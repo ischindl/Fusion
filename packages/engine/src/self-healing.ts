@@ -223,7 +223,7 @@ import {
 } from "./planning-handoff-recovery.js";
 import { getPromptPath } from "./execution/spec-staleness.js";
 import { evaluateStrandedHoldContinuation, seedPreReleasePlanReviewContinuation } from "./plan-review-continuation.js";
-import { evaluateStrandedContinuationReclaim, strandedHoldConditionKey, RECLAIM_RETIRED_STATE } from "./workflows/stranded-continuation-reclaim.js";
+import { evaluateStrandedContinuationReclaim, needsOverlapHolderProof, strandedHoldConditionKey, RECLAIM_RETIRED_STATE } from "./workflows/stranded-continuation-reclaim.js";
 /*
 FNXC:Workspace 2026-06-22-14:10 (Phase D review G — cycle dissolved):
 `isRepoLanded` is the CANONICAL per-repo landed predicate (Phase C, exported A6). It now lives in
@@ -9868,7 +9868,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           const livenessSignal = liveness(item.taskId);
           /* One signature per (taskId, nodeId, state, blockedReason) condition, shared by the two noise memos. */
           const conditionKey = strandedHoldConditionKey(item, item.blockedReason);
-          const verdict = evaluateStrandedContinuationReclaim({
+          const reclaimInput = {
             item,
             taskMissing: !task,
             taskTerminal: !!task && (
@@ -9893,7 +9893,30 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             taskBlockedBy: task?.blockedBy ?? null,
             taskOverlapBlockedBy: task?.overlapBlockedBy ?? null,
             alreadyAnnounced: this.strandedContinuationAnnounced.has(conditionKey),
-          });
+          };
+          let verdict = evaluateStrandedContinuationReclaim(reclaimInput);
+          /*
+          FNXC:StrandedContinuationReclaim 2026-09-26-03:06 (RUFU-285):
+          The classifier suppressed a wedge-class hold here for six days on RUFU-254 because the row's reason
+          string proves nothing while the TASK row proves a real lease wait. Resolving the blocker is one
+          extra `getTask`, so it is spent only on a row whose verdict already reached the unclaimable shape
+          (`needsOverlapHolderProof`) — an owned file-scope, dependency, principal-routing, or human-merge
+          reason never pays for it. The holder counts as live while it resolves, is not soft-deleted, and is
+          not in the terminal column: a blocker that finished or vanished leaves stale evidence behind, and
+          then the wedge-class recovery is the right answer, not a converged wait.
+          */
+          if (needsOverlapHolderProof(verdict.reason) && item.state === "held" && item.leaseOwner == null) {
+            const holderId = task?.overlapBlockedBy?.trim();
+            if (holderId && holderId !== item.taskId) {
+              const holder = await this.store.getTask(holderId).catch(() => undefined);
+              const holderColumns = await resolveTaskLifecycleColumns(this.store, holderId).catch(() => undefined);
+              if (holder
+                && holder.deletedAt == null
+                && holder.column !== (holderColumns?.complete ?? "done")) {
+                verdict = evaluateStrandedContinuationReclaim({ ...reclaimInput, overlapHolderLive: true });
+              }
+            }
+          }
           /* A wait an owning seam can re-take or release: the caller writes NOTHING at all. */
           if (verdict.action === "none") continue;
           const audit = async (
@@ -9936,6 +9959,34 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
               retryAfter: new Date(verdict.retryAfterMs).toISOString(),
             });
             if (deferred.state !== item.state) continue;
+            deferredCount += 1;
+            await audit("workflowWorkItem:reconcile-stranded-no-action", {
+              ...rowMetadata,
+              nextCheckAt: new Date(verdict.retryAfterMs).toISOString(),
+            });
+            continue;
+          }
+          /*
+          FNXC:StrandedContinuationReclaim 2026-09-26-03:06 (RUFU-285):
+          The wait is evidenced by the task row, so the row is RENAMED to what it actually is rather than
+          re-queued: the canonical `file-scope:<blockerId>` reason (identical to what
+          `settlePlanningContinuationDispatch` writes, so `releaseFileScopeWaitingContinuations` still matches
+          it and still clears `retryAfter` on wake) plus the deferral width, in one CAS. No `[recovery]` task-log
+          line and no re-queue event row: an evidenced wait is not a recovery, and this card history is the
+          artifact that reached 402 lines in six days. The write doubles as the durable memo — the next pass
+          reads the owned reason and takes the shipped `file-scope-hold` suppression, so the condition-signature
+          and ladder memos no longer decide whether this loop fires. A CAS whose returned row carries a
+          different reason lost the race to a fresher writer, so this pass defers to it and claims no outcome.
+          */
+          if (verdict.action === "converge") {
+            const converged = await this.store.transitionWorkflowWorkItem(item.id, item.state, {
+              expectedState: item.state,
+              /* Never converge a row a claimant took between our read and this write. */
+              expectedLeaseOwner: null,
+              blockedReason: verdict.ownedReason,
+              retryAfter: new Date(verdict.retryAfterMs).toISOString(),
+            });
+            if (converged?.blockedReason !== verdict.ownedReason) continue;
             deferredCount += 1;
             await audit("workflowWorkItem:reconcile-stranded-no-action", {
               ...rowMetadata,

@@ -229,6 +229,126 @@ describe("evaluateStrandedContinuationReclaim — hold ownership routing", () =>
   });
 });
 
+/* ── RUFU-285: convergence to the wait the task row proves ────────────────── */
+
+/*
+FNXC:StrandedContinuationReclaim 2026-09-26-02:40 (RUFU-285):
+RUFU-263's dedup cannot reach a card whose re-holding writer replaces the row instead of CAS-ing it: the
+process-local memo is keyed on `taskId|nodeId|state|blockedReason`, and the reason oscillates (NULL from the
+capacity `onSuspend`, `plan-review-close-*` from the planning-close hold) while the re-queue itself nulls
+`retryAfter`, erasing the durable width the ladder reads back. RUFU-254 measured 402 `[recovery]` lines in 6
+days at a 72–85/day cadence for exactly that shape, with zero `-no-action` (defer) rows ever written.
+
+The durable truth that survives all of that is on the **task** row: `overlapBlockedBy` names the card whose
+file-scope lease is being waited for, published by `transitionQueuedEpisode`. When the holder is live, that
+pair proves the wait is real, so the sweep **converges** the row to the reason the shipped releaser matches
+(`file-scope:<holderId>`) and stamps the ladder in the same write — no re-queue, no `[recovery]` line, no
+planner wake. The block below pins that contract and, just as loudly, the shapes that must keep re-queuing.
+*/
+
+describe("evaluateStrandedContinuationReclaim — a hold the task row proves is another card's lease wait", () => {
+  const NOW = 1_800_000_000_000;
+  const LIVE_OVERLAP = { taskOverlapBlockedBy: "RUFU-257", overlapHolderLive: true };
+  const CONVERGED_REASON = `${FILE_SCOPE_HOLD_REASON_PREFIX}RUFU-257`;
+
+  it("converges an unowned held reason to the canonical file-scope wait instead of re-queuing", () => {
+    // The two shapes the live loop actually presented, plus the blank string a writer can leave behind.
+    for (const reason of [null, "", "plan-review-close-capacity"]) {
+      const verdict = evaluateStrandedContinuationReclaim(heldInput(reason, LIVE_OVERLAP));
+      expect(verdict, String(reason)).toEqual({
+        action: "converge",
+        reason: "file-scope-wait-converged",
+        ownedReason: CONVERGED_REASON,
+        retryAfterMs: NOW + THIRTY_MINUTES,
+      });
+      // `announceRecovery` is the only thing that writes the card-history line; convergence must not carry it.
+      expect("announceRecovery" in (verdict as object), String(reason)).toBe(false);
+    }
+  });
+
+  it("leaves an already-owned match on the shipped suppression and an owned mismatch on the shipped orphan re-queue", () => {
+    // These two are the converged row's whole after-life: it must read as an ordinary file-scope wait, and
+    // drift in the task-level blocker must recover it. Neither may become a new disposition.
+    expect(evaluateStrandedContinuationReclaim(heldInput(CONVERGED_REASON, LIVE_OVERLAP)))
+      .toEqual({ action: "none", reason: "file-scope-hold" });
+    expect(evaluateStrandedContinuationReclaim(heldInput(`${FILE_SCOPE_HOLD_REASON_PREFIX}RUFU-999`, LIVE_OVERLAP)))
+      .toEqual({ action: "requeue", reason: "stale-file-scope-hold", announceRecovery: true });
+  });
+
+  it("converges ahead of the wedge-class sustained ladder, whatever the memo claims", () => {
+    // The memo cannot be trusted for this class (that is the bug), so convergence is unconditional on the
+    // durable proof rather than an optional extra gated on `alreadyAnnounced`.
+    expect(evaluateStrandedContinuationReclaim(heldInput(null, { ...LIVE_OVERLAP, alreadyAnnounced: true })))
+      .toMatchObject({ action: "converge", reason: "file-scope-wait-converged" });
+  });
+
+  it("keeps the first-sight re-queue for every way the overlap proof can be missing or false", () => {
+    const WEDGE = { action: "requeue", reason: "unclaimable-hold", announceRecovery: true };
+    for (const [label, extra] of [
+      ["no blocker named at all", {}],
+      ["blank blocker id", { taskOverlapBlockedBy: "  " }],
+      // The holder resolved but sits in a terminal column, is soft-deleted, or did not resolve: in every one
+      // of those cases nobody holds the lease, so the wedge-class recovery is the honest answer.
+      ["holder proof omitted", { taskOverlapBlockedBy: "RUFU-257" }],
+      ["holder proof false", { taskOverlapBlockedBy: "RUFU-257", overlapHolderLive: false }],
+      ["card blocked by itself", { taskOverlapBlockedBy: "RUFU-263", overlapHolderLive: true }],
+    ] as Array<[string, Record<string, unknown>]>) {
+      for (const reason of [null, "plan-review-close-capacity"]) {
+        expect(evaluateStrandedContinuationReclaim(heldInput(reason, extra)), `${label}/${reason}`)
+          .toEqual(WEDGE);
+      }
+    }
+  });
+
+  it("does not converge a row a claim owns mid-cycle", () => {
+    // Convergence writes `blockedReason` and a deferral stamp on a row it believes is unowned; a live
+    // `leaseOwner` means a dispatcher is mid-claim on it, and clobbering that is a double-dispatch risk.
+    expect(evaluateStrandedContinuationReclaim(heldInput(null, {
+      ...LIVE_OVERLAP,
+      item: {
+        state: "held", kind: "task", taskId: "RUFU-263", nodeId: "plan-review", leaseOwner: "engine-lease-1",
+        retryAfter: null, leaseExpiresAt: null, blockedReason: null,
+      },
+    }))).toEqual({ action: "requeue", reason: "unclaimable-hold", announceRecovery: true });
+  });
+
+  it("advances the convergence width on the same ladder and keeps deferring at its ceiling", () => {
+    // (d) of the freeze-safety set: the ceiling is a 6 h re-check, never a re-queue. The shipped ladder has no
+    // ceiling re-queue and this design must not invent one — a converged card that re-queued at 6 h would
+    // reproduce the symptom it replaces, just slower.
+    const widths = [null, THIRTY_MINUTES, TWO_HOURS, RECLAIM_DEFERRAL_LADDER_MS[2]];
+    const expected = [THIRTY_MINUTES, TWO_HOURS, RECLAIM_DEFERRAL_LADDER_MS[2], RECLAIM_DEFERRAL_LADDER_MS[2]];
+    for (let pass = 0; pass < widths.length; pass += 1) {
+      const verdict = evaluateStrandedContinuationReclaim(heldInput(null, {
+        ...LIVE_OVERLAP,
+        item: {
+          state: "held", kind: "task", taskId: "RUFU-263", nodeId: "plan-review",
+          leaseExpiresAt: null, blockedReason: null,
+          retryAfter: widths[pass] === null ? null : new Date(NOW - GRACE_EXCEEDED + widths[pass]!).toISOString(),
+        },
+      }));
+      expect(verdict, `pass ${pass}`).toMatchObject({
+        action: "converge", ownedReason: CONVERGED_REASON, retryAfterMs: NOW + expected[pass],
+      });
+    }
+  });
+
+  it("never converges a reason another seam already owns", () => {
+    // The convergence branch sits BELOW the owned-family branches, so these keep their shipped dispositions —
+    // a deferral stamped here would hide the row from the seam that releases it.
+    for (const reason of [
+      "workflow-role-pool-exhausted:executor",
+      `${HUMAN_MERGE_APPROVAL_HOLD_MARKER}-pending#sig`,
+      `${DEPENDENCY_HOLD_REASON_PREFIX}RUFU-196`,
+    ]) {
+      const verdict = evaluateStrandedContinuationReclaim(heldInput(reason, {
+        ...LIVE_OVERLAP, taskBlockedBy: "RUFU-196",
+      }));
+      expect(verdict.action, reason).not.toBe("converge");
+    }
+  });
+});
+
 /* ── Caller-level dispositions ─────────────────────────────────────────────── */
 
 const staleFrom = (ms: number) => new Date(Date.now() - ms).toISOString();
@@ -535,6 +655,8 @@ function handoffHarness(
   rows: WorkflowWorkItem[],
   taskOverrides: Partial<Task> = {},
   settings: Partial<Settings> = {},
+  /** Extra task rows resolvable by id — RUFU-285 needs them to stand as the live file-scope blocker. */
+  holders: Task[] = [],
 ) {
   const task = {
     id: "RUFU-263", title: "Bound the stranded-continuation sweep", description: "", column: "todo",
@@ -557,7 +679,9 @@ function handoffHarness(
         .map((row) => ({ ...row }));
     }),
     listTasks: vi.fn(async () => [{ ...task }]),
-    getTask: vi.fn(async (id: string) => (id === task.id ? task : undefined)),
+    getTask: vi.fn(async (id: string) => (
+      id === task.id ? task : holders.find((holder) => holder.id === id)
+    )),
     updateTask: vi.fn(async (_id: string, patch: Partial<Task>) => Object.assign(task, patch)),
     listWorkflowWorkItemsForTask: vi.fn(async (taskId: string) =>
       (taskId === task.id ? rows : []).map((row) => ({ ...row }))),
@@ -736,5 +860,209 @@ describe("hold owners still recover the rows this sweep leaves alone", () => {
         action: "none", reason: "human-merge-approval-hold",
       });
     }
+  });
+});
+
+/* ── RUFU-285: the caller converges the loop instead of re-firing it ─────── */
+
+/*
+FNXC:StrandedContinuationReclaim 2026-09-26-03:05 (RUFU-285):
+Symptom-verification suite for the RUFU-254 loop. The staged card is the real shape: `todo`/`queued` with
+`blockedBy: null`, `overlapBlockedBy` naming a live card, and the matching `queuedLogEpisodeSignature`,
+against a `held` `plan-review` row that carries no owned reason. `handoffHarness` is the CAS-faithful fake —
+it applies the patch, honours `expectedState`/`expectedLeaseOwner`, and due-gates the listing exactly like
+`listDueWorkflowWorkItems` — so a stamped deferral disappears from the next pass on its own, which is what
+makes the passes below a reproduction of the loop rather than a mock of the fix.
+*/
+describe("reconcileStrandedWorkflowContinuations — an overlap-evidenced hold converges instead of looping", () => {
+  const BLOCKED_ID = "RUFU-254";
+  const HOLDER_ID = "RUFU-257";
+  const CONVERGED = `${FILE_SCOPE_HOLD_REASON_PREFIX}${HOLDER_ID}`;
+
+  const holder = (overrides: Partial<Task> = {}) => ({
+    id: HOLDER_ID, title: "Structural CI guard", description: "", column: "in-progress",
+    dependencies: [], steps: [], currentStep: 0, log: [],
+    createdAt: staleFrom(GRACE_EXCEEDED), updatedAt: staleFrom(GRACE_EXCEEDED),
+    ...overrides,
+  } as unknown as Task);
+
+  /** The blocked card exactly as the loop left it: queued on another live card's file-scope lease. */
+  const overlapBlocked = () => ({
+    id: BLOCKED_ID, status: "queued", blockedBy: null,
+    overlapBlockedBy: HOLDER_ID, queuedLogEpisodeSignature: CONVERGED,
+  });
+
+  const heldRow = (overrides: Partial<WorkflowWorkItem> = {}) => workItem({
+    id: "wi-254", taskId: BLOCKED_ID, nodeId: "plan-review", blockedReason: null,
+    leaseOwner: null, retryAfter: null, ...overrides,
+  });
+
+  /**
+   * Age the converged row and expire its stamp, which is the state a ladder rung actually presents: the write
+   * set `updatedAt`, so without rolling it back the pass would stop at `too-fresh` and never re-read the task
+   * evidence the acceptance depends on.
+   */
+  const agedAndDue = (row: WorkflowWorkItem) => {
+    row.updatedAt = staleFrom(GRACE_EXCEEDED);
+    row.retryAfter = staleFrom(FIVE_MINUTES);
+  };
+
+  it("converges on the first pass and writes nothing on the passes after", async () => {
+    recordRunAuditEventMock.mockClear();
+    const row = heldRow();
+    const { manager, transitions, logged } = handoffHarness([row], overlapBlocked(), {}, [holder()]);
+
+    // Pass 1: the capacity-`onSuspend` shape — a held row whose reason proves nothing.
+    await expect(manager.reconcileStrandedWorkflowContinuations()).resolves.toBe(0);
+
+    expect(transitions).toHaveLength(1);
+    expect(transitions[0]).toMatchObject({
+      id: row.id, state: "held",
+      patch: { expectedState: "held", expectedLeaseOwner: null, blockedReason: CONVERGED },
+    });
+    // One write carries both halves of the durable pair: the owned reason and a ladder stamp. The card stays
+    // parked instead of waking the planner lane with a real model.
+    expect(row.state).toBe("held");
+    expect(row.blockedReason).toBe(CONVERGED);
+    expect(Date.parse(String(row.retryAfter))).toBeGreaterThan(Date.now());
+    expect(recordRunAuditEventMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: "workflowWorkItem:reconcile-stranded-no-action",
+      metadata: expect.objectContaining({
+        taskId: BLOCKED_ID, nodeId: "plan-review", reason: "file-scope-wait-converged",
+      }),
+    }));
+
+    // Passes 2..N: the row the sweep wrote IS the table's state, and it is now the shipped `file-scope-hold`
+    // suppression case. Expiring the stamp makes each pass a real due evaluation rather than a skipped gap.
+    for (let pass = 2; pass <= 4; pass += 1) {
+      transitions.length = 0;
+      recordRunAuditEventMock.mockClear();
+      agedAndDue(row);
+
+      await expect(manager.reconcileStrandedWorkflowContinuations()).resolves.toBe(0);
+
+      expect(transitions, `pass ${pass}`).toEqual([]);
+      expect(row.state, `pass ${pass}`).toBe("held");
+      expect(row.blockedReason, `pass ${pass}`).toBe(CONVERGED);
+    }
+
+    // The measured symptom was 402 `[recovery]` lines over 6 days (72–85 per day) for this exact loop. Across
+    // four due passes of the staged card the card history gained nothing and nothing was re-queued.
+    expect(logged).toEqual([]);
+  });
+
+  it("re-converges a row whose writer keeps replacing the reason, and still never re-queues or announces", async () => {
+    recordRunAuditEventMock.mockClear();
+    const { rows, manager, transitions, logged } = handoffHarness([heldRow()], overlapBlocked(), {}, [holder()]);
+    const oscillating = [null, "plan-review-close-capacity", ""];
+
+    for (let pass = 1; pass <= 3; pass += 1) {
+      transitions.length = 0;
+      // The real re-holding writer replaces the row through `replaceActiveTaskWorkflowContinuation`: fresh id,
+      // `retryAfter` reset to null. That is what defeats the process memo and the ladder both, so convergence
+      // has to survive it — one owned-reason write per pass, never a re-queue.
+      rows.splice(0, rows.length, heldRow({ id: `wi-254-pass-${pass}`, blockedReason: oscillating[pass - 1] }));
+
+      await expect(manager.reconcileStrandedWorkflowContinuations()).resolves.toBe(0);
+
+      expect(transitions, `pass ${pass}`).toHaveLength(1);
+      expect(transitions[0]!.state, `pass ${pass}`).toBe("held");
+      expect(transitions[0]!.patch.blockedReason, `pass ${pass}`).toBe(CONVERGED);
+    }
+
+    expect(logged).toEqual([]);
+  });
+
+  it("keeps the wedge-class first-sight re-queue for the identical card with no blocker named", async () => {
+    recordRunAuditEventMock.mockClear();
+    // (a) The promise RUFU-263 kept, restated on the loop's own fixture so the two dispositions are provably
+    // separated by the durable overlap evidence and not by the shape of the row.
+    const { manager, transitions, logged } = handoffHarness([heldRow()], {
+      id: BLOCKED_ID, status: "queued", blockedBy: null,
+    }, {}, [holder()]);
+
+    await expect(manager.reconcileStrandedWorkflowContinuations()).resolves.toBe(1);
+
+    expect(transitions[0]).toMatchObject({ state: "runnable", patch: { blockedReason: null, retryAfter: null } });
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toContain("workflow continuation re-queued");
+    expect(recordRunAuditEventMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: "workflowWorkItem:reconcile-stranded-requeued",
+      metadata: expect.objectContaining({ reason: "unclaimable-hold" }),
+    }));
+  });
+
+  it("keeps the first-sight re-queue for every way the holder can fail to be live", async () => {
+    const deadHolders: Array<[string, Task[]]> = [
+      ["terminal column", [holder({ column: "done" })]],
+      ["soft-deleted", [holder({ deletedAt: staleFrom(FIVE_MINUTES) })]],
+      ["unresolvable", []],
+    ];
+    for (const [label, holders] of deadHolders) {
+      recordRunAuditEventMock.mockClear();
+      const { manager, transitions, logged } = handoffHarness([heldRow()], overlapBlocked(), {}, holders);
+
+      await expect(manager.reconcileStrandedWorkflowContinuations(), label).resolves.toBe(1);
+
+      expect(transitions[0]?.state, label).toBe("runnable");
+      expect(logged, label).toHaveLength(1);
+      expect(logged[0], label).toContain("workflow continuation re-queued");
+    }
+  });
+
+  it("spends the holder lookup only on a row that actually needs the proof", async () => {
+    const row = heldRow({ blockedReason: CONVERGED });
+    const { store, manager, transitions } = handoffHarness([row], overlapBlocked(), {}, [holder()]);
+
+    await expect(manager.reconcileStrandedWorkflowContinuations()).resolves.toBe(0);
+
+    // The reason already names the task's blocker, so the shipped suppression answers without a second
+    // `getTask` — a holder read for every owned-family row would tax every maintenance pass.
+    expect(transitions).toEqual([]);
+    const lookedUp = (store.getTask as ReturnType<typeof vi.fn>).mock.calls.map((call) => call[0]);
+    expect(lookedUp).not.toContain(HOLDER_ID);
+  });
+
+  it("hands the converged row to the release owner, which clears the deferral stamp on wake", async () => {
+    recordRunAuditEventMock.mockClear();
+    const row = heldRow();
+    const { store, task, manager, logged } = handoffHarness([row], overlapBlocked(), {}, [holder()]);
+
+    await manager.reconcileStrandedWorkflowContinuations();
+    expect(row.blockedReason).toBe(CONVERGED);
+    expect(row.retryAfter).not.toBeNull();
+
+    // (b) Freeze-safety: the converged shape is exactly what `releaseFileScopeWaitingContinuations` matches,
+    // and its CAS writes `retryAfter: null`, so a ladder stamp can never delay the resume.
+    delete task.overlapBlockedBy;
+    delete task.queuedLogEpisodeSignature;
+    await expect(releaseFileScopeWaitingContinuations(store, [{ taskId: BLOCKED_ID, blockerId: HOLDER_ID }]))
+      .resolves.toEqual([row.id]);
+
+    expect(row.state).toBe("runnable");
+    expect(row.retryAfter).toBeNull();
+    expect(row.blockedReason).toBeNull();
+    expect(logged).toEqual([]);
+  });
+
+  it("re-queues a converged row whose task-level blocker moved to another card", async () => {
+    recordRunAuditEventMock.mockClear();
+    const row = heldRow();
+    const { store, task, manager, transitions, logged } = handoffHarness([row], overlapBlocked(), {}, [holder()]);
+    await manager.reconcileStrandedWorkflowContinuations();
+    expect(row.blockedReason).toBe(CONVERGED);
+
+    // (c) Drift escape hatch: the lease wait ended but no release event reached this row — the blocker id
+    // changed underneath it. This orphan re-queue is what keeps convergence from becoming a freeze.
+    transitions.length = 0;
+    recordRunAuditEventMock.mockClear();
+    await store.updateTask(BLOCKED_ID, { overlapBlockedBy: "RUFU-999" });
+    agedAndDue(row);
+
+    await expect(manager.reconcileStrandedWorkflowContinuations()).resolves.toBe(1);
+
+    expect(transitions[0]).toMatchObject({ state: "runnable", patch: { retryAfter: null } });
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toContain("stale-file-scope-hold");
   });
 });

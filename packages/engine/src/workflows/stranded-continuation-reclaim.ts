@@ -56,7 +56,13 @@ export type StrandedContinuationReason =
   | "stale-dependency-hold"
   /* RUFU-263 sustained condition: the same unclaimable hold this sweep already acted on once. */
   | "unclaimable-sustained"
-  | "unclaimable-hold";
+  | "unclaimable-hold"
+  /*
+  FNXC:StrandedContinuationReclaim 2026-09-26-03:06 (RUFU-285):
+  The row says nothing while the task row says everything: `overlapBlockedBy` names a live card whose
+  file-scope lease is unavailable. Writing the canonical wait reason ends the loop instead of re-firing it.
+  */
+  | "file-scope-wait-converged";
 
 /*
 FNXC:StrandedContinuationReclaim 2026-09-22-14:21 (RUFU-263):
@@ -72,11 +78,21 @@ to forget that:
   `reconcile-stranded-no-action` row. `retryAfterMs` is the durable half of the bound: the same due-gate
   that hides the row from this sweep hides it from every reader, so the bound survives a restart.
 - `none`     — a wait a named seam owns; the caller writes NOTHING at all.
+
+RUFU-285 adds:
+
+- `converge` — one CAS that adopts the wait the TASK row already proves: `blockedReason` becomes the canonical
+  `file-scope:<blockerId>` (`ownedReason`) and `retryAfterMs` stamps the deferral in the SAME write. It writes
+  NO task-log line and NO re-queue event row: an evidenced wait is not a recovery, and the `[recovery]` line is
+  exactly the artifact that accumulated to 402 lines in six days. Afterwards the row is an ordinary owned
+  file-scope wait, which the shipped `file-scope-hold` branch suppresses and
+  `releaseFileScopeWaitingContinuations` releases.
 */
 export type StrandedContinuationVerdict =
   | { action: "requeue"; reason: StrandedContinuationReason; announceRecovery: boolean; retryAfterMs?: number }
   | { action: "retire"; reason: StrandedContinuationReason }
   | { action: "defer"; reason: StrandedContinuationReason; retryAfterMs: number }
+  | { action: "converge"; reason: "file-scope-wait-converged"; ownedReason: string; retryAfterMs: number }
   | { action: "none"; reason: StrandedContinuationReason };
 
 /*
@@ -134,6 +150,18 @@ export const DEPENDENCY_HOLD_REASON_PREFIX = "dependency:";
 
 /** Graph admission refusal for an unsatisfiable dependency configuration (`workflowAdmissionHoldReason`). */
 export const DEPENDENCY_CONFIGURATION_HOLD_REASON = "dependency-configuration-blocked";
+
+/*
+FNXC:StrandedContinuationReclaim 2026-09-26-03:06 (RUFU-285):
+The two reasons that mean "no seam owns this reason string", i.e. the row is about to be re-queued or put on
+the unclaimable ladder. They are the ONLY verdicts that can still be rescued by task-level file-scope
+overlap evidence, so the caller spends its one extra `getTask` (the holder liveness read) exactly here and
+never for an owned-family row — a holder lookup per item would tax every maintenance pass to answer
+questions the reason string has already settled.
+*/
+export function needsOverlapHolderProof(reason: StrandedContinuationReason): boolean {
+  return reason === "unclaimable-hold" || reason === "unclaimable-sustained";
+}
 
 /*
 FNXC:StrandedContinuationReclaim 2026-09-22-14:21 (RUFU-263):
@@ -211,9 +239,12 @@ function dependencyHoldIds(reason: string): string[] {
  * @param input.taskOverlapBlockedBy The owning task's current file-scope blocker, for validating a file-scope wait.
  * @param input.alreadyAnnounced Caller-memo proof that this exact condition was already announced since
  *   process start; only an unclaimable hold consumes it, to stop the per-pass re-fire.
+ * @param input.overlapHolderLive Caller-proven liveness for `taskOverlapBlockedBy`'s task (resolves, not
+ *   soft-deleted, not in the terminal column); omitted means unproven, which keeps the wedge-class answer.
+ *   RUFU-285: proving liveness is what keeps a dead blocker's leftover evidence from freezing a card.
  */
 export function evaluateStrandedContinuationReclaim(input: {
-  item: Pick<WorkflowWorkItem, "state" | "kind" | "leaseExpiresAt" | "blockedReason" | "taskId" | "nodeId" | "retryAfter">;
+  item: Pick<WorkflowWorkItem, "state" | "kind" | "leaseExpiresAt" | "leaseOwner" | "blockedReason" | "taskId" | "nodeId" | "retryAfter">;
   taskTerminal: boolean;
   taskMissing: boolean;
   taskPaused: boolean;
@@ -226,6 +257,14 @@ export function evaluateStrandedContinuationReclaim(input: {
   taskBlockedBy?: string | null;
   taskOverlapBlockedBy?: string | null;
   alreadyAnnounced?: boolean;
+  /**
+  FNXC:StrandedContinuationReclaim 2026-09-26-03:06 (RUFU-285):
+  Caller-resolved proof that `taskOverlapBlockedBy` names a task that still resolves, is not
+  soft-deleted, and is not in the terminal column. Optional and compared with `=== true`, so an
+  omitted proof (any existing caller) keeps the wedge-class answer rather than converging on an
+  assumption.
+  */
+  overlapHolderLive?: boolean;
 }): StrandedContinuationVerdict {
   if (input.enginePaused) return { action: "none", reason: "engine-paused" };
   if (input.taskMissing) return { action: "retire", reason: "task-missing" };
@@ -325,6 +364,37 @@ export function evaluateStrandedContinuationReclaim(input: {
     }
     // The dependency the wait named is gone (cleared, replaced, or satisfied): stale wait, recover now.
     return { action: "requeue", reason: "stale-dependency-hold", announceRecovery: true };
+  }
+  /*
+  FNXC:StrandedContinuationReclaim 2026-09-26-03:06 (RUFU-285):
+  A `held` row whose reason proves nothing, sitting on a card whose TASK row carries the durable proof of a
+  real wait: `overlapBlockedBy` names another live card, published by `transitionQueuedEpisode` together with
+  the matching `queuedLogEpisodeSignature`. The reason string is missing that evidence only because two
+  different seams re-hold this row with their own vocabulary (`onSuspend` writes none at all, a capacity
+  suspension; `holdPlanReviewNoOpContinuation` writes `plan-review-close-*`) and each replacement arrives with
+  a fresh row identity, which resets `retryAfter` and changes the memo's condition signature. That is why
+  process-local bounds cannot fix it: the loop RUFU-263 measured (402 `[recovery]` lines in six days on
+  RUFU-254) is the sweep re-queuing a wait that was real every single time.
+
+  So the verdict adopts the task row's evidence instead of fighting the row's vocabulary: the canonical
+  `file-scope:<blockerId>` reason — byte-identical to what `settlePlanningContinuationDispatch` writes — plus
+  the deferral ladder in ONE write. Two guards keep this honest: a lease owner means a claimant is mid-cycle
+  (the claim predicate's `leaseOwner IS NULL` conjunct stays the truth), and the blocker must not be the row's
+  own task, which would converge a card onto its own lease forever.
+  */
+  const overlapBlockerId = input.taskOverlapBlockedBy?.trim() ?? "";
+  if (
+    input.overlapHolderLive === true
+    && overlapBlockerId
+    && overlapBlockerId !== input.item.taskId
+    && input.item.leaseOwner == null
+  ) {
+    return {
+      action: "converge",
+      reason: "file-scope-wait-converged",
+      ownedReason: `${FILE_SCOPE_HOLD_REASON_PREFIX}${overlapBlockerId}`,
+      retryAfterMs: input.now + nextDeferralMs(priorWidthMs),
+    };
   }
   /*
   Genuinely unclaimable: no reason at all (the FN-8901/FN-8902 shape, held 46h with a NULL reason) or a
