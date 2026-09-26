@@ -306,17 +306,70 @@ async function getWorktreeBranchMap(repoDir: string): Promise<Map<string, string
 }
 
 
+/*
+FNXC:TaskIdAttribution 2026-09-26-21:54:
+Commit attribution recognised only `FN-<n>` as a task id. Card ids are minted from the PROJECT's
+`settings.taskPrefix` (`resolveTaskPrefix` feeding `async-allocator.ts`), and a mission can override
+it again, so any project whose prefix is not `FN` produced commits that every attribution scan below
+read as "no card at all". Saneca (prefix `SANE`) is the reproduced case: `SANE-452`'s root-repo
+workspace worktree path went missing, its two surviving commits (`Fusion-Task-Id: SANE-452`, subject
+`SANE-452: …`) were classified `unattributed`, so `inspectBareBranchCollision` refused `reclaimable`
+(`taskAttributedCommitCount === 0 && foreignOrUnattributedCount !== 0`) and answered
+`foreign-unmerged` — a card could never re-acquire the checkout that holds its own work, and every
+dispatch repeated the same refusal.
+
+The token shape is the canonical id grammar id minting and integrity checks already use
+(`^([A-Z][A-Z0-9]*)-(\d+)$` in `packages/core/src/tasks/task-id-integrity.ts`), matched
+case-insensitively because subjects and trailers are hand-authored as well as Fusion-authored.
+Anything outside that grammar stays unattributed: widening the prefix must never turn arbitrary
+trailer text into a claimed owner, because `foreign` drives contamination refusal while
+`unattributed` drives preservation.
+
+Attribution lives in these helpers for a second reason: every previous site indexed
+`subjectMatch[2]` behind a capture group for the commit type, so dropping that group would silently
+read `undefined` and classify real work as unattributed. `extractAttributedTaskId` returns the id
+instead of a match object, which removes that footgun from all five call sites.
+*/
+const TASK_ID_TOKEN_SOURCE = "[A-Z][A-Z0-9]*-\\d+";
+const CONVENTIONAL_COMMIT_TYPES = "feat|fix|test|chore|docs|refactor|perf|build";
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Conventional-subject scope naming this exact card: `fix(SANE-452): …`. */
+function ownCommitSubjectPattern(taskId: string): RegExp {
+  return new RegExp(`^(${CONVENTIONAL_COMMIT_TYPES})\\(${escapeRegExp(taskId)}\\):`, "i");
+}
+
+/** `Fusion-Task-Id: <taskId>` trailer for this exact card, tolerant of spacing and a missing final newline. */
+function ownCommitTrailerPattern(taskId: string): RegExp {
+  return new RegExp(`(?:^|\\n)${FUSION_TASK_ID_TRAILER_KEY}:\\s*${escapeRegExp(taskId)}\\s*(?:\\n|$)`, "i");
+}
+
+/* The task id is capture group 1 of BOTH generic patterns — `extractAttributedTaskId` reads `[1]`. */
+const genericCommitSubjectPattern = new RegExp(`^(?:${CONVENTIONAL_COMMIT_TYPES})\\((${TASK_ID_TOKEN_SOURCE})\\):`, "i");
+const genericCommitTrailerPattern = new RegExp(`(?:^|\\n)${FUSION_TASK_ID_TRAILER_KEY}:\\s*(${TASK_ID_TOKEN_SOURCE})\\s*(?:\\n|$)`, "i");
+
+/**
+ * The card a commit claims: its `Fusion-Task-Id` trailer (authoritative) or conventional-subject
+ * scope. Empty string means the commit names no card, and callers must treat that as unattributed
+ * work to preserve — never as belonging to whoever is asking.
+ */
+export function extractAttributedTaskId(subject: string, body: string): string {
+  const trailerMatch = body.match(genericCommitTrailerPattern);
+  const subjectMatch = subject.match(genericCommitSubjectPattern);
+  return (trailerMatch?.[1] ?? subjectMatch?.[1] ?? "").toUpperCase();
+}
+
 interface TaskAttributionSummary {
   ownCount: number;
   foreignCount: number;
 }
 
 async function summarizeTaskAttributedCommits(repoDir: string, range: string, taskId: string): Promise<TaskAttributionSummary> {
-  const escapedTaskId = taskId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const ownSubjectPattern = new RegExp(`^(feat|fix|test|chore|docs|refactor|perf|build)\\(${escapedTaskId}\\):`);
-  const ownTrailerPattern = new RegExp(`(?:^|\\n)${FUSION_TASK_ID_TRAILER_KEY}: ${escapedTaskId}(?:\\n|$)`);
-  const genericSubjectPattern = /^(feat|fix|test|chore|docs|refactor|perf|build)\((FN-\d+)\):/i;
-  const genericTrailerPattern = new RegExp(`(?:^|\\n)${FUSION_TASK_ID_TRAILER_KEY}:\\s*(FN-\\d+)(?:\\n|$)`, "i");
+  const ownSubjectPattern = ownCommitSubjectPattern(taskId);
+  const ownTrailerPattern = ownCommitTrailerPattern(taskId);
   let output = "";
   try {
     output = await runGit(repoDir, `git log --format=%H%x00%s%x00%b ${quoteShellArg(range)}`);
@@ -336,9 +389,7 @@ async function summarizeTaskAttributedCommits(repoDir: string, range: string, ta
       ownCount += 1;
       continue;
     }
-    const subjectMatch = subject.match(genericSubjectPattern);
-    const trailerMatch = body.match(genericTrailerPattern);
-    const attributedTaskId = (trailerMatch?.[1] ?? subjectMatch?.[2] ?? "").toUpperCase();
+    const attributedTaskId = extractAttributedTaskId(subject, body);
     if (attributedTaskId && attributedTaskId !== normalizedTaskId) {
       foreignCount += 1;
     }
@@ -383,17 +434,12 @@ export async function reportBranchAttribution(
   const output = await runGit(repoDir, `git log --format=%H%x1f%s%x1f%b%x1e ${quoteShellArg(`${baseSha}..${branch}`)}`)
     .catch(() => "");
   if (!output) return report;
-  const escapedTaskId = taskId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const ownSubjectPattern = new RegExp(`^(feat|fix|test|chore|docs|refactor|perf|build)\\(${escapedTaskId}\\):`, "i");
-  const ownTrailerPattern = new RegExp(`(?:^|\\n)${FUSION_TASK_ID_TRAILER_KEY}: ${escapedTaskId}\\s*(?:\\n|$)`, "i");
-  const genericSubjectPattern = /^(feat|fix|test|chore|docs|refactor|perf|build)\((FN-\d+)\):/i;
-  const genericTrailerPattern = new RegExp(`(?:^|\\n)${FUSION_TASK_ID_TRAILER_KEY}:\\s*(FN-\\d+)\\s*(?:\\n|$)`, "i");
+  const ownSubjectPattern = ownCommitSubjectPattern(taskId);
+  const ownTrailerPattern = ownCommitTrailerPattern(taskId);
   const normalizedTaskId = taskId.toUpperCase();
   for (const record of output.split("").map((entry) => entry.trim()).filter(Boolean)) {
     const [sha = "", subject = "", body = ""] = record.split("");
-    const subjectMatch = subject.match(genericSubjectPattern);
-    const trailerMatch = body.match(genericTrailerPattern);
-    const attributedTaskId = (trailerMatch?.[1] ?? subjectMatch?.[2] ?? "").toUpperCase();
+    const attributedTaskId = extractAttributedTaskId(subject, body);
     if (attributedTaskId && attributedTaskId !== normalizedTaskId) {
       report.foreign.push({ sha, subject, foreignTaskId: attributedTaskId });
       continue;
@@ -429,7 +475,7 @@ export async function branchTipCarriesTaskIdTrailer(
 ): Promise<boolean> {
   try {
     const body = await runGit(repoDir, `git log -1 --pretty=%B ${quoteShellArg(branch)}`);
-    const escaped = taskId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const escaped = escapeRegExp(taskId);
     const pattern = new RegExp(`(?:^|\\n)${FUSION_TASK_ID_TRAILER_KEY}: ${escaped}\\s*(?:\\n|$)`);
     return pattern.test(body);
   } catch {
@@ -514,11 +560,8 @@ export async function classifyBootstrapMisbinding(
     };
   }
 
-  const escapedTaskId = taskId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const ownSubjectPattern = new RegExp(`^(feat|fix|test|chore|docs|refactor|perf|build)\\(${escapedTaskId}\\):`, "i");
-  const ownTrailerPattern = new RegExp(`(?:^|\\n)${FUSION_TASK_ID_TRAILER_KEY}:\\s*${escapedTaskId}\\s*(?:\\n|$)`, "i");
-  const subjectPattern = /^(feat|fix|test|chore|docs|refactor|perf|build)\((FN-\d+)\):/i;
-  const trailerPattern = /(?:^|\n)Fusion-Task-Id:\s*(FN-\d+)\s*(?:\n|$)/i;
+  const ownSubjectPattern = ownCommitSubjectPattern(taskId);
+  const ownTrailerPattern = ownCommitTrailerPattern(taskId);
 
   let ownCommitCount = 0;
   let nonAttributedCount = 0;
@@ -530,9 +573,7 @@ export async function classifyBootstrapMisbinding(
       continue;
     }
 
-    const subjectMatch = subject.match(subjectPattern);
-    const trailerMatch = body.match(trailerPattern);
-    const attributedTaskId = (trailerMatch?.[1] ?? subjectMatch?.[2] ?? "").toUpperCase();
+    const attributedTaskId = extractAttributedTaskId(subject, body);
     if (!attributedTaskId) {
       nonAttributedCount += 1;
     } else {
@@ -770,11 +811,7 @@ export async function classifyMisroutedForeignCommit(
   input: ClassifyMisroutedForeignCommitInput,
 ): Promise<ClassifyMisroutedForeignCommitResult> {
   const { repoDir, sha, commitSubject, commitBody, currentTaskId } = input;
-  const subjectPattern = /^(feat|fix|test|chore|docs|refactor|perf|build)\((FN-\d+)\):/i;
-  const trailerPattern = /(?:^|\n)Fusion-Task-Id:\s*(FN-\d+)\s*(?:\n|$)/i;
-  const subjectMatch = commitSubject.match(subjectPattern);
-  const trailerMatch = commitBody.match(trailerPattern);
-  const foreignTaskId = (trailerMatch?.[1] ?? subjectMatch?.[2] ?? "").toUpperCase();
+  const foreignTaskId = extractAttributedTaskId(commitSubject, commitBody);
   if (!foreignTaskId || foreignTaskId === currentTaskId.toUpperCase()) {
     return { misrouted: false, paths: [] };
   }
@@ -824,14 +861,10 @@ export async function classifyForeignOnlyContamination(
   }
   const persistedRangeOutput = await runGit(repoDir, `git log --format=%H%x1f%s%x1f%b ${quoteShellArg(`${baseSha}..${branchName}`)}`)
     .catch(() => "");
-  const subjectPattern = /^(feat|fix|test|chore|docs|refactor|perf|build)\((FN-\d+)\):/i;
-  const trailerPattern = /(?:^|\n)Fusion-Task-Id:\s*(FN-\d+)\s*(?:\n|$)/i;
   const foreignCommits: BranchCrossContaminationCommit[] = [];
   for (const line of persistedRangeOutput.split("\n").map((entry) => entry.trim()).filter(Boolean)) {
     const [sha, subject, body] = line.split("\u001f");
-    const subjectMatch = (subject ?? "").match(subjectPattern);
-    const trailerMatch = (body ?? "").match(trailerPattern);
-    const attributedTaskId = (trailerMatch?.[1] ?? subjectMatch?.[2] ?? "").toUpperCase();
+    const attributedTaskId = extractAttributedTaskId(subject ?? "", body ?? "");
     if (attributedTaskId && attributedTaskId !== taskId.toUpperCase()) {
       foreignCommits.push({ sha, subject: subject ?? "", foreignTaskId: attributedTaskId });
     }
@@ -1024,6 +1057,15 @@ export async function autoRecoverCrossContamination(
   };
 }
 
+/*
+FNXC:TaskIdAttribution 2026-09-26-21:54:
+Deliberately still `FN-<n>`-only, unlike the commit-attribution helpers above. Every consumer of this
+derivation gates a git DELETION (`self-healing.ts` fully-subsumed auto-reclaim and stale-active-branch
+reclaim, plus `inspectBranchConflict`'s self-owned fallback), so widening it would grant reclaim
+authority to non-`FN` projects rather than restore information they already had. Commit-level
+attribution needs no such authority grant and is what unblocks acquisition for a non-`FN` prefix, so
+it is fixed there. Widening this belongs on a card carrying its own destructive-path proof.
+*/
 export function deriveTaskIdFromFusionBranch(branchName: string): string | null {
   const match = /^fusion\/(fn-\d+)$/i.exec(branchName.trim());
   if (!match) return null;
