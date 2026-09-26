@@ -402,7 +402,7 @@ function makeFakeStore(
   rows: Array<Partial<Task> & { id: string }>,
   opts?: { backend?: boolean; markerPresent?: boolean; markerReadThrows?: boolean; markerWriteThrows?: boolean; markerError?: Error },
 ) {
-  const listCalls: Array<{ limit?: number; offset?: number }> = [];
+  const listCalls: Array<{ limit?: number; offset?: number; slim?: boolean; derive?: boolean; includeArchived?: boolean }> = [];
   const markerWrites: string[] = [];
   let markerPresent = opts?.markerPresent ?? false;
   // Flatten a drizzle SQL object's chunks into inspectable text.
@@ -440,8 +440,10 @@ function makeFakeStore(
     : undefined;
   const store = {
     asyncLayer,
-    listTasks: async (options?: { limit?: number; offset?: number }) => {
-      listCalls.push({ limit: options?.limit, offset: options?.offset });
+    listTasks: async (options?: { limit?: number; offset?: number; slim?: boolean; derive?: boolean; includeArchived?: boolean }) => {
+      // FNXC:LegacyAdoption 2026-09-26-19:31 (RUFU-275): the whole read shape is recorded so the
+      // census-pin test can assert derive:false (no per-row UI-signal CPU on the boot path).
+      listCalls.push({ limit: options?.limit, offset: options?.offset, slim: options?.slim, derive: options?.derive, includeArchived: options?.includeArchived });
       const offset = options?.offset ?? 0;
       const limit = options?.limit ?? rows.length;
       return rows.slice(offset, offset + limit) as Task[];
@@ -490,6 +492,29 @@ Drained-marker short-circuit contract: the sweep must skip when the marker is pr
 sweep when it is absent or unreadable, write the marker only after a fully-clean drain,
 and withhold it on any cycle that produced a mutating plan.
 */
+/*
+FNXC:LegacyAdoption 2026-09-26-19:31 (RUFU-275):
+Census read shape. The adoption plan consumes only persisted columns, so the boot census must
+ask for `derive: false` — measured at saneca calibre the derive pass costs 7.5x the plain slim
+read (173 ms → 22 ms per 310-card board), and on the field board that CPU sat on the critical
+path of a 30 s agent-tool boot budget.
+*/
+describe("adoptLegacyTaskRowsOnOpen — census read shape (RUFU-275)", () => {
+  it("censuses with slim + derive:false so no UI-signal derivation runs on store open", async () => {
+    const rows: Array<Partial<Task> & { id: string }> = [{ id: "task-1", status: "triaged" }];
+    const { store, listCalls } = makeFakeStore(rows);
+
+    await adoptLegacyTaskRowsOnOpen(store);
+
+    expect(listCalls.length).toBeGreaterThan(0);
+    for (const call of listCalls) {
+      expect(call.slim).toBe(true);
+      expect(call.derive).toBe(false);
+      expect(call.includeArchived).toBe(false);
+    }
+  });
+});
+
 describe("adoptLegacyTaskRowsOnOpen — drained-marker completion short-circuit", () => {
   it("writes the non-numeric marker after a clean drain (no mutating plan)", async () => {
     const rows = [

@@ -799,6 +799,16 @@ export interface CreateTaskStoreForBackendOptions {
   /** Operational dry-run escape hatch: skip only archive reintegration during TaskStore.init. */
   readonly skipArchiveReintegrationOnInit?: boolean;
   /*
+  FNXC:TaskStoreLightBoot 2026-09-26-19:30 (RUFU-275):
+  Transient agent-tool store opens skip the store-open patchnode reconcile too. Measured at
+  saneca calibre, the archive-reintegration reads dominate cold-boot bytes and the forced
+  patchnode pass is the other backlog phase a short-lived CLI process can defer — the next
+  full-boot host (engine/dashboard) or the completion-time writers do the same work.
+  Defaults false: host-path boots keep the complete backlog.
+  */
+  /** Light-boot escape hatch: skip the store-open Patchnode ledger reconcile. */
+  readonly skipPatchnodeReconcileOnInit?: boolean;
+  /*
   FNXC:MigrationHoldingPage 2026-07-17-12:20:
   During the one-time SQLite→PostgreSQL auto-migration the caller's HTTP server is
   not yet listening, so the CLI binds a temporary holding server on the dashboard
@@ -1294,7 +1304,10 @@ export async function createTaskStoreForBackend(
         asyncLayer,
         ...(options.consumerId ? { consumerId: options.consumerId } : {}),
       });
-      await taskStore.init({ skipArchiveReintegration: options.skipArchiveReintegrationOnInit });
+      await taskStore.init({
+        skipArchiveReintegration: options.skipArchiveReintegrationOnInit,
+        skipPatchnodeReconcile: options.skipPatchnodeReconcileOnInit,
+      });
     }
     log.log(`startup phase backend.taskStore.construct: ${Date.now() - constructT0}ms`);
   } catch (err) {

@@ -224,8 +224,15 @@ identify. One definition, in `project-context.ts`.
  * fallback so `closeProjectStore` always receives a well-formed context.
  */
 async function getBoardCommandContext(projectName?: string): Promise<ProjectContext> {
+  /*
+  FNXC:TaskStoreLightBoot 2026-09-26-19:31 (RUFU-275):
+  One-shot board reads/commands boot LIGHT — the archive-reintegration and forced-patchnode
+  backlog passes belong to long-lived hosts (they also run as engine maintenance); a transient
+  `fn task` process pays them on every invocation and on saneca calibre that is the multi-second
+  open the extension lane had to bound at 30 s. All three resolution branches opt in together.
+  */
   if (projectName) {
-    const context = await resolveProject(projectName);
+    const context = await resolveProject(projectName, process.cwd(), undefined, "light");
     if (!context) {
       throw new Error(`Project ${projectName} not found`);
     }
@@ -233,7 +240,7 @@ async function getBoardCommandContext(projectName?: string): Promise<ProjectCont
   }
 
   try {
-    const context = await resolveProject(undefined);
+    const context = await resolveProject(undefined, process.cwd(), undefined, "light");
     if (!context) {
       throw new Error("No project context");
     }
@@ -253,7 +260,7 @@ async function getBoardCommandContext(projectName?: string): Promise<ProjectCont
     */
     const cwd = process.cwd();
     console.error(unregisteredCwdProjectWarning(cwd, cwd));
-    const store = await createLocalStore(cwd);
+    const store = await createLocalStore(cwd, undefined, { lightBoot: true });
     const context = asLocalProjectContext(store);
     return context;
   }

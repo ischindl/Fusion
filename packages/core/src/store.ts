@@ -989,7 +989,11 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   public reconcileDistributedTaskIdStateOnOpen(): void {
     return reconcileDistributedTaskIdStateOnOpenImpl(this);
   }
-  async init(options?: { skipArchiveReintegration?: boolean }): Promise<void> {
+  /**
+   * Store-open backlog. Both skip flags default false (full backlog) so host boots are
+   * unchanged; transient agent-tool opens pass them to boot light (RUFU-275, see initImpl).
+   */
+  async init(options?: { skipArchiveReintegration?: boolean; skipPatchnodeReconcile?: boolean }): Promise<void> {
     return initImpl(this, options);
   }
 

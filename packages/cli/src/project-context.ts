@@ -118,6 +118,15 @@ export async function resolveProject(
   projectNameFlag?: string,
   cwd: string = process.cwd(),
   globalDir?: string,
+  /*
+  FNXC:TaskStoreLightBoot 2026-09-26-19:31 (RUFU-275):
+  "light" boots the CLI process's own TaskStore without the store-open backlog (archive
+  reintegration + forced patchnode reconcile). One-shot board reads (`fn task …`) use it: on a
+  saneca-scale board those passes are the bytes that blew the transient-boot budget, and the
+  same passes run as engine maintenance plus on every long-lived host boot. Default "full" —
+  every other CLI command keeps the current boot shape.
+  */
+  storeBoot: "full" | "light" = "full",
 ): Promise<ProjectContext> {
   const central = new CentralCore(globalDir);
   await central.init();
@@ -167,9 +176,10 @@ export async function resolveProject(
       }
 
       const isRegistered = Boolean(detected.id);
+      const lightBoot = storeBoot === "light";
       const store = isRegistered
-        ? await getStoreForProject(detected.id, detected.path, globalDir)
-        : await createLocalStore(detected.path, globalDir);
+        ? await getStoreForProject(detected.id, detected.path, globalDir, lightBoot)
+        : await createLocalStore(detected.path, globalDir, { lightBoot });
 
       // For unregistered projects, use the path as the project ID
       const projectId = isRegistered ? detected.id : detected.path;
@@ -191,7 +201,7 @@ export async function resolveProject(
       };
     }
 
-    const store = await getStoreForProject(project.id, project.path, globalDir);
+    const store = await getStoreForProject(project.id, project.path, globalDir, storeBoot === "light");
     const owner = storeOwners.get(store);
     if (owner && !owner.central) {
       owner.central = central;
@@ -373,10 +383,12 @@ async function findProjectByNameOrId(
  * @param projectPath - Absolute path to project directory
  * @returns Initialized TaskStore
  */
+/** Light-boot variant forwarded to createLocalStore (RUFU-275; default false = today's boot). */
 export async function getStoreForProject(
   projectId: string,
   projectPath: string,
   globalSettingsDir?: string,
+  lightBoot = false,
 ): Promise<TaskStore> {
   // Check cache first
   const cached = storeCache.get(projectId);
@@ -389,7 +401,7 @@ export async function getStoreForProject(
   // by default, external via DATABASE_URL) instead of a legacy SQLite TaskStore
   // whose runtime was removed under VAL-REMOVAL-005. Caching the resulting store
   // keeps a single connection pool per project for the CLI process lifetime.
-  const store = await createLocalStore(projectPath, globalSettingsDir);
+  const store = await createLocalStore(projectPath, globalSettingsDir, { lightBoot });
 
   // Cache it
   storeCache.set(projectId, store);
@@ -410,6 +422,8 @@ export async function clearStoreCache(): Promise<void> {
 export async function createLocalStore(
   projectPath: string,
   globalSettingsDir?: string,
+  /** RUFU-275 light boot: skip the store-open backlog (default false = today's full boot). */
+  options?: { lightBoot?: boolean },
 ): Promise<TaskStore> {
   // FNXC:PostgresCutover 2026-07-04: route through createTaskStoreForBackend so
   // standalone CLI commands (and resolveProject().store) boot PostgreSQL instead
@@ -421,6 +435,9 @@ export async function createLocalStore(
   const boot = await createTaskStoreForBackend({
     rootDir: projectPath,
     globalSettingsDir,
+    ...(options?.lightBoot
+      ? { skipArchiveReintegrationOnInit: true, skipPatchnodeReconcileOnInit: true }
+      : {}),
     /* FNXC:CrossProcessDeleteObservation 2026-08-01-11:39: CLI owns its factory-created store, so role-only identity is restart-stable. */
     consumerId: buildConsumerId("cli"),
   });

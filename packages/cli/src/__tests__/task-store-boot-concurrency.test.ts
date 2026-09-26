@@ -8,6 +8,7 @@ import {
   __setExtensionStoreBootFactoryForTesting,
   clearHostTaskStores,
   closeCachedStores,
+  setHostTaskStore,
 } from "../extension.js";
 
 /*
@@ -60,6 +61,50 @@ afterEach(async () => {
   __clearExtensionStoreBootStateForTesting();
   clearHostTaskStores();
   vi.restoreAllMocks();
+});
+
+/*
+FNXC:TaskStoreLightBoot 2026-09-26-19:31 (RUFU-275):
+The transient agent-tool boot must be LIGHT (no archive reintegration, no forced patchnode
+reconcile — the saneca >30 s store-open bytes) and must never dual-boot when the host already
+owns a store (FN-7956). These pin the two halves of that contract at the registry seam itself.
+*/
+describe("extension TaskStore boot is light and host-shared (RUFU-275)", () => {
+  it("passes both backlog-skip flags to the boot factory (light boot for transient tool opens)", async () => {
+    const bootOptions: Array<Record<string, unknown>> = [];
+    __setExtensionStoreBootFactoryForTesting(
+      bootFactory(async (options: Record<string, unknown>) => {
+        bootOptions.push(options ?? {});
+        return bootedStore("light");
+      }),
+    );
+
+    await __getStoreForTesting(PROJECT_ROOT, 5_000);
+
+    expect(bootOptions).toHaveLength(1);
+    expect(bootOptions[0]).toMatchObject({
+      rootDir: PROJECT_ROOT,
+      skipArchiveReintegrationOnInit: true,
+      skipPatchnodeReconcileOnInit: true,
+    });
+  });
+
+  it("serves a host-injected store without issuing any factory boot", async () => {
+    let boots = 0;
+    __setExtensionStoreBootFactoryForTesting(
+      bootFactory(async () => {
+        boots += 1;
+        return bootedStore("factory");
+      }),
+    );
+    const host = makeStore("host");
+    setHostTaskStore(PROJECT_ROOT, host);
+
+    const served = await __getStoreForTesting(PROJECT_ROOT, 5_000);
+
+    expect(served).toBe(host);
+    expect(boots).toBe(0);
+  });
 });
 
 describe("extension TaskStore boot is one bounded attempt (STAS-251)", () => {

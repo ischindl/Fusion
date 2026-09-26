@@ -583,7 +583,21 @@ function startStoreBoot(projectRoot: string): StoreBootAttempt {
 
   const promise = (async () => {
     try {
-      const boot = await extensionStoreBootFactory({ rootDir: projectRoot });
+      /*
+      FNXC:TaskStoreLightBoot 2026-09-26-19:30 (RUFU-275):
+      The transient agent-tool boot runs LIGHT: no archive reintegration, no forced patchnode
+      reconcile. Measured at saneca calibre those two passes are the store-open bytes (full-row
+      archived-lane reads + whole task_json parses) that pushed the open past the 30 s budget
+      below. Nothing is lost: host stores are served from setHostTaskStore before any factory
+      boot (FN-7956 path, unchanged), the same passes run as engine maintenance and on every
+      host-path boot, and completion-time writers capture ledger entries in their own
+      transactions. Host-path boots keep the full backlog — the flags default false.
+      */
+      const boot = await extensionStoreBootFactory({
+        rootDir: projectRoot,
+        skipArchiveReintegrationOnInit: true,
+        skipPatchnodeReconcileOnInit: true,
+      });
       storeBootFailureCooldown.delete(projectRoot);
       // Do not overwrite a host-injected external store that landed while we were booting.
       const raced = storeCache.get(projectRoot);
@@ -1183,7 +1197,36 @@ async function applyAgentPolicyGateForExtensionTool(
   const runId = typeof ctx.runId === "string" && ctx.runId ? ctx.runId : undefined;
 
   try {
-    const store = await getStore(cwd);
+    /*
+    FNXC:TaskStoreLightBoot 2026-09-26-19:30 (RUFU-275):
+    Honest denial cause. A store that cannot BOOT is not a permission-policy failure — the
+    field incident denied every fn_* call with `agent-permission-policy-unavailable` while the
+    real cause was the 30 s boot timeout, sending operators hunting the wrong settings. The
+    boot phase fails closed under its own `taskstore-boot-unavailable` cause (same deny shape,
+    carrying the concrete boot error); the outer catch below stays the home of genuine
+    policy-resolution unavailability. Operator/principal precedence is unchanged above.
+    */
+    let store: TaskStore;
+    try {
+      store = await getStore(cwd);
+    } catch (error) {
+      const bootMessage = error instanceof Error ? error.message : String(error);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `${toolName} denied: the project TaskStore could not be started (${bootMessage}). Failing closed — ask the operator to run this tool.`,
+          },
+        ],
+        isError: true as const,
+        details: {
+          deniedFor: "taskstore-boot-unavailable",
+          tool: toolName,
+          error: bootMessage,
+          ...(callerAgentId ? { agentId: callerAgentId } : {}),
+        },
+      };
+    }
     const settings = await store.getSettings();
 
     let agentRow: { name?: string; permissionPolicy?: AgentPermissionPolicy } | null = null;
