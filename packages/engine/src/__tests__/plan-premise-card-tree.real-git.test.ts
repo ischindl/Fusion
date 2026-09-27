@@ -103,6 +103,9 @@ const ir = {
 /** The release door's store surface: atomic move + the two History writers the ladder uses. */
 function releaseDoor(task: Task, root: string) {
   const storeMirror = { _value: task };
+  // Real revision semantics for the evidence document: every accepted write bumps the revision, so a
+  // door pass that re-wrote identical evidence would be visible as a growing revision count.
+  const documents = new Map<string, { content: string; revision: number }>();
   const reserve = vi.fn(() => ({ release: vi.fn() }));
   const allocate = vi.fn(() => path.join(root, ".worktrees", "fn-282"));
   const moveTaskIf = vi.fn(async (_id: string, target: string, predicate: (candidate: Task) => Promise<boolean> | boolean, options?: { allocateWorktree?: (names: Set<string>) => string }) => {
@@ -143,10 +146,19 @@ function releaseDoor(task: Task, root: string) {
       task.log.push({ timestamp: new Date().toISOString(), action: input.action, outcome: input.outcome, dedupeKey: input.dedupeKey } as never);
     }),
     moveTaskIf,
+    getTaskDocument: async (_id: string, key: string) => {
+      const stored = documents.get(key);
+      return stored ? { key, content: stored.content, revision: stored.revision } : null;
+    },
+    upsertTaskDocument: vi.fn(async (_id: string, input: { key: string; content: string }) => {
+      const next = { key: input.key, content: input.content, revision: (documents.get(input.key)?.revision ?? 0) + 1 };
+      documents.set(input.key, next);
+      return next;
+    }),
   } as unknown as TaskStore;
   const deps = { now: Date.now, reserveSlot: reserve, allocateWorktree: allocate };
   const logActions = (action: string) => task.log.filter((entry: { action?: string }) => entry.action === action).length;
-  return { store, deps, moveTaskIf, logActions };
+  return { store, deps, moveTaskIf, logActions, documents };
 }
 
 describe("premise truth is the card's committed identity, never the shared checkout", () => {
@@ -212,6 +224,55 @@ describe("premise truth is the card's committed identity, never the shared check
     expect(verdict.detail).toContain("literal not found in file");
   }, 30_000);
 
+  it("answers an absence premise from the tree, both for a missing file and a missing literal", async () => {
+    const root = await createRepo({ "src/App.tsx": FLAG_ON });
+    const check = async (bullet: string) => {
+      const task = premiseTask([bullet]);
+      return await checkPlanPremises(releaseDoor(task, root).store, task);
+    };
+
+    // A literal the committed file never carried is absent, and so is a file the commit never contained.
+    await expect(check('{"kind":"text-absent","path":"src/App.tsx","literal":"removedSetting"}')).resolves.toMatchObject({
+      outcome: "satisfied",
+      premiseViolations: [],
+    });
+    await expect(check('{"kind":"text-absent","path":"src/Deleted.tsx","literal":"anything"}')).resolves.toMatchObject({
+      outcome: "satisfied",
+      premiseViolations: [],
+    });
+    // The same kind refuses when the committed bytes do carry the literal — the reason names the finding,
+    // not the path, so an operator can tell "wrong file" from "wrong plan".
+    await expect(check('{"kind":"text-absent","path":"src/App.tsx","literal":"alphaUpdatesEnabled"}')).resolves.toMatchObject({
+      outcome: "stale",
+      premiseViolations: [{ premise: { kind: "text-absent", path: "src/App.tsx", literal: "alphaUpdatesEnabled" }, reason: "literal found in file" }],
+    });
+  }, 30_000);
+
+  it("writes nothing anywhere while evaluating — the repair is the plan, never the tree", async () => {
+    const root = await createRepo({ "src/App.tsx": FLAG_ON });
+    await git("checkout -qb fusion/fn-282", root);
+    // The temptation this verdict exists to refuse: a premise whose only apparent "fix" is deleting
+    // delivered content. Evaluation has to report it false while leaving no trace of itself.
+    await write(root, "src/App.tsx", FLAG_OFF);
+    await commit(root, "feat: retire the alpha flag");
+    await write(root, "src/App.tsx", FLAG_ON);
+
+    const task = premiseTask([ALPHA_PRESENT], { branch: "fusion/fn-282" });
+    const statusBefore = await git("status --porcelain", root);
+    const refsBefore = await git("show-ref", root);
+    const headBefore = await git("rev-parse HEAD", root);
+    // There really is an uncommitted edit here for a writing evaluator to "clean up".
+    expect(statusBefore).not.toBe("");
+
+    expect(await checkPlanPremises(releaseDoor(task, root).store, task)).toMatchObject({
+      outcome: "premise-invalidated-by-delivery",
+    });
+
+    expect(await git("status --porcelain", root)).toBe(statusBefore);
+    expect(await git("show-ref", root)).toBe(refsBefore);
+    expect(await git("rev-parse HEAD", root)).toBe(headBefore);
+  }, 30_000);
+
   it("refuses a worktree path that is not a linked worktree of the project repository", async () => {
     const root = await createRepo({ "src/App.tsx": FLAG_OFF });
     const unrelated = await createRepo({ "src/App.tsx": FLAG_ON }, "chore: somebody else's repository");
@@ -263,6 +324,14 @@ describe("delivery-invalidated premises are a distinct verdict and never a repla
     expect(task.log.some((entry: { outcome?: string }) => (entry.outcome ?? "").includes(culprit))).toBe(true);
     expect(door.deps.reserveSlot).toHaveBeenCalledOnce();
     expect(door.deps.allocateWorktree).toHaveBeenCalledOnce();
+    // Requirement 3's premium: the same evidence as a readable card document, naming the premise it
+    // says to amend and the commit that consumed it.
+    const evidence = door.documents.get("premise-invalidated");
+    expect(evidence?.content).toContain("text-present");
+    expect(evidence?.content).toContain("literal not found in file");
+    expect(evidence?.content).toContain(culprit);
+    expect(evidence?.content).toMatch(/[0-9a-f]{7,40}/);
+    expect(evidence?.revision).toBe(1);
   }, 30_000);
 
   it("keeps the evidence at one History entry and the episode absent across repeated door passes", async () => {
@@ -282,6 +351,9 @@ describe("delivery-invalidated premises are a distinct verdict and never a repla
     expect(door.logActions(TRIAGE_PLAN_PREMISE_INVALIDATED_BY_DELIVERY_LOG_ACTION)).toBe(1);
     expect(door.logActions(TRIAGE_PLAN_PREMISE_REJECTED_REPLAN_LOG_ACTION)).toBe(0);
     expect(task.sourceMetadata?.planPremiseRejection).toBeUndefined();
+    // Identical evidence must not grow document history either — one revision, one write.
+    expect(door.documents.get("premise-invalidated")?.revision).toBe(1);
+    expect(door.store.upsertTaskDocument).toHaveBeenCalledOnce();
   }, 30_000);
 });
 

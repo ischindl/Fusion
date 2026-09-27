@@ -1341,8 +1341,10 @@ door therefore records the evidence once and lets the release proceed. The dedup
 prompt fingerprint and the evaluated commit, so a re-plan or a new commit re-reports while repeated
 polls of the same verdict stay one History line. This path never touches the refusal episode, never
 sets `needs-replan`, and never parks: the ladder is for plans that are wrong, not for plans that came
-true.
+true. The card's `premise-invalidated` document carries the same facts in readable form.
 */
+const PLAN_PREMISE_EVIDENCE_DOCUMENT_KEY = "premise-invalidated";
+
 async function recordDeliveryInvalidatedPremises(
   store: TaskStore,
   taskId: string,
@@ -1357,9 +1359,50 @@ async function recordDeliveryInvalidatedPremises(
       dedupeKey,
       windowMs: PLAN_PREMISE_REFUSAL_LOG_WINDOW_MS,
     }).catch(() => undefined);
-    return;
+  } else {
+    await store.logEntry(taskId, `${TRIAGE_PLAN_PREMISE_INVALIDATED_BY_DELIVERY_LOG_ACTION}: ${check.detail}`).catch(() => undefined);
   }
-  await store.logEntry(taskId, `${TRIAGE_PLAN_PREMISE_INVALIDATED_BY_DELIVERY_LOG_ACTION}: ${check.detail}`).catch(() => undefined);
+  await recordPremiseEvidenceDocument(store, taskId, check);
+}
+
+/*
+FNXC:PlanPremises 2026-09-27-03:30:
+The card's `premise-invalidated` document is the readable half of the same evidence: the operator who
+has to amend the plan needs the premise JSON, the commit that consumed it, and the instruction that the
+PLAN changes rather than the delivered code (deleting delivered content to satisfy a stale assumption
+would un-ship the card — the trap this verdict exists to prevent). The History entry above is the
+mandatory record, so identical bytes are skipped (a repeated door pass adds no revision) and a document
+that cannot be written is reported to the scheduler log instead of un-authorising the release.
+*/
+async function recordPremiseEvidenceDocument(
+  store: TaskStore,
+  taskId: string,
+  check: Extract<PlanPremiseCheckResult, { outcome: "premise-invalidated-by-delivery" }>,
+): Promise<void> {
+  const content = [
+    `# Plan premises invalidated by \`${taskId}\`'s own delivery`,
+    "",
+    `Verdict: \`${check.outcome}\`. Release is not refused and the card was not re-planned: the`,
+    "assumption was destroyed by the very commits that satisfy the card, so the disagreement is fixed by",
+    "amending the PLAN — never by deleting delivered content to make an old assumption true again.",
+    "",
+    check.detail,
+    "",
+    ...check.premiseViolations.map((violation) => `- \`${JSON.stringify(violation.premise)}\`: ${violation.reason}`),
+    "",
+    `Prompt fingerprint: \`${check.promptFingerprint}\``,
+  ].join("\n");
+  try {
+    const existing = await store.getTaskDocument(taskId, PLAN_PREMISE_EVIDENCE_DOCUMENT_KEY);
+    if (existing?.content === content) return;
+    await store.upsertTaskDocument(taskId, {
+      key: PLAN_PREMISE_EVIDENCE_DOCUMENT_KEY,
+      content,
+      author: "engine:plan-premises",
+    });
+  } catch (error) {
+    schedulerLog.warn(`plan premise evidence document for ${taskId} could not be written: ${String(error)}`);
+  }
 }
 
 /*

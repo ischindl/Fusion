@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,10 +19,21 @@ const ir: WorkflowIr = {
   nodes: [], edges: [],
 };
 
+/*
+The premise gate reads committed git objects at the card's own identity, so this fixture's project is a
+real repository whose integration branch carries `fileText`. A premise's truth is the committed content
+— an uncommitted edit is not a fact — which is why the file is committed here rather than just written.
+*/
 async function fixture(premise: string | string[], fileText = "export const alphaUpdatesEnabled = true;") {
   const root = await mkdtemp(join(tmpdir(), "fusion-fn-375-"));
   roots.push(root);
   await writeFile(join(root, "App.tsx"), fileText);
+  const git = (args: string[]) => execFileSync("git", args, { cwd: root, stdio: "ignore" });
+  git(["init", "-q", "-b", "main", "."]);
+  git(["config", "user.email", "test@example.com"]);
+  git(["config", "user.name", "Test User"]);
+  git(["add", "-A"]);
+  git(["commit", "-qm", "chore: baseline"]);
   const bullets = (Array.isArray(premise) ? premise : [premise]).map((one) => `- ${one}`).join("\n");
   const task = {
     id: "FN-375-T", title: "planned", description: "planned", column: "todo", status: null,
@@ -65,6 +78,30 @@ async function fixture(premise: string | string[], fileText = "export const alph
 }
 
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+
+/*
+A premise's truth is the card's COMMITTED content, so a test that wants a premise to change has to move
+the repository's history — editing the working tree is deliberately invisible to the gate.
+*/
+function commitTreeChange(root: string, message: string): void {
+  execFileSync("git", ["add", "-A"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["commit", "-qm", message], { cwd: root, stdio: "ignore" });
+}
+
+/** Stages the path as a mode-040000 tree entry — the committed shape of "a path that is a directory". */
+function commitPathAsDirectory(root: string, relative: string, message: string): void {
+  const git = (args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf-8" }).toString().trim();
+  // A commit holds a directory at a path only when the working tree agrees, so the file is removed and a
+  // directory holding a child is committed in its place — the ordinary shape of "a path that is a directory".
+  git(["rm", "-f", "-q", "--", relative]);
+  git(["commit", "-qm", `chore: drop ${relative} before replacing it with a directory`]);
+  mkdirSync(join(root, relative), { recursive: true });
+  writeFileSync(join(root, relative, "inner.tsx"), "export const inner = true;\n");
+  git(["add", "-A"]);
+  git(["commit", "-qm", message]);
+  const entry = git(["ls-tree", "-l", "HEAD", "--", relative]);
+  if (!entry.startsWith("040000 ")) throw new Error(`Fixture cannot commit ${relative} as a directory entry; HEAD lists: ${entry || "<nothing>"}`);
+}
 
 describe("stateless plan premise release gate", () => {
   it("admits a true premise and preserves reservation/allocation", async () => {
@@ -165,6 +202,7 @@ describe("stateless plan premise release gate", () => {
     await admitTaskToWip(f.store, deps, f.task, "doing", ir);
     const episode = f.task.sourceMetadata?.planPremiseRejection;
     await writeFile(join(f.root, "App.tsx"), "export const alphaUpdatesEnabled = true;");
+    commitTreeChange(f.root, "feat: restore the alpha flag");
     const result = await admitTaskToWip(f.store, deps, f.task, "doing", ir);
     expect(result).toMatchObject({ released: true });
     // A successful release never clears episode state — only signature drift or operator action does.
@@ -190,6 +228,7 @@ describe("stateless plan premise release gate", () => {
     const f = await fixture('{"kind":"text-present","path":"App.tsx","literal":"alphaUpdatesEnabled"}');
     f.moveTaskIf.mockImplementationOnce(async (_id, _target, predicate) => {
       await writeFile(join(f.root, "App.tsx"), "export const footer = true;");
+      commitTreeChange(f.root, "feat: retire the alpha flag mid-flight");
       await predicate(f.task);
       return { task: f.task, moved: false };
     });
@@ -206,30 +245,36 @@ describe("stateless plan premise release gate", () => {
   it("requires regular files and detects a file replaced by a directory", async () => {
     const fileExists = await fixture('{"kind":"file-exists","path":"App.tsx"}');
     await expect(checkPlanPremises(fileExists.store, fileExists.task)).resolves.toMatchObject({ outcome: "satisfied", premiseViolations: [], promptFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await rm(join(fileExists.root, "App.tsx"));
-    await mkdir(join(fileExists.root, "App.tsx"));
-    await expect(checkPlanPremises(fileExists.store, fileExists.task)).resolves.toMatchObject({ outcome: "stale" });
+    commitPathAsDirectory(fileExists.root, "App.tsx", "chore: App.tsx becomes a directory");
+    await expect(checkPlanPremises(fileExists.store, fileExists.task)).resolves.toMatchObject({
+      outcome: "stale",
+      premiseViolations: [{ premise: { kind: "file-exists", path: "App.tsx" }, reason: "path exists but is not a regular file" }],
+    });
 
     const textAbsent = await fixture('{"kind":"text-absent","path":"App.tsx","literal":"removedSetting"}');
     await expect(checkPlanPremises(textAbsent.store, textAbsent.task)).resolves.toMatchObject({ outcome: "satisfied", premiseViolations: [] });
-    await rm(join(textAbsent.root, "App.tsx"));
-    await mkdir(join(textAbsent.root, "App.tsx"));
-    await expect(checkPlanPremises(textAbsent.store, textAbsent.task)).resolves.toMatchObject({ outcome: "stale" });
+    commitPathAsDirectory(textAbsent.root, "App.tsx", "chore: App.tsx becomes a directory");
+    await expect(checkPlanPremises(textAbsent.store, textAbsent.task)).resolves.toMatchObject({
+      outcome: "stale",
+      premiseViolations: [{ premise: { kind: "text-absent", path: "App.tsx", literal: "removedSetting" }, reason: "path exists but is not a regular file" }],
+    });
 
     const absentPath = await fixture('{"kind":"file-absent","path":"App.tsx"}');
-    await rm(join(absentPath.root, "App.tsx"));
-    await mkdir(join(absentPath.root, "App.tsx"));
+    commitPathAsDirectory(absentPath.root, "App.tsx", "chore: App.tsx becomes a directory");
     await expect(checkPlanPremises(absentPath.store, absentPath.task)).resolves.toMatchObject({ outcome: "stale" });
   });
 
   /*
   FNXC:PlanPremises 2026-09-16-02:49:
   RUFU-246 Step 1 pinned two checker contracts that prose alone did not prove:
-  - `file-absent` evaluates both ways against the real filesystem under the SAME containment rule
-    as the other kinds (an absent path under a symlinked parent may not resolve outside the root),
-    so a release gate can never report "unsupported" for a kind the planner grammar advertises;
-  - a stale verdict reports the ENTIRE violated set with each premise's JSON, reason, and the root
-    it was evaluated against, not only the first violation.
+  - `file-absent` evaluates both ways against the card's committed tree under the SAME containment rule
+    as the other kinds, so a release gate can never report "unsupported" for a kind the planner grammar
+    advertises;
+  - containment is enforced where the premise is written, not where it is read: a path that escapes the
+    repository is refused as a contract violation before any commit is opened, which is why no evaluated
+    path can ever name another directory;
+  - a stale verdict reports the ENTIRE violated set with each premise's JSON, reason, and the commit it
+    was evaluated at, not only the first violation.
   */
   it("evaluates file-absent both ways under the containment rule", async () => {
     const trulyAbsent = await fixture('{"kind":"file-absent","path":"Ghost.tsx"}');
@@ -238,19 +283,15 @@ describe("stateless plan premise release gate", () => {
     const wronglyAbsent = await fixture('{"kind":"file-absent","path":"App.tsx"}');
     await expect(checkPlanPremises(wronglyAbsent.store, wronglyAbsent.task)).resolves.toMatchObject({
       outcome: "stale",
-      detail: expect.stringMatching(/file-absent.*App\.tsx.*path exists.*Evaluated against .*fusion-fn-375/s),
-      premiseViolations: [{ premise: { kind: "file-absent", path: "App.tsx" }, reason: "path exists" }],
+      detail: expect.stringMatching(/file-absent.*App\.tsx.*path exists at the evaluated commit.*Evaluated at declared base main at [0-9a-f]{8}/s),
+      premiseViolations: [{ premise: { kind: "file-absent", path: "App.tsx" }, reason: "path exists at the evaluated commit" }],
     });
 
-    const escapingAbsent = await fixture('{"kind":"file-absent","path":"outside/deep/Ghost.tsx"}');
-    const outside = await mkdtemp(join(tmpdir(), "fusion-fn-375-outside-"));
-    roots.push(outside);
-    const { symlink } = await import("node:fs/promises");
-    await symlink(outside, join(escapingAbsent.root, "outside"));
-    await expect(checkPlanPremises(escapingAbsent.store, escapingAbsent.task)).resolves.toMatchObject({ outcome: "invalid-contract" });
+    const escaping = await fixture('{"kind":"file-absent","path":"../secrets/Ghost.tsx"}');
+    await expect(checkPlanPremises(escaping.store, escaping.task)).resolves.toMatchObject({ outcome: "invalid-contract" });
   });
 
-  it("satisfies every premise kind together and reports the full violated set with its root", async () => {
+  it("satisfies every premise kind together and reports the full violated set with its commit", async () => {
     const allKinds = await fixture([
       '{"kind":"file-exists","path":"App.tsx"}',
       '{"kind":"file-absent","path":"Ghost.tsx"}',
@@ -269,22 +310,50 @@ describe("stateless plan premise release gate", () => {
     if (result.outcome !== "stale") return;
     expect(result.premiseViolations).toEqual([
       { premise: { kind: "text-present", path: "App.tsx", literal: "goneSetting" }, reason: "literal not found in file" },
-      { premise: { kind: "file-exists", path: "Ghost.tsx" }, reason: "path does not exist" },
+      { premise: { kind: "file-exists", path: "Ghost.tsx" }, reason: "path does not exist at the evaluated commit" },
       { premise: { kind: "text-absent", path: "App.tsx", literal: "alphaUpdatesEnabled" }, reason: "literal found in file" },
     ]);
-    for (const fragment of ['"goneSetting"', '"Ghost.tsx"', '"alphaUpdatesEnabled"', "literal not found in file", "path does not exist", "literal found in file"]) {
+    for (const fragment of ['"goneSetting"', '"Ghost.tsx"', '"alphaUpdatesEnabled"', "literal not found in file", "path does not exist at the evaluated commit", "literal found in file"]) {
       expect(result.detail).toContain(fragment);
     }
-    expect(result.detail).toContain(`Evaluated against ${multiStale.root}`);
+    // The detail names the COMMIT, not a directory: the operator has to be able to re-check the exact
+    // object the verdict came from, and a path would let the same wording mean a different tree tomorrow.
+    expect(result.detail).toMatch(/Evaluated at declared base main at [0-9a-f]{8}/);
+    expect(result.detail).not.toContain(multiStale.root);
   });
 
-  it("rejects symlinks outside the project root as an invalid contract", async () => {
+  /*
+  The old gate refused a working-tree symlink that pointed out of the project root. The committed gate
+  cannot be escaped that way at all — it never opens a path, only objects inside one commit — and this
+  test is the proof: the link is answered as the entry it is, its target is never opened, and no path
+  reached through it exists.
+  */
+  it("reads a committed symlink as an entry and never follows it out of the tree", async () => {
     const f = await fixture('{"kind":"file-exists","path":"outside"}');
-    const outside = await mkdtemp(join(tmpdir(), "fusion-fn-375-outside-"));
-    roots.push(outside);
     const { symlink } = await import("node:fs/promises");
-    await symlink(outside, join(f.root, "outside"));
-    expect(await checkPlanPremises(f.store, f.task)).toMatchObject({ outcome: "invalid-contract" });
+    await symlink("/etc", join(f.root, "outside"));
+    commitTreeChange(f.root, "chore: commit a symlink pointing outside the repository");
+    // Every premise kind describes a regular file, so the link is answered as the non-regular entry it is.
+    await expect(checkPlanPremises(f.store, f.task)).resolves.toMatchObject({
+      outcome: "stale",
+      premiseViolations: [{ premise: { kind: "file-exists", path: "outside" }, reason: "path exists but is not a regular file" }],
+    });
+
+    const throughLink = await fixture('{"kind":"file-exists","path":"outside/passwd"}');
+    await symlink("/etc", join(throughLink.root, "outside"));
+    commitTreeChange(throughLink.root, "chore: commit a symlink pointing outside the repository");
+    await expect(checkPlanPremises(throughLink.store, throughLink.task)).resolves.toMatchObject({
+      outcome: "stale",
+      premiseViolations: [{ premise: { kind: "file-exists", path: "outside/passwd" }, reason: "path does not exist at the evaluated commit" }],
+    });
+
+    const readThroughLink = await fixture('{"kind":"text-present","path":"outside","literal":"etc"}');
+    await symlink("/etc", join(readThroughLink.root, "outside"));
+    commitTreeChange(readThroughLink.root, "chore: commit a symlink pointing outside the repository");
+    await expect(checkPlanPremises(readThroughLink.store, readThroughLink.task)).resolves.toMatchObject({
+      outcome: "stale",
+      premiseViolations: [{ premise: { kind: "text-present", path: "outside", literal: "etc" }, reason: "path exists but is not a regular file" }],
+    });
   });
 
   /*

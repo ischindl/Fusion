@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -60,6 +61,21 @@ function task(overrides: Partial<Task> = {}): Task {
   } as Task;
 }
 
+/*
+The premise gate answers from committed git objects at the card's own identity — never from a working
+-tree listing — so this fixture's "project" has to be a real repository with the marker committed on
+the integration branch. A plain directory now legitimately means "this card has no committed identity",
+which is the fail-closed verdict, not the plan this file is testing.
+*/
+function commitAsTrunk(root: string): void {
+  const git = (args: string[]) => execFileSync("git", args, { cwd: root, stdio: "ignore" });
+  git(["init", "-q", "-b", "main", "."]);
+  git(["config", "user.email", "test@example.com"]);
+  git(["config", "user.name", "Test User"]);
+  git(["add", "premise-marker"]);
+  git(["commit", "-qm", "chore: premise marker"]);
+}
+
 async function makeStore(
   initial: Task,
   options: { ir?: WorkflowIr; prompt?: string; workItems?: Array<Record<string, unknown>> } = {},
@@ -75,6 +91,7 @@ async function makeStore(
     options.prompt ?? '# Planned\n\n## Mission\nImplement the approved work.\n\n## Plan Premises\n\n- {"kind":"file-exists","path":"premise-marker"}\n',
     "utf8",
   );
+  commitAsTrunk(root);
 
   const current = initial;
   const ir = options.ir ?? workflow();

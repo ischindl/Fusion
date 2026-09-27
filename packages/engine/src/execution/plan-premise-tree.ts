@@ -160,20 +160,27 @@ historical "path exists but is not a regular file" verdict, because every premis
 regular file.
 */
 async function evaluateLiteral(identity: CardGitIdentity, premise: Extract<PlanPremise, { literal: string }>, entry: string | null): Promise<PremiseVerdict> {
-  // An absence claim is about the path, not about what kind of object sits there.
-  if (premise.kind === "text-absent") {
-    return entry ? { satisfied: false, reason: "path exists at the evaluated commit" } : { satisfied: true };
+  // A literal stated to be absent is absent when the file is absent — the historical contract, which a
+  // committed tree answers without opening anything.
+  if (!entry) {
+    return premise.kind === "text-absent" ? { satisfied: true } : { satisfied: false, reason: "path does not exist at the evaluated commit" };
   }
-  if (!entry) return { satisfied: false, reason: "path does not exist at the evaluated commit" };
   const [mode] = entry.split(" ");
   if (!mode || !REGULAR_FILE_MODES.has(mode)) return { satisfied: false, reason: "path exists but is not a regular file" };
   const content = await gitProbe(identity.repo, ["show", `${identity.commit}:${premise.path}`]);
   if (content === null) return { satisfied: false, reason: "file content is unreadable at the evaluated commit" };
-  return content.includes(premise.literal)
-    ? { satisfied: true }
-    : { satisfied: false, reason: "literal not found in file" };
+  if (premise.kind === "text-present") {
+    return content.includes(premise.literal) ? { satisfied: true } : { satisfied: false, reason: "literal not found in file" };
+  }
+  return content.includes(premise.literal) ? { satisfied: false, reason: "literal found in file" } : { satisfied: true };
 }
 
+/*
+FNXC:PlanPremises 2026-09-27-02:40:
+One `ls-tree -l` call names the entry AT the path with its mode: a regular file, a symlink (120000), or
+a directory (040000) all answer with exactly one line, and a path that a symlink or blob would have to
+lead through answers with nothing — the tree is descended only by git, never by the filesystem.
+*/
 export async function evaluatePremiseAtCommit(identity: CardGitIdentity, premise: PlanPremise): Promise<PremiseVerdict> {
   const entry = await gitLine(identity.repo, ["ls-tree", "-l", identity.commit, "--", premise.path]);
   if (premise.kind === "text-present" || premise.kind === "text-absent") return evaluateLiteral(identity, premise, entry);
