@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { promisify } from "node:util";
 import type { PlanPremise, Task, TaskStore } from "@fusion/core";
+import { extractAttributedTaskId } from "./branch-conflicts.js";
 import { resolveIntegrationBranch } from "../merge/integration-branch.js";
 import { isReclaimableWorktreeCandidate } from "../worktree/worktree-paths.js";
 
@@ -54,6 +55,9 @@ export type CardGitIdentitySource = "worktree-head" | "branch-tip" | "declared-b
 
 export interface CardGitIdentity {
   source: CardGitIdentitySource;
+  /** The card being evaluated, so a landed commit that names this card is recognisable as its own
+   *  delivery. Attribution never guesses: a commit naming no card, or another card, is not this one. */
+  taskId: string;
   /** A checkout of the card's repository that the git object reads run in. */
   repo: string;
   /** The commit whose committed tree premises are measured against. */
@@ -111,22 +115,23 @@ export async function resolveCardGitIdentity(store: TaskStore, task: Task): Prom
     return { ok: false, detail: `Cannot resolve the project repository: ${error instanceof Error ? error.message : String(error)}` };
   }
 
+  const taskId = typeof task.id === "string" ? task.id.trim() : "";
   const worktree = typeof task.worktree === "string" ? task.worktree.trim() : "";
   if (worktree.length > 0 && existsSync(worktree) && (await isReclaimableWorktreeCandidate(worktree, { rootDir: root }))) {
     const commit = await resolveCommit(worktree, "HEAD");
-    if (commit) return { ok: true, identity: { source: "worktree-head", repo: worktree, commit, ref: worktree, baseRef: "", rangeBase: null } };
+    if (commit) return { ok: true, identity: { source: "worktree-head", taskId, repo: worktree, commit, ref: worktree, baseRef: "", rangeBase: null } };
   }
 
   const branch = typeof task.branch === "string" ? task.branch.trim() : "";
   if (branch.length > 0) {
     const commit = await resolveCommit(root, branch);
-    if (commit) return { ok: true, identity: { source: "branch-tip", repo: root, commit, ref: branch, baseRef: "", rangeBase: null } };
+    if (commit) return { ok: true, identity: { source: "branch-tip", taskId, repo: root, commit, ref: branch, baseRef: "", rangeBase: null } };
   }
 
   const base = await declaredBaseRef(store, task, root);
   const baseCommit = await resolveCommit(root, base);
   if (baseCommit) {
-    return { ok: true, identity: { source: "declared-base", repo: root, commit: baseCommit, ref: base, baseRef: base, rangeBase: baseCommit } };
+    return { ok: true, identity: { source: "declared-base", taskId, repo: root, commit: baseCommit, ref: base, baseRef: base, rangeBase: baseCommit } };
   }
 
   const tried = [
@@ -194,11 +199,38 @@ export async function evaluatePremiseAtCommit(identity: CardGitIdentity, premise
     : { satisfied: false, reason: "path exists but is not a regular file" };
 }
 
-/** Commit that last changed `path` inside the card's own `base..tip` set, formatted `%h %s`, or null
- *  when the card's delivery never touched that path. */
+/*
+FNXC:PlanPremiseLandedLineage 2026-09-27-08:45:
+A card whose work has already LANDED has no unique commit set left to search: its branch is merged
+and usually deleted, so the identity ladder arrives at the declared base and `base..tip` is empty.
+Range-only attribution therefore finds nothing of the card's own and files its own delivery commit
+under "upstream" — which re-plans and re-implements finished work, consequence #2 of the original
+defect, on the one shape where that damage is certain. The landed lineage is still provable: the
+engine stamps `Fusion-Task-Id: <id>` on every commit it writes, so the falsifying commit names the
+card. This reads the engine's own attribution convention (`extractAttributedTaskId`, the canonical
+task-id grammar shared with task-id integrity), so a landed commit belonging to a DIFFERENT card, or
+naming no card at all, stays unattributable and therefore loudly plan-stale.
+*/
+async function landedCardDelivery(identity: CardGitIdentity, path: string): Promise<string | null> {
+  const cardTaskId = identity.taskId.toUpperCase();
+  if (cardTaskId.length === 0) return null;
+  const record = await gitProbe(identity.repo, ["log", "-1", "--format=%h %s%x1f%b", identity.commit, "--", path]);
+  if (!record) return null;
+  const [header = "", body = ""] = record.split("\u001f");
+  const subject = header.trim().replace(/^[0-9a-f]+\s+/, "");
+  if (extractAttributedTaskId(subject, body) !== cardTaskId) return null;
+  return header.trim();
+}
+
+/** The commit of THIS card's delivery that last changed `path`, formatted `%h %s`, or null when the
+ *  card's delivery never touched that path. Two git-proven forms: a commit in the card's unique
+ *  `base..tip` set, or — once that set is empty because the delivery landed — a commit in the
+ *  evaluated history that names this exact card through the engine's attribution convention. */
 export async function invalidatedByCardDelivery(identity: CardGitIdentity, path: string): Promise<string | null> {
-  if (!identity.rangeBase) return null;
-  return await gitLine(identity.repo, ["log", "-1", "--format=%h %s", `${identity.rangeBase}..${identity.commit}`, "--", path]);
+  const ownRange = identity.rangeBase
+    ? await gitLine(identity.repo, ["log", "-1", "--format=%h %s", `${identity.rangeBase}..${identity.commit}`, "--", path])
+    : null;
+  return ownRange ?? await landedCardDelivery(identity, path);
 }
 
 /** Commit that last changed `path` anywhere in the evaluated history — what an ordinary stale verdict

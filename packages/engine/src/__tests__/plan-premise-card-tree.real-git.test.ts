@@ -54,6 +54,13 @@ async function commit(root: string, message: string): Promise<string> {
   return await git("log -1 --format=%s", root);
 }
 
+/** A commit carrying the engine's own attribution trailer, which is how a real card's delivery is recorded. */
+async function commitFor(root: string, message: string, taskId: string): Promise<string> {
+  await git("add -A", root);
+  await git(`commit -qm ${JSON.stringify(message)} -m ${JSON.stringify(`Fusion-Task-Id: ${taskId}`)}`, root);
+  return await git("log -1 --format=%s", root);
+}
+
 /** A real repository on `main` carrying `files`, so the shared checkout has a committed baseline. */
 async function createRepo(files: Record<string, string>, message = "chore: base"): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), "stas282-card-tree-"));
@@ -67,8 +74,12 @@ async function createRepo(files: Record<string, string>, message = "chore: base"
 }
 
 const ALPHA_PRESENT = '{"kind":"text-present","path":"src/App.tsx","literal":"alphaUpdatesEnabled"}';
+const BETA_PRESENT = '{"kind":"text-present","path":"src/Beta.tsx","literal":"betaUpdatesEnabled"}';
+const ALERT_ABSENT = '{"kind":"text-absent","path":".env.example","literal":"ALERT_SLACK_TEAM_ID"}';
 const FLAG_ON = "export const alphaUpdatesEnabled = true;\n";
 const FLAG_OFF = "export const footer = true;\n";
+const BETA_ON = "export const betaUpdatesEnabled = true;\n";
+const BETA_OFF = "export const betaRetired = true;\n";
 
 function premiseTask(bullets: string[], fields: Partial<Task> = {}): Task {
   const now = new Date("2026-09-27T00:00:00.000Z").toISOString();
@@ -432,5 +443,94 @@ describe("an unresolvable card identity fails closed", () => {
     expect(result).toMatchObject({ released: false, rejection: "plan-premise-unavailable" });
     expect(task.sourceMetadata?.planPremiseRejection).toBeUndefined();
     expect(task.column).toBe("todo");
+  }, 30_000);
+});
+
+/*
+FNXC:PlanPremiseLandedLineage 2026-09-27 (STAS-282):
+The shape a card is left in once its work has LANDED — merged into the base and its branch deleted —
+has no unique commit set left at all: the identity ladder falls through a dead worktree path and a
+dead branch ref to the declared base, so a range-only attribution finds nothing of its own and calls
+the delivery's own commit "upstream". That is the loudest possible failure of this fix: the finished
+card is re-planned and re-implemented, which is consequence #2 of the original defect. The card's
+commit still names the card — `Fusion-Task-Id:` is the engine's own attribution convention — so the
+landed lineage is provable, and the verdict must say "the plan is what is false here".
+*/
+describe("a premise the card invalidated stays delivery-invalidated after the delivery lands", () => {
+  it("classifies the landed shape (delivery merged into the base, branch deleted) as delivery-invalidated, never plan-stale", async () => {
+    const root = await createRepo({ ".env.example": "SLACK_WEBHOOK=https://example.com/hook\n" });
+    await git("checkout -qb fusion/fn-282", root);
+    await write(root, ".env.example", "SLACK_WEBHOOK=https://example.com/hook\n# ALERT_SLACK_TEAM_ID=T_000000000000000000000000\n");
+    const delivered = await commitFor(root, "feat: make unconfigured alerting an inspectable startup mode", "FN-282");
+    // The delivery lands and the branch goes away: the card keeps a branch pointer that no longer
+    // resolves and no worktree, so the evaluated identity IS the base that now carries the delivery.
+    await git("checkout -q main", root);
+    await git("merge -q fusion/fn-282 --no-edit -m 'Merge fusion/fn-282'", root);
+    await git("branch -d fusion/fn-282", root);
+
+    const task = premiseTask([ALERT_ABSENT], { id: "FN-282", branch: "fusion/fn-282" });
+    const door = releaseDoor(task, root);
+    const verdict = await checkPlanPremises(door.store, task);
+    expect(verdict.outcome).toBe("premise-invalidated-by-delivery");
+    expect(verdict.detail).toContain(delivered);
+    expect(verdict.detail).toMatch(/[0-9a-f]{7,40}/);
+
+    // The consequence this exists to prevent: the landed card is promotable, never re-planned.
+    const result = await admitTaskToWip(door.store, door.deps, task, "doing", ir);
+    expect(result).toMatchObject({ released: true, task: { column: "doing" } });
+    expect(door.logActions(TRIAGE_PLAN_PREMISE_INVALIDATED_BY_DELIVERY_LOG_ACTION)).toBe(1);
+    expect(door.logActions(TRIAGE_PLAN_PREMISE_REJECTED_REPLAN_LOG_ACTION)).toBe(0);
+    expect(task.sourceMetadata?.planPremiseRejection).toBeUndefined();
+    const evidence = door.documents.get("premise-invalidated");
+    expect(evidence?.content).toContain(delivered);
+    // The landed delivery is not re-doable: the documentation block the card shipped still stands.
+    expect(await git("show main:.env.example", root)).toContain("ALERT_SLACK_TEAM_ID");
+  }, 30_000);
+
+  it("keeps a landed card loud when the commit that falsified the premise belongs to a different card", async () => {
+    const root = await createRepo({ "src/App.tsx": FLAG_ON });
+    await git("checkout -qb fusion/other-card", root);
+    await write(root, "src/App.tsx", FLAG_OFF);
+    const foreign = await commitFor(root, "feat: retire the alpha flag", "FN-999");
+    await git("checkout -q main", root);
+    await git("merge -q fusion/other-card --no-edit -m 'Merge fusion/other-card'", root);
+
+    // Same landed position, different owner: this card never delivered that change, so its plan really
+    // is false and the ladder must still run. Attribution by task id is what tells the two apart.
+    const task = premiseTask([ALPHA_PRESENT], { id: "FN-282", baseBranch: "main" });
+    const door = releaseDoor(task, root);
+    const verdict = await checkPlanPremises(door.store, task);
+    expect(verdict.outcome).toBe("stale");
+    expect(verdict.detail).toContain(foreign);
+
+    const result = await admitTaskToWip(door.store, door.deps, task, "doing", ir);
+    expect(result).toMatchObject({ released: false, rejection: "plan-premise-stale" });
+    expect(task.sourceMetadata?.planPremiseRejection).toMatchObject({ refusalCount: 1, escalation: "hold" });
+  }, 30_000);
+
+  it("names both classes when one premise set contains a delivered and an upstream falsification, and stays on the loud route", async () => {
+    const root = await createRepo({ "src/App.tsx": FLAG_ON, "src/Beta.tsx": BETA_ON });
+    await git("checkout -qb fusion/fn-282", root);
+    await write(root, "src/App.tsx", FLAG_OFF);
+    const ownDelivery = await commitFor(root, "feat: retire the alpha flag", "FN-282");
+    await git("checkout -q main", root);
+    await write(root, "src/Beta.tsx", BETA_OFF);
+    const upstream = await commit(root, "chore: upstream retires the beta flag");
+    await git("checkout -q fusion/fn-282", root);
+    await git("merge -q main --no-edit -m 'Merge main'", root);
+
+    const task = premiseTask([ALPHA_PRESENT, BETA_PRESENT], { id: "FN-282", branch: "fusion/fn-282" });
+    const door = releaseDoor(task, root);
+    const verdict = await checkPlanPremises(door.store, task);
+    // Loud wins: one genuinely false premise is enough to refuse, and the card's own delivered part
+    // must be named too — otherwise the re-plan it is handed re-implements work that already exists.
+    expect(verdict.outcome).toBe("stale");
+    expect(verdict.premiseViolations).toHaveLength(2);
+    expect(verdict.detail).toContain(upstream);
+    expect(verdict.detail).toContain(ownDelivery);
+
+    const result = await admitTaskToWip(door.store, door.deps, task, "doing", ir);
+    expect(result).toMatchObject({ released: false, rejection: "plan-premise-stale" });
+    expect(task.sourceMetadata?.planPremiseRejection).toMatchObject({ refusalCount: 1 });
   }, 30_000);
 });

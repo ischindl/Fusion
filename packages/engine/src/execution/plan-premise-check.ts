@@ -145,13 +145,20 @@ export async function checkPlanPremises(store: TaskStore, task: Task): Promise<P
     };
   }
 
-  const culprits = attributed
+  const upstreamCulprits = attributed
     .filter((violation) => violation.delivery === null)
-    .map((violation) => violation.upstream ?? `${violation.premise.path} is absent from this history`)
-    .join("; ");
+    .map((violation) => violation.upstream ?? `${violation.premise.path} is absent from this history`);
+  /*
+  A mixed premise set refuses loudly, but the refusal also has to say which of its own facts the card
+  already delivered: the re-plan this verdict triggers is what re-implements them if the two classes
+  are not named separately. The all-delivered case returns above, so this clause only ever appears
+  when both classes are present.
+  */
+  const deliveredCulprits = [...new Set(attributed.flatMap((violation) => (violation.delivery ? [violation.delivery] : [])))].join("; ");
+  const alreadyDelivered = deliveredCulprits.length > 0 ? ` Part of it is this card's own delivery: ${deliveredCulprits}.` : "";
   return {
     outcome: "stale",
-    detail: bounded(`Plan premise${violations.length === 1 ? "" : "s"} no longer true${violations.length === 1 ? ":" : " —"} ${enumerate(attributed)}. ${evaluatedAt} Falsified by: ${culprits}.`),
+    detail: bounded(`Plan premise${violations.length === 1 ? "" : "s"} no longer true${violations.length === 1 ? ":" : " —"} ${enumerate(attributed)}. ${evaluatedAt} Falsified by: ${[...new Set(upstreamCulprits)].join("; ")}.${alreadyDelivered}`),
     promptFingerprint,
     premiseViolations: violations,
   };
