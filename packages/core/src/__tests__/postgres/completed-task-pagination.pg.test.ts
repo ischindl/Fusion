@@ -248,6 +248,7 @@ pgDescribe("TaskStore completed-task pagination", () => {
     expect(fullRow.summary).toBe("board-invisible completion summary");
   });
 
+
   it("keeps literal suffix and punctuation membership exact across search pages", async () => {
     const store = h.store();
     const suffixRows = Array.from({ length: 12 }, (_, index) => {
@@ -461,5 +462,54 @@ pgDescribe("TaskStore completed-task pagination", () => {
     expect(first.nextCursor).toBeTruthy();
     await expect(store.listCurrentTasksPage({ limit: 3, query: "other", cursor: first.nextCursor! }))
       .rejects.toThrow("Invalid task list cursor");
+  });
+  /*
+  FNXC:BoardFeedCompaction 2026-09-27-20:52 (RUFU-378):
+  The Done lane is a `TaskCard` surface fed by `GET /api/tasks/done`, and that route never went
+  through `compactBoardFeedRow` even though the paged board feed had been compacting since 2026-09-17.
+  Measured live: 2.35 MB for 50 Done cards (47 KB each), and in `GET /api/tasks` the Done lane alone
+  carried 2.35 MB of step bodies plus 2.26 MB of `summary`. Pin the parity: the compacted Done page
+  carries step identity/status and no bodies/summary, and the un-opted call keeps the full row.
+  */
+  it("compacts the Done lane to the board row shape and keeps the full row for callers that did not opt in", async () => {
+    const store = h.store();
+    const done = await store.createTaskWithReservedId(
+      { title: "Done compaction probe", description: "done lane compaction", column: "done" },
+      { taskId: "FN-51501", applyDefaultWorkflowSteps: false },
+    );
+    await h.layer().db.update(schema.project.tasks).set({
+      summary: "done-lane summary the board never renders",
+      workflowStepResults: [{
+        workflowStepId: "code-review",
+        workflowStepName: "Code Review",
+        phase: "review",
+        status: "approved",
+        verdict: "APPROVE",
+        output: "done-lane reviewer body",
+        notes: "done-lane reviewer notes",
+        findings: [{ severity: "low", detail: "body" }],
+        priorAttempts: [{ workflowStepId: "code-review", workflowStepName: "Code Review", phase: "review", status: "failed", verdict: "REVISE", output: "older body" }],
+        startedAt: "2026-09-27T00:00:00.000Z",
+        completedAt: "2026-09-27T00:05:00.000Z",
+      }],
+    } as never).where(eq(schema.project.tasks.id, done.id));
+
+    const compacted = (await store.listCompletedTasks({ limit: 50, slim: true, compactBoardFeed: true }))
+      .tasks.find((candidate) => candidate.id === done.id)!;
+    const carried = compacted.workflowStepResults?.[0] as Record<string, unknown> | undefined;
+    expect(carried?.workflowStepId).toBe("code-review");
+    expect(carried?.status).toBe("approved");
+    expect(carried?.verdict).toBe("APPROVE");
+    expect(carried?.completedAt).toBe("2026-09-27T00:05:00.000Z");
+    expect("output" in (carried ?? {})).toBe(false);
+    expect("notes" in (carried ?? {})).toBe(false);
+    expect("findings" in (carried ?? {})).toBe(false);
+    expect("priorAttempts" in (carried ?? {})).toBe(false);
+    expect(compacted.summary).toBeUndefined();
+
+    const full = (await store.listCompletedTasks({ limit: 50, slim: true }))
+      .tasks.find((candidate) => candidate.id === done.id)!;
+    expect(full.workflowStepResults?.[0]?.output).toContain("done-lane reviewer body");
+    expect(full.summary).toBe("done-lane summary the board never renders");
   });
 });

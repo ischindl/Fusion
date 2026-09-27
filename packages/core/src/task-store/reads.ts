@@ -1420,7 +1420,7 @@ function decodeCompletedCursor(cursor: string, projectId: string): CompletedCurs
  */
 export async function listCompletedTasksImpl(
   store: TaskStore,
-  options?: { limit?: number; cursor?: string; slim?: boolean },
+  options?: { limit?: number; cursor?: string; slim?: boolean; compactBoardFeed?: boolean },
 ): Promise<CompletedTaskPage> {
   const rawLimit = options?.limit ?? 50;
   const limit = Math.min(500, Math.max(1, Math.trunc(rawLimit) || 50));
@@ -1434,6 +1434,20 @@ export async function listCompletedTasksImpl(
   const hasMore = result.rows.length > limit;
   const pageRows = result.rows.slice(0, limit);
   const tasks = pageRows.map((row) => store.rowToTask(store.pgRowToTaskRow(row)));
+  /*
+  FNXC:BoardFeedCompaction 2026-09-27-20:52 (RUFU-378):
+  The Done lane is rendered by the same `TaskCard` contract as the paged board feed, so it renders
+  step identity/status and never a step body. Measured live on the RunFusion board: `GET
+  /api/tasks/done?limit=50` returned 2.35 MB (47 KB per card) because this path never went through
+  `compactBoardFeedRow`, while `GET /api/tasks/page` already did. The same four step bodies and the
+  per-column `summary` dominate the Done payload — 2.35 MB of `workflowStepResults` plus 2.26 MB of
+  `summary` out of the 8.07 MB the Done lane carried in `GET /api/tasks`.
+
+  Compaction runs on the mapped rows, after hydration, exactly as the list path does it, so derived
+  badges (`computeRetrySummary` counts `priorAttempts`) are computed from the real bodies first.
+  Omitted means the full shape: engine consumers that read reviewer bodies keep getting them.
+  */
+  if (options?.compactBoardFeed) for (const task of tasks) compactBoardFeedRow(task);
   const last = tasks.at(-1);
   const completionAt = last ? (last.columnMovedAt ?? last.updatedAt ?? last.createdAt) : undefined;
   const numericSuffix = last?.id.match(/-([0-9]+)$/)?.[1] ?? "0";

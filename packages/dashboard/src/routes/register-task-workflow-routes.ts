@@ -1428,7 +1428,14 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
             excludeColumns = ["done"];
           }
         }
-        const listOptions = { limit, offset, slim: true, includeArchived: false, ...(includeDeleted ? { includeDeleted } : {}), ...(column ? { column } : {}), ...(excludeColumns ? { excludeColumns } : {}) };
+        // FNXC:BoardFeedCompaction 2026-09-27-20:52 (RUFU-378):
+        // This is a board-shaped read (it already asks for `slim`), so it must carry the same row
+        // shape as `GET /tasks/page`, which has compacted its feed since FNXC:BoardFeedCompaction
+        // 2026-09-17-14:49. Measured live: this endpoint returned 10.02 MB for 327 RunFusion cards
+        // in 21.7 s, of which 8.07 MB came from the Done lane and 4.6 MB of that was exactly the
+        // fields `compactBoardFeedRow` drops (`workflowStepResults` bodies 2.35 MB + `summary`
+        // 2.26 MB). A caller that needs reviewer bodies asks for them on `GET /api/tasks/:id`.
+        const listOptions = { limit, offset, slim: true, compactBoardFeed: true, includeArchived: false, ...(includeDeleted ? { includeDeleted } : {}), ...(column ? { column } : {}), ...(excludeColumns ? { excludeColumns } : {}) };
         tasks = await scopedStore.listTasks(listOptions);
       }
 
@@ -1687,6 +1694,14 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         limit: rawLimit === undefined ? undefined : Number(rawLimit),
         cursor: req.query.cursor,
         slim: true,
+        /*
+        FNXC:BoardFeedCompaction 2026-09-27-20:52 (RUFU-378):
+        The Done lane is a `TaskCard` surface and renders step identity/status, never a step body, so
+        it takes the same compacted row the paged board feed already ships. Measured live: this
+        endpoint returned 2.35 MB for 50 cards (47 KB per card) at 4.35 s. Bodies and `summary` stay
+        available on `GET /api/tasks/:id`, which is what `TaskHistoryTab` consumes (`task: TaskDetail`).
+        */
+        compactBoardFeed: true,
       }));
     } catch (err: unknown) {
       if (err instanceof ApiError) throw err;

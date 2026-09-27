@@ -1,6 +1,5 @@
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { preWipColumnsForTask } from "../task-lifecycle-lanes.js";
-import type { WorkflowIr } from "@fusion/core";
+import type { ColumnId } from "@fusion/core";
 import path from "node:path";
 import type { Request, Response } from "express";
 import type { Agent, AgentCapability, AgentUpdateInput, TaskStore, AgentPermissionPolicyRules, AgentPermissionPolicyDisposition, AgentPermissionPolicyToolRules } from "@fusion/core";
@@ -14,6 +13,7 @@ import {
   isEphemeralAgent,
   normalizeAgentPermissionPolicy,
   normalizeAgentRoles,
+  resolveProjectColumnsForRoles,
 } from "@fusion/core";
 import { ApiError, badRequest, notFound } from "../api-error.js";
 import type { ApiRoutesContext } from "./types.js";
@@ -414,20 +414,37 @@ export function registerAgentCoreRoutes(ctx: ApiRoutesContext, deps: AgentCoreRo
 
       const total = completedRuns + failedRuns;
       const successRate = total > 0 ? completedRuns / total : 0;
-      const tasks = await scopedStore.listTasks({ slim: true, includeArchived: false });
       /*
-      FNXC:WorkflowResolvedColumns 2026-07-30-06:50 (batch-core):
-      "How many cards are queued" for the agent stats panel — the pre-WIP roles (intake and hold),
-      resolved per task. Keyed on the literal, a renamed board reported 0 queued forever, so the panel
-      showed an idle backlog while cards were waiting.
+      FNXC:AgentStatsQueuedCount 2026-09-27-20:52 (RUFU-378):
+      "How many cards are queued" used to be answered by resolving the workflow IR of EVERY live card,
+      which is one workflow-selection read per card on top of the whole board scan. Measured live on
+      the RunFusion board: this endpoint did not answer within 45 s (`curl --max-time 45` timed out),
+      and an unrelated 16 KB `GET /api/agents` cost 13.55 s while a board read was in flight versus
+      2.51 s alone — the panel pays for per-card lane history to render eight counters.
 
-      One shared IR cache across the board scan: one workflow read per distinct workflow, not per task.
+      The lane scope now comes from `resolveProjectColumnsForRoles`, which walks the workflow
+      DEFINITIONS once and already widens the result with every declared intake/hold column, so a
+      custom workflow's hold column is still counted. That is the same project-level lane vocabulary
+      the board lane pager uses (FNXC:BoardLanePagination 2026-09-10-19:26), so the queued counter and
+      the lanes the operator actually sees cannot drift apart.
       */
-      const queuedIrCache = new Map<string, WorkflowIr>();
-      let todoTaskCount = 0;
-      for (const task of tasks) {
-        if ((await preWipColumnsForTask(scopedStore, task.id, queuedIrCache)).has(task.column)) todoTaskCount += 1;
-      }
+      const preWipColumns = [...await resolveProjectColumnsForRoles(scopedStore, ["intake", "hold"])] as ColumnId[];
+      const queuedTasks = await scopedStore.listTasks({
+        columns: preWipColumns,
+        includeArchived: false,
+        startupMemo: false,
+        /*
+        Counting rows needs no board badge. `derive: false` skips the nine per-row derivations and
+        `excludeLog: true` drops the heaviest column, both documented as safe for consumers that read
+        none of the derived signals (FNXC:ListTasksDeriveOptOut 2026-09-08-20:58 and
+        FNXC:ListTasksExcludeLog 2026-09-09-01:48). `slim` is deliberately NOT passed: it re-parses
+        PROMPT.md for every card whose persisted `steps` is empty, which is unbounded per-pass file
+        I/O for a number that needs no `steps` at all.
+        */
+        derive: false,
+        excludeLog: true,
+      });
+      const todoTaskCount = queuedTasks.length;
       res.json({
         activeCount,
         assignedTaskCount,

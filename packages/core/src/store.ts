@@ -1967,7 +1967,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   }
   /* FNXC:TaskQueueOrder 2026-09-17-12:07: FN-509 removed the selectable Complete sort mode with the
      column "..." menu. Done is always most-recent-arrival first. */
-  async listCompletedTasks(options?: { limit?: number; cursor?: string; slim?: boolean }): Promise<CompletedTaskPage> {
+  async listCompletedTasks(options?: { limit?: number; cursor?: string; slim?: boolean; compactBoardFeed?: boolean }): Promise<CompletedTaskPage> {
     return listCompletedTasksImpl(this, options);
   }
   /** Read-only archive inventory for project-scoped operational reconciliation. */
