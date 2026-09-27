@@ -281,9 +281,14 @@ testable without a store, a poll, or a git subprocess.
 import {
   PLANNING_ADMISSION_STALL_MAX_BRANCH_PROBES,
   PLANNING_ADMISSION_STALL_MAX_CANDIDATES,
+  PLANNING_ADMISSION_STALL_SWEEP_SIGNATURE_PREFIX,
+  PLANNING_ADMISSION_STALL_TRIAGE_OWNERSHIP_MS,
   decidePlanningAdmissionStall,
   isPlanningLaneIneligible,
+  isSweepOwnedPlanningAdmissionEpisode,
+  planningAdmissionAgeBaseMs,
   planningAdmissionAgeMs,
+  planningAdmissionEffectiveAgeMs,
   probeTaskSpecReadable,
   resolvePlanningLanes,
   resolvePlanningStallThresholdMs,
@@ -12877,6 +12882,14 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
         if (typeof task.status === "string" && task.status !== "") return false;
         // A live dependency edge is named LIVE by the derivation, so it is never an admission stall.
         if (typeof task.blockedBy === "string" && task.blockedBy.trim() !== "") return false;
+        /*
+        FNXC:PlanningAdmissionStall 2026-09-27-04:47 (RUFU-350): RAW PARSEABILITY only — deliberately not a
+        threshold comparison and deliberately not the reconstructed age. This filter decides who gets an IR read
+        and who stays in `agedIds`; made age-driven it self-erases, because a card the previous pass just named
+        carries a fresh `updatedAt`, would fall out of `agedIds`, and would be handed to the whole-board retract
+        pass as `no-longer-a-candidate`. Reading only the raw clock for membership is what keeps a just-named
+        card in the population, where its OWN per-card pass stays the single authority over its claim.
+        */
         return planningAdmissionAgeMs(task, cycleStartMs) !== undefined;
       });
       /*
@@ -12919,6 +12932,7 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
           && task.userPaused !== true
           && readPlanAdmissionStallEpisode(task.sourceMetadata) !== undefined),
         "no-longer-a-candidate",
+        cycleStartMs,
       );
 
       /*
@@ -12951,11 +12965,26 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
       silent longest are the ones an operator is asking about, and `listTasks` makes no ordering promise
       that would guarantee them a slot. The sort is over the already-filtered set, so a healthy board
       (zero candidates) pays nothing.
+
+      FNXC:PlanningAdmissionStall 2026-09-27-04:47 (RUFU-350): the ordering answers the same question the age
+      gate answers — how long has this card ACTUALLY been waiting — so it reads the reconstructed base rather
+      than the row the most recent write touched. Ordered by the raw clock the per-pass cap is spent on
+      whatever row was written last, so a board of recently-touched cards outranks the one that has been silent
+      for a week — the opposite of what oldest-first is for. A card with no episode, or with one whose base is
+      not provable (a triage stamp), falls back to the raw clock unchanged.
       */
+      const effectiveAgeByTaskId = new Map<string, number>();
+      for (const task of nameable) {
+        effectiveAgeByTaskId.set(task.id, planningAdmissionEffectiveAgeMs(
+          task,
+          readPlanAdmissionStallEpisode(task.sourceMetadata),
+          cycleStartMs,
+        ) ?? 0);
+      }
       const candidates = [
         ...nameable
           .slice()
-          .sort((a, b) => (planningAdmissionAgeMs(a, cycleStartMs) ?? 0) >= (planningAdmissionAgeMs(b, cycleStartMs) ?? 0) ? -1 : 1)
+          .sort((a, b) => (effectiveAgeByTaskId.get(a.id) ?? 0) >= (effectiveAgeByTaskId.get(b.id) ?? 0) ? -1 : 1)
           .slice(0, PLANNING_ADMISSION_STALL_MAX_CANDIDATES),
         /*
         Retract-only pass-through: these cards can produce a clear, never a naming, so they are bounded
@@ -13055,16 +13084,26 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
       return {
         named: 0,
         retracted: planningColumns
-          ? await this.retractPlanningAdmissionStallEpisodes([task], "left-planning-lane")
+          ? await this.retractPlanningAdmissionStallEpisodes([task], "left-planning-lane", ctx.now)
           : 0,
       };
     }
 
-    const ageMs = planningAdmissionAgeMs(task, ctx.now) ?? 0;
+    /*
+    FNXC:PlanningAdmissionStall 2026-09-27-04:47 (RUFU-350): the age CLAIM is measured against the reconstructed
+    waiting base, not the raw clock, because the raw clock is the very field this sweep's naming write moves
+    (`updateTask` bumps `updatedAt`) — measured that way the next pass retracts what the previous one named. The
+    reconstructed value is also what the ladder, the operator-facing warning, and the audit row report, so the
+    number the operator sees is the one that produced the verdict rather than a row's bookkeeping field.
+    A fresh card has no episode and is measured exactly as before; a triage-stamped episode carries no base this
+    sweep may inherit and is likewise measured by the raw clock.
+    */
+    const storedEpisode = readPlanAdmissionStallEpisode(task.sourceMetadata);
+    const ageMs = planningAdmissionEffectiveAgeMs(task, storedEpisode, ctx.now) ?? 0;
     const thresholdMs = resolvePlanningStallThresholdMs(ir, task.column);
     if (ageMs < thresholdMs) {
       // The row was touched since it was named: the age claim expired, so retract it.
-      return { named: 0, retracted: await this.retractPlanningAdmissionStallEpisodes([task], "no-longer-aged") };
+      return { named: 0, retracted: await this.retractPlanningAdmissionStallEpisodes([task], "no-longer-aged", ctx.now) };
     }
 
     const specProbe = await probeTaskSpecReadable(this.options.rootDir, task.id);
@@ -13117,13 +13156,35 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
       return PLANNING_ADMISSION_PASS_NOOP;
     }
 
+    /*
+    FNXC:PlanningAdmissionStall 2026-09-27-04:47 (RUFU-350): a same-code refresh of an episode whose base is
+    provable re-stamps the PRIOR `ageMs`, never the grown effective age. `planAdmissionStallWrite` keeps the
+    original `firstAt` through a same-code refresh, so stamping the current age there would move the
+    reconstructed base (`firstAt - ageMs`) earlier by the whole refresh interval on EVERY refresh — the badge
+    would age itself out at refresh N instead of never. A DIFFERENT code restarts the episode with a new
+    `firstAt`, and there the effective age is the honest stamp. The `?? ageMs` arm is unreachable arithmetic
+    (a provable base means a finite stored `ageMs`); it only keeps the expression typed.
+
+    FNXC:PlanningAdmissionStall 2026-09-27-05:59 (RUFU-350): reachability, stated honestly. Every rung of
+    `decidePlanningAdmissionStall` refuses a write whose code equals the stored episode's code — the residual
+    returns `already-named` for `plan-no-admission` and `writeUnlessAlreadyNamed` skips a matching evidence code —
+    so the same-code arm above is a GUARD, not a live path today: it is what keeps the base durable if the ladder
+    ever lets a sustained stall refresh (which is what its own cadence comment says it should do). The live drift
+    trap is the OTHER arm: correcting a stale episode to a new code restarts `firstAt`, so the `ageMs` written
+    beside it must be the effective age or the corrected badge self-erases on the next pass — pinned by the
+    correction-sequence case, which fails against the pre-fix raw stamp.
+    */
+    const inheritableBaseMs = planningAdmissionAgeBaseMs(storedEpisode);
+    const ageMsToStamp = storedEpisode && storedEpisode.code === decision.code && inheritableBaseMs !== undefined
+      ? storedEpisode.ageMs ?? ageMs
+      : ageMs;
     const episode = planAdmissionStallWrite(
-      readPlanAdmissionStallEpisode(task.sourceMetadata),
+      storedEpisode,
       {
         code: decision.code,
         // Names the writer and the gate it reached, so a reader can tell a sweep episode from a triage one.
-        signature: `sweep:${decision.code}`,
-        ageMs,
+        signature: `${PLANNING_ADMISSION_STALL_SWEEP_SIGNATURE_PREFIX}${decision.code}`,
+        ageMs: ageMsToStamp,
         uniqueCommitCount: decision.uniqueCommitCount,
       },
       ctx.now,
@@ -13197,6 +13258,20 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
    * whole-board pass stays write-free on a healthy board, and never runs for a paused card, whose row is
    * operator-authored and whose badge the pause family already owns.
    *
+   * FNXC:PlanningAdmissionStall 2026-09-27-04:47 (RUFU-350):
+   * An episode the sweep does not own is a claim with a live owner, and this is the one place that may not
+   * delete it. The whole-board pass asks only "did this row fail my filters", which is not the same question as
+   * "did this claim stop being true": a card whose `plan-admission-throttled` episode triage stamped seconds
+   * ago fails the pass's filters because triage also wrote `status: "queued"`, and the pass used to delete that
+   * episode while the lane that wrote it was still polling — re-creating, in the opposite direction, the exact
+   * bug RUFU-273 fixed (the operator's reason for a card vanishing because someone else wrote the row). So a
+   * foreign episode (a signature without the sweep's prefix, i.e. triage's FN-8600 gate stamp) is withheld
+   * inside RUFU-273's own `PLANNING_ADMISSION_STALL_TRIAGE_OWNERSHIP_MS` window, reported as
+   * `outcome: "triage-owned"`, and counted as neither a naming nor a retraction. `left-planning-lane` is NOT
+   * withheld: a card that moved into a lane its own workflow cannot plan in is positive evidence the claim died,
+   * not an inference from someone else's write. Past the ownership window a foreign episode is stale history and
+   * is retracted exactly as before.
+   *
    * Returns the number of rows actually rewritten, so a pass reports one honest count. A card with no
    * stored episode costs no write and no audit row, which is what makes this safe to run every cycle
    * over the whole board. The cap is the candidate cap: a mass transition (a fleet admitted at once)
@@ -13205,12 +13280,57 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
   private async retractPlanningAdmissionStallEpisodes(
     tasks: readonly Task[],
     outcome: "no-longer-a-candidate" | "left-planning-lane" | "no-longer-aged",
+    /*
+    FNXC:PlanningAdmissionStall 2026-09-27-05:38 (RUFU-350):
+    The cycle clock is a REQUIRED parameter, not a defaulted one. Every age this function records — the withheld
+    ownership window and the `ageMs` on the retraction row — must be measured against the SAME instant the pass
+    was sorted and gated by, and a `= Date.now()` default would silently re-introduce a per-card clock that can
+    disagree with the pass that decided the outcome. All three callers already thread the cycle clock in
+    (`cycleStartMs` / `ctx.now`); making it required is what stops a fourth caller from drifting.
+    */
+    now: number,
   ): Promise<number> {
     let retracted = 0;
     for (const task of tasks.slice(0, PLANNING_ADMISSION_STALL_MAX_CANDIDATES)) {
       // Nothing stored means nothing to retract: the guard here (not at each caller) is what makes a
       // whole-board pass write-free on a healthy board, where no card carries an episode at all.
-      if (readPlanAdmissionStallEpisode(task.sourceMetadata) === undefined) continue;
+      const stored = readPlanAdmissionStallEpisode(task.sourceMetadata);
+      if (stored === undefined) continue;
+      /*
+      FNXC:PlanningAdmissionStall 2026-09-27-04:47 (RUFU-350): the foreign-episode ownership floor, enforced at
+      the choke point so no current or future caller can delete another lane's claim on its way past a filter.
+      Freshness is measured from `lastAt` — the stamp the owning lane moves on every refresh — so a still-polling
+      triage keeps its episode by continuing to write it, and an unparseable stamp is treated as stale rather
+      than as fresh (the sweep may not invent freshness it cannot observe). Withheld cards emit a no-action row
+      and advance neither counter.
+
+      Which claims stay retractable after this guard: (1) an UNATTRIBUTED episode — no signature at all, the shape
+      every pre-RUFU-350 sweep write and the legacy fixtures carry, because only the sweep stamps a code with no
+      composite gate identity; (2) a SWEEP-OWNED episode (`sweep:` prefix) at any age; (3) a foreign episode once
+      its `lastAt` is older than the ownership floor, i.e. its writer went quiet; and (4) any foreign episode on a
+      `left-planning-lane` clear, where the card's own move — not another lane's row — is the evidence. The one
+      claim this guard withholds is a foreign episode written inside the floor, which is triage's live FN-8600
+      throttle stamp.
+      */
+      if (outcome !== "left-planning-lane" && !isSweepOwnedPlanningAdmissionEpisode(stored)) {
+        const ownerLastAtMs = Date.parse(stored.lastAt);
+        const sinceOwnerMs = Number.isFinite(ownerLastAtMs) ? now - ownerLastAtMs : Number.POSITIVE_INFINITY;
+        if (sinceOwnerMs < PLANNING_ADMISSION_STALL_TRIAGE_OWNERSHIP_MS) {
+          await this.emitPlanningAdmissionStallAudit("task:planning-admission-stalled-no-action", task, {
+            column: task.column,
+            outcome: "triage-owned",
+            ageMs: planningAdmissionEffectiveAgeMs(task, stored, now),
+            scannedCount: 1,
+          });
+          continue;
+        }
+      }
+      /*
+      The measurement is taken BEFORE the clear: `updateTask` bumps the row's `updatedAt`, so asking the clock
+      afterwards reports the age of the row this write just touched (~0 s, or negative) instead of the age the
+      decision rested on. RUFU-350's ownership-floor control test caught exactly that, printing `ageMs: -1`.
+      */
+      const ageMsAtDecision = planningAdmissionEffectiveAgeMs(task, stored, now);
       try {
         // `null` at KEY level, the same idiom the manual-retry reset uses: siblings survive.
         await this.store.updateTask(task.id, {
@@ -13220,6 +13340,15 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
         await this.emitPlanningAdmissionStallAudit("task:planning-admission-stalled-no-action", task, {
           column: task.column,
           outcome,
+          /*
+          FNXC:PlanningAdmissionStall 2026-09-27-04:47 (RUFU-350): the measurement the outcome rests on, so a
+          clear is diagnosable from the audit row alone. Before this, a retraction row recorded that a claim was
+          deleted and nothing about why — which is exactly why the self-erasure was invisible after the fact: the
+          row said `no-longer-aged` and the operator could not see that the age it measured was the one the
+          previous pass had just reset. Reported in the same effective-clock terms as the naming row, and omitted
+          (the emit helper strips undefined values) only when no clock parses at all.
+          */
+          ageMs: ageMsAtDecision,
           scannedCount: 1,
         });
       } catch (err: unknown) {

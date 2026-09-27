@@ -19,8 +19,11 @@ import { join } from "node:path";
 
 import {
   PLAN_ADMISSION_STALL_METADATA_KEY,
+  PLAN_ADMISSION_STALL_REFRESH_FLOOR_MS,
   PLAN_PREMISE_REJECTION_METADATA_KEY,
+  planAdmissionStallWrite,
   deriveTaskStallReason,
+  readPlanAdmissionStallEpisode,
   type RunAuditEventInput,
   type Task,
   type TaskPlanAdmissionStallEpisode,
@@ -36,7 +39,10 @@ import {
   PLANNING_ADMISSION_STALL_TRIAGE_OWNERSHIP_MS,
   decidePlanningAdmissionStall,
   isPlanningLaneIneligible,
+  isSweepOwnedPlanningAdmissionEpisode,
   planningAdmissionAgeMs,
+  planningAdmissionAgeBaseMs,
+  planningAdmissionEffectiveAgeMs,
   probeTaskSpecReadable,
   resolvePlanningLanes,
   resolvePlanningStallThresholdMs,
@@ -121,6 +127,30 @@ function episodeOf(over: Partial<TaskPlanAdmissionStallEpisode> = {}): TaskPlanA
   } as TaskPlanAdmissionStallEpisode;
 }
 
+/*
+FNXC:PlanningAdmissionStall 2026-09-27-05:55 (RUFU-350):
+The fixture the RECONCILIATION SWEEP writes, as opposed to `episodeOf`, which is triage's shape.
+
+Both shapes are transcribed from production, not designed here. `episodeOf` mirrors the FN-8600 throttle site
+(`triage.ts`, a pipe-joined composite gate identity and NO `ageMs`); this mirrors the sweep's own write
+(`self-healing.ts`): the `sweep:`-prefixed code signature, plus the `ageMs` the reconstructed waiting base is
+derived from. Two rules the RUFU-350 fixtures keep honest:
+- the signature is kept BYTE-IDENTICAL to production, because an invented shape makes the writer-discriminator
+  test tautological — it would prove that a helper recognizes a fixture nobody writes;
+- `ageMs` gets NO default. A `sweep:` episode without it is the LEGACY shape every pre-RUFU-350 write carried,
+  and it proves no base, so each case has to state the wait it means to encode.
+*/
+function sweepEpisodeOf(over: Partial<TaskPlanAdmissionStallEpisode> = {}): TaskPlanAdmissionStallEpisode {
+  return {
+    code: "plan-no-admission",
+    signature: "sweep:plan-no-admission",
+    lastAt: FRESH_ISO,
+    firstAt: FRESH_ISO,
+    stallCount: 1,
+    ...over,
+  } as TaskPlanAdmissionStallEpisode;
+}
+
 function evidenceOf(over: Partial<PlanningAdmissionEvidence> = {}): PlanningAdmissionEvidence {
   return {
     ageMs: 60 * HOUR,
@@ -159,8 +189,37 @@ function harness(
       enginePaused: false,
     }),
     listTasks: async () => tasks,
+    /*
+    FNXC:PlanningAdmissionStall 2026-09-27-04:55 (RUFU-350):
+    Record AND apply. The pre-RUFU-350 fake only recorded patches, so every case in this file fed the sweep
+    a pristine row on every call and the sweep could stay green while erasing its own badge in production:
+    the bug lives in what pass N+1 READS, and a record-only fake guarantees pass N+1 reads the fixture again
+    instead of the row pass N wrote. Applying is therefore the minimum faithfulness needed to express the
+    reported condition at all — `listTasks` hands back the same rows `updateTask` mutates.
+
+    Two real-store behaviors are reproduced because both are load-bearing for age arithmetic:
+    - `sourceMetadataPatch` merges per key and a `null` value deletes that key, so a sibling provenance key
+      survives an episode write (a whole-object overwrite would make the sibling-key cases pass vacuously).
+    - every accepted write bumps `updatedAt`, which is exactly the clock `planningAdmissionAgeMs` reads.
+      A zero-write pass therefore leaves it byte-identical, and a bare `{}` patch bumps it just as the real
+      store does — that asymmetry is what the pass-sequence cases assert.
+    */
     updateTask: async (taskId: string, patch: Record<string, unknown>) => {
       updates.push({ taskId, patch });
+      const row = tasks.find((candidate) => candidate.id === taskId);
+      if (!row) return;
+      const metadataPatch = patch.sourceMetadataPatch as Record<string, unknown> | undefined;
+      if (metadataPatch) {
+        const merged: Record<string, unknown> = { ...(row.sourceMetadata ?? {}) };
+        for (const [key, value] of Object.entries(metadataPatch)) {
+          if (value === null) delete merged[key];
+          else merged[key] = value;
+        }
+        row.sourceMetadata = merged as Task["sourceMetadata"];
+      }
+      const { sourceMetadataPatch: _applied, ...fields } = patch;
+      Object.assign(row, fields);
+      row.updatedAt = new Date().toISOString();
     },
     recordRunAuditEvent: async (event: RunAuditEventInput) => {
       audit.push(event);
@@ -384,6 +443,162 @@ describe("age, threshold, lane eligibility, and spec readability", () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/* The clock and the writer discriminator (RUFU-350)                           */
+/* -------------------------------------------------------------------------- */
+
+/*
+FNXC:PlanningAdmissionStall 2026-09-27-05:55 (RUFU-350):
+Unit coverage for the two pure helpers the fix turns on, over the data states enumerated up front. Sweep-level
+tests are the only existing path into these functions, and the states that decide the outcome — a row whose raw
+clock has collapsed under a reconstructed base, a foreign signature, a corrupt stamp, the legacy `ageMs`-less
+shape — are exactly the ones a sweep-level fixture cannot enumerate without becoming twelve sweeps.
+
+The arithmetic is kept self-consistent on purpose: the reconstructed base is pinned to the row's own
+`createdAt`, so a helper that derived the base wrongly (a sign flip, a lost `ageMs`) would disagree with the
+calendar and fail an equality instead of quietly shifting a threshold comparison.
+*/
+describe("the admission clock and its writer discriminator (RUFU-350)", () => {
+  /** The true waiting start: the card was created 60 h and 20 min before this call's clock. */
+  const BASE_MS = NOW - 60 * HOUR - 20 * MIN;
+  const BASE_ISO = new Date(BASE_MS).toISOString();
+  /** The row as the sweep reads it AFTER its own naming write: `updatedAt` is that write's instant. */
+  const TOUCHED_ISO = new Date(NOW - 20 * MIN).toISOString();
+  const touchedRow = () => ({ createdAt: BASE_ISO, updatedAt: TOUCHED_ISO });
+  /** The episode that same naming write stored: the card had waited 60 h when it was named. */
+  const namedEpisode = () => sweepEpisodeOf({ firstAt: TOUCHED_ISO, lastAt: TOUCHED_ISO, ageMs: 60 * HOUR });
+
+  it("measures a card with no episode by the raw clock, exactly as before the fix", () => {
+    expect(planningAdmissionEffectiveAgeMs({ createdAt: AGED_ISO, updatedAt: FRESH_ISO }, undefined, NOW))
+      .toBe(HOUR);
+    expect(planningAdmissionAgeBaseMs(undefined)).toBeUndefined();
+  });
+
+  it("reconstructs the wait from a complete sweep episode, and lands on the calendar date it must land on", () => {
+    const episode = namedEpisode();
+    // The base the sweep derives is the card's real waiting start — the row's own `createdAt`, independently.
+    expect(planningAdmissionAgeBaseMs(episode)).toBe(BASE_MS);
+    // The raw clock now reports the 20 minutes since the naming write — the number that erased the badge.
+    expect(planningAdmissionAgeMs(touchedRow(), NOW)).toBe(20 * MIN);
+    // The reconstructed clock reports the wait the card genuinely still has: 60 h at naming + 20 min since.
+    expect(planningAdmissionEffectiveAgeMs(touchedRow(), episode, NOW)).toBe(60 * HOUR + 20 * MIN);
+  });
+
+  it("refuses to inherit a base from a triage episode, even one that happens to carry an `ageMs`", () => {
+    /*
+    Triage owns its episode: it stamps a gate-identity composite and no `ageMs` today. The discriminator must
+    not depend on that accident — a foreign signature proves nothing this sweep may extend, or a triage stamp
+    would silently inherit a base the sweep invented and age a card triage is still polling.
+    */
+    // Triage's real signature composition (`triage.ts`): [gate, maxConcurrent, claimed, cardCount].join("|").
+    const triageEpisode = episodeOf({
+      signature: "running-agent cap|2|2|3",
+      firstAt: TOUCHED_ISO,
+      lastAt: TOUCHED_ISO,
+      ageMs: 60 * HOUR,
+    });
+    expect(isSweepOwnedPlanningAdmissionEpisode(triageEpisode)).toBe(false);
+    expect(planningAdmissionAgeBaseMs(triageEpisode)).toBeUndefined();
+    // Falls back to the raw clock rather than inventing the difference.
+    expect(planningAdmissionEffectiveAgeMs(touchedRow(), triageEpisode, NOW)).toBe(20 * MIN);
+  });
+
+  it("treats the legacy `ageMs`-less sweep shape as owned but unprovable, so it ages by the raw clock", () => {
+    /*
+    Every episode written before this change carries the code signature and no `ageMs`. It is still the sweep's
+    own (so the retract pass may still clear it), and it still proves no base (so the age falls back to the raw
+    clock). The badge on such a card can therefore still self-erase — an honest boundary of a store that exposes
+    no `sourceMetadataPatch`, and the reason a hand-built third fake shape would have been the wrong fixture.
+    */
+    const legacy = sweepEpisodeOf();
+    expect(isSweepOwnedPlanningAdmissionEpisode(legacy)).toBe(true);
+    expect(planningAdmissionAgeBaseMs(legacy)).toBeUndefined();
+    expect(planningAdmissionEffectiveAgeMs(touchedRow(), legacy, NOW)).toBe(20 * MIN);
+  });
+
+  it("classifies ownership by the writer prefix alone, never by the code inside the signature", () => {
+    // A signature equal to a bare CODE must not pass: the prefix is the only thing that claims sweep ownership.
+    expect(isSweepOwnedPlanningAdmissionEpisode(sweepEpisodeOf({ signature: "plan-no-admission" }))).toBe(false);
+    expect(isSweepOwnedPlanningAdmissionEpisode(sweepEpisodeOf({ signature: "sweep:plan-no-admission" }))).toBe(true);
+    // An absent or empty signature is pre-discriminator data, treated as the sweep's own.
+    expect(isSweepOwnedPlanningAdmissionEpisode(sweepEpisodeOf({ signature: undefined }))).toBe(true);
+    expect(isSweepOwnedPlanningAdmissionEpisode(sweepEpisodeOf({ signature: "" }))).toBe(true);
+    // Nothing stored at all is not somebody else's live claim.
+    expect(isSweepOwnedPlanningAdmissionEpisode(undefined)).toBe(true);
+    expect(isSweepOwnedPlanningAdmissionEpisode(null)).toBe(true);
+  });
+
+  it("falls back to the raw clock on a corrupt stamp instead of inventing an impossible wait", () => {
+    const row = touchedRow();
+    const corrupt = (over: Record<string, unknown>) => ({ ...namedEpisode(), ...over });
+    // A non-string `firstAt` (a serialized Date object) and an unparseable one are both unprovable.
+    expect(planningAdmissionAgeBaseMs(corrupt({ firstAt: new Date(BASE_MS) }))).toBeUndefined();
+    expect(planningAdmissionAgeBaseMs(corrupt({ firstAt: "last tuesday" }))).toBeUndefined();
+    // A non-finite, non-numeric, or negative `ageMs` would fabricate a base EARLIER than the card's birth.
+    expect(planningAdmissionAgeBaseMs(corrupt({ ageMs: Number.NaN }))).toBeUndefined();
+    expect(planningAdmissionAgeBaseMs(corrupt({ ageMs: "3600000" as unknown as number }))).toBeUndefined();
+    expect(planningAdmissionAgeBaseMs(corrupt({ ageMs: -1 }))).toBeUndefined();
+    for (const episode of [
+      corrupt({ firstAt: new Date(BASE_MS) }),
+      corrupt({ firstAt: "last tuesday" }),
+      corrupt({ ageMs: Number.NaN }),
+      corrupt({ ageMs: "3600000" as unknown as number }),
+      corrupt({ ageMs: -1 }),
+    ]) {
+      expect(planningAdmissionEffectiveAgeMs(row, episode, NOW)).toBe(20 * MIN);
+    }
+  });
+
+  it("never reports a negative wait when the row is stamped ahead of the call's clock", () => {
+    /*
+    A host clock that steps backwards between the row write and this call makes the raw age negative. The raw
+    helper reports what the calendar says — it is a measurement, and a measurement that hides its own direction
+    is worse than useless — while the helper that feeds the gate, the ladder, and the audit row clamps, because
+    a negative number would be written into a run-audit row as the operator-visible wait.
+    */
+    const futureRow = { createdAt: BASE_ISO, updatedAt: new Date(NOW + 5 * MIN).toISOString() };
+    expect(planningAdmissionAgeMs(futureRow, NOW)).toBe(-5 * MIN);
+    expect(planningAdmissionEffectiveAgeMs(futureRow, undefined, NOW)).toBe(0);
+    // The reconstructed arm was already clamped; both arms now agree at the boundary.
+    const futureBase = sweepEpisodeOf({ firstAt: new Date(NOW + MIN).toISOString(), lastAt: TOUCHED_ISO, ageMs: 0 });
+    expect(planningAdmissionAgeBaseMs(futureBase)).toBe(NOW + MIN);
+    expect(planningAdmissionEffectiveAgeMs(futureRow, futureBase, NOW)).toBe(0);
+  });
+
+  it("keeps the reconstructed base stable across a same-code refresh, and moves it when grown age is stamped", () => {
+    /*
+    The base is only durable if the shared writer's `ageMs` field still means what the first write meant.
+    `planAdmissionStallWrite` keeps `firstAt` through a same-code refresh and REPLACES `ageMs`, so stamping the
+    grown age every refresh would slide `firstAt - ageMs` earlier by the refresh interval each time — the badge
+    would age itself out at refresh N instead of never. This is the invariant behind the `ageMsToStamp` fork.
+    */
+    const namedAt = NOW - PLAN_ADMISSION_STALL_REFRESH_FLOOR_MS - MIN;
+    const prior = sweepEpisodeOf({
+      firstAt: new Date(namedAt).toISOString(),
+      lastAt: new Date(namedAt).toISOString(),
+      ageMs: 60 * HOUR,
+    });
+    const baseBefore = planningAdmissionAgeBaseMs(prior)!;
+
+    // What the sweep writes today: the PRIOR age, refreshed past the floor so the write is not refused.
+    const refreshed = planAdmissionStallWrite(
+      prior,
+      { code: prior.code, signature: prior.signature, ageMs: prior.ageMs },
+      NOW,
+    )!;
+    expect(refreshed.lastAt).toBe(new Date(NOW).toISOString());
+    expect(planningAdmissionAgeBaseMs(refreshed)).toBe(baseBefore);
+
+    // The counterfactual: the grown age moves the base earlier by exactly the refresh interval.
+    const drifted = planAdmissionStallWrite(
+      prior,
+      { code: prior.code, signature: prior.signature, ageMs: 60 * HOUR + (NOW - namedAt) },
+      NOW,
+    )!;
+    expect(planningAdmissionAgeBaseMs(drifted)).toBe(baseBefore - (NOW - namedAt));
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /* The sweep                                                                  */
 /* -------------------------------------------------------------------------- */
 
@@ -509,9 +724,19 @@ describe("reconcilePlanningAdmissionStalls — population and lane membership", 
     const h = harness([task], planningIr({ thresholdMs: 3 * HOUR }));
     expect(await h.manager.reconcilePlanningAdmissionStalls()).toBe(1);
 
-    // The same card under the policy default is not yet reportable.
+    /*
+    The same card under the policy default is not reportable — NAMING is what the default withholds, and
+    that is what this case pins. The one write the pass does make is the RETRACTION of the episode only the
+    3 h column threshold supported: 6 h of age never satisfies the 48 h default, so the claim written under
+    the stricter bar is false under the wider one.
+
+    The pre-RUFU-350 record-only harness made this read as zero writes by handing pass 2 a card with no
+    episode at all. Production applies its writes, so the honest expectation is the retraction.
+    */
     const h2 = harness([task], planningIr());
-    expect(await h2.manager.reconcilePlanningAdmissionStalls()).toBe(0);
+    expect(await h2.manager.reconcilePlanningAdmissionStalls()).toBe(1);
+    expect(h2.audit.some((event) => event.mutationType === "task:planning-admission-stalled")).toBe(false);
+    expect(auditFor(h2, task.id)?.metadata).toMatchObject({ outcome: "no-longer-aged" });
   });
 
   it("names a manual-intake card lane-ineligible instead of 'no admission'", async () => {
@@ -591,6 +816,14 @@ describe("reconcilePlanningAdmissionStalls — evidence rungs and episode author
     expect(episodeWritten(h, task.id)?.code).toBe("plan-spec-unreadable");
     // Key-level patch: the correction must not be able to erase the other lane's key.
     expect(h.updates[0].patch).not.toHaveProperty("sourceMetadata");
+    /*
+    FNXC:PlanningAdmissionStall 2026-09-27-05:45 (RUFU-350):
+    And the sibling key survives ON THE ROW, not merely in the shape of the patch. The patch-shape assertion was
+    written against a fake that never applied anything, so it could not distinguish "key-level patch" from "the
+    fake dropped the whole field"; with a harness that applies what the store applies, the row is the only place
+    the RUFU-246 premise provenance can be shown to have survived the write.
+    */
+    expect((task.sourceMetadata as Record<string, unknown>).someOtherLaneKey).toEqual({ keep: "me" });
   });
 
   it("never re-stamps a residual episode that is already on the row", async () => {
@@ -631,6 +864,9 @@ describe("reconcilePlanningAdmissionStalls — retracting a claim that stopped b
     expect(Object.keys(patch ?? {})).toEqual(["sourceMetadataPatch"]);
     // `null` at KEY level is the store's clear idiom; a whole-object write would erase the sibling key.
     expect(patch?.sourceMetadataPatch).toEqual({ [PLAN_ADMISSION_STALL_METADATA_KEY]: null });
+    // The clear took its own key and nothing else: the row still carries the other lane's provenance.
+    expect((task.sourceMetadata as Record<string, unknown>).someOtherLaneKey).toEqual({ keep: "me" });
+    expect(readPlanAdmissionStallEpisode(task.sourceMetadata)).toBeUndefined();
     expect(auditFor(h, task.id)).toMatchObject({
       mutationType: "task:planning-admission-stalled-no-action",
       metadata: { outcome: "no-longer-a-candidate" },
@@ -648,15 +884,50 @@ describe("reconcilePlanningAdmissionStalls — retracting a claim that stopped b
     expect(auditFor(h, task.id)?.metadata).toMatchObject({ outcome: "left-planning-lane" });
   });
 
-  it("retracts when the row was touched, so the age claim itself expired", async () => {
-    const task = agedTask({ createdAt: AGED_ISO, updatedAt: FRESH_ISO, sourceMetadata: storedEpisode() });
-    const h = harness([task], planningIr());
+  /*
+  FNXC:PlanningAdmissionStall 2026-09-27-05:50 (RUFU-350):
+  This is RUFU-273's "a touched row expires the age claim" case, RE-EXPRESSED rather than deleted, because
+  RUFU-350 proved the sentence it pinned was only ever true of a claim that cannot prove its own start:
+  `updateTask` bumps `updatedAt`, so the sweep's own naming write expired the claim it had just written.
+  Both directions are now pinned side by side. An episode that carries its waiting base (`firstAt - ageMs`)
+  SURVIVES a row touch — a self-write is not a foreign touch — while an episode that proves no base still
+  expires exactly as it always did, which is the honest boundary of the shape that carries no `ageMs`.
+  */
+  it("expires a touched row whose claim proves no base, and keeps one that reconstructs its own wait", async () => {
+    // The legacy shape every pre-RUFU-350 write carried: the sweep's own signature, no `ageMs`, so no base.
+    const unverifiable = agedTask({ updatedAt: FRESH_ISO, sourceMetadata: storedEpisode() });
+    // A complete-looking episode whose clock is unreadable proves no more than the legacy shape does.
+    const corrupt = agedTask({
+      updatedAt: FRESH_ISO,
+      sourceMetadata: storedEpisode({ firstAt: "last tuesday", ageMs: 60 * HOUR }),
+    });
+    // The same touched row, but the episode says "I had already waited 60 h when I was first stamped".
+    const provable = agedTask({
+      updatedAt: FRESH_ISO,
+      sourceMetadata: {
+        [PLAN_ADMISSION_STALL_METADATA_KEY]: sweepEpisodeOf({
+          firstAt: new Date(NOW - 61 * HOUR).toISOString(),
+          lastAt: FRESH_ISO,
+          ageMs: 60 * HOUR,
+        }),
+      },
+    });
+    const h = harness([unverifiable, corrupt, provable], planningIr());
 
-    expect(await h.manager.reconcilePlanningAdmissionStalls()).toBe(1);
-    expect(h.updates.find((entry) => entry.taskId === task.id)?.patch).toEqual({
+    expect(await h.manager.reconcilePlanningAdmissionStalls()).toBe(2);
+    expect(h.updates.find((entry) => entry.taskId === unverifiable.id)?.patch).toEqual({
       sourceMetadataPatch: { [PLAN_ADMISSION_STALL_METADATA_KEY]: null },
     });
-    expect(auditFor(h, task.id)?.metadata).toMatchObject({ outcome: "no-longer-aged" });
+    expect(auditFor(h, unverifiable.id)?.metadata).toMatchObject({ outcome: "no-longer-aged" });
+    expect(h.updates.find((entry) => entry.taskId === corrupt.id)?.patch).toEqual({
+      sourceMetadataPatch: { [PLAN_ADMISSION_STALL_METADATA_KEY]: null },
+    });
+    expect(auditFor(h, corrupt.id)?.metadata).toMatchObject({ outcome: "no-longer-aged" });
+    // The surviving card is untouched and still says why, with the age it reconstructed rather than the row's.
+    expect(h.updates.find((entry) => entry.taskId === provable.id)).toBeUndefined();
+    expect(readPlanAdmissionStallEpisode(provable.sourceMetadata)?.code).toBe("plan-no-admission");
+    expect(auditFor(h, provable.id)?.metadata).toMatchObject({ outcome: "already-named" });
+    expect(auditFor(h, provable.id)?.metadata?.ageMs).toBeGreaterThanOrEqual(100 * HOUR);
   });
 
   it("leaves a paused card's stored episode byte-identical — the pause family owns that row", async () => {
@@ -694,6 +965,248 @@ describe("reconcilePlanningAdmissionStalls — retracting a claim that stopped b
     expect(await h.manager.reconcilePlanningAdmissionStalls()).toBe(0);
     expect(h.updates).toHaveLength(0);
     expect(h.audit).toHaveLength(0);
+  });
+});
+
+describe("reconcilePlanningAdmissionStalls — the badge survives its own sweep (RUFU-350)", () => {
+  /*
+  FNXC:PlanningAdmissionStall 2026-09-27-04:55 (RUFU-350):
+  Every other case in this file feeds the sweep a PRISTINE row, so the whole feature can be green while the
+  reported defect is fully present. A real sweep mutates the row it just stamped, and the age clock the next
+  pass reads is the very field that write moved: `updateTask` bumps `updatedAt`, and age is
+  `now - max(createdAt, updatedAt)`, so pass 2 measures the badge at ~0 s and retracts its own naming with
+  outcome `no-longer-aged`. The second self-erasure is the whole-board retract pass, which deletes every
+  stored episode outside its aged set — including the throttle episodes triage wrote minutes ago.
+
+  These are the multi-pass fixtures: the harness now applies patches the way the real store does, so pass
+  N+1 reads what pass N wrote. Both reported shapes are pinned against the READ authority
+  (`deriveTaskStallReason`) as well as the row, because a badge that survives in storage but never renders
+  would still leave the operator facing the original silence.
+  */
+  const readCtx = (): TaskStallReasonContext => ({
+    now: Date.now(),
+    planningColumns: new Set(["backlog", "hold-lane"]),
+  });
+  const episodeOnRow = (task: Task) => readPlanAdmissionStallEpisode(task.sourceMetadata);
+
+  it("names once, then stays named: a three-pass sequence that costs one write", async () => {
+    /*
+    The full sequence the report needs, in ONE test, because the defect was a sequence and a per-pass fixture
+    cannot show it: pass 1 writes, and passes 2+ READ what pass 1 wrote. Each pass asserts three things an
+    operator can check — the exact write count, the row's untouched `updatedAt`, and the badge through the
+    read authority — plus the audit outcome, so a future "optimization" that copy-writes an unchanged episode
+    shows up as a write-count failure rather than as a silent extra row per card per hour.
+    */
+    const task = agedTask();
+    writeSpec(task.id);
+    const h = harness([task], planningIr());
+
+    // Pass 1: exactly one write, the naming write — and it bumps the row's `updatedAt` like any real write.
+    expect(await h.manager.reconcilePlanningAdmissionStalls()).toBe(1);
+    expect(h.updates).toHaveLength(1);
+    expect(auditFor(h, task.id)?.metadata).toMatchObject({ outcome: "named", code: "plan-no-admission" });
+    expect(episodeOnRow(task)?.code).toBe("plan-no-admission");
+    const namedUpdatedAt = task.updatedAt;
+    expect(await deriveTaskStallReason(task, readCtx())).toMatchObject({ code: "plan-no-admission" });
+
+    /*
+    Passes 2 and 3 are the self-erasure window: pre-fix the raw clock reads the naming write's own `updatedAt`
+    as a ~0 s card, the age gate fails, and THIS pass retracts the naming with `no-longer-aged`. Post-fix the
+    card is measured from the base its own episode proves, the ladder answers `already-named`, and a card that
+    stays silent is permanently free for the sweep.
+    */
+    for (const pass of [2, 3]) {
+      h.updates.length = 0;
+      h.audit.length = 0;
+      expect(await h.manager.reconcilePlanningAdmissionStalls()).toBe(0);
+      // Zero writes includes zero copy-writes: an unchanged episode is never re-stamped.
+      expect(h.updates, `pass ${pass} wrote a row it had no reason to touch`).toHaveLength(0);
+      expect(auditFor(h, task.id)?.metadata).toMatchObject({ outcome: "already-named" });
+      // Byte-identical, not merely re-parseable: any write would have moved this field.
+      expect(task.updatedAt).toBe(namedUpdatedAt);
+      expect(episodeOnRow(task)?.code).toBe("plan-no-admission");
+      expect(await deriveTaskStallReason(task, readCtx())).toMatchObject({ code: "plan-no-admission" });
+    }
+  });
+
+  it("carries the waiting base through a correction, so the corrected badge does not self-erase", async () => {
+    /*
+    The reachable drift trap at the write seam. Correcting a STALE episode to the residual is the one write the
+    ladder can make over an episode that already proves a waiting base, and it restarts `firstAt` at the write
+    instant — so the only thing keeping the reconstructed base intact is that the `ageMs` written beside it is
+    the EFFECTIVE age. Stamp the raw age instead (what this call site did before RUFU-350) and the new base
+    lands on `now - rawAge`, the age gate fails on the very next pass, and the sweep retracts its own
+    correction — the reported bug, arriving through a different door.
+    */
+    const task = agedTask({
+      // The raw clock says one hour old; only the episode says this card has been waiting ~5 days.
+      updatedAt: FRESH_ISO,
+      sourceMetadata: {
+        [PLAN_ADMISSION_STALL_METADATA_KEY]: sweepEpisodeOf({
+          code: "plan-spec-unreadable",
+          signature: "sweep:plan-spec-unreadable",
+          firstAt: new Date(NOW - 60 * HOUR).toISOString(),
+          // Past the 60-min ownership floor: nobody is still observing that reason, so it is correctable.
+          lastAt: new Date(NOW - 2 * HOUR).toISOString(),
+          ageMs: 59 * HOUR,
+        }),
+      },
+    });
+    // The spec reads fine now, so no evidence rung fires and the residual is the honest verdict.
+    writeSpec(task.id);
+    const h = harness([task], planningIr());
+    const baseBefore = planningAdmissionAgeBaseMs(readPlanAdmissionStallEpisode(task.sourceMetadata));
+    expect(baseBefore).toBeDefined();
+
+    expect(await h.manager.reconcilePlanningAdmissionStalls()).toBe(1);
+    const corrected = readPlanAdmissionStallEpisode(task.sourceMetadata);
+    expect(corrected?.code).toBe("plan-no-admission");
+    // The base survived a `firstAt` restart, to within the milliseconds the pass itself takes.
+    expect(planningAdmissionAgeBaseMs(corrected)).toBeGreaterThanOrEqual(baseBefore! - MIN);
+    // The age the operator is told is the reconstructed wait, not the one-hour row age.
+    expect(auditFor(h, task.id)?.metadata).toMatchObject({ outcome: "named", ageMs: expect.any(Number) });
+    expect(auditFor(h, task.id)?.metadata?.ageMs).toBeGreaterThanOrEqual(100 * HOUR);
+
+    // Pass 2 is the pin: the raw-age stamp would have retracted this correction outright.
+    h.updates.length = 0;
+    expect(await h.manager.reconcilePlanningAdmissionStalls()).toBe(0);
+    expect(h.updates).toHaveLength(0);
+    expect(readPlanAdmissionStallEpisode(task.sourceMetadata)?.code).toBe("plan-no-admission");
+    expect(await deriveTaskStallReason(task, readCtx())).toMatchObject({ code: "plan-no-admission" });
+  });
+
+  it("does not retract a triage-owned throttle episode while triage is still polling", async () => {
+    /*
+    The reported card: triage's own FN-8600 stamp (a pipe-joined gate signature, never a `sweep:` prefix)
+    on a card that has already picked up a `status`, so the sweep never considers it nameable and the
+    whole-board retract pass deletes the episode as `no-longer-a-candidate`. A fresh foreign-owned stamp is
+    a claim triage still owns — the poll that wrote it runs every 15 s — so the sweep must leave it alone.
+    */
+    const task = agedTask({
+      status: "queued",
+      sourceMetadata: {
+        [PLAN_ADMISSION_STALL_METADATA_KEY]: episodeOf({
+          signature: "running-agent cap|2|2|3",
+          firstAt: new Date(NOW - 10 * MIN).toISOString(),
+          lastAt: new Date(NOW - 10 * MIN).toISOString(),
+          ageMs: 60 * HOUR,
+        }),
+      },
+    });
+    const h = harness([task], planningIr());
+
+    expect(await h.manager.reconcilePlanningAdmissionStalls()).toBe(0);
+    expect(h.updates).toHaveLength(0);
+    expect(auditFor(h, task.id)?.metadata).toMatchObject({ outcome: "triage-owned" });
+    expect(episodeOnRow(task)?.signature).toBe("running-agent cap|2|2|3");
+    /*
+    The read path is asserted, but honestly: while the scheduler transient `status: "queued"` sits on the row the
+    derivation deliberately renders NOTHING for the planning lane — a non-empty status belongs to whatever wrote
+    it, which is RUFU-273's precedence rule, not a defect. So this shape's survival guarantee is that triage's
+    episode is still there to render once the transient clears; the operator-visible sentence for a card in the
+    silent set is the case below, and core's own suite pins the status-bearing non-render.
+    */
+    expect(await deriveTaskStallReason(task, readCtx())).toBeUndefined();
+    expect(await deriveTaskStallReason({ ...task, status: "" }, readCtx()))
+      .toMatchObject({ code: "plan-admission-throttled" });
+  });
+
+  it("leaves a live triage episode on a silently-aged card alone, and the badge still reads throttled", async () => {
+    /*
+    The operator-visible half of mechanism B: a card with NO status — the silent set the badge exists for — whose
+    only written reason is triage's live throttle stamp. The sweep may not replace it with a `plan-no-admission`
+    verdict of its own (RUFU-273's rule (a) refuses a different-code write inside the ownership window), so what
+    the operator keeps reading is triage's capacity sentence rather than a generic one the sweep invented.
+    */
+    const task = agedTask({
+      sourceMetadata: {
+        [PLAN_ADMISSION_STALL_METADATA_KEY]: episodeOf({
+          signature: "running-agent cap|2|2|3",
+          firstAt: new Date(NOW - 60 * HOUR).toISOString(),
+          lastAt: new Date(NOW - 10 * MIN).toISOString(),
+          ageMs: 60 * HOUR,
+        }),
+      },
+    });
+    writeSpec(task.id);
+    const h = harness([task], planningIr());
+
+    expect(await h.manager.reconcilePlanningAdmissionStalls()).toBe(0);
+    expect(h.updates).toHaveLength(0);
+    expect(episodeOnRow(task)?.code).toBe("plan-admission-throttled");
+    // The naming pass reports the SAME `triage-owned` vocabulary the retract pass uses — RUFU-273's rung 6
+    // owns a fresh throttle stamp, so both lanes now answer "triage owns this claim" with one outcome.
+    expect(auditFor(h, task.id)?.metadata).toMatchObject({ outcome: "triage-owned" });
+    expect(await deriveTaskStallReason(task, readCtx())).toMatchObject({
+      code: "plan-admission-throttled",
+      reason: expect.stringContaining("planner capacity"),
+    });
+  });
+
+  it("still retracts a foreign episode once its owner has gone quiet past the ownership floor", async () => {
+    // The control that keeps the floor from becoming an immunity: the same foreign stamp, last refreshed
+    // beyond PLANNING_ADMISSION_STALL_TRIAGE_OWNERSHIP_MS, is stale history — triage stopped polling this
+    // card — so the sweep retracts it exactly as it always did, and the row says so with its measurement.
+    const task = agedTask({
+      status: "queued",
+      sourceMetadata: {
+        [PLAN_ADMISSION_STALL_METADATA_KEY]: episodeOf({
+          signature: "running-agent cap|2|2|3",
+          firstAt: new Date(NOW - 5 * HOUR).toISOString(),
+          lastAt: new Date(NOW - 2 * HOUR).toISOString(),
+          ageMs: 5 * HOUR,
+        }),
+      },
+    });
+    const h = harness([task], planningIr());
+
+    // The pass count is writes OR retractions, so the honest expectation for a control that must clear is 1.
+    expect(await h.manager.reconcilePlanningAdmissionStalls()).toBe(1);
+    expect(episodeOnRow(task)).toBeUndefined();
+    expect(auditFor(h, task.id)?.metadata).toMatchObject({ outcome: "no-longer-a-candidate" });
+    // The age is the one the decision measured, not the one the clear's own `updatedAt` bump left behind
+    // (a write-then-measure bug reports ~0 or a negative here).
+    expect(auditFor(h, task.id)?.metadata?.ageMs).toBeGreaterThanOrEqual(4 * HOUR);
+  });
+});
+
+describe("reconcilePlanningAdmissionStalls — sibling provenance survives both of its writes (RUFU-350)", () => {
+  it("preserves every other provenance key on the row, across both halves of the sweep", async () => {
+    /*
+    The episode is a guest in a field other lanes also write: RUFU-246's premise rejection, duplicate/handoff
+    provenance, and other lanes' own keys all live in the same `sourceMetadata` object. Naming and retracting are
+    the two writes this sweep makes, and each must leave every other key in place — asserted ON THE ROW, which is
+    where a whole-object write would show up as an absence. The naming half also pins the no-copy-write property:
+    a pass with nothing to say must not even re-stamp the episode it found, so the stored object stays the same
+    object.
+    */
+    const premise = { code: "plan-premise-rejected", lastAt: FRESH_ISO };
+    const named = agedTask({ sourceMetadata: { someOtherLaneKey: { keep: "me" } } });
+    const retracted = agedTask({
+      status: "queued",
+      sourceMetadata: {
+        [PLAN_ADMISSION_STALL_METADATA_KEY]: sweepEpisodeOf({ firstAt: AGED_ISO, lastAt: AGED_ISO, ageMs: 60 * HOUR }),
+        [PLAN_PREMISE_REJECTION_METADATA_KEY]: premise,
+        someOtherLaneKey: { keep: "me" },
+      },
+    });
+    writeSpec(named.id);
+    const h = harness([named, retracted], planningIr());
+
+    expect(await h.manager.reconcilePlanningAdmissionStalls()).toBe(2);
+    // Naming half: the write added its key and left the sibling key exactly where it was.
+    expect((named.sourceMetadata as Record<string, unknown>).someOtherLaneKey).toEqual({ keep: "me" });
+    const storedEpisode = readPlanAdmissionStallEpisode(named.sourceMetadata);
+    expect(storedEpisode?.code).toBe("plan-no-admission");
+    // Retracting half: only its own key went away; RUFU-246's premise episode and the sibling both survived.
+    expect(readPlanAdmissionStallEpisode(retracted.sourceMetadata)).toBeUndefined();
+    expect((retracted.sourceMetadata as Record<string, unknown>)[PLAN_PREMISE_REJECTION_METADATA_KEY]).toBe(premise);
+    expect((retracted.sourceMetadata as Record<string, unknown>).someOtherLaneKey).toEqual({ keep: "me" });
+
+    // Pass 2 has nothing to say about the card it named, so it does not even re-stamp the episode.
+    h.updates.length = 0;
+    expect(await h.manager.reconcilePlanningAdmissionStalls()).toBe(0);
+    expect(readPlanAdmissionStallEpisode(named.sourceMetadata)).toBe(storedEpisode);
   });
 });
 

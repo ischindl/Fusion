@@ -2599,6 +2599,16 @@ export class TriageProcessor {
         - Telemetry is untouched: the audit event, its dedupe signature, and this log line stay exactly
           as they were. This adds a row field, it does not move or rename anything.
         */
+        /*
+        FNXC:PlanningAdmissionStall 2026-09-27-05:38 (RUFU-350):
+        The pipe-joined composite below is this lane's OWNERSHIP MARKER, and the reconciliation sweep reads it that
+        way. `retractPlanningAdmissionStallEpisodes` decides whether an episode is safe to delete by testing for
+        the ABSENCE of its own `sweep:` signature prefix (`PLANNING_ADMISSION_STALL_SWEEP_SIGNATURE_PREFIX`):
+        no prefix means a foreign writer — this throttle site — and a foreign episode inside
+        `PLANNING_ADMISSION_STALL_TRIAGE_OWNERSHIP_MS` is left alone instead of being retracted by the sweep's
+        whole-board clear pass. Keep this signature composite (never a bare code, and never `sweep:`-prefixed):
+        flattening it to the code would read as sweep-owned and let the sweep erase a live throttle claim.
+        */
         void Promise.all(eligibleTasks.map(async (task) => {
           const episode = planAdmissionStallWrite(readPlanAdmissionStallEpisode(task.sourceMetadata), {
             code: "plan-admission-throttled",

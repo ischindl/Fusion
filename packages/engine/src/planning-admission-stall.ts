@@ -59,6 +59,104 @@ export function planningAdmissionAgeMs(task: AgedRow, now: number = Date.now()):
 }
 
 /*
+FNXC:PlanningAdmissionStall 2026-09-27-04:47 (RUFU-350):
+The waiting clock a named card must be measured against.
+
+`planningAdmissionAgeMs` reads `now - max(createdAt, updatedAt)`, and the sweep's own naming write moves
+`updatedAt` — `updateTask` stamps it on every accepted write. Measured that way, the pass right after naming
+sees a ~0 s card, the age gate fails, and the sweep retracts the badge it wrote minutes earlier with outcome
+`no-longer-aged`. RUFU-273's own cadence invariant — a same-code stall refreshes instead of restarting, and
+a badge must never erase itself — therefore needs a clock a diagnostic write cannot reset.
+
+REJECTED FIRST: a new `agedFromMs` field on `TaskPlanAdmissionStallEpisode`. It was rejected for what it does
+to the OTHER writer, not for its shape. Triage stamps the same key and does not know such a field, and
+`planAdmissionStallWrite` copies forward only the keys it knows — so a schema field would either be dropped on
+the first triage refresh or force a schema change plus a migration onto a value the sweep can already derive.
+The episode already stores its own waiting base in two fields every writer maintains: `firstAt` (when this
+gate was first seen) and `ageMs` (how old the card was at that observation). The base is therefore a
+derivation, `Date.parse(firstAt) - ageMs`, with no new field and no migration.
+
+REJECTED SECOND: trusting `firstAt` alone. `firstAt` is when the GATE was first seen, which is the very
+quantity RUFU-273 fixed — a card that waited five days before any gate could be named restarts its clock at
+the naming. A `firstAt`-only base is still self-erasing, because that age sits under the threshold on the
+very next pass, and it understates the wait the operator asked to see. `firstAt - ageMs` carries the
+pre-existing wait forward; the write may refresh `lastAt` all it likes without touching either term.
+*/
+
+/**
+ * Signature prefix that identifies the reconciliation sweep as the writer of an episode.
+ *
+ * The sweep already stamped it (`sweep:<code>`); it is exported so the ownership test below and the write
+ * site cannot drift apart on a literal.
+ */
+export const PLANNING_ADMISSION_STALL_SWEEP_SIGNATURE_PREFIX = "sweep:";
+
+/**
+ * Whether an episode carries an age claim the sweep is allowed to reason about.
+ *
+ * The sweep owns an episode it wrote (its signature carries the prefix) and one that carries no signature at
+ * all — only the sweep stamps a code with no composite gate identity, so a signature-less episode is either
+ * its own or corrupt. A FOREIGN episode belongs to triage's FN-8600 throttle site, which stamps a
+ * pipe-joined gate signature and no `ageMs` the sweep may inherit: reading that card's wait through it would
+ * promote another lane's bookkeeping into this sweep's admission arithmetic.
+ */
+export function isSweepOwnedPlanningAdmissionEpisode(
+  episode: TaskPlanAdmissionStallEpisode | undefined | null,
+): boolean {
+  if (!episode) return true;
+  const signature = episode.signature;
+  if (typeof signature !== "string" || signature === "") return true;
+  return signature.startsWith(PLANNING_ADMISSION_STALL_SWEEP_SIGNATURE_PREFIX);
+}
+
+/**
+ * The base the waiting clock runs from, or `undefined` when the episode cannot prove one.
+ *
+ * Only a sweep-owned episode whose `firstAt` parses and whose `ageMs` is a finite number qualifies; the
+ * caller falls back to the raw clock for everything else. `firstAt - ageMs` is stable across a refresh only
+ * while the refresh re-stamps the PRIOR `ageMs` — stamping the grown age instead slides the base earlier by
+ * the refresh interval on every refresh, which the base-stability case pins.
+ */
+export function planningAdmissionAgeBaseMs(
+  episode: TaskPlanAdmissionStallEpisode | undefined | null,
+): number | undefined {
+  if (!episode || !isSweepOwnedPlanningAdmissionEpisode(episode)) return undefined;
+  /*
+  FNXC:PlanningAdmissionStall 2026-09-27-05:20 (RUFU-350):
+  The stamp must be a STRING before it is parsed, matching `planningAdmissionAgeMs` above. `Date.parse` coerces
+  its argument, so a `Date` instance parses too — and parses lossily, dropping the milliseconds. A base built
+  from that coercion would be a number nobody wrote, which is exactly the class of invented clock this helper
+  exists to stop. A non-string `firstAt` therefore proves no base and falls back to the raw clock.
+  */
+  const firstAtMs = typeof episode.firstAt === "string" ? Date.parse(episode.firstAt) : Number.NaN;
+  const ageMs = episode.ageMs;
+  if (!Number.isFinite(firstAtMs) || typeof ageMs !== "number" || !Number.isFinite(ageMs) || ageMs < 0) return undefined;
+  return firstAtMs - ageMs;
+}
+
+/**
+ * How long the card has actually been waiting: the reconstructed base when the episode proves one, the raw
+ * creation/update clock otherwise.
+ *
+ * The reconstruction never reads `updatedAt`, which is the point — it is the field the sweep's own write
+ * moves. Fresh cards (no episode), cards named by triage (a foreign signature, no inheritable base), and
+ * cards whose stamps are corrupt all keep the raw behavior unchanged.
+ */
+export function planningAdmissionEffectiveAgeMs(
+  task: AgedRow,
+  episode: TaskPlanAdmissionStallEpisode | undefined | null,
+  now: number = Date.now(),
+): number | undefined {
+  const baseMs = planningAdmissionAgeBaseMs(episode);
+  if (baseMs !== undefined) return Math.max(0, now - baseMs);
+  // Clamped like the reconstructed arm: a row whose `updatedAt` sits a few ms ahead of this call's clock (or a
+  // writer that stamped it in the same pass) has no meaningful negative wait, and an audit row reading `-1`
+  // explains nothing to an operator.
+  const rawMs = planningAdmissionAgeMs(task, now);
+  return rawMs === undefined ? undefined : Math.max(0, rawMs);
+}
+
+/*
 FNXC:PlanningAdmissionStall 2026-09-25-19:31 (RUFU-273 Step 3):
 How long a `plan-admission-throttled` episode stays TRIAGE-OWNED after its last stamp.
 
