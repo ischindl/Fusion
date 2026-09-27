@@ -394,7 +394,7 @@ Planning-lane codes (RUFU-273) — every one of them derived from evidence the e
 
 - `plan-admission-throttled` — planning admission is withheld while other eligible cards are waiting: triage hit its running-agent cap and recorded the binding gate on the row. The card is behind real work, not lost.
 - `plan-lane-ineligible` — the card sits in a lane that will never plan it: the column declares no planning node, is manual-intake, or is a fast lane. It needs a person or a different column, not a planner.
-- `plan-premise-held` — RUFU-246's premise episode is on the row: the planner refused the card's premise and waits on a human. This outranks any admission code on the same card.
+- `plan-premise-held` — RUFU-246's premise episode is on the row: the planner refused the card's premise and waits on a human. This outranks any admission code on the same card. A premise the card's own delivery consumed never sets this code: it is recorded as `premise-invalidated-by-delivery` evidence in History and in the card's `premise-invalidated` document, and the card stays promotable (STAS-282).
 - `plan-spec-unreadable` — the card's `PROMPT.md` exists but cannot be read. A *missing* spec is deliberately not named here: no spec yet means "awaiting planning", not a fault.
 - `plan-recovery-backoff` — an earlier planning attempt failed and the row carries a future `nextRecoveryAt`; the card sits in a recovery wait. That is a wait, so the wording never presents it as a new fault.
 - `plan-no-admission` — the honest residual: aged past its lane's threshold, not paused, not being dispatched, no live dependency edge, and nothing else on the row explains the silence. It states that nothing admitted the card and no gate owns a reason; it never speculates why.
