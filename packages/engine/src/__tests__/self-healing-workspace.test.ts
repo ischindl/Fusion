@@ -44,6 +44,7 @@ interface RecordingStore extends EventEmitter {
   emitted: Array<{ event: string; payload: unknown }>;
   enqueued: string[];
   updateTask: ReturnType<typeof vi.fn>;
+  updateTaskAtomic: ReturnType<typeof vi.fn>;
   mergeWorkspaceWorktreeEntry: ReturnType<typeof vi.fn>;
   moveTask: ReturnType<typeof vi.fn>;
 }
@@ -67,6 +68,15 @@ function createStore(rows: Task[], settings: Partial<Settings> = {}): TaskStore 
     updateTask: vi.fn(async (id: string, patch: Partial<Task>) => {
       const cur = tasks.get(id);
       if (cur) tasks.set(id, { ...cur, ...patch } as Task);
+      return tasks.get(id) as Task;
+    }),
+    // Recovery park clears are compare-and-set writes, so the fake needs the same seam the product uses.
+    updateTaskAtomic: vi.fn(async (id: string, mutate: (live: Task) => Partial<Task> | null) => {
+      const cur = tasks.get(id);
+      if (!cur) return null;
+      const patch = mutate(cur);
+      if (!patch) return null;
+      tasks.set(id, { ...cur, ...patch } as Task);
       return tasks.get(id) as Task;
     }),
     mergeWorkspaceWorktreeEntry: vi.fn(async (
@@ -393,6 +403,98 @@ describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
     const n = await manager.reconcileWorkspacePartialLands();
     expect(n).toBe(0);
     expect(store.enqueued).not.toContain(TASK_ID);
+  });
+
+  /*
+  FNXC:WorkspacePartialLandStallPark 2026-09-27-08:57:
+  The GUARD 2 invariant across all four pause shapes. An operator stop is `userPaused:true` or a
+  `paused:true` with no engine reason; the engine's OWN `in-review-stall-deadlock` park is not one,
+  because this sweep is the only owner that re-enqueues a workspace card's per-repo land. Measured on
+  a live board: 25 cards sat parked with `userPaused:false, pausedReason:"in-review-stall-deadlock"`
+  while the sweep reported `reason:"user-paused"` 106 times — the two owners deadlocked each other.
+  Any other named park stays refused, so the recovery cannot drive over `external-block` /
+  `awaiting-approval` / `error-unrecoverable` holds.
+  */
+  const STALL_DEADLOCK_ERROR = "In-review stall deadlock: completed-review-status-none repeated 3× without progress. Completed review task has no merge owner or status for >= 5 min";
+
+  /** A workspace card whose every sub-repo has proven landing evidence, in the given pause shape. */
+  async function landedParkedCard(pause: Partial<Task>): Promise<{ store: TaskStore & RecordingStore; manager: SelfHealingManager }> {
+    fx = await createWorkspaceFixture(["repo-a", "repo-b"]);
+    addRepoBranch(fx, "repo-a", "a\n");
+    addRepoBranch(fx, "repo-b", "b\n");
+    const landedA = landRepoForReal(fx, "repo-a");
+    const landedB = landRepoForReal(fx, "repo-b");
+    const task = workspaceTask(
+      {
+        "repo-a": { worktreePath: fx.repoPath("repo-a"), branch: BRANCH, landedSha: landedA },
+        "repo-b": { worktreePath: fx.repoPath("repo-b"), branch: BRANCH, landedSha: landedB },
+      },
+      { status: "failed", steps: [{ status: "done" }, { status: "done" }], ...pause },
+    );
+    const store = createStore([task]);
+    return { store, manager: makeManager(store, fx.rootDir) };
+  }
+
+  it("partial-land reconciler refuses a pause the operator took without an engine reason", async () => {
+    const { store, manager } = await landedParkedCard({ paused: true });
+
+    expect(await manager.reconcileWorkspacePartialLands()).toBe(0);
+    expect(store.enqueued).not.toContain(TASK_ID);
+  });
+
+  it("partial-land reconciler refuses a park it did not write (external-block)", async () => {
+    const { store, manager } = await landedParkedCard({ paused: true, pausedReason: "external-block", error: "external block" });
+
+    expect(await manager.reconcileWorkspacePartialLands()).toBe(0);
+    expect(store.enqueued).not.toContain(TASK_ID);
+  });
+
+  it("partial-land reconciler drives its OWN stall-deadlock park: re-enqueues and clears the park in place", async () => {
+    const { store, manager } = await landedParkedCard({
+      paused: true,
+      pausedReason: "in-review-stall-deadlock",
+      error: STALL_DEADLOCK_ERROR,
+    });
+
+    expect(await manager.reconcileWorkspacePartialLands()).toBe(1);
+    expect(store.enqueued).toEqual([TASK_ID]);
+    const row = store.tasks.get(TASK_ID)!;
+    // The park is the exact inverse of the deadlock disposition's write: nothing else, no column move.
+    expect(row.paused).toBe(false);
+    expect(row.pausedReason).toBeNull();
+    expect(row.status).toBeNull();
+    expect(row.error).toBeNull();
+    expect(row.column).toBe("in-review");
+    expect(row.userPaused).toBeFalsy();
+    const audit = (store.recordRunAuditEvent as unknown as { mock: { calls: Array<[Record<string, unknown>]> } }).mock.calls
+      .map(([arg]) => arg)
+      .find((arg) => (arg?.type ?? arg?.mutationType) === "task:reconcile-workspace-partial-land");
+    expect(audit?.metadata).toMatchObject({ action: "re-enqueue", parkCleared: true });
+  });
+
+  it("partial-land reconciler leaves a stall-parked card frozen when an operator pauses it meanwhile", async () => {
+    const { store, manager } = await landedParkedCard({
+      paused: true,
+      pausedReason: "in-review-stall-deadlock",
+      error: STALL_DEADLOCK_ERROR,
+    });
+    // The compare-and-set re-reads the live row, so a pause that lands before the write is honoured.
+    store.updateTaskAtomic.mockImplementation(async (id: string, mutate: (live: Task) => Partial<Task> | null) => {
+      const cur = store.tasks.get(id);
+      if (!cur) return null;
+      const raced = { ...cur, userPaused: true } as Task;
+      store.tasks.set(id, raced);
+      const patch = mutate(raced);
+      if (!patch) return null;
+      store.tasks.set(id, { ...raced, ...patch } as Task);
+      return store.tasks.get(id) as Task;
+    });
+
+    await manager.reconcileWorkspacePartialLands();
+
+    const row = store.tasks.get(TASK_ID)!;
+    expect(row.paused).toBe(true);
+    expect(row.pausedReason).toBe("in-review-stall-deadlock");
   });
 
   it("partial-land reconciler emits -no-action when a sub-repo worktree is live", async () => {

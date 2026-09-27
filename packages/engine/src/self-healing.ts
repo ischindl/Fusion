@@ -13865,8 +13865,23 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             await this.emitWorkspacePartialLandNoAction(task, "auto-merge-off", []);
             continue;
           }
-          // GUARD 2 — user-pause: a hard operator stop.
-          if (task.userPaused || task.paused) {
+          /*
+          FNXC:WorkspacePartialLandStallPark 2026-09-27-08:57:
+          GUARD 2 — a HARD operator stop only. `userPaused === true`, or `paused === true` with no
+          `pausedReason` (the documented user-pause shape), is a human stop and is never driven over.
+          The engine's own `in-review-stall-deadlock` park is not one: the deadlock disposition writes
+          `{paused:true, pausedReason:IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON, status:"failed",
+          error:"In-review stall deadlock: …"}`, and this sweep is the only owner that re-enqueues a
+          workspace card's per-repo land. Reading that park as a human stop made the two owners block
+          each other forever — measured on a live board, 25 workspace cards emitted
+          `task:reconcile-workspace-partial-land-no-action reason:"user-paused"` 106 times while every
+          row carried `userPaused:false, pausedReason:"in-review-stall-deadlock"`. Every other named
+          park (`external-block`, `awaiting-approval`, `error-unrecoverable`,
+          `non-retryable-provider-error`, …) stays refused: this admits exactly the class this sweep
+          repairs. Same discrimination `rerouteUnrunPreMergeGateToReview` already makes through
+          `allowDeadlockPark`.
+          */
+          if (task.userPaused || (task.paused && task.pausedReason !== IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON)) {
             await this.emitWorkspacePartialLandNoAction(task, "user-paused", []);
             continue;
           }
@@ -13912,7 +13927,24 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
           const blockerTask = latestTask?.status === "failed" && latestTask.error?.startsWith("Workspace partial land:")
             ? { ...latestTask, status: null, error: undefined }
             : latestTask;
-          if (!blockerTask || getTaskMergeBlocker(blockerTask as Task, { skipColumnIdentityCheck: true }) !== undefined) {
+          /*
+          FNXC:WorkspacePartialLandStallPark 2026-09-27-08:57:
+          `getTaskMergeBlocker` refuses any paused card ("task is paused"), so the blocker re-read has
+          to judge the shape this sweep is about to install; stripping nothing would only swap the
+          no-action reason from `user-paused` to `merge-blocked` and keep the card frozen forever.
+          The strip is limited to the stall park and stays fail-closed: a park whose `error` was
+          overwritten by a later, unrelated failure is not this class and is not touched. Failed
+          `workflowStepResults` rows are NOT stripped, so a negative review verdict still blocks and
+          nothing here can implicitly approve anything.
+          */
+          const recoverStallPark = blockerTask?.paused === true
+            && blockerTask.userPaused !== true
+            && blockerTask.pausedReason === IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON
+            && (!blockerTask.error || blockerTask.error.startsWith(IN_REVIEW_STALL_DEADLOCK_ERROR_PREFIX));
+          const parkStripped = recoverStallPark
+            ? { ...blockerTask, paused: false, pausedReason: null, status: null, error: undefined }
+            : blockerTask;
+          if (!parkStripped || getTaskMergeBlocker(parkStripped as Task, { skipColumnIdentityCheck: true }) !== undefined) {
             await this.emitWorkspacePartialLandNoAction(task, "merge-blocked", []);
             continue;
           }
@@ -14079,6 +14111,7 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
               landedRepos,
               unlandedRepos: [],
               reason: "all-landed-not-finalized",
+              recoverStallPark,
               successLog: "Workspace merge recovery scheduled: all sub-repositories have proven landing evidence; awaiting finalize-once result",
             });
             recovered++;
@@ -14090,6 +14123,7 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             landedRepos,
             unlandedRepos,
             reason: landedRepos.length > 0 ? "partial-land" : "zero-land",
+            recoverStallPark,
             successLog: `Workspace merge recovery scheduled: ${landedRepos.length} landed, ${unlandedRepos.length} pending`,
           });
           recovered++;
@@ -14141,7 +14175,7 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
   private async enqueueWorkspaceMergeBounded(
     task: Task,
     auditor: RunAuditor,
-    input: { landedRepos: string[]; unlandedRepos: string[]; reason: string; successLog: string },
+    input: { landedRepos: string[]; unlandedRepos: string[]; reason: string; successLog: string; recoverStallPark?: boolean },
   ): Promise<boolean> {
     const enqueueMerge = this.options.enqueueMerge;
     if (!enqueueMerge) {
@@ -14158,12 +14192,34 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
 
     const queued = enqueueMerge(task.id);
     if (queued) {
+      /*
+      FNXC:WorkspacePartialLandStallPark 2026-09-27-08:57:
+      A card whose land this sweep has just (re)scheduled must not stay parked, or every other lane
+      keeps honouring a park that is no longer the current truth. The clear is the exact inverse of
+      the deadlock disposition's own write and runs as a compare-and-set on the live row: an operator
+      pause that arrived while this sweep was working, a park whose reason or error drifted, or a card
+      already un-parked by another owner all refuse the write. Mirrors the established park clear in
+      `routeUnrunGateParkBackToReview` and the unrun-gate recovery above.
+      */
+      let parkCleared = false;
+      if (input.recoverStallPark) {
+        await this.store.updateTaskAtomic(task.id, (live) => {
+          if (live.userPaused === true || live.paused !== true
+            || live.pausedReason !== IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON) return null;
+          if (live.error && !live.error.startsWith(IN_REVIEW_STALL_DEADLOCK_ERROR_PREFIX)) return null;
+          parkCleared = true;
+          return { paused: false, pausedReason: null, status: null, error: null, mergeRetries: 0 };
+        });
+        if (parkCleared) {
+          await this.store.logEntry(task.id, "[workspace] Cleared the in-review stall-deadlock park and scheduled the per-repo land; delivery is now owned by the merge lane.");
+        }
+      }
       this.workspacePartialLandDrops.delete(task.id);
       await this.store.logEntry(task.id, input.successLog);
       await auditor.database({
         type: "task:reconcile-workspace-partial-land",
         target: task.id,
-        metadata: { taskId: task.id, landedRepos: input.landedRepos, unlandedRepos: input.unlandedRepos, failedRepos: [], action: "re-enqueue", reason: input.reason },
+        metadata: { taskId: task.id, landedRepos: input.landedRepos, unlandedRepos: input.unlandedRepos, failedRepos: [], action: "re-enqueue", reason: input.reason, parkCleared },
       }).catch(() => undefined);
       return false;
     }

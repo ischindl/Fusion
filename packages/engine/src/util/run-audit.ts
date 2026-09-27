@@ -719,7 +719,7 @@ export type DatabaseMutationType =
   /** Metadata: { shiftedTaskIds: [], downtimeMs, reason } */
   | "task:reconcile-engine-downtime-active-timing-no-action"
   /* FNXC:Workspace 2026-06-22-09:30 (Phase D U1) — workspace-mode self-healing run-audit events. */
-  /** Metadata: { taskId, landedRepos: string[], unlandedRepos: string[], failedRepos: string[], action: "re-enqueue" | "park-failed", reason } */
+  /** Metadata: { taskId, landedRepos: string[], unlandedRepos: string[], failedRepos: string[], action: "re-enqueue" | "re-enqueue-noop" | "re-enqueue-dropped" | "park-failed", reason, parkCleared?: boolean } */
   | "task:reconcile-workspace-partial-land"
   /** Metadata: { taskId, repo, resolution: "landed" | "not-landed" } */
   | "task:reconcile-workspace-land-intent"
