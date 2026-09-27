@@ -29,7 +29,7 @@ let inflight: Promise<ModelsResponse> | null = null;
 // Guards concurrent refreshModelsCache() callers so they share one forced
 // fetch instead of each spawning its own request (see FNXC:ModelCatalog
 // comment on refreshModelsCache below).
-let refreshInflight: Promise<void> | null = null;
+let refreshInflight: Promise<ModelsCacheState | null> | null = null;
 const listeners = new Set<(state: ModelsCacheState) => void>();
 
 function toModelsCacheState(response: ModelsResponse | null | undefined): ModelsCacheState {
@@ -47,9 +47,25 @@ function toModelsCacheState(response: ModelsResponse | null | undefined): Models
   };
 }
 
+/*
+FNXC:ChatModels 2026-09-27-09:36:
+`GET /api/models` always answers with the resolved default pair, so a stored response WITHOUT one is
+either an older build's envelope or a response captured while no default was configured. Trusting it
+made the dashboard start every mount in an empty state that `load()` then refused to discard (a failed
+refresh keeps the last good list), so New Chat reported "no default model configured" on a board that
+had one. A pair-less envelope is therefore treated as a cache miss and refetched, never as truth.
+*/
+export function hasRoutableDefaultModel(
+  state: Pick<ModelsCacheState, "defaultProvider" | "defaultModelId">,
+): boolean {
+  return Boolean(state.defaultProvider && state.defaultModelId);
+}
+
 function readCachedModelsState(): ModelsCacheState | null {
   const cached = readCache<ModelsResponse>(SWR_CACHE_KEYS.MODELS, { maxAgeMs: SWR_DEFAULT_MAX_AGE_MS });
-  return cached ? toModelsCacheState(cached) : null;
+  if (!cached) return null;
+  const state = toModelsCacheState(cached);
+  return hasRoutableDefaultModel(state) ? state : null;
 }
 
 function notifyListeners(state: ModelsCacheState): void {
@@ -103,7 +119,7 @@ async function fetchModelsShared(): Promise<ModelsResponse> {
  * untouched, so a transient network hiccup degrades to "keep showing the
  * last good list", not an empty picker.
  */
-export async function refreshModelsCache(): Promise<void> {
+export async function refreshModelsCache(): Promise<ModelsCacheState | null> {
   if (refreshInflight) {
     return refreshInflight;
   }
@@ -118,9 +134,16 @@ export async function refreshModelsCache(): Promise<void> {
       const nextState = toModelsCacheState(response);
       writeCache(SWR_CACHE_KEYS.MODELS, response, { maxBytes: 500_000 });
       notifyListeners(nextState);
+      /*
+      FNXC:ChatModels 2026-09-27-09:36:
+      The caller that needs an answer *now* (New Chat) cannot wait for React to re-render the hook it
+      does not own, so the published state travels back as this promise's value.
+      */
+      return nextState;
     } catch {
       // Never throw, never blank an existing good list — leave cache/listeners
       // state untouched on failure (see FNXC:ModelCatalog comment above).
+      return null;
     }
   })().finally(() => {
     refreshInflight = null;

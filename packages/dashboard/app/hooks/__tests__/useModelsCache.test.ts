@@ -83,7 +83,14 @@ describe("useModelsCache", () => {
     const hookA = renderHook(() => useModelsCache());
     const hookB = renderHook(() => useModelsCache());
 
-    expect(hookA.result.current.loading).toBe(false);
+    /*
+    FNXC:ChatModels 2026-09-27-09:36:
+    This envelope carries no default model pair, so it is now a cache MISS rather than a hydrated starting
+    state — that is what stops New Chat from reporting "no default model configured" off a stale copy.
+    The invariant this case is named for (every mounted consumer gets the replaced catalog) is asserted
+    below and is unchanged.
+    */
+    expect(hookA.result.current.loading).toBe(true);
     expect(hookA.result.current.models).toEqual([]);
 
     await waitFor(() => {
@@ -319,8 +326,56 @@ describe("useModelsCache", () => {
 
       mockFetchModels.mockRejectedValueOnce(new Error("network down"));
 
-      await expect(refreshModelsCache()).resolves.toBeUndefined();
+      /*
+      FNXC:ChatModels 2026-09-27-09:36:
+      `refreshModelsCache()` now resolves to the state it published (New Chat needs an answer in that
+      same click), so a failed refresh publishes nothing rather than `undefined`. The good list staying
+      mounted is the assertion that matters here.
+      */
+      await expect(refreshModelsCache()).resolves.toBeNull();
       expect(result.current.models[0]?.id).toBe("gpt-4o");
+    });
+  });
+
+  /*
+  FNXC:ChatModels 2026-09-27-09:36:
+  A stored catalog with no default pair is not a usable starting truth: every configured board answers
+  `/api/models` with the resolved default, so such an envelope is an older build's shape or a response
+  captured before any default existed. Trusting it is what made New Chat report "no default model
+  configured" to an operator who had one on every project.
+  */
+  describe("a cached catalog with no default model pair", () => {
+    const poisonedEnvelope = JSON.stringify({
+      savedAt: Date.now(),
+      data: {
+        models: [{ provider: "anthropic", id: "claude", name: "Claude", reasoning: false, contextWindow: 200000 }],
+        favoriteProviders: ["anthropic"],
+        favoriteModels: ["claude"],
+      },
+    });
+
+    it("is treated as a cache miss and replaced by the fetched default", async () => {
+      localStorage.setItem(SWR_CACHE_KEYS.MODELS, poisonedEnvelope);
+
+      const { result } = renderHook(() => useModelsCache());
+
+      expect(result.current.loading).toBe(true);
+      expect(result.current.defaultProvider).toBeNull();
+
+      await waitFor(() => {
+        expect(result.current.defaultProvider).toBe("openai");
+        expect(result.current.defaultModelId).toBe("gpt-4o");
+      });
+    });
+
+    it("is dropped when the refetch fails, so the next mount cannot reuse it", async () => {
+      localStorage.setItem(SWR_CACHE_KEYS.MODELS, poisonedEnvelope);
+      mockFetchModels.mockRejectedValueOnce(new Error("offline"));
+
+      const { result } = renderHook(() => useModelsCache());
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      expect(localStorage.getItem(SWR_CACHE_KEYS.MODELS)).toBeNull();
     });
   });
 });

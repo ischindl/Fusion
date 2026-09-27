@@ -49,7 +49,7 @@ import { ProviderIcon } from "./ProviderIcon";
 import { FileMentionPopup } from "./FileMentionPopup";
 import { CliChatSurface, type CliChatTier } from "./CliChatSurface";
 import { useFileMention } from "../hooks/useFileMention";
-import { useModelsCache } from "../hooks/useModelsCache";
+import { refreshModelsCache, useModelsCache } from "../hooks/useModelsCache";
 import { useFavorites } from "../hooks/useFavorites";
 import { useDiscoveredSkillsCache } from "../hooks/useDiscoveredSkillsCache";
 import { useChatSnippets } from "../hooks/useChatSnippetsCache";
@@ -2033,7 +2033,24 @@ function ChatViewContent({ projectId, addToast, floating = false, compactLayout 
       void (openInNewWindow ? handleCreateSession(input, { openInNewWindow: true }) : handleCreateSession(input));
       return;
     }
-    addToast(t("chat.noDefaultModelConfigured", "Configure a default chat model in Settings before creating a conversation."), "error");
+    /*
+    FNXC:ChatNewChatCatalogRace 2026-09-27-09:36:
+    The default chat model is resolved from `GET /api/models`, and this client cache legitimately starts
+    empty on a cold load (6 h TTL, a version-update cache wipe, or a pair-less stored envelope). New
+    Chat read that transient emptiness as "the operator never configured a model" and refused on every
+    project until the fetch landed — the same click a second later worked. The refusal is only honest
+    once one forced catalog fetch has actually answered; a catalog that is still default-less is the
+    genuinely-unconfigured case the message describes.
+    */
+    void (async () => {
+      const refreshed = await refreshModelsCache();
+      if (!refreshed?.defaultProvider || !refreshed.defaultModelId) {
+        addToast(t("chat.noDefaultModelConfigured", "Configure a default chat model in Settings before creating a conversation."), "error");
+        return;
+      }
+      const input = { agentId: FN_AGENT_ID, modelProvider: refreshed.defaultProvider, modelId: refreshed.defaultModelId };
+      await (openInNewWindow ? handleCreateSession(input, { openInNewWindow: true }) : handleCreateSession(input));
+    })();
   }, [addToast, chatDefaultTarget, defaultModel, handleCreateSession, listOnly, onOpenSessionInNewWindow, t]);
 
   const resizeComposer = useCallback(() => {
