@@ -37,6 +37,15 @@ planner-facing detail from the durable episode, not from this log.
 export const TRIAGE_PLAN_PREMISE_REJECTED_REPLAN_LOG_ACTION = "Plan premise release gate refused execution";
 export const PLAN_PREMISE_REFUSAL_LOG_WINDOW_MS = 7 * 24 * 60 * 60_000;
 
+/*
+FNXC:PlanPremises 2026-09-27-03:00:
+STAS-282 — the delivery-invalidated verdict is evidence, not a refusal, so it gets its own action key
+and its own one-shot window. Keeping it a distinct action is what lets the release doors write the
+evidence WITHOUT touching the refusal episode: an operator reading History sees that the card's own
+commits are what falsified its plan, and the planner is never handed a card whose work already exists.
+*/
+export const TRIAGE_PLAN_PREMISE_INVALIDATED_BY_DELIVERY_LOG_ACTION = "Plan premise invalidated by the card's own delivery";
+
 export type PlanPremiseEscalation = "hold" | "replan" | "park";
 
 export interface PlanPremiseLadderStep {

@@ -1,8 +1,14 @@
 import { parsePlanPremises, type PlanPremise, type Task, type TaskStore } from "@fusion/core";
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import { access, readFile, realpath, stat } from "node:fs/promises";
-import { dirname, relative, resolve, sep } from "node:path";
+import { readFile } from "node:fs/promises";
+import {
+  attachCardCommitRange,
+  describeCardGitIdentity,
+  evaluatePremiseAtCommit,
+  invalidatedByCardDelivery,
+  lastCommitTouching,
+  resolveCardGitIdentity,
+} from "./plan-premise-tree.js";
 import { getPromptPath } from "./spec-staleness.js";
 
 /*
@@ -11,9 +17,17 @@ Every verdict carries `promptFingerprint` (sha256 of the authoritative prompt th
 computed from) so the RUFU-246 refusal-episode signature can bind a refusal to the exact plan
 revision: once replanning rewrites PROMPT.md, the fingerprint changes and the escalation count
 resets. An unreadable prompt fingerprints as the empty string.
+
+FNXC:PlanPremises 2026-09-27-02:40:
+`premise-invalidated-by-delivery` is a NEW verdict, not a synonym for `stale`. Both mean "a stated
+fact no longer holds", but only `stale` means "the plan was written against a repository that has
+moved on". When the commits that falsified the facts are the card's OWN (see plan-premise-tree.ts),
+replanning is the wrong remedy — the planner would re-derive the same facts from a tree its own
+delivery changed — so this verdict must not enter the refusal ladder at all.
 */
 export type PlanPremiseCheckResult =
   | { outcome: "satisfied"; promptFingerprint: string; premiseViolations: [] }
+  | { outcome: "premise-invalidated-by-delivery"; detail: string; promptFingerprint: string; premiseViolations: PlanPremiseViolation[] }
   | { outcome: "stale"; detail: string; promptFingerprint: string; premiseViolations: PlanPremiseViolation[] }
   | { outcome: "invalid-contract"; detail: string; promptFingerprint: string; premiseViolations: [] }
   | { outcome: "unavailable"; detail: string; promptFingerprint: string; premiseViolations: [] };
@@ -24,8 +38,9 @@ RUFU-246 lifts the violated premises out of the prose detail into a structured p
 rejection episode can hash exactly the fields that describe WHY the card was refused. Each entry
 carries the violated premise JSON and a fixed human-readable reason naming what was found; the
 premise's own `path` is its location. A verdict no longer stops reporting at the first violation:
-the whole violated set is enumerated so a planner sees every fact that drifted, and the detail
-closes with the root directory the facts were evaluated against.
+the whole violated set is enumerated so a planner sees every fact that drifted. The shape is
+deliberately unchanged by the commit-identity work — the culprit commit rides the prose detail, so
+the episode signature of an existing refusal cannot shift under stored episodes.
 */
 export interface PlanPremiseViolation {
   premise: PlanPremise;
@@ -34,11 +49,14 @@ export interface PlanPremiseViolation {
 
 /*
 FNXC:PlanPremises 2026-09-16-02:49:
-RUFU-246 requires a stale verdict's detail to enumerate the ENTIRE violated set AND the root it was
-evaluated against, so the bound must survive a few full premise JSONs plus a worker-scoped tmp
+RUFU-246 requires a stale verdict's detail to enumerate the ENTIRE violated set AND the identity it
+was evaluated against, so the bound must survive a few full premise JSONs plus a worker-scoped tmp
 root; 320 truncated the root clause in tests. Still one line, still capped.
+
+FNXC:PlanPremises 2026-09-27-02:40:
+The clause now also names the commit responsible, which 640 clipped on a multi-premise card.
 */
-const MAX_DETAIL = 640;
+const MAX_DETAIL = 1024;
 const bounded = (value: string) => value.replace(/\s+/g, " ").trim().slice(0, MAX_DETAIL);
 
 async function authoritativePrompt(store: TaskStore, task: Task): Promise<string> {
@@ -49,51 +67,21 @@ async function authoritativePrompt(store: TaskStore, task: Task): Promise<string
   throw new Error("authoritative PROMPT.md is unavailable");
 }
 
-async function nearestExistingRealPath(path: string): Promise<string> {
-  let cursor = path;
-  for (;;) {
-    try {
-      return await realpath(cursor);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      const parent = dirname(cursor);
-      if (parent === cursor) throw error;
-      cursor = parent;
-    }
-  }
-}
-
-async function resolveContained(root: string, premise: PlanPremise): Promise<{ candidate: string; exists: boolean }> {
-  const rootReal = await realpath(root);
-  const candidate = resolve(rootReal, premise.path);
-  const anchor = await nearestExistingRealPath(candidate);
-  const rel = relative(rootReal, anchor);
-  if (rel === ".." || rel.startsWith(`..${sep}`) || resolve(rootReal, rel) !== anchor) {
-    throw Object.assign(new Error(`premise path resolves outside project root: ${premise.path}`), { code: "OUTSIDE_ROOT" });
-  }
-  try {
-    await access(candidate, constants.F_OK);
-    const actual = await realpath(candidate);
-    const actualRel = relative(rootReal, actual);
-    if (actualRel === ".." || actualRel.startsWith(`..${sep}`)) {
-      throw Object.assign(new Error(`premise path resolves outside project root: ${premise.path}`), { code: "OUTSIDE_ROOT" });
-    }
-    return { candidate: actual, exists: true };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { candidate, exists: false };
-    throw error;
-  }
-}
-
-function describe(premise: PlanPremise): string {
-  return "literal" in premise
-    ? `${premise.kind} ${premise.path} literal ${JSON.stringify(premise.literal).slice(0, 160)}`
-    : `${premise.kind} ${premise.path}`;
+function enumerate(violations: Array<{ premise: PlanPremise; reason: string }>): string {
+  return violations.map((violation) => `${JSON.stringify(violation.premise)} (${violation.reason})`).join("; ");
 }
 
 /*
-FNXC:PlanPremises 2026-09-13-04:01:
-Release evaluates plan facts directly against the current main checkout returned by TaskStore.getRootDir(). The check is stateless and fail-closed; it neither creates a worktree nor persists a validation episode, and symlink resolution may never escape the project root.
+FNXC:PlanPremises 2026-09-27-02:40:
+Release evaluates plan facts against the CARD's own committed content — its worktree HEAD, else its
+branch tip, else its declared base — never against the project root or common directory. See
+plan-premise-tree.ts for the identity ladder and for why every read is a git object read.
+
+FNXC:PlanPremises 2026-09-16-05:35:
+The identity is resolved only when the plan actually states a premise, and an unresolvable identity
+yields the fail-closed `unavailable` verdict instead of escaping checkPlanPremises as a TypeError:
+premise evaluation must never throw at the caller, and a plan stating no facts needs no repository
+to prove them (FN-8304's planless Fast cards legitimately state none).
 */
 export async function checkPlanPremises(store: TaskStore, task: Task): Promise<PlanPremiseCheckResult> {
   let prompt: string;
@@ -116,74 +104,55 @@ export async function checkPlanPremises(store: TaskStore, task: Task): Promise<P
   if (!parsed.ok && parsed.reason !== "missing-section" && parsed.reason !== "empty-section") {
     return { outcome: "invalid-contract", detail: bounded(parsed.detail), promptFingerprint, premiseViolations: [] };
   }
-
   const premises = parsed.ok ? parsed.premises : [];
-  /*
-  FNXC:PlanPremises 2026-09-16-05:35:
-  RUFU-246 — the release root is resolved ONLY when the plan actually states a premise, and a store
-  whose getRootDir is missing or throwing yields the fail-closed `unavailable` verdict rather than
-  escaping checkPlanPremises as a TypeError. Without this, a Fast-mode card with a premise-free plan
-  (FN-8304: fast cards are legitimately planless) crashed the whole release door once the fast-lane
-  premise bypass was removed — "premise evaluation" must never throw at the caller, and a plan
-  stating no facts needs no filesystem to prove them.
-  */
-  let root: string;
-  if (premises.length > 0) {
-    try {
-      root = store.getRootDir();
-    } catch (error) {
-      return { outcome: "unavailable", detail: bounded(`Cannot resolve the release root: ${error instanceof Error ? error.message : String(error)}`), promptFingerprint, premiseViolations: [] };
-    }
-  } else {
-    return { outcome: "satisfied", promptFingerprint, premiseViolations: [] };
+  if (premises.length === 0) return { outcome: "satisfied", promptFingerprint, premiseViolations: [] };
+
+  const identity = await resolveCardGitIdentity(store, task);
+  if (!identity.ok) {
+    return { outcome: "unavailable", detail: bounded(identity.detail), promptFingerprint, premiseViolations: [] };
   }
+
   const violations: PlanPremiseViolation[] = [];
   for (const premise of premises) {
-    try {
-      const resolved = await resolveContained(root, premise);
-      let satisfied: boolean;
-      let reason: string | null = null;
-      if (!resolved.exists) {
-        satisfied = premise.kind === "file-absent" || premise.kind === "text-absent";
-        if (!satisfied) reason = "path does not exist";
-      } else {
-        const info = await stat(resolved.candidate);
-        /*
-        FNXC:PlanPremises 2026-09-13-05:28:
-        File and text premises describe regular files, not merely occupied paths. Replacing a source
-        file with a directory invalidates file-exists and both text checks; text-absent must not pass
-        vacuously when no file content was readable.
-        */
-        if (!info.isFile()) {
-          satisfied = false;
-          reason = "path exists but is not a regular file";
-        } else if (premise.kind === "file-exists") satisfied = true;
-        else if (premise.kind === "file-absent") {
-          satisfied = false;
-          reason = "path exists";
-        } else {
-          const content = await readFile(resolved.candidate, "utf8");
-          const present = content.includes((premise as Extract<PlanPremise, { literal: string }>).literal);
-          satisfied = premise.kind === "text-present" ? present : !present;
-          if (!satisfied) reason = premise.kind === "text-present" ? "literal not found in file" : "literal found in file";
-        }
-      }
-      if (!satisfied && reason) violations.push({ premise, reason });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "OUTSIDE_ROOT") {
-        return { outcome: "invalid-contract", detail: bounded(error instanceof Error ? error.message : String(error)), promptFingerprint, premiseViolations: [] };
-      }
-      return { outcome: "unavailable", detail: bounded(`Cannot verify ${describe(premise)}: ${error instanceof Error ? error.message : String(error)}`), promptFingerprint, premiseViolations: [] };
-    }
+    const verdict = await evaluatePremiseAtCommit(identity.identity, premise);
+    if (!verdict.satisfied) violations.push({ premise, reason: verdict.reason });
   }
-  if (violations.length > 0) {
-    const enumerated = violations.map((violation) => `${JSON.stringify(violation.premise)} (${violation.reason})`).join("; ");
+  if (violations.length === 0) return { outcome: "satisfied", promptFingerprint, premiseViolations: [] };
+
+  /*
+  FNXC:PlanPremises 2026-09-27-02:40:
+  Attribution decides WHO falsified the facts. A violation whose path was last changed by a commit in
+  the card's own `base..tip` set is the card's doing; anything else (an upstream commit, or a path
+  the history never carried) is drift the planner has to reconcile. The split is deliberately
+  conservative: ONE unattributable violation keeps the whole verdict `stale`, because a card with a
+  genuinely outdated plan deserves its replan even if other facts drifted on its own watch.
+  */
+  const withRange = await attachCardCommitRange(store, task, identity.identity);
+  const attributed = [];
+  for (const violation of violations) {
+    const delivery = await invalidatedByCardDelivery(withRange, violation.premise.path);
+    attributed.push({ ...violation, delivery, upstream: delivery ? null : await lastCommitTouching(withRange, violation.premise.path) });
+  }
+  const evaluatedAt = `Evaluated at ${describeCardGitIdentity(withRange)}.`;
+
+  if (attributed.every((violation) => violation.delivery !== null)) {
+    const culprits = [...new Set(attributed.map((violation) => violation.delivery as string))].join(", ");
     return {
-      outcome: "stale",
-      detail: bounded(`Plan premise${violations.length === 1 ? "" : "s"} no longer true${violations.length === 1 ? ":" : " —"} ${enumerated}. Evaluated against ${root}`),
+      outcome: "premise-invalidated-by-delivery",
+      detail: bounded(`Plan premises falsified by this card's own delivery — ${enumerate(attributed)}. Falsified by ${culprits}. ${evaluatedAt} Replanning cannot restore these facts.`),
       promptFingerprint,
       premiseViolations: violations,
     };
   }
-  return { outcome: "satisfied", promptFingerprint, premiseViolations: [] };
+
+  const culprits = attributed
+    .filter((violation) => violation.delivery === null)
+    .map((violation) => violation.upstream ?? `${violation.premise.path} is absent from this history`)
+    .join("; ");
+  return {
+    outcome: "stale",
+    detail: bounded(`Plan premise${violations.length === 1 ? "" : "s"} no longer true${violations.length === 1 ? ":" : " —"} ${enumerate(attributed)}. ${evaluatedAt} Falsified by: ${culprits}.`),
+    promptFingerprint,
+    premiseViolations: violations,
+  };
 }

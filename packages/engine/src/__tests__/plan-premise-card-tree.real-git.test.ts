@@ -89,10 +89,15 @@ function premiseTask(bullets: string[], fields: Partial<Task> = {}): Task {
   } as Task;
 }
 
+/* The release door reads column traits, so the target column must really count toward WIP — a
+   premise-less ir would make every door below release vacuously. */
 const ir = {
-  nodes: [{ id: "todo", type: "column", name: "Todo", x: 0, y: 0, config: { column: "todo", traits: ["hold", "capacity"] } }, { id: "doing", type: "column", name: "Doing", x: 1, y: 0, config: { column: "doing", traits: ["wip"] } }],
-  edges: [],
-  columns: [{ id: "todo", name: "Todo", color: "blue" }, { id: "doing", name: "Doing", color: "yellow" }],
+  version: "v2", id: "test", name: "test",
+  columns: [
+    { id: "todo", name: "Planning", traits: [{ trait: "hold", config: { release: "capacity" } }] },
+    { id: "doing", name: "Doing", traits: [{ trait: "wip" }] },
+  ],
+  nodes: [], edges: [],
 } as unknown as WorkflowIr;
 
 /** The release door's store surface: atomic move + the two History writers the ladder uses. */
@@ -106,19 +111,12 @@ function releaseDoor(task: Task, root: string) {
     storeMirror._value.column = target;
     return { task: storeMirror._value, moved: true };
   });
-  const logEntry = vi.fn(async (entry: { action?: string; _uniqueActionKey?: string }) => {
-    const log = storeMirror._value.log ??= [];
-    const key = typeof entry._uniqueActionKey === "string" ? entry._uniqueActionKey : null;
-    if (key && log.some((item: { _uniqueActionKey?: string }) => item._uniqueActionKey === key)) return false;
-    log.push({ ...entry, id: `log-${log.length}`, at: new Date().toISOString() });
-    return true;
-  });
   const store = {
     getRootDir: () => root,
     getSettings: async () => ({ maxConcurrent: 3 }),
-    updateTaskAtomic: async (id: string, updater: (candidate: Task) => Partial<Task> | null | undefined) => {
+    updateTaskAtomic: async (id: string, updater: (candidate: Task) => Partial<Task> | null | undefined | Promise<Partial<Task> | null | undefined>) => {
       if (storeMirror._value.id !== id) return null;
-      const patch = updater(storeMirror._value);
+      const patch = await updater(storeMirror._value);
       if (!patch) return null;
       const metadata = patch.sourceMetadataPatch;
       if (metadata) {
@@ -133,8 +131,17 @@ function releaseDoor(task: Task, root: string) {
       Object.assign(storeMirror._value, fields);
       return storeMirror._value;
     },
-    logEntry,
-    logEntryOnce: async (entry: { action?: string; _uniqueActionKey?: string }) => logEntry(entry),
+    logEntry: vi.fn(async (_id: string, message: string) => {
+      task.log.push({ timestamp: new Date().toISOString(), message } as never);
+    }),
+    // Mirrors the real store's once-seam: the same dedupeKey within windowMs appends nothing.
+    logEntryOnce: vi.fn(async (_id: string, input: { action: string; outcome?: string; dedupeKey: string; windowMs: number }) => {
+      const cutoff = Date.now() - input.windowMs;
+      const duplicate = task.log.some((entry: { dedupeKey?: string; timestamp?: string }) =>
+        entry.dedupeKey === input.dedupeKey && Date.parse(entry.timestamp ?? "") >= cutoff);
+      if (duplicate) return;
+      task.log.push({ timestamp: new Date().toISOString(), action: input.action, outcome: input.outcome, dedupeKey: input.dedupeKey } as never);
+    }),
     moveTaskIf,
   } as unknown as TaskStore;
   const deps = { now: Date.now, reserveSlot: reserve, allocateWorktree: allocate };
@@ -170,16 +177,26 @@ describe("premise truth is the card's committed identity, never the shared check
     await git("checkout -qb fusion/fn-282", root);
     await write(root, "src/App.tsx", FLAG_ON);
     await commit(root, "feat: alpha flag");
-    await git("checkout -q main", root);
     const worktree = `${root}-wt`;
     tempDirs.push(worktree);
-    await git(`worktree add -q ${JSON.stringify(worktree)} fusion/fn-282`, root);
+    // The card's checkout frozen at the commit it is actually running (a detached linked worktree is
+    // exactly what the engine provisions), then the branch pointer moves past it.
+    await git(`worktree add -q --detach ${JSON.stringify(worktree)} fusion/fn-282`, root);
+    await git("checkout -q main", root);
+    await write(root, "src/flag.ts", "export const alphaFlagRemoved = true;\n");
+    await commit(root, "feat: retire the alpha flag");
+    await git("branch -f fusion/fn-282 main", root);
 
     const task = premiseTask([ALPHA_PRESENT], { branch: "fusion/fn-282", worktree });
     const door = releaseDoor(task, root);
-    const verdict = await checkPlanPremises(door.store, task);
-    expect(verdict.outcome).toBe("satisfied");
-    expect(verdict.detail).toContain("worktree");
+    // Worktree HEAD carries the fact; the moved branch pointer does not. Only the worktree answer is
+    // "satisfied", so this pins WHICH commit was read, not just that a read happened.
+    expect(await checkPlanPremises(door.store, task)).toMatchObject({ outcome: "satisfied" });
+
+    const withoutCheckout = premiseTask([ALPHA_PRESENT], { branch: "fusion/fn-282" });
+    const branchVerdict = await checkPlanPremises(releaseDoor(withoutCheckout, root).store, withoutCheckout);
+    expect(branchVerdict).toMatchObject({ outcome: "stale" });
+    expect(branchVerdict.detail).toContain("card branch fusion/fn-282");
   }, 30_000);
 
   it("treats an uncommitted working-tree edit as no evidence at all", async () => {
@@ -243,9 +260,9 @@ describe("delivery-invalidated premises are a distinct verdict and never a repla
     expect(task.sourceMetadata?.planPremiseRejection).toBeUndefined();
     expect(door.logActions(TRIAGE_PLAN_PREMISE_REJECTED_REPLAN_LOG_ACTION)).toBe(0);
     expect(door.logActions(TRIAGE_PLAN_PREMISE_INVALIDATED_BY_DELIVERY_LOG_ACTION)).toBe(1);
-    expect(task.log.some((entry: { detail?: string }) => (entry.detail ?? "").includes(culprit))).toBe(true);
-    expect(door.reserve).toHaveBeenCalledOnce();
-    expect(door.allocate).toHaveBeenCalledOnce();
+    expect(task.log.some((entry: { outcome?: string }) => (entry.outcome ?? "").includes(culprit))).toBe(true);
+    expect(door.deps.reserveSlot).toHaveBeenCalledOnce();
+    expect(door.deps.allocateWorktree).toHaveBeenCalledOnce();
   }, 30_000);
 
   it("keeps the evidence at one History entry and the episode absent across repeated door passes", async () => {

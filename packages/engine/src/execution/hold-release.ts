@@ -84,6 +84,7 @@ import {
   buildPlanPremiseExhaustedError,
   isPlanPremiseParkTerminal,
   PLAN_PREMISE_REFUSAL_LOG_WINDOW_MS,
+  TRIAGE_PLAN_PREMISE_INVALIDATED_BY_DELIVERY_LOG_ACTION,
   TRIAGE_PLAN_PREMISE_REJECTED_REPLAN_LOG_ACTION,
   type PlanPremiseEscalation,
 } from "./plan-premise-ladder.js";
@@ -1330,6 +1331,38 @@ async function publishPremiseReplan(
 }
 
 /*
+FNXC:PlanPremises 2026-09-27-03:05:
+STAS-282 — `premise-invalidated-by-delivery` RELEASES. The assumed facts were destroyed by commits
+this card itself produced, which is the ordinary shape of work that removed a flag or renamed a module
+its plan had assumed stable. Refusing such a card parks finished work behind a gate no executor can
+satisfy — the premise is self-refuting, so it cannot be made true again on any tree that carries the
+delivery — and replanning it would dispatch a second implementation of work that already exists. The
+door therefore records the evidence once and lets the release proceed. The dedupe key carries the
+prompt fingerprint and the evaluated commit, so a re-plan or a new commit re-reports while repeated
+polls of the same verdict stay one History line. This path never touches the refusal episode, never
+sets `needs-replan`, and never parks: the ladder is for plans that are wrong, not for plans that came
+true.
+*/
+async function recordDeliveryInvalidatedPremises(
+  store: TaskStore,
+  taskId: string,
+  check: Extract<PlanPremiseCheckResult, { outcome: "premise-invalidated-by-delivery" }>,
+): Promise<void> {
+  const dedupeKey = `plan-premise-delivery-invalidated:${createHash("sha256").update(`${check.promptFingerprint}|${check.detail}`).digest("hex")}`;
+  const logOnce = (store as Partial<TaskStore>).logEntryOnce;
+  if (typeof logOnce === "function") {
+    await logOnce.call(store, taskId, {
+      action: TRIAGE_PLAN_PREMISE_INVALIDATED_BY_DELIVERY_LOG_ACTION,
+      outcome: check.detail,
+      dedupeKey,
+      windowMs: PLAN_PREMISE_REFUSAL_LOG_WINDOW_MS,
+    }).catch(() => undefined);
+    return;
+  }
+  await store.logEntry(taskId, `${TRIAGE_PLAN_PREMISE_INVALIDATED_BY_DELIVERY_LOG_ACTION}: ${check.detail}`).catch(() => undefined);
+}
+
+/*
 FNXC:PlanPremises 2026-09-13-04:01:
 Every first planning/hold-to-WIP public admission uses this release authority. Premises are checked before reservation and again from the live row inside moveTaskIf; stale contracts re-enter the existing needs-replan loop without allocating a worktree or creating validation state.
 */
@@ -1428,6 +1461,10 @@ async function issueRelease(
         detail: "detail" in recorded.check ? recorded.check.detail : premiseCheck.detail,
       };
     }
+    if (premiseCheck.outcome === "premise-invalidated-by-delivery") {
+      // STAS-282: evidence, not a refusal — record it and fall through to a normal release.
+      await recordDeliveryInvalidatedPremises(store, task.id, premiseCheck);
+    }
     if (premiseCheck.outcome === "unavailable") {
       return { released: false, rejection: "plan-premise-unavailable", detail: premiseCheck.detail };
     }
@@ -1476,6 +1513,7 @@ async function issueRelease(
     const originalColumn = options.expectedColumn ?? task.column;
     let liveUnplanned: Task | undefined;
     let livePremiseFailure: Extract<PlanPremiseCheckResult, { outcome: "stale" | "invalid-contract" | "unavailable" }> | undefined;
+    let livePremiseDeliveryInvalidated: Extract<PlanPremiseCheckResult, { outcome: "premise-invalidated-by-delivery" }> | undefined;
     // RUFU-246: set when the locked live row already carries a terminal premise park (see predicate).
     let livePremiseExhausted = false;
     /*
@@ -1525,7 +1563,12 @@ async function issueRelease(
         // premises are repository facts, not planning-requiredness rules.
         if (targetIsProcessing) {
           const checked = await checkPlanPremises(store, live);
-          if (checked.outcome !== "satisfied") {
+          if (checked.outcome === "premise-invalidated-by-delivery") {
+            // STAS-282: releases on the same terms as a satisfied verdict. The verdict is only
+            // remembered here — the History entry is written once the move lock is released, so a
+            // premise evaluation never performs a write inside the move transaction.
+            livePremiseDeliveryInvalidated = checked;
+          } else if (checked.outcome !== "satisfied") {
             livePremiseFailure = checked;
             return false;
           }
@@ -1573,6 +1616,7 @@ async function issueRelease(
       schedulerLog.log(`Hold release for ${task.id} skipped — task became paused or left ${originalColumn}`);
       return { released: false };
     }
+    if (livePremiseDeliveryInvalidated) await recordDeliveryInvalidatedPremises(store, task.id, livePremiseDeliveryInvalidated);
     return { released: true, task: result.task };
   } catch (error) {
     if (error instanceof TransitionRejectionError && error.rejection.code === "capacity-exhausted") {
