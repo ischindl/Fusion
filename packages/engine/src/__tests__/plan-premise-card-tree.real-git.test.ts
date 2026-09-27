@@ -334,6 +334,36 @@ describe("delivery-invalidated premises are a distinct verdict and never a repla
     expect(evidence?.revision).toBe(1);
   }, 30_000);
 
+  /*
+  STAS-264's premise P4, reproduced exactly: the card's deliverable is a documented config line in
+  `.env.example`, and its plan asserts that literal is absent. Such a premise can never hold on any tree
+  that carries the delivery, so the only honest verdict is the delivery-invalidated one — and the only
+  honest remedy is amending the plan. A "fix" that deletes the delivered documentation would re-do the
+  card, which is why this test asserts the delivered line survives untouched.
+  */
+  it("releases the incident shape: the delivery is the very config text a text-absent premise forbids", async () => {
+    const root = await createRepo({ ".env.example": "SLACK_WEBHOOK=https://example.com/hook\n" });
+    await git("checkout -qb fusion/fn-282", root);
+    await write(root, ".env.example", "SLACK_WEBHOOK=https://example.com/hook\n# ALERT_SLACK_TEAM_ID=T_000000000000000000000000\n");
+    const culprit = await commit(root, "feat: make unconfigured alerting an inspectable startup mode");
+
+    const task = premiseTask(['{"kind":"text-absent","path":".env.example","literal":"ALERT_SLACK_TEAM_ID"}'], { branch: "fusion/fn-282" });
+    const door = releaseDoor(task, root);
+    const result = await admitTaskToWip(door.store, door.deps, task, "doing", ir);
+
+    expect(result).toMatchObject({ released: true, task: { column: "doing" } });
+    expect(door.logActions(TRIAGE_PLAN_PREMISE_INVALIDATED_BY_DELIVERY_LOG_ACTION)).toBe(1);
+    expect(door.logActions(TRIAGE_PLAN_PREMISE_REJECTED_REPLAN_LOG_ACTION)).toBe(0);
+    expect(task.sourceMetadata?.planPremiseRejection).toBeUndefined();
+    const evidence = door.documents.get("premise-invalidated");
+    expect(evidence?.content).toContain("text-absent");
+    expect(evidence?.content).toContain("literal found in file");
+    // The plan is what gets amended: the delivered documentation block stands, uncommitted and unedited.
+    expect(await git("show HEAD:.env.example", root)).toContain("ALERT_SLACK_TEAM_ID");
+    expect(await git("status --porcelain", root)).toBe("");
+    expect(evidence?.content).toContain(culprit);
+  }, 30_000);
+
   it("keeps the evidence at one History entry and the episode absent across repeated door passes", async () => {
     const root = await createRepo({ "src/App.tsx": FLAG_ON });
     await git("checkout -qb fusion/fn-282", root);
