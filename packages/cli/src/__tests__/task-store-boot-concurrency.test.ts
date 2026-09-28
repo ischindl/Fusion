@@ -5,6 +5,7 @@ import {
   __getStoreForTesting,
   __peekCachedStoreForTesting,
   __resolveProjectRootForTesting,
+  __setCachedStoreForTesting,
   __setExtensionStoreBootFactoryForTesting,
   clearHostTaskStores,
   closeCachedStores,
@@ -170,5 +171,106 @@ describe("extension TaskStore boot is one bounded attempt (STAS-251)", () => {
 
     await expect(__getStoreForTesting(PROJECT_ROOT, 500)).rejects.toThrow(/lock timeout/);
     expect(__peekCachedStoreForTesting(PROJECT_ROOT)).toBeUndefined();
+  });
+});
+
+/*
+FNXC:TaskStoreBootDeadline 2026-09-28-04:22:
+RUFU-377 investigated a renewed `fn_agent_show … TaskStore boot timed out after 30000ms`
+sighting and had to answer it from measurement, because boot attribution lives on the console
+only. Two facts were not pinned by any test, and both are what separates "the boot was really
+slow" from "the budget burned while a store was already ready":
+1) an orphaned boot that lands after its deadline must actually SERVE later callers — otherwise
+   a slow-but-successful boot leaves every subsequent tool call paying the budget again, which
+   looks identical to a permanently broken boot;
+2) the two failure sentences are different instruments. The bare
+   `… boot timed out after Nms` can only come from the wall-clock race, i.e. a caller that found
+   neither a cached store nor a cooldown entry. Every DB-side contention path in core is bounded
+   server-side at ~20s and reports a NAMED cause (measured on an isolated board-DB copy:
+   `Timed out after 20000ms waiting for the fusion:schema-applier advisory lock`), so contention
+   never produces the bare sentence. A caller that arrives inside the backoff window instead reads
+   `… recently failed (cooldown 5000ms): <cause>`, where <cause> is either the real underlying
+   error or the deadline detail. These are the operator-visible fingerprints of the branch.
+*/
+describe("extension TaskStore boot deadline vs ready-store discrimination (RUFU-377)", () => {
+  it("serves a later caller from the cache with no second boot once an orphaned boot lands", async () => {
+    let boots = 0;
+    __setExtensionStoreBootFactoryForTesting(
+      bootFactory(() => {
+        boots += 1;
+        return settledAfter(() => bootedStore("slow-but-fine"), 200);
+      }),
+    );
+
+    await expect(__getStoreForTesting(PROJECT_ROOT, 20)).rejects.toThrow(/timed out after 20ms/);
+    expect(__peekCachedStoreForTesting(PROJECT_ROOT)).toBeUndefined();
+
+    await vi.waitFor(() => {
+      expect(__peekCachedStoreForTesting(PROJECT_ROOT)).toBeDefined();
+    });
+
+    const served = await __getStoreForTesting(PROJECT_ROOT, 5_000);
+    expect(served).toBeDefined();
+    expect(boots).toBe(1);
+  });
+
+  it("reports the bare budget sentence (no cause) only to a caller that paid the budget", async () => {
+    __setExtensionStoreBootFactoryForTesting(bootFactory(stalledForever));
+
+    await expect(__getStoreForTesting(PROJECT_ROOT, 30)).rejects.toThrow(
+      /^fn extension TaskStore boot timed out after 30ms$/,
+    );
+  });
+
+  it("attributes a named underlying cause to a caller arriving inside the cooldown window", async () => {
+    __setExtensionStoreBootFactoryForTesting(
+      bootFactory(async () => {
+        throw new Error("Timed out after 20000ms waiting for the fusion:schema-applier advisory lock");
+      }),
+    );
+
+    await expect(__getStoreForTesting(PROJECT_ROOT, 500)).rejects.toThrow(/schema-applier advisory lock/);
+
+    const elapsed = await rejectsWithin(__getStoreForTesting(PROJECT_ROOT, BOOT_BUDGET_MS));
+    expect(elapsed).toBeLessThan(IMMEDIATE_MS);
+    await expect(__getStoreForTesting(PROJECT_ROOT, BOOT_BUDGET_MS)).rejects.toThrow(
+      /fn extension TaskStore boot recently failed \(cooldown 5000ms\): .*schema-applier advisory lock/,
+    );
+  });
+
+  it("attributes a reported deadline to later cooldown callers instead of re-running the bare race", async () => {
+    __setExtensionStoreBootFactoryForTesting(
+      bootFactory(() => settledAfter(() => bootedStore("orphan"), 500)),
+    );
+
+    await expect(__getStoreForTesting(PROJECT_ROOT, 25)).rejects.toThrow(
+      /^fn extension TaskStore boot timed out after 25ms$/,
+    );
+
+    const elapsed = await rejectsWithin(__getStoreForTesting(PROJECT_ROOT, BOOT_BUDGET_MS));
+    expect(elapsed).toBeLessThan(IMMEDIATE_MS);
+    await expect(__getStoreForTesting(PROJECT_ROOT, BOOT_BUDGET_MS)).rejects.toThrow(
+      /fn extension TaskStore boot recently failed \(cooldown 5000ms\): abandoned after \d+ms \(budget 25ms\)/,
+    );
+  });
+
+  it("never races an already-ready store against the boot budget", async () => {
+    // The B2 arm of the discrimination: with a store already in hand, the budget cannot fire and
+    // cannot be reported. If a future change ever put a cached/host store behind the race, a warm
+    // process would start producing "timed out after Nms" sightings like this one.
+    let boots = 0;
+    __setExtensionStoreBootFactoryForTesting(
+      bootFactory(() => {
+        boots += 1;
+        return stalledForever();
+      }),
+    );
+    const ready = makeStore("ready-before-the-budget");
+    __setCachedStoreForTesting(PROJECT_ROOT, ready);
+
+    const started = Date.now();
+    await expect(__getStoreForTesting(PROJECT_ROOT, 20)).resolves.toBe(ready);
+    expect(Date.now() - started).toBeLessThan(IMMEDIATE_MS);
+    expect(boots).toBe(0);
   });
 });

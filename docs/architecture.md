@@ -1391,6 +1391,52 @@ For scheduler concurrency diagnostics, the queued reason names each active limit
   - Registers tool set for in-chat task/mission operations
   - Uses `TaskStore` directly for extension-side actions
 
+#### Extension TaskStore boot budget
+<!--
+FNXC:TaskStoreBootDeadline 2026-09-28-05:32:
+An agent received `fn_agent_show failed: fn extension TaskStore boot timed out after 30000ms`, and
+the card that investigated it (RUFU-377) could not attribute it because three different budgets can
+expire behind one message. Recorded here so the shapes are distinguishable by reading, and so the
+"ready store never pays the boot budget" invariant is written down next to the seam it describes.
+-->
+Every extension tool resolves its store through one `getStore(projectRoot)` seam, so the boot cost
+and its deadline are shared by all of them rather than paid per surface:
+
+- **Resolution order is cache → in-flight → cooldown → boot.** A ready cached store (including a
+  store injected by the host) is returned before the boot deadline wrapper is even constructed, so a
+  live store never pays the boot budget. One boot attempt per project root is in flight at a time;
+  a root with a recent failure is refused by a 5 000 ms cooldown instead of re-booting.
+- **Two distinct rejection shapes.** A budget that expires while nothing has failed yet produces
+  `fn extension TaskStore boot timed out after <N>ms`; a root already inside the backoff produces
+  `fn extension TaskStore boot recently failed (cooldown <N>ms): <cause>` and returns at once. The
+  cooldown message carries the real cause, so it is the surviving evidence of a slow boot after the
+  caller has already given up.
+- **The deadline never cancels the boot.** An abandoned boot keeps running, caches itself on
+  success, and arms the backoff on failure — a cache hit therefore outranks the cooldown a previous
+  timeout armed, and later callers are served instead of each queueing behind the same stall.
+- **Every registered tool's `execute` is wrapped at registration time.** `kbExtension` intercepts
+  `pi.registerTool`, so a rejection reaching an agent is prefixed `${toolName} failed: ` while the
+  store-boot sentence stays inside it. That prefix is also what rules out the permission-policy
+  deny path: policy refusals (`taskstore-boot-unavailable`) are a different branch, and
+  `fn_agent_show` is not a gated tool.
+- **Which budget expired is readable only from the message.** The agent-permission resolution
+  timeout (5 000 ms), this store-boot budget (30 000 ms), and the outer whole-`execute` tool
+  watchdog (60 000 ms, default 30 000 ms for shell tools) nest inside each other; only the message
+  subject names the one that fired.
+- **`[taskstore-boot]` is process-local console output, not telemetry.** It carries cause and
+  duration and reaches the launching process only — it is never a run-audit event, so a historical
+  stall cannot be attributed from the durable record.
+- **What that ceiling cost RUFU-377.** Re-measuring the seam live put a cold extension boot at
+  226–229 ms (factory total; the light boot skips archive reintegration and patchnode reconcile per
+  RUFU-275), the same `fn_agent_show` round trip at 247 ms, and its cached repeat at 7 ms — three
+  orders of magnitude inside the budget — while every DB-side contention path measured (advisory
+  lock, table lock) terminates with a **named** cause at the server's ~20 s bound rather than as a
+  bare budget expiry. A bare 30 s expiry is therefore the shape a stall with no server-side bound
+  takes, and it is **un-attributable with existing channels**: no `store:open` provenance row, no
+  persisted child-process console, no `pg_stat_statements`. No product change shipped for it; the
+  discriminator is pinned by `packages/cli/src/__tests__/task-store-boot-concurrency.test.ts` and
+  `packages/cli/src/__tests__/extension-agent-class-boot-budget.test.ts`.
+
 ### Binary identity
 - Published package defines `fn` binary (`packages/cli/package.json`)
 - Running `fn` with no arguments defaults to dashboard (web UI by default)
