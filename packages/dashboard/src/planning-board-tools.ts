@@ -38,10 +38,23 @@ export function resolveTaskListFormatter(core: { formatTaskListText?: unknown })
 }
 
 export function createPlanningBoardTools(store: TaskStore): ToolDefinition[] {
+  /*
+  FNXC:CommentDelivery 2026-09-27-17:05 (RUFU-259):
+  The planning interview lane receives operator steering too, so its `fn_task_show` carries the same
+  optional comment-id read as the engine factory, the planner lane, and the pi extension. A fourth
+  variant without it would just move the unreadable-comment bug to whichever surface the planner
+  happens to be holding.
+  */
   const taskGetParams = {
     type: "object",
     properties: {
       id: { type: "string", description: "Task ID (e.g. KB-001)" },
+      commentIds: {
+        type: "array",
+        items: { type: "string" },
+        maxItems: 20,
+        description: "Optional comment or steering-comment ids to return bodies for. Resolved against both `comments` and `steeringComments`.",
+      },
     },
     required: ["id"],
     additionalProperties: false,
@@ -111,9 +124,10 @@ export function createPlanningBoardTools(store: TaskStore): ToolDefinition[] {
     label: "Get Task",
     description:
       "Get full details of a specific task including its PROMPT.md content. " +
-      "Use to verify duplicates and to read dependency task specs before writing a new PROMPT.md.",
+      "Use to verify duplicates and to read dependency task specs before writing a new PROMPT.md. " +
+      "Pass commentIds to read the body of comment or steering comments by id.",
     parameters: taskGetParams,
-    execute: async (_callId: string, params: { id: string }) => {
+    execute: async (_callId: string, params: { id: string; commentIds?: string[] }) => {
       try {
         const task = await store.getTask(params.id);
         const parts = [
@@ -124,6 +138,7 @@ export function createPlanningBoardTools(store: TaskStore): ToolDefinition[] {
           "",
           "PROMPT.md:",
           task.prompt || "(not yet specified)",
+          fusionCore.renderTaskCommentSection(task, params.commentIds) || null,
         ].filter(Boolean);
         return {
           content: [{ type: "text" as const, text: parts.join("\n") }],

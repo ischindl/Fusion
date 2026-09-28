@@ -4342,6 +4342,15 @@ describe("Pause/Unpause endpoints", () => {
         vi.spyOn(AgentStore.prototype, "init").mockResolvedValue(undefined);
         vi.spyOn(AgentStore.prototype, "getAgent").mockResolvedValue(agent as never);
         vi.spyOn(AgentStore.prototype, "getActiveHeartbeatRun").mockResolvedValue(null);
+        /*
+        FNXC:CommentDelivery 2026-09-28-02:46 (RUFU-259 merge fix):
+        The wake is now the second half of a delivery, and delivery resolves its recipient through the durable
+        agent ladder whose assignee rung refuses a `dangling-assignee` — an assignee that is not in the durable
+        pool is skipped rather than woken. This fixture always meant "the card is assigned to a real agent",
+        so it now states that by seeding the pool the delivery host reads (`listAgents`), instead of passing
+        on a wake that fired without ever naming a recipient.
+        */
+        vi.spyOn(AgentStore.prototype, "listAgents").mockResolvedValue([agent] as never);
 
         const heartbeatMonitor = {
           executeHeartbeat: vi.fn().mockResolvedValue({ id: "run-1" }),
@@ -4624,6 +4633,12 @@ describe("Pause/Unpause endpoints", () => {
         vi.spyOn(AgentStore.prototype, "init").mockResolvedValue(undefined);
         vi.spyOn(AgentStore.prototype, "getAgent").mockResolvedValue(agent as never);
         vi.spyOn(AgentStore.prototype, "getActiveHeartbeatRun").mockResolvedValue(null);
+        /*
+        FNXC:CommentDelivery 2026-09-28-02:46 (RUFU-259 merge fix):
+        Seed the durable agent pool the recipient ladder reads — a `dangling-assignee` is skipped, not woken
+        (see the task-comment wake fixture above for the full reasoning).
+        */
+        vi.spyOn(AgentStore.prototype, "listAgents").mockResolvedValue([agent] as never);
 
         const heartbeatMonitor = {
           executeHeartbeat: vi.fn().mockResolvedValue({ id: "run-1" }),

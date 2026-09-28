@@ -17,7 +17,7 @@
  * - onTerminated: Called when a heartbeat run is terminated
  */
 
-import { DEFAULT_PROVIDER_INSTANCE_ID, deriveTaskLabelFromDescription, type AgentStore, type AgentHeartbeatRun, type HeartbeatInvocationSource, type AgentHeartbeatConfig, type AgentBudgetStatus, type Message, type MessageStore, type TaskStore, type TaskDetail, type AgentRole, type Agent, type InboxTask, type RunMutationContext, type Settings, type AgentConfigRevision, type ReflectionStore, type ChatStore, type ChatRoom, type ChatRoomMessage, type AgentMemoryInclusionMode } from "@fusion/core";
+import { DEFAULT_PROVIDER_INSTANCE_ID, deriveTaskLabelFromDescription, resolveAdvertisedCommentIds, type AgentStore, type AgentHeartbeatRun, type HeartbeatInvocationSource, type AgentHeartbeatConfig, type AgentBudgetStatus, type Message, type MessageStore, type TaskStore, type TaskDetail, type AgentRole, type Agent, type InboxTask, type RunMutationContext, type Settings, type AgentConfigRevision, type ReflectionStore, type ChatStore, type ChatRoom, type ChatRoomMessage, type AgentMemoryInclusionMode } from "@fusion/core";
 import { AutoClaimSnapshotManager, resolveFreshAutoClaimCandidates, type AutoClaimCandidate } from "./scheduling/auto-claim-snapshot.js";
 import { emitBoundedRunAudit } from "./util/emit-bounded-run-audit.js";
 import {
@@ -3789,9 +3789,20 @@ export class HeartbeatMonitor {
           const wakeInboxSnapshotLine = wakeInboxEmpty
             ? "- inbox snapshot: empty (already consumed)"
             : `- inbox snapshot: ${pendingMessages.length} message(s)`;
+          /*
+          FNXC:CommentDelivery 2026-09-27-17:30 (RUFU-259):
+          The consumed branch used to print the message id anyway. `fn_read_messages` defaults to unread
+          rows, so an id the sender had already marked read names a row the recipient cannot fetch — the
+          wake then spent the agent's first turns on a lookup that could not succeed (RUFU-251 observed the
+          same shape for steering). A consumed trigger is therefore reported by origin WITHOUT an id, and
+          says plainly that the body is not retrievable; only a still-unread id is advertised, because that
+          one the agent can actually open.
+          */
           const wakeTriggerSourceLine = isWakeOnMessageTrigger
             ? (`- wake trigger source: ${wakeMessage
-              ? `message ${wakeMessage.messageId} from ${wakeMessage.fromType}:${wakeMessage.fromId}${wakeMessage.forced ? " (forced)" : ""}, ${wakeMessageStillUnread ? "still unread" : "already consumed at snapshot"}`
+              ? wakeMessageStillUnread
+                ? `message ${wakeMessage.messageId} from ${wakeMessage.fromType}:${wakeMessage.fromId}${wakeMessage.forced ? " (forced)" : ""}, still unread — read it with fn_read_messages`
+                : `a message from ${wakeMessage.fromType}:${wakeMessage.fromId}${wakeMessage.forced ? " (forced)" : ""} was already marked read before this snapshot — its body is NOT retrievable from fn_read_messages, so do not guess its content`
               : "no triggering-message metadata"}`)
             : null;
 
@@ -4032,7 +4043,21 @@ export class HeartbeatMonitor {
             // markdown prefix that reads as `## Pôvodný popis` to the agent.
             const taskTitle = taskDetail!.title?.trim() || deriveTaskLabelFromDescription(taskDetail!.description ?? "", 100);
 
+            /*
+            FNXC:CommentDelivery 2026-09-27-17:25 (RUFU-259):
+            This block used to skip any id it could not resolve and print nothing about the skip, while the
+            wake delta still counted that comment. An agent woken by a comment it could neither see nor name
+            has no way to learn that its own steering is missing — that is the silent-drop behaviour this
+            replaces. Now every advertised id gets a line: the body when the card holds it, an explicit
+            "not on this card" when it does not, and the ids always travel with the line so
+            `fn_task_show(id, commentIds=[…])` is a call the agent can actually make.
+            */
             const triggeringCommentLines: string[] = [];
+            let hiddenTriggeringCommentIds: string[] = [];
+            const readableTriggeringCommentCount = resolveAdvertisedCommentIds(
+              taskDetail,
+              effectiveTriggeringCommentIds,
+            ).length;
             if (effectiveTriggeringCommentIds && effectiveTriggeringCommentIds.length > 0) {
               const commentLookup = new Map<string, { author: string; text: string }>();
               for (const comment of taskDetail!.comments ?? []) {
@@ -4043,20 +4068,37 @@ export class HeartbeatMonitor {
               }
 
               const formatCommentText = (text: string): string => text.replace(/\s+/g, " ").trim();
+              const readableIds: string[] = [];
+              const missingIds: string[] = [];
+              const bodyLines: string[] = [];
 
               for (const commentId of effectiveTriggeringCommentIds) {
                 const comment = commentLookup.get(commentId);
                 if (comment) {
-                  triggeringCommentLines.push(`- [${comment.author}]: "${formatCommentText(comment.text)}"`);
+                  readableIds.push(commentId);
+                  bodyLines.push(`- [${comment.author}] (commentId: ${commentId}): "${formatCommentText(comment.text)}"`);
+                } else {
+                  missingIds.push(commentId);
                 }
               }
 
-              if (triggeringCommentLines.length > 0) {
-                triggeringCommentLines.unshift(
+              hiddenTriggeringCommentIds = [...readableIds, ...missingIds];
+
+              if (bodyLines.length > 0 || missingIds.length > 0) {
+                triggeringCommentLines.push(
                   "",
                   "You were woken because of new comments on this task. Review them and take appropriate action.",
                   `Triggering comment type: ${effectiveTriggeringCommentType ?? "task"}`,
                   "New comments since last run:",
+                  ...bodyLines,
+                );
+                for (const commentId of missingIds) {
+                  triggeringCommentLines.push(
+                    `- [unknown] (commentId: ${commentId}): body is NOT on this card — do not guess its content`,
+                  );
+                }
+                triggeringCommentLines.push(
+                  `Re-read any of these bodies with fn_task_show(id: "${taskId}", commentIds: [...]) — that tool returns comment bodies by id.`,
                 );
               }
             }
@@ -4090,7 +4132,7 @@ export class HeartbeatMonitor {
               ...(wakeTriggerSourceLine ? [wakeTriggerSourceLine] : []),
               `- pending messages: ${pendingMessages.length}`,
               `- pending room messages: ${pendingRoomMessages.total}`,
-              `- triggering comments: ${effectiveTriggeringCommentIds?.length ?? 0}`,
+              `- triggering comments: ${readableTriggeringCommentCount} of ${(effectiveTriggeringCommentIds ?? []).length} readable on this card`,
               "",
               "Treat this wake delta as the highest-priority change for this heartbeat.",
               "This is an autonomous heartbeat run (manual or automatic): re-anchor on",
@@ -4105,7 +4147,7 @@ export class HeartbeatMonitor {
               trimTaskDescription(taskDetail!.description, promptTemplate),
               "",
               taskDetail!.prompt ? `PROMPT.md:\n${trimPromptMd(taskDetail!.prompt, promptTemplate)}` : "No PROMPT.md available.",
-              ...trimTriggeringComments(triggeringCommentLines, promptTemplate),
+              ...trimTriggeringComments(triggeringCommentLines, promptTemplate, hiddenTriggeringCommentIds),
               ...pendingMessagesLines,
               ...pendingRoomMessagesLines,
               ...roomAmbiguityNoticesLines,

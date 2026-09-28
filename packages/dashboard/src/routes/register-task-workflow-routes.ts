@@ -41,6 +41,8 @@ import type {
   ArtifactType,
   PrInfo,
   WorkflowIr,
+  TaskCommentSource,
+  TaskCommentDeliveryResult,
 } from "@fusion/core";
 import {
   COLUMNS,
@@ -1057,6 +1059,33 @@ async function buildDirectTaskReviewData(task: Task, store: TaskStore): Promise<
   };
 }
 
+/**
+ * The payload a comment/steering write surface hands the deliver-then-wake helper.
+ *
+ * FNXC:CommentDelivery 2026-09-27-19:50 (RUFU-259 Step 4):
+ * `comment` + `source` are what make the hand-off DURABLE — one inbox row per (task, comment id), written
+ * before the route answers. The `triggering*` fields are only the wake hint a heartbeat receives. A wake
+ * hint without the body is precisely the defect this card removes, so the body is a required field rather
+ * than something a caller may omit; `authorType` is derived from `author` inside the seam.
+ */
+export type CommentWakeInput = {
+  triggeringCommentType: "steering" | "task" | "pr";
+  triggeringCommentIds?: string[];
+  triggerDetail: string;
+  comment: { id: string; text: string; author?: string; createdAt?: string; kind?: "comment" | "steering" };
+  source: TaskCommentSource;
+  /**
+   * False when another arm of the route already owns the RUN for this comment (a review-lane re-engagement
+   * moves the card and re-dispatches it itself). Defaults to eligible.
+   *
+   * FNXC:CommentDelivery 2026-09-27-21:40 (RUFU-259 Step 4):
+   * Splitting "hand the body over" from "start a run now" is the point of this field. The durable hand-off
+   * is unconditional; only the immediate run is negotiated per surface, so a route can stop double-running
+   * a card it is already re-engaging without ever dropping the body.
+   */
+  wakeEligible?: boolean;
+};
+
 interface TaskWorkflowRouteDeps {
   runtimeLogger: { error: (message: string, data?: Record<string, unknown>) => void; warn: (message: string, data?: Record<string, unknown>) => void };
   upload: { single: (name: string) => unknown };
@@ -1067,7 +1096,7 @@ interface TaskWorkflowRouteDeps {
   isGitRepo: (cwd: string) => Promise<boolean>;
   resolveIntegrationBranch: (rootDir: string, settings: unknown) => Promise<string>;
   trimTaskDetailActivityLog: (task: TaskDetail) => TaskDetail;
-  triggerCommentWakeForAssignedAgent: (scopedStore: TaskStore, task: Task, wake: { triggeringCommentType: "steering" | "task" | "pr"; triggeringCommentIds?: string[]; triggerDetail: string }) => Promise<void>;
+  triggerCommentWakeForAssignedAgent: (scopedStore: TaskStore, task: Task, wake: CommentWakeInput) => Promise<TaskCommentDeliveryResult | undefined>;
   resolveSelfHealingManager: (scopedStore: TaskStore) => {
     rootDir: string;
     reconcileInReviewBranchRebind: (opts?: { includeTaskIds?: Set<string> }) => Promise<import("@fusion/engine").RebindResult>;
@@ -1094,11 +1123,14 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
   } = deps;
   const TASK_DETAIL_ACTIVITY_LOG_LIMIT = taskDetailActivityLogLimit;
 
-  type InReviewUserCommentReengagementInput = {
-    triggeringCommentType: "steering" | "task";
-    triggeringCommentIds?: string[];
-    triggerDetail: string;
-  };
+  /**
+   * RUFU-259 Step 4: the payload every comment/steering write surface hands the delivery+wake helper.
+   *
+   * `comment` + `source` are what make the hand-off DURABLE (one inbox row per comment id, written
+   * before the route answers); the `triggering*` fields are only the wake hint the heartbeat receives.
+   * A wake hint without the body is exactly the defect this card removes, so both halves are required.
+   */
+  type InReviewUserCommentReengagementInput = CommentWakeInput;
 
   /*
   FNXC:HumanMergeApproval 2026-09-17-18:09:
@@ -6270,25 +6302,45 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       const normalizedAuthor = author?.trim() || "user";
       const task = await scopedStore.addTaskComment(req.params.id, text, normalizedAuthor);
 
-      const newCommentId = task.comments?.at(-1)?.id;
-      const wake = {
-        triggeringCommentType: "task" as const,
-        triggeringCommentIds: newCommentId ? [newCommentId] : undefined,
+      const newComment = task.comments?.at(-1);
+      const diffReviewColumns = await resolveReviewColumnsForTask(scopedStore, task.id);
+      const reviewLaneReengage =
+        normalizedAuthor === "user" && diffReviewColumns.has(task.column) && !task.sessionFile;
+      const wake: CommentWakeInput = {
+        triggeringCommentType: "task",
+        triggeringCommentIds: newComment?.id ? [newComment.id] : undefined,
         triggerDetail: "task-comment",
+        comment: {
+          id: newComment?.id ?? "",
+          text,
+          author: normalizedAuthor,
+          createdAt: newComment?.createdAt,
+          kind: "comment",
+        },
+        source: "dashboard-comment",
+        // The re-engagement arm moves the card and re-dispatches it itself; it owns the run.
+        wakeEligible: !reviewLaneReengage,
       };
-      if (normalizedAuthor === "user") {
-        const diffReviewColumns = await resolveReviewColumnsForTask(scopedStore, task.id);
-        if (diffReviewColumns.has(task.column) && !task.sessionFile) {
-          const { task: reengagedTask } = await reengageInReviewTaskForUserComment(scopedStore, task, wake);
-          res.json(reengagedTask);
-          return;
-        }
 
-        void triggerCommentWakeForAssignedAgent(scopedStore, task, wake).catch((error) => {
-          runtimeLogger.warn(
-            `failed to trigger task-comment heartbeat for ${task.id}: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        });
+      /*
+      FNXC:CommentDelivery 2026-09-27-19:30 / 21:40 (RUFU-259 Step 4):
+      Awaited, and BEFORE the branch. The response used to go out while the comment had been handed to
+      nobody — the dashboard said "Comment added." — and on the review-lane path it used to return without
+      any hand-off at all, having done nothing with the text when re-engagement was suppressed by an open
+      PR or a live session. The durable row is now unconditional on every arm; only the immediate run is
+      negotiated (`wakeEligible`). A failed hand-off never fails the write: the comment row is already
+      durable, so we warn and answer.
+      */
+      await triggerCommentWakeForAssignedAgent(scopedStore, task, wake).catch((error) => {
+        runtimeLogger.warn(
+          `failed to deliver task-comment for ${task.id}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+
+      if (reviewLaneReengage) {
+        const { task: reengagedTask } = await reengageInReviewTaskForUserComment(scopedStore, task, wake);
+        res.json(reengagedTask);
+        return;
       }
 
       res.json(task);
@@ -6774,24 +6826,42 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       }
       const task = await scopedStore.addSteeringComment(req.params.id, text, "user");
 
-      const newSteeringCommentId = task.steeringComments?.at(-1)?.id;
-      const wake = {
-        triggeringCommentType: "steering" as const,
-        triggeringCommentIds: newSteeringCommentId ? [newSteeringCommentId] : undefined,
-        triggerDetail: "steering-comment",
-      };
+      const newSteeringComment = task.steeringComments?.at(-1);
       const artifactReviewColumns = await resolveReviewColumnsForTask(scopedStore, task.id);
-      if (artifactReviewColumns.has(task.column) && !task.sessionFile) {
+      const steerReviewLaneReengage = artifactReviewColumns.has(task.column) && !task.sessionFile;
+      const wake: CommentWakeInput = {
+        triggeringCommentType: "steering",
+        triggeringCommentIds: newSteeringComment?.id ? [newSteeringComment.id] : undefined,
+        triggerDetail: "steering-comment",
+        comment: {
+          id: newSteeringComment?.id ?? "",
+          text,
+          author: "user",
+          createdAt: newSteeringComment?.createdAt,
+          kind: "steering",
+        },
+        source: "dashboard-steer",
+        // The re-engagement arm re-dispatches the card itself; it owns the run.
+        wakeEligible: !steerReviewLaneReengage,
+      };
+
+      /*
+      FNXC:CommentDelivery 2026-09-27-19:30 / 21:40 (RUFU-259 Step 4):
+      Awaited and hoisted above the review-lane branch so 200 means "the body is in the recipient's inbox"
+      on every arm, including the one that used to answer after a suppressed re-engagement with nothing
+      handed over. See the comment-write route above for the full reasoning.
+      */
+      await triggerCommentWakeForAssignedAgent(scopedStore, task, wake).catch((error) => {
+        runtimeLogger.warn(
+          `failed to deliver steering-comment for ${task.id}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+
+      if (steerReviewLaneReengage) {
         const { task: reengagedTask } = await reengageInReviewTaskForUserComment(scopedStore, task, wake);
         res.json(reengagedTask);
         return;
       }
-
-      void triggerCommentWakeForAssignedAgent(scopedStore, task, wake).catch((error) => {
-        runtimeLogger.warn(
-          `failed to trigger steering-comment heartbeat for ${task.id}: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      });
 
       res.json(task);
     } catch (err: unknown) {
@@ -8016,9 +8086,16 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
 
       await scopedStore.updateTask(task.id, { reviewState: nextReviewState });
 
-      let steeringCommentId: string | null = null;
-      const steeringComment = await scopedStore.addSteeringComment(task.id, steeringText, "user");
-      steeringCommentId = steeringComment.id;
+      /*
+      FNXC:CommentDelivery 2026-09-27-19:45 (RUFU-259 Step 4):
+      `addSteeringComment` returns the TASK, so this used to read `steeringComment.id` — the TASK id — and
+      pass it as the triggering comment id. Every review-address wake therefore advertised an id no
+      comment row carries (Step 1's resolver refuses it), and a delivery keyed on it would collapse every
+      review-address comment on the card into ONE inbox row. Read the row the write actually appended.
+      */
+      const steeringCommentWrite = await scopedStore.addSteeringComment(task.id, steeringText, "user");
+      const steeringComment = steeringCommentWrite.steeringComments?.at(-1);
+      const steeringCommentId: string | null = steeringComment?.id ?? null;
 
       let updatedTask: Task = await scopedStore.getTask(task.id);
 
@@ -8030,21 +8107,44 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       const steeringReviewColumns = await resolveReviewColumnsForTask(scopedStore, task.id);
       const steeringWipColumn = await resolveWipColumnForTask(scopedStore, task.id);
 
-      if (steeringReviewColumns.has(task.column)) {
-        updatedTask = (await reengageInReviewTaskForUserComment(scopedStore, updatedTask, {
-          triggeringCommentType: "steering",
-          triggeringCommentIds: steeringCommentId ? [steeringCommentId] : undefined,
-          triggerDetail: "review-address",
-        })).task;
-      } else {
-        const hasActiveSession = Boolean(updatedTask.sessionFile);
-        if (steeringCommentId && updatedTask.column === steeringWipColumn && updatedTask.assignedAgentId && !hasActiveSession) {
-          await triggerCommentWakeForAssignedAgent(scopedStore, updatedTask, {
-            triggeringCommentType: "steering",
-            triggeringCommentIds: [steeringCommentId],
-            triggerDetail: "review-address",
-          });
-        }
+      const inReviewLane = steeringReviewColumns.has(task.column);
+
+      /*
+      FNXC:CommentDelivery 2026-09-27-19:35 / 21:50 (RUFU-259 Step 4):
+      Hand-off FIRST and unconditionally, which is the whole point of this card. Two arms used to be able
+      to write the instruction and hand it to nobody: the review-lane arm returned after a suppressed
+      re-engagement (open PR / live session), and the other arm required both the WIP column AND an idle
+      session AND `assignedAgentId` (RUFU-251's unassigned-card drop) before doing anything. Those
+      conditions all describe whether a RUN is appropriate, so they are kept — on the run, via
+      `wakeEligible`. The body reaches an inbox either way, and the ladder resolves an unassigned card too
+      (column binding -> planning-lane binding -> sole lane agent -> reported).
+      */
+      const addressWake: CommentWakeInput = {
+        triggeringCommentType: "steering",
+        triggeringCommentIds: steeringCommentId ? [steeringCommentId] : undefined,
+        triggerDetail: "review-address",
+        comment: {
+          id: steeringCommentId ?? "",
+          text: steeringComment?.text ?? steeringText,
+          author: "user",
+          createdAt: steeringComment?.createdAt,
+          kind: "steering",
+        },
+        source: "review-address",
+        wakeEligible:
+          !inReviewLane &&
+          updatedTask.column === steeringWipColumn &&
+          !updatedTask.sessionFile,
+      };
+      await triggerCommentWakeForAssignedAgent(scopedStore, updatedTask, addressWake).catch((error) => {
+        runtimeLogger.warn(
+          `failed to deliver review-address comment for ${task.id}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+
+      // The hand-off above already happened for both arms; only the review lane has a run to arrange.
+      if (inReviewLane) {
+        updatedTask = (await reengageInReviewTaskForUserComment(scopedStore, updatedTask, addressWake)).task;
       }
 
       await scopedStore.logEntry(task.id, "Same-task review revision requested", `${selectedItems.length} item(s) submitted from review tab`);
@@ -8088,8 +8188,10 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         `Context: ${prLabel} ${prInfo.url}`,
       ].join("\n\n");
 
-      const steeringComment = await scopedStore.addSteeringComment(task.id, steeringText, "user");
-      const steeringCommentId = steeringComment.id;
+      // FNXC:CommentDelivery 2026-09-27-19:45 (RUFU-259 Step 4): take the appended row, not the task id (see review-address above).
+      const steeringCommentWrite = await scopedStore.addSteeringComment(task.id, steeringText, "user");
+      const steeringComment = steeringCommentWrite.steeringComments?.at(-1);
+      const steeringCommentId: string | null = steeringComment?.id ?? null;
 
       let updatedTask: Task = await scopedStore.getTask(task.id);
 
@@ -8113,13 +8215,32 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
 
       const hasActiveSession = Boolean(updatedTask.sessionFile);
       const wakeWipColumn = await resolveWipColumnForTask(scopedStore, updatedTask.id);
-      if (updatedTask.column === wakeWipColumn && updatedTask.assignedAgentId && !hasActiveSession) {
-        await triggerCommentWakeForAssignedAgent(scopedStore, updatedTask, {
-          triggeringCommentType: "steering",
-          triggeringCommentIds: [steeringCommentId],
-          triggerDetail: "pr-address-feedback",
-        });
-      }
+
+      /*
+      FNXC:CommentDelivery 2026-09-27-19:35 / 21:55 (RUFU-259 Step 4):
+      Same shape as review-address above: the hand-off is unconditional, while the WIP-column + idle-session
+      conditions only decide whether to start a run. The review-lane arm above moves the card into the WIP
+      column before this point, so an addressed PR comment on a card in review is no longer written and then
+      handed to nobody.
+      */
+      await triggerCommentWakeForAssignedAgent(scopedStore, updatedTask, {
+        triggeringCommentType: "steering",
+        triggeringCommentIds: steeringCommentId ? [steeringCommentId] : undefined,
+        triggerDetail: "pr-address-feedback",
+        comment: {
+          id: steeringCommentId ?? "",
+          text: steeringComment?.text ?? steeringText,
+          author: "user",
+          createdAt: steeringComment?.createdAt,
+          kind: "steering",
+        },
+        source: "pr-address",
+        wakeEligible: updatedTask.column === wakeWipColumn && !hasActiveSession,
+      }).catch((error) => {
+        runtimeLogger.warn(
+          `failed to deliver pr-address comment for ${task.id}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
 
       await scopedStore.logEntry(task.id, "Address PR feedback requested", `${prLabel} queued via ce-resolve-pr-feedback skill prompt`);
       res.json({ task: updatedTask });

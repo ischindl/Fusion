@@ -297,6 +297,30 @@ FN-9175 bounded best-effort seam so telemetry can never alter, delay, or fail th
 
 `task:reconcile-absent-branch-landed` records an ownership-trailer-proven review card finalized after its branch was cleaned up or when a still-present branch has no remaining task-owned unlanded commits. `task:reconcile-absent-branch-unproven` records a skipped absent-branch candidate. Metadata is IDs and fixed outcomes only: task id, source (`self-healing` or `manual`), branch/base branch identifiers, merge SHA/strategy or fixed reason, and ownership-proof classification; it never contains commit subjects, diffs, or reviewer text. Both emissions use the FN-9175 bounded best-effort engine seam, so hostile sinks cannot alter reconciliation. The unproven event is deduplicated per manager only after its audit write records successfully, allowing a failed audit write to be retried. `fn task reconcile <id>` and the automatic self-healing absent-branch sweep both call the same `SelfHealingManager.reconcileLandedReviewTask` fence, so a manual reconcile and an automatic one can never disagree about what "landed" means.
 
+### Operator comment delivery (RUFU-259)
+
+Every operator-facing comment write path (task comment, steering, review-address, PR address-feedback, Planner Chat
+steering, `fn task comment`, `fn task steer`) hands the body to one resolved agent through the core delivery seam,
+and each attempt records exactly one row: `task:comment-delivery` for the routed and transport outcomes, or
+`task:comment-delivery-unowned` when the outcome is `unrouted` (no agent on the card, its column, its workflow, or
+the lane pool could be named). The split exists so "nobody was told" is a queryable class of its own rather than a
+value buried inside the general stream.
+
+Metadata is ids/counts/fixed enums only: `source` (which surface accepted the comment), `kind`
+(`comment` | `steering`), `commentId`, `via` (`assignee` | `column-binding` | `workflow-binding` | `triage-pool` |
+`executor-pool` | `none`), `outcome` (`delivered` | `already-delivered` | `unrouted` | `no-message-store` |
+`send-failed`), `unroutedReason` (`pool-empty` | `pool-ambiguous`, or `none`), the `skippedRungs` walk record,
+`poolSize`, and `messageStoreAvailable`; a successful write adds `messageId` and a failed hand-off adds
+`noticeDelivered`. The comment text, the rendered inbox body, and any error message are never recorded. `agentId`
+and `runId` are the fixed synthetic `task-comment-delivery` identity, with `runId` =
+`task-comment-delivery:<taskId>:<commentId>` so all rows for one comment group by that comment.
+
+Emission goes through the core bounded seam (`emitBoundedRunAudit`), so an absent, throwing, or hanging audit sink
+cannot fail a comment, delay the operator's response, or change the delivery outcome; the durable
+`sendMessageOnce` inbox write is the only guarantee the seam makes. The undelivered cases additionally notify the
+operator on the mailbox (deduped per comment) and log a non-delivery entry on the card, because a stored comment
+that nobody was given is an outcome the operator has to be able to see without querying the audit store.
+
 ### Merge-boundary evidence recovery (FN-9345)
 
 Missing implementation proof is normally repaired through the workflow's durable task log and graph remediation path before merge admission. On startup and periodic maintenance, `task:merge-boundary-evidence-recovered` records a historic proofless park only after durable unfinished work, lifecycle ownership, liveness, and auto-merge policy are re-verified. These repairs intentionally do not put boundary reason prose, foreach identities, paths, review output, or external capability diagnostics in run-audit metadata. If recovery cannot prove an executable owner, the existing terminal `task:merge-boundary-unproven-parked` event remains the fail-closed audit surface and retains its ids/counts/fixed-outcomes-only contract.

@@ -1064,6 +1064,44 @@ And engine logs emit a structured correlation line keyed by `[wake-trigger-diagn
 2. Find lines where `triggerDetail=wake-on-message` (or forced variant) and `inboxUnreadCount=0 wakeMessageStillUnread=false`.
 3. Correlate `messageId`, `from=`, and `run=` with the run's Wake Delta block; this indicates a false-positive wake where the trigger message had already been consumed by snapshot time.
 
+### Operator Comments Are Delivered, Not Counted
+
+<!-- FNXC:CommentDelivery 2026-09-27-20:18: RUFU-259 — the wake counted comments while no agent could read them. -->
+
+A comment or steering note is only worth what its recipient can read. Every operator-facing write path — the
+task-detail comment box and Activity composer, review-address, PR address-feedback, Planner Chat steering, and
+`fn task comment` / `fn task steer` — writes the body into one resolved agent's inbox before it answers.
+
+- **Recipient resolution** is one agent, in this order: task assignee → the agent bound to the card's current
+  workflow column → an agent bound to the card's selected workflow → an idle triage-class agent (planning lane)
+  → an idle executor-class agent (work lane). Ambiguity never fans out: two candidates at one rung stop the walk
+  rather than pick arbitrarily or deliver twice.
+- **Idempotent per comment.** The inbox row is keyed `task-comment:<taskId>:<commentId>`, so a re-posted comment
+  or a retried request cannot queue the same instruction twice.
+- **Wake policy is unchanged by delivery.** Only a user-authored comment stamps `metadata.wakeRecipient`, which
+  is the existing convention for overriding an agent's `messageResponseMode`. Comments authored by agents are
+  delivered but never force a run. An `on-heartbeat` agent receives the body and reads it on its next tick; an
+  `immediate` agent is also woken now, in-process, when a heartbeat monitor is reachable.
+- **A comment that reaches nobody is a reported fact**, never a silent one: it is recorded in run-audit
+  (`task:comment-delivery-unowned`), mailed to the operator's inbox, and logged on the card.
+- **Text answers state the outcome.** `fn task comment`, `fn task steer`, and Planner Chat steering print the
+  agent the body reached, or plainly say nobody was told. "Comment added" is not a delivery claim.
+
+What the woken agent can read back:
+
+- The Wake Delta header `- triggering comments: 2 of 3 readable on this card` separates the count the agent can
+  act on from the count that was advertised. Every advertised id then gets its own line — the body with its
+  author when the card holds it, or `- [unknown] (commentId: …): body is NOT on this card — do not guess its
+  content` — and the block ends with the exact `fn_task_show(id: "<taskId>", commentIds: […])` call to re-read them.
+- `fn_task_show` takes `commentIds` (up to 20) and returns matching task comments **and** steering comments with
+  author and timestamp, labelling an advertised id it cannot find rather than silently omitting it.
+- When prompt trimming elides comment blocks, the marker keeps the pointer alive: `… (older comments hidden;
+  read them with fn_task_show commentIds=["…"])`. Trimming never removes the only copy of an id.
+
+Delivery is a body hand-off and a wake only. It grants no lifecycle authority: reading comments stays read-only,
+the comment-to-replan release path is untouched, and await-input answers and `[planner-oversight]` nudges keep
+their existing channels rather than becoming comments.
+
 ### Default Procedure: Bound-Task Scope Discipline
 
 The shipped default `HEARTBEAT_PROCEDURE` (in `packages/engine/src/agent-heartbeat.ts`) now requires bound-task classification on each tick: `executor-class`, `blocked`, or `coordination-class`.

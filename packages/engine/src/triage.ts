@@ -4682,8 +4682,20 @@ export class TriageProcessor {
   private createTriageTools(options: { parentTaskId: string }): ToolDefinition[] {
     const store = this.store;
 
+    /*
+    FNXC:CommentDelivery 2026-09-27-16:50 (RUFU-259):
+    The planner lane carries the same optional comment-id read as the shared factory
+    (`taskShowParams` in `agent-tools.ts`), because both surfaces are model-visible as
+    `fn_task_show`. Two tools with one name must not disagree about whether an advertised comment id
+    returns a body — the planner is a recipient of operator steering, so it is the lane least allowed
+    to be the one that cannot read a comment.
+    */
     const taskGetParams = Type.Object({
       id: Type.String({ description: "Task ID (e.g. KB-001)" }),
+      commentIds: Type.Optional(Type.Array(Type.String(), {
+        description: "Optional comment or steering-comment ids to return bodies for. Resolved against both `comments` and `steeringComments`.",
+        maxItems: 20,
+      })),
     });
     const taskSearchParams = Type.Object({
       query: Type.String({ minLength: 1, description: "Search query" }),
@@ -4813,7 +4825,8 @@ export class TriageProcessor {
       label: "Get Task",
       description:
         "Get full details of a specific task including its PROMPT.md content. " +
-        "Use to verify duplicates and to read dependency task specs before writing a new PROMPT.md.",
+        "Use to verify duplicates and to read dependency task specs before writing a new PROMPT.md. " +
+        "Pass commentIds to read the body of comment or steering comments by id (e.g. operator steering that woke this run).",
       parameters: taskGetParams,
       execute: async (
         _callId: string,
@@ -4831,6 +4844,7 @@ export class TriageProcessor {
             "",
             "PROMPT.md:",
             task.prompt || "(not yet specified)",
+            fusionCore.renderTaskCommentSection(task, params.commentIds) || null,
           ].filter(Boolean);
           return {
             content: [{ type: "text" as const, text: parts.join("\n") }],

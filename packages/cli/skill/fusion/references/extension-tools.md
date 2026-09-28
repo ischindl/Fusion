@@ -44,7 +44,7 @@ List all tasks on the Fusion board, grouped by column.
 
 ### fn_task_show
 
-Show full details for a task including steps, progress, and log entries.
+Show full details for a task including steps, progress, and log entries. Pass commentIds to read comment or steering-comment bodies by id (e.g. the ids a wake delta named).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

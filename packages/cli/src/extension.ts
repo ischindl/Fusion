@@ -2381,10 +2381,21 @@ export default function kbExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "fn_task_show",
     label: "fn: Show Task",
-    description: "Show full details for a task including steps, progress, and log entries.",
+    description: "Show full details for a task including steps, progress, and log entries. Pass commentIds to read comment or steering-comment bodies by id (e.g. the ids a wake delta named).",
     promptSnippet: "Show full details for a Fusion task",
     parameters: Type.Object({
       id: Type.String({ description: "Task ID (e.g. FN-001)" }),
+      /*
+      FNXC:CommentDelivery 2026-09-27-17:00 (RUFU-259):
+      This is the `fn_task_show` a task-execution session actually holds, so it is the surface the
+      RUFU-251 measurement proved could not return a comment body. The shared renderer lives in
+      `@fusion/core` (`tasks/task-comment-read.ts`) precisely so this registration, the engine
+      factory, and the planner lanes cannot disagree about what an advertised id returns.
+      */
+      commentIds: Type.Optional(Type.Array(Type.String(), {
+        description: "Optional comment or steering-comment ids to return bodies for. Resolved against both `comments` and `steeringComments`.",
+        maxItems: 20,
+      })),
     }),
 
     /*
@@ -2459,6 +2470,13 @@ export default function kbExtension(pi: ExtensionAPI) {
             `  ${ts}  ${l.action}${l.outcome ? ` → ${l.outcome}` : ""}`,
           );
         }
+      }
+
+      // Requested comment bodies (RUFU-259) — appended last so the card's own spec keeps priority.
+      const commentSection = fusionCore.renderTaskCommentSection(task, params.commentIds);
+      if (commentSection) {
+        lines.push("");
+        lines.push(commentSection);
       }
 
       return {

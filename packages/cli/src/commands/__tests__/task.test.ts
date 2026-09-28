@@ -265,7 +265,9 @@ vi.mock("../../project-context.js", () => {
 
 import { createInterface } from "node:readline/promises";
 import { TaskStore, CentralCore, extractIntentSignature, findNearDuplicates, MAX_TASK_MESSAGE_LENGTH, runDeterministicDuplicateGuard, reconcileDeterministicDuplicate } from "@fusion/core";
-import { watchFile, unwatchFile, statSync, existsSync, readFileSync } from "node:fs";
+import { watchFile, unwatchFile, statSync, existsSync, readFileSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { exec } from "node:child_process";
 import { runTaskShow, runTaskCreate, runTaskList, runTaskDuplicate, runTaskRefine, runTaskDelete, runTaskRetry, runTaskLogs, runTaskComment, runTaskComments, runTaskPrCreate, runTaskPlan, runTaskMove, runTaskAttach, runTaskPause, runTaskUnpause, runTaskSteer, runTaskSetNode, runTaskClearNode, runTaskImportFromGitHub, runTaskImportGitHubInteractive, runTaskUpdate, runTaskLog, runTaskMerge, type LogsOptions } from "../task.js";
 import {
@@ -3373,6 +3375,42 @@ describe("runTaskComment", () => {
     await runTaskComment("FN-001", longComment, "alice");
 
     expect(addTaskComment).toHaveBeenCalledWith("FN-001", longComment, "alice");
+  });
+
+  /*
+  FNXC:CommentDelivery 2026-09-27-22:10 (RUFU-259 Step 5):
+  `fn task comment` used to print "✓ Comment added" and exit, which is exactly the claim this card says a
+  write may not make. The command now runs the shared delivery seam, and the audit row is where its payload
+  is observable. `commentId` is the load-bearing assertion: `addTaskComment` returns the TASK, so reading
+  `.id` off that result would name FN-001 as the comment's identity on every delivery. The empty fusion dir
+  keeps the durable-agent pool empty on purpose, so the outcome is a deterministic `unrouted` rather than
+  whatever agents happen to live in the developer's real `.fusion`.
+  */
+  it("hands the appended comment row to delivery and reports the outcome instead of only the write", async () => {
+    const auditEvents: Array<{ mutationType: string; metadata: Record<string, unknown> }> = [];
+    (TaskStore as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => ({
+      init: vi.fn(),
+      getFusionDir: () => mkdtempSync(join(tmpdir(), "fusion-cli-delivery-")),
+      recordRunAuditEvent: vi.fn(async (event: { mutationType: string; metadata: Record<string, unknown> }) => {
+        auditEvents.push({ mutationType: event.mutationType, metadata: event.metadata });
+      }),
+      addTaskComment: vi.fn().mockResolvedValue(makeTask({
+        comments: [{ id: "c-9", text: "Check the retry budget first", author: "user", createdAt: "2026-09-27T20:00:00.000Z" }],
+      })),
+    }));
+
+    await runTaskComment("FN-001", "Check the retry budget first", "user");
+
+    const delivery = auditEvents.find((event) => event.mutationType.startsWith("task:comment-delivery"));
+    expect(delivery, "the command must attempt the hand-off, not only the row write").toBeDefined();
+    expect(delivery!.metadata).toMatchObject({
+      source: "cli-comment",
+      kind: "comment",
+      commentId: "c-9",
+    });
+    expect(delivery!.metadata.commentId).not.toBe("FN-001");
+    // The operator sees who received it (or why nobody did), never a bare "added".
+    expect(logSpy.mock.calls.flat().join("\n")).toMatch(/no agent|delivered|nobody/i);
   });
 
   it("lists task comments", async () => {

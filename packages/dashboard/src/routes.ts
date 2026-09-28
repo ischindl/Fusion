@@ -26,6 +26,8 @@ import {
   resolveWorkflowIrForTask,
   columnsWithFlag,
   resolveEffectiveConcurrency,
+  deliverTaskCommentFromStore,
+  type TaskCommentDeliveryResult,
 } from "@fusion/core";
 import type { ServerOptions } from "./server.js";
 import { SESSION_CLEANUP_DEFAULT_MAX_AGE_MS, type AiSessionType } from "./ai-session-store.js";
@@ -44,7 +46,7 @@ import {
 import { createPluginRouter } from "./plugin-routes.js";
 import { createApiRoutesContext } from "./routes/context.js";
 import { createRegistrarMounter } from "./routes/create-api-routes-mount-sequence.js";
-import { registerTaskWorkflowRoutes } from "./routes/register-task-workflow-routes.js";
+import { registerTaskWorkflowRoutes, type CommentWakeInput } from "./routes/register-task-workflow-routes.js";
 import { registerWorkflowRoutes } from "./routes/register-workflow-routes.js";
 import { registerPlanningSubtaskRoutes } from "./routes/register-planning-subtask-routes.js";
 import { registerChatRoutes } from "./routes/register-chat-routes.js";
@@ -1113,30 +1115,77 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
   }
 
   /**
-   * Trigger a heartbeat wake for an assigned agent based on a comment event.
+   * Hand a freshly written operator comment to the agent that owns the card, then wake it if that is
+   * the agent's configured mode.
    *
    * UTILITY PATH: This function is on the heartbeat control-plane lane and is
    * independent of task-lane saturation. It must NOT be gated on maxConcurrent,
    * semaphore state, or queue depth.
    *
-   * Skip reasons (these are normal operation, not saturation gates):
+   * FNXC:CommentDelivery 2026-09-27-18:24 (RUFU-259):
+   * This function used to be wake-only, and its FIRST skip was `responseMode !== "immediate"` — so for
+   * an `on-heartbeat` agent the comment body was written to the card and handed to nobody, while the
+   * route answered 200 and the dashboard said "Comment added." That skip is gone from delivery: the
+   * body is now written durably into the recipient's inbox for every responseMode, and `responseMode`
+   * only decides whether we ALSO run an immediate heartbeat. `responseMode` is a statement about wake
+   * latency, never about whether an operator's instructions are read.
+   *
+   * Delivery skips: none. Unrouted comments are reported (operator mailbox + run-audit) rather than
+   * dropped, so a card nobody owns shows up as a visible problem instead of a silent one.
+   *
+   * Wake skip reasons (normal operation, not saturation gates):
    * - No HeartbeatMonitor available (heartbeat executor not configured)
-   * - No agent assigned to the task
    * - HeartbeatMonitor is bound to a different project
-   * - Agent's responseMode is not "immediate" (non-immediate mode skips on-demand wakes)
+   * - No recipient resolved (nothing to wake)
+   * - The body already landed durably and the agent's responseMode is not "immediate" (only a
+   *   user-authored comment carries `wakeRecipient`, which is what overrides that setting)
    * - Agent already has an active heartbeat run (prevents duplicate runs)
    */
   const triggerCommentWakeForAssignedAgent = async (
     scopedStore: TaskStore,
     task: Task,
-    wake: {
-      triggeringCommentType: "steering" | "task" | "pr";
-      triggeringCommentIds?: string[];
-      triggerDetail: string;
-    },
-  ): Promise<void> => {
+    wake: CommentWakeInput,
+  ): Promise<TaskCommentDeliveryResult | undefined> => {
+    const delivery = await deliverTaskCommentFromStore({
+      store: scopedStore,
+      task,
+      comment: wake.comment,
+      source: wake.source,
+      /*
+      FNXC:CommentDelivery 2026-09-27-21:40 (RUFU-259 Step 4):
+      The two halves have different gates on purpose. Delivery is unconditional (an unrouted comment is
+      reported, never dropped); the immediate run is skipped when the calling route already owns it — a
+      review-lane re-engagement moves the card and re-dispatches it, so waking here would run the same
+      comment twice. This is why `wakeEligible: false` still returns the delivery result: the caller needs
+      to know the body landed even when it arranged the run itself.
+      */
+      onRouted: (recipientAgentId, result) =>
+        wake.wakeEligible === false
+          ? undefined
+          : wakeAgentForDeliveredComment(scopedStore, task, wake, recipientAgentId, result),
+    });
+    return delivery;
+  };
+
+  /** The wake half of comment delivery: immediate-mode agents (or a failed durable write) get a run. */
+  async function wakeAgentForDeliveredComment(
+    scopedStore: TaskStore,
+    task: Task,
+    wake: CommentWakeInput,
+    recipientAgentId: string,
+    result: TaskCommentDeliveryResult,
+  ): Promise<void> {
+    /*
+    FNXC:CommentDelivery 2026-09-27-20:00 (RUFU-259 Step 4):
+    Who may FORCE a run is decided by the `metadata.wakeRecipient` convention the seam writes (only a
+    user-authored comment sets it) and by `deliverMessageToAgent`, which requires `fromType === "user"`
+    before it overrides an agent's `messageResponseMode`. This call path is the FALLBACK for hosts where
+    the message hook is not wired, so it mirrors that rule instead of inventing a stricter one: an agent
+    that configured "immediate" is still entitled to be woken by mail addressed to it, and refusing here
+    would silently break that configuration for comments only.
+    */
     // Skip: no HeartbeatMonitor available
-    if (!hasHeartbeatExecutor || !heartbeatMonitor || !task.assignedAgentId) {
+    if (!hasHeartbeatExecutor || !heartbeatMonitor) {
       return;
     }
 
@@ -1155,20 +1204,22 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
     const agentStore = new AgentStore({ rootDir: scopedStore.getFusionDir(), asyncLayer: scopedStore.getAsyncLayer() ?? undefined });
     await agentStore.init();
 
-    const assignedAgent = await agentStore.getAgent(task.assignedAgentId);
+    const recipient = await agentStore.getAgent(recipientAgentId);
     // Skip: agent not found
-    if (!assignedAgent) {
+    if (!recipient) {
       return;
     }
 
-    // Skip: agent's responseMode is not "immediate" (non-immediate mode skips on-demand wakes)
-    const responseMode = (assignedAgent.runtimeConfig as { messageResponseMode?: string } | undefined)?.messageResponseMode;
-    if (responseMode !== "immediate") {
+    // Skip: the body is already durable in this agent's inbox and it is not an immediate-wake agent.
+    // A durable write that FAILED is the opposite case — then the wake hint is the only carrier left.
+    const responseMode = (recipient.runtimeConfig as { messageResponseMode?: string } | undefined)?.messageResponseMode;
+    const carried = result.outcome === "delivered" || result.outcome === "already-delivered";
+    if (carried && responseMode !== "immediate") {
       return;
     }
 
     // Skip: agent already has an active heartbeat run (prevents duplicate runs)
-    const activeRun = await agentStore.getActiveHeartbeatRun(assignedAgent.id);
+    const activeRun = await agentStore.getActiveHeartbeatRun(recipient.id);
     if (activeRun) {
       return;
     }
@@ -1183,7 +1234,7 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
     };
 
     await resolvedMonitor.executeHeartbeat({
-      agentId: assignedAgent.id,
+      agentId: recipient.id,
       source: "on_demand",
       triggerDetail: wake.triggerDetail,
       taskId: task.id,
@@ -1191,7 +1242,7 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
       triggeringCommentType: wake.triggeringCommentType,
       contextSnapshot,
     });
-  };
+  }
 
   registrarMounter.mount("registerConfigMcpPiSettingsRoutes", () => registerConfigMcpPiSettingsRoutes(routeContext));
 

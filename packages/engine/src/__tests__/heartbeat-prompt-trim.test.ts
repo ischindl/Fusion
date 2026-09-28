@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { trimPromptMd, trimTaskDescription, trimTriggeringComments } from "../agents/heartbeat-prompt-trim.js";
+import {
+  buildCommentsTruncationMarker,
+  trimPromptMd,
+  trimTaskDescription,
+  trimTriggeringComments,
+} from "../agents/heartbeat-prompt-trim.js";
 
 const TASK_MARKER = "… (truncated, use fn_task_show for full)";
 const COMMENT_MARKER = "… (older comments hidden, fetch via fn_task_show)";
@@ -102,5 +107,31 @@ describe("trimTriggeringComments", () => {
     const joined = trimmed.join("\n");
     expect(joined.length).toBe(500);
     expect(joined.endsWith(COMMENT_MARKER)).toBe(true);
+  });
+
+  /*
+  FNXC:CommentDelivery 2026-09-27-18:20 (RUFU-259):
+  `fn_task_show` reads a comment by ID, so a marker that hides the dropped ids tells the agent to use an
+  affordance it cannot invoke. Once the wake knows the ids, the marker must carry them.
+  */
+  it("names the hidden comment ids so the marker is actually executable", () => {
+    const lines = ["h1", "h2", `A${"z".repeat(600)}`, `B${"z".repeat(600)}`, `C${"z".repeat(600)}`];
+    const trimmed = trimTriggeringComments(lines, "default", ["1758-aaa", "1758-bbb"]).join("\n");
+    expect(trimmed).toContain('fn_task_show commentIds=["1758-aaa", "1758-bbb"]');
+    // The bare-"fetch via fn_task_show" form must not survive once ids are known.
+    expect(trimmed).not.toContain("older comments hidden, fetch via fn_task_show");
+  });
+
+  it("bounds the id list in the marker instead of pasting every hidden id", () => {
+    const ids = Array.from({ length: 8 }, (_, index) => `1758-id-${index}`);
+    const marker = buildCommentsTruncationMarker(ids);
+    // The overflow note sits outside the brackets so the id list stays pasteable as a call argument.
+    expect(marker).toContain('commentIds=["1758-id-0", "1758-id-1", "1758-id-2", "1758-id-3", "1758-id-4"]) (+3 more hidden)');
+    expect(marker).not.toContain("1758-id-7");
+  });
+
+  it("keeps the id-free marker when a wake advertised no ids", () => {
+    expect(buildCommentsTruncationMarker(undefined)).toBe(COMMENT_MARKER);
+    expect(buildCommentsTruncationMarker([])).toBe(COMMENT_MARKER);
   });
 });

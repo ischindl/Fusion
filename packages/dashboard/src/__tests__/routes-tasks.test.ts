@@ -2590,9 +2590,28 @@ describe("POST /tasks/:id/pr/address-feedback", () => {
       runtimeConfig: { messageResponseMode: "immediate" },
     } as any);
     const activeRunSpy = vi.spyOn(AgentStore.prototype, "getActiveHeartbeatRun").mockResolvedValue(null);
+    /*
+    FNXC:CommentDelivery 2026-09-28-02:46 (RUFU-259 merge fix):
+    Two facts the pre-delivery route never needed and the delivery route does:
+    (1) the assignee must exist in the durable agent pool — the recipient ladder skips a `dangling-assignee`
+        rather than waking an agent it cannot name, so the pool the host reads (`listAgents`) is seeded;
+    (2) `addSteeringComment` resolves the TASK, and the route now reads the appended steering ROW off that
+        result (`steeringComments.at(-1)`) — reading `result.id` off it, which is the task id, is exactly the
+        defect RUFU-259 removes. The store fake therefore returns a task carrying the new steering row.
+    */
+    const listAgentsSpy = vi.spyOn(AgentStore.prototype, "listAgents").mockResolvedValue([{
+      id: "agent-1",
+      name: "Executor",
+      role: "executor",
+      state: "idle",
+      runtimeConfig: { messageResponseMode: "immediate" },
+    }] as never);
     (store.getFusionDir as ReturnType<typeof vi.fn>).mockReturnValue("/fake/root/.fusion");
     (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValueOnce(task).mockResolvedValueOnce(task);
-    (store.addSteeringComment as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "sc-1" });
+    (store.addSteeringComment as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...task,
+      steeringComments: [{ id: "sc-1", text: "Address PR feedback", author: "user", createdAt: "2026-06-28T00:00:00.000Z" }],
+    });
 
     try {
       const res = await REQUEST(
@@ -2623,6 +2642,7 @@ describe("POST /tasks/:id/pr/address-feedback", () => {
       initSpy.mockRestore();
       getAgentSpy.mockRestore();
       activeRunSpy.mockRestore();
+      listAgentsSpy.mockRestore();
     }
   });
 

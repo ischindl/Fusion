@@ -7,7 +7,7 @@ Import union for this line: ours adds `isFollowUpTask`, `resolveWorkflowIrForTas
 but the merged body has no call site, so keeping them would be dead references. Engine side keeps ours
 (`admitTaskToWip`/`isFirstPlanningToWipAdmission`/`planTaskWorktreePath`) and `SelfHealingManager`, which both lines need.
 */
-import { TaskStore, COLUMNS, COLUMN_LABELS, deriveTaskLabelFromDescription, describeTaskTitleRejection, isFollowUpTask, MAX_TASK_MESSAGE_LENGTH, resolveProjectColumnsForRoles, TERMINAL_ROLES, resolveReviewColumns, resolveTaskLifecycleColumns, resolveWorkflowIrForTask, resolvePreMergeGateForTask, resolveWorkflowIrForTaskWithProvenance, workflowHasColumn, resolveEffectiveAutoMerge, CentralCore, buildAutoPauseClearPatch, buildManualRetryResetPatch, extractIntentSignature, findNearDuplicates, getTaskDuplicateLineage, isValidRepoSlug, isWorkspaceTask, reconcileDeterministicDuplicate, resolveTaskGithubTracking, runDeterministicDuplicateGuard, type Settings, type Column, type ColumnId, type StepStatus, type AgentLogType, type AgentLogEntry, type IntentSignature, type NearDuplicateCandidate, type NearDuplicateMatch, type TaskDependencyMutation } from "@fusion/core";
+import { TaskStore, COLUMNS, COLUMN_LABELS, deriveTaskLabelFromDescription, describeTaskTitleRejection, isFollowUpTask, MAX_TASK_MESSAGE_LENGTH, resolveProjectColumnsForRoles, TERMINAL_ROLES, resolveReviewColumns, resolveTaskLifecycleColumns, resolveWorkflowIrForTask, resolvePreMergeGateForTask, resolveWorkflowIrForTaskWithProvenance, workflowHasColumn, resolveEffectiveAutoMerge, CentralCore, buildAutoPauseClearPatch, buildManualRetryResetPatch, extractIntentSignature, findNearDuplicates, getTaskDuplicateLineage, isValidRepoSlug, isWorkspaceTask, reconcileDeterministicDuplicate, resolveTaskGithubTracking, runDeterministicDuplicateGuard, deliverTaskCommentFromStore, describeTaskCommentDelivery, type Settings, type Column, type ColumnId, type StepStatus, type AgentLogType, type AgentLogEntry, type IntentSignature, type NearDuplicateCandidate, type NearDuplicateMatch, type TaskDependencyMutation } from "@fusion/core";
 import { isFailedNoVerdictPreMergeReviewResult, admitTaskToWip, isFirstPlanningToWipAdmission, isInReviewMissingWorktreeSessionStartFailure, planTaskWorktreePath, runAiMerge, landWorkspaceTask, withWorkspaceMergeDispatchLease, clearOwnedMergeStamp, reconcileUnownedStaleMergeStamp, SelfHealingManager } from "@fusion/engine";
 import { createInterface } from "node:readline/promises";
 import type { PlanningQuestion, PlanningSummary } from "@fusion/core";
@@ -2598,11 +2598,34 @@ export async function runTaskComment(id: string, message?: string, author = "use
     const task = await context.store.addTaskComment(id, trimmed, author || "user");
     const latestComment = task.comments?.[task.comments.length - 1];
 
+    /*
+    FNXC:CommentDelivery 2026-09-27-20:40 (RUFU-259 Step 4):
+    This command used to print "Comment added" and stop, which is the sentence this card exists to retire:
+    an add that reaches nobody is not a delivery. The same core seam every dashboard surface uses runs here,
+    so the answer reports the agent the body actually reached. No `onRouted`: this process has no heartbeat
+    monitor, so the CLI never wakes anyone — the durable inbox row IS the hand-off, read at the next beat.
+    A hand-off that cannot be attempted must not fail the command: the comment row is already written, so
+    `null` degrades to the honest "nobody has been told" sentence rather than a non-zero exit.
+    */
+    const delivery = await deliverTaskCommentFromStore({
+      store: context.store,
+      task,
+      comment: {
+        id: latestComment?.id ?? "",
+        text: trimmed,
+        author: author || "user",
+        createdAt: latestComment?.createdAt,
+        kind: "comment",
+      },
+      source: "cli-comment",
+    }).catch(() => null);
+
     console.log();
     console.log(`  ✓ Comment added to ${task.id}`);
     if (latestComment) {
       console.log(`    ID: ${latestComment.id}`);
     }
+    console.log(`    ${describeTaskCommentDelivery(delivery)}`);
     console.log();
   });
 }
@@ -2668,9 +2691,33 @@ export async function runTaskSteer(id: string, message?: string, projectName?: s
 
     // Show success with preview
     const preview = trimmed.length > 60 ? trimmed.slice(0, 60) + "…" : trimmed;
+
+    /*
+    FNXC:CommentDelivery 2026-09-27-20:45 (RUFU-259 Step 4):
+    `fn task steer` was the loudest instance of the defect: it is the command an operator types when they
+    believe the agent is listening, and it only appended a row. Delivery goes through the same seam as
+    every other surface (no `onRouted` — no heartbeat monitor in this process), and the answer now states
+    who received it instead of only that a row was written. `addSteeringComment` returns the TASK, so the
+    id handed to the seam is the appended row's, not the task's.
+    */
+    const latestSteering = task.steeringComments?.at(-1);
+    const delivery = await deliverTaskCommentFromStore({
+      store: context.store,
+      task,
+      comment: {
+        id: latestSteering?.id ?? "",
+        text: latestSteering?.text ?? trimmed,
+        author: "user",
+        createdAt: latestSteering?.createdAt,
+        kind: "steering",
+      },
+      source: "cli-steer",
+    }).catch(() => null);
+
     console.log();
     console.log(`  ✓ Steering comment added to ${task.id}`);
     console.log(`    "${preview}"`);
+    console.log(`    ${describeTaskCommentDelivery(delivery)}`);
     console.log();
   });
 }

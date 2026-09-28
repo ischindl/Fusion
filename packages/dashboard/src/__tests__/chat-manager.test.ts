@@ -3060,6 +3060,14 @@ describe("ChatManager.sendMessage", () => {
       author: "user",
       createdAt: "2026-06-30T23:59:00.000Z",
     };
+    /*
+    FNXC:CommentDelivery 2026-09-27-21:55 (RUFU-259 Step 4):
+    `getFusionDir` points the delivery host at an empty durable-agent pool so this case is deterministic
+    instead of inheriting whatever agents happen to live in the developer's real `.fusion`. With an empty
+    pool the hand-off is honestly `unrouted`, which is the outcome this test needs: it proves the tool
+    REPORTS the fate of the body and hands the seam the appended steering row's OWN id.
+    */
+    const auditEvents: Array<{ mutationType: string; metadata: Record<string, unknown> }> = [];
     const taskStore = {
       getTask: vi.fn().mockResolvedValue({ id: "FN-7310", title: "Add planner chat", column: "todo" }),
       addSteeringComment: vi.fn().mockResolvedValue({
@@ -3068,6 +3076,10 @@ describe("ChatManager.sendMessage", () => {
         steeringComments: [persistedComment],
       }),
       getSettings: vi.fn().mockResolvedValue({}),
+      getFusionDir: () => mkdtempSync(join(TEST_ROOT, "fusion-empty-")),
+      recordRunAuditEvent: vi.fn(async (event: { mutationType: string; metadata: Record<string, unknown> }) => {
+        auditEvents.push({ mutationType: event.mutationType, metadata: event.metadata });
+      }),
     };
     const chatManager = new ChatManager(
       mockChatStore as any,
@@ -3099,7 +3111,28 @@ describe("ChatManager.sendMessage", () => {
       text: "Keep the new Chat tab separate from Activity.",
       taskUpdatedAt: "2026-06-30T23:59:01.000Z",
       steeringComment: persistedComment,
+      delivery: expect.objectContaining({ via: "none", unroutedReason: "pool-empty" }),
     });
+
+    /*
+    FNXC:CommentDelivery 2026-09-27-21:55 (RUFU-259 Step 4, symptom verification):
+    Before this card, the planner-chat steering tool's whole effect was the row above: it answered
+    "Added as steering comment" and told nobody. The tool now runs the same delivery seam every write
+    surface uses, and the audit row is where its payload is observable. `commentId` is the assertion that
+    carries the defect: `addSteeringComment` returns the TASK, so reading `.id` off its result would name
+    FN-7310 and every delivery would claim the card's id as the comment's identity.
+    */
+    const delivery = auditEvents.find((event) => event.mutationType.startsWith("task:comment-delivery"));
+    expect(delivery, "the steering tool must attempt the hand-off, not only write the row").toBeDefined();
+    expect(delivery!.metadata).toMatchObject({
+      source: "planner-chat",
+      kind: "steering",
+      commentId: "steer-7310",
+      outcome: "unrouted",
+    });
+    expect(delivery!.metadata.commentId).not.toBe("FN-7310");
+    // The answer text must state the fate of the body rather than only that a row was written.
+    expect(result.content[0].text).toMatch(/no agent|delivered|nobody/i);
   });
 
   it("persists duplicate clear planner steering requests only when the tool is called again", async () => {

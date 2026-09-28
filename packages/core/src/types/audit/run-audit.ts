@@ -64,6 +64,18 @@ export type RunAuditMutationType =
   */
   | "task:planning-admission-stalled"
   | "task:planning-admission-stalled-no-action"
+  /*
+  FNXC:CommentDelivery 2026-09-27-17:36 (RUFU-259):
+  `task:comment-delivery` records one comment's routing attempt and `task:comment-delivery-unowned` the
+  one case where no agent could be resolved at all. Before these rows existed a comment could be dropped
+  (an `on-heartbeat` recipient skipped by the wake path, or a card nobody owns) while the write surface
+  still answered 200, so nothing in the system distinguished "steering landed" from "steering
+  evaporated". Metadata is ids/counts/fixed enums only (`source`, `kind`, `commentId`, `via`, `outcome`,
+  `unroutedReason`, `skippedRungs`, `poolSize`, `messageStoreAvailable`, optional
+  `messageId`/`noticeDelivered`); the comment body is operator prose and is never recorded.
+  */
+  | "task:comment-delivery"
+  | "task:comment-delivery-unowned"
   | "task:vanished-approved-work"
   | "task:row-purged-for-resurrection"
   | (string & {});

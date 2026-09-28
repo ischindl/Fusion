@@ -45,6 +45,8 @@ import {
   resolvePermanentAgentEffectiveThinkingLevel,
   isExperimentalFeatureEnabled,
   CHAT_FOCUS_FLAG,
+  deliverTaskCommentFromStore,
+  describeTaskCommentDelivery,
 } from "@fusion/core";
 import { EventEmitter } from "node:events";
 import { RATE_LIMIT_ENTRY_BYTES } from "./lib/retention-census.js";
@@ -1058,12 +1060,37 @@ function createTaskPlannerSteeringTool(taskStore: TaskStore, taskId: string) {
       const steeringComment = task.steeringComments
         ?.filter((comment) => comment.author === "user" && comment.text === text)
         .at(-1);
+
+      /*
+      FNXC:CommentDelivery 2026-09-27-21:00 (RUFU-259 Step 4):
+      This tool is how an operator steers a card through the planner chat, and until now its whole effect
+      was one row on the card: the answer said "Added as steering comment" while nothing was handed to the
+      agent that would act on it. The body now goes through the same seam every other write surface uses.
+      Deliberately WITHOUT `onRouted`: a planner-chat session already owns this card's planning lane, and a
+      second forced run from here would race it — the durable inbox row is the hand-off, and the heartbeat
+      (or the message hook, for an immediate-mode agent) decides when to read it. A failed hand-off cannot
+      undo the write, so it degrades to the reported sentence below rather than erroring the tool.
+      */
+      const delivery = await deliverTaskCommentFromStore({
+        store: taskStore,
+        task,
+        comment: {
+          id: steeringComment?.id ?? "",
+          text: steeringComment?.text ?? text,
+          author: "user",
+          createdAt: steeringComment?.createdAt,
+          kind: "steering",
+        },
+        source: "planner-chat",
+      }).catch(() => null);
+
       return {
-        content: [{ type: "text" as const, text: `Added as steering comment on ${task.id}.` }],
+        content: [{ type: "text" as const, text: `Added as steering comment on ${task.id}. ${describeTaskCommentDelivery(delivery)}` }],
         details: {
           taskId: task.id,
           text,
           taskUpdatedAt: task.updatedAt,
+          delivery: delivery ?? { outcome: "not-attempted" },
           steeringComment: steeringComment
             ? {
                 id: steeringComment.id,

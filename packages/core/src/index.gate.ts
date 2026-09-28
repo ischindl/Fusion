@@ -217,6 +217,34 @@ export type {
   RankAssignedTasksForWakeDeltaResult,
 } from "./agents/assigned-task-ranking.js";
 export { MAX_TASK_LIST_TEXT_CHARS, clampTaskListText, formatTaskListText } from "./tasks/task-list-format.js";
+export { collectTaskCommentEntries, renderTaskCommentSection, resolveAdvertisedCommentIds, MAX_COMMENT_LOOKUP_IDS } from "./tasks/task-comment-read.js";
+export type { TaskCommentEntry } from "./tasks/task-comment-read.js";
+export {
+  taskCommentLaneRole,
+  taskCommentAuthorType,
+  taskCommentDeliveryId,
+  resolveTaskCommentRecipient,
+  renderTaskCommentMessage,
+  describeTaskCommentDelivery,
+  deliverTaskComment,
+} from "./tasks/task-comment-delivery.js";
+export { deliverTaskCommentFromStore } from "./tasks/task-comment-delivery-host.js";
+export type { TaskCommentTaskFacts, TaskCommentStoreHost, DeliverTaskCommentFromStoreInput } from "./tasks/task-comment-delivery-host.js";
+export type {
+  TaskCommentLane,
+  TaskCommentRecipientVia,
+  TaskCommentUnroutedReason,
+  TaskCommentRungSkip,
+  TaskCommentDeliveryOutcome,
+  TaskCommentSource,
+  TaskCommentColumnBinding,
+  TaskCommentRecipientInput,
+  TaskCommentRecipient,
+  TaskCommentMessageSink,
+  TaskCommentLogSink,
+  TaskCommentDeliveryInput,
+  TaskCommentDeliveryResult,
+} from "./tasks/task-comment-delivery.js";
 export {
   DEFAULT_TOOL_OUTPUT_MAX_CHARS,
   TOOL_OUTPUT_UNLIMITED_SETTING_VALUE,

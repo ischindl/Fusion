@@ -809,6 +809,12 @@ fn task comments FN-001
 fn task steer FN-001 "Reuse existing auth middleware"
 ```
 
+Both `comment` and `steer` report what happened to the body, not just that a row was written: the output names
+the agent the note was delivered to, or says plainly that no agent was available to receive it (the comment is
+still saved, and the miss is recorded on the card and in run-audit). The CLI process has no heartbeat monitor, so
+it never wakes anyone — the delivered inbox record is read on the recipient's next heartbeat tick. An agent that
+needs the text can read it back with `fn_task_show` `commentIds`.
+
 ### Completion, maintenance, and history
 
 ```bash

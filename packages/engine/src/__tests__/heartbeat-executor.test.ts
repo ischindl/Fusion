@@ -2605,7 +2605,17 @@ describe("executeHeartbeat", () => {
       const executionPrompt = promptCalls[promptCalls.length - 1][0];
       expect(executionPrompt).toContain("wake reason: message_received_already_consumed");
       expect(executionPrompt).toContain("- inbox snapshot: empty (already consumed)");
-      expect(executionPrompt).toContain("wake trigger source: message msg-empty-1 from user:user-empty, already consumed at snapshot");
+      /*
+      FNXC:CommentDelivery 2026-09-27-18:35 (RUFU-259):
+      This assertion used to pin `message msg-empty-1 … already consumed at snapshot`, which advertised an
+      id the agent's own reader cannot return — RUFU-251's second instance was exactly an agent burning
+      tool calls on one of these. The line keeps naming the ACTOR (who steered) and now states plainly that
+      the body is unrecoverable, so the agent neither guesses nor goes hunting.
+      */
+      expect(executionPrompt).toContain(
+        "wake trigger source: a message from user:user-empty was already marked read before this snapshot — its body is NOT retrievable from fn_read_messages",
+      );
+      expect(executionPrompt).not.toContain("msg-empty-1");
       expect(executionPrompt).toContain("- pending messages: 0");
       expect(executionPrompt).not.toContain("wake reason: message_received\n");
       expect(vi.mocked(heartbeatLog.log)).toHaveBeenCalledWith(
@@ -2650,7 +2660,11 @@ describe("executeHeartbeat", () => {
       const executionPrompt = promptCalls[promptCalls.length - 1][0];
       expect(executionPrompt).toContain("wake reason: message_received_urgent_already_consumed");
       expect(executionPrompt).toContain("- inbox snapshot: empty (already consumed)");
-      expect(executionPrompt).toContain("wake trigger source: message msg-forced-1 from user:user-forced (forced), already consumed at snapshot");
+      // Same honesty rule on the forced lane: the actor and the forced marker survive, the unreadable id does not.
+      expect(executionPrompt).toContain(
+        "wake trigger source: a message from user:user-forced (forced) was already marked read before this snapshot — its body is NOT retrievable from fn_read_messages",
+      );
+      expect(executionPrompt).not.toContain("msg-forced-1");
       expect(executionPrompt).toContain("- pending messages: 0");
       expect(vi.mocked(heartbeatLog.log)).toHaveBeenCalledWith(
         expect.stringMatching(/\[wake-trigger-diagnostics\].*messageId=msg-forced-1.*forced=true.*inboxUnreadCount=0.*wakeMessageStillUnread=false/),
@@ -3854,6 +3868,113 @@ describe("executeHeartbeat", () => {
       expect(promptArg).toContain("You were woken because of new comments on this task");
       expect(promptArg).toContain("Please cover edge cases");
       expect(promptArg).toContain("Investigating blocker");
+    });
+
+    /*
+    FNXC:CommentDelivery 2026-09-27-18:40 (RUFU-259):
+    The wake delta used to print `- triggering comments: N` and then skip any id whose body it could not
+    find, printing nothing about the skip. RUFU-251 measured the result: the counter advanced
+    `comments: 1 -> 2` while four tool calls proved no surface could return the body, so the agent could
+    not tell "nobody steered me" from "my lookup is wrong". These tests pin the replacement contract:
+    the counter is readable-of-advertised, every advertised id gets a line, and the miss says so.
+    */
+    it("counts triggering comments as readable-of-advertised instead of a bare count", async () => {
+      const store = createStoreWithAgentForExec();
+      const mockSession = createMockAgentSession();
+      mockedCreateFnAgent.mockResolvedValue({ session: mockSession as any });
+
+      mockTaskStore.getTask = vi.fn().mockResolvedValue({
+        id: "FN-001",
+        title: "Test Task",
+        description: "Test task description",
+        prompt: "# Prompt",
+        comments: [{ id: "c-1", author: "user", text: "Please cover edge cases", createdAt: "2026-01-01T00:00:00.000Z" }],
+        steeringComments: [],
+        steps: [],
+        column: "todo",
+        dependencies: [],
+        log: [],
+        attachments: [],
+      } as unknown as TaskDetail);
+
+      const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+      await monitor.executeHeartbeat({
+        agentId: "agent-001",
+        source: "on_demand",
+        triggeringCommentIds: ["c-1", "msg-phantom-259"],
+        triggeringCommentType: "task",
+      });
+
+      const promptArg = mockSession.prompt.mock.calls[0]![0] as string;
+      // One advertised id resolves, the other is the phantom RUFU-251 measured; the count says so.
+      expect(promptArg).toContain("- triggering comments: 1 of 2 readable on this card");
+      expect(promptArg).toContain("- [user] (commentId: c-1):");
+      expect(promptArg).toContain("Please cover edge cases");
+    });
+
+    it("states an advertised comment id it cannot read instead of dropping it silently", async () => {
+      const store = createStoreWithAgentForExec();
+      const mockSession = createMockAgentSession();
+      mockedCreateFnAgent.mockResolvedValue({ session: mockSession as any });
+
+      mockTaskStore.getTask = vi.fn().mockResolvedValue({
+        id: "FN-001",
+        title: "Test Task",
+        description: "Test task description",
+        prompt: "# Prompt",
+        comments: [],
+        steeringComments: [],
+        steps: [],
+        column: "todo",
+        dependencies: [],
+        log: [],
+        attachments: [],
+      } as unknown as TaskDetail);
+
+      const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+      await monitor.executeHeartbeat({
+        agentId: "agent-001",
+        source: "on_demand",
+        triggeringCommentIds: ["msg-phantom-259"],
+        triggeringCommentType: "task",
+      });
+
+      const promptArg = mockSession.prompt.mock.calls[0]![0] as string;
+      expect(promptArg).toContain("- triggering comments: 0 of 1 readable on this card");
+      expect(promptArg).toContain(
+        "- [unknown] (commentId: msg-phantom-259): body is NOT on this card — do not guess its content",
+      );
+    });
+
+    it("names the card so the advertised ids are fetchable through fn_task_show", async () => {
+      const store = createStoreWithAgentForExec();
+      const mockSession = createMockAgentSession();
+      mockedCreateFnAgent.mockResolvedValue({ session: mockSession as any });
+
+      mockTaskStore.getTask = vi.fn().mockResolvedValue({
+        id: "FN-001",
+        title: "Test Task",
+        description: "Test task description",
+        prompt: "# Prompt",
+        comments: [{ id: "c-1", author: "user", text: "Please cover edge cases", createdAt: "2026-01-01T00:00:00.000Z" }],
+        steeringComments: [],
+        steps: [],
+        column: "todo",
+        dependencies: [],
+        log: [],
+        attachments: [],
+      } as unknown as TaskDetail);
+
+      const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+      await monitor.executeHeartbeat({
+        agentId: "agent-001",
+        source: "on_demand",
+        triggeringCommentIds: ["c-1"],
+        triggeringCommentType: "task",
+      });
+
+      const promptArg = mockSession.prompt.mock.calls[0]![0] as string;
+      expect(promptArg).toContain('fn_task_show(id: "FN-001", commentIds:');
     });
 
     it("keeps standard prompt when no triggering comments are provided", async () => {

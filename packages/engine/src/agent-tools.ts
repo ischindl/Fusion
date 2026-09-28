@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import * as fusionCore from "@fusion/core";
 import type { AgentState, AgentCapability, AgentUpdateInput, AgentLogEntry, Artifact, ArtifactCreateInput, ArtifactWithTask, Task, TaskDocument, TaskDocumentCreateInput, TaskStore, RunMutationContext, MessageStore, Message, SourceType, Settings, ResearchRun, ResearchRunStatus, TaskCreateInput, ReflectionStore, ApprovalRequestStore, ProjectSettings, ChatStore, WorkflowSettingDefinition, GoalStatus, WorkflowIrNode, IdeationCandidate, MissionWithHierarchy, DbTransaction } from "@fusion/core";
-import { listTraits, isBuiltinWorkflowId, isTaskNotFoundError, AgentStore, validateColumnAgentBindings, ColumnAgentBindingError, stripApprovalBypassFlags, WorkflowSettingRejectionError, resolveEffectiveSettingsById, resolveWorkflowIrById, findOrphanedSettingValues, BUILTIN_WORKFLOW_SETTINGS, MAX_TASK_LIST_TEXT_CHARS, formatCurrentTaskLine, normalizeWorkflowIcon, parseWorkflowIr, WorkflowIrError, assertColumnTraitsValid, ColumnTraitValidationError } from "@fusion/core";
+import { listTraits, isBuiltinWorkflowId, isTaskNotFoundError, renderTaskCommentSection, AgentStore, validateColumnAgentBindings, ColumnAgentBindingError, stripApprovalBypassFlags, WorkflowSettingRejectionError, resolveEffectiveSettingsById, resolveWorkflowIrById, findOrphanedSettingValues, BUILTIN_WORKFLOW_SETTINGS, MAX_TASK_LIST_TEXT_CHARS, formatCurrentTaskLine, normalizeWorkflowIcon, parseWorkflowIr, WorkflowIrError, assertColumnTraitsValid, ColumnTraitValidationError } from "@fusion/core";
 import { promoteHeldTask } from "./execution/hold-release.js";
 import { stepLifecycleNoopResult, storeErrorResult, storeWriteFailure } from "./tool-store-errors.js";
 import { computeCrossParentDiagnosticClaim, computeCrossParentDiagnosticClaimId, computeParentIntentClaimId, DASHBOARD_USER_ID, dailyMemoryPath, ensureOpenClawMemoryFiles, evaluateImplementationTaskBind, extractAgentProvisioningRequest, findSameAgentDuplicates, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, normalizeMessageParticipant, reconcileDeterministicDuplicate, resolveAgentProvisioningPolicy, resolveMemoryBackend, resolveMemorySearchTopic, resolveResearchSettings, resolveTaskGithubTracking, runDeterministicDuplicateGuard, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh } from "@fusion/core";
@@ -142,6 +142,17 @@ export const taskListParams = Type.Object({});
 
 export const taskShowParams = Type.Object({
   id: Type.String({ description: "Task ID (e.g. FN-001)" }),
+  /*
+  FNXC:CommentDelivery 2026-09-27-16:45 (RUFU-259):
+  Optional comment/steering bodies by id. A wake delta that names a triggering comment id is now a
+  promise the body is readable from an agent lane, and this parameter is where that promise is kept
+  (`packages/engine/src/task-comment-read.ts`). Omitted, the rendered card is exactly what it was
+  before, so no existing caller pays the tokens.
+  */
+  commentIds: Type.Optional(Type.Array(Type.String(), {
+    description: "Optional comment or steering-comment ids to return bodies for (e.g. the ids a wake delta named). Resolved against both `comments` and `steeringComments`.",
+    maxItems: 20,
+  })),
 });
 
 export const taskSearchParams = Type.Object({
@@ -1999,6 +2010,13 @@ export function createTaskShowTool(store: TaskStore): ToolDefinition {
           details: {},
         };
       }
+      /*
+      FNXC:CommentDelivery 2026-09-27-16:45 (RUFU-259):
+      The comment section is appended AFTER PROMPT.md so the trim budget still favours the card's own
+      spec over comment traffic, and an unmatched id is rendered as an explicit miss rather than
+      dropped — the silent drop is what let a wake advertise a body nobody could fetch.
+      */
+      const commentSection = renderTaskCommentSection(task, params.commentIds);
       const parts = [
         `ID: ${task.id}`,
         task.title ? `Title: ${task.title}` : null,
@@ -2012,6 +2030,7 @@ export function createTaskShowTool(store: TaskStore): ToolDefinition {
         "",
         "PROMPT.md:",
         task.prompt || "(not yet specified)",
+        commentSection || null,
       ].filter((part): part is string => typeof part === "string");
       return {
         content: [{
