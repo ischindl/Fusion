@@ -1398,14 +1398,28 @@ An agent received `fn_agent_show failed: fn extension TaskStore boot timed out a
 the card that investigated it (RUFU-377) could not attribute it because three different budgets can
 expire behind one message. Recorded here so the shapes are distinguishable by reading, and so the
 "ready store never pays the boot budget" invariant is written down next to the seam it describes.
+
+FNXC:TaskStoreBootDeadline 2026-09-28-09:06:
+RUFU-388 corrected the ordering bullet below. It read cache → in-flight → cooldown → boot, but `getStore`
+consults `storeCache` first, then the failure cooldown, then the shared in-flight boot, so the true order
+is cache → cooldown → in-flight → boot. The transposition was load-bearing, not cosmetic: the cooldown
+window is the only branch where the sequence is observable, and the published order promised that a call
+landing inside one coalesces onto a sibling boot, when the seam actually refuses it immediately with the
+timeout-shaped cooldown sentence. Because prose drifts silently, the bullet is now machine-checked: a
+structure guard in `packages/cli/src/__tests__/extension-agent-class-boot-budget.test.ts` compares this
+sentence's stage list against the occurrence order of the four registry reads inside `getStore`, so
+reordering either side turns a test red. Renaming a stage in the doc fails that guard too, because it
+enumerates the four stages by name.
 -->
 Every extension tool resolves its store through one `getStore(projectRoot)` seam, so the boot cost
 and its deadline are shared by all of them rather than paid per surface:
 
-- **Resolution order is cache → in-flight → cooldown → boot.** A ready cached store (including a
+- **Resolution order is cache → cooldown → in-flight → boot.** A ready cached store (including a
   store injected by the host) is returned before the boot deadline wrapper is even constructed, so a
-  live store never pays the boot budget. One boot attempt per project root is in flight at a time;
-  a root with a recent failure is refused by a 5 000 ms cooldown instead of re-booting.
+  live store never pays the boot budget. The failure cooldown is consulted before the in-flight map, so
+  a root that recently failed is refused immediately by a 5 000 ms cooldown rather than joining a boot
+  the cooldown has already given up on; only a root still inside its 15 000 ms budget joins the one
+  shared in-flight boot for that path.
 - **Two distinct rejection shapes.** A budget that expires while nothing has failed yet produces
   `fn extension TaskStore boot timed out after <N>ms`; a root already inside the backoff produces
   `fn extension TaskStore boot recently failed (cooldown <N>ms): <cause>` and returns at once. The

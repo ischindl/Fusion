@@ -552,11 +552,27 @@ When dashboard/serve/daemon injects the live engine TaskStore via setHostTaskSto
 */
 let extensionStoreBootFactory: typeof createTaskStoreForBackend = createTaskStoreForBackend;
 
+/*
+FNXC:TaskStoreBootAttribution 2026-09-28-08:55:
+RUFU-388 rewrote this comment's closing sentence. It promised a durable record: that the lines were
+written to a log the engine keeps and that a later stall gets diagnosed from them. RUFU-377 measured that
+promise and found no such rows anywhere in the sighting window, because nothing in the machine persists
+them. The function writes with `console.warn`, so the line reaches only the console of the process that
+loaded the extension, and what becomes of that console is the loader's choice: the runtime that hosts the
+extension forks it with `silent: true` and forwards IPC alone
+(`packages/engine/src/runtimes/child-process-runtime.ts`), so a forked worker's stdout/stderr are piped
+and stored nowhere, while a dashboard/serve/daemon host surfaces its own process console instead. Neither
+shape produces a run-audit row. So the line attributes a boot stall only for whoever is watching that
+process while it is live, and a stall that already happened is not recoverable from it. The durable form
+of this invariant is the "`[taskstore-boot]` is process-local console output, not telemetry" bullet of
+"Extension TaskStore boot budget" in docs/architecture.md.
+*/
 /**
  * Emit one machine-readable line per boot outcome. Every boot used to end as either silence
  * or a bare "timed out after 30000ms" with no elapsed time, no phase, and no reason, so a
- * repeated stall left nothing to attribute. These lines land in the engine log and are the
- * record a future stall is diagnosed from.
+ * repeated stall left nothing to attribute. Live observation is the whole reach: the line is
+ * console output of the loading process and nothing downstream retains it — see the FNXC block
+ * above for what each loader keeps and what it discards.
  */
 function reportStoreBoot(
   projectRoot: string,

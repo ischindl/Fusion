@@ -32,6 +32,9 @@
  * lane for the full real budget, so the registered-tool arm resolves its spy factory in 5 ms and
  * lets the zero-invocation counter carry the assertion.
  */
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { afterEach, afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskStore } from "@fusion/core";
 import kbExtension, {
@@ -52,7 +55,59 @@ import {
   type ToolResult,
 } from "./pg-extension-harness.js";
 
-const TOOL_CALL_CWD = "/home/schindler/git/Fusion";
+/*
+FNXC:CliTests 2026-09-28-09:12 (RUFU-388):
+This file used to drive every arm from a hard-coded absolute path to one developer's checkout. The
+extension resolves the canonical project root before it consults the store registry, so that constant
+only ever passed on the machine it named: on any other host `resolveProjectRoot` walks past a directory
+carrying no `.fusion` marker, the key the tools look up stops matching the key the arms seed, and the
+twelve registry arms below break on a perfectly healthy product.
+
+The fixture is a fresh temp directory per run instead, and the `.fusion` marker inside it is load-bearing
+rather than decorative: `resolveProjectRoot` returns the FIRST ancestor carrying that marker, and this
+host demonstrably has a `.fusion` directory at the temp root itself — measured during this card, an
+unmarked fixture resolved to `/tmp`, not to the fixture. So the marker is what pins resolution to the
+fixture on every host, and the `BOOT-REGISTRY-PARITY` case in the first describe is what turns that
+derivation from an assumption into an asserted invariant (it goes red, loudly, if an ancestor ever
+intercepts the walk). The `afterAll` below removes the directory.
+*/
+const FIXTURE_PROJECT_ROOT = mkdtempSync(join(tmpdir(), "rufu388-boot-registry-"));
+/** The first thing `resolveProjectRoot` looks for; without it the upward walk continues to a foreign `.fusion`. */
+mkdirSync(join(FIXTURE_PROJECT_ROOT, ".fusion"), { recursive: true });
+/** A nested working directory under the fixture: tools are invoked from anywhere inside a project. */
+const FIXTURE_NESTED_CWD = join(FIXTURE_PROJECT_ROOT, "packages", "cli");
+mkdirSync(FIXTURE_NESTED_CWD, { recursive: true });
+const TOOL_CALL_CWD = FIXTURE_PROJECT_ROOT;
+
+/**
+ * Repo root derived from this file's own location. Never `process.cwd()`: a vitest worker's cwd is
+ * wherever the runner was invoked, so a source-region guard read through it would silently scan
+ * nothing (or the wrong tree) on another host.
+ */
+const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..", "..");
+
+/** Read a repo-relative source file for the structural scans in this file. */
+function readRepoFile(relPath: string): string {
+  return readFileSync(join(REPO_ROOT, relPath), "utf8");
+}
+
+/**
+ * Extract a top-level function body: its opening brace through the first column-0 `}` after it.
+ * Bounding the region matters — a whole-file scan would let a construct used by a neighbouring
+ * function satisfy an order assertion about the one being described.
+ */
+function extractFunctionBody(source: string, declaration: string): string {
+  const start = source.indexOf(declaration);
+  if (start === -1) {
+    throw new Error(`source region not found: ${declaration}`);
+  }
+  const open = source.indexOf("{", start);
+  const end = source.indexOf("\n}", open);
+  if (end === -1) {
+    throw new Error(`unterminated source region for: ${declaration}`);
+  }
+  return source.slice(open, end);
+}
 
 /** A store stand-in; the registry layer never touches it, only hands it back. */
 function makeFakeStore(): TaskStore {
@@ -96,6 +151,13 @@ afterEach(async () => {
   __setExtensionStoreBootFactoryForTesting(undefined);
   __clearExtensionStoreBootStateForTesting();
   vi.useRealTimers();
+});
+
+afterAll(() => {
+  // The derived fixture outlives a single test, not the process. It holds only the `.fusion`
+  // marker and the nested cwd — no store files, because the backend here is the external test
+  // server — so there is nothing to drain beyond the cache close the afterEach already does.
+  rmSync(FIXTURE_PROJECT_ROOT, { recursive: true, force: true });
 });
 
 describe("extension agent-class boot budget (RUFU-377)", () => {
@@ -171,6 +233,33 @@ describe("extension agent-class boot budget (RUFU-377)", () => {
     // Cache-before-cooldown: the late landing outranks the backoff the deadline armed.
     const result = (await agentReadToolWithBudget(30_000)("call-3", { id: "agent-48a5da4e" })) as ToolResult;
     expect(result.content[0]?.text).toBe("agents for ready-store");
+  });
+
+  /*
+  FNXC:CliTests 2026-09-28-09:12 (RUFU-388) — BOOT-REGISTRY-PARITY:
+  Every arm in this file seeds the store registry under one cwd and reads it back through the resolver,
+  which only tests what it claims while project-root resolution and the registry key agree. Nothing
+  proved that agreement: the file previously assumed it by passing a hard-coded developer checkout path,
+  so the arms silently depended on one machine's filesystem. This case asserts the invariant that
+  assumption stood in for, in its general form rather than the single reported cwd — resolution is
+  self-consistent and idempotent, a cwd nested inside the project resolves to the same root, and the one
+  entry seeded under any of those spellings is what the resolver seam hands back for all of them.
+  */
+  it("BOOT-REGISTRY-PARITY: project-root resolution and the store registry key agree", async () => {
+    const resolved = __resolveProjectRootForTesting(TOOL_CALL_CWD);
+    expect(resolved).toBe(FIXTURE_PROJECT_ROOT);
+    // Idempotent: re-resolution yields the same key, not a fresh derivation that could drift.
+    expect(__resolveProjectRootForTesting(TOOL_CALL_CWD)).toBe(resolved);
+    // The general form, not the reported cwd: a nested cwd lands on the same root.
+    expect(__resolveProjectRootForTesting(FIXTURE_NESTED_CWD)).toBe(resolved);
+
+    const store = makeFakeStore();
+    __setCachedStoreForTesting(TOOL_CALL_CWD, store);
+
+    // One registry entry serves every cwd spelling — no per-directory second boot.
+    await expect(__getStoreForTesting(TOOL_CALL_CWD)).resolves.toBe(store);
+    await expect(__getStoreForTesting(FIXTURE_NESTED_CWD)).resolves.toBe(store);
+    await expect(__getStoreForTesting(resolved)).resolves.toBe(store);
   });
 });
 
@@ -270,5 +359,126 @@ pgDescribe("registered agent-class tools share the one boot seam (RUFU-377)", ()
     expect(second.content[0]?.text).toContain("fn extension TaskStore boot recently failed");
     expect(rejecting).toHaveBeenCalledTimes(1);
     expect(Date.now() - startedAt).toBeLessThan(5_000);
+  });
+});
+
+/*
+FNXC:TaskStoreBootAttribution 2026-09-28-08:55 (RUFU-388):
+RUFU-377 spent its whole investigation looking for persisted `[taskstore-boot]` rows and found none,
+because the machine never persists them: the runtime that hosts the extension forks it with
+`silent: true` and forwards IPC alone, so a forked worker's stdout/stderr are piped and stored nowhere
+(packages/engine/src/runtimes/child-process-runtime.ts). The JSDoc above `reportStoreBoot` nonetheless
+promised a durable engine-side record, which is the false contract that cost that search its entire
+attempt. The architecture doc already states the opposite invariant ("process-local console output, not
+telemetry"). These are code-construct scans, not prose checks: the emission seam must stay exactly one
+`console.warn` of the `[taskstore-boot]` line with no durable sink reachable from it, and the
+falsified persisted-record claim must not come back.
+*/
+describe("reportStoreBoot's sink is console-only (RUFU-388)", () => {
+  const extensionSource = readRepoFile("packages/cli/src/extension.ts");
+
+  it("emits the boot line through console.warn and reaches no durable sink from it", () => {
+    const body = extractFunctionBody(extensionSource, "function reportStoreBoot(");
+
+    // The live emission is the whole contract: still present, still the same line prefix.
+    expect(body).toContain("console.warn(");
+    expect(body).toContain("[taskstore-boot] ");
+    // A persisted sink reachable from here would contradict the invariant the comment now states.
+    expect(body).not.toMatch(/recordRunAudit|emitBoundedRunAudit|appendFile|createWriteStream/);
+  });
+
+  it("carries no claim that the boot line survives as a durable record", () => {
+    // Ratchet against re-authoring the RUFU-377-falsified contract, in either wording it shipped in.
+    expect(extensionSource).not.toMatch(/land(?:s)? in the engine log/);
+    expect(extensionSource).not.toMatch(/record a future stall is diagnosed from/);
+  });
+});
+
+/*
+FNXC:TaskStoreBootDeadline 2026-09-28-09:06 (RUFU-388):
+The architecture doc's "Resolution order" bullet and the `getStore` seam had already drifted apart: the
+doc listed cache → in-flight → cooldown → boot while the code consults the cache, then the failure
+cooldown, then the shared in-flight boot. The transposition is not cosmetic — a cooldown window is the
+only branch where the order is observable, and the doc's sequence promised that an agent-class call
+landing during one would coalesce onto a sibling boot, while the code refuses it immediately with the
+timeout-shaped cooldown sentence. A test asserting only the code order would have stayed green over the
+wrong doc, so this guard compares the DOC's stage list against the occurrence order of the four registry
+reads inside `getStore`. Either side being reordered turns it red.
+*/
+describe("the architecture doc states getStore's real resolution order (RUFU-388)", () => {
+  /** Each doc stage name mapped to the registry read that implements it inside `getStore`. */
+  const STAGE_CONSTRUCTS: Array<{ token: string; construct: string }> = [
+    { token: "cache", construct: "storeCache.get(" },
+    { token: "cooldown", construct: "storeBootFailureCooldown.get(" },
+    { token: "in-flight", construct: "storeBootInflight.get(" },
+    { token: "boot", construct: "startStoreBoot(" },
+  ];
+
+  /** The stage tokens exactly as the doc bullet lists them, left to right. */
+  function docStageOrder(): string[] {
+    const doc = readRepoFile("docs/architecture.md");
+    const bullet = doc.match(/\*\*Resolution order is ([^*]+)\.\*\*/);
+    expect(bullet, "docs/architecture.md must state the boot-budget resolution order bullet").not.toBeNull();
+    return bullet![1]!
+      .split("→")
+      .map((stage) => stage.trim())
+      .filter(Boolean);
+  }
+
+  /** The stages in the order `getStore` actually consults them, by first occurrence in its body. */
+  function codeStageOrder(): string[] {
+    const body = extractFunctionBody(readRepoFile("packages/cli/src/extension.ts"), "async function getStore(");
+    const consulted = STAGE_CONSTRUCTS.map((stage) => ({ ...stage, at: body.indexOf(stage.construct) }));
+    for (const stage of consulted) {
+      expect(stage.at, `getStore must still consult ${stage.construct}`).toBeGreaterThanOrEqual(0);
+    }
+    return consulted
+      .sort((a, b) => a.at - b.at)
+      .map((stage) => stage.token);
+  }
+
+  it("names all four stages, so a renamed stage cannot vacuously pass", () => {
+    expect(docStageOrder().slice().sort()).toEqual([...STAGE_CONSTRUCTS.map((s) => s.token)].sort());
+  });
+
+  it("lists the stages in the order getStore consults them", () => {
+    expect(docStageOrder()).toEqual(codeStageOrder());
+  });
+});
+
+/*
+FNXC:CliTests 2026-09-28-09:30 (RUFU-388):
+A host-absolute checkout path inside a test is invisible to every CI lane that runs on the machine it
+names, and fails on the next one — which is how this file's old `TOOL_CALL_CWD` survived while breaking
+the twelve registry arms off that host. The scan is scoped to THIS file alone: 87 files repo-wide still
+carry a developer path, and a whole-repo ratchet would fail on all of them without naming this card's
+change. The forbidden literals are assembled from fragments because a guard whose own source contained
+the contiguous literal could never tell a real host path from the guard that forbids it.
+*/
+describe("this test file names no host path (RUFU-388)", () => {
+  const SLASH = "/";
+  const BACKSLASH = "\\";
+  /** Interpolated, so this guard's source never contains the contiguous literal it hunts for. */
+  const HOST_PATH_LITERALS = [
+    `${SLASH}home${SLASH}`,
+    `${SLASH}Users${SLASH}`,
+    `C:${BACKSLASH}Users${BACKSLASH}`,
+  ];
+
+  function ownSource(): string {
+    return readFileSync(join(import.meta.dirname, "extension-agent-class-boot-budget.test.ts"), "utf8");
+  }
+
+  it("contains no host home-directory path literal", () => {
+    const source = ownSource();
+    expect(source.length, "the guard must actually read its own source").toBeGreaterThan(0);
+    expect(HOST_PATH_LITERALS.filter((literal) => source.includes(literal))).toEqual([]);
+  });
+
+  it("names a host path when one is present, so the scan is not vacuous", () => {
+    const offendingSource = `const TOOL_CALL_CWD = "${SLASH}home${SLASH}dev${SLASH}repo";`;
+    expect(HOST_PATH_LITERALS.filter((literal) => offendingSource.includes(literal))).toEqual([
+      `${SLASH}home${SLASH}`,
+    ]);
   });
 });
