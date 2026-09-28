@@ -495,3 +495,75 @@ describe("reconcile review stall wedge notifications", () => {
     vi.useRealTimers();
   });
 });
+
+/*
+FNXC:ReviewEscalationNotice 2026-09-28-07:34 (RUFU-371):
+The class RUFU-180 could not announce: a review-convergence escalation. Measured for RUFU-281 — parked since
+2026-09-24T19:40Z, `reviewConvergenceStage=3`, `reviewConvergenceEscalationCount=1` — six sweep passes in one
+day were each recorded as `outcome:"unavailable"` with `stallAgeMs: 0`, and no artifact reached the operator.
+The sweep must (a) report the age from durable lane-entry evidence rather than the observation stamp the stall
+authority rewrites on every pass, and (b) hand this one class to the operator through the idempotent mailbox,
+because the wedge service has no episode to attach it to.
+*/
+describe("convergence-escalated review park (RUFU-371)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getActiveNotificationServiceMock.mockReset();
+  });
+
+  it("reports the real multi-day age and delivers the operator notice the wedge service could not", async () => {
+    const now = Date.now();
+    const escalatedTask = stalledTask("FN-STAND-ESCALATED", {
+      columnMovedAt: new Date(now - 72 * 60 * 60 * 1000).toISOString(),
+      reviewConvergenceStage: 3,
+      reviewConvergenceEscalationCount: 1,
+      stallReason: {
+        code: "merge-blocker",
+        reason: "Code Review produced no verdict",
+        // The stall authority re-stamps this every observation: the source of the old `stallAgeMs: 0`.
+        observedAt: new Date(now - 1_000).toISOString(),
+      },
+    });
+    const h = createHarness(escalatedTask);
+    await h.service.start();
+    getActiveNotificationServiceMock.mockReturnValue(h.service);
+    const manager = new SelfHealingManager(h.store, {
+      rootDir: "/repo",
+      messageStore: { sendMessageOnce: h.sendMessageOnce },
+    } as never);
+
+    // Pass 1: the service can only arm its settle window, which is exactly the production `unavailable`.
+    await expect(manager.reconcileReviewStallWedgeNotifications()).resolves.toBe(1);
+
+    const noticeKeys = h.sendMessageOnce.mock.calls.map(([, key]) => String(key));
+    expect(noticeKeys.some((key) => key.includes("system:review-convergence-escalation:FN-STAND-ESCALATED:3:"))).toBe(true);
+
+    const row = (h.recordRunAuditEvent.mock.calls as unknown as Array<[{ metadata?: Record<string, unknown> }]>)
+      .map(([event]) => event.metadata)
+      .find((metadata) => metadata?.reasonKey === "stall:merge-blocker");
+    expect(row).toMatchObject({ outcome: "unavailable", notice: "delivered" });
+    // Three days old, not one second: the age is usable for ranking again.
+    expect(Number(row?.stallAgeMs)).toBeGreaterThan(71 * 60 * 60 * 1000);
+    await h.service.stop();
+  });
+
+  it("leaves a non-escalated stall to the wedge service with no extra notice", async () => {
+    const h = createHarness(stalledTask("FN-STAND-PLAIN", {
+      stallReason: {
+        code: "merge-blocker",
+        reason: "Merge refusal",
+        observedAt: new Date(Date.now() - 1_000).toISOString(),
+      },
+    }));
+    await h.service.start();
+    getActiveNotificationServiceMock.mockReturnValue(h.service);
+
+    await expect(h.manager().reconcileReviewStallWedgeNotifications()).resolves.toBe(1);
+    expect(h.sendMessageOnce).not.toHaveBeenCalled();
+    const row = (h.recordRunAuditEvent.mock.calls as unknown as Array<[{ metadata?: Record<string, unknown> }]>)
+      .map(([event]) => event.metadata)
+      .find((metadata) => metadata?.reasonKey === "stall:merge-blocker");
+    expect(row && "notice" in row).toBe(false);
+    await h.service.stop();
+  });
+});

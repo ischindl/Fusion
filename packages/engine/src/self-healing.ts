@@ -301,6 +301,11 @@ import {
 import { SelfHealingGitEvidence, execAsync, shellQuote } from "./self-healing-git-evidence.js";
 import { evaluateParkedAgentTaskLink, PARKED_AGENT_LINK_FRESH_RUN_MS } from "./agents/task-agent-sync.js";
 import { describeSelfHealingNoActionWedge } from "./notification/task-wedge-notification.js";
+import {
+  isConvergenceEscalatedTask,
+  notifyReviewEscalationUnreachable,
+  resolveStallParkAgeMs,
+} from "./notification/review-escalation-notice.js";
 import { computeRecoveryDecision, formatDelay, MAX_RECOVERY_RETRIES } from "./healing/recovery-policy.js";
 
 type FileScopeLeaseTaskRoles = {
@@ -9070,7 +9075,38 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         } catch {
           outcome = "failed";
         }
-        const observedAt = Date.parse(stallReason.observedAt ?? "");
+        /*
+        FNXC:ReviewEscalationNotice 2026-09-28-07:34 (RUFU-371):
+        Two production defects, both fixed here at the sweep that owns them.
+
+        1. `stallAgeMs` was computed from `stallReason.observedAt`, which the stall authority re-stamps on
+           every observation — so a three-day-old park reported `stallAgeMs: 0` and the row could not be
+           ranked. The age now comes from the durable lane-entry timestamp (`columnMovedAt`), falling back
+           to `updatedAt`, and only then to `observedAt`. These are TEXT ISO columns: compare parsed values,
+           never `now()` from SQL, which renders +02:00 on this host.
+        2. `outcome: "unavailable"` was terminal-silent. For a review-convergence escalation the service
+           cannot own the episode at all (the protocol parked the card for a person by design), so the six
+           firings for RUFU-281 produced no artifact anywhere. That one class gets an idempotent mailbox
+           notice; every other `unavailable` keeps its existing meaning, and the notice outcome is recorded
+           in the same row so "the service declined" and "nothing exists yet" stay distinguishable.
+        */
+        const stallAgeMs = resolveStallParkAgeMs({
+          columnMovedAt: task.columnMovedAt,
+          updatedAt: task.updatedAt,
+          observedAt: stallReason.observedAt,
+          now,
+        });
+        let notice: "delivered" | "unavailable" | undefined;
+        if (outcome === "unavailable" && isConvergenceEscalatedTask(task)) {
+          // Absent convergence fields on a slim row fail safe: no notice, no false claim of one.
+          notice = await notifyReviewEscalationUnreachable({
+            store: this.store,
+            messageStore: this.options.messageStore,
+            task,
+            stallCode: stallReason.code,
+            ...(stallAgeMs !== undefined ? { stallAgeMs } : {}),
+          });
+        }
         await emitBoundedRunAudit(this.store, {
           taskId: task.id,
           agentId: "self-healing",
@@ -9082,7 +9118,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             taskId: task.id,
             reasonKey: `stall:${stallReason.code}`,
             outcome,
-            ...(Number.isFinite(observedAt) ? { stallAgeMs: Math.max(0, now - observedAt) } : {}),
+            ...(notice ? { notice } : {}),
+            ...(stallAgeMs !== undefined ? { stallAgeMs } : {}),
           },
         });
         processed += 1;
