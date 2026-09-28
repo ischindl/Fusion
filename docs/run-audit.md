@@ -330,3 +330,9 @@ that nobody was given is an outcome the operator has to be able to see without q
 ### Merge-boundary evidence recovery (FN-9345)
 
 Missing implementation proof is normally repaired through the workflow's durable task log and graph remediation path before merge admission. On startup and periodic maintenance, `task:merge-boundary-evidence-recovered` records a historic proofless park only after durable unfinished work, lifecycle ownership, liveness, and auto-merge policy are re-verified. These repairs intentionally do not put boundary reason prose, foreach identities, paths, review output, or external capability diagnostics in run-audit metadata. If recovery cannot prove an executable owner, the existing terminal `task:merge-boundary-unproven-parked` event remains the fail-closed audit surface and retains its ids/counts/fixed-outcomes-only contract.
+
+### The stall park that owned the verdict it was waiting for (RUFU-391)
+
+`task:review-no-verdict-park-repaired` is written once per pass that re-seeds a required pre-merge gate whose latest row has no authored verdict and then lifts the in-review stall-deadlock park around that same card. Metadata is `taskId`, `workflowStepId`, fixed `source` (`self-healing`) and `outcome` (`cleared`/`signature-drift`) only — no findings, verdicts, blocker sentences, or error text.
+
+`outcome:"cleared"` means the park's pause marker, park error, `status` and `error` were all dropped in one `updateTaskAtomic` write whose guard re-derived the SAME signature that admitted the seed: the deadlock pause reason, the park's own error prefix still on the row, no `userPaused`, and a required gate still verdict-less. Anything else is `signature-drift` and writes no field, so a card that changed shape underneath the recovery keeps its terminal evidence for an operator. If the re-run fails to converge again, the stall detector parks it again with fresh evidence — this event records one attempt, not a disarm.

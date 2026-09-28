@@ -17,8 +17,10 @@ latest row failed with NO authored verdict is a plumbing death (crashed session,
 rewrite, FN-279 stripped approval), not a reviewer REVISE; the merge door still refuses it — this
 lane only guarantees it gets a fresh real run instead of terminalizing as a deadlock park. The
 earliest seedable gate in IR order wins, so a genuinely-missing gate keeps precedence over a later
-verdict-less one. All existing guards stay: singular content only, workspace cards excluded,
-operator-held cards excluded, idle-only seeding (an active continuation never gets doubled).
+verdict-less one. Remaining guards (RUFU-391 widened exactly two of them): operator-held cards
+excluded, idle-only seeding (an active continuation never gets doubled), and the RUFU-276 bounded-rerun
+budget. Content kind and workspace membership are NO LONGER guards here — see
+FNXC:NoVerdictWorkspaceSeed below for why this seed never needed them.
 A verdict-less target consumes a persistent per-(task, gate) rerun budget counted from fixed-marker
 task-log entries (see `MAX_VERDICTLESS_GATE_RERUN_ATTEMPTS`); a missing target stays idle-only and
 unbudgeted exactly as FN-9243 shipped it, so that lane's behavior is byte-stable.
@@ -40,6 +42,31 @@ import {
   type TaskStore,
 } from "@fusion/core";
 import { AUTO_MERGE_RETRY_REJECTED_PREFIX } from "./stale-content-park.js";
+
+/**
+ * Error prefix the in-review stall-deadlock disposition stamps. Single-sourced here because both the
+ * recovery lane below and `SelfHealingManager` must recognise the SAME parked shape: a park whose
+ * `error` was overwritten by a later, unrelated failure is not this class and stays operator-owned.
+ */
+export const IN_REVIEW_STALL_DEADLOCK_ERROR_PREFIX = "In-review stall deadlock: ";
+
+/**
+ * True only for the park the engine authored for itself: the stall disposition's pause marker, its own
+ * error sentence still on the row, and no operator hold. The pause marker alone is not enough — a park
+ * whose `error` was later replaced by an unrelated failure is no longer this class, and lifting it
+ * would discard a real failure the operator must see.
+ *
+ * FNXC:NoVerdictStallParkAdmission 2026-09-28-09:15 (RUFU-391): single-sourced because the recovery
+ * sweep's candidate filter and the seed lane's own guard must admit the identical class — a card that
+ * satisfies one and not the other would be re-seeded forever without ever lifting its park.
+ */
+export function isEngineAuthoredInReviewStallPark(
+  task: Pick<Task, "paused" | "userPaused" | "pausedReason" | "error">,
+): boolean {
+  if (task.paused !== true || task.userPaused === true) return false;
+  if (task.pausedReason !== IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON) return false;
+  return !task.error || task.error.startsWith(IN_REVIEW_STALL_DEADLOCK_ERROR_PREFIX);
+}
 
 export type UnrunPreMergeGateRerouteReason =
   | "seeded"
@@ -232,9 +259,33 @@ async function seedPreMergeReviewIfIdle<Reason extends "no-unrun-gate" | "no-fai
   noCandidateReason: Reason,
   runKind: "unrun-pre-merge-gate" | "failed-no-verdict-pre-merge-gate",
 ): Promise<ReseedResult<"seeded" | "active-continuation" | Reason | "no-review-route" | "not-singular" | "operator-held" | "workflow-selection-changed">> {
-  const { mergeContent, requiredPreMergeStepIds, expectedWorkflowSelection } = options;
-  if (mergeContent.kind !== "singular" || task.workspaceWorktrees !== undefined) return { rerouted: false, reason: "not-singular" };
-  if (task.paused || task.userPaused || task.deletedAt || task.autoMerge === false) return { rerouted: false, reason: "operator-held" };
+  const { requiredPreMergeStepIds, expectedWorkflowSelection } = options;
+  /*
+  FNXC:NoVerdictWorkspaceSeed 2026-09-28-09:15 (RUFU-391):
+  This seed is CONTENT-FREE — it reads `requiredPreMergeStepIds` and the card's own step results, and
+  inserts an idle continuation on the review node. It never compares a fingerprint, so the singular
+  content descriptor it used to demand was not evidence for anything it did; it only made every
+  workspace card ineligible. Measured: the saneca board's 26 parked `in-review` cards each have a
+  `code-review` row `failed` with NO verdict (a lost dispatch, not a rejection), and this one guard
+  — plus the pause guard below — is what kept the producing lane from ever re-running that gate.
+  Approving anything is still impossible from here: the workspace merge door requires
+  `repositoryScope.reviewEvidence` per in-scope repository, so the re-run must actually produce
+  current per-repo proof.
+  */
+  /*
+  FNXC:NoVerdictStallParkAdmission 2026-09-28-09:15 (RUFU-391):
+  The engine's OWN in-review stall-deadlock park is not an operator stop, and it is self-sustaining
+  here: the stall classifier exempts paused cards, so the park can never lift itself, while the
+  no-verdict recovery that would produce the missing verdict refused `task.paused` blanket. Same
+  conjunction `recoverStallPark` (workspace partial land) already uses, and the same invariant
+  RUFU-380 encodes for the dispatch sweep: the pause REASON must name the deadlock park, the error
+  must still be the park's own sentence (a later unrelated failure is not this class), and
+  `userPaused` / every other named pause stays a hard `operator-held` refusal.
+  */
+  const engineStallPark = isEngineAuthoredInReviewStallPark(task);
+  if ((task.paused && !engineStallPark) || task.userPaused || task.deletedAt || task.autoMerge === false) {
+    return { rerouted: false, reason: "operator-held" };
+  }
   if (requiredPreMergeStepIds.size === 0 || candidateStepIds.size === 0) return { rerouted: false, reason: noCandidateReason };
 
   const ir = await resolveWorkflowIrForTask(store, task.id);

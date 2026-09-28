@@ -199,7 +199,7 @@ describe("unrun pre-merge gate reseed", () => {
     expect(fake.seedWorkspaceCodeReviewContinuationIfIdle).not.toHaveBeenCalled();
   });
 
-  it("refuses duplicate dispatch, manual hold, selection change, and non-singular content", async () => {
+  it("refuses duplicate dispatch, manual hold, and selection change", async () => {
     const retryTask = subject({ workflowStepResults: [{ workflowStepId: "code-review", phase: "pre-merge", status: "failed" }] });
     const duplicate = store(false);
     await expect(rerouteFailedNoVerdictPreMergeGateToReview(duplicate, retryTask, {
@@ -209,7 +209,6 @@ describe("unrun pre-merge gate reseed", () => {
 
     for (const [task, content, expected] of [
       [subject({ paused: true, workflowStepResults: retryTask.workflowStepResults }), singular, "operator-held"],
-      [retryTask, { kind: "workspace" }, "not-singular"],
     ] as const) {
       const fake = store();
       await expect(rerouteFailedNoVerdictPreMergeGateToReview(fake, task, {
@@ -218,6 +217,20 @@ describe("unrun pre-merge gate reseed", () => {
       })).resolves.toMatchObject({ rerouted: false, reason: expected });
       expect(fake.seedWorkspaceCodeReviewContinuationIfIdle).not.toHaveBeenCalled();
     }
+
+    /*
+    FNXC:NoVerdictWorkspaceSeed 2026-09-28-09:15 (RUFU-391): this lane used to answer a workspace card
+    with "not-singular". The idle seed reads no merge content at all, so that guard never protected
+    anything — it only kept workspace cards from the review re-run they were owed, and on a board of
+    workspace cards that meant the verdict-less gate was never re-run. Non-singular content now seeds;
+    the unrun-gate lane keeps its own content guard untouched.
+    */
+    const workspaceFake = store();
+    await expect(rerouteFailedNoVerdictPreMergeGateToReview(workspaceFake, retryTask, {
+      requiredPreMergeStepIds: required,
+      mergeContent: { kind: "workspace" } as any,
+    })).resolves.toMatchObject({ rerouted: true, nodeId: "code-review" });
+    expect(workspaceFake.seedWorkspaceCodeReviewContinuationIfIdle).toHaveBeenCalledTimes(1);
 
     const changed = store(false);
     changed.seedWorkspaceCodeReviewContinuationIfIdle.mockResolvedValueOnce({ seeded: false, reason: "workflow-selection-changed" });

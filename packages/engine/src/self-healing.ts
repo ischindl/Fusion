@@ -192,6 +192,8 @@ import {
   classifyUnrunGatePark,
   isFailedNoVerdictPreMergeReviewResult,
   isRecoverableUnrunGatePark,
+  isEngineAuthoredInReviewStallPark,
+  IN_REVIEW_STALL_DEADLOCK_ERROR_PREFIX,
   rerouteFailedNoVerdictPreMergeGateToReview,
   rerouteUnrunPreMergeGateToReview,
   type UnrunGateParkShape,
@@ -978,9 +980,6 @@ keep `workflowStepResults` byte-identical, so the row check is valid pre-resolut
 named-gate verdict is merge-content-independent (content only rebinds PASSED rows), so the same
 verdict holds inside the atomic clear transaction below.
 */
-/** Error prefix the stall-deadlock disposition stamps; also the classifier's post-unpause arm. */
-const IN_REVIEW_STALL_DEADLOCK_ERROR_PREFIX = "In-review stall deadlock: ";
-
 /** Which terminal-park producer wrote a verdict-less gate park. */
 type VerdictlessGateParkShape = "stall-deadlock" | "retry-rejected";
 
@@ -12016,6 +12015,51 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
     }
   }
 
+  /*
+  FNXC:NoVerdictStallParkAdmission 2026-09-28-09:15 (RUFU-391):
+  Seed first, then lift the park — the ordering `routeVerdictlessGateParkBackToReview` established,
+  because the seed has to happen while the card still carries the park it is undoing. The clear is
+  all-or-nothing on the SAME signature that admitted the seed (deadlock pause marker or the park's own
+  error sentence, AND a required gate whose latest row still has no authored verdict), so a card whose
+  shape drifted in between keeps its `status`/`error` untouched and the next pass decides again. An
+  operator hold (`userPaused`, or a pause whose reason is not the deadlock park) is never lifted. If a
+  later pass terminalises the card again, the stall lane parks it again with fresh evidence — this
+  clears a park, it does not disarm the detector.
+  */
+  private async clearStallParkAfterNoVerdictSeed(task: Task, requiredPreMergeStepIds: ReadonlySet<string>): Promise<void> {
+    if (!isEngineAuthoredInReviewStallPark(task)) return;
+    let outcome: "cleared" | "signature-drift" = "signature-drift";
+    let clearedGateId: string | undefined;
+    await this.store.updateTaskAtomic(task.id, (live) => {
+      if (live.deletedAt || !isEngineAuthoredInReviewStallPark(live)) return null;
+      const verdictlessGate = (live.workflowStepResults ?? [])
+        .filter((result) => isFailedNoVerdictPreMergeReviewResult(result, requiredPreMergeStepIds))
+        .at(-1);
+      if (!verdictlessGate) return null;
+      outcome = "cleared";
+      clearedGateId = verdictlessGate.workflowStepId;
+      return {
+        paused: false,
+        pausedReason: null as unknown as Task["pausedReason"],
+        status: null,
+        error: null,
+      };
+    });
+
+    await emitBoundedRunAudit(this.store, {
+      taskId: task.id,
+      agentId: "self-healing",
+      runId: generateSyntheticRunId("self-healing", task.id),
+      domain: "database",
+      mutationType: "task:review-no-verdict-park-repaired",
+      target: task.id,
+      metadata: { taskId: task.id, workflowStepId: clearedGateId ?? null, source: "self-healing", outcome },
+    });
+    if (outcome === "cleared") {
+      await this.store.logEntry(task.id, `[pre-merge] Cleared the engine's in-review stall park after re-seeding the no-verdict gate '${clearedGateId ?? "unknown"}'.`);
+    }
+  }
+
   /**
    * Recover `in-review` tasks parked by a failed pre-merge workflow step.
    *
@@ -12098,9 +12142,20 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
       through the fix producer and its revision budget.
       */
       for (const task of tasks) {
+        /*
+        FNXC:NoVerdictStallParkAdmission 2026-09-28-09:15 (RUFU-391):
+        The blanket `task.paused` made this lane blind to exactly the cards it exists to rescue. The
+        stall classifier exempts paused cards from re-observing, so an `in-review-stall-deadlock` park
+        cannot lift itself, and the missing verdict it parked over can only be produced by THIS lane:
+        park → no verdict → park, forever. Measured on saneca: 26 `in-review` cards, every one with
+        `code-review = failed` and no verdict plus `In-review stall deadlock: completed-review-status-none
+        repeated 3× without progress`. A park the engine authored is not an operator stop — the same
+        invariant `1da1e59381` encodes for capacity eligibility and RUFU-380 for review dispatch.
+        `userPaused` and every other named pause keep the old refusal.
+        */
         if (!(reviewLanesByTask.get(task.id) ?? new Set(["in-review"])).has(task.column)
           || !allowsAutoMergeProcessing(task, settings)
-          || task.paused
+          || (task.paused === true && !isEngineAuthoredInReviewStallPark(task))
           || executingIds.has(task.id)
           || await this.isMergeLaneOwned(task.id)) continue;
         try {
@@ -12128,6 +12183,7 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
           if ((typeof reroute === "string" ? reroute === "rerouted" : reroute.rerouted)) {
             noVerdictRecovered++;
             await this.store.logEntry(task.id, "[pre-merge] Self-healing re-seeded the failed no-verdict review gate.");
+            await this.clearStallParkAfterNoVerdictSeed(task, gate.requiredPreMergeStepIds);
           }
         } catch (error) {
           log.warn(`Failed no-verdict review recovery skipped for ${task.id}: ${error instanceof Error ? error.message : String(error)}`);
