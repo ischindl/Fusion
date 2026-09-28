@@ -2,6 +2,7 @@ import {
   CODE_REVIEW_GROUP_ID,
   completeReviewerRunForTask,
   invalidateReviewerRunsForTask,
+  IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON,
   isEphemeralAgent,
   listReviewerRunsForTask,
   latestTaskEnteredReviewAt,
@@ -168,8 +169,24 @@ export function classifyReviewCard(input: {
   FNXC:ReviewLaneDispatch 2026-09-16-13:22 (#3619 review C6):
   Every pause authority lands in the same bucket before any dispatch logic: `paused` (engine/
   automation pause) and `userPaused` (the human's own hold) are both "do not start reviewer work".
+
+  FNXC:ReviewLaneDispatch 2026-09-28-08:06 (RUFU-380):
+  That blanket made the engine's OWN in-review stall-deadlock park self-sustaining, and on the saneca
+  board it is the dominant wedge: 27 `in-review` cards sit `failed` with `completed-review-status-none
+  repeated 3× without progress` while their Code Review row is `failed` / `NOT_REVIEWED`, and every tick
+  logs `[ReviewDispatchSweep] excluded-paused: SANE-509 (attempts=1) — no reviewer work dispatched`
+  (same for SANE-510/512/513). Nothing can produce the missing verdict, so nothing reaches the merge
+  door, so the park is re-confirmed forever — 1 lifecycle move in 40 minutes across the whole project.
+  A park the engine authored is not an operator stop, the invariant `1da1e59381` already encodes for
+  capacity eligibility and stall-park recovery. A human hold (`userPaused`) and every other engine pause
+  keep the old meaning. A card whose review genuinely produced a verdict is still protected — the
+  recorded-verdict rule below outranks the ledger, so relaxing the pause filter only ever lets through
+  cards with NO verdict, which is exactly the work the reviewer lane owes.
   */
-  if (input.task.paused === true || input.task.userPaused === true) return skip("excluded-paused");
+  if (input.task.userPaused === true
+    || (input.task.paused === true && input.task.pausedReason !== IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON)) {
+    return skip("excluded-paused");
+  }
   if (!input.reviewerFound) return skip("no-reviewer");
   if (isCodeReviewExcluded(input.task)) return skip("excluded-review-level");
 

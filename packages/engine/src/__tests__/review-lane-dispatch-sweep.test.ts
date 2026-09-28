@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CODE_REVIEW_GROUP_ID } from "@fusion/core";
+import { CODE_REVIEW_GROUP_ID, IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON } from "@fusion/core";
 import type { AgentHeartbeatRun, ReviewerRunRow, Task, WorkflowStepResult } from "@fusion/core";
 import {
   classifyReviewCard,
@@ -363,5 +363,80 @@ describe("review-lane dispatch sweep timing", () => {
 
   it("keeps the anti-loop budget small enough to surface a wedge rather than burn sessions", () => {
     expect(DEFAULT_REVIEW_MAX_ATTEMPTS).toBeLessThanOrEqual(3);
+  });
+});
+
+/*
+FNXC:ReviewLaneDispatch 2026-09-28-08:06 (RUFU-380):
+The engine's own in-review stall-deadlock park used to disqualify a card from the reviewer lane, so 27
+saneca cards starved: `completed-review-status-none repeated 3× without progress` with a `NOT_REVIEWED`
+Code Review row, and `[ReviewDispatchSweep] excluded-paused: SANE-509 — no reviewer work dispatched` on
+every tick. A park the engine authored is not an operator stop; a human hold still is.
+*/
+describe("engine-authored stall park does not starve the reviewer lane (RUFU-380)", () => {
+  it("keeps a stall-parked card with no verdict dispatchable", () => {
+    const decision = classifyReviewCard({
+      task: reviewTask({ paused: true, pausedReason: IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON }),
+      reviewerFound: true,
+      rows: [],
+      activeRun: null,
+      now: NOW,
+      graceMs: DEFAULT_REVIEW_GRACE_MS,
+      startLatencyMs: DEFAULT_REVIEW_START_LATENCY_MS,
+      maxAttempts: DEFAULT_REVIEW_MAX_ATTEMPTS,
+    });
+    expect(decision.bucket).toBe("never-dispatched");
+    expect(decision.dispatch).toBe(true);
+  });
+
+  it("keeps every other pause authority excluded, including a user pause that also carries the stall reason", () => {
+    const enginePause = classifyReviewCard({
+      task: reviewTask({ paused: true, pausedReason: "operator-hold" }),
+      reviewerFound: true,
+      rows: [],
+      activeRun: null,
+      now: NOW,
+      graceMs: DEFAULT_REVIEW_GRACE_MS,
+      startLatencyMs: DEFAULT_REVIEW_START_LATENCY_MS,
+      maxAttempts: DEFAULT_REVIEW_MAX_ATTEMPTS,
+    });
+    expect(enginePause.bucket).toBe("excluded-paused");
+
+    const humanHold = classifyReviewCard({
+      task: reviewTask({ userPaused: true, pausedReason: IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON }),
+      reviewerFound: true,
+      rows: [],
+      activeRun: null,
+      now: NOW,
+      graceMs: DEFAULT_REVIEW_GRACE_MS,
+      startLatencyMs: DEFAULT_REVIEW_START_LATENCY_MS,
+      maxAttempts: DEFAULT_REVIEW_MAX_ATTEMPTS,
+    });
+    expect(humanHold.bucket).toBe("excluded-paused");
+  });
+
+  it("does not re-review a stall-parked card whose verdict already exists", () => {
+    const decided = classifyReviewCard({
+      task: reviewTask({
+        paused: true,
+        pausedReason: IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON,
+        workflowStepResults: [{
+          workflowStepId: CODE_REVIEW_GROUP_ID,
+          workflowStepName: "Code Review",
+          status: "passed",
+          verdict: "APPROVE",
+          completedAt: ENTERED_AT,
+        }] as never,
+      }),
+      reviewerFound: true,
+      rows: [],
+      activeRun: null,
+      now: NOW,
+      graceMs: DEFAULT_REVIEW_GRACE_MS,
+      startLatencyMs: DEFAULT_REVIEW_START_LATENCY_MS,
+      maxAttempts: DEFAULT_REVIEW_MAX_ATTEMPTS,
+    });
+    expect(decided.bucket).toBe("verdict-recorded");
+    expect(decided.dispatch).toBe(false);
   });
 });
