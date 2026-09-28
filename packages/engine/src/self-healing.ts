@@ -12046,6 +12046,9 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
       };
     });
 
+    // Read through an explicit widening: the assignment happens inside the atomic updater, which
+    // control-flow analysis cannot see, so the narrowed literal would otherwise be `"signature-drift"`.
+    const finalOutcome = outcome as "cleared" | "signature-drift";
     await emitBoundedRunAudit(this.store, {
       taskId: task.id,
       agentId: "self-healing",
@@ -12053,9 +12056,9 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
       domain: "database",
       mutationType: "task:review-no-verdict-park-repaired",
       target: task.id,
-      metadata: { taskId: task.id, workflowStepId: clearedGateId ?? null, source: "self-healing", outcome },
+      metadata: { taskId: task.id, workflowStepId: clearedGateId ?? null, source: "self-healing", outcome: finalOutcome },
     });
-    if (outcome === "cleared") {
+    if (finalOutcome === "cleared") {
       await this.store.logEntry(task.id, `[pre-merge] Cleared the engine's in-review stall park after re-seeding the no-verdict gate '${clearedGateId ?? "unknown"}'.`);
     }
   }
