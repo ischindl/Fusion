@@ -4477,6 +4477,9 @@ export class ProjectEngine {
                 auditAgentId: "merger",
                 auditPhase: "auto-merge-fast-path-finalize",
                 source: "merge-confirmed-fast-path",
+                // RUFU-370: this is the fast path that produced the production deferral loop; hand the
+                // unreachable gate to the operator instead of re-warning on every pass.
+                messageStore: this.getMessageStore(),
                 log: (message) => runtimeLog.warn(message),
               });
               if (finalization.outcome === "blocked") {

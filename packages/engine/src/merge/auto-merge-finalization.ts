@@ -11,9 +11,16 @@ import {
   type Task,
   type TaskStore,
 } from "@fusion/core";
-import { reseedUnrunPostMergeGate } from "./post-merge-gate-reseed.js";
+import {
+  isTerminalPostMergeReseedRefusal,
+  reseedUnrunPostMergeGate,
+  type PostMergeGateReseedReason,
+} from "./post-merge-gate-reseed.js";
+import { deliverMailboxMessageOnce } from "../notification/mailbox-delivery.js";
+import { emitBoundedRunAudit } from "../util/emit-bounded-run-audit.js";
 import { createRunAuditor, generateSyntheticRunId, type DatabaseMutationType, type RunAuditor } from "../util/run-audit.js";
 import { cleanupLandedTaskWorktree } from "./post-landing-worktree-cleanup.js";
+import { DASHBOARD_USER_ID, type MessageStore } from "@fusion/core";
 import type { MergeWriteFence } from "./merge-write-fence.js";
 
 /*
@@ -87,6 +94,14 @@ export interface FinalizeProvenAutoMergeTaskOptions {
   source: "direct-ai-merge" | "merge-confirmed-fast-path" | "self-healing" | "workflow-graph-merge-finalize";
   log?: (message: string) => void | Promise<void>;
   fence?: MergeWriteFence;
+  /*
+  FNXC:UnrunPostMergeGateRecovery 2026-09-28-07:34 (RUFU-370):
+  Optional by design. The mailbox lives on `MessageStore`, which `TaskStore` does not expose, so a finalizer
+  only hands off through the mailbox where the caller already holds one (self-healing, project-engine).
+  Every other caller still gets the durable audit row, and `deliverMailboxMessageOnce` reports
+  `unavailable` rather than failing finalization when no store is wired.
+  */
+  messageStore?: Pick<MessageStore, "sendMessageOnce"> | null;
 }
 
 export type WorkflowDoneMergeProofVerdict =
@@ -170,6 +185,92 @@ function buildMismatchMetadata(task: Task, reason: string): Record<string, unkno
   };
 }
 
+/**
+ * FNXC:UnrunPostMergeGateRecovery 2026-09-28-07:34 (RUFU-370):
+ * One operator-visible notice per (task, gate, refusal) per cooldown window. The key carries a time
+ * bucket so repeats of the same refusal collapse to one mailbox row while a genuinely new refusal (or a
+ * refusal still unaddressed after the window) announces again — the same discipline as RUFU-283's
+ * `system:vanished-work:*` notice, chosen because this class has no wedge row to hang dedupe off. The
+ * write goes through `deliverMailboxMessageOnce`, so a missing, throwing, or stalled mailbox store cannot
+ * delay or change finalization: it returns `unavailable` and the deferral stands on its own.
+ */
+const POST_MERGE_GATE_NOTICE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * The blocker sentence plus the machine-readable terminal marker. The suffix is what lets the merge-retry
+ * router and an operator tell "deferred, try again" from "this seam can never produce the evidence" —
+ * RUFU-370's whole point is that the two used to be one indistinguishable warn line.
+ */
+export function unreachablePostMergeGateReason(
+  evidenceBlocker: string,
+  refusal: PostMergeGateReseedReason,
+): string {
+  return `${evidenceBlocker} [post-merge gate unreachable: ${refusal}]`;
+}
+
+export function unreachablePostMergeGateNoticeKey(
+  taskId: string,
+  gateId: string | undefined,
+  refusal: PostMergeGateReseedReason,
+  now: number,
+): string {
+  const bucket = Math.floor(now / POST_MERGE_GATE_NOTICE_COOLDOWN_MS);
+  return `system:unrun-post-merge-gate:${taskId}:${gateId ?? "unknown"}:${refusal}:${bucket}`;
+}
+
+export async function notifyUnreachablePostMergeGate(args: {
+  store: TaskStore;
+  messageStore?: Pick<MessageStore, "sendMessageOnce"> | null;
+  taskId: string;
+  gateId?: string;
+  refusal: PostMergeGateReseedReason;
+  evidenceBlocker: string;
+  /** Injectable clock so the cooldown bucket is testable without waiting for a window to roll. */
+  now?: number;
+  /** Bound on the optional mailbox write; forwarded to `deliverMailboxMessageOnce`. */
+  timeoutMs?: number;
+}): Promise<"delivered" | "unavailable"> {
+  const now = args.now ?? Date.now();
+  const sentence = `Auto-merge cannot finish ${args.taskId}: ${args.evidenceBlocker}, and the post-merge gate `
+    + `cannot be re-seeded (${args.refusal}). The landed work is preserved — this card needs a human decision, `
+    + `either an operator bypass of the gate or a workflow whose post-merge node can run.`;
+  const notice = await deliverMailboxMessageOnce(
+    args.messageStore ?? undefined,
+    {
+      fromId: "system",
+      fromType: "system",
+      toId: DASHBOARD_USER_ID,
+      toType: "user",
+      type: "system",
+      content: sentence,
+      metadata: {
+        kind: "unreachable-post-merge-gate",
+        taskId: args.taskId,
+        workflowStepId: args.gateId ?? null,
+        refusal: args.refusal,
+      },
+    },
+    unreachablePostMergeGateNoticeKey(args.taskId, args.gateId, args.refusal, now),
+    args.timeoutMs,
+  );
+  // Best-effort telemetry must never become a finalization dependency (FN-9175).
+  await emitBoundedRunAudit(args.store, {
+    taskId: args.taskId,
+    agentId: "merger",
+    runId: generateSyntheticRunId("auto-merge-finalize", args.taskId),
+    domain: "database",
+    mutationType: "task:auto-merge-finalize-post-merge-gate-unreachable" as DatabaseMutationType,
+    target: args.taskId,
+    metadata: {
+      taskId: args.taskId,
+      workflowStepId: args.gateId ?? null,
+      refusal: args.refusal,
+      notice,
+    },
+  });
+  return notice;
+}
+
 async function recordFinalizationAudit(args: {
   store: TaskStore;
   audit?: RunAuditor;
@@ -239,6 +340,7 @@ export async function finalizeProvenAutoMergeTask({
   source,
   log,
   fence,
+  messageStore,
 }: FinalizeProvenAutoMergeTaskOptions): Promise<AutoMergeFinalizationResult> {
   const latest = await store.getTask(taskId).catch(() => null);
   if (!latest) {
@@ -262,6 +364,35 @@ export async function finalizeProvenAutoMergeTask({
     verdict, and this path never completes a card on its own authority.
     */
     const reseed = await reseedUnrunPostMergeGate(store, latest, { source: "auto-merge" });
+    /*
+    FNXC:UnrunPostMergeGateRecovery 2026-09-28-07:34 (RUFU-370):
+    A terminal reseed refusal is not a transient deferral, and treating it as one is what made the pair
+    dominate production warn output: SANE-452 (`reseed: workspace`, refused by this seam by construction)
+    and STAS-288 (`reseed: active-continuation`) were re-announced seconds apart forever, with no
+    operator-visible artifact and no named terminal state. For a refusal that cannot ever produce
+    evidence, finalization now (a) hands the card to the operator once through the idempotent mailbox
+    upsert, (b) writes one bounded audit row per (task, gate, refusal), and (c) returns a reason the
+    merge-retry router can classify instead of a sentence it will re-log. Lifecycle stays untouched —
+    no backward move, no verdict, and the card keeps the column it stands in.
+    */
+    if (!reseed.seeded && isTerminalPostMergeReseedRefusal(reseed.reason)) {
+      const notice = await notifyUnreachablePostMergeGate({
+        store,
+        messageStore,
+        taskId,
+        gateId: reseed.workflowStepId,
+        refusal: reseed.reason,
+        evidenceBlocker,
+      });
+      await log?.(`Auto-merge finalization deferred for ${taskId}: ${evidenceBlocker}`
+        + ` [post-merge gate reseed: ${reseed.reason}; operator handoff: ${notice}]`);
+      return {
+        outcome: "blocked",
+        task: latest,
+        previousColumn: latest.column,
+        reason: unreachablePostMergeGateReason(evidenceBlocker, reseed.reason),
+      };
+    }
     await recordFinalizationAudit({
       store,
       audit,

@@ -15164,6 +15164,8 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             auditAgentId: "self-healing",
             auditPhase: "recover-merged-review",
             source: "self-healing",
+            // RUFU-370: an unreachable post-merge gate must reach the operator, not loop as a warn line.
+            messageStore: this.options.messageStore,
             rootDir: this.options.rootDir,
             log: (message) => log.warn(message),
           });
@@ -16294,6 +16296,8 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
       auditAgentId: "self-healing",
       auditPhase: "recover-stranded-ai-merge-commit",
       source: "self-healing",
+      // RUFU-370: same operator handoff on the stranded-AI-merge recovery path.
+      messageStore: this.options.messageStore,
       rootDir: this.options.rootDir,
       log: async (message) => {
         await this.store.logEntry(task.id, message).catch(() => undefined);

@@ -61,6 +61,29 @@ export interface PostMergeGateReseedResult {
   priorAttemptCount?: number;
 }
 
+/*
+FNXC:UnrunPostMergeGateRecovery 2026-09-28-07:34 (RUFU-370):
+RUFU-306 bounded the SEED, and the bound holds — but the caller had no way to tell a refusal that will
+become a seed later from a refusal that can never produce evidence, so production kept deferring on
+seconds-spaced passes: `[post-merge gate reseed: workspace]` for SANE-452 and
+`[post-merge gate reseed: active-continuation]` for STAS-288, both forever. These are the refusals where
+retrying the same seam is provably useless: a workspace card is refused by this seam by construction, a
+workflow with no such node cannot seed it, and the seed budget is already spent. `active-continuation`,
+`operator-held` and `workflow-selection-changed` stay NON-terminal here — each names a condition that
+can genuinely clear on a later pass, and those cards must keep the old transient-defer behaviour.
+*/
+const TERMINAL_POST_MERGE_RESEED_REFUSALS = new Set<PostMergeGateReseedReason>([
+  "workspace",
+  "no-post-merge-node",
+  "rerun-budget-exhausted",
+  "unsupported-store",
+]);
+
+/** True when no future pass through this seam can produce the missing post-merge evidence row. */
+export function isTerminalPostMergeReseedRefusal(reason: PostMergeGateReseedReason): boolean {
+  return TERMINAL_POST_MERGE_RESEED_REFUSALS.has(reason);
+}
+
 /** Fixed per-gate marker prefix; gate ids cannot contain apostrophes, so the quoting is safe to match. */
 export function postMergeGateReseedLogMarker(gateId: string): string {
   return `[post-merge-gate-reseed] gate '${gateId}'`;
@@ -90,7 +113,8 @@ export async function reseedUnrunPostMergeGate(
 ): Promise<PostMergeGateReseedResult> {
   // Landed PROOF, not a merge-shaped object: `{}` proves nothing and must not start graph work.
   if (!task.mergeDetails?.commitSha) return { seeded: false, reason: "no-merge-proof" };
-  if (isWorkspaceTask(task)) return { seeded: false, reason: "workspace" };
+  // RUFU-370: this guard was duplicated in the RUFU-306 edit; a workspace card is refused by this
+  // seam by construction, which is why SANE-452 deferred forever with zero seed attempts.
   if (isWorkspaceTask(task)) return { seeded: false, reason: "workspace" };
   if (
     task.userPaused
