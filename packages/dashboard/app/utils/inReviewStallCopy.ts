@@ -23,7 +23,17 @@ const BADGE_LABEL_BY_CODE: Record<InReviewStallCode, string> = {
   "merge-blocker": "Merge blocked",
   "transient-merge-status-no-owner": "Merge stalled",
   "merge-retries-exhausted": "Retries exhausted",
-  "completed-review-status-none": "Merge retry stalled",
+  /*
+  FNXC:InReviewStallBadge 2026-09-28-18:56 (RUFU-393 era observation):
+  This badge used to read "Merge retry stalled". The classifier that produces this code REQUIRES
+  `mergeRetries === 0` (`packages/core/src/tasks/in-review-stall.ts`), so no merge retry had ever run
+  on any card carrying it — the label pointed the operator at merge-retry tooling for a state that
+  contains no retries at all. Measured the same day: 26 saneca `in-review` cards wore that badge while
+  their actual condition was a Code Review row that died with NO authored verdict. The badge now names
+  the observable fact (review finished, nothing merged) and the description carries both real causes.
+  The `merge-retries-exhausted` code keeps the retry wording, because there it is true.
+  */
+  "completed-review-status-none": "Review not merged",
   "no-worktree-no-merge-confirmed": "No worktree",
   "non-retryable-provider-error": "Provider error",
 };
@@ -48,11 +58,11 @@ const COPY_BY_CODE: Record<InReviewStallCode, Omit<InReviewStallCopy, "badgeLabe
       "Resolve the underlying merge problem manually and re-run the merge from the Review tab, or move the task back to in-progress.",
   },
   "completed-review-status-none": {
-    headline: "Completed review has no active merge",
+    headline: "Review finished but nothing was merged",
     description:
-      "All workflow steps are complete, but the task has no merge status or active merger. The automatic merge handoff did not durably start.",
+      "Every workflow step is done or skipped, yet the card has no status, no error, and zero merge retries — so this is not a retry that stalled. Two shapes produce it: a required review gate whose latest row has NO authored verdict (the review session died), or an approved card whose auto-merge hand-off never durably started.",
     suggestedAction:
-      "Retry the task to restart merge recovery. If the task-owned work is already on the target branch, use reconciliation to finalize it safely.",
+      "Open the Review tab. A missing verdict needs no manual repair — the no-verdict recovery re-seeds that gate and lifts the stall park itself. When a verdict exists, Retry restarts the merge hand-off.",
   },
   "no-worktree-no-merge-confirmed": {
     headline: "No worktree on disk and merge not confirmed",
