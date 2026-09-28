@@ -6,6 +6,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { promisify } from "node:util";
 import { acquireWorktreePathReservation, assertWorkspaceRepoRelPath, canonicalizeWorktreePath, classifyTaskBranchOrigin, isLegacyWorkspaceWorktreeLayout, resolveEngineIncarnationId, resolveEngineNodeId, resolveWorkspaceRepoWorktreePath, resolveWorkspaceTaskWorktreeDir, workspaceWorktreeGroupSegment, WORKSPACE_GROUP_MARKER_FILENAME, type RunMutationContext, type Settings, type Task, type TaskStore, type SecretsStore, type WorkspaceConfig, type WorkspaceLeaseHandle, type WorkspaceWorktreeContext } from "@fusion/core";
 import { resolveTaskWorkingBranchWithOrigin } from "./worktree-names.js";
+import { findWorktreeHoldingBranch, resolveWorkspaceRootMembership } from "./workspace-root-member.js";
 import { resolveTaskWorktreePathForBackend, resolveWorktreesDir, WORKTREE_RECOVERY_DIRNAME } from "./worktree-paths.js";
 import { hydrateWorktreeDb } from "./worktree-db-hydrate.js";
 import { formatError } from "../logger.js";
@@ -1753,6 +1754,59 @@ export async function acquireWorkspaceRepoWorktree(
     const deferredTaskMutations: Array<() => Promise<unknown>> = [];
     let mergeError: unknown;
     try {
+      /*
+      FNXC:WorkspaceRootMember 2026-09-28-08:41 (RUFU-390):
+      A member that resolves to the WORKSPACE ROOT repository is not a sub-repository: git walked up
+      from `<root>/<member>` to `<root>`, so creating this member's worktree would ask the root
+      repository for a SECOND worktree on `fusion/<id>` — the branch the task already occupies. Git
+      refuses that (`Branch fusion/<id> is already checked out at <path>`) and every workspace lane
+      then fails identically: 42 saneca cards carry `Workspace repository preparation failed for
+      saneca during acquire`, 26 sit `in-review` with a verdict-less Code Review row plus an
+      `in-review-stall-deadlock` park, and the board moved once per 40 minutes.
+
+      One branch can live in exactly one worktree, so the member entry is repointed at the registered
+      worktree that already holds the branch — an idempotent reuse with no `git worktree add`, which is
+      also what landing already expected: root-repo work has always landed from the task's own
+      root-repository worktree (measured: `workspaceWorktrees.saneca.landedSha` on landed cards).
+      When NOTHING holds the branch the ordinary creation path below runs untouched, and every member
+      that is its own repository takes neither branch — byte-identical to today.
+      */
+      if ((await resolveWorkspaceRootMembership(repoAbsPath, workspaceRootDir)).kind === "workspace-root-repository") {
+        const workingBranch = resolveTaskWorkingBranchWithOrigin(task).branch;
+        const holderPath = await findWorktreeHoldingBranch(workspaceRootDir, workingBranch);
+        if (holderPath) {
+          await store.mergeWorkspaceWorktreeEntry(task.id, repoRelPath, {
+            worktreePath: holderPath,
+            branch: workingBranch,
+          });
+          await safeObserve(async () => {
+            await store.logEntry(
+              task.id,
+              `Workspace member ${repoRelPath} is the workspace root repository, not a sub-repository: reusing the registered worktree that already holds ${workingBranch} (${holderPath}) instead of creating a second worktree of the same branch`,
+              undefined,
+              runContext,
+            );
+            await emitBoundedRunAudit(store, {
+              taskId: task.id,
+              agentId: runContext?.agentId ?? "workspace-acquire",
+              runId: runContext?.runId ?? generateSyntheticRunId("workspace-acquire", task.id),
+              domain: "git",
+              mutationType: "worktree:workspace-root-member-reused",
+              target: repoRelPath,
+              metadata: { taskId: task.id, repoRelPath, outcome: "reused-registered-worktree" },
+            });
+          });
+          logger?.warn(
+            `${task.id}: workspace member ${repoRelPath} resolves to the workspace root repository; reusing ${holderPath} (${workingBranch})`,
+          );
+          return {
+            worktreePath: holderPath,
+            branch: workingBranch,
+            baseCommitSha: existing?.baseCommitSha,
+            alreadyAcquired: true,
+          };
+        }
+      }
       await store.mergeWorkspaceWorktreeEntry(
         task.id,
         repoRelPath,

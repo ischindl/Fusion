@@ -229,6 +229,12 @@ the operator, so the run-audit row must stay ids/outcomes-only and never echo th
 
 `TASK_BASE_DIVERGED:` is the operator-visible refusal sentence for proven divergence, not a new event type. It means the local integration ref (e.g. `main`) and its remote-tracking counterpart (e.g. `origin/main`) each carry commits the other lacks — proven with `git merge-base --is-ancestor` against already-fetched refs, never a fresh fetch. Remedy: the operator pulls (or pushes) the local default branch to reconcile it with the remote, then retries the card. All four acquisition entry points — the executor (`run-implementation`), the durable-agent heartbeat, the merger, and the workflow graph-node custom-node entry — surface the identical refusal and park the task `failed` with it; none of them consumes the branch-conflict `recoveryRetryCount` budget, emits the acquisition-exhaustion message, or calls `onTaskAcquisitionExhausted`, because divergence is a human reconciliation decision, not a retryable branch conflict. Ahead-only, behind-only, and aligned repos are never refused: a strictly-behind linear remote still receives the FN-8839 post-create linear rebase; only a rebase target proven to have diverged is skipped (the fresh branch keeps its local base).
 
+<!--
+FNXC:WorkspaceRootMember 2026-09-28-08:41 (RUFU-390): documents the reuse event emitted when a
+configured workspace member resolves to the workspace root repository.
+-->
+`worktree:workspace-root-member-reused` records one workspace acquisition in which the configured member directory resolved to the workspace root repository (git walked up from `<root>/<member>` to `<root>`), so the member entry was repointed at the registered worktree that already holds the task branch instead of creating a second worktree of the same repository and branch. Metadata is ids and a fixed outcome only (`taskId`, `repoRelPath`, `outcome`); the reused path and branch name live on the task row and the task log, never in this row. The emit uses the FN-9175 bounded seam, so telemetry cannot alter or delay the acquisition.
+
 ### Cross-project handoff
 
 <!--
