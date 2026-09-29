@@ -738,8 +738,12 @@ pgTest("MissionStore (PostgreSQL backend mode)", () => {
   renamed-lane PostgreSQL coverage uses the same direct source to keep schema and workflow APIs
   separate.
   */
-  /* Control: with no renamed workflow the duplicate still lands in the legacy archive lane, so an
-     unconverted board is byte-identical. */
+  /*
+  FNXC:MissionAdmission 2026-09-29-09:25 (merge origin/main a6e65a5af8, upstream FN-9402):
+  Upstream added this pool-starvation regression while the duplicate still moved to an archive lane.
+  Our side soft-deletes the competing duplicate, so the observable post-state is "no live read" plus
+  an untouched canonical claim — this test guards the pool invariant, not the destination lane.
+  */
   it("does not exhaust the runtime pool when concurrent duplicate cleanup resolves historical-sentinel lanes", async () => {
     const m = missions();
     const taskStore = h.store();
@@ -760,8 +764,19 @@ pgTest("MissionStore (PostgreSQL backend mode)", () => {
       duplicateTaskId: duplicateTask.id,
     })));
 
-    await expect(Promise.all(cases.map(({ duplicateTask }) => taskStore.getTask(duplicateTask.id))))
-      .resolves.toEqual(expect.arrayContaining(cases.map(({ duplicateTask }) => expect.objectContaining({ id: duplicateTask.id, column: "archived" }))));
+    const liveState = async (taskId: string) => {
+      try {
+        await taskStore.getTask(taskId);
+        return "live";
+      } catch {
+        return "gone";
+      }
+    };
+    await expect(Promise.all(cases.map(({ duplicateTask }) => liveState(duplicateTask.id))))
+      .resolves.toEqual(cases.map(() => "gone"));
+    /* The first claim must survive: reconciliation removes the competitor, never the canonical. */
+    await expect(Promise.all(cases.map(({ claimedTask }) => liveState(claimedTask.id))))
+      .resolves.toEqual(cases.map(() => "live"));
     await expect(taskStore.asyncLayer!.ping()).resolves.toBeUndefined();
   });
 
