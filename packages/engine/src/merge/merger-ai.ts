@@ -1752,7 +1752,7 @@ export async function runAiMerge(
         target: branch,
         metadata: { taskId, kind: "no-commits-expected", noCommitsExpected: true },
       });
-      return await finalizeTask(store, taskId, noOpResult(task, branch, "no-commits-expected"), undefined, undefined, projectRootDir, fence);
+      return await finalizeTask(store, taskId, noOpResult(task, branch, "no-commits-expected"), undefined, undefined, projectRootDir, fence, options.graphOwnedPostMergeTraversal === true);
     }
     if (wasExecuted && !alreadyMerged) {
       await audit.git({
@@ -1771,7 +1771,7 @@ export async function runAiMerge(
       target: branch,
       metadata: { taskId, kind: alreadyMerged ? "already-merged" : "never-executed" },
     });
-    return await finalizeTask(store, taskId, noOpResult(task, branch, alreadyMerged ? "already-merged" : "no-branch"), undefined, undefined, projectRootDir, fence);
+    return await finalizeTask(store, taskId, noOpResult(task, branch, alreadyMerged ? "already-merged" : "no-branch"), undefined, undefined, projectRootDir, fence, options.graphOwnedPostMergeTraversal === true);
   }
 
   /*
@@ -1839,7 +1839,7 @@ export async function runAiMerge(
       const finalized = await finalizeMerged(store, projectRootDir, taskId, task, branch, integrationBranch, alreadyLanded.landedSha, audit, log, {
         empty: false,
         expectedBranchTipSha: alreadyLanded.landedBranchTipSha,
-      }, mergeTarget, groupRouting, options.syncGroupPr, fence);
+      }, mergeTarget, groupRouting, options.syncGroupPr, fence, options.graphOwnedPostMergeTraversal === true);
       await audit.git({
         type: "merge:ai-landed",
         target: integrationBranch,
@@ -2073,14 +2073,14 @@ export async function runAiMerge(
     }
 
     await log(`AI merge: ${branch} had no net changes vs ${integrationBranch} — finalizing as no-op`);
-    const noOpFinalized = await finalizeMerged(store, projectRootDir, taskId, task, branch, integrationBranch, landResult.tipSha, audit, log, { empty: true }, mergeTarget, groupRouting, options.syncGroupPr, fence);
+    const noOpFinalized = await finalizeMerged(store, projectRootDir, taskId, task, branch, integrationBranch, landResult.tipSha, audit, log, { empty: true }, mergeTarget, groupRouting, options.syncGroupPr, fence, options.graphOwnedPostMergeTraversal === true);
     await runPushAfterMergeStep({ store, projectRootDir, taskId, settings, integrationBranch, audit, log, options, result: noOpFinalized, fence });
     return noOpFinalized;
   }
 
   let finalized: MergeResult;
   try {
-    finalized = await finalizeMerged(store, projectRootDir, taskId, task, branch, integrationBranch, landResult.squashSha, audit, log, { empty: false }, mergeTarget, groupRouting, options.syncGroupPr, fence);
+    finalized = await finalizeMerged(store, projectRootDir, taskId, task, branch, integrationBranch, landResult.squashSha, audit, log, { empty: false }, mergeTarget, groupRouting, options.syncGroupPr, fence, options.graphOwnedPostMergeTraversal === true);
   } catch (error: unknown) {
     const failure = getErrorMessage(error);
     const landingMessage = `AI merge: landed ${short(landResult.squashSha)} on ${integrationBranch}, but post-landing finalization failed: ${failure}. The landing is durable; a retry will finalize without re-merging.`;
@@ -3870,6 +3870,7 @@ export async function finalizeMerged(
   groupRouting?: BranchGroupMergeRouting | null,
   syncGroupPr?: SyncGroupPrFn,
   fence?: MergeWriteFence,
+  graphOwnedPostMergeTraversal = false,
 ): Promise<MergeResult> {
   /*
   FNXC:BranchGroupCompletion 2026-07-04-00:00:
@@ -4074,10 +4075,17 @@ export async function finalizeMerged(
   }
 
   fence?.assertOwned("finalization");
-  const finalized = await finalizeTask(store, taskId, result, audit, log, projectRootDir, fence);
-  await log(opts.empty ? `AI merge: finalized ${taskId} (no-op) → done` : `AI merge: landed ${short(landedSha)}, task → done`);
-  return finalized;
+  const finalized = await finalizeTask(store, taskId, result, audit, log, projectRootDir, fence, graphOwnedPostMergeTraversal);
+  if (finalized.deferredPostMergeEvidence) {
+    await log(`AI merge: ${taskId} landed; awaiting required post-merge verification before task finalization`);
+  } else {
+    await log(opts.empty ? `AI merge: finalized ${taskId} (no-op) → done` : `AI merge: landed ${short(landedSha)}, task → done`);
+  }
+  const { deferredPostMergeEvidence: _deferredPostMergeEvidence, ...mergeResult } = finalized;
+  return mergeResult;
 }
+
+type FinalizeTaskResult = MergeResult & { deferredPostMergeEvidence?: boolean };
 
 /** Move the task to done and emit, mirroring the legacy completeTask. */
 async function finalizeTask(
@@ -4088,7 +4096,8 @@ async function finalizeTask(
   log?: (message: string) => Promise<void>,
   rootDir?: string,
   fence?: MergeWriteFence,
-): Promise<MergeResult> {
+  graphOwnedPostMergeTraversal = false,
+): Promise<FinalizeTaskResult> {
   const finalization = await finalizeProvenAutoMergeTask({
     store,
     taskId,
@@ -4101,8 +4110,24 @@ async function finalizeTask(
     log,
     fence,
   });
-  if (finalization.outcome === "blocked") {
+  if (finalization.outcome === "blocked" && !finalization.deferredPostMergeEvidence) {
     throw new Error(`AI merge finalization blocked for ${taskId}: ${finalization.reason ?? "unknown"}`);
+  }
+  if (finalization.deferredPostMergeEvidence) {
+    /*
+    FNXC:PostMergeEvidenceOrdering 2026-09-25-20:07:
+    Proven no-op merge proof cannot substitute for required post-merge evidence. Only the graph
+    requester guarantees immediate traversal of its authored gate, so direct/manual callers fail
+    visibly rather than reporting a successful merge that leaves the required gate stranded.
+    */
+    if (!graphOwnedPostMergeTraversal) {
+      throw new Error(`AI merge finalization blocked for ${taskId}: ${finalization.reason ?? "required post-merge evidence has not reported"}`);
+    }
+    return {
+      ...result,
+      task: finalization.task ?? result.task,
+      deferredPostMergeEvidence: true,
+    };
   }
   if (!finalization.task) {
     throw new Error(`AI merge finalization could not find task ${taskId}`);

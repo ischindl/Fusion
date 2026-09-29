@@ -138,7 +138,7 @@ export function MilestoneSliceInterviewModal({
   const connectToInterviewStream = useCallback(
     (sessionId: string) => {
       streamConnectionRef.current?.close();
-      const connection = connectToStream(sessionId, projectId, {
+      const connection = connectToStream(targetId, sessionId, projectId, {
         onThinking: (data) => {
           setStreamingOutput((prev) => prev + data);
           broadcastUpdate({
@@ -211,7 +211,7 @@ export function MilestoneSliceInterviewModal({
 
       streamConnectionRef.current = connection;
     },
-    [broadcastCompleted, broadcastUpdate, connectToStream, interviewType, projectId, targetTitle],
+    [broadcastCompleted, broadcastUpdate, connectToStream, interviewType, projectId, targetId, targetTitle],
   );
 
   const clearSummary = () => {
@@ -371,7 +371,7 @@ export function MilestoneSliceInterviewModal({
 
       try {
         connectToInterviewStream(sessionId);
-        await respondToInterview(sessionId, responses, projectId);
+        await respondToInterview(targetId, sessionId, responses, projectId);
       } catch (err) {
         streamConnectionRef.current?.close();
         streamConnectionRef.current = null;
@@ -379,7 +379,7 @@ export function MilestoneSliceInterviewModal({
         setView({ type: "question", sessionId, question: view.question });
       }
     },
-    [connectToInterviewStream, projectId, respondToInterview, view],
+    [connectToInterviewStream, projectId, respondToInterview, targetId, view],
   );
 
   const handleApply = useCallback(async () => {
@@ -389,14 +389,14 @@ export function MilestoneSliceInterviewModal({
     setIsApplying(true);
 
     try {
-      await applyInterview(view.sessionId, editedSummary || undefined, projectId);
+      await applyInterview(targetId, view.sessionId, editedSummary || undefined, projectId);
       onApplied();
       setView({ type: "applied" });
     } catch (err) {
       setError(getErrorMessage(err) || t("interview.error.failedToApply", "Failed to apply interview results"));
       setIsApplying(false);
     }
-  }, [applyInterview, editedSummary, onApplied, projectId, view]);
+  }, [applyInterview, editedSummary, onApplied, projectId, targetId, view]);
 
   const getProgress = () => {
     if (view.type === "question") {

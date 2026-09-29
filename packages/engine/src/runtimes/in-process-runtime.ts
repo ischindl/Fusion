@@ -1361,7 +1361,7 @@ export class InProcessRuntime
   private mergeEnqueuer?: (taskId: string) => boolean;
   private mergeRequester?: (
     taskId: string,
-    options?: { signal?: AbortSignal },
+    options?: { signal?: AbortSignal; graphOwnedPostMergeTraversal?: boolean },
   ) => Promise<import("@fusion/core").MergeResult>;
   private clearMergeActive?: (taskId: string) => void;
   private activeMergeTaskIdProvider?: () => string | null;
@@ -2872,7 +2872,7 @@ export class InProcessRuntime
   setMergeRequester(
     requestMerge: (
       taskId: string,
-      options?: { signal?: AbortSignal },
+      options?: { signal?: AbortSignal; graphOwnedPostMergeTraversal?: boolean },
     ) => Promise<import("@fusion/core").MergeResult>,
   ): void {
     this.mergeRequester = requestMerge;

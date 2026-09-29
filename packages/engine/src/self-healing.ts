@@ -34,8 +34,36 @@ Import = union of both sides: upstream's renamed resolveExplicitDuplicateMarker 
 getMergeConfirmedFinalizationBlocker (beta.8 merge-boundary feature), plus the two local
 type imports (ChatSession, ChatInFlightGenerationState) that the post-merge body still
 uses. parseExplicitDuplicateMarker survives only in an FNXC history comment — every
-call site uses the renamed resolver.
-
+call site uses the renamed resolver. */
+import { PRE_MERGE_STEPS_NOT_RUN_BLOCKER, loadWorkspaceConfig, type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, IN_REVIEW_STALL_TERMINAL_LOG_PREFIX, allowsAutoMergeProcessing, hasUserAutoMergeHold, hasSharedBranchMemberAutoMergeHold, resolveEffectiveAutoMerge, countRecentIdenticalStallEntries,
+  /* FNXC:SelfHealing 2026-09-10-23:14 (merge origin/main 2026-09-10): upstream's stall-deadlock
+     repetition logic calls these two in-review-stall helpers; the union import carries them. */
+  getLatestFailedPreMergeStepProgressAt, resolveInReviewStallDeadlockThreshold,
+  detectDependencyCycle, detectSelfDefeatingDependency, evaluateNoCommitsNoOpFinalize, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getPostMergeFinalizeBlocker, getRequiredPostMergeEvidenceBlocker, planConfirmedMergeChecklistReconciliation, getTaskMergeBlocker, resolvePreMergeGateForTask,
+  /* FNXC:SelfHealing 2026-09-06-09:47 (merge origin/main dd808ed2c6): FN-295 collateral-archive restore helpers + stale-content predicate — the auto-merged sweep bodies call all three. */
+  resolveCollateralArchivedReviewGate,
+  COLLATERAL_ARCHIVED_REVIEW_GATE_DIAGNOSTIC,
+  isStaleContentApprovalBlocker, isPreMergeStepsNotRunBlocker, isPreMergeGateFailedBlocker, parsePreMergeGateApprovalBlocker, parseEmbeddedPreMergeGateApprovalBlocker, findVerdictLessFailedRequiredGates, IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON, namesVerdictLessFailedGate, hasFailedPreMergeWorkflowStepRow, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isLiveSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, resolveExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveRequiredPreMergeStepIds, resolveReboundTarget, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, isWipColumnRole, isReviewColumnRole, isTerminalColumnRole, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, resolveUnprovenReviewApproval, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, /* FNXC:ApprovalHoldMoveClear 2026-09-25-11:12 (RUFU-297): the drifted-hold sweep consumes the single hold authority + honest pause accounting. */ isTaskBlockedOnApproval, computePauseAccountingPatch, /* FNXC:PlanningAdmissionStall 2026-09-25-19:31 (RUFU-273 Step 3): the sweep reads/writes the planning-admission episode through the SAME core helpers triage uses, and reads RUFU-246's premise episode to stand down in front of it. */ PLAN_ADMISSION_STALL_METADATA_KEY, PLAN_PREMISE_REJECTION_METADATA_KEY, planAdmissionStallWrite, readPlanAdmissionStallEpisode, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type MoveTaskOptions, type Settings, type Task, type MergeDetails, type MergeResult, type WorkflowStepResult, type WorkflowIr, type WorkflowIrV2, type ChatSession, type ChatInFlightGenerationState,
+  resolveNearDuplicateCanonicalFlags,
+  LEGACY_COLUMN_IDS_BY_ROLE,
+  TERMINAL_ROLES,
+  resolveProjectColumnsForRoles,
+  REVIEW_ROLES,
+  pruneTaskLifecycleEvents,
+  pruneGitHubCheckStatesAsync,
+  resolveAgentActivityAttribution,
+  resolveEngineIncarnationId,
+  resolveEngineNodeId,
+  classifyTaskBranchOrigin,
+  isFusionDeletableBranch,
+  isTaskExternallyBlocked,
+  isTaskLogWriteRefusal,
+  hasNonTerminalSteps,
+  fileScopeLeaseBlocksCandidate,
+  normalizeOverlapScopeForTask,
+  resolveWorktreePathReservationDirectory,
+  resolveLegacyWorktreesDirLayout,
+} from "@fusion/core";
 
 /*
 FNXC:SelfHealing 2026-08-30-08:55 (merge origin/main c7a5e74a6a → main):
@@ -96,35 +124,7 @@ The FN-207 lifecycle-containment rewrite stopped calling `resolveReboundTargetFo
 in the union import, which broke workspace lint (`no-unused-vars`) for every card after it. `resolveReboundTarget` is the
 symbol this file actually calls, so only the dead token was dropped.
 */
-import { PRE_MERGE_STEPS_NOT_RUN_BLOCKER, loadWorkspaceConfig, type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, IN_REVIEW_STALL_TERMINAL_LOG_PREFIX, allowsAutoMergeProcessing, hasSharedBranchMemberAutoMergeHold, resolveEffectiveAutoMerge, countRecentIdenticalStallEntries,
-  /* FNXC:SelfHealing 2026-09-10-23:14 (merge origin/main 2026-09-10): upstream's stall-deadlock
-     repetition logic calls these two in-review-stall helpers; the union import carries them. */
-  getLatestFailedPreMergeStepProgressAt, resolveInReviewStallDeadlockThreshold,
-  detectDependencyCycle, detectSelfDefeatingDependency, evaluateNoCommitsNoOpFinalize, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getPostMergeFinalizeBlocker, getRequiredPostMergeEvidenceBlocker, planConfirmedMergeChecklistReconciliation, getTaskMergeBlocker, resolvePreMergeGateForTask,
-  /* FNXC:SelfHealing 2026-09-06-09:47 (merge origin/main dd808ed2c6): FN-295 collateral-archive restore helpers + stale-content predicate — the auto-merged sweep bodies call all three. */
-  resolveCollateralArchivedReviewGate,
-  COLLATERAL_ARCHIVED_REVIEW_GATE_DIAGNOSTIC,
-  isStaleContentApprovalBlocker, isPreMergeStepsNotRunBlocker, isPreMergeGateFailedBlocker, parsePreMergeGateApprovalBlocker, parseEmbeddedPreMergeGateApprovalBlocker, findVerdictLessFailedRequiredGates, IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON, namesVerdictLessFailedGate, hasFailedPreMergeWorkflowStepRow, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isLiveSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, resolveExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveRequiredPreMergeStepIds, resolveReboundTarget, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, isWipColumnRole, isReviewColumnRole, isTerminalColumnRole, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, resolveUnprovenReviewApproval, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, /* FNXC:ApprovalHoldMoveClear 2026-09-25-11:12 (RUFU-297): the drifted-hold sweep consumes the single hold authority + honest pause accounting. */ isTaskBlockedOnApproval, computePauseAccountingPatch, /* FNXC:PlanningAdmissionStall 2026-09-25-19:31 (RUFU-273 Step 3): the sweep reads/writes the planning-admission episode through the SAME core helpers triage uses, and reads RUFU-246's premise episode to stand down in front of it. */ PLAN_ADMISSION_STALL_METADATA_KEY, PLAN_PREMISE_REJECTION_METADATA_KEY, planAdmissionStallWrite, readPlanAdmissionStallEpisode, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type MoveTaskOptions, type Settings, type Task, type MergeDetails, type MergeResult, type WorkflowStepResult, type WorkflowIr, type WorkflowIrV2, type ChatSession, type ChatInFlightGenerationState,
-  resolveNearDuplicateCanonicalFlags,
-  LEGACY_COLUMN_IDS_BY_ROLE,
-  TERMINAL_ROLES,
-  resolveProjectColumnsForRoles,
-  REVIEW_ROLES,
-  pruneTaskLifecycleEvents,
-  pruneGitHubCheckStatesAsync,
-  resolveAgentActivityAttribution,
-  resolveEngineIncarnationId,
-  resolveEngineNodeId,
-  classifyTaskBranchOrigin,
-  isFusionDeletableBranch,
-  isTaskExternallyBlocked,
-  isTaskLogWriteRefusal,
-  hasNonTerminalSteps,
-  fileScopeLeaseBlocksCandidate,
-  normalizeOverlapScopeForTask,
-  resolveWorktreePathReservationDirectory,
-  resolveLegacyWorktreesDirLayout,
-} from "@fusion/core";
+
 /*
 FNXC:ChatSidebarLiveness 2026-09-24-05:55 (RUFU-220):
 `chatInFlightReferenceMs` is the same reference resolver that now drives the dashboard sidebar's
@@ -497,7 +497,6 @@ import {
   matchesScope,
 } from "./healing/self-healing-path-utils.js";
 
-
 const log = createLogger("self-healing");
 
 /*
@@ -563,7 +562,6 @@ type WorkflowRecoveryRoute =
   | { kind: "no-action"; reason: "not-pause-abort" | "unsafe-or-not-routable" };
 
 
-
 type BranchGroupLandingRecorder = {
   recordBranchGroupMemberLanded?: (groupId: string, payload: {
     taskId: string;
@@ -594,7 +592,6 @@ async function classifyOwnedLandedEvidenceForSelfHealing(rootDir: string, task: 
   const { classifyOwnedLandedEvidence } = await import("./merger.js");
   return classifyOwnedLandedEvidence(rootDir, task, { mergeTargetBranch });
 }
-
 
 
 /*
@@ -1052,7 +1049,6 @@ type AutoRebindSafetyResult =
 
 export type RebindResult = { repaired: number; outcomes: RebindOutcome[] };
 
-
 /**
  * Decide whether a git commit belongs to a given task.
  *
@@ -1068,8 +1064,6 @@ export type RebindResult = { repaired: number; outcomes: RebindOutcome[] };
  *  - Subject anchored on the task ID in conventional-commit form:
  *      `<type>(<taskId>): …` or `<taskId>: …` or `<type>(<taskId>/...): …`
  */
-
-
 
 
 
@@ -2368,6 +2362,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       { name: "reconcile-stale-duplicate-decision", fn: () => this.reconcileStaleDuplicateDecisionPause().then(() => undefined) },
       { name: "reconcile-pending-wedge-notification", fn: () => this.reconcilePendingWedgeNotifications().then(() => undefined) },
       { name: "reconcile-review-stall-notification", fn: () => this.reconcileReviewStallWedgeNotifications().then(() => undefined) },
+      { name: "reconcile-externally-merged-pr", fn: () => this.reconcileExternallyMergedPrTasks().then(() => undefined) },
       { name: "recover-already-merged-review", fn: () => this.recoverAlreadyMergedReviewTasks().then(() => undefined) },
       { name: "recover-post-done-noncontinuable-wedge", fn: () => this.recoverPostDoneNonContinuableWedge().then(() => undefined) },
       { name: "recover-completion-handoff-limbo", fn: () => this.recoverCompletionHandoffLimbo().then(() => undefined) },
@@ -2653,7 +2648,6 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     }
   }
 
-
   /*
   FNXC:LifecycleContainment 2026-08-28-07:48:
   Stuck-session recovery has no kill budget or terminal branch. The detector disposes a dead session
@@ -2865,7 +2859,6 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   }
 
 
-
   /**
    * Best-effort refresh of the remote-tracking base ref so the already-merged
    * evidence detector can see a squash that landed on the remote after this
@@ -2876,7 +2869,6 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
    * still attempt to resolve the (possibly stale) remote-tracking ref; if even
    * that is absent we return null and the caller leaves the card untouched.
    */
-
 
 
 
@@ -2986,7 +2978,6 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     }
   }
 
-
   private async resolveSelfHealingMergeTarget(
     task: Task,
     settings: Settings | undefined,
@@ -3048,7 +3039,6 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       log.warn(`Failed to record shared-group routing guard for ${task.id}: ${errorMessage}`);
     }
   }
-
 
   private async recordSelfHealingBranchGroupMemberLanding(
     task: Task,
@@ -3567,6 +3557,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           // FNXC:PlanningEvacuation 2026-07-25-23:00: reclaim worktrees acquired at planning time by cards that never executed.
           { name: "reconcile-pre-execution-worktrees", fn: () => this.reconcilePreExecutionWorktrees() },
           { name: "recover-merged-review", fn: () => this.recoverMergedReviewTasks() },
+          { name: "reconcile-externally-merged-pr", fn: () => this.reconcileExternallyMergedPrTasks() },
           { name: "recover-already-merged-review", fn: () => this.recoverAlreadyMergedReviewTasks() },
           { name: "recover-post-done-noncontinuable-wedge", fn: () => this.recoverPostDoneNonContinuableWedge() },
           { name: "recover-completion-handoff-limbo", fn: () => this.recoverCompletionHandoffLimbo() },
@@ -3647,14 +3638,12 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         }
       }
 
-
       const elapsedMs = Date.now() - startMs;
       log.debug(`Maintenance cycle completed in ${elapsedMs}ms`);
     } finally {
       this.maintenanceRunning = false;
     }
   }
-
 
   // ── Completed task recovery ──────────────────────────────────────
 
@@ -7583,7 +7572,6 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       const allTasks = await this.store.listTasks({ includeArchived: false });
       const taskById = new Map(allTasks.map((task) => [task.id, task]));
 
-
       const overlapIgnorePaths = settings.overlapIgnorePaths ?? [];
       const filteredScopeByTaskId = new Map<string, string[]>();
       const leaseRoleIrCache = new Map<string, WorkflowIr>();
@@ -7769,7 +7757,6 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         complete: new Set(["done"]),
         hold: new Set(["todo"]), review: new Set(["in-review"]),
       };
-
 
       for (const task of candidates.values()) {
         const blockerId = task.blockedBy;
@@ -12632,6 +12619,14 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
 
       for (const task of tasks) {
         if (task.deletedAt || !allowsAutoMergeProcessing(task, settings)) continue;
+        /*
+        FNXC:ReviewHoldRecovery 2026-09-25-20:03:
+        A user-authored per-task autoMerge Off keeps an in-review card available
+        for human Merge & Close even while project auto-merge is enabled. Stall
+        disposal is lifecycle mutation, not processing admission, so it must not
+        turn that explicit review hold into a failed paused card.
+        */
+        if (hasUserAutoMergeHold(task)) continue;
         const reviewColumns = stallLanes.get(task.id) ?? stallReviewColumns;
         const requiredPreMergeStepIds = stallGateIds.get(task.id);
         const selectedSignal = getInReviewStallReason(task, {
@@ -13454,7 +13449,6 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
     return retracted;
   }
 
-
   /* FNXC:LifecycleContainment 2026-08-28-07:48: recoverGhostReviewTasks was removed; only the in-place stuck-session detector may heal WIP liveness. */
 
   /**
@@ -14165,7 +14159,6 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             }
             continue;
           }
-
 
           if (unrecoverableRepos.length > 0) {
             // FORK-A: at least one repo is proven branch-gone and not landed → park failed.
@@ -14890,7 +14883,6 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
   }
 
 
-
   async recoverDoneTaskMergeMetadata(): Promise<number> {
     try {
       /*
@@ -15127,6 +15119,38 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
   }
 
   // ── Misclassified failure recovery ───────────────────────────────
+
+  /**
+   * Finalize review cards whose durable PR mirror already records an external merge.
+   *
+   * This is deliberately provider-independent: dashboard/CLI adapters write the remote state, and the
+   * TaskStore transition owns proof persistence and lifecycle movement. A closed PR is excluded because
+   * it is not merge evidence; active merger ownership is left untouched for its current owner to settle.
+   */
+  async reconcileExternallyMergedPrTasks(): Promise<number> {
+    const reviewColumns = await resolveProjectColumnsForRoles(this.store, REVIEW_ROLES);
+    const candidates = new Map<string, Task>();
+    for (const column of reviewColumns) {
+      for (const task of await this.store.listTasks({ column, slim: true })) {
+        const prInfos = task.prInfos ?? (task.prInfo ? [task.prInfo] : []);
+        if (task.deletedAt || task.paused || ["merging", "merging-pr", "merging-fix"].includes(task.status ?? "") || !prInfos.some((pr) => pr.status === "merged")) continue;
+        candidates.set(task.id, task);
+      }
+    }
+
+    let reconciled = 0;
+    for (const task of candidates.values()) {
+      const result = await this.store.applyPrMergedTransition(task.id, {
+        agentId: "self-healing",
+        runId: generateSyntheticRunId("external-pr-reconcile", task.id),
+      }).catch((error) => {
+        log.warn(`External PR reconciliation failed for ${task.id}: ${error instanceof Error ? error.message : String(error)}`);
+        return { moved: false };
+      });
+      if (result.moved) reconciled++;
+    }
+    return reconciled;
+  }
 
   /**
    * Recover tasks that already merged successfully but never reached `done`.
@@ -16550,7 +16574,6 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
       await this.store.logEntry(task.id, "Auto-recovered (FN-4999): task in 'in-review' past handoff grace with no merge fan-out — re-emitting auto-merge handoff");
     }
   }
-
 
   /**
    * Reconciles an absent post-merge branch only after ownership proof and liveness fences agree.
@@ -20008,7 +20031,6 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
     log.debug('Maintenance batch 1 step "fts-maintenance" skipped — PostgreSQL tsvector/GIN is sync-on-write');
     return;
   }
-
 
   /** Run a best-effort passive WAL checkpoint without forcing live writers to truncate. */
   private checkpointWal(): void {

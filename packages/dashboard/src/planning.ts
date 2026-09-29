@@ -296,7 +296,7 @@ After every selected option, multi-selection, or free-text Other answer, treat t
 
 For every initial, answer, or refine turn respond only with JSON: {"type":"question","data":{"id":"unique-id","type":"single_select|multi_select","question":"...","description":"...","options":[{"id":"option-a","label":"...","description":"...","pros":["..."],"cons":["..."]},{"id":"option-b","label":"...","description":"...","pros":["..."],"cons":["..."]},{"id":"option-c","label":"...","description":"...","pros":["..."],"cons":["..."]},{"id":"other","label":"...","isOther":true}],"runningPlan":{"title":"...","description":"...","proposedChanges":["specific change"],"acceptanceCriteria":["observable outcome"],"suggestedSize":"S|M|L","suggestedDependencies":[],"keyDeliverables":["concrete work item"],"suggestedRefinements":["next focus 1","next focus 2"]}}}. Include normally 3–5 substantive alternatives in options; this example is illustrative rather than a maximum.
 
-Every turn must include the running-plan fields: only title, description, concrete proposedChanges, observable acceptanceCriteria, suggestedSize, suggestedDependencies, concrete keyDeliverables, and concise suggestedRefinements informed by the idea and answers so far. Include every distinct, high-value unresolved refinement area; do not cap the list at three. Never use interview question text as a deliverable. Proceed with plan serializes the plan as plan.md without suggestedRefinements. Never emit a priority: tasks run in arrival order and an operator raises one explicitly with Boost. Every question must provide normally 3–5 materially distinct actionable alternatives, each with a non-empty description, pros, and cons, plus exactly one Other/write-your-own option. Never treat two alternatives as sufficient or truncate a genuinely useful larger set. Write every label, option, and Other label in the language of the user's original input. Incorporate free-text Other answers verbatim as steering context for the following question.`;
+Every turn must include the running-plan fields: only title, description, concrete proposedChanges, observable acceptanceCriteria, suggestedSize, suggestedDependencies, concrete keyDeliverables, and concise suggestedRefinements informed by the idea and answers so far. suggestedDependencies may contain only existing task IDs in canonical PREFIX-NUMBER form; never include task titles, descriptions, question text, or proposed work, and omit an unknown dependency rather than guessing. Include every distinct, high-value unresolved refinement area; do not cap the list at three. Never use interview question text as a deliverable. Proceed with plan serializes the plan as plan.md without suggestedRefinements. Never emit a priority: tasks run in arrival order and an operator raises one explicitly with Boost. Every question must provide normally 3–5 materially distinct actionable alternatives, each with a non-empty description, pros, and cons, plus exactly one Other/write-your-own option. Never treat two alternatives as sufficient or truncate a genuinely useful larger set. Write every label, option, and Other label in the language of the user's original input. Incorporate free-text Other answers verbatim as steering context for the following question.`;
 
 /*
 FNXC:PlanningMode 2026-07-23-11:35:
@@ -793,6 +793,35 @@ function normalizeStringArray(value: unknown): string[] {
     }
     seen.add(trimmed);
     normalized.push(trimmed);
+  }
+  return normalized;
+}
+
+/*
+FNXC:PlanningDependencies 2026-09-29-05:38:
+Planning summaries are untrusted model and persisted-session data. Only general canonical task
+identifiers may become dependency edges; titles, question text, and proposed work must be dropped
+so the core store remains the authority for whether an accepted ID is live in this project.
+*/
+const PLANNING_DEPENDENCY_TASK_ID_PATTERN = /^[A-Z][A-Z0-9]*-\d+$/;
+
+export function normalizePlanningSuggestedDependencies(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") {
+      continue;
+    }
+    const dependencyId = item.trim();
+    if (!PLANNING_DEPENDENCY_TASK_ID_PATTERN.test(dependencyId) || seen.has(dependencyId)) {
+      continue;
+    }
+    seen.add(dependencyId);
+    normalized.push(dependencyId);
   }
   return normalized;
 }
@@ -4589,13 +4618,10 @@ export async function createTaskFromPlanSession(
     const trackingDecision = sourceContext
       ? await (await import("./github-tracking.js")).resolvePlanningGithubTrackingDecision(store, await store.getSettings(), { owner: sourceContext.sourceIssue.repository.split("/")[0], repo: sourceContext.sourceIssue.repository.split("/")[1], issueNumber: sourceContext.sourceIssue.issueNumber, url: sourceContext.sourceIssue.url ?? "" })
       : undefined;
+    const dependencies = normalizePlanningSuggestedDependencies(summary.suggestedDependencies);
     const task = await store.createTask({
       title: summary.title,
       description: sourceContext ? (await import("./github.js")).appendSourceIssueBlock(planMd, sourceContext.markdown, sourceContext.sourceIssue.url ?? "") : planMd,
-      dependencies: summary.suggestedDependencies?.length ? summary.suggestedDependencies : undefined,
-      /* FNXC:TaskQueueOrder 2026-09-17-12:07: FN-509 — a legacy saved summary may still carry a level
-         in its raw JSON. It is DROPPED here rather than converted into a rank, so resuming an old
-         planning session keeps working without reintroducing a priority. */
       ...(sourceContext ? { sourceIssue: sourceContext.sourceIssue, source: { sourceType: "github_import" as const, sourceMetadata: sourceContext.sourceMetadata }, ...(trackingDecision?.githubTracking ? { githubTracking: trackingDecision.githubTracking } : {}) } : { source: { sourceType: options?.sourceType ?? "cli" } }),
       ...(options?.baseBranch?.trim() ? { baseBranch: options.baseBranch.trim() } : {}),
       proposalClaimId: currentProposalClaimId(),

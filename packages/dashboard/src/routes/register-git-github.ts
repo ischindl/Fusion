@@ -71,6 +71,7 @@ import type { ApiRoutesContext } from "./types.js";
 import { runGitCommand } from "./resolve-diff-base.js";
 import { assertWorktreePathSafe, isPathWithin, listRegisteredWorktreePaths } from "../git-worktree-safety.js";
 import { registerBoundedWindowMap } from "../lib/retention/bounded-window-map.js";
+import { getTaskPrimaryPr } from "../task-planner-pr-status.js";
 
 const execAsync = promisify(execCb);
 const PR_ROUTE_MAX_BUFFER_BYTES = 10 * 1024 * 1024;
@@ -2281,6 +2282,14 @@ export async function applyChangesRequestedTransition(
   prInfo: PrInfo,
 ): Promise<void> {
   if (snapshot.decision !== "CHANGES_REQUESTED") return;
+  /*
+  FNXC:ExternalPrReconciliation 2026-09-29-06:40:
+  A concurrent forge observation can complete the task while another PR refresh is pending.
+  Re-read immediately before the nonterminal rebound so a historical review never moves a landed task out of Done.
+  */
+  const liveTask = await store.getTask(task.id);
+  if (!liveTask) return;
+  task = liveTask;
   if (!(await reviewColumnsForTask(store, task.id)).has(task.column)) return;
   if (task.prInfo?.lastReviewDecision === "CHANGES_REQUESTED") return;
 
@@ -2391,6 +2400,31 @@ export async function mergeTaskPr(
   const resolveIngestedChecks = createIngestedCheckResolver(scopedStore.getAsyncLayer?.());
   const mergeStatus = await client.getPrMergeStatus(repo.owner, repo.repo, task.prInfo.number, { requiredCheckNames, ...(resolveIngestedChecks ? { resolveIngestedChecks } : {}) });
   const nativeAutoMerge = settings.githubNativeAutoMerge === true;
+  /*
+  FNXC:ExternalPrReconciliation 2026-09-29-05:58:
+  A stale Finish & Close action must reconcile authoritative merged state before readiness checks.
+  GitHub no longer permits another merge, so persist its evidence and delegate completion to the shared
+  store transition instead of reporting a misleading merge-readiness conflict or calling mergePr.
+  */
+  if (mergeStatus.prInfo.status === "merged") {
+    const refreshed = {
+      ...task.prInfo,
+      ...mergeStatus.prInfo,
+      autoMergeOnGreen: task.prInfo.autoMergeOnGreen,
+      autoMergeStrategy: task.prInfo.autoMergeStrategy,
+      manual: task.prInfo.manual,
+      draft: mergeStatus.prInfo.draft ?? mergeStatus.prInfo.isDraft,
+      lastCheckedAt: new Date().toISOString(),
+      lastMergeError: undefined,
+      lastMergeErrorAt: undefined,
+    } satisfies PrInfo;
+    await scopedStore.updatePrInfo(task.id, refreshed);
+    await scopedStore.applyPrMergedTransition(task.id, {
+      agentId: "dashboard",
+      runId: `${runIdPrefix}-${task.id}-${Date.now()}`,
+    });
+    return refreshed;
+  }
   if (!nativeAutoMerge && !mergeStatus.mergeReady) {
     throw conflict(`PR cannot merge: ${mergeStatus.blockingReasons.join("; ")}`);
   }
@@ -2527,12 +2561,14 @@ export async function refreshPrInBackground(
     const client = new GitHubClient(token);
     const task = await store.getTask(taskId);
     const taskPrs = task ? getTaskPrList(task) : currentPrInfos;
+    const primaryPrNumber = task?.prInfo?.number ?? taskPrs[0]?.number;
+    const orderedTaskPrs = [...taskPrs].sort((left, right) => Number(right.number === primaryPrNumber) - Number(left.number === primaryPrNumber));
     const settings = await store.getSettings();
     const requiredCheckNames = resolveRequiredCheckNames(settings);
     const resolveIngestedChecks = createIngestedCheckResolver(store.getAsyncLayer?.());
     const checkGateOptions = { requiredCheckNames, ...(resolveIngestedChecks ? { resolveIngestedChecks } : {}) };
 
-    for (const currentPrInfo of taskPrs) {
+    for (const currentPrInfo of orderedTaskPrs) {
       const reviewSnapshot = await client.getPrReviewSnapshot(owner, repo, currentPrInfo.number, checkGateOptions);
       const mergeStatus = await client.getPrMergeStatus(owner, repo, currentPrInfo.number, checkGateOptions);
       const prior = getTaskPrList(task).find((entry) => entry.number === currentPrInfo.number) ?? currentPrInfo;
@@ -2569,13 +2605,16 @@ export async function refreshPrInBackground(
 
       await store.updatePrInfoByNumber(taskId, currentPrInfo.number, prInfo);
       await syncPrReviewsToTask(store, task, reviewSnapshot);
-      await applyChangesRequestedTransition(store, task, reviewSnapshot, prInfo);
+      /* FNXC:ExternalPrReconciliation 2026-09-29-06:37: A historical changes-requested review cannot override forge-confirmed landing evidence. */
+      if (prInfo.status !== "merged") {
+        await applyChangesRequestedTransition(store, task, reviewSnapshot, prInfo);
+      }
 
       if (prInfo.mergeable === "conflicting" && task?.branch && task?.worktree && options?.onConflictDetected) {
         await options.onConflictDetected(taskId);
       }
 
-      if (prInfo.status === "merged") {
+      if (prInfo.status === "merged" && currentPrInfo.number === primaryPrNumber) {
         await store.applyPrMergedTransition(taskId, {
           agentId: "dashboard",
           runId: `pr-refresh-${taskId}-${Date.now()}`,
@@ -5942,7 +5981,7 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
         throw notFound("Task has no associated PR");
       }
 
-      const primaryPr = prList[0];
+      const primaryPr = getTaskPrimaryPr(task) ?? prList[0];
 
       // Check if data is stale (>5 minutes since last check)
       const fiveMinutesMs = 5 * 60 * 1000;
@@ -6034,6 +6073,7 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
         mergeable?: PrInfo["mergeable"];
         blockingReasons: string[];
         reviewDecision: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | null;
+        reviewSnapshot: PrReviewSnapshot;
         checks: Array<{ name: string; required: boolean; state: string; detailsUrl?: string; startedAt?: string; completedAt?: string }>;
         automationStatus?: string | null;
         conflictReclaimQueued?: boolean;
@@ -6075,10 +6115,6 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
             lastReviewDecision: reviewSnapshot.decision,
           };
 
-          await scopedStore.updatePrInfoByNumber(task.id, priorPr.number, prInfo);
-          await syncPrReviewsToTask(scopedStore, task, reviewSnapshot);
-          await applyChangesRequestedTransition(scopedStore, task, reviewSnapshot, prInfo);
-
           return {
             prInfo,
             conflictDiagnostics: prInfo.conflictDiagnostics,
@@ -6086,12 +6122,45 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
             mergeable: prInfo.mergeable,
             blockingReasons: mergeStatus.blockingReasons,
             reviewDecision: reviewSnapshot.decision,
+            reviewSnapshot,
             checks: mergeStatus.checks,
             automationStatus: task.status ?? null,
             conflictReclaimQueued: false,
           };
         }));
         refreshedEntries.push(...results);
+      }
+
+      /*
+      FNXC:ExternalPrReconciliation 2026-09-29-06:40:
+      Persist every remote observation before letting an authoritative primary merge complete the task.
+      This keeps the response mirror complete without allowing a secondary review result to win the lifecycle race.
+      */
+      for (const entry of refreshedEntries) {
+        await scopedStore.updatePrInfoByNumber(task.id, entry.prInfo.number, entry.prInfo);
+        await syncPrReviewsToTask(scopedStore, task, entry.reviewSnapshot);
+      }
+
+      const observedPrimary = task.prInfo ?? prList[0];
+      const mergedPrimary = observedPrimary
+        ? refreshedEntries.find((entry) => entry.prInfo.number === observedPrimary.number && entry.prInfo.status === "merged")
+        : undefined;
+      if (mergedPrimary) {
+        /*
+        FNXC:ExternalPrReconciliation 2026-09-29-06:40:
+        Fetching multiple PRs concurrently must not let a secondary changes-requested result rebound the task before the owned primary's merged state is applied.
+        The remote primary is reconciled first; nonterminal review outcomes re-read the live task and become no-ops after completion.
+        */
+        await scopedStore.applyPrMergedTransition(task.id, {
+          agentId: "dashboard",
+          runId: `pr-refresh-${task.id}-${Date.now()}`,
+        });
+      }
+
+      for (const entry of refreshedEntries) {
+        if (entry.prInfo.status !== "merged") {
+          await applyChangesRequestedTransition(scopedStore, task, entry.reviewSnapshot, entry.prInfo);
+        }
       }
 
       const anyConflict = refreshedEntries.some((entry) => entry.prInfo.mergeable === "conflicting");
@@ -6351,8 +6420,8 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
 
       const requestedPr = Number.parseInt(String(req.query.pr ?? ""), 10);
       const primaryPr = Number.isInteger(requestedPr) && requestedPr > 0
-        ? prList.find((pr) => pr.number === requestedPr) ?? prList[0]
-        : prList[0];
+        ? prList.find((pr) => pr.number === requestedPr) ?? getTaskPrimaryPr(task) ?? prList[0]
+        : getTaskPrimaryPr(task) ?? prList[0];
       let owner: string;
       let repo: string;
       const badgeParsed = parseBadgeUrl(primaryPr.url);

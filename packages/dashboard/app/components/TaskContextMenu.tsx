@@ -287,9 +287,18 @@ export function getTaskReviewAction(
       };
     }
     if (prStatus === "merged") {
-      return options.includeMergeCompletionAction
-        ? { id: "merge", label: options.t("taskDetail.pr.finishAndClose", "Finish & Close"), onSelect: options.onMerge }
-        : undefined;
+      return {
+        id: "check-pr-status",
+        label: options.t("taskDetail.pr.mergedExternally", "Pull request merged"),
+        disabled: true,
+      };
+    }
+    if (prStatus === "closed") {
+      return {
+        id: "check-pr-status",
+        label: options.t("taskDetail.pr.closedWithoutMerge", "Pull request closed without merging"),
+        disabled: true,
+      };
     }
   }
 
