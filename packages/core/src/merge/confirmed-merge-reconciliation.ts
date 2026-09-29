@@ -3,6 +3,7 @@ import { resolveWorkflowIrForTask, type WorkflowIrResolverStore } from "../workf
 import { isWorkflowOptionalGroupEnabled } from "../workflows/workflow-optional-steps.js";
 import type { WorkflowIr } from "../workflows/workflow-ir-types.js";
 import { BLOCKING_TASK_STATUSES, clearMergeConfirmedTransientStatus } from "./task-merge.js";
+import { isAuditedOperatorBypass } from "./pre-merge-approval.js";
 
 export type ConfirmedMergeChecklistReconciliation = {
   skippedStepIndexes: number[];
@@ -79,6 +80,18 @@ export function getPostMergeEvidenceGateStatuses(
   return resolveRequiredPostMergeGateIds(task, ir).flatMap((gateId): PostMergeEvidenceGateStatus[] => {
     const result = (task.workflowStepResults ?? []).find((entry) => entry.workflowStepId === gateId);
     if (!result) return [{ gateId, state: "missing" as const }];
+    /*
+    FNXC:PostMergeGateOperatorWaiver 2026-09-29-15:49 (RUFU-408):
+    An audited operator waiver satisfies the post-merge gate, exactly as it satisfies the pre-merge door
+    (`evaluatePreMergeApprovals`' `auditedOperatorWaiver` class). Without this, the bypass the RUFU-370
+    notice names as the remedy rewrote the row to `skipped` and the finalizer STILL refused: `skipped`
+    is not `passed`, so the waiver closed one door and left the other shut, and the landed card stayed
+    in `in-review` forever with a recorded human decision on it. This is not a verdict — no reviewer
+    approval is fabricated; the row keeps `bypassedBy`/`bypassedAt`/`bypassReason` and the
+    `task:bypass-review` audit row, and the shared `isAuditedOperatorBypass` predicate refuses every
+    automated actor, so only a named human waiver clears the gate.
+    */
+    if (isAuditedOperatorBypass(result)) return [];
     if (result.status !== "passed" || (result.verdict !== "APPROVE" && result.verdict !== "APPROVE_WITH_NOTES")) {
       return [{ gateId, state: "not-approved" as const }];
     }

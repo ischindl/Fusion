@@ -114,6 +114,7 @@ import { CentralCore } from "./central/central-core.js";
 import { SecretsStore } from "./secrets/secrets-store.js";
 import { getLatestFailedPreMergeReviewStep, findPendingPreMergeStep } from "./merge/task-merge.js";
 import { resolveRequiredPreMergeStepIds } from "./merge/required-pre-merge-steps.js";
+import { resolveRequiredPostMergeGateIds } from "./merge/confirmed-merge-reconciliation.js";
 /*
 FNXC:ReviewLaneBypass 2026-09-06-01:20 (merge origin/main dd808ed2c6 → main):
 Import union: RUFU-179's pure derivation helpers AND upstream FN-295's approval evaluator.
@@ -2850,6 +2851,19 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         ? [...resolveRequiredPreMergeStepIds(reviewIrForBypass, task.enabledWorkflowSteps, task)]
         : [];
       /*
+      FNXC:PostMergeGateOperatorWaiver 2026-09-29-15:49 (RUFU-408):
+      The SAME IR read also names the required POST-merge gates, so the operator escape covers the gate
+      that is actually holding a landed card out of `done`. Measured on saneca 2026-09-29: seven
+      merge-CONFIRMED cards sat in `in-review` on `required post-merge evidence gate
+      'post-merge-verification' has not reported` while this method answered `no failed pre-merge review
+      step found` — the RUFU-370 mailbox notice told the operator to bypass the gate and no surface would
+      accept that bypass. It costs nothing extra (the IR was already resolved for the pre-merge set) and
+      it is the only reason the derivation and this method can stay one fact rather than two.
+      */
+      const requiredPostMergeForBypass = reviewIrForBypass
+        ? new Set(resolveRequiredPostMergeGateIds(task, reviewIrForBypass))
+        : new Set<string>();
+      /*
       FNXC:ReviewLaneBypass 2026-09-03-10:07 (RUFU-179):
       THE TARGET IS NOW CHOSEN BY THE SAME PURE DERIVATION THE READ PATHS HYDRATE, and that is the
       defect this method existed in only from the other side. FN-158 widened THIS method to accept a
@@ -2875,8 +2889,15 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       MORE permissive than the menu — RUFU-179's safe direction (an API-reachable escape, never a
       dead affordance).
       */
-      const bypassTarget = deriveReviewBypassTarget(task, new Set(requiredForBypass), new Set(reviewColumns));
+      const bypassTarget = deriveReviewBypassTarget(
+        task,
+        new Set(requiredForBypass),
+        new Set(reviewColumns),
+        requiredPostMergeForBypass,
+      );
       const absentStepId = bypassTarget && bypassTarget.kind === "absent" ? bypassTarget.workflowStepId : undefined;
+      // FNXC:PostMergeGateOperatorWaiver 2026-09-29-15:49 (RUFU-408): the waiver row belongs to the gate's own phase.
+      const absentPhase: "pre-merge" | "post-merge" = bypassTarget?.phase === "post-merge" ? "post-merge" : "pre-merge";
       const unapprovedTarget = !failedTarget && !absentStepId && requiredForBypass.length > 0
         ? (() => {
           const blocked = evaluatePreMergeApprovals(task, { requiredPreMergeStepIds: new Set(requiredForBypass) })
@@ -2910,7 +2931,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       const target = failedTarget ?? unapprovedTarget ?? {
         workflowStepId: bypassTarget!.workflowStepId,
         workflowStepName: bypassTarget!.workflowStepName,
-        phase: "pre-merge" as const,
+        phase: absentPhase,
         status: "absent" as const,
       };
       const rowTarget = failedTarget ?? unapprovedTarget;
@@ -2933,7 +2954,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         : {
           workflowStepId: absentStepId!,
           workflowStepName: absentStepId!,
-          phase: "pre-merge",
+          phase: absentPhase,
           status: "skipped",
           bypassedBy: actor,
           bypassedAt: now,

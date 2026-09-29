@@ -8,6 +8,8 @@ import {
   type ReviewBypassTaskView,
 } from "../merge/review-bypass-target.js";
 import { resolveRequiredPreMergeStepIds } from "../merge/required-pre-merge-steps.js";
+import { resolveRequiredPostMergeGateIds } from "../merge/confirmed-merge-reconciliation.js";
+import { BUILTIN_CODING_WORKFLOW_IR } from "../workflows/builtin-coding-workflow-ir.js";
 
 /*
 FNXC:ReviewLaneBypass 2026-09-03-10:07 (RUFU-179):
@@ -396,5 +398,98 @@ describe("required-gate resolution feeds the same derivation", () => {
     const standardRequired = resolveRequiredPreMergeStepIds(ir, undefined, standardTask);
     expect([...standardRequired]).toEqual(["code-review"]);
     expect(deriveReviewBypassTarget(standardTask, standardRequired, new Set(["in-review"]))?.kind).toBe("absent");
+  });
+});
+
+/*
+FNXC:PostMergeGateOperatorWaiver 2026-09-29-15:49 (RUFU-408):
+A merge-CONFIRMED card held out of `done` by an unreported POST-merge gate is the shape the RUFU-370
+mailbox notice tells the operator to bypass. Measured on saneca 2026-09-29: seven such cards got
+`no failed pre-merge review step found` from the API and no menu item, because this derivation was
+asked only about pre-merge gates — the human decision the notice asked for had no surface. These cases
+pin the widened derivation, and the ordering case pins that a pre-merge door is still cleared first
+(skipping a post-merge gate must never look like a way past a review that has not run).
+*/
+describe("deriveReviewBypassTarget — required post-merge gates", () => {
+  const POST_MERGE = new Set<string>(["post-merge-verification"]);
+
+  /** Durable merge proof is what makes the post-merge gate a door at all. */
+  const LANDED = { mergeDetails: { commitSha: "0123456789abcdef0123456789abcdef01234567", mergeConfirmed: true } } as never;
+
+  it("names an unreported post-merge gate as the absent target, tagged with its phase", () => {
+    const target = deriveReviewBypassTarget(
+      reviewTask({ workflowStepResults: [{ workflowStepId: "code-review", phase: "pre-merge", status: "passed", verdict: "APPROVE" } as never], ...LANDED }),
+      NO_REQUIRED,
+      REVIEW,
+      POST_MERGE,
+    );
+    expect(target).toEqual({
+      kind: "absent",
+      workflowStepId: "post-merge-verification",
+      workflowStepName: "post-merge-verification",
+      phase: "post-merge",
+    });
+  });
+
+  it("keeps an outstanding pre-merge gate in front of the post-merge one", () => {
+    const target = deriveReviewBypassTarget(
+      reviewTask({ workflowStepResults: [] }),
+      new Set<string>(["plan-review"]),
+      REVIEW,
+      POST_MERGE,
+    );
+    expect(target).toEqual({ kind: "absent", workflowStepId: "plan-review", workflowStepName: "plan-review" });
+    expect(target?.phase).toBeUndefined();
+  });
+
+  it("does not offer a post-merge gate that already reported (a real verdict is not this hatch)", () => {
+    const target = deriveReviewBypassTarget(
+      reviewTask({ workflowStepResults: [{ workflowStepId: "post-merge-verification", phase: "post-merge", status: "failed" } as never] }),
+      NO_REQUIRED,
+      REVIEW,
+      POST_MERGE,
+    );
+    expect(target).toBeUndefined();
+  });
+
+  it("does not offer the post-merge waiver while the card is unlanded (no pre-emptive waivers)", () => {
+    const target = deriveReviewBypassTarget(
+      reviewTask({ workflowStepResults: [{ workflowStepId: "code-review", phase: "pre-merge", status: "passed", verdict: "APPROVE" } as never] }),
+      NO_REQUIRED,
+      REVIEW,
+      POST_MERGE,
+    );
+    expect(target).toBeUndefined();
+  });
+
+  it("still refuses an operator-held card whose only outstanding gate is post-merge", () => {
+    const target = deriveReviewBypassTarget(
+      reviewTask({ paused: true, userPaused: true, workflowStepResults: [], ...LANDED } as never),
+      NO_REQUIRED,
+      REVIEW,
+      POST_MERGE,
+    );
+    expect(target).toBeUndefined();
+  });
+
+  it("names builtin:coding's real post-merge gate through the resolver (no invented step id)", () => {
+    const ir = BUILTIN_CODING_WORKFLOW_IR as unknown as WorkflowIr;
+    const landedCard = {
+      column: "in-review",
+      paused: false,
+      mergeDetails: { commitSha: "0123456789abcdef0123456789abcdef01234567", mergeConfirmed: true },
+      enabledWorkflowSteps: ["plan-review", "code-review", "post-merge-verification"],
+      workflowStepResults: [
+        { workflowStepId: "plan-review", phase: "pre-merge", status: "passed", verdict: "APPROVE" },
+        { workflowStepId: "code-review", phase: "pre-merge", status: "passed", verdict: "APPROVE" },
+      ],
+    } as unknown as ReviewBypassTaskView;
+    const requiredPost = new Set(resolveRequiredPostMergeGateIds(
+      { enabledWorkflowSteps: landedCard.enabledWorkflowSteps } as Task,
+      ir,
+    ));
+    expect([...requiredPost]).toEqual(["post-merge-verification"]);
+    expect(deriveReviewBypassTarget(landedCard, new Set<string>(), REVIEW, requiredPost))
+      .toMatchObject({ kind: "absent", workflowStepId: "post-merge-verification", phase: "post-merge" });
   });
 });

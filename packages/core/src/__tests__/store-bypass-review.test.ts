@@ -12,6 +12,7 @@ import {
   PRE_MERGE_STEPS_NOT_RUN_BLOCKER,
 } from "../merge/task-merge.js";
 import { resolveRequiredPreMergeStepIds } from "../merge/required-pre-merge-steps.js";
+import { getRequiredPostMergeEvidenceBlocker } from "../merge/confirmed-merge-reconciliation.js";
 import { BUILTIN_CODING_WORKFLOW_IR } from "../workflows/builtin-coding-workflow-ir.js";
 
 /*
@@ -420,6 +421,101 @@ pgDescribe("TaskStore.bypassFailedPreMergeReviewStep", () => {
     await store().updateTask("FN-BYP-005", { enabledWorkflowSteps: [] });
     await expect(
       store().bypassFailedPreMergeReviewStep("FN-BYP-005", { reason: "x", actor: "operator" }),
+    ).rejects.toThrow(/no failed pre-merge review step/);
+  });
+
+  /*
+  FNXC:PostMergeGateOperatorWaiver 2026-09-29-15:49 (RUFU-408):
+  THE HUMAN DECISION THE NOTICE PROMISED, ENDED TO END. RUFU-370's mailbox message on a landed card
+  reads "either an operator bypass of the gate or a workflow whose post-merge node can run", and the
+  first half did not exist: `bypassFailedPreMergeReviewStep` derived its target from PRE-merge gates
+  only, so seven merge-CONFIRMED saneca cards in `in-review` were told to use a lever that answered
+  `no failed pre-merge review step found` (measured 2026-09-29, 5,319
+  task:auto-merge-finalize-post-merge-gate-unreachable rows in one day).
+
+  Asserted on the real builtin:coding IR through the store, in the direction the board actually
+  experiences: the post-merge blocker before, the phase-stamped audited carrier after, and the SAME
+  resolver answering no blocker. The phase matters — a `skipped` row stamped `pre-merge` would be read
+  by `evaluatePreMergeApprovals` as a pre-merge gate result, i.e. a waiver written into the wrong door.
+  */
+  it("bypasses a required POST-merge gate that never reported and clears the finalization blocker", async () => {
+    await seedInReviewTask("FN-BYP-POSTMERGE", {
+      workflowStepResults: [
+        { workflowStepId: "plan-review", workflowStepName: "Plan Review", phase: "pre-merge", status: "passed", verdict: "APPROVE" },
+        { workflowStepId: "code-review", workflowStepName: "Code Review", phase: "pre-merge", status: "passed", verdict: "APPROVE" },
+      ],
+      workflowId: "builtin:coding",
+    });
+    const seeded = await store().getTask("FN-BYP-POSTMERGE");
+    await store().updateTask("FN-BYP-POSTMERGE", {
+      enabledWorkflowSteps: ["plan-review", "code-review", "post-merge-verification"],
+      mergeDetails: { commitSha: "0123456789abcdef0123456789abcdef01234567", mergeConfirmed: true },
+      steps: (seeded.steps ?? []).map((step) => ({ ...step, status: "done" as const })),
+    });
+
+    const before = await store().getTask("FN-BYP-POSTMERGE");
+    expect(await getRequiredPostMergeEvidenceBlocker(store(), before))
+      .toBe("required post-merge evidence gate 'post-merge-verification' has not reported");
+
+    await store().bypassFailedPreMergeReviewStep("FN-BYP-POSTMERGE", {
+      reason: "post-merge gate cannot run for this card shape; operator releases landed work",
+      actor: "operator-postmerge",
+    });
+
+    const after = await store().getTask("FN-BYP-POSTMERGE");
+    const waived = after.workflowStepResults?.find((entry) => entry.workflowStepId === "post-merge-verification");
+    expect(waived?.status).toBe("skipped");
+    expect(waived?.phase).toBe("post-merge");
+    expect(waived?.bypassedBy).toBe("operator-postmerge");
+    expect(waived?.bypassedFromStatus).toBe("absent");
+    // A waiver is a human decision recorded against the gate, never a reviewer approval.
+    expect(waived?.verdict).toBeUndefined();
+    expect(await getRequiredPostMergeEvidenceBlocker(store(), after)).toBeUndefined();
+  });
+
+  /*
+  FNXC:PostMergeGateOperatorWaiver 2026-09-29-15:49 (RUFU-408): NEGATIVE PROOF. The pre-merge gate is
+  still the first door: an unrun PRE-merge gate keeps precedence over an unrun post-merge one, so this
+  hatch can never be used to step past a review that has not happened.
+  */
+  it("will not name the post-merge gate while a pre-merge gate is still outstanding", async () => {
+    await seedInReviewTask("FN-BYP-POSTMERGE-ORDER", { workflowStepResults: [], workflowId: "builtin:coding" });
+    await store().updateTask("FN-BYP-POSTMERGE-ORDER", {
+      enabledWorkflowSteps: ["plan-review", "post-merge-verification"],
+      mergeDetails: { commitSha: "0123456789abcdef0123456789abcdef01234567", mergeConfirmed: true },
+    });
+
+    const updated = await store().bypassFailedPreMergeReviewStep("FN-BYP-POSTMERGE-ORDER", {
+      reason: "first bypass releases the pre-merge gate only",
+      actor: "operator-order",
+    });
+    expect(updated.workflowStepResults?.map((entry) => entry.workflowStepId)).toEqual(["plan-review"]);
+
+    // And the post-merge gate is NOT quietly waived as a side effect of that bypass.
+    expect(await getRequiredPostMergeEvidenceBlocker(store(), await store().getTask("FN-BYP-POSTMERGE-ORDER")))
+      .toBe("required post-merge evidence gate 'post-merge-verification' has not reported");
+  });
+
+  /*
+  FNXC:PostMergeGateOperatorWaiver 2026-09-29-15:49 (RUFU-408): NEGATIVE PROOF for the merge-proof
+  condition. The post-merge gate is not a door until the work lands, so an unlanded card with every
+  pre-merge gate approved must still be refused — otherwise the menu item sits beside a healthy Merge
+  button and an operator can waive delivery evidence the card has not earned yet.
+  */
+  it("refuses a post-merge waiver while the card has no durable merge proof", async () => {
+    await seedInReviewTask("FN-BYP-POSTMERGE-UNLANDED", {
+      workflowStepResults: [
+        { workflowStepId: "plan-review", workflowStepName: "Plan Review", phase: "pre-merge", status: "passed", verdict: "APPROVE" },
+        { workflowStepId: "code-review", workflowStepName: "Code Review", phase: "pre-merge", status: "passed", verdict: "APPROVE" },
+      ],
+      workflowId: "builtin:coding",
+    });
+    await store().updateTask("FN-BYP-POSTMERGE-UNLANDED", {
+      enabledWorkflowSteps: ["plan-review", "code-review", "post-merge-verification"],
+    });
+
+    await expect(
+      store().bypassFailedPreMergeReviewStep("FN-BYP-POSTMERGE-UNLANDED", { reason: "x", actor: "operator" }),
     ).rejects.toThrow(/no failed pre-merge review step/);
   });
 

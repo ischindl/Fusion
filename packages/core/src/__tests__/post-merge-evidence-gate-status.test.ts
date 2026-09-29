@@ -13,6 +13,7 @@ import {
   getRequiredPostMergeEvidenceBlocker,
   resolveRequiredPostMergeGateIds,
 } from "../merge/confirmed-merge-reconciliation.js";
+import { FAST_MODE_BYPASS_ACTOR } from "../workflows/workflow-fast-lane.js";
 import type { Task, WorkflowIr } from "../types.js";
 
 const GATE_ID = "post-merge-verification";
@@ -93,5 +94,67 @@ describe("post-merge evidence gate states", () => {
 
     expect(getPostMergeEvidenceGateStatuses(task, ir)).toEqual([]);
     expect(await getRequiredPostMergeEvidenceBlocker(storeFor(ir) as never, task)).toBeUndefined();
+  });
+
+  /*
+  FNXC:PostMergeGateOperatorWaiver 2026-09-29-15:49 (RUFU-408):
+  The RUFU-370 handoff notice promises "an operator bypass of the gate", and on the saneca board that
+  promise was unfulfillable twice over: `bypassFailedPreMergeReviewStep` looked only at pre-merge gates
+  (`no failed pre-merge review step found`), and even a written waiver row would not have satisfied this
+  resolver, because `skipped` is not `passed`. Seven merge-CONFIRMED cards therefore sat in `in-review`
+  with a recorded human decision on them and emitted 5,319
+  `task:auto-merge-finalize-post-merge-gate-unreachable` rows in a single day (measured 2026-09-29,
+  saneca proj_e70af3a5554a4f03).
+
+  The waiver is accepted through the SAME predicate the pre-merge door uses
+  (`isAuditedOperatorBypass`), so the automated fast-mode actor stays excluded: a bypass is a named
+  human decision or it is not a waiver at all. The two negative cases below are what keep this from
+  becoming a way to walk a landed card into `done` without a human signing anything.
+  */
+  it("treats an audited operator waiver as satisfying evidence, not as a reviewer verdict", async () => {
+    const ir = irWithPostMergeGate(true);
+    const task = {
+      ...taskWith([GATE_ID]),
+      workflowStepResults: [{
+        workflowStepId: GATE_ID,
+        workflowStepName: GATE_ID,
+        phase: "post-merge",
+        status: "skipped",
+        bypassedBy: "dashboard-operator",
+        bypassedAt: "2026-09-29T15:00:00.000Z",
+        bypassReason: "gate cannot run on this project",
+        bypassedFromStatus: "absent",
+      }],
+    } as never;
+
+    expect(getPostMergeEvidenceGateStatuses(task, ir)).toEqual([]);
+    expect(await getRequiredPostMergeEvidenceBlocker(storeFor(ir) as never, task)).toBeUndefined();
+  });
+
+  it("refuses a skipped row that carries no waiver metadata (an automated skip is not a human decision)", () => {
+    const ir = irWithPostMergeGate(true);
+    const task = {
+      ...taskWith([GATE_ID]),
+      workflowStepResults: [{ workflowStepId: GATE_ID, phase: "post-merge", status: "skipped" }],
+    } as never;
+
+    expect(getPostMergeEvidenceGateStatuses(task, ir)).toEqual([{ gateId: GATE_ID, state: "not-approved" }]);
+  });
+
+  it("refuses the automated fast-mode actor's waiver metadata on a post-merge gate", () => {
+    const ir = irWithPostMergeGate(true);
+    const task = {
+      ...taskWith([GATE_ID]),
+      workflowStepResults: [{
+        workflowStepId: GATE_ID,
+        phase: "post-merge",
+        status: "skipped",
+        bypassedBy: FAST_MODE_BYPASS_ACTOR,
+        bypassedAt: "2026-09-29T15:00:00.000Z",
+        bypassReason: "fast lane",
+      }],
+    } as never;
+
+    expect(getPostMergeEvidenceGateStatuses(task, ir)).toEqual([{ gateId: GATE_ID, state: "not-approved" }]);
   });
 });

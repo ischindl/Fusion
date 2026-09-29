@@ -29,6 +29,8 @@ import {resolveTaskLifecycleColumns} from "../workflows/workflow-lifecycle-trait
 import {detectStalledReview} from "../tasks/stalled-review-detector.js";
 import {computeRetrySummary} from "../tasks/retry-summary.js";
 import {resolveRequiredPreMergeStepIds} from "../merge/required-pre-merge-steps.js";
+// FNXC:PostMergeGateOperatorWaiver 2026-09-29-15:49 (RUFU-408): the bypass affordance must ask about the post-merge gates too.
+import {resolveRequiredPostMergeGateIds} from "../merge/confirmed-merge-reconciliation.js";
 import {deriveReviewBypassTarget, isOperatorPausedForOperatorEscapeHatch, resolveReviewBypassLanes, type ReviewBypassTarget} from "../merge/review-bypass-target.js";
 import {deriveTaskStallReason, type TaskStallReason, type TaskStallReasonContext} from "../tasks/task-stall-reason.js";
 // FNXC:TaskLookup404 2026-07-26-11:20: typed miss signal so API boundaries can
@@ -404,7 +406,15 @@ async function resolveReviewBypassForTask(
     const requiredStepIds = ir
       ? resolveRequiredPreMergeStepIds(ir, task.enabledWorkflowSteps, task)
       : new Set<string>();
-    return deriveReviewBypassTarget(task, requiredStepIds, new Set(lanes));
+    /*
+    FNXC:PostMergeGateOperatorWaiver 2026-09-29-15:49 (RUFU-408):
+    The required POST-merge set is passed so the affordance matches the store on the gate that holds a
+    LANDED card out of `done` — the RUFU-179 invariant (UI eligibility == store acceptance) is only real
+    if both sides ask about the same gates. Cost is one more pure pass over the already-resolved IR, on
+    rows that are neither operator-held nor outside a bypass lane.
+    */
+    const requiredPostMergeStepIds = ir ? new Set(resolveRequiredPostMergeGateIds(task, ir)) : new Set<string>();
+    return deriveReviewBypassTarget(task, requiredStepIds, new Set(lanes), requiredPostMergeStepIds);
   } catch {
     return undefined;
   }

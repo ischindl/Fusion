@@ -51,6 +51,15 @@ export interface ReviewBypassTarget {
   kind: ReviewBypassTargetKind;
   workflowStepId: string;
   workflowStepName: string;
+  /*
+  FNXC:PostMergeGateOperatorWaiver 2026-09-29-15:49 (RUFU-408):
+  Only a POST-merge target carries this field. It stays optional (pre-merge targets keep returning the
+  exact object shape they always returned) so the two existing UI branches on `kind` need no change and
+  the store stamps the materialised `skipped` row with the phase the gate actually belongs to — a
+  post-merge waiver written as a `pre-merge` row would be read by `evaluatePreMergeApprovals` as a
+  pre-merge gate result, which is a different door.
+  */
+  phase?: "post-merge";
 }
 
 /**
@@ -62,7 +71,7 @@ export interface ReviewBypassTarget {
  * reads as "not an operator hold".
  */
 export type ReviewBypassTaskView = Pick<Task, "column" | "paused"> &
-  Partial<Pick<Task, "workflowStepResults" | "userPaused">>;
+  Partial<Pick<Task, "workflowStepResults" | "userPaused" | "mergeDetails">>;
 
 /*
 FNXC:ReviewLaneBypass 2026-09-10-23:19 (RUFU-218):
@@ -158,15 +167,36 @@ export function resolveReviewBypassLanes(ir: WorkflowIr | undefined): string[] {
  * 4. else the first `requiredStepIds` entry with no entry in `workflowStepResults` → `"absent"`.
  *    A `pending` result counts as PRESENT: a gate that is running is not a gate that never ran, and
  *    offering to skip it mid-flight would let an operator skip past a review in progress.
- * 5. else nothing (includes the fast lane and the no-gates case, whose resolved set is empty).
+ * 5. else a required POST-merge gate with NO result row → `kind: "absent"` + `phase: "post-merge"`.
+ * 6. else nothing (includes the fast lane and the no-gates case, whose resolved set is empty).
  *
  * `requiredStepIds` is resolved by the caller because it needs the workflow IR, which only the
  * server holds — see the module note for why that keeps this predicate server-side.
+ *
+ * FNXC:PostMergeGateOperatorWaiver 2026-09-29-15:49 (RUFU-408):
+ * STEP 5 EXISTS BECAUSE THE NOTICE PROMISED A LEVER THAT DID NOT EXIST. A merge-CONFIRMED card whose
+ * enabled gate-mode post-merge group never reported is held out of `done` by
+ * `getRequiredPostMergeEvidenceBlocker`, and RUFU-370 hands it to the operator in a mailbox message
+ * that reads "either an operator bypass of the gate or a workflow whose post-merge node can run".
+ * Measured on the saneca board 2026-09-29: seven landed cards sat in `in-review` on exactly that
+ * message while `POST /tasks/:id/bypass-review` answered `no failed pre-merge review step found` — the
+ * derivation asked only about PRE-merge gates, so the promised human decision had no surface and the
+ * cards spun 5,319 `task:auto-merge-finalize-post-merge-gate-unreachable` rows in one day. Only the
+ * `absent` class is admitted here: a post-merge row that EXISTS and was not approved carries a real
+ * reviewer verdict, and FN-7720's hatch exists for gates that never ran, not to overrule a reviewer.
+ * A `pending` post-merge row is a review in flight and stays unselectable, as in step 4.
+ *
+ * THE POST-MERGE BRANCH ALSO REQUIRES DURABLE MERGE PROOF. The post-merge gate is not a door until the
+ * work has landed — `getTaskMergeBlocker` never consults it — so offering the waiver on an unlanded
+ * card would hand the operator a way to pre-emptively waive evidence the card has not yet earned, and
+ * would light the menu item beside a perfectly healthy Merge button. `mergeDetails.mergeConfirmed` is
+ * the same proof the finalizer and every recovery lane keys on.
  */
 export function deriveReviewBypassTarget(
   task: ReviewBypassTaskView,
   requiredStepIds: ReadonlySet<string>,
   reviewColumns: ReadonlySet<string>,
+  requiredPostMergeStepIds: ReadonlySet<string> = new Set(),
 ): ReviewBypassTarget | undefined {
   if (isOperatorPausedForOperatorEscapeHatch(task)) return undefined;
   if (!reviewColumns.has(task.column)) return undefined;
@@ -184,6 +214,12 @@ export function deriveReviewBypassTarget(
   for (const workflowStepId of requiredStepIds) {
     if (!results.some((result) => result.workflowStepId === workflowStepId)) {
       return { kind: "absent", workflowStepId, workflowStepName: workflowStepId };
+    }
+  }
+  for (const workflowStepId of requiredPostMergeStepIds) {
+    if (task.mergeDetails?.mergeConfirmed !== true) return undefined;
+    if (!results.some((result) => result.workflowStepId === workflowStepId)) {
+      return { kind: "absent", workflowStepId, workflowStepName: workflowStepId, phase: "post-merge" };
     }
   }
   return undefined;
