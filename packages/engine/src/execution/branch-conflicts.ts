@@ -411,6 +411,43 @@ export interface BranchAttributionReport {
 }
 
 /**
+ * FNXC:BranchAttribution 2026-09-29-21:50:
+ * Attribution must enumerate the SAME revision set the reclaim decision counts against. That decision
+ * counts `listUniqueBranchCommits` (git cherry — non-patch-equivalent commits only) while attribution
+ * enumerated `git log base..branch`, which also yields merge commits, and a merge body carries the
+ * trailer of the branch it merged. A fully own branch could therefore report ownTrailed=4 against
+ * unique=3 and never satisfy `4 === 3`, stranding it in `foreign-unmerged` (RUFU-434). When the caller
+ * supplies `commitShas` those shas are attributed instead; foreign work still surfaces because any
+ * merged commit that adds content appears in the unique set. Omitting `commitShas` keeps the
+ * whole-range post-session audit the executor relies on.
+ */
+async function collectBranchAttributionOutput(
+  repoDir: string,
+  branch: string,
+  baseSha: string,
+  commitShas?: string[],
+): Promise<string> {
+  const recordFormat = "%H%x1f%s%x1f%b%x1e";
+  if (!commitShas || commitShas.length === 0) {
+    return await runGit(
+      repoDir,
+      `git log --format=${recordFormat} ${quoteShellArg(`${baseSha}..${branch}`)}`,
+    ).catch(() => "");
+  }
+  const chunkSep = String.fromCharCode(0x1e);
+  const chunks: string[] = [];
+  // Chunked so a long branch cannot exceed the shell argument limit; one git call per chunk.
+  for (let i = 0; i < commitShas.length; i += 200) {
+    const batch = commitShas.slice(i, i + 200).map((sha) => quoteShellArg(sha)).join(" ");
+    if (!batch) continue;
+    // --no-walk keeps each listed commit's own message and never pulls in ancestors.
+    const out = await runGit(repoDir, `git log --no-walk=unsorted --format=${recordFormat} ${batch}`).catch(() => "");
+    if (out.trim()) chunks.push(out.trim());
+  }
+  return chunks.join(chunkSep);
+}
+
+/**
  * Post-session audit of every commit in `base..branch`. Used by the executor
  * immediately after a step-session completes to detect three classes of
  * contamination early — long before merge time:
@@ -421,6 +458,10 @@ export interface BranchAttributionReport {
  *   3. unattributed: commit lacks both subject prefix and trailer (often a
  *      hand-merged commit or plumbing-driven update).
  *
+ * Pass `commitShas` to attribute exactly the revisions the branch adds (the `git cherry` unique set)
+ * instead of the whole `base..branch` range — required whenever the caller compares these counts
+ * against that set, so both sides count the same commits.
+ *
  * Returns counts/details rather than throwing so callers can decide whether
  * to refuse, warn, or just audit.
  */
@@ -429,10 +470,10 @@ export async function reportBranchAttribution(
   branch: string,
   baseSha: string,
   taskId: string,
+  commitShas?: string[],
 ): Promise<BranchAttributionReport> {
   const report: BranchAttributionReport = { ownTrailed: 0, ownUntrailed: [], foreign: [], unattributed: [] };
-  const output = await runGit(repoDir, `git log --format=%H%x1f%s%x1f%b%x1e ${quoteShellArg(`${baseSha}..${branch}`)}`)
-    .catch(() => "");
+  const output = await collectBranchAttributionOutput(repoDir, branch, baseSha, commitShas);
   if (!output) return report;
   const ownSubjectPattern = ownCommitSubjectPattern(taskId);
   const ownTrailerPattern = ownCommitTrailerPattern(taskId);
@@ -1192,9 +1233,14 @@ export async function inspectBareBranchCollision(
     input.branchName,
     uniqueCommitResult.mainRef,
     input.requestingTaskId,
+    // FNXC:BranchAttribution 2026-09-29-21:50: attribute the same unique set the equality below counts,
+    // so a branch whose own merge commit carries its own trailer can still be reclaimed.
+    uniqueCommitResult.commits.map((commit) => commit.sha),
   );
   const taskAttributedCommitCount = attribution.ownTrailed + attribution.ownUntrailed.length;
   const foreignOrUnattributedCount = attribution.foreign.length + attribution.unattributed.length;
+  // Both sides of this equality now come from the same unique revision set, so a merge commit can no
+  // longer inflate the attribution side and make an entirely own branch look contaminated.
   if (
     taskAttributedCommitCount === uniqueCommitResult.commits.length
     && foreignOrUnattributedCount === 0
