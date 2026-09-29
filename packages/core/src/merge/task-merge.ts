@@ -6,6 +6,8 @@ import { evaluatePreMergeApprovals } from "./pre-merge-approval.js";
 /* FNXC:HumanMergeApproval 2026-09-17-18:09: FN-514's per-card delivery lock is a merge-door predicate like every other gate. */
 import { getHumanMergeApprovalBlocker, type HumanMergeApprovalEvidence } from "./human-merge-approval.js";
 import { isArchivedRemediationCarrier } from "../workflows/workflow-step-results.js";
+/* FNXC:ZeroCommitLandingProof 2026-09-25-12:05 (RUFU-274): the durable zero-commit refusal is a merge-door gate like every other one. */
+import { getUncommittedWorkHoldBlocker } from "./zero-commit-landing-proof.js";
 
 export interface LandedMemberReviewAdvisory {
   taskId: string;
@@ -567,7 +569,7 @@ export const TASK_DONE_BYPASS_BLOCKER_MESSAGE =
  * Undefined means the task is eligible to move from `in-review` to `done`.
  */
 export function getTaskMergeBlocker(
-  task: Pick<Task, "column" | "paused" | "status" | "error" | "steps" | "workflowStepResults" | "repositoryScope"> & Partial<Pick<Task, "humanMergeApproval">>,
+  task: Pick<Task, "column" | "paused" | "status" | "error" | "steps" | "workflowStepResults" | "repositoryScope" | "mergeDetails"> & Partial<Pick<Task, "humanMergeApproval">>,
   options: {
     manual?: boolean;
     skipColumnIdentityCheck?: boolean;
@@ -651,6 +653,24 @@ export function getTaskMergeBlocker(
       return `task is in '${task.column}', must be in ${expected}`;
     }
   }
+
+  /*
+  FNXC:ZeroCommitLandingProof 2026-09-25-12:05 / 2026-09-27-01:01 (RUFU-274 Step 6):
+  A card refused because its branch carried zero commits while its checkout still held the work stays
+  refused from the row alone, so the hold outlives the process that wrote it and the board chip states it
+  without a re-probe. RUFU-262 is the loss: 0 ahead of `main`, worktree still dirty, card `done`.
+
+  It is placed ABOVE the generic pause arm because the shipped hold pairs its marker with the observable
+  pause pair (`paused` + `pausedReason: "manual-hold"`) so the card is visible in the lane it sits in; a
+  refusal that answered `"task is paused"` would hide the one thing an operator must act on — that files
+  survive in a worktree and a merge would drop them. It sits above the pre-merge and human-merge-approval
+  gates because it is about content automatic delivery cannot safely touch, not lane bookkeeping, and it is
+  NOT waived by `manual`: `manual` lets a human see past scheduler-transient states, not license discarding
+  content — the merge would drop the uncommitted files whoever asks for it. The remedy is on the worktree
+  (commit or discard); the refusing lane clears the hold on its next pass once the evidence changes.
+  */
+  const uncommittedWorkHold = getUncommittedWorkHoldBlocker(task);
+  if (uncommittedWorkHold) return uncommittedWorkHold;
 
   if (task.paused) {
     return "task is paused";
@@ -816,7 +836,7 @@ export function clearMergeConfirmedTransientStatus(status: string | undefined): 
 }
 
 export function getTaskHardMergeBlocker(
-  task: Pick<Task, "column" | "paused" | "status" | "error" | "steps" | "workflowStepResults" | "repositoryScope"> & Partial<Pick<Task, "humanMergeApproval">>,
+  task: Pick<Task, "column" | "paused" | "status" | "error" | "steps" | "workflowStepResults" | "repositoryScope" | "mergeDetails"> & Partial<Pick<Task, "humanMergeApproval">>,
   options: { reviewColumns?: ReadonlySet<string>; requiredPreMergeStepIds?: ReadonlySet<string>; mergeContent?: MergeContentDescriptor } = {},
 ): string | undefined {
   return getTaskMergeBlocker({

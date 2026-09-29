@@ -85,6 +85,19 @@ import {
   writeInstallMarker,
 } from "./merge/merge-dependency-sync.js";
 import { resolveTaskWorkingBranch } from "./worktree/worktree-names.js";
+/*
+FNXC:ZeroCommitDeliveryProof 2026-09-26-02:20 (RUFU-274):
+Every zero-commit finalize this runner performs now passes the shared landing-proof door. Three separate
+zero-diff lanes exist here (early empty-own-diff, the legacy no-op classifier, and branch-missing) and
+RUFU-262 showed that any ONE of them can produce a `done` card whose deliverable is still uncommitted, so
+the door is not optional on any of them.
+*/
+import {
+  collectZeroCommitFinalizeEvidence,
+  enforceZeroCommitLandingProof,
+  resolveNoOpFinalizeGateIds,
+  zeroCommitDeliveryUnprovenMarker,
+} from "./merge/zero-commit-finalization-guard.js";
 import {
   collectOwnTaskCommitsForRange,
   filterFilesToOwnTaskCommits,
@@ -96,6 +109,8 @@ import {
   assertNotWorkspaceTaskMerge,
   buildTaskLineageTrailer,
   evaluateNoCommitsNoOpFinalize,
+  type DeliveryUnprovenMarker,
+  type NoCommitsNoOpFinalizeEvaluation,
   getTaskMergeBlocker,
   isPreMergeStepsNotRunBlocker,
   PreMergeStepsNotRunError,
@@ -130,7 +145,6 @@ import {
   resolveMergerFallbackModel,
   resolveWorkflowIrForTask,
   resolvePreMergeGateForTask,
-  resolveRequiredPreMergeStepIds,
   resolveCompleteColumn,
   resolveMergeOrchestrationColumn,
   resolveTaskLifecycleColumns,
@@ -6485,18 +6499,62 @@ workflow steps run exclusively as the workflow graph's own post-merge optional-g
  *     `fusion/<id>` branch keeps `.worktrees/` and the branch namespace tidy.
  */
 /*
- * FNXC:ReviewGatedRemediation 2026-08-23-05:23:
- * Empty-diff finalizers must resolve the selected workflow's required pre-merge gates, not infer
- * verification from implementation-step names. Legacy callers without a workflow selection retain
- * their historical guard behavior.
- */
-async function resolveNoOpFinalizeGateIds(store: TaskStore, task: Task): Promise<ReadonlySet<string> | undefined> {
-  const selection = store.getTaskWorkflowSelectionAsync
-    ? await store.getTaskWorkflowSelectionAsync(task.id)
-    : store.getTaskWorkflowSelection?.(task.id);
-  if (!selection) return undefined;
-  const ir = await resolveWorkflowIrForTask(store, task.id).catch(() => undefined);
-  return ir ? resolveRequiredPreMergeStepIds(ir, task.enabledWorkflowSteps) : undefined;
+FNXC:ZeroCommitDeliveryProof 2026-09-26-02:20 (RUFU-274):
+The merge runner's shared no-commits finalize check: the historical step-ledger guard PLUS the landing-proof
+ Door, both answered from ONE git observation.
+
+RUFU-262 is why both run together: the step ledger said "nothing incomplete", the revision walk said
+"already landed", and the uncommitted files that were the actual deliverable were never asked about. A lane
+that only consults the step ledger can no longer reach a finalize.
+
+A content refusal is deliberately NOT routed through the incomplete-steps branch below it: that branch
+writes `error` and rebinds the card to `todo`, which is right for unfinished work and wrong here — the work
+exists and is sitting uncommitted in a tree. A refusal keeps the card where it is with a durable hold, and
+never deletes the tree it is protecting (hence no cleanup on this path).
+*/
+async function evaluateNoCommitsFinalizeWithLandingProof(input: {
+  store: TaskStore;
+  task: Task;
+  rootDir: string;
+  integrationBranch: string;
+}): Promise<{
+  evaluation: NoCommitsNoOpFinalizeEvaluation;
+  /** Present ONLY for the `held` disposition: durable hold written, refusal sentence, result marker. */
+  held?: { refusal: string; marker: DeliveryUnprovenMarker };
+}> {
+  const { store, task, rootDir, integrationBranch } = input;
+  const requiredVerificationStepIds = await resolveNoOpFinalizeGateIds(store, task);
+  const collected = await collectZeroCommitFinalizeEvidence({
+    store,
+    task,
+    repoDir: rootDir,
+    integrationBranch,
+    requiredVerificationStepIds,
+  });
+  const evaluation = evaluateNoCommitsNoOpFinalize(task, collected);
+  if (!evaluation.blocked || !evaluation.deliveryUnproven) return { evaluation };
+
+  const outcome = await enforceZeroCommitLandingProof({
+    store,
+    task,
+    repoDir: rootDir,
+    integrationBranch,
+    source: "merge-runner",
+    preCollected: collected,
+  });
+  /*
+  FNXC:ZeroCommitDeliveryProof 2026-09-26-07:55 / 2026-09-27-01:01 (RUFU-274 Step 4/6):
+  Only the `held` disposition earns the new lane behaviour. `retry` (an unobservable checkout) and `allow`
+  (proved landing, a clean tree with nothing to deliver, or a gate/step that still owns the card) return no
+  `held` payload, so the caller falls through to its EXISTING unproven-empty handling — write its own error
+  and rebind to `todo`, which is the remedy for a card whose work was never done. A refusal is reserved for
+  what a human must resolve (uncommitted work at risk, or a delivery claim over an unobservable tree); a
+  transient probe failure resolves itself on the next pass, and holding it would create the wedge this card
+  exists to prevent.
+  */
+  const marker = zeroCommitDeliveryUnprovenMarker(outcome);
+  if (outcome.disposition !== "held" || !marker) return { evaluation };
+  return { evaluation, held: { refusal: outcome.refusal, marker } };
 }
 
 async function tryEarlyEmptyOwnDiffFinalize(input: {
@@ -6561,9 +6619,37 @@ async function tryEarlyEmptyOwnDiffFinalize(input: {
     return null;
   }
 
-  const noCommitsFinalize = evaluateNoCommitsNoOpFinalize(task, {
-    requiredVerificationStepIds: await resolveNoOpFinalizeGateIds(store, task),
+  const finalizeCheck = await evaluateNoCommitsFinalizeWithLandingProof({
+    store, task, rootDir: projectRootDir, integrationBranch: mergeTargetBranch,
   });
+  const noCommitsFinalize = finalizeCheck.evaluation;
+  if (finalizeCheck.held) {
+    const reason = finalizeCheck.held.refusal;
+    await store.logEntry(
+      taskId,
+      `Finalize refused (zero-commit landing proof): ${reason}`,
+      JSON.stringify({
+        contentState: noCommitsFinalize.deliveryUnproven?.contentState,
+        modifiedCount: noCommitsFinalize.deliveryUnproven?.modifiedCount,
+        untrackedCount: noCommitsFinalize.deliveryUnproven?.untrackedCount,
+        durableHoldWritten: true,
+        branch,
+        mergeTargetBranch,
+        lane: "early-empty-own-diff",
+      }, null, 2),
+    );
+    return {
+      task,
+      branch,
+      merged: false,
+      noOp: false,
+      ok: true,
+      reason,
+      worktreeRemoved: false,
+      branchDeleted: false,
+      deliveryUnproven: finalizeCheck.held.marker,
+    };
+  }
   if (noCommitsFinalize.blocked) {
     const reason = noCommitsFinalize.reason ?? "no-commits task has incomplete work with no net branch changes";
     /*
@@ -7698,9 +7784,45 @@ export async function aiMergeTask(
       // — NOT a legitimate no-op. Demote to the unproven-recovery path which
       // moves the task back to todo with progress preserved instead of
       // clearing modifiedFiles to [].
-      const noCommitsFinalize = evaluateNoCommitsNoOpFinalize(task, {
-        requiredVerificationStepIds: await resolveNoOpFinalizeGateIds(store, task),
+      const finalizeCheck = await evaluateNoCommitsFinalizeWithLandingProof({
+        store, task, rootDir, integrationBranch: classification.baseRef,
       });
+      const noCommitsFinalize = finalizeCheck.evaluation;
+      if (finalizeCheck.held) {
+        const reason = finalizeCheck.held.refusal;
+        /*
+         * FNXC:ZeroCommitDeliveryProof 2026-09-26-02:20 (RUFU-274):
+         * The classifier reads git history and concluded "proven no-op"; the worktree says otherwise. This
+         * lane holds a reuse handoff lease, so the lease is released here exactly as the incomplete-steps
+         * branch below does — but the card is NOT rebound to todo and no `error` is written, because the
+         * deliverable is present and waiting for a human, not unfinished. The tree survives untouched.
+         */
+        await store.logEntry(
+          taskId,
+          `Finalize refused (zero-commit landing proof): ${reason}`,
+          JSON.stringify({
+            contentState: noCommitsFinalize.deliveryUnproven?.contentState,
+            modifiedCount: noCommitsFinalize.deliveryUnproven?.modifiedCount,
+            untrackedCount: noCommitsFinalize.deliveryUnproven?.untrackedCount,
+            durableHoldWritten: true,
+            classification: classification.kind,
+            baseRef: classification.baseRef,
+            lane: "legacy-no-op-classifier",
+          }, null, 2),
+        );
+        await releaseReuseHandoffEarly("zero-commit-delivery-unproven");
+        return {
+          task,
+          branch,
+          merged: false,
+          noOp: false,
+          ok: true,
+          reason,
+          worktreeRemoved: false,
+          branchDeleted: false,
+          deliveryUnproven: finalizeCheck.held.marker,
+        };
+      }
       if (noCommitsFinalize.blocked) {
         const reason = noCommitsFinalize.reason ?? "no-commits task has incomplete work with no net branch changes";
         /*
@@ -8004,9 +8126,40 @@ export async function aiMergeTask(
       result.mergeTargetSource = mergeTarget.source;
       mergerLog.log(`${taskId}: branch missing; recovered owned landed commit ${classification.commit.sha.slice(0, 8)}`);
     } else {
-      const noCommitsFinalize = evaluateNoCommitsNoOpFinalize(task, {
-        requiredVerificationStepIds: await resolveNoOpFinalizeGateIds(store, task),
+      const finalizeCheck = await evaluateNoCommitsFinalizeWithLandingProof({
+        store, task, rootDir, integrationBranch: classification.baseRef,
       });
+      const noCommitsFinalize = finalizeCheck.evaluation;
+      if (finalizeCheck.held) {
+        const reason = finalizeCheck.held.refusal;
+        /*
+         * FNXC:ZeroCommitDeliveryProof 2026-09-26-02:20 (RUFU-274):
+         * Branch-missing lane: the ref is gone, so this card's content can only be confirmed by what its
+         * worktree still holds or by a recorded landing. Either the tree carries the deliverable (durable
+         * hold, human decision) or nothing can be shown at all (decline) — and in both cases this lane no
+         * longer finalizes the card as a proven no-op. No `error`, no rebind: the card waits.
+         */
+        result.merged = false;
+        result.noOp = false;
+        result.reason = reason;
+        result.worktreeRemoved = false;
+        result.branchDeleted = false;
+        result.deliveryUnproven = finalizeCheck.held.marker;
+        await store.logEntry(
+          taskId,
+          `Finalize refused (zero-commit landing proof): ${reason}`,
+          JSON.stringify({
+            contentState: noCommitsFinalize.deliveryUnproven?.contentState,
+            modifiedCount: noCommitsFinalize.deliveryUnproven?.modifiedCount,
+            untrackedCount: noCommitsFinalize.deliveryUnproven?.untrackedCount,
+            durableHoldWritten: true,
+            classification: classification.kind,
+            baseRef: classification.baseRef,
+            lane: "legacy-branch-missing-no-op",
+          }, null, 2),
+        );
+        return result;
+      }
       if (noCommitsFinalize.blocked) {
         const reason = noCommitsFinalize.reason ?? "no-commits task has incomplete work with no net branch changes";
         /*

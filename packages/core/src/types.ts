@@ -640,6 +640,7 @@ import type {
   TaskVerificationStatus,
   TaskVerificationProfile,
   MergeDetails,
+  UncommittedWorkHold,
   HumanPlanApprovalState,
   HumanPlanApprovalDecision,
   HumanPlanApprovalDecisionKind,
@@ -703,6 +704,7 @@ export type {
   TaskVerificationStatus,
   TaskVerificationProfile,
   MergeDetails,
+  UncommittedWorkHold,
   HumanPlanApprovalState,
   HumanPlanApprovalDecision,
   HumanPlanApprovalDecisionKind,
@@ -974,6 +976,7 @@ import type {
   DistributedTaskIdStateResult,
   AutostashOrphanRecord,
   MergeResult,
+  DeliveryUnprovenMarker,
   TaskCommitAssociation,
   CommitAssociationDiffBackfillReport,
 } from "./types/board/board-config.js";
@@ -992,6 +995,7 @@ export type {
   DistributedTaskIdStateResult,
   AutostashOrphanRecord,
   MergeResult,
+  DeliveryUnprovenMarker,
   TaskCommitAssociation,
   CommitAssociationDiffBackfillReport,
 };

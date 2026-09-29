@@ -1007,8 +1007,18 @@ export {
   invalidateReviewerRunsForTask,
 } from "./task-store/reviewer-run-ledger.js";
 export type { ReviewerRunRow, ReviewerRunStatus } from "./task-store/reviewer-run-ledger.js";
-export { evaluateNoCommitsNoOpFinalize } from "./merge/no-commits-finalize-guard.js";
-export type { NoCommitsNoOpFinalizeEvaluation } from "./merge/no-commits-finalize-guard.js";
+export { evaluateNoCommitsNoOpFinalize, WORKTREE_CONTENT_UNPROVEN_REASON } from "./merge/no-commits-finalize-guard.js";
+export type { NoCommitsNoOpFinalizeEvaluation, NoCommitsNoOpFinalizeEvidence, NoCommitsDeliveryUnproven } from "./merge/no-commits-finalize-guard.js";
+/*
+FNXC:ZeroCommitDeliveryProof 2026-09-27-02:55 (RUFU-274):
+Mirrored from `index.ts` per this file's maintenance rule: RUFU-274's landing-proof predicate is reached
+TRANSITIVELY by the gate — every merge-lane gate file imports `merger.ts` / `zero-commit-finalization-guard.ts`,
+which call these emitters — so excluding it here reproduces the FN-7668 failure mode in the opposite direction:
+the `engine-core` fork resolved `hasDurableLandingProof` to `undefined` and failed the zero-commit finalize
+lane with a TypeError instead of a verdict.
+*/
+export { evaluateZeroCommitLandingProof, hasDurableLandingProof, worktreeContentCounts, CLEAN_WORKTREE_CONTENT, describeUncommittedWorkRefusal, isUncommittedWorkHold, getUncommittedWorkHoldBlocker, CONTENT_UNVERIFIABLE_REFUSAL } from "./merge/zero-commit-landing-proof.js";
+export type { WorktreeContentState, WorktreeContentClassification, LandingProof, LandingProofKind, DurableLandingProofVerdict, ZeroCommitLandingProofInput, ZeroCommitLandingProofVerdict, LegitimateNoOpBasis, UncommittedWorkRefusalCode } from "./merge/zero-commit-landing-proof.js";
 export {
   __getDeterministicGuardMutexSize,
   deterministicGuardLocks,

@@ -42,6 +42,15 @@ export const DELIVERY_PIPELINE_RUN_AUDIT_EVENTS_LITERALS = [
   "task:post-finalize-verification-no-op",
   "task:no-commits-finalize-blocked-incomplete-steps",
   "task:empty-merge-finalize-blocked-no-landed-proof",
+  /*
+  FNXC:ZeroCommitLandingProof 2026-09-25-12:20 (RUFU-274):
+  The shared durable landing-proof guard's three events. RUFU-262 finalized `done` on a zero-commit branch
+  and the work survived only as uncommitted files with no audit row naming the shape; these three are the
+  forensic trail every lane now writes.
+  */
+  "task:zero-commit-landing-proof-refused",
+  "task:zero-commit-landing-proof-deferred",
+  "task:zero-commit-landing-proof-cleared",
   "task:finalize-unproven-blocked",
   "task:merge-boundary-unproven-parked",
   "task:merge-boundary-evidence-recovered",
@@ -121,6 +130,12 @@ export const DELIVERY_PIPELINE_RUN_AUDIT_EVENT_NOTES: Readonly<Record<DeliveryPi
     "Finalize is blocked for a zero-commit task with incomplete workflow steps (FN-6461 lane).",
   "task:empty-merge-finalize-blocked-no-landed-proof":
     "The AI empty-merge lane vetoes a zero-diff no-op finalize with no landed proof (FN-8141).",
+  "task:zero-commit-landing-proof-refused":
+    "A finalization lane refused to finalize a zero-commit card whose checkout still held work, or could not be classified (RUFU-274). Metadata is ids/counts/fixed enums only — never paths or content.",
+  "task:zero-commit-landing-proof-deferred":
+    "A finalization lane deferred on a zero-commit card because zero-ness or checkout content could not be proven, instead of finalizing on a guess (RUFU-274). Metadata is ids/counts/fixed enums only.",
+  "task:zero-commit-landing-proof-cleared":
+    "A re-probe proved the cause of a durable uncommitted-work hold is gone and the hold was cleared (RUFU-274). Metadata is the task ID, lane and prior reason code only.",
   "task:finalize-unproven-blocked":
     "Finalize is blocked because finalization has not been proven against the landing truth.",
   "task:merge-boundary-unproven-parked":

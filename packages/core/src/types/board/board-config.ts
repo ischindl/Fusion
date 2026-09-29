@@ -6,6 +6,7 @@
 import type { Column } from "../board/board.js";
 import type { Settings } from "../settings/settings-scope.js";
 import type { MergeDetails, Task } from "../task/task-core.js";
+import type { WorktreeContentState } from "../merge/worktree-content.js";
 
 export interface BoardConfig {
   nextId: number;
@@ -109,11 +110,37 @@ export type AutostashOutcome =
     }
   | { status: "failed"; stashSha?: string; errorMessage: string };
 
+/*
+FNXC:ZeroCommitDeliveryProof 2026-09-26-01:35 (RUFU-274):
+The ONLY thing a refusal may put on a merge result. `MergeResult` has no `status` field and must not gain
+one: RUFU-274 adds no new merge status, no new MergeDetails field, and no graph edge, because a new
+terminal-looking value would re-open the `merge-failed` path this contract forbids (retry budgets, failed
+badges, `merge-failed` routing). A refusal is therefore a WAIT layered on the existing
+`manual-required`/held shape, and this marker is what distinguishes "held because content delivery could
+not be proven" from every other reason a merge stops.
+
+`worktreePathPreserved` is asserted, not hoped for: a refusal that deleted the tree it was refusing about
+would destroy the evidence an operator needs, so a lane cannot report a refusal while claiming nothing was
+preserved.
+*/
+export interface DeliveryUnprovenMarker {
+  /** Which content classification produced the refusal. */
+  contentState: WorktreeContentState;
+  modifiedCount?: number;
+  untrackedCount?: number;
+  /** The card's worktree path survived the refusal (never deleted, never reset). */
+  worktreePathPreserved: true;
+  /** A durable row-visible hold was written. `true` always — an unwitnessed refusal is not this marker. */
+  refusalRecorded: true;
+}
+
 export interface MergeResult extends MergeDetails {
   task: Task;
   branch: string;
   merged: boolean;
   noOp?: boolean;
+  /** Present when automatic finalization was REFUSED for unproven content delivery. Never a `status`. */
+  deliveryUnproven?: DeliveryUnprovenMarker;
   ok?: true;
   reason?: string;
   worktreeRemoved: boolean;

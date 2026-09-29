@@ -440,6 +440,47 @@ describe("cleanupLandedTaskWorktree", () => {
     expect(getSettings).not.toHaveBeenCalled();
     expect(removeWorktreeMock).toHaveBeenCalledWith(expect.objectContaining({ settings: {} }));
   });
+
+  /*
+  FNXC:ZeroCommitDeliveryProof 2026-09-27-01:01 (RUFU-274 Step 5):
+  RUFU-262's work survived only as uncommitted files, and the cleanup lane is what deletes them. A row that
+  carries the delivery-unproven hold must therefore be untouchable HERE, regardless of which lane reached
+  cleanup — this is the last door before the tree is gone.
+  */
+  it("refuses to dispose a tree whose row carries the delivery-unproven hold", async () => {
+    const { store, updateTask, logEntry } = createStore();
+
+    await expect(cleanupLandedTaskWorktree({
+      store: store as never,
+      taskId: "FN-251",
+      worktreePath: "/repo/.worktrees/fn-251",
+      rootDir: "/repo",
+      source: "test",
+      task: {
+        mergeDetails: {
+          uncommittedWorkHold: {
+            at: "2026-09-26T00:00:00.000Z",
+            reason: "2 uncommitted file(s) survived on the branch; automatic merge refused",
+            modifiedCount: 1,
+            untrackedCount: 1,
+            uncommittedPaths: ["src/a.ts", "src/b.ts"],
+            code: "uncommitted-work",
+            contentState: "deliverable",
+            source: "merge-runner",
+          },
+        },
+      } as never,
+    })).resolves.toMatchObject({ outcome: "preserved-unverifiable", removed: false, preservedReason: "delivery-unproven" });
+
+    expect(removeWorktreeMock).not.toHaveBeenCalled();
+    expect(updateTask).not.toHaveBeenCalled();
+    // The preservation is recorded in FN-251's existing vocabulary, with the reason naming this class.
+    expect(logEntry).toHaveBeenCalledWith(
+      "FN-251",
+      "Post-landing worktree cleanup preserved",
+      expect.stringContaining("delivery-unproven"),
+    );
+  });
 });
 
 describe("cleanupLandedWorkspaceTaskWorktrees", () => {
@@ -550,5 +591,41 @@ describe("cleanupLandedWorkspaceTaskWorktrees", () => {
 
     expect(result).toEqual(expect.objectContaining({ removedRepoRels: ["api"], taskDirectoryRemoved: false, removed: true }));
     expect(rmdirSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("preserves every repository when the row carries the delivery-unproven hold", async () => {
+    const { store } = createStore();
+    const task = workspaceTask({
+      api: { worktreePath: "/workspace/.fusion/worktrees/fn-268/api", branch: "fusion/fn-268" },
+      "apps/web": { worktreePath: "/workspace/.fusion/worktrees/fn-268/apps/web", branch: "fusion/fn-268" },
+    });
+    task.mergeDetails = {
+      uncommittedWorkHold: {
+        at: "2026-09-26T00:00:00.000Z",
+        reason: "1 uncommitted file(s) survived on the branch; automatic merge refused",
+        modifiedCount: 1,
+        untrackedCount: 0,
+        uncommittedPaths: ["src/a.ts"],
+        code: "uncommitted-work",
+        contentState: "deliverable",
+        source: "workspace-finalize",
+      },
+    };
+
+    const result = await cleanupLandedWorkspaceTaskWorktrees({
+      store: store as never,
+      task,
+      workspaceRootDir: "/workspace",
+      landedShas: { api: "api-sha", "apps/web": "web-sha" },
+      source: "workspace-finalize",
+    });
+
+    // One repository's content being at risk preserves ALL of them: a workspace task delivers as one unit.
+    expect(result.removedRepoRels).toEqual([]);
+    expect(result.preserved.map((entry) => [entry.repoRel, entry.outcome, entry.reason])).toEqual([
+      ["api", "preserved-unverifiable", "delivery-unproven"],
+      ["apps/web", "preserved-unverifiable", "delivery-unproven"],
+    ]);
+    expect(removeWorktreeMock).not.toHaveBeenCalled();
   });
 });

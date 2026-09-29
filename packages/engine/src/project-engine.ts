@@ -64,6 +64,7 @@ import {
   resolveEngineNodeId,
   type WorkspaceLeaseHandle,
   getTaskMergeBlocker,
+  isUncommittedWorkHold,
   resolvePreMergeGateForTask,
   buildManualRetryResetPatch,
 } from "@fusion/core";
@@ -5031,6 +5032,28 @@ export class ProjectEngine {
             }
 
             this.activeMergeSession = null;
+
+            /*
+            FNXC:ZeroCommitDeliveryProof 2026-09-26-08:20 (RUFU-274):
+            A delivery-unproven refusal is a WAIT, not a merge and not a merge failure. The merge body came
+            back without landing anything because the work exists only as uncommitted files in a tree, and it
+            left a durable `mergeDetails.uncommittedWorkHold` marker plus a `manual-required` queue record
+            behind. This arm exists so the pump cannot treat that shape as an ordinary result: the "merged"
+            log line would be a lie, and `attemptBranchGroupPromotion` below would promote a shared branch
+            group whose member never delivered. Retry budget stays untouched — nothing about the refusal is
+            fixed by trying the same branch again — and no `status`/`error` is written, because a `failed`
+            card invites Retry/Bypass while the actual remedy is a human looking at the worktree. The next
+            drain pass never reaches here at all: `resolveMergeGateBlocker` now refuses any row carrying the
+            hold, which is the durable de-admission.
+            */
+            if (!result.merged && !result.noOp && (result.deliveryUnproven || isUncommittedWorkHold((await store.getTask(taskId).catch(() => null))?.mergeDetails))) {
+              runtimeLog.log(
+                `${hasManualResolver ? "Manual" : "Auto"}-merge held for ${taskId}: ${result.reason ?? "delivery unproven"} — durable manual hold in place, merge retries untouched`,
+              );
+              if (hasManualResolver) this.resolveMergeResolvers(taskId, result);
+              continue;
+            }
+
             runtimeLog.log(`${hasManualResolver ? "Manual" : "Auto"}-merge merged: ${taskId}`);
 
             if (hasManualResolver) {

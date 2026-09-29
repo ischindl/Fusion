@@ -40,6 +40,9 @@ Events that close a task's delivery: blocked/advanced completion parks, already-
 | `task:post-finalize-verification-no-op` | Post-finalize verification ran and found nothing to verify (no-op), recording the check outcome. |
 | `task:no-commits-finalize-blocked-incomplete-steps` | Finalize is blocked for a zero-commit task with incomplete workflow steps (FN-6461 lane). |
 | `task:empty-merge-finalize-blocked-no-landed-proof` | The AI empty-merge lane vetoes a zero-diff no-op finalize with no landed proof (FN-8141). |
+| `task:zero-commit-landing-proof-refused` | A finalization lane refused to finalize a zero-commit card whose checkout still held work, or could not be classified (RUFU-274). Metadata is ids/counts/fixed enums only — never paths or content. |
+| `task:zero-commit-landing-proof-deferred` | A finalization lane deferred on a zero-commit card because zero-ness or checkout content could not be proven, instead of finalizing on a guess (RUFU-274). Metadata is ids/counts/fixed enums only. |
+| `task:zero-commit-landing-proof-cleared` | A re-probe proved the cause of a durable uncommitted-work hold is gone and the hold was cleared (RUFU-274). Metadata is the task ID, lane and prior reason code only. |
 | `task:finalize-unproven-blocked` | Finalize is blocked because finalization has not been proven against the landing truth. |
 | `task:merge-boundary-unproven-parked` | A workflow merge boundary could not be proven and its terminal park is recorded with best-effort, time-bounded telemetry that never blocks or stalls the park. |
 | `task:merge-boundary-evidence-recovered` | Self-healing reverified durable unfinished work on a historic proofless boundary park and resumed named implementation remediation. Metadata contains task ID and a fixed outcome only. |

@@ -1,6 +1,14 @@
 import { existsSync, rmdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { isLegacyWorkspaceWorktreeLayout, isStrictDescendantPath, resolveWorkspaceTaskWorktreeDir, type Settings, type Task, type TaskStore } from "@fusion/core";
+import {
+  isLegacyWorkspaceWorktreeLayout,
+  isStrictDescendantPath,
+  isUncommittedWorkHold,
+  resolveWorkspaceTaskWorktreeDir,
+  type Settings,
+  type Task,
+  type TaskStore,
+} from "@fusion/core";
 import type { RunAuditor } from "../util/run-audit.js";
 import {
   ActiveSessionWorktreeRemovalError,
@@ -30,6 +38,35 @@ export interface CleanupLandedTaskWorktreeInput {
   audit?: RunAuditor;
   log?: (message: string) => void | Promise<void>;
   fence?: Pick<MergeWriteFence, "assertOwned">;
+  /**
+   * The live task row when the caller has one (every finalization lane does). Only
+   * `mergeDetails.uncommittedWorkHold` is read — the durable anti-proof that makes a cleanup refuse.
+   */
+  task?: Pick<Task, "mergeDetails">;
+}
+
+/*
+FNXC:ZeroCommitDeliveryProof 2026-09-27-01:01 (RUFU-274 Step 5):
+Cleanup is the last door a refused card can still be destroyed through, so both entry points demand the
+same proof the finalization doors demand — expressed here as the anti-proof that is cheapest to test. A row
+carrying the durable `uncommittedWorkHold` marker has ALREADY been found to hold undelivered content, and no
+`landedSha` a caller presents can outrank that finding: the sha an empty landing records is proof of a
+no-op, never of delivered content. FN-251 already refuses to delete `deliverable` or unverifiable content;
+this closes the residue where a lane could still reach cleanup with a hold stamped — a later lane that never
+re-ran the guard, a manual cleanup, or a card whose hold a sibling door wrote — without re-probing git on a
+path FN-251 deliberately keeps cheap.
+The vocabulary reuses `preserved-unverifiable` with a `delivery-unproven` reason: the tree is not called
+damaged, it is called NOT SHOWN DELIVERED, which is the class FN-251 already preserves for.
+*/
+function deliveryUnprovenPreservation(
+  input: Pick<CleanupLandedTaskWorktreeInput, "store" | "taskId" | "log">,
+  worktreePath: string,
+): Pick<CleanupLandedTaskWorktreeResult, "outcome" | "preservedReason"> {
+  void recordPreservedOutcome(input, worktreePath, {
+    outcome: "preserved-unverifiable",
+    preservedReason: "delivery-unproven: undelivered work is held for manual merge",
+  });
+  return { outcome: "preserved-unverifiable", preservedReason: "delivery-unproven" };
 }
 
 export interface CleanupLandedTaskWorktreeResult {
@@ -125,6 +162,10 @@ export async function cleanupLandedTaskWorktree(
   if (!worktreePath || !input.rootDir) {
     return { outcome: "nothing-to-remove", removed: false };
   }
+  if (isUncommittedWorkHold(input.task?.mergeDetails)) {
+    const preserved = deliveryUnprovenPreservation(input, worktreePath);
+    return { ...preserved, removed: false };
+  }
   if (!existsSync(worktreePath)) {
     await clearWorktreePointer(input, worktreePath);
     return { outcome: "nothing-to-remove", removed: false };
@@ -170,7 +211,7 @@ export async function cleanupLandedTaskWorktree(
 
 export interface CleanupLandedWorkspaceTaskWorktreesInput {
   store: LandedWorktreeCleanupStore;
-  task: Pick<Task, "id" | "workspaceWorktrees">;
+  task: Pick<Task, "id" | "workspaceWorktrees" | "mergeDetails">;
   workspaceRootDir: string;
   landedShas?: Record<string, string | undefined>;
   source: string;
@@ -216,6 +257,25 @@ export async function cleanupLandedWorkspaceTaskWorktrees(
   };
   const logInput = { ...input, taskId: input.task.id };
   if (entries.length === 0) return result;
+
+  /*
+  FNXC:ZeroCommitDeliveryProof 2026-09-27-01:01 (RUFU-274 Step 5):
+  Same anti-proof gate as the singular entry point, evaluated once for the whole workspace: a hold stamped
+  on the row means at least one repository's content is already known to be undelivered, so no sub-repo
+  checkout is disposable on a landing sha that may itself came from an empty land.
+  */
+  if (isUncommittedWorkHold(input.task.mergeDetails)) {
+    for (const [repoRel, entry] of entries) {
+      const preserved = deliveryUnprovenPreservation(logInput, entry.worktreePath);
+      result.preserved.push({
+        repoRel,
+        worktreePath: entry.worktreePath,
+        outcome: "preserved-unverifiable",
+        reason: preserved.preservedReason ?? "delivery-unproven",
+      });
+    }
+    return result;
+  }
 
   let settings: Settings = {} as Settings;
   try {

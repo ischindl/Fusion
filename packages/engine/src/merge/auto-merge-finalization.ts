@@ -22,6 +22,15 @@ import { createRunAuditor, generateSyntheticRunId, type DatabaseMutationType, ty
 import { cleanupLandedTaskWorktree } from "./post-landing-worktree-cleanup.js";
 import { DASHBOARD_USER_ID, type MessageStore } from "@fusion/core";
 import type { MergeWriteFence } from "./merge-write-fence.js";
+/*
+FNXC:ZeroCommitDeliveryProof 2026-09-26-09:40 (RUFU-274):
+This module is the shared finalize primitive every merge lane ends in, so it is the last place a
+`mergeConfirmed` / no-op claim can be tested against git before a card becomes `done`. `hasDurableMergeProof`
+below proves that a CLAIM is durable; it cannot prove the claim is TRUE — RUFU-262's card reached done with
+a confirmed no-op claim while its deliverable sat uncommitted in the worktree. The landing-proof door is
+therefore asked separately, and before any cleanup, because a cleanup would destroy the evidence it reads.
+*/
+import { enforceZeroCommitLandingProof } from "./zero-commit-finalization-guard.js";
 
 /*
 FNXC:WorkflowMergeFinalization 2026-07-19-07:20 (U7 / R2/R3/KTD-1):
@@ -429,6 +438,8 @@ export async function finalizeProvenAutoMergeTask({
       worktreePath: task.worktree,
       rootDir,
       landedSha: mergeDetails.commitSha ?? result?.commitSha,
+      // RUFU-274 Step 5: the row is passed so cleanup can see a durable delivery-unproven hold.
+      task,
       source,
       audit,
       log: async (message) => {
@@ -487,6 +498,40 @@ export async function finalizeProvenAutoMergeTask({
       auditPhase,
     });
     return { outcome: "blocked", task: latest, previousColumn: latest.column, reason };
+  }
+
+  /*
+  FNXC:ZeroCommitDeliveryProof 2026-09-26-09:45 (RUFU-274):
+  The delivery-proof door on the shared finalize primitive. It runs only when both facts needed to probe are
+  on the row: a repository root, and the integration branch the landing claims to have reached. Without
+  either there is nothing to corroborate against, and inventing a ref (or trusting a `mergeConfirmed` flag
+  to substitute for a probe) is the failure mode this door exists to remove — so the historical behaviour
+  stands for those cards. A `held` refusal has already written its durable hold, row sentence, and bounded
+  audit row inside the guard; here the only job is to stop — before cleanup and before the complete-column
+  move — and to report a deferral, the same non-burning `blocked` class `missing-merge-confirmation` uses.
+  A `retry` is the opposite case: the probe could not see the content, which is not evidence that work is at
+  risk, so finalizing proceeds on today's rules rather than wedging a card over an unreadable checkout. The
+  guard's own deferred row records that abstention, and this lane adds no audit event of its own: the
+  refusal's forensic record and its fixed reason codes belong to the one writer.
+  */
+  const landingProofBranch = mergeDetails.mergeTargetBranch;
+  if (rootDir && landingProofBranch) {
+    const landingProof = await enforceZeroCommitLandingProof({
+      store,
+      task: latest,
+      repoDir: rootDir,
+      integrationBranch: landingProofBranch,
+      source: "finalize-proven-auto-merge",
+      fence,
+    });
+    if (landingProof.disposition === "held") {
+      const reason = landingProof.refusal;
+      await log?.(`Auto-merge finalization refused for ${taskId}: ${reason}`);
+      return { outcome: "blocked", task: latest, previousColumn: latest.column, reason };
+    }
+    if (landingProof.disposition === "retry") {
+      await log?.(`Auto-merge finalization proceeding without a zero-commit delivery probe for ${taskId}: ${landingProof.reason}`);
+    }
   }
 
   /*

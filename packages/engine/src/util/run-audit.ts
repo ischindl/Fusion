@@ -965,6 +965,18 @@ export type DatabaseMutationType =
   | "task:merge-boundary-unproven-parked"
   /** FNXC:WorkflowMergeRecovery 2026-09-20-19:38: Self-healing resumes a historic proofless park only after durable unfinished work and lifecycle ownership are re-verified. Metadata is ids/outcomes-only. */
   | "task:merge-boundary-evidence-recovered"
+  /**
+   * FNXC:ZeroCommitLandingProof 2026-09-25-12:20 (RUFU-274):
+   * One finalization lane refused to finalize a card whose branch carried zero commits while a checkout
+   * still held work (or could not be classified). Metadata is { taskId, source, code, pathCount,
+   * contentBasis, aheadCommitCount, pointersPreserved } — ids/counts/fixed enums only, never file paths
+   * or content. Emitted best-effort: a hostile audit sink cannot change the refusal.
+   */
+  | "task:zero-commit-landing-proof-refused"
+  /** FNXC:ZeroCommitLandingProof 2026-09-25-12:20 (RUFU-274): zero-ness or content could not be proven, so the lane deferred rather than finalizing. Metadata is ids/counts/fixed enums only. */
+  | "task:zero-commit-landing-proof-deferred"
+  /** FNXC:ZeroCommitLandingProof 2026-09-25-12:20 (RUFU-274): a re-probe showed the cause of a durable uncommitted-work hold is gone and the hold was cleared. Metadata is { taskId, source, priorCode } only. */
+  | "task:zero-commit-landing-proof-cleared"
   /** FNXC:MergeExecutionExclusion 2026-08-23-08:25: FN-180 records live-execution admission deferrals with ids and fixed signal/source/outcome enums only. */
   | "task:merge-admission-deferred-live-execution"
   /** FNXC:ConfirmedMergeFinalization 2026-08-23-08:25: FN-180 records counts-only reconciliation of stale checklist state after durable merge proof. */

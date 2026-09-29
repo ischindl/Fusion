@@ -30,6 +30,7 @@ import type { InReviewStallSignal } from "../../tasks/in-review-stall.js";
 import type { InReviewStalledSignal } from "../../tasks/in-review-stalled.js";
 import type { TaskStallReason } from "../../tasks/task-stall-reason.js";
 import type { ReviewBypassTarget } from "../../merge/review-bypass-target.js";
+import type { WorktreeContentState } from "../merge/worktree-content.js";
 import type { StalePausedReviewSignal } from "../../tasks/stale-paused-review.js";
 import type { StalePausedTodoSignal } from "../../tasks/stale-paused-todo.js";
 import type { TaskExternalBlock } from "../../tasks/task-external-block.js";
@@ -184,6 +185,23 @@ export interface MergeDetails {
    * Never set on success paths.
    */
   landedFilesCaptureFallback?: "attribution-failed";
+  /**
+   * FNXC:ZeroCommitLandingProof 2026-09-25-11:40 (RUFU-274):
+   * Durable record of a refused finalization: the card's branch carried zero commits while its
+   * checkout still held work, so automatic finalization would have discarded it. Written instead of a
+   * completion, and read by `getTaskMergeBlocker` so the refusal stays visible on the row and every
+   * later door — including one presented as `manual: true` — answers the same way until a human acts.
+   *
+   * RUFU-262 is the failure this records: branch 0 commits ahead of `main`, worktree still dirty, card
+   * `done`. It is an evidence record, not a status: no `Task.status`/`Task.column` value describes
+   * "committed work is required before merge", and a wait written as a failure would be retried,
+   * replanned, or bypassed rather than fixed.
+   *
+   * Path COUNTS and a capped path list only — never file contents. Cleared by the guard as soon as a
+   * re-probe shows the cause is gone (the human committed, or discarded and the card legitimately has
+   * nothing to deliver).
+   */
+  uncommittedWorkHold?: UncommittedWorkHold;
   mergeCommitMessage?: string;
   mergedAt?: string;
   mergeConfirmed?: boolean;
@@ -245,6 +263,52 @@ export interface MergeDetails {
   delivered blocker is only ever gone by deletion.
   */
   workspaceLandedFiles?: Record<string, string[]>;
+}
+
+/**
+ * FNXC:ZeroCommitLandingProof 2026-09-25-11:40 (RUFU-274):
+ * Shape of `MergeDetails.uncommittedWorkHold`. `paths` is capped by the writer; `reason` is the exact
+ * canonical refusal sentence, so the board chip, the task log, and the refusing lane can never drift.
+ */
+export interface UncommittedWorkHold {
+  at: string;
+  /*
+  FNXC:ZeroCommitLandingProof 2026-09-27-01:01 (RUFU-274):
+  `content-unverifiable` is the only claim-shaped refusal left. A clean checkout with no durable landing proof
+  is not a refusal at all — there is nothing there for a merge to destroy — so the `no-landing-proof` code that
+  an earlier draft carried was removed with the decision-table row that produced it.
+  */
+  code: "uncommitted-work" | "content-unverifiable";
+  /** Which lane refused — ids/counts only, never reviewer prose or file contents. */
+  source: string;
+  pathCount: number;
+  paths?: string[];
+  worktree?: string;
+  branch?: string;
+  reason: string;
+  /*
+  FNXC:ZeroCommitDeliveryProof 2026-09-26-01:30 (RUFU-274):
+  The evidence CLASS and counts that produced the hold, added by RUFU-274 Step 6 so the row states what
+  was found (`deliverable` + `1 modified, 3 untracked`) rather than only that something was found, and so
+  an operator can tell a dirty tree from an unreadable one without opening History. Optional because a
+  hold written before this change stays readable. `paths` lists names only — file CONTENT is never
+  stored, and neither is the probe's raw output.
+  */
+  contentState?: WorktreeContentState;
+  modifiedCount?: number;
+  untrackedCount?: number;
+  /*
+  FNXC:ZeroCommitDeliveryProof 2026-09-27-01:01 (RUFU-274 Step 6):
+  The row-visible hold state that predates this refusal, captured because a refusal write must not erase
+  another owner's park. A card already parked by an exhausted auto-merge retry or a human is parked BY THEM,
+  and stays parked after this hold clears; without the snapshot the release could only guess, and guessing
+  "unpause" hands a human-held card back to the scheduler.
+  */
+  priorRowHold?: {
+    paused: boolean;
+    pausedReason?: string | null;
+    error?: string | null;
+  };
 }
 
 /** Represents an agent's checkout lease on a task. */

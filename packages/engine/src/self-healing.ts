@@ -126,6 +126,14 @@ symbol this file actually calls, so only the dead token was dropped.
 */
 
 /*
+FNXC:SelfHealing 2026-09-29-22:04 (fusion/rufu-274 squash merge):
+RUFU-274 dropped `resolveRequiredPreMergeStepIds` from this position because it moved the local
+`resolveNoOpFinalizeGateIds` helper into `merge/zero-commit-finalization-guard.ts`. main's union import
+above still carries the symbol — RUFU-297's drifted-hold sweep calls it — so the re-emitted import is
+dropped as before and the canonical union import remains the sole import.
+*/
+
+/*
 FNXC:ChatSidebarLiveness 2026-09-24-05:55 (RUFU-220):
 `chatInFlightReferenceMs` is the same reference resolver that now drives the dashboard sidebar's
 liveness tag, so the label an operator reads and the clear this sweep performs cannot disagree about
@@ -250,6 +258,18 @@ import { recordWorkspaceBaseBranchDecision, resolveWorkspaceRepoBaseBranch } fro
 import { resolveBranchGroupMergeRouting } from "./merge/group-merge-coordinator.js";
 import type { OwnedLandedClassification } from "./merger.js";
 import { regenerateBareMergeSubject } from "./merge/merger-bare-subject.js";
+/*
+FNXC:ZeroCommitDeliveryProof 2026-09-26-09:05 (RUFU-274):
+The no-op review finalization sweep is one of the review-lane doors RUFU-262 named as an independent
+writer of the symptom: it classifies a card as `proven-no-op` from a revision walk, clears
+`modifiedFiles`, and moves the card to done — while the deliverable can still be sitting uncommitted in
+that card's checkout. It now answers the shared landing-proof predicate before it finalizes.
+*/
+import {
+  collectZeroCommitFinalizeEvidence,
+  enforceZeroCommitLandingProof,
+  resolveNoOpFinalizeGateIds,
+} from "./merge/zero-commit-finalization-guard.js";
 import { recoverForeignOnlyContamination } from "./recovery/foreign-only-contamination.js";
 /*
 FNXC:BranchConflictRecovery 2026-09-13-01:35:
@@ -946,19 +966,6 @@ const RECONCILE_SCOPE_OVERRIDE_MERGE_ACTIVE_STATUS_SET = new Set<string>(MERGE_A
 // that already depend on `self-healing.ts` exports.
 import { classifyTransientMergeError } from "./errors/transient-merge-error-classifier.js";
 
-/*
- * FNXC:ReviewGatedRemediation 2026-08-23-05:23:
- * Self-healing's zero-diff finalizers use the selected workflow's required gate set so recovery
- * cannot bypass a failed or absent deterministic Verification result.
- */
-async function resolveNoOpFinalizeGateIds(store: TaskStore, task: Task): Promise<ReadonlySet<string> | undefined> {
-  const selection = store.getTaskWorkflowSelectionAsync
-    ? await store.getTaskWorkflowSelectionAsync(task.id)
-    : store.getTaskWorkflowSelection?.(task.id);
-  if (!selection) return undefined;
-  const ir = await resolveWorkflowIrForTask(store, task.id).catch(() => undefined);
-  return ir ? resolveRequiredPreMergeStepIds(ir, task.enabledWorkflowSteps) : undefined;
-}
 export { classifyTransientMergeError } from "./errors/transient-merge-error-classifier.js";
 const MAX_STARVATION_DROPS = 3;
 /*
@@ -3191,6 +3198,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         worktreePath: task.worktree,
         rootDir: this.options.rootDir,
         landedSha: landedMergeDetails.commitSha,
+        // RUFU-274 Step 5: the row is passed so cleanup can see a durable delivery-unproven hold.
+        task,
         source,
         audit,
         log: async (message) => {
@@ -3821,7 +3830,20 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       const irCache = new Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>();
       const stranded: Task[] = [];
       for (const task of completedNonColumnCandidates) {
+        /*
+        FNXC:ZeroCommitDeliveryProof 2026-09-26-09:10 (RUFU-274):
+        This is the promoter's FILTER, not a finalization door: a candidate it refuses to promote stays put,
+        and a candidate it promotes goes BACK into execution, which is the remedy for unproven delivery, not
+        a false `done`. So it asks only the step/gate half of the shared guard and says so in its evidence —
+        `{ state: "unverifiable" }` plus an unreadable ahead-count is the honest "this lane did not look",
+        which the shared predicate answers with its abstention arm rather than the `deliverable` refusal.
+        Fabricating `clean` here would put this sweep in the class of lane RUFU-262 was about: an
+        unexamined tree assumed harmless in order to move a card.
+        */
         if (evaluateNoCommitsNoOpFinalize(task, {
+          aheadCommitCount: null,
+          worktreeContent: { state: "unverifiable", probeDetail: "stranded-todo-promoter-does-not-probe" },
+          landingProof: null,
           requiredVerificationStepIds: await resolveNoOpFinalizeGateIds(this.store, task),
         }).blocked) continue;
         let holdColumn = "todo";
@@ -6608,6 +6630,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
               worktreePath: completionCleanupPath,
               rootDir: this.options.rootDir,
               landedSha: task.mergeDetails.commitSha,
+              // RUFU-274 Step 5: the row is passed so cleanup can see a durable delivery-unproven hold.
+              task,
               source: "self-healing-completion-convergence",
               audit,
               log: async (message) => {
@@ -10848,9 +10872,53 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           // the audit trail of the lost work. Now we refuse to finalize and
           // move the task back to todo with progress preserved so the next
           // executor run can re-attempt.
-          const noCommitsFinalize = evaluateNoCommitsNoOpFinalize(task, {
+          /*
+          FNXC:ZeroCommitDeliveryProof 2026-09-26-09:15 (RUFU-274):
+          One git observation answers both authorities: the historical step/gate ledger AND the landing-proof
+          door. `classification.baseRef` is the ref this sweep already counted against, so the ahead-count the
+          predicate reads is the same number that produced the `proven-no-op` classification — the two can no
+          longer disagree the way RUFU-262's did.
+          */
+          const collectedNoOpEvidence = await collectZeroCommitFinalizeEvidence({
+            store: this.store,
+            task,
+            repoDir: this.options.rootDir,
+            integrationBranch: classification.baseRef,
             requiredVerificationStepIds: await resolveNoOpFinalizeGateIds(this.store, task),
           });
+          const noCommitsFinalize = evaluateNoCommitsNoOpFinalize(task, collectedNoOpEvidence);
+          const landingProofOutcome = noCommitsFinalize.blocked && noCommitsFinalize.deliveryUnproven
+            ? await enforceZeroCommitLandingProof({
+                store: this.store,
+                task,
+                repoDir: this.options.rootDir,
+                integrationBranch: classification.baseRef,
+                source: "self-healing-no-op-finalize",
+                preCollected: collectedNoOpEvidence,
+              })
+            : null;
+          if (landingProofOutcome?.disposition === "held") {
+            /*
+            FNXC:ZeroCommitDeliveryProof 2026-09-26-09:20 (RUFU-274):
+            The durable hold, the row sentence, and the bounded audit row are the guard's writes; this sweep
+            adds only the card-visible log line. It deliberately does NOT write `error`, does NOT rebind, and
+            does NOT count itself as a recovery: `recovered` feeds "Recovered N no-op review task(s) → done",
+            and nothing here moved. A refusal is a human wait, so the sweep stops touching the card — and
+            above all never reaches the `modifiedFiles: []` clear below, which is the statement that there was
+            nothing to deliver.
+            */
+            await this.store.logEntry(
+              task.id,
+              `Finalize refused (delivery unproven): ${landingProofOutcome.refusal}`,
+              JSON.stringify({
+                lane: "self-healing-finalize-no-op-review",
+                classification: "proven-no-op",
+                baseRef: classification.baseRef,
+                held: true,
+              }, null, 2),
+            );
+            continue;
+          }
           if (noCommitsFinalize.blocked) {
             const reason = noCommitsFinalize.reason ?? "no-commits task has incomplete work with no net branch changes";
             /*
