@@ -97,7 +97,11 @@ export function findLockstepViolations({ rootDir, ledger, packageConfigs = disco
     const configPath = normalizeConfigPath(rootDir, config);
     if (!existsSync(configPath)) continue;
     const relativeConfig = normalizeRepoPath(path.relative(rootDir, configPath));
-    configExcludes.set(relativeConfig, extractConcreteExcludes(readFileSync(configPath, "utf8")));
+    const configSource = readFileSync(configPath, "utf8");
+    configExcludes.set(relativeConfig, [
+      ...extractConcreteExcludes(configSource),
+      ...extractStaticQuarantinedCliTests(configSource),
+    ]);
   }
 
   const violations = [];
