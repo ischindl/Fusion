@@ -1861,6 +1861,8 @@ Memory backups snapshot memory files into timestamped directories under `memoryB
   - `memory-YYYY-MM-DD-HHMMSS/project/...`
   - `memory-YYYY-MM-DD-HHMMSS/agents/<agentId>/...`
 
+Long-term memory maintenance (`fn_memory_append` budget reporting plus the `reconcile-long-term-memory-budget` self-healing sweep) creates one of these snapshots **itself** before it rewrites an over-budget `MEMORY.md`, using `memoryBackupDir`, `memoryBackupScope`, and `memoryBackupRetention` as configured. That rewrite backup is not gated by `memoryBackupEnabled`: the scheduled cron decides how often backups are taken, while the rewrite guarantee — no backup, no write — is unconditional. Maintenance only collapses exactly duplicated `## ` entries and never shortens or drops a unique entry, so a file that stays over budget after collapsing stays over budget and keeps reporting its size honestly. See `docs/run-audit.md` → *Long-term memory budget maintenance*.
+
 CLI commands:
 
 - `fn memory-backup --create` — Create a memory backup now.

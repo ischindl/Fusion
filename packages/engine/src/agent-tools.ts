@@ -18,6 +18,7 @@ import { listTraits, isBuiltinWorkflowId, isTaskNotFoundError, renderTaskComment
 import { promoteHeldTask } from "./execution/hold-release.js";
 import { stepLifecycleNoopResult, storeErrorResult, storeWriteFailure } from "./tool-store-errors.js";
 import { computeCrossParentDiagnosticClaim, computeCrossParentDiagnosticClaimId, computeParentIntentClaimId, DASHBOARD_USER_ID, dailyMemoryPath, ensureOpenClawMemoryFiles, evaluateImplementationTaskBind, extractAgentProvisioningRequest, findSameAgentDuplicates, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, normalizeMessageParticipant, reconcileDeterministicDuplicate, resolveAgentProvisioningPolicy, resolveMemoryBackend, resolveMemorySearchTopic, resolveResearchSettings, resolveTaskGithubTracking, runDeterministicDuplicateGuard, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh } from "@fusion/core";
+import { formatLongTermMemoryAppendReport, formatMemorySize, measureLongTermMemory, type LongTermMemoryScope } from "./memory/memory-budget.js";
 import { ResearchOrchestrator } from "./research/research-orchestrator.js";
 import { ResearchProviderRegistry } from "./research/provider-registry.js";
 import { ResearchStepRunner } from "./research/research-step-runner.js";
@@ -4617,6 +4618,50 @@ export function createMemoryGetTool(rootDir: string, settings?: MemoryToolSettin
   };
 }
 
+/**
+ * FNXC:MemoryBudget 2026-09-29-23:56:
+ * RUFU-279 — the append tool used to answer `Appended to long-term memory.` with no number at all,
+ * which is how a project file reached 594,273 bytes / 306 entries without anyone being told: every
+ * write looked equally free. The confirmation now reads the file back and reports measured UTF-8 bytes
+ * plus the `## ` entry count, so the author sees the cost of the write at the moment they make it.
+ *
+ * Long-term writes additionally report the code-owned budget and, when over it, what maintenance will
+ * and will not do.
+ *
+ * The `daily` layer keeps its original sentence verbatim. Daily files are dated logs with their own
+ * lifecycle, the budget is a long-term policy, and RUFU-279 was never asked to change a message that
+ * was not lying about anything — an unchanged string is the diff that cannot surprise a reader or a
+ * downstream assertion.
+ *
+ * A failed read-back never turns a successful append into an error, and it never falls back to the
+ * old number-free sentence either: it says the measurement is unavailable.
+ */
+async function memoryAppendConfirmation(params: {
+  targetPath: string;
+  scopeLabel: string;
+  scope: LongTermMemoryScope;
+  agentId?: string;
+  layer: string;
+  appendedBytes: number;
+}): Promise<string> {
+  if (params.layer !== "long-term") return `Appended to ${params.scopeLabel} memory.`;
+  try {
+    const content = await readFile(params.targetPath, "utf-8");
+    const report = measureLongTermMemory({
+      content,
+      scope: params.scope,
+      ...(params.agentId ? { agentId: params.agentId } : {}),
+    });
+    return formatLongTermMemoryAppendReport({
+      scopeLabel: params.scopeLabel,
+      appendedBytes: params.appendedBytes,
+      report,
+    });
+  } catch {
+    return `Appended to ${params.scopeLabel} memory (${formatMemorySize(params.appendedBytes)} appended; size measurement unavailable).`;
+  }
+}
+
 export function createMemoryAppendTool(rootDir: string, settings?: MemoryToolSettings, options?: MemoryToolOptions): ToolDefinition {
   return {
     name: "fn_memory_append",
@@ -4641,7 +4686,8 @@ export function createMemoryAppendTool(rootDir: string, settings?: MemoryToolSet
         const targetPath = params.layer === "long-term"
           ? agentMemoryFilePath(rootDir, agentMemory.agentId)
           : agentDailyFilePath(rootDir, agentMemory.agentId);
-        await appendFile(targetPath, `\n${content}\n`, "utf-8");
+        const written = `\n${content}\n`;
+        await appendFile(targetPath, written, "utf-8");
         if (resolveMemoryBackend(settings).type === "qmd") {
           void refreshAgentMemoryQmdIndex(rootDir, agentMemory).catch((err) => {
             log.warn(
@@ -4650,19 +4696,39 @@ export function createMemoryAppendTool(rootDir: string, settings?: MemoryToolSet
           });
         }
         return {
-          content: [{ type: "text" as const, text: `Appended to agent ${params.layer} memory.` }],
+          content: [{
+            type: "text" as const,
+            text: await memoryAppendConfirmation({
+              targetPath,
+              scopeLabel: `agent ${params.layer}`,
+              scope: "agent",
+              agentId: agentMemory.agentId,
+              layer: params.layer,
+              appendedBytes: Buffer.byteLength(written, "utf8"),
+            }),
+          }],
           details: { scope, layer: params.layer },
         };
       }
 
       await ensureOpenClawMemoryFiles(rootDir);
       const targetPath = params.layer === "long-term" ? memoryLongTermPath(rootDir) : dailyMemoryPath(rootDir);
-      await appendFile(targetPath, `\n${content}\n`, "utf-8");
+      const written = `\n${content}\n`;
+      await appendFile(targetPath, written, "utf-8");
       if (resolveMemoryBackend(settings).type === "qmd") {
         scheduleQmdProjectMemoryRefresh(rootDir);
       }
       return {
-        content: [{ type: "text" as const, text: `Appended to ${params.layer} memory.` }],
+        content: [{
+          type: "text" as const,
+          text: await memoryAppendConfirmation({
+            targetPath,
+            scopeLabel: params.layer,
+            scope: "project",
+            layer: params.layer,
+            appendedBytes: Buffer.byteLength(written, "utf8"),
+          }),
+        }],
         details: { scope, layer: params.layer },
       };
     },

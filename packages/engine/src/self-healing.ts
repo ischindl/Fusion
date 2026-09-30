@@ -154,6 +154,7 @@ import { createLogger, schedulerLog } from "./logger.js";
 import { registerLifecycleMoveLog } from "./execution/lifecycle-move-log.js";
 import { moveTaskToContainedBackwardTarget, type ContainedLifecycleMoveResult } from "./execution/lifecycle-move.js";
 import { emitBoundedRunAudit, emitBoundedRunAuditWithOutcome } from "./util/emit-bounded-run-audit.js";
+import { runLongTermMemoryMaintenance, type LongTermMemoryMaintenanceResult } from "./memory/long-term-consolidation.js";
 import { createProcfsGitChildProbe, reapOrphanedGitChildren, type GitChildProcessProbe } from "./util/orphaned-git-child-reaper.js";
 import {
   TRIAGE_MARKER_CLEARED_REPLAN_LOG_ACTION,
@@ -1144,6 +1145,14 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   private maintenanceRunning = false;
   /** Last wall-clock a batch-1 git-churn pass ran on this manager (coarse-cadence gate). */
   private lastGitWorktreeChurnAt = 0;
+  /**
+   * FNXC:MemoryBudget 2026-09-29-23:56 (RUFU-279): signature → last emitted timestamp for
+   * `memory:long-term-over-budget`, owned here so the rate limit survives across sweeps. The engine
+   * process is the single writer of long-term memory maintenance, so instance state is sufficient —
+   * re-deriving it from the audit store would add a query per batch to reproduce a bound that a
+   * breach already survives, since a breach that never self-heals repeats forever by definition.
+   */
+  private longTermMemoryOverBudgetAuditState = new Map<string, number>();
 
   // ── Event listener cleanup ──────────────────────────────────────────
   private settingsListener: ((data: { settings: Settings; previous: Settings }) => void) | null = null;
@@ -2413,6 +2422,10 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       // FNXC:ChatInFlightRecovery 2026-08-20-20:17 (RUFU-144): clear in_flight_generation flags stranded by a
       // dashboard restart before any client re-attach can reopen a dead streaming UI state.
       { name: "reconcile-stale-in-flight-chat-generations", fn: () => this.reconcileStaleInFlightChatGenerations().then(() => undefined) },
+      /* FNXC:MemoryBudget 2026-09-29-23:56 (RUFU-279): an engine start is when a bloated long-term
+         memory file has just been injected into every lane's context for the first time; this pass
+         measures it and collapses exact duplicates behind a backup, with no runtime toggle to enable. */
+      { name: "reconcile-long-term-memory-budget", fn: () => this.reconcileLongTermMemoryBudget().then(() => undefined) },
       /* FNXC:OrphanedGitChildren 2026-09-12-09:20 (RUFU-210): an engine restart is exactly when
          last run's reparented git children become provably orphaned; the sweep signals processes
          only and makes no task/worktree/lifecycle mutation, so it stays safe at startup. */
@@ -3372,6 +3385,13 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           // while the dashboard stayed up (crash between the last snapshot and the final clear), not just restarts.
           name: "reconcile-stale-in-flight-chat-generations",
           fn: () => this.reconcileStaleInFlightChatGenerations(),
+        },
+        {
+          /* FNXC:MemoryBudget 2026-09-29-23:56 (RUFU-279): periodic net for the memory file that only
+             the append tool writes. Pause-safe by construction (no task/worktree/lifecycle mutation);
+             the over-budget audit rate limit is what keeps a 15-minute cadence from repeating itself. */
+          name: "reconcile-long-term-memory-budget",
+          fn: () => this.reconcileLongTermMemoryBudget(),
         },
         {
           name: "cleanup-old-mail",
@@ -8015,6 +8035,67 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       log.error(`Stale blockedBy sweep failed: ${errorMessage}`);
       return 0;
     }
+  }
+
+  /**
+   * FNXC:MemoryBudget 2026-09-29-23:56 (RUFU-279):
+   * Default-on maintenance for long-term `MEMORY.md` files (project + every durable agent). The
+   * defect this step replaces was a 594,273-byte / 306-entry project file with ZERO `memory:*` rows in
+   * the audit store: `fn_memory_append` was the only code path touching the file (blind append, no
+   * measurement), the size bound lived in an unenforced settings key, and the one service with
+   * "consolidation" in its name maintains the knowledge graph rather than the file — and its whole
+   * lane is gated behind the opt-in `Memory Keeper` runtime switch, which built-in provisioning seeds
+   * `enabled: false` and startup convergence deliberately never flips on. So maintenance is wired
+   * here instead: startup recovery plus every maintenance batch, with no operator toggle to set and no
+   * model to consult.
+   *
+   * The pass itself is loss-free by construction (`long-term-consolidation.ts`): it only collapses
+   * `## ` sections that are exact duplicates, counts same-heading/different-body conflicts instead of
+   * resolving them, and refuses every rewrite unless a memory backup covering that file succeeded in
+   * the same sweep after the bytes were read. Within-budget files are never rewritten.
+   *
+   * Silence is the healthy signal: a sweep with no breach and no failure emits no summary row, because
+   * a 15-minute cadence would otherwise drown the store in rows that report nothing (the per-file
+   * breach rows are rate-limited by signature and cooldown).
+   */
+  async reconcileLongTermMemoryBudget(): Promise<LongTermMemoryMaintenanceResult | undefined> {
+    const rootDir = this.options.rootDir;
+    if (!rootDir) return undefined;
+
+    let settings: Awaited<ReturnType<TaskStore["getSettings"]>> | undefined;
+    try {
+      settings = await this.store.getSettings();
+    } catch {
+      // Backup dir/retention/scope are operator preferences; unreadable settings fall back to the
+      // MemoryBackupManager defaults rather than skipping maintenance, which is what let it rot.
+      settings = undefined;
+    }
+
+    const result = await runLongTermMemoryMaintenance({
+      rootDir,
+      settings,
+      overBudgetAuditState: this.longTermMemoryOverBudgetAuditState,
+      audit: (mutationType, payload) => emitBoundedRunAudit(this.store, {
+        agentId: "self-healing",
+        runId: generateSyntheticRunId("reconcile-long-term-memory-budget", payload.target),
+        domain: "database",
+        mutationType: mutationType as DatabaseMutationType,
+        target: `memory:${payload.target}`,
+        metadata: payload.metadata,
+      }, { log }),
+      log,
+    });
+
+    if (result.overBudget > 0 || result.failures > 0 || result.rewritten > 0) {
+      const summary = `Long-term memory maintenance: scanned=${result.scanned} within-budget=${result.withinBudget} over-budget=${result.overBudget} ` +
+        `duplicates-collapsed=${result.duplicateSectionsCollapsed} conflicts-retained=${result.conflictsRetained} ` +
+        `rewritten=${result.rewritten} suppressed-findings=${result.suppressedFindings} failures=${result.failures}`;
+      if (result.failures > 0) log.warn(summary);
+      else log.debug(summary);
+    } else {
+      await yieldEventLoop();
+    }
+    return result;
   }
 
   /**

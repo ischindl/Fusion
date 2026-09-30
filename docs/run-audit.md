@@ -339,3 +339,29 @@ Missing implementation proof is normally repaired through the workflow's durable
 `task:review-no-verdict-park-repaired` is written once per pass that re-seeds a required pre-merge gate whose latest row has no authored verdict and then lifts the in-review stall-deadlock park around that same card. Metadata is `taskId`, `workflowStepId`, fixed `source` (`self-healing`) and `outcome` (`cleared`/`signature-drift`) only — no findings, verdicts, blocker sentences, or error text.
 
 `outcome:"cleared"` means the park's pause marker, park error, `status` and `error` were all dropped in one `updateTaskAtomic` write whose guard re-derived the SAME signature that admitted the seed: the deadlock pause reason, the park's own error prefix still on the row, no `userPaused`, and a required gate still verdict-less. Anything else is `signature-drift` and writes no field, so a card that changed shape underneath the recovery keeps its terminal evidence for an operator. If the re-run fails to converge again, the stall detector parks it again with fresh evidence — this event records one attempt, not a disarm.
+
+### Long-term memory budget maintenance (RUFU-279)
+
+`memory:long-term-over-budget` records a long-term `MEMORY.md` (project scope, or one durable agent's
+own memory) that exceeds the code-owned byte budget; `memory:long-term-consolidated` records a rewrite
+that actually landed; `memory:long-term-consolidation-failed` records a maintenance pass that refused
+to write. Over-budget findings are rate-limited per file by a size/entry-count signature plus a 6-hour
+cooldown, so a card that stays in the same condition reports once per window instead of once per
+15-minute maintenance batch. A sweep with no breach and no failure writes no row at all.
+
+Metadata is ids/counts/fixed enums only: `scope` (`project`/`agent`) with `agentId` when scoped to an
+agent, measured `bytes`, `budgetBytes`, `overByBytes`, `entryCount`, booleans `duplicatesFound`,
+`conflictsFound`, `tooLarge`, `overBudget`, `stillOverBudget`, counts `duplicateSectionsCollapsed` and
+`conflictsRetained`, and the fixed `stage` enum
+`read`/`too-large`/`backup`/`backup-scope`/`concurrent-write`/`write`/`verify`. Because the rewrite is
+backup-first and loss-free, a `consolidated` row is also proof that a memory backup covering that file
+was created in the same pass; `bytesBefore`/`bytesAfter` and `entryCountBefore`/`entryCountAfter` name
+both sides of the change, and `stillOverBudget` stays true when collapsing duplicates could not bring
+the file under the bound. Entry headings, entry text, diff text, file paths, and error messages are
+never recorded — the durable memory content is precisely what an operator would have to redact.
+
+The three events are deliberately absent from the curated `run-audit-catalogue.ts` delivery-pipeline
+list: that catalogue is locked table-for-table against the delivery surface, and these rows are
+background maintenance telemetry with no delivery pipeline to describe.
+`packages/engine/src/__tests__/memory-long-term-audit-contract.test.ts` pins the declaration, the
+documentation, and that exclusion together.

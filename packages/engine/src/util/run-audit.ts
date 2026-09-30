@@ -950,6 +950,21 @@ export type DatabaseMutationType =
   | "memory:semantics-skipped"
   | "memory:capture-recorded"
   | "memory:capture-failed"
+  /*
+   * FNXC:MemoryBudget 2026-09-29-23:56:
+   * RUFU-279: long-term `MEMORY.md` grew to 594,273 bytes / 306 entries with zero `memory:*` rows in
+   * the store, because every memory row was gated behind the opt-in Memory Keeper runtime lane and no
+   * code path consolidated the file at all. These three rows are emitted by the default-on maintenance
+   * sweep (`runLongTermMemoryMaintenance`) instead, so breach evidence no longer depends on a toggle.
+   * Metadata is scope/ids/counts/fixed enums only: `scope` (project|agent), `agentId` (agent scope
+   * only), byte sizes, entry counts, `budgetBytes`, `overByBytes`, boolean findings, and the closed
+   * `stage` enum (read|too-large|backup|backup-scope|concurrent-write|write|verify). File paths, entry
+   * text, headings, diff text, and error class/message are never recorded; the file path lives on the
+   * engine log line, not in the audit row.
+   */
+  | "memory:long-term-over-budget"
+  | "memory:long-term-consolidated"
+  | "memory:long-term-consolidation-failed"
   | "task:in-review-stall-deadlock-disposed"
   | "task:in-review-stall-terminal-provider-error"
   | "task:finalize-unproven-blocked"

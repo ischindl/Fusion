@@ -42,6 +42,8 @@ Fusion currently has two related but distinct memory systems:
 | `MEMORY_WORKING_PATH` | `.fusion/memory/MEMORY.md` | `memory-insights.ts` |
 | `MEMORY_INSIGHTS_PATH` | `.fusion/memory/memory-insights.md` | `memory-insights.ts` |
 | `MEMORY_AUDIT_PATH` | `.fusion/memory/memory-audit.md` | `memory-insights.ts` |
+| `MEMORY_LONG_TERM_BYTE_BUDGET` | `32768` (32 KiB) | `packages/engine/src/memory/memory-budget.ts` |
+| `MEMORY_LONG_TERM_MAINTENANCE_MAX_BYTES` | `8388608` (8 MiB) | `packages/engine/src/memory/memory-budget.ts` |
 
 ### 1.3 Exported Surface (Post-Migration)
 
@@ -93,6 +95,20 @@ Runtime backend resolution uses an internal `MemorySettings` shape with `memoryB
 4. Backend selection key is **`memoryBackendType`**.
 5. Prompt instruction context is backend-aware (`file` path hint vs `qmd`/`readonly` behavior).
 6. Dashboard `/api/memory` routes are backend-aware; layered file routes validate requests against allowed memory workspace files.
+7. The long-term `MEMORY.md` byte budget is **code-owned**, not a settings knob. `MEMORY_LONG_TERM_BYTE_BUDGET`
+   is the single number both the write path (`fn_memory_append`) and the maintenance path
+   (`reconcile-long-term-memory-budget`) compare against, so the append report and the sweep can never
+   disagree about what "over budget" means. An append that breaches it still succeeds: the confirmation
+   message reports measured bytes, budget, percentage, and entry count instead of refusing to record the
+   lesson. Daily-layer files keep their original unmeasured confirmation wording, because the budget is a
+   long-term working-set bound and daily files are rolling dated logs.
+8. Long-term memory maintenance is **default-on and loss-free**. It runs from self-healing (startup
+   recovery plus maintenance batch 1) rather than from the optional `Memory Keeper` runtime lane, which
+   built-in provisioning seeds disabled. It collapses only `## ` sections that are exact duplicates,
+   counts same-heading/different-body conflicts instead of choosing between them, and refuses every write
+   unless a memory backup covering that file succeeded in the same pass after the bytes were read.
+   Within-budget files are never rewritten. See `docs/run-audit.md` → *Long-term memory budget
+   maintenance* for the `memory:long-term-*` rows this emits.
 
 ---
 
