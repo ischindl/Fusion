@@ -22,7 +22,7 @@ import { EventEmitter } from "node:events";
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { type Settings, type Task, type TaskStore, type WorkspaceLandIntent } from "@fusion/core";
+import { hasZeroCommitDeliveryAuthorization, type Settings, type Task, type TaskStore, type WorkspaceLandIntent, WORKSPACE_PARTIAL_LAND_EVIDENCE_UNAVAILABLE_PREFIX, WORKSPACE_PARTIAL_LAND_UNRECOVERABLE_PREFIX } from "@fusion/core";
 import { SelfHealingManager } from "../self-healing.js";
 import { classifyBranchProbeError } from "../self-healing-git-evidence.js";
 import { activeSessionRegistry, executingTaskLock } from "../agents/active-session-registry.js";
@@ -587,6 +587,103 @@ describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
     expect(store.tasks.get(TASK_ID)?.status).toBe("failed");
     expect(entries?.["repo-a"]?.landFailure).toMatchObject({ branch: BRANCH });
     expect(entries?.["repo-b"]?.landFailure).toMatchObject({ branch: BRANCH });
+  });
+
+  /*
+  FNXC:ZeroCommitWorkspaceDelivery 2026-09-30-21:00 (RUFU-451):
+  A card whose own plan declares `noCommitsExpected` delivers without commits, so FORK-A's evidence
+  ("no branch, no landedSha") is the delivery shape rather than lost work. Live case SANE-509: source-free
+  File Scope, both member branches at zero unique commits, review re-executed green — and the sweep parked
+  it `failed`, whose refusal then blocked the merge, the recovery doors, AND the operator's manual drag
+  (`409 code=merge-blocked`). These cases pin the three observable consequences: no new park, no `landFailure`
+  breadcrumb claiming lost work, and an in-place clear of a park an earlier build already wrote. The
+  `noCommitsExpected: false` control keeps the original FORK-A park, so the exemption cannot widen.
+  */
+  it("FORK-A: a card authorized to deliver zero commits is not parked and its stale park is cleared", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const stalePark = `${WORKSPACE_PARTIAL_LAND_UNRECOVERABLE_PREFIX} sub-repo(s) repo-a have no branch (${BRANCH}) and no landedSha — manual intervention required.`;
+    const task = workspaceTask(
+      { "repo-a": { worktreePath: fx.repoPath("repo-a"), branch: BRANCH } },
+      { noCommitsExpected: true, status: "failed", error: stalePark },
+    );
+    const store = createStore([task]);
+    const manager = makeManager(store, fx.rootDir);
+
+    expect(await manager.reconcileWorkspacePartialLands()).toBe(0);
+
+    const row = store.tasks.get(TASK_ID)!;
+    expect(row.status ?? undefined).toBeUndefined();
+    expect(row.error).toBeUndefined();
+    expect(row.column).toBe("in-review");
+    // No display-only breadcrumb: it would state lost work for a delivery that never had any.
+    expect(row.workspaceWorktrees?.["repo-a"]?.landFailure).toBeUndefined();
+    expect(store.enqueued).not.toContain(TASK_ID);
+
+    const noticeRows = () => (store.recordRunAuditEvent as ReturnType<typeof vi.fn>).mock.calls.filter(
+      ([event]) =>
+        (event as { mutationType?: string }).mutationType === "task:reconcile-workspace-partial-land-no-action"
+        && (event as { metadata?: { reason?: string } }).metadata?.reason === "no-commits-expected",
+    );
+    expect(noticeRows()).toHaveLength(1);
+    expect((noticeRows()[0] as [unknown])[0]).toMatchObject({
+      metadata: { taskId: TASK_ID, reason: "no-commits-expected" },
+    });
+
+    /*
+    The class is permanently exempt, so the notice is written once per candidate episode rather than once
+    per sweep — the card stays a candidate and a five-minute row stating an unchanging fact buries it.
+    */
+    await manager.reconcileWorkspacePartialLands();
+    await manager.reconcileWorkspacePartialLands();
+    expect(noticeRows()).toHaveLength(1);
+    expect(store.tasks.get(TASK_ID)?.status ?? undefined).toBeUndefined();
+  });
+
+  it("control: the same shape without the zero-commit authorization keeps the FORK-A park", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const task = workspaceTask(
+      { "repo-a": { worktreePath: fx.repoPath("repo-a"), branch: BRANCH } },
+      // Written explicitly rather than omitted: the exemption must key on an affirmative answer.
+      { noCommitsExpected: false },
+    );
+    const store = createStore([task]);
+    const manager = makeManager(store, fx.rootDir);
+
+    expect(await manager.reconcileWorkspacePartialLands()).toBe(1);
+    const row = store.tasks.get(TASK_ID)!;
+    expect(row.status).toBe("failed");
+    // Coupling guard: the writer builds its sentence from the same fact the core waiver recognizes.
+    expect(row.error?.startsWith(WORKSPACE_PARTIAL_LAND_UNRECOVERABLE_PREFIX)).toBe(true);
+    expect(hasZeroCommitDeliveryAuthorization(row)).toBe(false);
+    expect(store.enqueued).not.toContain(TASK_ID);
+  });
+
+  it("starvation park: an unreadable branch state never terminalizes a zero-commit card", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    addRepoBranch(fx, "repo-a", "a\n");
+    const task = workspaceTask(
+      { "repo-a": { worktreePath: fx.repoPath("repo-a"), branch: BRANCH } },
+      { noCommitsExpected: true },
+    );
+    const store = createStore([task]);
+    const manager = new UnavailableBranchProbeManager(store, managerOptions(store, fx.rootDir) as never);
+
+    // The control's sibling: the ordinary card parks after the bounded budget (see the starvation
+    // case above); past that budget this card must still carry no failure state at all.
+    for (let pass = 0; pass < 5; pass++) await manager.reconcileWorkspacePartialLands();
+
+    const row = store.tasks.get(TASK_ID)!;
+    expect(row.status ?? undefined).toBeUndefined();
+    expect(row.error).toBeUndefined();
+    expect(store.enqueued).not.toContain(TASK_ID);
+    expect(
+      (store.recordRunAuditEvent as ReturnType<typeof vi.fn>).mock.calls.some(
+        ([event]) =>
+          (event as { mutationType?: string }).mutationType === "task:reconcile-workspace-partial-land"
+          && typeof (event as { metadata?: { reason?: string } }).metadata?.reason === "string"
+          && (event as { metadata?: { reason?: string } }).metadata?.reason?.includes("evidence-unavailable-exhausted"),
+      ),
+    ).toBe(false);
   });
 
   it("skips a restored fully-disposed workspace task after restore clears its map", async () => {

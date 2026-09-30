@@ -123,7 +123,14 @@ export type StallableTask = Pick<
   | "sourceMetadata"
   | "nextRecoveryAt"
   | "userPaused"
->;
+> & Partial<Pick<Task, /*
+  FNXC:ZeroCommitWorkspaceDelivery 2026-09-30-20:52 (RUFU-451):
+  The review-lane branch composes `getTaskMergeBlocker`'s answer, and that door now looks past exactly
+  one false terminal — the workspace partial-land park written for a card authorized to deliver zero
+  commits. Declaring the flag OPTIONAL here keeps the two classifiers answering the same question about
+  the same row: a card whose stall reason is derived without the flag keeps today's refusal (fail-closed),
+  while a hydrated row reports no `merge-blocker` stall for a delivery its own plan called source-free.
+  */ "noCommitsExpected">>;
 
 export interface TaskStallReasonContext {
   /** Clock (ms epoch) shared with sibling signals; `observedAt` derives from it. */

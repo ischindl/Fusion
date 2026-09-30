@@ -7,7 +7,7 @@ import { evaluatePreMergeApprovals } from "./pre-merge-approval.js";
 import { getHumanMergeApprovalBlocker, type HumanMergeApprovalEvidence } from "./human-merge-approval.js";
 import { isArchivedRemediationCarrier } from "../workflows/workflow-step-results.js";
 /* FNXC:ZeroCommitLandingProof 2026-09-25-12:05 (RUFU-274): the durable zero-commit refusal is a merge-door gate like every other one. */
-import { getUncommittedWorkHoldBlocker } from "./zero-commit-landing-proof.js";
+import { getUncommittedWorkHoldBlocker, isZeroCommitWorkspaceLandPark } from "./zero-commit-landing-proof.js";
 
 export interface LandedMemberReviewAdvisory {
   taskId: string;
@@ -569,7 +569,7 @@ export const TASK_DONE_BYPASS_BLOCKER_MESSAGE =
  * Undefined means the task is eligible to move from `in-review` to `done`.
  */
 export function getTaskMergeBlocker(
-  task: Pick<Task, "column" | "paused" | "status" | "error" | "steps" | "workflowStepResults" | "repositoryScope" | "mergeDetails"> & Partial<Pick<Task, "humanMergeApproval">>,
+  task: Pick<Task, "column" | "paused" | "status" | "error" | "steps" | "workflowStepResults" | "repositoryScope" | "mergeDetails"> & Partial<Pick<Task, "humanMergeApproval" | "noCommitsExpected">>,
   options: {
     manual?: boolean;
     skipColumnIdentityCheck?: boolean;
@@ -677,11 +677,27 @@ export function getTaskMergeBlocker(
   }
 
   const blockingStatuses = options.manual === true ? HARD_BLOCKING_TASK_STATUSES : BLOCKING_TASK_STATUSES;
-  if (task.status && blockingStatuses.has(task.status)) {
+  if (task.status && blockingStatuses.has(task.status) && !isZeroCommitWorkspaceLandPark(task)) {
     return task.error
       ? `task is marked '${task.status}': ${task.error}`
       : `task is marked '${task.status}'`;
   }
+  /*
+  FNXC:ZeroCommitWorkspaceDelivery 2026-09-30-20:43 (RUFU-451):
+  The one blocking status this door looks past: a `failed` whose entire evidence is the workspace
+  partial-land park that the board's own sweep wrote for a card authorized to deliver zero commits.
+  The sweep judged a git-invisible delivery as lost work, but for that contract "no branch, no landedSha"
+  is the expected shape, so the park was a false terminal — and because every door and the stall
+  classifier consults this authority, that single write refused the merge, the operator's manual drag,
+  and every recovery lane at once. Measured on SANE-509: `409 code=merge-blocked` on a card whose
+  delivery was real, review-approved, and declared source-free in its own plan.
+
+  The waiver is exactly three facts wide (`isZeroCommitWorkspaceLandPark`): the card's own explicit
+  `noCommitsExpected`, `status: "failed"`, and an `error` naming one of the two sentences only that
+  sweep writes. Anything else — a later unrelated failure, a pause, a negative or unrun gate, a held
+  human merge approval — still refuses through the arms above and below, so nothing here approves content.
+  `noCommitsExpected` is read as an optional pick, so a caller that withholds it keeps today's refusal.
+  */
 
   if (task.steps.length > 0 && task.steps.some((step) => NON_TERMINAL_STEP_STATUSES.has(step.status))) {
     return "task has incomplete steps";
@@ -836,7 +852,7 @@ export function clearMergeConfirmedTransientStatus(status: string | undefined): 
 }
 
 export function getTaskHardMergeBlocker(
-  task: Pick<Task, "column" | "paused" | "status" | "error" | "steps" | "workflowStepResults" | "repositoryScope" | "mergeDetails"> & Partial<Pick<Task, "humanMergeApproval">>,
+  task: Pick<Task, "column" | "paused" | "status" | "error" | "steps" | "workflowStepResults" | "repositoryScope" | "mergeDetails"> & Partial<Pick<Task, "humanMergeApproval" | "noCommitsExpected">>,
   options: { reviewColumns?: ReadonlySet<string>; requiredPreMergeStepIds?: ReadonlySet<string>; mergeContent?: MergeContentDescriptor } = {},
 ): string | undefined {
   return getTaskMergeBlocker({

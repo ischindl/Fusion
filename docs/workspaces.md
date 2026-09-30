@@ -115,6 +115,14 @@ The non-atomic land loop has a partial-land window. The `task:reconcile-workspac
 
 If a member task branch is gone and Fusion has no recorded or otherwise proven `landedSha`, the sweep parks the task as failed with a manual-intervention-required error. Inspect the per-repository integration history and task logs, establish whether the missing work landed or must be recovered, then repair/retry the task only after the workspace is safe. Do not assume a partial land rolled back repositories that already landed.
 
+A card explicitly marked **No commits expected** is the exception: its plan states that delivery leaves no
+commits, so "no branch and no landedSha" is the expected delivery shape rather than lost work. For that card
+the sweep records `task:reconcile-workspace-partial-land-no-action` with reason `no-commits-expected` (once
+per candidate episode), writes no failure breadcrumb, and clears in place any such park an earlier build
+already wrote — it does not finalize the card itself, because accepting a git-invisible delivery is a door
+that judges content. The same authorization also stops that park from refusing the card at the merge door,
+the stall classifiers, or an operator's manual move to the completion lane.
+
 Additional sweeps emit `task:reconcile-orphaned-workspace-worktree` when they remove a recorded dead member worktree and `task:reclaim-phantom-workspace-land-lease` when they reclaim a leaked member landing lease. Acquisition exclusivity is decided by a renewable durable lease; owner deletion or an execution-lane exit releases its acquire claim, while `task:reclaim-phantom-workspace-acquire-lease` and `worktree:workspace-repo-acquire-reclaimed` diagnose defensive leaked-entry recovery. Search run-audit records for these event IDs and `task:reconcile-workspace-partial-land` when diagnosing recovery.
 
 ## Reverting a workspace task

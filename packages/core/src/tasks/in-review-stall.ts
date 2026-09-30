@@ -296,7 +296,9 @@ function matchesStallEntry(entry: TaskLogEntry, code: InReviewStallCode, reason:
 
 export function getInReviewStallReason(
   task: Pick<Task, "column" | "paused" | "status" | "error" | "steps" | "workflowStepResults" | "worktree" | "mergeDetails" | "mergeRetries" | "updatedAt">
-    & Partial<Pick<Task, "humanMergeApproval">>
+    /* FNXC:ZeroCommitWorkspaceDelivery 2026-09-30-20:52 (RUFU-451): forwards the zero-commit delivery
+    authorization to the merge authority below so this classifier and the door cannot disagree. */
+    & Partial<Pick<Task, "humanMergeApproval" | "noCommitsExpected">>
     & { id?: string },
   context: InReviewStallContext = {},
 ): InReviewStallSignal | undefined {

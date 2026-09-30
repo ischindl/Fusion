@@ -411,3 +411,74 @@ export function getUncommittedWorkHoldBlocker(task: Pick<Task, "mergeDetails">):
   if (!isUncommittedWorkHold(task.mergeDetails)) return undefined;
   return task.mergeDetails.uncommittedWorkHold.reason;
 }
+
+/*
+FNXC:ZeroCommitWorkspaceDelivery 2026-09-30-20:43 (RUFU-451):
+The workspace partial-land sweep (`reconcileWorkspacePartialLands`) parks a card `failed` when a member
+repository is PROVEN branch-gone with no `landedSha` (FORK-A), or when its branch state could not be read
+after the bounded starvation budget. That judgement is sound for a card that owes commits and proves it
+wrong for a card whose own plan declares `noCommitsExpected` — for that contract, git has nothing to show
+by design, so "no branch, no landedSha" is the EXPECTED delivery shape rather than lost work.
+
+Measured live on SANE-509: `no_commits_expected = 1`, both member branches present at zero unique
+commits, review re-executed green, and the sweep parked the card `failed` with the FORK-A sentence every
+pass. Because `getTaskMergeBlocker` treats any blocking status as a merge blocker, that single write also
+refused the operator's `in-review → done` drag (`409 code=merge-blocked`), the stall classifier
+(`stall:merge-blocker`), and every recovery door that consults the same authority — so a missing push
+blocked the card from every direction at once, with no lane owning the repair.
+
+The two sentence prefixes below are the SHARED FACT between the writer and the reader: the sweep builds
+its park error from them and this module recognises them, so a wording change cannot silently orphan the
+recognition the way a duplicated literal would. Recognition stays deliberately narrow — it names only
+these two sentences, written only by that sweep, on a card that carries the explicit zero-commit
+authorization. It is not a general "ignore failures on no-commits cards" rule, and it waives nothing
+about pauses, review verdicts, or unrun gates.
+*/
+
+/** FORK-A park: a member repository is proven branch-gone with no landing proof. */
+export const WORKSPACE_PARTIAL_LAND_UNRECOVERABLE_PREFIX = "Workspace partial-land unrecoverable:";
+
+/** Starvation park: a member repository's branch state could not be read after the bounded budget. */
+export const WORKSPACE_PARTIAL_LAND_EVIDENCE_UNAVAILABLE_PREFIX = "Workspace partial-land evidence unavailable:";
+
+const WORKSPACE_PARTIAL_LAND_PARK_PREFIXES: readonly string[] = [
+  WORKSPACE_PARTIAL_LAND_UNRECOVERABLE_PREFIX,
+  WORKSPACE_PARTIAL_LAND_EVIDENCE_UNAVAILABLE_PREFIX,
+];
+
+/**
+ * True when `error` is one of the two sentences the workspace partial-land sweep writes when it parks a
+ * card. Any other failure text — including a later unrelated failure that overwrote the park — is not
+ * this class, so the recognition cannot launder an ordinary merge failure.
+ */
+export function isWorkspacePartialLandParkError(error: string | undefined | null): boolean {
+  if (typeof error !== "string") return false;
+  return WORKSPACE_PARTIAL_LAND_PARK_PREFIXES.some((prefix) => error.startsWith(prefix));
+}
+
+/**
+ * The card's own authorization to deliver zero commits. Read as an explicit `=== true`: `undefined` and
+ * `false` are commit-expected (the legacy default), so a row that never answered is never treated as
+ * exempt. 265 cards across the boards carry the flag; 1895 do not.
+ */
+export function hasZeroCommitDeliveryAuthorization(
+  task: Partial<Pick<Task, "noCommitsExpected">>,
+): boolean {
+  return task.noCommitsExpected === true;
+}
+
+/**
+ * The row shape RUFU-451 repairs: a `failed` card whose only failure evidence is the workspace
+ * partial-land park written for a contract that expects no commits at all.
+ *
+ * `noCommitsExpected` is an OPTIONAL pick so existing partial-task callers keep compiling; a caller that
+ * omits it therefore does NOT get the waiver. That is the fail-closed direction — the door keeps
+ * refusing and the operator sees the same sentence they see today.
+ */
+export function isZeroCommitWorkspaceLandPark(
+  task: Pick<Task, "status" | "error"> & Partial<Pick<Task, "noCommitsExpected">>,
+): boolean {
+  return hasZeroCommitDeliveryAuthorization(task)
+    && task.status === "failed"
+    && isWorkspacePartialLandParkError(task.error);
+}

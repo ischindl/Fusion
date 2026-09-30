@@ -39,7 +39,7 @@ import { PRE_MERGE_STEPS_NOT_RUN_BLOCKER, loadWorkspaceConfig, type TaskMoveLane
   /* FNXC:SelfHealing 2026-09-10-23:14 (merge origin/main 2026-09-10): upstream's stall-deadlock
      repetition logic calls these two in-review-stall helpers; the union import carries them. */
   getLatestFailedPreMergeStepProgressAt, resolveInReviewStallDeadlockThreshold,
-  detectDependencyCycle, detectSelfDefeatingDependency, evaluateNoCommitsNoOpFinalize, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getPostMergeFinalizeBlocker, getRequiredPostMergeEvidenceBlocker, planConfirmedMergeChecklistReconciliation, getTaskMergeBlocker, resolvePreMergeGateForTask,
+  detectDependencyCycle, detectSelfDefeatingDependency, /* FNXC:ZeroCommitWorkspaceDelivery 2026-09-30-20:43 (RUFU-451): the partial-land sweep builds and reads its own park sentence through ONE core fact, so a wording change can never silently orphan the waiver that lets a zero-commit card reach `done`. */ evaluateNoCommitsNoOpFinalize, hasZeroCommitDeliveryAuthorization, isWorkspacePartialLandParkError, WORKSPACE_PARTIAL_LAND_UNRECOVERABLE_PREFIX, WORKSPACE_PARTIAL_LAND_EVIDENCE_UNAVAILABLE_PREFIX, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getPostMergeFinalizeBlocker, getRequiredPostMergeEvidenceBlocker, planConfirmedMergeChecklistReconciliation, getTaskMergeBlocker, resolvePreMergeGateForTask,
   /* FNXC:SelfHealing 2026-09-06-09:47 (merge origin/main dd808ed2c6): FN-295 collateral-archive restore helpers + stale-content predicate — the auto-merged sweep bodies call all three. */
   resolveCollateralArchivedReviewGate,
   COLLATERAL_ARCHIVED_REVIEW_GATE_DIAGNOSTIC,
@@ -1182,6 +1182,14 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   */
   private workspacePartialLandDrops: Map<string, number> = new Map();
   private workspacePartialLandEvidenceDefers: Map<string, number> = new Map();
+  /*
+  FNXC:ZeroCommitWorkspaceDelivery 2026-09-30-20:43 (RUFU-451):
+  A card authorized to deliver zero commits is permanently exempt from the partial-land parks, so the
+  `no-commits-expected` notice is written once per candidate episode rather than once per sweep — the
+  card stays a candidate forever and a five-minute audit row stating a fact that never changes is noise
+  that buries the class it is meant to make countable.
+  */
+  private readonly zeroCommitLandParkNoticed = new Set<string>();
   /*
   FNXC:Workspace 2026-08-15-05:13:
   A prune-only entry performs git work even when its recorded directory is permanently absent. The same
@@ -14296,6 +14304,9 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
       for (const taskId of [...this.workspacePartialLandEvidenceDefers.keys()]) {
         if (!candidateIds.has(taskId)) this.workspacePartialLandEvidenceDefers.delete(taskId);
       }
+      for (const taskId of [...this.zeroCommitLandParkNoticed]) {
+        if (!candidateIds.has(taskId)) this.zeroCommitLandParkNoticed.delete(taskId);
+      }
 
       if (candidates.length === 0) return 0;
 
@@ -14486,6 +14497,39 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             phase: "reconcile-workspace-partial-land",
           });
 
+          /*
+          FNXC:ZeroCommitWorkspaceDelivery 2026-09-30-20:43 (RUFU-451):
+          FORK-A and the starvation park both judge a card by what git can see. For a card whose own plan
+          declares `noCommitsExpected`, git seeing nothing IS the delivery contract: SANE-509's File Scope
+          named only git-ignored paths and its criteria stated "Delivery je source-free … sa nevyžaduje
+          commit ani changeset", its member branches sat at zero unique commits, and its review re-ran
+          green against a pinned harness — yet the sweep parked it `failed` on `no branch and no
+          landedSha`, and the resulting blocker refused the merge, the operator's manual drag
+          (`409 code=merge-blocked`), and every recovery door at once.
+
+          So this class gets no park and no `landFailure` breadcrumb: a park would be a false terminal and
+          a breadcrumb would claim lost work that was never supposed to exist. An existing park written by
+          an earlier build is cleared IN PLACE under the live-row signature (failed + one of this sweep's
+          own sentences), because the red badge is itself what was refusing the human move; no column move,
+          no step-result write, and an unrelated failure that overwrote the sentence keeps its state. The
+          delivery itself still has to be accepted by a door that can judge content — the sweep does not
+          finalize anything here.
+          */
+          if (hasZeroCommitDeliveryAuthorization(task) && (unrecoverableRepos.length > 0 || evidenceUnavailableRepos.length > 0)) {
+            if (isWorkspacePartialLandParkError(latestTask?.error)) {
+              await this.store.updateTaskAtomic(task.id, (live) => (
+                live.status === "failed" && isWorkspacePartialLandParkError(live.error)
+                  ? { status: null, error: undefined }
+                  : null
+              )).catch(() => null);
+            }
+            if (!this.zeroCommitLandParkNoticed.has(task.id)) {
+              this.zeroCommitLandParkNoticed.add(task.id);
+              await this.emitWorkspacePartialLandNoAction(task, "no-commits-expected", []);
+            }
+            continue;
+          }
+
           if (evidenceUnavailableRepos.length > 0) {
             /*
             FNXC:WorkspaceFinalization 2026-08-21-09:09:
@@ -14496,7 +14540,7 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             const defers = (task.mergeTransientRetryCount ?? 0) + 1;
             await this.store.updateTask(task.id, { mergeTransientRetryCount: defers });
             if (defers >= MAX_STARVATION_DROPS) {
-              const error = `Workspace partial-land evidence unavailable: branch state could not be read after ${MAX_STARVATION_DROPS} sweeps for sub-repo(s) ${evidenceUnavailableRepos.join(", ")} — manual intervention required.`;
+              const error = `${WORKSPACE_PARTIAL_LAND_EVIDENCE_UNAVAILABLE_PREFIX} branch state could not be read after ${MAX_STARVATION_DROPS} sweeps for sub-repo(s) ${evidenceUnavailableRepos.join(", ")} — manual intervention required.`;
               await this.store.updateTask(task.id, { status: "failed", error });
               await this.store.logEntry(task.id, error);
               await auditor.database({
@@ -14517,7 +14561,7 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             const missingBranches = unrecoverableRepos
               .map((repoRel) => workspaceWorktrees[repoRel]?.branch ?? resolveTaskWorkingBranch(task))
               .join(", ");
-            const error = `Workspace partial-land unrecoverable: sub-repo(s) ${unrecoverableRepos.join(", ")} have no branch (${missingBranches}) and no landedSha — manual intervention required.`;
+            const error = `${WORKSPACE_PARTIAL_LAND_UNRECOVERABLE_PREFIX} sub-repo(s) ${unrecoverableRepos.join(", ")} have no branch (${missingBranches}) and no landedSha — manual intervention required.`;
             /*
             FNXC:Workspace 2026-08-15-07:17:
             This is the third and final writer of the display-only failure breadcrumb. Persist each
@@ -14582,7 +14626,7 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
 
   private async emitWorkspacePartialLandNoAction(
     task: Task,
-    reason: "auto-merge-off" | "user-paused" | "live-worktree" | "merge-pending" | "merge-blocked" | "evidence-unavailable" | "scope-unresolved" | "empty-obligations",
+    reason: "auto-merge-off" | "user-paused" | "live-worktree" | "merge-pending" | "merge-blocked" | "evidence-unavailable" | "scope-unresolved" | "empty-obligations" | "no-commits-expected",
     livePaths: string[],
   ): Promise<void> {
     try {
