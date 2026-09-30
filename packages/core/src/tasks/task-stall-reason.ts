@@ -13,6 +13,11 @@ import {
   isPreMergeStepsNotRunRefusal,
   PRE_MERGE_STEPS_NOT_RUN_BLOCKER,
 } from "../merge/task-merge.js";
+/* FNXC:ReviewRevisionWait 2026-09-29-14:12 (RUFU-280): the chip and the stall ladder must reach the same verdict from ONE predicate, so the derived reason imports the classifier instead of restating its conjuncts. */
+import {
+  AWAITING_REVIEW_REVISION_STALL_REASON,
+  isAwaitingReviewRevision,
+} from "./review-revision-wait.js";
 
 /*
 FNXC:TaskStallReason 2026-09-01-15:35 (RUFU-174):
@@ -44,6 +49,18 @@ export type TaskStallReasonCode =
   | "merge-blocker"
   /** An enabled pre-merge gate has not run yet — a pipeline step pending, not a human task. */
   | "pre-merge-gate-pending"
+  /*
+  FNXC:ReviewRevisionWait 2026-09-29-14:12 (RUFU-280):
+  An authored `REVISE` verdict whose named remediation is still unfinished. This is a WORK state, so it
+  sits beside the two other "a step is still owed" codes rather than beside `merge-blocker`: the merge
+  door does refuse this card, but nothing is broken, and the entity that owns the next move is the
+  executor running the published corrections — not the operator.
+
+  The code exists because the two words that used to answer here were wrong in the same sentence.
+  `Merge blocked` plus `Open the Review tab to see why it cannot merge` pointed an operator at a remedy
+  for a state the card was already leaving on its own.
+  */
+  | "awaiting-review-revision"
   /** Nothing refuses; the card waits on a human because auto-merge processing is off for it. */
   | "held-human-review"
   /** A live `blockedBy`/`dependencies` edge keeps the card from being treated as complete. */
@@ -457,6 +474,35 @@ export async function deriveTaskStallReason(
       notifier never show the composed park prose.
       */
       const unrunGate = isPreMergeStepsNotRunBlocker(blocker) || isPreMergeStepsNotRunRefusal(blocker);
+      /*
+      FNXC:ReviewRevisionWait 2026-09-29-14:12 (RUFU-280):
+      A card mid-remediation was answering `merge-blocker` with the door's own refusal sentence, and the
+      dashboard renders that code as "Merge blocked / Open the Review tab to see why it cannot merge" —
+      pointing the operator at a Review tab that had already done its job by publishing the work.
+
+      Ordered AFTER the unrun-gate test on purpose: the never-ran class has an automatic re-run lane and
+      must never be swallowed by this arm, which is why the same hazard is checked before the park in
+      `getInReviewStallReason`'s ladder rather than folded into a single shared branch. A card can hold
+      both facts (a revised gate plus a later gate that has not run), and the gate with zero rows is the
+      more urgent of the two because only a re-run can move it.
+
+      FNXC:ReviewRevisionConsentPrecedence 2026-09-30-07:19 (RUFU-280 code-review remediation, P0):
+      The deferral is conditional on auto-merge CONSENT, and the mirror this arm exists to agree with
+      already says so: `getInReviewStallReason` suppresses the WHOLE ladder at
+      `context.autoMerge === false`, so a withheld-consent card has no engine stall signal at all —
+      nothing counts it, nothing can park it — while the pre-fix read side named it
+      `awaiting-review-revision` and the dashboard rendered a green "working through review
+      corrections" chip for a card whose every engine lane the operator closed by hand. With consent
+      withheld the pre-existing classification is the truthful one: `merge-blocker` while the door
+      refuses the card, `held-human-review` otherwise (the rung directly below).
+      */
+      if (!unrunGate && context.autoMergeAllowed !== false && isAwaitingReviewRevision(task)) {
+        return {
+          code: "awaiting-review-revision",
+          reason: AWAITING_REVIEW_REVISION_STALL_REASON,
+          observedAt,
+        };
+      }
       return {
         code: unrunGate ? "pre-merge-gate-pending" : "merge-blocker",
         reason: unrunGate && !isPreMergeStepsNotRunBlocker(blocker) ? PRE_MERGE_STEPS_NOT_RUN_BLOCKER : blocker,

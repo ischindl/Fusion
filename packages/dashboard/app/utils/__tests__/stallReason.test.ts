@@ -711,6 +711,41 @@ describe("resolveStallReason — the server field outranks the client classifier
   });
 
   /*
+  FNXC:ReviewRevisionWait 2026-09-29-16:47 (RUFU-280):
+  The card whose reviewer asked for changes is the loop working, so the copy must not read as a refusal.
+  The refusal wording lives behind two different codes now (`merge-blocker`, `pre-merge-gate-pending`), and
+  this is the assertion that keeps a future edit from routing the revision wait back through them.
+  */
+  it("describes awaiting-review-revision as corrections in flight, never as a blocked merge", () => {
+    const { t, call, calls } = makeT();
+    const result = resolveStallReason(
+      subject({ column: "in-review", stallReason: serverStall("awaiting-review-revision", "Code Review asked for changes that are not finished yet") }),
+      { t },
+    );
+    expect(result?.code).toBe("awaiting-review-revision");
+    expect(call("stall.awaiting-review-revision.headline")!.fallback).toBe("Applying review corrections");
+    for (const c of calls) {
+      const text = `${c.fallback} ${c.resolved}`;
+      expect(text).not.toMatch(/blocked/i);
+    }
+    expect(call("stall.merge-blocker.badgeLabel")).toBeUndefined();
+    // The server's fixed sentence is translator-owned prose, so it is NOT rendered verbatim.
+    expect(result?.description).not.toContain("Code Review asked for changes");
+  });
+
+  it("routes awaiting-review-revision through its own copy group, not the merge blocker's", () => {
+    const { t, keys } = makeT();
+    const result = resolveStallReason(
+      subject({ column: "in-review", stallReason: serverStall("awaiting-review-revision", "Code Review asked for changes that are not finished yet") }),
+      { t },
+    );
+    // A distinguishable code AND a distinguishable copy group — the code alone would pass a shared table.
+    expect(result?.code).not.toBe("merge-blocker");
+    expect(keys().some((k) => k.startsWith("stall.merge-blocker."))).toBe(false);
+    expect(keys().some((k) => k.startsWith("stall.awaiting-review-revision."))).toBe(true);
+  });
+
+  /*
   FNXC:StallReason 2026-09-02-22:06 (RUFU-177):
   `clearInReviewStallForFreshAgentLog` (useTasks.ts) blanks `stallReason` alongside the three sibling
   stall badges while an agent is visibly streaming logs, so the authority's answer disappears for a poll
@@ -850,6 +885,13 @@ const faceExpectations: Record<StallReasonCode, readonly [boolean, boolean, bool
   // Ordinary review-lane waits: named by the detail banner, never presented as a face-level fault.
   "pre-merge-gate-pending": [false, false, true],
   "held-human-review": [false, false, true],
+  /*
+  FNXC:ReviewRevisionWait 2026-09-29-16:45 (RUFU-280):
+  Third ordinary-wait code: applying review corrections is the review loop mid-flight, so it is named by
+  the detail banner and never presented as a face-level fault. The board already shows the card's pending
+  remediation steps; a chip would mark routine revision abnormal.
+  */
+  "awaiting-review-revision": [false, false, true],
   /*
   FNXC:PlanningAdmissionStall 2026-09-25-19:31 (RUFU-273):
   Every planning-lane code is face-visible in all three modes. This row is the acceptance for the reported

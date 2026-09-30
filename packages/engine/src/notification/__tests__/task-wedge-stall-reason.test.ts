@@ -104,6 +104,20 @@ describe("describeTaskWedgeFromStallReason", () => {
   });
 
   /*
+  FNXC:ReviewRevisionWait 2026-09-30-07:19 (RUFU-280 code-review remediation, P2):
+  `awaiting-review-revision` is visible-but-not-alertable, the same class RUFU-273 established for the
+  planning codes: the sentence is the engine reporting work it is doing, and the Review lane already
+  reports the revision itself. The `Record` in the notifier makes an undeclared code a TYPE error; this
+  is the pair assertion that makes the silence a tested contract instead of a compile-time side effect,
+  so a future edit cannot move the code into the alertable set without a test failing here first.
+  */
+  it("stays silent on awaiting-review-revision: an in-progress correction is nobody's wedge to announce", () => {
+    expect(describeTaskWedgeFromStallReason(task({
+      stallReason: stall("awaiting-review-revision", "Working through review corrections: unfinished remediation work"),
+    }))).toBeNull();
+  });
+
+  /*
   FNXC:PlanningAdmissionStall 2026-09-25-17:48 (RUFU-273):
   The planning-lane codes are visible-but-not-alertable. RUFU-273 routes them to the card face and the
   detail banner, never to the mailbox, so this is the pair assertion that makes the design a tested

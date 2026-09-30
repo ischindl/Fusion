@@ -4794,6 +4794,11 @@
       "headline": "This card's branch holds commits that are not merged",
       "description": "Work exists on the branch this card claims that the card itself does not show.",
       "suggestedAction": "Open the branch to recover the commits, then retry or re-plan the card."
+    },
+    "awaiting-review-revision": {
+      "description": "The latest review asked for changes and this card still has unfinished remediation steps, so it is working rather than waiting on anyone.",
+      "headline": "Applying review corrections",
+      "suggestedAction": "Let the next review round run; open the Review tab only if the remediation steps stop moving."
     }
   },
   "piManager": {

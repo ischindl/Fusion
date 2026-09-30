@@ -43,7 +43,10 @@ import { PRE_MERGE_STEPS_NOT_RUN_BLOCKER, loadWorkspaceConfig, type TaskMoveLane
   /* FNXC:SelfHealing 2026-09-06-09:47 (merge origin/main dd808ed2c6): FN-295 collateral-archive restore helpers + stale-content predicate — the auto-merged sweep bodies call all three. */
   resolveCollateralArchivedReviewGate,
   COLLATERAL_ARCHIVED_REVIEW_GATE_DIAGNOSTIC,
-  isStaleContentApprovalBlocker, isPreMergeStepsNotRunBlocker, isPreMergeGateFailedBlocker, parsePreMergeGateApprovalBlocker, parseEmbeddedPreMergeGateApprovalBlocker, findVerdictLessFailedRequiredGates, IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON, namesVerdictLessFailedGate, hasFailedPreMergeWorkflowStepRow, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isLiveSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, resolveExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveRequiredPreMergeStepIds, resolveReboundTarget, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, isWipColumnRole, isReviewColumnRole, isTerminalColumnRole, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, resolveUnprovenReviewApproval, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, /* FNXC:ApprovalHoldMoveClear 2026-09-25-11:12 (RUFU-297): the drifted-hold sweep consumes the single hold authority + honest pause accounting. */ isTaskBlockedOnApproval, computePauseAccountingPatch, /* FNXC:PlanningAdmissionStall 2026-09-25-19:31 (RUFU-273 Step 3): the sweep reads/writes the planning-admission episode through the SAME core helpers triage uses, and reads RUFU-246's premise episode to stand down in front of it. */ PLAN_ADMISSION_STALL_METADATA_KEY, PLAN_PREMISE_REJECTION_METADATA_KEY, planAdmissionStallWrite, readPlanAdmissionStallEpisode, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type MoveTaskOptions, type Settings, type Task, type MergeDetails, type MergeResult, type WorkflowStepResult, type WorkflowIr, type WorkflowIrV2, type ChatSession, type ChatInFlightGenerationState,
+  isStaleContentApprovalBlocker, isPreMergeStepsNotRunBlocker, isPreMergeGateFailedBlocker,
+  /* FNXC:ReviewRevisionWait 2026-09-29-14:12 (RUFU-280): the stall ladder and the bounded park repair
+     both consume the authored-REVISE-with-pending-remediation predicate from its single core seam. */
+  isAwaitingReviewRevision, findAwaitingReviewRevisionGate, parsePreMergeGateApprovalBlocker, parseEmbeddedPreMergeGateApprovalBlocker, findVerdictLessFailedRequiredGates, IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON, namesVerdictLessFailedGate, hasFailedPreMergeWorkflowStepRow, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isLiveSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, resolveExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveRequiredPreMergeStepIds, resolveReboundTarget, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, isWipColumnRole, isReviewColumnRole, isTerminalColumnRole, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, resolveUnprovenReviewApproval, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, /* FNXC:ApprovalHoldMoveClear 2026-09-25-11:12 (RUFU-297): the drifted-hold sweep consumes the single hold authority + honest pause accounting. */ isTaskBlockedOnApproval, computePauseAccountingPatch, /* FNXC:PlanningAdmissionStall 2026-09-25-19:31 (RUFU-273 Step 3): the sweep reads/writes the planning-admission episode through the SAME core helpers triage uses, and reads RUFU-246's premise episode to stand down in front of it. */ PLAN_ADMISSION_STALL_METADATA_KEY, PLAN_PREMISE_REJECTION_METADATA_KEY, planAdmissionStallWrite, readPlanAdmissionStallEpisode, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type MoveTaskOptions, type Settings, type Task, type MergeDetails, type MergeResult, type WorkflowStepResult, type WorkflowIr, type WorkflowIrV2, type ChatSession, type ChatInFlightGenerationState,
   resolveNearDuplicateCanonicalFlags,
   LEGACY_COLUMN_IDS_BY_ROLE,
   TERMINAL_ROLES,
@@ -2311,6 +2314,14 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       */
       { name: "reconcile-orphaned-non-convergence-holds", fn: () => this.reconcileOrphanedNonConvergenceHolds().then(() => undefined) },
       /*
+      FNXC:ReviewRevisionWait 2026-09-29-14:12 (RUFU-280):
+      Un-freezes a card a pre-fix build parked while its reviewer was waiting for corrections. Runs
+      immediately after the drifted-hold sweep (the two clears are adjacent in meaning: a hold or a park
+      whose evidence no longer supports it) and before `failed-pre-merge-steps`, so a card this sweep
+      frees is classified by the revival lanes in the SAME startup pass instead of one cycle later.
+      */
+      { name: "reconcile-review-revision-stall-parks", fn: () => this.reconcileReviewRevisionStallParks().then(() => undefined) },
+      /*
       FNXC:PreMergeApproval 2026-09-05-22:11:
       Runs AFTER the orphaned-step sweep, because that sweep is what produces the `failed` row this
       defect archives, and BEFORE failed-step recovery, so the restored gate is visible to it in the
@@ -3547,6 +3558,10 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           // FNXC:ApprovalHoldMoveClear 2026-09-25-11:12 (RUFU-297 defect B): steady-state twin of the
           // startup registration above; same load-bearing ordering after the orphaned-pending sweep.
           { name: "reconcile-orphaned-non-convergence-holds", fn: () => this.reconcileOrphanedNonConvergenceHolds() },
+          // FNXC:ReviewRevisionWait 2026-09-29-14:12 (RUFU-280): steady-state twin of the startup
+          // registration above — a card can be parked by the pre-fix classifier without a restart, and
+          // the same ordering applies (frees the card before the revival lanes classify it).
+          { name: "reconcile-review-revision-stall-parks", fn: () => this.reconcileReviewRevisionStallParks() },
           { name: "recover-failed-pre-merge-steps", fn: () => this.recoverReviewTasksWithFailedPreMergeSteps() },
           { name: "recover-missing-worktree-review-failures", fn: () => this.recoverMissingWorktreeReviewFailures() },
           { name: "recover-interrupted-merging", fn: () => this.recoverInterruptedMergingTasks() },
@@ -9478,6 +9493,170 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   }
 
   /*
+  FNXC:ReviewRevisionWait 2026-09-29-14:12 (RUFU-280):
+  REPAIR A CARD AN EARLIER BUILD FROZE WHILE ITS REVIEWER WAS WAITING FOR CORRECTIONS.
+
+  The stall ladder now withholds this park (see `isAwaitingReviewRevision`), but a card parked by a
+  pre-fix build is still sitting `paused: true` + `status: "failed"` with unfinished remediation steps,
+  and nothing else owns that combination: the failed-pre-merge-gate revival lanes all require an
+  engine-authored park signature this card's error does carry, but each of them re-runs a gate, while
+  this card's gate ran, produced findings, and its work is merely not finished yet. So this sweep does
+  one thing — lift the park in place — and no column move, no verdict fabrication, and no re-run.
+
+  Why the signature is the PREDICATE and not the error text: the predicate is content-keyed
+  (`verdict === "REVISE"` + a real `reviewInputFingerprint` + pending structural remediation), so a
+  verdict-less plumbing death parked under the identical sentence stays with the verdict-less recovery
+  lanes (RUFU-204/217/234) that actually re-run it. The clear is `updateTaskAtomic`-all-or-nothing on
+  the same signature that admitted it, so a card whose shape drifted between the page read and the
+  write keeps its park, and an operator hold (`userPaused`, or a pause whose reason is not the deadlock
+  park) is never lifted. Clearing is not disarming: the detector re-parks on the same threshold once
+  remediation stops being pending.
+
+  The clear also resets `mergeRetries`, matching the other two lifts of this same park
+  (`routeUnrunGateParkBackToReview` and the workspace-partial-land stall clear): a card frozen by a
+  mis-read stall episode must come back with a live merge budget, because burning its retry budget is
+  a side effect of the mis-park rather than anything the merge lane ever proved about its content.
+
+  FNXC:ReviewRevisionParkAdmission 2026-09-30-07:19 (RUFU-280 code-review remediation, P1):
+  Admission now carries the two conjuncts every sibling park repair applies and this one lacked.
+  **Withheld auto-merge consent** (`allowsAutoMergeProcessing`) is the same veto that keeps the stall
+  LANE from alerting on these cards and — after the R4 classifier fix — the veto that keeps the chip
+  calling them `held-human-review`: an engine pass that un-parks a card its operator's own switch
+  froze manufactures motion the consent says is not the engine's to make. **Live ownership** is the
+  canonical in-process triple (a registered active session path, the `executingTaskLock`, or
+  `isTaskActive`) plus the executor/merge-owner signals: the parked shape is deliberately identical
+  to a card a session is RIGHT NOW working on remediation for, and this clear drops `status`, so an
+  un-park mid-run would strip the failure the owning session is still entitled to see. Both halves
+  are one predicate (`isReviewRevisionParkRepairAdmissible`) so the pre-filter and the atomic write
+  cannot diverge; the merge-queue leg needs an await and so lives in the pre-check, which the sync
+  atomic updater cannot host.
+  */
+  async reconcileReviewRevisionStallParks(): Promise<number> {
+    try {
+      const settings = await this.store.getSettings();
+      if (settings.globalPause || settings.enginePaused) return 0;
+      const executingIds = this.options.getExecutingTaskIds?.() ?? new Set<string>();
+      const pageSize = 500;
+      let offset = 0;
+      let cleared = 0;
+      let deferred = 0;
+
+      for (;;) {
+        const tasks = await this.store.listTasks({ slim: true, includeArchived: false, limit: pageSize, offset });
+        for (const task of tasks) {
+          // Page-cheap pre-filter of the park shape; candidacy is re-derived from a fresh read.
+          if (task.paused !== true || task.pausedReason !== IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON) continue;
+          // An operator park is authoritative; this sweep never reaches through it.
+          if (task.userPaused === true) continue;
+
+          const fresh = await this.store.getTask(task.id);
+          if (!fresh || fresh.deletedAt) continue;
+          if (fresh.userPaused === true) continue;
+          // Consent and live ownership veto the repair, same predicate the atomic write re-applies.
+          if (!this.isReviewRevisionParkRepairAdmissible(fresh, settings, executingIds)) {
+            deferred++;
+            continue;
+          }
+          // Merge-queue ownership needs an await, so it is checked here rather than in the sync updater.
+          if (await this.isMergeLaneOwned(fresh.id)) {
+            deferred++;
+            continue;
+          }
+          // Re-derive both halves of the admission signature against the live row.
+          if (!isEngineAuthoredInReviewStallPark(fresh)) continue;
+          const revisionGateId = findAwaitingReviewRevisionGate(fresh);
+          if (!revisionGateId) continue;
+
+          let outcome: "cleared" | "signature-drift" = "signature-drift";
+          await this.store.updateTaskAtomic(fresh.id, (live) => {
+            if (live.deletedAt || live.userPaused === true) return null;
+            // Admission re-derives on the live row: consent withdrawn or a session started since the
+            // page read must refuse the write, not race it.
+            if (!this.isReviewRevisionParkRepairAdmissible(live, settings, executingIds)) return null;
+            if (!isEngineAuthoredInReviewStallPark(live)) return null;
+            if (!isAwaitingReviewRevision(live)) return null;
+            outcome = "cleared";
+            /*
+            FNXC:ReviewRevisionWait 2026-09-30-06:21:
+            The four park fields are the exact inverse of the deadlock disposition's write; `mergeRetries`
+            is reset alongside them per the convention both sibling lifts of this park follow
+            (`routeUnrunGateParkBackToReview`, workspace-partial-land stall clear). Without it a repaired
+            card would re-queue against a retry budget its mis-park had already consumed, and
+            `canMergeTask` would hold it out of the merge queue until the cooldown escape hatch elapsed —
+            punishing the card for a stall the engine mis-read.
+            */
+            return {
+              paused: false,
+              pausedReason: null as unknown as Task["pausedReason"],
+              status: null,
+              error: null,
+              mergeRetries: 0,
+            };
+          });
+
+          // Read through an explicit widening: the assignment happens inside the atomic updater, which
+          // control-flow analysis cannot see, so the narrowed literal would otherwise be `"signature-drift"`.
+          const finalOutcome = outcome as "cleared" | "signature-drift";
+          if (finalOutcome !== "cleared") continue;
+          cleared += 1;
+
+          await emitBoundedRunAudit(this.store, {
+            taskId: fresh.id,
+            agentId: "self-healing",
+            runId: generateSyntheticRunId("self-healing", fresh.id),
+            domain: "database",
+            mutationType: "task:merge-review-revision-park-cleared",
+            target: fresh.id,
+            // ids/fixed outcomes only — never reviewer findings, verdicts, or blocker prose.
+            metadata: {
+              taskId: fresh.id,
+              workflowStepId: revisionGateId,
+              source: "self-healing",
+              outcome: finalOutcome,
+            },
+          });
+          await this.store.logEntry(
+            fresh.id,
+            `[pre-merge] Cleared the engine's in-review stall park: the latest review authored a REVISE verdict and this card still has unfinished remediation, so it is working, not stalled.`,
+          );
+        }
+        if (tasks.length < pageSize) break;
+        offset += tasks.length;
+      }
+      if (cleared > 0) log.log(`Cleared in-review stall parks on ${cleared} task(s) awaiting review revisions`);
+      // Admission vetoes write no audit row — the population is expected (every auto-merge-off board)
+      // and re-checked every pass — but a pass that withheld repairs is not silently invisible either.
+      if (deferred > 0) log.log(`Withheld in-review stall park repair on ${deferred} task(s): withheld auto-merge consent or a live executor/merger owns the card`);
+      return cleared;
+    } catch (error) {
+      log.error(`reconcileReviewRevisionStallParks failed: ${error instanceof Error ? error.message : String(error)}`);
+      return 0;
+    }
+  }
+
+  /**
+   * The sync half of the review-revision park repair's admission, shared by its pre-filter and its
+   * atomic write guard so the two cannot disagree about the same card.
+   *
+   * Deliberately synchronous: `updateTaskAtomic`'s guard is a sync callback, so any conjunct that
+   * needs an await (the merge queue) is checked in the pre-filter only, and every conjunct that CAN
+   * be re-derived at write time is. See `reconcileReviewRevisionStallParks` for why consent and live
+   * ownership belong here.
+   */
+  private isReviewRevisionParkRepairAdmissible(
+    task: Task,
+    settings: Settings,
+    executingIds: ReadonlySet<string>,
+  ): boolean {
+    if (!allowsAutoMergeProcessing(task, settings)) return false;
+    if (executingIds.has(task.id) || executingTaskLock.has(task.id)) return false;
+    if (activeSessionRegistry.pathsForTask(task.id).some((path) => activeSessionRegistry.isPathActive(path))) return false;
+    if (this.options.isTaskActive?.(task.id) === true) return false;
+    if (this.options.getActiveMergeTaskId?.() === task.id) return false;
+    return true;
+  }
+
+  /*
   FNXC:LegacyAdoption 2026-07-19-04:20 (U9b / R10 / KTD-8):
   Startup adoption sweep — the live CONSUMER of the KTD-8 adoption table. U9 landed the
   table and the census that keeps it complete, but nothing ever called it, so no
@@ -12846,7 +13025,31 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
               error: `Terminal provider error (non-retryable): ${signal.reason}`,
             };
           }
-          if (threshold > 0 && live.userPaused !== true && repetitionCount >= threshold) {
+          /*
+          FNXC:ReviewRevisionWait 2026-09-29-14:12 (RUFU-280):
+          AN AUTHORED `REVISE` VERDICT IS NOT "THE SAME STALL REPEATING WITHOUT PROGRESS".
+
+          The classifier above now names that state (`awaiting-review-revision`) instead of folding it into
+          `merge-blocker`, but naming alone would not have stopped this arm: the threshold counts identical
+          entries by CODE, so the revision would simply have accumulated ten identical
+          `awaiting-review-revision` observations and parked anyway. Counting stays intact on purpose — a
+          card mid-remediation really has been sitting in the review lane for hours, which is worth
+          surfacing — and only the terminal write is withheld.
+
+          The conjunct is evaluated against `live` (the row this fenced callback just re-read) rather than
+          the classifier's `signal.code`, so the guard is the predicate itself and not a code frozen at an
+          earlier read: today the classifier's awaiting arm and this call agree by construction, and the
+          re-derivation is what keeps them from silently diverging if the arm ever gains a second route.
+          That is also why no second budget was invented — when remediation stops being pending, this arm
+          falls through to the ordinary classification, whose code change re-keys the episode (finishing
+          remediation is progress), and the pre-existing threshold governs whatever episode follows.
+          */
+          if (
+            threshold > 0
+            && live.userPaused !== true
+            && repetitionCount >= threshold
+            && !isAwaitingReviewRevision(live)
+          ) {
             disposition = "deadlock";
             return {
               logEntry: {

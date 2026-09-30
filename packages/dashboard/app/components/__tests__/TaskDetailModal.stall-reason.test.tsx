@@ -182,6 +182,33 @@ describe("TaskDetailModal server-backed stallReason", () => {
     expect(banner).toHaveTextContent("Merge is blocked");
     expect(banner.querySelector(".task-stall-reason-description")?.textContent).toBe("code-review has not run");
   });
+
+  /*
+  FNXC:ReviewRevisionWait 2026-09-30-07:19 (RUFU-280 code-review remediation, P2):
+  A badge suppression is not a visibility suppression: `awaiting-review-revision` is quiet on the board
+  face because a revision in flight is not abnormal, but the detail banner still owns the sentence, and
+  it must say "applying review corrections" rather than reuse the merge-blocker copy. That mislabel was
+  the original RUFU-280 symptom - the card told the operator the merge was refused while the engine was
+  executing its own remediation - so the negative assertion here is the one that matters.
+  */
+  it("names awaiting-review-revision as work in progress, never as a refused merge", () => {
+    renderDetail(
+      makeTask({
+        id: "FN-SREV",
+        column: "in-review",
+        status: "in-progress",
+        stallReason: { code: "awaiting-review-revision", reason: "Working through review corrections: unfinished remediation steps", observedAt },
+      }),
+    );
+    const banner = screen.getByTestId("task-detail-stall-reason-FN-SREV");
+    expect(banner.getAttribute("data-stall-code")).toBe("awaiting-review-revision");
+    expect(banner).toHaveTextContent("Applying review corrections");
+    // Unlike `merge-blocker`, this code rides its OWN catalog copy rather than the server sentence:
+    // the server words name a gate, while the operator needs to know whose work it is. Pinning the
+    // shipped catalog sentence is what proves the resolver reached this code's copy group.
+    expect(banner.querySelector(".task-stall-reason-description")?.textContent).toContain("The latest review asked for changes");
+    expect(banner.textContent).not.toMatch(/merge (is )?blocked/i);
+  });
 });
 
 /*

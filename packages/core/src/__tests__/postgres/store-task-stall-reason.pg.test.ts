@@ -21,6 +21,7 @@ import {
 import * as schema from "../../postgres/schema/index.js";
 import { HELD_HUMAN_REVIEW_STALL_REASON, PLAN_ADMISSION_THROTTLED_STALL_REASON, type TaskStallReason } from "../../tasks/task-stall-reason.js";
 import { PRE_MERGE_STEPS_NOT_RUN_BLOCKER } from "../../merge/task-merge.js";
+import { AWAITING_REVIEW_REVISION_STALL_REASON } from "../../tasks/review-revision-wait.js";
 import type { TaskStore } from "../../store.js";
 
 const pgTest = pgDescribe;
@@ -117,6 +118,51 @@ pgTest("TaskStore stallReason hydration parity (PostgreSQL)", () => {
     expect(sites.detail?.code).toBe("merge-blocker");
     expect(sites.detail?.reason).toBe("task has failed pre-merge workflow steps");
     expect(sites.detail?.observedAt).toBeTruthy();
+  });
+
+  /*
+  FNXC:ReviewRevisionWait 2026-09-30-07:19 (RUFU-280 code-review remediation, P2):
+  Board-list proof for the code this change adds. It is the first stall code whose derivation reads
+  BOTH jsonb documents - `workflowStepResults` for the authored `REVISE` and `steps` for the unfinished
+  remediation they own - so a read site projecting only one of them would call the card healthy on the
+  board and stalled in detail: exactly the per-site drift this file exists to catch (RUFU-174).
+  The fixture is consented and blocker-free of the never-ran class, so the awaiting arm is the only
+  classification that can answer.
+  */
+  it("names the awaiting-revision code on all four read sites for a card mid-remediation", async () => {
+    const at = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString();
+    await seedTask("STLR-REVISION", {
+      column: "in-review",
+      description: "stallreasonrevisionfixture card mid-remediation",
+      set: {
+        workflowStepResults: [{
+          workflowStepId: "code-review",
+          workflowStepName: "Code Review",
+          phase: "pre-merge",
+          status: "failed",
+          verdict: "REVISE",
+          reviewInputFingerprint: "sha256:pg-revision-fixture",
+          startedAt: at(9),
+          completedAt: at(8),
+          output: "",
+          notes: "",
+        }],
+        steps: [
+          { name: "implement", status: "done" },
+          {
+            name: "remediate findings",
+            status: "pending",
+            remediation: { workflowStepId: "code-review", findingIds: ["f-1"] },
+          },
+        ],
+      },
+    });
+    const store = h.store();
+
+    const sites = await readAllSites(store, "STLR-REVISION", "stallreasonrevisionfixture");
+    expectSitesAgree(sites);
+    expect(sites.detail?.code).toBe("awaiting-review-revision");
+    expect(sites.detail?.reason).toBe(AWAITING_REVIEW_REVISION_STALL_REASON);
   });
 
   /*

@@ -78,6 +78,15 @@ export type StallReasonCode =
   | "pre-merge-gate-pending"
   | "held-human-review"
   /*
+  FNXC:ReviewRevisionWait 2026-09-29-16:35 (RUFU-280):
+  Carried VERBATIM from `TaskStallReasonCode` like the three review-lane codes above. The code identity is
+  what separates "a reviewer asked for changes and the engine is making them" from the ordinary
+  `pre-merge-gate-pending` wait and from a genuine `merge-blocker` refusal — all three arrive from the
+  server with a merge-lane shape, and folding them would make an in-flight revision indistinguishable in
+  `data-stall-code` and in tests.
+  */
+  | "awaiting-review-revision"
+  /*
   FNXC:PlanningAdmissionStall 2026-09-25-19:31 (RUFU-273):
   The seven planning-lane codes, carried VERBATIM from `TaskStallReasonCode` for the same reason RUFU-177
   carried the three review-lane ones: the code identity is what a surface branches on and what
@@ -455,6 +464,8 @@ function serverStallReason(subject: StallSubject, context: StallContext): StallR
       return serverDependencyReason(subject, context);
     case "held-human-review":
       return heldHumanReviewReason(context);
+    case "awaiting-review-revision":
+      return awaitingReviewRevisionReason(context);
     default:
       /*
       An unknown or not-yet-mapped server code must not fabricate a label and must not swallow the card:
@@ -505,6 +516,27 @@ function heldHumanReviewReason(context: StallContext): StallReason {
     headline,
     description: t("stall.held-human-review.description", "Nothing is refusing this card: automatic merge processing is withheld for it, so finishing the review does not merge it."),
     suggestedAction: t("stall.held-human-review.suggestedAction", "Merge the card yourself, or turn automatic merge processing back on."),
+  };
+}
+
+/*
+FNXC:ReviewRevisionWait 2026-09-29-16:35 (RUFU-280):
+Like `held-human-review`, this code must NOT read like a fault: a reviewer asked for changes and the
+engine is executing them, which is the review loop working. The copy therefore never says "blocked" and
+never points the operator at merge-retry tooling — the corrective action belongs to the next review round,
+and an operator only acts if those remediation steps stop moving. The server's own fixed sentence is
+catalog copy here rather than passed through (same rule as `held-human-review`: translator-owned prose is
+not diagnostic data), and the badge label reuses the headline because the code is face-suppressed.
+*/
+function awaitingReviewRevisionReason(context: StallContext): StallReason {
+  const { t } = context;
+  const headline = t("stall.awaiting-review-revision.headline", "Applying review corrections");
+  return {
+    code: "awaiting-review-revision",
+    badgeLabel: headline,
+    headline,
+    description: t("stall.awaiting-review-revision.description", "The latest review asked for changes and this card still has unfinished remediation steps, so it is working rather than waiting on anyone."),
+    suggestedAction: t("stall.awaiting-review-revision.suggestedAction", "Let the next review round run; open the Review tab only if the remediation steps stop moving."),
   };
 }
 
@@ -861,8 +893,16 @@ export function stallReasonVisibleOnFace(
     case "engine-paused":
       return Boolean(subject.pausedReason);
     // Detail-only by the 2026-09-02-22:01 note above — deliberately NOT widened to the planning codes.
+    case "awaiting-review-revision":
     case "pre-merge-gate-pending":
     case "held-human-review":
+      /*
+      FNXC:ReviewRevisionWait 2026-09-29-16:35 (RUFU-280):
+      The third ordinary-wait code. Applying review corrections is a healthy review loop mid-flight, so a
+      chip on every revising card would mark routine work abnormal — the exact call the review-lane badge
+      rule already made. The detail banner has the room to explain it, and it is the surface where "this
+      card looked frozen" was actually reported.
+      */
       return options?.allowDetailOnlyCodes === true;
     default:
       return false;

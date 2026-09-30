@@ -7862,6 +7862,11 @@
       "headline": "Blocked outside the worktree",
       "suggestedAction": "Repair the external obstacle, then resume this card."
     },
+    "awaiting-review-revision": {
+      "description": "The latest review asked for changes and this card still has unfinished remediation steps, so it is working rather than waiting on anyone.",
+      "headline": "Applying review corrections",
+      "suggestedAction": "Let the next review round run; open the Review tab only if the remediation steps stop moving."
+    },
     "held-human-review": {
       "description": "Nothing is refusing this card: automatic merge processing is withheld for it, so finishing the review does not merge it.",
       "headline": "Waiting on a person",

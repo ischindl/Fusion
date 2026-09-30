@@ -342,6 +342,24 @@ const STALL_WEDGE_ACTIONS: Record<TaskStallReasonCode, string | null> = {
   "held-human-review": "Merge the card by hand, or turn automatic merge processing back on.",
   // Already announced elsewhere: normal queueing, and the blocking card announces its own stall.
   "dependency-blocker": null,
+  /*
+  FNXC:ReviewRevisionWait 2026-09-29-14:12 (RUFU-280):
+  A card working through an authored review revision is excluded from wedge alerting for the same
+  structural reason as `dependency-blocker`: the work it is waiting on has an owner that is already
+  announceable elsewhere. The named remediation steps are published ON the card, the executor is dispatched
+  to run them, and the Review lane itself reports the revision — an alert here would notify the operator
+  about work the engine is performing, and `task:reconcile-review-stall-notification` would fire once per
+  revision episode for a card that is not stuck at all.
+
+  This table is a pure notification-admission allowlist: `describeTaskWedgeFromStallReason` returns at the
+  `!action` line below, so `null` suppresses only the alert and the card's own `stallReason` copy stays
+  rendered on its face and in detail. It has NO authority over lane state, which is what makes the `null`
+  here different from the `null` in `STALL_WEDGE_ACTIONS`'s other exclusions only in degree — the two
+  exclusions that were NOT deliberate (`plan-*`) exist only because RUFU-273 added codes to a table written
+  against a smaller union. That exhaustive `Record` is the reason this change had to touch this table at
+  all: TypeScript refuses the build rather than letting a new code silently decide its own alert policy.
+  */
+  "awaiting-review-revision": null,
   // Planning-lane codes (RUFU-273) — the card names the cause itself, so a wedge alert would double-announce.
   "plan-admission-throttled": null,
   "plan-lane-ineligible": null,

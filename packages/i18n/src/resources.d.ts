@@ -9070,6 +9070,11 @@ export default interface Resources {
         "headline": "A tool call is waiting for your approval",
         "suggestedAction": "Open the approvals inbox to approve or deny."
       },
+      "awaiting-review-revision": {
+        "description": "The latest review asked for changes and this card still has unfinished remediation steps, so it is working rather than waiting on anyone.",
+        "headline": "Applying review corrections",
+        "suggestedAction": "Let the next review round run; open the Review tab only if the remediation steps stop moving."
+      },
       "completion-blocker": {
         "badgeLabel": "Completion blocked",
         "headline": "Completion is blocked",

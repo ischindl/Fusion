@@ -1,6 +1,11 @@
 import { getTaskMergeBlocker, isPreMergeStepsNotRunBlocker } from "../merge/task-merge.js";
 /* FNXC:HumanMergeApproval 2026-09-17-22:32: FN-514's delivery lock is a human WAIT, never a stall. */
 import { isHumanMergeApprovalBlocker } from "../merge/human-merge-approval.js";
+/* FNXC:ReviewRevisionWait 2026-09-29-14:12 (RUFU-280): one predicate decides "this card is working through an authored revision" for the stall ladder, the derived chip, and the dashboard copy. */
+import {
+  AWAITING_REVIEW_REVISION_STALL_REASON,
+  isAwaitingReviewRevision,
+} from "./review-revision-wait.js";
 import type { Task, TaskLogEntry } from "../types.js";
 
 /*
@@ -26,6 +31,17 @@ const LEGACY_REVIEW_LANES: ReadonlySet<string> = new Set(["in-review"]);
  * because in-review tasks are expected to remain on the PR-based manual flow.
  */
 export type InReviewStallCode =
+  /*
+  FNXC:ReviewRevisionWait 2026-09-29-14:12 (RUFU-280):
+  An authored `REVISE` verdict with unfinished named remediation. The signal still fires — a card parked
+  in the review lane for days IS worth surfacing — but the deadlock ladder must not park on it. Returning
+  `undefined` here instead would have been the tempting wrong fix: it resets the identical-entry count, so
+  a card stuck at the boundary between remediation and re-review would never accumulate a park and would
+  sit silently forever. Naming the state keeps the count alive and defers only the terminal action, so when
+  remediation is exhausted the predicate's own second clause goes false and the pre-existing threshold
+  becomes reachable again.
+  */
+  | "awaiting-review-revision"
   | "merge-blocker"
   | "transient-merge-status-no-owner"
   | "merge-retries-exhausted"
@@ -423,6 +439,35 @@ export function getInReviewStallReason(
     auto-failed, or counted toward the deadlock ladder.
     */
     if (isHumanMergeApprovalBlocker(mergeBlocker)) return undefined;
+    /*
+    FNXC:ReviewRevisionWait 2026-09-29-14:12 (RUFU-280):
+    A REVIEW THAT AUTHORED A `REVISE` VERDICT CREATED WORK; IT DID NOT STOP THE CARD.
+
+    `isHumanMergeApprovalBlocker` above exempts only the two OPERATOR rejection sentences, so the
+    review-agent revision lane fell straight through to `{ code: "merge-blocker" }` below. This classifier
+    is not the only consumer of that code — `self-healing.ts`'s in-review stall ladder logs one identical
+    observation per `taskStuckTimeoutMs` (10 min by default) and at `inReviewStallDeadlockThreshold` (10)
+    writes `paused: true` + `pausedReason: "in-review-stall-deadlock"` + `status: "failed"`. Measured at
+    defaults, an authored revision terminalized its own card after ~100 minutes of the executor doing
+    exactly what the reviewer asked for.
+
+    Unlike the two exemptions around it, this arm RETURNS rather than suppressing the signal: the state is
+    genuinely reportable, only the park is withheld (see `InReviewStallCode`). The bound is this predicate's
+    own second clause rather than a new counter — the moment remediation stops being pending, this arm
+    falls through to the ordinary classification and the already-accumulated count parks on the next pass.
+    A card whose remediation was silently dropped is therefore still terminalized; it is only ever
+    terminalized later than the corrections it is waiting on.
+
+    `getTaskMergeBlocker` is evaluated first so the awaiting state is still anchored to a real refusal — a
+    card with pending remediation and a clear merge door needs no explanation at all.
+    */
+    if (isAwaitingReviewRevision(task)) {
+      return {
+        code: "awaiting-review-revision",
+        reason: AWAITING_REVIEW_REVISION_STALL_REASON,
+        observedAt,
+      };
+    }
     if (mergeBlocker.startsWith(FAILED_TASK_MERGE_BLOCKER_PREFIX)) {
       const error = mergeBlocker.slice(FAILED_TASK_MERGE_BLOCKER_PREFIX.length).trim();
       if (classifyProviderError(error) === "non_retryable") {

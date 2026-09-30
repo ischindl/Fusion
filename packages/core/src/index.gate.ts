@@ -997,6 +997,9 @@ export {
   remediationDeclaredFiles,
 } from "./tasks/remediation-steps.js";
 export type { RemediationStepInput } from "./tasks/remediation-steps.js";
+/* FNXC:ReviewRevisionWait 2026-09-30-07:57 (RUFU-280 code-review remediation, P1): mirrored into BOTH barrels — `getInReviewStallReason` imports this predicate from `@fusion/core`, which the engine-core gate project resolves through THIS file, so an omission here TypeErrors the stall classifier in the merge gate. */
+export { isAwaitingReviewRevision, findAwaitingReviewRevisionGate, AWAITING_REVIEW_REVISION_STALL_REASON } from "./tasks/review-revision-wait.js";
+export type { ReviewRevisionWaitSubject } from "./tasks/review-revision-wait.js";
 export type { AppendRemediationStepsOptions, AppendRemediationStepsResult } from "./task-store/remediation-step-ops.js";
 
 export {
