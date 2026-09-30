@@ -230,6 +230,7 @@ retry route call them.
 export type FailedNoVerdictPreMergeGateRerouteReason =
   | "seeded"
   | "active-continuation"
+  | "rerun-budget-exhausted"
   | "no-failed-no-verdict-gate"
   | "no-review-route"
   | "not-singular"
@@ -258,7 +259,7 @@ async function seedPreMergeReviewIfIdle<Reason extends "no-unrun-gate" | "no-fai
   candidateStepIds: ReadonlySet<string>,
   noCandidateReason: Reason,
   runKind: "unrun-pre-merge-gate" | "failed-no-verdict-pre-merge-gate",
-): Promise<ReseedResult<"seeded" | "active-continuation" | Reason | "no-review-route" | "not-singular" | "operator-held" | "workflow-selection-changed">> {
+): Promise<ReseedResult<"seeded" | "active-continuation" | "rerun-budget-exhausted" | Reason | "no-review-route" | "not-singular" | "operator-held" | "workflow-selection-changed">> {
   const { requiredPreMergeStepIds, expectedWorkflowSelection } = options;
   /*
   FNXC:NoVerdictWorkspaceSeed 2026-09-28-09:15 (RUFU-391):
@@ -292,6 +293,24 @@ async function seedPreMergeReviewIfIdle<Reason extends "no-unrun-gate" | "no-fai
   const node = ir.nodes.find((candidate) => requiredPreMergeStepIds.has(candidate.id) && candidateStepIds.has(candidate.id));
   if (!node) return { rerouted: false, reason: "no-review-route" };
 
+  /*
+  FNXC:NoVerdictRerunBudget 2026-09-30-14:34 (RUFU-449):
+  This lane had no attempt counter at all, while the unrun-gate lane above has enforced
+  `MAX_VERDICTLESS_GATE_RERUN_ATTEMPTS` since RUFU-217. Measured on saneca 2026-09-30: 19 `in-review`
+  cards carried ~72 FAILED `code-review` items each, at 20-34 new doomed continuations per hour for
+  twelve straight hours, because a seeded review that dies before session start leaves the gate exactly
+  as it was — `failed` with no verdict — so the recovery re-seeded it forever. The `:${items.length}`
+  suffix in the run id is an item count masquerading as an attempt count; it read 82 while the real cap
+  was never consulted. The seed now consumes the SAME durable per-(task, gate) marker budget as the
+  unrun lane, deliberately shared: total re-runs of one crashing gate are bounded across both lanes, not
+  3 + 3. The counter accrues only when a seed actually lands, and the marker text names the lane, so the
+  task log shows `rerun N of 3` instead of silence while the board shows an idle card.
+  */
+  const rerunAttempts = await countVerdictlessGateRerunAttempts(store, task, node.id);
+  if (rerunAttempts >= MAX_VERDICTLESS_GATE_RERUN_ATTEMPTS) {
+    return { rerouted: false, reason: "rerun-budget-exhausted", nodeId: node.id, workflowStepId: node.id };
+  }
+
   const items = await store.listWorkflowWorkItemsForTask(task.id);
   const result = await store.seedWorkspaceCodeReviewContinuationIfIdle({
     taskId: task.id,
@@ -306,7 +325,15 @@ async function seedPreMergeReviewIfIdle<Reason extends "no-unrun-gate" | "no-fai
     irHash: computeWorkflowIrPin(ir, node.id).irHash,
     expectedWorkflowSelection,
   });
-  if (result.seeded) return { rerouted: true, reason: "seeded", nodeId: node.id, workflowStepId: node.id };
+  if (result.seeded) {
+    // Durable budget marker, written only AFTER the seed landed, exactly as the unrun lane does.
+    await store.logEntry(
+      task.id,
+      `${verdictlessGateRerunLogMarker(node.id)} ${runKind}, re-seeded in place for a fresh run`
+        + ` (rerun ${rerunAttempts + 1} of ${MAX_VERDICTLESS_GATE_RERUN_ATTEMPTS})`,
+    );
+    return { rerouted: true, reason: "seeded", nodeId: node.id, workflowStepId: node.id };
+  }
   return {
     rerouted: false,
     reason: result.reason === "workflow-selection-changed" ? "workflow-selection-changed" : "active-continuation",
