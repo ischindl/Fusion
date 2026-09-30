@@ -115,6 +115,13 @@ export async function reseedUnrunPostMergeGate(
   if (!task.mergeDetails?.commitSha) return { seeded: false, reason: "no-merge-proof" };
   // RUFU-370: this guard was duplicated in the RUFU-306 edit; a workspace card is refused by this
   // seam by construction, which is why SANE-452 deferred forever with zero seed attempts.
+  /*
+  FNXC:PostMergeGateDeliveryShape 2026-09-30-13:09 (RUFU-429):
+  This refusal is now a backstop, not the reason workspace cards stall. The requirement itself resolves to
+  `not-applicable` for a workspace-shaped absence in core, so the finalizer completes and never reaches
+  this seam; the guard stays because seeding a post-merge reviewer onto a lane that is already cleaned
+  would re-acquire against a moved base and burn the rerun budget (the SANE-507 loop).
+  */
   if (isWorkspaceTask(task)) return { seeded: false, reason: "workspace" };
   if (
     task.userPaused

@@ -53,6 +53,48 @@ function storeFor(ir: WorkflowIr) {
 }
 
 describe("post-merge evidence gate states", () => {
+  /*
+  FNXC:PostMergeGateDeliveryShape 2026-09-30-13:09 (RUFU-429):
+  The requirement is only real when the lane that delivered the card can report the evidence. These cases
+  pin BOTH sides of the invariant in one place, so the exemption cannot be widened into a general
+  post-merge bypass: the same IR and the same enabled gate must still block a singular-delivery card, and
+  must still block a workspace card that carries a real negative verdict.
+  */
+  it("does not hold a workspace-shaped card out of completion for evidence its lane cannot produce", async () => {
+    const ir = irWithPostMergeGate(true);
+    const workspaceTask = {
+      ...taskWith([GATE_ID]),
+      workspaceWorktrees: { app: { path: "/repo/.worktrees/app" } },
+    } as never;
+
+    expect(getPostMergeEvidenceGateStatuses(workspaceTask, ir))
+      .toEqual([{ gateId: GATE_ID, state: "not-applicable" }]);
+    // No blocker sentence means the finalizer completes instead of parking on
+    // `[post-merge gate unreachable: workspace]`, which is what the waiver stream existed for.
+    expect(await getRequiredPostMergeEvidenceBlocker(storeFor(ir) as never, workspaceTask)).toBeUndefined();
+
+    // The same gate on a singular-delivery card is still owed.
+    expect(getPostMergeEvidenceGateStatuses(taskWith([GATE_ID]), ir))
+      .toEqual([{ gateId: GATE_ID, state: "missing" }]);
+    expect(await getRequiredPostMergeEvidenceBlocker(storeFor(ir) as never, taskWith([GATE_ID])))
+      .toBe(`required post-merge evidence gate '${GATE_ID}' has not reported`);
+  });
+
+  it("still honours a real negative post-merge verdict on a workspace-shaped card", async () => {
+    const ir = irWithPostMergeGate(true);
+    const workspaceTask = {
+      id: "SANE-447",
+      enabledWorkflowSteps: [GATE_ID],
+      workspaceWorktrees: { app: { path: "/repo/.worktrees/app" } },
+      workflowStepResults: [{ workflowStepId: GATE_ID, status: "failed", phase: "post-merge" }],
+    } as never;
+
+    expect(getPostMergeEvidenceGateStatuses(workspaceTask, ir))
+      .toEqual([{ gateId: GATE_ID, state: "not-approved" }]);
+    expect(await getRequiredPostMergeEvidenceBlocker(storeFor(ir) as never, workspaceTask))
+      .toBe(`required post-merge evidence gate '${GATE_ID}' is not approved`);
+  });
+
   it("names an enabled gate-mode post-merge group as required", () => {
     expect(resolveRequiredPostMergeGateIds(taskWith(), irWithPostMergeGate(true))).toEqual([GATE_ID]);
     expect(resolveRequiredPostMergeGateIds(taskWith(), irWithPostMergeGate(false))).toEqual([]);

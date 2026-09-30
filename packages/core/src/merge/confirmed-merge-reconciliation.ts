@@ -1,4 +1,4 @@
-import type { Task, WorkflowStepResult } from "../types.js";
+import { isWorkspaceTask, type Task, type WorkflowStepResult } from "../types.js";
 import { resolveWorkflowIrForTask, type WorkflowIrResolverStore } from "../workflows/workflow-ir-resolver.js";
 import { isWorkflowOptionalGroupEnabled } from "../workflows/workflow-optional-steps.js";
 import type { WorkflowIr } from "../workflows/workflow-ir-types.js";
@@ -65,7 +65,17 @@ review decision, and re-seeding it would be a machine overruling a gate. The eng
 route is allowed to see this distinction; the blocker TEXT deliberately stays the single sentence
 operators already recognise, so no consumer changes shape.
 */
-export type PostMergeEvidenceGateState = "missing" | "not-approved";
+/*
+FNXC:PostMergeGateDeliveryShape 2026-09-30-13:09 (RUFU-429):
+A required gate whose lane CANNOT report it is not a violation; it is a requirement this delivery shape
+never had. `not-applicable` names that third case: the IR still requires the gate and the operator escape
+hatch still sees it, but no blocker, no re-seed, and no deferred-finalization claim may be built on an
+absence the lane was never able to fill. Measured before this: zero workspace cards in any project had
+ever produced a `post-merge-verification` row, while `reseedUnrunPostMergeGate` refuses workspace cards by
+construction (`reason: "workspace"`) — so every landed workspace card was held out of `done` by a gate that
+could only be lifted by a human waiver (eleven of them on 2026-09-29 alone).
+*/
+export type PostMergeEvidenceGateState = "missing" | "not-approved" | "not-applicable";
 
 export interface PostMergeEvidenceGateStatus {
   gateId: string;
@@ -74,12 +84,22 @@ export interface PostMergeEvidenceGateStatus {
 
 /** Per-gate evidence state for every required post-merge gate, in IR order. */
 export function getPostMergeEvidenceGateStatuses(
-  task: Pick<Task, "enabledWorkflowSteps" | "workflowStepResults">,
+  task: Pick<Task, "enabledWorkflowSteps" | "workflowStepResults" | "workspaceWorktrees">,
   ir: WorkflowIr,
 ): PostMergeEvidenceGateStatus[] {
+  const workspaceShaped = isWorkspaceTask(task);
   return resolveRequiredPostMergeGateIds(task, ir).flatMap((gateId): PostMergeEvidenceGateStatus[] => {
     const result = (task.workflowStepResults ?? []).find((entry) => entry.workflowStepId === gateId);
-    if (!result) return [{ gateId, state: "missing" as const }];
+    /*
+    FNXC:PostMergeGateDeliveryShape 2026-09-30-13:09 (RUFU-429):
+    Only an ABSENCE becomes not-applicable. A durable negative verdict on a workspace card still reports
+    `not-approved`, so exempting the shape never launders a real gate decision into completion; and the
+    required-gate list itself is left untouched, which keeps the operator bypass target resolvable for a
+    workspace card that ever does need one. Fixing the invariant here rather than in the engine keeps the
+    blocker text, the re-seed lane, the finalizer's deferred-evidence claim, and the dashboard's bypass
+    affordance asking about the same gates (the RUFU-179 offer==accept invariant).
+    */
+    if (!result) return [{ gateId, state: (workspaceShaped ? "not-applicable" : "missing") as PostMergeEvidenceGateState }];
     /*
     FNXC:PostMergeGateOperatorWaiver 2026-09-29-15:49 (RUFU-408):
     An audited operator waiver satisfies the post-merge gate, exactly as it satisfies the pre-merge door
@@ -101,13 +121,15 @@ export function getPostMergeEvidenceGateStatuses(
 
 export async function getRequiredPostMergeEvidenceBlocker(
   store: WorkflowIrResolverStore,
-  task: Pick<Task, "id" | "enabledWorkflowSteps" | "workflowStepResults">,
+  task: Pick<Task, "id" | "enabledWorkflowSteps" | "workflowStepResults" | "workspaceWorktrees">,
 ): Promise<string | undefined> {
   const reader = store as Partial<WorkflowIrResolverStore>;
   if (typeof reader.getTaskWorkflowSelection !== "function") return undefined;
 
   const ir = await resolveWorkflowIrForTask(store, task.id);
   for (const { gateId, state } of getPostMergeEvidenceGateStatuses(task, ir)) {
+    // A requirement this delivery shape cannot satisfy is not a blocker (RUFU-429).
+    if (state === "not-applicable") continue;
     return state === "missing"
       ? `required post-merge evidence gate '${gateId}' has not reported`
       : `required post-merge evidence gate '${gateId}' is not approved`;
