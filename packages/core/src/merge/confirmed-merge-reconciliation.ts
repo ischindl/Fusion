@@ -1,9 +1,11 @@
 import { isWorkspaceTask, type Task, type WorkflowStepResult } from "../types.js";
 import { resolveWorkflowIrForTask, type WorkflowIrResolverStore } from "../workflows/workflow-ir-resolver.js";
 import { isWorkflowOptionalGroupEnabled } from "../workflows/workflow-optional-steps.js";
+import { postMergeEvidenceDemandsCi, postMergeEvidenceKindOf } from "../workflows/builtin-post-merge-group.js";
 import type { WorkflowIr } from "../workflows/workflow-ir-types.js";
 import { BLOCKING_TASK_STATUSES, clearMergeConfirmedTransientStatus } from "./task-merge.js";
 import { isAuditedOperatorBypass } from "./pre-merge-approval.js";
+import { isPostMergeEvidenceUnreportable, type PostMergeEvidenceContract } from "./post-merge-evidence-contract.js";
 
 export type ConfirmedMergeChecklistReconciliation = {
   skippedStepIndexes: number[];
@@ -77,17 +79,46 @@ could only be lifted by a human waiver (eleven of them on 2026-09-29 alone).
 */
 export type PostMergeEvidenceGateState = "missing" | "not-approved" | "not-applicable";
 
+/*
+FNXC:PostMergeEvidenceContract 2026-09-30-22:29 (RUFU-430):
+`not-applicable` now has two independent causes, and an operator reading one board needs to know which.
+`delivery-shape` is RUFU-429 (a workspace lane cannot report); `no-evidence-reporter` is this card (the
+project has no CI reporter at all); `verdict-precedes-contract` is the history case below. The reason is
+carried on the status so a caller can name it in a log or audit row without re-deriving anything — the
+blocker TEXT stays one sentence per state, so no consumer's wording contract changes.
+*/
+export type PostMergeEvidenceNotApplicableReason =
+  | "delivery-shape"
+  | "no-evidence-reporter"
+  | "verdict-precedes-contract";
+
 export interface PostMergeEvidenceGateStatus {
   gateId: string;
   state: PostMergeEvidenceGateState;
+  /** Present only for `not-applicable`, naming which fact made the gate inapplicable. */
+  notApplicableReason?: PostMergeEvidenceNotApplicableReason;
 }
 
 /** Per-gate evidence state for every required post-merge gate, in IR order. */
 export function getPostMergeEvidenceGateStatuses(
   task: Pick<Task, "enabledWorkflowSteps" | "workflowStepResults" | "workspaceWorktrees">,
   ir: WorkflowIr,
+  contract?: PostMergeEvidenceContract,
 ): PostMergeEvidenceGateStatus[] {
   const workspaceShaped = isWorkspaceTask(task);
+  const unreportable = isPostMergeEvidenceUnreportable(contract);
+  /*
+  FNXC:PostMergeEvidenceRequirement 2026-09-30-22:51 (RUFU-430):
+  Whether the reporter fact exempts a gate depends on what THAT gate asks for, and that is authored per
+  workflow node. An `integration-only` gate is still owed by a board with no CI — it asks for the landed SHA
+  and a read of the landed content, both of which such a board can produce. Only a contract that names CI
+  artifacts is exempt when no reporter exists. Absence of the config keeps the historical full-suite reading.
+  */
+  const evidenceKindByGate = new Map(
+    ir.nodes
+      .filter((node) => node.kind === "optional-group")
+      .map((node) => [node.id, postMergeEvidenceKindOf(node.config as { evidence?: { kind?: unknown } } | undefined)]),
+  );
   return resolveRequiredPostMergeGateIds(task, ir).flatMap((gateId): PostMergeEvidenceGateStatus[] => {
     const result = (task.workflowStepResults ?? []).find((entry) => entry.workflowStepId === gateId);
     /*
@@ -99,7 +130,21 @@ export function getPostMergeEvidenceGateStatuses(
     blocker text, the re-seed lane, the finalizer's deferred-evidence claim, and the dashboard's bypass
     affordance asking about the same gates (the RUFU-179 offer==accept invariant).
     */
-    if (!result) return [{ gateId, state: (workspaceShaped ? "not-applicable" : "missing") as PostMergeEvidenceGateState }];
+    /*
+    FNXC:PostMergeEvidenceContract 2026-09-30-22:29 (RUFU-430):
+    Same shape as the delivery-shape exemption one line below, one cause earlier: on a board with no CI
+    reporter the absence was never a violation either. Measured before this fact existed, 66 of 98 durable
+    post-merge refusals across the fleet said the repo has no CI pipeline, and every saneca landing cost
+    one operator waiver (11 on 2026-09-29 alone) to release a card whose gate could not be rung.
+    */
+    if (!result) {
+      const demandsCi = postMergeEvidenceDemandsCi(evidenceKindByGate.get(gateId) ?? "github-actions-full-suite");
+      if (unreportable && demandsCi) {
+        return [{ gateId, state: "not-applicable", notApplicableReason: "no-evidence-reporter" }];
+      }
+      if (workspaceShaped) return [{ gateId, state: "not-applicable", notApplicableReason: "delivery-shape" }];
+      return [{ gateId, state: "missing" }];
+    }
     /*
     FNXC:PostMergeGateOperatorWaiver 2026-09-29-15:49 (RUFU-408):
     An audited operator waiver satisfies the post-merge gate, exactly as it satisfies the pre-merge door
@@ -113,6 +158,23 @@ export function getPostMergeEvidenceGateStatuses(
     */
     if (isAuditedOperatorBypass(result)) return [];
     if (result.status !== "passed" || (result.verdict !== "APPROVE" && result.verdict !== "APPROVE_WITH_NOTES")) {
+      /*
+      FNXC:PostMergeEvidenceContract 2026-09-30-22:29 (RUFU-430):
+      A durable negative verdict is a real gate decision and is never laundered — that is RUFU-429's own
+      boundary, and it holds here. The one honest exception is history: a REVISE recorded BEFORE this
+      project's reporter was observed to be missing is a verdict ABOUT AN IMPOSSIBLE CONTRACT, not about
+      the delivery (vllm-rocm carries 38 such rows, dgx_spark 23). A refusal recorded AFTER the observation
+      is actionable, because by then the gate ran knowing the reporter was absent. Only a DERIVED contract
+      carries that cutoff; an operator who declares `none` explicitly is taking the declaration back in
+      time, so their declaration exempts absences but never overwrites a recorded refusal.
+      */
+      if (unreportable && contract?.source === "derived" && postMergeEvidenceDemandsCi(evidenceKindByGate.get(gateId) ?? "github-actions-full-suite")) {
+        const recordedAt = Date.parse(result.completedAt ?? result.startedAt ?? "");
+        const observedAt = Date.parse(contract.observedAt);
+        if (Number.isFinite(recordedAt) && Number.isFinite(observedAt) && recordedAt < observedAt) {
+          return [{ gateId, state: "not-applicable", notApplicableReason: "verdict-precedes-contract" }];
+        }
+      }
       return [{ gateId, state: "not-approved" as const }];
     }
     return [];
@@ -122,12 +184,13 @@ export function getPostMergeEvidenceGateStatuses(
 export async function getRequiredPostMergeEvidenceBlocker(
   store: WorkflowIrResolverStore,
   task: Pick<Task, "id" | "enabledWorkflowSteps" | "workflowStepResults" | "workspaceWorktrees">,
+  contract?: PostMergeEvidenceContract,
 ): Promise<string | undefined> {
   const reader = store as Partial<WorkflowIrResolverStore>;
   if (typeof reader.getTaskWorkflowSelection !== "function") return undefined;
 
   const ir = await resolveWorkflowIrForTask(store, task.id);
-  for (const { gateId, state } of getPostMergeEvidenceGateStatuses(task, ir)) {
+  for (const { gateId, state } of getPostMergeEvidenceGateStatuses(task, ir, contract)) {
     // A requirement this delivery shape cannot satisfy is not a blocker (RUFU-429).
     if (state === "not-applicable") continue;
     return state === "missing"

@@ -17,6 +17,7 @@ import {
   reseedUnrunPostMergeGate,
   type PostMergeGateReseedReason,
 } from "./post-merge-gate-reseed.js";
+import { resolvePostMergeEvidenceContract } from "./post-merge-evidence-contract.js";
 import { deliverMailboxMessageOnce } from "../notification/mailbox-delivery.js";
 import { emitBoundedRunAudit } from "../util/emit-bounded-run-audit.js";
 import { createRunAuditor, generateSyntheticRunId, type DatabaseMutationType, type RunAuditor } from "../util/run-audit.js";
@@ -383,7 +384,16 @@ export async function finalizeProvenAutoMergeTask({
     if (persisted) latest = persisted;
   }
 
-  const evidenceBlocker = await getRequiredPostMergeEvidenceBlocker(store, latest);
+  /*
+  FNXC:PostMergeEvidenceContract 2026-09-30-22:29 (RUFU-430):
+  Which evidence reporter this PROJECT has is a precondition to asking for a GitHub Actions delivery record
+  at all. It is resolved once per finalize pass (cached per project root in the resolver, so no shellout
+  enters the retry loop) and handed to every read of the gate below, so the blocker, the deferral fact, and
+  the fenced re-read answer the same question. An unresolvable contract keeps today's demand unchanged.
+  */
+  const evidenceContract = await resolvePostMergeEvidenceContract(store, { auditHost: store });
+
+  const evidenceBlocker = await getRequiredPostMergeEvidenceBlocker(store, latest, evidenceContract);
   if (evidenceBlocker) {
 
   /*
@@ -397,7 +407,7 @@ export async function finalizeProvenAutoMergeTask({
   */
   const postMergeIr = await resolveWorkflowIrForTask(store, latest.id).catch(() => null);
   const deferredPostMergeEvidence = postMergeIr
-    ? getPostMergeEvidenceGateStatuses(latest, postMergeIr).some((status) => status.state === "missing") || undefined
+    ? getPostMergeEvidenceGateStatuses(latest, postMergeIr, evidenceContract).some((status) => status.state === "missing") || undefined
     : evidenceBlocker.includes("has not reported") || undefined;
     /*
     FNXC:UnrunPostMergeGateRecovery 2026-09-25-15:35 (RUFU-306):
@@ -647,7 +657,7 @@ export async function finalizeProvenAutoMergeTask({
         finalizationBlocker = "missing-merge-confirmation";
         return false;
       }
-      finalizationBlocker = await getRequiredPostMergeEvidenceBlocker(store, live);
+      finalizationBlocker = await getRequiredPostMergeEvidenceBlocker(store, live, evidenceContract);
       if (finalizationBlocker) return false;
       finalizationBlocker = getPostMergeFinalizeBlocker({
         status: clearMergeConfirmedTransientStatus(live.status),
@@ -669,7 +679,7 @@ export async function finalizeProvenAutoMergeTask({
       : { moveSource: "engine", workflowMoveSource: "auto-merge-finalization", preserveProgress: true });
     if (!move.moved) {
       const currentBlocker = finalizationBlocker
-        ?? await getRequiredPostMergeEvidenceBlocker(store, move.task)
+        ?? await getRequiredPostMergeEvidenceBlocker(store, move.task, evidenceContract)
         ?? "finalization-fence-refused";
       await recordFinalizationAudit({
         store,

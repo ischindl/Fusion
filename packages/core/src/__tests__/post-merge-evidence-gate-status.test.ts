@@ -67,8 +67,13 @@ describe("post-merge evidence gate states", () => {
       workspaceWorktrees: { app: { path: "/repo/.worktrees/app" } },
     } as never;
 
+    /*
+    FNXC:PostMergeEvidenceContract 2026-09-30-22:29 (RUFU-430):
+    `not-applicable` gained a second cause, so the status now names which one. The workspace exemption this
+    test guards is unchanged in behavior — the added field is `delivery-shape`, RUFU-429's own fact.
+    */
     expect(getPostMergeEvidenceGateStatuses(workspaceTask, ir))
-      .toEqual([{ gateId: GATE_ID, state: "not-applicable" }]);
+      .toEqual([{ gateId: GATE_ID, state: "not-applicable", notApplicableReason: "delivery-shape" }]);
     // No blocker sentence means the finalizer completes instead of parking on
     // `[post-merge gate unreachable: workspace]`, which is what the waiver stream existed for.
     expect(await getRequiredPostMergeEvidenceBlocker(storeFor(ir) as never, workspaceTask)).toBeUndefined();

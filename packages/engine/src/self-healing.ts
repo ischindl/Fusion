@@ -214,6 +214,7 @@ import {
   reseedUnrunPostMergeGate,
   type PostMergeGateReseedReason,
 } from "./merge/post-merge-gate-reseed.js";
+import { resolvePostMergeEvidenceContract } from "./merge/post-merge-evidence-contract.js";
 import { cleanupLandedTaskWorktree, removeEmptyWorkspaceTaskDirectory } from "./merge/post-landing-worktree-cleanup.js";
 import { cleanupDeletedTaskWorktrees } from "./worktree/deleted-task-worktree-cleanup.js";
 import { AutoRecoveryDispatcher } from "./healing/auto-recovery.js";
@@ -3788,7 +3789,9 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         the normal graph path to reach merge and its gate; proven-merged recovery must retain it.
         */
         if (task.mergeDetails?.mergeConfirmed === true) {
-          const evidenceBlocker = await getRequiredPostMergeEvidenceBlocker(this.store, task);
+          // FNXC:PostMergeEvidenceContract 2026-09-30-22:29 (RUFU-430): same project-level fact as the finalizer's.
+          const evidenceBlocker = await getRequiredPostMergeEvidenceBlocker(
+            this.store, task, await resolvePostMergeEvidenceContract(this.store, { auditHost: this.store }));
           if (evidenceBlocker) {
             log.debug(`${task.id} remains blocked pending post-merge evidence: ${evidenceBlocker}`);
             continue;
@@ -3923,7 +3926,9 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         proven-merged recovery can require evidence that is already durable.
         */
         if (task.mergeDetails?.mergeConfirmed === true) {
-          const evidenceBlocker = await getRequiredPostMergeEvidenceBlocker(this.store, task);
+          // FNXC:PostMergeEvidenceContract 2026-09-30-22:29 (RUFU-430): same project-level fact as the finalizer's.
+          const evidenceBlocker = await getRequiredPostMergeEvidenceBlocker(
+            this.store, task, await resolvePostMergeEvidenceContract(this.store, { auditHost: this.store }));
           if (evidenceBlocker) {
             log.debug(`${task.id} remains blocked pending post-merge evidence: ${evidenceBlocker}`);
             continue;
@@ -4205,7 +4210,9 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             waiting for evidence that can only be produced after merge.
             */
             if (live.mergeDetails?.mergeConfirmed === true) {
-              const evidenceBlocker = await getRequiredPostMergeEvidenceBlocker(this.store, live);
+              // FNXC:PostMergeEvidenceContract 2026-09-30-22:29 (RUFU-430): same project-level fact as the finalizer's.
+              const evidenceBlocker = await getRequiredPostMergeEvidenceBlocker(
+                this.store, live, await resolvePostMergeEvidenceContract(this.store, { auditHost: this.store }));
               if (evidenceBlocker) {
                 log.debug(`${live.id} remains blocked pending post-merge evidence: ${evidenceBlocker}`);
                 continue;

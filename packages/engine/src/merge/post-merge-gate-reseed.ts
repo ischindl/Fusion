@@ -38,6 +38,7 @@ import {
 } from "@fusion/core";
 // FN-9175: engine-lane emitters use the engine seam, which absorbs an absent, throwing, or hanging sink.
 import { emitBoundedRunAudit } from "../util/emit-bounded-run-audit.js";
+import { resolvePostMergeEvidenceContract } from "./post-merge-evidence-contract.js";
 
 export const MAX_POST_MERGE_GATE_RESEED_ATTEMPTS = 3;
 
@@ -144,8 +145,16 @@ export async function reseedUnrunPostMergeGate(
   }
 
   const ir = await resolveWorkflowIrForTask(store, task.id);
+  /*
+  FNXC:PostMergeEvidenceContract 2026-09-30-22:29 (RUFU-430):
+  Seeding a post-merge reviewer onto a board with no CI reporter would produce a fresh refusal, not evidence
+  — it would spend a model run and one of three reseed attempts to re-derive the same impossibility. With the
+  project's contract the absence resolves `not-applicable` upstream, this list is empty, and the lane exits
+  `no-missing-gate` without burning the budget.
+  */
+  const evidenceContract = await resolvePostMergeEvidenceContract(store);
   // Only `missing` is seedable. `not-approved` carries a real verdict and stays the operator's call.
-  const missing = getPostMergeEvidenceGateStatuses(task, ir).filter((status) => status.state === "missing");
+  const missing = getPostMergeEvidenceGateStatuses(task, ir, evidenceContract).filter((status) => status.state === "missing");
   if (missing.length === 0) return { seeded: false, reason: "no-missing-gate" };
 
   const gateId = missing[0]!.gateId;

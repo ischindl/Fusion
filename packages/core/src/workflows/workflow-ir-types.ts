@@ -270,6 +270,15 @@ export interface WorkflowOptionalGroupConfig {
   */
   phase?: "pre-merge" | "post-merge";
   /*
+  FNXC:PostMergeEvidenceRequirement 2026-09-30-22:51 (RUFU-430):
+  WHICH evidence a post-merge gate may demand, authored per workflow. Absent = "github-actions-full-suite"
+  (the historical contract), so every IR written before this resolves unchanged. This is the selection lever
+  the operator was missing: a board whose trunk is OneDev, self-hosted GitLab, or a repo with no remote can
+  now keep a post-merge gate and ask it for evidence that repo can actually produce, instead of choosing a
+  workflow with no post-merge group at all and losing the integration review with it.
+  */
+  evidence?: { kind: "github-actions-full-suite" | "integration-only" };
+  /*
   FNXC:ReportingOnlyGroup 2026-08-26-06:56:
   A REPORTING group observes accepted work and records what it found. It carries no approval and can
   never hold or reopen a card, so it is excluded from the required pre-merge approval set and may

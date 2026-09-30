@@ -762,6 +762,20 @@ function validateOptionalGroup(
     throw new WorkflowIrError(`optional-group node '${node.id}' phase must be 'pre-merge' or 'post-merge'`);
   }
   /*
+   * FNXC:PostMergeEvidenceRequirement 2026-09-30-22:51 (RUFU-430):
+   * An authored evidence contract is validated at parse so a custom workflow cannot persist a kind the
+   * reviewer prompt builder has no text for — a typo there would silently downgrade a delivery gate to an
+   * unrecognisable demand. Absent stays valid and means the historical full-suite contract.
+   */
+  if (cfg.evidence !== undefined) {
+    const kind = (cfg.evidence as { kind?: unknown }).kind;
+    if (kind !== "github-actions-full-suite" && kind !== "integration-only") {
+      throw new WorkflowIrError(
+        `optional-group node '${node.id}' evidence.kind must be 'github-actions-full-suite' or 'integration-only'`,
+      );
+    }
+  }
+  /*
    * FNXC:WorkflowOptionalStepRevisionBudget 2026-06-27-12:22:
    * Parse-time validation accepts only an explicit non-negative integer budget or `"unbounded"`; absent remains byte-inert and resolves through the gate-specific runtime fallback at execution time.
    *

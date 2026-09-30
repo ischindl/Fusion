@@ -1596,7 +1596,22 @@ export {
   COLLATERAL_ARCHIVED_REVIEW_GATE_DIAGNOSTIC,
 } from "./merge/pre-merge-approval.js";
 export { getPostMergeFinalizeBlocker, getRequiredPostMergeEvidenceBlocker, getPostMergeEvidenceGateStatuses, resolveRequiredPostMergeGateIds, planConfirmedMergeChecklistReconciliation } from "./merge/confirmed-merge-reconciliation.js";
-export type { ConfirmedMergeChecklistReconciliation, PostMergeEvidenceGateState, PostMergeEvidenceGateStatus } from "./merge/confirmed-merge-reconciliation.js";
+export type { ConfirmedMergeChecklistReconciliation, PostMergeEvidenceGateState, PostMergeEvidenceGateStatus, PostMergeEvidenceNotApplicableReason } from "./merge/confirmed-merge-reconciliation.js";
+/*
+FNXC:PostMergeEvidenceContract 2026-09-30-22:29 (RUFU-430):
+The post-merge gate's evidence contract was hardcoded GitHub Actions and applied to every project, so a
+board without a CI reporter could only ever answer it with an operator waiver. This is the fact the seam
+consumes: which reporter a project has, derived from repo facts or an explicit declaration.
+*/
+export { derivePostMergeEvidenceContract, parseDeclaredPostMergeEvidence, isPostMergeEvidenceUnreportable } from "./merge/post-merge-evidence-contract.js";
+/*
+FNXC:PostMergeEvidenceRequirement 2026-09-30-22:51 (RUFU-430):
+The evidence a post-merge gate demands is authored on the workflow node, so the kind helpers and the prompt
+builder are public surface — the editor, the resolver, and any custom workflow author need the same one.
+*/
+export { buildPostMergeVerificationPrompt, postMergeEvidenceKindOf, postMergeEvidenceDemandsCi } from "./workflows/builtin-post-merge-group.js";
+export type { PostMergeEvidenceKind } from "./workflows/builtin-post-merge-group.js";
+export type { PostMergeEvidenceProvider, PostMergeEvidenceSource, PostMergeEvidenceReason, PostMergeEvidenceContract, PostMergeRepoFacts, DeclaredPostMergeEvidence } from "./merge/post-merge-evidence-contract.js";
 export type { PreMergeApproval, PreMergeApprovalState } from "./merge/pre-merge-approval.js";
 export {
   isBranchGroupMemberLanded,
