@@ -10,7 +10,8 @@ import {
   type MergeResult,
   type Task,
   type TaskStore,
-} from "@fusion/core";
+  getPostMergeEvidenceGateStatuses,
+ } from "@fusion/core";
 import {
   isTerminalPostMergeReseedRefusal,
   reseedUnrunPostMergeGate,
@@ -384,6 +385,20 @@ export async function finalizeProvenAutoMergeTask({
 
   const evidenceBlocker = await getRequiredPostMergeEvidenceBlocker(store, latest);
   if (evidenceBlocker) {
+
+  /*
+  FNXC:PostMergeEvidence 2026-09-30-09:57:
+  Whether the active graph traversal can still produce the required post-merge gate result is a STRUCTURED
+  fact (`state === "missing"`), not a property of the blocker sentence. The flag used to be derived by
+  matching "has not reported" in prose, so any wording change upstream silently converted a claimable
+  deferral into a fatal block at `merger-ai`'s `!deferredPostMergeEvidence` throw. FN-9422 makes the merge
+  proof durable before the deferral, so every absent-gate deferral below — including the terminal-reseed-
+  refusal handoff — is a deferral with proof, and a pending/non-approval stays fatal.
+  */
+  const postMergeIr = await resolveWorkflowIrForTask(store, latest.id).catch(() => null);
+  const deferredPostMergeEvidence = postMergeIr
+    ? getPostMergeEvidenceGateStatuses(latest, postMergeIr).some((status) => status.state === "missing") || undefined
+    : evidenceBlocker.includes("has not reported") || undefined;
     /*
     FNXC:UnrunPostMergeGateRecovery 2026-09-25-15:35 (RUFU-306):
     This is the loop production showed all day: `Auto-merge finalization deferred for DGXS-313 /
@@ -422,6 +437,7 @@ export async function finalizeProvenAutoMergeTask({
         task: latest,
         previousColumn: latest.column,
         reason: unreachablePostMergeGateReason(evidenceBlocker, reseed.reason),
+        deferredPostMergeEvidence,
       };
     }
     await recordFinalizationAudit({
@@ -445,7 +461,7 @@ export async function finalizeProvenAutoMergeTask({
       Only an absent result can be claimed by the active graph traversal. A pending or terminal
       non-approval is durable evidence that must remain a blocker, not a retry signal.
       */
-      deferredPostMergeEvidence: evidenceBlocker.includes("has not reported") || undefined,
+      deferredPostMergeEvidence,
     };
   }
 

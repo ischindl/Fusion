@@ -265,7 +265,14 @@ test("const array not containing the ledger file still reports missing-exclude",
     writeFile(rootDir, "packages/cli/src/other.test.ts");
     writeFile(rootDir, "packages/cli/src/ledgered.test.ts");
     const ledgerPath = writeLedger(rootDir, { entries: [{ file: "packages/cli/src/ledgered.test.ts", reason: "path absent from the const array", quarantinedAt: "2026-07-12" }] });
-    assert.deepEqual(findLockstepViolations({ rootDir, ledger: readLedger(ledgerPath) }).map((row) => row.kind), ["missing-exclude"]);
+    /*
+FNXC:QuarantineLockstep 2026-09-30-10:44:
+FN-9425 feeds the CLI's static `quarantinedCliTests` list into the same exclude map as `test.exclude`, so the
+guard is now bidirectional over it — their own case "CLI static quarantine list without a ledger row is
+orphan-exclude" demands it. This fixture's `src/other.test.ts` is concretely excluded with no ledger row, so
+the honest new expectation is both kinds, not `missing-exclude` alone.
+*/
+assert.deepEqual(findLockstepViolations({ rootDir, ledger: readLedger(ledgerPath) }).map((row) => row.kind), ["missing-exclude", "orphan-exclude"]);
   } finally { rmSync(rootDir, { recursive: true, force: true }); }
 });
 

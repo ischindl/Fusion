@@ -64,16 +64,9 @@ function createFinalizationStore(options: { column?: string; worktree?: string |
     Object.assign(task, patch);
     return task;
   });
-  const moveTaskIf = vi.fn(async (_id: string, column: string, predicate: (live: typeof task) => Promise<boolean>) => {
-    if (await predicate(task)) {
-      callOrder.push("move");
-      task.column = column;
-      return { moved: true, task };
-    }
-    return { moved: false, task };
-  });
-  const updateTaskAtomic = vi.fn(async (_id: string, reducer: (current: typeof task) => Record<string, unknown>) => {
-    Object.assign(task, reducer(task));
+  const moveTask = vi.fn(async (_id: string, column: string) => {
+    callOrder.push("move");
+    task.column = column;
     return task;
   });
   const logEntry = vi.fn().mockResolvedValue(task);
@@ -107,7 +100,6 @@ function createFinalizationStore(options: { column?: string; worktree?: string |
     updateTask,
     moveTask,
     moveTaskIf,
-    updateTaskAtomic,
     logEntry,
     store: {
       getTask: vi.fn(async () => task),
@@ -306,7 +298,7 @@ describe("cleanupLandedTaskWorktree", () => {
     "self-healing",
     "direct-ai-merge",
   ])("cleans before the complete-column move for %s", async (source) => {
-    const { store, task, callOrder, updateTask, moveTaskIf } = createFinalizationStore();
+    const { store, task, callOrder, updateTask, moveTask } = createFinalizationStore();
     removeWorktreeMock.mockImplementationOnce(async () => {
       callOrder.push("remove");
       return { removed: true, classification: "removed" };
@@ -324,7 +316,7 @@ describe("cleanupLandedTaskWorktree", () => {
     expect(callOrder.indexOf("remove")).toBeLessThan(callOrder.indexOf("move"));
     expect(callOrder.indexOf("cleanup")).toBeLessThan(callOrder.indexOf("move"));
     expect(updateTask).toHaveBeenCalledWith(task.id, { worktree: null });
-    expect(moveTaskIf).toHaveBeenCalledWith(task.id, "done", expect.any(Function), expect.any(Object));
+    expect(moveTask).toHaveBeenCalledWith(task.id, "done", expect.any(Object));
     expect(task.worktree).toBeNull();
   });
 
@@ -332,7 +324,7 @@ describe("cleanupLandedTaskWorktree", () => {
     new Error("preserving /repo/.worktrees/fn-251: uncommitted or ignored content present"),
     new Error("preserving /repo/.worktrees/fn-251: status probe failed (broken registration)"),
   ])("finalizes a durable landing when cleanup preserves content", async (error) => {
-    const { store, task, moveTaskIf } = createFinalizationStore();
+    const { store, task, moveTask } = createFinalizationStore();
     removeWorktreeMock.mockRejectedValueOnce(error);
 
     const result = await finalizeProvenAutoMergeTask({
@@ -348,7 +340,7 @@ describe("cleanupLandedTaskWorktree", () => {
   });
 
   it("skips cleanup without a root directory but still completes", async () => {
-    const { store, task, moveTaskIf } = createFinalizationStore();
+    const { store, task, moveTask } = createFinalizationStore();
 
     const result = await finalizeProvenAutoMergeTask({
       store: store as never,
@@ -358,11 +350,11 @@ describe("cleanupLandedTaskWorktree", () => {
 
     expect(result).toMatchObject({ outcome: "done" });
     expect(removeWorktreeMock).not.toHaveBeenCalled();
-    expect(moveTaskIf).toHaveBeenCalledWith(task.id, "done", expect.any(Function), expect.any(Object));
+    expect(moveTask).toHaveBeenCalledWith(task.id, "done", expect.any(Object));
   });
 
   it("does no git work for a workspace-shaped task without a singular worktree", async () => {
-    const { store, task, moveTaskIf } = createFinalizationStore({ worktree: null });
+    const { store, task, moveTask } = createFinalizationStore({ worktree: null });
     task.workspaceWorktrees = [{ repoRelPath: "packages/a", worktreePath: "/repo/.worktrees/a" }];
 
     const result = await finalizeProvenAutoMergeTask({
@@ -374,11 +366,11 @@ describe("cleanupLandedTaskWorktree", () => {
 
     expect(result).toMatchObject({ outcome: "done" });
     expect(removeWorktreeMock).not.toHaveBeenCalled();
-    expect(moveTaskIf).toHaveBeenCalledWith(task.id, "done", expect.any(Function), expect.any(Object));
+    expect(moveTask).toHaveBeenCalledWith(task.id, "done", expect.any(Object));
   });
 
   it("keeps an active-session worktree while still moving the task to complete", async () => {
-    const { store, task, moveTaskIf, logEntry } = createFinalizationStore();
+    const { store, task, moveTask, logEntry } = createFinalizationStore();
     removeWorktreeMock.mockRejectedValueOnce(new ActiveSessionWorktreeRemovalErrorMock());
 
     const result = await finalizeProvenAutoMergeTask({
@@ -390,12 +382,12 @@ describe("cleanupLandedTaskWorktree", () => {
 
     expect(result).toMatchObject({ outcome: "done" });
     expect(task.worktree).toBe("/repo/.worktrees/fn-251");
-    expect(moveTaskIf).toHaveBeenCalledWith(task.id, "done", expect.any(Function), expect.any(Object));
+    expect(moveTask).toHaveBeenCalledWith(task.id, "done", expect.any(Object));
     expect(logEntry).toHaveBeenCalledWith(task.id, expect.stringContaining("active-session"));
   });
 
   it("still completes when clearing a removed worktree pointer fails", async () => {
-    const { store, task, updateTask, moveTaskIf, logEntry } = createFinalizationStore();
+    const { store, task, updateTask, moveTask, logEntry } = createFinalizationStore();
     const update = updateTask.getMockImplementation()!;
     let rejectPointerClear = true;
     updateTask.mockImplementation(async (id: string, patch: Record<string, unknown>) => {
@@ -415,12 +407,12 @@ describe("cleanupLandedTaskWorktree", () => {
 
     expect(result).toMatchObject({ outcome: "done" });
     expect(task.worktree).toBe("/repo/.worktrees/fn-251");
-    expect(moveTaskIf).toHaveBeenCalledWith(task.id, "done", expect.any(Function), expect.any(Object));
+    expect(moveTask).toHaveBeenCalledWith(task.id, "done", expect.any(Object));
     expect(logEntry).toHaveBeenCalledWith(task.id, expect.stringContaining("pointer is pending"));
   });
 
   it("reclaims an already-complete task through the convergence path", async () => {
-    const { store, task, moveTaskIf, updateTask } = createFinalizationStore({ column: "done" });
+    const { store, task, moveTask, updateTask } = createFinalizationStore({ column: "done" });
 
     const result = await finalizeProvenAutoMergeTask({
       store: store as never,
@@ -431,7 +423,7 @@ describe("cleanupLandedTaskWorktree", () => {
 
     expect(result.outcome).toBe("already-done");
     expect(updateTask).toHaveBeenCalledWith(task.id, { worktree: null });
-    expect(moveTaskIf).not.toHaveBeenCalled();
+    expect(moveTask).not.toHaveBeenCalled();
   });
 
   it("uses empty settings when a minimal store has no settings reader", async () => {

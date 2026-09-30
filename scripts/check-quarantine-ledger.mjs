@@ -20,7 +20,26 @@ The string-aware Vitest-config scanners moved to `scripts/lib/vitest-config-pars
 policy guard reads exclusions through the SAME scanner this lockstep guard already trusts. Behavior here is
 unchanged; `extractConcreteExcludes` is now imported rather than defined locally.
 */
-import { extractConcreteExcludes } from "./lib/vitest-config-parse.mjs";
+import { extractConcreteExcludes, stripComments, extractBalancedArray, extractConcreteTestFiles } from "./lib/vitest-config-parse.mjs";
+
+/*
+FNXC:QuarantineLockstep 2026-09-30-10:20:
+FN-9425 quarantines a CLI test through a static `quarantinedCliTests: string[]` list in
+`packages/cli/vitest.config.ts` instead of a `test.exclude` array, so the ledger guard must read that
+literal list too or the entry reports `missing-exclude` while it is genuinely excluded. This is the
+upstream intent (their `extractStaticQuarantinedCliTests`) rebuilt on our shared scanner
+(`scripts/lib/vitest-config-parse.mjs`), which our line adopted in place of the local parser.
+*/
+function extractStaticQuarantinedCliTests(source) {
+  const commentFree = stripComments(source);
+  const declaration = /\bconst\s+quarantinedCliTests\s*:\s*string\[\]\s*=\s*/.exec(commentFree);
+  if (declaration == null) return [];
+  let index = declaration.index + declaration[0].length;
+  while (/\s/.test(commentFree[index] ?? "")) index += 1;
+  if (commentFree[index] !== "[") return [];
+  const array = extractBalancedArray(commentFree, index);
+  return array == null ? [] : extractConcreteTestFiles(array);
+}
 
 const MS_PER_DAY = 86_400_000;
 const DEFAULT_WARN_WITHIN_DAYS = 5;

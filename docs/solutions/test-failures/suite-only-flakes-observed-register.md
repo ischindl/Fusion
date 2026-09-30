@@ -310,28 +310,6 @@ Never run the whole file unbounded on a shared host. The host-safe bounded repro
 
 
 
-### 17. Terminal graph-gate activity outbox contract
-
-- **Status:** Active first sighting — recorded 2026-09-24, unattributed.
-- **File:** `packages/engine/src/__tests__/agent-activity-writers.test.ts`
-- **Exact test:** `engine agent activity durable writer > persists a terminal graph gate through the production TaskStore outbox facade`
-- **Observed tree/SHA:** `c76cb158f4` (FN-9388).
-- **Observed frequency:** 1 sighting, Full Suite push shard 1 only.
-
-Push Full Suite run [36034454035](https://github.com/Runfusion/Fusion/actions/runs/36034454035), shard 1 artifact `test-timings-shard-1` (`packages/engine/.timings/timings-shard1-1.json`), reported this exact test at line 381: `events[0]` was shown as `{ seq: '2', …(11) }` and did not match the unchanged `workflow:gate-passed` contract. The CI run's full runner output and timing JSON remain in that GitHub Actions run; the incident task document records the inspected command output and planner evidence.
-
-No product race was established. The terminal writer appends exactly one event after the persisted terminal result; `appendAgentActivityEvent` serializes each project-wide counter allocation and stores the type in the same transaction; and `queryAgentActivityEvents` filters by project, task, and `type: "workflow:gate-passed"` before mapping its returned row. Sequence `2` is therefore valid evidence of an earlier event in the same project, not event identity and not a path by which a non-gate row can pass the type filter. The current shard planner still assigns `@fusion/engine --shard=1/2` to Full Suite shard 1, with the runner defaults resolving to 12 workers and concurrency 2.
-
-| control | result |
-|---|---|
-| exact `c76cb158f4`, full file | passed, 11/11 in 10.9s |
-| exact `c76cb158f4`, exact test | passed, 1 passed / 10 skipped |
-| push run 35974858442, instance 3 | passed; exact full name absent from the shard failed set |
-| push run 35991562171, instance 4 | passed |
-| current targeted file | passed, 11/11 |
-
-The test remains on the suite with its original timeout, `events.length === 1`, and `toMatchObject` contract unchanged. A **second sighting** of this exact test requires file-level quarantine in `scripts/lib/test-quarantine.json` and the matching package Vitest exclusion in the same change; do not add retries, widen timeouts, or alter this assertion.
-
 ### 18. Triage rate-limit retry log warning timer ordering
 
 - **Status:** Active first sighting — recorded 2026-09-24, unattributed.
@@ -427,7 +405,7 @@ FN-9423 rebuilt the CLI and ran the exact file through the built `bin.mjs` entry
 
 ### 17. Terminal graph-gate activity outbox contract
 
-- **Status:** Closed — quarantined 2026-09-29 after the second sighting triggered the deletion ratchet; deletion deadline 2026-10-13.
+- **Status:** Closed — quarantined 2026-09-29 by FN-9419 after the second sighting triggered the deletion ratchet; deletion deadline 2026-10-13.
 - **File:** `packages/engine/src/__tests__/agent-activity-writers.test.ts`
 - **Exact test:** `engine agent activity durable writer > persists a terminal graph gate through the production TaskStore outbox facade`
 - **Observed tree/SHA:** `c76cb158f4` (FN-9388).
@@ -451,7 +429,7 @@ The strict production TaskStore outbox path remains untouched: `events.length ==
 
 ### 16. Native updater setup mock lifecycle
 
-- **Status:** Closed — quarantined 2026-09-24 after three artifact-backed second sightings; deletion deadline 2026-10-08.
+- **Status:** Closed — quarantined 2026-09-24 by FN-9383 after three artifact-backed second sightings; deletion deadline 2026-10-08.
 - **File:** `packages/desktop/src/__tests__/native.test.ts`
 - **Exact tests:** `native integrations > setupAutoUpdater > registers updater listeners and checks for updates`; `native integrations > setupAutoUpdater > sets updater download and install flags`.
 - **First-sighting tree/SHA:** GitHub Actions Full Suite push run [35920595803](https://github.com/Runfusion/Fusion/actions/runs/35920595803), `2ed9b65c116cf85e19f2428832a335fc56b0fa09`.
