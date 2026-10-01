@@ -957,6 +957,18 @@ export const RETENTION_INVENTORY = [
     ]
   },
   {
+    "file": "packages/dashboard/src/routes/register-session-diff-routes.ts",
+    "name": "taskDiffStatsInFlight",
+    "kind": "Map",
+    "classification": "census-registered",
+    "sources": [
+      "task_diff_stats_in_flight"
+    ],
+    "ceilingConstant": "TASK_DIFF_STATS_CACHE_MAX",
+    "justification": "registerRetentionSource(task_diff_stats_in_flight) references `taskDiffStatsInFlight`",
+    "expiryEvidence": []
+  },
+  {
     "file": "packages/dashboard/src/routes/register-system-routes.ts",
     "name": "jobsById",
     "kind": "Map",

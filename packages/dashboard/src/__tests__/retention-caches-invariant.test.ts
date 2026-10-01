@@ -74,6 +74,9 @@ const EXPECTED_BOUNDED_SOURCES = [
   "session_files",
   "file_diffs",
   "task_diff_stats",
+  // FNXC:RetentionCensus 2026-10-01-19:40: the `?stats=1` rendezvous table (one promise per key being
+  // computed) is census-registered alongside the stats cache it feeds.
+  "task_diff_stats_in_flight",
   "workflow_design_rate_limits",
   "remote_auth_short_lived_tokens",
   "codebase_metrics",
