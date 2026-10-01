@@ -64,6 +64,7 @@ export type PostMergeGateReseedReason =
   | "selection-drift"
   | "rerun-budget-exhausted"
   | "active-continuation"
+  | "task-state-changed"
   | "unsupported-store";
 
 export interface PostMergeGateReseedResult {
@@ -236,7 +237,21 @@ export async function resumeMissingPostMergeGate(
     expectedWorkflowSelection: selection ?? null,
     expectedTaskUpdatedAt: task.updatedAt,
   });
-  if (!seeded.seeded) return { outcome: "not-seeded", reason: "active-continuation", workflowStepId: gateId };
+  if (!seeded.seeded) {
+    /*
+    FNXC:PostMergeRecovery 2026-10-01-10:58: the idle-seed primitive names THREE refusals, and collapsing
+    them into one made production unanswerable — RUFU-286 deferred on a ~90s cadence reporting
+    `post-merge-continuation-not-idle` while its three continuations were all `succeeded`, so the named
+    cause was simply false. Carry the primitive's reason: a live continuation, a selection that moved
+    under the fence, and a card that changed while we were deciding are three different operator actions.
+    */
+    const refusal = seeded.reason === "workflow-selection-changed"
+      ? "selection-drift"
+      : seeded.reason === "task-state-changed"
+        ? "task-state-changed"
+        : "active-continuation";
+    return { outcome: "not-seeded", reason: refusal, workflowStepId: gateId };
+  }
 
   await store.logEntry(
     task.id,
