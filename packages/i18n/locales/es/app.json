@@ -4799,6 +4799,12 @@
       "description": "The latest review asked for changes and this card still has unfinished remediation steps, so it is working rather than waiting on anyone.",
       "headline": "Applying review corrections",
       "suggestedAction": "Let the next review round run; open the Review tab only if the remediation steps stop moving."
+    },
+    "agent-rate-limited": {
+      "suggestedAction": "No action needed unless it is still rate limited after the retry.",
+      "badgeLabel": "Rate limited",
+      "description": "The engine will retry automatically at {{retryAt}} — nothing needs fixing.",
+      "headline": "The provider is rate limiting this agent"
     }
   },
   "piManager": {
@@ -8102,7 +8108,8 @@
       "heartbeat-disabled": "Heartbeat switched off",
       "heartbeat-model-unavailable": "Model unavailable",
       "never-beat": "No heartbeat yet",
-      "paused": "Paused"
+      "paused": "Paused",
+      "rate-limited": "Rate limited — retry scheduled"
     },
     "fieldThinking": "Razonamiento",
     "pendingApprovals": "Aprobaciones pendientes",

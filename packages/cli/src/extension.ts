@@ -50,6 +50,7 @@ import {
   resolveWorkflowIrForTaskWithProvenance,
   resolveWorkflowIrForTask,
   resolveReviewColumns,
+  describeHeartbeatThrottle,
 } from "@fusion/core";
 import {
   getGhErrorMessage,
@@ -117,7 +118,14 @@ function truncateAgentDiagnosticText(value: string, maxChars: number): string {
   return value.length > maxChars ? `${value.slice(0, maxChars)}…` : value;
 }
 
-function formatAgentErrorRecoveryLine(metadata: Record<string, unknown> | null | undefined): string | null {
+/**
+ * RUFU-286: takes the agent record (not just `metadata`) so the throttle clause can come from the
+ * one shared reader. `describeHeartbeatThrottle` is what decides whether a re-probe is pending at
+ * all; re-deriving `cooldownUntilAt > now` here would be a second authority whose expiry could
+ * drift from the two engine lanes that read it.
+ */
+function formatAgentErrorRecoveryLine(agent: AgentDiagnosticLineInput): string | null {
+  const metadata = agent.metadata;
   const heartbeatRaw = metadata?.heartbeatErrorRecovery;
   const heartbeat = heartbeatRaw && typeof heartbeatRaw === "object" ? heartbeatRaw as Record<string, unknown> : null;
   const heartbeatAttempts = typeof heartbeat?.consecutiveAttempts === "number" && Number.isFinite(heartbeat.consecutiveAttempts)
@@ -138,6 +146,19 @@ function formatAgentErrorRecoveryLine(metadata: Record<string, unknown> | null |
   const details: string[] = [`attempts ${attempts}`];
   if (durable?.exhausted === true) details.push("exhausted");
   if (typeof durable?.nextRetryAt === "string") details.push(`next ${durable.nextRetryAt}`);
+  /*
+  FNXC:ProviderThrottleIsTransient 2026-09-30-14:17 (RUFU-286):
+  A provider throttle is transient back-off with an armed re-probe, so a reader must be able to
+  tell "waiting on the provider until <ISO>" from an exhausted park that needs a restart. The
+  streak is the pressure signal: attempts 1, throttle 4 in a row is a sustained provider limit,
+  not a blip, and that distinction is what `fn agent errors` was built to answer.
+  */
+  const throttle = describeHeartbeatThrottle(agent);
+  if (throttle?.kind === "throttle-cooldown") {
+    details.push(`throttle cooldown until ${throttle.retryingAt} (streak ${throttle.throttleStreak})`);
+  } else if (throttle?.kind === "throttle-exhausted") {
+    details.push(`throttle retries exhausted (streak ${throttle.throttleStreak})`);
+  }
   return `Error Recovery: ${details.join(", ")}`;
 }
 
@@ -154,7 +175,7 @@ function appendAgentDiagnosticLines(parts: string[], agent: AgentDiagnosticLineI
   if (agent.pauseReason) {
     parts.push(`Pause Reason: ${truncateAgentDiagnosticText(agent.pauseReason, 180)}`);
   }
-  const recoveryLine = formatAgentErrorRecoveryLine(agent.metadata);
+  const recoveryLine = formatAgentErrorRecoveryLine(agent);
   if (recoveryLine) {
     parts.push(recoveryLine);
   }

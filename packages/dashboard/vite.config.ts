@@ -148,12 +148,33 @@ export default defineConfig({
       "@fusion/core/task-delete-attribution": resolve(__dirname, "../core/src/task-delete-attribution.ts"),
       "@fusion/core/column-roles": resolve(__dirname, "../core/src/column-roles.ts"),
       /*
+      FNXC:ProviderThrottleIsTransient 2026-09-30-14:58 (RUFU-286):
+      The heartbeat throttle-recovery reader is the ONE authority for whether an agent is waiting on a
+      provider rate limit and until when, and the health pill / org node / stall resolver / mapper all
+      need it as a VALUE. The root `@fusion/core` alias below points at the types-only leaf, so a
+      root-barrel value import would typecheck and even pass Vitest yet resolve to `undefined` in the
+      shipped bundle — the same silent failure RUFU-220 recorded. `agents/heartbeat-recovery-state.ts`
+      imports nothing, so it is a safe browser leaf (dated entry in
+      scripts/lib/dashboard-browser-safe-core-modules.json); alias the subpath instead of widening the
+      root alias, and keep it before that root entry because Vite matches aliases in order.
+      */
+      "@fusion/core/heartbeat-recovery-state": resolve(__dirname, "../core/src/agents/heartbeat-recovery-state.ts"),
+      /*
       FNXC:ChatSidebarLiveness 2026-09-24-05:55 (RUFU-220):
       The sidebar liveness tag needs the shared generation classifier as a VALUE, and the root `@fusion/core` alias below points at the types-only leaf, so a root-barrel value import would compile and even pass Vitest (whose alias points at the real index) yet resolve to `undefined` in the production browser bundle with no build error.
       `chat/chat-liveness.ts` imports only an erased type from `chat-types.ts`, so it is a safe browser leaf; alias its subpath rather than widening the `@fusion/core` alias.
       Ordered before the `@fusion/core` entry because Vite matches aliases in order and the broader key would otherwise swallow this subpath.
       */
       "@fusion/core/chat-liveness": resolve(__dirname, "../core/src/chat/chat-liveness.ts"),
+      /*
+      FNXC:ProviderThrottleIsTransient 2026-09-30-13:20 (RUFU-286):
+      Agent surfaces need the shared throttle-cooldown reader (`describeHeartbeatThrottle`) as a
+      VALUE, and the root `@fusion/core` alias points at the types-only leaf, so a root-barrel value
+      import would resolve to `undefined` in the production browser bundle. `agents/heartbeat-recovery-state.ts`
+      imports nothing at all, so it is a safe browser leaf; alias its subpath rather than widening the
+      root alias. Ordered before the `@fusion/core` entry because Vite matches aliases in order.
+      */
+      "@fusion/core/heartbeat-recovery-state": resolve(__dirname, "../core/src/agents/heartbeat-recovery-state.ts"),
       "@fusion/core": resolve(__dirname, "../core/src/types.ts"),
       "@fusion/dashboard/app/components/TaskCard": resolve(__dirname, "app/components/TaskCard.tsx"),
       // FNXC:PluginBuild 2026-09-13-16:50: Bundled plugin source can import shared header primitives and the cooperative full-page header through package exports; Vite needs matching source aliases so one-header composition cannot fail only in CI merge builds.

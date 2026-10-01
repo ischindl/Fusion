@@ -227,6 +227,57 @@ describe("resolveFleetStallReason", () => {
     });
   });
 
+  /*
+  FNXC:ProviderThrottleIsTransient 2026-09-30-14:58 (RUFU-286):
+  The org node reads its line off this code, so a throttled agent used to be described with the same
+  code as a crashed one. The bucket assertions matter as much as the code assertion: widening the code
+  must not disturb the strip's four disjoint counts, otherwise "rate limited" would silently move an
+  agent out of `stalled` and change what the fleet header claims.
+  */
+  it("names a throttled agent rate-limited, not a generic failed run", () => {
+    const retryingAt = new Date(NOW + 2 * MINUTE).toISOString();
+    const reason = resolveFleetStallReason(
+      makeAgent({
+        state: "error",
+        lastError: "429 rate_limit_error (unknown model, no fallback configured)",
+        metadata: { heartbeatErrorRecovery: { consecutiveAttempts: 1, updatedAt: new Date(NOW).toISOString(), throttleStreak: 2, cooldownUntilAt: retryingAt } },
+      }),
+      CONTEXT,
+    );
+
+    expect(reason?.code).toBe(FLEET_STALL_CODES.rateLimited);
+    expect(reason?.code).not.toBe(FLEET_STALL_CODES.stateError);
+    expect(reason?.bucket).toBe("stalled");
+    expect(reason?.detail).toContain(retryingAt);
+  });
+
+  it("keeps counting a throttled agent inside the stalled bucket", () => {
+    const retryingAt = new Date(NOW + 2 * MINUTE).toISOString();
+    expect(classifyFleetVerdict([
+      makeAgent({
+        state: "error",
+        lastError: "429 rate_limit_error",
+        metadata: { heartbeatErrorRecovery: { consecutiveAttempts: 1, updatedAt: new Date(NOW).toISOString(), throttleStreak: 2, cooldownUntilAt: retryingAt } },
+      }),
+    ], CONTEXT)).toMatchObject({ stalled: 1, active: 0, waitingHuman: 0, noHeartbeat: 0 });
+  });
+
+  it("falls back to the failed-run code once the injected clock passes the cooldown", () => {
+    // Control: the gate is a LIVE cooldown measured against `dataAsOfMs`, not the presence of the row.
+    const expired = new Date(NOW - MINUTE).toISOString();
+    const reason = resolveFleetStallReason(
+      makeAgent({
+        state: "error",
+        lastError: "429 rate_limit_error",
+        metadata: { heartbeatErrorRecovery: { consecutiveAttempts: 1, updatedAt: new Date(NOW - 10 * MINUTE).toISOString(), throttleStreak: 2, cooldownUntilAt: expired } },
+      }),
+      CONTEXT,
+    );
+
+    expect(reason?.code).toBe(FLEET_STALL_CODES.stateError);
+    expect(reason?.detail).toBe("429 rate_limit_error");
+  });
+
   it("converges a card sitting on a human-hold column onto the person-hold code", () => {
     expect(resolveFleetStallReason(makeAgent({ state: "idle", taskId: "FN-042", taskColumn: "awaiting-user-review" }), CONTEXT)).toEqual({
       bucket: "waitingHuman",

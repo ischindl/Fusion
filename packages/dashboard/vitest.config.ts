@@ -612,6 +612,14 @@ export default defineConfig({
       */
       "@fusion/core/task-delete-attribution": resolve(__dirname, "../core/src/task-delete-attribution.ts"),
       "@fusion/core/column-roles": resolve(__dirname, "../core/src/column-roles.ts"),
+      /*
+      FNXC:ProviderThrottleIsTransient 2026-09-30-14:58 (RUFU-286):
+      The heartbeat throttle-recovery reader is the ONE authority for "is this agent waiting on a
+      provider rate limit, and until when", and the pill, org node, stall resolver and mapper all import
+      it as a VALUE. Ordered before the broader `@fusion/core` alias because Vite matches by prefix and
+      the root key would rewrite the subpath and fail to resolve.
+      */
+      "@fusion/core/heartbeat-recovery-state": resolve(__dirname, "../core/src/agents/heartbeat-recovery-state.ts"),
       // FNXC:ChatSidebarLiveness 2026-09-24-05:55 (RUFU-220): Mirror vite.config.ts so the sidebar classifier resolves identically under Vitest and the browser bundle; the root `@fusion/core` alias here points at the full index, so leaving the subpath unaliased would test a different module than production ships. Ordered before the broader alias because Vite matches in order.
       "@fusion/core/chat-liveness": resolve(__dirname, "../core/src/chat/chat-liveness.ts"),
       // FNXC:MemoryMcp 2026-08-11-00:19: Route tests use the Node-only factory subpath; browser components remain on the pure descriptor barrel.

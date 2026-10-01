@@ -574,6 +574,13 @@ export type DatabaseMutationType =
   | "agent:error-retry-exhausted"
   | "agent:error-parked-unrecoverable"
   /*
+  FNXC:ProviderThrottleIsTransient 2026-09-30-13:37 (RUFU-286):
+  Records that a provider throttle envelope armed a bounded heartbeat re-probe cooldown. Metadata stays
+  ids/counts/outcomes-only (`agentId`, `attempt`, `limit`, `backoffMs`, fixed `source`); the provider error
+  text, model identifiers, and retry-after headers never enter run-audit.
+  */
+  | "agent:throttle-cooldown-armed"
+  /*
   FNXC:RunAudit 2026-07-15-00:00:
   FN-8004 records a heartbeat move that lost a concurrent soft-delete using identifiers and timestamps only. Never place the failed run text or agent lastError in this event because the race is benign and audit metadata must remain structured.
   */

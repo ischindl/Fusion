@@ -39,6 +39,11 @@
       "source": "./src/chat/chat-liveness.ts",
       "import": "./dist/chat/chat-liveness.js"
     },
+    "./heartbeat-recovery-state": {
+      "types": "./src/agents/heartbeat-recovery-state.ts",
+      "source": "./src/agents/heartbeat-recovery-state.ts",
+      "import": "./dist/agents/heartbeat-recovery-state.js"
+    },
     "./detect-content-language": {
       "types": "./src/i18n/detect-content-language.ts",
       "source": "./src/i18n/detect-content-language.ts",

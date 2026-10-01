@@ -51,6 +51,7 @@ import {
   resolveColumnFlags,
   isReviewColumnRole,
   isTerminalColumnRole,
+  readHeartbeatRecoveryState,
 } from "@fusion/core";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "@earendil-works/pi-ai";
@@ -162,6 +163,7 @@ async function resolveHeartbeatReboundColumn(taskStore: TaskStore, taskId: strin
   }
 }
 import { classifyReportHealth } from "./reports-health.js";
+import { describeHeartbeatThrottle } from "@fusion/core";
 import { accumulateSessionTokenUsage, captureSessionTokenBaseline } from "./execution/session-token-usage.js";
 
 const promptSizeLog = createLogger("prompt-size");
@@ -622,6 +624,10 @@ export {
   buildHeartbeatErrorRecoveryMetadata,
   incrementHeartbeatErrorRecoveryMetadata,
   resetHeartbeatErrorRecoveryMetadata,
+  armHeartbeatThrottleCooldown,
+  buildHeartbeatErrorRecoveryMetadataPreservingThrottle,
+  buildHeartbeatThrottleExhaustionMetadata,
+  isHeartbeatThrottleCooldownActive,
   isHeartbeatErrorRecoverable,
   isModelUnavailablePark,
   isModelUnavailableParkRecoveryEligible,
@@ -634,13 +640,18 @@ import {
   HEARTBEAT_MODEL_UNAVAILABLE_PAUSE_REASON,
   resolveErrorRecoveryLimit,
   readHeartbeatErrorRetryCount,
+  buildHeartbeatErrorRecoveryMetadata,
   incrementHeartbeatErrorRecoveryMetadata,
   resetHeartbeatErrorRecoveryMetadata,
+  armHeartbeatThrottleCooldown,
+  buildHeartbeatThrottleExhaustionMetadata,
+  isHeartbeatThrottleCooldownActive,
   isHeartbeatErrorRecoverable,
   isModelUnavailablePark,
   isErrorRecoveryEligible,
   isHeartbeatManaged,
 } from "./agents/agent-heartbeat-error-recovery.js";
+import { isProviderThrottleEnvelopeError } from "./errors/transient-error-detector.js";
 
 
 /** Parameter schema for the fn_heartbeat_done tool */
@@ -1896,10 +1907,29 @@ export class HeartbeatMonitor {
             && retryCount > 0
             && failedWithRecoverableError
           ) {
+            /*
+            FNXC:ProviderThrottleIsTransient 2026-09-30-13:37 (RUFU-286):
+            Exhaustion is what ends a throttle episode's WAIT: the park drops any still-unexpired
+            `cooldownUntilAt`, because a `paused` card that advertised a re-probe instant would promise a
+            retry nothing owns (the timer stops dispatching paused agents) and surfaces would read a live
+            throttle pill off a durably parked agent. What keeps this card parked is the shared budget,
+            never the wait, and it gets the same `error-retry-exhausted` park every other recoverable
+            class gets — the fleet-wide throttle fix stays "more recoverable", never a coordinator-specific
+            park reason.
+
+            FNXC:ProviderThrottleIsTransient 2026-09-30-16:26 (RUFU-286 code review P0):
+            The write is the exhaustion-specific builder, not the clearing one: `throttleStreak` stays on
+            the row so the shared reader can classify this park `throttle-exhausted` ("the retries ran out
+            while the provider kept throttling") instead of an unattributable exhausted park. The clearing
+            builder used to erase that evidence on the most common exhaustion route (a failed run at the
+            budget cap), while the run-entry exhaustion route — which writes no metadata at all — kept it,
+            so the same park read differently depending on which lane noticed.
+            */
             await this.store.updateAgentState(agentId, "paused");
             await this.store.updateAgent(agentId, {
               lastError: failedError,
               pauseReason: HEARTBEAT_ERROR_RETRY_EXHAUSTED_PAUSE_REASON,
+              ...(latestAgent ? { metadata: buildHeartbeatThrottleExhaustionMetadata(latestAgent, retryCount) } : {}),
             });
             heartbeatLog.warn(`Agent ${agentId} error recovery exhausted after ${retryCount}/${errorRecoveryLimit} attempts — pausing`);
             if (this.taskStore) {
@@ -1957,8 +1987,69 @@ export class HeartbeatMonitor {
               }
             }
           } else {
+            /*
+            FNXC:ProviderThrottleIsTransient 2026-09-30-13:37 (RUFU-286):
+            A provider throttle envelope (a 429 carrying `rate_limit_error` / `rate_limit_exceeded`, or an
+            unambiguous request-rate code like AWS `ThrottlingException`) is a self-clearing accounting
+            window, not an operator-actionable durable failure, so this recoverable branch arms the bounded
+            re-probe instead of leaving the card in bare `error`
+
+            FNXC:ProviderThrottleIsTransient 2026-10-01-06:20 (RUFU-286 code review P2):
+            The example list names only tokens `isProviderThrottleEnvelopeError` actually carries. Google
+            `RESOURCE_EXHAUSTED` is NOT one of them — Vertex/Gemini use that single code for both a
+            per-minute request rate and a hard per-project quota, so classing it as a wait could backoff
+            forever against a dead account; it keeps the ordinary bounded budget and parks
+            `error-retry-exhausted`, which is visible. Listing it here promised a wait the code refuses.
+            with only the plain heartbeat interval to wake it. The wait is written on THIS state write
+            (`throttleStreak` + `cooldownUntilAt` in `metadata.heartbeatErrorRecovery`) so there is one
+            durable record of "we are waiting, and until when"; the run-entry gate reads it back and
+            defers until the horizon. Arming burns no budget unit — the failed re-probe at the horizon
+            does, through the normal increment at run entry — and only the budget cap ends the episode,
+            via the exhaustion park above (`error-retry-exhausted`). No arm on the durable park branch
+            and none once the budget is exhausted: both would schedule a re-probe nothing owns.
+            */
+            const throttleArm = latestAgent && failedWithRecoverableError && isProviderThrottleEnvelopeError(failedError)
+              ? armHeartbeatThrottleCooldown(latestAgent)
+              : null;
+            /*
+            FNXC:ProviderThrottleIsTransient 2026-09-30-16:26 (RUFU-286 code review P0):
+            A recoverable failure that is NOT a throttle envelope ends the throttle episode: the streak
+            counted consecutive provider rate-limits, so carrying it past a socket hang-up or a model error
+            would let a much later exhaustion park claim credit for a throttle that stopped happening. Only
+            the stale attribution is cleared here — the clearing builder keeps the shared budget counter —
+            and only when the row actually carries a streak, so ordinary non-throttle failures keep writing
+            exactly the metadata they wrote before this change.
+            */
+            const staleThrottleEpisode = !throttleArm
+              && latestAgent
+              && readHeartbeatRecoveryState(latestAgent).throttleStreak > 0;
             await this.store.updateAgentState(agentId, "error");
-            await this.store.updateAgent(agentId, { lastError: failedError });
+            await this.store.updateAgent(agentId, {
+              lastError: failedError,
+              ...(throttleArm
+                ? { metadata: throttleArm.metadata }
+                : staleThrottleEpisode
+                  ? { metadata: buildHeartbeatErrorRecoveryMetadata(latestAgent, readHeartbeatErrorRetryCount(latestAgent)) }
+                  : {}),
+            });
+            if (throttleArm && this.taskStore) {
+              // IDs/counts/outcomes only: the provider envelope stays on `agent.lastError`, never in run-audit.
+              await emitBoundedRunAudit(this.taskStore, {
+                agentId,
+                runId,
+                domain: "database",
+                mutationType: "agent:throttle-cooldown-armed",
+                target: agentId,
+                metadata: {
+                  agentId,
+                  attempt: retryCount,
+                  limit: errorRecoveryLimit,
+                  backoffMs: throttleArm.backoffMs,
+                  source: "run-failure",
+                },
+              });
+              heartbeatLog.debug(`Agent ${agentId} provider throttle: re-probe scheduled in ${throttleArm.backoffMs}ms (streak ${throttleArm.throttleStreak})`);
+            }
           }
           }
         } else if (completionResult.status === "terminated") {
@@ -2552,6 +2643,55 @@ export class HeartbeatMonitor {
         Include paused/heartbeat-model-unavailable in the same run-entry recovery gate as bare error. Assignment/on-demand model-unavailable parks previously never re-entered the timer path, so false positives stayed parked until a human Retry even though the next session start would succeed.
         */
         if (agent.state === "error" || isModelUnavailablePark(agent)) {
+          /*
+          FNXC:ProviderThrottleIsTransient 2026-09-30-13:37 (RUFU-286):
+          A provider throttle armed a cooldown on the failing run, so until that horizon the agent must not
+          dispatch at all. The gate sits INSIDE this recovery block and BEFORE `canAttemptErrorRecovery` so a
+          deferred tick burns no budget unit — deferral is not an attempt, and if it were, a throttle episode
+          would exhaust the shared budget while merely waiting. The tick completes as a skipped run
+          (`status:"completed"`, `skipStateTransition:true`, reason `throttle-cooldown`) shaped like the
+          `global_pause` / `engine_paused` / budget skips above, so the interval stays armed and the card
+          never re-enters `running`.
+
+          Once the horizon passes, the NEXT tick falls through to the ordinary recovery ladder: it consumes
+          one shared-budget attempt, emits `agent:auto-recover-error-state`, and clears `error` for a probe
+          run. If the budget is already spent, the ladder's exhausted branch parks
+          `pauseReason:"error-retry-exhausted"` — NOT `error-unrecoverable` — deliberately:
+          `error-unrecoverable` means "a human must fix credentials/quota/model access", is excluded from
+          FN-7884 startup recovery, and is re-parked on every restart, so a throttle parked that way re-arms
+          the sweep-rejection loop this change removes and a fleet-wide throttle would end the day with N
+          cards demanding an operator action that was never needed. `error-retry-exhausted` is the park every
+          other recoverable class already gets — restart clears it, `fn_agent_start` clears it, and the
+          invariant stays "a throttle is more recoverable", never coordinator-specific special-casing.
+          */
+          if (agent.state === "error" && isHeartbeatThrottleCooldownActive(agent)) {
+            const throttleCooldown = readHeartbeatRecoveryState(agent);
+            heartbeatLog.debug(`Agent ${agentId} heartbeat deferred — provider throttle cooldown active until ${throttleCooldown.cooldownUntilAt} (source=${source})`);
+            /*
+            FNXC:ProviderThrottleIsTransient 2026-09-30-13:37 (RUFU-286):
+            `startRun` already flipped the row to `running`, and a `skipStateTransition` completion leaves it
+            there — which would erase the very condition this gate reads. `reconcileOrphanedRunningAgents`
+            (every `checkMissedHeartbeats` poll) flips a running row with no active run back to `active`, so
+            the SECOND deferred tick would find a healthy-looking agent and dispatch straight into the same
+            429. Restoring the state the tick arrived in is therefore part of the deferral, not a state
+            change: this branch is only reachable when the preloaded row was `error`, so the write can never
+            lift an operator pause, and it is the same explicit-state-then-skip pattern the budget-park and
+            exhausted-park branches use.
+            */
+            await this.store.updateAgentState(agentId, "error");
+            await this.completeRun(agentId, run.id, {
+              status: "completed",
+              resultJson: {
+                reason: "throttle-cooldown",
+                source,
+                cooldownUntilAt: throttleCooldown.cooldownUntilAt,
+                throttleStreak: throttleCooldown.throttleStreak,
+              },
+              skipStateTransition: true,
+            });
+            return (await this.store.getRunDetail(agentId, run.id))!;
+          }
+
           const errorRecoveryLimit = resolveErrorRecoveryLimit(heartbeatModelSettings);
           const currentRetryCount = readHeartbeatErrorRetryCount(agent);
           const canAttemptErrorRecovery = isErrorRecoveryEligible(agent, errorRecoveryLimit);
@@ -4600,6 +4740,14 @@ export class HeartbeatMonitor {
         }
       }
 
+      /*
+      FNXC:ProviderThrottleIsTransient 2026-09-30-14:17 (RUFU-286):
+      The health cell must not cry "needs operator repair" for a provider throttle the heartbeat
+      timer is already scheduled to re-probe, so the deadline comes from the single shared reader
+      rather than a second parse of `metadata.heartbeatErrorRecovery` here. Only the cooldown kind
+      is forwarded: an exhausted throttle park still needs a human restart.
+      */
+      const throttleDisplay = describeHeartbeatThrottle(report);
       const classification = classifyReportHealth({
         state: report.state,
         pauseReason: report.pauseReason,
@@ -4607,6 +4755,7 @@ export class HeartbeatMonitor {
         heartbeatTimeoutMs,
         staleThresholdMs,
         staleParkedAssignment,
+        throttleCooldownUntilAt: throttleDisplay?.kind === "throttle-cooldown" ? throttleDisplay.retryingAt : null,
       });
       if (classification.bucket === "stale") {
         heartbeatLog.log(`[reports-health] stale report ${report.id} intervalSource=${intervalSource} staleThresholdMs=${staleThresholdMs} heartbeatAgeMs=${heartbeatAgeMs}`);

@@ -3519,3 +3519,28 @@ export type {
   StartDispatchWakeListenerOptions,
 } from "./postgres/dispatch-wake.js";
 export { classifyDispatchWakeReason, resolveDispatchWakeTaskId } from "./task-store/dispatch-wake.js";
+
+/*
+FNXC:ProviderThrottleIsTransient 2026-09-30-13:20 (RUFU-286):
+Shared browser-safe reader for the durable-agent heartbeat recovery metadata
+(throttle cooldown `throttleStreak`/`cooldownUntilAt`). Engine lanes write the row;
+dashboard/fleet/`fn agent show` read it through this module so no surface forks
+its own parse of `metadata.heartbeatErrorRecovery` (RUFU-247 single-projection rule).
+*/
+export {
+  HEARTBEAT_ERROR_RECOVERY_METADATA_KEY,
+  HEARTBEAT_ERROR_RETRY_EXHAUSTED_PAUSE_REASON,
+  THROTTLE_BACKOFF_FLOOR_MS,
+  THROTTLE_BACKOFF_CAP_MS,
+  throttleBackoffMs,
+  readHeartbeatRecoveryState,
+  heartbeatThrottleCooldownRemainingMs,
+  isHeartbeatThrottleCooldownActive,
+  describeHeartbeatThrottle,
+} from "./agents/heartbeat-recovery-state.js";
+export type {
+  HeartbeatErrorRecoveryMetadata,
+  HeartbeatRecoveryAgentRecord,
+  HeartbeatRecoveryState,
+  HeartbeatThrottleDisplay,
+} from "./agents/heartbeat-recovery-state.js";

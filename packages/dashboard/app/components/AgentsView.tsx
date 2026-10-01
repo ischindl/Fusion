@@ -267,6 +267,14 @@ function stallReasonLabel(code: string, t: TFunction<"app">): string {
       return t("agents.stallReason.awaiting-approval", "Waiting for approval");
     case "state-error":
       return t("agents.stallReason.state-error", "Last run failed");
+    /*
+    FNXC:ProviderThrottleIsTransient 2026-09-30-14:52 (RUFU-286):
+    The sibling of `state-error` — the same `state: "error"` row, the opposite operator action. These
+    two lines sit adjacent on purpose: a reader comparing them should see that one says "go look" and
+    the other says "nothing to do", which is the whole distinction RUFU-286 exists to make visible.
+    */
+    case "rate-limited":
+      return t("agents.stallReason.rate-limited", "Rate limited — retry scheduled");
     case "paused":
       return t("agents.stallReason.paused", "Paused");
     case "held-human-review":

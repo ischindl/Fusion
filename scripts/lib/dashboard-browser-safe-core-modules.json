@@ -74,6 +74,11 @@
       "module": "live-agent-count",
       "reason": "2026-07-21: FN-8453 shares pure workflow-trait-based Running and Waiting predicates with dashboard capacity indicators; its dependency graph has no Node-only modules.",
       "verifiedAt": "2026-07-21"
+    },
+    {
+      "module": "heartbeat-recovery-state",
+      "reason": "2026-09-30: RUFU-286 throttle-cooldown reader for agent surfaces; the leaf imports nothing at all (structural input types only).",
+      "verifiedAt": "2026-09-30"
     }
   ]
 }

@@ -1162,6 +1162,7 @@ export default interface Resources {
         "migrated-from-terminated": "Migrated from a dead agent",
         "never-beat": "No heartbeat yet",
         "paused": "Paused",
+        "rate-limited": "Rate limited — retry scheduled",
         "state-error": "Last run failed",
         "testing": "Paused for testing",
         "user-requested": "Paused on request"
@@ -9069,6 +9070,12 @@ export default interface Resources {
         "description": "The agent paused itself until a person approves the pending permission request.",
         "headline": "A tool call is waiting for your approval",
         "suggestedAction": "Open the approvals inbox to approve or deny."
+      },
+      "agent-rate-limited": {
+        "badgeLabel": "Rate limited",
+        "description": "The engine will retry automatically at {{retryAt}} — nothing needs fixing.",
+        "headline": "The provider is rate limiting this agent",
+        "suggestedAction": "No action needed unless it is still rate limited after the retry."
       },
       "awaiting-review-revision": {
         "description": "The latest review asked for changes and this card still has unfinished remediation steps, so it is working rather than waiting on anyone.",

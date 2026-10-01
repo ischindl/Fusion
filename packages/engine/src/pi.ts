@@ -3535,6 +3535,28 @@ export async function createPiAgentSessionRaw(options: AgentOptions): Promise<Ag
     && fallbackModel
     && (configuredFallbackDiffers || selectedModel.provider !== fallbackModel.provider || selectedModel.id !== fallbackModel.id),
   );
+  /*
+  FNXC:ProviderThrottleIsTransient 2026-09-30-14:17 (RUFU-286):
+  The live session is the only record of which model actually served a request when
+  Fusion resolved no model of its own (runtime built-in default). It is held in a
+  nullable holder declared BEFORE `makeFallbackExhaustedError` because the sole
+  session-creation exhaustion call site runs before `activeSession` exists, and a
+  direct closure reference there would read a block-scoped binding still in its
+  temporal dead zone. Refreshed on every session swap so a prompt-time exhaustion
+  names the model that was in use at failure time, not the one first created.
+  */
+  let modelDiagnosticSession: AgentSession | null = null;
+  /**
+   * RUFU-286: the wrapper's `unknown model` text was a formatting artifact that the
+   * operator-actionable classifier mistook for a provider verdict (a live 429 wrapped
+   * in it was parked `error-unrecoverable`). Name the concrete model whenever a session
+   * carried the request; the literal stays reserved for a genuine no-session preflight.
+   */
+  const primaryModelDescription = (): string => {
+    if (selectedModel) return modelDescription(selectedModel);
+    return modelDiagnosticSession ? describeModel(modelDiagnosticSession) : "unknown model";
+  };
+
   const makeFallbackExhaustedError = (
     triggerPoint: "session-creation" | "prompt-time",
     attempts: number,
@@ -3542,7 +3564,7 @@ export async function createPiAgentSessionRaw(options: AgentOptions): Promise<Ag
   ): ModelFallbackExhaustedError => {
     const underlyingReason = underlying instanceof Error ? underlying.message : String(underlying);
     return new ModelFallbackExhaustedError({
-      primaryModel: modelDescription(selectedModel),
+      primaryModel: primaryModelDescription(),
       fallbackModel: hasDistinctFallback ? modelDescription(fallbackModel) : undefined,
       triggerPoint,
       attempts,
@@ -3623,6 +3645,7 @@ export async function createPiAgentSessionRaw(options: AgentOptions): Promise<Ag
   installMessageContentGuard(activeSession as AgentToolHookSession, sessionManager as unknown as SessionManagerLike);
   (activeSession as any).__fusionMemoryAppendAvailable = options.customTools?.some((tool) => tool.name === FN_MEMORY_APPEND_TOOL_NAME) === true;
   const promptableSession = activeSession as PromptableSession;
+  modelDiagnosticSession = activeSession;
 
   let thinkingCompatibilityDisabled = false;
   // FNXC:ThinkingEffortFallback 2026-08-25-00:00: ensure the single-step-down
@@ -3798,6 +3821,7 @@ export async function createPiAgentSessionRaw(options: AgentOptions): Promise<Ag
     Object.assign(promptableSession, next);
     promptableSession.promptWithFallback = next.promptWithFallback ?? promptableSession.promptWithFallback;
     activeSession = next;
+    modelDiagnosticSession = next;
     return next;
   };
 

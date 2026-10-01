@@ -1,4 +1,5 @@
 import type { Agent } from "../api";
+import { describeHeartbeatThrottle } from "@fusion/core/heartbeat-recovery-state";
 import {
   getAgentHealthStatus,
   AGENT_HEALTH_LABEL_HEARTBEAT_DISABLED,
@@ -162,6 +163,14 @@ Synthesized codes (never written by the engine, so they cannot collide with a ra
 export const FLEET_STALL_CODES = {
   awaitingApproval: "awaiting-approval",
   stateError: "state-error",
+  /*
+  FNXC:ProviderThrottleIsTransient 2026-09-30-14:40 (RUFU-286):
+  Synthesized, like `state-error`, and it splits that one code in two: an agent the provider is
+  rate limiting and an agent whose run genuinely failed both sit in `state: "error"`, but only the
+  second one has an operator action. The BUCKET is untouched (still `stalled`, still one agent), so
+  the strip's four counts cannot shift — this only names WHY, which is what the node's line reads.
+  */
+  rateLimited: "rate-limited",
   paused: "paused",
   heldByPerson: "held-human-review",
   heartbeatDisabled: "heartbeat-disabled",
@@ -204,6 +213,20 @@ export function resolveFleetStallReason(
     : undefined;
   if (approvalCount || agent.pauseReason === AGENT_PAUSE_REASON_AWAITING_APPROVAL) {
     return { bucket, code: FLEET_STALL_CODES.awaitingApproval };
+  }
+
+  /*
+  FNXC:ProviderThrottleIsTransient 2026-09-30-14:40 (RUFU-286):
+  Ranked immediately above `state-error` for the same reason agentHealth ranks its label there: the
+  cooldown is a fact about the SAME `state: "error"` row, and reading `lastError` off that row is the
+  misdiagnosis this task exists to remove. The deadline goes in `detail` (tooltip-only) because a
+  headline is one short phrase; the shared reader supplies it, so no timing is re-derived here.
+  */
+  // Injected clock, like every other timing judgement in this module: an elapsed cooldown must read as
+  // elapsed in a fixture whose `dataAsOfMs` is fixed, never against the wall clock.
+  const throttle = describeHeartbeatThrottle(agent, context.dataAsOfMs ?? Date.now());
+  if (throttle?.kind === "throttle-cooldown") {
+    return { bucket, code: FLEET_STALL_CODES.rateLimited, detail: `Auto-retry scheduled for ${throttle.retryingAt} (attempt ${throttle.throttleStreak})` };
   }
 
   if (agent.state === "error") {

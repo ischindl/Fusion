@@ -126,6 +126,21 @@ Events that make durable-agent error states and their recovery inspectable.
 | `agent:error-parked-unrecoverable` | An operator-actionable durable-agent error parks the agent `paused` with pauseReason `error-unrecoverable` for human repair. |
 | `agent:heartbeat-move-skipped-soft-delete` | A heartbeat move races a soft-deleted task and is skipped without parking the durable agent. |
 
+`agent:throttle-cooldown-armed` records the heartbeat arming one bounded re-probe after a run failed on a
+provider throttle envelope (HTTP 429 `rate_limit_error` / `Rate limit exceeded` / `~~429~~`) rather than
+parking the agent. Metadata is ids/counts/fixed enums only: `agentId`, the shared attempt count `attempt`,
+the `limit`, the computed `backoffMs`, and fixed `source: "run-failure"`; the provider envelope, model
+identifiers, and account text never enter the row. The row is written once per arming failure — subsequent
+failures in the same episode raise the streak and widen `backoffMs` on the floor-doubling-cap ladder, and
+an exhausted budget parks `error-retry-exhausted` (the sibling row above) instead of re-arming. While the
+cooldown is live, heartbeat run entry skips the run with `resultJson.reason: "throttle-cooldown"` and emits
+no audit row of its own — the wait is already represented by the arming row plus the agent's own recovery
+metadata (`agent-heartbeat-throttle-cooldown.test.ts` pins both). The skip deliberately consumes no unit of
+the shared retry budget; only a re-probe that actually runs and fails does. The write uses the FN-9175
+bounded best-effort seam, so an absent, throwing, or hanging audit sink can neither delay the failure path
+nor turn a transient throttle into a durable park, and the event is intentionally outside the curated
+delivery-pipeline event catalogue.
+
 ## Event-driven dispatch latency
 
 `task:dispatch-latency-observed` (FN-519) answers "why did this card wait?" after the fact. Before

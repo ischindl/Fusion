@@ -177,13 +177,14 @@ import {
   isRecoverableMissingWorktreeReviewFailureWithProgress,
   MERGE_ACTIVE_MISSING_WORKTREE_STATUSES,
 } from "./healing/restart-recovery-coordinator.js";
-import { extractMissingModulePath, isNonContinuableSessionError, isStaleWorktreeModuleResolutionError } from "./errors/transient-error-detector.js";
+import { extractMissingModulePath, isNonContinuableSessionError, isProviderThrottleEnvelopeError, isStaleWorktreeModuleResolutionError } from "./errors/transient-error-detector.js";
 import { classifyTaskError } from "./errors/error-classifier.js";
 import {
-  buildHeartbeatErrorRecoveryMetadata,
+  buildHeartbeatErrorRecoveryMetadataPreservingThrottle,
   HEARTBEAT_ERROR_RETRY_EXHAUSTED_PAUSE_REASON,
   HEARTBEAT_ERROR_UNRECOVERABLE_PAUSE_REASON,
   isHeartbeatErrorRecoverable,
+  isHeartbeatThrottleCooldownActive,
   isModelUnavailablePark,
   isModelUnavailableParkRecoveryEligible,
   readHeartbeatErrorRetryCount,
@@ -18614,7 +18615,23 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
         const isErrorRetryExhaustedPark =
           agent.state === "paused" && agent.pauseReason === HEARTBEAT_ERROR_RETRY_EXHAUSTED_PAUSE_REASON;
         const isModelUnavailableParked = isModelUnavailablePark(agent);
-        if (agent.state !== "error" && !isErrorRetryExhaustedPark && !isModelUnavailableParked) {
+        /*
+        FNXC:ProviderThrottleIsTransient 2026-09-30-14:05 (RUFU-286):
+        A `paused` + `error-unrecoverable` park whose `lastError` is a provider throttle envelope is a
+        MIS-PARK, not the operator-actionable park FN-7884 protects: the park was written by the pre-fix
+        classifier, whose `/unknown model/i` pattern matched the model-fallback wrapper around a live 429
+        (RUFU-286's coordinator outage). Engine restart is an operator-retry boundary, so this build
+        clears the agent it would otherwise have preserved forever, and the already-victimized agent
+        recovers on the first restart after deploy. Candidacy is by envelope shape only — the shared
+        `isHeartbeatErrorRecoverable` guard below still has to agree before anything is cleared, so a
+        genuine durable park (bad key, OAuth scope, model access, hard `insufficient_quota`) names no
+        throttle envelope, never becomes a candidate here, and stays preserved exactly as before.
+        */
+        const isThrottleMisPark =
+          agent.state === "paused"
+          && agent.pauseReason === HEARTBEAT_ERROR_UNRECOVERABLE_PAUSE_REASON
+          && isProviderThrottleEnvelopeError(agent.lastError ?? "");
+        if (agent.state !== "error" && !isErrorRetryExhaustedPark && !isModelUnavailableParked && !isThrottleMisPark) {
           continue;
         }
         if (isEphemeralAgent(agent)) {
@@ -18768,6 +18785,20 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
           if (this.options.hasActiveAgentExecution?.(agent.id) === true) {
             return false;
           }
+          /*
+          FNXC:ProviderThrottleIsTransient 2026-09-30-14:05 (RUFU-286):
+          Mid-cooldown, this sweep stands down entirely. A throttle episode has exactly one re-probe
+          owner — the heartbeat timer, which defers its own run entry until the horizon — and a second
+          engine-side attempt would either duplicate the provider request the horizon exists to avoid or
+          spend the shared `heartbeatErrorRecovery` budget on a tick the timer already owns, which would
+          shorten the episode's remaining attempts and eventually park a card that was merely waiting.
+          Skipping here consumes no budget and writes nothing: the candidate stays exactly as the timer
+          left it, and the sweep only takes the episode over once the cooldown has actually expired.
+          */
+          if (isHeartbeatThrottleCooldownActive(agent)) {
+            log.log(`Durable agent ${agent.id} left untouched: provider throttle cooldown active, heartbeat timer owns the re-probe`);
+            return false;
+          }
           const isRecoverableHeartbeatError = isHeartbeatErrorRecoverable(agent) || isModelUnavailableRecoveryCandidate;
           const isStaleMissingModule = isStaleWorktreeModuleResolutionError(agent.lastError ?? "");
           const isUnrecoverableHeartbeatError = !isRecoverableHeartbeatError && !isStaleMissingModule;
@@ -18884,10 +18915,18 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             /*
             FNXC:AgentHeartbeat 2026-07-11-22:42:
             FN-7844 consolidates durable-agent error recovery accounting across the heartbeat timer and self-healing sweep. The sweep keeps its cooldown/stale-path metadata, but writes the shared heartbeatErrorRecovery counter and audit event so a single retry budget applies regardless of which recovery entry path fires.
+
+            FNXC:ProviderThrottleIsTransient 2026-09-30-16:26 (RUFU-286 code review P1):
+            This budget write goes through the STREAK-PRESERVING builder, not the clearing one. The sweep
+            only reaches here after the mid-cooldown stand-down earlier in this predicate — i.e. exactly
+            when a throttle horizon has just elapsed — so the clearing shape erased `throttleStreak` on
+            every sweep-owned re-probe and pinned the next arm back at the 60 s floor: the same dead-ladder
+            defect the heartbeat run-entry increment had. Dropping an elapsed wait is fine; ending the
+            episode is not this writer's call (a success reset or a non-throttle failure owns that).
             */
             await agentStore.updateAgent(agent.id, {
               metadata: {
-                ...buildHeartbeatErrorRecoveryMetadata(agent, nextAttempts),
+                ...buildHeartbeatErrorRecoveryMetadataPreservingThrottle(agent, nextAttempts),
                 durableErrorRecovery: {
                   attempts: nextAttempts,
                   lastAttemptAt: new Date().toISOString(),

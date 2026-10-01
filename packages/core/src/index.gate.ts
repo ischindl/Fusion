@@ -2865,3 +2865,27 @@ export {
   latestTaskEnteredReviewAt,
 } from "./task-store/lifecycle-outbox.js";
 export type { TaskLifecycleEventInput, TaskEnteredReviewLifecyclePayload } from "./task-store/lifecycle-outbox.js";
+
+/*
+FNXC:ProviderThrottleIsTransient 2026-09-30-13:20 (RUFU-286):
+Mirrored from index.ts — the engine gate files reach it transitively through
+`agent-heartbeat-error-recovery.ts`, which now reads the throttle cooldown fields
+(`throttleStreak`/`cooldownUntilAt`) from this shared browser-safe leaf.
+*/
+export {
+  HEARTBEAT_ERROR_RECOVERY_METADATA_KEY,
+  HEARTBEAT_ERROR_RETRY_EXHAUSTED_PAUSE_REASON,
+  THROTTLE_BACKOFF_FLOOR_MS,
+  THROTTLE_BACKOFF_CAP_MS,
+  throttleBackoffMs,
+  readHeartbeatRecoveryState,
+  heartbeatThrottleCooldownRemainingMs,
+  isHeartbeatThrottleCooldownActive,
+  describeHeartbeatThrottle,
+} from "./agents/heartbeat-recovery-state.js";
+export type {
+  HeartbeatErrorRecoveryMetadata,
+  HeartbeatRecoveryAgentRecord,
+  HeartbeatRecoveryState,
+  HeartbeatThrottleDisplay,
+} from "./agents/heartbeat-recovery-state.js";

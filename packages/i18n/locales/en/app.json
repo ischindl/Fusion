@@ -7893,6 +7893,12 @@
       "description": "The agent paused itself until a person approves the pending permission request.",
       "headline": "A tool call is waiting for your approval"
     },
+    "agent-rate-limited": {
+      "suggestedAction": "No action needed unless it is still rate limited after the retry.",
+      "badgeLabel": "Rate limited",
+      "description": "The engine will retry automatically at {{retryAt}} — nothing needs fixing.",
+      "headline": "The provider is rate limiting this agent"
+    },
     "pausedReason": {
       "error-retry-exhausted": {
         "headline": "Automatic retries exhausted"
@@ -11237,6 +11243,7 @@
       "manual": "Paused by a person",
       "error-retry-exhausted": "Error retries exhausted",
       "state-error": "Last run failed",
+      "rate-limited": "Rate limited — retry scheduled",
       "held-human-review": "Waiting on a person",
       "user-requested": "Paused on request",
       "error-unrecoverable": "Needs a person to fix",

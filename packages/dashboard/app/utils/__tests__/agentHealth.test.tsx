@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { JSX } from "react";
-import { getAgentHealthStatus, getAgentHealthColorVar } from "../agentHealth";
+import {
+  getAgentHealthStatus,
+  getAgentHealthColorVar,
+  AGENT_HEALTH_LABEL_AWAITING_APPROVAL,
+  AGENT_HEALTH_LABEL_RATE_LIMITED,
+} from "../agentHealth";
+import { PAUSE_REASON_LABELS } from "../stallReason";
 import type { Agent } from "../../api";
 
 // Mock Date.now to get deterministic elapsed time calculations
@@ -71,6 +77,80 @@ describe("getAgentHealthStatus", () => {
       const status = getAgentHealthStatus(agent);
       expect(status.label).toBe("Error");
       expect(status.stateDerived).toBe(true);
+    });
+  });
+
+  /*
+  FNXC:ProviderThrottleIsTransient 2026-09-30-14:58 (RUFU-286):
+  The reported incident, on the surface that actually misled the operator. The pill printed the raw
+  upstream wrapper body, whose tail says `unknown model, no fallback configured` — text that reads as
+  "a model name is broken, go fix configuration" — while the real cause was a 429 account rate limit
+  the engine was already waiting out. These cases pin the whole distinction: the cooldown outranks the
+  body, the body survives as tooltip evidence, and BOTH controls prove the gate is the live cooldown
+  rather than `lastError` never being allowed to render at all.
+  */
+  describe("provider throttle cooldown", () => {
+    const THROTTLE_ENVELOPE = 'Unable to select a usable model after 1 attempt (primary unknown model, no fallback configured, trigger: prompt-time): 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."},"request_id":"req_011Cf3ZXBTF3bymyoFWRQy3t"}';
+    const cooldownMetadata = (untilAt: string) => ({
+      heartbeatErrorRecovery: {
+        consecutiveAttempts: 1,
+        updatedAt: new Date(FIXED_NOW).toISOString(),
+        throttleStreak: 2,
+        cooldownUntilAt: untilAt,
+      },
+    });
+    const retryingAt = new Date(FIXED_NOW + 120_000).toISOString();
+
+    it('labels a cooled-down throttled agent "Rate limited" instead of printing the provider body', () => {
+      const status = getAgentHealthStatus(makeAgent({
+        state: "error",
+        lastError: THROTTLE_ENVELOPE,
+        metadata: cooldownMetadata(retryingAt),
+      }));
+
+      expect(status.label).toBe(AGENT_HEALTH_LABEL_RATE_LIMITED);
+      // The misdiagnosis text must never reach the headline again.
+      expect(status.label).not.toContain("unknown model");
+      expect(status.label).not.toContain("429");
+      // The raw body is demoted to evidence, not deleted.
+      expect(status.reason).toContain("429");
+      expect(status.reason).toContain(retryingAt);
+    });
+
+    it("keeps printing the provider body once the cooldown has elapsed", () => {
+      // Control for the case above: the gate is a LIVE cooldown, not a blanket ban on lastError.
+      const elapsed = new Date(FIXED_NOW - 1).toISOString();
+      const status = getAgentHealthStatus(makeAgent({
+        state: "error",
+        lastError: THROTTLE_ENVELOPE,
+        metadata: cooldownMetadata(elapsed),
+      }));
+
+      expect(status.label).toBe(THROTTLE_ENVELOPE);
+    });
+
+    it("does not pre-empt a pending approval the operator can act on", () => {
+      // The cooldown keeps running underneath either way; the actionable wait is what gets named.
+      const status = getAgentHealthStatus(makeAgent({
+        state: "error",
+        lastError: THROTTLE_ENVELOPE,
+        pendingApprovalCount: 1,
+        metadata: cooldownMetadata(retryingAt),
+      }));
+
+      expect(status.label).toBe(AGENT_HEALTH_LABEL_AWAITING_APPROVAL);
+    });
+
+    it("does not promise a retry to a paused agent whose throttle budget ran out", () => {
+      const status = getAgentHealthStatus(makeAgent({
+        state: "paused",
+        pauseReason: "error-retry-exhausted",
+        lastError: THROTTLE_ENVELOPE,
+        metadata: cooldownMetadata(retryingAt),
+      }));
+
+      expect(status.label).toBe(PAUSE_REASON_LABELS["error-retry-exhausted"]);
+      expect(status.reason ?? "").not.toContain(retryingAt);
     });
   });
 

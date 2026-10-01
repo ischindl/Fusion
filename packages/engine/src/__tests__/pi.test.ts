@@ -2723,6 +2723,75 @@ describe("piLog structured diagnostics", () => {
     expect(onFallbackModelUsed).not.toHaveBeenCalled();
   });
 
+  /*
+  FNXC:ProviderThrottleIsTransient 2026-09-30-14:17 (RUFU-286):
+  The incident string `primary unknown model` was pure formatting artifact: Fusion resolved no
+  model of its own while the runtime used its built-in default, and the operator-actionable
+  classifier read that artifact as a provider verdict, permanently parking a live 429. The
+  wrapper must name the model the session actually carried, and must keep the literal only when
+  no session-side identity exists to name. The `Unable to select a usable model after` prefix is
+  a stable contract other lanes grep for, so both directions assert it.
+  */
+  it("names the session's concrete model in a prompt-time exhaustion when Fusion resolved none", async () => {
+    const createAgentSessionMock = vi.mocked(createAgentSession);
+    createAgentSessionMock.mockReset();
+
+    // No defaultProvider/defaultModelId: Fusion resolves no model and pi uses its
+    // built-in default, which is exactly the identity the wrapper used to erase.
+    const sessionWithRuntimeDefaultModel = {
+      model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+      prompt: vi.fn().mockRejectedValue(new Error("429 Too Many Requests")),
+      state: { errorMessage: "", messages: [] },
+      subscribe: vi.fn(),
+      dispose: vi.fn(),
+      setThinkingLevel: vi.fn(),
+      sessionFile: undefined,
+    } as unknown as AgentSession;
+    createAgentSessionMock.mockResolvedValue({ session: sessionWithRuntimeDefaultModel } as any);
+
+    const { session } = await createFnAgent({
+      cwd: "/test/project",
+      systemPrompt: "Test unresolved primary identity",
+      fallbackProvider: "test",
+      fallbackModelId: "fallback-model",
+    });
+
+    const thrown = await (session as any).promptWithFallback("prompt text").catch((err: unknown) => err);
+    expect((thrown as Error).name).toBe("ModelFallbackExhaustedError");
+    expect((thrown as Error).message).toContain("Unable to select a usable model after");
+    expect((thrown as any).primaryModel).toBe("anthropic/claude-sonnet-4-5");
+    expect((thrown as Error).message).not.toContain("primary unknown model");
+  });
+
+  it("keeps the literal `unknown model` when no session-side model identity exists", async () => {
+    const createAgentSessionMock = vi.mocked(createAgentSession);
+    createAgentSessionMock.mockReset();
+
+    // A session carrying neither a model object nor a lastModelDescription is the only
+    // remaining producer of the literal, so the wording must not be invented here.
+    const sessionWithoutIdentity = {
+      prompt: vi.fn().mockRejectedValue(new Error("429 Too Many Requests")),
+      state: { errorMessage: "", messages: [] },
+      subscribe: vi.fn(),
+      dispose: vi.fn(),
+      setThinkingLevel: vi.fn(),
+      sessionFile: undefined,
+    } as unknown as AgentSession;
+    createAgentSessionMock.mockResolvedValue({ session: sessionWithoutIdentity } as any);
+
+    const { session } = await createFnAgent({
+      cwd: "/test/project",
+      systemPrompt: "Test no model identity",
+      fallbackProvider: "test",
+      fallbackModelId: "fallback-model",
+    });
+
+    const thrown = await (session as any).promptWithFallback("prompt text").catch((err: unknown) => err);
+    expect((thrown as Error).name).toBe("ModelFallbackExhaustedError");
+    expect((thrown as any).primaryModel).toBe("unknown model");
+    expect((thrown as Error).message).toContain("primary unknown model");
+  });
+
   it("fires fallback hook on prompt-time model-auth-tier fallback", async () => {
     const createAgentSessionMock = vi.mocked(createAgentSession);
     const onFallbackModelUsed = vi.fn();

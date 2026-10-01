@@ -376,6 +376,50 @@ describe("resolveStallReason — non-pause codes reach the translator", () => {
   });
 
   /*
+  FNXC:ProviderThrottleIsTransient 2026-09-30-14:58 (RUFU-286):
+  A card whose agent is waiting out a provider throttle was the shape an operator read as "stuck, and the
+  error text says the model name is wrong". The card must say the wait is rate limiting and that it ends
+  by itself. `throttleRetryAt` is the mapper's derived field, so these cases feed exactly what the mapper
+  produces — never a raw metadata bag — which is what keeps a second reader of the episode from existing.
+  */
+  it("agent-rate-limited when the owning agent holds a live throttle cooldown", () => {
+    const { t, call } = makeT();
+    const retryingAt = new Date(Date.parse("2026-09-30T12:02:00.000Z")).toISOString();
+    const result = resolveStallReason(
+      subject({ status: "in-progress" }),
+      { t, agent: { state: "error", lastError: "429 rate_limit_error (unknown model, no fallback configured)", throttleRetryAt: retryingAt } },
+    );
+
+    expect(result?.code).toBe("agent-rate-limited");
+    expect(call("stall.agent-rate-limited.badgeLabel")).toMatchObject({ fallback: "Rate limited" });
+    expect(result?.description).toContain(retryingAt);
+    // The misdiagnosis sentence must not be what the card repeats.
+    expect(result?.headline).not.toContain("unknown model");
+  });
+
+  it("an exhausted throttle with no retry scheduled leaves the card flowing", () => {
+    // Control: the rung keys on a scheduled retry, not on the throttle row being present. An exhausted
+    // park has no retry to promise, so inventing this code there would name a recovery that will not come.
+    const { t } = makeT();
+    const result = resolveStallReason(
+      subject({ status: "in-progress" }),
+      { t, agent: { state: "paused", pauseReason: "error-retry-exhausted" } },
+    );
+    expect(result).toBeUndefined();
+  });
+
+  it("ranks a card-specific blocker above the agent-wide throttle wait", () => {
+    // `throttleRetryAt` comes from the owning AGENT, so it is aggregated across every card that agent
+    // owns; a blocker that names THIS card must win, the same lesson the approval rung learned.
+    const { t } = makeT();
+    const result = resolveStallReason(
+      subject({ column: "in-review" }),
+      { t, mergeBlockerReason: "pre-merge check 'lint' failed", agent: { state: "error", throttleRetryAt: new Date(Date.parse(ISO_T) + 120_000).toISOString() } },
+    );
+    expect(result?.code).toBe("merge-blocker");
+  });
+
+  /*
   FNXC:StallReason 2026-09-03-01:01 (RUFU-177):
   RUFU-177's consumer wiring made this branch reachable from the board, and its ranking turned out to be
   load-bearing: `pendingApprovalCount` is a per-ACTOR aggregate (`getPendingCountsByActor`), so an approval
@@ -870,6 +914,15 @@ const faceExpectations: Record<StallReasonCode, readonly [boolean, boolean, bool
   queued: [false, false, false],
   // The card's awaiting-approval affordance owns this one.
   "agent-approval": [false, false, false],
+  /*
+  FNXC:ProviderThrottleIsTransient 2026-09-30-14:58 (RUFU-286):
+  Unlike `agent-approval` above, nothing else on the card says "rate limited", so the detail banner is
+  this code's only surface — it may not be dropped entirely. It is NOT face-visible for the same reason
+  the two ordinary review waits below it are not: the engine resolves the wait by itself on a bounded
+  timer, so a chip would brand routine retry an abnormal state — and `pendingApprovalCount`-style
+  per-ACTOR aggregation means one throttled agent would badge every card it owns.
+  */
+  "agent-rate-limited": [false, false, true],
   // A pause earns a visible reason only when it can name one.
   "agent-paused": [true, false, true],
   "user-paused": [true, false, true],

@@ -4,7 +4,8 @@ export type ReportHealthBucket =
   | "stale"
   | "stuck"
   | "paused"
-  | "operator-actionable";
+  | "operator-actionable"
+  | "rate-limited";
 
 export interface ReportHealthInput {
   state: string | undefined;
@@ -13,6 +14,14 @@ export interface ReportHealthInput {
   heartbeatTimeoutMs: number;
   staleThresholdMs: number;
   staleParkedAssignment: boolean;
+  /**
+   * RUFU-286: the provider-throttle re-probe deadline, already resolved by the single
+   * browser-safe reader (`describeHeartbeatThrottle` from `@fusion/core/heartbeat-recovery-state`).
+   * The classifier deliberately takes the derived value instead of raw `metadata` so this
+   * engine-side classifier stays free of parsing policy — one reader owns what "cooling down"
+   * means for every surface. Absent/null means no cooldown.
+   */
+  throttleCooldownUntilAt?: string | null;
 }
 
 export interface ReportHealthClassification {
@@ -50,6 +59,22 @@ export function classifyReportHealth(input: ReportHealthInput): ReportHealthClas
     };
   }
 
+  /*
+  FNXC:ProviderThrottleIsTransient 2026-09-30-14:17 (RUFU-286):
+  A throttled agent stays in `state: "error"` while it waits out a bounded provider cooldown, so
+  the pre-existing error branch below would have reported it as `**needs operator repair**` —
+  the same false alarm the lifecycle used to park it with. Nothing is wrong with the credentials
+  or access; the provider said "try again later" and the heartbeat timer has the re-probe armed.
+  Only the state column changes (`error` stays, because the agent genuinely is not running), and
+  a pause never takes this branch: pause markers outrank state above, and the shared reader
+  refuses to advertise a re-probe the de-registered timer would not run.
+  */
+  if (input.state === "error" && input.throttleCooldownUntilAt) {
+    return {
+      bucket: "rate-limited",
+      cellText: `rate limited — auto-retry scheduled (${input.throttleCooldownUntilAt})`,
+    };
+  }
   if (input.state === "error") {
     return { bucket: "operator-actionable", cellText: "**needs operator repair**" };
   }

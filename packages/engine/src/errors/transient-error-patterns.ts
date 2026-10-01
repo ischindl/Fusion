@@ -159,6 +159,85 @@ export function isSessionContentionError(errorMessage: string): boolean {
   return SESSION_CONTENTION_PATTERNS.some((pattern) => pattern.test(errorMessage));
 }
 
+/*
+FNXC:ProviderThrottleIsTransient 2026-09-30-13:05 (RUFU-286):
+A time-boxed provider throttle is a wait-until condition, not a repair-it condition. The motivating
+incident: an Anthropic 429 `rate_limit_error` ("This request would exceed your account's rate limit.
+Please try again later.") reached a durable agent wrapped in pi's fallback envelope
+`Unable to select a usable model after 1 attempt (primary unknown model, no fallback configured,
+trigger: prompt-time): 429 {"type":"error","error":{"type":"rate_limit_error",...}}`. pi substitutes
+the literal `unknown model` into that wrapper whenever Fusion resolved no model (pi used its own
+built-in default), so the wrapper — not the envelope — is what downstream text classifiers saw, and
+it matched the operator-actionable /unknown model/i pattern. Consequence: the agent parked
+`paused`/`pauseReason:"error-unrecoverable"` with no scheduled re-probe and the FN-7884 startup sweep
+refuses to clear that class, so a throttle that expires in minutes silently becomes an operator
+page. Measured: the engine-wide `agent:error-parked-unrecoverable` rate had climbed to 4.8 events/day.
+
+Shape (a): a structured provider envelope type — Anthropic 429 `rate_limit_error`, OpenAI 429
+`rate_limit_exceeded`. Shape (b): the pi fallback wrapper whose tail carries shape (a); a whole-string
+envelope test covers both because pi interpolates the underlying reason verbatim. The wrapper alone
+(without an envelope tail) must NOT fire — it also wraps durable classes at session creation.
+
+Hard usage caps are excluded FIRST and win: `insufficient_quota` ("budget has been exhausted. Please
+purchase more."), quota-exceeded, billing, plan-access and weekly "usage limit reached" wording are
+provider-account states no retry fixes. An Anthropic insufficient_quota envelope carries
+`"type":"insufficient_quota"`, never a rate-limit type, so the exclusion is precedence insurance for
+messages that mention both (e.g. an OpenAI rate_limit envelope whose message says "check your billing").
+
+Deliberately narrow: generic prose ("we hit a rate limit", the dashboard's own provider-pause reason
+`provider-rate-limit:<id>`, retry-count chatter) must not match — only the structured type tokens
+providers emit in a 429 body. That is also why the token is not put into TRANSIENT_ERROR_PATTERNS:
+this classification feeds operator-actionability, not task retry queues.
+*/
+const PROVIDER_THROTTLE_ENVELOPE_PATTERN =
+  /["']type["']\s*:\s*["']rate_limit_(?:error|exceeded)["']|\brate_limit_error\b|\brate_limit_exceeded\b/i;
+
+/*
+FNXC:ProviderThrottleIsTransient 2026-09-30-17:12 (RUFU-286 code review P2):
+The envelope tokens above are the Anthropic/OpenAI spellings only, so every other provider's
+unambiguous request-rate code fell to the generic branch — and for a durable agent that branch is
+the error-recovery budget, which ends in a park. These additions are the codes that ONLY ever mean
+"your request rate is too high, try again in a moment", never an account state:
+- AWS/Bedrock: `ThrottlingException` (bedrock-runtime and Step Functions style), `Throttling`,
+  `ThrottlingException`'s v2 siblings `RequestLimitExceeded` / `TooManyRequestsException`, and the
+  CamelCase `rateLimitExceeded` the JS SDK puts on `err.name`/`err.code`.
+- Azure OpenAI and AI-Gateway: 429 bodies whose `error.code` is `TooManyRequests`.
+- SDK class names carried in the message text (`RateLimitError`, `APIError: 429`-style prefixes are
+  NOT matched — a bare status code proves nothing about which quota tier tripped).
+
+DELIBERATE EXCLUSION — Google `RESOURCE_EXHAUSTED`. Vertex/Gemini use ONE code for two opposite
+verdicts: per-minute request rate (a wait) and daily/per-project quota exhaustion (an operator
+action). Nothing in the body distinguishes them (`"Resource has been exhausted (e.g. check quota.)"`
+appears for both), so matching it would silently convert a hard quota stop into an endless
+backoff-and-reprobe that never pages anyone — the exact failure mode RUFU-286 exists to remove. An
+unclassified `RESOURCE_EXHAUSTED` still gets the bounded retry budget and then parks
+`error-retry-exhausted`, which IS visible. Add it only together with a field that separates the two.
+
+Hard-cap precedence is unchanged and still wins: an AWS `ThrottlingException` whose message also says
+"purchase more" stays operator-actionable.
+*/
+const PROVIDER_THROTTLE_ENUM_PATTERN =
+  /\bThrottling(?:Exception)?\b|\bTooManyRequests(?:Exception)?\b|\bRequestLimitExceeded\b|\brateLimitExceeded\b|\bRateLimitError\b/i;
+const PROVIDER_HARD_USAGE_CAP_PATTERN =
+  /insufficient_quota|quota[_\s-]?exceeded|billing|plan access|usage limit reached|budget has been exhausted|purchase more/i;
+
+/**
+ * Detect a time-boxed provider throttle — a 429 whose structured type says retry later
+ * (`rate_limit_error` Anthropic / `rate_limit_exceeded` OpenAI, plus the AWS/Azure request-rate
+ * enums), including pi's fallback wrapper when its tail carries that envelope. Excludes hard usage
+ * caps (`insufficient_quota`, quota-exceeded, billing, plan-access, weekly usage-limit wording):
+ * those need operator action.
+ */
+export function isProviderThrottleEnvelopeError(errorMessage: string): boolean {
+  if (!errorMessage || typeof errorMessage !== "string") {
+    return false;
+  }
+  if (PROVIDER_HARD_USAGE_CAP_PATTERN.test(errorMessage)) {
+    return false;
+  }
+  return PROVIDER_THROTTLE_ENVELOPE_PATTERN.test(errorMessage) || PROVIDER_THROTTLE_ENUM_PATTERN.test(errorMessage);
+}
+
 /**
  * Check if an error message indicates a transient network/infrastructure error.
  *

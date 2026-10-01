@@ -18,6 +18,21 @@ function makeT() {
   return { t, calls };
 }
 
+/**
+ * FNXC:ProviderThrottleIsTransient 2026-09-30-14:58 (RUFU-286): shared card under test for the throttle
+ * mappings below — the mapper only reads `assignedAgentId` to prove ownership, while `resolveStallReason`
+ * needs a real column/updatedAt, so one shape serves both.
+ */
+const CARD = {
+  id: "FN-701",
+  title: "Task",
+  column: "in-progress" as const,
+  status: "in-progress" as const,
+  assignedAgentId: "agent-a",
+  createdAt: "2026-09-02T12:00:00.000Z",
+  updatedAt: "2026-09-02T12:00:00.000Z",
+};
+
 describe("toStallAgent", () => {
   it("maps the owning agent's approval and pause fields through verbatim", () => {
     const stall = toStallAgent(
@@ -85,5 +100,74 @@ describe("toStallAgent", () => {
       { t, agent: toStallAgent(base, { id: "agent-b", state: "running", pendingApprovalCount: 1 }) },
     );
     expect(foreign?.code).toBeUndefined();
+  });
+
+  /*
+  FNXC:ProviderThrottleIsTransient 2026-09-30-14:58 (RUFU-286):
+  This mapper is the ONLY place a card learns about a provider throttle, so these two assertions carry the
+  single-reader guarantee. The fixture writes the canonical `heartbeatErrorRecovery` envelope the engine
+  actually persists — a test that invented its own key names would pass while production stayed broken.
+  The controls matter as much as the positive case: an elapsed cooldown and an exhausted park must NOT
+  forward a retry date, or the card would promise a re-probe that is never coming.
+  */
+  it("derives throttleRetryAt from the canonical throttle envelope the engine persists", () => {
+    const retryingAt = new Date(Date.now() + 120_000).toISOString();
+    const mapped = toStallAgent(
+      { ...CARD, stallReason: undefined },
+      {
+        id: "agent-a",
+        state: "error",
+        lastError: "429 rate_limit_error (unknown model, no fallback configured)",
+        metadata: {
+          heartbeatErrorRecovery: {
+            consecutiveAttempts: 1,
+            updatedAt: new Date().toISOString(),
+            throttleStreak: 2,
+            cooldownUntilAt: retryingAt,
+          },
+        },
+      },
+    );
+
+    expect(mapped?.throttleRetryAt).toBe(retryingAt);
+
+    const { t } = makeT();
+    expect(resolveStallReason({ ...CARD, stallReason: undefined }, { t, agent: mapped })?.code).toBe("agent-rate-limited");
+  });
+
+  it("forwards no retry date for an elapsed cooldown or an exhausted park", () => {
+    const elapsed = toStallAgent(
+      { ...CARD, stallReason: undefined },
+      {
+        id: "agent-a",
+        state: "error",
+        metadata: {
+          heartbeatErrorRecovery: {
+            consecutiveAttempts: 1,
+            updatedAt: new Date(Date.now() - 600_000).toISOString(),
+            throttleStreak: 2,
+            cooldownUntilAt: new Date(Date.now() - 60_000).toISOString(),
+          },
+        },
+      },
+    );
+    expect(elapsed?.throttleRetryAt).toBeUndefined();
+
+    const exhausted = toStallAgent(
+      { ...CARD, stallReason: undefined },
+      {
+        id: "agent-a",
+        state: "paused",
+        pauseReason: "error-retry-exhausted",
+        metadata: {
+          heartbeatErrorRecovery: {
+            consecutiveAttempts: 5,
+            updatedAt: new Date().toISOString(),
+            throttleStreak: 5,
+          },
+        },
+      },
+    );
+    expect(exhausted?.throttleRetryAt).toBeUndefined();
   });
 });

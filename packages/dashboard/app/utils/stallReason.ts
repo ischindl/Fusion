@@ -102,7 +102,17 @@ export type StallReasonCode =
   | "plan-spec-unreadable"
   | "plan-recovery-backoff"
   | "plan-no-admission"
-  | "recoverable-work";
+  | "recoverable-work"
+  /*
+  FNXC:ProviderThrottleIsTransient 2026-09-30-14:45 (RUFU-286):
+  Client-synthesized (like `agent-approval`, not carried from a server code): the card's own agent is
+  sitting in a provider-throttle cooldown, so the card is not moving while the heartbeat re-probe is
+  held. It is NOT `failed` — nothing failed in a way an operator can act on — and it is NOT the
+  pause family: a throttle has no `pausedReason`, and naming one would imply a park that does not
+  exist. The code identity is what lets the surface say "comes back on its own" instead of "needs a
+  person".
+  */
+  | "agent-rate-limited";
 
 export interface StallReason {
   code: StallReasonCode;
@@ -176,6 +186,14 @@ export interface StallAgent {
   pauseReason?: string;
   lastError?: string;
   pendingApprovalCount?: number;
+  /*
+  FNXC:ProviderThrottleIsTransient 2026-09-30-14:45 (RUFU-286):
+  DERIVED, never a raw engine field: the mapper resolves it from the single shared core reader. The
+  resolver must not re-derive a cooldown from `metadata` (a second reader of the same episode is what
+  this task exists to remove), and it must not re-derive a timing threshold — so what it receives is
+  the already-decided deadline, present only while that deadline is in the future.
+  */
+  throttleRetryAt?: string;
 }
 
 /** Per-surface overrides for the paused badge key, so each surface keeps its OWN localized label. */
@@ -756,6 +774,25 @@ export function resolveStallReason(subject: StallSubject, context: StallContext)
     };
   }
 
+  /*
+  11b. agent-rate-limited — the owning agent's provider is rate limiting it and the engine already
+  holds a bounded re-probe. Ranked directly after `agent-approval` (a permission decision a person can
+  approve is the more actionable wait) and deliberately NOT merged into `failed`: the whole defect this
+  code exists for is an error-shaped signal being read as an operator repair, and the card face must
+  not repeat it. Detail-only like `agent-approval` — see `stallReasonVisibleOnFace`: an episode the
+  engine resolves by itself is not the abnormal-state chip, and a cooldown on every card that agent
+  owns would mark routine retry as broken.
+  */
+  if (context.agent?.throttleRetryAt) {
+    return {
+      code: "agent-rate-limited",
+      badgeLabel: t("stall.agent-rate-limited.badgeLabel", "Rate limited"),
+      headline: t("stall.agent-rate-limited.headline", "The provider is rate limiting this agent"),
+      description: t("stall.agent-rate-limited.description", "The engine will retry automatically at {{retryAt}} — nothing needs fixing.", { retryAt: context.agent.throttleRetryAt }),
+      suggestedAction: t("stall.agent-rate-limited.suggestedAction", "No action needed unless it is still rate limited after the retry."),
+    };
+  }
+
   // 12. in-review-stall — delegate to the existing copy module so the card badge, the detail review
   //     banner, and this resolver all agree byte-for-byte (one authority: getInReviewStallCopy).
   if (subject.inReviewStall) {
@@ -893,6 +930,16 @@ export function stallReasonVisibleOnFace(
     case "engine-paused":
       return Boolean(subject.pausedReason);
     // Detail-only by the 2026-09-02-22:01 note above — deliberately NOT widened to the planning codes.
+    /*
+    FNXC:ProviderThrottleIsTransient 2026-09-30-14:58 (RUFU-286):
+    A provider throttle joins the ordinary waits. It is not a fault: the engine parks the agent with a
+    bounded re-probe timer and resolves the wait by itself, so a chip would brand routine retry abnormal —
+    and, because the cooldown is read off the OWNING AGENT, that chip would land on every card the agent
+    owns, exactly the per-actor aggregation trap the approval rung documents. Unlike `agent-approval`
+    (invisible everywhere, because the card's own approval affordance says it) nothing else on the card
+    mentions rate limiting, so the detail banner is this code's only surface and it may not be dropped.
+    */
+    case "agent-rate-limited":
     case "awaiting-review-revision":
     case "pre-merge-gate-pending":
     case "held-human-review":

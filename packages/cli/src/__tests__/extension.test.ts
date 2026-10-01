@@ -4542,6 +4542,63 @@ pgTest("fn pi extension (runnable structured-output regression slice)", () => {
       expect(healthyBlock).not.toContain("Pause Reason:");
     });
 
+    it("labels a live throttle cooldown as an armed re-probe, not an exhausted park", async () => {
+      /*
+      FNXC:ProviderThrottleIsTransient 2026-09-30-14:17 (RUFU-286):
+      A provider throttle leaves the agent in `state: "error"` while the heartbeat timer holds a
+      bounded re-probe, so an operator reading `Error Recovery: attempts 1` could not tell a
+      provider telling us to come back later from an exhausted park that needs a restart. The
+      wording comes from the single shared core reader, so the CLI cannot drift from the
+      lifecycle's own horizon. The exhausted sibling is asserted in the same pass because the
+      pair of readings is the whole deliverable.
+      */
+      const agentStore = new AgentStore({ rootDir: join(tmpDir, ".fusion"), asyncLayer: h.store().getAsyncLayer() });
+      await agentStore.init();
+      const throttledAgent = await agentStore.createAgent({ name: "throttled-agent", role: "executor", metadata: {} });
+      const exhaustedAgent = await agentStore.createAgent({ name: "exhausted-agent", role: "executor", metadata: {} });
+      const retryingAt = new Date(Date.now() + 120_000).toISOString();
+
+      await agentStore.updateAgentState(throttledAgent.id, "error");
+      await agentStore.updateAgent(throttledAgent.id, {
+        lastError: "429 rate_limit_error",
+        metadata: {
+          // Persisted shape exactly as `armHeartbeatThrottleCooldown` writes it: the canonical
+          // horizon key is `cooldownUntilAt`, and the row carries no separate backoff field.
+          heartbeatErrorRecovery: {
+            consecutiveAttempts: 1,
+            updatedAt: new Date().toISOString(),
+            throttleStreak: 2,
+            cooldownUntilAt: retryingAt,
+          },
+        },
+      });
+
+      await agentStore.updateAgentState(exhaustedAgent.id, "paused");
+      await agentStore.updateAgent(exhaustedAgent.id, {
+        pauseReason: "error-retry-exhausted",
+        metadata: {
+          heartbeatErrorRecovery: {
+            consecutiveAttempts: 3,
+            lastAttemptAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            throttleStreak: 3,
+          },
+        },
+      });
+
+      const tool = api.tools.get("fn_list_agents")!;
+      const result = await tool.execute("la-throttle", {}, undefined, undefined, makeCtx(tmpDir));
+      const text = result.content[0].text;
+
+      const throttledBlock = text.split("Name: throttled-agent")[1]?.split("\n\n")[0] ?? "";
+      expect(throttledBlock).toContain(`throttle cooldown until ${retryingAt} (streak 2)`);
+      expect(throttledBlock).not.toContain("exhausted");
+
+      const exhaustedBlock = text.split("Name: exhausted-agent")[1]?.split("\n\n")[0] ?? "";
+      expect(exhaustedBlock).toContain("throttle retries exhausted (streak 3)");
+      expect(exhaustedBlock).not.toContain("throttle cooldown until");
+    });
+
     it("shows current task column context for parked, active, terminal, and missing links", async () => {
       const store = createStore();
       const triageTask = await store.createTask({ description: "Planning link", column: "triage" });

@@ -1,5 +1,6 @@
 import type { JSX } from "react";
 import { Bot, Heart, Activity, Pause } from "lucide-react";
+import { describeHeartbeatThrottle } from "@fusion/core/heartbeat-recovery-state";
 import type { Agent } from "../api";
 import { resolveHeartbeatIntervalMs } from "./heartbeatIntervals";
 import { elapsedSinceMs } from "./dataFreshness";
@@ -43,6 +44,13 @@ stall RESOLVER's chip keeps its own `stall.agent-approval.badgeLabel` ("Awaiting
 namespace, different surface; the pill mirrors the catalog label the Fleet/Agents views already say.
 */
 export const AGENT_HEALTH_LABEL_AWAITING_APPROVAL = "Waiting for approval";
+/*
+FNXC:ProviderThrottleIsTransient 2026-09-30-14:35 (RUFU-286):
+The label the throttle branch prints. Exported for the same reason the two literals above are: the
+fleet-verdict classifier buckets by label membership, so the words must be ONE constant shared by
+producer and consumer rather than a copy that can drift.
+*/
+export const AGENT_HEALTH_LABEL_RATE_LIMITED = "Rate limited";
 
 /** Shape of the health status returned by getAgentHealthStatus */
 export interface AgentHealthStatus {
@@ -212,6 +220,41 @@ export function getAgentHealthStatus(
   const { state, lastHeartbeatAt, lastError, pauseReason, runtimeConfig } = agent;
   const isTaskWorker = isTaskWorkerAgent(agent);
   const isHeartbeatEnabled = isTaskWorker || runtimeConfig?.enabled !== false;
+
+  /*
+  FNXC:ProviderThrottleIsTransient 2026-09-30-14:35 (RUFU-286):
+  A provider throttle left a pill printing the raw upstream body — for the reference incident that
+  meant `429 rate_limit_error … unknown model …`, which reads as "the model name is wrong, go fix a
+  credential" while the heartbeat timer was already holding a bounded re-probe. `lastError` is an
+  upstream wrapper body, not a Fusion judgment, so it may only headline when NOTHING better is known.
+  A live cooldown therefore outranks it: the label says the provider rate limited us and the engine
+  will re-probe, and the raw body is demoted to `reason` (tooltip evidence) instead of the headline.
+
+  Ranked ABOVE the raw-body print but BELOW a permission decision: a pending approval is the only one of
+  the two a person can act on, and the cooldown keeps running underneath either way. That has a consequence
+  the first draft of this branch got wrong — it excluded approvals and let the case fall through to the
+  `state === "error"` print below, so the agent with BOTH a throttle and an approval was still shown the
+  raw `unknown model` body, which is the exact misdiagnosis this branch exists to remove. The approval
+  therefore has to be answered here, by delegating to the shared approval status, not by exclusion. Note
+  this is an intersection-only change: `state: "error"` outranking the approval count is the pre-existing
+  documented contract and stays untouched for every non-throttled agent.
+  */
+  const throttle = describeHeartbeatThrottle(agent);
+  if (throttle?.kind === "throttle-cooldown") {
+    if ((agent.pendingApprovalCount ?? 0) > 0 || pauseReason === "awaiting-approval") {
+      return awaitingApprovalHealthStatus();
+    }
+    return {
+      label: AGENT_HEALTH_LABEL_RATE_LIMITED,
+      icon: <Activity size={14} />,
+      color: "var(--state-error-text)",
+      stateDerived: false,
+      reason: [
+        `Provider rate limited — automatic retry scheduled for ${throttle.retryingAt} (attempt ${throttle.throttleStreak}).`,
+        lastError ? `Last provider error: ${lastError}` : null,
+      ].filter(Boolean).join(" "),
+    };
+  }
 
   // Explicit non-running states always take precedence.
   if (state === "error") {
