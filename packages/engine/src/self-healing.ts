@@ -1113,12 +1113,15 @@ liveness/eligibility fence blocked reconciliation so an operator retry has a con
 export type LandedReviewReconcileResult =
   | { outcome: "reconciled"; sha: string; strategy: string; baseBranch: string }
   /*
-  FNXC:UnrunPostMergeGateRecovery 2026-09-25-15:35 (RUFU-306):
-  `postMergeEvidence` is what makes the sentence honest. A merge-confirmed card that still stands in
-  the review lane with a required post-merge gate unreported is NOT complete, and printing "already
-  complete" there told the operator the opposite of the truth while the card kept holding its slot.
-  RUFU-220 and ROZV-286 measured exactly this on 2026-09-25: commits proven on the base branch, row
-  still `in-review`, and a reconciliation that reported success. Absent means nothing is outstanding.
+  FNXC:UnrunPostMergeGateRecovery 2026-09-25-15:35 (RUFU-306) · FNXC:PostMergeRecovery 2026-10-01-09:01:
+  Honesty rule: a merge-confirmed card with a required post-merge gate unreported is NOT complete, and
+  printing "already complete" there told the operator the opposite of the truth while the card kept
+  holding its slot (RUFU-220 and ROZV-286, measured 2026-09-25: commits proven on the base branch, row
+  still `in-review`, reconciliation reporting success). Upstream FN-9442 carries that rule in the
+  `ineligible` reasons now — `post-merge-evidence-pending` for a gate that owes a result, and
+  `awaiting-finalization` when nothing is owed — so no caller can print completion over outstanding
+  evidence. `postMergeEvidence` stays on this arm as the belt-and-braces channel for any owner that
+  still returns completeness while a gate is pending; the CLI treats it as a failure, never a success.
   */
   | { outcome: "already-complete"; postMergeEvidence?: { pending: boolean; reason: PostMergeGateReseedReason } }
   /*
@@ -17031,38 +17034,6 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
         && !await getRequiredPostMergeEvidenceBlocker(this.store, task)
         ? { outcome: "already-complete" } : { outcome: "ineligible", reason: "not-in-review" };
     }
-    if (task.mergeDetails?.mergeConfirmed) {
-      /*
-      FNXC:PostMergeRecovery 2026-10-01-09:01 (upstream FN-9442 adopted, RUFU-306 / RUFU-370 kept):
-      Landed proof is not the END of this decision. A merge-confirmed card still standing in the review lane
-      has one thing left: the gate-mode post-merge group the graph never visited. Upstream's resume installs
-      it in place through the idle continuation fence — no fabricated verdict, no lifecycle move — and their
-      `resumed` outcome is the vocabulary every owner (this sweep, the CLI reconcile, the retry router) now
-      reports. What our side adds back on top of their call is the refusal taxonomy: a refusal that can
-      never produce evidence names its cause instead of deferring forever, and an absent gate with nothing
-      owed stays the honest "already-complete". Upstream deleted this branch in the manual/CLI path, which is
-      how RUFU-306's cards (DGXS-313, ROZV-290) deferred forever with nobody seeding the node; the prose
-      trigger (`blocker.includes("has not reported")`) is gone with it, so a pending or non-approved result
-      can no longer be re-seeded over.
-      */
-      if (this.options.isTaskActive?.(task.id)) return { outcome: "ineligible", reason: "executing" };
-      const contract = await resolvePostMergeEvidenceContract(this.store, { auditHost: this.store });
-      const reseed = await resumeMissingPostMergeGate(this.store, task, { source: "manual-reconcile", contract });
-      if (reseed.outcome === "seeded") {
-        return {
-          outcome: "resumed",
-          gateId: reseed.workflowStepId ?? "post-merge-verification",
-          attempt: (reseed.priorAttemptCount ?? 0) + 1,
-        };
-      }
-      // Absent means genuinely nothing is outstanding, which is the honest old shape; the field only
-      // appears when something real is still owed, so callers never see `pending: false` noise.
-      if (reseed.reason === "no-merge-proof" || reseed.reason === "gate-not-resumable") {
-        const blocker = await getRequiredPostMergeEvidenceBlocker(this.store, task, contract);
-        return blocker ? { outcome: "ineligible", reason: "post-merge-evidence-pending" } : { outcome: "already-complete" };
-      }
-      return { outcome: "already-complete", postMergeEvidence: { pending: true, reason: reseed.reason } };
-    }
     /*
     FNXC:LandedReviewReconciliation 2026-09-20-03:09:
     External landing proves content reachability, not workflow approval. Reconciliation must retain
@@ -17106,8 +17077,18 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             attempt: (resumed.priorAttemptCount ?? 0) + 1,
           };
         }
-        // A refusal is not a success: the card keeps its park and the caller reports why.
-        return { outcome: "raced", reason: `post-merge-resume-${resumed.reason}` };
+        /*
+         * A refusal is not a success: the card keeps its park and the caller reports WHY. The idle-seed
+         * refusal keeps upstream's name (`post-merge-continuation-not-idle`) because that is the sentence
+         * the retry router and the CLI were written against; every other refusal names our own reason so
+         * an operator sees whether it is a hold, a lease, or the spent reseed budget.
+         */
+        return {
+          outcome: "raced",
+          reason: resumed.reason === "active-continuation"
+            ? "post-merge-continuation-not-idle"
+            : `post-merge-resume-${resumed.reason}`,
+        };
       }
       return { outcome: "ineligible", reason: decision.outcome === "blocked" ? "post-merge-evidence-pending" : "awaiting-finalization" };
     }

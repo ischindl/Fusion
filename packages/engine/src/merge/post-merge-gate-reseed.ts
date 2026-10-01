@@ -32,6 +32,8 @@ import {
   type TaskStore,
 } from "@fusion/core";
 import { activeSessionRegistry, executingTaskLock } from "../agents/active-session-registry.js";
+// FN-9175: engine-lane emitters use the engine seam, which absorbs an absent, throwing, or hanging sink.
+import { emitBoundedRunAudit } from "../util/emit-bounded-run-audit.js";
 import { isTaskExecutionLive } from "./merge-execution-exclusion.js";
 
 /*
@@ -93,7 +95,17 @@ The budget is read from durable task-log lines, not memory, because the lanes th
 processes on separate timers. Upstream's success sentence is counted alongside our own marker so the
 rename does not reset the budget for cards that already hold seeds from the earlier build.
 */
-const RESEED_LOG_MARKERS = ["[post-merge-gate-reseed] gate", "[post-merge] Resuming missing verification"];
+/**
+ * The durable marker this seam writes on a successful resume. Exported because the budget is READ from the
+ * task log, so anything that seeds a card by hand (a test, an operator repair) must write this exact shape
+ * or it will not be counted — and a resume that is not counted is a resume without a bound.
+ */
+export function postMergeGateReseedLogMarker(gateId: string): string {
+  return `[post-merge] Resuming missing verification at '${gateId}'`;
+}
+
+/** Our pre-sync sentence, still counted so a card seeded by the earlier build does not get a fresh budget. */
+const LEGACY_RESEED_LOG_MARKER = "[post-merge-gate-reseed] gate";
 
 /** Counts persisted resume markers for one gate, hydrating the log when the row came slimmed. */
 async function countReseedAttempts(store: TaskStore, task: Task, gateId: string): Promise<number> {
@@ -101,7 +113,8 @@ async function countReseedAttempts(store: TaskStore, task: Task, gateId: string)
   const quoted = `'${gateId}'`;
   return log.filter((entry) => {
     const action = typeof entry.action === "string" ? entry.action : "";
-    return RESEED_LOG_MARKERS.some((marker) => action.startsWith(marker) && action.includes(quoted));
+    return (action.startsWith(postMergeGateReseedLogMarker(gateId)) || action.startsWith(LEGACY_RESEED_LOG_MARKER))
+      && action.includes(quoted);
   }).length;
 }
 
@@ -136,10 +149,6 @@ export async function resumeMissingPostMergeGate(
     contract: PostMergeEvidenceContract | undefined;
   },
 ): Promise<PostMergeGateReseedResult> {
-  if (typeof store.seedWorkspaceCodeReviewContinuationIfIdle !== "function"
-    || typeof store.listWorkflowWorkItemsForTask !== "function") {
-    return { outcome: "not-seeded", reason: "unsupported-store" };
-  }
   /*
   FNXC:PostMergeGateDeliveryShape 2026-09-30-13:09 (RUFU-429):
   This refusal is a backstop, not the reason workspace cards stall: the requirement itself resolves to
@@ -147,10 +156,15 @@ export async function resumeMissingPostMergeGate(
   this seam. The guard stays because the SANE-507 loop is a live failure mode.
   */
   if (isWorkspaceTask(task)) return { outcome: "not-seeded", reason: "workspace" };
-  // Landed PROOF, not a merge-shaped object: `{}` proves nothing and must not start graph work.
-  if (!task.mergeDetails?.mergeConfirmed || !task.mergeDetails?.commitSha) {
-    return { outcome: "not-seeded", reason: "no-merge-proof" };
-  }
+  /*
+  FNXC:PostMergeRecovery 2026-10-01-09:01 (upstream FN-9442 adopted):
+  `mergeConfirmed` is the guard, matching upstream — the commitSha requirement our seam added is NOT added
+  back, because every caller proves landing before asking: the finalizer runs `hasDurableMergeProof` and the
+  zero-commit delivery door first, and `reconcileLandedReviewTask` proves the trailer on the base branch.
+  Re-checking a SHA here would only re-litigate a fact the caller already fenced, and it silently refused
+  cards whose proof is a PR number rather than a local SHA. An empty merge-shaped object still refuses.
+  */
+  if (!task.mergeDetails?.mergeConfirmed) return { outcome: "not-seeded", reason: "no-merge-proof" };
   if (
     task.userPaused
     || task.deletedAt
@@ -168,6 +182,15 @@ export async function resumeMissingPostMergeGate(
   if (hasFreshCheckoutLease(task, settings)) return { outcome: "not-seeded", reason: "checkout-lease" };
   if (isTaskExecutionLive(task.id, { activeSessionRegistry, executingTaskLock })) {
     return { outcome: "not-seeded", reason: "execution-live" };
+  }
+  /*
+   * Checked only once the card itself is eligible: a workspace card is refused by this seam by
+   * construction, and naming the store's missing capability instead would hide the real reason (the
+   * RUFU-370 refusal taxonomy exists precisely so the reported cause is the actionable one).
+   */
+  if (typeof store.seedWorkspaceCodeReviewContinuationIfIdle !== "function"
+    || typeof store.listWorkflowWorkItemsForTask !== "function") {
+    return { outcome: "not-seeded", reason: "unsupported-store" };
   }
   // A gate that already holds a result — approved, REVISE, or failed — is authoritative; never seed over it.
   const irForGate = await resolveWorkflowIrForTaskWithProvenance(store, task.id);
@@ -217,9 +240,34 @@ export async function resumeMissingPostMergeGate(
 
   await store.logEntry(
     task.id,
-    `[post-merge] Resuming missing verification at '${node.id}'; already-landed implementation and merge `
+    `${postMergeGateReseedLogMarker(node.id)}; already-landed implementation and merge `
       + `will not run again (reseed ${priorAttemptCount + 1} of ${MAX_POST_MERGE_GATE_RESEED_ATTEMPTS})`,
   );
+  /*
+  FNXC:RunAudit 2026-10-01-09:01 (FN-9175 seam kept through the upstream adoption):
+  Handing a card back to the graph is an ACTION on the card, so it is countable: `task:merge-unrun-post-
+  merge-gate-reseeded` is how an operator distinguishes "the gate is running now" from "the card is
+  parked", and the attempt count is what makes the bounded budget auditable. Metadata stays ids / counts /
+  fixed enums; an absent, throwing, or hanging sink cannot alter the seed.
+  */
+  await emitBoundedRunAudit(store, {
+    taskId: task.id,
+    agentId: "self-healing",
+    runId: `${task.id}:unrun-post-merge-gate-reseed:${node.id}`,
+    domain: "database",
+    mutationType: "task:merge-unrun-post-merge-gate-reseeded",
+    target: task.id,
+    metadata: {
+      taskId: task.id,
+      nodeId: node.id,
+      workflowStepId: gateId,
+      source: options.source,
+      outcome: "seeded",
+      attempt: priorAttemptCount + 1,
+      maxAttempts: MAX_POST_MERGE_GATE_RESEED_ATTEMPTS,
+    },
+  // No sink-side logging wanted here: the refusal and the seed are both on the card's own log line.
+  }, { log: { warn: () => {} } });
   return { outcome: "seeded", reason: "seeded", workflowStepId: gateId, priorAttemptCount };
 }
 

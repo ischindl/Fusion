@@ -205,13 +205,20 @@ export async function getRequiredPostMergeEvidenceDecision(
   if (typeof reader.getTaskWorkflowSelection !== "function") return { outcome: "finalizable" };
 
   const ir = await resolveWorkflowIrForTask(store, task.id);
-  for (const status of getPostMergeEvidenceGateStatuses(task, ir, contract)) {
-    // A requirement this board cannot satisfy is neither resumable nor blocking (RUFU-429 / RUFU-430).
-    if (status.state === "not-applicable") continue;
-    const gateId = status.gateId;
+  const statuses = new Map(getPostMergeEvidenceGateStatuses(task, ir, contract).map((status) => [status.gateId, status]));
+  for (const gateId of resolveRequiredPostMergeGateIds(task, ir)) {
     const results = (task.workflowStepResults ?? []).filter((entry) => entry.workflowStepId === gateId);
-    if (results.length === 0) return { outcome: "resumable", gateId };
+    /*
+     * Duplicates are checked BEFORE the requirement, on purpose: two rows for one gate means the graph
+     * reported twice, and no lane may pick the convenient one — even on a board whose requirement is
+     * inapplicable, where silently choosing would hide a broken workflow definition.
+     */
     if (results.length > 1) return { outcome: "blocked", gateId, reason: "duplicate" };
+    const status = statuses.get(gateId);
+    // No status means nothing is owed here: the gate is disabled, already approved, or inapplicable to
+    // this delivery shape / reporter set (RUFU-429, RUFU-430).
+    if (!status || status.state === "not-applicable") continue;
+    if (results.length === 0) return { outcome: "resumable", gateId };
     const [result] = results;
     if (result.status === "pending") return { outcome: "blocked", gateId, reason: "pending" };
     if (result.status === "failed") return { outcome: "blocked", gateId, reason: "failed" };

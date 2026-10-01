@@ -19,7 +19,7 @@ import type { MessageStore, TaskStore } from "@fusion/core";
 
 import {
   isTerminalPostMergeReseedRefusal,
-  reseedUnrunPostMergeGate,
+  resumeMissingPostMergeGate,
 } from "../merge/post-merge-gate-reseed.js";
 import {
   notifyUnreachablePostMergeGate,
@@ -154,8 +154,8 @@ describe("the forever-defer shape is gone (negative proof)", () => {
     } as never;
     const { store } = fakeStore();
 
-    const refusal = await reseedUnrunPostMergeGate(store, task, { source: "auto-merge" });
-    expect(refusal).toMatchObject({ seeded: false, reason: "workspace" });
+    const refusal = await resumeMissingPostMergeGate(store, task, { source: "auto-merge", contract: undefined });
+    expect(refusal).toMatchObject({ outcome: "not-seeded", reason: "workspace" });
 
     // Pre-fix, this card's finalization reason was the bare blocker — byte-identical to a transient
     // deferral, which is why the loop was invisible. The terminal reason can no longer equal it.

@@ -20,7 +20,7 @@ import { IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON, type Task, type TaskStore } from
 import {
   MAX_POST_MERGE_GATE_RESEED_ATTEMPTS,
   postMergeGateReseedLogMarker,
-  reseedUnrunPostMergeGate,
+  resumeMissingPostMergeGate,
 } from "../merge/post-merge-gate-reseed.js";
 
 const GATE_ID = "post-merge-verification";
@@ -63,7 +63,12 @@ function task(overrides: Partial<Task> = {}): Task {
     log: [],
     enabledWorkflowSteps: [GATE_ID],
     workflowStepResults: [],
-    mergeDetails: { commitSha: "c1321d86936e6187ff8b5c769d2c15e204c4a3cb" },
+    /*
+    FNXC:PostMergeRecovery 2026-10-01-09:01: the merged guard is upstream's `mergeConfirmed` (FN-9442) — the
+    SHA alone used to be this seam's proof, but every caller proves landing before asking, so the fixture
+    carries the durable confirmation the real row carries.
+    */
+    mergeDetails: { mergeConfirmed: true, commitSha: "c1321d86936e6187ff8b5c769d2c15e204c4a3cb" },
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     ...overrides,
@@ -83,6 +88,9 @@ function fakeStore(options: FakeOptions = {}) {
     selectionReads: 0,
   };
   const store = {
+    getSettings: async () => ({}),
+    getTaskWorkflowSelectionAsync: async () => null,
+    getTaskWorkflowSelection: async () => null,
     getTaskWorkflowSelection: () => {
       if (options.selectionReads === false) return undefined;
       calls.selectionReads += 1;
@@ -101,13 +109,13 @@ function fakeStore(options: FakeOptions = {}) {
   return { store: store as unknown as TaskStore, calls };
 }
 
-describe("reseedUnrunPostMergeGate", () => {
+describe("resumeMissingPostMergeGate", () => {
   it("seeds the unreported gate in place, keeps the card's own column, and records one marker", async () => {
     const { store, calls } = fakeStore();
 
-    const result = await reseedUnrunPostMergeGate(store, task(), { source: "self-healing" });
+    const result = await resumeMissingPostMergeGate(store, task(), { source: "self-healing", contract: undefined });
 
-    expect(result.seeded).toBe(true);
+    expect(result.outcome).toBe("seeded");
     expect(result.reason).toBe("seeded");
     expect(calls.seed).toHaveLength(1);
     const seed = calls.seed[0]!;
@@ -128,10 +136,10 @@ describe("reseedUnrunPostMergeGate", () => {
       workflowStepResults: [{ workflowStepId: GATE_ID, status: "failed", verdict: "REVISE" }],
     } as never);
 
-    const result = await reseedUnrunPostMergeGate(store, decided, { source: "self-healing" });
+    const result = await resumeMissingPostMergeGate(store, decided, { source: "self-healing", contract: undefined });
 
-    expect(result.seeded).toBe(false);
-    expect(result.reason).toBe("no-missing-gate");
+    expect(result.outcome).toBe("not-seeded");
+    expect(result.reason).toBe("gate-not-resumable");
     expect(calls.seed).toHaveLength(0);
     expect(calls.logged).toHaveLength(0);
   });
@@ -145,7 +153,7 @@ describe("reseedUnrunPostMergeGate", () => {
     } as never);
     const { store, calls } = fakeStore();
 
-    const result = await reseedUnrunPostMergeGate(store, spent, { source: "self-healing" });
+    const result = await resumeMissingPostMergeGate(store, spent, { source: "self-healing", contract: undefined });
 
     expect(result.reason).toBe("rerun-budget-exhausted");
     expect(result.priorAttemptCount).toBe(MAX_POST_MERGE_GATE_RESEED_ATTEMPTS);
@@ -160,34 +168,34 @@ describe("reseedUnrunPostMergeGate", () => {
     ];
     for (const card of held) {
       const { store, calls } = fakeStore();
-      const result = await reseedUnrunPostMergeGate(store, card, { source: "self-healing" });
+      const result = await resumeMissingPostMergeGate(store, card, { source: "self-healing", contract: undefined });
       expect(result.reason).toBe("operator-held");
       expect(calls.seed).toHaveLength(0);
     }
 
     const parkedByOurOwnLane = task({ paused: true, pausedReason: IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON } as never);
     const admitted = fakeStore();
-    expect((await reseedUnrunPostMergeGate(admitted.store, parkedByOurOwnLane, { source: "self-healing" })).seeded).toBe(true);
+    expect((await resumeMissingPostMergeGate(admitted.store, parkedByOurOwnLane, { source: "self-healing", contract: undefined })).outcome).toBe("seeded");
   });
 
   it("demands landed proof before touching the graph, and stays silent without a selection read", async () => {
     const withoutProof = fakeStore();
-    expect((await reseedUnrunPostMergeGate(withoutProof.store, task({ mergeDetails: {} } as never), { source: "self-healing" })).reason)
+    expect((await resumeMissingPostMergeGate(withoutProof.store, task({ mergeDetails: {} } as never), { source: "self-healing", contract: undefined })).reason)
       .toBe("no-merge-proof");
     // An empty mergeDetails object must not even start workflow resolution.
     expect(withoutProof.calls.selectionReads).toBe(0);
 
     const blind = fakeStore({ selectionReads: false });
     const blindStore = Object.assign(blind.store, { getTaskWorkflowSelection: undefined }) as unknown as TaskStore;
-    expect((await reseedUnrunPostMergeGate(blindStore, task(), { source: "self-healing" })).reason).toBe("no-missing-gate");
+    expect((await resumeMissingPostMergeGate(blindStore, task(), { source: "self-healing", contract: undefined })).reason).toBe("gate-not-resumable");
   });
 
   it("reports an idle-seed refusal as a refusal and logs no budget marker", async () => {
     const { store, calls } = fakeStore({ seedResult: { seeded: false, reason: "active-continuation" } });
 
-    const result = await reseedUnrunPostMergeGate(store, task(), { source: "self-healing" });
+    const result = await resumeMissingPostMergeGate(store, task(), { source: "self-healing", contract: undefined });
 
-    expect(result.seeded).toBe(false);
+    expect(result.outcome).toBe("not-seeded");
     expect(result.reason).toBe("active-continuation");
     expect(calls.logged).toHaveLength(0);
     expect(calls.audits).toHaveLength(0);

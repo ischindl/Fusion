@@ -136,7 +136,7 @@ describe("SelfHealingManager.reconcileLandedReviewTask", () => {
     const manager = managerWithStubs(store);
 
     await expect(manager.reconcileLandedReviewTask(task.id, { source: "manual" })).resolves.toEqual({
-      outcome: "resumed", gateId: "post-merge-verification",
+      outcome: "resumed", gateId: "post-merge-verification", attempt: expect.any(Number),
     });
     await expect(manager.reconcileLandedReviewTask(task.id, { source: "manual" })).resolves.toEqual({
       outcome: "raced", reason: "post-merge-continuation-not-idle",

@@ -97,6 +97,7 @@
     "packages/engine/src/executor/workspace-config-resolver.ts",
     "packages/engine/src/executor/workspace-review-remediation.ts",
     "packages/engine/src/executor/worktree-git-refs.ts",
+    "packages/engine/src/executor/worktree-ownership.ts",
     "packages/engine/src/executor/worktree-registry-helpers.ts",
     "packages/engine/src/external-integrations/manifest.ts",
     "packages/engine/src/git-identity.ts",
@@ -117,6 +118,8 @@
     "packages/engine/src/mcp/mcp-runtime-support.ts",
     "packages/engine/src/mcp/mcp-session-tools.ts",
     "packages/engine/src/memory/index.ts",
+    "packages/engine/src/memory/long-term-consolidation.ts",
+    "packages/engine/src/memory/memory-budget.ts",
     "packages/engine/src/merge/already-merged-detector.ts",
     "packages/engine/src/merge/auto-merge-fact-providers.ts",
     "packages/engine/src/merge/auto-merge-finalization.ts",
@@ -125,6 +128,7 @@
     "packages/engine/src/merge/merge-active-status.ts",
     "packages/engine/src/merge/merge-content-capture.ts",
     "packages/engine/src/merge/merge-dependency-sync.ts",
+    "packages/engine/src/merge/merge-execution-exclusion.ts",
     "packages/engine/src/merge/merge-reclaim-policy.ts",
     "packages/engine/src/merge/merge-trait.ts",
     "packages/engine/src/merge/merge-write-fence.ts",
@@ -148,6 +152,7 @@
     "packages/engine/src/merge/merger-squash-audit.ts",
     "packages/engine/src/merge/merger-workspace-test-commands.ts",
     "packages/engine/src/merge/post-landing-worktree-cleanup.ts",
+    "packages/engine/src/merge/post-merge-evidence-contract.ts",
     "packages/engine/src/merge/post-merge-gate-reseed.ts",
     "packages/engine/src/merge/pr-monitor-gh.ts",
     "packages/engine/src/merge/pr-monitor.ts",
@@ -163,6 +168,7 @@
     "packages/engine/src/merge/workspace-land-failure.ts",
     "packages/engine/src/merge/workspace-land-predicate.ts",
     "packages/engine/src/merge/workspace-merge-readiness.ts",
+    "packages/engine/src/merge/zero-commit-finalization-guard.ts",
     "packages/engine/src/merger.ts",
     "packages/engine/src/missions/mission-feature-sync.ts",
     "packages/engine/src/missions/mission-state-reconcile.ts",
@@ -3336,7 +3342,7 @@
       "enclosingSymbolPath": "carryCanonicalTaskRouting",
       "writer": "store.moveTask",
       "ordinal": 1,
-      "lineHint": 1389,
+      "lineHint": 1392,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -3356,7 +3362,7 @@
       "enclosingSymbolPath": "carryCanonicalTaskRouting",
       "writer": "store.updateTask",
       "ordinal": 1,
-      "lineHint": 1386,
+      "lineHint": 1389,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -3376,7 +3382,7 @@
       "enclosingSymbolPath": "createAgentTask>createdTask",
       "writer": "store.createTask",
       "ordinal": 1,
-      "lineHint": 1610,
+      "lineHint": 1613,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -3394,7 +3400,7 @@
       "enclosingSymbolPath": "createChatTaskDocumentTools>document",
       "writer": "store.upsertTaskDocument",
       "ordinal": 1,
-      "lineHint": 2721,
+      "lineHint": 2724,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -3412,7 +3418,7 @@
       "enclosingSymbolPath": "createHistoryReadTool>result",
       "writer": "store.listPatchnodeEntries",
       "ordinal": 1,
-      "lineHint": 1949,
+      "lineHint": 1952,
       "owningEntryPoint": "indeterminate",
       "reachableDataStates": [
         "unobservable:human classification required for new durable write"
@@ -3432,7 +3438,7 @@
       "enclosingSymbolPath": "createInstallWorktreeDependenciesTool",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 2455,
+      "lineHint": 2458,
       "owningEntryPoint": "other",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -3450,7 +3456,7 @@
       "enclosingSymbolPath": "createInstallWorktreeDependenciesTool",
       "writer": "store.logEntry",
       "ordinal": 2,
-      "lineHint": 2500,
+      "lineHint": 2503,
       "owningEntryPoint": "other",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -3468,7 +3474,7 @@
       "enclosingSymbolPath": "createTaskAddDepTool",
       "writer": "store.updateTask",
       "ordinal": 1,
-      "lineHint": 3926,
+      "lineHint": 3929,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -3488,7 +3494,7 @@
       "enclosingSymbolPath": "createTaskDeleteTool>task",
       "writer": "store.deleteTask",
       "ordinal": 1,
-      "lineHint": 3541,
+      "lineHint": 3544,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -3506,7 +3512,7 @@
       "enclosingSymbolPath": "createTaskDocumentWriteTool>document",
       "writer": "store.upsertTaskDocument",
       "ordinal": 1,
-      "lineHint": 2359,
+      "lineHint": 2362,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -3524,7 +3530,7 @@
       "enclosingSymbolPath": "createTaskDuplicateTool>task",
       "writer": "store.duplicateTask",
       "ordinal": 1,
-      "lineHint": 3731,
+      "lineHint": 3734,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -3537,12 +3543,12 @@
     },
     {
       "callSiteId": "packages/engine/src/agent-tools.ts::createTaskFileScopeAddTool::store.appendAgentLog::#1",
-      "callSiteFingerprint": "store .appendAgentLog(taskId,`Added to File Scope: ${toAdd.join(\", \")}${params.reason ? ` \u2014 ${params.reason}` : \"\"}`,\"status\")",
+      "callSiteFingerprint": "store .appendAgentLog(taskId,`Added to File Scope: ${toAdd.join(\", \")}${params.reason ? ` — ${params.reason}` : \"\"}`,\"status\")",
       "file": "packages/engine/src/agent-tools.ts",
       "enclosingSymbolPath": "createTaskFileScopeAddTool",
       "writer": "store.appendAgentLog",
       "ordinal": 1,
-      "lineHint": 2678,
+      "lineHint": 2681,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -3562,7 +3568,7 @@
       "enclosingSymbolPath": "createTaskFileScopeAddTool",
       "writer": "store.updateTask",
       "ordinal": 1,
-      "lineHint": 2677,
+      "lineHint": 2680,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -3582,7 +3588,7 @@
       "enclosingSymbolPath": "createTaskLogTool",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 2073,
+      "lineHint": 2076,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -3602,7 +3608,7 @@
       "enclosingSymbolPath": "createTaskLogToolWithContext",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 2100,
+      "lineHint": 2103,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -3622,7 +3628,7 @@
       "enclosingSymbolPath": "createTaskPauseTool>task",
       "writer": "store.pauseTask",
       "ordinal": 1,
-      "lineHint": 3697,
+      "lineHint": 3700,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -3640,7 +3646,7 @@
       "enclosingSymbolPath": "createTaskPromptWriteTool",
       "writer": "store.reconcileSpecDriftWhilePlanningLocked",
       "ordinal": 1,
-      "lineHint": 2568,
+      "lineHint": 2571,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -3660,7 +3666,7 @@
       "enclosingSymbolPath": "createTaskPromptWriteTool",
       "writer": "store.updateTask",
       "ordinal": 1,
-      "lineHint": 2578,
+      "lineHint": 2581,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -3680,7 +3686,7 @@
       "enclosingSymbolPath": "createTaskPromptWriteTool>updated",
       "writer": "store.updateTaskUnlocked",
       "ordinal": 1,
-      "lineHint": 2566,
+      "lineHint": 2569,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -3700,7 +3706,7 @@
       "enclosingSymbolPath": "createTaskRetryTool",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 3602,
+      "lineHint": 3605,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -3720,7 +3726,7 @@
       "enclosingSymbolPath": "createTaskRetryTool",
       "writer": "store.logEntry",
       "ordinal": 2,
-      "lineHint": 3656,
+      "lineHint": 3659,
       "owningEntryPoint": "indeterminate",
       "reachableDataStates": [
         "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo"
@@ -3740,7 +3746,7 @@
       "enclosingSymbolPath": "createTaskRetryTool",
       "writer": "store.logEntry",
       "ordinal": 3,
-      "lineHint": 3680,
+      "lineHint": 3683,
       "owningEntryPoint": "indeterminate",
       "reachableDataStates": [
         "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo"
@@ -3760,7 +3766,7 @@
       "enclosingSymbolPath": "createTaskRetryTool",
       "writer": "store.moveTask",
       "ordinal": 1,
-      "lineHint": 3679,
+      "lineHint": 3682,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -3780,7 +3786,7 @@
       "enclosingSymbolPath": "createTaskRetryTool",
       "writer": "store.updateTask",
       "ordinal": 1,
-      "lineHint": 3666,
+      "lineHint": 3669,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -3800,7 +3806,7 @@
       "enclosingSymbolPath": "createTaskUnpauseTool>task",
       "writer": "store.pauseTask",
       "ordinal": 1,
-      "lineHint": 3714,
+      "lineHint": 3717,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -3818,7 +3824,7 @@
       "enclosingSymbolPath": "createTaskUpdateTool",
       "writer": "store.updateStep",
       "ordinal": 1,
-      "lineHint": 3830,
+      "lineHint": 3833,
       "owningEntryPoint": "indeterminate",
       "reachableDataStates": [
         "unobservable:human classification required for new durable write"
@@ -3838,7 +3844,7 @@
       "enclosingSymbolPath": "createTaskUpdateTool",
       "writer": "store.updateStep",
       "ordinal": 2,
-      "lineHint": 3831,
+      "lineHint": 3834,
       "owningEntryPoint": "indeterminate",
       "reachableDataStates": [
         "unobservable:human classification required for new durable write"
@@ -3858,7 +3864,7 @@
       "enclosingSymbolPath": "createTaskUpdateTool",
       "writer": "store.updateTask",
       "ordinal": 1,
-      "lineHint": 3796,
+      "lineHint": 3799,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -3878,7 +3884,7 @@
       "enclosingSymbolPath": "createTaskUpdateTool",
       "writer": "store.updateTask",
       "ordinal": 2,
-      "lineHint": 3824,
+      "lineHint": 3827,
       "owningEntryPoint": "indeterminate",
       "reachableDataStates": [
         "unobservable:human classification required for new durable write"
@@ -3898,7 +3904,7 @@
       "enclosingSymbolPath": "createTaskUpdateTool>res",
       "writer": "store.updateTaskCustomFields",
       "ordinal": 1,
-      "lineHint": 3803,
+      "lineHint": 3806,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -3916,7 +3922,7 @@
       "enclosingSymbolPath": "createWorkflowCreateTool>created",
       "writer": "store.createWorkflowDefinition",
       "ordinal": 1,
-      "lineHint": 4142,
+      "lineHint": 4145,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -3934,7 +3940,7 @@
       "enclosingSymbolPath": "createWorkflowDeleteTool",
       "writer": "store.deleteWorkflowDefinition",
       "ordinal": 1,
-      "lineHint": 4262,
+      "lineHint": 4265,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -3952,7 +3958,7 @@
       "enclosingSymbolPath": "createWorkflowSelectTool",
       "writer": "store.selectTaskWorkflowAndReconcile",
       "ordinal": 1,
-      "lineHint": 3419,
+      "lineHint": 3422,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -3970,7 +3976,7 @@
       "enclosingSymbolPath": "createWorkflowSettingsTool>next",
       "writer": "store.updateWorkflowSettingValues",
       "ordinal": 1,
-      "lineHint": 4396,
+      "lineHint": 4399,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -3988,7 +3994,7 @@
       "enclosingSymbolPath": "createWorkflowUpdateTool>updated",
       "writer": "store.updateWorkflowDefinition",
       "ordinal": 1,
-      "lineHint": 4206,
+      "lineHint": 4209,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -4006,7 +4012,7 @@
       "enclosingSymbolPath": "registerArtifactForAgent>artifact",
       "writer": "store.registerArtifact",
       "ordinal": 1,
-      "lineHint": 2895,
+      "lineHint": 2898,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -4287,7 +4293,7 @@
     },
     {
       "callSiteId": "packages/engine/src/execution/lifecycle-move.ts::moveTaskToContainedBackwardTarget::store.logEntry::#1",
-      "callSiteFingerprint": "store.logEntry(taskId,`Lifecycle recovery retained in '${column}' \u2014 ${reason} has no backward-move authority`)",
+      "callSiteFingerprint": "store.logEntry(taskId,`Lifecycle recovery retained in '${column}' — ${reason} has no backward-move authority`)",
       "file": "packages/engine/src/execution/lifecycle-move.ts",
       "enclosingSymbolPath": "moveTaskToContainedBackwardTarget",
       "writer": "store.logEntry",
@@ -4307,7 +4313,7 @@
     },
     {
       "callSiteId": "packages/engine/src/execution/lifecycle-move.ts::moveTaskToContainedBackwardTarget::store.logEntry::#2",
-      "callSiteFingerprint": "store.logEntry(taskId,`Lifecycle rebound contained in '${column}' \u2014 the workflow declares no adjacent backward destination`)",
+      "callSiteFingerprint": "store.logEntry(taskId,`Lifecycle rebound contained in '${column}' — the workflow declares no adjacent backward destination`)",
       "file": "packages/engine/src/execution/lifecycle-move.ts",
       "enclosingSymbolPath": "moveTaskToContainedBackwardTarget",
       "writer": "store.logEntry",
@@ -4327,7 +4333,7 @@
     },
     {
       "callSiteId": "packages/engine/src/execution/lifecycle-move.ts::moveTaskWithLifecycleReason::store.logEntry::#1",
-      "callSiteFingerprint": "store.logEntry(taskId,`Lifecycle move deferred: ${task.column} \u2192 ${toColumn} (backward) \u2014 ${summary} (destination at capacity; retrying later))",
+      "callSiteFingerprint": "store.logEntry(taskId,`Lifecycle move deferred: ${task.column} → ${toColumn} (backward) — ${summary} (destination at capacity; retrying later))",
       "file": "packages/engine/src/execution/lifecycle-move.ts",
       "enclosingSymbolPath": "moveTaskWithLifecycleReason",
       "writer": "store.logEntry",
@@ -4401,7 +4407,7 @@
     },
     {
       "callSiteId": "packages/engine/src/execution/reviewer.ts::reviewStep::store.logEntry::#1",
-      "callSiteFingerprint": "options.store.logEntry(options.taskId,`${reviewType} review skipped \u2014 ${reason} active`)",
+      "callSiteFingerprint": "options.store.logEntry(options.taskId,`${reviewType} review skipped — ${reason} active`)",
       "file": "packages/engine/src/execution/reviewer.ts",
       "enclosingSymbolPath": "reviewStep",
       "writer": "store.logEntry",
@@ -4441,7 +4447,7 @@
     },
     {
       "callSiteId": "packages/engine/src/execution/reviewer.ts::reviewStep>buildPauseUnavailableResult::store.logEntry::#1",
-      "callSiteFingerprint": "options.store.logEntry(options.taskId,`${reviewType} review aborted before spawn \u2014 ${reason} active`)",
+      "callSiteFingerprint": "options.store.logEntry(options.taskId,`${reviewType} review aborted before spawn — ${reason} active`)",
       "file": "packages/engine/src/execution/reviewer.ts",
       "enclosingSymbolPath": "reviewStep>buildPauseUnavailableResult",
       "writer": "store.logEntry",
@@ -4801,7 +4807,7 @@
     },
     {
       "callSiteId": "packages/engine/src/executor/review-empty-content-close.ts::terminalizeEmptyReviewContent::store.logEntry::#1",
-      "callSiteFingerprint": "deps.store.logEntry(taskId,`No reviewable content \u2014 terminal park recorded for ${fence.stepName}`,`Gate ${fence.workflowStepId} rejected a provably empty diff. No remediation round can help until new work exists.`,deps.getRunContextFor(taskId))",
+      "callSiteFingerprint": "deps.store.logEntry(taskId,`No reviewable content — terminal park recorded for ${fence.stepName}`,`Gate ${fence.workflowStepId} rejected a provably empty diff. No remediation round can help until new work exists.`,deps.getRunContextFor(taskId))",
       "file": "packages/engine/src/executor/review-empty-content-close.ts",
       "enclosingSymbolPath": "terminalizeEmptyReviewContent",
       "writer": "store.logEntry",
@@ -5135,12 +5141,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merge/auto-merge-finalization.ts::finalizeProvenAutoMergeTask::store.logEntry::#1",
-      "callSiteFingerprint": "store.logEntry(taskId,`Auto-merge finalization repaired column mismatch: ${latest.column} \u2192 ${completeColumn} after proven merge; cleared stal)",
+      "callSiteFingerprint": "store.logEntry(taskId,`Auto-merge finalization repaired column mismatch: ${latest.column} → ${completeColumn} after proven merge; cleared stal)",
       "file": "packages/engine/src/merge/auto-merge-finalization.ts",
       "enclosingSymbolPath": "finalizeProvenAutoMergeTask",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 636,
+      "lineHint": 716,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -5160,7 +5166,7 @@
       "enclosingSymbolPath": "finalizeProvenAutoMergeTask>cleanupLandedWorktree",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 436,
+      "lineHint": 482,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "single-repository merge finalization or fenced merge-failure recovery"
@@ -5180,7 +5186,7 @@
       "enclosingSymbolPath": "finalizeProvenAutoMergeTask>cleanupLandedWorktree",
       "writer": "store.logEntry",
       "ordinal": 2,
-      "lineHint": 438,
+      "lineHint": 484,
       "owningEntryPoint": "finalizeProvenAutoMergeTask",
       "reachableDataStates": [
         "proven landing finalization without a merge write fence"
@@ -5200,7 +5206,7 @@
       "enclosingSymbolPath": "finalizeProvenAutoMergeTask>finalized",
       "writer": "store.updateTaskAtomic",
       "ordinal": 1,
-      "lineHint": 604,
+      "lineHint": 684,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -5220,7 +5226,7 @@
       "enclosingSymbolPath": "finalizeProvenAutoMergeTask>move",
       "writer": "store.moveTaskIf",
       "ordinal": 1,
-      "lineHint": 563,
+      "lineHint": 643,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -5234,13 +5240,33 @@
       "followUpTaskId": "none:no-follow-up-required"
     },
     {
+      "callSiteId": "packages/engine/src/merge/auto-merge-finalization.ts::finalizeProvenAutoMergeTask>persistProof::store.updateTaskAtomic::#1",
+      "callSiteFingerprint": "store.updateTaskAtomic(taskId,(current) => ({ mergeDetails: buildFinalizationMergeDetails(current, result), }))",
+      "file": "packages/engine/src/merge/auto-merge-finalization.ts",
+      "enclosingSymbolPath": "finalizeProvenAutoMergeTask>persistProof",
+      "writer": "store.updateTaskAtomic",
+      "ordinal": 1,
+      "lineHint": 379,
+      "owningEntryPoint": "indeterminate",
+      "reachableDataStates": [
+        "unobservable:human classification required for new durable write"
+      ],
+      "axis1": "indeterminate",
+      "axis1Evidence": "pending: human classification required for newly derived durable write",
+      "axis2Provisional": "unresolved",
+      "axis2Final": "unresolved",
+      "observedInSuite": "unobservable:human classification required for new durable write",
+      "executionProof": "none:human classification required for new durable write",
+      "followUpTaskId": "pending:classify"
+    },
+    {
       "callSiteId": "packages/engine/src/merge/merger-ai.ts::finalizeMerged::store.publishTaskOverlapDeliveries::#1",
       "callSiteFingerprint": "store.publishTaskOverlapDeliveries(taskId,[{ blockerTaskId: taskId, blockerLineageId: task.lineageId, repository: \".\", target: mergeDetails.mergeTargetBranch, lan)",
       "file": "packages/engine/src/merge/merger-ai.ts",
       "enclosingSymbolPath": "finalizeMerged",
       "writer": "store.publishTaskOverlapDeliveries",
       "ordinal": 1,
-      "lineHint": 3914,
+      "lineHint": 4064,
       "owningEntryPoint": "indeterminate",
       "reachableDataStates": [
         "unobservable:human classification required for new durable write"
@@ -5260,7 +5286,7 @@
       "enclosingSymbolPath": "finalizeMerged",
       "writer": "store.publishTaskOverlapDeliveries",
       "ordinal": 2,
-      "lineHint": 3955,
+      "lineHint": 4105,
       "owningEntryPoint": "indeterminate",
       "reachableDataStates": [
         "unobservable:human classification required for new durable write"
@@ -5280,7 +5306,7 @@
       "enclosingSymbolPath": "finalizeMerged",
       "writer": "store.recordBranchGroupMemberLanded",
       "ordinal": 1,
-      "lineHint": 4049,
+      "lineHint": 4201,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "mid-review",
@@ -5302,7 +5328,7 @@
       "enclosingSymbolPath": "finalizeMerged",
       "writer": "store.updateTask",
       "ordinal": 1,
-      "lineHint": 3912,
+      "lineHint": 4062,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -5326,7 +5352,7 @@
       "enclosingSymbolPath": "finalizeMerged",
       "writer": "store.updateTask",
       "ordinal": 2,
-      "lineHint": 3945,
+      "lineHint": 4095,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -5350,7 +5376,7 @@
       "enclosingSymbolPath": "finalizeMerged",
       "writer": "store.upsertTaskCommitAssociation",
       "ordinal": 1,
-      "lineHint": 3930,
+      "lineHint": 4080,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -5374,7 +5400,7 @@
       "enclosingSymbolPath": "finalizeMerged",
       "writer": "syncGroupPrOnLanding",
       "ordinal": 1,
-      "lineHint": 4060,
+      "lineHint": 4212,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -5394,7 +5420,7 @@
       "enclosingSymbolPath": "finalizeTask",
       "writer": "store.emit",
       "ordinal": 1,
-      "lineHint": 4137,
+      "lineHint": 4289,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -5418,7 +5444,7 @@
       "enclosingSymbolPath": "finalizeTask>finalization",
       "writer": "finalizeProvenAutoMergeTask",
       "ordinal": 1,
-      "lineHint": 4101,
+      "lineHint": 4253,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -5438,7 +5464,7 @@
       "enclosingSymbolPath": "finalizeWorkspaceTask",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 3389,
+      "lineHint": 3539,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -5462,7 +5488,7 @@
       "enclosingSymbolPath": "finalizeWorkspaceTask",
       "writer": "store.logEntry",
       "ordinal": 2,
-      "lineHint": 3391,
+      "lineHint": 3541,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -5486,7 +5512,7 @@
       "enclosingSymbolPath": "finalizeWorkspaceTask",
       "writer": "store.logEntry",
       "ordinal": 3,
-      "lineHint": 3414,
+      "lineHint": 3564,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -5510,7 +5536,7 @@
       "enclosingSymbolPath": "finalizeWorkspaceTask",
       "writer": "store.logEntry",
       "ordinal": 4,
-      "lineHint": 3416,
+      "lineHint": 3566,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -5534,7 +5560,7 @@
       "enclosingSymbolPath": "finalizeWorkspaceTask",
       "writer": "store.publishTaskOverlapDeliveries",
       "ordinal": 1,
-      "lineHint": 3363,
+      "lineHint": 3513,
       "owningEntryPoint": "indeterminate",
       "reachableDataStates": [
         "unobservable:human classification required for new durable write"
@@ -5554,7 +5580,7 @@
       "enclosingSymbolPath": "finalizeWorkspaceTask",
       "writer": "store.updateTask",
       "ordinal": 1,
-      "lineHint": 3361,
+      "lineHint": 3511,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -5578,7 +5604,7 @@
       "enclosingSymbolPath": "finalizeWorkspaceTask>cleanup",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 3379,
+      "lineHint": 3529,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -5602,7 +5628,7 @@
       "enclosingSymbolPath": "finalizeWorkspaceTask>cleanup",
       "writer": "store.logEntry",
       "ordinal": 2,
-      "lineHint": 3381,
+      "lineHint": 3531,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -5626,7 +5652,7 @@
       "enclosingSymbolPath": "landOneRepo",
       "writer": "store.recordWorkspaceLandIntent",
       "ordinal": 1,
-      "lineHint": 1299,
+      "lineHint": 1360,
       "owningEntryPoint": "landOneRepo",
       "reachableDataStates": [
         "pre-land"
@@ -5646,7 +5672,7 @@
       "enclosingSymbolPath": "landOneRepo",
       "writer": "store.updateTask",
       "ordinal": 1,
-      "lineHint": 1336,
+      "lineHint": 1397,
       "owningEntryPoint": "landOneRepo",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -5661,12 +5687,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merge/merger-ai.ts::landWorkspaceTask::store.logEntry::#1",
-      "callSiteFingerprint": "store.logEntry(taskId,`Finalize blocked (empty-merge no-landed-proof guard, workspace): ${reason} \u2014 contained recovery target ${reboundColumn},JSON.stringify({ lane: \"ai-empty-merge-workspace\", repoCount: repos.length, landedCount, repos: repos.map((r) => r.repo))",
+      "callSiteFingerprint": "store.logEntry(taskId,`Finalize blocked (empty-merge no-landed-proof guard, workspace): ${reason} — contained recovery target ${reboundColumn},JSON.stringify({ lane: \"ai-empty-merge-workspace\", repoCount: repos.length, landedCount, repos: repos.map((r) => r.repo))",
       "file": "packages/engine/src/merge/merger-ai.ts",
       "enclosingSymbolPath": "landWorkspaceTask",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 3162,
+      "lineHint": 3312,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -5690,7 +5716,7 @@
       "enclosingSymbolPath": "landWorkspaceTask",
       "writer": "store.releaseWorkspaceLease",
       "ordinal": 1,
-      "lineHint": 2883,
+      "lineHint": 3033,
       "owningEntryPoint": "landWorkspaceTask",
       "reachableDataStates": [
         "workspace-partial-land",
@@ -5711,7 +5737,7 @@
       "enclosingSymbolPath": "landWorkspaceTask",
       "writer": "store.releaseWorkspaceLease",
       "ordinal": 2,
-      "lineHint": 2911,
+      "lineHint": 3061,
       "owningEntryPoint": "landWorkspaceTask",
       "reachableDataStates": [
         "workspace-partial-land",
@@ -5732,7 +5758,7 @@
       "enclosingSymbolPath": "landWorkspaceTask",
       "writer": "store.releaseWorkspaceLease",
       "ordinal": 3,
-      "lineHint": 3112,
+      "lineHint": 3262,
       "owningEntryPoint": "landWorkspaceTask",
       "reachableDataStates": [
         "workspace-partial-land",
@@ -5753,7 +5779,7 @@
       "enclosingSymbolPath": "landWorkspaceTask",
       "writer": "store.updateTask",
       "ordinal": 1,
-      "lineHint": 2642,
+      "lineHint": 2792,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -5777,7 +5803,7 @@
       "enclosingSymbolPath": "landWorkspaceTask",
       "writer": "store.updateTask",
       "ordinal": 2,
-      "lineHint": 3159,
+      "lineHint": 3309,
       "owningEntryPoint": "landWorkspaceTask",
       "reachableDataStates": [
         "pre-land",
@@ -5799,7 +5825,7 @@
       "enclosingSymbolPath": "landWorkspaceTask>log",
       "writer": "store.appendAgentLog",
       "ordinal": 1,
-      "lineHint": 2473,
+      "lineHint": 2623,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -5823,7 +5849,7 @@
       "enclosingSymbolPath": "landWorkspaceTask>log",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 2472,
+      "lineHint": 2622,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -5847,7 +5873,7 @@
       "enclosingSymbolPath": "landWorkspaceTask>resolved",
       "writer": "store.resolveWorkspaceLandIntent",
       "ordinal": 1,
-      "lineHint": 2997,
+      "lineHint": 3147,
       "owningEntryPoint": "landWorkspaceTask",
       "reachableDataStates": [
         "post-ref-advance"
@@ -5867,7 +5893,7 @@
       "enclosingSymbolPath": "mergeAndReview>assertCurrentEpisodeIdentity",
       "writer": "store.updateTaskAtomic",
       "ordinal": 1,
-      "lineHint": 3461,
+      "lineHint": 3611,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "mid-review"
@@ -5887,7 +5913,7 @@
       "enclosingSymbolPath": "mergeAndReview>persistState",
       "writer": "store.updateTaskAtomic",
       "ordinal": 1,
-      "lineHint": 3442,
+      "lineHint": 3592,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "mid-review"
@@ -5907,7 +5933,7 @@
       "enclosingSymbolPath": "persistRepoLandedSha",
       "writer": "store.updateTask",
       "ordinal": 1,
-      "lineHint": 3267,
+      "lineHint": 3417,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -5931,7 +5957,7 @@
       "enclosingSymbolPath": "pushAfterMergeToRemote>recordRecoveryBranch",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 3717,
+      "lineHint": 3867,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -5955,7 +5981,7 @@
       "enclosingSymbolPath": "recoverApprovedPreexistingAiMergeWorktree",
       "writer": "store.updateTask",
       "ordinal": 1,
-      "lineHint": 376,
+      "lineHint": 437,
       "owningEntryPoint": "landOneRepo",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -5975,7 +6001,7 @@
       "enclosingSymbolPath": "recoverApprovedPreexistingAiMergeWorktree",
       "writer": "store.updateTask",
       "ordinal": 2,
-      "lineHint": 382,
+      "lineHint": 443,
       "owningEntryPoint": "landOneRepo",
       "reachableDataStates": [
         "pre-land",
@@ -5991,12 +6017,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merge/merger-ai.ts::runAiMerge::store.logEntry::#1",
-      "callSiteFingerprint": "store.logEntry(taskId,`Finalize blocked (no-commits incomplete-work guard): ${reason} \u2014 contained recovery target ${reboundColumn} with progre,JSON.stringify({ doneCount: noCommitsFinalize.doneCount, incompleteCount: noCommitsFinalize.incompleteCount, branch, int)",
+      "callSiteFingerprint": "store.logEntry(taskId,`Finalize refused (delivery unproven): ${refusal}`,JSON.stringify({ lane: \"no-commits-branch-missing\", branch, integrationBranch, deliveryUnproven: marker, }, null, 2))",
       "file": "packages/engine/src/merge/merger-ai.ts",
       "enclosingSymbolPath": "runAiMerge",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 1714,
+      "lineHint": 1775,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -6015,12 +6041,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merge/merger-ai.ts::runAiMerge::store.logEntry::#2",
-      "callSiteFingerprint": "store.logEntry(taskId,`Finalize blocked (no-commits incomplete-work guard): ${reason} \u2014 contained recovery target ${reboundColumn} with progre,JSON.stringify({ doneCount: noCommitsFinalize.doneCount, incompleteCount: noCommitsFinalize.incompleteCount, branch, int)",
+      "callSiteFingerprint": "store.logEntry(taskId,`Finalize blocked (no-commits incomplete-work guard): ${reason} — contained recovery target ${reboundColumn} with progre,JSON.stringify({ doneCount: noCommitsFinalize.doneCount, incompleteCount: noCommitsFinalize.incompleteCount, branch, int)",
       "file": "packages/engine/src/merge/merger-ai.ts",
       "enclosingSymbolPath": "runAiMerge",
       "writer": "store.logEntry",
       "ordinal": 2,
-      "lineHint": 1901,
+      "lineHint": 1821,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -6039,12 +6065,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merge/merger-ai.ts::runAiMerge::store.logEntry::#3",
-      "callSiteFingerprint": "store.logEntry(taskId,`Finalize blocked (empty-merge no-landed-proof guard): ${reason} \u2014 contained recovery target ${reboundColumn} with progr,JSON.stringify({ branch, integrationBranch, lane: \"ai-empty-merge\", baseCommitSha: task.baseCommitSha }, null, 2))",
+      "callSiteFingerprint": "store.logEntry(taskId,`Finalize refused (delivery unproven): ${refusal}`,JSON.stringify({ lane: \"ai-empty-merge\", branch, integrationBranch, deliveryUnproven: marker, }, null, 2))",
       "file": "packages/engine/src/merge/merger-ai.ts",
       "enclosingSymbolPath": "runAiMerge",
       "writer": "store.logEntry",
       "ordinal": 3,
-      "lineHint": 1966,
+      "lineHint": 2006,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -6063,12 +6089,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merge/merger-ai.ts::runAiMerge::store.logEntry::#4",
-      "callSiteFingerprint": "store.logEntry(taskId,`Finalize blocked (overseer failed-executor veto): ${vetoReason} \u2014 contained recovery target ${reboundColumn} with progr,JSON.stringify({ executorSignal: executorMemory?.signal, executorSignalObservedAt: executorMemory?.observedAt, branch, i)",
+      "callSiteFingerprint": "store.logEntry(taskId,`Finalize blocked (no-commits incomplete-work guard): ${reason} — contained recovery target ${reboundColumn} with progre,JSON.stringify({ doneCount: noCommitsFinalize.doneCount, incompleteCount: noCommitsFinalize.incompleteCount, branch, int)",
       "file": "packages/engine/src/merge/merger-ai.ts",
       "enclosingSymbolPath": "runAiMerge",
       "writer": "store.logEntry",
       "ordinal": 4,
-      "lineHint": 2037,
+      "lineHint": 2051,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "single-repository merge finalization or fenced merge-failure recovery"
@@ -6083,12 +6109,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merge/merger-ai.ts::runAiMerge::store.logEntry::#5",
-      "callSiteFingerprint": "store.logEntry(taskId,landingMessage,\"AiMerge\")",
+      "callSiteFingerprint": "store.logEntry(taskId,`Finalize blocked (empty-merge no-landed-proof guard): ${reason} — contained recovery target ${reboundColumn} with progr,JSON.stringify({ branch, integrationBranch, lane: \"ai-empty-merge\", baseCommitSha: task.baseCommitSha }, null, 2))",
       "file": "packages/engine/src/merge/merger-ai.ts",
       "enclosingSymbolPath": "runAiMerge",
       "writer": "store.logEntry",
       "ordinal": 5,
-      "lineHint": 2094,
+      "lineHint": 2116,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "single-repository merge finalization or fenced merge-failure recovery"
@@ -6102,13 +6128,53 @@
       "followUpTaskId": "none:no-follow-up-required"
     },
     {
+      "callSiteId": "packages/engine/src/merge/merger-ai.ts::runAiMerge::store.logEntry::#6",
+      "callSiteFingerprint": "store.logEntry(taskId,`Finalize blocked (overseer failed-executor veto): ${vetoReason} — contained recovery target ${reboundColumn} with progr,JSON.stringify({ executorSignal: executorMemory?.signal, executorSignalObservedAt: executorMemory?.observedAt, branch, i)",
+      "file": "packages/engine/src/merge/merger-ai.ts",
+      "enclosingSymbolPath": "runAiMerge",
+      "writer": "store.logEntry",
+      "ordinal": 6,
+      "lineHint": 2187,
+      "owningEntryPoint": "indeterminate",
+      "reachableDataStates": [
+        "unobservable:human classification required for new durable write"
+      ],
+      "axis1": "indeterminate",
+      "axis1Evidence": "pending: human classification required for newly derived durable write",
+      "axis2Provisional": "unresolved",
+      "axis2Final": "unresolved",
+      "observedInSuite": "unobservable:human classification required for new durable write",
+      "executionProof": "none:human classification required for new durable write",
+      "followUpTaskId": "pending:classify"
+    },
+    {
+      "callSiteId": "packages/engine/src/merge/merger-ai.ts::runAiMerge::store.logEntry::#7",
+      "callSiteFingerprint": "store.logEntry(taskId,landingMessage,\"AiMerge\")",
+      "file": "packages/engine/src/merge/merger-ai.ts",
+      "enclosingSymbolPath": "runAiMerge",
+      "writer": "store.logEntry",
+      "ordinal": 7,
+      "lineHint": 2244,
+      "owningEntryPoint": "indeterminate",
+      "reachableDataStates": [
+        "unobservable:human classification required for new durable write"
+      ],
+      "axis1": "indeterminate",
+      "axis1Evidence": "pending: human classification required for newly derived durable write",
+      "axis2Provisional": "unresolved",
+      "axis2Final": "unresolved",
+      "observedInSuite": "unobservable:human classification required for new durable write",
+      "executionProof": "none:human classification required for new durable write",
+      "followUpTaskId": "pending:classify"
+    },
+    {
       "callSiteId": "packages/engine/src/merge/merger-ai.ts::runAiMerge::store.updateTask::#1",
       "callSiteFingerprint": "store.updateTask(taskId,{error})",
       "file": "packages/engine/src/merge/merger-ai.ts",
       "enclosingSymbolPath": "runAiMerge",
       "writer": "store.updateTask",
       "ordinal": 1,
-      "lineHint": 1708,
+      "lineHint": 1815,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -6132,7 +6198,7 @@
       "enclosingSymbolPath": "runAiMerge",
       "writer": "store.updateTask",
       "ordinal": 2,
-      "lineHint": 1895,
+      "lineHint": 2045,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -6156,7 +6222,7 @@
       "enclosingSymbolPath": "runAiMerge",
       "writer": "store.updateTask",
       "ordinal": 3,
-      "lineHint": 1960,
+      "lineHint": 2110,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -6180,7 +6246,7 @@
       "enclosingSymbolPath": "runAiMerge",
       "writer": "store.updateTask",
       "ordinal": 4,
-      "lineHint": 2031,
+      "lineHint": 2181,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "single-repository merge finalization or fenced merge-failure recovery"
@@ -6200,7 +6266,7 @@
       "enclosingSymbolPath": "runAiMerge>log",
       "writer": "store.appendAgentLog",
       "ordinal": 1,
-      "lineHint": 1655,
+      "lineHint": 1716,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -6224,7 +6290,7 @@
       "enclosingSymbolPath": "runAiMerge>log",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 1654,
+      "lineHint": 1715,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -6243,12 +6309,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merge/merger-ai.ts::runPushAfterMergeStep::store.logEntry::#1",
-      "callSiteFingerprint": "store.logEntry(taskId,`Push to remote failed after merge \u2014 task finalized anyway; local ${integrationBranch} may diverge from ${pushOutcome.re,\"PushToRemoteFailed\")",
+      "callSiteFingerprint": "store.logEntry(taskId,`Push to remote failed after merge — task finalized anyway; local ${integrationBranch} may diverge from ${pushOutcome.re,\"PushToRemoteFailed\")",
       "file": "packages/engine/src/merge/merger-ai.ts",
       "enclosingSymbolPath": "runPushAfterMergeStep",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 2184,
+      "lineHint": 2334,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -6272,7 +6338,7 @@
       "enclosingSymbolPath": "runPushAfterMergeStep",
       "writer": "store.logEntry",
       "ordinal": 2,
-      "lineHint": 2205,
+      "lineHint": 2355,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -6291,12 +6357,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merge/merger-ai.ts::runPushAfterMergeStep::store.logEntry::#3",
-      "callSiteFingerprint": "store.logEntry(taskId,`Push to remote threw after merge \u2014 task finalized anyway; local ${integrationBranch} may diverge from origin: ${message,\"PushToRemoteFailed\")",
+      "callSiteFingerprint": "store.logEntry(taskId,`Push to remote threw after merge — task finalized anyway; local ${integrationBranch} may diverge from origin: ${message,\"PushToRemoteFailed\")",
       "file": "packages/engine/src/merge/merger-ai.ts",
       "enclosingSymbolPath": "runPushAfterMergeStep",
       "writer": "store.logEntry",
       "ordinal": 3,
-      "lineHint": 2217,
+      "lineHint": 2367,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -6320,7 +6386,7 @@
       "enclosingSymbolPath": "runPushAfterMergeStep",
       "writer": "store.updateTask",
       "ordinal": 1,
-      "lineHint": 2174,
+      "lineHint": 2324,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -6344,7 +6410,7 @@
       "enclosingSymbolPath": "writeTransientMergeStatus",
       "writer": "store.updateTask",
       "ordinal": 1,
-      "lineHint": 219,
+      "lineHint": 280,
       "owningEntryPoint": "runAiMerge",
       "reachableDataStates": [
         "pre-land",
@@ -6382,13 +6448,13 @@
       "axis1Evidence": "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo to assertSquashOverlapsFileScope; this imported module belongs to the legacy/independent subsystem closure."
     },
     {
-      "callSiteId": "packages/engine/src/merge/post-merge-gate-reseed.ts::reseedUnrunPostMergeGate::store.logEntry::#1",
-      "callSiteFingerprint": "store.logEntry(task.id,`${postMergeGateReseedLogMarker(gateId)} landed merge has no post-merge evidence row, re-seeded in place ` + `for a fres)",
+      "callSiteId": "packages/engine/src/merge/post-merge-gate-reseed.ts::resumeMissingPostMergeGate::store.logEntry::#1",
+      "callSiteFingerprint": "store.logEntry(task.id,`${postMergeGateReseedLogMarker(node.id)}; already-landed implementation and merge ` + `will not run again (reseed ${pri)",
       "file": "packages/engine/src/merge/post-merge-gate-reseed.ts",
-      "enclosingSymbolPath": "reseedUnrunPostMergeGate",
+      "enclosingSymbolPath": "resumeMissingPostMergeGate",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 183,
+      "lineHint": 241,
       "owningEntryPoint": "indeterminate",
       "reachableDataStates": [
         "unobservable:human classification required for new durable write"
@@ -6402,13 +6468,13 @@
       "followUpTaskId": "pending:classify"
     },
     {
-      "callSiteId": "packages/engine/src/merge/post-merge-gate-reseed.ts::reseedUnrunPostMergeGate>seed::store.seedWorkspaceCodeReviewContinuationIfIdle::#1",
-      "callSiteFingerprint": "store.seedWorkspaceCodeReviewContinuationIfIdle({taskId,nodeId,kind,state,runId,stableWorkflowRunId,continuationSequence,sourceColumn,targetColumn,irHash,expectedWorkflowSelection})",
+      "callSiteId": "packages/engine/src/merge/post-merge-gate-reseed.ts::resumeMissingPostMergeGate>seeded::store.seedWorkspaceCodeReviewContinuationIfIdle::#1",
+      "callSiteFingerprint": "store.seedWorkspaceCodeReviewContinuationIfIdle({taskId,nodeId,kind,state,runId,stableWorkflowRunId,continuationSequence,sourceColumn,targetColumn,irHash,expectedWorkflowSelection,expectedTaskUpdatedAt})",
       "file": "packages/engine/src/merge/post-merge-gate-reseed.ts",
-      "enclosingSymbolPath": "reseedUnrunPostMergeGate>seed",
+      "enclosingSymbolPath": "resumeMissingPostMergeGate>seeded",
       "writer": "store.seedWorkspaceCodeReviewContinuationIfIdle",
       "ordinal": 1,
-      "lineHint": 154,
+      "lineHint": 225,
       "owningEntryPoint": "indeterminate",
       "reachableDataStates": [
         "unobservable:human classification required for new durable write"
@@ -6660,13 +6726,33 @@
       "followUpTaskId": "pending:classify"
     },
     {
+      "callSiteId": "packages/engine/src/merge/pre-merge-gate-reseed.ts::seedPreMergeReviewIfIdle::store.logEntry::#1",
+      "callSiteFingerprint": "store.logEntry(task.id,`${verdictlessGateRerunLogMarker(node.id)} ${runKind}, re-seeded in place for a fresh run` + ` (rerun ${rerunAttempts + )",
+      "file": "packages/engine/src/merge/pre-merge-gate-reseed.ts",
+      "enclosingSymbolPath": "seedPreMergeReviewIfIdle",
+      "writer": "store.logEntry",
+      "ordinal": 1,
+      "lineHint": 330,
+      "owningEntryPoint": "indeterminate",
+      "reachableDataStates": [
+        "unobservable:human classification required for new durable write"
+      ],
+      "axis1": "indeterminate",
+      "axis1Evidence": "pending: human classification required for newly derived durable write",
+      "axis2Provisional": "unresolved",
+      "axis2Final": "unresolved",
+      "observedInSuite": "unobservable:human classification required for new durable write",
+      "executionProof": "none:human classification required for new durable write",
+      "followUpTaskId": "pending:classify"
+    },
+    {
       "callSiteId": "packages/engine/src/merge/pre-merge-gate-reseed.ts::seedPreMergeReviewIfIdle>result::store.seedWorkspaceCodeReviewContinuationIfIdle::#1",
       "callSiteFingerprint": "store.seedWorkspaceCodeReviewContinuationIfIdle({taskId,nodeId,kind,state,runId,stableWorkflowRunId,continuationSequence,sourceColumn,targetColumn,irHash,?})",
       "file": "packages/engine/src/merge/pre-merge-gate-reseed.ts",
       "enclosingSymbolPath": "seedPreMergeReviewIfIdle>result",
       "writer": "store.seedWorkspaceCodeReviewContinuationIfIdle",
       "ordinal": 1,
-      "lineHint": 296,
+      "lineHint": 315,
       "owningEntryPoint": "indeterminate",
       "reachableDataStates": [
         "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo"
@@ -6720,13 +6806,93 @@
       "followUpTaskId": "none:no-follow-up-required"
     },
     {
+      "callSiteId": "packages/engine/src/merge/zero-commit-finalization-guard.ts::applyZeroCommitUncommittedWorkHold::store.updateTask::#1",
+      "callSiteFingerprint": "store.updateTask(task.id,{?,?})",
+      "file": "packages/engine/src/merge/zero-commit-finalization-guard.ts",
+      "enclosingSymbolPath": "applyZeroCommitUncommittedWorkHold",
+      "writer": "store.updateTask",
+      "ordinal": 1,
+      "lineHint": 437,
+      "owningEntryPoint": "indeterminate",
+      "reachableDataStates": [
+        "unobservable:human classification required for new durable write"
+      ],
+      "axis1": "indeterminate",
+      "axis1Evidence": "pending: human classification required for newly derived durable write",
+      "axis2Provisional": "unresolved",
+      "axis2Final": "unresolved",
+      "observedInSuite": "unobservable:human classification required for new durable write",
+      "executionProof": "none:human classification required for new durable write",
+      "followUpTaskId": "pending:classify"
+    },
+    {
+      "callSiteId": "packages/engine/src/merge/zero-commit-finalization-guard.ts::clearZeroCommitUncommittedWorkHold>write::store.updateTask::#1",
+      "callSiteFingerprint": "store.updateTask(task.id,{mergeDetails,?})",
+      "file": "packages/engine/src/merge/zero-commit-finalization-guard.ts",
+      "enclosingSymbolPath": "clearZeroCommitUncommittedWorkHold>write",
+      "writer": "store.updateTask",
+      "ordinal": 1,
+      "lineHint": 490,
+      "owningEntryPoint": "indeterminate",
+      "reachableDataStates": [
+        "unobservable:human classification required for new durable write"
+      ],
+      "axis1": "indeterminate",
+      "axis1Evidence": "pending: human classification required for newly derived durable write",
+      "axis2Provisional": "unresolved",
+      "axis2Final": "unresolved",
+      "observedInSuite": "unobservable:human classification required for new durable write",
+      "executionProof": "none:human classification required for new durable write",
+      "followUpTaskId": "pending:classify"
+    },
+    {
+      "callSiteId": "packages/engine/src/merge/zero-commit-finalization-guard.ts::logZeroCommitGuardEvent::store.logEntry::#1",
+      "callSiteFingerprint": "store.logEntry(task.id,`[${source}] ${action}`,outcome)",
+      "file": "packages/engine/src/merge/zero-commit-finalization-guard.ts",
+      "enclosingSymbolPath": "logZeroCommitGuardEvent",
+      "writer": "store.logEntry",
+      "ordinal": 1,
+      "lineHint": 526,
+      "owningEntryPoint": "indeterminate",
+      "reachableDataStates": [
+        "unobservable:human classification required for new durable write"
+      ],
+      "axis1": "indeterminate",
+      "axis1Evidence": "pending: human classification required for newly derived durable write",
+      "axis2Provisional": "unresolved",
+      "axis2Final": "unresolved",
+      "observedInSuite": "unobservable:human classification required for new durable write",
+      "executionProof": "none:human classification required for new durable write",
+      "followUpTaskId": "pending:classify"
+    },
+    {
+      "callSiteId": "packages/engine/src/merge/zero-commit-finalization-guard.ts::upsertZeroCommitManualMergeHold::store.upsertMergeRequestRecord::#1",
+      "callSiteFingerprint": "store.upsertMergeRequestRecord(taskId,{state,now,lastError})",
+      "file": "packages/engine/src/merge/zero-commit-finalization-guard.ts",
+      "enclosingSymbolPath": "upsertZeroCommitManualMergeHold",
+      "writer": "store.upsertMergeRequestRecord",
+      "ordinal": 1,
+      "lineHint": 507,
+      "owningEntryPoint": "indeterminate",
+      "reachableDataStates": [
+        "unobservable:human classification required for new durable write"
+      ],
+      "axis1": "indeterminate",
+      "axis1Evidence": "pending: human classification required for newly derived durable write",
+      "axis2Provisional": "unresolved",
+      "axis2Final": "unresolved",
+      "observedInSuite": "unobservable:human classification required for new durable write",
+      "executionProof": "none:human classification required for new durable write",
+      "followUpTaskId": "pending:classify"
+    },
+    {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask::store.appendAgentLog::#1",
-      "callSiteFingerprint": "store.appendAgentLog(taskId,`Pre-merge auto-prerebase: ${branch} \u2192 local HEAD ${mainHead.slice(0, 8)} (${prerebaseDecision.reason})`,\"status\",undefined,\"merger\")",
+      "callSiteFingerprint": "store.appendAgentLog(taskId,`Pre-merge auto-prerebase: ${branch} → local HEAD ${mainHead.slice(0, 8)} (${prerebaseDecision.reason})`,\"status\",undefined,\"merger\")",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.appendAgentLog",
       "ordinal": 1,
-      "lineHint": 8205,
+      "lineHint": 8359,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -6741,12 +6907,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask::store.appendAgentLog::#2",
-      "callSiteFingerprint": "store.appendAgentLog(taskId,`Pre-merge rebase: ${branch} \u2192 ${remoteRef}`,\"status\",undefined,\"merger\")",
+      "callSiteFingerprint": "store.appendAgentLog(taskId,`Pre-merge rebase: ${branch} → ${remoteRef}`,\"status\",undefined,\"merger\")",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.appendAgentLog",
       "ordinal": 2,
-      "lineHint": 8340,
+      "lineHint": 8494,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -6766,7 +6932,7 @@
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.appendAgentLog",
       "ordinal": 3,
-      "lineHint": 8676,
+      "lineHint": 8830,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -6786,7 +6952,7 @@
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.appendAgentLog",
       "ordinal": 4,
-      "lineHint": 8746,
+      "lineHint": 8900,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -6806,7 +6972,7 @@
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.appendAgentLog",
       "ordinal": 5,
-      "lineHint": 9493,
+      "lineHint": 9647,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -6826,7 +6992,7 @@
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.appendAgentLog",
       "ordinal": 6,
-      "lineHint": 9502,
+      "lineHint": 9656,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -6841,12 +7007,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask::store.appendAgentLog::#7",
-      "callSiteFingerprint": "store.appendAgentLog(taskId,summaryParts.join(\" \u00b7 \"),\"status\",undefined,\"merger\")",
+      "callSiteFingerprint": "store.appendAgentLog(taskId,summaryParts.join(\" · \"),\"status\",undefined,\"merger\")",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.appendAgentLog",
       "ordinal": 7,
-      "lineHint": 9706,
+      "lineHint": 9860,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -6866,7 +7032,7 @@
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.enqueueMergeQueue",
       "ordinal": 1,
-      "lineHint": 7513,
+      "lineHint": 7600,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -6884,7 +7050,7 @@
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 7676,
+      "lineHint": 7763,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -6899,12 +7065,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask::store.logEntry::#10",
-      "callSiteFingerprint": "store.logEntry(taskId,`Auto-finalized no-op (proven): start point on ${classification.baseRef}; modifiedFiles cleared`)",
+      "callSiteFingerprint": "store.logEntry(taskId,`Finalize refused (zero-commit landing proof): ${reason}`,JSON.stringify({ contentState: noCommitsFinalize.deliveryUnproven?.contentState, modifiedCount: noCommitsFinalize.delive)",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.logEntry",
       "ordinal": 10,
-      "lineHint": 8071,
+      "lineHint": 8149,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -6919,12 +7085,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask::store.logEntry::#11",
-      "callSiteFingerprint": "store.logEntry(taskId,`Pre-merge recovery (Layer 1): dropped dependency commits from ${task.executionStartBranch} via rebase --onto ${rebaseTa)",
+      "callSiteFingerprint": "store.logEntry(taskId,`Finalize blocked (no-commits incomplete-work guard): ${reason} — moving back to todo with progress preserved`,JSON.stringify({ doneCount: noCommitsFinalize.doneCount, incompleteCount: noCommitsFinalize.incompleteCount, classificat)",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.logEntry",
       "ordinal": 11,
-      "lineHint": 8465,
+      "lineHint": 8174,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -6939,12 +7105,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask::store.logEntry::#12",
-      "callSiteFingerprint": "store.logEntry(taskId,`Pre-merge recovery (Layer 2): patch-id matched ${dropped} branch commit(s) against the last 500 main commits and droppe)",
+      "callSiteFingerprint": "store.logEntry(taskId,`Auto-finalized no-op (proven): start point on ${classification.baseRef}; modifiedFiles cleared`)",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.logEntry",
       "ordinal": 12,
-      "lineHint": 8573,
+      "lineHint": 8225,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -6959,12 +7125,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask::store.logEntry::#13",
-      "callSiteFingerprint": "store.logEntry(taskId,`Pre-merge recovery (Layer 3): both surgical and patch-id recovery failed; AI arbiter takes over. SAFETY CONSTRAINT for ,\"PreMergeRebaseFallthrough\")",
+      "callSiteFingerprint": "store.logEntry(taskId,`Pre-merge recovery (Layer 1): dropped dependency commits from ${task.executionStartBranch} via rebase --onto ${rebaseTa)",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.logEntry",
       "ordinal": 13,
-      "lineHint": 8608,
+      "lineHint": 8619,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -6979,12 +7145,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask::store.logEntry::#14",
-      "callSiteFingerprint": "store.logEntry(taskId,overlapMessage)",
+      "callSiteFingerprint": "store.logEntry(taskId,`Pre-merge recovery (Layer 2): patch-id matched ${dropped} branch commit(s) against the last 500 main commits and droppe)",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.logEntry",
       "ordinal": 14,
-      "lineHint": 8677,
+      "lineHint": 8727,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -6999,7 +7165,7 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask::store.logEntry::#15",
-      "callSiteFingerprint": "store.logEntry(taskId,warning)",
+      "callSiteFingerprint": "store.logEntry(taskId,`Pre-merge recovery (Layer 3): both surgical and patch-id recovery failed; AI arbiter takes over. SAFETY CONSTRAINT for ,\"PreMergeRebaseFallthrough\")",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.logEntry",
@@ -7019,12 +7185,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask::store.logEntry::#16",
-      "callSiteFingerprint": "store.logEntry(taskId,`Merge blocked: ${scopeError.message}`)",
+      "callSiteFingerprint": "store.logEntry(taskId,overlapMessage)",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.logEntry",
       "ordinal": 16,
-      "lineHint": 8767,
+      "lineHint": 8831,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7039,12 +7205,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask::store.logEntry::#17",
-      "callSiteFingerprint": "store.logEntry(taskId,`Attempt 3 (-X ours fallback) suppressed: pre-merge rebase recovery layers 1+2 failed under smart-prefer-main, so the un,\"PreMergeRebaseFallthrough\")",
+      "callSiteFingerprint": "store.logEntry(taskId,warning)",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.logEntry",
       "ordinal": 17,
-      "lineHint": 9365,
+      "lineHint": 8916,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7059,12 +7225,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask::store.logEntry::#18",
-      "callSiteFingerprint": "store.logEntry(taskId,`Push to remote failed after merge \u2014 task marked done anyway; local main may diverge from origin: ${pushResult.error}`,\"PushToRemoteFailed\")",
+      "callSiteFingerprint": "store.logEntry(taskId,`Merge blocked: ${scopeError.message}`)",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.logEntry",
       "ordinal": 18,
-      "lineHint": 10020,
+      "lineHint": 8921,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7079,12 +7245,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask::store.logEntry::#19",
-      "callSiteFingerprint": "store.logEntry(taskId,message,\"PushToRemoteFailed\")",
+      "callSiteFingerprint": "store.logEntry(taskId,`Attempt 3 (-X ours fallback) suppressed: pre-merge rebase recovery layers 1+2 failed under smart-prefer-main, so the un,\"PreMergeRebaseFallthrough\")",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.logEntry",
       "ordinal": 19,
-      "lineHint": 10046,
+      "lineHint": 9519,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7099,12 +7265,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask::store.logEntry::#2",
-      "callSiteFingerprint": "store.logEntry(taskId,`Finalize blocked (no-commits incomplete-work guard): ${reason} \u2014 moving back to todo with progress preserved`,JSON.stringify({ doneCount: noCommitsFinalize.doneCount, incompleteCount: noCommitsFinalize.incompleteCount, classificat)",
+      "callSiteFingerprint": "store.logEntry(taskId,`Finalize refused (zero-commit landing proof): ${reason}`,JSON.stringify({ contentState: noCommitsFinalize.deliveryUnproven?.contentState, modifiedCount: noCommitsFinalize.delive)",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.logEntry",
       "ordinal": 2,
-      "lineHint": 7711,
+      "lineHint": 7801,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7119,12 +7285,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask::store.logEntry::#20",
-      "callSiteFingerprint": "store.logEntry(taskId,`Push to remote threw after merge \u2014 task marked done anyway; local main may diverge from origin: ${err.message}`,\"PushToRemoteFailed\")",
+      "callSiteFingerprint": "store.logEntry(taskId,`Push to remote failed after merge — task marked done anyway; local main may diverge from origin: ${pushResult.error}`,\"PushToRemoteFailed\")",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.logEntry",
       "ordinal": 20,
-      "lineHint": 10061,
+      "lineHint": 10174,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7138,13 +7304,53 @@
       "followUpTaskId": "none:out-of-frontier"
     },
     {
+      "callSiteId": "packages/engine/src/merger.ts::aiMergeTask::store.logEntry::#21",
+      "callSiteFingerprint": "store.logEntry(taskId,message,\"PushToRemoteFailed\")",
+      "file": "packages/engine/src/merger.ts",
+      "enclosingSymbolPath": "aiMergeTask",
+      "writer": "store.logEntry",
+      "ordinal": 21,
+      "lineHint": 10200,
+      "owningEntryPoint": "indeterminate",
+      "reachableDataStates": [
+        "unobservable:human classification required for new durable write"
+      ],
+      "axis1": "indeterminate",
+      "axis1Evidence": "pending: human classification required for newly derived durable write",
+      "axis2Provisional": "unresolved",
+      "axis2Final": "unresolved",
+      "observedInSuite": "unobservable:human classification required for new durable write",
+      "executionProof": "none:human classification required for new durable write",
+      "followUpTaskId": "pending:classify"
+    },
+    {
+      "callSiteId": "packages/engine/src/merger.ts::aiMergeTask::store.logEntry::#22",
+      "callSiteFingerprint": "store.logEntry(taskId,`Push to remote threw after merge — task marked done anyway; local main may diverge from origin: ${err.message}`,\"PushToRemoteFailed\")",
+      "file": "packages/engine/src/merger.ts",
+      "enclosingSymbolPath": "aiMergeTask",
+      "writer": "store.logEntry",
+      "ordinal": 22,
+      "lineHint": 10215,
+      "owningEntryPoint": "indeterminate",
+      "reachableDataStates": [
+        "unobservable:human classification required for new durable write"
+      ],
+      "axis1": "indeterminate",
+      "axis1Evidence": "pending: human classification required for newly derived durable write",
+      "axis2Provisional": "unresolved",
+      "axis2Final": "unresolved",
+      "observedInSuite": "unobservable:human classification required for new durable write",
+      "executionProof": "none:human classification required for new durable write",
+      "followUpTaskId": "pending:classify"
+    },
+    {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask::store.logEntry::#3",
-      "callSiteFingerprint": "store.logEntry(taskId,`Finalize blocked (lost-work guard): task claims ${task.modifiedFiles.length} modifiedFiles but classification would fin,JSON.stringify({ modifiedFilesSample: task.modifiedFiles.slice(0, 5), classification: classification.kind, }, null, 2))",
+      "callSiteFingerprint": "store.logEntry(taskId,`Finalize blocked (no-commits incomplete-work guard): ${reason} — moving back to todo with progress preserved`,JSON.stringify({ doneCount: noCommitsFinalize.doneCount, incompleteCount: noCommitsFinalize.incompleteCount, classificat)",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.logEntry",
       "ordinal": 3,
-      "lineHint": 7752,
+      "lineHint": 7834,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7159,12 +7365,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask::store.logEntry::#4",
-      "callSiteFingerprint": "store.logEntry(taskId,classification.kind === \"proven-no-op\" ? `Auto-finalized no-op (proven): start point on ${classification.baseRef}; modif)",
+      "callSiteFingerprint": "store.logEntry(taskId,`Finalize blocked (lost-work guard): task claims ${task.modifiedFiles.length} modifiedFiles but classification would fin,JSON.stringify({ modifiedFilesSample: task.modifiedFiles.slice(0, 5), classification: classification.kind, }, null, 2))",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.logEntry",
       "ordinal": 4,
-      "lineHint": 7794,
+      "lineHint": 7875,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7179,12 +7385,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask::store.logEntry::#5",
-      "callSiteFingerprint": "store.logEntry(taskId,`Finalize blocked: unproven ownership evidence (${classification.reason}); no owned landed commit was found \u2014 auto-retry,JSON.stringify(classification.details, null, 2))",
+      "callSiteFingerprint": "store.logEntry(taskId,classification.kind === \"proven-no-op\" ? `Auto-finalized no-op (proven): start point on ${classification.baseRef}; modif)",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.logEntry",
       "ordinal": 5,
-      "lineHint": 7821,
+      "lineHint": 7917,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7199,12 +7405,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask::store.logEntry::#6",
-      "callSiteFingerprint": "store.logEntry(taskId,\"Merge aborted: autostash creation failed (dirty edits preserved)\",message)",
+      "callSiteFingerprint": "store.logEntry(taskId,`Finalize blocked: unproven ownership evidence (${classification.reason}); no owned landed commit was found — auto-retry,JSON.stringify(classification.details, null, 2))",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.logEntry",
       "ordinal": 6,
-      "lineHint": 7869,
+      "lineHint": 7944,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7219,12 +7425,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask::store.logEntry::#7",
-      "callSiteFingerprint": "store.logEntry(taskId,`Race-rescue stash created during pre-merge autostash: ${r.sha.slice(0, 7)} (${r.label})`,`These are working-tree changes that landed AFTER the initial autostash snapshot but BEFORE the destructive reset. Recov)",
+      "callSiteFingerprint": "store.logEntry(taskId,\"Merge aborted: autostash creation failed (dirty edits preserved)\",message)",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.logEntry",
       "ordinal": 7,
-      "lineHint": 7889,
+      "lineHint": 7992,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7239,12 +7445,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask::store.logEntry::#8",
-      "callSiteFingerprint": "store.logEntry(taskId,`Finalize blocked: unproven ownership evidence (${classification.reason}); branch missing and no owned landed commit was,JSON.stringify(classification.details, null, 2))",
+      "callSiteFingerprint": "store.logEntry(taskId,`Race-rescue stash created during pre-merge autostash: ${r.sha.slice(0, 7)} (${r.label})`,`These are working-tree changes that landed AFTER the initial autostash snapshot but BEFORE the destructive reset. Recov)",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.logEntry",
       "ordinal": 8,
-      "lineHint": 7956,
+      "lineHint": 8012,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7259,12 +7465,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask::store.logEntry::#9",
-      "callSiteFingerprint": "store.logEntry(taskId,`Finalize blocked (no-commits incomplete-work guard): ${reason} \u2014 moving back to todo with progress preserved`,JSON.stringify({ doneCount: noCommitsFinalize.doneCount, incompleteCount: noCommitsFinalize.incompleteCount, classificat)",
+      "callSiteFingerprint": "store.logEntry(taskId,`Finalize blocked: unproven ownership evidence (${classification.reason}); branch missing and no owned landed commit was,JSON.stringify(classification.details, null, 2))",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.logEntry",
       "ordinal": 9,
-      "lineHint": 8020,
+      "lineHint": 8079,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7284,7 +7490,7 @@
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.moveTask",
       "ordinal": 1,
-      "lineHint": 9595,
+      "lineHint": 9749,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7304,7 +7510,7 @@
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.publishTaskOverlapDeliveries",
       "ordinal": 1,
-      "lineHint": 9658,
+      "lineHint": 9812,
       "owningEntryPoint": "indeterminate",
       "reachableDataStates": [
         "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo"
@@ -7324,7 +7530,7 @@
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.transitionMergeRequestState",
       "ordinal": 1,
-      "lineHint": 7489,
+      "lineHint": 7576,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -7342,7 +7548,7 @@
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.transitionMergeRequestState",
       "ordinal": 2,
-      "lineHint": 7490,
+      "lineHint": 7577,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -7360,7 +7566,7 @@
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.transitionMergeRequestState",
       "ordinal": 3,
-      "lineHint": 7492,
+      "lineHint": 7579,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -7378,7 +7584,7 @@
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.updateTask",
       "ordinal": 1,
-      "lineHint": 7675,
+      "lineHint": 7762,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7398,7 +7604,7 @@
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.updateTask",
       "ordinal": 10,
-      "lineHint": 8049,
+      "lineHint": 8203,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7418,7 +7624,7 @@
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.updateTask",
       "ordinal": 11,
-      "lineHint": 8782,
+      "lineHint": 8936,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7438,7 +7644,7 @@
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.updateTask",
       "ordinal": 12,
-      "lineHint": 9591,
+      "lineHint": 9745,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7458,7 +7664,7 @@
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.updateTask",
       "ordinal": 13,
-      "lineHint": 9642,
+      "lineHint": 9796,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7478,7 +7684,7 @@
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.updateTask",
       "ordinal": 14,
-      "lineHint": 9783,
+      "lineHint": 9937,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7498,7 +7704,7 @@
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.updateTask",
       "ordinal": 15,
-      "lineHint": 9914,
+      "lineHint": 10068,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7518,7 +7724,7 @@
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.updateTask",
       "ordinal": 16,
-      "lineHint": 9991,
+      "lineHint": 10145,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7538,7 +7744,7 @@
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.updateTask",
       "ordinal": 2,
-      "lineHint": 7710,
+      "lineHint": 7833,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7558,7 +7764,7 @@
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.updateTask",
       "ordinal": 3,
-      "lineHint": 7751,
+      "lineHint": 7874,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7578,7 +7784,7 @@
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.updateTask",
       "ordinal": 4,
-      "lineHint": 7793,
+      "lineHint": 7916,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7598,7 +7804,7 @@
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.updateTask",
       "ordinal": 5,
-      "lineHint": 7820,
+      "lineHint": 7943,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7618,7 +7824,7 @@
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.updateTask",
       "ordinal": 6,
-      "lineHint": 7870,
+      "lineHint": 7993,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7638,7 +7844,7 @@
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.updateTask",
       "ordinal": 7,
-      "lineHint": 7955,
+      "lineHint": 8078,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7658,7 +7864,7 @@
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.updateTask",
       "ordinal": 8,
-      "lineHint": 7981,
+      "lineHint": 8104,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7678,7 +7884,7 @@
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.updateTask",
       "ordinal": 9,
-      "lineHint": 8019,
+      "lineHint": 8173,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7698,7 +7904,7 @@
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.upsertMergeRequestRecord",
       "ordinal": 1,
-      "lineHint": 7484,
+      "lineHint": 7571,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -7716,7 +7922,7 @@
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.upsertTaskCommitAssociation",
       "ordinal": 1,
-      "lineHint": 9676,
+      "lineHint": 9830,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7736,7 +7942,7 @@
       "enclosingSymbolPath": "aiMergeTask>capture",
       "writer": "store.appendAgentLog",
       "ordinal": 1,
-      "lineHint": 9534,
+      "lineHint": 9688,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7756,7 +7962,7 @@
       "enclosingSymbolPath": "aiMergeTask>cleared",
       "writer": "store.clearStaleExecutionStartBranchReferences",
       "ordinal": 1,
-      "lineHint": 9865,
+      "lineHint": 10019,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -7774,7 +7980,7 @@
       "enclosingSymbolPath": "aiMergeTask>mergeAttempt",
       "writer": "store.appendAgentLog",
       "ordinal": 1,
-      "lineHint": 8824,
+      "lineHint": 8978,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7789,12 +7995,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask>mergeAttempt::store.appendAgentLog::#10",
-      "callSiteFingerprint": "store.appendAgentLog(taskId,`In-merge verification fix attempt ${fixAttempt} failed`,\"tool_error\",`${fixAttemptDurationMs}ms \u2014 verification still fails`,\"merger\")",
+      "callSiteFingerprint": "store.appendAgentLog(taskId,`In-merge verification fix attempt ${fixAttempt} failed`,\"tool_error\",`${fixAttemptDurationMs}ms — verification still fails`,\"merger\")",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask>mergeAttempt",
       "writer": "store.appendAgentLog",
       "ordinal": 10,
-      "lineHint": 9182,
+      "lineHint": 9336,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7809,12 +8015,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask>mergeAttempt::store.appendAgentLog::#11",
-      "callSiteFingerprint": "store.appendAgentLog(taskId,\"Verification fix finalize: task already landed on main \u2014 recovered\",\"tool_result\",`via=${finalized.strategy} sha=${finalized.mergeSha?.slice(0, 8)}`,\"merger\")",
+      "callSiteFingerprint": "store.appendAgentLog(taskId,\"Verification fix finalize: task already landed on main — recovered\",\"tool_result\",`via=${finalized.strategy} sha=${finalized.mergeSha?.slice(0, 8)}`,\"merger\")",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask>mergeAttempt",
       "writer": "store.appendAgentLog",
       "ordinal": 11,
-      "lineHint": 9217,
+      "lineHint": 9371,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7829,12 +8035,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask>mergeAttempt::store.appendAgentLog::#2",
-      "callSiteFingerprint": "store.appendAgentLog(taskId,`Verification failed \u2014 attempting in-merge fix (up to ${maxFixRetries} attempts)`,\"status\",undefined,\"merger\")",
+      "callSiteFingerprint": "store.appendAgentLog(taskId,`Verification failed — attempting in-merge fix (up to ${maxFixRetries} attempts)`,\"status\",undefined,\"merger\")",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask>mergeAttempt",
       "writer": "store.appendAgentLog",
       "ordinal": 2,
-      "lineHint": 8959,
+      "lineHint": 9113,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7854,7 +8060,7 @@
       "enclosingSymbolPath": "aiMergeTask>mergeAttempt",
       "writer": "store.appendAgentLog",
       "ordinal": 3,
-      "lineHint": 8984,
+      "lineHint": 9138,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7869,12 +8075,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask>mergeAttempt::store.appendAgentLog::#4",
-      "callSiteFingerprint": "store.appendAgentLog(taskId,`In-merge verification fix succeeded on attempt ${fixAttempt}`,\"tool_result\",`${fixAttemptDurationMs}ms \u2014 verification now passes`,\"merger\")",
+      "callSiteFingerprint": "store.appendAgentLog(taskId,`In-merge verification fix succeeded on attempt ${fixAttempt}`,\"tool_result\",`${fixAttemptDurationMs}ms — verification now passes`,\"merger\")",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask>mergeAttempt",
       "writer": "store.appendAgentLog",
       "ordinal": 4,
-      "lineHint": 9018,
+      "lineHint": 9172,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7889,12 +8095,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask>mergeAttempt::store.appendAgentLog::#5",
-      "callSiteFingerprint": "store.appendAgentLog(taskId,`In-merge verification fix attempt ${fixAttempt} failed`,\"tool_error\",`${fixAttemptDurationMs}ms \u2014 verification still fails`,\"merger\")",
+      "callSiteFingerprint": "store.appendAgentLog(taskId,`In-merge verification fix attempt ${fixAttempt} failed`,\"tool_error\",`${fixAttemptDurationMs}ms — verification still fails`,\"merger\")",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask>mergeAttempt",
       "writer": "store.appendAgentLog",
       "ordinal": 5,
-      "lineHint": 9030,
+      "lineHint": 9184,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7909,12 +8115,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask>mergeAttempt::store.appendAgentLog::#6",
-      "callSiteFingerprint": "store.appendAgentLog(taskId,\"Verification fix finalize: task already landed on main \u2014 recovered\",\"tool_result\",`via=${finalized.strategy} sha=${finalized.mergeSha?.slice(0, 8)}`,\"merger\")",
+      "callSiteFingerprint": "store.appendAgentLog(taskId,\"Verification fix finalize: task already landed on main — recovered\",\"tool_result\",`via=${finalized.strategy} sha=${finalized.mergeSha?.slice(0, 8)}`,\"merger\")",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask>mergeAttempt",
       "writer": "store.appendAgentLog",
       "ordinal": 6,
-      "lineHint": 9068,
+      "lineHint": 9222,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7929,12 +8135,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask>mergeAttempt::store.appendAgentLog::#7",
-      "callSiteFingerprint": "store.appendAgentLog(taskId,\"Build verification failed \u2014 attempting in-merge fix\",\"status\",undefined,\"merger\")",
+      "callSiteFingerprint": "store.appendAgentLog(taskId,\"Build verification failed — attempting in-merge fix\",\"status\",undefined,\"merger\")",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask>mergeAttempt",
       "writer": "store.appendAgentLog",
       "ordinal": 7,
-      "lineHint": 9119,
+      "lineHint": 9273,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7954,7 +8160,7 @@
       "enclosingSymbolPath": "aiMergeTask>mergeAttempt",
       "writer": "store.appendAgentLog",
       "ordinal": 8,
-      "lineHint": 9138,
+      "lineHint": 9292,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7974,7 +8180,7 @@
       "enclosingSymbolPath": "aiMergeTask>mergeAttempt",
       "writer": "store.appendAgentLog",
       "ordinal": 9,
-      "lineHint": 9172,
+      "lineHint": 9326,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -7994,7 +8200,7 @@
       "enclosingSymbolPath": "aiMergeTask>mergeAttempt",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 8941,
+      "lineHint": 9095,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8009,12 +8215,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask>mergeAttempt::store.logEntry::#10",
-      "callSiteFingerprint": "store.logEntry(taskId,`[timing] In-merge verification fix attempt ${fixAttempt} \u2014 verification still fails (${fixAttemptDurationMs}ms)`)",
+      "callSiteFingerprint": "store.logEntry(taskId,`[timing] In-merge verification fix attempt ${fixAttempt} — verification still fails (${fixAttemptDurationMs}ms)`)",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask>mergeAttempt",
       "writer": "store.logEntry",
       "ordinal": 10,
-      "lineHint": 9181,
+      "lineHint": 9335,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8034,7 +8240,7 @@
       "enclosingSymbolPath": "aiMergeTask>mergeAttempt",
       "writer": "store.logEntry",
       "ordinal": 11,
-      "lineHint": 9224,
+      "lineHint": 9378,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8049,12 +8255,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask>mergeAttempt::store.logEntry::#12",
-      "callSiteFingerprint": "store.logEntry(taskId,\"Build failed \u2014 retrying merge attempt\")",
+      "callSiteFingerprint": "store.logEntry(taskId,\"Build failed — retrying merge attempt\")",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask>mergeAttempt",
       "writer": "store.logEntry",
       "ordinal": 12,
-      "lineHint": 9260,
+      "lineHint": 9414,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8069,12 +8275,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask>mergeAttempt::store.logEntry::#2",
-      "callSiteFingerprint": "store.logEntry(taskId,`Verification failed during merge \u2014 attempting in-merge fix (up to ${maxFixRetries} attempts)`)",
+      "callSiteFingerprint": "store.logEntry(taskId,`Verification failed during merge — attempting in-merge fix (up to ${maxFixRetries} attempts)`)",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask>mergeAttempt",
       "writer": "store.logEntry",
       "ordinal": 2,
-      "lineHint": 8958,
+      "lineHint": 9112,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8094,7 +8300,7 @@
       "enclosingSymbolPath": "aiMergeTask>mergeAttempt",
       "writer": "store.logEntry",
       "ordinal": 3,
-      "lineHint": 8983,
+      "lineHint": 9137,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8109,12 +8315,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask>mergeAttempt::store.logEntry::#4",
-      "callSiteFingerprint": "store.logEntry(taskId,`[timing] In-merge verification fix succeeded on attempt ${fixAttempt} in ${fixAttemptDurationMs}ms \u2014 verification now p)",
+      "callSiteFingerprint": "store.logEntry(taskId,`[timing] In-merge verification fix succeeded on attempt ${fixAttempt} in ${fixAttemptDurationMs}ms — verification now p)",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask>mergeAttempt",
       "writer": "store.logEntry",
       "ordinal": 4,
-      "lineHint": 9017,
+      "lineHint": 9171,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8129,12 +8335,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask>mergeAttempt::store.logEntry::#5",
-      "callSiteFingerprint": "store.logEntry(taskId,`[timing] In-merge verification fix attempt ${fixAttempt} \u2014 verification still fails (${fixAttemptDurationMs}ms)`)",
+      "callSiteFingerprint": "store.logEntry(taskId,`[timing] In-merge verification fix attempt ${fixAttempt} — verification still fails (${fixAttemptDurationMs}ms)`)",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask>mergeAttempt",
       "writer": "store.logEntry",
       "ordinal": 5,
-      "lineHint": 9029,
+      "lineHint": 9183,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8154,7 +8360,7 @@
       "enclosingSymbolPath": "aiMergeTask>mergeAttempt",
       "writer": "store.logEntry",
       "ordinal": 6,
-      "lineHint": 9075,
+      "lineHint": 9229,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8169,12 +8375,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask>mergeAttempt::store.logEntry::#7",
-      "callSiteFingerprint": "store.logEntry(taskId,`Build verification failed during merge \u2014 attempting in-merge fix`)",
+      "callSiteFingerprint": "store.logEntry(taskId,`Build verification failed during merge — attempting in-merge fix`)",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask>mergeAttempt",
       "writer": "store.logEntry",
       "ordinal": 7,
-      "lineHint": 9118,
+      "lineHint": 9272,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8194,7 +8400,7 @@
       "enclosingSymbolPath": "aiMergeTask>mergeAttempt",
       "writer": "store.logEntry",
       "ordinal": 8,
-      "lineHint": 9137,
+      "lineHint": 9291,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8214,7 +8420,7 @@
       "enclosingSymbolPath": "aiMergeTask>mergeAttempt",
       "writer": "store.logEntry",
       "ordinal": 9,
-      "lineHint": 9171,
+      "lineHint": 9325,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8234,7 +8440,7 @@
       "enclosingSymbolPath": "aiMergeTask>mergeAttempt",
       "writer": "store.updateTask",
       "ordinal": 1,
-      "lineHint": 8937,
+      "lineHint": 9091,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8254,7 +8460,7 @@
       "enclosingSymbolPath": "aiMergeTask>reacquireReuseIntegrationWorktree",
       "writer": "store.recordActivity",
       "ordinal": 1,
-      "lineHint": 7289,
+      "lineHint": 7376,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -8272,7 +8478,7 @@
       "enclosingSymbolPath": "aiMergeTask>reacquireReuseIntegrationWorktree",
       "writer": "store.recordActivity",
       "ordinal": 2,
-      "lineHint": 7397,
+      "lineHint": 7484,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -8290,7 +8496,7 @@
       "enclosingSymbolPath": "aiMergeTask>reacquireReuseIntegrationWorktree",
       "writer": "store.updateTask",
       "ordinal": 1,
-      "lineHint": 7273,
+      "lineHint": 7360,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8310,7 +8516,7 @@
       "enclosingSymbolPath": "aiMergeTask>recordBranchGroupMemberLanding",
       "writer": "store.recordBranchGroupMemberLanded",
       "ordinal": 1,
-      "lineHint": 6932,
+      "lineHint": 7019,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8330,7 +8536,7 @@
       "enclosingSymbolPath": "aiMergeTask>recordBranchGroupMemberLanding>settled",
       "writer": "syncGroupPrOnLanding",
       "ordinal": 1,
-      "lineHint": 6978,
+      "lineHint": 7065,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8345,12 +8551,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask>runLocalBaseRebase::store.appendAgentLog::#1",
-      "callSiteFingerprint": "store.appendAgentLog(taskId,`Pre-merge rebase: ${branch} \u2192 local HEAD ${localHead.slice(0, 8)}${label ? ` (${label})` : \"\"}`,\"status\",undefined,\"merger\")",
+      "callSiteFingerprint": "store.appendAgentLog(taskId,`Pre-merge rebase: ${branch} → local HEAD ${localHead.slice(0, 8)}${label ? ` (${label})` : \"\"}`,\"status\",undefined,\"merger\")",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask>runLocalBaseRebase",
       "writer": "store.appendAgentLog",
       "ordinal": 1,
-      "lineHint": 8300,
+      "lineHint": 8454,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8370,7 +8576,7 @@
       "enclosingSymbolPath": "applyBranchCommitsPreservingHistory",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 4842,
+      "lineHint": 4857,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8390,7 +8596,7 @@
       "enclosingSymbolPath": "applyBranchCommitsPreservingHistory",
       "writer": "store.logEntry",
       "ordinal": 2,
-      "lineHint": 4844,
+      "lineHint": 4859,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8410,7 +8616,7 @@
       "enclosingSymbolPath": "applyLayer3ConflictScopePartition",
       "writer": "store.appendAgentLog",
       "ordinal": 1,
-      "lineHint": 4248,
+      "lineHint": 4263,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8430,7 +8636,7 @@
       "enclosingSymbolPath": "applyLayer3ConflictScopePartition",
       "writer": "store.appendAgentLog",
       "ordinal": 2,
-      "lineHint": 4310,
+      "lineHint": 4325,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8450,7 +8656,7 @@
       "enclosingSymbolPath": "applyLayer3ConflictScopePartition",
       "writer": "store.appendAgentLog",
       "ordinal": 3,
-      "lineHint": 4345,
+      "lineHint": 4360,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8470,7 +8676,7 @@
       "enclosingSymbolPath": "applyLayer3ConflictScopePartition",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 4346,
+      "lineHint": 4361,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8490,7 +8696,7 @@
       "enclosingSymbolPath": "attemptInMergeVerificationFix",
       "writer": "store.appendAgentLog",
       "ordinal": 1,
-      "lineHint": 1312,
+      "lineHint": 1327,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8505,12 +8711,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::attemptInMergeVerificationFix::store.appendAgentLog::#2",
-      "callSiteFingerprint": "store.appendAgentLog(taskId,`Fix agent made no changes \u2014 skipping verification re-run`,\"status\",undefined,\"merger\")",
+      "callSiteFingerprint": "store.appendAgentLog(taskId,`Fix agent made no changes — skipping verification re-run`,\"status\",undefined,\"merger\")",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "attemptInMergeVerificationFix",
       "writer": "store.appendAgentLog",
       "ordinal": 2,
-      "lineHint": 1379,
+      "lineHint": 1394,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8525,12 +8731,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::attemptInMergeVerificationFix::store.appendAgentLog::#3",
-      "callSiteFingerprint": "store.appendAgentLog(taskId,\"Out-of-scope verification failure detected \u2014 not retrying\",\"status\",undefined,\"merger\")",
+      "callSiteFingerprint": "store.appendAgentLog(taskId,\"Out-of-scope verification failure detected — not retrying\",\"status\",undefined,\"merger\")",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "attemptInMergeVerificationFix",
       "writer": "store.appendAgentLog",
       "ordinal": 3,
-      "lineHint": 1416,
+      "lineHint": 1431,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8550,7 +8756,7 @@
       "enclosingSymbolPath": "attemptInMergeVerificationFix",
       "writer": "store.appendAgentLog",
       "ordinal": 4,
-      "lineHint": 1431,
+      "lineHint": 1446,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8570,7 +8776,7 @@
       "enclosingSymbolPath": "attemptInMergeVerificationFix",
       "writer": "store.appendAgentLog",
       "ordinal": 5,
-      "lineHint": 1484,
+      "lineHint": 1499,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8590,7 +8796,7 @@
       "enclosingSymbolPath": "attemptInMergeVerificationFix",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 1308,
+      "lineHint": 1323,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8605,12 +8811,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::attemptInMergeVerificationFix::store.logEntry::#2",
-      "callSiteFingerprint": "store.logEntry(taskId,`In-merge fix agent made no changes \u2014 skipping verification re-run (attempt ${fixAttemptNumber ?? \"unknown\"})`)",
+      "callSiteFingerprint": "store.logEntry(taskId,`In-merge fix agent made no changes — skipping verification re-run (attempt ${fixAttemptNumber ?? \"unknown\"})`)",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "attemptInMergeVerificationFix",
       "writer": "store.logEntry",
       "ordinal": 2,
-      "lineHint": 1375,
+      "lineHint": 1390,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8630,7 +8836,7 @@
       "enclosingSymbolPath": "attemptInMergeVerificationFix",
       "writer": "store.logEntry",
       "ordinal": 3,
-      "lineHint": 1415,
+      "lineHint": 1430,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8650,7 +8856,7 @@
       "enclosingSymbolPath": "attemptInMergeVerificationFix",
       "writer": "store.logEntry",
       "ordinal": 4,
-      "lineHint": 1427,
+      "lineHint": 1442,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8670,7 +8876,7 @@
       "enclosingSymbolPath": "attemptInMergeVerificationFix",
       "writer": "store.logEntry",
       "ordinal": 5,
-      "lineHint": 1483,
+      "lineHint": 1498,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8690,7 +8896,7 @@
       "enclosingSymbolPath": "completeTask",
       "writer": "store.emit",
       "ordinal": 1,
-      "lineHint": 11616,
+      "lineHint": 11774,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8710,7 +8916,7 @@
       "enclosingSymbolPath": "completeTask",
       "writer": "store.recordAgentActivity",
       "ordinal": 1,
-      "lineHint": 11614,
+      "lineHint": 11772,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -8728,7 +8934,7 @@
       "enclosingSymbolPath": "completeTask",
       "writer": "store.transitionMergeRequestState",
       "ordinal": 1,
-      "lineHint": 11605,
+      "lineHint": 11764,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -8740,44 +8946,24 @@
       "followUpTaskId": "none:out-of-frontier"
     },
     {
-      "callSiteId": "packages/engine/src/merger.ts::completeTask::store.updateTask::#1",
-      "callSiteFingerprint": "store.updateTask(taskId,{status})",
+      "callSiteId": "packages/engine/src/merger.ts::completeTask>finalization::finalizeProvenAutoMergeTask::#1",
+      "callSiteFingerprint": "finalizeProvenAutoMergeTask({?,?,?,source})",
       "file": "packages/engine/src/merger.ts",
-      "enclosingSymbolPath": "completeTask",
-      "writer": "store.updateTask",
+      "enclosingSymbolPath": "completeTask>finalization",
+      "writer": "finalizeProvenAutoMergeTask",
       "ordinal": 1,
-      "lineHint": 11590,
-      "owningEntryPoint": "other",
+      "lineHint": 11749,
+      "owningEntryPoint": "indeterminate",
       "reachableDataStates": [
-        "unobservable:closure-wide production fixture pending"
+        "unobservable:human classification required for new durable write"
       ],
-      "axis1": "out-of-frontier",
-      "axis2Provisional": "out-of-frontier",
-      "axis2Final": "out-of-frontier",
-      "observedInSuite": "out-of-frontier",
-      "executionProof": "none:out-of-frontier",
-      "followUpTaskId": "none:out-of-frontier",
-      "axis1Evidence": "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo to completeTask; this imported module belongs to the legacy/independent subsystem closure."
-    },
-    {
-      "callSiteId": "packages/engine/src/merger.ts::completeTask>task::store.moveTask::#1",
-      "callSiteFingerprint": "store.moveTask(taskId,await resolveMergerLifecycleColumn(store, taskId, \"complete\"),{workflowMoveSource})",
-      "file": "packages/engine/src/merger.ts",
-      "enclosingSymbolPath": "completeTask>task",
-      "writer": "store.moveTask",
-      "ordinal": 1,
-      "lineHint": 11598,
-      "owningEntryPoint": "other",
-      "reachableDataStates": [
-        "unobservable:closure-wide production fixture pending"
-      ],
-      "axis1": "out-of-frontier",
-      "axis2Provisional": "out-of-frontier",
-      "axis2Final": "out-of-frontier",
-      "observedInSuite": "out-of-frontier",
-      "executionProof": "none:out-of-frontier",
-      "followUpTaskId": "none:out-of-frontier",
-      "axis1Evidence": "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo to completeTask>task; this imported module belongs to the legacy/independent subsystem closure."
+      "axis1": "indeterminate",
+      "axis1Evidence": "pending: human classification required for newly derived durable write",
+      "axis2Provisional": "unresolved",
+      "axis2Final": "unresolved",
+      "observedInSuite": "unobservable:human classification required for new durable write",
+      "executionProof": "none:human classification required for new durable write",
+      "followUpTaskId": "pending:classify"
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::dropAutostashHandle::store.logEntry::#1",
@@ -8786,7 +8972,7 @@
       "enclosingSymbolPath": "dropAutostashHandle",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 2412,
+      "lineHint": 2427,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8806,7 +8992,7 @@
       "enclosingSymbolPath": "executeMergeAttempt",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 10676,
+      "lineHint": 10830,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8826,7 +9012,7 @@
       "enclosingSymbolPath": "notifyAutostashOrphans",
       "writer": "store.emit",
       "ordinal": 1,
-      "lineHint": 1861,
+      "lineHint": 1876,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8846,7 +9032,7 @@
       "enclosingSymbolPath": "persistFinalizeResetLeftovers",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 3657,
+      "lineHint": 3672,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8866,7 +9052,7 @@
       "enclosingSymbolPath": "recordCommitAssociationFromHead",
       "writer": "store.upsertTaskCommitAssociation",
       "ordinal": 1,
-      "lineHint": 3462,
+      "lineHint": 3477,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8886,7 +9072,7 @@
       "enclosingSymbolPath": "runAiAgentForAutostashConflict",
       "writer": "store.appendAgentLog",
       "ordinal": 1,
-      "lineHint": 2593,
+      "lineHint": 2608,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8906,7 +9092,7 @@
       "enclosingSymbolPath": "runAiAgentForAutostashConflict",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 2617,
+      "lineHint": 2632,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8926,7 +9112,7 @@
       "enclosingSymbolPath": "runAiAgentForAutostashHardFail",
       "writer": "store.appendAgentLog",
       "ordinal": 1,
-      "lineHint": 3041,
+      "lineHint": 3056,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8946,7 +9132,7 @@
       "enclosingSymbolPath": "runAiAgentForAutostashHardFail",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 3065,
+      "lineHint": 3080,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8961,12 +9147,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::runAiAgentForCommit::store.logEntry::#1",
-      "callSiteFingerprint": "store.logEntry(taskId,\"Context limit reached during merge after auto-compaction \u2014 retrying with reduced prompt\")",
+      "callSiteFingerprint": "store.logEntry(taskId,\"Context limit reached during merge after auto-compaction — retrying with reduced prompt\")",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "runAiAgentForCommit",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 11263,
+      "lineHint": 11417,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8986,7 +9172,7 @@
       "enclosingSymbolPath": "runDeterministicVerification",
       "writer": "store.appendAgentLog",
       "ordinal": 1,
-      "lineHint": 852,
+      "lineHint": 867,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9006,7 +9192,7 @@
       "enclosingSymbolPath": "runDeterministicVerification",
       "writer": "store.appendAgentLog",
       "ordinal": 10,
-      "lineHint": 1100,
+      "lineHint": 1115,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -9024,7 +9210,7 @@
       "enclosingSymbolPath": "runDeterministicVerification",
       "writer": "store.appendAgentLog",
       "ordinal": 2,
-      "lineHint": 880,
+      "lineHint": 895,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9044,7 +9230,7 @@
       "enclosingSymbolPath": "runDeterministicVerification",
       "writer": "store.appendAgentLog",
       "ordinal": 3,
-      "lineHint": 911,
+      "lineHint": 926,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9064,7 +9250,7 @@
       "enclosingSymbolPath": "runDeterministicVerification",
       "writer": "store.appendAgentLog",
       "ordinal": 4,
-      "lineHint": 919,
+      "lineHint": 934,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9084,7 +9270,7 @@
       "enclosingSymbolPath": "runDeterministicVerification",
       "writer": "store.appendAgentLog",
       "ordinal": 5,
-      "lineHint": 923,
+      "lineHint": 938,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9104,7 +9290,7 @@
       "enclosingSymbolPath": "runDeterministicVerification",
       "writer": "store.appendAgentLog",
       "ordinal": 6,
-      "lineHint": 934,
+      "lineHint": 949,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9124,7 +9310,7 @@
       "enclosingSymbolPath": "runDeterministicVerification",
       "writer": "store.appendAgentLog",
       "ordinal": 7,
-      "lineHint": 952,
+      "lineHint": 967,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9144,7 +9330,7 @@
       "enclosingSymbolPath": "runDeterministicVerification",
       "writer": "store.appendAgentLog",
       "ordinal": 8,
-      "lineHint": 1054,
+      "lineHint": 1069,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9164,7 +9350,7 @@
       "enclosingSymbolPath": "runDeterministicVerification",
       "writer": "store.appendAgentLog",
       "ordinal": 9,
-      "lineHint": 1083,
+      "lineHint": 1098,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9184,7 +9370,7 @@
       "enclosingSymbolPath": "runDeterministicVerification",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 851,
+      "lineHint": 866,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9204,7 +9390,7 @@
       "enclosingSymbolPath": "runDeterministicVerification",
       "writer": "store.logEntry",
       "ordinal": 10,
-      "lineHint": 1099,
+      "lineHint": 1114,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9224,7 +9410,7 @@
       "enclosingSymbolPath": "runDeterministicVerification",
       "writer": "store.logEntry",
       "ordinal": 11,
-      "lineHint": 1107,
+      "lineHint": 1122,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -9242,7 +9428,7 @@
       "enclosingSymbolPath": "runDeterministicVerification",
       "writer": "store.logEntry",
       "ordinal": 2,
-      "lineHint": 879,
+      "lineHint": 894,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9262,7 +9448,7 @@
       "enclosingSymbolPath": "runDeterministicVerification",
       "writer": "store.logEntry",
       "ordinal": 3,
-      "lineHint": 910,
+      "lineHint": 925,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9282,7 +9468,7 @@
       "enclosingSymbolPath": "runDeterministicVerification",
       "writer": "store.logEntry",
       "ordinal": 4,
-      "lineHint": 918,
+      "lineHint": 933,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9302,7 +9488,7 @@
       "enclosingSymbolPath": "runDeterministicVerification",
       "writer": "store.logEntry",
       "ordinal": 5,
-      "lineHint": 922,
+      "lineHint": 937,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9322,7 +9508,7 @@
       "enclosingSymbolPath": "runDeterministicVerification",
       "writer": "store.logEntry",
       "ordinal": 6,
-      "lineHint": 933,
+      "lineHint": 948,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9342,7 +9528,7 @@
       "enclosingSymbolPath": "runDeterministicVerification",
       "writer": "store.logEntry",
       "ordinal": 7,
-      "lineHint": 947,
+      "lineHint": 962,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9357,12 +9543,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::runDeterministicVerification::store.logEntry::#8",
-      "callSiteFingerprint": "store.logEntry(taskId,`Deterministic test verification failed (exit ${testResult.exitCode}) \u2014 see prior [verification] entry for truncated out,\"VerificationError\")",
+      "callSiteFingerprint": "store.logEntry(taskId,`Deterministic test verification failed (exit ${testResult.exitCode}) — see prior [verification] entry for truncated out,\"VerificationError\")",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "runDeterministicVerification",
       "writer": "store.logEntry",
       "ordinal": 8,
-      "lineHint": 1049,
+      "lineHint": 1064,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9377,12 +9563,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::runDeterministicVerification::store.logEntry::#9",
-      "callSiteFingerprint": "store.logEntry(taskId,`Deterministic build verification failed (exit ${buildResult.exitCode}) \u2014 see prior [verification] entry for truncated o,\"VerificationError\")",
+      "callSiteFingerprint": "store.logEntry(taskId,`Deterministic build verification failed (exit ${buildResult.exitCode}) — see prior [verification] entry for truncated o,\"VerificationError\")",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "runDeterministicVerification",
       "writer": "store.logEntry",
       "ordinal": 9,
-      "lineHint": 1078,
+      "lineHint": 1093,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9402,7 +9588,7 @@
       "enclosingSymbolPath": "runDeterministicVerification",
       "writer": "store.recordVerificationCachePass",
       "ordinal": 1,
-      "lineHint": 1105,
+      "lineHint": 1120,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -9420,7 +9606,7 @@
       "enclosingSymbolPath": "runDeterministicVerification>executeVerificationWithRetry",
       "writer": "store.appendAgentLog",
       "ordinal": 1,
-      "lineHint": 990,
+      "lineHint": 1005,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9440,7 +9626,7 @@
       "enclosingSymbolPath": "runDeterministicVerification>executeVerificationWithRetry",
       "writer": "store.appendAgentLog",
       "ordinal": 2,
-      "lineHint": 1004,
+      "lineHint": 1019,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9460,7 +9646,7 @@
       "enclosingSymbolPath": "runDeterministicVerification>executeVerificationWithRetry",
       "writer": "store.appendAgentLog",
       "ordinal": 3,
-      "lineHint": 1018,
+      "lineHint": 1033,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9480,7 +9666,7 @@
       "enclosingSymbolPath": "runDeterministicVerification>executeVerificationWithRetry",
       "writer": "store.appendAgentLog",
       "ordinal": 4,
-      "lineHint": 1030,
+      "lineHint": 1045,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9500,7 +9686,7 @@
       "enclosingSymbolPath": "runDeterministicVerification>executeVerificationWithRetry",
       "writer": "store.appendAgentLog",
       "ordinal": 5,
-      "lineHint": 1035,
+      "lineHint": 1050,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9520,7 +9706,7 @@
       "enclosingSymbolPath": "runDeterministicVerification>executeVerificationWithRetry",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 989,
+      "lineHint": 1004,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9540,7 +9726,7 @@
       "enclosingSymbolPath": "runDeterministicVerification>executeVerificationWithRetry",
       "writer": "store.logEntry",
       "ordinal": 2,
-      "lineHint": 1003,
+      "lineHint": 1018,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9560,7 +9746,7 @@
       "enclosingSymbolPath": "runDeterministicVerification>executeVerificationWithRetry",
       "writer": "store.logEntry",
       "ordinal": 3,
-      "lineHint": 1017,
+      "lineHint": 1032,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9580,7 +9766,7 @@
       "enclosingSymbolPath": "runDeterministicVerification>executeVerificationWithRetry",
       "writer": "store.logEntry",
       "ordinal": 4,
-      "lineHint": 1029,
+      "lineHint": 1044,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9600,7 +9786,7 @@
       "enclosingSymbolPath": "runDeterministicVerification>executeVerificationWithRetry",
       "writer": "store.logEntry",
       "ordinal": 5,
-      "lineHint": 1034,
+      "lineHint": 1049,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9615,12 +9801,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::sweepAutostashOrphans::store.logEntry::#1",
-      "callSiteFingerprint": "store .logEntry(taskId,`Cleaned up ${subsumed.length} subsumed autostash orphan(s) \u2014 their content already on HEAD`,subsumed.map((o) => `${o.ref}@${o.sha.slice(0, 7)} (${o.label})`).join(\"\\n\"))",
+      "callSiteFingerprint": "store .logEntry(taskId,`Cleaned up ${subsumed.length} subsumed autostash orphan(s) — their content already on HEAD`,subsumed.map((o) => `${o.ref}@${o.sha.slice(0, 7)} (${o.label})`).join(\"\\n\"))",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "sweepAutostashOrphans",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 2060,
+      "lineHint": 2075,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9635,12 +9821,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::sweepAutostashOrphans::store.logEntry::#2",
-      "callSiteFingerprint": "store .logEntry(taskId,`${live.length} autostash orphan(s) still hold uncommitted dev work \u2014 recover manually`,live .map( (o) => `${o.ref}@${o.sha.slice(0, 7)} (${o.label})\\n recover: git stash apply ${o.sha}`, ) .join(\"\\n\\n\"))",
+      "callSiteFingerprint": "store .logEntry(taskId,`${live.length} autostash orphan(s) still hold uncommitted dev work — recover manually`,live .map( (o) => `${o.ref}@${o.sha.slice(0, 7)} (${o.label})\\n recover: git stash apply ${o.sha}`, ) .join(\"\\n\\n\"))",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "sweepAutostashOrphans",
       "writer": "store.logEntry",
       "ordinal": 2,
-      "lineHint": 2074,
+      "lineHint": 2089,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9660,7 +9846,7 @@
       "enclosingSymbolPath": "syncDependenciesForMerge",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 714,
+      "lineHint": 729,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9680,7 +9866,7 @@
       "enclosingSymbolPath": "syncGroupPrOnLanding",
       "writer": "store.updateBranchGroup",
       "ordinal": 1,
-      "lineHint": 6812,
+      "lineHint": 6899,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -9693,12 +9879,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::tryEarlyEmptyOwnDiffFinalize::store.logEntry::#1",
-      "callSiteFingerprint": "store.logEntry(taskId,`Finalize blocked (no-commits incomplete-work guard): ${reason} \u2014 moving back to todo with progress preserved`,JSON.stringify({ doneCount: noCommitsFinalize.doneCount, incompleteCount: noCommitsFinalize.incompleteCount, branch, mer)",
+      "callSiteFingerprint": "store.logEntry(taskId,`Finalize refused (zero-commit landing proof): ${reason}`,JSON.stringify({ contentState: noCommitsFinalize.deliveryUnproven?.contentState, modifiedCount: noCommitsFinalize.delive)",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "tryEarlyEmptyOwnDiffFinalize",
       "writer": "store.logEntry",
       "ordinal": 1,
-      "lineHint": 6574,
+      "lineHint": 6629,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9713,12 +9899,12 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::tryEarlyEmptyOwnDiffFinalize::store.logEntry::#2",
-      "callSiteFingerprint": "store.logEntry(taskId,`Auto-finalized no-op (early fast-path, FN-5345/FN-5377): ${noOpReason}`)",
+      "callSiteFingerprint": "store.logEntry(taskId,`Finalize blocked (no-commits incomplete-work guard): ${reason} — moving back to todo with progress preserved`,JSON.stringify({ doneCount: noCommitsFinalize.doneCount, incompleteCount: noCommitsFinalize.incompleteCount, branch, mer)",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "tryEarlyEmptyOwnDiffFinalize",
       "writer": "store.logEntry",
       "ordinal": 2,
-      "lineHint": 6625,
+      "lineHint": 6661,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9732,13 +9918,33 @@
       "axis1Evidence": "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo to tryEarlyEmptyOwnDiffFinalize; this imported module belongs to the legacy/independent subsystem closure."
     },
     {
+      "callSiteId": "packages/engine/src/merger.ts::tryEarlyEmptyOwnDiffFinalize::store.logEntry::#3",
+      "callSiteFingerprint": "store.logEntry(taskId,`Auto-finalized no-op (early fast-path, FN-5345/FN-5377): ${noOpReason}`)",
+      "file": "packages/engine/src/merger.ts",
+      "enclosingSymbolPath": "tryEarlyEmptyOwnDiffFinalize",
+      "writer": "store.logEntry",
+      "ordinal": 3,
+      "lineHint": 6712,
+      "owningEntryPoint": "indeterminate",
+      "reachableDataStates": [
+        "unobservable:human classification required for new durable write"
+      ],
+      "axis1": "indeterminate",
+      "axis1Evidence": "pending: human classification required for newly derived durable write",
+      "axis2Provisional": "unresolved",
+      "axis2Final": "unresolved",
+      "observedInSuite": "unobservable:human classification required for new durable write",
+      "executionProof": "none:human classification required for new durable write",
+      "followUpTaskId": "pending:classify"
+    },
+    {
       "callSiteId": "packages/engine/src/merger.ts::tryEarlyEmptyOwnDiffFinalize::store.updateTask::#1",
       "callSiteFingerprint": "store.updateTask(taskId,{error})",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "tryEarlyEmptyOwnDiffFinalize",
       "writer": "store.updateTask",
       "ordinal": 1,
-      "lineHint": 6573,
+      "lineHint": 6660,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9758,7 +9964,7 @@
       "enclosingSymbolPath": "tryEarlyEmptyOwnDiffFinalize",
       "writer": "store.updateTask",
       "ordinal": 2,
-      "lineHint": 6624,
+      "lineHint": 6711,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9778,7 +9984,7 @@
       "enclosingSymbolPath": "tryEarlyEmptyOwnDiffFinalize",
       "writer": "store.updateTask",
       "ordinal": 3,
-      "lineHint": 6737,
+      "lineHint": 6824,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9890,7 +10096,7 @@
       "enclosingSymbolPath": "recoverApprovedStrandedAiMergeCommit>finalized",
       "writer": "finalizeProvenAutoMergeTask",
       "ordinal": 1,
-      "lineHint": 16434,
+      "lineHint": 16834,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -9910,7 +10116,7 @@
       "enclosingSymbolPath": "recoverMergedReviewTasks>finalization",
       "writer": "finalizeProvenAutoMergeTask",
       "ordinal": 1,
-      "lineHint": 15303,
+      "lineHint": 15703,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -10105,7 +10311,7 @@
     },
     {
       "callSiteId": "packages/engine/src/worktree/workspace-base-refresh.ts::refreshWorkspaceRepoWorktreeBases::store.logEntry::#1",
-      "callSiteFingerprint": "store.logEntry(task.id,`Workspace base refresh skipped [${repoRelPath}] (${result.kind}) \u2014 kept local base; the merge-time rebase will retry wi,result.detail,runContext)",
+      "callSiteFingerprint": "store.logEntry(task.id,`Workspace base refresh skipped [${repoRelPath}] (${result.kind}) — kept local base; the merge-time rebase will retry wi,result.detail,runContext)",
       "file": "packages/engine/src/worktree/workspace-base-refresh.ts",
       "enclosingSymbolPath": "refreshWorkspaceRepoWorktreeBases",
       "writer": "store.logEntry",
@@ -10225,7 +10431,7 @@
     },
     {
       "callSiteId": "packages/engine/src/worktree/worktree-acquisition.ts::acquireTaskWorktree>acquirePinnedWorktree::store.logEntry::#3",
-      "callSiteFingerprint": "store.logEntry(task.id,`Preserved orphaned task-pinned directory ${pinnedPath} before recreation${ preserveForContentPolicy ? \" \u2014 removal refus,preservedPath,runContext)",
+      "callSiteFingerprint": "store.logEntry(task.id,`Preserved orphaned task-pinned directory ${pinnedPath} before recreation${ preserveForContentPolicy ? \" — removal refus,preservedPath,runContext)",
       "file": "packages/engine/src/worktree/worktree-acquisition.ts",
       "enclosingSymbolPath": "acquireTaskWorktree>acquirePinnedWorktree",
       "writer": "store.logEntry",
@@ -10665,7 +10871,7 @@
     },
     {
       "callSiteId": "packages/engine/src/worktree/worktree-acquisition.ts::acquireTaskWorktree>refreshExistingWorktree::store.logEntry::#2",
-      "callSiteFingerprint": "store.logEntry(task.id,`Worktree base refresh skipped (${refresh.kind}) \u2014 kept local base; the merge-time rebase will retry with conflict resol,refresh.detail,runContext)",
+      "callSiteFingerprint": "store.logEntry(task.id,`Worktree base refresh skipped (${refresh.kind}) — kept local base; the merge-time rebase will retry with conflict resol,refresh.detail,runContext)",
       "file": "packages/engine/src/worktree/worktree-acquisition.ts",
       "enclosingSymbolPath": "acquireTaskWorktree>refreshExistingWorktree",
       "writer": "store.logEntry",
