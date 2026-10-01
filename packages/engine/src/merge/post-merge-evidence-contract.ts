@@ -156,13 +156,15 @@ export async function resolvePostMergeEvidenceContract(
 FNXC:RunAudit 2026-09-30-22:29 (RUFU-430): one row per (project root, reason) through the bounded seam,
 with provider/source/reason only.
 
-FNXC:RunAudit 2026-10-01-00:12 (RUFU-430): the first shipped row NEVER LANDED. The bounded seam swallowed
-`[run-audit] failed to record merge:post-merge-evidence-contract` twice on 2026-09-30 because the event
-carried `domain:"merge"` and no `target`, while `project.run_audit_events` declares NOT NULL `target` /
-`project_id` and `RunAuditDomain = "database" | "git" | "filesystem" | "sandbox"`. Telemetry that is
-silently dropped is the exact failure this seam is designed to make invisible, so the merge lane uses the
-same shape every other merge event uses — `domain:"git"`, `agentId:"merger"`, constant `target` — and the
-engine test asserts those fields, not just the absence of the remote URL. The remote URL is deliberately NEVER recorded — a remote can carry
+FNXC:RunAudit 2026-10-01-00:12, corrected 2026-10-01-00:26 (RUFU-430): the first shipped row NEVER LANDED —
+production logged `[run-audit] failed to record merge:post-merge-evidence-contract` twice and the bounded
+seam swallowed it. Measured cause: the event carried NO `target`, and `project.run_audit_events.target` is
+NOT NULL (1,773,528 rows, zero with a null target). The `domain:"merge"` it also carried is NOT the proven
+cause and was never claimed as more than hygiene: the column has no CHECK constraint and 13,926 rows carry
+the out-of-enum `task-lifecycle`, so out-of-enum domains do land. The merge lane therefore emits the shape
+every other merge event uses — `domain:"git"`, `agentId:"merger"`, constant `target` `post-merge-evidence` —
+and the engine test asserts those fields, not just the absence of the remote URL, because telemetry that is
+silently dropped is exactly the failure FN-9175's seam is designed to make invisible. The remote URL is deliberately NEVER recorded — a remote can carry
 credentials — and the project path is not recorded either, so the row stays ids/counts/fixed-enums-only.
 */
 async function emitOnce(

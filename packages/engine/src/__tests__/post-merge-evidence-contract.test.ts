@@ -69,9 +69,10 @@ describe("resolvePostMergeEvidenceContract", () => {
     /*
     FNXC:RunAudit 2026-10-01-00:12 (RUFU-430): these fields are the row's ticket into
     `project.run_audit_events`, whose `target` and `project_id` are NOT NULL and whose domain set is fixed.
-    The first shipped emit carried `domain:"merge"` and no target; the bounded seam swallowed the rejection
-    and production kept zero rows, so the decision stayed unanswerable — the one thing this event exists to
-    prevent. Asserting the shape is the regression guard.
+    The first shipped emit carried no `target` at all, `project.run_audit_events.target` is NOT NULL, and the
+    bounded seam swallowed the resulting rejection — production kept zero rows, so the decision stayed
+    unanswerable, which is the one thing this event exists to prevent. Asserting the whole row shape is the
+    regression guard; note the domain value is convention, not enforcement (the column has no CHECK).
     */
     expect(recorded[0]).toMatchObject({
       mutationType: "merge:post-merge-evidence-contract",

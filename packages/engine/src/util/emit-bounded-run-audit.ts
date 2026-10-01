@@ -18,11 +18,12 @@ export type BoundedRunAuditResult =
   | { outcome: "timed-out" };
 
 /*
-FNXC:RunAudit 2026-10-01-00:16 (RUFU-430): the loose arm exists so test doubles can hand the seam a partial
-event. It used to accept ANY key, including a `domain` outside `RunAuditDomain` — and RUFU-430 shipped
-`domain: "merge"` on that arm, which the store rejected at write time while this very seam swallowed the
-rejection, so production recorded zero rows for a decision the event exists to make answerable. The arm now
-pins `domain` to the real enum: an out-of-enum domain is a compile error instead of silent telemetry loss.
+FNXC:RunAudit 2026-10-01-00:16, corrected 2026-10-01-00:26 (RUFU-430): the loose arm exists so test doubles
+can hand the seam a partial event. It used to accept ANY key, including a `domain` outside `RunAuditDomain`.
+Pinning it keeps the declared vocabulary honest — but it is HYGIENE, not the fix for RUFU-430's lost rows:
+`run_audit_events.domain` has no CHECK constraint and 13,926 rows already carry the out-of-enum
+`task-lifecycle`, while the demonstrated defect was the missing NOT NULL `target`. Do not read this pin as a
+runtime guarantee; a required column is enforced by the store, and only an emit-shape test catches that.
 */
 export type RunAuditEvent = RunAuditEventInput | {
   mutationType: string;
