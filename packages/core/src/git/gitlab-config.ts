@@ -36,7 +36,13 @@ function readConfiguredString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function normalizeHttpUrl(value: string, label: string): string {
+/*
+FNXC:PostMergeEvidenceContract 2026-10-01-06:36 (RUFU-457):
+Exported so the post-merge evidence reporter declaration validates its base URL with EXACTLY these rules
+(absolute http(s), no userinfo, hostname required, query/hash stripped) instead of growing a second, slightly
+different URL validator. The `label` argument is what keeps every existing GitLab error sentence byte-stable.
+*/
+export function normalizeHttpUrl(value: string, label: string): string {
   let parsed: URL;
   try {
     parsed = new URL(value);

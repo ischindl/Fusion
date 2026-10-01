@@ -223,6 +223,12 @@ export async function resumeMissingPostMergeGate(
   if (!node) return { outcome: "not-seeded", reason: "no-post-merge-node", workflowStepId: gateId };
 
   const items = await store.listWorkflowWorkItemsForTask(task.id);
+  /*
+  FNXC:PostMergeEvidenceContract 2026-10-01-08:00 (RUFU-457):
+  This lane seeds the NODE id, never prompt text — the reviewer's instructions are materialised when the node
+  dispatches (`executor/run-graph-custom-node.ts` via `executor/post-merge-prompt.ts`), so a reseed picks up
+  whatever evidence contract the board resolves at that moment and nothing here can drift from that wording.
+  */
   const seeded = await store.seedWorkspaceCodeReviewContinuationIfIdle({
     taskId: task.id,
     nodeId: node.id,

@@ -1608,13 +1608,37 @@ The post-merge gate's evidence contract was hardcoded GitHub Actions and applied
 board without a CI reporter could only ever answer it with an operator waiver. This is the fact the seam
 consumes: which reporter a project has, derived from repo facts or an explicit declaration.
 */
-export { derivePostMergeEvidenceContract, parseDeclaredPostMergeEvidence, isPostMergeEvidenceUnreportable } from "./merge/post-merge-evidence-contract.js";
+/*
+FNXC:PostMergeEvidenceContract 2026-10-01-06:36 (RUFU-457):
+RUFU-457 adds the real reporters, so the endpoint surface is public too: the engine supplies provider-tagged
+endpoint CANDIDATES (`PostMergeReporterEndpoint`) and `normalizePostMergeReporterBaseUrl` is the single
+validator a reporter URL must pass — the same rules a GitLab instance URL passes, so a declared OneDev URL
+and a configured GitLab instance URL cannot disagree about what a usable base URL is.
+*/
+export { derivePostMergeEvidenceContract, parseDeclaredPostMergeEvidence, isPostMergeEvidenceUnreportable, normalizePostMergeReporterBaseUrl } from "./merge/post-merge-evidence-contract.js";
+export type { PostMergeReporterEndpoint } from "./merge/post-merge-evidence-contract.js";
 /*
 FNXC:PostMergeEvidenceRequirement 2026-09-30-22:51 (RUFU-430):
 The evidence a post-merge gate demands is authored on the workflow node, so the kind helpers and the prompt
 builder are public surface — the editor, the resolver, and any custom workflow author need the same one.
 */
-export { buildPostMergeVerificationPrompt, postMergeEvidenceKindOf, postMergeEvidenceDemandsCi } from "./workflows/builtin-post-merge-group.js";
+/*
+FNXC:PostMergeEvidenceContract 2026-10-01-06:36 (RUFU-457):
+The engine's prompt-materialization seam needs three more things from this module: the untampered built-in
+prompt text to byte-compare against, the authored-kind reader, and the provider-aware resolver. Exporting the
+constant is deliberate — the substitution guard is "rewrite only if this is exactly the shipped text", which
+is only expressible if the shipped text is importable.
+*/
+export {
+  buildPostMergeVerificationPrompt,
+  postMergeEvidenceKindOf,
+  authoredPostMergeEvidenceKindOf,
+  resolvePostMergeEvidenceKind,
+  postMergeEvidenceDemandsCi,
+  POST_MERGE_EVIDENCE_KINDS,
+  describePostMergeEvidenceKinds,
+  POST_MERGE_VERIFICATION_PROMPT,
+} from "./workflows/builtin-post-merge-group.js";
 export type { PostMergeEvidenceKind } from "./workflows/builtin-post-merge-group.js";
 export type { PostMergeEvidenceProvider, PostMergeEvidenceSource, PostMergeEvidenceReason, PostMergeEvidenceContract, PostMergeRepoFacts, DeclaredPostMergeEvidence } from "./merge/post-merge-evidence-contract.js";
 export type { PreMergeApproval, PreMergeApprovalState } from "./merge/pre-merge-approval.js";

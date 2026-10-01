@@ -2476,6 +2476,41 @@ export {
   postMergeVerificationOptionalGroupNode,
 } from "./workflows/builtin-post-merge-group.js";
 export type { PostMergeOptionalGroupSpec } from "./workflows/builtin-post-merge-group.js";
+/*
+FNXC:PostMergeEvidenceContract 2026-10-01-06:51 (RUFU-457):
+Mirror of the full barrel's post-merge evidence surface (see index.ts). This belongs here rather than being
+excluded the way the ten never-touched modules are, because the engine gate lane DOES reach this graph: the
+gate lane aliases `@fusion/core` to this file, and `merge/auto-merge-finalization.ts` →
+`merge/post-merge-evidence-contract.ts` and `executor/run-graph-custom-node.ts` both import these symbols
+across the package boundary. Under the alias a missing named export is a link-time hole in every gate fork
+that loads those modules.
+*/
+export {
+  buildPostMergeVerificationPrompt,
+  postMergeEvidenceKindOf,
+  authoredPostMergeEvidenceKindOf,
+  resolvePostMergeEvidenceKind,
+  postMergeEvidenceDemandsCi,
+  POST_MERGE_EVIDENCE_KINDS,
+  describePostMergeEvidenceKinds,
+  POST_MERGE_VERIFICATION_PROMPT,
+} from "./workflows/builtin-post-merge-group.js";
+export type { PostMergeEvidenceKind } from "./workflows/builtin-post-merge-group.js";
+export {
+  derivePostMergeEvidenceContract,
+  parseDeclaredPostMergeEvidence,
+  isPostMergeEvidenceUnreportable,
+  normalizePostMergeReporterBaseUrl,
+} from "./merge/post-merge-evidence-contract.js";
+export type { PostMergeReporterEndpoint } from "./merge/post-merge-evidence-contract.js";
+export type {
+  PostMergeEvidenceProvider,
+  PostMergeEvidenceSource,
+  PostMergeEvidenceReason,
+  PostMergeEvidenceContract,
+  PostMergeRepoFacts,
+  DeclaredPostMergeEvidence,
+} from "./merge/post-merge-evidence-contract.js";
 export { isResearchExperimentalEnabled, resolveResearchSettings } from "./research/research-settings.js";
 export type { ResolvedResearchSettings } from "./research/research-settings.js";
 export { isEvalsExperimentalEnabled, resolveEvalSettings } from "./eval/eval-settings.js";

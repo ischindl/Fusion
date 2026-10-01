@@ -24,10 +24,12 @@ import { executorLog } from "../logger.js";
 import type { EngineRunContext } from "../util/run-audit.js";
 import type { WorkflowNodeResult } from "../workflows/workflow-graph-executor.js";
 import {
+  postMergeEvidenceKindOfContext,
   WORKFLOW_BLOCKING_SEVERITY_CONTEXT_KEY,
   WORKFLOW_OPTIONAL_GROUP_CONTEXT_KEY,
   WORKFLOW_REVIEW_KIND_CONTEXT_KEY,
 } from "../workflows/workflow-graph-executor.js";
+import { materializePostMergePrompt } from "./post-merge-prompt.js";
 import { workflowNodeRequiresWorktree } from "../workflows/workflow-node-execution-needs.js";
 import {
   FUSION_WORKFLOW_STEP_CONVENTIONS_PREAMBLE,
@@ -690,6 +692,19 @@ export async function runGraphCustomNode(
       return result;
     }
     let prompt = typeof cfg.prompt === "string" ? cfg.prompt : "";
+    /*
+    FNXC:PostMergeEvidenceContract 2026-10-01-07:58 (RUFU-457):
+    The prompt the IR carries is the built-in GitHub text; on a OneDev or GitLab board that sentence asks a
+    reviewer for evidence their platform does not produce, and it has been doing so on every dispatch of the
+    built-in gate. Materialize the platform's own wording HERE — the one place the dispatched text is
+    assembled — and only for the byte-for-byte untampered built-in text, so an edited prompt stays edited.
+    Runs before the overlap-context append so that section keeps its position at the end either way.
+    */
+    prompt = await materializePostMergePrompt({
+      prompt,
+      store: deps.store,
+      authoredKind: postMergeEvidenceKindOfContext(graphContext),
+    });
     if (overlapResumeContext) {
       prompt = [prompt, "", "## Overlap wait synchronization", overlapResumeContext].join("\n");
     }

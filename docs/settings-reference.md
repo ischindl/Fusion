@@ -808,6 +808,30 @@ GitLab enablement defaults effectively to on when `gitlabEnabled` is unset, so e
 
 GitLab configuration examples: leave both URL fields blank for GitLab.com (`https://gitlab.com`, API `https://gitlab.com/api/v4`); set only `gitlabInstanceUrl=https://gitlab.example.com/gitlab` for a self-managed path-prefix install (API derives `https://gitlab.example.com/gitlab/api/v4`); set both URL fields when a self-managed API gateway differs from the web URL. GitLab auth uses access tokens over the GitLab REST API `PRIVATE-TOKEN` header; Fusion does not require or invoke `glab`. Supported token families are [personal access tokens](https://docs.gitlab.com/user/profile/personal_access_tokens/), [project access tokens](https://docs.gitlab.com/user/project/settings/project_access_tokens/), and [group access tokens](https://docs.gitlab.com/user/group/settings/group_access_tokens/). GitLab issue/MR import and tracking reads need `read_api` or `api`; posting notes/comments and closing/reopening issues or MRs need `api`. Project and group access tokens are constrained to their associated resource and role membership, so the configured token must cover the target project or group. Lifecycle actions use the configured API base URL for GitLab.com and self-managed instances, URL-encode project path identifiers, and skip unsupported targets such as terminal merged merge requests or group issues missing concrete project identity. Command Center signals, research/search providers, and star-prompt behavior remain deferred to later GitLab subtasks tracked from [GitLab Parity Inventory](./gitlab-parity-inventory.md).
 
+### Post-merge CI evidence declaration
+
+<!--
+FNXC:PostMergeEvidenceContract 2026-10-01-08:31 (RUFU-457):
+The built-in `post-merge-verification` gate demands a post-landing CI delivery record, which exists only
+where a CI reporter can produce it. This setting is the operator's answer to "which CI does this board have".
+It is deliberately a REFERENCE, never a credential: `tokenSecret` is the name of a secret, not its value, and
+only host[:port] plus a `credentialConfigured` boolean ever reach the audit row. There is no CI API client —
+the declaration only tells the reviewer which platform's own page to read.
+-->
+
+The built-in `post-merge-verification` gate demands a post-landing CI delivery record whose shape depends on which CI the project has (see [Workflow steps → Which evidence a post-merge gate may demand](./workflow-steps.md#which-evidence-a-post-merge-gate-may-demand-rufu-430)). Fusion normally **derives** this from repo facts, but the operator can declare it to override the derivation in either direction.
+
+| Setting | Type | Default | Behavior |
+| --- | --- | --- | --- |
+| `postMergeEvidence` | object or bare string | `undefined` (derived) | Declares the post-merge evidence reporter. Shape: `{ "provider": "none" \| "github-actions" \| "onedev" \| "gitlab", "baseUrl"?, "tokenSecret"?, "note"? }`, or the bare provider string. A declaration wins over observed repo facts; an unreadable or unknown value is **ignored**, never guessed at (behavior falls back to derivation). |
+
+- **`provider`** — which CI reporter the board has. `none` exempts the CI-shaped gate (`not-applicable`); `github-actions` requires the Full Suite shard contract; `onedev` / `gitlab` require their platform's pipeline record. `gitea` and `bitbucket` are **not** accepted — Fusion names only reporters it can point a reviewer at.
+- **`baseUrl`** (optional) — the reporter base URL, validated by the same rules as a GitLab instance URL: absolute `http(s)`, **no userinfo**. When its host (and port, when present) equals the origin the card was pushed to, the contract reports the endpoint-confirmed reason and carries `endpointHost` (`host`, plus a non-default port). The full URL, its path, and any userinfo never leave the derivation.
+- **`tokenSecret`** (optional) — the **name of a project secret** holding the reporter token, never the token itself. A value containing `@`, `/`, whitespace, or a scheme is rejected as a bad secret reference rather than stored. Setting it to a token is the same class of error as putting a PAT in `githubAuthToken`.
+- **GitLab needs no new setting.** The GitLab reporter is derived from the existing `gitlabInstanceUrl` / `gitlabApiBaseUrl` / `gitlabAuthToken` config already documented above: a self-managed instance is derived for free; `gitlab.com` requires the GitLab integration to be enabled, because a bare `github.com`-shaped remote is not proof of a GitLab project. A GitLab reporter is never derived from the remote alone (an `https://gitlab…` remote with the integration disabled or no URL configured stays `non-github-remote`).
+- **OneDev has no other settings surface**, so `baseUrl` is the only way to give it a reporter — there is no OneDev instance config elsewhere in Settings to reuse.
+- **Non-goal:** declaring a reporter does not make Fusion query that CI. It only selects which platform's own delivery page the reviewer reads; there is no HTTP client, polling, or retry. Exposing this declaration in the Settings UI / workflow editor is tracked separately (RUFU-456); today it is authored as a raw project setting.
+
 | `autoCreatePr` | `boolean` | `false` | Auto-create PRs for completed tasks. |
 | `autoBackupEnabled` | `boolean` | `false` | Enable scheduled shared-database backups. |
 | `autoBackupSchedule` | `string` | `"0 2 * * *"` | Shared database backup cron schedule. |

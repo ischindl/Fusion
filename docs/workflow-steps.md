@@ -603,20 +603,32 @@ When a confirmed landing is durable but an enabled required post-merge gate has 
 
 The built-in `post-merge-verification` gate demands a **post-landing CI delivery record**: the landed SHA, the first push-to-main run at or after it, a Pipeline smoke conclusion, four Test shard conclusions, and four `test-timings-shard-N` artifacts. That record exists only where a CI reporter can produce it, so the requirement is resolved against one project-level fact — `derivePostMergeEvidenceContract()` in `packages/core/src/merge/post-merge-evidence-contract.ts`:
 
+<!--
+FNXC:PostMergeEvidenceContract 2026-10-01-08:31 (RUFU-457):
+This table previously collapsed OneDev and self-hosted GitLab into `none` because Fusion had no reader for
+their pipelines. That host-shaped exemption was the bug: it forgave boards that DO have a pipeline and kept
+demanding GitHub Actions shard vocabulary from boards that could never produce it. `onedev` and `gitlab` are
+real reporters now; a host with no configured endpoint is still `none`. The table is ordered by the derivation
+ladder — declaration and the two fail-closed guards resolve before any endpoint is consulted.
+-->
 | project situation | provider | effect on the gate |
 | --- | --- | --- |
 | GitHub remote with `.github/workflows/*.yml` | `github-actions` | unchanged: the shard contract is required |
 | GitHub remote, empty/absent workflow directory | `none` | not-applicable |
-| OneDev / self-hosted GitLab / Gitea / any other host | `none` | not-applicable |
+| OneDev origin with a configured OneDev endpoint (host[:port] match) | `onedev` | **owed: the OneDev pipeline record is required** |
+| GitLab origin (self-managed instance, or `gitlab.com` with the integration enabled) | `gitlab` | **owed: the GitLab pipeline record is required** |
+| any other host with no configured reporter endpoint (Gitea / Bitbucket / plain ssh) | `none` | not-applicable |
 | repository with no remote at all | `none` | not-applicable |
 | project root unreadable (no checkout, git failure) | `github-actions` | **unchanged — fails closed** |
 
-- The operator can force either direction with project setting `postMergeEvidence` (`{ "provider": "none" | "github-actions", "note"?: string }`, or the bare string). A declaration wins over observed facts; an unreadable declaration is ignored rather than guessed at.
+- The operator can force either direction with project setting `postMergeEvidence` (`{ "provider": "none" | "github-actions" | "onedev" | "gitlab", "baseUrl"?, "tokenSecret"?, "note"? }`, or the bare string). A declaration wins over observed facts; an unreadable declaration is ignored rather than guessed at. A provider declaration that also names the endpoint this origin actually serves reports the stronger `<provider>-endpoint` reason; a malformed `baseUrl`/`tokenSecret` drops that one field, never the whole declaration, because a misspelling must not silently relax a gate. See [Settings reference → Post-merge CI evidence declaration](./settings-reference.md#post-merge-ci-evidence-declaration).
 - `not-applicable` means **no blocker, no gate re-seed, no operator waiver** — it is not a pass and fabricates no verdict. The operator bypass affordance still sees the gate, and a durable negative verdict still blocks, with one bounded exception: a refusal recorded *before* a **derived** observation is a verdict about a contract the board could never satisfy (measured: 66 of 98 durable post-merge failures across this fleet named a missing CI pipeline). A refusal recorded after the observation, or any refusal on a board that merely *declared* `none`, stays the operator's call.
 - Facts are read once per project root per process from `store.getRootDir()` — never from a card's worktree, which is normally already cleaned up — and an unreadable observation is deliberately not cached, so a transient failure is retried instead of remembered.
-- Run-audit records `merge:post-merge-evidence-contract` once per (project, reason) with `provider`/`source`/`reason` only. The remote URL is never recorded; a remote can carry credentials.
+- Run-audit records `merge:post-merge-evidence-contract` once per (project, reason) with `provider`/`source`/`reason` only, plus the **non-secret** endpoint facts `endpointHost` (host, plus port only when it is not the scheme default) and `credentialConfigured` (a boolean). The full URL, its path, any userinfo or token, and the remote are **never** recorded — a remote can carry credentials.
+- **The exemption invariant (RUFU-457):** every consumer asks `isPostMergeEvidenceUnreportable(contract)` (true only when `provider === "none"`); **nobody** may key an exemption on a hostname, a provider string, or a substring of the remote. With `onedev`/`gitlab` in the union, "not GitHub" no longer implies "nothing to show", so a host-shaped exemption would re-forgive boards that owe pipeline evidence.
+- **Non-goal:** Fusion queries **no CI API**. "Reporter" means *a human reviewer can be told where to read the record* — exactly as for Actions. There is no HTTP client, polling, or retry anywhere in this rule; the reviewer reads the OneDev build page or the instance's pipeline page themselves. Surfacing the declaration in the editor/Settings is RUFU-456.
 
-Two follow-ups are **not** in this rule and remain open: a non-GitHub reporter (OneDev/GitLab pipeline reader) would add a `provider`, and the group is still *enabled* on cards planned before the fact existed, so the verifier lane still runs and records its own refusal there.
+The OneDev/GitLab reporter named as follow-up work in the original RUFU-430 rule now exists. What remains open is only that the group is still *enabled* on cards planned before the fact existed, so the verifier lane still runs and records its own refusal there.
 
 #### Authoring which evidence a post-merge gate demands
 
@@ -629,11 +641,14 @@ Because the project fact alone would have meant "no post-merge review at all" fo
 
 | `evidence.kind` | reviewer is told to name | exempt when the project has no reporter? |
 | --- | --- | --- |
-| `github-actions-full-suite` (absent = this) | landed SHA, first push-to-main run, Pipeline smoke, 4 shard conclusions, 4 timing artifacts | yes |
-| `integration-only` | landed SHA + merge/already-on-main proof, landed content vs deliverable, the project's own verification command result or why none applies | **no — still owed** |
+| `github-actions-full-suite` (absent on a GitHub/`none` board = this) | landed SHA, first push-to-main run, Pipeline smoke, 4 shard conclusions, 4 timing artifacts | yes |
+| `onedev-pipeline` (absent on an OneDev board = this) | landed SHA, the OneDev MR/pipeline build at or after it, job/step conclusions named individually, published artifacts or a statement there are none, and the trigger | **no — a reportable run is owed** |
+| `gitlab-pipeline` (absent on a GitLab board = this) | landed SHA, the pipeline that ran on the default-branch commit at or after it with its own SHA, every job named with status, the artifact list or a statement there are none, and the ref/MR source | **no — a reportable run is owed** |
+| `integration-only` (only ever authored) | landed SHA + merge/already-on-main proof, landed content vs deliverable, the project's own verification command result or why none applies | **no — still owed** |
 
-- The prompt is generated by `buildPostMergeVerificationPrompt(kind)`; the verdict protocol is shared, so the choice cannot change how the result row parses. The full-suite text is unchanged byte-for-byte, so no existing board's bar moves.
-- `parseWorkflowIr` validates `evidence.kind`, so a typo cannot persist as an unrecognisable demand.
+- **Authored vs implied (RUFU-457).** The enforced contract is `authored ?? platformDefault(provider)`, and the order *is* the contract. An authored kind always wins (an `integration-only` gate stays `integration-only` on a GitLab board too — that is a repo fact, not a host fact). An **absent** kind inherits the reporter's platform: `none`/`github-actions`/a missing contract all resolve to `github-actions-full-suite` byte-identically, so no GitHub board's bar moves. This is what closes the "GitHub-only vocabulary" bug — absent is what every built-in and un-updated custom workflow carries, and until now absent meant GitHub wording no matter where the board lives.
+- The prompt is generated by `buildPostMergeVerificationPrompt(kind)`; the verdict protocol is shared, so the choice cannot change how the result row parses. The full-suite text is unchanged byte-for-byte, so no existing board's bar moves. The one place an *authored* prompt could be re-materialized per platform (`materializePostMergePrompt` in the engine) rewrites only on a byte-for-byte match against the untampered built-in text, so an operator who edited the prompt in the workflow editor always keeps their own wording.
+- `parseWorkflowIr` validates `evidence.kind` against all four values, so a typo cannot persist as an unrecognisable demand. A stored IR whose inner prompt was generated from the full-suite built-in is accepted as-is (the prompt is materialized at dispatch, not stored); one edited past that is only accepted when it names no GitHub-only artifact or no CI evidence at all, so an authored contract survives.
 - Why this is per-node and not per-project: `builtin:coding` is the default workflow on every board here and ships the gate with `defaultOn: true`, so nobody chose the GitHub contract — and the only workflow-level escape was one with no post-merge group at all, which also drops the integration review (that review found a real broken backup command on VLLM-078 while refusing for want of shard artifacts).
 - The workflow **editor UI** does not yet expose the field; it is authored in the stored IR. Exposing it is a follow-up card.
 

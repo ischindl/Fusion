@@ -1,7 +1,7 @@
 import { isWorkspaceTask, type Task, type WorkflowStepResult } from "../types.js";
 import { resolveWorkflowIrForTask, type WorkflowIrResolverStore } from "../workflows/workflow-ir-resolver.js";
 import { isWorkflowOptionalGroupEnabled } from "../workflows/workflow-optional-steps.js";
-import { postMergeEvidenceDemandsCi, postMergeEvidenceKindOf } from "../workflows/builtin-post-merge-group.js";
+import { authoredPostMergeEvidenceKindOf, postMergeEvidenceDemandsCi, resolvePostMergeEvidenceKind } from "../workflows/builtin-post-merge-group.js";
 import type { WorkflowIr } from "../workflows/workflow-ir-types.js";
 import { BLOCKING_TASK_STATUSES, clearMergeConfirmedTransientStatus } from "./task-merge.js";
 import { isAuditedOperatorBypass } from "./pre-merge-approval.js";
@@ -118,10 +118,31 @@ export function getPostMergeEvidenceGateStatuses(
   and a read of the landed content, both of which such a board can produce. Only a contract that names CI
   artifacts is exempt when no reporter exists. Absence of the config keeps the historical full-suite reading.
   */
+  /*
+  FNXC:PostMergeEvidenceContract 2026-10-01-06:36 (RUFU-457):
+  The kind is resolved through the provider-aware resolver, so the question this seam answers stays
+  "what does THIS gate ask for, given the reporter this board really has" rather than "which host is the
+  remote on". Concretely: an OneDev/GitLab contract is reportable, so its CI-shaped gate stays OWED
+  (`missing`, blocker names it) instead of being exempted the way RUFU-430 exempted a board with no
+  reporter at all; a `none` contract still takes the `no-evidence-reporter` path untouched; and an authored
+  `integration-only` gate stays owed on any board because it asks for no run.
+  Every consumer below reads these statuses rather than re-deriving a kind anywhere:
+  `getRequiredPostMergeEvidenceBlocker` (this file), the engine finalizer's pending-evidence claim
+  (`merge/auto-merge-finalization.ts`), the RUFU-306 re-seed lane (`merge/post-merge-gate-reseed.ts`),
+  the three `self-healing.ts` call sites, and the dashboard/store bypass target
+  (`merge/review-bypass-target.ts`). That single derivation is the RUFU-179 offer == accept invariant: a
+  locally re-derived kind is how an affordance and an acceptance gate start disagreeing.
+  */
   const evidenceKindByGate = new Map(
     ir.nodes
       .filter((node) => node.kind === "optional-group")
-      .map((node) => [node.id, postMergeEvidenceKindOf(node.config as { evidence?: { kind?: unknown } } | undefined)]),
+      .map((node) => [
+        node.id,
+        resolvePostMergeEvidenceKind({
+          authored: authoredPostMergeEvidenceKindOf(node.config as { evidence?: { kind?: unknown } } | undefined),
+          provider: contract?.provider,
+        }),
+      ]),
   );
   return resolveRequiredPostMergeGateIds(task, ir).flatMap((gateId): PostMergeEvidenceGateStatus[] => {
     const result = (task.workflowStepResults ?? []).find((entry) => entry.workflowStepId === gateId);
@@ -142,7 +163,7 @@ export function getPostMergeEvidenceGateStatuses(
     one operator waiver (11 on 2026-09-29 alone) to release a card whose gate could not be rung.
     */
     if (!result) {
-      const demandsCi = postMergeEvidenceDemandsCi(evidenceKindByGate.get(gateId) ?? "github-actions-full-suite");
+      const demandsCi = postMergeEvidenceDemandsCi(evidenceKindByGate.get(gateId) ?? resolvePostMergeEvidenceKind({ authored: undefined, provider: contract?.provider }));
       if (unreportable && demandsCi) {
         return [{ gateId, state: "not-applicable", notApplicableReason: "no-evidence-reporter" }];
       }
@@ -172,7 +193,7 @@ export function getPostMergeEvidenceGateStatuses(
       carries that cutoff; an operator who declares `none` explicitly is taking the declaration back in
       time, so their declaration exempts absences but never overwrites a recorded refusal.
       */
-      if (unreportable && contract?.source === "derived" && postMergeEvidenceDemandsCi(evidenceKindByGate.get(gateId) ?? "github-actions-full-suite")) {
+      if (unreportable && contract?.source === "derived" && postMergeEvidenceDemandsCi(evidenceKindByGate.get(gateId) ?? resolvePostMergeEvidenceKind({ authored: undefined, provider: contract?.provider }))) {
         const recordedAt = Date.parse(result.completedAt ?? result.startedAt ?? "");
         const observedAt = Date.parse(contract.observedAt);
         if (Number.isFinite(recordedAt) && Number.isFinite(observedAt) && recordedAt < observedAt) {

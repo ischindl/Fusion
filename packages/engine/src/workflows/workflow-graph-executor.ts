@@ -10,8 +10,9 @@ import type {
   WorkflowNodeExtensionResult,
   WorkflowStepResult,
   WorkflowStepNotRunReason,
+  PostMergeEvidenceKind,
 } from "@fusion/core";
-import { BUILTIN_CODING_WORKFLOW_IR, FAST_LANE_SKIP_VALUE, FAST_MODE_BYPASS_ACTOR, PLAN_REVIEW_GROUP_ID, WORKFLOW_STEP_NOT_RUN_REASONS, WorkflowIrError, computeWorkflowIrPin, getWorkflowExtensionRegistry, instanceNodeId, resolveFastLaneRoute, resolveMaxReworkCycles, isExperimentalFeatureEnabled, GRAPH_NATIVE_POST_MERGE_FLAG, isCompletionSummaryNode, classifyReviewLease, isWorkflowOptionalGroupEnabled, isPlanReviewSatisfied, parseNoOpCompletionMarker, requiresContentReviewProof, resolveRequiredPreMergeStepIds } from "@fusion/core";
+import { BUILTIN_CODING_WORKFLOW_IR, FAST_LANE_SKIP_VALUE, FAST_MODE_BYPASS_ACTOR, PLAN_REVIEW_GROUP_ID, WORKFLOW_STEP_NOT_RUN_REASONS, WorkflowIrError, computeWorkflowIrPin, getWorkflowExtensionRegistry, instanceNodeId, resolveFastLaneRoute, resolveMaxReworkCycles, isExperimentalFeatureEnabled, GRAPH_NATIVE_POST_MERGE_FLAG, isCompletionSummaryNode, classifyReviewLease, isWorkflowOptionalGroupEnabled, isPlanReviewSatisfied, parseNoOpCompletionMarker, requiresContentReviewProof, resolveRequiredPreMergeStepIds, authoredPostMergeEvidenceKindOf } from "@fusion/core";
 import { isNonPlanDefectPlanReviewFailure } from "../errors/transient-error-detector.js";
 import { isSessionContentionError } from "../errors/transient-error-patterns.js";
 import { isRequiredArtifactReadFailedValue, parseRequiredArtifactMissingValue } from "../execution/required-workflow-artifacts.js";
@@ -168,6 +169,26 @@ export const WORKFLOW_DEPENDENCY_CONFIGURATION_BLOCK_VALUE = "dependency-configu
 /** Explicit parent marker for template execution; never inferred from template labels or output. */
 export const WORKFLOW_REVIEW_KIND_CONTEXT_KEY = "workflow:reviewKind";
 export const WORKFLOW_BLOCKING_SEVERITY_CONTEXT_KEY = "workflow:blockingSeverity";
+/*
+FNXC:PostMergeEvidenceContract 2026-10-01-07:58 (RUFU-457):
+The evidence kind an optional-group AUTHORS lives on the group node's config, but the prompt runs in the
+template child, which cannot see it. Carry it the same way review kind and blocking severity are carried, so
+the dispatch-time prompt materialization applies the same authored-first rule the gate-status seam applies —
+otherwise a workflow that authored `integration-only` would be handed a pipeline demand by the platform
+substitution and contradicted by its own gate. Absent = authored nothing, which is every built-in.
+*/
+export const WORKFLOW_POST_MERGE_EVIDENCE_KIND_CONTEXT_KEY = "workflow:postMergeEvidenceKind";
+
+/**
+ * Read the propagated evidence kind out of a run context, validating it through the same allow-list that
+ * authored it. A persisted continuation from an older build, a hand-written context value, or a value
+ * renamed upstream all read as "authored nothing", which is the safe reading: the platform default applies.
+ */
+export function postMergeEvidenceKindOfContext(
+  context: Record<string, unknown> | undefined,
+): PostMergeEvidenceKind | undefined {
+  return authoredPostMergeEvidenceKindOf({ evidence: { kind: context?.[WORKFLOW_POST_MERGE_EVIDENCE_KIND_CONTEXT_KEY] } });
+}
 export const WORKFLOW_NODE_ENGINE_PAUSE_ABORT_KIND: WorkflowNodeAbortKind = "engine-pause";
 
 export interface WorkflowNodeResult {
@@ -1226,11 +1247,13 @@ export class WorkflowGraphExecutor {
               FNXC:FastOptionalSteps 2026-06-30-09:12:
               Optional-group template execution carries the parent group id in context so fast mode can skip only top-level review/validation gates. Once an operator explicitly enables an optional group, that selection is stronger than the fast default and its prompt/script/gate body must run.
               */
+              const authoredEvidenceKind = authoredPostMergeEvidenceKindOf(node.config);
               const optionalGroupContext = {
                 ...(contextOverride ?? context),
                 [WORKFLOW_OPTIONAL_GROUP_CONTEXT_KEY]: node.id,
                 ...(this.workflowReviewKind(node) ? { [WORKFLOW_REVIEW_KIND_CONTEXT_KEY]: this.workflowReviewKind(node) } : {}),
                 ...(this.workflowBlockingSeverity(node) ? { [WORKFLOW_BLOCKING_SEVERITY_CONTEXT_KEY]: this.workflowBlockingSeverity(node) } : {}),
+                ...(authoredEvidenceKind ? { [WORKFLOW_POST_MERGE_EVIDENCE_KIND_CONTEXT_KEY]: authoredEvidenceKind } : {}),
               };
               return this.executeMaterializedTemplateNode(tNode, task, settings, optionalGroupContext, ir, sig);
             },

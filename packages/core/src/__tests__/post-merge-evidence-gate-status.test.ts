@@ -14,11 +14,12 @@ import {
   resolveRequiredPostMergeGateIds,
 } from "../merge/confirmed-merge-reconciliation.js";
 import { FAST_MODE_BYPASS_ACTOR } from "../workflows/workflow-fast-lane.js";
+import { derivePostMergeEvidenceContract, type PostMergeEvidenceContract } from "../merge/post-merge-evidence-contract.js";
 import type { Task, WorkflowIr } from "../types.js";
 
 const GATE_ID = "post-merge-verification";
 
-function irWithPostMergeGate(defaultOn: boolean): WorkflowIr {
+function irWithPostMergeGate(defaultOn: boolean, evidence?: { kind: string }): WorkflowIr {
   return {
     version: "v2",
     id: "builtin:coding",
@@ -32,6 +33,7 @@ function irWithPostMergeGate(defaultOn: boolean): WorkflowIr {
         config: {
           phase: "post-merge",
           defaultOn,
+          ...(evidence ? { evidence } : {}),
           template: { nodes: [{ id: "post-merge-check", kind: "prompt", config: { gateMode: "gate" } }] },
         },
       },
@@ -186,6 +188,164 @@ describe("post-merge evidence gate states", () => {
     } as never;
 
     expect(getPostMergeEvidenceGateStatuses(task, ir)).toEqual([{ gateId: GATE_ID, state: "not-approved" }]);
+  });
+
+  /*
+  FNXC:PostMergeEvidenceContract 2026-10-01-06:51 (RUFU-457):
+  The seam's key is the CONTRACT, never the host: these cases hand this function a contract object and nothing
+  else, so a hostname cannot reach it even by accident. What they pin is the pair of outcomes that RUFU-430
+  could not express — an OneDev/GitLab board OWES its CI-shaped gate (it can produce the evidence, so an
+  absence is a real gap and not an exemption), while a GitHub board's statuses are identical to the pre-change
+  ones whether the contract is supplied or not. RUFU-179's lesson is the shape of the assertion: an affordance
+  and an acceptance gate diverge when each re-derives the kind locally, so every consumer reads these statuses.
+  */
+  describe("under a OneDev/GitLab evidence contract", () => {
+    const onedevContract = derivePostMergeEvidenceContract({
+      repo: { factsReadable: true, remoteUrl: "http://192.168.12.60:6610/saneca.git", githubWorkflowFileCount: 0 },
+      endpoints: [{ provider: "onedev", baseUrl: "http://192.168.12.60:6610", credentialConfigured: true }],
+      observedAt: "2026-10-01T06:00:00.000Z",
+    });
+    const gitlabContract = derivePostMergeEvidenceContract({
+      repo: {
+        factsReadable: true,
+        remoteUrl: "https://gitlab.digitalsystems.eu/ai/test_banks.git",
+        githubWorkflowFileCount: 0,
+      },
+      endpoints: [{ provider: "gitlab", baseUrl: "https://gitlab.digitalsystems.eu" }],
+      observedAt: "2026-10-01T06:00:00.000Z",
+    });
+    const githubContract: PostMergeEvidenceContract = derivePostMergeEvidenceContract({
+      repo: {
+        factsReadable: true,
+        remoteUrl: "https://github.com/Runfusion/Fusion.git",
+        githubWorkflowFileCount: 11,
+      },
+      observedAt: "2026-10-01T06:00:00.000Z",
+    });
+
+    it.each([
+      ["onedev", onedevContract],
+      ["gitlab", gitlabContract],
+    ] as const)("leaves a %s board's CI-shaped gate owed, not exempt", (_provider, contract) => {
+      const ir = irWithPostMergeGate(true);
+      expect(getPostMergeEvidenceGateStatuses(taskWith([GATE_ID]), ir, contract)).toEqual([
+        { gateId: GATE_ID, state: "missing" },
+      ]);
+    });
+
+    it.each([onedevContract, gitlabContract])(
+      "keeps the blocker sentence on a reporter board until the gate reports (%s.provider)",
+      async (contract) => {
+        const ir = irWithPostMergeGate(true);
+        await expect(getRequiredPostMergeEvidenceBlocker(storeFor(ir) as never, taskWith([GATE_ID]), contract))
+          .resolves.toBe(`required post-merge evidence gate '${GATE_ID}' has not reported`);
+      },
+    );
+
+    it("holds a GitHub board's statuses byte-identical to the no-contract reading", () => {
+      const ir = irWithPostMergeGate(true);
+      const shapes: Array<Pick<Task, "id" | "enabledWorkflowSteps" | "workflowStepResults">> = [
+        taskWith([GATE_ID]),
+        { ...taskWith([GATE_ID]), workflowStepResults: [{ workflowStepId: GATE_ID, status: "failed" }] } as never,
+        {
+          ...taskWith([GATE_ID]),
+          workflowStepResults: [{ workflowStepId: GATE_ID, status: "passed", verdict: "APPROVE" }],
+        } as never,
+      ];
+      for (const task of shapes) {
+        expect(getPostMergeEvidenceGateStatuses(task, ir, githubContract)).toEqual(
+          getPostMergeEvidenceGateStatuses(task, ir),
+        );
+      }
+    });
+
+    it("keeps an authored kind above the platform default in both directions", () => {
+      // A repo whose contract is the integration lane stays owed on an OneDev board: authored wins.
+      const authored = irWithPostMergeGate(true, { kind: "integration-only" });
+      expect(getPostMergeEvidenceGateStatuses(taskWith([GATE_ID]), authored, onedevContract)).toEqual([
+        { gateId: GATE_ID, state: "missing" },
+      ]);
+
+      // And a board with NO reporter that authored a CI-shaped kind is still exempt — the `none` path is
+      // decided by the reporter fact, not by which kind the prompt asks for.
+      const noneContract = derivePostMergeEvidenceContract({
+        declared: { provider: "none" },
+        repo: { factsReadable: true, remoteUrl: "http://192.168.12.60:6610/saneca.git", githubWorkflowFileCount: 0 },
+        observedAt: "2026-10-01T06:00:00.000Z",
+      });
+      expect(getPostMergeEvidenceGateStatuses(taskWith([GATE_ID]), irWithPostMergeGate(true), noneContract)).toEqual([
+        { gateId: GATE_ID, state: "not-applicable", notApplicableReason: "no-evidence-reporter" },
+      ]);
+    });
+
+    /*
+    FNXC:PostMergeEvidenceContract 2026-10-01-07:20 (RUFU-457):
+    RUFU-430's history cutoff is the one place a NEGATIVE verdict can be forgiven, so adding providers had to
+    leave both of its guards provably intact: the row is only excused while the contract is unreportable AND
+    derived AND the refusal predates the observation. A reporter board can never reach it — the ladder answers
+    `not-approved` there — while the exemption keeps working for a `none` board exactly as before, which is
+    what makes "adding a provider silently forgave a real refusal" impossible to ship by accident.
+    */
+    it.each([["onedev", onedevContract], ["gitlab", gitlabContract]] as const)(
+      "keeps a durable %s refusal at not-approved instead of laundering it through the history cutoff",
+      (_provider, contract) => {
+        const reviseBeforeObservation = {
+          ...taskWith([GATE_ID]),
+          workflowStepResults: [{
+            workflowStepId: GATE_ID,
+            phase: "post-merge",
+            status: "failed",
+            verdict: "REVISE",
+            completedAt: "2026-09-30T20:00:00.000Z",
+          }],
+        } as never;
+
+        expect(getPostMergeEvidenceGateStatuses(reviseBeforeObservation, irWithPostMergeGate(true), contract))
+          .toEqual([{ gateId: GATE_ID, state: "not-approved" }]);
+      },
+    );
+
+    it("still excuses a pre-observation refusal on a board with no reporter (RUFU-430 cutoff unchanged)", () => {
+      const derivedNone = derivePostMergeEvidenceContract({
+        repo: { factsReadable: true, remoteUrl: "https://git.example.org/x.git", githubWorkflowFileCount: 0 },
+        observedAt: "2026-10-01T06:00:00.000Z",
+      });
+      expect(derivedNone.reason).toBe("non-github-remote");
+      const reviseBeforeObservation = {
+        ...taskWith([GATE_ID]),
+        workflowStepResults: [{
+          workflowStepId: GATE_ID,
+          phase: "post-merge",
+          status: "failed",
+          verdict: "REVISE",
+          completedAt: "2026-09-30T20:00:00.000Z",
+        }],
+      } as never;
+
+      expect(getPostMergeEvidenceGateStatuses(reviseBeforeObservation, irWithPostMergeGate(true), derivedNone))
+        .toEqual([{ gateId: GATE_ID, state: "not-applicable", notApplicableReason: "verdict-precedes-contract" }]);
+    });
+
+    it("never lets an operator-declared 'none' launder a refusal that predates the declaration", () => {
+      const declaredNone = derivePostMergeEvidenceContract({
+        declared: { provider: "none" },
+        repo: { factsReadable: true, remoteUrl: "http://192.168.12.60:6610/saneca.git", githubWorkflowFileCount: 0 },
+        observedAt: "2026-10-01T06:00:00.000Z",
+      });
+      const reviseBeforeDeclaration = {
+        ...taskWith([GATE_ID]),
+        workflowStepResults: [{
+          workflowStepId: GATE_ID,
+          phase: "post-merge",
+          status: "failed",
+          verdict: "REVISE",
+          completedAt: "2026-09-30T20:00:00.000Z",
+        }],
+      } as never;
+
+      expect(getPostMergeEvidenceGateStatuses(reviseBeforeDeclaration, irWithPostMergeGate(true), declaredNone))
+        .toEqual([{ gateId: GATE_ID, state: "not-approved" }]);
+    });
   });
 
   it("refuses the automated fast-mode actor's waiver metadata on a post-merge gate", () => {
