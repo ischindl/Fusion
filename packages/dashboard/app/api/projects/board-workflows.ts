@@ -113,16 +113,24 @@ export function updateTaskCustomFields(
 }
 
 /** Fetch the multi-lane board metadata (U9). When the flag is OFF the server
- *  returns `{ flagEnabled: false }` and the board renders its legacy form. */
+ *  returns `{ flagEnabled: false }` and the board renders its legacy form.
+ *
+ *  FNXC:BoardWorkflows 2026-10-01-21:51: `partial` asks the server to answer for `taskIds` ONLY.
+ *  Without it the server unions the named ids onto a full current-task scan, so naming ids saved
+ *  nothing (14.2 s measured for a request naming ONE card, answering 241). Partial answers are
+ *  patches — see `mergePartialBoardWorkflows` — and are only valid together with `taskIds`, which is
+ *  what the server requires too.
+ */
 export function fetchBoardWorkflows(
   projectId?: string,
-  options?: FetchOptions & { taskIds?: readonly string[] },
+  options?: FetchOptions & { taskIds?: readonly string[]; partial?: boolean },
 ): Promise<BoardWorkflowsPayload> {
   const basePath = withProjectId("/tasks/board-workflows", projectId);
   const separator = basePath.includes("?") ? "&" : "?";
   const taskIds = [...new Set(options?.taskIds ?? [])].sort();
+  const partialSuffix = options?.partial && taskIds.length > 0 ? "&partial=1" : "";
   const path = taskIds.length > 0
-    ? `${basePath}${separator}taskIds=${encodeURIComponent(taskIds.join(","))}`
+    ? `${basePath}${separator}taskIds=${encodeURIComponent(taskIds.join(","))}${partialSuffix}`
     : basePath;
   return dedupe(path, () => api<BoardWorkflowsPayload>(path), options);
 }

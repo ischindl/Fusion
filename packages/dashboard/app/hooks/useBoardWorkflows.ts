@@ -77,12 +77,41 @@ export interface UseBoardWorkflowsResult {
    *  task missing from `taskWorkflowIds`, since task→workflow assignment emits no workflow SSE).
    *  Resolves when the fetch has SETTLED — it never rejects, since a failed fetch is
    *  non-authoritative — so a caller that must not overlap attempts can await it. */
-  refreshBoardWorkflows: (options?: { forceFresh?: boolean; taskIds?: readonly string[] }) => Promise<void>;
+  refreshBoardWorkflows: (options?: { forceFresh?: boolean; taskIds?: readonly string[]; partial?: boolean }) => Promise<void>;
   /**
    * Raw state setter, exposed so Board can apply optimistic task→workflow assignment.
    * Planning does not use this.
    */
   setBoardWorkflowsState: Dispatch<SetStateAction<{ projectId?: string; payload: BoardWorkflowsPayload } | null>>;
+}
+
+/*
+FNXC:BoardWorkflows 2026-10-01-21:51:
+A `?taskIds=…&partial=1` response answers ONLY the ids it was asked about, so its `workflows` array is the
+subset those ids reference — not the lane set the board is showing. Applying it like a normal response
+would delete lanes that still hold cards, which is exactly the failure that kept the named-id repair path
+asking for everything (and paying a whole-table scan for it: 14.2 s measured to answer 241 cards when ONE
+was requested).
+
+Merging is therefore the contract that makes a bounded request legal: lanes only ever grow, a card's
+mapping is only ever refreshed, and the answer to "which lanes exist?" stays with the last UNBOUNDED
+response. Existing lane order is preserved and new workflows append, so a partial answer can never
+reorder the board the operator is looking at.
+*/
+export function mergePartialBoardWorkflows(
+  current: BoardWorkflowsPayload,
+  partial: BoardWorkflowsPayload,
+): BoardWorkflowsPayload {
+  // A flag-off answer is authoritative about workflow mode being off; a flag-off current is not worth keeping.
+  if (!partial.flagEnabled || !current.flagEnabled) return partial;
+  const byId = new Map(current.workflows.map((workflow) => [workflow.id, workflow]));
+  for (const workflow of partial.workflows) byId.set(workflow.id, workflow);
+  return {
+    flagEnabled: true,
+    defaultWorkflowId: partial.defaultWorkflowId || current.defaultWorkflowId,
+    workflows: [...byId.values()],
+    taskWorkflowIds: { ...current.taskWorkflowIds, ...partial.taskWorkflowIds },
+  };
 }
 
 export function useBoardWorkflows(params: UseBoardWorkflowsParams): UseBoardWorkflowsResult {
@@ -206,6 +235,17 @@ export function useBoardWorkflows(params: UseBoardWorkflowsParams): UseBoardWork
   }, [projectId, readBoardWorkflowsCache]);
 
   /*
+  FNXC:BoardWorkflows 2026-10-01-21:51:
+  Read the held payload through a ref rather than the callback's dependency list: `refreshBoardWorkflows`
+  is a dependency of the SSE/focus resync effect, so making it change whenever the payload changes would
+  resubscribe the board's event stream on every metadata answer.
+  */
+  const boardWorkflowsHeldRef = useRef<{ projectId?: string; payload: BoardWorkflowsPayload } | null>(null);
+  useEffect(() => {
+    boardWorkflowsHeldRef.current = boardWorkflowsState;
+  }, [boardWorkflowsState]);
+
+  /*
   FNXC:WorkflowBoard 2026-07-29-00:00 (PR #2530 review — greptile):
   RETURNS its settle promise now (additive — existing callers ignore it). The
   unmapped-workflow repair needs to know when a forced refresh has SETTLED: on a slow
@@ -214,9 +254,15 @@ export function useBoardWorkflows(params: UseBoardWorkflowsParams): UseBoardWork
   promise never rejects — a failed fetch stays non-authoritative — so awaiting it is
   safe for every caller.
   */
-  const refreshBoardWorkflows = useCallback((options?: { forceFresh?: boolean; taskIds?: readonly string[] }): Promise<void> => {
+  const refreshBoardWorkflows = useCallback((options?: { forceFresh?: boolean; taskIds?: readonly string[]; partial?: boolean }): Promise<void> => {
     const seq = ++boardWorkflowsFetchSeqRef.current;
-    if (options?.forceFresh) {
+    /*
+    FNXC:BoardWorkflows 2026-10-01-21:51:
+    A partial answer MERGES into the held payload, so clearing the cache first would throw away precisely
+    the lane set the merge exists to preserve. Unbounded refreshes keep clearing (they answer the whole
+    board and must not inherit a stale mapping for a card that moved workflow).
+    */
+    if (options?.forceFresh && !options?.partial) {
       clearBoardWorkflowsCache(projectId);
     }
     const fetchPromise = options === undefined
@@ -224,10 +270,14 @@ export function useBoardWorkflows(params: UseBoardWorkflowsParams): UseBoardWork
       : fetchBoardWorkflows(projectId, options);
     return fetchPromise
       .then((payload) => {
-        if (seq === boardWorkflowsFetchSeqRef.current) {
-          setBoardWorkflowsState({ projectId, payload });
-          writeBoardWorkflowsCache(projectId, payload);
-        }
+        if (seq !== boardWorkflowsFetchSeqRef.current) return;
+        const held = boardWorkflowsHeldRef.current;
+        const next = options?.partial && held && held.projectId === projectId
+          ? mergePartialBoardWorkflows(held.payload, payload)
+          : payload;
+        boardWorkflowsHeldRef.current = { projectId, payload: next };
+        setBoardWorkflowsState({ projectId, payload: next });
+        writeBoardWorkflowsCache(projectId, next);
       })
       .catch(() => {
         // Fetch failures are non-authoritative: keep the current/cache-hydrated payload so the cleanup effect does not erase durable selection.
