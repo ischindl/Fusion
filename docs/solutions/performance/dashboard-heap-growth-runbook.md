@@ -177,6 +177,45 @@ repo is in the **Docker build stage** (Dockerfile builder tooling, not the runne
 Node flags are otherwise untouched. If a legitimate traffic increase needs more room, that decision belongs
 with a measured `source_bytes`/per-entry-size argument, recorded in the inventory — not with a flag bump.
 
+<!-- FNXC:DashboardHeapCeiling 2026-10-01-07:41:
+A production host runs its dashboard with NODE_OPTIONS=--max-old-space-size=16384 set in the launch
+environment, not in settings, scripts, compose, or a cgroup. It is therefore invisible to an audit that
+reads only those files, and it is silently lost when a process is started by hand: without the flag V8
+uses its 4.09 GB default, and 28 consecutive supervisor restarts were measured dying at 3.90-4.03 GB.
+The rule above is about the product not raising the ceiling as a fix; this note records an operator's
+availability decision on one host. Both statements have to stay true at once.
+
+FNXC:DashboardHeapCeiling 2026-10-01-07:41:
+Raising the ceiling in the launch environment does cost the diagnostics named above, so read the pressure
+signal against the real limit, not the default: `heap-ratio` fires at 75 % of 16.09 GB (about 12 GB),
+not of 4.09 GB. Measured history on that host: with the 16 GB ceiling in place RSS still grew
+3.0 -> 13.0 GB across 9.3 h (~1 GB/h), so the ceiling changes how long the process lives, never whether
+the retained set is real. Treat a raised ceiling as a reason to read `source_bytes` earlier, not as a
+reason to stop reading it.
+-->
+
+### A host that already runs with a raised ceiling
+
+One production host deliberately runs the dashboard with `NODE_OPTIONS=--max-old-space-size=16384` in the
+launch environment. That is an operator availability decision, not a fix for this class, and it does not
+repeal the rule above. Two consequences for anyone reading the numbers there:
+
+- **The 75 % pressure threshold resolves against the real limit.** On that host `retention pressure
+  (heap-ratio)` first becomes possible near 12 GB, so a quiet log there is not evidence of a healthy heap.
+  Sample `fusion_retention_heap_used_bytes` against `…_heap_limit_bytes`, which report the actual pair.
+- **Verify the ceiling before believing a death.** Node's default is 4.09 GB and the flag raises it to
+  16.09 GB, so deaths clustered just under 4 GB mean the flag was missing from the launch environment,
+  which is an operations fault and not this runbook's subject:
+
+  ```bash
+  tr '\0' '\n' < /proc/$(ss -ltnp | grep ':4040 ' | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)/environ \
+    | grep -E '^NODE_OPTIONS'   # empty = running on the 4.09 GB default
+  node -e 'console.log((require("v8").getHeapStatistics().heap_size_limit/1073741824).toFixed(2))'
+  ```
+
+  When restarting that host, carry the flag in the environment (so agent-session children inherit it) and
+  keep any diagnostic flag in `execArgv`, which is what the dashboard supervisor preserves across respawn.
+
 ## Recurrence guard (what CI now refuses)
 
 ```bash
