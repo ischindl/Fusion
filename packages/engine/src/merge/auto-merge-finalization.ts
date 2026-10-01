@@ -1,6 +1,7 @@
 import {
   getPostMergeFinalizeBlocker,
   getRequiredPostMergeEvidenceBlocker,
+  getRequiredPostMergeEvidenceDecision,
   planConfirmedMergeChecklistReconciliation,
   resolveWorkflowIrForTask,
   resolveCompleteColumn,
@@ -14,7 +15,6 @@ import {
  } from "@fusion/core";
 import {
   isTerminalPostMergeReseedRefusal,
-  resumeMissingPostMergeGate,
   type PostMergeGateReseedReason,
 } from "./post-merge-gate-reseed.js";
 import { resolvePostMergeEvidenceContract } from "./post-merge-evidence-contract.js";

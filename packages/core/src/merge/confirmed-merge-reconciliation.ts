@@ -12,6 +12,11 @@ export type ConfirmedMergeChecklistReconciliation = {
   reconciledWorkflowStepIds: string[];
 };
 
+export type RequiredPostMergeEvidenceDecision =
+  | { outcome: "finalizable" }
+  | { outcome: "resumable"; gateId: string }
+  | { outcome: "blocked"; gateId: string; reason: "duplicate" | "pending" | "failed" | "skipped" | "not-approved" };
+
 /*
 FNXC:ConfirmedMergeFinalization 2026-08-23-07:42:
 FN-180 requires a confirmed integration merge to finalize even when a concurrent
@@ -35,11 +40,10 @@ export function getPostMergeFinalizeBlocker(task: Pick<Task, "status" | "error">
 }
 
 /*
-FNXC:WorkflowPostMerge 2026-09-23-07:48:
-A confirmed merge does not erase an enabled gate-mode post-merge requirement. Finalizers and
-self-healing share this resolver-backed decision so absent, pending, skipped, or revised evidence
-keeps the task outside completion until the durable gate result approves it. Explicitly disabled
-and advisory groups retain their intentional non-blocking behavior.
+FNXC:PostMergeRecovery 2026-10-01-06:36:
+A confirmed landing is not completion when an enabled post-merge gate has no durable result. The
+shared decision exposes that one resumable state structurally, so recovery owners never infer it
+from display text; pending, duplicate, skipped, failed, and non-approved evidence remain blockers.
 */
 
 /** The enabled gate-mode post-merge groups a task must still satisfy, in IR order. */
@@ -181,24 +185,61 @@ export function getPostMergeEvidenceGateStatuses(
   });
 }
 
+/*
+FNXC:PostMergeRecovery 2026-10-01-09:01 (upstream FN-9442 adopted, RUFU-429 / RUFU-430 layered on top):
+Upstream made the gate decision the single loop and derived the blocker SENTENCE from it, which is better
+than the two independent loops the fork had: the blocker can no longer disagree with the recovery route.
+Their classification is kept verbatim — an absent row is resumable, while duplicate / pending / failed /
+skipped / non-approved rows all block, because each names a durable result the graph already produced.
+What is layered on top is the requirement side: which gates are required, and which of them this board can
+report at all, comes from `getPostMergeEvidenceGateStatuses` (delivery shape RUFU-429, evidence reporter
+RUFU-430). A gate whose requirement is `not-applicable` is neither resumable nor blocking; reading raw rows
+for it would resurrect the waiver-per-landing defect on every board that has no CI reporter.
+*/
+export async function getRequiredPostMergeEvidenceDecision(
+  store: WorkflowIrResolverStore,
+  task: Pick<Task, "id" | "enabledWorkflowSteps" | "workflowStepResults" | "workspaceWorktrees">,
+  contract?: PostMergeEvidenceContract,
+): Promise<RequiredPostMergeEvidenceDecision> {
+  const reader = store as Partial<WorkflowIrResolverStore>;
+  if (typeof reader.getTaskWorkflowSelection !== "function") return { outcome: "finalizable" };
+
+  const ir = await resolveWorkflowIrForTask(store, task.id);
+  for (const status of getPostMergeEvidenceGateStatuses(task, ir, contract)) {
+    // A requirement this board cannot satisfy is neither resumable nor blocking (RUFU-429 / RUFU-430).
+    if (status.state === "not-applicable") continue;
+    const gateId = status.gateId;
+    const results = (task.workflowStepResults ?? []).filter((entry) => entry.workflowStepId === gateId);
+    if (results.length === 0) return { outcome: "resumable", gateId };
+    if (results.length > 1) return { outcome: "blocked", gateId, reason: "duplicate" };
+    const [result] = results;
+    if (result.status === "pending") return { outcome: "blocked", gateId, reason: "pending" };
+    if (result.status === "failed") return { outcome: "blocked", gateId, reason: "failed" };
+    if (result.status === "skipped") return { outcome: "blocked", gateId, reason: "skipped" };
+    if (result.status !== "passed" || (result.verdict !== "APPROVE" && result.verdict !== "APPROVE_WITH_NOTES")) {
+      return { outcome: "blocked", gateId, reason: "not-approved" };
+    }
+  }
+  return { outcome: "finalizable" };
+}
+
+/*
+FNXC:PostMergeEvidence 2026-10-01-09:01:
+The blocker sentence is now DERIVED from the decision above, so the two can never disagree. `contract` is
+threaded because the sentence is the one string every lane compares and logs; a caller that resolved a
+per-board contract must pass it or the sentence describes the GitHub-Actions default, not this board.
+*/
 export async function getRequiredPostMergeEvidenceBlocker(
   store: WorkflowIrResolverStore,
   task: Pick<Task, "id" | "enabledWorkflowSteps" | "workflowStepResults" | "workspaceWorktrees">,
   contract?: PostMergeEvidenceContract,
 ): Promise<string | undefined> {
-  const reader = store as Partial<WorkflowIrResolverStore>;
-  if (typeof reader.getTaskWorkflowSelection !== "function") return undefined;
-
-  const ir = await resolveWorkflowIrForTask(store, task.id);
-  for (const { gateId, state } of getPostMergeEvidenceGateStatuses(task, ir, contract)) {
-    // A requirement this delivery shape cannot satisfy is not a blocker (RUFU-429).
-    if (state === "not-applicable") continue;
-    return state === "missing"
-      ? `required post-merge evidence gate '${gateId}' has not reported`
-      : `required post-merge evidence gate '${gateId}' is not approved`;
-  }
-  return undefined;
+  const decision = await getRequiredPostMergeEvidenceDecision(store, task, contract);
+  if (decision.outcome === "finalizable") return undefined;
+  if (decision.outcome === "resumable") return `required post-merge evidence gate '${decision.gateId}' has not reported`;
+  return `required post-merge evidence gate '${decision.gateId}' is not approved`;
 }
+
 
 export function planConfirmedMergeChecklistReconciliation(
   task: Pick<Task, "steps" | "workflowStepResults">,

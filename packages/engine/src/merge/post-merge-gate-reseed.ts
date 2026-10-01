@@ -132,8 +132,8 @@ export async function resumeMissingPostMergeGate(
   store: TaskStore,
   task: Task,
   options: {
-    source: "self-healing" | "auto-merge";
-    contract: PostMergeEvidenceContract;
+    source: "self-healing" | "auto-merge" | "manual-reconcile";
+    contract: PostMergeEvidenceContract | undefined;
   },
 ): Promise<PostMergeGateReseedResult> {
   if (typeof store.seedWorkspaceCodeReviewContinuationIfIdle !== "function"
@@ -173,8 +173,11 @@ export async function resumeMissingPostMergeGate(
   const irForGate = await resolveWorkflowIrForTaskWithProvenance(store, task.id);
   const statuses = getPostMergeEvidenceGateStatuses(task, irForGate.ir, options.contract);
   const missingGate = statuses.find((status) => status.state === "missing");
-  if (!statuses.some((status) => status.demandsCi) || !missingGate) {
-    return { outcome: "not-seeded", reason: "gate-not-resumable", workflowStepId: missingGate?.workflowStepId };
+  if (!missingGate) {
+    // Nothing is absent: no gate is required, the requirement is inapplicable on this board (RUFU-429
+    // delivery shape, RUFU-430 no-reporter), or a result already exists and stays authoritative. Seeding
+    // would overwrite a real verdict.
+    return { outcome: "not-seeded", reason: "gate-not-resumable" };
   }
 
   const decision = await getRequiredPostMergeEvidenceDecision(store, task, options.contract);

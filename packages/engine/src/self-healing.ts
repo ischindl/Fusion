@@ -40,7 +40,7 @@ import { PRE_MERGE_STEPS_NOT_RUN_BLOCKER, loadWorkspaceConfig, type TaskMoveLane
   /* FNXC:SelfHealing 2026-09-10-23:14 (merge origin/main 2026-09-10): upstream's stall-deadlock
      repetition logic calls these two in-review-stall helpers; the union import carries them. */
   getLatestFailedPreMergeStepProgressAt, resolveInReviewStallDeadlockThreshold,
-  detectDependencyCycle, detectSelfDefeatingDependency, /* FNXC:ZeroCommitWorkspaceDelivery 2026-09-30-20:43 (RUFU-451): the partial-land sweep builds and reads its own park sentence through ONE core fact, so a wording change can never silently orphan the waiver that lets a zero-commit card reach `done`. */ evaluateNoCommitsNoOpFinalize, hasZeroCommitDeliveryAuthorization, isWorkspacePartialLandParkError, WORKSPACE_PARTIAL_LAND_UNRECOVERABLE_PREFIX, WORKSPACE_PARTIAL_LAND_EVIDENCE_UNAVAILABLE_PREFIX, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getPostMergeFinalizeBlocker, getRequiredPostMergeEvidenceBlocker, planConfirmedMergeChecklistReconciliation, getTaskMergeBlocker, resolvePreMergeGateForTask,
+  detectDependencyCycle, detectSelfDefeatingDependency, /* FNXC:ZeroCommitWorkspaceDelivery 2026-09-30-20:43 (RUFU-451): the partial-land sweep builds and reads its own park sentence through ONE core fact, so a wording change can never silently orphan the waiver that lets a zero-commit card reach `done`. */ evaluateNoCommitsNoOpFinalize, hasZeroCommitDeliveryAuthorization, isWorkspacePartialLandParkError, WORKSPACE_PARTIAL_LAND_UNRECOVERABLE_PREFIX, WORKSPACE_PARTIAL_LAND_EVIDENCE_UNAVAILABLE_PREFIX, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getPostMergeFinalizeBlocker, getRequiredPostMergeEvidenceBlocker, getRequiredPostMergeEvidenceDecision, planConfirmedMergeChecklistReconciliation, getTaskMergeBlocker, resolvePreMergeGateForTask,
   /* FNXC:SelfHealing 2026-09-06-09:47 (merge origin/main dd808ed2c6): FN-295 collateral-archive restore helpers + stale-content predicate — the auto-merged sweep bodies call all three. */
   resolveCollateralArchivedReviewGate,
   COLLATERAL_ARCHIVED_REVIEW_GATE_DIAGNOSTIC,
@@ -212,7 +212,6 @@ import {
   type UnrunGateParkShape,
 } from "./merge/pre-merge-gate-reseed.js";
 import {
-  reseedUnrunPostMergeGate,
   type PostMergeGateReseedReason,
 } from "./merge/post-merge-gate-reseed.js";
 import { resolvePostMergeEvidenceContract } from "./merge/post-merge-evidence-contract.js";
@@ -1122,7 +1121,12 @@ export type LandedReviewReconcileResult =
   still `in-review`, and a reconciliation that reported success. Absent means nothing is outstanding.
   */
   | { outcome: "already-complete"; postMergeEvidence?: { pending: boolean; reason: PostMergeGateReseedReason } }
-  | { outcome: "post-merge-gate-reseeded"; workflowStepId: string; attempt: number }
+  /*
+  FNXC:PostMergeRecovery 2026-10-01-09:01: one name for "the graph was handed the missing gate back".
+  Upstream's CLI and this sweep's counter both consume `resumed`; `attempt` is ours (RUFU-306's bounded
+  reseed), so the operator can see which of the three seeds this is instead of guessing from the log.
+  */
+  | { outcome: "resumed"; gateId: string; attempt: number }
   | { outcome: "not-landed"; baseBranch: string }
   | { outcome: "raced"; reason: string }
   | { outcome: "ineligible"; reason: "workspace" | "not-in-review" | "paused" | "user-paused" | "executing" | "live-session" | "checkout-leased" | "auto-merge-off" | "no-branch-recorded" | "branch-present" | "branch-has-unlanded-content" | "foreign-ownership" | "workflow-approval-blocked" | "engine-paused" | "post-merge-evidence-pending" | "awaiting-finalization" };
@@ -3794,7 +3798,10 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           const evidenceBlocker = await getRequiredPostMergeEvidenceBlocker(
             this.store, task, await resolvePostMergeEvidenceContract(this.store, { auditHost: this.store }));
           if (evidenceBlocker) {
-            if (evidenceBlocker.includes("has not reported")) await resumeMissingPostMergeGate(this.store, task.id);
+            const contract = await resolvePostMergeEvidenceContract(this.store, { auditHost: this.store });
+            if ((await getRequiredPostMergeEvidenceDecision(this.store, task, contract)).outcome === "resumable") {
+              await resumeMissingPostMergeGate(this.store, task, { source: "self-healing", contract });
+            }
             log.debug(`${task.id} remains blocked pending post-merge evidence: ${evidenceBlocker}`);
             continue;
           }
@@ -3932,7 +3939,10 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           const evidenceBlocker = await getRequiredPostMergeEvidenceBlocker(
             this.store, task, await resolvePostMergeEvidenceContract(this.store, { auditHost: this.store }));
           if (evidenceBlocker) {
-            if (evidenceBlocker.includes("has not reported")) await resumeMissingPostMergeGate(this.store, task.id);
+            const contract = await resolvePostMergeEvidenceContract(this.store, { auditHost: this.store });
+            if ((await getRequiredPostMergeEvidenceDecision(this.store, task, contract)).outcome === "resumable") {
+              await resumeMissingPostMergeGate(this.store, task, { source: "self-healing", contract });
+            }
             log.debug(`${task.id} remains blocked pending post-merge evidence: ${evidenceBlocker}`);
             continue;
           }
@@ -4217,7 +4227,10 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
               const evidenceBlocker = await getRequiredPostMergeEvidenceBlocker(
                 this.store, live, await resolvePostMergeEvidenceContract(this.store, { auditHost: this.store }));
               if (evidenceBlocker) {
-                if (evidenceBlocker.includes("has not reported")) await resumeMissingPostMergeGate(this.store, live.id);
+                const liveContract = await resolvePostMergeEvidenceContract(this.store, { auditHost: this.store });
+                if ((await getRequiredPostMergeEvidenceDecision(this.store, live, liveContract)).outcome === "resumable") {
+                  await resumeMissingPostMergeGate(this.store, live, { source: "self-healing", contract: liveContract });
+                }
                 log.debug(`${live.id} remains blocked pending post-merge evidence: ${evidenceBlocker}`);
                 continue;
               }
@@ -17019,40 +17032,37 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
         ? { outcome: "already-complete" } : { outcome: "ineligible", reason: "not-in-review" };
     }
     if (task.mergeDetails?.mergeConfirmed) {
-      /* FNXC:PostMergeRecovery 2026-10-01-04:43: Landed is not complete while required evidence is absent. */
-      if (this.options.isTaskActive?.(task.id)) return { outcome: "ineligible", reason: "executing" };
-      const blocker = await getRequiredPostMergeEvidenceBlocker(this.store, task);
-      if (blocker?.includes("has not reported")) await resumeMissingPostMergeGate(this.store, task.id);
-      return { outcome: "ineligible", reason: blocker ? "post-merge-evidence-pending" : "awaiting-finalization" };
-    }
       /*
       FNXC:PostMergeRecovery 2026-10-01-09:01 (upstream FN-9442 adopted, RUFU-306 / RUFU-370 kept):
-      Landed proof is not the END of this decision. A merge-confirmed card still standing in the review
-      lane has one thing left: the gate-mode post-merge group the graph never visited. Upstream's resume
-      installs it in place through the idle continuation fence — no fabricated verdict, no lifecycle move —
-      and our reason taxonomy is what makes the outcome reportable: a terminal refusal names its cause and
-      hands the card to the operator, while an absent gate with nothing owed stays the honest
-      "already-complete". Upstream deleted this branch outright, which is exactly how RUFU-306's card
-      (DGXS-313 / ROZV-290) came to defer forever with nobody seeding the node.
+      Landed proof is not the END of this decision. A merge-confirmed card still standing in the review lane
+      has one thing left: the gate-mode post-merge group the graph never visited. Upstream's resume installs
+      it in place through the idle continuation fence — no fabricated verdict, no lifecycle move — and their
+      `resumed` outcome is the vocabulary every owner (this sweep, the CLI reconcile, the retry router) now
+      reports. What our side adds back on top of their call is the refusal taxonomy: a refusal that can
+      never produce evidence names its cause instead of deferring forever, and an absent gate with nothing
+      owed stays the honest "already-complete". Upstream deleted this branch in the manual/CLI path, which is
+      how RUFU-306's cards (DGXS-313, ROZV-290) deferred forever with nobody seeding the node; the prose
+      trigger (`blocker.includes("has not reported")`) is gone with it, so a pending or non-approved result
+      can no longer be re-seeded over.
       */
+      if (this.options.isTaskActive?.(task.id)) return { outcome: "ineligible", reason: "executing" };
       const contract = await resolvePostMergeEvidenceContract(this.store, { auditHost: this.store });
-      const reseed = await resumeMissingPostMergeGate(this.store, task, {
-        source: "self-healing",
-        contract,
-      });
+      const reseed = await resumeMissingPostMergeGate(this.store, task, { source: "manual-reconcile", contract });
       if (reseed.outcome === "seeded") {
         return {
-          outcome: "post-merge-gate-reseeded",
-          workflowStepId: reseed.workflowStepId ?? "post-merge-verification",
+          outcome: "resumed",
+          gateId: reseed.workflowStepId ?? "post-merge-verification",
           attempt: (reseed.priorAttemptCount ?? 0) + 1,
         };
       }
       // Absent means genuinely nothing is outstanding, which is the honest old shape; the field only
       // appears when something real is still owed, so callers never see `pending: false` noise.
       if (reseed.reason === "no-merge-proof" || reseed.reason === "gate-not-resumable") {
-        return { outcome: "already-complete" };
+        const blocker = await getRequiredPostMergeEvidenceBlocker(this.store, task, contract);
+        return blocker ? { outcome: "ineligible", reason: "post-merge-evidence-pending" } : { outcome: "already-complete" };
       }
       return { outcome: "already-complete", postMergeEvidence: { pending: true, reason: reseed.reason } };
+    }
     /*
     FNXC:LandedReviewReconciliation 2026-09-20-03:09:
     External landing proves content reachability, not workflow approval. Reconciliation must retain
@@ -17060,11 +17070,13 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
     failed, or missing review verdict.
     */
     const requiredPreMergeStepIds = await resolveNoOpFinalizeGateIds(this.store, task);
-    const approvalBlocker = getTaskHardMergeBlocker(task, {
-      reviewColumns,
-      requiredPreMergeStepIds,
-    });
-    if (approvalBlocker) return { outcome: "ineligible", reason: "workflow-approval-blocked" };
+    if (!task.mergeDetails?.mergeConfirmed) {
+      const approvalBlocker = getTaskHardMergeBlocker(task, {
+        reviewColumns,
+        requiredPreMergeStepIds,
+      });
+      if (approvalBlocker) return { outcome: "ineligible", reason: "workflow-approval-blocked" };
+    }
     if (task.paused) return { outcome: "ineligible", reason: "paused" };
     if (task.userPaused) return { outcome: "ineligible", reason: "user-paused" };
     const livePaths = activeSessionRegistry.pathsForTask(task.id).filter((path) => activeSessionRegistry.isPathActive(path));
@@ -17076,7 +17088,29 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
     const graceMs = (settings.taskStuckTimeoutMs ?? STALE_ACTIVE_BRANCH_EXECUTION_GRACE_MS) * PHANTOM_EXECUTOR_BINDING_AGE_MULTIPLIER;
     const leaseAge = task.checkoutLeaseRenewedAt ? Date.now() - Date.parse(task.checkoutLeaseRenewedAt) : Number.POSITIVE_INFINITY;
     if (task.checkoutRunId && Number.isFinite(leaseAge) && leaseAge >= 0 && leaseAge < graceMs) return { outcome: "ineligible", reason: "checkout-leased" };
-    if (options.requireAutoMergeEligible && !allowsAutoMergeProcessing(task, settings)) return { outcome: "ineligible", reason: "auto-merge-off" };
+    if ((options.requireAutoMergeEligible && !allowsAutoMergeProcessing(task, settings)) || task.autoMerge === false) return { outcome: "ineligible", reason: "auto-merge-off" };
+    if (task.mergeDetails?.mergeConfirmed) {
+      /*
+      FNXC:PostMergeRecovery 2026-10-01-06:36:
+      Manual reconciliation reports the graph-owned recovery truth: it may resume only absent required
+      evidence after the same pause, hold, liveness, lease, and auto-merge fences as every other owner.
+      */
+      const contract = await resolvePostMergeEvidenceContract(this.store, { auditHost: this.store });
+      const decision = await getRequiredPostMergeEvidenceDecision(this.store, task, contract);
+      if (decision.outcome === "resumable") {
+        const resumed = await resumeMissingPostMergeGate(this.store, task, { source: "manual-reconcile", contract });
+        if (resumed.outcome === "seeded") {
+          return {
+            outcome: "resumed",
+            gateId: resumed.workflowStepId ?? decision.gateId,
+            attempt: (resumed.priorAttemptCount ?? 0) + 1,
+          };
+        }
+        // A refusal is not a success: the card keeps its park and the caller reports why.
+        return { outcome: "raced", reason: `post-merge-resume-${resumed.reason}` };
+      }
+      return { outcome: "ineligible", reason: decision.outcome === "blocked" ? "post-merge-evidence-pending" : "awaiting-finalization" };
+    }
     const branch = task.branch;
     if (!branch) return { outcome: "ineligible", reason: "no-branch-recorded" };
     const mergeTarget = await this.resolveSelfHealingMergeTarget(task, settings, "reconcile-absent-branch");
@@ -17220,7 +17254,7 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             event. Classifying it as `reconcile-absent-branch-unproven` would make the sweep look like
             it is failing on cards it actually repaired.
             */
-            else if (result.outcome !== "already-complete" && result.outcome !== "post-merge-gate-reseeded") {
+            else if (result.outcome !== "already-complete" && result.outcome !== "resumed") {
               const reason = result.outcome === "not-landed" ? "not-landed" : result.reason;
               const key = `${task.id}:${reason}`;
               if (!this.absentBranchUnprovenAuditKeys.has(key)) {

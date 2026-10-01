@@ -1463,11 +1463,18 @@ export async function runTaskReconcile(id: string, projectName?: string) {
     FNXC:MergeRebuild0919 2026-09-19-21:45:
     Both lines added this function independently; the bodies are identical apart from comment vintage and the
     three-way `live` test, so canonical's newer (2026-09-17) wording wins here and ours contributed nothing beyond it.
+    FNXC:PostMergeRecovery 2026-10-01-07:12 (FN-9442):
+    A successful manual reconciliation can resume a missing required post-merge gate instead of
+    completing the card. Report that recovery as success so the CLI does not misclassify it as an error.
     */
     const manager = new SelfHealingManager(context.store, { rootDir: context.projectPath });
     const result = await manager.reconcileLandedReviewTask(id, { source: "manual", requireAutoMergeEligible: false });
     if (result.outcome === "reconciled") {
       console.log(`Reconciled ${id}: landed ${result.sha} via ${result.strategy} on ${result.baseBranch}; card moved to complete.`);
+      return;
+    }
+    if (result.outcome === "resumed") {
+      console.log(`Resumed ${id}: required post-merge evidence gate ${result.gateId} was re-seeded.`);
       return;
     }
     if (result.outcome === "already-complete") {
@@ -1484,10 +1491,6 @@ export async function runTaskReconcile(id: string, projectName?: string) {
         return;
       }
       console.log(`${id} is already complete; no reconciliation was needed.`);
-      return;
-    }
-    if (result.outcome === "post-merge-gate-reseeded") {
-      console.log(`${id}: merge confirmed and landed — re-seeded the unreported post-merge evidence gate '${result.workflowStepId}' (attempt ${result.attempt}); the card finalizes once that gate reports.`);
       return;
     }
     if (result.outcome === "not-landed") {
