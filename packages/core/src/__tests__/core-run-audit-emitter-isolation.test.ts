@@ -20,6 +20,11 @@ const awaitedClassifications = {
 /*
  * FN-295 (2026-09-04): removing task archiving deleted the transactional audit writer in
  * task-store/async/async-comments-attachments.ts, so it is no longer a transactional boundary.
+ *
+ * FNXC:TombstonePurgeAudit 2026-09-24-03:35 (RUFU-283):
+ * task-store/task-id-integrity.ts joined the list because the resurrection tombstone purge now
+ * writes `task:row-purged-for-resurrection` inside its parent-delete transaction, which is what
+ * makes the purge fail closed (`TombstonePurgeUnauditedError` keeps the tombstone intact).
  */
 const transactionalSourceBoundaries = [
   "task-store/moves.ts", "task-store/symbol-locks.ts", "task-store/async/async-merge-coordination.ts",
@@ -27,6 +32,7 @@ const transactionalSourceBoundaries = [
   "task-store/task-artifacts-ops.ts", "task-store/task-lifecycle-consumer-registry.ts",
   "task-store/async/async-workflow-workitems.ts",
   "task-store/archive-lifecycle-2.ts",
+  "task-store/task-id-integrity.ts",
 ] as const;
 
 const files = [

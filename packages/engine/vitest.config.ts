@@ -74,12 +74,21 @@ export default defineConfig({
           stay on their root aliases and only @fusion/core is overridden here.
 
           FNXC:MergeGatePerformance 2026-08-04-15:44:
-          FN-8783 confirms W32's engine-core lane has 22 exact policy files.
+          FN-8783 measured W32's engine-core lane at 22 policy files; that count is a
+          point-in-time observation, not a contract.
           The current core bundle remains the only evidence-backed import-path
           optimization: it is rebuilt every run, retains mock interception, and
           avoids the measured-slower engine-graph bundle designs below. Keep pool,
-          worker budgeting, file parallelism, and this alias intact; membership is
-          pinned in scripts/__tests__/engine-vitest-gate-policy.test.mjs.
+          worker budgeting, file parallelism, and this alias intact.
+
+          FNXC:MergeGatePolicy 2026-09-08-11:49:
+          RUFU-197 inverted this note's closing pointer, which said membership was
+          "pinned in scripts/__tests__/engine-vitest-gate-policy.test.mjs". That guard holds
+          no copy of the list any more: the `engine-core` `include` array below is the single
+          membership authority and the guard derives from it, so retiring or admitting a lane
+          file is a one-place edit here. The guard still pins pool, worker budgeting, file
+          parallelism, the fsModuleCache path, and this alias -- the non-membership invariants
+          this lane depends on -- but it asserts no file count.
 
           FNXC:EngineTests 2026-07-08-04:50:
           FN-7669: the @fusion/core alias now points at a PRE-BUNDLED single ESM
@@ -183,13 +192,22 @@ export default defineConfig({
           experimental: {
             /*
             FNXC:MergeGatePerformance 2026-08-04-16:09:
-            FN-8783 retains all 22 forked files but enables Vitest's validated
-            filesystem transform cache only for engine-core. Fork isolation still
-            evaluates every test and preserves mocks; caching immutable Vite
-            transforms avoids repeating import/setup compilation on warm gate runs.
-            Keep this cache project-scoped so broad engine lanes cannot inherit
-            gate-specific artifacts, and let Vitest invalidate entries from its
-            transform dependency graph rather than maintaining an unsafe file list.
+            FN-8783 keeps every curated forked file in the lane but enables
+            Vitest's validated filesystem transform cache only for engine-core.
+            Fork isolation still evaluates every test and preserves mocks; caching
+            immutable Vite transforms avoids repeating import/setup compilation on
+            warm gate runs.
+
+            FNXC:MergeGatePolicy 2026-09-08-11:52:
+            RUFU-197 removed FN-8783's file count from this note (it read "all 22
+            forked files", a measurement that went stale the first time the
+            deletion ratchet retired a lane file). The constraint is that the cache
+            must not change WHICH files run, and that is property-based, not
+            numeric: the allow-list below stays the membership authority and the
+            policy validator derives it. Keep this cache project-scoped so broad
+            engine lanes cannot inherit gate-specific artifacts, and let Vitest
+            invalidate entries from its transform dependency graph rather than
+            maintaining an unsafe file list.
             */
             fsModuleCache: true,
             fsModuleCachePath: resolve(__dirname, "node_modules/.engine-core-fs-module-cache"),
@@ -310,6 +328,7 @@ export default defineConfig({
             "src/__tests__/triage-preflight.test.ts",
             "src/__tests__/mission-scheduler.test.ts",
             "src/__tests__/heartbeat-monitor.test.ts",
+            "src/__tests__/review-lane-dispatch-sweep.test.ts",
             "src/__tests__/workflow-node-handlers.test.ts",
             "src/__tests__/workflow-policy-ownership-map.test.ts",
           ],
@@ -330,6 +349,21 @@ export default defineConfig({
           name: "engine-default",
           include: ["src/**/*.test.ts"],
           exclude: [
+            /*
+            FNXC:EngineTests 2026-08-22-21:57 (RUFU-156):
+            EVICTED the RUFU-072 quarantine of
+            src/notification/__tests__/task-wedge-notification.test.ts — quarantined
+            2026-08-11 (run-time OOM: superlinear RSS 64G->120G in ~90s, host halted
+            4+ times), deletion-ratchet deadline 2026-08-25, early eviction
+            CEO-approved 2026-08-21 on the audit findings. Rescue was infeasible on
+            this host (~3G free RAM, full swap; re-run after a watchdog trip is
+            forbidden; no deterministic code root cause). The test file is deleted
+            but remains in git history for a later root-cause rescue; the production
+            module notification/task-wedge-notification.ts is untouched. Upstream CI
+            runs the test on an empty ledger — the quarantine was local-machine
+            state only and was never carried into any PR.
+            */
+            /* FNXC:WedgeNotificationFlake 2026-09-06-13:10: deletion ratchet executed — file deleted at its 2026-09-06 deadline (quarantined 2026-08-23, no rescue). */
             "src/__tests__/reliability-interactions/**/*.test.ts",
             // FNXC:PipelineSmoke 2026-08-23-14:52: FN-182's whole-pipeline fixture is opt-in, never a default or gate test.
             "src/__tests__/pipeline-smoke/**/*.test.ts",

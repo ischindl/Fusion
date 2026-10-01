@@ -25,7 +25,7 @@ vi.mock("../../api", () => ({
 }));
 
 vi.mock("../../hooks/useConfirm", () => ({
-  useConfirm: () => ({ confirm: vi.fn() }),
+  useConfirm: () => ({ confirmWithCheckbox: async (options?: { checkbox?: { defaultChecked?: boolean } }) => ({ choice: "cancel" as const, checkboxValue: options?.checkbox?.defaultChecked ?? false }), confirm: vi.fn() }),
 }));
 
 vi.mock("../../hooks/useBadgeWebSocket", () => ({
@@ -87,8 +87,10 @@ function ViewSwitchHarness() {
     onQuickCreate: vi.fn(async () => ({}) as any),
     onNewTask: vi.fn(),
     autoMerge: true,
-    onToggleAutoMerge: vi.fn(),
     globalPaused: false,
+    showWorktreeGrouping: false,
+    planAutoApproveEnabled: false,
+    onTogglePlanAutoApprove: vi.fn(),
   };
 
   const listProps = {
@@ -96,7 +98,7 @@ function ViewSwitchHarness() {
     onMoveTask: vi.fn(async () => ({}) as any),
     onRetryTask: vi.fn(async () => ({}) as any),
     onDeleteTask: vi.fn(async () => ({}) as any),
-    onMergeTask: vi.fn(async () => ({ merged: false })),
+    onMergeTask: vi.fn(async (..._args: unknown[]) => ({ merged: false }) as never),
     onOpenDetail: vi.fn(),
     addToast: vi.fn(),
     onNewTask: vi.fn(),

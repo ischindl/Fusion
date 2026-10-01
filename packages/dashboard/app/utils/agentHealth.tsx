@@ -1,8 +1,10 @@
 import type { JSX } from "react";
 import { Bot, Heart, Activity, Pause } from "lucide-react";
+import { describeHeartbeatThrottle } from "@fusion/core/heartbeat-recovery-state";
 import type { Agent } from "../api";
 import { resolveHeartbeatIntervalMs } from "./heartbeatIntervals";
 import { elapsedSinceMs } from "./dataFreshness";
+import { PAUSE_REASON_LABELS } from "./stallReason";
 
 // Heartbeat scheduling depends on both state and `runtimeConfig.enabled`.
 // Durable agents with heartbeat disabled should render distinctly from healthy
@@ -24,6 +26,31 @@ const HEARTBEAT_GRACE_MULTIPLIER = 4;
  * from an engine pause/resume cycle.
  */
 const MIN_HEARTBEAT_STALENESS_MS = 5 * 60_000;
+
+/*
+FNXC:FleetVerdict 2026-09-02-05:18 (RUFU-176):
+`AgentHealthStatus.label` is a plain string, so the RUFU-176 fleet-verdict classifier (which buckets an agent as
+"no heartbeat" by label membership) would otherwise duplicate these literals and drift silently from the producer.
+Exported so both surfaces read the SAME strings; rendering is byte-identical — only the literals moved here.
+*/
+export const AGENT_HEALTH_LABEL_HEARTBEAT_DISABLED = "Heartbeat Disabled";
+export const AGENT_HEALTH_LABEL_UNRESPONSIVE = "Unresponsive";
+/*
+FNXC:AgentHealthPill 2026-09-02-22:35 (RUFU-177):
+The pill module has no `t`, but the approval-wait wording must MATCH the shipped catalog
+`agents.stallReason.awaiting-approval` ("Waiting for approval", rendered via t in AgentsView's stall
+column) rather than invent a new phrase, so the agent surfaces and the pill agree on the words. The
+stall RESOLVER's chip keeps its own `stall.agent-approval.badgeLabel` ("Awaiting approval") — different
+namespace, different surface; the pill mirrors the catalog label the Fleet/Agents views already say.
+*/
+export const AGENT_HEALTH_LABEL_AWAITING_APPROVAL = "Waiting for approval";
+/*
+FNXC:ProviderThrottleIsTransient 2026-09-30-14:35 (RUFU-286):
+The label the throttle branch prints. Exported for the same reason the two literals above are: the
+fleet-verdict classifier buckets by label membership, so the words must be ONE constant shared by
+producer and consumer rather than a copy that can drift.
+*/
+export const AGENT_HEALTH_LABEL_RATE_LIMITED = "Rate limited";
 
 /** Shape of the health status returned by getAgentHealthStatus */
 export interface AgentHealthStatus {
@@ -47,6 +74,7 @@ type AgentHealthInput = Pick<
   | "name"
   | "role"
   | "taskId"
+  | "pendingApprovalCount"
 >;
 
 /**
@@ -59,7 +87,12 @@ type AgentHealthInput = Pick<
  * and agents that were explicitly configured both get consistent treatment,
  * differing only by their scheduled cadence.
  */
-function getStalenessThresholdMs(
+/**
+ * Exported for RUFU-176's org-node heartbeat countdown: the card must call the SAME threshold its own health label
+ * uses, so "overdue" on the countdown and "Unresponsive" on the health glyph are one fact, not two that can drift.
+ * FNXC:FleetVerdict 2026-09-02-06:25 (RUFU-176).
+ */
+export function getStalenessThresholdMs(
   runtimeConfig?: Record<string, unknown>,
   heartbeatMultiplier: number = 1,
 ): number {
@@ -78,8 +111,14 @@ function getStalenessThresholdMs(
   return Math.max(effectiveIntervalMs * HEARTBEAT_GRACE_MULTIPLIER, MIN_HEARTBEAT_STALENESS_MS);
 }
 
-/** Format milliseconds into a human-readable duration string (e.g. "5m", "1h 20m", "2h"). */
-function formatDuration(ms: number): string {
+/**
+ * Format milliseconds into a human-readable duration string (e.g. "5m", "1h 20m", "2h").
+ *
+ * Exported for RUFU-176's org-node heartbeat countdown, which sits in the same card as the `reason` string built here
+ * ("No heartbeat for 2h (threshold: 20m)"); one formatter keeps the two durations on a card reading identically.
+ * FNXC:FleetVerdict 2026-09-02-06:30 (RUFU-176).
+ */
+export function formatDuration(ms: number): string {
   const totalMinutes = Math.floor(ms / 60_000);
   if (totalMinutes < 1) return "<1m";
   const hours = Math.floor(totalMinutes / 60);
@@ -140,6 +179,39 @@ function getHeartbeatRepairMetadata(agent: AgentHealthInput): {
   };
 }
 
+/*
+FNXC:AgentHealthPill 2026-09-02-22:35 (RUFU-177):
+A pending permission request was the one wait the health pill could not see. The engine's approval gate
+parks an agent with `pauseReason: "awaiting-approval"`, and the approval COUNT is a separate read-path
+enrichment (`withPendingApprovalCounts` on the agent API routes). Before RUFU-177 the pill ignored the
+count entirely: an agent blocked on the gate printed "Running" while its state still said running, or
+"Unresponsive"/"Idle" once its heartbeat aged out WHILE it sat waiting, and the request itself only
+appeared in the approvals inbox. Same false-flowing defect RUFU-177 fixes on cards: the fact existed,
+the surface never looked at it.
+
+Precedence ladder (spec Step 4): `Error` > named non-approval pause > AWAITING APPROVAL > heartbeat
+verdicts > `Running`/`Healthy`. The approval state deliberately OUTRANKS the heartbeat-unresponsive
+branches: an agent parked at the gate stops heartbeating, so heartbeat staleness is the SYMPTOM of the
+wait, not a competing diagnosis — reporting "Unresponsive" for it told operators to go kill a process
+that was merely waiting for a click. The trade is recorded honestly: approval rows can outlive a dead
+session, so a stale count can mask a dead agent's "Unresponsive" until the row clears; the spec accepts
+that because the count is what the operator can act on, and the org-chart activity line reads the same
+ladder. `pauseReason: "awaiting-approval"` is translated in the paused branch to the SAME label, so a
+park and a count can never disagree on the pill.
+
+Deliberate non-effect: `resolveFleetVerdictBucket` takes `state` first, so a running agent keeps its
+`active` Fleet strip bucket whatever this label says, and every agent that CAN reach this site is
+already `waitingHuman` there by `pendingApprovalCount`/`pauseReason`. The strip's four counts cannot shift.
+*/
+function awaitingApprovalHealthStatus(): AgentHealthStatus {
+  return {
+    label: AGENT_HEALTH_LABEL_AWAITING_APPROVAL,
+    icon: <Pause size={14} />,
+    color: "var(--state-paused-text)",
+    stateDerived: false,
+  };
+}
+
 export function getAgentHealthStatus(
   agent: AgentHealthInput,
   heartbeatMultiplier: number = 1,
@@ -148,6 +220,41 @@ export function getAgentHealthStatus(
   const { state, lastHeartbeatAt, lastError, pauseReason, runtimeConfig } = agent;
   const isTaskWorker = isTaskWorkerAgent(agent);
   const isHeartbeatEnabled = isTaskWorker || runtimeConfig?.enabled !== false;
+
+  /*
+  FNXC:ProviderThrottleIsTransient 2026-09-30-14:35 (RUFU-286):
+  A provider throttle left a pill printing the raw upstream body — for the reference incident that
+  meant `429 rate_limit_error … unknown model …`, which reads as "the model name is wrong, go fix a
+  credential" while the heartbeat timer was already holding a bounded re-probe. `lastError` is an
+  upstream wrapper body, not a Fusion judgment, so it may only headline when NOTHING better is known.
+  A live cooldown therefore outranks it: the label says the provider rate limited us and the engine
+  will re-probe, and the raw body is demoted to `reason` (tooltip evidence) instead of the headline.
+
+  Ranked ABOVE the raw-body print but BELOW a permission decision: a pending approval is the only one of
+  the two a person can act on, and the cooldown keeps running underneath either way. That has a consequence
+  the first draft of this branch got wrong — it excluded approvals and let the case fall through to the
+  `state === "error"` print below, so the agent with BOTH a throttle and an approval was still shown the
+  raw `unknown model` body, which is the exact misdiagnosis this branch exists to remove. The approval
+  therefore has to be answered here, by delegating to the shared approval status, not by exclusion. Note
+  this is an intersection-only change: `state: "error"` outranking the approval count is the pre-existing
+  documented contract and stays untouched for every non-throttled agent.
+  */
+  const throttle = describeHeartbeatThrottle(agent);
+  if (throttle?.kind === "throttle-cooldown") {
+    if ((agent.pendingApprovalCount ?? 0) > 0 || pauseReason === "awaiting-approval") {
+      return awaitingApprovalHealthStatus();
+    }
+    return {
+      label: AGENT_HEALTH_LABEL_RATE_LIMITED,
+      icon: <Activity size={14} />,
+      color: "var(--state-error-text)",
+      stateDerived: false,
+      reason: [
+        `Provider rate limited — automatic retry scheduled for ${throttle.retryingAt} (attempt ${throttle.throttleStreak}).`,
+        lastError ? `Last provider error: ${lastError}` : null,
+      ].filter(Boolean).join(" "),
+    };
+  }
 
   // Explicit non-running states always take precedence.
   if (state === "error") {
@@ -160,7 +267,25 @@ export function getAgentHealthStatus(
   }
 
   if (state === "paused") {
-    const label = pauseReason ? `Paused: ${pauseReason}` : "Paused";
+    /*
+    FNXC:StallReason 2026-09-01-18:47 (RUFU-175):
+    A paused agent used to print its raw pauseReason CODE in the health pill ("Paused:
+    error-retry-exhausted") — the same unmapped-code leak the stall resolver fixes on cards. Route a
+    known code through the SHARED pause-reason table so the pill says the same human words every other
+    surface says ("Automatic retries exhausted"); the table phrases are complete labels, so they are
+    used whole rather than re-prefixed with "Paused:". An unrecognized code keeps the old
+    `Paused: <raw>` fallback so an engine reason the table does not list yet still shows verbatim
+    instead of silently degrading to "Paused", and a pause with no reason stays "Paused".
+    */
+    const knownLabel: string | undefined = pauseReason ? PAUSE_REASON_LABELS[pauseReason] : undefined;
+    let label = pauseReason ? (knownLabel ?? `Paused: ${pauseReason}`) : "Paused";
+    /*
+    FNXC:AgentHealthPill 2026-09-02-22:35 (RUFU-177): completion criterion — an approval-PARKED agent
+    (state paused, pauseReason awaiting-approval) must read "Waiting for approval" on every pill surface,
+    byte-identical to what the pendingApprovalCount branch prints below. The stall resolver's chip keeps
+    its own "Awaiting approval" wording; the pill mirrors the catalog label the Fleet/Agents views say.
+    */
+    if (pauseReason === "awaiting-approval") label = AGENT_HEALTH_LABEL_AWAITING_APPROVAL;
     return {
       label,
       icon: <Pause size={14} />,
@@ -168,6 +293,13 @@ export function getAgentHealthStatus(
       stateDerived: !pauseReason,
     };
   }
+
+  /*
+  FNXC:AgentHealthPill 2026-09-02-22:35 (RUFU-177): the count signal sits right after the explicit-state
+  branches — see the ladder above: only Error and a named non-approval pause outrank it; every heartbeat
+  verdict and Running/Healthy below it lose to a pending approval.
+  */
+  if ((agent.pendingApprovalCount ?? 0) > 0) return awaitingApprovalHealthStatus();
 
   if (state === "running" || (isTaskWorker && state === "active")) {
     return {
@@ -180,7 +312,7 @@ export function getAgentHealthStatus(
 
   if (!isHeartbeatEnabled) {
     return {
-      label: "Heartbeat Disabled",
+      label: AGENT_HEALTH_LABEL_HEARTBEAT_DISABLED,
       icon: <Pause size={14} />,
       color: "var(--state-paused-text)",
       stateDerived: false,
@@ -203,7 +335,7 @@ export function getAgentHealthStatus(
     const lastHeartbeatMs = Date.parse(lastHeartbeatAt);
     if (Number.isFinite(repairedMs) && Number.isFinite(lastHeartbeatMs) && lastHeartbeatMs < repairedMs) {
       return {
-        label: "Unresponsive",
+        label: AGENT_HEALTH_LABEL_UNRESPONSIVE,
         icon: <Activity size={14} />,
         color: "var(--state-error-text)",
         stateDerived: false,
@@ -228,7 +360,7 @@ export function getAgentHealthStatus(
   */
   if (!Number.isFinite(lastHeartbeat)) {
     return {
-      label: "Unresponsive",
+      label: AGENT_HEALTH_LABEL_UNRESPONSIVE,
       icon: <Activity size={14} />,
       color: "var(--state-error-text)",
       stateDerived: false,
@@ -250,7 +382,7 @@ export function getAgentHealthStatus(
   if (elapsed > stalenessThresholdMs) {
     const reason = `No heartbeat for ${formatDuration(elapsed)} (threshold: ${formatDuration(stalenessThresholdMs)})`;
     return {
-      label: "Unresponsive",
+      label: AGENT_HEALTH_LABEL_UNRESPONSIVE,
       icon: <Activity size={14} />,
       color: "var(--state-error-text)",
       stateDerived: false,

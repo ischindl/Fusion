@@ -69,7 +69,7 @@ describe("usePrChecksStream resume instrumentation", () => {
     const { fetchPrChecks } = await import("../../api");
     const mockFetchPrChecks = vi.mocked(fetchPrChecks);
     mockFetchPrChecks.mockResolvedValue({
-      checks: [{ name: "ci", state: "success" }],
+      checks: [{ name: "ci", required: true, state: "success" }],
       rollup: "pending",
       lastCheckedAt: "",
     });

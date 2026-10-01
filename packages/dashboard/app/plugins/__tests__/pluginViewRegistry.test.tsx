@@ -73,7 +73,7 @@ describe("pluginViewRegistry", () => {
     }));
     registerPluginView("plugin-a", "main", View);
 
-    render(<>{PluginDashboardViewHost({ viewId: "plugin:plugin-a:main", context: { projectId: "proj-1", tasks: [], workflowSteps: [], openTaskDetail: () => {} } })}</>);
+    render(<>{PluginDashboardViewHost({ viewId: "plugin:plugin-a:main", context: { projectId: "proj-1", tasks: [], workflowSteps: [], openTaskDetail: () => {}, openFile: () => {} } })}</>);
 
     expect(await screen.findByText("proj-1")).toBeInTheDocument();
   });

@@ -1,22 +1,29 @@
+/*
+FNXC:MergeRebuild0919 2026-09-19-21:45:
+Both lines added this file with the same three cases; only the mock surface differs, so the merge is a union keyed to
+what the MERGED `../task.js` actually imports. Ours owns the `@fusion/engine` list (canonical still names
+`installBaselineArchiveWorktreeDisposer`, whose call site this line's archive retirement removed), and canonical's
+extra module stubs (`createLocalStore` on project-context, `../../output.js`, `../node.js`) stay so module load can
+never reach real output formatting or node-lookup code.
+*/
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const reconcile = vi.hoisted(() => vi.fn());
 const close = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock("@fusion/core", () => ({
-  COLUMNS: [],
-  COLUMN_LABELS: {},
-  MAX_TASK_MESSAGE_LENGTH: 10_000,
-  TaskStore: vi.fn(),
-  CentralCore: vi.fn(),
+  COLUMNS: [], COLUMN_LABELS: {}, MAX_TASK_MESSAGE_LENGTH: 10_000,
+  TaskStore: vi.fn(), CentralCore: vi.fn(),
 }));
 vi.mock("@fusion/engine", () => ({
   SelfHealingManager: class {
     reconcileLandedReviewTask = reconcile;
   },
+  admitTaskToWip: vi.fn(),
+  isFirstPlanningToWipAdmission: vi.fn(),
   isInReviewMissingWorktreeSessionStartFailure: vi.fn(),
+  planTaskWorktreePath: vi.fn(),
   isFailedNoVerdictPreMergeReviewResult: vi.fn(() => false),
-  installBaselineArchiveWorktreeDisposer: vi.fn(),
   runAiMerge: vi.fn(),
   landWorkspaceTask: vi.fn(),
   withWorkspaceMergeDispatchLease: vi.fn(),
@@ -28,42 +35,24 @@ vi.mock("../../project-context.js", () => ({
   createLocalStore: vi.fn(),
   closeProjectStore: close,
 }));
-vi.mock("../../lock-retry.js", () => ({
-  retryOnLock: async (body: () => unknown) => body(),
-  LockRetryExhaustedError: class extends Error {},
-}));
-vi.mock("../../output.js", () => ({
-  promptOutputStream: vi.fn(),
-  result: vi.fn(),
-}));
+vi.mock("../../lock-retry.js", () => ({ retryOnLock: async (body: () => unknown) => body(), LockRetryExhaustedError: class extends Error {} }));
+vi.mock("../../output.js", () => ({ promptOutputStream: vi.fn(), result: vi.fn() }));
 vi.mock("../node.js", () => ({ findNodeByNameOrId: vi.fn() }));
 vi.mock("@fusion/dashboard", () => ({}));
 vi.mock("@fusion/dashboard/planning", () => ({}));
 vi.mock("@fusion/core/gh-cli", () => ({}));
 vi.mock("node:readline/promises", () => ({ createInterface: vi.fn() }));
-vi.mock("node:fs", () => ({
-  watchFile: vi.fn(),
-  unwatchFile: vi.fn(),
-  statSync: vi.fn(),
-  existsSync: vi.fn(),
-  readFileSync: vi.fn(),
-}));
+vi.mock("node:fs", () => ({ watchFile: vi.fn(), unwatchFile: vi.fn(), statSync: vi.fn(), existsSync: vi.fn(), readFileSync: vi.fn() }));
 
 import { runTaskReconcile } from "../task.js";
 
 describe("runTaskReconcile", () => {
   const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
   const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
-  const exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
-    throw new Error(`exit:${code}`);
-  }) as never);
+  const exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => { throw new Error(`exit:${code}`); }) as never);
 
   afterEach(() => {
-    reconcile.mockReset();
-    close.mockClear();
-    log.mockClear();
-    error.mockClear();
-    exit.mockClear();
+    reconcile.mockReset(); close.mockClear(); log.mockClear(); error.mockClear(); exit.mockClear();
   });
 
   it("uses the shared manual reconciliation fence and reports landing", async () => {

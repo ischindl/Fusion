@@ -24,8 +24,8 @@ now live in the import-free leaf `transient-error-patterns.ts` so the merge clas
 one definition of "transient" without inheriting this module's logger chain (FN-8004).
 Re-exported here so every existing importer of this module keeps working unchanged.
 */
-import { isSessionContentionError, isTransientAuthCredentialError, isTransientError } from "./transient-error-patterns.js";
-export { TRANSIENT_ERROR_PATTERNS, SESSION_CONTENTION_PATTERNS, isSessionContentionError, isTransientAuthCredentialError, isTransientError } from "./transient-error-patterns.js";
+import { isProviderThrottleEnvelopeError, isSessionContentionError, isTransientAuthCredentialError, isTransientError } from "./transient-error-patterns.js";
+export { TRANSIENT_ERROR_PATTERNS, SESSION_CONTENTION_PATTERNS, isSessionContentionError, isTransientAuthCredentialError, isTransientError, isProviderThrottleEnvelopeError } from "./transient-error-patterns.js";
 
 
 /*
@@ -306,6 +306,22 @@ export function isOperatorActionableAgentError(errorMessage: string): boolean {
   Transient OAuth token-rotation 401s must NOT be treated as operator-actionable even though the provider message contains "credentials": no operator action fixes them (the refreshed token already exists on disk) and marking them actionable parks durable agents "error-unrecoverable" instead of letting bounded heartbeat error recovery retry. Scope/API-key failures are excluded inside the classifier and still fall through to the actionable patterns below.
   */
   if (isTransientAuthCredentialError(errorMessage)) {
+    return false;
+  }
+  /*
+  FNXC:ProviderThrottleIsTransient 2026-09-30-13:10 (RUFU-286):
+  A time-boxed provider throttle (429 rate_limit_error / rate_limit_exceeded envelope, including pi's
+  fallback wrapper whose tail carries one) must NOT be operator-actionable either — same shape as the
+  auth-rotation gate above. Before this gate the pi wrapper's literal `unknown model` text matched
+  OPERATOR_ACTIONABLE_AGENT_ERROR_PATTERNS below, so a throttle that self-clears in minutes parked the
+  agent paused/"error-unrecoverable" with no scheduled re-probe, and the FN-7884 startup sweep refuses
+  to clear that park class. Heartbeat recovery now owns the wait: the run-failure branch arms a bounded
+  exponential cooldown whose horizon rides the heartbeat timer's next tick (see agent-heartbeat.ts
+  RUFU-286 notes) — this lane never had any wait owner at all before, and no `pauseReason` enum value
+  was added for the throttle state. Hard usage caps (insufficient_quota/billing/plan-access) are
+  excluded inside the predicate and stay operator-actionable below.
+  */
+  if (isProviderThrottleEnvelopeError(errorMessage)) {
     return false;
   }
   return (

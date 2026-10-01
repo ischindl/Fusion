@@ -56,6 +56,7 @@ function props(overrides: Partial<MainContentProps> = {}): MainContentProps {
     taskView: "mailbox",
     modalManager: { openPlanningWithSession: vi.fn() } as unknown as MainContentProps["modalManager"],
     handleChangeTaskView: vi.fn(),
+    openHistory: vi.fn(),
     refreshAppSettings: vi.fn(async () => undefined),
     addToast: vi.fn(),
     currentProject: { id: "project-1", name: "Project 1" } as MainContentProps["currentProject"],
@@ -130,7 +131,7 @@ describe("MainContent roadmap native structures", () => {
       taskView: "plugin:fusion-plugin-roadmap:roadmaps",
       pluginDashboardViews: [{
         pluginId: "fusion-plugin-roadmap",
-        view: { viewId: "roadmaps", label: "Roadmaps", placement: "primary" },
+        view: { viewId: "roadmaps", label: "Roadmaps", placement: "primary", componentPath: "app/views/RoadmapsView.tsx" },
       }],
     })} />);
 
@@ -155,7 +156,7 @@ describe("MainContent roadmap native structures", () => {
       taskView: "plugin:fusion-plugin-roadmap:roadmaps",
       pluginDashboardViews: [{
         pluginId: "fusion-plugin-roadmap",
-        view: { viewId: "roadmaps", label: "Roadmaps", placement: "primary" },
+        view: { viewId: "roadmaps", label: "Roadmaps", placement: "primary", componentPath: "app/views/RoadmapsView.tsx" },
       }],
     })} />);
 

@@ -1,5 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { MeshClusterSnapshot } from "@fusion/core";
 import * as api from "../../api";
 
 const { recordResumeEvent } = vi.hoisted(() => ({
@@ -21,7 +22,7 @@ async function flushPromises(): Promise<void> {
   await Promise.resolve();
 }
 
-function meshPayload(nodeId: string) {
+function meshPayload(nodeId: string): MeshClusterSnapshot {
   return {
     collectedAt: "2026-01-01T00:00:00.000Z",
     sourceNodeId: "local",

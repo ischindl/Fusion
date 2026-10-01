@@ -42,6 +42,8 @@ Fusion currently has two related but distinct memory systems:
 | `MEMORY_WORKING_PATH` | `.fusion/memory/MEMORY.md` | `memory-insights.ts` |
 | `MEMORY_INSIGHTS_PATH` | `.fusion/memory/memory-insights.md` | `memory-insights.ts` |
 | `MEMORY_AUDIT_PATH` | `.fusion/memory/memory-audit.md` | `memory-insights.ts` |
+| `MEMORY_LONG_TERM_BYTE_BUDGET` | `32768` (32 KiB) | `packages/engine/src/memory/memory-budget.ts` |
+| `MEMORY_LONG_TERM_MAINTENANCE_MAX_BYTES` | `8388608` (8 MiB) | `packages/engine/src/memory/memory-budget.ts` |
 
 ### 1.3 Exported Surface (Post-Migration)
 
@@ -93,6 +95,20 @@ Runtime backend resolution uses an internal `MemorySettings` shape with `memoryB
 4. Backend selection key is **`memoryBackendType`**.
 5. Prompt instruction context is backend-aware (`file` path hint vs `qmd`/`readonly` behavior).
 6. Dashboard `/api/memory` routes are backend-aware; layered file routes validate requests against allowed memory workspace files.
+7. The long-term `MEMORY.md` byte budget is **code-owned**, not a settings knob. `MEMORY_LONG_TERM_BYTE_BUDGET`
+   is the single number both the write path (`fn_memory_append`) and the maintenance path
+   (`reconcile-long-term-memory-budget`) compare against, so the append report and the sweep can never
+   disagree about what "over budget" means. An append that breaches it still succeeds: the confirmation
+   message reports measured bytes, budget, percentage, and entry count instead of refusing to record the
+   lesson. Daily-layer files keep their original unmeasured confirmation wording, because the budget is a
+   long-term working-set bound and daily files are rolling dated logs.
+8. Long-term memory maintenance is **default-on and loss-free**. It runs from self-healing (startup
+   recovery plus maintenance batch 1) rather than from the optional `Memory Keeper` runtime lane, which
+   built-in provisioning seeds disabled. It collapses only `## ` sections that are exact duplicates,
+   counts same-heading/different-body conflicts instead of choosing between them, and refuses every write
+   unless a memory backup covering that file succeeded in the same pass after the bytes were read.
+   Within-budget files are never rewritten. See `docs/run-audit.md` → *Long-term memory budget
+   maintenance* for the `memory:long-term-*` rows this emits.
 
 ---
 
@@ -178,6 +194,7 @@ export class MemoryBackendError extends Error {
 | `FileMemoryBackend` | `file` | Reads/writes canonical `.fusion/memory/MEMORY.md`; supports `exists/get/search`; atomic writes via temp file rename |
 | `QmdMemoryBackend` | `qmd` | Delegates read/write to file backend; schedules qmd refresh; uses qmd search first, local layered search fallback |
 | `ReadOnlyMemoryBackend` | `readonly` | Read-only; `write()` throws `MemoryBackendError("READ_ONLY", ...)`; `search()` returns empty |
+| `StashMemoryBackend` | `stash` | Read/search/write via the Stash REST API (Bearer auth, injectable transport seam); keyword scoring per §3.3.2; opt-in vector search per §3.3.1 |
 
 #### 3.3.1 Stash vector/semantic search (RUFU-126)
 
@@ -213,9 +230,13 @@ only after *definitive* no-vector responses — 404 (unpatched server), 405,
 cached, so the vector path retries on the next call.
 
 **Score-scale caveat (D5).** Vector `score` = response `rank` (cosine
-similarity, 0..1; missing/non-finite → 1.0); the keyword path keeps
-positional scores (2.0 first hit, 1.0 thereafter). The two scales differ —
-client-side min-score filters must treat score scales per-backend.
+similarity, 0..1; missing/non-finite → 1.0). The keyword path no longer
+keeps positional scores when the server supplies rank/score: it maps to a
+comparable 0..1 scale (see §3.3.2), so keyword and vector hits share one
+scale and the RUFU-120 single-threshold min-score filter can rank both.
+The residual scale difference is the positional fallback (2.0 first hit,
+1.0 thereafter) only — exercised by undeployed servers that supply neither
+field.
 
 **Upstream dependency.** The endpoint ships in a local Stash branch
 (`fusion-rufu-126-sessions-semantic-search`, plus `sentence-transformers` in
@@ -225,6 +246,41 @@ back transparently (once negatively cached per process). Operator rollout
 steps (image rebuild with the embedder, backfill, verification, flag
 enablement) are checklist form in
 `docs/research/stash-vector-search-evaluation.md`.
+
+#### 3.3.2 Stash keyword-search scoring (RUFU-133)
+
+`StashMemoryBackend.search` maps every keyword hit to a **comparable 0..1
+relevance score** — the D5 companion to the §3.3.1 vector path, so the
+RUFU-120 client-side min-score filter can rank weak keyword hits against
+weak vector hits (cosine similarity, 0..1) with one threshold.
+
+**Three-tier mapping.** Per hit, in precedence order:
+
+1. **Server score** — the response item's `score` field when present and
+   usable (finite number, or a numeric string), clamped into [0,1]. A
+   server score beats `rank` on the same item.
+2. **Rank normalized** — otherwise the raw FTS `rank` (Stash `ts_rank`)
+   divided by the max usable rank across the WHOLE result set (top hit =
+   exactly 1.0; ts_rank is only meaningful relative to the result set),
+   clamped into [0,1].
+3. **Positional fallback** — otherwise the pre-RUFU-133 positional scores
+   (2.0 first hit, 1.0 thereafter), for servers that supply neither field.
+
+`maxRank == 0` (all ranks zero or missing) forces tier 3 with no
+divide-by-zero; out-of-range values are clamped into [0,1] at every tier.
+
+**Undeployed server shape is byte-identical.** Until the score field ships
+in a deployed Stash image, responses carry neither `rank` nor `score` and
+tier 3 applies — behavior is byte-identical to the pre-RUFU-133 positional
+mapping (pinned by the RUFU-121 URL-contract and RUFU-133 test blocks in
+`packages/core/src/memory/__tests__/memory-backend-stash.test.ts`).
+
+**Upstream dependency.** The additive `score` field (normalized ts_rank,
+response-model-only — no DB column, no migration) ships on the local Stash
+branch `fusion-rufu-133-keyword-score` — **not yet merged or deployed**
+(handoff note: RUFU-133 task doc `stash-handoff`). Once an image built from
+that branch is deployed, `search()` automatically uses tiers 1/2 — no
+Fusion change required.
 
 ### 3.4 Registry Contract (Function-Based)
 

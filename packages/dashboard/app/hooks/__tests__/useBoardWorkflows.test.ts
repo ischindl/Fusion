@@ -1,12 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { Mock } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { useBoardWorkflows } from "../useBoardWorkflows";
+import type { SseSubscription } from "../../sse-bus";
 import type { BoardWorkflowsPayload } from "../../api";
 import { ALL_WORKFLOWS_BOARD_VIEW_ID, readBoardWorkflowViewSelection } from "../../utils/boardWorkflowSelection";
 import {
   __test_clearWorkflowSettingValuesRevisions,
   getWorkflowSettingValuesRevision,
 } from "../../utils/workflowSettingValuesEvents";
+import { __test_clearBoardWorkflowSelectionListeners } from "../../utils/boardWorkflowSelectionEvents";
 
 function makePayload(overrides: Partial<BoardWorkflowsPayload> = {}): BoardWorkflowsPayload {
   return {
@@ -23,24 +26,26 @@ function makePayload(overrides: Partial<BoardWorkflowsPayload> = {}): BoardWorkf
 
 describe("useBoardWorkflows", () => {
   let subscribeHandlers: Record<string, (payload?: unknown) => void>;
-  let unsubscribe: ReturnType<typeof vi.fn>;
+  let unsubscribe: Mock<() => void>;
 
   beforeEach(() => {
     subscribeHandlers = {};
-    unsubscribe = vi.fn();
+    unsubscribe = vi.fn<() => void>();
     localStorage.clear();
     sessionStorage.clear();
     __test_clearWorkflowSettingValuesRevisions();
+    /* FN-483 : la notification inter-consommateurs est un module partagé ; repartir d'un registre vide entre cas. */
+    __test_clearBoardWorkflowSelectionListeners();
   });
 
   function makeDeps(fetchImpl: () => Promise<BoardWorkflowsPayload>) {
     return {
       fetchBoardWorkflows: vi.fn(fetchImpl),
-      subscribeSse: vi.fn((_url: string, sub: { events?: Record<string, (p?: unknown) => void> }) => {
-        subscribeHandlers = { ...(sub.events ?? {}) };
+      subscribeSse: vi.fn((_url: string, sub?: SseSubscription) => {
+        subscribeHandlers = { ...(sub?.events ?? {}) } as Record<string, (payload?: unknown) => void>;
         return unsubscribe;
       }),
-      readBoardWorkflowsCache: vi.fn(() => null),
+      readBoardWorkflowsCache: vi.fn((..._args: unknown[]) => null as BoardWorkflowsPayload | null),
       writeBoardWorkflowsCache: vi.fn(),
       /*
       FNXC:OriginWorkflowSelection 2026-07-26-19:40:
@@ -112,7 +117,8 @@ describe("useBoardWorkflows", () => {
       workflows: [{ id: "wf-c", name: "Gamma", columns: [] }],
     });
     const deps = makeDeps(() => new Promise<BoardWorkflowsPayload>(() => {}));
-    deps.readBoardWorkflowsCache.mockImplementation((projectId?: string) => {
+    deps.readBoardWorkflowsCache.mockImplementation((..._args: unknown[]) => {
+      const projectId = _args[0] as string | undefined;
       if (projectId === "p1") return projectOnePayload;
       if (projectId === "p2") return projectTwoPayload;
       return null;
@@ -304,21 +310,81 @@ describe("useBoardWorkflows", () => {
     expect(localStorage.getItem("kb:p1:kb-dashboard-board-workflow-selection")).toBe("wf-b");
   });
 
-  it("keeps selected workflow state isolated per hook consumer", async () => {
+  /*
+  FNXC:BoardWorkflowSelection 2026-09-16-23:24:
+  FN-483 remplace « keeps selected workflow state isolated per hook consumer ». Ce contrat d'isolation par instance
+  montée est devenu faux POUR UN MÊME PROJET : un seul sélecteur contextuel subsiste par en-tête, donc une List ou un
+  Graph conservés doivent suivre le choix explicite de l'opérateur. L'isolation entre projets — et avec le contexte
+  sans projet — reste garantie, et les dépendances (fetch/SSE/cache) restent strictement par instance.
+  */
+  it("partage le choix explicite entre consommateurs du même projet et l'isole des autres projets", async () => {
     const depsOne = makeDeps(() => Promise.resolve(makePayload()));
     const depsTwo = makeDeps(() => Promise.resolve(makePayload()));
+    const depsOther = makeDeps(() => Promise.resolve(makePayload()));
+    const depsNoProject = makeDeps(() => Promise.resolve(makePayload()));
 
     const first = renderHook(() => useBoardWorkflows({ projectId: "p1", ...depsOne }));
     const second = renderHook(() => useBoardWorkflows({ projectId: "p1", ...depsTwo }));
+    const other = renderHook(() => useBoardWorkflows({ projectId: "q1", ...depsOther }));
+    const noProject = renderHook(() => useBoardWorkflows({ ...depsNoProject }));
 
     await waitFor(() => expect(first.result.current.selectedWorkflow?.id).toBe("wf-a"));
     await waitFor(() => expect(second.result.current.selectedWorkflow?.id).toBe("wf-a"));
+    await waitFor(() => expect(other.result.current.selectedWorkflow?.id).toBe("wf-a"));
+    await waitFor(() => expect(noProject.result.current.selectedWorkflow?.id).toBe("wf-a"));
 
     act(() => { first.result.current.setSelectedWorkflowId("wf-b"); });
 
     await waitFor(() => expect(first.result.current.selectedWorkflow?.id).toBe("wf-b"));
-    expect(second.result.current.selectedWorkflow?.id).toBe("wf-a");
-    expect(second.result.current.selectedWorkflowId).toBe("wf-a");
+    await waitFor(() => expect(second.result.current.selectedWorkflow?.id).toBe("wf-b"));
+    expect(second.result.current.selectedWorkflowId).toBe("wf-b");
+    /* Contrôle négatif : un autre projet et le contexte sans projet ne bougent pas. */
+    expect(other.result.current.selectedWorkflow?.id).toBe("wf-a");
+    expect(noProject.result.current.selectedWorkflow?.id).toBe("wf-a");
+
+    /* Un choix produit AU PLUS UN miroir serveur, pas un par abonné. */
+    await waitFor(() => expect(depsOne.persistBoardWorkflowSelection).toHaveBeenCalledTimes(1));
+    expect(depsTwo.persistBoardWorkflowSelection).not.toHaveBeenCalled();
+    expect(depsOther.persistBoardWorkflowSelection).not.toHaveBeenCalled();
+
+    /* Le démontage retire l'écoute : le récepteur démonté ne peut plus être mis à jour. */
+    second.unmount();
+    act(() => { first.result.current.setSelectedWorkflowId("wf-a"); });
+    await waitFor(() => expect(first.result.current.selectedWorkflow?.id).toBe("wf-a"));
+    expect(second.result.current.selectedWorkflow?.id).toBe("wf-b");
+  });
+
+  /* FN-483 : la vue agrégée suit le même chemin partagé et n'est jamais envoyée au miroir serveur. */
+  it("partage la vue agrégée sans l'envoyer au miroir serveur", async () => {
+    const depsOne = makeDeps(() => Promise.resolve(makePayload()));
+    const depsTwo = makeDeps(() => Promise.resolve(makePayload()));
+
+    const first = renderHook(() => useBoardWorkflows({ projectId: "p-all", ...depsOne }));
+    const second = renderHook(() => useBoardWorkflows({ projectId: "p-all", ...depsTwo }));
+    await waitFor(() => expect(second.result.current.selectedWorkflow?.id).toBe("wf-a"));
+
+    act(() => { first.result.current.setSelectedWorkflowId(ALL_WORKFLOWS_BOARD_VIEW_ID); });
+
+    await waitFor(() => expect(second.result.current.isAllWorkflowsSelected).toBe(true));
+    expect(first.result.current.isAllWorkflowsSelected).toBe(true);
+    expect(localStorage.getItem("kb:p-all:kb-dashboard-board-workflow-selection")).toBe(ALL_WORKFLOWS_BOARD_VIEW_ID);
+    await waitFor(() => expect(depsOne.persistBoardWorkflowSelection).toHaveBeenCalledWith(null, "p-all"));
+    expect(depsTwo.persistBoardWorkflowSelection).not.toHaveBeenCalled();
+  });
+
+  /*
+  FN-483 : l'agrégat doit survivre à un projet ne proposant qu'un seul workflow sélectionnable — c'est la capacité
+  que Board portait dans son état local avant d'emprunter ce chemin commun.
+  */
+  it("conserve la vue agrégée avec un unique workflow sélectionnable", async () => {
+    localStorage.setItem("kb:p-single:kb-dashboard-board-workflow-selection", ALL_WORKFLOWS_BOARD_VIEW_ID);
+    const deps = makeDeps(() => Promise.resolve(makePayload({ workflows: [makePayload().workflows[0]] })));
+
+    const { result } = renderHook(() => useBoardWorkflows({ projectId: "p-single", ...deps }));
+
+    await waitFor(() => expect(result.current.boardWorkflows).not.toBeNull());
+    expect(result.current.isAllWorkflowsSelected).toBe(true);
+    expect(localStorage.getItem("kb:p-single:kb-dashboard-board-workflow-selection")).toBe(ALL_WORKFLOWS_BOARD_VIEW_ID);
   });
 
   it("unmount removes visibility/focus listeners and unsubscribes from SSE", async () => {
@@ -359,21 +425,23 @@ describe("useBoardWorkflows — board lane server mirror", () => {
     sessionStorage.clear();
   });
 
-  function makeMirrorDeps(persist: ReturnType<typeof vi.fn>) {
+  type PersistFn = (workflowId: string | null, projectId?: string) => Promise<{ workflowId: string | null }>;
+
+  function makeMirrorDeps(persist: Mock<PersistFn>) {
     return {
       fetchBoardWorkflows: vi.fn(() => Promise.resolve(makePayload())),
-      subscribeSse: vi.fn((_url: string, sub: { events?: Record<string, (p?: unknown) => void> }) => {
-        subscribeHandlers = { ...(sub.events ?? {}) };
+      subscribeSse: vi.fn((_url: string, sub?: SseSubscription) => {
+        subscribeHandlers = { ...(sub?.events ?? {}) } as Record<string, (payload?: unknown) => void>;
         return vi.fn();
       }),
-      readBoardWorkflowsCache: vi.fn(() => null),
+      readBoardWorkflowsCache: vi.fn((..._args: unknown[]) => null as BoardWorkflowsPayload | null),
       writeBoardWorkflowsCache: vi.fn(),
       persistBoardWorkflowSelection: persist,
     };
   }
 
   it("mirrors a user lane change to the server alongside the local write", async () => {
-    const persist = vi.fn(() => Promise.resolve({ workflowId: "wf-b" }));
+    const persist = vi.fn<PersistFn>(() => Promise.resolve({ workflowId: "wf-b" }));
     const { result } = renderHook(() => useBoardWorkflows({ projectId: "p1", ...makeMirrorDeps(persist) }));
     await waitFor(() => expect(result.current.workflowOptions.length).toBe(2));
 
@@ -386,7 +454,7 @@ describe("useBoardWorkflows — board lane server mirror", () => {
   // The aggregate view is a Board-only sentinel, never a real workflow id. Mirroring it
   // would hand task creation "__all_workflows__" as a workflow to resolve.
   it("clears the mirror instead of persisting the all-workflows sentinel", async () => {
-    const persist = vi.fn(() => Promise.resolve({ workflowId: null }));
+    const persist = vi.fn<PersistFn>(() => Promise.resolve({ workflowId: null }));
     const { result } = renderHook(() => useBoardWorkflows({ projectId: "p1", ...makeMirrorDeps(persist) }));
     await waitFor(() => expect(result.current.workflowOptions.length).toBe(2));
 
@@ -398,7 +466,7 @@ describe("useBoardWorkflows — board lane server mirror", () => {
   });
 
   it("clears the mirror when the selection is cleared", async () => {
-    const persist = vi.fn(() => Promise.resolve({ workflowId: null }));
+    const persist = vi.fn<PersistFn>(() => Promise.resolve({ workflowId: null }));
     const { result } = renderHook(() => useBoardWorkflows({ projectId: "p1", ...makeMirrorDeps(persist) }));
     await waitFor(() => expect(result.current.workflowOptions.length).toBe(2));
 
@@ -410,7 +478,7 @@ describe("useBoardWorkflows — board lane server mirror", () => {
   // localStorage already holds the authoritative selection; a mirror failure is a
   // best-effort miss, not a reason to revert or surface an error to the operator.
   it("keeps the lane switch when the mirror request rejects", async () => {
-    const persist = vi.fn(() => Promise.reject(new Error("offline")));
+    const persist = vi.fn<PersistFn>(() => Promise.reject(new Error("offline")));
     const { result } = renderHook(() => useBoardWorkflows({ projectId: "p1", ...makeMirrorDeps(persist) }));
     await waitFor(() => expect(result.current.workflowOptions.length).toBe(2));
 
@@ -422,7 +490,7 @@ describe("useBoardWorkflows — board lane server mirror", () => {
   });
 
   it("does not mirror on mount, before the operator has chosen a lane", async () => {
-    const persist = vi.fn(() => Promise.resolve({ workflowId: null }));
+    const persist = vi.fn<PersistFn>(() => Promise.resolve({ workflowId: null }));
     const { result } = renderHook(() => useBoardWorkflows({ projectId: "p1", ...makeMirrorDeps(persist) }));
     await waitFor(() => expect(result.current.workflowOptions.length).toBe(2));
 

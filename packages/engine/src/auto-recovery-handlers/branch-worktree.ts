@@ -8,7 +8,16 @@ import {
   inspectBareBranchCollision,
   inspectBranchConflict,
   reanchorBranchToBase,
+  taskWorktreeCheckoutIsClean,
 } from "../execution/branch-conflicts.js";
+import { recoverForeignOnlyContamination } from "../recovery/foreign-only-contamination.js";
+/*
+FNXC:BranchConflictRecovery 2026-09-13-02:50:
+RUFU-231: every branch-conflict pause — including this handler's irreducible pause — must
+advance the persisted `recoveryRetryCount`, or the dispatcher's `retryCount >= maxRetries`
+budget (Mission defect 4) can never reach exhaustion and the refusal loops unbounded.
+*/
+import { branchConflictRecoveryCounterPatch, planBranchConflictRecoveryPass } from "../recovery/branch-conflict-recovery-accounting.js";
 import type { AutoRecoveryContext, AutoRecoveryDecision, AutoRecoveryFailure } from "../healing/auto-recovery.js";
 import { activeSessionRegistry } from "../agents/active-session-registry.js";
 import { resolveIntegrationBranch } from "../merge/integration-branch.js";
@@ -329,7 +338,17 @@ export class BranchWorktreeAutoRecoveryHandler {
     }
   }
 
-  private async emitIrreduciblePause(task: Task, failure: AutoRecoveryFailure, reason: string, evidence: Record<string, unknown>): Promise<void> {
+  private async emitIrreduciblePause(ctx: AutoRecoveryContext, task: Task, failure: AutoRecoveryFailure, reason: string, evidence: Record<string, unknown>): Promise<void> {
+    /*
+    FNXC:BranchConflictRecovery 2026-09-13-02:50:
+    RUFU-231: persist this pass on the card's bounded recovery budget (mode "off" opt-out
+    respected) so repeated irreducible pauses advance toward the terminal park instead of
+    re-offering recovery forever.
+    */
+    const pass = planBranchConflictRecoveryPass(task, ctx.settings);
+    if (pass.counted) {
+      await this.deps.taskStore.updateTask(task.id, branchConflictRecoveryCounterPatch(pass)).catch(() => undefined);
+    }
     await this.deps.runAudit.database({
       type: "branch-worktree:irreducible-pause",
       target: task.id,
@@ -370,7 +389,7 @@ export class BranchWorktreeAutoRecoveryHandler {
     a bounded unused engine sibling for the next acquisition.
     */
     if (failure.evidence?.collisionKind === "foreign-unmerged" && !isFusionDeletableBranch(ctx.task, branchName)) {
-      await this.emitIrreduciblePause(ctx.task, failure, "operator-branch-preserved", { branchName });
+      await this.emitIrreduciblePause(ctx, ctx.task, failure, "operator-branch-preserved", { branchName });
       return;
     }
     if (failure.evidence?.collisionKind === "foreign-unmerged" && isFusionDeletableBranch(ctx.task, branchName)) {
@@ -393,7 +412,7 @@ export class BranchWorktreeAutoRecoveryHandler {
           }
         }
         if (!replacementBranch) {
-          await this.emitIrreduciblePause(ctx.task, failure, "fresh-sibling-exhausted", {
+          await this.emitIrreduciblePause(ctx, ctx.task, failure, "fresh-sibling-exhausted", {
             branchName,
             tipSha: bare.tipSha,
             inspectionKind: bare.kind,
@@ -427,11 +446,32 @@ export class BranchWorktreeAutoRecoveryHandler {
     });
 
     if (inspection.kind === "stale-resolved" || inspection.kind === "fully-subsumed" || inspection.kind === "tip-already-merged") {
-      await this.requeueAfterRecovery(ctx.task, failure, inspection.kind, {
-        branchExists: await this.hasBranchRef(repoDir, branchName),
-        worktreePresent: existsSync(conflictingWorktreePath),
-        tipSha: "tipSha" in inspection ? inspection.tipSha : undefined,
+      /*
+      FNXC:BranchBaseIdentity 2026-09-13-03:10:
+      RUFU-231 (never release an unproven checkout): the requeue below clears the task's
+      worktree/branch pointers. When landedness was proven ONLY against the remote-tracking
+      identity (the zero-own-commit wedge shape), a still-live dirty checkout must not be
+      pointer-cleared — it parks unrecoverably and stays under the reclaim sweep's
+      preserve-then-release arm, whose holds are bounded by the recovery-retry accounting.
+      */
+      const unprovenRelease = inspection.kind === "tip-already-merged"
+        && inspection.landedVia === "remote-tracking"
+        && existsSync(conflictingWorktreePath)
+        && !await taskWorktreeCheckoutIsClean(conflictingWorktreePath);
+      if (!unprovenRelease) {
+        await this.requeueAfterRecovery(ctx.task, failure, inspection.kind, {
+          branchExists: await this.hasBranchRef(repoDir, branchName),
+          worktreePresent: existsSync(conflictingWorktreePath),
+          tipSha: "tipSha" in inspection ? inspection.tipSha : undefined,
+          inspectionKind: inspection.kind,
+        });
+        return;
+      }
+      await this.emitIrreduciblePause(ctx, ctx.task, failure, "remote-landed-checkout-unproven", {
+        branchName,
+        conflictingWorktreePath,
         inspectionKind: inspection.kind,
+        landedOn: inspection.kind === "tip-already-merged" ? inspection.integrationRef : undefined,
       });
       return;
     }
@@ -576,7 +616,23 @@ export class BranchWorktreeAutoRecoveryHandler {
 
     const branchExists = await this.hasBranchRef(repoDir, branchName);
     const tipSha = await this.getTipSha(repoDir, branchName);
-    await this.emitIrreduciblePause(ctx.task, failure, "deterministic-unresolved", {
+    /*
+    FNXC:BranchBaseIdentity 2026-09-13-03:15:
+    RUFU-231 Deliverable 1: last direct-call exit before the irreducible pause — the
+    classification-proven foreign-only recovery. It only acts when the branch provably owns
+    nothing (zero own commits, zero unattributed, foreign work landed on a trusted identity)
+    and performs its own containment-aware move + metadata clear, so a recovered card must
+    not be requeued again here. Non-matching classifications return recovered:false and the
+    pause proceeds unchanged.
+    */
+    const recovered = await recoverForeignOnlyContamination(ctx.task, {
+      repoDir,
+      taskStore: this.deps.taskStore,
+      runAudit: this.deps.runAudit,
+      integrationBranch,
+    }).catch(() => null);
+    if (recovered?.recovered) return;
+    await this.emitIrreduciblePause(ctx, ctx.task, failure, "deterministic-unresolved", {
       branchName,
       conflictingWorktreePath,
       inspectionKind: inspection.kind,
@@ -609,7 +665,7 @@ export class BranchWorktreeAutoRecoveryHandler {
       return;
     }
 
-    await this.emitIrreduciblePause(ctx.task, failure, "ai-session-unresolved", {
+    await this.emitIrreduciblePause(ctx, ctx.task, failure, "ai-session-unresolved", {
       outcome: result.outcome,
       ...(result.metadata ?? {}),
     });

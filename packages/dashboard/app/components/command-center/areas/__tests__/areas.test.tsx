@@ -61,7 +61,7 @@ import { EcosystemArea } from "../EcosystemArea";
 import { useAnalyticsArea } from "../useAnalyticsArea";
 import { ConfirmDialogProvider } from "../../../../hooks/useConfirm";
 import { formatCost, rangeQuery } from "../areaShared";
-import { defaultPresets, rangeFromPreset } from "../../DateRangePicker";
+import { defaultPresets, rangeFromPreset, type DateRange } from "../../DateRangePicker";
 import {
   activityFixture,
   agentNode,
@@ -1166,7 +1166,17 @@ describe("ProductivityArea", () => {
 
   it("disables the preview button and shows pending status while LOC backfill is in flight", async () => {
     apiMock.mockResolvedValue(productivityFixture());
-    let resolveBackfill: ((value: { scannedRows: number; distinctCommits: number; updatedRows: number; skippedUnavailableCommits: number; skippedInvalidShas: number; dryRun: boolean }) => void) | null = null;
+    /*
+    FNXC:AnalyticsAreaBackfill 2026-08-20-19:05:
+    RUFU-140: the resolver must stay callable at the direct call site below.
+    An explicit `= null` initializer narrows the variable to `null` in
+    TypeScript's linear control flow (the closure assignment does not reset it),
+    making `resolveBackfill?.(...)` a TS2349 "not callable" (never) error.
+    Declaring `| undefined` WITHOUT an initializer keeps the declared union in
+    effect at the call site; runtime behavior is identical (`?.` is a no-op
+    until the pending promise executor assigns the resolver).
+    */
+    let resolveBackfill: ((value: { scannedRows: number; distinctCommits: number; updatedRows: number; skippedUnavailableCommits: number; skippedInvalidShas: number; dryRun: boolean }) => void) | undefined;
     backfillCommitAssociationDiffStatsMock.mockImplementationOnce(
       () => new Promise((resolve) => {
         resolveBackfill = resolve;

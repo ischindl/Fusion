@@ -123,6 +123,14 @@ export class ProjectEngineManager {
     return this.engines.get(projectId);
   }
 
+  /* FNXC:ChatRestartAutoContinue 2026-09-17-21:05: dashboard-side late wiring for engines started after server boot; call `getAllEngines()` once to cover existing ones. */
+  private engineStartedHook?: (engine: ProjectEngine) => void | Promise<void>;
+
+  setEngineStartedHook(hook?: (engine: ProjectEngine) => void | Promise<void>): void {
+    this.engineStartedHook = hook;
+  }
+
+
   /** Get all running engines. */
   getAllEngines(): ReadonlyMap<string, ProjectEngine> {
     return this.engines;
@@ -569,6 +577,17 @@ export class ProjectEngineManager {
 
     this.engines.set(projectId, engine);
     this.starting.delete(projectId);
+    /*
+    FNXC:ChatRestartAutoContinue 2026-09-17-21:05:
+    Engines start lazily, after the dashboard has installed its engine-started hook; the hook is
+    where the dashboard attaches per-engine services (chat restart-continuation) that the engine
+    must not construct itself. A throwing hook may never fail engine start.
+    */
+    try {
+      await this.engineStartedHook?.(engine);
+    } catch (hookErr: unknown) {
+      runtimeLog.warn(`engine-started hook failed for ${projectId}: ${hookErr instanceof Error ? hookErr.message : String(hookErr)}`);
+    }
     runtimeLog.log(
       `Started engine for ${project.name ?? projectId} (${projectId})`,
     );

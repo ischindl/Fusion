@@ -73,6 +73,8 @@ vi.mock("../../api", async (importOriginal) => {
     rejectPlan: vi.fn().mockResolvedValue({}),
     duplicateTask: vi.fn().mockResolvedValue({}),
     refineTask: vi.fn().mockResolvedValue({}),
+    /* FNXC:TaskFollowUp 2026-09-17-18:10: FN-513's second composer endpoint, shared by every Task Detail host test. */
+    followUpTask: vi.fn().mockResolvedValue({}),
     addSteeringComment: vi.fn(),
     assignTask: vi.fn().mockResolvedValue({}),
     fetchAgents: vi.fn().mockResolvedValue([]),
@@ -116,7 +118,8 @@ vi.mock("../../api", async (importOriginal) => {
 });
 
 // Mock lucide-react icons used by TaskDetailModal, TaskForm, PrPanel, CustomModelDropdown
-vi.mock("lucide-react", () => ({
+vi.mock("lucide-react", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("lucide-react")>()),
   Pencil: () => null,
   Sparkles: (props: any) => React.createElement("svg", { "data-testid": "sparkles-icon", ...props }),
   Globe: () => null,
@@ -274,13 +277,23 @@ export function makeTask(overrides: Partial<TaskDetail> = {}): TaskDetail {
  * `mergeTaskSnapshot` intentionally preserves populated fields from an equal-clock sparse response,
  * so reusing `makeTask`'s fixed clock would simulate a stale payload rather than a server mutation.
  */
-export function makeUpdatedTask(current: TaskDetail, patch: Partial<TaskDetail>): TaskDetail {
+/*
+FNXC:RUFU-140 2026-08-20-19:45:
+updateTask's inline `updates` parameter type allows `null` on optional override fields
+(e.g. `priority?: TaskPriority | null`) while the Task/TaskDetail model types use `undefined`,
+so test call sites pass the mock's patch through here. Accept the structural patch shape and
+narrow once inside the spread.
+*/
+export function makeUpdatedTask(
+  current: TaskDetail,
+  patch: Partial<TaskDetail> | Record<string, unknown>,
+): TaskDetail {
   const currentUpdatedAt = Date.parse(current.updatedAt);
   const nextUpdatedAt = new Date(
     Number.isFinite(currentUpdatedAt) ? currentUpdatedAt + 1_000 : Date.now(),
   ).toISOString().replace(/\.\d{3}Z$/, "Z");
 
-  return makeTask({ ...current, ...patch, updatedAt: nextUpdatedAt });
+  return makeTask({ ...current, ...(patch as Partial<TaskDetail>), updatedAt: nextUpdatedAt });
 }
 
 /*
@@ -308,6 +321,20 @@ export const noopDelete = vi.fn(async () => ({}) as Task);
 export const noopMerge = vi.fn(async () => ({ merged: false }) as MergeResult);
 export const noopRetry = vi.fn(async () => ({}) as Task);
 export const noopOpenDetail = vi.fn();
+
+export async function openTaskDetailActionsMenu(): Promise<HTMLElement> {
+  const trigger = await screen.findByRole("button", { name: "Actions" });
+  if (trigger.getAttribute("aria-expanded") !== "true") {
+    fireEvent.click(trigger);
+  }
+  await waitFor(() => expect(document.querySelector(".detail-actions-menu")).toBeInTheDocument());
+  return document.querySelector<HTMLElement>(".detail-actions-menu")!;
+}
+
+export async function findTaskDetailActionByTestId(testId: string): Promise<HTMLElement> {
+  const menu = await openTaskDetailActionsMenu();
+  return within(menu).findByTestId(testId);
+}
 
 export function getCssRuleBlock(css: string, selector: string): string {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

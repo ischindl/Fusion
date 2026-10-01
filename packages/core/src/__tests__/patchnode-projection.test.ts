@@ -2,11 +2,55 @@ import { describe, expect, it } from "vitest";
 import {
   buildPatchnodeEntryId,
   buildPatchnodeEntryInput,
+  buildPatchnodeSnapshotLabel,
   groupPatchnodeEntriesByDay,
+  isPatchnodeJunkLabel,
   matchesPatchnodeQuery,
+  PATCHNODE_DESCRIPTION_LABEL_LENGTH,
   toPatchnodeDay,
 } from "../board/patchnode.js";
+import { extractPatchnodeProductSummary, PATCHNODE_PRODUCT_SUMMARY_LENGTH } from "../board/patchnode-product-summary.js";
+import { planPatchnodeLabelRepair, planPatchnodeProductSummaryRepair } from "../task-store/async/async-patchnode.js";
 import type { PatchnodeEntry } from "../types/task/patchnode.js";
+
+/*
+FNXC:PatchnodeLedger 2026-09-18-02:48:
+FN-526 fixtures are duplicated literally in `packages/dashboard/app/utils/__tests__/taskPlanSummary.test.ts`
+so the core extractor and the dashboard's `extractTaskProductSummary` stay converged on section
+selection. Editing one side requires editing the other.
+*/
+export const PLAN_WITH_BOTH_SECTIONS = [
+  "# Task: FN-1 - Titre",
+  "",
+  "## What This Delivers",
+  "",
+  "- Les opérateurs relisent l'intention.",
+  "- La description vient du plan.",
+  "",
+  "## Before → After Transformation",
+  "",
+  "- **Before:** ancien corps.",
+  "",
+  "## Mission",
+  "",
+  "Technique.",
+  "",
+].join("\n");
+
+export const PLAN_BEFORE_AFTER_ONLY = [
+  "# Task: FN-1 - Titre",
+  "",
+  "## Before -> After Transformation",
+  "",
+  "- **Before:** `body` venait du résumé.",
+  "",
+  "## Mission",
+  "",
+  "Technique.",
+  "",
+].join("\n");
+
+export const PLAN_MISSION_ONLY = "# Task: FN-1 - Titre\n\n## Mission\n\nTechnique seulement.\n";
 
 const entry = (overrides: Partial<PatchnodeEntry> = {}): PatchnodeEntry => ({
   entryId: "completed:FN-1:1",
@@ -36,9 +80,76 @@ describe("Patchnode projection", () => {
     expect(days[0]).toMatchObject({ completedCount: 1, revertedCount: 1 });
   });
 
-  it("falls back to title and then task id for an empty summary", () => {
-    expect(buildPatchnodeEntryInput({ id: "FN-1", title: "Title", summary: "  " }, "completed", "2026-08-28T00:00:00Z").body).toBe("Title");
-    expect(buildPatchnodeEntryInput({ id: "FN-2", title: "  ", summary: "" }, "completed", "2026-08-28T00:00:00Z")).toMatchObject({ title: "FN-2", body: "FN-2" });
+  /*
+  FNXC:PatchnodeLedger 2026-09-18-02:48:
+  FN-526 replaces the FN-444 expectations here (which asserted `body === task.summary`, literally the
+  reported defect). The symptom reproduction: a task whose Completion Summary is "Shipped search"
+  and whose plan declares `## What This Delivers` must persist the PRODUCT text, and the completion
+  summary must never appear in the body — not even as a fallback when no product section exists.
+  */
+  it("captures the plan's product summary as the body and never the completion summary", () => {
+    // A stored Completion Summary is present on the source task and must be ignored entirely.
+    const withProductSection = { id: "FN-1", title: "Titre", description: "D", summary: "Shipped search", prompt: "## What This Delivers\n\n- Les opérateurs relisent l'intention.\n" };
+    const captured = buildPatchnodeEntryInput(withProductSection, "completed", "2026-08-28T00:00:00Z");
+    expect(captured.body).toBe("Les opérateurs relisent l'intention.");
+    expect(captured.body).not.toContain("Shipped search");
+
+    // No product section, a non-empty completion summary: the body stays EMPTY, no fallback.
+    const missionOnly = { id: "FN-1", title: "Titre", description: "D", summary: "Shipped search", prompt: PLAN_MISSION_ONLY };
+    expect(buildPatchnodeEntryInput(missionOnly, "completed", "2026-08-28T00:00:00Z").body).toBe("");
+
+    // No plan at all (unreadable or absent PROMPT.md).
+    expect(buildPatchnodeEntryInput({ id: "FN-1", title: "Titre", description: "D" }, "completed", "2026-08-28T00:00:00Z").body).toBe("");
+  });
+
+  it("captures the canonical task label instead of repeating the task id", () => {
+    // Symptom reproduction from FN-444: a titleless task used to persist title === taskId.
+    expect(buildPatchnodeEntryInput({ id: "FN-2", title: undefined, description: "Corriger le rendu" }, "completed", "2026-08-28T00:00:00Z").title).toBe("Corriger le rendu");
+    expect(buildPatchnodeEntryInput({ id: "FN-2", title: "  ", description: "Corriger le rendu" }, "completed", "2026-08-28T00:00:00Z").title).toBe("Corriger le rendu");
+  });
+
+  it("mirrors the FN-391 label precedence: title, then exactly 220 description characters, then id", () => {
+    expect(PATCHNODE_DESCRIPTION_LABEL_LENGTH).toBe(220);
+    expect(buildPatchnodeSnapshotLabel({ id: "FN-1", title: "Stored title", description: "Ignored description" })).toBe("Stored title");
+    const short = "x".repeat(PATCHNODE_DESCRIPTION_LABEL_LENGTH);
+    expect(buildPatchnodeSnapshotLabel({ id: "FN-1", title: undefined, description: short })).toBe(short);
+    const long = "y".repeat(PATCHNODE_DESCRIPTION_LABEL_LENGTH + 40);
+    const label = buildPatchnodeSnapshotLabel({ id: "FN-1", title: null, description: long });
+    expect(label).toBe(long.slice(0, PATCHNODE_DESCRIPTION_LABEL_LENGTH));
+    expect(label).toHaveLength(PATCHNODE_DESCRIPTION_LABEL_LENGTH);
+    expect(label.endsWith("…")).toBe(false);
+    expect(label.endsWith("...")).toBe(false);
+    expect(buildPatchnodeSnapshotLabel({ id: "FN-3", title: "  ", description: "   " })).toBe("FN-3");
+    expect(buildPatchnodeSnapshotLabel({ id: "FN-3" })).toBe("FN-3");
+  });
+
+  /*
+  FNXC:TaskTitleDerivation 2026-09-26-02:43:
+  RUFU-295 replaced the ledger's raw description prefix with the canonical description→label
+  derivation. Before this, a spec-shaped description froze `## Pôvodný popis` — the description's raw
+  first line — into a permanent delivery row, and a multi-line description froze a label containing a
+  line break, which no other surface can render.
+  */
+  it("derives the ledger label instead of copying the description's raw first line", () => {
+    expect(
+      buildPatchnodeSnapshotLabel({ id: "RUFU-295", title: null, description: "## Pôvodný popis\n\nUvítali by sme možnosť premenovať kartu." }),
+    ).toBe("Uvítali by sme možnosť premenovať kartu");
+    expect(buildPatchnodeSnapshotLabel({ id: "RUFU-295", title: null, description: "First line\nSecond line" })).toBe("First line");
+  });
+
+  it("classifies durable junk labels for the widened repair admission", () => {
+    expect(isPatchnodeJunkLabel("## Pôvodný popis")).toBe(true);
+    expect(isPatchnodeJunkLabel("First line\nSecond line")).toBe(true);
+    expect(isPatchnodeJunkLabel("First line\rSecond line")).toBe(true);
+    // A clean label that merely differs from today's derivation is point-in-time history, not junk.
+    expect(isPatchnodeJunkLabel("Shipped label from August")).toBe(false);
+    expect(isPatchnodeJunkLabel("Corriger le rendu de l'historique")).toBe(false);
+    expect(isPatchnodeJunkLabel(undefined)).toBe(false);
+    expect(isPatchnodeJunkLabel(null)).toBe(false);
+  });
+
+  it("still falls back to the task id when neither a title nor a description exists", () => {
+    expect(buildPatchnodeEntryInput({ id: "FN-2", title: "  ", description: "" }, "completed", "2026-08-28T00:00:00Z")).toMatchObject({ title: "FN-2", body: "" });
   });
 
   it("matches task id, title, and body case-insensitively", () => {
@@ -60,9 +171,9 @@ describe("Patchnode projection", () => {
   });
 
   it("distinguishes deliveries while converging repeated capture of one delivery", () => {
-    const first = buildPatchnodeEntryInput({ id: "FN-1", title: "Title", summary: "First" }, "completed", "2026-08-27T10:00:00Z");
-    const repeated = buildPatchnodeEntryInput({ id: "FN-1", title: "Title", summary: "First" }, "completed", "2026-08-27T10:00:00Z");
-    const second = buildPatchnodeEntryInput({ id: "FN-1", title: "Title", summary: "Second" }, "completed", "2026-08-28T10:00:00Z");
+    const first = buildPatchnodeEntryInput({ id: "FN-1", title: "Title", description: "D" }, "completed", "2026-08-27T10:00:00Z");
+    const repeated = buildPatchnodeEntryInput({ id: "FN-1", title: "Title", description: "D" }, "completed", "2026-08-27T10:00:00Z");
+    const second = buildPatchnodeEntryInput({ id: "FN-1", title: "Title", description: "D" }, "completed", "2026-08-28T10:00:00Z");
     expect(first.entryId).toBe(repeated.entryId);
     expect(second.entryId).not.toBe(first.entryId);
     expect([first.day, second.day]).toEqual(["2026-08-27", "2026-08-28"]);
@@ -73,11 +184,160 @@ describe("Patchnode projection", () => {
     expect(buildPatchnodeEntryId("reverted", "FN-1", "42")).toBe("reverted:FN-1:42");
   });
 
+  describe("legacy label repair", () => {
+    const degenerate = (overrides: Partial<PatchnodeEntry> = {}) => entry({ taskId: "FN-2", title: "FN-2", body: "FN-2", ...overrides });
+
+    it("leaves a healthy entry alone", () => {
+      expect(planPatchnodeLabelRepair(entry(), { id: "FN-1", title: "Ship feature" })).toBeNull();
+      expect(planPatchnodeLabelRepair(entry({ title: "Ship feature" }), { id: "FN-1", title: undefined, description: "Other" })).toBeNull();
+    });
+
+    it("repairs a degenerate entry from the live task label", () => {
+      expect(planPatchnodeLabelRepair(degenerate(), { id: "FN-2", title: undefined, description: "Corriger le rendu" })).toEqual({ title: "Corriger le rendu", body: "" });
+      expect(planPatchnodeLabelRepair(degenerate(), { id: "FN-2", title: "Stored title", description: "Ignored" })).toEqual({ title: "Stored title", body: "" });
+    });
+
+    it("cannot repair when the task has no recoverable label", () => {
+      expect(planPatchnodeLabelRepair(degenerate(), { id: "FN-2", title: "  ", description: "" })).toBeNull();
+      expect(planPatchnodeLabelRepair(degenerate(), { id: "FN-2" })).toBeNull();
+    });
+
+    it("preserves a real point-in-time summary and clears only a copied identifier body", () => {
+      expect(planPatchnodeLabelRepair(degenerate({ body: "Shipped search" }), { id: "FN-2", description: "Corriger le rendu" })).toEqual({ title: "Corriger le rendu", body: "Shipped search" });
+      expect(planPatchnodeLabelRepair(degenerate({ body: "FN-2" }), { id: "FN-2", description: "Corriger le rendu" })?.body).toBe("");
+    });
+
+    it("is idempotent", () => {
+      const task = { id: "FN-2", title: undefined, description: "Corriger le rendu" };
+      const repaired = planPatchnodeLabelRepair(degenerate(), task)!;
+      expect(planPatchnodeLabelRepair({ taskId: "FN-2", ...repaired }, task)).toBeNull();
+    });
+
+    /*
+    FNXC:TaskTitleDerivation 2026-09-26-02:43:
+    RUFU-295 widened the admission from `label === taskId` to any label the old raw-prefix projection
+    could have frozen (heading-shaped or line-break-containing), because those rows are junk on every
+    surface and — unlike a task id — they are what operators actually complained about. Idempotence is
+    now carried by an explicit equality check rather than by the admission itself: the canonical label
+    of a healthy row never re-enters the planner as a change.
+    */
+    it("repairs a durable heading-shaped label from the live description", () => {
+      const junk = entry({ taskId: "FN-2", title: "## Pôvodný popis", body: "Shipped search" });
+      expect(planPatchnodeLabelRepair(junk, { id: "FN-2", title: undefined, description: "## Pôvodný popis\n\nShip the rename rule." }))
+        .toEqual({ title: "Ship the rename rule", body: "Shipped search" });
+    });
+
+    it("repairs a durable label that froze a multi-line description slice", () => {
+      const junk = entry({ taskId: "FN-2", title: "First line\nSecond line", body: "Shipped search" });
+      expect(planPatchnodeLabelRepair(junk, { id: "FN-2", title: undefined, description: "First line\nSecond line" }))
+        .toEqual({ title: "First line", body: "Shipped search" });
+    });
+
+    it("leaves a clean label that is merely not today's derivation untouched", () => {
+      expect(planPatchnodeLabelRepair(entry({ taskId: "FN-2", title: "Shipped label from August" }), {
+        id: "FN-2",
+        title: undefined,
+        description: "A different description today",
+      })).toBeNull();
+    });
+  });
+
+  /*
+  FNXC:PatchnodeLedger 2026-09-18-02:48:
+  FN-526: the SQL provenance marker (`entries.body = tasks.summary`) is what admits a row into this
+  planner; the planner itself only decides the replacement body.
+  */
+  describe("legacy product-summary repair", () => {
+    it("replaces an old completion-summary body with the plan's product summary", () => {
+      expect(planPatchnodeProductSummaryRepair({ body: "Shipped search" }, PLAN_WITH_BOTH_SECTIONS))
+        .toEqual({ body: "Les opérateurs relisent l'intention. La description vient du plan." });
+    });
+
+    it("clears the body when the plan exposes no product section", () => {
+      expect(planPatchnodeProductSummaryRepair({ body: "Shipped search" }, PLAN_MISSION_ONLY)).toEqual({ body: "" });
+    });
+
+    it("clears the body for an unreadable plan, but leaves an already-empty body alone", () => {
+      expect(planPatchnodeProductSummaryRepair({ body: "Shipped search" }, null)).toEqual({ body: "" });
+      expect(planPatchnodeProductSummaryRepair({ body: "" }, null)).toBeNull();
+    });
+
+    it("leaves a body that already carries the product summary alone", () => {
+      expect(planPatchnodeProductSummaryRepair({ body: "Les opérateurs relisent l'intention. La description vient du plan." }, PLAN_WITH_BOTH_SECTIONS)).toBeNull();
+    });
+
+    it("is idempotent", () => {
+      const first = planPatchnodeProductSummaryRepair({ body: "Shipped search" }, PLAN_WITH_BOTH_SECTIONS)!;
+      expect(planPatchnodeProductSummaryRepair(first, PLAN_WITH_BOTH_SECTIONS)).toBeNull();
+    });
+  });
+
   it("captures title and body by value", () => {
-    const source = { id: "FN-1", title: "Original", summary: "First" };
+    const source = { id: "FN-1", title: "Original", description: "D", prompt: PLAN_WITH_BOTH_SECTIONS };
     const captured = buildPatchnodeEntryInput(source, "completed", "2026-08-28T10:00:00Z");
     source.title = "Changed";
-    source.summary = "Second";
-    expect(captured).toMatchObject({ title: "Original", body: "First" });
+    source.prompt = PLAN_MISSION_ONLY;
+    expect(captured).toMatchObject({ title: "Original", body: "Les opérateurs relisent l'intention. La description vient du plan." });
+  });
+});
+
+describe("Patchnode product summary extraction", () => {
+  it("prefers What This Delivers over Before → After Transformation", () => {
+    expect(extractPatchnodeProductSummary(PLAN_WITH_BOTH_SECTIONS)).toBe("Les opérateurs relisent l'intention. La description vient du plan.");
+  });
+
+  it("falls back to Before → After Transformation, including the ASCII variant", () => {
+    expect(extractPatchnodeProductSummary(PLAN_BEFORE_AFTER_ONLY)).toBe("Before: body venait du résumé.");
+    expect(extractPatchnodeProductSummary(PLAN_BEFORE_AFTER_ONLY.replace("->", "→"))).toBe("Before: body venait du résumé.");
+  });
+
+  it("never falls back to Mission", () => {
+    expect(extractPatchnodeProductSummary(PLAN_MISSION_ONLY)).toBe("");
+  });
+
+  it("returns an empty string for an absent, null, or contentless plan", () => {
+    expect(extractPatchnodeProductSummary(null)).toBe("");
+    expect(extractPatchnodeProductSummary(undefined)).toBe("");
+    expect(extractPatchnodeProductSummary("")).toBe("");
+    expect(extractPatchnodeProductSummary("# Task: FN-1 - Titre\n")).toBe("");
+  });
+
+  it("treats an empty product section as absent", () => {
+    expect(extractPatchnodeProductSummary("## What This Delivers\n\n## Mission\n\nTechnique.\n")).toBe("");
+    // An empty first section still yields the legitimate legacy fallback.
+    expect(extractPatchnodeProductSummary("## What This Delivers\n\n## Before → After Transformation\n\n- Ancien corps.\n")).toBe("Ancien corps.");
+  });
+
+  it("ignores a heading inside a code fence", () => {
+    const plan = [
+      "## Mission",
+      "",
+      "```markdown",
+      "## What This Delivers",
+      "",
+      "- Exemple de gabarit, pas une section.",
+      "```",
+      "",
+    ].join("\n");
+    expect(extractPatchnodeProductSummary(plan)).toBe("");
+  });
+
+  it("keeps only the first occurrence of a duplicated heading", () => {
+    const plan = "## What This Delivers\n\n- Première.\n\n## Mission\n\nX\n\n## What This Delivers\n\n- Seconde.\n";
+    expect(extractPatchnodeProductSummary(plan)).toBe("Première.");
+  });
+
+  it("flattens a markdown bullet list into one plain line", () => {
+    const plan = "## What This Delivers\n\n- **Gras** retiré\n- `code` retiré\n1. Numéroté retiré\n\n### Sous-titre\n";
+    expect(extractPatchnodeProductSummary(plan)).toBe("Gras retiré code retiré Numéroté retiré Sous-titre");
+  });
+
+  it("truncates at exactly 400 characters with no ellipsis", () => {
+    expect(PATCHNODE_PRODUCT_SUMMARY_LENGTH).toBe(400);
+    const long = "z".repeat(PATCHNODE_PRODUCT_SUMMARY_LENGTH + 80);
+    const extracted = extractPatchnodeProductSummary(`## What This Delivers\n\n${long}\n`);
+    expect(extracted).toHaveLength(PATCHNODE_PRODUCT_SUMMARY_LENGTH);
+    expect(extracted.endsWith("…")).toBe(false);
+    expect(extracted.endsWith("...")).toBe(false);
   });
 });

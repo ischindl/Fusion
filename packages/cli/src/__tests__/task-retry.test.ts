@@ -29,6 +29,20 @@ vi.mock("../project-context.js", () => ({
   // FNXC:CliTests 2026-07-16-08:47: FN-8102 keeps command-finally cleanup
   // awaitable while the PG harness retains ownership of the test store lifecycle.
   closeProjectStore: closeProjectStoreMock,
+  /*
+  FNXC:ProjectRoutingVisibility 2026-09-23-00:12 (RUFU-269): `runTaskRetry` reaches
+  `getBoardCommandContext`'s cwd-fallback branch when `resolveProject` has no answer, and that branch now
+  wraps its store with the SHARED `project-context.ts` `asLocalProjectContext` (task.ts's private copy is
+  gone). A double that omits the export turns the fallback into a call of `undefined`.
+  */
+  asLocalProjectContext: (store: unknown) => ({
+    projectId: process.cwd(),
+    projectPath: process.cwd(),
+    projectName: "current-project",
+    isRegistered: false,
+    resolvedFrom: "cwd-fallback",
+    store,
+  }),
 }));
 
 import { runTaskRetry } from "../commands/task.js";

@@ -1,16 +1,29 @@
+/*
+FNXC:RUFU153 2026-08-23-00:21:
+Per FNXC:ChatNavigation (ChatView.tsx) the main pane is closed by default and opens only on a user row
+click (no auto-open path), so the tests click the session row (chat-session-<id>; async sessions via
+findByTestId) before asserting streaming DOM. A remount resets detailOpen, so multi-mount tests click
+once per mount. Generating fixtures keep isGenerating: true so useChat's attachIfGenerating restore
+path runs off the raw fetched session object.
+*/
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+/*
+FNXC:ChatSendDurability 2026-09-07-13:25 (kept through the FN-302 test rewrite):
+RUFU-192 keeps an unacknowledged prompt in the composer, so whole-document text queries
+can match the textarea; transcript assertions use this selector explicitly.
+*/
+const TRANSCRIPT_SURFACE = { selector: ".chat-message-content" };
+
 import { ChatView } from "../ChatView";
 import type { ChatMessage, ChatSession } from "@fusion/core";
 import type { UseChatRoomsResult } from "../../hooks/useChatRooms";
-
 Element.prototype.scrollIntoView = vi.fn();
 
-vi.mock("../../utils/projectStorage", () => ({
-  getScopedItem: vi.fn(),
-  setScopedItem: vi.fn(),
-  removeScopedItem: vi.fn(),
-}));
+vi.mock("../../utils/projectStorage", async () => {
+  const { mockProjectStorage } = await import("../../test/mockProjectStorage");
+  return mockProjectStorage;
+});
 
 vi.mock("../../sse-bus", () => ({
   subscribeSse: vi.fn(() => () => {}),
@@ -77,6 +90,7 @@ const mockStreamChatResponse = vi.mocked(apiModule.streamChatResponse);
 const mockCancelChatResponse = vi.mocked(apiModule.cancelChatResponse);
 const mockAttachChatStream = vi.mocked(apiModule.attachChatStream);
 const mockGetScopedItem = vi.mocked(projectStorageModule.getScopedItem);
+const mockGetPersistedChatOpenSession = vi.mocked(projectStorageModule.getPersistedChatOpenSession);
 const mockSubscribeSse = vi.mocked(sseBusModule.subscribeSse);
 const mockUseChatRooms = vi.mocked(useChatRoomsModule.useChatRooms);
 
@@ -93,9 +107,17 @@ const defaultRoomsState: UseChatRoomsResult = {
   deleteRoom: vi.fn(),
   sendRoomMessage: vi.fn(),
   refreshRooms: vi.fn(),
+
+  updateRoomSettings: vi.fn(),
+  clearRoom: vi.fn(),
 };
 
-function makeSession(overrides: Partial<ChatSession> & Pick<ChatSession, "id" | "agentId">): ChatSession {
+// RUFU-153: the real useChat restore/attach seams (app/hooks/useChat.ts attachIfGenerating)
+// read the server-derived `isGenerating` flag off the raw session object; the core
+// ChatSession type does not declare it, so the generating fixtures declare it explicitly.
+type ChatSessionWithGeneration = ChatSession & { isGenerating?: boolean };
+
+function makeSession(overrides: Partial<ChatSessionWithGeneration> & Pick<ChatSessionWithGeneration, "id" | "agentId">): ChatSessionWithGeneration {
   return {
     id: overrides.id,
     agentId: overrides.agentId,
@@ -104,10 +126,17 @@ function makeSession(overrides: Partial<ChatSession> & Pick<ChatSession, "id" | 
     projectId: overrides.projectId ?? null,
     modelProvider: overrides.modelProvider ?? null,
     modelId: overrides.modelId ?? null,
+    // RUFU-153: pass the server-derived generating flag through; the restore/attach paths key off it.
+    isGenerating: overrides.isGenerating,
     createdAt: overrides.createdAt ?? "2026-04-08T00:00:00.000Z",
     updatedAt: overrides.updatedAt ?? "2026-04-08T00:00:00.000Z",
-    isGenerating: overrides.isGenerating,
-    inFlightGeneration: overrides.inFlightGeneration,
+    inFlightGeneration: overrides.inFlightGeneration ?? null,
+    tags: [],
+    thinkingLevel: null,
+    memoryFocus: null,
+    pinnedAt: null,
+    cliSessionFile: null,
+    cliExecutorAdapterId: null,
   };
 }
 
@@ -125,9 +154,12 @@ function makeMessage(overrides: Partial<ChatMessage> & Pick<ChatMessage, "id" | 
 }
 
 type StreamAppendHandlers = {
-  onText: (delta: string) => void;
-  onToolStart: (data: { toolName: string; args?: Record<string, unknown> }) => void;
-  onToolEnd: (data: { toolName: string; isError: boolean; result?: unknown }) => void;
+  onText?: (delta: string) => void;
+  onThinking?: (delta: string) => void;
+  onToolStart?: (data: { toolName: string; args?: Record<string, unknown> }) => void;
+  onToolEnd?: (data: { toolName: string; isError: boolean; result?: unknown }) => void;
+  onPhase?: (data: { phase: "compacting"; active: boolean }) => void;
+  onDone?: (data: { messageId: string }) => void;
 };
 
 function createDeferredPromise<T>() {
@@ -170,6 +202,7 @@ describe("FN-6599 ChatView streaming prior thread", () => {
     localStorage.clear();
     mockUseChatRooms.mockReturnValue(defaultRoomsState);
     mockGetScopedItem.mockReturnValue(undefined);
+    mockGetPersistedChatOpenSession.mockImplementation(() => mockGetScopedItem("kb-chat-active-session") ?? null);
     mockSubscribeSse.mockReturnValue(() => {});
     mockFetchChatSession.mockResolvedValue({ session: makeSession({ id: "session-001", agentId: "agent-001" }) });
     mockStreamChatResponse.mockReturnValue({ close: vi.fn(), isConnected: () => true });
@@ -182,6 +215,19 @@ describe("FN-6599 ChatView streaming prior thread", () => {
     vi.clearAllMocks();
   });
 
+  it("loads a persisted open session through the shared storage mock", async () => {
+    const session = makeSession({ id: "session-persisted-open", agentId: "agent-001", title: "Persisted open" });
+    mockGetPersistedChatOpenSession.mockReturnValue(session.id);
+    mockFetchChatSessions.mockResolvedValue({ sessions: [session] });
+    mockFetchChatSession.mockResolvedValue({ session });
+    mockFetchChatMessages.mockResolvedValue({ messages: [] });
+
+    render(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+
+    expect(await screen.findByTestId("chat-input")).toBeInTheDocument();
+    expect(mockGetPersistedChatOpenSession).toHaveBeenCalledWith("proj-123");
+  });
+
   it.each([
     ["desktop", 1280],
     ["mobile", 390],
@@ -192,6 +238,7 @@ describe("FN-6599 ChatView streaming prior thread", () => {
       id: "session-restored-streaming",
       agentId: "agent-001",
       title: "Restored streaming",
+      // RUFU-153: the restore/attach paths key off the server-derived isGenerating flag.
       isGenerating: true,
       inFlightGeneration: {
         status: "generating" as const,
@@ -209,9 +256,11 @@ describe("FN-6599 ChatView streaming prior thread", () => {
       makeMessage({ id: "msg-001", sessionId: generatingSession.id, role: "user", content: "First question" }),
     ];
 
-    mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? generatingSession.id : undefined);
+    mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? generatingSession.id : null);
     mockFetchChatSessions.mockResolvedValue({ sessions: [generatingSession] });
     mockFetchChatMessages.mockResolvedValue({ messages: priorThreadNewestFirst });
+    // RUFU-153: the authoritative session detail fetch must return the generating session itself.
+    mockFetchChatSession.mockResolvedValue({ session: generatingSession });
 
     await act(async () => {
       render(<ChatView projectId="proj-123" addToast={vi.fn()} />);
@@ -238,6 +287,7 @@ describe("FN-6599 ChatView streaming prior thread", () => {
       id: "session-reentry",
       agentId: "agent-001",
       title: "Re-entry",
+      // RUFU-153: the restore/attach paths key off the server-derived isGenerating flag.
       isGenerating: true,
       inFlightGeneration: {
         status: "generating" as const,
@@ -249,7 +299,7 @@ describe("FN-6599 ChatView streaming prior thread", () => {
       },
     });
     const priorMessage = makeMessage({ id: "msg-prior", sessionId: generatingSession.id, role: "user", content: "Prior question" });
-    mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? generatingSession.id : undefined);
+    mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? generatingSession.id : null);
     mockFetchChatSessions.mockResolvedValue({ sessions: [generatingSession] });
     mockFetchChatSession.mockResolvedValue({ session: generatingSession });
     mockFetchChatMessages.mockResolvedValue({ messages: [priorMessage] });
@@ -292,7 +342,7 @@ describe("FN-6599 ChatView streaming prior thread", () => {
       metadata: { interrupted: true },
       createdAt: "2026-08-18T21:55:00.000Z",
     });
-    mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? session.id : undefined);
+    mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? session.id : null);
     mockFetchChatSessions.mockResolvedValue({ sessions: [session] });
     mockFetchChatSession.mockResolvedValue({ session });
     mockFetchChatMessages
@@ -339,6 +389,7 @@ describe("FN-6599 ChatView streaming prior thread", () => {
       id: "session-mid-turn-stable",
       agentId: "agent-001",
       title: "Mid turn stable",
+      // RUFU-153: the restore/attach paths key off the server-derived isGenerating flag.
       isGenerating: true,
       inFlightGeneration: {
         status: "generating" as const,
@@ -360,7 +411,7 @@ describe("FN-6599 ChatView streaming prior thread", () => {
     let subscribeHandler: Record<string, (event: MessageEvent) => void> = {};
 
     cacheMessages("proj-123", generatingSession.id, priorThread);
-    mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? generatingSession.id : undefined);
+    mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? generatingSession.id : null);
     mockFetchChatSessions.mockResolvedValue({ sessions: [generatingSession] });
     mockFetchChatMessages.mockReturnValue(staleFetch.promise);
     mockAttachChatStream.mockImplementation((_sessionId, handlers) => {
@@ -405,7 +456,7 @@ describe("FN-6599 ChatView streaming prior thread", () => {
     Object.defineProperty(messagesContainer, "clientHeight", { configurable: true, value: 240 });
     fireEvent.scroll(messagesContainer);
     scrollHeight = 1500;
-    act(() => attachedHandlers?.onText(" while reading earlier output"));
+    act(() => attachedHandlers?.onText?.(" while reading earlier output"));
     expect(scrollTop).toBe(180);
 
     act(() => {
@@ -419,9 +470,9 @@ describe("FN-6599 ChatView streaming prior thread", () => {
     expectPriorThreadVisible();
 
     act(() => {
-      attachedHandlers?.onToolStart({ toolName: "read", args: { path: "README.md" } });
-      attachedHandlers?.onText(" now");
-      attachedHandlers?.onToolEnd({ toolName: "read", isError: false, result: "ok" });
+      attachedHandlers?.onToolStart?.({ toolName: "read", args: { path: "README.md" } });
+      attachedHandlers?.onText?.(" now");
+      attachedHandlers?.onToolEnd?.({ toolName: "read", isError: false, result: "ok" });
     });
     await act(async () => {
       await Promise.resolve();
@@ -449,6 +500,61 @@ describe("FN-6599 ChatView streaming prior thread", () => {
     expect(screen.getByText(/working/)).toBeInTheDocument();
   });
 
+  /*
+  FNXC:ChatPhaseStatus 2026-09-05-11:45:
+  RUFU-188 (Code Review P0): the operator-facing symptom lives in the Chat view bubble, so the phase
+  label's end-to-end arrival is asserted here — desktop and mobile — not just at the shared component
+  boundary. The inactive frame must revert to the plain waiting label and a residual active frame must be
+  gone once the turn completes (the bubble unmounts with the stream).
+  */
+  it.each([
+    ["desktop", 1280],
+    ["mobile", 390],
+  ])("shows the live compacting phase in the waiting bubble on %s", async (_label, width) => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+    window.dispatchEvent(new Event("resize"));
+    const session = makeSession({ id: "session-phase", agentId: "agent-001" });
+    mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? session.id : null);
+    mockFetchChatSessions.mockResolvedValue({ sessions: [session] });
+    mockFetchChatMessages.mockResolvedValue({ messages: [] });
+    mockFetchChatSession.mockResolvedValue({ session });
+    let streamHandlers: StreamAppendHandlers = {};
+    mockStreamChatResponse.mockImplementation((_sessionId, _content, handlers) => {
+      streamHandlers = handlers as unknown as StreamAppendHandlers;
+      return { close: vi.fn(), isConnected: () => true };
+    });
+
+    render(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await openRestoredConversation();
+    fireEvent.change(await screen.findByTestId("chat-input"), { target: { value: "long question" } });
+    fireEvent.click(screen.getByTestId("chat-send-btn"));
+
+    expect(await screen.findByText("Working…")).toBeInTheDocument();
+
+    await act(async () => {
+      streamHandlers.onPhase?.({ phase: "compacting", active: true });
+    });
+    expect(await screen.findByText("Working (compacting…)")).toBeInTheDocument();
+    expect(screen.queryByText("Working…")).not.toBeInTheDocument();
+
+    await act(async () => {
+      streamHandlers.onPhase?.({ phase: "compacting", active: false });
+    });
+    expect(await screen.findByText("Working…")).toBeInTheDocument();
+    expect(screen.queryByText("Working (compacting…)")).not.toBeInTheDocument();
+
+    // A residual active frame (lost inactive frame / replay) must not survive the turn's completion.
+    await act(async () => {
+      streamHandlers.onPhase?.({ phase: "compacting", active: true });
+    });
+    expect(screen.getByText("Working (compacting…)")).toBeInTheDocument();
+    await act(async () => {
+      streamHandlers.onDone?.({ messageId: "m-phase" });
+    });
+    expect(screen.queryByText("Working (compacting…)")).not.toBeInTheDocument();
+    expect(screen.queryByText("Working…")).not.toBeInTheDocument();
+  });
+
   it.each([
     ["wide", 1280],
     ["compact", 768],
@@ -456,17 +562,17 @@ describe("FN-6599 ChatView streaming prior thread", () => {
   ])("FN-100 starts a fresh Direct thread from idle exact /new and /clear without a recovery toast on %s", async (_label, width) => {
     Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
     window.dispatchEvent(new Event("resize"));
-    const idleSession = makeSession({ id: "session-idle", agentId: "agent-001", isGenerating: false });
+    const idleSession = makeSession({ id: "session-idle", agentId: "agent-001" });
     const freshSessions = [
-      makeSession({ id: "session-fresh-1", agentId: "agent-001", title: "Fresh one", isGenerating: false }),
-      makeSession({ id: "session-fresh-2", agentId: "agent-001", title: "Fresh two", isGenerating: false }),
+      makeSession({ id: "session-fresh-1", agentId: "agent-001", title: "Fresh one" }),
+      makeSession({ id: "session-fresh-2", agentId: "agent-001", title: "Fresh two" }),
     ];
     const addToast = vi.fn();
     const idleCancellation = createDeferredPromise<{ success: boolean; interrupted: boolean }>();
     mockCancelChatResponse
       .mockImplementationOnce(() => idleCancellation.promise)
       .mockResolvedValue({ success: true, interrupted: false });
-    mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? idleSession.id : undefined);
+    mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? idleSession.id : null);
     mockFetchChatSessions.mockResolvedValue({ sessions: [idleSession] });
     mockFetchChatSession
       .mockResolvedValueOnce({ session: idleSession })
@@ -503,6 +609,260 @@ describe("FN-6599 ChatView streaming prior thread", () => {
       "error",
     );
     expect(mockFetchChatMessages).toHaveBeenCalledWith(freshSessions[1].id, { limit: 50, order: "desc" }, "proj-123");
+  });
+
+  it.each([
+    ["desktop détaché", 1280, 300, 300],
+    ["téléphone au sommet volontaire", 390, 0, 1400],
+  ])("FN-302 applies the current optimistic-send viewport policy on %s", async (_label, width, readingTop, expectedScrollTop) => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+    window.dispatchEvent(new Event("resize"));
+    const session = makeSession({ id: `session-detached-${width}`, agentId: "agent-001" });
+    const priorThread = [
+      makeMessage({ id: "anchor-1", sessionId: session.id, role: "user", content: "Question ancienne" }),
+      makeMessage({ id: "anchor-2", sessionId: session.id, role: "assistant", content: "Réponse ancienne" }),
+      makeMessage({ id: "anchor-3", sessionId: session.id, role: "user", content: "Question récente" }),
+      makeMessage({ id: "anchor-4", sessionId: session.id, role: "assistant", content: "Réponse récente" }),
+    ];
+    mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? session.id : undefined);
+    mockFetchChatSessions.mockResolvedValue({ sessions: [session] });
+    mockFetchChatSession.mockResolvedValue({ session });
+    mockFetchChatMessages.mockResolvedValue({ messages: priorThread });
+
+    render(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await openRestoredConversation();
+    await screen.findByText("Réponse récente");
+
+    const container = document.querySelector(".chat-messages") as HTMLDivElement;
+    let scrollTop = readingTop;
+    Object.defineProperties(container, {
+      scrollTop: { configurable: true, get: () => scrollTop, set: (value: number) => { scrollTop = value; } },
+      clientHeight: { configurable: true, value: 300 },
+      scrollHeight: {
+        configurable: true,
+        get: () => 1200 + Math.max(0, container.querySelectorAll(".chat-message").length - priorThread.length) * 100,
+      },
+    });
+    const offsetTopSpy = vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function () {
+      const messageId = this.getAttribute("data-message-id");
+      const index = priorThread.findIndex((message) => message.id === messageId);
+      return Math.max(0, index) * 250;
+    });
+    const offsetHeightSpy = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(250);
+    fireEvent.wheel(container, { deltaY: -1 });
+
+    const input = screen.getByTestId("chat-input");
+    fireEvent.change(input, { target: { value: "Nouvelle question" } });
+    fireEvent.click(screen.getByTestId("chat-send-btn"));
+
+    await screen.findByText("Nouvelle question");
+    expect(scrollTop).toBe(expectedScrollTop);
+    offsetTopSpy.mockRestore();
+    offsetHeightSpy.mockRestore();
+  });
+
+  it.each([
+    ["Chat principal", 1280, {}],
+    ["floating large", 1280, { floating: true }],
+    ["floating étroit", 600, { floating: true }],
+    ["compactLayout", 1280, { compactLayout: true }],
+    ["téléphone", 390, {}],
+  ])("FN-302 suit le bas pendant tout le streaming dans %s", async (_label, width, hostProps) => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+    window.dispatchEvent(new Event("resize"));
+    const session = makeSession({ id: `session-pinned-${_label}`, agentId: "agent-001" });
+    const prior = makeMessage({ id: "prior", sessionId: session.id, role: "assistant", content: "Historique" });
+    let handlers: Parameters<typeof apiModule.streamChatResponse>[2] | undefined;
+    let subscribeHandler: Record<string, (event: MessageEvent) => void> = {};
+    mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? session.id : undefined);
+    mockFetchChatSessions.mockResolvedValue({ sessions: [session] });
+    mockFetchChatSession.mockResolvedValue({ session });
+    mockFetchChatMessages.mockResolvedValue({ messages: [prior] });
+    mockStreamChatResponse.mockImplementation((_sessionId, _content, nextHandlers) => {
+      handlers = nextHandlers;
+      return { close: vi.fn(), isConnected: () => true };
+    });
+    mockSubscribeSse.mockImplementation((_url, options) => {
+      subscribeHandler = options?.events as typeof subscribeHandler;
+      return () => {};
+    });
+    const frames: FrameRequestCallback[] = [];
+    const frameSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const flushFrames = () => {
+      act(() => {
+        for (let count = 0; count < 20 && frames.length > 0; count += 1) {
+          frames.shift()?.(count);
+        }
+      });
+    };
+
+    render(<ChatView projectId="proj-123" addToast={vi.fn()} {...hostProps} />);
+    await openRestoredConversation();
+    await screen.findByText("Historique");
+    flushFrames();
+    const container = document.querySelector(".chat-messages") as HTMLDivElement;
+    let scrollTop = 900;
+    let baseScrollHeight = 1200;
+    const currentScrollHeight = () => baseScrollHeight + (container.querySelectorAll(".chat-message").length > 1 ? 100 : 0);
+    Object.defineProperties(container, {
+      scrollTop: { configurable: true, get: () => scrollTop, set: (value: number) => { scrollTop = value; } },
+      clientHeight: { configurable: true, value: 300 },
+      scrollHeight: { configurable: true, get: currentScrollHeight },
+    });
+
+    fireEvent.change(screen.getByTestId("chat-input"), { target: { value: "Question streamée" } });
+    fireEvent.click(screen.getByTestId("chat-send-btn"));
+    await waitFor(() => expect(scrollTop).toBe(1300));
+    flushFrames();
+
+    act(() => {
+      subscribeHandler["chat:message:added"]?.({
+        data: JSON.stringify(makeMessage({
+          id: "persisted-user",
+          sessionId: session.id,
+          role: "user",
+          content: "Question streamée",
+        })),
+      } as MessageEvent);
+    });
+    await waitFor(() => expect(screen.getAllByText("Question streamée", TRANSCRIPT_SURFACE)).toHaveLength(1));
+    expect(scrollTop).toBe(1300);
+    flushFrames();
+
+    baseScrollHeight = 1350;
+    act(() => handlers?.onThinking?.("raisonnement"));
+    flushFrames();
+    await waitFor(() => expect(scrollTop).toBe(1450));
+    flushFrames();
+
+    baseScrollHeight = 1500;
+    act(() => handlers?.onToolStart?.({ toolName: "read", args: { path: "README.md" } }));
+    flushFrames();
+    await waitFor(() => expect(scrollTop).toBe(1600));
+    flushFrames();
+
+    baseScrollHeight = 1550;
+    act(() => handlers?.onText?.("réponse"));
+    flushFrames();
+    await waitFor(() => expect(scrollTop).toBe(1650));
+    flushFrames();
+
+    baseScrollHeight = 1600;
+    act(() => handlers?.onDone?.({ messageId: "assistant-final" }));
+    flushFrames();
+    await waitFor(() => expect(scrollTop).toBe(1700));
+    flushFrames();
+    frameSpy.mockRestore();
+  });
+
+  it("FN-302 donne la priorité au scroll manuel sur une frame et un observateur déjà programmés", async () => {
+    const resizeCallbacks: ResizeObserverCallback[] = [];
+    const originalResizeObserver = globalThis.ResizeObserver;
+    class ControlledResizeObserver implements ResizeObserver {
+      constructor(callback: ResizeObserverCallback) { resizeCallbacks.push(callback); }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    globalThis.ResizeObserver = ControlledResizeObserver;
+    const frames: FrameRequestCallback[] = [];
+    const frameSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const flushFrames = () => {
+      act(() => {
+        for (let count = 0; count < 20 && frames.length > 0; count += 1) {
+          frames.shift()?.(count);
+        }
+      });
+    };
+    const session = makeSession({ id: "session-manual-wins", agentId: "agent-001" });
+    const prior = makeMessage({ id: "manual-prior", sessionId: session.id, role: "assistant", content: "Lecture" });
+    let handlers: Parameters<typeof apiModule.streamChatResponse>[2] | undefined;
+    mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? session.id : undefined);
+    mockFetchChatSessions.mockResolvedValue({ sessions: [session] });
+    mockFetchChatSession.mockResolvedValue({ session });
+    mockFetchChatMessages.mockResolvedValue({ messages: [prior] });
+    mockStreamChatResponse.mockImplementation((_sessionId, _content, nextHandlers) => {
+      handlers = nextHandlers;
+      return { close: vi.fn(), isConnected: () => true };
+    });
+
+    render(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await openRestoredConversation();
+    await screen.findByText("Lecture");
+    flushFrames();
+    const container = document.querySelector(".chat-messages") as HTMLDivElement;
+    let scrollTop = 900;
+    let baseScrollHeight = 1200;
+    const currentScrollHeight = () => baseScrollHeight + (container.querySelectorAll(".chat-message").length > 1 ? 100 : 0);
+    Object.defineProperties(container, {
+      scrollTop: { configurable: true, get: () => scrollTop, set: (value: number) => { scrollTop = value; } },
+      clientHeight: { configurable: true, value: 300 },
+      scrollHeight: { configurable: true, get: currentScrollHeight },
+    });
+
+    fireEvent.change(screen.getByTestId("chat-input"), { target: { value: "Question" } });
+    fireEvent.click(screen.getByTestId("chat-send-btn"));
+    expect(frames.length).toBeGreaterThan(0);
+    scrollTop = 280;
+    fireEvent.scroll(container);
+    baseScrollHeight = 1400;
+    act(() => {
+      handlers?.onToolStart?.({ toolName: "read", args: { path: "README.md" } });
+      resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver));
+    });
+    flushFrames();
+    expect(scrollTop).toBe(280);
+
+    scrollTop = 1200;
+    fireEvent.scroll(container);
+    baseScrollHeight = 1550;
+    act(() => handlers?.onText?.("delta suivi"));
+    flushFrames();
+    await waitFor(() => expect(scrollTop).toBe(1650));
+
+    scrollTop = 200;
+    fireEvent.scroll(container);
+    fireEvent.click(screen.getByTestId("chat-jump-to-latest"));
+    expect(scrollTop).toBe(1650);
+    frameSpy.mockRestore();
+    globalThis.ResizeObserver = originalResizeObserver;
+  });
+
+  it("FN-302 ancre le premier envoi d’une conversation vide", async () => {
+    const session = makeSession({ id: "session-empty-send", agentId: "agent-001" });
+    mockGetScopedItem.mockImplementation((key) => key === "kb-chat-active-session" ? session.id : undefined);
+    mockFetchChatSessions.mockResolvedValue({ sessions: [session] });
+    mockFetchChatSession.mockResolvedValue({ session });
+    mockFetchChatMessages.mockResolvedValue({ messages: [] });
+    render(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await openRestoredConversation();
+    const container = document.querySelector(".chat-messages") as HTMLDivElement;
+    let scrollTop = 0;
+    Object.defineProperties(container, {
+      scrollTop: { configurable: true, get: () => scrollTop, set: (value: number) => { scrollTop = value; } },
+      clientHeight: { configurable: true, value: 300 },
+      scrollHeight: { configurable: true, get: () => container.querySelectorAll(".chat-message").length * 100 },
+    });
+
+    fireEvent.change(screen.getByTestId("chat-input"), { target: { value: "Premier message" } });
+    fireEvent.click(screen.getByTestId("chat-send-btn"));
+    await screen.findByText("Premier message");
+    expect(scrollTop).toBe(224);
+  });
+
+  it("FN-302 n’écrit aucun viewport sans session", async () => {
+    mockFetchChatSessions.mockResolvedValue({ sessions: [] });
+    mockFetchChatMessages.mockResolvedValue({ messages: [] });
+    render(<ChatView projectId="proj-123" addToast={vi.fn()} />);
+    await waitFor(() => expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument());
+    expect(document.querySelector(".chat-messages")).toBeNull();
+    expect(mockStreamChatResponse).not.toHaveBeenCalled();
   });
 
 });

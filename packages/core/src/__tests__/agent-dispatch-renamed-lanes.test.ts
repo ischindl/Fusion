@@ -137,29 +137,32 @@ describe("agent dispatch selects by lifecycle ROLE, not by column id", () => {
     expect(await selectNextTaskForAgentImpl(store, AGENT_ID, EXECUTOR_AGENT)).toBeNull();
   });
 
-  it("DOCUMENTS A DEFECT: the role-routing policy does not apply on a renamed board", async () => {
+  it("applies the role-routing policy on a renamed board (defect pin flipped by RUFU-272)", async () => {
     /*
     FNXC:WorkflowResolvedColumns 2026-07-30-15:20 (#2739 review — the claim, and what proving it exposed):
     Passing an agent is not evidence the evaluator RAN: an executor agent is allowed, so a short-circuit and
     a real evaluation are indistinguishable from a passing case. So this asserts a `custom`-role agent is
     REFUSED an implementation task on a renamed lane.
 
-    It failed — the task was handed over — and the cause is production, not the test.
-    `isImplementationTask` tests Set membership over the hardcoded ids {triage, todo, in-progress, ...}, and
-    `evaluateImplementationTaskBind` short-circuits to `allowed: true` when that is false. On a renamed
-    board EVERY agent is therefore bind-compatible with EVERY task, and the role check that stops a liaison
-    being handed implementation work does not apply at all.
+    It failed — the task was handed over — and the cause was production, not the test:
+    `isImplementationTask` tested Set membership over hardcoded legacy ids, and
+    `evaluateImplementationTaskBind` short-circuited to `allowed: true` when that was false, so on a renamed
+    board EVERY agent was bind-compatible with EVERY task.
 
-    This case is written to the CURRENT behaviour and named as documenting a defect, so it does not sit red.
-    Flip the expectation when the policy resolves lanes by role; the reasoning is recorded at
-    `agent-role-policy.ts`'s `IMPLEMENTATION_TASK_COLUMNS`.
+    FNXC:LaneCapabilityVocabulary 2026-09-26-18:46 (RUFU-272 — the promised flip): the dispatcher now threads
+    the card's resolved implementation-lane set (`resolveTaskImplementationColumns`) into the bind
+    evaluator, so `building` classifies as implementation-class and the custom-role agent is refused. The
+    executor control leg in the SAME store shape keeps the refusal non-vacuous: if the lane filters matched
+    nothing, both agents would see null and this test would pass without the policy ever running.
     */
     const store = makeStore([task({ id: "FN-9", column: "building" })], ir("building", "backlog", "shipped"));
 
-    const selected = await selectNextTaskForAgentImpl(store, AGENT_ID, { id: AGENT_ID, role: "custom" } as never);
+    const refused = await selectNextTaskForAgentImpl(store, AGENT_ID, { id: AGENT_ID, role: "custom" } as never);
+    expect(refused, "custom-role agent was handed implementation work on a renamed lane").toBeNull();
 
-    // Current behaviour, not desired behaviour: the bind check is bypassed, so the task IS selected.
-    expect(selected?.task?.id).toBe("FN-9");
+    const selected = await selectNextTaskForAgentImpl(store, AGENT_ID, EXECUTOR_AGENT);
+    expect(selected?.task?.id, "executor control leg: the refusal must come from the policy, not an empty filter")
+      .toBe("FN-9");
   });
 
   it("a dependency in a SECOND complete lane satisfies the dependent (#2739 review)", async () => {

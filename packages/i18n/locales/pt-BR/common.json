@@ -1,8 +1,13 @@
 {
   "actions": {
+    "cancel": "",
+    "save": "",
     "send": "Enviar"
   },
   "agents": {
+    "onboarding": {
+      "dialogLabel": ""
+    },
     "ratings": {
       "trendDeclining": "↓ Em declínio",
       "trendImproving": "↑ Melhorando",
@@ -32,41 +37,85 @@
       "minutesAgo_other": "há {{count}}m"
     }
   },
+  "app": {
+    "backendError": {
+      "failedFetch": ""
+    }
+  },
   "board": {
+    "loadingWorkflowLanes": "",
+    "noWorkflowLanes": "",
     "rejection": {
       "capacityExhausted": "Essa coluna está com capacidade esgotada. Tente novamente quando uma vaga se abrir.",
       "guardRejected": "Este movimento não é permitido pelo fluxo de trabalho.",
       "mergeBlocked": "Esta tarefa está bloqueada para conclusão até que sua etapa de merge termine.",
+      "staleMovePrecondition": "",
       "unknownColumn": "Essa coluna não existe no fluxo de trabalho desta tarefa.",
       "unplannedForExecution": "Esta tarefa ainda não está pronta para execução — o planejamento ou a revisão do plano ainda está pendente.",
       "workflowMismatch": "Arrastar não pode mover um cartão entre fluxos de trabalho. Use o seletor de fluxo de trabalho."
     }
   },
   "chat": {
-    "failedToGetResponse": "Falha ao obter resposta",
-    "failureReferenceId": "ID",
-    "failureReferenceKind": "Tipo",
-    "failureReferenceLabel": "Referência",
-    "failureReferenceMetaLabel": "Rótulo",
-    "openMailboxMessage": "Abrir mensagem da caixa de entrada",
-    "toolCallArgsPrefix": "args",
-    "toolCallResultPrefix": "resultado",
-    "toolCallsCount_one": "{{count}} chamada de ferramenta",
-    "toolCallsCount_other": "{{count}} chamadas de ferramenta",
-    "toolCallsHeader": "Chamadas de ferramenta",
-    "toolCallStatusCompleted": "concluído",
-    "toolCallStatusError": "erro",
-    "toolCallStatusErrors": "erros",
-    "toolCallStatusRunning": "em execução",
-    "viewFailureDetails": "Ver detalhes da falha"
+    "failedToGetResponse": "Falha ao obter resposta"
   },
   "commandCenter": {
+    "controls": {
+      "concurrency": {
+        "confirmChangeSummaryItem": ""
+      }
+    },
     "range": {
       "allTime": "Todo o período",
       "last24h": "Últimas 24h",
       "last30d": "Últimos 30 dias",
       "last7d": "Últimos 7 dias"
     }
+  },
+  "documents": {
+    "artifactAudioLabel": "",
+    "artifactMediaFailed": "",
+    "artifactVideoLabel": "",
+    "audioArtifactLabel": "",
+    "binaryArtifactFallback": "",
+    "expandImageArtifact": "",
+    "loadingArtifactContent": "",
+    "markdown": "",
+    "noArtifactPreview": "",
+    "openArtifact": "",
+    "openArtifactMedia": "",
+    "openInNewTab": "",
+    "openTask": "",
+    "pdfArtifactTitle": "",
+    "plain": "",
+    "switchToMarkdown": "",
+    "switchToPlainText": "",
+    "unknownAuthor": "",
+    "untitledArtifact": "",
+    "videoArtifactLabel": ""
+  },
+  "dotted": {
+    "key": ""
+  },
+  "git": {
+    "commentAvatarAlt": "",
+    "commentBot": "",
+    "commentFilterAll": "",
+    "commentFilterBot": "",
+    "commentFilterHuman": "",
+    "commentHuman": "",
+    "commentImported": "",
+    "commentNavAriaLabel": "",
+    "commentNavPosition": "",
+    "commentNextAriaLabel": "",
+    "commentPrevAriaLabel": "",
+    "commentsHeading": "",
+    "failedToImportComment": "",
+    "filterCommentsAriaLabel": "",
+    "importCommentAsTask": "",
+    "loadingComments": "",
+    "noCommentBody": "",
+    "noComments": "",
+    "noCommentsForFilter": ""
   },
   "health": {
     "anomaly": {
@@ -84,6 +133,9 @@
   },
   "labels": {
     "name": "Nome"
+  },
+  "mailbox": {
+    "replyingTo": ""
   },
   "merge": {
     "unknown": "Desconhecido"
@@ -149,6 +201,9 @@
       "notConfigured": "Não configurado"
     }
   },
+  "scripts": {
+    "title": ""
+  },
   "settings": {
     "nodeRouting": {
       "statusConnecting": "Conectando",
@@ -160,6 +215,7 @@
   "setup": {
     "apiKeyFormatError": "As chaves da {{providerName}} devem seguir este formato: {{hint}} (ex.: {{example}})",
     "apiKeyLabel": {
+      "anthropic": "",
       "fallback": "Chave de API",
       "kimiCoding": "Chave de API do Kimi",
       "minimax": "Chave de API do MiniMax",
@@ -177,6 +233,7 @@
     },
     "apiKeyRequired": "A chave de API é obrigatória",
     "apiKeySetup": {
+      "anthropic": "",
       "fallback": "Digite sua chave de API para este provedor.",
       "kimiCoding": "Crie sua chave de API nas configurações de conta da plataforma Moonshot.",
       "minimax": "Gere uma chave de API no console de desenvolvedor da plataforma MiniMax.",
@@ -187,6 +244,7 @@
       "zai": "Crie uma chave de API nas configurações de conta da plataforma aberta da Zhipu AI."
     },
     "apiKeyUsage": {
+      "anthropic": "",
       "fallback": "Usada pelo Fusion para autenticar solicitações a este provedor",
       "kimiCoding": "Usada para modelos Kimi/Moonshot AI na execução e no planejamento de tarefas",
       "minimax": "Usada para modelos MiniMax na execução de tarefas",
@@ -198,6 +256,8 @@
     },
     "providerDesc": {
       "anthropic": "Modelos Claude — fortes em raciocínio, análise e código",
+      "anthropicApiKey": "",
+      "anthropicSubscription": "",
       "fallback": "Provedor de IA — conecte-se para começar a usar modelos de IA",
       "gemini": "Modelos Gemini — multimodais com forte raciocínio",
       "google": "Modelos Gemini — multimodais com forte raciocínio",
@@ -213,6 +273,96 @@
       "zai": "Modelos GLM da Zhipu AI — forte suporte multilíngue"
     }
   },
+  "some": {
+    "key": ""
+  },
+  "taskDetail": {
+    "bypassReview": {
+      "btn": ""
+    },
+    "delete": {
+      "btn": ""
+    },
+    "duplicate": {
+      "btn": "",
+      "message": "",
+      "success": "",
+      "title": "",
+      "workflowLabel": ""
+    },
+    "githubTracking": {
+      "enableCheckboxLabel": ""
+    },
+    "gitlabTracking": {
+      "kindGroupIssue": "",
+      "kindMergeRequest": "",
+      "kindProjectIssue": ""
+    },
+    "oversight": {
+      "interventions": {
+        "action": {
+          "escalate": "",
+          "injectGuidance": "",
+          "observe": "",
+          "requestConfirmation": "",
+          "requestFix": "",
+          "retry": ""
+        },
+        "ariaLabel": "",
+        "attempts_one": "",
+        "attempts_other": "",
+        "empty": "",
+        "heading": "",
+        "loadError": "",
+        "loading": "",
+        "outcome": {
+          "awaitingConfirmation": "",
+          "failed": "",
+          "pending": "",
+          "skipped": "",
+          "succeeded": ""
+        },
+        "sourceLink": {
+          "agentLog": "",
+          "failedCheck": "",
+          "mergeError": "",
+          "prState": "",
+          "reviewComment": "",
+          "url": ""
+        },
+        "stage": {
+          "executor": "",
+          "merger": "",
+          "pullRequest": "",
+          "reviewer": "",
+          "workflowGate": ""
+        }
+      }
+    },
+    "pause": {
+      "pauseBtn": "",
+      "pausedByAgent": "",
+      "unpauseBtn": ""
+    },
+    "plan": {
+      "openPlanningBtn": ""
+    },
+    "pr": {
+      "checkPrStatus": "",
+      "finishAndClose": "",
+      "mergeAndClose": "",
+      "startPrReview": ""
+    },
+    "refine": {
+      "btn": ""
+    },
+    "reset": {
+      "btn": ""
+    },
+    "retry": {
+      "btn": ""
+    }
+  },
   "taskForm": {
     "nodeStatusConnecting": "Conectando",
     "nodeStatusError": "Erro",
@@ -220,15 +370,21 @@
     "nodeStatusOnline": "Online"
   },
   "taskReview": {
+    "checksSummary": "",
     "never": "Nunca",
+    "noChecksReported": "",
     "refreshSourceBackground": "Segundo plano",
     "refreshSourceInitialLoad": "Carregamento inicial",
     "refreshSourceManual": "Manual"
   },
   "workflowNodes": {
+    "summaryAskUserDefault": "",
     "summaryAwaitInput": "Aguarda entrada do usuário",
     "summaryCodeDefault": "TypeScript",
     "summaryDefaultModel": "Modelo padrão",
+    "summaryExitGateContains": "",
+    "summaryExitGateMatches": "",
+    "summaryExitGateUnconditional": "",
     "summaryGateAdvisory": "Consultivo",
     "summaryGateBlocks": "Gate (bloqueia)",
     "summaryHoldRelease": "Liberação: {{release}}",

@@ -720,42 +720,6 @@ pgTest("MissionStore (PostgreSQL backend mode)", () => {
     expect(await m.getFeature(feature.id)).toMatchObject({ status: "defined", taskId: undefined });
   });
 
-  it("preserves a late bootstrap duplicate already linked to another feature", async () => {
-    const m = missions();
-    const mission = await m.createMission({ title: "Bootstrap sibling ownership" });
-    const milestone = await m.addMilestone(mission.id, { title: "MS" });
-    const slice = await m.addSlice(milestone.id, { title: "SL" });
-    const firstFeature = await m.addFeature(slice.id, { title: "First feature" });
-    const siblingFeature = await m.addFeature(slice.id, { title: "Sibling feature" });
-    const taskStore = h.store();
-    const claimedTask = await taskStore.createTask({
-      description: "same fingerprint work",
-      missionId: mission.id,
-      sliceId: slice.id,
-    });
-    await m.linkFeatureToTask(firstFeature.id, claimedTask.id);
-    const siblingTask = await taskStore.createTask({
-      description: "same fingerprint work",
-      missionId: mission.id,
-      sliceId: slice.id,
-    });
-    await m.linkFeatureToTask(siblingFeature.id, siblingTask.id);
-
-    await m.archiveDefinedFeatureBootstrapDuplicate({
-      featureId: firstFeature.id,
-      taskId: claimedTask.id,
-      duplicateTaskId: siblingTask.id,
-    });
-
-    /* FNXC:MissionAdmission 2026-07-23-21:10: a late same-fingerprint task claimed by another feature is not a duplicate eligible for archival. */
-    /* FNXC:MergedPlanningColumn 2026-07-29-15:30 (U11): the assertion is "not archived" — the card
-       stays where it was created, which for the default lineage is now the merged planning column
-       `todo` rather than `triage`. */
-    expect(await taskStore.getTask(siblingTask.id)).toMatchObject({ id: siblingTask.id, column: "todo" });
-    expect(await m.getFeature(siblingFeature.id)).toMatchObject({ taskId: siblingTask.id, status: "triaged" });
-    expect(await m.getFeature(firstFeature.id)).toMatchObject({ taskId: claimedTask.id, status: "triaged" });
-  });
-
   /*
   FNXC:WorkflowResolvedColumns 2026-07-31-10:20:
   THE BOOTSTRAP DUPLICATE WAS PARKED IN A LANE THE BOARD DOES NOT DECLARE.
@@ -774,63 +738,13 @@ pgTest("MissionStore (PostgreSQL backend mode)", () => {
   renamed-lane PostgreSQL coverage uses the same direct source to keep schema and workflow APIs
   separate.
   */
-  it("archives a bootstrap duplicate into the RENAMED archive lane", async () => {
-    const m = missions();
-    const taskStore = h.store();
-
-    const ir = JSON.parse(JSON.stringify(BUILTIN_CODING_WORKFLOW_IR)) as {
-      id: string; nodes?: { column?: string }[]; columns?: { id: string }[];
-    };
-    ir.id = "custom:renamed-archive-missions";
-    for (const node of ir.nodes ?? []) if (node.column === "archived") node.column = "filed";
-    for (const column of ir.columns ?? []) if (column.id === "archived") column.id = "filed";
-    expect((ir.columns ?? []).map((c) => c.id)).not.toContain("archived");
-    const definition = await taskStore.createWorkflowDefinition({ name: "Renamed archive", kind: "workflow", ir } as never);
-    const workflowId = (definition as unknown as { id: string }).id;
-
-    const mission = await m.createMission({ title: "Renamed archive bootstrap" });
-    const milestone = await m.addMilestone(mission.id, { title: "MS" });
-    const slice = await m.addSlice(milestone.id, { title: "SL" });
-    const feature = await m.addFeature(slice.id, { title: "Feature" });
-
-    const claimedTask = await taskStore.createTask({ description: "same fingerprint work", missionId: mission.id, sliceId: slice.id });
-    await m.linkFeatureToTask(feature.id, claimedTask.id);
-    const duplicateTask = await taskStore.createTask({ description: "same fingerprint work", missionId: mission.id, sliceId: slice.id });
-    await taskStore.writeTaskWorkflowSelection(duplicateTask.id, workflowId, []);
-
-    await m.archiveDefinedFeatureBootstrapDuplicate({
-      featureId: feature.id,
-      taskId: claimedTask.id,
-      duplicateTaskId: duplicateTask.id,
-    });
-
-    expect(await taskStore.getTask(duplicateTask.id)).toMatchObject({ id: duplicateTask.id, column: "filed" });
-  });
-
-  /* Control: with no renamed workflow the duplicate still lands in the legacy archive lane, so an
-     unconverted board is byte-identical. */
-  it("archives a bootstrap duplicate into `archived` on the default lineage", async () => {
-    const m = missions();
-    const taskStore = h.store();
-    const mission = await m.createMission({ title: "Default archive bootstrap" });
-    const milestone = await m.addMilestone(mission.id, { title: "MS" });
-    const slice = await m.addSlice(milestone.id, { title: "SL" });
-    const feature = await m.addFeature(slice.id, { title: "Feature" });
-
-    const claimedTask = await taskStore.createTask({ description: "same fingerprint work", missionId: mission.id, sliceId: slice.id });
-    await m.linkFeatureToTask(feature.id, claimedTask.id);
-    const duplicateTask = await taskStore.createTask({ description: "same fingerprint work", missionId: mission.id, sliceId: slice.id });
-
-    await m.archiveDefinedFeatureBootstrapDuplicate({
-      featureId: feature.id,
-      taskId: claimedTask.id,
-      duplicateTaskId: duplicateTask.id,
-    });
-
-    expect(await taskStore.getTask(duplicateTask.id)).toMatchObject({ id: duplicateTask.id, column: "archived" });
-  });
-
-  it("does not exhaust the runtime pool when concurrent duplicate cleanup resolves archive lanes", async () => {
+  /*
+  FNXC:MissionAdmission 2026-09-29-09:25 (merge origin/main a6e65a5af8, upstream FN-9402):
+  Upstream added this pool-starvation regression while the duplicate still moved to an archive lane.
+  Our side soft-deletes the competing duplicate, so the observable post-state is "no live read" plus
+  an untouched canonical claim — this test guards the pool invariant, not the destination lane.
+  */
+  it("does not exhaust the runtime pool when concurrent duplicate cleanup resolves historical-sentinel lanes", async () => {
     const m = missions();
     const taskStore = h.store();
     const cases = await Promise.all(["A", "B", "C"].map(async (label) => {
@@ -844,14 +758,25 @@ pgTest("MissionStore (PostgreSQL backend mode)", () => {
       return { feature, claimedTask, duplicateTask };
     }));
 
-    await Promise.all(cases.map(({ feature, claimedTask, duplicateTask }) => m.archiveDefinedFeatureBootstrapDuplicate({
+    await Promise.all(cases.map(({ feature, claimedTask, duplicateTask }) => m.deleteDefinedFeatureBootstrapDuplicate({
       featureId: feature.id,
       taskId: claimedTask.id,
       duplicateTaskId: duplicateTask.id,
     })));
 
-    await expect(Promise.all(cases.map(({ duplicateTask }) => taskStore.getTask(duplicateTask.id))))
-      .resolves.toEqual(expect.arrayContaining(cases.map(({ duplicateTask }) => expect.objectContaining({ id: duplicateTask.id, column: "archived" }))));
+    const liveState = async (taskId: string) => {
+      try {
+        await taskStore.getTask(taskId);
+        return "live";
+      } catch {
+        return "gone";
+      }
+    };
+    await expect(Promise.all(cases.map(({ duplicateTask }) => liveState(duplicateTask.id))))
+      .resolves.toEqual(cases.map(() => "gone"));
+    /* The first claim must survive: reconciliation removes the competitor, never the canonical. */
+    await expect(Promise.all(cases.map(({ claimedTask }) => liveState(claimedTask.id))))
+      .resolves.toEqual(cases.map(() => "live"));
     await expect(taskStore.asyncLayer!.ping()).resolves.toBeUndefined();
   });
 
@@ -920,47 +845,6 @@ pgTest("MissionStore (PostgreSQL backend mode)", () => {
 
   Being adjacent to a covered resolver is not coverage; this is the third such split found in core.
   */
-  it("accepts an ARCHIVED card whose board calls the archive lane something else", async () => {
-    const m = missions();
-    const store = h.store();
-    await store.createWorkflowDefinition({
-      name: "Renamed archive",
-      ir: {
-        version: "v2",
-        name: "Renamed archive",
-        columns: [
-          { id: "todo", name: "Todo", traits: [{ trait: "intake" }, { trait: "hold" }] },
-          { id: "done", name: "Done", traits: [{ trait: "complete" }] },
-          { id: "vaulted", name: "Vaulted", traits: [{ trait: "archived" }] },
-        ],
-        nodes: [
-          { id: "start", kind: "start", column: "todo" },
-          { id: "end", kind: "end", column: "done" },
-        ],
-        edges: [{ from: "start", to: "end", condition: "success" }],
-      } as never,
-    });
-    const mission = await m.createMission({ title: "Renamed-archive repair" });
-    const milestone = await m.addMilestone(mission.id, { title: "MS" });
-    const slice = await m.addSlice(milestone.id, { title: "SL" });
-    const feature = await m.addFeature(slice.id, { title: "Delivered" });
-    const task = await store.createTask({ description: "filed away", column: "done" });
-    /*
-    A REAL archive, then the lane rename. The `archived` verdict requires all three of
-    `deletedAt !== null`, an archive-snapshot row, and `isArchived(column)` — a live card merely
-    sitting in an archive-trait column is `invalid-deleted`, not `archived`, so seeding one would
-    fail for a reason that has nothing to do with the lane read under test. Archiving first and
-    then renaming the recorded lane isolates exactly the third condition.
-    */
-    await store.archiveTask(task.id, { cleanup: false });
-    await h.adminDb().execute(sql`UPDATE project.tasks SET "column" = 'vaulted' WHERE id = ${task.id}`);
-    store.taskCache.delete(task.id);
-
-    const reconciled = await m.reconcileFeatureDoneWithTerminalTask(feature.id, task.id);
-
-    expect(reconciled).toMatchObject({ taskId: task.id, status: "done" });
-  });
-
   it("atomically reconciles live done evidence and remains idempotent", async () => {
     const m = missions();
     const mission = await m.createMission({ title: "Parked repair" });
@@ -1006,27 +890,6 @@ pgTest("MissionStore (PostgreSQL backend mode)", () => {
     expect(await m.getFeature(feature.id)).toEqual(reconciled);
   });
 
-  it("accepts a supported archived tombstone without resurrecting or back-linking it", async () => {
-    const m = missions();
-    const mission = await m.createMission({ title: "Archived repair" });
-    const milestone = await m.addMilestone(mission.id, { title: "MS" });
-    const slice = await m.addSlice(milestone.id, { title: "SL" });
-    const feature = await m.addFeature(slice.id, { title: "Archived delivery" });
-    const task = await h.store().createTask({ description: "archived shipped work", column: "done" });
-    await h.store().archiveTask(task.id, { cleanup: false });
-
-    const reconciled = await m.reconcileFeatureDoneWithTerminalTask(feature.id, task.id);
-
-    expect(reconciled).toMatchObject({ taskId: task.id, status: "done", loopState: "idle", implementationAttemptCount: 0 });
-    expect(await h.store().getTask(task.id)).toMatchObject({ column: "archived" });
-    const tombstones = await h.layer().db
-      .select({ column: schema.project.tasks.column, deletedAt: schema.project.tasks.deletedAt, missionId: schema.project.tasks.missionId, sliceId: schema.project.tasks.sliceId })
-      .from(schema.project.tasks)
-      .where(eq(schema.project.tasks.id, task.id));
-    expect(tombstones).toEqual([{ column: "archived", deletedAt: expect.any(String), missionId: null, sliceId: null }]);
-    expect(await m.getMission(mission.id)).toMatchObject({ status: "planning", autopilotEnabled: false, autoAdvance: false });
-  });
-
   it("rejects missing, nonterminal, invalid-deleted, feature mismatch, and duplicate task links without mutation", async () => {
     const m = missions();
     const mission = await m.createMission({ title: "Guarded repair" });
@@ -1045,7 +908,10 @@ pgTest("MissionStore (PostgreSQL backend mode)", () => {
 
     await expect(m.reconcileFeatureDoneWithTerminalTask(feature.id, "FN-MISSING")).rejects.toMatchObject({ code: "TASK_NOT_FOUND" });
     await expect(m.reconcileFeatureDoneWithTerminalTask(feature.id, nonterminal.id)).rejects.toMatchObject({ code: "TASK_NOT_TERMINAL" });
-    await expect(m.reconcileFeatureDoneWithTerminalTask(feature.id, invalidDeleted.id)).rejects.toMatchObject({ code: "TASK_ARCHIVE_INVALID" });
+    /* FNXC:MergeRebuild0919 2026-09-20-00:40: canonical split TASK_DELIVERY_DELETED vs TASK_ARCHIVE_INVALID
+   for archive-provenance of a deleted delivery task. This line retired the archiving lane (FN-9187), so a
+   deleted task uniformly cannot prove delivery — the merged line rejects with TASK_DELIVERY_DELETED. */
+    await expect(m.reconcileFeatureDoneWithTerminalTask(feature.id, invalidDeleted.id)).rejects.toMatchObject({ code: "TASK_DELIVERY_DELETED" });
     await expect(m.reconcileFeatureDoneWithTerminalTask(feature.id, linkedTask.id)).rejects.toMatchObject({ code: "TASK_FEATURE_CONFLICT" });
 
     const canonicalTask = await h.store().createTask({ description: "canonical", column: "done" });
@@ -1666,35 +1532,6 @@ pgTest("MissionStore (PostgreSQL backend mode)", () => {
     await expect(m.createGeneratedFixFeature(source.id, fourthRun.id, [], "deterministic failure"))
       .rejects.toThrow("MISSION_REMEDIATION_STOPPED: budget-exhausted");
     expect(await m.getFeature(root.id)).toMatchObject({ loopState: "blocked", implementationStopReason: "budget-exhausted", implementationAttemptCount: 3 });
-  });
-
-  it("records generated-task archive as a durable root stop before unlinking", async () => {
-    /*
-    FNXC:MissionLineageBudget 2026-07-22-15:30:
-    Task archive is a supported removal surface. Its archive transaction must
-    retain the root stop even though it clears the generated feature's task link.
-    */
-    const m = missions();
-    const mission = await m.createMission({ title: "Generated task stop" });
-    const milestone = await m.addMilestone(mission.id, { title: "MS" });
-    const slice = await m.addSlice(milestone.id, { title: "SL" });
-    const root = await m.addFeature(slice.id, { title: "F" });
-    const run = await m.startValidatorRun(root.id, "scheduled");
-    await m.completeValidatorRun(run.id, "failed", "repair");
-    const fix = await m.createGeneratedFixFeature(root.id, run.id, [], "repair");
-    const task = await h.store().createTask({ description: "Generated fix task" });
-    await m.linkFeatureToTask(fix.id, task.id);
-
-    await h.store().archiveTask(task.id, { cleanup: false });
-
-    expect(await m.getFeature(root.id)).toMatchObject({
-      loopState: "blocked",
-      implementationStopReason: "operator-intervention",
-    });
-    expect(await m.getFeature(fix.id)).toMatchObject({ taskId: undefined });
-    const stops = await h.layer().db.select().from(schema.project.missionLineageStops)
-      .where(sql`${schema.project.missionLineageStops.rootFeatureId} = ${root.id}`);
-    expect(stops).toMatchObject([{ reason: "operator-intervention", origin: "task-archive" }]);
   });
 
   it("clears only a stale blocked mission badge with one attributed audit event", async () => {

@@ -19,6 +19,7 @@ export * from "./approval-request-store.js";
 export * from "./assigned-task-ranking.js";
 export * from "./column-agent-binding-validation.js";
 export * from "./column-agent-resolver.js";
+export * from "./heartbeat-recovery-state.js";
 export * from "./live-agent-count.js";
 export * from "./org-bundle.js";
 export * from "./reflection-store.js";

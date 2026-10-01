@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Task, TaskStore, WorkflowWorkItem } from "@fusion/core";
 
 import { projectAdmissionCoordinator } from "../concurrency/concurrency.js";
+import { registerPlanningLivenessProbe } from "../agents/planning-liveness.js";
 import {
   admitPlanningContinuation,
   createPlanningContinuationDispatcher,
@@ -11,8 +12,21 @@ import {
 const PROJECT_ID = "/test/workflow-continuation-capacity";
 const CONTINUATION_ID = "FN-CONTINUATION";
 
+/*
+FNXC:CapacitySlotLeak 2026-09-19-04:07:
+Every `status:"planning"` fixture in this file means a planner that is ALREADY RUNNING, so the planner
+liveness proof must report those ids live. `isRunningAgentTask` now counts a planning status only with
+that proof: a durable planning row with no live planner held every project slot and froze planning
+itself (677 "Plan throttled by running-agent cap" lines; 258 with `claimed=2, processing=0`). Without
+this probe the fixtures below would assert admission into FREE capacity instead of admission AT the
+cap — the slot-accounting behavior they exist to pin — and the already-active resume fast path would
+stop being exercised at all.
+*/
+const LIVE_PLANNING_TASK_IDS = new Set<string>();
+registerPlanningLivenessProbe((taskId) => LIVE_PLANNING_TASK_IDS.has(taskId));
+
 function task(id: string, patch: Partial<Task> = {}): Task {
-  return {
+  const row = {
     id,
     title: id,
     description: id,
@@ -26,6 +40,8 @@ function task(id: string, patch: Partial<Task> = {}): Task {
     updatedAt: "2026-08-01T00:00:00.000Z",
     ...patch,
   } as Task;
+  if (row.status === "planning") LIVE_PLANNING_TASK_IDS.add(row.id);
+  return row;
 }
 
 function store(
@@ -64,7 +80,7 @@ afterEach(() => {
 });
 
 describe("workflow continuation active-slot admission", () => {
-  it("does not start a tenth task when nine active tasks already hold the worktree budget", async () => {
+  it("starts a continuation when the worktree gate is full but the agent gate has slack", async () => {
     const active = Array.from({ length: 8 }, (_, index) =>
       task(`FN-PLAN-${index}`, { status: "planning" }),
     );
@@ -89,11 +105,11 @@ describe("workflow continuation active-slot admission", () => {
       dispatch,
     });
 
-    expect(admitted).toBe(false);
-    expect(dispatch).not.toHaveBeenCalled();
-    expect(taskStore.logEntry).toHaveBeenCalledWith(
+    expect(admitted).toBe(true);
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(taskStore.logEntry).not.toHaveBeenCalledWith(
       CONTINUATION_ID,
-      expect.stringContaining("maxWorktrees capacity exhausted: used=9/9"),
+      expect.stringContaining("maxWorktrees capacity exhausted"),
     );
   });
 
@@ -122,7 +138,11 @@ describe("workflow continuation active-slot admission", () => {
     const ninthActive = task("FN-LANDED-HANDOFF", { status: "planning" });
     const continuation = task(CONTINUATION_ID);
     let liveTasks = [...eightActive, continuation];
-    const taskStore = store(liveTasks);
+    const taskStore = store(liveTasks, {
+      maxConcurrent: 9,
+      maxWorktrees: 3,
+      worktreeLimitEnabled: true,
+    });
     vi.mocked(taskStore.listTasks).mockImplementation(async () => liveTasks);
     const dispatch = vi.fn(async () => {});
     let releaseBlocker!: () => void;
@@ -136,6 +156,7 @@ describe("workflow continuation active-slot admission", () => {
           taskId: "FN-BLOCKER",
           projectId: PROJECT_ID,
           lane: "execute",
+          consumesWorktree: true,
           createdAt: "2026-07-31T23:59:59.000Z",
           start: async () => {
             resolveStarted();
@@ -214,7 +235,11 @@ describe("workflow continuation active-slot admission", () => {
     const first = task(CONTINUATION_ID);
     const second = task("FN-CONTINUATION-2", { createdAt: "2026-08-01T00:00:01.000Z" });
     const tasks = [...active, first, second];
-    const taskStore = store(tasks);
+    const taskStore = store(tasks, {
+      maxConcurrent: 9,
+      maxWorktrees: 1,
+      worktreeLimitEnabled: true,
+    });
     const pendingResolvers: Array<() => void> = [];
     const execute = vi.fn(() => new Promise<void>((resolve) => pendingResolvers.push(resolve)));
     const items = [
@@ -249,7 +274,11 @@ describe("workflow continuation active-slot admission", () => {
     const continuation = task(CONTINUATION_ID);
     const other = task("FN-CONTINUATION-2");
     const fourth = task("FN-CONTINUATION-3");
-    const taskStore = store([...active, continuation, other, fourth]);
+    const taskStore = store([...active, continuation, other, fourth], {
+      maxConcurrent: 9,
+      maxWorktrees: 1,
+      worktreeLimitEnabled: true,
+    });
     const settles: Array<() => void> = [];
     const execute = vi.fn(() => new Promise<void>((resolve) => { settles.push(resolve); }));
     const dispatch = createPlanningContinuationDispatcher({
@@ -263,6 +292,7 @@ describe("workflow continuation active-slot admission", () => {
       dispatch(continuation, { ...item, id: "continuation-duplicate" }),
     ]);
     expect(admissions).toEqual([true, true]);
+    await Promise.resolve();
     expect(execute).toHaveBeenCalledOnce();
     expect(await dispatch(other, { ...item, id: "continuation-other", taskId: other.id })).toBe(true);
     expect(execute).toHaveBeenCalledTimes(2);

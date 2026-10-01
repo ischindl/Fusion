@@ -438,6 +438,8 @@ Validation and merge behavior (from engine runtime collection):
 - When multiple plugins set the same `env` key, later plugins override earlier values and the engine logs a warning.
 - `pathPrepend` entries from later plugins are placed earlier in the final prepend list.
 
+Independently of this hook, the engine applies a **non-interactive git floor** (`GIT_EDITOR`/`GIT_SEQUENCE_EDITOR=true`, `GIT_PAGER`/`PAGER=cat`, `GIT_TERMINAL_PROMPT=0`, `GIT_MERGE_AUTOEDIT=no`) **last** to every autonomous spawn lane, so neither a plugin contribution nor a task-scoped env can re-enable an interactive git prompt. If your plugin runtime spawns the agent CLI itself (outside the executor's own spawn seams), wrap the env you pass to the spawn with `applyNonInteractiveGitEnv` from `@fusion/core` so your lane honors the same floor; do not re-declare the individual git env keys locally. Every first-party runtime plugin already does (RUFU-210: acp/claude/grok/omp/cursor/hermes; RUFU-216: droid/paperclip/openclaw) — a new runtime plugin must match, with probe/config/key-mint seams deliberately exempt; a bundled plugin also needs the helper listed in the CLI staged-plugin shim's bounded re-exports, or the publish build fails.
+
 ### Example: prepend a generated tool directory for executor commands
 
 ```typescript
@@ -876,6 +878,27 @@ Placement guidance:
 - `primary`: top-level nav tab (host may limit count on mobile)
 - `overflow`: desktop header overflow menu
 - `more`: mobile More sheet / secondary nav surfaces
+
+### Shared dashboard-view layout contract
+
+<!-- FNXC:StandardizedViewLayout 2026-09-13-22:31: FN-379 standardizes every dashboard destination on one layout/header/rail/action contract, so plugin views must cooperate with the host chrome instead of forking a second header or a private rail width. -->
+
+Full dashboard destinations share one composition: a single header, an optional tab strip, the content, and an optional contextual footer. Plugin views participate through opt-in, backward-compatible exports:
+
+| Import | Purpose |
+| --- | --- |
+| `@fusion/dashboard/app/components/ViewLayout` | Bounded shell: header, optional tabs, body, optional footer. Pass `contentOwnsScroll` only when the child owns the entire flex/scroll chain (canvas, transcript, terminal, table). |
+| `@fusion/dashboard/app/components/ViewHeader` | The single visible title/action owner, including the tactile `ChevronLeft` return before the title via `backAction`. |
+| `@fusion/dashboard/app/components/ViewSidebar` | The desktop/tablet collection rail with the shared accessible separator. |
+| `@fusion/dashboard/app/components/ViewActionButton` | The shared creation/action button (`kind="create"` renders the common `Plus`); labels collapse visually on phones while the localized accessible name is retained. |
+| `@fusion/dashboard/app/plugins/PluginDashboardViewHeader` | Cooperative header for plugin views: outside a full host it renders `ViewHeader`; inside one it keeps a single title and portals the plugin's live actions into the host header. |
+
+Rules:
+- Never render a second title when the host already provides chrome; use `PluginDashboardViewHeader` so the host owns the visible header.
+- Never publish a private sidebar width key. The rail width is one project-scoped preference owned by `ViewLayoutContext`/`useViewSidebarWidth`; a host may clamp the rendered width but only the provider persists the operator preference.
+- Put primary creation in the header, not in a footer or an empty-state duplicate.
+- On phones, show the list first and return through the header chevron; do not add a separate textual Back row.
+- The `layout` contract on `PluginDashboardViewHost` is optional. Views registered before FN-379, and uncontrolled third-party extensions, keep their previous host fallback rendering.
 
 Project-scoped UI state guidance:
 - Persist plugin view layout/state in browser storage using a plugin-owned base key and the shared project-scoped pattern (`kb:${projectId}:${baseKey}`).
@@ -1781,10 +1804,9 @@ A plugin trait may **not** declare these flags (rejected at validation, and as a
 backstop at registry registration):
 
 - `complete` — a terminal-success column that silently satisfies dependencies.
-- `archived` — globally hidden column semantics.
 
-A plugin needing those semantics composes its trait **alongside** the built-in
-`complete` / `archived` trait on the same column.
+A plugin needing terminal-success semantics composes its trait **alongside** the built-in
+`complete` trait on the same column. Fusion has no task-archive trait or hidden archive column.
 
 ### Versioned hook-descriptor schema
 

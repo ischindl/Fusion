@@ -901,7 +901,6 @@ describe("executeHeartbeat", () => {
 
       expect(getTasksByAssignedAgent).toHaveBeenCalledWith("agent-001", {
         pausedOnly: true,
-        excludeArchived: true,
       });
       expect(pauseTask).toHaveBeenCalledTimes(1);
       expect(pauseTask).toHaveBeenCalledWith("FN-001", false);
@@ -1120,17 +1119,17 @@ describe("executeHeartbeat", () => {
       expect(result.resultJson).toEqual({ reason: "task_not_found", taskId: "FN-MISSING" });
     });
 
-    it("clears archived task assignments and falls back to a no-task heartbeat for identity agents", async () => {
+    it("clears completed task assignments and falls back to a no-task heartbeat for identity agents", async () => {
       const appendAgentLog = vi.fn().mockResolvedValue(undefined);
       mockTaskStore = createMockTaskStore({
         appendAgentLog,
         getTask: vi.fn().mockResolvedValue({
-          id: "FN-ARCHIVED",
-          title: "Archived Task",
-          description: "Archived task description",
-          prompt: "# Archived\n\nTask is archived",
+          id: "FN-COMPLETE",
+          title: "Completed Task",
+          description: "Completed task description",
+          prompt: "# Completed\n\nTask is complete",
           steps: [],
-          column: "archived",
+          column: "done",
           dependencies: [],
           log: [],
           attachments: [],
@@ -1139,7 +1138,7 @@ describe("executeHeartbeat", () => {
         } as unknown as TaskDetail),
       });
       const store = createStoreWithAgentForExec({
-        taskId: "FN-ARCHIVED",
+        taskId: "FN-COMPLETE",
         soul: "Monitor the project and handle ambient work.",
       });
       const mockSession = createMockAgentSession();
@@ -1217,6 +1216,9 @@ describe("executeHeartbeat", () => {
         createdAt: overrides.createdAt ?? "2026-01-01T00:00:00.000Z",
         updatedAt: overrides.updatedAt ?? "2026-01-01T00:00:00.000Z",
         paused: overrides.paused,
+        // RUFU-264: explicit field-list fixture — without forwarding userPaused,
+        // operator-park coverage through the auto-claim path would be vacuous.
+        userPaused: overrides.userPaused,
         assignedAgentId: overrides.assignedAgentId,
         checkedOutBy: overrides.checkedOutBy,
         deletedAt: overrides.deletedAt,
@@ -1539,11 +1541,11 @@ describe("executeHeartbeat", () => {
     it.each([
       { name: "executor display", role: "executor" as const, soul: "Re-ratchet line-count baseline specialist", runtimeConfig: undefined, expectedStatus: "auto-claim relevant tasks: enabled" },
       { name: "engineer role fallback", role: "engineer" as const, soul: "Re-ratchet line-count baseline specialist", runtimeConfig: { engineerBacklogAutoClaim: false }, expectedStatus: "auto-claim relevant tasks: enabled (compatible backlog blocked; engineerBacklogAutoClaim disabled)" },
-    ])("drops archived-while-cached candidates from heartbeat prompt and claim path for $name", async (scenario) => {
-      const archivedCachedTask = makeAutoClaimTask({
+    ])("drops completed-while-cached candidates from heartbeat prompt and claim path for $name", async (scenario) => {
+      const completedCachedTask = makeAutoClaimTask({
         id: "FN-6872",
-        title: "Re-ratchet line-count baseline archived cached title",
-        description: "Re-ratchet line-count baseline work that matched this agent before archive",
+        title: "Re-ratchet line-count baseline completed cached title",
+        description: "Re-ratchet line-count baseline work that matched this agent before completion",
         createdAt: "2026-01-01T00:00:00.000Z",
       });
       const siblingCachedTask = makeAutoClaimTask({
@@ -1552,11 +1554,11 @@ describe("executeHeartbeat", () => {
         description: "neutral queue work",
         createdAt: "2026-01-02T00:00:00.000Z",
       });
-      const archivedCanonicalTask = makeAutoClaimTask({
+      const completedCanonicalTask = makeAutoClaimTask({
         id: "FN-6872",
-        title: "Re-ratchet line-count baseline archived canonical title",
-        description: "archived within the snapshot TTL",
-        column: "archived",
+        title: "Re-ratchet line-count baseline completed canonical title",
+        description: "completed within the snapshot TTL",
+        column: "done",
         createdAt: "2026-01-01T00:00:00.000Z",
       });
       const siblingCanonicalTask = makeAutoClaimTask({
@@ -1566,8 +1568,8 @@ describe("executeHeartbeat", () => {
         createdAt: "2026-01-02T00:00:00.000Z",
       });
       const listTasks = vi.fn()
-        .mockResolvedValueOnce([archivedCachedTask, siblingCachedTask])
-        .mockResolvedValue([archivedCanonicalTask, siblingCanonicalTask]);
+        .mockResolvedValueOnce([completedCachedTask, siblingCachedTask])
+        .mockResolvedValue([completedCanonicalTask, siblingCanonicalTask]);
       const store = createStoreWithAgentForExec({
         taskId: undefined,
         role: scenario.role,
@@ -1594,9 +1596,58 @@ describe("executeHeartbeat", () => {
       expect(executionPrompt).toContain(scenario.expectedStatus);
       expect(executionPrompt).toContain("Open Task Candidates (auto-claim scan):");
       expect(executionPrompt).not.toContain("FN-6872");
-      expect(executionPrompt).not.toContain("Re-ratchet line-count baseline archived cached title");
-      expect(executionPrompt).not.toContain("Re-ratchet line-count baseline archived canonical title");
+      expect(executionPrompt).not.toContain("Re-ratchet line-count baseline completed cached title");
+      expect(executionPrompt).not.toContain("Re-ratchet line-count baseline completed canonical title");
       expect(executionPrompt).toContain("- FN-TODO: Canonical neutral queue title");
+    });
+
+    /*
+    FNXC:AutoClaim 2026-09-23-21:35 (RUFU-264):
+    An operator Move-Task hard cancel (`userPaused: true, paused: undefined`) is
+    a durable operator stop (`FNXC:TaskDispatch 2026-07-19-14:40`, scheduler.ts).
+    The auto-claim selector only honored `paused`, so the heartbeat BOTH offered
+    the cancelled card in "Open Task Candidates" and attempted to claim it.
+    This drives the full no-task pipeline (snapshot → fresh re-resolve → prompt
+    → claim attempt) through the real fixture.
+    */
+    it("excludes an operator-parked (userPaused) card from the auto-claim prompt and claim path", async () => {
+      const parkedTask = makeAutoClaimTask({
+        id: "FN-user-paused",
+        title: "Operator hard-cancelled work",
+        description: "Move-Task cancelled; scheduler must never dispatch it",
+        userPaused: true,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      const runnableTask = makeAutoClaimTask({
+        id: "FN-claimable",
+        title: "Canonical runnable work",
+        description: "genuinely claimable",
+        createdAt: "2026-01-02T00:00:00.000Z",
+      });
+      const listTasks = vi.fn().mockResolvedValue([parkedTask, runnableTask]);
+      const store = createStoreWithAgentForExec({
+        taskId: undefined,
+        role: "executor",
+        soul: "Re-ratchet line-count baseline specialist",
+      });
+      const mockSession = createMockAgentSession();
+      mockedCreateFnAgent.mockResolvedValue({ session: mockSession as any });
+      mockTaskStore = createMockTaskStore({
+        listTasks,
+        getTask: vi.fn().mockResolvedValue(runnableTask),
+      });
+
+      const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+      await monitor.executeHeartbeat({ agentId: "agent-001", source: "timer" });
+
+      const allPrompts = mockSession.prompt.mock.calls.map((call) => String(call[0])).join("\n");
+      expect(allPrompts).toContain("Open Task Candidates (auto-claim scan):");
+      expect(allPrompts).toContain("FN-claimable");
+      // Not a titled line, not a bare count, not anywhere in any prompt.
+      expect(allPrompts).not.toContain("FN-user-paused");
+      expect(store.claimTaskForAgent).not.toHaveBeenCalledWith("agent-001", "FN-user-paused", expect.anything());
+      // The runnable sibling still rides the normal claim path (test is not vacuous).
+      expect(store.claimTaskForAgent).toHaveBeenCalledWith("agent-001", "FN-claimable", expect.anything());
     });
 
     it("reuses one snapshot rebuild across concurrent no-task heartbeats", async () => {
@@ -2034,7 +2085,52 @@ describe("executeHeartbeat", () => {
       expect(executionPrompt).toContain("FN-001");
       expect(executionPrompt).toContain("FN-220");
       expect(executionPrompt).toContain("(bound)");
-      expect(getTasksByAssignedAgent).toHaveBeenCalledWith("agent-001", { excludeArchived: true });
+      expect(getTasksByAssignedAgent).toHaveBeenCalledWith("agent-001");
+    });
+
+    /*
+    FNXC:WakeDeltaMultiAssign 2026-09-23-21:35 (RUFU-264):
+    The reported tick, end to end: a Move-Task hard-cancelled sibling
+    (`userPaused: true, paused: false` — the exact serialization) arrived via
+    `getTasksByAssignedAgent` and the pre-fix ranker titled it `[ready_todo]`
+    actionable work the scheduler would never dispatch, while the count line
+    "(paused)" underreported the true parked set. The parked card must be
+    invisible as a titled line and visible only in the operator bucket.
+    */
+    it("Wake Delta keeps an operator-parked sibling out of titled lines and counts it as operator-paused", async () => {
+      const now = new Date().toISOString();
+      const getTasksByAssignedAgent = vi.fn().mockResolvedValue([
+        { id: "FN-001", column: "in-progress", title: "Bound task", dependencies: [], createdAt: now, updatedAt: now },
+        { id: "FN-220", column: "todo", title: "Sibling todo", dependencies: [], createdAt: now, updatedAt: now },
+        {
+          id: "FN-PARKED",
+          column: "todo",
+          title: "Operator hard-cancelled",
+          description: "moved back by the operator; must not be re-chased",
+          dependencies: [],
+          userPaused: true,
+          paused: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ]);
+      mockTaskStore = createMockTaskStore({ getTasksByAssignedAgent });
+      const store = createStoreWithAgentForExec({ taskId: "FN-001" });
+      const mockSession = createMockAgentSession();
+      mockedCreateFnAgent.mockResolvedValue({ session: mockSession as any });
+
+      const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+      await monitor.executeHeartbeat({ agentId: "agent-001", source: "timer" });
+
+      const allPrompts = mockSession.prompt.mock.calls.map((call) => String(call[0])).join("\n");
+      expect(allPrompts).toContain("coordination inventory");
+      // Live siblings still render as titled lines.
+      expect(allPrompts).toContain("FN-220");
+      // The parked sibling appears nowhere as a titled line or id...
+      expect(allPrompts).not.toContain("FN-PARKED");
+      // ...and the count line splits it into the operator bucket, not the merged (paused) lie.
+      expect(allPrompts).toContain("also assigned not actionable now: 1 (operator-paused: 1, engine-paused: 0)");
+      expect(allPrompts).not.toContain("(paused)");
     });
 
     it("exits checkout_conflict without starting a session when lease is held by another agent", async () => {
@@ -2509,7 +2605,17 @@ describe("executeHeartbeat", () => {
       const executionPrompt = promptCalls[promptCalls.length - 1][0];
       expect(executionPrompt).toContain("wake reason: message_received_already_consumed");
       expect(executionPrompt).toContain("- inbox snapshot: empty (already consumed)");
-      expect(executionPrompt).toContain("wake trigger source: message msg-empty-1 from user:user-empty, already consumed at snapshot");
+      /*
+      FNXC:CommentDelivery 2026-09-27-18:35 (RUFU-259):
+      This assertion used to pin `message msg-empty-1 … already consumed at snapshot`, which advertised an
+      id the agent's own reader cannot return — RUFU-251's second instance was exactly an agent burning
+      tool calls on one of these. The line keeps naming the ACTOR (who steered) and now states plainly that
+      the body is unrecoverable, so the agent neither guesses nor goes hunting.
+      */
+      expect(executionPrompt).toContain(
+        "wake trigger source: a message from user:user-empty was already marked read before this snapshot — its body is NOT retrievable from fn_read_messages",
+      );
+      expect(executionPrompt).not.toContain("msg-empty-1");
       expect(executionPrompt).toContain("- pending messages: 0");
       expect(executionPrompt).not.toContain("wake reason: message_received\n");
       expect(vi.mocked(heartbeatLog.log)).toHaveBeenCalledWith(
@@ -2554,7 +2660,11 @@ describe("executeHeartbeat", () => {
       const executionPrompt = promptCalls[promptCalls.length - 1][0];
       expect(executionPrompt).toContain("wake reason: message_received_urgent_already_consumed");
       expect(executionPrompt).toContain("- inbox snapshot: empty (already consumed)");
-      expect(executionPrompt).toContain("wake trigger source: message msg-forced-1 from user:user-forced (forced), already consumed at snapshot");
+      // Same honesty rule on the forced lane: the actor and the forced marker survive, the unreadable id does not.
+      expect(executionPrompt).toContain(
+        "wake trigger source: a message from user:user-forced (forced) was already marked read before this snapshot — its body is NOT retrievable from fn_read_messages",
+      );
+      expect(executionPrompt).not.toContain("msg-forced-1");
       expect(executionPrompt).toContain("- pending messages: 0");
       expect(vi.mocked(heartbeatLog.log)).toHaveBeenCalledWith(
         expect.stringMatching(/\[wake-trigger-diagnostics\].*messageId=msg-forced-1.*forced=true.*inboxUnreadCount=0.*wakeMessageStillUnread=false/),
@@ -3466,6 +3576,38 @@ describe("executeHeartbeat", () => {
       ]);
     });
 
+    /*
+    FNXC:TaskLogsRead 2026-09-09-15:19:
+    RUFU-204: the heartbeat lane must expose the cross-task target too. Durable agents poll OTHER cards'
+    logs from a task-bound heartbeat to decide whether a sibling has stalled, and the pre-fix closure
+    discarded the requested id, handing them their own card's fresh timestamp and inverting that judgement.
+    This asserts the heartbeat-installed tool (a) exposes task_id and (b) actually reads the requested card
+    from the shared task store. It calls createHeartbeatTools directly, so it does not touch the exact
+    70-tool count/name harness above.
+    */
+    it("installs fn_task_logs_read so a task-bound heartbeat can read another card's log", async () => {
+      const getAgentLogs = vi.fn(async () => [
+        { taskId: "FN-OTHER", timestamp: "2026-09-08T00:00:00.000Z", text: "sibling log row", type: "text", agent: "executor" },
+      ]);
+      const getAgentLogCount = vi.fn(async () => 1);
+      const logsTaskStore = { ...mockTaskStore, getAgentLogs, getAgentLogCount } as unknown as TaskStore;
+      const store = createStoreWithAgentForExec();
+
+      const monitor = new HeartbeatMonitor({ store, taskStore: logsTaskStore, rootDir: "/tmp/test" });
+      const tools = monitor.createHeartbeatTools("agent-001", logsTaskStore, "FN-001");
+      const logTool = tools.find((tool) => tool.name === "fn_task_logs_read");
+      expect(logTool).toBeDefined();
+      expect((logTool!.parameters as { properties: Record<string, unknown> }).properties).toHaveProperty("task_id");
+
+      const result = await (logTool as unknown as {
+        execute: (id: string, params: unknown) => Promise<{ content: { text: string }[] }>;
+      }).execute("call", { task_id: "FN-OTHER" });
+
+      expect(getAgentLogs).toHaveBeenCalledWith("FN-OTHER", expect.any(Object));
+      expect(result.content[0].text).toContain("Agent log (FN-OTHER):");
+      expect(result.content[0].text).toContain("sibling log row");
+    });
+
     it("loads workspace memory into system prompt and identity snapshot when inline memory is empty", async () => {
       const rootDir = mkdtempSync(join(tmpdir(), "heartbeat-workspace-memory-"));
       mkdirSync(join(rootDir, ".fusion", "agent-memory", "agent-001"), { recursive: true });
@@ -3728,6 +3870,113 @@ describe("executeHeartbeat", () => {
       expect(promptArg).toContain("Investigating blocker");
     });
 
+    /*
+    FNXC:CommentDelivery 2026-09-27-18:40 (RUFU-259):
+    The wake delta used to print `- triggering comments: N` and then skip any id whose body it could not
+    find, printing nothing about the skip. RUFU-251 measured the result: the counter advanced
+    `comments: 1 -> 2` while four tool calls proved no surface could return the body, so the agent could
+    not tell "nobody steered me" from "my lookup is wrong". These tests pin the replacement contract:
+    the counter is readable-of-advertised, every advertised id gets a line, and the miss says so.
+    */
+    it("counts triggering comments as readable-of-advertised instead of a bare count", async () => {
+      const store = createStoreWithAgentForExec();
+      const mockSession = createMockAgentSession();
+      mockedCreateFnAgent.mockResolvedValue({ session: mockSession as any });
+
+      mockTaskStore.getTask = vi.fn().mockResolvedValue({
+        id: "FN-001",
+        title: "Test Task",
+        description: "Test task description",
+        prompt: "# Prompt",
+        comments: [{ id: "c-1", author: "user", text: "Please cover edge cases", createdAt: "2026-01-01T00:00:00.000Z" }],
+        steeringComments: [],
+        steps: [],
+        column: "todo",
+        dependencies: [],
+        log: [],
+        attachments: [],
+      } as unknown as TaskDetail);
+
+      const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+      await monitor.executeHeartbeat({
+        agentId: "agent-001",
+        source: "on_demand",
+        triggeringCommentIds: ["c-1", "msg-phantom-259"],
+        triggeringCommentType: "task",
+      });
+
+      const promptArg = mockSession.prompt.mock.calls[0]![0] as string;
+      // One advertised id resolves, the other is the phantom RUFU-251 measured; the count says so.
+      expect(promptArg).toContain("- triggering comments: 1 of 2 readable on this card");
+      expect(promptArg).toContain("- [user] (commentId: c-1):");
+      expect(promptArg).toContain("Please cover edge cases");
+    });
+
+    it("states an advertised comment id it cannot read instead of dropping it silently", async () => {
+      const store = createStoreWithAgentForExec();
+      const mockSession = createMockAgentSession();
+      mockedCreateFnAgent.mockResolvedValue({ session: mockSession as any });
+
+      mockTaskStore.getTask = vi.fn().mockResolvedValue({
+        id: "FN-001",
+        title: "Test Task",
+        description: "Test task description",
+        prompt: "# Prompt",
+        comments: [],
+        steeringComments: [],
+        steps: [],
+        column: "todo",
+        dependencies: [],
+        log: [],
+        attachments: [],
+      } as unknown as TaskDetail);
+
+      const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+      await monitor.executeHeartbeat({
+        agentId: "agent-001",
+        source: "on_demand",
+        triggeringCommentIds: ["msg-phantom-259"],
+        triggeringCommentType: "task",
+      });
+
+      const promptArg = mockSession.prompt.mock.calls[0]![0] as string;
+      expect(promptArg).toContain("- triggering comments: 0 of 1 readable on this card");
+      expect(promptArg).toContain(
+        "- [unknown] (commentId: msg-phantom-259): body is NOT on this card — do not guess its content",
+      );
+    });
+
+    it("names the card so the advertised ids are fetchable through fn_task_show", async () => {
+      const store = createStoreWithAgentForExec();
+      const mockSession = createMockAgentSession();
+      mockedCreateFnAgent.mockResolvedValue({ session: mockSession as any });
+
+      mockTaskStore.getTask = vi.fn().mockResolvedValue({
+        id: "FN-001",
+        title: "Test Task",
+        description: "Test task description",
+        prompt: "# Prompt",
+        comments: [{ id: "c-1", author: "user", text: "Please cover edge cases", createdAt: "2026-01-01T00:00:00.000Z" }],
+        steeringComments: [],
+        steps: [],
+        column: "todo",
+        dependencies: [],
+        log: [],
+        attachments: [],
+      } as unknown as TaskDetail);
+
+      const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+      await monitor.executeHeartbeat({
+        agentId: "agent-001",
+        source: "on_demand",
+        triggeringCommentIds: ["c-1"],
+        triggeringCommentType: "task",
+      });
+
+      const promptArg = mockSession.prompt.mock.calls[0]![0] as string;
+      expect(promptArg).toContain('fn_task_show(id: "FN-001", commentIds:');
+    });
+
     it("keeps standard prompt when no triggering comments are provided", async () => {
       const store = createStoreWithAgentForExec();
       const mockSession = createMockAgentSession();
@@ -3825,6 +4074,25 @@ describe("executeHeartbeat", () => {
       expect(callArgs.defaultModelId).toBe("claude-sonnet-4-5");
       expect(callArgs.fallbackProvider).toBeUndefined();
       expect(callArgs.fallbackModelId).toBeUndefined();
+    });
+
+    it("uses project role lanes directly for a model-less idle heartbeat", async () => {
+      const store = createStoreWithAgentForExec({ runtimeConfig: {} });
+      mockTaskStore = createMockTaskStore({
+        getSettings: vi.fn().mockResolvedValue({
+          executionProvider: "anthropic",
+          executionCredentialInstanceId: "project-account",
+          executionModelId: "claude-opus-5",
+        }),
+      });
+      mockedCreateFnAgent.mockResolvedValue({ session: createMockAgentSession() as any });
+
+      const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+      await monitor.executeHeartbeat({ agentId: "agent-001", source: "on_demand" });
+
+      const callArgs = mockedCreateFnAgent.mock.calls[0]![0];
+      expect(callArgs.defaultProvider).toBe("anthropic");
+      expect(callArgs.defaultModelId).toBe("claude-opus-5");
     });
 
     it("passes undefined model when runtimeConfig has no model", async () => {
@@ -3998,6 +4266,17 @@ describe("executeHeartbeat", () => {
     FNXC:EngineTests 2026-09-20-05:15:
     Autonomous no-task heartbeat creation must accept ordinary work without mission lineage and preserve normal agent-heartbeat provenance.
     */
+    /*
+    FNXC:TaskQueueOrder 2026-09-24-01:27 (RUFU-287):
+    FN-509 deleted the task `priority` levels, and with them this tool's `priority` parameter —
+    `taskCreateParams` declares only `description`, `dependencies`, `workflow_id` and `mission_lineage`,
+    and `createTaskCreateTool.execute` reads exactly those, so a legacy caller's `priority` is dropped
+    before `store.createTask` and queue position comes from arrival plus an explicit operator Boost.
+    Both cases below asserted the deleted contract, so they are re-derived from the current parameter
+    list rather than kept as a tombstone. `expect.objectContaining` requires a KEY to exist, so
+    `priority: undefined` could never express "the product omits it" — the omission is asserted on the
+    captured input, which is the same idiom the lineage assertions in these cases already use.
+    */
     it("creates a lineage-free task from an autonomous no-task heartbeat", async () => {
       const store = createStoreWithAgentForExec({ taskId: undefined, soul: "I am a coordinator" });
       let capturedCreateTool: any;
@@ -4020,7 +4299,6 @@ describe("executeHeartbeat", () => {
       expect(mockTaskStore.createTask).toHaveBeenCalledWith(expect.objectContaining({
         description: "Follow-up task",
         dependencies: undefined,
-        priority: undefined,
         source: expect.objectContaining({
           sourceType: "agent_heartbeat",
           sourceAgentId: "agent-001",
@@ -4033,9 +4311,11 @@ describe("executeHeartbeat", () => {
       const createInput = vi.mocked(mockTaskStore.createTask).mock.calls[0]?.[0];
       expect(createInput).not.toHaveProperty("missionId");
       expect(createInput).not.toHaveProperty("sliceId");
+      // FN-509: there is no priority level to store, and the key must be absent rather than undefined.
+      expect(createInput).not.toHaveProperty("priority");
     });
 
-    it("forwards explicit priority when fn_task_create tool is called", async () => {
+    it("drops a legacy priority argument while forwarding mission lineage", async () => {
       const store = createStoreWithAgentForExec();
       let capturedCreateTool: any;
       const mockSession = createMockAgentSession();
@@ -4051,9 +4331,17 @@ describe("executeHeartbeat", () => {
       const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
       await monitor.executeHeartbeat({ agentId: "agent-001", source: "on_demand" });
 
-      expect(mockTaskStore.createTask).toHaveBeenCalledWith(expect.objectContaining({
-        priority: "high",
-      }), expect.any(Object));
+      const createInput = vi.mocked(mockTaskStore.createTask).mock.calls[0]?.[0] as Record<string, any>;
+      // The deletion's guarantee: the stale key never reaches the store…
+      expect(createInput).not.toHaveProperty("priority");
+      // …while the axes the tool DOES declare still flow, so nothing was dropped along with it.
+      expect(createInput).toMatchObject({ description: "Follow-up task", missionId: "M-001", sliceId: "SL-001" });
+      expect(createInput.source.sourceMetadata.missionLineage).toEqual({
+        missionId: "M-001",
+        sliceId: "SL-001",
+        featureId: "F-001",
+      });
+      expect(createInput.source.sourceParentTaskId).toBe("FN-001");
     });
   });
 
@@ -4570,6 +4858,186 @@ describe("executeHeartbeat", () => {
       expect(onDemandResult.status).toBe("completed");
       expect(assignmentResult.status).toBe("completed");
       expect(mockedCreateFnAgent).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  /*
+  FNXC:LaneCapabilityWake 2026-09-26-18:46 (RUFU-272):
+  A wake on `agent.taskId` never re-ran the bind policy, so an implementation-class card bound to a
+  capability-ineligible lane (assignmentPolicy "none"/"explicit-only" without a durable-owner witness)
+  executed on that lane forever — the RUFU-222 wedge. These legs pin the wake-path revalidation:
+  ineligible durable binds are declined with a named reason (log + `task:lane-capability-declined`
+  audit row), the wake still falls through to inbox/auto-claim, and every capable-lane behavior
+  (explicit-owner assignment, auto executor pickup, live-session immunity) is unchanged.
+
+  The four decline legs shipped as `it.fails` defect pins while the fix landed (measured red
+  pre-fix: the mis-bound card executed on the audit-only lane, the inbox was never offered, and the
+  inbox projection carried no `roles`); the wake revalidation commit flipped them back to plain `it`.
+  */
+  describe("lane-capability wake revalidation", () => {
+    function createLaneCapTaskStore(overrides: Partial<TaskStore> = {}): TaskStore {
+      return createMockTaskStore({
+        recordRunAuditEvent: vi.fn().mockResolvedValue(undefined),
+        ...overrides,
+      });
+    }
+
+    function boundTaskRow(id: string, overrides: Record<string, unknown> = {}): TaskDetail {
+      return {
+        id,
+        title: "Bound card",
+        description: "implementation card",
+        prompt: "# Test PROMPT.md\nSome content",
+        steps: [],
+        column: "in-progress",
+        assignedAgentId: "agent-001",
+        worktree: "/tmp/worktree-fn-001",
+        branch: "fusion/fn-001",
+        dependencies: [],
+        log: [],
+        attachments: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        ...overrides,
+      } as unknown as TaskDetail;
+    }
+
+    it("declines a policy-none lane holding a durable-owned implementation card, without executing it", async () => {
+      const store = createStoreWithAgentForExec({
+        taskId: "FN-WEDGE",
+        runtimeConfig: { assignmentPolicy: "none" } as Agent["runtimeConfig"],
+      });
+      const taskStore = createLaneCapTaskStore({
+        getTask: vi.fn().mockResolvedValue(boundTaskRow("FN-WEDGE")),
+      });
+      mockedCreateFnAgent.mockResolvedValue({ session: createMockAgentSession() as any });
+      const monitor = new HeartbeatMonitor({ store, taskStore, rootDir: "/tmp" });
+
+      await monitor.executeHeartbeat({ agentId: "agent-001", source: "automation" });
+
+      expect(mockedCreateFnAgent).not.toHaveBeenCalled();
+      expect(heartbeatLog.warn).toHaveBeenCalledWith(expect.stringContaining('has assignmentPolicy "none"'));
+      expect(taskStore.recordRunAuditEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mutationType: "task:lane-capability-declined",
+          taskId: "FN-WEDGE",
+          agentId: "agent-001",
+        }),
+      );
+    });
+
+    it("still offers the inbox after a wake decline", async () => {
+      const store = createStoreWithAgentForExec({
+        taskId: "FN-WEDGE",
+        runtimeConfig: { assignmentPolicy: "none" } as Agent["runtimeConfig"],
+      });
+      const selectNextTaskForAgent = vi.fn().mockResolvedValue(null);
+      const taskStore = createLaneCapTaskStore({
+        getTask: vi.fn().mockResolvedValue(boundTaskRow("FN-WEDGE")),
+        selectNextTaskForAgent,
+      });
+      mockedCreateFnAgent.mockResolvedValue({ session: createMockAgentSession() as any });
+      const monitor = new HeartbeatMonitor({ store, taskStore, rootDir: "/tmp" });
+
+      await monitor.executeHeartbeat({ agentId: "agent-001", source: "automation" });
+
+      expect(mockedCreateFnAgent).not.toHaveBeenCalled();
+      expect(selectNextTaskForAgent).toHaveBeenCalled();
+    });
+
+    it("lets an explicit-only lane execute the card it durably owns (liaison explicit assignment unchanged)", async () => {
+      const store = createStoreWithAgentForExec({
+        taskId: "FN-OWNED",
+        runtimeConfig: { assignmentPolicy: "explicit-only" } as Agent["runtimeConfig"],
+        roles: ["executor"],
+      });
+      const taskStore = createLaneCapTaskStore({
+        getTask: vi.fn().mockResolvedValue(boundTaskRow("FN-OWNED")),
+      });
+      mockedCreateFnAgent.mockResolvedValue({ session: createMockAgentSession() as any });
+      const monitor = new HeartbeatMonitor({ store, taskStore, rootDir: "/tmp" });
+
+      await monitor.executeHeartbeat({ agentId: "agent-001", source: "automation" });
+
+      expect(mockedCreateFnAgent).toHaveBeenCalledOnce();
+      expect(taskStore.recordRunAuditEvent).not.toHaveBeenCalledWith(
+        expect.objectContaining({ mutationType: "task:lane-capability-declined" }),
+      );
+    });
+
+    it("holds a non-owner explicit wake on the auto bar when the lane is explicit-only", async () => {
+      const store = createStoreWithAgentForExec({
+        taskId: "FN-MIRROR",
+        runtimeConfig: { assignmentPolicy: "explicit-only" } as Agent["runtimeConfig"],
+        roles: ["executor"],
+      });
+      const taskStore = createLaneCapTaskStore({
+        getTask: vi.fn().mockResolvedValue(boundTaskRow("FN-MIRROR", { assignedAgentId: "agent-999" })),
+      });
+      mockedCreateFnAgent.mockResolvedValue({ session: createMockAgentSession() as any });
+      const monitor = new HeartbeatMonitor({ store, taskStore, rootDir: "/tmp" });
+
+      await monitor.executeHeartbeat({ agentId: "agent-001", source: "automation" });
+
+      expect(mockedCreateFnAgent).not.toHaveBeenCalled();
+      expect(taskStore.recordRunAuditEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mutationType: "task:lane-capability-declined",
+          taskId: "FN-MIRROR",
+        }),
+      );
+    });
+
+    it("projects the full role set into the inbox selector so multi-role lanes are not misjudged", async () => {
+      const store = createStoreWithAgentForExec({
+        taskId: undefined,
+        role: "reviewer",
+        roles: ["reviewer", "executor"],
+      });
+      const selectNextTaskForAgent = vi.fn().mockResolvedValue(null);
+      const taskStore = createLaneCapTaskStore({ selectNextTaskForAgent });
+      const monitor = new HeartbeatMonitor({ store, taskStore, rootDir: "/tmp" });
+
+      await monitor.executeHeartbeat({ agentId: "agent-001", source: "automation" });
+
+      expect(selectNextTaskForAgent).toHaveBeenCalledWith(
+        "agent-001",
+        expect.objectContaining({ roles: expect.arrayContaining(["reviewer", "executor"]) }),
+      );
+    });
+
+    it("never declines a card whose own heartbeat run is live", async () => {
+      const store = createStoreWithAgentForExec({
+        taskId: "FN-LIVE",
+        runtimeConfig: { assignmentPolicy: "none" } as Agent["runtimeConfig"],
+      });
+      (store.getActiveHeartbeatRun as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: "run-live-1",
+        agentId: "agent-001",
+        contextSnapshot: { taskId: "FN-LIVE" },
+      });
+      const taskStore = createLaneCapTaskStore({
+        getTask: vi.fn().mockResolvedValue(boundTaskRow("FN-LIVE")),
+      });
+      mockedCreateFnAgent.mockResolvedValue({ session: createMockAgentSession() as any });
+      const monitor = new HeartbeatMonitor({ store, taskStore, rootDir: "/tmp" });
+
+      await monitor.executeHeartbeat({ agentId: "agent-001", source: "automation" });
+
+      expect(taskStore.recordRunAuditEvent).not.toHaveBeenCalledWith(
+        expect.objectContaining({ mutationType: "task:lane-capability-declined" }),
+      );
+      expect(mockedCreateFnAgent).toHaveBeenCalledOnce();
+    });
+
+    it("regression floor: a default auto-policy executor lane still executes its bound card", async () => {
+      const store = createStoreWithAgentForExec();
+      mockedCreateFnAgent.mockResolvedValue({ session: createMockAgentSession() as any });
+      const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+
+      await monitor.executeHeartbeat({ agentId: "agent-001", source: "automation" });
+
+      expect(mockedCreateFnAgent).toHaveBeenCalledOnce();
     });
   });
 });

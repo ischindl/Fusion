@@ -30,6 +30,39 @@ export const schedulingSearchEntries: SettingsSearchEntry[] = [
     helpFallback: "Caps stacked typecheck/build verification across tasks. Default: 1. Range: 1–8.",
     keywords: ["parallelism", "tests", "cpu", "load"],
   },
+  /*
+  FNXC:VerificationResourceBound 2026-09-10-13:09:
+  RUFU-212: one entry per new resource-envelope row, labels/help verbatim from
+  SchedulingSection.tsx. Keywords carry the complaint vocabulary ("machine slows to a crawl",
+  "desktop lag while tests run") an operator types before knowing the setting's name.
+  */
+  {
+    sectionId: "scheduling",
+    key: "verificationCpuQuotaPercent",
+    labelKey: "settings.scheduling.verificationCpuQuotaPercent",
+    labelFallback: "Verification CPU quota (%)",
+    helpKey: "settings.scheduling.verificationCpuQuotaPercentHelp",
+    helpFallback: "CPUQuota per verification (200 = 2 cores). Empty = inherit the machine fallback; unset there means ~half the cores, at least 100%. 0 disables bounding for this project.",
+    keywords: ["cpu", "throttle", "slow desktop", "machine crawl", "load", "verification too heavy"],
+  },
+  {
+    sectionId: "scheduling",
+    key: "verificationCpuIoWeight",
+    labelKey: "settings.scheduling.verificationCpuIoWeight",
+    labelFallback: "Verification CPU/IO weight",
+    helpKey: "settings.scheduling.verificationCpuIoWeightHelp",
+    helpFallback: "CPU/IO weight while unthrottled (1–10000; lower keeps the desktop responsive). Empty = inherit the machine fallback; unset there means 10. 0 disables weight shaping.",
+    keywords: ["nice", "priority", "io", "disk", "desktop lag", "responsiveness"],
+  },
+  {
+    sectionId: "scheduling",
+    key: "verificationMemoryMaxMb",
+    labelKey: "settings.scheduling.verificationMemoryMaxMb",
+    labelFallback: "Verification memory cap (MB)",
+    helpKey: "settings.scheduling.verificationMemoryMaxMbHelp",
+    helpFallback: "MemoryMax per verification, in MB. Empty = inherit the machine fallback; unset there means no memory cap. 0 disables the cap.",
+    keywords: ["memory", "ram", "oom", "cap", "verification memory"],
+  },
   {
     sectionId: "scheduling",
     key: "executorToolFailureRetryCount",
@@ -162,46 +195,6 @@ export const schedulingSearchEntries: SettingsSearchEntry[] = [
     helpKey: "settings.scheduling.maximumAgeInHoursBeforeAPlanIs",
     helpFallback: "Maximum age in hours before a plan is considered stale. Default: 6 hours.",
     keywords: ["PROMPT.md", "replan", "age"],
-  },
-  {
-    sectionId: "scheduling",
-    key: "autoArchiveDoneTasksEnabled",
-    labelKey: "settings.scheduling.enableAutomaticTaskArchiving",
-    labelFallback: " Enable automatic task archiving ",
-    helpKey: "settings.scheduling.completedTasksOlderThanTheThresholdAreMoved",
-    helpFallback:
-      "Completed tasks older than the threshold are moved out of the active task database. Default: enabled.",
-    keywords: ["done column", "cleanup", "prune", "board clutter"],
-  },
-  {
-    sectionId: "scheduling",
-    key: "autoArchiveDoneAfterMs",
-    labelKey: "settings.scheduling.archiveCompletedTasksAfterDays",
-    labelFallback: "Archive Completed Tasks After (days)",
-    helpKey: "settings.scheduling.numberOfDaysATaskCanStayIn",
-    helpFallback:
-      "Number of days a task can stay in Done before it is archived. Default: 2 days (48 hours).",
-    keywords: ["retention", "cleanup", "age"],
-  },
-  {
-    sectionId: "scheduling",
-    key: "archiveAgentLogMode",
-    labelKey: "settings.scheduling.archiveAgentLog",
-    labelFallback: "Archive Agent Log",
-    helpKey: "settings.scheduling.compactModeKeepsArchiveSizeLowWhilePreserving",
-    helpFallback:
-      "Compact mode keeps archive size low while preserving recent agent activity for context. Default: compact.",
-    keywords: ["history", "transcript", "disk space", "retention"],
-  },
-  {
-    sectionId: "scheduling",
-    key: "autoArchiveDuplicateTasksEnabled",
-    labelKey: "settings.scheduling.autoArchiveDuplicateTasks",
-    labelFallback: " Automatically archive duplicate tasks ",
-    helpKey: "settings.scheduling.autoArchiveDuplicateTasksHelp",
-    helpFallback:
-      "Automatically archive tasks detected as same-agent duplicates on creation (off by default). When disabled, duplicates are flagged in place with the yellow Duplicate chip and Keep/Archive actions instead of being archived automatically.",
-    keywords: ["near duplicate", "dedupe", "repeat"],
   },
   {
     sectionId: "scheduling",

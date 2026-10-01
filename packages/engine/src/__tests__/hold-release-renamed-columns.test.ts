@@ -49,6 +49,14 @@ function task(over: Partial<Task> = {}): Task {
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     columnMovedAt: "2026-01-01T00:00:00.000Z",
+    /*
+    FNXC:PlanPremises 2026-09-16-05:35:
+    A card released into processing passes the plan-premise gate (RUFU-145/RUFU-246). This fixture
+    store exposes no getTasksDir, so the gate reads task.prompt; without one the card fails closed
+    as `unavailable` and never releases. A planned prompt that STATES no premises mirrors the
+    PLANNED_PROMPT the fs-backed sibling fixtures write: vacuously satisfied, nothing to falsify.
+    */
+    prompt: "# Planned\n\n## Mission\nImplement the approved work.\n",
     ...over,
   } as Task;
 }

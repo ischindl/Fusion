@@ -17,7 +17,6 @@ function jsonResponse(body: unknown, ok = true): Response {
 
 function makeProps(overrides: Partial<MergeSectionProps["form"]> = {}): MergeSectionProps {
   return {
-    scopeBanner: null,
     form: {
       autoMerge: true,
       planApprovalMode: "workflow",

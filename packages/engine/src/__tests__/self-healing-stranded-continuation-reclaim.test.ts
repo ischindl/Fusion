@@ -25,8 +25,9 @@ vi.mock("../util/run-audit.js", async (importOriginal) => ({
   createRunAuditor: vi.fn(() => ({ database: recordRunAuditEventMock })),
 }));
 
-import { SelfHealingManager } from "../self-healing.js";
+import { SelfHealingManager, type SelfHealingOptions } from "../self-healing.js";
 import { evaluateStrandedContinuationReclaim } from "../workflows/stranded-continuation-reclaim.js";
+import { registerPlanningLivenessProbe } from "../agents/planning-liveness.js";
 
 /*
 FNXC:StrandedContinuationReclaim 2026-08-11-09:12:
@@ -40,8 +41,16 @@ the FK cascade only fires on a hard delete.
 
 Surface enumeration — the invariant is asserted across every state the wedge can wear, not just the
 reported one: `running` with a NULL lease, `running` with an EXPIRED lease, `held` with a NULL reason,
-`held` with a principal-routing reason, a retired task's row in each active state, and the negative
-cases (live session, unexpired lease, operator pause, manual-hold kind, engine pause, too-fresh).
+a retired task's row in each active state, and the negative cases (live session, unexpired lease,
+operator pause, manual-hold kind, engine pause, too-fresh).
+
+FNXC:StrandedContinuationReclaim 2026-09-22-14:21 (RUFU-263):
+This file used to enumerate `held` with a principal-routing reason as a RE-QUEUE surface. That contract is
+deliberately retired: the store's own claim predicate re-takes `workflow-principal-%`,
+`workflow-named-principal-%`, and `workflow-role-pool-%` holds, so re-queueing them was not recovery — it
+was the ~700-rows-a-day churn this change removes, and the re-queue also erased the reason that tells the
+owning seam what it is waiting for. The row now stays put; see
+`stranded-continuation-owner-routing.test.ts` for the owner-routing invariant across every family.
 */
 
 const stale = (ms: number) => new Date(Date.now() - ms).toISOString();
@@ -61,6 +70,7 @@ function harness(
   items: WorkflowWorkItem[] = [item()],
   taskOverrides: Partial<Task> = {},
   settings: Partial<Settings> = {},
+  managerOptions: Partial<SelfHealingOptions> = {},
 ) {
   const task = {
     id: "FN-8932", title: "Memory layer 4a", description: "", column: "todo",
@@ -93,8 +103,14 @@ function harness(
     getRootDir: vi.fn(() => "/repo"),
     getTasksDir: vi.fn(() => ""),
   } as unknown as TaskStore;
-  resolveTaskLifecycleColumnsMock.mockResolvedValue({ complete: "done", archived: "archived" });
-  return { task, store, transitions, logged, manager: new SelfHealingManager(store, { rootDir: "/repo" }) };
+  resolveTaskLifecycleColumnsMock.mockResolvedValue({ complete: "done" });
+  return {
+    task,
+    store,
+    transitions,
+    logged,
+    manager: new SelfHealingManager(store, { rootDir: "/repo", ...managerOptions }),
+  };
 }
 
 describe("reconcileStrandedWorkflowContinuations", () => {
@@ -124,7 +140,6 @@ describe("reconcileStrandedWorkflowContinuations", () => {
       ["running, null lease expiry", { state: "running", leaseExpiresAt: null }],
       ["running, expired lease", { state: "running", leaseExpiresAt: stale(GRACE_EXCEEDED) }],
       ["held, null blocked reason", { state: "held", leaseOwner: null, blockedReason: null }],
-      ["held, principal routing reason", { state: "held", leaseOwner: null, blockedReason: "workflow-principal-role-pool-exhausted:executor" }],
     ] as Array<[string, Partial<WorkflowWorkItem>]>) {
       const { manager, transitions } = harness([item(overrides)]);
       await expect(manager.reconcileStrandedWorkflowContinuations(), label).resolves.toBe(1);
@@ -132,10 +147,31 @@ describe("reconcileStrandedWorkflowContinuations", () => {
     }
   });
 
+  /*
+  FNXC:StrandedContinuationReclaim 2026-09-22-14:21 (RUFU-263):
+  RUFU-208 sat in this shape for days: a `plan-review` hold carrying a reason the scheduler's claim
+  predicate can re-take on its own. The sweep used to re-queue it every ~15-minute pass, which erased the
+  reason and re-wrote the card history; the owner here is `acquireWorkflowWorkItemLease` / FN-8923's
+  planning sweep, so a pass must now leave the row, its reason, the card history, and the event store
+  untouched. The same test's `held, null blocked reason` case above proves the suppression is the reason
+  string's doing and not the `held` state.
+  */
+  it("leaves a hold the scheduler's own claim predicate can re-take exactly as it found it", async () => {
+    recordRunAuditEventMock.mockClear();
+    const { manager, transitions, logged } = harness([item({
+      state: "held", leaseOwner: null, blockedReason: "workflow-principal-role-pool-exhausted:executor",
+    })]);
+
+    await expect(manager.reconcileStrandedWorkflowContinuations()).resolves.toBe(0);
+
+    expect(transitions).toEqual([]);
+    expect(logged).toEqual([]);
+    expect(recordRunAuditEventMock).not.toHaveBeenCalled();
+  });
+
   it("retires rows whose task can never run them again", async () => {
     for (const taskOverrides of [
       { column: "archived", deletedAt: stale(1) },
-      { column: "archived" },
       { column: "done" },
     ] as Array<Partial<Task>>) {
       for (const state of ["running", "held", "runnable", "retrying"] as const) {
@@ -148,7 +184,7 @@ describe("reconcileStrandedWorkflowContinuations", () => {
 
   it("does not treat default column ids as terminal for a custom workflow", async () => {
     const { manager, transitions } = harness([item()], { column: "done" });
-    resolveTaskLifecycleColumnsMock.mockResolvedValue({ complete: "shipped", archived: "retired" });
+    resolveTaskLifecycleColumnsMock.mockResolvedValue({ complete: "shipped" });
 
     await expect(manager.reconcileStrandedWorkflowContinuations()).resolves.toBe(1);
     expect(transitions[0]?.state).toBe("runnable");
@@ -196,7 +232,7 @@ describe("reconcileStrandedWorkflowContinuations", () => {
 
 describe("evaluateStrandedContinuationReclaim", () => {
   const base = {
-    item: { state: "running", kind: "task", leaseExpiresAt: null, blockedReason: null },
+    item: { state: "running", kind: "task", taskId: "FN-8932", nodeId: "plan-review", retryAfter: null, leaseExpiresAt: null, blockedReason: null },
     taskTerminal: false, taskMissing: false, taskPaused: false,
     live: false, enginePaused: false, stalenessMs: GRACE_EXCEEDED, graceMs: 600_000, now: Date.now(),
   } as Parameters<typeof evaluateStrandedContinuationReclaim>[0];
@@ -214,12 +250,84 @@ describe("evaluateStrandedContinuationReclaim", () => {
       .toEqual({ action: "retire", reason: "task-terminal" });
   });
 
+  it("classifies a live planner separately without weakening higher-priority guards", () => {
+    expect(evaluateStrandedContinuationReclaim({ ...base, planningLive: true }))
+      .toEqual({ action: "none", reason: "live-planning" });
+    expect(evaluateStrandedContinuationReclaim({ ...base, planningLive: true, taskTerminal: true }))
+      .toEqual({ action: "retire", reason: "task-terminal" });
+    expect(evaluateStrandedContinuationReclaim({ ...base, planningLive: true, taskMissing: true }))
+      .toEqual({ action: "retire", reason: "task-missing" });
+    expect(evaluateStrandedContinuationReclaim({ ...base, planningLive: true, enginePaused: true }))
+      .toEqual({ action: "none", reason: "engine-paused" });
+    expect(evaluateStrandedContinuationReclaim({ ...base, planningLive: true, taskPaused: true }))
+      .toEqual({ action: "none", reason: "operator-paused" });
+  });
+
+  it("preserves dead-lease recovery when no planner is live", () => {
+    expect(evaluateStrandedContinuationReclaim({ ...base, planningLive: false }))
+      .toEqual({ action: "requeue", reason: "dead-lease", announceRecovery: true });
+    expect(evaluateStrandedContinuationReclaim(base))
+      .toEqual({ action: "requeue", reason: "dead-lease", announceRecovery: true });
+  });
+
   it("treats a future lease expiry as proof of a live claim even past the grace window", () => {
     expect(evaluateStrandedContinuationReclaim({
       ...base,
       item: { ...base.item, leaseExpiresAt: new Date(base.now + 60_000).toISOString() },
       stalenessMs: 24 * 3_600_000,
     })).toEqual({ action: "none", reason: "lease-active" });
+  });
+});
+
+/*
+FNXC:StrandedContinuationReclaim 2026-09-05-23:52:
+FN-282 regression (FN-299): once planning stopped acquiring the task worktree it registered no session
+path, so a planner still writing PROMPT.md read as a dead lease and its `plan` continuation was
+re-queued underneath it — which re-dispatched the plan node and fired Plan Review against a spec that
+did not exist yet.
+*/
+describe("planning liveness protects a live plan continuation", () => {
+  it("leaves the incident's null-lease plan continuation alone while its probe is live", async () => {
+    const { manager, store, transitions, logged } = harness([
+      item({ nodeId: "plan", leaseOwner: "triage:FN-8932", leaseExpiresAt: null }),
+    ]);
+    const unregister = registerPlanningLivenessProbe((taskId) => taskId === "FN-8932");
+    try {
+      await expect(manager.reconcileStrandedWorkflowContinuations()).resolves.toBe(0);
+      expect(transitions).toEqual([]);
+      expect(store.transitionWorkflowWorkItem).not.toHaveBeenCalled();
+      expect(logged).toEqual([]);
+      expect(store.logEntry).not.toHaveBeenCalled();
+    } finally {
+      unregister();
+    }
+  });
+
+  it("also honors the self-healing planning-task provider without a registered probe", async () => {
+    const { manager, store } = harness(
+      [item({ nodeId: "plan", leaseOwner: "triage:FN-8932", leaseExpiresAt: null })],
+      {},
+      {},
+      { getPlanningTaskIds: () => new Set(["FN-8932"]) },
+    );
+
+    await expect(manager.reconcileStrandedWorkflowContinuations()).resolves.toBe(0);
+    expect(store.transitionWorkflowWorkItem).not.toHaveBeenCalled();
+    expect(store.logEntry).not.toHaveBeenCalled();
+  });
+
+  it("still re-queues and reports the dead lease once the planner is gone", async () => {
+    const { manager, transitions, logged } = harness([
+      item({ nodeId: "plan", leaseOwner: "triage:FN-8932", leaseExpiresAt: null }),
+    ]);
+    const unregister = registerPlanningLivenessProbe((taskId) => taskId === "FN-OTHER");
+    try {
+      await expect(manager.reconcileStrandedWorkflowContinuations()).resolves.toBe(1);
+      expect(transitions).toEqual([expect.objectContaining({ state: "runnable" })]);
+      expect(logged).toEqual([expect.stringContaining("plan was stranded in 'running' (dead-lease)")]);
+    } finally {
+      unregister();
+    }
   });
 });
 

@@ -3,7 +3,9 @@ import type { PrInfo, StepStatus } from "../types.js";
 import {
   getMergeConfirmedFinalizationBlocker,
   getUnfinishedStepTitles,
+  buildPreMergeGateApprovalBlocker,
   isPreMergeStepsNotRunBlocker,
+  isPreMergeStepsNotRunRefusal,
   isStaleContentApprovalBlocker,
   PreMergeStepsNotRunError,
   PRE_MERGE_STEPS_NOT_RUN_BLOCKER,
@@ -537,6 +539,32 @@ describe("getTaskMergeBlocker", () => {
       .toBe(`Cannot merge FN-9191: ${PRE_MERGE_STEPS_NOT_RUN_BLOCKER}`);
   });
 
+  /*
+  FNXC:PreMergeApproval 2026-09-22-21:42 (RUFU-276):
+  RUFU-225's park proved the deferral contract breaks the moment the sentence is wrapped: the typed
+  error prefixes `Cannot merge <id>: `, the retry seam prefixes `AUTO_MERGE_RETRY_REJECTED: `, and
+  `getTaskMergeBlocker` prefixes `task is marked 'failed': `. The wrap-aware predicate has to name
+  every one of those, while the four merge doors keep the verbatim predicate — widening THAT one
+  would let a genuinely terminal failed card look deferrable.
+  */
+  it("names the unrun-gate refusal through every wrapper that embeds it", () => {
+    const typedError = new PreMergeStepsNotRunError("RUFU-225").message;
+    expect(isPreMergeStepsNotRunRefusal(PRE_MERGE_STEPS_NOT_RUN_BLOCKER)).toBe(true);
+    expect(isPreMergeStepsNotRunRefusal(typedError)).toBe(true);
+    expect(isPreMergeStepsNotRunRefusal(`AUTO_MERGE_RETRY_REJECTED: ${typedError}`)).toBe(true);
+    expect(isPreMergeStepsNotRunRefusal(`task is marked 'failed': AUTO_MERGE_RETRY_REJECTED: ${typedError}`)).toBe(true);
+
+    // Other refusals stay other refusals, including the sibling lanes this must never absorb.
+    expect(isPreMergeStepsNotRunRefusal("task has failed pre-merge workflow steps")).toBe(false);
+    expect(isPreMergeStepsNotRunRefusal(STALE_CONTENT_APPROVAL_BLOCKER)).toBe(false);
+    expect(isPreMergeStepsNotRunRefusal(`AUTO_MERGE_RETRY_REJECTED: Cannot merge RUFU-225: ${STALE_CONTENT_APPROVAL_BLOCKER}`)).toBe(false);
+    expect(isPreMergeStepsNotRunRefusal(`AUTO_MERGE_RETRY_REJECTED: Cannot merge RUFU-225: ${buildPreMergeGateApprovalBlocker("code-review")}`)).toBe(false);
+    expect(isPreMergeStepsNotRunRefusal("task is marked 'needs-replan'")).toBe(false);
+    expect(isPreMergeStepsNotRunRefusal(undefined)).toBe(false);
+    expect(isPreMergeStepsNotRunRefusal(null)).toBe(false);
+    expect(isPreMergeStepsNotRunRefusal("")).toBe(false);
+  });
+
   it("classifies stale-content blockers through merge-door and park wrappers", () => {
     expect(isStaleContentApprovalBlocker(STALE_CONTENT_APPROVAL_BLOCKER)).toBe(true);
     expect(isStaleContentApprovalBlocker(`Cannot merge FN-1: ${STALE_CONTENT_APPROVAL_BLOCKER}`)).toBe(true);
@@ -957,7 +985,7 @@ describe("getTaskCompletionBlocker", () => {
     }, { resolveTask })).resolves.toBeUndefined();
   });
 
-  it.each(["done", "archived"] as const)("ignores blockedBy when resolveTask reports the blocker is %s", async (column) => {
+  it.each(["done"] as const)("ignores blockedBy when resolveTask reports the blocker is %s", async (column) => {
     const resolveTask = async () => ({ id: "FN-4054", column });
 
     await expect(getTaskCompletionBlocker({

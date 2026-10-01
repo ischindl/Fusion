@@ -17,6 +17,10 @@ import {
   resolveEffectiveConcurrency,
 } from "@fusion/core";
 import type { CentralCore as CentralCoreApi, WorkflowIr } from "@fusion/core";
+import {
+  DEFAULT_HYBRID_EXECUTOR_READY_WAIT_MS,
+  resolveHybridExecutorReadiness,
+} from "@fusion/engine";
 import { ApiError, badRequest, notFound } from "../api-error.js";
 import { execFileAsync } from "../exec-file.js";
 import { getOrCreateProjectStore, evictProjectStore } from "../project-store-resolver.js";
@@ -821,6 +825,32 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
 
         if (isolationChanged) {
           if (options?.hybridExecutor) {
+            /*
+            FNXC:HybridExecutorBoot 2026-09-26-03:10:
+            RUFU-322: a live isolation transition is the one route that needs loaded project runtimes,
+            and since the boot no longer awaits `HybridExecutor.initialize()` before HTTP listen, a
+            transition can now arrive while runtimes are still loading. Wait for readiness under a
+            bounded, injectable window (`hybridExecutorReadyWaitMs`) and answer honestly instead of
+            running the transition against a half-built executor or hanging the request: `starting` is
+            retryable, `failed` is not. Both refuse the write, so the stored isolationMode stays
+            consistent with the live runtime (the same guarantee as `isolation_transition_unavailable`).
+            When already initialized this resolves immediately and adds no latency to the common case.
+            */
+            const readiness = await resolveHybridExecutorReadiness(
+              options.hybridExecutor,
+              options?.hybridExecutorReadyWaitMs ?? DEFAULT_HYBRID_EXECUTOR_READY_WAIT_MS,
+            );
+            if (readiness !== "ready") {
+              const code = readiness === "failed" ? "hybrid_executor_failed" : "hybrid_executor_starting";
+              throw new ApiError(503, code, {
+                error: code,
+                message:
+                  readiness === "failed"
+                    ? "Live isolation mode transition is unavailable: HybridExecutor failed to load its project runtimes. Fix the reported startup error or restart the dashboard, then retry."
+                    : "Live isolation mode transition is unavailable: HybridExecutor is still loading project runtimes. Retry shortly.",
+                readyWaitMs: options?.hybridExecutorReadyWaitMs ?? DEFAULT_HYBRID_EXECUTOR_READY_WAIT_MS,
+              });
+            }
             const transition = await options.hybridExecutor.transitionProjectIsolation(
               req.params.id,
               isolationMode as "in-process" | "child-process",
@@ -965,7 +995,7 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
             t.id,
             lanes === undefined
               ? isTerminalColumnRole(undefined, t.column)
-              : t.column === lanes.complete || t.column === lanes.archived,
+              : t.column === lanes.complete,
           );
         }
         const activeTaskCount = tasks.filter((t) => !terminalByTaskId.get(t.id)).length;
@@ -985,9 +1015,7 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
         than per task: this iterates every task in the project and a per-task resolve would make a
         health read scale with board size.
 
-        `complete` and `archived` both count as landed. The legacy pair remains the fallback when the
-        IR cannot be read or resolves empty (v1-upgraded workflows carry `traits: []`, so empty means
-        UNEXPRESSED rather than absent).
+        Every Complete column counts as landed. Done remains the fallback when the IR cannot be read or resolves empty, as v1-upgraded workflows carry no traits.
         */
         const healthIrCache = new Map<string, WorkflowIr>();
         let totalTasksCompleted = 0;
@@ -995,10 +1023,10 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
           let landed: Set<string>;
           try {
             const ir = await resolveWorkflowIrForTask(projectStore, t.id, healthIrCache);
-            const lanes = [...columnsWithFlag(ir, "complete"), ...columnsWithFlag(ir, "archived")];
-            landed = new Set(lanes.length > 0 ? lanes : ["done", "archived"]);
+            const lanes = columnsWithFlag(ir, "complete");
+            landed = new Set(lanes.length > 0 ? lanes : ["done"]);
           } catch {
-            landed = new Set(["done", "archived"]);
+            landed = new Set(["done"]);
           }
           if (landed.has(t.column)) totalTasksCompleted += 1;
         }
@@ -1057,9 +1085,7 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
       res.json({
         maxConcurrent: capacity.maxConcurrent,
         maxWorktrees: capacity.worktreeLimit ?? settings.maxWorktrees,
-        effectiveMaxConcurrent: capacity.effectiveLimit,
         worktreeLimitEnabled: settings.worktreeLimitEnabled !== false,
-        concurrencyBindingKnob: capacity.bindingKnob,
         rootDir: project.path,
       });
     } catch (err: unknown) {

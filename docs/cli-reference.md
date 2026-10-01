@@ -67,38 +67,7 @@ For safe publication, first call `fn_task_document_read`, then write with the re
 }
 ```
 
-Revision zero means create only if absent. On success the tool returns the new revision and content hash. A stale expectation returns an error result with code `TASK_DOCUMENT_PRECONDITION_FAILED` and current revision/hash; re-read, reconcile the newer content, and submit a deliberate rebased write. The tool never retries or overwrites automatically. Omitting both expectations retains the legacy unconditional contract. These ordinary tools reject archived parents; there is no `allowArchived` tool parameter.
-
-### Operator API: append to a retained archived document
-
-Archived correction publication is an authenticated HTTP API, not an `fn` binary subcommand or agent tool. It requires active daemon bearer authentication; Fusion launched with `--no-auth` returns `403`. First read the exact current revision/hash, then submit only the suffix:
-
-```bash
-BASE=http://127.0.0.1:4040/api
-TASK=FX-DISPOSABLE
-KEY=docs
-TOKEN="$FUSION_DAEMON_TOKEN"
-
-curl -fsS -H "Authorization: Bearer $TOKEN" \
-  "$BASE/tasks/$TASK/documents/$KEY" > /tmp/fusion-current-document.json
-
-REVISION=$(jq -r .revision /tmp/fusion-current-document.json)
-CONTENT_HASH=$(jq -r .contentHash /tmp/fusion-current-document.json)
-
-curl -fsS -X POST \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  "$BASE/tasks/$TASK/documents/$KEY/archived-publications" \
-  --data "$(jq -n \
-    --arg appendContent 'Correction text' \
-    --arg expectedContentHash "$CONTENT_HASH" \
-    --arg author 'operator' \
-    --arg reason 'Correct retained evidence' \
-    --argjson expectedRevision "$REVISION" \
-    '{appendContent, expectedRevision, expectedContentHash, author, reason}')"
-```
-
-Fusion constructs `existing content + "\n\n" + appendContent`; callers cannot send replacement `content` or metadata. Responses are `201` on committed append, `400` for malformed/unknown fields, `403` when the privileged capability is unavailable, `404` for a missing archived parent/document, and `409` for non-archived/inconsistent state or stale CAS. On `409 TASK_DOCUMENT_PRECONDITION_FAILED`, re-read current content/revision/hash, verify whether the correction is still needed, and submit a newly rebased append; never retry the stale body unchanged. In multi-project operation, use the same project selector as other task APIs so every read and publication resolves within one project.
+Revision zero means create only if absent. On success the tool returns the new revision and content hash. A stale expectation returns an error result with code `TASK_DOCUMENT_PRECONDITION_FAILED` and current revision/hash; re-read, reconcile the newer content, and submit a deliberate rebased write. The tool never retries or overwrites automatically. Omitting both expectations retains the legacy unconditional contract. These ordinary tools reject soft-deleted parents and historical sentinel rows; there is no task-archive publication path.
 
 ## Workflow commands
 
@@ -137,6 +106,55 @@ When `--project` is not supplied, Fusion resolves project context in this order:
 1. Explicit `--project` flag
 2. Default project (set via `fn project set-default <name>`)
 3. Current-directory auto-detection (`.fusion/project.json` lookup upward; legacy `fusion.db` is recognized only for migration)
+
+### Project routing visibility
+
+<!--
+FNXC:ProjectRoutingVisibility 2026-09-23-00:12:
+RUFU-269: the precedence above silently moved cards in practice — an operator stood in project A with a
+project-B default set, ran `fn task create`, and the card landed in B because the confirmation printed
+nothing about the target. Every card-creating command now names its landing target, and the one route
+where the decision is not obvious (a default project other than the current directory's project) asks for
+confirmation before any row is written. Documented precedence itself is unchanged.
+-->
+
+The resolution itself is silent when it is what the operator already asked for: an explicit `--project` and a current-directory match are never second-guessed. What gets announced is the target and, in one case, the mismatch.
+
+**The target is always printed.** `fn task create`, `fn task duplicate`, and `fn task refine` state where the card landed, before the write happens:
+
+```bash
+$ cd ~/code/Fusion && fn task create "Fix checkout button"
+
+  Project: gedapp  /home/me/code/gedapp  (resolved via the central default project)
+  ✓ Created FN-042: Fix checkout button
+    Column: triage
+    Path:   /home/me/code/gedapp/.fusion/tasks/FN-042/
+```
+
+- The `Project:` line carries the **absolute project path** plus its resolution source: `(resolved via the --project flag)`, `(resolved via the central default project)`, `(resolved via current-directory detection)`, or `(resolved via an unregistered local project in the current directory)`. A hand-built or plugin-supplied context with no recorded source prints the bare `Project: <name>` line, exactly as before.
+- `Path:` is the **absolute** card directory (`<projectPath>/.fusion/tasks/<id>/`), so it can be pasted into another shell; it used to be the cwd-relative `.fusion/tasks/<id>/`, which was simply false for a card filed into another project.
+- An invalid `--project` value is an error and creates **nothing** — routing is evaluated while resolving the project, before any row is written.
+
+**Cross-project confirmation (`fn task create` only).** When the *default project* wins while the current directory belongs to a **different** registered project, the CLI prints the mismatch on stderr and asks before writing:
+
+```
+⚠ Project routing: the current directory (/home/me/code/Fusion) belongs to project "Fusion" (/home/me/code/Fusion), but this card would be created in project "gedapp" (/home/me/code/gedapp) resolved via the central default project. Pass `--project Fusion` to target the project you are standing in, or run `fn project set-default <name>` to change which project is default.
+Create this card in project "gedapp" anyway? [y/N]:
+```
+
+Answering no exits 0 and writes **nothing** — no task row, no card directory — and prints where it *would* have gone plus how to make that routing permanent (`--project <name>`, `fn project set-default <name>`, or the `defaultProjectId` global setting).
+
+The prompt is skipped — the card is created with the warning still shown — whenever an answer cannot be typed:
+
+| Case | Behavior |
+|---|---|
+| `--yes` | Skips the prompt; warning still printed. The scripted escape hatch — a flag for the risky case, never a silent default. |
+| `--quiet` / `FUSION_QUIET=1` | Never prompts; warning on stderr, then proceeds. |
+| Piped or non-TTY stdin/stdout (`fn task create … \| jq`) | Never prompts; warning on stderr, then proceeds, so pipelines cannot hang. |
+
+`fn task duplicate` and `fn task refine` print the same warning and target line but **never block** — they already name a specific card and carry no `--yes`.
+
+All three commands build the `Project:` line through one shared routing module, so the wording cannot drift between them, and every `fn` command resolves its project through the one `resolveProject()` helper in `packages/cli/src/project-context.ts` — precedence is decided in exactly one place. The pi extension's `fn_task_create` tool is unchanged: it opens the store for the session's own working directory, so the central-default route that caused the mis-routing is not on its path and there is nothing to confirm there.
 
 ---
 
@@ -211,6 +229,16 @@ Backward-compatibility guard: existing setups are never blocked — when central
 already exists (including the central-DB + registered-project case), or when the
 CLI onboarding completion marker exists even if the central DB step was skipped,
 onboarding does not auto-launch.
+
+Bundled llama.cpp extension: when the `useLlamaCpp` global setting is on and a
+`llama-server` is reachable, the bundled `@fusion/pi-llama-cpp` pi extension
+registers each local model with the real per-model context window auto-detected
+from the running server (per-model `meta.n_ctx` from the model list, then the
+`/props` defaults, then the 128000 fallback) plus the best available max-output
+default (32000 fallback). The registered `maxTokens` is capped at half the
+resolved window so the chat pre-overflow compaction gate keeps a positive
+headroom; older server builds that expose no window metadata keep today's
+128000/32000 behavior.
 
 ---
 
@@ -586,10 +614,47 @@ fn task create "Fix login race condition"
 fn task create "Fix bug" --attach screenshot.png --depends FN-010
 fn task create "Investigate flaky runner" --node edge-runner
 fn task create "Fix workspace revert" --github --github-repo acme/kb
+fn task create "Sweep stale branches" --project ./gedapp --yes
+fn task create "$(cat spec.md)" --title "Rename affordance must reach board cards"
 fn task plan "Design a new authentication flow"
 ```
 
+`--yes` skips the [cross-project confirmation](#project-routing-visibility) when the central default project routes the card somewhere other than the current directory's project; the warning is still printed. Every create prints the resolved project (with its source) and the absolute card path — see [Project routing visibility](#project-routing-visibility).
+
 For AI-guided task specification, see [Planning mode](#planning-mode).
+
+**A card's one-line label is either the title you give it or one derivation from the description.** The
+derivation skips fenced code blocks, table rows, thematic breaks and frontmatter delimiters; a line that
+is only a markdown heading is section furniture, so the prose under it becomes the label and the heading
+text is used only when it is all the card contains; blockquote, list, and task-list markers are stripped;
+the label stops at the first sentence terminator (`.`, `!`, `?`, `…` followed by a space or the end, with
+`e.g.`/`i.e.`-style abbreviations and single-letter initials exempted); and it is capped on a word
+boundary at 220 characters, hard-truncated with no ellipsis when the text offers no boundary at all. This
+replaces the older "first line, or first 220 raw characters" slicing, which is why a spec-shaped
+description used to freeze `## Pôvodný popis` — the PROMPT.md section heading — onto the board card.
+
+| Option | Description |
+|---|---|
+| `--title <text>` | Set the card's explicit one-line label. The positional argument stays the description — which is what the duplicate-detection fingerprint is computed from — so `--title` never rewrites it. |
+
+A title is validated on every creation path (CLI, `fn_task_create`, `fn_delegate_task`, the REST routes):
+blank, markdown-heading, multi-line, or over-220-character input is refused with an actionable message
+instead of being silently replaced by a derived label.
+
+### Renaming a card
+
+```bash
+fn task rename FN-001 "Authored code-review REVISE must not become a stall deadlock park"
+fn task rename RUFU-042 "Stranded-continuation reclaim must sustain-defer" --project ./gedapp
+```
+
+Renames an existing card's label. The description is never touched, and the card's `PROMPT.md` first line
+is rewritten to match so the spec heading and the board label stay consistent. The multi-line positional
+form is accepted the way `fn task log` accepts it — remaining arguments are joined — so a title with
+spaces needs quotes, not escaping. The same validation as `--title` applies: a blank, markdown-heading,
+multi-line, or over-220-character title exits non-zero naming the reason and leaves the card unchanged.
+Agents reach the identical rule from `fn_task_update`'s optional `title` parameter, where a blank value
+clears the title as it did before this command existed.
 
 ### Planning mode
 
@@ -744,6 +809,12 @@ fn task comments FN-001
 fn task steer FN-001 "Reuse existing auth middleware"
 ```
 
+Both `comment` and `steer` report what happened to the body, not just that a row was written: the output names
+the agent the note was delivered to, or says plainly that no agent was available to receive it (the comment is
+still saved, and the miss is recorded on the card and in run-audit). The CLI process has no heartbeat monitor, so
+it never wakes anyone — the delivered inbox record is read on the recipient's next heartbeat tick. An agent that
+needs the text can read it back with `fn_task_show` `commentIds`.
+
 ### Completion, maintenance, and history
 
 ```bash
@@ -752,18 +823,16 @@ fn task merge FN-001
 fn task reconcile FN-001
 fn task duplicate FN-001
 fn task refine FN-001 --feedback "Add rollback handling"
-fn task archive FN-001
-fn task archive FN-001 --force
-fn task unarchive FN-001
 fn task delete FN-001 --force
 ```
 
 Notes:
+
 - `fn task reconcile <id>` closes an in-review card only when its base branch carries ownership-anchored landed content. The recorded branch may already be cleaned up or may remain present, but a present branch is accepted only when it has no unlanded task-owned commits. It refuses paused, leased, live, raced, foreign-owned, or unproven cards and never bypasses review approval; use `fn task merge` for normal live merge work.
+- `fn task reconcile <id>` closes an in-review card only when its base branch carries an ownership-anchored landed commit. It refuses paused, leased, live, raced, or unproven cards and never bypasses review approval; use `fn task merge` for the normal live-branch path.
+- `fn task reconcile <id>` closes an in-review card only when its base branch carries an ownership-anchored landed commit found after its branch itself was cleaned up. It refuses paused, leased, live, raced, or unproven cards and never bypasses review approval; use `fn task merge` for the normal live-branch path.
+igin/main
 - Interrupting `fn task merge` aborts its merge and clears its transient merge status: Ctrl-C (`SIGINT`) exits 130, `SIGTERM` exits 143, and a closed terminal (`SIGHUP`) exits 129. Unlike `fn serve`, `fn dashboard`, and the daemon, this one-shot foreground command deliberately does not survive terminal disconnects.
-- `fn task archive` accepts live-board tasks and preserves the original column for restore. It refuses tasks in a WIP lane or active merge pipeline to protect another process's worktrees; a human operator may use `--force` to override this destructive guard.
-- The agent-facing `fn_task_archive` tool returns a structured error for the same live-task refusal and deliberately has no force parameter.
-- `fn task unarchive` restores to the saved pre-archive column when available, with legacy archives falling back to `done`.
 
 ### Branch conflict handling
 
@@ -1149,6 +1218,7 @@ fn chat <agent-id> [message…] [--once] [--non-interactive] [--poll-ms <n>] [--
 - This is MessageStore mail plus polling, not token-streaming SSE. Replies are printed only when they carry the active conversation ID or reply to a known thread message.
 - Agents replying through `fn_send_message` should pass `reply_to_message_id`; replies default to the original sender only when that parent message was addressed to the replying agent.
 - One-shot chat has a reply deadline independent of the polling interval. Interactive chat tracks each outbound message independently: it prints a timeout for an unanswered request, clears that request, and continues the REPL for later messages.
+- CLI-agent-backed chat sessions (claude/pi PTY chat in the dashboard terminal) participate in per-turn memory recall when the cli-agent executor is enabled: each turn receives a bounded, deduped recall cue through the CLI's native channel (never as typed terminal text), silently skipped when nothing is recalled.
 
 ### Options
 
@@ -1376,10 +1446,11 @@ Subcommands: `search`, `install`, `get`.
 | `--attach` | `fn task create` |
 | `--depends` | `fn task create` |
 | `--node` | `fn task create` |
+| `--title` | `fn task create` (explicit one-line card label; the positional description stays the description) |
 | `--github` / `--no-github` | `fn task create` (per-task GitHub issue tracking override; default comes from project/global settings) |
 | `--github-repo` | `fn task create` (`owner/repo` override for the tracking issue) |
 | `--feedback` | `fn task refine` |
-| `--yes` | confirmation-skipping flows (`task plan`, `settings import`, git pull/push, etc.) |
+| `--yes` | confirmation-skipping flows (`task create` cross-project routing confirm, `task plan`, `settings import`, git pull/push, etc.) |
 | `--limit`, `-l` | `fn task import`, `fn task import-gitlab` (default: 30, max: 100), `fn skills search` (default: 10, max: 50) |
 | `--labels`, `-L` | `fn task import`, `fn task import-gitlab` |
 | `--resource`, `-r` | `fn task import-gitlab` (`project-issues`, `group-issues`, or `merge-requests`) |

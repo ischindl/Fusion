@@ -12,6 +12,7 @@ function makeNode(id: string, children: OrgTreeNode[] = []): OrgTreeNode {
       id,
       name: id,
       role: "executor",
+      roles: ["executor"],
       state: "active",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),

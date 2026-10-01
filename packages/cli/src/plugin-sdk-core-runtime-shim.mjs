@@ -30,11 +30,33 @@ import { getErrorMessage } from "../../core/src/process/error-message.js";
 export { AgentStore, postgresSchema, redactSecrets, getErrorMessage };
 
 /*
+ * FNXC:NonInteractiveGit 2026-09-12-12:23:
+ * RUFU-216 — the non-interactive git floor must be reachable from a bundled runtime plugin.
+ *
+ * Every agent-spawning runtime plugin wraps its session spawn env in `applyNonInteractiveGitEnv`
+ * so a git child that wants an editor, a pager, or a credential prompt cannot park an autonomous
+ * card forever (RUFU-210's measured incident: `git commit -e` blocked on `vi` for 1 day 13 hours,
+ * orphaned under PID 1 in a worktree already deleted underneath it). That helper is a core VALUE
+ * import, and inside the bundled build `@fusion/core` resolves here, so an import this file does
+ * not re-export is a hard esbuild failure ("No matching export") in CI's Build job rather than a
+ * runtime fallback — the plugin still typechecks, still passes its own tests, and still builds in
+ * fast mode, which is why RUFU-210's staged-plugin lanes reached main with the bundle path broken.
+ *
+ * Source path with a `.js` specifier, not the package barrel, for the standing reason above: esbuild
+ * follows core's source here and the CLI must not take a private `@fusion/core` dependency.
+ * staged-plugin-core-imports.test.ts asserts every staged plugin's core value import is shim-exported;
+ * the floor is behaviour-neutral, so it is safe on every lane.
+ */
+import { applyNonInteractiveGitEnv } from "../../core/src/git/non-interactive-git-env.js";
+
+export { applyNonInteractiveGitEnv };
+
+/*
  * FNXC:BundledPlugins 2026-07-31-09:55:
  * Lifecycle ROLE resolution, re-exported for bundled plugins.
  *
  * A plugin that asks "is this card in a terminal lane?" must resolve the board's roles rather than
- * compare against `done`/`archived`, or it stalls forever on a renamed board. That is what the
+ * compare against a literal `done`; it must resolve the `complete` trait or it stalls forever on a renamed board. That is what the
  * compound-engineering reconciler now does — but this shim is what `@fusion/core` resolves to inside
  * the bundled build, so an import it does not re-export is a hard esbuild failure ("No matching
  * export"), not a runtime fallback. The plugin built fine in the workspace and broke only in the CLI

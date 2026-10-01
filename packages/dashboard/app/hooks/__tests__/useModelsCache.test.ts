@@ -15,7 +15,7 @@ describe("useModelsCache", () => {
     vi.clearAllMocks();
     localStorage.clear();
     mockFetchModels.mockResolvedValue({
-      models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o" }],
+      models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o", reasoning: false, contextWindow: 200000 }],
       favoriteProviders: ["openai"],
       favoriteModels: ["gpt-4o"],
       defaultProvider: "openai",
@@ -29,7 +29,7 @@ describe("useModelsCache", () => {
       JSON.stringify({
         savedAt: Date.now(),
         data: {
-          models: [{ provider: "anthropic", id: "claude", name: "Claude" }],
+          models: [{ provider: "anthropic", id: "claude", name: "Claude", reasoning: false, contextWindow: 200000 }],
           favoriteProviders: ["anthropic"],
           favoriteModels: ["claude"],
           defaultProvider: "anthropic",
@@ -75,7 +75,7 @@ describe("useModelsCache", () => {
       }),
     );
     mockFetchModels.mockResolvedValueOnce({
-      models: [{ provider: "pi-claude-cli", id: "claude-sonnet-5", name: "Claude Sonnet 5 (CLI)" }],
+      models: [{ provider: "pi-claude-cli", id: "claude-sonnet-5", name: "Claude Sonnet 5 (CLI)", reasoning: false, contextWindow: 200000 }],
       favoriteProviders: [],
       favoriteModels: [],
     });
@@ -83,7 +83,14 @@ describe("useModelsCache", () => {
     const hookA = renderHook(() => useModelsCache());
     const hookB = renderHook(() => useModelsCache());
 
-    expect(hookA.result.current.loading).toBe(false);
+    /*
+    FNXC:ChatModels 2026-09-27-09:36:
+    This envelope carries no default model pair, so it is now a cache MISS rather than a hydrated starting
+    state — that is what stops New Chat from reporting "no default model configured" off a stale copy.
+    The invariant this case is named for (every mounted consumer gets the replaced catalog) is asserted
+    below and is unchanged.
+    */
+    expect(hookA.result.current.loading).toBe(true);
     expect(hookA.result.current.models).toEqual([]);
 
     await waitFor(() => {
@@ -115,7 +122,7 @@ describe("useModelsCache", () => {
 
     await act(async () => {
       resolveFetch?.({
-        models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o" }],
+        models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o", reasoning: false, contextWindow: 200000 }],
         favoriteProviders: ["openai"],
         favoriteModels: ["gpt-4o"],
         defaultProvider: "openai",
@@ -152,7 +159,7 @@ describe("useModelsCache", () => {
     });
 
     mockFetchModels.mockResolvedValueOnce({
-      models: [{ provider: "anthropic", id: "claude", name: "Claude" }],
+      models: [{ provider: "anthropic", id: "claude", name: "Claude", reasoning: false, contextWindow: 200000 }],
       favoriteProviders: ["anthropic"],
       favoriteModels: ["claude"],
       defaultProvider: "anthropic",
@@ -173,7 +180,7 @@ describe("useModelsCache", () => {
     it("updates every mounted useModelsCache() subscriber in place after a CLI provider toggle, for grok-cli", async () => {
       // Seed the shared cache with a catalog that has NO grok-cli rows (pre-toggle state).
       mockFetchModels.mockResolvedValueOnce({
-        models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o" }],
+        models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o", reasoning: false, contextWindow: 200000 }],
         favoriteProviders: [],
         favoriteModels: [],
       });
@@ -193,8 +200,8 @@ describe("useModelsCache", () => {
       // Simulate toggling Grok CLI on: fetchModels() now returns grok-cli rows too.
       mockFetchModels.mockResolvedValueOnce({
         models: [
-          { provider: "openai", id: "gpt-4o", name: "GPT-4o" },
-          { provider: "grok-cli", id: "grok-4", name: "Grok 4 (CLI)" },
+          { provider: "openai", id: "gpt-4o", name: "GPT-4o", reasoning: false, contextWindow: 200000 },
+          { provider: "grok-cli", id: "grok-4", name: "Grok 4 (CLI)", reasoning: false, contextWindow: 200000 },
         ],
         favoriteProviders: [],
         favoriteModels: [],
@@ -210,7 +217,7 @@ describe("useModelsCache", () => {
 
       // Disabling propagates too: a subsequent refresh with grok-cli rows removed hides them again.
       mockFetchModels.mockResolvedValueOnce({
-        models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o" }],
+        models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o", reasoning: false, contextWindow: 200000 }],
         favoriteProviders: [],
         favoriteModels: [],
       });
@@ -225,7 +232,7 @@ describe("useModelsCache", () => {
 
     it("updates mounted subscribers after a cursor-cli toggle", async () => {
       mockFetchModels.mockResolvedValueOnce({
-        models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o" }],
+        models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o", reasoning: false, contextWindow: 200000 }],
         favoriteProviders: [],
         favoriteModels: [],
       });
@@ -236,8 +243,8 @@ describe("useModelsCache", () => {
 
       mockFetchModels.mockResolvedValueOnce({
         models: [
-          { provider: "openai", id: "gpt-4o", name: "GPT-4o" },
-          { provider: "cursor-cli", id: "cursor/gpt-5", name: "GPT-5 (Cursor CLI)" },
+          { provider: "openai", id: "gpt-4o", name: "GPT-4o", reasoning: false, contextWindow: 200000 },
+          { provider: "cursor-cli", id: "cursor/gpt-5", name: "GPT-5 (Cursor CLI)", reasoning: false, contextWindow: 200000 },
         ],
         favoriteProviders: [],
         favoriteModels: [],
@@ -252,7 +259,7 @@ describe("useModelsCache", () => {
 
     it("writes through SWR_CACHE_KEYS.MODELS on refresh", async () => {
       mockFetchModels.mockResolvedValueOnce({
-        models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o" }],
+        models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o", reasoning: false, contextWindow: 200000 }],
         favoriteProviders: [],
         favoriteModels: [],
       });
@@ -260,7 +267,7 @@ describe("useModelsCache", () => {
       await waitFor(() => expect(mockFetchModels).toHaveBeenCalledTimes(1));
 
       mockFetchModels.mockResolvedValueOnce({
-        models: [{ provider: "grok-cli", id: "grok-4", name: "Grok 4" }],
+        models: [{ provider: "grok-cli", id: "grok-4", name: "Grok 4", reasoning: false, contextWindow: 200000 }],
         favoriteProviders: [],
         favoriteModels: [],
       });
@@ -276,7 +283,7 @@ describe("useModelsCache", () => {
 
     it("single-flights concurrent refreshModelsCache() calls", async () => {
       mockFetchModels.mockResolvedValueOnce({
-        models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o" }],
+        models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o", reasoning: false, contextWindow: 200000 }],
         favoriteProviders: [],
         favoriteModels: [],
       });
@@ -298,7 +305,7 @@ describe("useModelsCache", () => {
 
       await act(async () => {
         resolveFetch?.({
-          models: [{ provider: "grok-cli", id: "grok-4", name: "Grok 4" }],
+          models: [{ provider: "grok-cli", id: "grok-4", name: "Grok 4", reasoning: false, contextWindow: 200000 }],
           favoriteProviders: [],
           favoriteModels: [],
         });
@@ -310,7 +317,7 @@ describe("useModelsCache", () => {
 
     it("never throws and leaves an existing good list intact when the forced refresh fails", async () => {
       mockFetchModels.mockResolvedValueOnce({
-        models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o" }],
+        models: [{ provider: "openai", id: "gpt-4o", name: "GPT-4o", reasoning: false, contextWindow: 200000 }],
         favoriteProviders: [],
         favoriteModels: [],
       });
@@ -319,8 +326,56 @@ describe("useModelsCache", () => {
 
       mockFetchModels.mockRejectedValueOnce(new Error("network down"));
 
-      await expect(refreshModelsCache()).resolves.toBeUndefined();
+      /*
+      FNXC:ChatModels 2026-09-27-09:36:
+      `refreshModelsCache()` now resolves to the state it published (New Chat needs an answer in that
+      same click), so a failed refresh publishes nothing rather than `undefined`. The good list staying
+      mounted is the assertion that matters here.
+      */
+      await expect(refreshModelsCache()).resolves.toBeNull();
       expect(result.current.models[0]?.id).toBe("gpt-4o");
+    });
+  });
+
+  /*
+  FNXC:ChatModels 2026-09-27-09:36:
+  A stored catalog with no default pair is not a usable starting truth: every configured board answers
+  `/api/models` with the resolved default, so such an envelope is an older build's shape or a response
+  captured before any default existed. Trusting it is what made New Chat report "no default model
+  configured" to an operator who had one on every project.
+  */
+  describe("a cached catalog with no default model pair", () => {
+    const poisonedEnvelope = JSON.stringify({
+      savedAt: Date.now(),
+      data: {
+        models: [{ provider: "anthropic", id: "claude", name: "Claude", reasoning: false, contextWindow: 200000 }],
+        favoriteProviders: ["anthropic"],
+        favoriteModels: ["claude"],
+      },
+    });
+
+    it("is treated as a cache miss and replaced by the fetched default", async () => {
+      localStorage.setItem(SWR_CACHE_KEYS.MODELS, poisonedEnvelope);
+
+      const { result } = renderHook(() => useModelsCache());
+
+      expect(result.current.loading).toBe(true);
+      expect(result.current.defaultProvider).toBeNull();
+
+      await waitFor(() => {
+        expect(result.current.defaultProvider).toBe("openai");
+        expect(result.current.defaultModelId).toBe("gpt-4o");
+      });
+    });
+
+    it("is dropped when the refetch fails, so the next mount cannot reuse it", async () => {
+      localStorage.setItem(SWR_CACHE_KEYS.MODELS, poisonedEnvelope);
+      mockFetchModels.mockRejectedValueOnce(new Error("offline"));
+
+      const { result } = renderHook(() => useModelsCache());
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      expect(localStorage.getItem(SWR_CACHE_KEYS.MODELS)).toBeNull();
     });
   });
 });

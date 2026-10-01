@@ -10,7 +10,7 @@ const mocked = vi.hoisted(() => ({
   clearPushError: vi.fn(),
   setForceWithLease: vi.fn(),
   setConflictState: vi.fn(),
-  stashModal: vi.fn(() => null),
+  stashModal: vi.fn((..._args: unknown[]) => null),
 }));
 
 vi.mock("../../hooks/useMergeAdvanceNotice", () => ({ useMergeAdvanceNotice: mocked.useMergeAdvanceNotice }));

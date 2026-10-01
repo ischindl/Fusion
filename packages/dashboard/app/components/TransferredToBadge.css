@@ -1,0 +1,55 @@
+/*
+FNXC:CrossProjectHandoff 2026-09-09-09:02:
+The "Transferred → <project> <TARGET-ID>" chip is neutral provenance like the Undo/Refines/
+Reverted chips, so it reuses their established density (`--card-chip-height`, pill radius,
+`--text-muted` token pair). It is a real <button> (clicking performs the deep-link project
+switch), hence the button reset + hover affordance the span chips do not need. The column pill
+is the live-status addition; it stays visually subordinate to the label.
+*/
+.transferred-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex-shrink: 0;
+  max-width: 100%;
+  padding: var(--space-xs) var(--space-sm);
+  height: var(--card-chip-height);
+  min-height: var(--card-chip-height);
+  border: var(--btn-border-width) solid color-mix(in srgb, var(--text-muted) 30%, transparent);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--text-muted) 12%, transparent);
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.transferred-chip:hover,
+.transferred-chip:focus-visible {
+  background: color-mix(in srgb, var(--text-muted) 22%, transparent);
+  border-color: color-mix(in srgb, var(--text-muted) 45%, transparent);
+}
+
+.transferred-chip-label {
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+  transform: translateY(1px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.transferred-chip-status {
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+  padding: 1px var(--space-xs);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--text-muted) 18%, transparent);
+  font-size: 0.625rem;
+  font-weight: 500;
+}

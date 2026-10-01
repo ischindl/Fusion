@@ -23,13 +23,24 @@ interface SetupOptions {
 }
 
 function setup({ customProviders, hermesConnected }: SetupOptions) {
+  /*
+  FNXC:ModelCatalog 2026-08-23-02:16:
+  RUFU-163: production registerModelRoutes also registers POST /models/refresh
+  (register-model-routes.ts:259); the fixture router must expose the full
+  production route surface or registration throws at setup.
+  */
   const getHandlers = new Map<string, (req: unknown, res: { json: (body: unknown) => void }) => Promise<void>>();
+  const postHandlers = new Map<string, (req: unknown, res: { json: (body: unknown) => void }) => Promise<void>>();
   const router = {
     get: vi.fn((path: string, handler: (req: unknown, res: { json: (body: unknown) => void }) => Promise<void>) => {
       getHandlers.set(path, handler);
     }),
     // FNXC:ModelCatalog 2026-08-23-23:12: registerModelRoutes also registers POST /models/refresh (FN-019 operator catalog refresh), so a router fake exposing only `get` throws before any GET handler is captured.
-    post: vi.fn(),
+    // FNXC:ModelCatalog 2026-09-06 (merge FN-295 sync): the fixture captures POST handlers so
+    // refreshCatalog resolves the registered /models/refresh handler instead of undefined.
+    post: vi.fn((path: string, handler: (req: unknown, res: { json: (body: unknown) => void }) => Promise<void>) => {
+      postHandlers.set(path, handler);
+    }),
   } as unknown as Router;
 
   const store = {
@@ -80,7 +91,7 @@ function setup({ customProviders, hermesConnected }: SetupOptions) {
     options: { modelRegistry } as never,
   } as never);
 
-  return { handler: getHandlers.get("/models")!, modelRegistry };
+  return { handler: getHandlers.get("/models")!, refreshCatalog: postHandlers.get("/models/refresh")!, modelRegistry };
 }
 
 async function callModels(handler: (req: unknown, res: { json: (body: unknown) => void }) => Promise<void>) {
@@ -150,5 +161,14 @@ describe("FN-7630: Hermes runtime additive — /api/models", () => {
     const response = await callModels(handler);
 
     expect(response.models.some((m) => m.provider === key && m.id === "collide-model")).toBe(true);
+  });
+
+  it("registers POST /models/refresh alongside GET /models with production refresh semantics", async () => {
+    const { handler, refreshCatalog } = setup({ customProviders: [], hermesConnected: true });
+    expect(handler).toBeTypeOf("function");
+    expect(refreshCatalog).toBeTypeOf("function");
+    const json = vi.fn();
+    await refreshCatalog({}, { json });
+    expect(json.mock.calls[0][0]).toEqual({ outcome: "completed" });
   });
 });

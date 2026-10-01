@@ -2,10 +2,14 @@ import { describe, it, expect } from "vitest";
 // FNXC:Reliability-ErrorClassification 2026-07-15-19:15 (FN-8004): the pure predicates moved to
 // the import-free leaf `transient-error-patterns.ts`; this module re-exports them. Importing via
 // BOTH paths here pins the re-export contract so existing callers keep working.
-import { isTransientError as isTransientErrorViaLeaf } from "../errors/transient-error-patterns.js";
+import {
+  isTransientError as isTransientErrorViaLeaf,
+  isProviderThrottleEnvelopeError as isProviderThrottleEnvelopeErrorViaLeaf,
+} from "../errors/transient-error-patterns.js";
 import {
   isTransientError,
   isTransientAuthCredentialError,
+  isProviderThrottleEnvelopeError,
   classifyError,
   isSilentTransientError,
   extractConcurrentSoftDeleteRaceDetails,
@@ -520,6 +524,165 @@ describe("Transient Error Detector", () => {
       expect(isOperatorActionableAgentError("upstream connect error")).toBe(false);
       expect(isOperatorActionableAgentError("Failed to start agent session: spawn ENOENT")).toBe(false);
       expect(isOperatorActionableAgentError("Unexpected end of JSON input")).toBe(false);
+    });
+
+    /*
+    FNXC:ProviderThrottleIsTransient 2026-09-30-13:25 (RUFU-286):
+    Incident-shape regression suite, mirroring the OAuth-rotation suite below. The incident string is
+    the verbatim durable-agent stall reason: pi's fallback wrapper embeds `unknown model` (Fusion
+    resolved no model, pi used its built-in default), which matched the operator-actionable
+    /unknown model/i pattern and parked the agent paused/"error-unrecoverable" with no re-probe —
+    `agent:error-parked-unrecoverable` was running 4.8 events/day. The throttle envelope now wins over
+    the wrapper text; hard usage caps (insufficient_quota) and account/plan limits stay actionable.
+    */
+    const throttleIncident =
+      'Unable to select a usable model after 1 attempt (primary unknown model, no fallback configured, trigger: prompt-time): 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."},"request_id":"req_011Cf3ZXBTF3bymyoFWRQy3t"}';
+
+    it("returns false for the time-boxed throttle incident envelope (wrapper + rate_limit_error tail)", () => {
+      expect(isOperatorActionableAgentError(throttleIncident)).toBe(false);
+      // Raw envelope (shape a) classifies identically without the wrapper.
+      expect(
+        isOperatorActionableAgentError(
+          'Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."},"request_id":"req_011Cf3ZXBTF3bymyoFWRQy3t"}',
+        ),
+      ).toBe(false);
+      // OpenAI 429 envelope type.
+      expect(
+        isOperatorActionableAgentError(
+          '{"error":{"code":"rate_limit_exceeded","type":"rate_limit_exceeded","message":"Rate limit reached for gpt-5. Please try again later."}}',
+        ),
+      ).toBe(false);
+    });
+
+    it("keeps durable usage-cap classes operator-actionable — the exclusion must beat the wrapper text", () => {
+      // Anthropic insufficient_quota in the SAME wrapper shape as the incident: the predicate's hard-cap
+      // exclusion must keep the wrapper's `unknown model` match alive (that pattern IS why this class
+      // parks today — if the throttle predicate leaked here, this flips to false and the agent would
+      // cooldown-loop against a cap that never self-clears).
+      expect(
+        isOperatorActionableAgentError(
+          'Unable to select a usable model after 1 attempt (primary unknown model, no fallback configured, trigger: session-creation): 429 {"type":"error","error":{"type":"insufficient_quota","message":"Your account\'s budget has been exhausted. Please purchase more."},"request_id":"req_011Cf3Zq2k9PjUu2kH8s"}',
+        ),
+      ).toBe(true);
+      // OpenAI billing/quota wording — provider-side billing classification, not engine-side.
+      expect(
+        isOperatorActionableAgentError(
+          '{"error":{"code":"insufficient_quota","type":"insufficient_quota","message":"You exceeded your current quota, please check your plan and billing details."}}',
+        ),
+      ).toBe(true);
+    });
+  });
+
+  /*
+  FNXC:ProviderThrottleIsTransient 2026-09-30-13:27 (RUFU-286):
+  `isProviderThrottleEnvelopeError` is the shared predicate every lane uses to separate the
+  time-bounded wait class from durable account states. It fires ONLY on the structured 429 envelope
+  types (rate_limit_error / rate_limit_exceeded) — never on generic prose — and hard usage caps take
+  precedence even beside an envelope token. Imported via BOTH paths to pin the re-export contract.
+  */
+  describe("isProviderThrottleEnvelopeError", () => {
+    const throttleIncident =
+      'Unable to select a usable model after 1 attempt (primary unknown model, no fallback configured, trigger: prompt-time): 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."},"request_id":"req_011Cf3ZXBTF3bymyoFWRQy3t"}';
+
+    it("fires on the incident pi-wrapper shape and both raw envelope types", () => {
+      expect(isProviderThrottleEnvelopeError(throttleIncident)).toBe(true);
+      expect(isProviderThrottleEnvelopeErrorViaLeaf(throttleIncident)).toBe(true);
+      expect(
+        isProviderThrottleEnvelopeError(
+          '429 {"type":"error","error":{"type":"rate_limit_error","message":"Please try again later."}}',
+        ),
+      ).toBe(true);
+      expect(
+        isProviderThrottleEnvelopeError(
+          '{"error":{"code":"rate_limit_exceeded","type":"rate_limit_exceeded","message":"Rate limit reached for gpt-5. Please try again later."}}',
+        ),
+      ).toBe(true);
+    });
+
+    /*
+    FNXC:ProviderThrottleIsTransient 2026-09-30-17:12 (RUFU-286 code review P2):
+    Non-Anthropic/OpenAI providers spell the same 429 with their own code identifiers, and every one
+    of them used to fall through to the generic branch — for a durable agent that is the bounded
+    error-retry budget ending in a park, for a task it is a `failed` card. These are the codes that
+    ONLY mean request-rate pressure. Google's `RESOURCE_EXHAUSTED` is the deliberate negative: Vertex
+    uses that one code for both per-minute rate limits and daily quota exhaustion with no field that
+    separates them, so classifying it as a wait would hide a hard quota stop behind endless backoff.
+    */
+    it("fires on AWS, Azure, and SDK request-rate code identifiers", () => {
+      const shapes = [
+        // Bedrock runtime / SDK v3: err.name + __type carry the exception name.
+        'ThrottlingException: Too many requests, please wait before trying again.',
+        '{"name":"ThrottlingException","$metadata":{"httpStatusCode":429,"httpStatusReasonPhrase":"Too Many Requests"},"message":"Too many requests for shared resources"}',
+        // SDK v2 sibling codes.
+        'RequestLimitExceeded: Rate exceeded',
+        'TooManyRequestsException: Please reduce your request rate.',
+        'rateLimitExceeded',
+        // Azure OpenAI / AI Gateway 429 body.
+        '{"error":{"code":"TooManyRequests","message":"Requests to the customer are being throttled."}}',
+        // OpenAI SDK class name carried in the message text.
+        'RateLimitError: 429 requests to this model are too busy',
+      ];
+      for (const shape of shapes) {
+        expect(isProviderThrottleEnvelopeError(shape), shape).toBe(true);
+        expect(isProviderThrottleEnvelopeErrorViaLeaf(shape), shape).toBe(true);
+      }
+    });
+
+    it("keeps the documented provider boundaries: ambiguous Google code and hard caps stay out", () => {
+      // Vertex/Gemini: ONE code for per-minute rate AND daily quota — no field separates them.
+      expect(
+        isProviderThrottleEnvelopeError(
+          '{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"Resource has been exhausted (e.g. check quota.)"}}',
+        ),
+      ).toBe(false);
+      // A throttle code whose message also names an account state stays operator-actionable.
+      expect(
+        isProviderThrottleEnvelopeError(
+          'ThrottlingException: account quota exceeded, purchase more capacity',
+        ),
+      ).toBe(false);
+      // A bare 429 status with no code identifier proves nothing about which tier tripped.
+      expect(isProviderThrottleEnvelopeError('APIError: 429')).toBe(false);
+      // Bedrock model-availability codes are transient but are NOT request-rate throttles.
+      expect(isProviderThrottleEnvelopeError('ModelNotReadyException: model is still loading')).toBe(false);
+    });
+
+    it("never fires on generic prose, retry chatter, or the provider-pause reason shape", () => {
+      expect(isProviderThrottleEnvelopeError("we hit a rate limit earlier but it cleared")).toBe(false);
+      expect(isProviderThrottleEnvelopeError("Rate limit approaching, slowing down")).toBe(false);
+      expect(isProviderThrottleEnvelopeError("provider-rate-limit:anthropic")).toBe(false);
+      expect(isProviderThrottleEnvelopeError("retry 3 of 5 after transient failure")).toBe(false);
+      expect(isProviderThrottleEnvelopeError("")).toBe(false);
+      // The pi wrapper WITHOUT a throttle envelope tail (e.g. it wrapped an auth failure) is not a throttle.
+      expect(
+        isProviderThrottleEnvelopeError(
+          "Unable to select a usable model after 1 attempt (primary anthropic/claude-sonnet-5, fallback anthropic/claude-haiku-4-5, trigger: session-creation): 401 invalid api key",
+        ),
+      ).toBe(false);
+    });
+
+    it("hard usage caps win even beside an envelope token", () => {
+      expect(
+        isProviderThrottleEnvelopeError(
+          '{"error":{"type":"rate_limit_exceeded","message":"insufficient_quota: check your billing details"}}',
+        ),
+      ).toBe(false);
+      expect(
+        isProviderThrottleEnvelopeError(
+          '429 {"type":"error","error":{"type":"insufficient_quota","message":"Your account\'s budget has been exhausted. Please purchase more."}}',
+        ),
+      ).toBe(false);
+    });
+
+    it("is re-exported identically through transient-error-detector (leaf/detector parity)", () => {
+      for (const sample of [
+        throttleIncident,
+        'ThrottlingException: Too many requests, please wait before trying again.',
+        'we hit a rate limit earlier',
+        'invalid api key',
+      ]) {
+        expect(isProviderThrottleEnvelopeError(sample)).toBe(isProviderThrottleEnvelopeErrorViaLeaf(sample));
+      }
     });
   });
 

@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { WorkflowIrError, parseWorkflowIr, serializeWorkflowIr } from "../workflows/workflow-ir.js";
-import { resolveOptionalStepRevisionBudget } from "../workflows/workflow-ir-types.js";
+import {
+  ABSOLUTE_MAX_AUTOMATIC_REVIEW_REVISIONS,
+  resolveOptionalStepRevisionBudget,
+} from "../workflows/workflow-ir-types.js";
 import type { WorkflowIrEdge, WorkflowIrNode, WorkflowIrV2 } from "../workflows/workflow-ir-types.js";
+import {
+  POST_MERGE_EVIDENCE_KINDS,
+  describePostMergeEvidenceKinds,
+} from "../workflows/builtin-post-merge-group.js";
 
 /*
 FNXC:WorkflowOptionalGroup 2026-06-21-11:00:
@@ -102,12 +109,48 @@ describe("optional-group validation", () => {
     }
   });
 
+  /*
+  FNXC:PostMergeEvidenceContract 2026-10-01-06:51 (RUFU-457):
+  `evidence.kind` is the authored axis that decides which evidence a post-merge gate demands, and until RUFU-457
+  it validated exactly two values. Two things are pinned here because both were live hazards: every one of the
+  four kinds must PARSE (the first draft of the validator read `cfg.evidence.evidence.kind`, which rejected
+  every authored value while the two legacy kinds survived only through the absent-means-full-suite fallback),
+  and the rejection sentence must enumerate the same list the validator accepts — the old shape spelled the
+  kinds twice by hand, which is precisely the shape that drifts.
+  */
+  it("accepts and round-trips every authored post-merge evidence kind", () => {
+    for (const kind of POST_MERGE_EVIDENCE_KINDS) {
+      const parsed = parseWorkflowIr(groupIr({ evidence: { kind } })) as WorkflowIrV2;
+      const group = parsed.nodes.find((n) => n.id === "browser-verification");
+      expect((group?.config as { evidence?: { kind?: unknown } })?.evidence?.kind).toBe(kind);
+      expect(parseWorkflowIr(serializeWorkflowIr(parsed))).toEqual(parsed);
+    }
+  });
+
+  it("names every evidence kind the validator accepts when an authored evidence.kind is rejected", () => {
+    expect(() => parseWorkflowIr(groupIr({ evidence: { kind: "jenkins" } }))).toThrow(
+      new RegExp(`evidence\\.kind must be ${describePostMergeEvidenceKinds().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+    );
+    // The sentence must be readable in full: four quoted names, and the offending node id.
+    expect(() => parseWorkflowIr(groupIr({ evidence: { kind: "jenkins" } }))).toThrow(
+      /browser-verification[\s\S]*'github-actions-full-suite', 'integration-only', 'onedev-pipeline', or 'gitlab-pipeline'/,
+    );
+  });
+
   it("resolves optional-step revision budgets from numeric, unbounded, and fallback states", () => {
     expect(resolveOptionalStepRevisionBudget(2, 3)).toEqual({ unbounded: false, max: 2 });
     expect(resolveOptionalStepRevisionBudget(0, 3)).toEqual({ unbounded: false, max: 0 });
-    expect(resolveOptionalStepRevisionBudget("unbounded", 3)).toEqual({ unbounded: true, max: Number.POSITIVE_INFINITY });
+    expect(resolveOptionalStepRevisionBudget("unbounded", 3)).toEqual({
+      unbounded: true,
+      max: ABSOLUTE_MAX_AUTOMATIC_REVIEW_REVISIONS,
+    });
+    expect(resolveOptionalStepRevisionBudget(ABSOLUTE_MAX_AUTOMATIC_REVIEW_REVISIONS + 4, 3)).toEqual({
+      unbounded: false,
+      max: ABSOLUTE_MAX_AUTOMATIC_REVIEW_REVISIONS,
+    });
     expect(resolveOptionalStepRevisionBudget(undefined, 3)).toEqual({ unbounded: false, max: 3 });
     expect(resolveOptionalStepRevisionBudget("sometimes", 3)).toEqual({ unbounded: false, max: 3 });
+    expect(resolveOptionalStepRevisionBudget(undefined, Number.POSITIVE_INFINITY)).toEqual({ unbounded: false, max: 0 });
   });
 
   it.each(["plan", "code"] as const)("rejects valid reviewKind in every optional-group template node as unsupported placement", (reviewKind) => {

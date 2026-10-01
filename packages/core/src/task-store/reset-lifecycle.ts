@@ -1,5 +1,5 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
-import type { ColumnId, Task } from "../types.js";
+import { PLAN_PREMISE_REJECTION_METADATA_KEY, type ColumnId, type Task } from "../types.js";
 import * as schema from "../postgres/schema/index.js";
 import { projectScopeFor } from "../postgres/data-layer.js";
 import { acquireTaskAdvisoryXactLock } from "./task-advisory-lock.js";
@@ -8,7 +8,10 @@ import { readTaskRowInTransaction, upsertTaskRowInTransaction } from "./async/as
 import type { TaskStore } from "../store.js";
 import { createLogger } from "../process/logger.js";
 import { resolveTaskSymbolsForTask } from "../tasks/task-symbol-resolution.js";
-import { cancelTaskOverlapWaitsInTransaction } from "./overlap-wait-ops.js";
+import { cancelTaskOverlapWaitsInTransaction, recordOverlapBlockerResetInTransaction } from "./overlap-wait-ops.js";
+import { clearHumanPlanApprovalDecision } from "../planner/human-plan-approval.js";
+import { clearHumanMergeApprovalDecision } from "../merge/human-merge-approval.js";
+import { computePauseAccountingPatch } from "../tasks/task-pause-accounting.js";
 
 const resetLog = createLogger("task-store-reset-lifecycle");
 const ACTIVE_TASK_CONTINUATION_STATES = ["runnable", "running", "held", "retrying"] as const;
@@ -51,8 +54,18 @@ export function buildResetTask(
   options?: ResetTaskPublicationOptions,
 ): Task {
   const now = new Date().toISOString();
+  /*
+  FNXC:TaskPauseAccounting 2026-09-16-06:16:
+  FN-457 — Reset writes `paused: false`, so an open pause segment must be BANKED here rather than
+  abandoned; abandoning it leaves an orphaned anchor that readers must then defend against forever.
+  `cumulativePausedMs` itself is never cleared: it joins firstExecutionAt/cumulativeActiveMs/
+  cumulativePlanningMs/columnDwellMs in the timing analytics Reset deliberately preserves.
+  */
+  const pausePatch = computePauseAccountingPatch(task, false, now, false);
   return {
     ...task,
+    cumulativePausedMs: pausePatch.cumulativePausedMs ?? task.cumulativePausedMs,
+    pausedStartedAt: undefined,
     description: resolveResetDescription(task.description, options?.description) ?? task.description,
     column: intakeColumn,
     status: undefined,
@@ -80,6 +93,28 @@ export function buildResetTask(
     pausedReason: undefined,
     externalBlock: undefined,
     planningFailure: undefined,
+    /*
+    FNXC:PlanPremises 2026-09-16-04:08:
+    RUFU-246 — Reset is a fresh planning request and must NOT carry a plan-premise refusal episode
+    through this builder's `...task` spread: Reset's own premise is "no plan state carries over",
+    and a sticky-park episode surviving into fresh planning would re-park the card at its first
+    release attempt against the new spec. Clear only the premise key — unrelated sourceMetadata
+    provenance keys (duplicate-of, handoff-from) keep surviving Reset exactly as before.
+    */
+    sourceMetadata: task.sourceMetadata === undefined ? undefined : { ...task.sourceMetadata, [PLAN_PREMISE_REJECTION_METADATA_KEY]: null },
+    /*
+    FNXC:HumanPlanApproval 2026-09-15-06:24:
+    FN-408 — Reset keeps the per-card requirement (it is the operator's standing intent for this card)
+    but discards any decision, so the regenerated plan always asks again.
+    */
+    humanPlanApproval: clearHumanPlanApprovalDecision(task.humanPlanApproval) ?? undefined,
+    /*
+    FNXC:HumanMergeApproval 2026-09-17-18:09:
+    FN-514 — Reset keeps the delivery lock INTENT, bumps its generation so every prior accord, pending
+    destination and stale candidate becomes unusable, and preserves the remediation counter so a later
+    rejection cannot reuse a cancelled episode's identity.
+    */
+    humanMergeApproval: clearHumanMergeApprovalDecision(task.humanMergeApproval) ?? undefined,
     pausedByAgentId: undefined,
     checkedOutBy: undefined,
     checkedOutAt: undefined,
@@ -185,7 +220,7 @@ export async function resetTaskPublicationImpl(
   if (!layer) {
     throw new Error("Atomic task reset publication requires the PostgreSQL backend");
   }
-  const projectId = layer.projectId;
+  const projectId = layer.projectId?.trim() || "__legacy_unscoped__";
   const beforeReset = await store.getTask(taskId);
   if (!beforeReset) throw new Error(`Task ${taskId} not found`);
   const symbols = resolveTaskSymbolsForTask(beforeReset);
@@ -242,8 +277,14 @@ export async function resetTaskPublicationImpl(
       FNXC:OverlapWaitSynchronization 2026-09-17-00:12:
       Reset invalidates any in-flight generation: cancel rather than delete so a stale owner's
       completeTaskOverlapWait races against the phase check and loses, without erasing history.
+
+      FNXC:OverlapWaitRelease 2026-09-17-06:29:
+      Stamp the blocker's own waits BEFORE the merge evidence is discarded, so an already landed
+      delivery survives and an unlanded execution is explicitly abandoned. `projectId` is already
+      normalised at the top of this transaction, so it needs no `?? "__legacy_unscoped__"` here.
       */
-      await cancelTaskOverlapWaitsInTransaction(tx, projectId?.trim() || "__legacy_unscoped__", taskId);
+      await recordOverlapBlockerResetInTransaction(tx, projectId, current);
+      await cancelTaskOverlapWaitsInTransaction(tx, projectId, taskId);
       await tx.delete(schema.project.mergeQueue).where(and(projectScopeFor(schema.project.mergeQueue.projectId, projectId), eq(schema.project.mergeQueue.taskId, taskId)));
       await tx.delete(schema.project.mergeRequests).where(and(projectScopeFor(schema.project.mergeRequests.projectId, projectId), eq(schema.project.mergeRequests.taskId, taskId)));
       /*

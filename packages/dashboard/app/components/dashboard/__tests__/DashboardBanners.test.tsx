@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { AiSessionSummary } from "../../../api";
 import type { ModalManager } from "../../../hooks/useModalManager";
-import { AuthTokenRecoveryDialog } from "../../AuthTokenRecoveryDialog";
+import { AuthTokenRecoveryPage } from "../../AuthTokenRecoveryPage";
 import type { DashboardBannersProps } from "../types";
 
 vi.mock("../../TestModeBanner", () => ({ TestModeBanner: () => null }));
@@ -180,10 +180,8 @@ function buildModalManager(overrides: Partial<ModalManager> = {}): ModalManager 
     fileBrowserInitialFile: null,
     activityLogOpen: false,
     gitManagerOpen: false,
-    workflowEditorOpen: false,
-    workflowEditorInitialPanel: undefined,
-    workflowEditorInitialAction: undefined,
-    workflowEditorInitialWorkflowId: undefined,
+    workflowViewPanel: undefined,
+    workflowViewWorkflowId: undefined,
     agentsOpen: false,
     scriptsOpen: false,
     setupWizardOpen: false,
@@ -223,8 +221,8 @@ function buildModalManager(overrides: Partial<ModalManager> = {}): ModalManager 
     closeActivityLog: noop,
     openGitManager: noop,
     closeGitManager: noop,
-    openWorkflowEditor: noop,
-    closeWorkflowEditor: noop,
+    setWorkflowViewParams: noop,
+    clearWorkflowViewParams: noop,
     openAgents: noop,
     closeAgents: noop,
     openScripts: noop,
@@ -237,8 +235,12 @@ function buildModalManager(overrides: Partial<ModalManager> = {}): ModalManager 
     onPlanningTaskCreated: noop,
     onPlanningTasksCreated: noop,
     onSubtaskTasksCreated: noop,
+    newTaskInitialWorkflowId: null,
+    planningSourceIssue: undefined,
+    planningEntryGeneration: 0,
+    detailTaskInitialAction: null,
     ...overrides,
-  };
+  } as ModalManager;
 }
 
 function buildProps(overrides: Partial<DashboardBannersProps> = {}): DashboardBannersProps {
@@ -298,7 +300,7 @@ function unavailableEngineHealth(): DashboardBannersProps["dashboardHealth"] {
     engine: { available: false, status: "unavailable" },
     database: { healthy: true, corruptionDetected: false, corruptionErrors: [], lastCheckedAt: null },
     taskIdIntegrity: { status: "ok" },
-  } as DashboardBannersProps["dashboardHealth"];
+  } as unknown as DashboardBannersProps["dashboardHealth"];
 }
 
 function AuthRecoveryBannerShell({
@@ -320,7 +322,7 @@ function AuthRecoveryBannerShell({
           sessionsNeedingInput: [],
         })}
       />
-      <AuthTokenRecoveryDialog open={open} />
+      <AuthTokenRecoveryPage open={open} />
     </>
   );
 }
@@ -341,7 +343,7 @@ describe("DashboardBanners engine remediation visibility", () => {
   FNXC:AuthRecovery 2026-06-29-00:00:
   FN-7243 surface enumeration: DashboardBanners is the app-shell project banner stack that mounts EngineStatusBanner and EngineUnavailableBanner. Auth token recovery must suppress both engine-remediation components while preserving the existing project/currentProject guard, so unauthorized daemon-token recovery does not leave empty aria-live regions, start buttons, or banner shells behind.
   */
-  it("shows only the auth-token recovery dialog when unauthorized recovery opens over visible engine remediation", () => {
+  it("shows only the auth-token recovery page when unauthorized recovery opens over visible engine remediation", () => {
     const { rerender } = render(<AuthRecoveryBannerShell open={false} />);
 
     expect(screen.getByTestId("engine-status-banner")).toBeInTheDocument();
@@ -350,9 +352,9 @@ describe("DashboardBanners engine remediation visibility", () => {
 
     rerender(<AuthRecoveryBannerShell open={true} />);
 
-    const dialog = screen.getByRole("dialog", { name: "Authentication token required" });
+    const page = screen.getByRole("main", { name: "Authentication token required" });
     const tokenInput = screen.getByLabelText("Replacement token");
-    expect(dialog).toBeInTheDocument();
+    expect(page).toBeInTheDocument();
     expect(tokenInput).toBeInTheDocument();
     expect(document.activeElement).toBe(tokenInput);
     expectNoEngineRemediationShell();
@@ -367,7 +369,7 @@ describe("DashboardBanners engine remediation visibility", () => {
       />,
     );
 
-    expect(screen.getAllByRole("dialog", { name: "Authentication token required" })).toHaveLength(1);
+    expect(screen.getAllByRole("main", { name: "Authentication token required" })).toHaveLength(1);
     expect(screen.getByLabelText("Replacement token")).toBe(document.activeElement);
     expectNoEngineRemediationShell();
   });

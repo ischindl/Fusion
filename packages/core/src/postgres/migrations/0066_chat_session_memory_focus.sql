@@ -17,4 +17,13 @@
 -- Upstream's 0065 is already released, so this migration takes the next free sequence.
 -- Production ledgers that applied the memory-focus SQL under the old row "0065"
 -- (v17-era) need a one-time 0065->0066 ledger remap before first 0066-ceiling boot.
+-- Renumbered again during the rebase onto origin/main (2026-08-14): origin/main
+-- concurrently landed FN-9037's 0059_fn_9037_tasks_source_agent_index.sql under the
+-- same 0059 sequence we had picked, so our chat_session_memory_focus migration is
+-- pinned to 0060 (the next free sequence above both SCHEMA_BASELINE_VERSION "0059"
+-- and FN-9037's source-agent index).
+-- Renumbered again during the RUFU-160 merge of origin/main (2026-08-23): origin/main
+-- independently shipped 0065 as 0065_fn_149_review_convergence_stage.sql (v0.77.0-beta.7),
+-- so this migration takes 0066, the next free sequence; 0068 re-runs both 0065-collision
+-- migrations idempotently to repair databases that recorded 0065 with this line's content.
 ALTER TABLE IF EXISTS project.chat_sessions ADD COLUMN IF NOT EXISTS memory_focus text;

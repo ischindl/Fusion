@@ -78,10 +78,34 @@ describe("hold-release bounded database work", () => {
       return tasks;
     });
 
+    // RUFU-209 (Step 6): repeat-last-value clock — the first read is the sweep baseline and every
+    // later read returns the same +3 s, so added phase-timing `now()` reads cannot move what fires.
     let clockCalls = 0;
     await runHoldReleaseSweep(store, { now: () => 1_000_000 + (clockCalls++ > 0 ? 3_000 : 0) });
 
-    expect(store.listTasks).toHaveBeenCalledWith(expect.objectContaining({ includeArchived: false, selectionCache: expect.any(Map), selectionReadTally: { batched: 1, singles: 0 }, irCache: expect.any(Map), definitionReadTally: { definitions: 1 } }));
+    /*
+    FNXC:ListTasksExcludeLog 2026-09-09-01:50 (RUFU-202):
+    This is the load-bearing read-shape assertion for the sweep. The full-board read measured avg
+    10.6 s / max 159.8 s live and starved dispatch, so the two opt-outs that make it cheap are
+    pinned here explicitly: `derive: false` (no per-row UI-signal derivation, no selection/override
+    prefetch) and `excludeLog: true` (the ~11 KB/row `log` column is not selected). An earlier
+    version of this assertion used a bare `objectContaining` without them, which would have kept
+    passing while the sweep silently regressed back to the deriving full-column read — the reason
+    RUFU-201's log-drop gate was originally written for slim consumers only.
+
+    FNXC:WorkflowScheduling 2026-09-09-15:13 (merge origin/main f59f9ead92 -> main): FN-9261's caller-owned
+    `irCache` + `definitionReadTally` are asserted beside the fork's cost opt-outs, because the sweep passes
+    both sets and its slow-sweep warning reports both counters.
+    */
+    expect(store.listTasks).toHaveBeenCalledWith(expect.objectContaining({
+      includeArchived: false,
+      derive: false,
+      excludeLog: true,
+      selectionCache: expect.any(Map),
+      selectionReadTally: { batched: 1, singles: 0 },
+      irCache: expect.any(Map),
+      definitionReadTally: { definitions: 1 },
+    }));
     expect(store.getTaskWorkflowSelectionsAsync).not.toHaveBeenCalled();
     expect(warn.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining("batchSelections=1, selections=0, definitions=1"));
   });
@@ -96,6 +120,7 @@ describe("hold-release bounded database work", () => {
       return tasks;
     });
 
+    // RUFU-209 (Step 6): repeat-last-value clock (see the note above the sibling test).
     let clockCalls = 0;
     await runHoldReleaseSweep(store, { now: () => 1_000_000 + (clockCalls++ > 0 ? 3_000 : 0) });
 

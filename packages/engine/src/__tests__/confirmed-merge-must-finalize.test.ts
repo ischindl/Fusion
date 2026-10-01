@@ -42,6 +42,42 @@ describe("FN-180 confirmed merge must finalize", () => {
     expect(store.updateTask).not.toHaveBeenCalledWith(task.id, expect.objectContaining({ status: "failed" }));
   });
 
+  /*
+  FNXC:PostMergeGateDeliveryShape 2026-09-30-13:09 (RUFU-429):
+  SYMPTOM VERIFICATION. Reproduction before the fix: a workspace-shaped card with the default-on
+  `post-merge-verification` gate, `mergeConfirmed: true`, and no post-merge row reached the finalizer and
+  answered `blocked` with reason `required post-merge evidence gate 'post-merge-verification' has not
+  reported [post-merge gate unreachable: workspace]`, because `reseedUnrunPostMergeGate` refuses workspace
+  cards by construction. Eleven saneca cards needed a human waiver on 2026-09-29 for exactly this. The
+  assertion below is the absence of that whole class, not of one card id.
+  */
+  it("finalizes a landed workspace card whose lane cannot report post-merge evidence", async () => {
+    const task = {
+      id: "SANE-447",
+      column: "in-review",
+      steps: [{ name: "implementation", status: "done" }],
+      enabledWorkflowSteps: ["post-merge-verification"],
+      workflowStepResults: [],
+      workspaceWorktrees: {
+        saneca: { path: "/repo/saneca/.fusion/worktrees/sane-447" },
+        "lager-manager": { path: "/repo/lager-manager/.fusion/worktrees/sane-447" },
+      },
+      mergeDetails: { mergeConfirmed: true, commitSha: "e38b4a3" },
+    } as unknown as Task;
+    const store = makeStore(task);
+
+    const result = await finalizeProvenAutoMergeTask({
+      store,
+      taskId: task.id,
+      source: "workflow-graph-merge-finalize",
+      result: { task, mergeConfirmed: true, commitSha: "e38b4a3" } as never,
+    });
+
+    expect(result.outcome).toBe("done");
+    expect(result.reason ?? "").not.toMatch(/post-merge gate unreachable|has not reported/);
+    expect(task.column).toBe("done");
+  });
+
   it("persists irreversible merge proof before deferring to an absent post-merge result", async () => {
     const task = {
       id: "FN-PM-proof-before-gate",

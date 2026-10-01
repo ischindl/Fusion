@@ -612,7 +612,7 @@ describe("CE workflow-step executor integration", () => {
       expect(result.context["node:code-review:outcome"]).not.toBe("no-worktree-for-write-node");
     });
 
-    it("keeps disabled inline fixes and Plan Review read-only during graph preparation", async () => {
+    it("prepares a Code Review checkout while keeping Plan Review checkout-free", async () => {
       const requirements: any[] = [];
       const graph = new WorkflowGraphExecutor({
         prepareNodeExecution: (_node, _task, requirement) => { requirements.push(requirement); },
@@ -636,9 +636,8 @@ describe("CE workflow-step executor integration", () => {
       };
       await graph.run(baseStepTask({ enabledWorkflowSteps: ["code-review", "plan-review"] }) as any, {
         experimentalFeatures: {},
-        reviewerInlineFixes: false,
       }, ir);
-      expect(requirements).toEqual([]);
+      expect(requirements).toEqual([{ requiresWorktree: true, reason: "write-capable-node" }]);
     });
 
     it("finalizes a merge-confirmed workflow graph task that is stranded before done", async () => {
@@ -672,7 +671,7 @@ describe("CE workflow-step executor integration", () => {
       expect(live.mergeDetails?.mergeConfirmed).toBe(true);
     });
 
-    it("lets stale no-op merge proof fall through when implementation steps are incomplete", async () => {
+    it("finalizes durable no-op merge proof without replaying pre-merge implementation", async () => {
       const store = createMockStore();
       const live = baseStepTask({
         column: "in-progress",
@@ -688,19 +687,14 @@ describe("CE workflow-step executor integration", () => {
       const { executor } = makeExecutor(store);
 
       /*
-       * FNXC:WorkflowMerge 2026-06-29-23:12:
-       * A no-op merge confirmation without a landed commit is not implementation proof. When reopened work still has incomplete legacy steps, execute() must continue to stale-merge cleanup/reverification instead of consuming the run in merge-confirmed finalization.
+       * FNXC:ConfirmedMergeFinalization 2026-09-03-05:40:
+       * Durable merge confirmation is the terminal authority. FN-180 reconciliation skips stale
+       * pre-merge checklist entries rather than replaying implementation after the merge boundary.
        */
       const handled = await (executor as any).finalizeMergeConfirmedWorkflowGraphTask("FN-CE-1", "test");
 
-      expect(handled).toBe(false);
-      expect(store.moveTask).not.toHaveBeenCalledWith("FN-CE-1", "done", expect.anything());
-      expect(store.logEntry).toHaveBeenCalledWith(
-        "FN-CE-1",
-        expect.stringContaining("merge-confirmed finalization blocked"),
-        undefined,
-        undefined,
-      );
+      expect(handled).toBe(true);
+      expect(store.moveTask).toHaveBeenCalledWith("FN-CE-1", "done", expect.anything());
     });
 
     it("blocks the merge requester when graph traversal reaches merge before implementation steps finish", async () => {
@@ -1173,7 +1167,7 @@ Ship FIVE kinds. Do NOT add roadmap-item in this task.
       expect(cap.last?.systemPrompt).toContain("modified-file list is the starting point");
       expect(cap.last?.systemPrompt).toContain("necessary callers, selectors, shared helpers, consumers, and tests");
       expect(cap.last?.systemPrompt).not.toContain("Review ONLY the files listed above");
-      expect(cap.last?.systemPrompt).toContain("restart the mandatory review procedure");
+      expect(cap.last?.systemPrompt).not.toContain("## Same-Session Fix Policy");
     });
 
     it("does not restore the historical task description when PROMPT.md is unavailable", async () => {
@@ -1365,6 +1359,64 @@ Ship FIVE kinds. Do NOT add roadmap-item in this task.
         { unattended: true },
       );
       expect(cap.last?.taskEnv?.FUSION_HEADLESS).toBe("1");
+    });
+
+    it("applies the non-interactive git floor to the step env, taskEnv-supplied or not", async () => {
+      /*
+      FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210):
+      RUFU-210 measured a `git rebase --continue` blocked in `vi` for 1d13h on a production host.
+      A workflow-step session inherits this env, so the floor (GIT_EDITOR/GIT_SEQUENCE_EDITOR/
+      GIT_PAGER/GIT_TERMINAL_PROMPT/GIT_MERGE_AUTOEDIT) must ride on the captured step env both
+      when taskEnv is absent (undefined → process.env fallback) and when a taskEnv tries to name
+      a real editor. The floor is written last, so a `vim` from taskEnv cannot survive; and
+      because it only ever writes GIT_* keys, the order-sensitive FUSION_HEADLESS strip can never
+      resurrect a stripped key through it.
+      */
+      const store = createMockStore();
+      const { executor } = makeExecutor(store);
+      const cap = captureSession();
+
+      // (a) taskEnv === undefined → floor still present via the process.env fallback branch.
+      await (executor as any).executeWorkflowStep(
+        baseStepTask(),
+        makeStep({ skillName: "compound-engineering:ce-plan" }),
+        "/tmp/wt",
+        {},
+        undefined,
+      );
+      expect(cap.last?.taskEnv?.GIT_EDITOR).toBe("true");
+      expect(cap.last?.taskEnv?.GIT_SEQUENCE_EDITOR).toBe("true");
+      expect(cap.last?.taskEnv?.GIT_PAGER).toBe("cat");
+      expect(cap.last?.taskEnv?.GIT_TERMINAL_PROMPT).toBe("0");
+      expect(cap.last?.taskEnv?.GIT_MERGE_AUTOEDIT).toBe("no");
+      expect(cap.last?.taskEnv?.FUSION_WORKFLOW_STEP).toBe("1");
+
+      // (b) a taskEnv naming a real editor/pager cannot clear the floor.
+      await (executor as any).executeWorkflowStep(
+        baseStepTask(),
+        makeStep({ skillName: "compound-engineering:ce-plan" }),
+        "/tmp/wt",
+        {},
+        { GIT_EDITOR: "vim", GIT_PAGER: "less" },
+      );
+      expect(cap.last?.taskEnv?.GIT_EDITOR).toBe("true");
+      expect(cap.last?.taskEnv?.GIT_PAGER).toBe("cat");
+      expect(cap.last?.taskEnv?.GIT_SEQUENCE_EDITOR).toBe("true");
+      expect(cap.last?.taskEnv?.GIT_TERMINAL_PROMPT).toBe("0");
+      expect(cap.last?.taskEnv?.GIT_MERGE_AUTOEDIT).toBe("no");
+
+      // (c) a board run that strips an inherited FUSION_HEADLESS keeps the floor intact.
+      await (executor as any).executeWorkflowStep(
+        baseStepTask(),
+        makeStep({ skillName: "compound-engineering:ce-plan" }),
+        "/tmp/wt",
+        {},
+        { FUSION_HEADLESS: "1" },
+        { unattended: false },
+      );
+      expect(cap.last?.taskEnv?.FUSION_HEADLESS).toBeUndefined();
+      expect(cap.last?.taskEnv?.GIT_EDITOR).toBe("true");
+      expect(cap.last?.taskEnv?.GIT_PAGER).toBe("cat");
     });
   });
 

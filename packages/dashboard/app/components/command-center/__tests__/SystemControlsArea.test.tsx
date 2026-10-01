@@ -7,6 +7,7 @@ import { CommandCenter } from "../CommandCenter";
 import { selectCommandCenterSection } from "./sectionNavTestUtils";
 import { refreshUpdateCheck } from "../../../api/legacy";
 import { readAppFile } from "../../../test/cssFixture";
+import type { SseSubscription } from "../../../sse-bus";
 
 /*
 FNXC:CommandCenterSystemTests 2026-07-23-22:35:
@@ -28,7 +29,7 @@ const mockFetchSystemLogs = vi.fn();
 const mockFetchNodeSystemStats = vi.fn();
 const mockFetchGlobalSettings = vi.fn();
 const mockFetchNodes = vi.fn();
-const subscribeSseMock = vi.fn(() => () => undefined);
+const subscribeSseMock = vi.fn((_url: string, _sub?: SseSubscription) => () => undefined);
 const mockStartSystemSourceUpdate = vi.fn();
 
 vi.mock("../../../api/legacy", () => ({
@@ -82,8 +83,15 @@ vi.mock("../../../api", () => ({
   updateGlobalSettings: vi.fn().mockResolvedValue({}),
 }));
 
+/*
+FNXC:SseBusMock 2026-08-22-03:12:
+Forward the real (url, sub) arguments into the mock: an implemented vi.fn infers its parameter
+list, so the pre-campaign spread of unknown[] failed typecheck, and dropping the args left the
+stream subscription unreachable through mock.calls — getStreamEvents below found no call for the
+stream URL. Restoring the args keeps both the typecheck and the SSE-line assertions working.
+*/
 vi.mock("../../../sse-bus", () => ({
-  subscribeSse: (...args: unknown[]) => subscribeSseMock(...args),
+  subscribeSse: (url: string, sub?: SseSubscription) => subscribeSseMock(url, sub),
 }));
 
 vi.mock("../../../hooks/useAppSettings", () => ({

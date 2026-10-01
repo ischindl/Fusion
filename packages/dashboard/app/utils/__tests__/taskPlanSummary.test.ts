@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { splitTaskPlanSummary } from "../taskPlanSummary";
+import { extractTaskBeforeAfterTransformation, extractTaskProductSummary, splitTaskPlanSummary } from "../taskPlanSummary";
 
 const bothSections = `# Task: FN-195 - Summary first
 
@@ -110,5 +110,161 @@ describe("splitTaskPlanSummary", () => {
       const inSource = nonBlankLines(source).filter((candidate) => candidate === line).length;
       expect(inSummary + inRest).toBe(inSource);
     }
+  });
+});
+
+/*
+FNXC:TaskDetailDefinition 2026-09-14-20:25:
+FN-391's product-outcome selector. Deliberately narrower than `splitTaskPlanSummary`: it returns ONE
+section in product language, never the technical Mission, and reports which section supplied it so a
+caller can tell a modern plan from a legacy fallback.
+*/
+describe("extractTaskProductSummary", () => {
+  it("prefers What This Delivers and reports its source", () => {
+    const summary = extractTaskProductSummary(bothSections);
+
+    expect(summary?.source).toBe("what-this-delivers");
+    expect(summary?.markdown).toContain("Operators can confirm the expected outcome quickly.");
+    expect(summary?.markdown).not.toContain("**Before:**");
+  });
+
+  it("falls back to Before → After Transformation when What This Delivers is absent", () => {
+    const summary = extractTaskProductSummary("# Task: FN-1 - Legacy\n\n## Before → After Transformation\n\n- **Before:** manual\n- **After:** automatic\n\n## Mission\n\nTechnical brief.\n");
+
+    expect(summary?.source).toBe("before-after");
+    expect(summary?.markdown).toContain("**After:** automatic");
+  });
+
+  it("accepts the ASCII arrow variant of the legacy heading", () => {
+    const summary = extractTaskProductSummary("# Task: FN-1 - Legacy\n\n## Before -> After Transformation\n\nASCII arrow plan.\n");
+
+    expect(summary?.source).toBe("before-after");
+    expect(summary?.markdown).toContain("ASCII arrow plan.");
+  });
+
+  it.each([
+    { label: "a Mission-only plan", prompt: "# Task: FN-1 - Mission\n\n## Mission\n\nTechnical brief.\n" },
+    { label: "an empty prompt", prompt: "" },
+    { label: "a heading-only prompt", prompt: "# Task: FN-1 - Heading only\n" },
+    { label: "an empty summary section", prompt: "# Task: FN-1 - Empty\n\n## What This Delivers\n\n## Mission\n\nTechnical brief.\n" },
+  ])("returns null for $label", ({ prompt }) => {
+    expect(extractTaskProductSummary(prompt)).toBeNull();
+  });
+
+  it("skips a fenced heading and uses the first real occurrence only", () => {
+    const summary = extractTaskProductSummary("# Task: FN-1 - Fenced\n\n```md\n## What This Delivers\n\nFenced example.\n```\n\n## What This Delivers\n\nReal outcome.\n\n## What This Delivers\n\nDuplicate.\n");
+
+    expect(summary?.markdown).toContain("Real outcome.");
+    expect(summary?.markdown).not.toContain("Fenced example.");
+    expect(summary?.markdown).not.toContain("Duplicate.");
+  });
+
+  it("never returns the Mission section, even when it is the only prose in the plan", () => {
+    expect(extractTaskProductSummary("# Task: FN-1 - Mission\n\n## Mission\n\nUnifier le contrat titre/description.\n")).toBeNull();
+  });
+
+  it("excludes the heading line itself from the returned markdown", () => {
+    const summary = extractTaskProductSummary(bothSections);
+
+    expect(summary?.markdown.startsWith("## ")).toBe(false);
+    expect(summary?.markdown).not.toContain("## What This Delivers");
+  });
+});
+
+describe("extractTaskBeforeAfterTransformation", () => {
+  it("returns the before/after body when the plan carries both summary sections", () => {
+    const transformation = extractTaskBeforeAfterTransformation(bothSections);
+
+    expect(transformation).toContain("**Before:** intent is buried");
+    expect(transformation).toContain("**After:** intent is visible");
+    expect(transformation).not.toContain("## Before");
+    expect(transformation).not.toContain("Operators can confirm");
+  });
+
+  it("accepts the ASCII arrow variant of the heading", () => {
+    expect(extractTaskBeforeAfterTransformation("# Task: FN-1 - Legacy\n\n## Before -> After Transformation\n\nASCII arrow body.\n")).toBe("ASCII arrow body.");
+  });
+
+  it("skips a fenced heading and keeps only the first real occurrence", () => {
+    const transformation = extractTaskBeforeAfterTransformation(
+      "# Task: FN-1 - Fenced\n\n```md\n## Before → After Transformation\n\nFenced example.\n```\n\n## Before → After Transformation\n\nReal transformation.\n\n## Before → After Transformation\n\nDuplicate.\n",
+    );
+
+    expect(transformation).toBe("Real transformation.");
+    expect(transformation).not.toContain("Fenced example.");
+    expect(transformation).not.toContain("Duplicate.");
+  });
+
+  it.each([
+    { label: "a plan without the section", prompt: "# Task: FN-1 - Outcome only\n\n## What This Delivers\n\nOutcome.\n" },
+    { label: "an empty before/after section", prompt: "# Task: FN-1 - Empty\n\n## Before → After Transformation\n\n## Mission\n\nTechnical brief.\n" },
+    { label: "an empty prompt", prompt: "" },
+    { label: "a heading-only prompt", prompt: "# Task: FN-1 - Heading only\n" },
+  ])("returns null for $label", ({ prompt }) => {
+    expect(extractTaskBeforeAfterTransformation(prompt)).toBeNull();
+  });
+
+  it("does not change extractTaskProductSummary results for the same plans", () => {
+    expect(extractTaskProductSummary(bothSections)?.source).toBe("what-this-delivers");
+    expect(extractTaskProductSummary(bothSections)?.markdown).toContain("Operators can confirm the expected outcome quickly.");
+
+    const legacyOnly = "# Task: FN-1 - Legacy\n\n## Before → After Transformation\n\n- **Before:** manual\n- **After:** automatic\n";
+    expect(extractTaskProductSummary(legacyOnly)?.source).toBe("before-after");
+    expect(extractTaskProductSummary(legacyOnly)?.markdown).toContain("**After:** automatic");
+    expect(extractTaskBeforeAfterTransformation(legacyOnly)).toBe(extractTaskProductSummary(legacyOnly)?.markdown);
+  });
+});
+
+/*
+FNXC:PatchnodeLedger 2026-09-18-02:48:
+FN-526 duplicates the History ledger's product-summary rule into `@fusion/core`
+(`packages/core/src/board/patchnode-product-summary.ts`) because neither package can import the
+other's runtime helper (the dashboard browser bundle aliases `@fusion/core` to `types.ts`). These
+fixtures are copied LITERALLY from `packages/core/src/__tests__/patchnode-projection.test.ts` so
+section selection cannot drift: editing one side requires editing the other.
+*/
+describe("core Patchnode mirror convergence", () => {
+  const PLAN_WITH_BOTH_SECTIONS = [
+    "# Task: FN-1 - Titre",
+    "",
+    "## What This Delivers",
+    "",
+    "- Les opérateurs relisent l'intention.",
+    "- La description vient du plan.",
+    "",
+    "## Before → After Transformation",
+    "",
+    "- **Before:** ancien corps.",
+    "",
+    "## Mission",
+    "",
+    "Technique.",
+    "",
+  ].join("\n");
+
+  const PLAN_BEFORE_AFTER_ONLY = [
+    "# Task: FN-1 - Titre",
+    "",
+    "## Before -> After Transformation",
+    "",
+    "- **Before:** `body` venait du résumé.",
+    "",
+    "## Mission",
+    "",
+    "Technique.",
+    "",
+  ].join("\n");
+
+  const PLAN_MISSION_ONLY = "# Task: FN-1 - Titre\n\n## Mission\n\nTechnique seulement.\n";
+
+  it("selects the same plan section as the core extractor on the shared fixtures", () => {
+    expect(extractTaskProductSummary(PLAN_WITH_BOTH_SECTIONS)?.source).toBe("what-this-delivers");
+    expect(extractTaskProductSummary(PLAN_WITH_BOTH_SECTIONS)?.markdown).toContain("Les opérateurs relisent l'intention.");
+    expect(extractTaskProductSummary(PLAN_WITH_BOTH_SECTIONS)?.markdown).not.toContain("ancien corps.");
+
+    expect(extractTaskProductSummary(PLAN_BEFORE_AFTER_ONLY)?.source).toBe("before-after");
+    expect(extractTaskProductSummary(PLAN_BEFORE_AFTER_ONLY)?.markdown).toContain("venait du résumé.");
+
+    expect(extractTaskProductSummary(PLAN_MISSION_ONLY)).toBeNull();
   });
 });

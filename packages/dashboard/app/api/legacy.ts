@@ -34,7 +34,9 @@ export type {
 
 export {
   fetchTasks,
-  fetchArchivedTasks,
+  fetchTaskPage,
+  fetchTaskQueuePage,
+  fetchCompletedTasks,
   fetchTaskRecommendations,
   fetchTaskDetail,
   fetchTaskPrompt,
@@ -51,7 +53,7 @@ export {
 } from "./tasks/tasks.js";
 import type {
   DeleteTaskOptions,
-  ArchiveTaskOptions,
+  CompletedTaskPageResponse,
   TaskRecommendationsResponse,
   TaskRuntimeFallbackResponse,
   TaskPromptResponse,
@@ -70,7 +72,7 @@ import type {
 } from "./tasks/tasks.js";
 export type {
   DeleteTaskOptions,
-  ArchiveTaskOptions,
+  CompletedTaskPageResponse,
   TaskRecommendationsResponse,
   TaskRuntimeFallbackResponse,
   TaskPromptResponse,
@@ -109,16 +111,18 @@ export {
   recoverBranchBinding,
   resetTask,
   duplicateTask,
+  transferTask,
+  fetchHandoffStatus,
+  boostTask,
   pauseTask,
   unpauseTask,
   nudgeOverseer,
   stopOverseer,
   explainOverseer,
   fetchPlannerInterventionTimeline,
-  archiveTask,
-  unarchiveTask,
   revertTask,
-  archiveAllDone,
+  // FN-416: restore a reverted task's revert.
+  restoreTaskRevert,
   approvePlan,
   rejectPlan,
 } from "./tasks/tasks-lifecycle.js";
@@ -127,12 +131,21 @@ export type {
   BranchGroupSummary,
   PromoteBranchGroupResult,
   RecoverBranchBindingOutcome,
+  TaskRetryOptions,
   OverseerControlResult,
   RevertTaskWorkspaceRepoResult,
   RevertTaskGitResult,
   RevertTaskAiResult,
   RevertTaskResult,
   RevertTaskOptions,
+  /* FNXC:CrossProjectHandoff 2026-09-09-05:03 (RUFU-203): transfer client surface for the UI helper, modal, and badge. */
+  TaskTransferDisposition,
+  TaskTransferResult,
+  HandoffTargetStatus,
+  RestoreTaskRevertGitResult,
+  RestoreTaskRevertAiResult,
+  RestoreTaskRevertResult,
+  RestoreTaskRevertOptions,
 } from "./tasks/tasks-lifecycle.js";
 
 export {
@@ -322,6 +335,8 @@ export {
   requestSpecRevision,
   rebuildTaskSpec,
   refineTask,
+  // FNXC:TaskFollowUp 2026-09-17-17:30: FN-513's follow-up composer reaches the client through the same barrel.
+  followUpTask,
 } from "./tasks/task-steer.js";
 
 /*
@@ -599,6 +614,8 @@ export {
   saveFileContent,
   saveWorkspaceFileContent,
   searchFiles,
+  uploadWorkspaceFiles,
+  MAX_WORKSPACE_UPLOAD_FILE_BYTES,
 } from "./projects/workspace-files.js";
 export type {
   FileContentResponse,
@@ -610,6 +627,9 @@ export type {
   SaveFileResponse,
   WorkspaceListResponse,
   WorkspaceTaskInfo,
+  WorkspaceUploadFailure,
+  WorkspaceUploadFileResult,
+  WorkspaceUploadResponse,
 } from "./projects/workspace-files.js";
 
 /*
@@ -763,6 +783,7 @@ export {
   fetchWorkflowStepTemplates,
   fetchWorkflows,
   importWorkflow,
+  normalizeScriptCatalog,
   removeScript,
   runScript,
   selectTaskWorkflow,
@@ -1063,6 +1084,9 @@ export type {
   TaskCommitAssociationRow,
   TaskCommitAssociationsResponse,
   TaskDiff,
+  TaskDiffResponse,
+  TaskDiffStats,
+  TaskDiffStatsResponse,
   TaskFileDiff,
 } from "./tasks/task-diff.js";
 

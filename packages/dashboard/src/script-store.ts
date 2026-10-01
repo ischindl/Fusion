@@ -73,6 +73,7 @@ class ScriptStore {
   }
 }
 
+// retention-config-keyed: keyed by the project's scripts file — one live ScriptStore per configured root
 const storeInstances = new Map<string, ScriptStore>();
 
 export async function loadScriptStore(projectDir: string): Promise<ScriptStore> {

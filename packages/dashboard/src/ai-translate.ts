@@ -21,6 +21,11 @@ import {
   AiServiceError,
   ValidationError,
 } from "./ai-refine.js";
+import { RATE_LIMIT_ENTRY_BYTES } from "./lib/retention-census.js";
+import {
+  enforceEntryCeiling,
+  registerBoundedWindowMap,
+} from "./lib/retention/bounded-window-map.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const createFnAgent: any = engineCreateFnAgent;
@@ -46,12 +51,35 @@ export const IMPORT_TRANSLATE_MAX_ISSUES = 50;
 /** Max translate requests per IP per hour (own budget; see FNXC above). */
 export const MAX_TRANSLATE_REQUESTS_PER_HOUR = 300;
 
+/**
+ * Ceiling on distinct client addresses holding a translate-budget window.
+ *
+ * FNXC:RetentionCensus 2026-09-21-21:40 (RUFU-257): unlike the refine-family limiter, this map had
+ * no sweeper at all — an address that translated once kept its entry for the life of the process.
+ * The retention census now deletes expired windows on its own sample and this ceiling backstops a
+ * burst of distinct addresses inside one sample. The 300/hour budget, its window, and the batch
+ * reservation semantics are untouched.
+ */
+export const TRANSLATE_RATE_LIMIT_IP_MAX = 10_000;
+
 interface TranslateRateLimitEntry {
   count: number;
   firstRequestAt: number;
 }
 
 const translateRateLimits = new Map<string, TranslateRateLimitEntry>();
+
+// Census-owned reclamation: no sweep existed for this map, so the census sample performs
+// delete-on-expire and the ceiling clamp. `now` stays wall-clock because the budget itself reads
+// Date.now() at reserve time; tests freeze timers for both.
+registerBoundedWindowMap<string, TranslateRateLimitEntry>({
+  id: "ai_translate_rate_limits",
+  map: translateRateLimits,
+  ceiling: TRANSLATE_RATE_LIMIT_IP_MAX,
+  ceilingConstant: "TRANSLATE_RATE_LIMIT_IP_MAX",
+  expiryOf: (entry) => entry.firstRequestAt + RATE_LIMIT_WINDOW_MS,
+  valueBytes: () => RATE_LIMIT_ENTRY_BYTES,
+});
 
 /**
  * Reserve `cost` translate requests for an IP against the translate-only budget.
@@ -65,6 +93,7 @@ export function checkTranslateRateLimit(ip: string, cost = 1): boolean {
   if (!entry || now - entry.firstRequestAt > RATE_LIMIT_WINDOW_MS) {
     if (cost > MAX_TRANSLATE_REQUESTS_PER_HOUR) return false;
     translateRateLimits.set(ip, { count: cost, firstRequestAt: now });
+    enforceEntryCeiling(translateRateLimits, TRANSLATE_RATE_LIMIT_IP_MAX);
     return true;
   }
 

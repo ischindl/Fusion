@@ -36,7 +36,6 @@ function makeProps(
   propOverrides: Partial<MergeSectionProps> = {},
 ): MergeSectionProps {
   return {
-    scopeBanner: null,
     form: {
       autoMerge: true,
       planApprovalMode: "workflow",

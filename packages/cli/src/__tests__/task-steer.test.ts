@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // Mock node:readline/promises before importing
 vi.mock("node:readline/promises", () => ({
@@ -76,6 +79,42 @@ describe("runTaskSteer", () => {
     expect(mockConsoleLog).toHaveBeenCalledWith(
       expect.stringContaining("Steering comment added to FN-001")
     );
+  });
+
+  /*
+  FNXC:CommentDelivery 2026-09-27-22:15 (RUFU-259 Step 5):
+  `fn task steer` is the loudest instance of this card's defect — the command an operator types believing
+  the agent is listening — and its whole previous effect was the row write plus "Steering comment added".
+  The assertions below pin the two halves of the fix: the appended steering row reaches the shared delivery
+  seam under its OWN id (`addSteeringComment` returns the TASK, so `.id` there is the task id — the defect
+  this assertion keeps dead), and the printed answer states the fate of the body. The empty fusion dir makes
+  the pool deterministically empty, so `unrouted` is a real reported outcome rather than host leakage.
+  */
+  it("hands the appended steering row to delivery and reports the outcome instead of only the write", async () => {
+    const auditEvents: Array<{ mutationType: string; metadata: Record<string, unknown> }> = [];
+    setupTaskStoreMock({
+      getFusionDir: () => mkdtempSync(join(tmpdir(), "fusion-cli-steer-delivery-")),
+      recordRunAuditEvent: vi.fn(async (event: { mutationType: string; metadata: Record<string, unknown> }) => {
+        auditEvents.push({ mutationType: event.mutationType, metadata: event.metadata });
+      }),
+    });
+    mockAddComment.mockResolvedValueOnce({
+      id: "FN-001",
+      title: "Test Task",
+      steeringComments: [{ id: "steer-9", text: "Focus on error handling", author: "user", createdAt: "2026-09-27T20:00:00.000Z" }],
+    });
+
+    await runTaskSteer("FN-001", "Focus on error handling");
+
+    const delivery = auditEvents.find((event) => event.mutationType.startsWith("task:comment-delivery"));
+    expect(delivery, "the command must attempt the hand-off, not only the row write").toBeDefined();
+    expect(delivery!.metadata).toMatchObject({
+      source: "cli-steer",
+      kind: "steering",
+      commentId: "steer-9",
+    });
+    expect(delivery!.metadata.commentId).not.toBe("FN-001");
+    expect(mockConsoleLog.mock.calls.flat().join("\n")).toMatch(/no agent|delivered|nobody/i);
   });
 
   it("reads message from stdin when not provided as argument", async () => {

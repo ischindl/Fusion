@@ -62,7 +62,11 @@
 
 /*
 FNXC:Agents 2026-06-23-02:00:
-Agents renders the shared ViewHeader (.view-header). Its chrome reads identically to the Missions inline header (.mission-manager__header--inline): same --space-lg/--space-xl padding, surface background, no bottom divider, and a --todo-colored leading icon.
+Agents renders the shared ViewHeader (.view-header). Its chrome reads identically to the Missions inline header (.mission-manager__header--inline): same --space-lg/--space-xl padding, surface background, and a --todo-colored leading icon.
+
+FNXC:UniversalViewChrome 2026-09-16-21:44:
+FN-476: the "no bottom divider" half of the rule above is retired. Every destination header, Agents included, now shows
+one shared separation declared once on `.view-header`; Agents adds no local rule to obtain it.
 
 FNXC:ViewHeader 2026-06-23-03:45:
 The former scoped overrides (.agents-view .view-header padding/border/background and the --todo icon color) are removed: ViewHeader now supplies that canonical chrome by default, so the overrides were redundant. The legacy .agents-view-header/.agents-view-title rules below are retained only because the agents-view-mobile CSS string-match test asserts them; they no longer map to rendered DOM.
@@ -234,58 +238,58 @@ The former scoped overrides (.agents-view .view-header padding/border/background
   align-self: flex-start;
 }
 
+/*
+FNXC:StandardizedViewSidebar 2026-09-14-03:12:
+The rail is one ViewSidebar element that owns its own width and separator, so the host is a plain flex row. The former
+three-track grid ([rail][handle][detail]) outlived the standalone handle FN-379 deleted: with only two children left,
+the detail pane landed in the token-thin middle track and rendered crushed while the real content column stayed empty.
+*/
 .agents-split-layout {
-  display: grid;
-  grid-template-columns: minmax(calc(var(--space-xl) * 11 + var(--space-xs)), calc(var(--space-xl) * 13 + var(--space-lg))) var(--space-sm) minmax(0, 1fr);
+  display: flex;
+  flex-direction: row;
   gap: 0;
   flex: 1;
   min-height: 0;
 }
 
+/*
+FNXC:AgentsView 2026-09-16-21:40:
+The base rule used to force `display: flex; flex-direction: column` with its own
+`border-right` — leftover from the pre-ViewSidebar era when this class styled a bespoke
+sidebar element. `.agents-split-sidebar` is now the ViewSidebar ROOT element (the host
+className lands on it), and ViewSidebar owns the row layout: panel + accessible resize
+separator, with the separator's ::after supplying the boundary line like every other
+consumer. A column root made `.view-sidebar__panel` a content-sized column item inside
+the clipped rail (operator report: the 2378px-tall agent list in a 745px rail was
+unscrollable — overflow hidden left no scroll container). The host rule keeps only the
+host-side constraints; the boundary line comes from the separator, not a doubled border.
+Enforced by agent-css-classes.test.ts (`never re-declares flex-direction`).
+
+FNXC:AgentsView 2026-09-17-09:26:
+FN-502 reached the same diagnosis from the mobile drawer: with a column root the panel
+(`flex: none` in the primitive) follows content height, `.agents-view-content` loses its
+bound, and `overflow: hidden` clips the rest. The rail panel restates its vertical bound
+physically as well as logically because one box left at `min-height: auto` unbinds the whole
+chain (jsdom does not derive physical from logical — AgentsView.mobile-drawer-scroll.test.tsx).
+*/
 .agents-split-sidebar {
   min-height: 0;
   overflow: hidden;
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
 }
 
-.agents-split-resize-handle {
-  position: relative;
-  width: var(--space-sm);
-  min-width: var(--space-sm);
-  cursor: col-resize;
-  background: transparent;
-  touch-action: none;
-  transition: background var(--transition-fast);
+.agents-split-sidebar__panel {
+  min-block-size: 0;
+  min-height: 0;
 }
 
 /*
-FNXC:AgentsView 2026-06-20-00:00:
-The resize affordance must match MissionManager's accessible split-pane handle while preserving a token-only, no-mobile-shell layout.
-The base grid keeps a token-sized handle column as the no-JS fallback, while the React inline grid width owns desktop/tablet persistence.
+FNXC:AgentsView 2026-09-14-03:12:
+The bespoke .agents-split-resize-handle element and its grid column are gone: ViewSidebar owns the accessible resize
+separator for every destination. Its orphaned rules are removed with it rather than left styling nothing.
 */
-.agents-split-resize-handle::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 50%;
-  width: var(--space-xs);
-  transform: translateX(-50%);
-}
-
-.agents-split-resize-handle:hover::before,
-.agents-split-resize-handle:active::before {
-  background: color-mix(in srgb, var(--todo) 30%, transparent);
-}
-
-.agents-split-resize-handle:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring-strong);
-}
-
 .agents-split-detail {
+  flex: 1;
+  min-inline-size: 0;
   min-height: 0;
   overflow: hidden;
   display: flex;
@@ -299,6 +303,27 @@ The base grid keeps a token-sized handle column as the no-JS fallback, while the
   min-height: 0;
   overflow-y: auto;
   padding: 0 calc(var(--space-lg) + var(--space-xs)) calc(var(--space-lg) + var(--space-xs));
+}
+
+/*
+FNXC:AgentsView 2026-09-17-09:26:
+FN-502 : sur téléphone, la destination Agents peut être rendue dans le tiroir principal (`.mobile-drawer__body`)
+comme en plein écran. Les boîtes intermédiaires de la chaîne (`ViewLayout`, `ViewSidebar`) ne déclarent leur borne
+qu'en `min-block-size` logique ; une seule boîte restée à `min-height: auto` suffit à laisser la liste dépasser le
+panneau. La chaîne de remplissage est donc restatée ici en PHYSIQUE, pour tout téléphone et indépendamment de l'hôte
+(même raisonnement que FN-462 pour Files). Aucune géométrie desktop n'est touchée et le verrou global `touch-action`
+de `styles.css` n'est pas relâché
+(cf. docs/solutions/ui-bugs/mobile-touch-action-ancestor-intersection-defeats-leaf-scroll.md).
+*/
+html[data-viewport-mode="mobile"] .agents-view,
+html[data-viewport-mode="mobile"] .agents-view .view-layout__body,
+html[data-viewport-mode="mobile"] .agents-view .view-layout__content,
+html[data-viewport-mode="mobile"] .agents-view .agents-split-layout,
+html[data-viewport-mode="mobile"] .agents-view .agents-split-sidebar,
+html[data-viewport-mode="mobile"] .agents-view .agents-split-sidebar__panel,
+html[data-viewport-mode="mobile"] .agents-view .agents-split-detail {
+  min-height: 0;
+  min-block-size: 0;
 }
 
 
@@ -1580,11 +1605,12 @@ AgentsView uses the measured SVG overlay as the single connector system so paren
     justify-content: center;
   }
 
+  /* FNXC:IconOnlyButtonCanon 2026-09-16-19:05: FN-471 — boîte d'icône canonique mobile au lieu d'un calcul bespoke. */
   .agents-view-primary-actions .btn-icon {
-    width: calc(var(--space-lg) * 2 + var(--space-xs));
-    height: calc(var(--space-lg) * 2 + var(--space-xs));
-    min-width: calc(var(--space-lg) * 2 + var(--space-xs));
-    min-height: calc(var(--space-lg) * 2 + var(--space-xs));
+    width: var(--icon-button-size-mobile);
+    height: var(--icon-button-size-mobile);
+    min-width: var(--icon-button-size-mobile);
+    min-height: var(--icon-button-size-mobile);
   }
 
   /* Title row: keep the Bot icon aligned with the compact control row. */
@@ -1616,7 +1642,6 @@ AgentsView uses the measured SVG overlay as the single connector system so paren
   }
 
   .agents-split-sidebar {
-    border-right: 0;
     width: 100%;
     flex: 1;
     min-height: 0;
@@ -1624,10 +1649,6 @@ AgentsView uses the measured SVG overlay as the single connector system so paren
   }
 
   .agents-split-sidebar--hidden-mobile {
-    display: none;
-  }
-
-  .agents-split-resize-handle {
     display: none;
   }
 
@@ -1665,6 +1686,74 @@ AgentsView uses the measured SVG overlay as the single connector system so paren
   }
 }
 
+/*
+FNXC:AgentsView 2026-09-17-09:26:
+FN-502 : repli pré-hydratation de la chaîne de remplissage déclarée plus haut, pour le cas de largeur étroite non
+ambigu tant que `data-viewport-mode` n'est pas publié. Il est placé EN FIN DE FICHIER à dessein : les recensements CSS
+existants (`agents-view-mobile.test.tsx`) lisent le PREMIER bloc `@media (max-width: 768px)` portant un sélecteur, et
+celui-ci ne doit pas s'interposer devant les règles téléphone historiques du rail.
+*/
+@media (max-width: 768px) {
+  html:not([data-viewport-mode]) .agents-view,
+  html:not([data-viewport-mode]) .agents-view .view-layout__body,
+  html:not([data-viewport-mode]) .agents-view .view-layout__content,
+  html:not([data-viewport-mode]) .agents-view .agents-split-layout,
+  html:not([data-viewport-mode]) .agents-view .agents-split-sidebar,
+  html:not([data-viewport-mode]) .agents-view .agents-split-sidebar__panel,
+  html:not([data-viewport-mode]) .agents-view .agents-split-detail {
+    min-height: 0;
+    min-block-size: 0;
+  }
+}
+
 /* FNXC:AgentSkillsUI 2026-08-16-04:27: List badges preserve the shared availability classification at compact widths. */
 .agent-badges .badge-skill[data-skill-state="disabled"] { border-color: var(--color-warning); }
 .agent-badges .badge-skill[data-skill-state="unknown"] { border-color: var(--color-error); }
+
+/*
+FNXC:FleetVerdict 2026-09-02-06:50 (RUFU-176):
+The three org-node runtime-fact rows (linked task, heartbeat countdown, stall reason) render at the card's compact badge
+size, stacked under the state/health row. Colors reuse the same semantic status tokens the state badges,
+`getAgentHealthStatus`, and the overview verdict strip already emit, so "red means stalled" is one meaning across the
+whole tab. Each row is absent rather than placeholdered when its fact is unknown, so a card never renders a zero it
+cannot prove.
+*/
+.org-chart-node__task {
+  margin-top: var(--space-xs);
+  font-size: calc(var(--space-sm) + var(--space-xs) * 0.75);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.org-chart-node__heartbeat {
+  margin-top: var(--space-xs);
+  font-size: calc(var(--space-sm) + var(--space-xs) * 0.75);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.org-chart-node__heartbeat--overdue {
+  color: var(--state-error-text);
+}
+
+.org-chart-node__stall {
+  margin-top: var(--space-xs);
+  font-size: calc(var(--space-sm) + var(--space-xs) * 0.75);
+  font-weight: 600;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.org-chart-node__stall--waiting-human {
+  color: var(--state-paused-text);
+}
+
+.org-chart-node__stall--no-heartbeat {
+  color: var(--state-idle-text);
+}
+
+.org-chart-node__stall--stalled {
+  color: var(--state-error-text);
+}

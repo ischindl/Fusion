@@ -90,8 +90,8 @@ describe("useVoiceDictation", () => {
     app.use("/api", router);
     createRegisterVoiceRoutes({
       manager: { getState: async () => ({ status: "installed" as const, installedPath: "/model" }), peekState: () => ({ status: "installed" as const, installedPath: "/model" }), scheduleDownload: () => ({ accepted: false as const, state: { status: "error" as const } }), remove: async () => {}, download: async () => ({ status: "installed" as const }), subscribe: () => () => {} },
-      service: { getRuntimeStatus: async () => ({ status: "available" as const }), createSession: async () => ({ acceptChunk, finish: () => ({ text: "unused" }), close }) },
-    })({ router, getScopedStore: async () => ({ getSettings: async () => ({ voiceInput: { enabled: true } }), getGlobalSettingsStore: () => ({ getSettings: async () => ({}) }) }), getProjectIdFromRequest: (request) => typeof request.query.projectId === "string" ? request.query.projectId : undefined } as unknown as ApiRoutesContext);
+      service: { getRuntimeStatus: async () => ({ status: "available" as const }), createSession: async () => ({ acceptChunk, finish: () => ({ text: "unused" }), close }), resetRuntime: async () => undefined },
+    })({ router, getScopedStore: async () => ({ getSettings: async () => ({ voiceInput: { enabled: true } }), getGlobalSettingsStore: () => ({ getSettings: async () => ({}) }) }), getProjectIdFromRequest: (request: { query: Record<string, unknown> }) => typeof request.query.projectId === "string" ? request.query.projectId : undefined } as unknown as ApiRoutesContext);
     const server = app.listen(0);
     await new Promise<void>((resolve) => server.once("listening", resolve));
     const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;

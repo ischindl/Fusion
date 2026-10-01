@@ -46,13 +46,24 @@ function createInMemoryModelRegistry(): ModelRegistry {
 }
 
 function createRouterHarness(modelRegistry: ModelRegistry) {
+  /*
+  FNXC:ModelCatalog 2026-08-23-02:16:
+  RUFU-163: production registerModelRoutes also registers POST /models/refresh
+  (register-model-routes.ts:259); the fixture router must expose the full
+  production route surface or registration throws at setup.
+  */
   const getHandlers = new Map<string, (req: unknown, res: { json: (body: unknown) => void }) => Promise<void>>();
+  const postHandlers = new Map<string, (req: unknown, res: { json: (body: unknown) => void }) => Promise<void>>();
   const router = {
     get: vi.fn((path: string, handler: (req: unknown, res: { json: (body: unknown) => void }) => Promise<void>) => {
       getHandlers.set(path, handler);
     }),
     // FNXC:ModelCatalog 2026-08-23-23:12: registerModelRoutes also registers POST /models/refresh (FN-019 operator catalog refresh), so a router fake exposing only `get` throws before any GET handler is captured.
-    post: vi.fn(),
+    // FNXC:ModelCatalog 2026-09-06 (merge FN-295 sync): the fixture captures POST handlers so
+    // refreshCatalog resolves the registered /models/refresh handler instead of undefined.
+    post: vi.fn((path: string, handler: (req: unknown, res: { json: (body: unknown) => void }) => Promise<void>) => {
+      postHandlers.set(path, handler);
+    }),
   } as unknown as Router;
   const store = {
     getGlobalSettingsStore: () => ({ getSettings: vi.fn().mockResolvedValue({}) }),
@@ -67,7 +78,7 @@ function createRouterHarness(modelRegistry: ModelRegistry) {
     options: { modelRegistry },
   } as never);
 
-  return getHandlers.get("/models")!;
+  return { handler: getHandlers.get("/models")!, refreshCatalog: postHandlers.get("/models/refresh")! };
 }
 
 describe("registerModelRoutes Z.ai real registry", () => {
@@ -94,7 +105,7 @@ describe("registerModelRoutes Z.ai real registry", () => {
       const allZaiIds = modelRegistry.getAll().filter((model) => model.provider === "zai").map((model) => model.id);
       expect(allZaiIds).toEqual([...EXISTING_ZAI_MODELS, "glm-5.2"]);
 
-      const handler = createRouterHarness(modelRegistry);
+      const { handler } = createRouterHarness(modelRegistry);
       const json = vi.fn();
       await handler({}, { json });
 
@@ -104,5 +115,15 @@ describe("registerModelRoutes Z.ai real registry", () => {
     } finally {
       restoreHome();
     }
+  });
+
+  it("registers POST /models/refresh alongside GET /models with production refresh semantics", async () => {
+    const modelRegistry = await createInMemoryModelRegistry();
+    const { handler, refreshCatalog } = createRouterHarness(modelRegistry);
+    expect(handler).toBeTypeOf("function");
+    expect(refreshCatalog).toBeTypeOf("function");
+    const json = vi.fn();
+    await refreshCatalog({}, { json });
+    expect(json.mock.calls[0][0]).toEqual({ outcome: "completed" });
   });
 });

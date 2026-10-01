@@ -414,7 +414,7 @@ describe("useMeshState", () => {
 
   it("suppresses visibility-resume suspension errors when mesh state already exists", async () => {
     mockFetchMeshState
-      .mockResolvedValueOnce({ nodes: [makeMeshNode({ name: "Initial Mesh" })] })
+      .mockResolvedValueOnce({ collectedAt: "2026-01-01T00:00:00.000Z", sourceNodeId: "node_local", nodes: [makeMeshNode({ name: "Initial Mesh" } as Partial<NodeMeshState>)] })
       .mockRejectedValueOnce(new Error("Failed to fetch"));
 
     const { result } = renderHook(() => useMeshState());
@@ -423,12 +423,12 @@ describe("useMeshState", () => {
       await flushPromises();
     });
 
-    expect(result.current.meshState[0].name).toBe("Initial Mesh");
+    expect((result.current.meshState[0] as unknown as { name?: string }).name).toBe("Initial Mesh");
     expect(result.current.error).toBeNull();
 
     await simulateHiddenToVisibleResume();
 
-    expect(result.current.meshState[0].name).toBe("Initial Mesh");
+    expect((result.current.meshState[0] as unknown as { name?: string }).name).toBe("Initial Mesh");
     expect(result.current.error).toBeNull();
   });
 });

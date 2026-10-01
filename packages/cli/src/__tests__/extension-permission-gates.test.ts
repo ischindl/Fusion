@@ -37,6 +37,12 @@ import {
   pgDescribe,
   type MockApi,
 } from "./pg-extension-harness.js";
+import {
+  __clearExtensionStoreBootStateForTesting,
+  __setExtensionStoreBootFactoryForTesting,
+  clearHostTaskStores,
+  closeCachedStores,
+} from "../extension.js";
 import { registerApprovalRoutes } from "../../../dashboard/src/routes/register-approval-routes.js";
 import { request as requestRoute } from "../../../dashboard/src/test-request.js";
 import { ChatManager, __resetChatState, __setCreateResolvedAgentSession } from "../../../dashboard/src/chat.js";
@@ -228,6 +234,14 @@ pgDescribe("extension tool permission gates", () => {
     // Hardcoded tool/param pairs — params are irrelevant because the guard runs first.
     const calls: Array<[string, Record<string, unknown>]> = [
       ["fn_task_bypass_review", { id: "FN-1", reason: "nope" }],
+      /*
+      FNXC:OperatorEscapeHatch 2026-09-11-14:44 (RUFU-219):
+      The resume hatch was production-withheld (WITHHELD_FROM_AGENT_EXTENSION_TOOLS) but absent from
+      this hardcoded census, so an accidental removal from the withheld set would have shipped green.
+      RUFU-219 narrows the STORE-side pause gate without touching this tool-surface guard — the agent
+      denial below is what proves that separation.
+      */
+      ["fn_workflow_step_resume", { id: "FN-1", stepId: "code-review", reason: "nope" }],
       ["fn_mission_delete", { id: "M-1" }],
       ["fn_mission_clear_blocked", { id: "M-1" }],
       ["fn_milestone_delete", { milestoneId: "MS-1" }],
@@ -245,6 +259,55 @@ pgDescribe("extension tool permission gates", () => {
       expect(result.details?.tool, name).toBe(name);
       expect(result.details?.agentId, name).toBe("agent-rogue");
     }
+  });
+
+  /*
+   * FNXC:OperatorEscapeHatch 2026-09-11-14:44 (RUFU-219):
+   * Tool-surface parity for the resume hatch: the agent denial lives in the census test above;
+   * THIS test proves the other half — the operator principal passes the withheld guard and the
+   * call reaches the real store, where an engine-parked card (plain `paused: true`, no
+   * `userPaused` — the exact shape `updateTask` produces) is resumed to `failed` with the
+   * resume metadata. Before RUFU-219 this same operator call died in the store's bare
+   * `paused` refusal; the CLI adds no pause gate of its own, so green here means the
+   * store-side narrowing reached the operator lane end to end.
+   */
+  it("fn_workflow_step_resume: operator passes the withheld guard and resumes an engine-parked card", async () => {
+    const cwd = h.rootDir();
+    const tool = requireTool(freshApi(), "fn_workflow_step_resume");
+    // Column must be set AT CREATION — `updateTask` does not move cards (moves are fenced ops),
+    // so a column patch here would silently no-op and the resume would hit the lane refusal.
+    const task = await h.store().createTask({ description: "resume operator pass target", column: "in-review" });
+    await h.store().updateTask(task.id, {
+      workflowStepResults: [
+        { workflowStepId: "code-review", status: "pending", startedAt: new Date().toISOString(), completedAt: undefined, durationMs: undefined },
+      ],
+      paused: true,
+    });
+
+    const operator = await tool.execute(
+      "operator",
+      { id: task.id, stepId: "code-review", reason: "verdict callback never arrived" },
+      undefined,
+      undefined,
+      { cwd },
+    );
+
+    expect(operator.isError, `tool text: ${operator.content?.[0]?.text}`).toBeUndefined();
+    expect(operator.content[0]?.text).toBe(
+      `Resumed stuck pending workflow step 'code-review' for ${task.id}`,
+    );
+    const after = await h.store().getTask(task.id);
+    expect(after.workflowStepResults?.[0]?.status).toBe("failed");
+    expect(after.workflowStepResults?.[0]?.resumedFromStatus).toBe("pending");
+    // In-place escape hatch: the card stays parked (no auto-unpause, no move).
+    expect(after.paused).toBe(true);
+    expect(after.column).toBe("in-review");
+    // AC1 at the tool surface: the `task:resume-step` audit row carries the server-derived
+    // actor — an operator principal (no agentId in context) lands as `cli-operator`.
+    const events = await h.store().getRunAuditEventsAsync({ taskId: task.id });
+    const resumeEvent = events.find((event) => event.mutationType === "task:resume-step");
+    expect(resumeEvent).toBeDefined();
+    expect(resumeEvent?.agentId).toBe("cli-operator");
   });
 
   it("fn_mission_clear_blocked: denies agent and ambiguous principals before the store, while operators proceed", async () => {
@@ -318,6 +381,44 @@ pgDescribe("extension tool permission gates", () => {
     const operatorResult = await tool.execute("c2", { id: task.id }, undefined, undefined, { cwd });
     expect(operatorResult.isError).toBeUndefined();
     expect(operatorResult.content[0]?.text).toBe(`Paused ${task.id}`);
+  });
+
+  /*
+  FNXC:TaskStoreLightBoot 2026-09-26-19:31 (RUFU-275):
+  Honest denial cause. The saneca incident denied every fn_* call with
+  `agent-permission-policy-unavailable` while the real failure was the 30 s TaskStore boot —
+  the denial must name its own cause (`taskstore-boot-unavailable`, carrying the concrete boot
+  error) while remaining fail-closed: a tool whose store cannot boot executes nothing.
+  */
+  it("a failing TaskStore boot denies agent tools under its own taskstore-boot-unavailable cause", async () => {
+    const cwd = h.rootDir();
+    const api = freshApi();
+    const tool = requireTool(api, "fn_task_pause");
+    // Take away the harness-injected store: this test is the transient factory-boot failure path.
+    await closeCachedStores();
+    clearHostTaskStores();
+    __setExtensionStoreBootFactoryForTesting(
+      (async () => {
+        throw new Error("TaskStore boot exceeded 30000ms");
+      }) as never,
+    );
+
+    try {
+      const result = await tool.execute("c1", { id: "FN-BOOTFAIL" }, undefined, undefined, {
+        cwd,
+        agentId: "agent-bootfail",
+      });
+      expect(result.isError).toBe(true);
+      expect(result.details?.deniedFor).toBe("taskstore-boot-unavailable");
+      expect(String(result.details?.error)).toContain("TaskStore boot exceeded 30000ms");
+      // Fail-closed: no approval row was minted for a boot failure, and nothing executed.
+      expect(result.details?.outcome).toBeUndefined();
+      expect(result.details?.approvalRequestId).toBeUndefined();
+    } finally {
+      __setExtensionStoreBootFactoryForTesting(undefined);
+      __clearExtensionStoreBootStateForTesting();
+      await closeCachedStores();
+    }
   });
 
   it("approval-required policy: mints agent-attributed request, reuses pending, redeems approval once", async () => {

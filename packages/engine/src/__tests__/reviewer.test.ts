@@ -49,7 +49,15 @@ const mockedCreateFnAgent = vi.mocked(createFnAgent);
 const mockedPromptWithFallback = vi.mocked(promptWithFallback);
 const CONTEXT_LIMIT_ERROR = "exceeded model token limit: 262144 (requested: 262879)";
 
+function approvingReview(reviewText: string): string {
+  return `${reviewText}\n\n### Authoritative Verdict\n{"verdict":"APPROVE","notes":"Test reviewer authored approval."}`;
+}
+
 function createMockSession(reviewText: string) {
+  const authoredReviewText = /(?:^|\n)\s*(?:#{1,6}\s*)?(?:verdict|decision)\s*:\s*APPROVE\b/i.test(reviewText)
+    && !/"verdict"\s*:/.test(reviewText)
+    ? approvingReview(reviewText)
+    : reviewText;
   return {
     session: {
       prompt: vi.fn().mockResolvedValue(undefined),
@@ -57,7 +65,7 @@ function createMockSession(reviewText: string) {
         // Simulate the reviewer producing text
         cb({
           type: "message_update",
-          assistantMessageEvent: { type: "text_delta", delta: reviewText },
+          assistantMessageEvent: { type: "text_delta", delta: authoredReviewText },
         });
       }),
       dispose: vi.fn(),
@@ -106,7 +114,7 @@ describe("reviewStep — model settings threading", () => {
   });
 
   it("captures a terminal-only reviewer verdict through the production subscriber", async () => {
-    const terminalVerdict = "### Verdict: APPROVE\n### Summary\nTerminal text is complete.";
+    const terminalVerdict = approvingReview("### Verdict: APPROVE\n### Summary\nTerminal text is complete.");
     mockedCreateFnAgent.mockResolvedValue({
       session: {
         prompt: vi.fn().mockResolvedValue(undefined),
@@ -131,9 +139,44 @@ describe("reviewStep — model settings threading", () => {
     expect(result.review).toBe(terminalVerdict);
   });
 
+  /*
+  FNXC:AssistantTextCapture 2026-09-13-21:15:
+  RUFU-234 reviewer-verdict-text surface. The reviewer parses its verdict out of the captured stream, so a
+  capture seam that drops characters corrupts the verdict text the merge gate reads. Replay the
+  openai-completions producer shape (the shared block is mutated ahead of async delivery, which is how the
+  operator's inter-word space went missing on HEAD) and assert the review text is byte-faithful.
+  */
+  it("captures a mutated-ahead producer stream into the review text without dropping characters", async () => {
+    const intact = approvingReview("### Verdict: APPROVE\n### Summary\nhealthy in-review");
+    mockedCreateFnAgent.mockResolvedValue({
+      session: {
+        prompt: vi.fn().mockResolvedValue(undefined),
+        subscribe: vi.fn().mockImplementation((callback: (event: unknown) => void) => {
+          const partial = { content: [{ type: "text", text: "### Verdict: APPROVE\n### Summary\nhealthy" }] };
+          callback({ type: "message_update", assistantMessageEvent: { type: "text_start", partial, contentIndex: 0 } });
+          partial.content[0].text = intact; // producer coalesced " in-review" into the block
+          callback({ type: "message_update", assistantMessageEvent: { type: "text_delta", partial, contentIndex: 0, delta: "in-review" } });
+          callback({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: intact }] } });
+        }),
+        dispose: vi.fn(),
+      },
+    } as any);
+
+    const result = await reviewStep("/tmp/worktree", "RUFU-234", 1, "Fidelity verdict", "plan", "# prompt");
+
+    expect(result.verdict).toBe("APPROVE");
+    expect(result.review).toBe(intact);
+  });
+  /*
+  FNXC:AssistantTextCapture 2026-09-22-12:40 (#sync-0922 resolution):
+  Upstream's FN-9356 exact-once case asserted via a bare "### Verdict: APPROVE". On this line
+  ReviewLeniency withholds prose-approval authority (a bare APPROVE parses to UNAVAILABLE by
+  design, FN-279), so the case is re-anchored on REVISE, which retains prose authority — the
+  capture shape under test is byte-identical and the dedupe assertion is unchanged.
+  */
   it("parses an exact-once verdict from a lagging mutable partial through the production subscriber", async () => {
-    const verdict = "### Verdict: APPROVE\n### Summary\nInput/Output is correct.";
-    const deltas = ["### Verdict: APPROVE\n", "### Summary\n", "Input/", "Output is correct."];
+    const verdict = "### Verdict: REVISE\n### Summary\nInput/Output is correct.";
+    const deltas = ["### Verdict: REVISE\n", "### Summary\n", "Input/", "Output is correct."];
     const output = { role: "assistant", content: [] as Array<{ type: string; text: string }> };
     const block = { type: "text", text: "" };
     output.content.push(block);
@@ -157,7 +200,7 @@ describe("reviewStep — model settings threading", () => {
 
     const result = await reviewStep("/tmp/worktree", "FN-9356", 1, "Mutable verdict", "plan", "# prompt");
 
-    expect(result.verdict).toBe("APPROVE");
+    expect(result.verdict).toBe("REVISE");
     expect(result.review).toBe(verdict);
   });
 
@@ -484,18 +527,18 @@ describe("reviewStep — model settings threading", () => {
    * truncated JSON payload exposes a quoted verdict key. The anti-laundering
    * guard applies only to Strategy 4 prose approval, never Strategies 1–2.
    */
-  it("keeps an explicit APPROVE heading authoritative over truncated JSON verdict intent", async () => {
+  it("refuses an explicit APPROVE heading when structured verdict intent is truncated", async () => {
     mockedCreateFnAgent.mockResolvedValue(createMockSession(
       '## Verdict: APPROVE\nlooks good\n{"verdict":"REVISE","notes":"truncated',
     ));
     const result = await reviewStep("/tmp/worktree", "FN-100", 1, "Test Step", "plan", "# prompt");
-    expect(result.verdict).toBe("APPROVE");
+    expect(result.verdict).toBe("UNAVAILABLE");
   });
 
-  it("preserves lenient prose approval without a structured verdict key", async () => {
+  it("refuses lenient prose approval without a structured verdict key", async () => {
     mockedCreateFnAgent.mockResolvedValue(createMockSession("looks good"));
     const result = await reviewStep("/tmp/worktree", "FN-100", 1, "Test Step", "plan", "# prompt");
-    expect(result.verdict).toBe("APPROVE");
+    expect(result.verdict).toBe("UNAVAILABLE");
   });
 });
 
@@ -700,7 +743,7 @@ describe("reviewStep — spec review type", () => {
         subscribe: vi.fn().mockImplementation((cb: any) => {
           cb({
             type: "message_update",
-            assistantMessageEvent: { type: "text_delta", delta: "### Verdict: APPROVE\n### Summary\nOK" },
+            assistantMessageEvent: { type: "text_delta", delta: approvingReview("### Verdict: APPROVE\n### Summary\nOK") },
           });
         }),
         dispose: vi.fn(),
@@ -737,7 +780,7 @@ describe("reviewStep — spec review type", () => {
         subscribe: vi.fn().mockImplementation((cb: any) => {
           cb({
             type: "message_update",
-            assistantMessageEvent: { type: "text_delta", delta: "### Verdict: APPROVE\n### Summary\nOK" },
+            assistantMessageEvent: { type: "text_delta", delta: approvingReview("### Verdict: APPROVE\n### Summary\nOK") },
           });
         }),
         dispose: vi.fn(),
@@ -834,7 +877,7 @@ describe("reviewStep — context-limit retry", () => {
           for (const subscriber of subscribers) {
             subscriber({
               type: "message_update",
-              assistantMessageEvent: { type: "text_delta", delta: "### Verdict: APPROVE\n### Summary\nCompacted retry worked." },
+              assistantMessageEvent: { type: "text_delta", delta: approvingReview("### Verdict: APPROVE\n### Summary\nCompacted retry worked.") },
             });
           }
         }),
@@ -1396,7 +1439,7 @@ describe("reviewStep — user comments in spec review", () => {
         subscribe: vi.fn().mockImplementation((cb: any) => {
           cb({
             type: "message_update",
-            assistantMessageEvent: { type: "text_delta", delta: "### Verdict: APPROVE\n### Summary\nOK" },
+            assistantMessageEvent: { type: "text_delta", delta: approvingReview("### Verdict: APPROVE\n### Summary\nOK") },
           });
         }),
         dispose: vi.fn(),
@@ -1416,7 +1459,7 @@ describe("reviewStep — user comments in spec review", () => {
         subscribe: vi.fn().mockImplementation((cb: any) => {
           cb({
             type: "message_update",
-            assistantMessageEvent: { type: "text_delta", delta: "### Verdict: APPROVE\n### Summary\nOK" },
+            assistantMessageEvent: { type: "text_delta", delta: approvingReview("### Verdict: APPROVE\n### Summary\nOK") },
           });
         }),
         dispose: vi.fn(),
@@ -1463,7 +1506,7 @@ describe("reviewStep — user comments in spec review", () => {
         subscribe: vi.fn().mockImplementation((cb: any) => {
           cb({
             type: "message_update",
-            assistantMessageEvent: { type: "text_delta", delta: "### Verdict: APPROVE\n### Summary\nOK" },
+            assistantMessageEvent: { type: "text_delta", delta: approvingReview("### Verdict: APPROVE\n### Summary\nOK") },
           });
         }),
         dispose: vi.fn(),
@@ -1489,7 +1532,7 @@ describe("reviewStep — user comments in spec review", () => {
         subscribe: vi.fn().mockImplementation((cb: any) => {
           cb({
             type: "message_update",
-            assistantMessageEvent: { type: "text_delta", delta: "### Verdict: APPROVE\n### Summary\nOK" },
+            assistantMessageEvent: { type: "text_delta", delta: approvingReview("### Verdict: APPROVE\n### Summary\nOK") },
           });
         }),
         dispose: vi.fn(),
@@ -1528,7 +1571,7 @@ describe("reviewStep — user comments in spec review", () => {
         subscribe: vi.fn().mockImplementation((cb: any) => {
           cb({
             type: "message_update",
-            assistantMessageEvent: { type: "text_delta", delta: "### Verdict: APPROVE\n### Summary\nOK" },
+            assistantMessageEvent: { type: "text_delta", delta: approvingReview("### Verdict: APPROVE\n### Summary\nOK") },
           });
         }),
         dispose: vi.fn(),
@@ -1554,7 +1597,7 @@ describe("reviewStep — user comments in spec review", () => {
         subscribe: vi.fn().mockImplementation((cb: any) => {
           cb({
             type: "message_update",
-            assistantMessageEvent: { type: "text_delta", delta: "### Verdict: APPROVE\n### Summary\nOK" },
+            assistantMessageEvent: { type: "text_delta", delta: approvingReview("### Verdict: APPROVE\n### Summary\nOK") },
           });
         }),
         dispose: vi.fn(),

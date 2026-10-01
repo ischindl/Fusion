@@ -144,4 +144,80 @@ export const memorySearchEntries: SettingsSearchEntry[] = [
       "Base URL of the Stash server (e.g. http://127.0.0.1:3457). Used only when the backend above is Stash. The API key lives in the global secrets store, never in settings.",
     keywords: ["url", "endpoint", "server"],
   },
+  /*
+  FNXC:PerTurnMemoryRecall 2026-08-19-15:05:
+  (RUFU-120) The per-turn recall rows were rendered with descriptor keys but never
+  registered here — the search-index drift guard (settings-search-index.test.ts) fails
+  on any rendered-but-unindexed key, so both rows are indexed now (fixes the red guard).
+  */
+  {
+    sectionId: "memory",
+    key: "memoryPerTurnRecallEnabled",
+    labelKey: "settings.memory.perTurnRecall",
+    labelFallback: " Per-turn memory recall ",
+    helpKey: "settings.memory.perTurnRecallHelp",
+    helpFallback:
+      "Recalls the most relevant memory snippets for the current topic before each chat or task step turn and injects a short, deduped cue into the prompt. Default: enabled.",
+    keywords: ["recall", "cue", "focus", "context"],
+  },
+  {
+    sectionId: "memory",
+    key: "memoryPerTurnRecallTopK",
+    labelKey: "settings.memory.perTurnRecallTopK",
+    labelFallback: " Max snippets per turn ",
+    helpKey: "settings.memory.perTurnRecallTopKHelp",
+    helpFallback: "Maximum number of memory snippets injected per turn. Default: 3.",
+    keywords: ["topk", "snippets", "limit"],
+  },
+  /*
+  FNXC:ChatContextGuard 2026-08-19-15:05:
+  (RUFU-118) Opt-out toggle for the LCM B.1 pre-overflow compaction gate.
+  */
+  {
+    sectionId: "memory",
+    key: "chatPreOverflowCompactionEnabled",
+    labelKey: "settings.memory.preOverflowCompaction",
+    labelFallback: "Pre-overflow compaction guard",
+    helpKey: "settings.memory.preOverflowCompactionHelp",
+    helpFallback:
+      "Compacts the chat context at ~80% of the model window before a turn would overflow it, preventing single-token replies at the context wall. Default: enabled.",
+    keywords: ["compaction", "overflow", "guard", "context", "lcm"],
+  },
+  {
+    sectionId: "memory",
+    key: "chatContextBudgetEnabled",
+    labelKey: "settings.memory.chatContextBudget",
+    labelFallback: "Chat context budget (64K window fit)",
+    helpKey: "settings.memory.chatContextBudgetHelp",
+    helpFallback:
+      "Bounds the chat static context: oversized memory becomes a bounded heading index and chat sessions use the curated chat toolset, so agent chat fits 64K-window models. Disable to restore unbounded memory injection and the full tool set (pre-RUFU-135 behavior). Default: enabled.",
+    keywords: ["context", "budget", "memory", "tools", "64k", "lcm", "floor", "kill switch"],
+  },
+  /*
+  FNXC:ChatHandoff 2026-09-09-22:00:
+  RUFU-199: cross-session Direct-chat handoff surfaced in the Memory section beside the
+  compaction toggles. Handoff is NOT compaction — it moves the conversation to a fresh
+  session seeded with a briefing instead of compressing in place — so its search keywords
+  deliberately include "continue"/"new chat" rather than only context words.
+  */
+  {
+    sectionId: "memory",
+    key: "chatHandoffEnabled",
+    labelKey: "settings.memory.chatHandoff",
+    labelFallback: "Chat handoff (continue in a fresh chat)",
+    helpKey: "settings.memory.chatHandoffHelp",
+    helpFallback:
+      "Once a chat passes the context threshold below, its header offers one click to continue in a fresh chat with the same agent/model, briefed with a summary of the old conversation. The old chat is archived, not deleted. Unrelated to in-session compaction. Default: enabled.",
+    keywords: ["handoff", "continue", "new chat", "fresh chat", "summary", "archive", "long chat"],
+  },
+  {
+    sectionId: "memory",
+    key: "chatHandoffThresholdPercent",
+    labelKey: "settings.memory.chatHandoffThreshold",
+    labelFallback: "Chat handoff context threshold (%)",
+    helpKey: "settings.memory.chatHandoffThresholdHelp",
+    helpFallback:
+      "Context-usage percentage past which the chat header offers the handoff button (50-95). Values outside the range fall back to the default: 75.",
+    keywords: ["handoff", "threshold", "context", "percent", "usage"],
+  },
 ];

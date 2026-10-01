@@ -380,4 +380,39 @@ describe("POST /api/tasks/:id/retry — specification retry follows the plan nod
       expect(statusPatchOf(good.updateTask)).toBe("needs-replan");
     }
   });
+
+  /*
+  FNXC:TaskRetrySurfaceSeparation 2026-09-22-10:14 (RUFU-261):
+  The legacy execution-retry branch re-queues into the HOLD lane, which is precisely the lane whose
+  entry parks a card (`applyResetOnEntryEffects` sets `userPaused = true` on a `moveSource: "user"`
+  move into hold). This branch releases because it passes NO move options at all, so `moveTask`
+  derives `moveSource: "engine"` and the park predicate cannot fire — the release is derived from the
+  move's source at the single seam rather than from a per-caller post-move clear (the alternative
+  rejected in RUFU-261, because every new caller would have to re-invent it). Pinning the absence of
+  a park-producing source here is what stops a future edit from "attributing" this move to the
+  operator and quietly turning the dashboard's Retry into the self-defeating park it had.
+  */
+  it("re-queues a parked WIP card into the hold lane without a park-producing move source", async () => {
+    const { app, moveTask } = buildApp({
+      task: mkTask({ column: "in-progress", paused: true, userPaused: true }),
+      workflowId: "custom:plans-in-inbox",
+      definition: { ir: PLANS_IN_INBOX },
+    });
+
+    const res = await retry(app);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(moveTask).toHaveBeenCalledTimes(1);
+    const [movedId, targetColumn, moveOptions] = moveTask.mock.calls[0] as [
+      string,
+      string,
+      { moveSource?: string; parkOnHold?: boolean } | undefined,
+    ];
+    expect(movedId).toBe("FN-9001");
+    // The hold lane of this board is `todo`; the destination is the dangerous one, so the source is
+    // what carries the release intent.
+    expect(targetColumn).toBe("todo");
+    expect(moveOptions?.moveSource).not.toBe("user");
+    expect(moveOptions?.parkOnHold).not.toBe(true);
+  });
 });

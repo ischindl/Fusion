@@ -8,10 +8,12 @@ import { usePoppedOutTasks } from "../../../hooks/usePoppedOutTasks";
 import type { PluginDashboardViewContext } from "../../../plugins/types";
 
 const hostContexts: PluginDashboardViewContext[] = [];
+const hostLayouts: Array<{ title?: unknown }> = [];
 
 vi.mock("../../../plugins/PluginDashboardViewHost", () => ({
-  PluginDashboardViewHost: ({ taskView, context }: { taskView: string; context?: PluginDashboardViewContext }) => {
+  PluginDashboardViewHost: ({ taskView, context, layout }: { taskView: string; context?: PluginDashboardViewContext; layout?: { title?: unknown } }) => {
     if (context) hostContexts.push(context);
+    if (layout) hostLayouts.push(layout);
     const task = context?.tasks[0];
     return (
       <div data-testid="plugin-host" data-task-view={taskView}>
@@ -66,6 +68,22 @@ const LazySettingsCloseStub = lazy(async () => ({
   default: ({ onClose }: { onClose: () => void }) => <button type="button" onClick={onClose}>Close settings view</button>,
 }));
 let embeddedSettingsProps: Record<string, unknown> | undefined;
+let embeddedWorkflowProps: Record<string, unknown> | undefined;
+const clearCapturedProps = () => {
+  embeddedSettingsProps = undefined;
+  embeddedWorkflowProps = undefined;
+};
+const LazyWorkflowBridgeStub = lazy(async () => ({
+  default: (props: Record<string, unknown>) => {
+    embeddedWorkflowProps = props;
+    return <div data-testid="embedded-workflow-editor" className="workflow-editor-embedded" />;
+  },
+}));
+const LazySettingsWorkflowReferralStub = lazy(async () => ({
+  default: ({ onOpenWorkflowSettings }: { onOpenWorkflowSettings: () => void }) => (
+    <button type="button" onClick={onOpenWorkflowSettings}>Open workflow settings</button>
+  ),
+}));
 const LazySettingsBridgeStub = lazy(async () => ({
   default: (props: Record<string, unknown>) => {
     embeddedSettingsProps = props;
@@ -85,9 +103,11 @@ function mainContentProps(overrides: Partial<MainContentProps> = {}): MainConten
     modalManager: {
       closeSettings: vi.fn(),
       settingsInitialSection: undefined,
-      openWorkflowEditor: vi.fn(),
+      setWorkflowViewParams: vi.fn(),
+      clearWorkflowViewParams: vi.fn(),
     } as unknown as MainContentProps["modalManager"],
     handleChangeTaskView: vi.fn(),
+    openHistory: vi.fn(),
     refreshAppSettings: vi.fn(async () => undefined),
     addToast: vi.fn(),
     currentProject: { id: "project-1", name: "Project 1" } as MainContentProps["currentProject"],
@@ -100,14 +120,25 @@ function mainContentProps(overrides: Partial<MainContentProps> = {}): MainConten
     shadcnCustomColors: {},
     setShadcnCustomColors: vi.fn(),
     resolvedThemeMode: "light",
-    setQuickChatButtonModeImmediate: vi.fn(),
+    setMobileNavPrimaryItemsImmediate: vi.fn(),
+    revertTask: vi.fn(),
     setChatMessageLayoutImmediate: vi.fn(),
-    setOpenTasksInRightSidebarImmediate: vi.fn(),
-    setOpenMobileTasksInPopupImmediate: vi.fn(),
-    setTaskPopupsBoardListOnlyImmediate: vi.fn(),
     setShowCostBadgeOnCardsImmediate: vi.fn(),
-    setTaskDetailChatFirstImmediate: vi.fn(),
+    setTaskDetailDefaultTabImmediate: vi.fn(),
+    rightSidebarEnabled: false,
+    setRightSidebarEnabledImmediate: vi.fn(),
     reopenOnboardingWithNav: vi.fn(),
+    planAutoApproveEnabled: false,
+    togglePlanAutoApprove: vi.fn(),
+    loadMoreArchivedTasks: vi.fn(),
+    changeArchivedSortMode: vi.fn(),
+    archivedSortMode: "completion-date-desc",
+    archivedHasMore: false,
+    archivedLoadingMore: false,
+    fleetViewEnabled: false,
+    ideationEnabled: false,
+    showWorktreeGrouping: false,
+    FleetDashboardView: LazyStub as unknown as MainContentProps["FleetDashboardView"],
     viewMode: "project",
     projects: [],
     projectsLoading: false,
@@ -144,20 +175,15 @@ function mainContentProps(overrides: Partial<MainContentProps> = {}): MainConten
     subscribePluginEvents: vi.fn(() => vi.fn()),
     openDetailTask: vi.fn(),
     openFileInBrowser: vi.fn(),
-    workflowStepNameLookup: new Map(),
     prAuthAvailable: false,
     autoMerge: true,
     mergeStrategy: "direct",
     settingsLoaded: true,
-    openTasksInRightSidebar: false,
-    openMobileTasksInPopup: false,
-    taskPopupsBoardListOnly: true,
     showCostBadgeOnCards: false,
-    taskDetailChatFirst: false,
+    taskDetailDefaultTab: "activity" as const,
     chatMessageLayout: "bubbles",
     skillsEnabled: true,
     experimentalFeatures: {},
-    setQuickChatOpen: vi.fn(),
     setMailboxUnreadCount: vi.fn(),
     setMissionTargetId: vi.fn(),
     setMissionResumeSessionId: vi.fn(),
@@ -184,7 +210,6 @@ function mainContentProps(overrides: Partial<MainContentProps> = {}): MainConten
     openPlanningWithInitialPlanWithNav: vi.fn(),
     ingestCreatedTasks: vi.fn(),
     nodesEnabled: true,
-    openWorkflowEditorWithNav: vi.fn(),
     handlePlanningTaskCreated: vi.fn(),
     handlePlanningTasksCreated: vi.fn(),
     handleGitHubImport: vi.fn(),
@@ -192,22 +217,18 @@ function mainContentProps(overrides: Partial<MainContentProps> = {}): MainConten
     mainPanelDetailTask: null,
     filteredBoardTasks: [],
     maxConcurrent: 2,
+    effectiveMaxConcurrent: 2,
     moveTask: vi.fn(),
     pauseTask: vi.fn(),
     openTaskDetailInMainPanel: vi.fn(),
     openGroupModalWithNav: vi.fn(),
     handleBoardQuickCreate: vi.fn(),
     openNewTaskWithNav: vi.fn(),
-    subtaskBreakdownEnabled: true,
     toggleAutoMerge: vi.fn(),
     globalPaused: false,
     updateTask: vi.fn(),
     retryTask: vi.fn(),
-    archiveTask: vi.fn(),
-    unarchiveTask: vi.fn(),
     deleteTask: vi.fn(),
-    archiveAllDone: vi.fn(),
-    loadArchivedTasks: vi.fn(),
     searchQuery: "",
     availableModels: [],
     favoriteProviders: [],
@@ -217,7 +238,6 @@ function mainContentProps(overrides: Partial<MainContentProps> = {}): MainConten
     handleToggleModelFavorite: vi.fn(),
     staleHighFanoutBlockerAgeThresholdMs: 0,
     lastFetchTimeMs: undefined,
-    openCreateWorkflowWithNav: vi.fn(),
     sidebarActive: false,
     isMobile: false,
     mainPanelDetailInitialTab: "chat",
@@ -233,9 +253,12 @@ function mainContentProps(overrides: Partial<MainContentProps> = {}): MainConten
     handleDismissCapacityRisk: vi.fn(),
     AgentsView: LazyStub as MainContentProps["AgentsView"],
     ChatView: LazyStub as MainContentProps["ChatView"],
-    CommandCenter: LazyStub as MainContentProps["CommandCenter"],
-    DevServerView: LazyStub as MainContentProps["DevServerView"],
-    DocumentsView: LazyStub as MainContentProps["DocumentsView"],
+    /* FNXC:MergeFixtures 2026-09-16-19:30 (merge origin/main): the merged CommandCenter props
+       signature made the direct LazyStub cast insufficient; use the double-cast fixture pattern. */
+    CommandCenter: LazyStub as unknown as MainContentProps["CommandCenter"],
+    /* DevServerView declares required props (projectId/theme), so the () => null stub needs the
+       double-cast pattern this file already uses for capacityRiskSignal. */
+    DevServerView: LazyStub as unknown as MainContentProps["DevServerView"],
     EvalsView: LazyStub as MainContentProps["EvalsView"],
     GoalsView: LazyStub as MainContentProps["GoalsView"],
     InsightsView: LazyStub as MainContentProps["InsightsView"],
@@ -252,6 +275,73 @@ function mainContentProps(overrides: Partial<MainContentProps> = {}): MainConten
   };
 }
 
+/*
+FN-407: the workflow editor has exactly one presentation — the `workflows` main-content view. These cases prove
+the two halves of that at the owning router: the Settings referral NAVIGATES there instead of opening an overlay,
+and the view itself renders the embedded editor with its view parameters and no floating-window chrome.
+*/
+describe("MainContent workflow editor view routing", () => {
+  it("routes the Settings workflow referral to the Workflows view without any overlay", async () => {
+    const closeSettings = vi.fn();
+    const handleChangeTaskView = vi.fn();
+    const setWorkflowViewParams = vi.fn();
+
+    render(
+      <MainContent
+        {...mainContentProps({
+          taskView: "settings",
+          modalManager: {
+            closeSettings,
+            settingsInitialSection: undefined,
+            setWorkflowViewParams,
+            clearWorkflowViewParams: vi.fn(),
+          } as unknown as MainContentProps["modalManager"],
+          handleChangeTaskView,
+          _SettingsView: LazySettingsWorkflowReferralStub as MainContentProps["_SettingsView"],
+        })}
+      />,
+    );
+
+    (await screen.findByText("Open workflow settings")).click();
+
+    expect(setWorkflowViewParams).toHaveBeenCalledWith({ panel: "settings" });
+    expect(handleChangeTaskView).toHaveBeenCalledWith("workflows");
+    expect(document.body.querySelector(".floating-window--workflow-editor")).toBeNull();
+    expect(document.body.querySelector('[data-testid="floating-window-overlay-workflow-node-editor"]')).toBeNull();
+  });
+
+  it("renders the Workflows view with its view parameters and clears them on unmount", async () => {
+    clearCapturedProps();
+    const clearWorkflowViewParams = vi.fn();
+
+    const view = render(
+      <MainContent
+        {...mainContentProps({
+          taskView: "workflows",
+          modalManager: {
+            workflowViewPanel: undefined,
+            workflowViewWorkflowId: "WF-002",
+            setWorkflowViewParams: vi.fn(),
+            clearWorkflowViewParams,
+          } as unknown as MainContentProps["modalManager"],
+          _WorkflowEditorView: LazyWorkflowBridgeStub as unknown as MainContentProps["_WorkflowEditorView"],
+        })}
+      />,
+    );
+
+    await screen.findByTestId("embedded-workflow-editor");
+    expect(embeddedWorkflowProps?.initialWorkflowId).toBe("WF-002");
+    expect(embeddedWorkflowProps?.initialPanel).toBeUndefined();
+    // FN-407: no presentation prop survives — the editor renders embedded unconditionally.
+    expect(embeddedWorkflowProps).not.toHaveProperty("presentation");
+    expect(document.body.querySelector(".floating-window--workflow-editor")).toBeNull();
+    expect(document.body.querySelector(".modal-overlay")).toBeNull();
+
+    view.unmount();
+    expect(clearWorkflowViewParams).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("MainContent graph task pop-out wiring", () => {
   it("refreshes app settings when the embedded Settings view closes", async () => {
     const closeSettings = vi.fn();
@@ -262,7 +352,7 @@ describe("MainContent graph task pop-out wiring", () => {
       <MainContent
         {...mainContentProps({
           taskView: "settings",
-          modalManager: { closeSettings, settingsInitialSection: undefined, openWorkflowEditor: vi.fn() } as unknown as MainContentProps["modalManager"],
+          modalManager: { closeSettings, settingsInitialSection: undefined, setWorkflowViewParams: vi.fn(), clearWorkflowViewParams: vi.fn() } as unknown as MainContentProps["modalManager"],
           handleChangeTaskView,
           refreshAppSettings,
           _SettingsView: LazySettingsCloseStub as MainContentProps["_SettingsView"],
@@ -279,51 +369,55 @@ describe("MainContent graph task pop-out wiring", () => {
   });
 
   it("forwards every live Appearance value and callback to embedded Settings", async () => {
-    embeddedSettingsProps = undefined;
+    clearCapturedProps();
     const setters = {
       setChatMessageLayoutImmediate: vi.fn(),
-      setOpenTasksInRightSidebarImmediate: vi.fn(),
-      setOpenMobileTasksInPopupImmediate: vi.fn(),
-      setTaskPopupsBoardListOnlyImmediate: vi.fn(),
       setShowCostBadgeOnCardsImmediate: vi.fn(),
-      setTaskDetailChatFirstImmediate: vi.fn(),
+      setTaskDetailDefaultTabImmediate: vi.fn(),
     };
 
     render(<MainContent {...mainContentProps({
       taskView: "settings",
       chatMessageLayout: "full-width",
-      openTasksInRightSidebar: true,
-      openMobileTasksInPopup: true,
-      taskPopupsBoardListOnly: false,
       showCostBadgeOnCards: true,
-      taskDetailChatFirst: true,
+      taskDetailDefaultTab: "chat" as const,
       ...setters,
-      _SettingsView: LazySettingsBridgeStub as MainContentProps["_SettingsView"],
+      _SettingsView: LazySettingsBridgeStub as unknown as MainContentProps["_SettingsView"],
     })} />);
 
     await screen.findByText("Embedded settings bridge");
-    expect(embeddedSettingsProps).toMatchObject({
+    const bridgeProps = embeddedSettingsProps as Record<string, unknown> | undefined;
+    expect(bridgeProps).toMatchObject({
       chatMessageLayout: "full-width",
-      openTasksInRightSidebar: true,
-      openMobileTasksInPopup: true,
-      taskPopupsBoardListOnly: false,
       showCostBadgeOnCards: true,
-      taskDetailChatFirst: true,
+      taskDetailDefaultTab: "chat",
     });
+    // FN-392: the per-view task popup setting is gone, so embedded Settings receives neither value nor callback.
+    expect(embeddedSettingsProps).not.toHaveProperty("taskPopupsBoardListOnly");
+    expect(embeddedSettingsProps).not.toHaveProperty("onTaskPopupsBoardListOnlyChange");
+    /*
+    FNXC:TaskDetailDefaultTab 2026-09-16-02:53:
+    FN-442 deleted the two board task-open routing settings, so embedded Settings must receive neither value nor callback
+    for them — a leftover prop would re-mount a control whose behavior no longer exists.
+    */
+    for (const removed of ["openTasksInRightSidebar", "onOpenTasksInRightSidebarChange", "openMobileTasksInPopup", "onOpenMobileTasksInPopupChange", "taskDetailChatFirst", "onTaskDetailChatFirstChange"]) {
+      expect(embeddedSettingsProps).not.toHaveProperty(removed);
+    }
 
     (embeddedSettingsProps?.onChatMessageLayoutChange as (value: "bubbles" | "full-width") => void)("bubbles");
-    (embeddedSettingsProps?.onOpenTasksInRightSidebarChange as (value: boolean) => void)(false);
-    (embeddedSettingsProps?.onOpenMobileTasksInPopupChange as (value: boolean) => void)(false);
-    (embeddedSettingsProps?.onTaskPopupsBoardListOnlyChange as (value: boolean) => void)(true);
     (embeddedSettingsProps?.onShowCostBadgeOnCardsChange as (value: boolean) => void)(false);
-    (embeddedSettingsProps?.onTaskDetailChatFirstChange as (value: boolean) => void)(false);
+    (embeddedSettingsProps?.onTaskDetailDefaultTabChange as (value: "definition" | "chat" | "activity") => void)("definition");
 
     expect(setters.setChatMessageLayoutImmediate).toHaveBeenCalledWith("bubbles");
-    expect(setters.setOpenTasksInRightSidebarImmediate).toHaveBeenCalledWith(false);
-    expect(setters.setOpenMobileTasksInPopupImmediate).toHaveBeenCalledWith(false);
-    expect(setters.setTaskPopupsBoardListOnlyImmediate).toHaveBeenCalledWith(true);
     expect(setters.setShowCostBadgeOnCardsImmediate).toHaveBeenCalledWith(false);
-    expect(setters.setTaskDetailChatFirstImmediate).toHaveBeenCalledWith(false);
+    expect(setters.setTaskDetailDefaultTabImmediate).toHaveBeenCalledWith("definition");
+  });
+
+  it("gives each enabled plugin destination host-owned canonical chrome", () => {
+    hostLayouts.length = 0;
+    render(<MainContent {...mainContentProps()} />);
+    expect(hostLayouts.length).toBeGreaterThan(0);
+    expect(hostLayouts.every((layout) => layout.title === "Graph")).toBe(true);
   });
 
   it("routes dependency-graph bridge and rendered task-card opens to the shared pop-out", () => {
@@ -397,8 +491,8 @@ describe("MainContent graph task pop-out wiring", () => {
   A PLUGIN-RENDERED CARD RESOLVED NO COLUMN TRAITS AT ALL.
 
   `renderTaskCard` is how a plugin view draws a real task card. It built a `TaskCard` without
-  `taskColumnFlags`, so every role helper inside that card fell back to the legacy id — archive and
-  revert affordances, progress, the elapsed-time indicator, the planning badge — for every plugin
+  `taskColumnFlags`, so every role helper inside that card fell back to the legacy id — Revert
+  affordances, progress, the elapsed-time indicator, and the planning badge — for every plugin
   view on every board. The map was already in this component's scope; the card was simply never
   given it.
 

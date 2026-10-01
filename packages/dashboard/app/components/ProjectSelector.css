@@ -124,6 +124,34 @@
   background: var(--card-hover);
 }
 
+/*
+ * FNXC:CrossProjectHandoff 2026-09-09-09:02 (RUFU-203):
+ * A host-marked-disabled entry (a cross-node project for the transfer picker) stays VISIBLE with
+ * its reason, because hiding it would leave the operator thinking the target does not exist. The
+ * row is de-emphasised and cannot be clicked, so the reason text is the whole message.
+ */
+.project-selector__item--disabled,
+.project-selector__item--disabled:hover,
+.project-selector__item--disabled.highlighted {
+  background: transparent;
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.project-selector__item-disabled-reason {
+  flex-shrink: 0;
+  margin-left: auto;
+  max-width: calc(var(--space-2xl) * 6);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  padding: 1px var(--space-xs);
+}
+
 .project-selector-divider {
   height: 1px;
   margin: var(--space-xs) var(--space-sm);
@@ -457,11 +485,48 @@
   z-index: 100;
   min-width: 200px;
   max-width: 280px;
+  /*
+  FNXC:MobileProjectSwitchScroll 2026-08-24-20:07:
+  RUFU-170: the mobile switcher list must scroll internally instead of overflowing the
+  viewport. The mobile-only dropdown previously had no max-height/overflow-y, so with 8+
+  projects items below the viewport bottom were unreachable. Cap it with the desktop
+  selector's exact viewport-aware declarations (see .project-selector-dropdown above)
+  rather than a new variant, and contain overscroll so wheeling to the list end does not
+  scroll the page. The cap lives on the base class (not a media query) so a short-landscape
+  phone in JS mobile mode with a 769-1024px CSS width gets it too.
+
+  FNXC:MobileProjectSwitchScroll 2026-09-04-04:43:
+  Review P1 follow-up: do not fall back to 100vh. Unsupported dvh would keep the larger
+  layout-viewport calculation and leave lower entries below the visible screen. First
+  declaration is the tokenized cap (smaller than typical mobile chrome-visible height).
+  Then 100svh (smallest viewport, chrome expanded) and 100dvh (current visible).
+  */
+  max-height: var(--dropdown-max-height);
+  max-height: min(var(--dropdown-max-height), calc(100svh - var(--dropdown-viewport-gutter)));
+  max-height: min(var(--dropdown-max-height), calc(100dvh - var(--dropdown-viewport-gutter)));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--text-dim) transparent;
   padding: var(--space-xs);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface);
   box-shadow: var(--shadow-lg);
+}
+
+/* RUFU-170: thin scrollbar mirroring .project-selector__dropdown::-webkit-scrollbar. */
+.mobile-project-switch-dropdown::-webkit-scrollbar {
+  width: var(--space-scrollbar);
+}
+
+.mobile-project-switch-dropdown::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.mobile-project-switch-dropdown::-webkit-scrollbar-thumb {
+  background-color: var(--text-dim);
+  border-radius: var(--radius-scrollbar);
 }
 
 .mobile-project-switch-item {
@@ -615,6 +680,17 @@
   width: 100%;
 }
 
+/*
+FNXC:FloatingWindowSnap 2026-09-17-04:51:
+FN-487: a window docked along the bottom is position:fixed, so without a reservation it COVERS the lower half of the
+board. This modifier reserves exactly the published band, so the application content — the board columns included —
+recomposes above it, at parity with `.terminal-below-host` for the pinned terminal. The base rule deliberately keeps
+no padding-bottom: the reservation must vanish the moment the window detaches, closes, or is hidden.
+*/
+.dashboard-project-stack--bottom-dock {
+  padding-bottom: var(--bottom-dock-reservation, 0px);
+}
+
 .dashboard-project-shell {
   /*
   FNXC:DashboardFooterLayout 2026-06-21-10:30:
@@ -703,8 +779,15 @@
 FNXC:ViewportChrome 2026-08-03-00:13:
 ProjectSelector.css loads after ExecutorStatusBar.css, so reassert the desktop footer token for tablet/desktop mode after the mobile width override above — otherwise mid-tablet still reserves the taller mobile footer while the bar sits at bottom:0. Also un-hide the project selector for tablet-class ≤768 CSS px (width media hid it with true phones).
 */
-html:is([data-viewport-mode="tablet"], [data-viewport-mode="desktop"]) .project-content--with-footer,
-html:is([data-viewport-mode="tablet"], [data-viewport-mode="desktop"]) .dashboard-project-shell {
+/*
+FNXC:ViewportChrome 2026-09-16-19:44:
+FN-468 : le jeton de pied de page large suit la frontière du shell et ne s'applique plus qu'à partir de 1024 px.
+Le sélecteur de projet, lui, N'EST PAS une surface de navigation primaire : le Header continue de le rendre au-dessus
+de la bande téléphone, donc son bras d'affichage garde volontairement la tablette. Le déplacement de frontière change
+la propriété de la navigation, pas l'accès au changement de projet.
+*/
+html[data-viewport-mode="desktop"] .project-content--with-footer,
+html[data-viewport-mode="desktop"] .dashboard-project-shell {
   --executor-footer-height: 36px;
 }
 
@@ -712,7 +795,7 @@ html:is([data-viewport-mode="tablet"], [data-viewport-mode="desktop"]) .project-
   display: inline-flex;
 }
 
-html[data-viewport-mode="mobile"] .project-content--with-footer {
+html:is([data-viewport-mode="mobile"], [data-viewport-mode="tablet"]) .project-content--with-footer {
   --executor-footer-height: calc(var(--space-lg) * 2 + var(--space-xs));
 }
 

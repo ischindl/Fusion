@@ -13,6 +13,97 @@ import type {
 import { hybridExecutorLog } from "../logger.js";
 
 /**
+ * How long {@link HybridExecutor.shutdown} waits for project runtime loading to land before it
+ * stops what exists and aborts the rest. Five seconds covers a warm per-project settings read and
+ * stays far below the window an operator perceives as a stuck shutdown.
+ */
+export const DEFAULT_SHUTDOWN_INIT_WAIT_TIMEOUT_MS = 5_000;
+
+/**
+ * How long a single project's startup capacity probe may take before {@link HybridExecutor} falls
+ * back to the registry concurrency snapshot. The probe exists only to pick up live per-project
+ * settings; it must never decide how long boot takes.
+ */
+export const DEFAULT_STARTUP_CAPACITY_PROBE_TIMEOUT_MS = 2_500;
+
+type Settled<A, B> = { status: "value"; value: A } | { status: "timeout"; reason: B } | { status: "rejected"; error: unknown };
+
+/**
+ * Settle `promise` within `timeoutMs`, reporting which of the three outcomes happened instead of
+ * collapsing them into a rejection. The caller keeps ownership of `promise`, so a late resolution
+ * still runs whatever cleanup the caller attached to it — racing it away must never strand a
+ * resource (e.g. a task store that finished booting after the probe gave up).
+ *
+ * A non-finite or non-positive bound disables the deadline and waits for the promise.
+ */
+async function settleWithin<A>(promise: Promise<A>, timeoutMs: number): Promise<Settled<A, "timeout">> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    try {
+      return { status: "value", value: await promise };
+    } catch (error) {
+      return { status: "rejected", error };
+    }
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise.then(
+        (value) => ({ status: "value", value }) as Settled<A, "timeout">,
+        (error: unknown) => ({ status: "rejected", error }) as Settled<A, "timeout">,
+      ),
+      new Promise<Settled<A, "timeout">>((resolve) => {
+        timer = setTimeout(() => resolve({ status: "timeout", reason: "timeout" }), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * How long a caller may wait for {@link HybridExecutor.whenReady} before it has to answer honestly
+ * instead of holding an HTTP request open. Same order as the shutdown bound: long enough to cover a
+ * warm per-project settings read, short enough that a slow or wedged boot surfaces as a specific
+ * retryable answer rather than as a hung request.
+ */
+export const DEFAULT_HYBRID_EXECUTOR_READY_WAIT_MS = 5_000;
+
+/** Outcome of a bounded {@link resolveHybridExecutorReadiness} wait. */
+export type HybridExecutorReadiness =
+  /** Project runtimes are loaded; executor operations against project state are meaningful. */
+  | "ready"
+  /** Boot is still walking projects when the bound expired. Waiting longer may still succeed. */
+  | "starting"
+  /** Boot never started or its last attempt rejected. Waiting will not help. */
+  | "failed";
+
+/**
+ * Wait at most `timeoutMs` for {@link HybridExecutor.whenReady} and classify what happened.
+ *
+ * Exists so the one route that genuinely needs project-runtime readiness can depend on it without
+ * either holding an HTTP request open for an unbounded boot or pretending an unloaded executor is
+ * usable. The outcomes stay distinguishable on purpose: `starting` is retryable, `failed` is not.
+ */
+export async function resolveHybridExecutorReadiness(
+  executor: Pick<HybridExecutor, "whenReady">,
+  timeoutMs: number = DEFAULT_HYBRID_EXECUTOR_READY_WAIT_MS,
+): Promise<HybridExecutorReadiness> {
+  /*
+  FNXC:HybridExecutorBoot 2026-09-26-03:10:
+  A caller asking for a zero, negative or NaN bound means "answer me now", so the bound is floored at
+  1ms rather than falling through to `settleWithin`'s "non-positive disables the deadline" contract —
+  that reading is right for an internal drain and wrong for an HTTP handler, where a mis-set knob must
+  not turn a 503 into a hung request. `Infinity` keeps its literal meaning: wait as long as it takes.
+  */
+  const bound = timeoutMs > 0 ? timeoutMs : 1;
+  const settled = await settleWithin(executor.whenReady(), bound);
+  if (settled.status === "value") return "ready";
+  return settled.status === "timeout" ? "starting" : "failed";
+}
+
+/**
  * Events emitted by HybridExecutor.
  */
 export interface HybridExecutorEvents {
@@ -65,6 +156,17 @@ export interface HybridExecutorOptions {
   onTaskCompleted?: (projectId: string, taskId: string, success: boolean) => void;
   /** Called when a task fails */
   onTaskFailed?: (projectId: string, taskId: string, error: Error) => void;
+  /*
+  FNXC:HybridExecutorBoot 2026-09-26-02:26:
+  RUFU-322: shutdown used to return immediately while a boot was still mid-flight, which left the
+  CLI teardown paths (`await hybridExecutor.shutdown().catch(warn)`) with no bound on what they were
+  waiting for and no record of the runtimes that were still being constructed. This is the bound for
+  that drain; see shutdown().
+  */
+  /** Upper bound on waiting for in-flight project runtime loading during shutdown. Default 5000ms. */
+  shutdownInitWaitTimeoutMs?: number;
+  /** Upper bound on one project's startup capacity probe before the registry snapshot is used. Default 2500ms. */
+  startupCapacityProbeTimeoutMs?: number;
 }
 
 /**
@@ -139,6 +241,18 @@ export class HybridExecutor extends EventEmitter<HybridExecutorEvents> {
   private projectManager: ProjectManager;
   private nodeHealthMonitor: NodeHealthMonitor | null = null;
   private initialized = false;
+  /*
+  FNXC:HybridExecutorBoot 2026-09-26-02:26:
+  RUFU-322 boot-lifecycle state. `initPromise` is the single in-flight boot shared by every
+  initialize() caller (a second caller must never start a second walk over the project registry), and
+  it is cleared when the boot settles so a failure is never cached as the executor's permanent state.
+  `loadingProjectIds` names the projects whose runtime construction is still running, which is what
+  shutdown reports when it stops waiting. `shuttingDown` tells an in-flight boot to stop building and
+  to tear down any runtime that lands after shutdown already drained its bound.
+  */
+  private initPromise: Promise<void> | null = null;
+  private loadingProjectIds = new Set<string>();
+  private shuttingDown = false;
 
   /**
    * @param centralCore - CentralCore reference for global coordination
@@ -165,21 +279,86 @@ export class HybridExecutor extends EventEmitter<HybridExecutorEvents> {
    *
    * Loads all registered projects from CentralCore and creates appropriate
    * runtimes based on their isolation mode configuration.
+   *
+   * Concurrent callers share one boot: the walk over the project registry happens once, and every
+   * caller awaits the same promise. A boot that fails is not cached — the in-flight promise is
+   * cleared when it settles, so a later call retries.
    */
   async initialize(): Promise<void> {
     if (this.initialized) {
       hybridExecutorLog.warn("HybridExecutor already initialized");
       return;
     }
+    if (this.initPromise) {
+      return this.initPromise;
+    }
 
+    // A fresh boot is an intentional restart after a completed teardown, so it clears the previous
+    // shutdown's abort flags. A boot that is still in flight returns above and never touches them.
+    this.shuttingDown = false;
+    this.loadingProjectIds.clear();
+
+    const boot = this.bootProjectRuntimes();
+    // Assigned synchronously, before the first await, so initialize(), whenReady(), and shutdown()
+    // cannot observe a half-started boot or race a second one.
+    this.initPromise = boot;
+    try {
+      await boot;
+    } finally {
+      if (this.initPromise === boot) this.initPromise = null;
+    }
+  }
+
+  /*
+  FNXC:HybridExecutorBoot 2026-09-26-02:26:
+  RUFU-322: boot now backgrounds initialize() so the migration holding server releases and the real
+  server binds while project runtimes are still loading. That leaves one question a caller can ask —
+  is the executor ready to act on project state yet? `whenReady()` is that answer: the same promise
+  initialize() awaits, so a route or command that needs loaded runtimes (the isolation-transition
+  route today) can gate on readiness without putting a project-boot cost back in front of the port.
+  A never-started or failed boot rejects rather than pretending readiness, because the caller's
+  alternative is acting on a registry the executor has not built runtimes for. It holds no HTTP or
+  listening logic: readiness is state, the transport stays in the caller.
+  */
+  /**
+   * Resolve once project runtime loading has completed, reject if it has not run or last failed.
+   *
+   * Safe to call from multiple places: it hands out the in-flight boot promise rather than starting
+   * new work.
+   */
+  whenReady(): Promise<void> {
+    if (this.initialized) return Promise.resolve();
+    if (this.initPromise) return this.initPromise;
+    return Promise.reject(
+      new Error("HybridExecutor is not ready: project runtime loading has not completed"),
+    );
+  }
+
+  /**
+   * The one walk over the registered projects: build a runtime per active project, then wire
+   * CentralCore events and start node health monitoring.
+   */
+  private async bootProjectRuntimes(): Promise<void> {
     hybridExecutorLog.log("Initializing HybridExecutor...");
+    /*
+    FNXC:HybridExecutorBoot 2026-09-26-02:26:
+    RUFU-322: boot progress was previously only inferable from one "Loaded project runtime for X" line
+    per project and the absence of any completion record, so an operator staring at a 15-minute 503
+    could not tell "still loading" from "wedged". These counters feed the greppable completion marker
+    at the end of the walk, which is the record of full startup (and of how many projects were skipped).
+    */
+    const bootStartedAt = Date.now();
+    let loadedCount = 0;
+    let failedCount = 0;
 
     // Load all registered projects from CentralCore
     const projects = await this.centralCore.listProjects();
 
     // Start runtimes for all active projects
     for (const project of projects) {
+      if (this.shuttingDown) break;
       if (project.status === "active" || project.status === "initializing") {
+        this.loadingProjectIds.add(project.id);
         try {
           const workingDirectory = await this.centralCore.resolveLocalProjectWorkingDirectory(
             project.id,
@@ -194,14 +373,44 @@ export class HybridExecutor extends EventEmitter<HybridExecutorEvents> {
             maxWorktrees: capacity.worktreeLimit ?? capacity.maxConcurrent,
             settings: project.settings,
           });
+
+          if (this.shuttingDown) {
+            /*
+            FNXC:HybridExecutorBoot 2026-09-26-02:26:
+            RUFU-322: shutdown() stops every runtime that exists, but a runtime that finished
+            constructing after shutdown already drained its bound would otherwise be created into a
+            torn-down executor. Stop it here — nothing may survive shutdown just because it loaded
+            late.
+            */
+            hybridExecutorLog.warn(
+              `Shutdown in progress: stopping project runtime ${project.id} that finished loading late`,
+            );
+            await this.removeProject(project.id).catch((error: unknown) => {
+              hybridExecutorLog.error(
+                `Failed to stop late-loaded project runtime ${project.id}:`,
+                error instanceof Error ? error.message : String(error),
+              );
+            });
+            break;
+          }
+
+          loadedCount++;
           hybridExecutorLog.log(`Loaded project runtime for ${project.name}`);
         } catch (error) {
+          failedCount++;
           hybridExecutorLog.error(
             `Failed to load project ${project.id}:`,
             error instanceof Error ? error.message : String(error)
           );
+        } finally {
+          this.loadingProjectIds.delete(project.id);
         }
       }
+    }
+
+    if (this.shuttingDown) {
+      hybridExecutorLog.warn("Project runtime loading aborted by shutdown; HybridExecutor stays uninitialized");
+      return;
     }
 
     // Listen for CentralCore project events
@@ -212,7 +421,14 @@ export class HybridExecutor extends EventEmitter<HybridExecutorEvents> {
     await this.nodeHealthMonitor.start();
 
     this.initialized = true;
-    hybridExecutorLog.log("HybridExecutor initialized");
+    if (failedCount > 0) {
+      hybridExecutorLog.warn(
+        `Project runtime loading finished with ${failedCount} project(s) failing to load`,
+      );
+    }
+    hybridExecutorLog.log(
+      `HybridExecutor initialized: ${loadedCount} project runtimes in ${Date.now() - bootStartedAt}ms`,
+    );
   }
 
   /**
@@ -238,19 +454,47 @@ export class HybridExecutor extends EventEmitter<HybridExecutorEvents> {
   FNXC:CapacityModel 2026-08-21-15:45:
   FN-9185 requires hybrid runtime startup to read the target project's live settings blob.
   A registry snapshot is a fallback only when the project root cannot open its scoped TaskStore.
+
+  FNXC:HybridExecutorBoot 2026-09-26-02:26:
+  RUFU-322: that live read is a full scoped backend boot (`createTaskStoreForBackend` resolves DB
+  startup options, constructs the store, then shuts it down), and this call sat unbounded inside a
+  serial per-project loop in front of the operator's port release. The probe is now bounded by
+  `startupCapacityProbeTimeoutMs` and its outcome is reported as `source`, so a fallback is a logged
+  decision instead of an invisible 24-fold serial stall. The probe promise keeps its own store
+  teardown: if it lands after the deadline the store is still closed by that chain, never leaked.
   */
-  private async resolveStartupConcurrency(project: RegisteredProject, workingDirectory: string) {
-    if (!existsSync(workingDirectory)) return resolveEffectiveConcurrency(project.settings);
-    try {
+  private async resolveStartupConcurrency(
+    project: RegisteredProject,
+    workingDirectory: string,
+  ): Promise<{ maxConcurrent: number; worktreeLimit: number | null; source: "project-settings" | "registry-snapshot" }> {
+    if (!existsSync(workingDirectory)) return { ...resolveEffectiveConcurrency(project.settings), source: "registry-snapshot" };
+
+    const timeoutMs = this.options.startupCapacityProbeTimeoutMs ?? DEFAULT_STARTUP_CAPACITY_PROBE_TIMEOUT_MS;
+    const probe = (async () => {
       const boot = await createTaskStoreForBackend({ rootDir: workingDirectory, projectId: project.id });
       try {
         return resolveEffectiveConcurrency(await boot.taskStore.getSettingsFast());
       } finally {
         await boot.shutdown();
       }
-    } catch {
-      return resolveEffectiveConcurrency(project.settings);
-    }
+    })();
+    // The probe keeps running (and closing its own store) after a timeout; swallow a late
+    // rejection so it cannot surface as an unhandled rejection in the host process.
+    probe.catch(() => {});
+
+    const settled = await settleWithin(probe, timeoutMs);
+    if (settled.status === "value") return { ...settled.value, source: "project-settings" };
+
+    const reason =
+      settled.status === "timeout"
+        ? `capacity probe exceeded ${timeoutMs}ms`
+        : settled.error instanceof Error
+          ? settled.error.message
+          : String(settled.error);
+    hybridExecutorLog.warn(
+      `Startup capacity for ${project.id} fell back to the registry concurrency snapshot (${reason})`,
+    );
+    return { ...resolveEffectiveConcurrency(project.settings), source: "registry-snapshot" };
   }
 
   /**
@@ -432,7 +676,40 @@ export class HybridExecutor extends EventEmitter<HybridExecutorEvents> {
    * and shuts down all runtimes in parallel.
    */
   async shutdown(): Promise<void> {
-    if (!this.initialized) {
+    /*
+    FNXC:HybridExecutorBoot 2026-09-26-02:26:
+    RUFU-322 shutdown drain. The old early return meant a teardown that arrived while boot was still
+    walking the project registry stopped nothing at all and reported success: the half-built runtimes
+    were left running behind a process that believed it had shut down. Now shutdown waits for the
+    in-flight boot up to `shutdownInitWaitTimeoutMs` (default 5s), names the projects still loading
+    when that bound is hit, then tears down the health monitor and every runtime that exists — and
+    still refuses to report success while a boot is in flight, so a caller can never mistake a
+    partial teardown for a clean one.
+    */
+    const waitMs = this.options.shutdownInitWaitTimeoutMs ?? DEFAULT_SHUTDOWN_INIT_WAIT_TIMEOUT_MS;
+    const inFlightBoot = this.initPromise;
+    let bootStillInFlight = false;
+    if (inFlightBoot) {
+      hybridExecutorLog.log(
+        `Shutting down with project runtime loading in flight; waiting up to ${waitMs}ms...`,
+      );
+      const settled = await settleWithin(inFlightBoot, waitMs);
+      if (settled.status === "timeout") {
+        bootStillInFlight = true;
+        hybridExecutorLog.warn(
+          `Project runtime loading still in flight after ${waitMs}ms for: ${
+            [...this.loadingProjectIds].join(", ") || "unknown project"
+          }; stopping the runtimes that exist and aborting the rest`,
+        );
+      }
+    }
+    // Set before teardown so an aborted boot stops building and stops anything that lands late.
+    this.shuttingDown = true;
+
+    const hasRuntimes = this.projectManager.getProjectIds().length > 0;
+    // Silent no-op only when nothing was ever started AND no boot is outstanding: while a boot is in
+    // flight, "no runtimes yet" proves nothing, so teardown must still run and the abort flag stands.
+    if (!this.initialized && !hasRuntimes && !bootStillInFlight) {
       return;
     }
 
@@ -454,6 +731,14 @@ export class HybridExecutor extends EventEmitter<HybridExecutorEvents> {
 
     this.initialized = false;
     hybridExecutorLog.log("HybridExecutor shutdown complete");
+
+    if (bootStillInFlight) {
+      // Teardown of everything that existed is done, but this is not a clean shutdown: refuse to
+      // report success while a boot is still running so no caller reads a partial stop as a full one.
+      throw new Error(
+        `HybridExecutor shutdown incomplete: project runtime loading was still in flight after ${waitMs}ms`,
+      );
+    }
   }
 
   /**

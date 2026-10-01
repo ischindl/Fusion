@@ -388,9 +388,24 @@ export async function runDaemon(opts: DaemonOptions = {}) {
   let hybridExecutor: HybridExecutor | null = null;
   const hybridGate = await shouldUseHybridExecutor(sharedCentralCore);
   console.log(`[daemon] hybrid executor gate: enabled=${hybridGate.enabled} reason=${hybridGate.reason}`);
+  /*
+  FNXC:HybridExecutorBoot 2026-09-26-02:49:
+  RUFU-322: this awaited `initialize()` was the same release blocker as in `fn dashboard` and
+  `fn serve`: it boots a scoped TaskStore per registered project, and the holding server is only
+  released at `migrationHoldingServer?.close()` just above `app.listen()`, so every `fn daemon` boot with
+  FUSION_HYBRID_EXECUTOR=1 answered the operator's `/api/` calls with 503 "Fusion is starting" until
+  the last runtime loaded. Project runtime construction must never gate the port, so the boot is
+  backgrounded and `HybridExecutor.whenReady()` carries the isolation-transition gate instead.
+
+  Recorded rather than changed here: `await engineManager.startAll()` above is still fully serial, so
+  `fn daemon` keeps a separate pre-listen cost that this card does not touch.
+  */
   if (hybridGate.enabled) {
     hybridExecutor = new HybridExecutor(sharedCentralCore);
-    await hybridExecutor.initialize();
+    void hybridExecutor.initialize().catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[daemon] Background HybridExecutor.initialize failed: ${message}`);
+    });
   }
 
   engineManager.startReconciliation();
@@ -1070,7 +1085,19 @@ export async function runDaemon(opts: DaemonOptions = {}) {
 
     // Stop all project engines uniformly; their runtimes own their TaskStores.
     if (hybridExecutor) {
-      await hybridExecutor.shutdown();
+      /*
+      FNXC:HybridExecutorBoot 2026-09-26-02:49:
+      RUFU-322: this teardown had no catch at all, so any executor failure aborted the shutdown
+      sequence behind it. `shutdown()` now self-bounds its wait for an in-flight project boot
+      (`shutdownInitWaitTimeoutMs`, default 5s) and rejects on an incomplete stop — that must be a
+      warning here, never a hang and never an aborted shutdown.
+      */
+      try {
+        await hybridExecutor.shutdown();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`[daemon] Hybrid executor shutdown incomplete: ${message}`);
+      }
     }
 
     await engineManager.stopAll();

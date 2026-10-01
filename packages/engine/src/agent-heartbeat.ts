@@ -17,8 +17,9 @@
  * - onTerminated: Called when a heartbeat run is terminated
  */
 
-import { DEFAULT_PROVIDER_INSTANCE_ID, type AgentStore, type AgentHeartbeatRun, type HeartbeatInvocationSource, type AgentHeartbeatConfig, type AgentBudgetStatus, type Message, type MessageStore, type TaskStore, type TaskDetail, type AgentRole, type Agent, type InboxTask, type RunMutationContext, type Settings, type AgentConfigRevision, type ReflectionStore, type ChatStore, type ChatRoom, type ChatRoomMessage, type AgentMemoryInclusionMode } from "@fusion/core";
+import { DEFAULT_PROVIDER_INSTANCE_ID, deriveTaskLabelFromDescription, resolveAdvertisedCommentIds, type AgentStore, type AgentHeartbeatRun, type HeartbeatInvocationSource, type AgentHeartbeatConfig, type AgentBudgetStatus, type Message, type MessageStore, type TaskStore, type TaskDetail, type AgentRole, type Agent, type InboxTask, type RunMutationContext, type Settings, type AgentConfigRevision, type ReflectionStore, type ChatStore, type ChatRoom, type ChatRoomMessage, type AgentMemoryInclusionMode } from "@fusion/core";
 import { AutoClaimSnapshotManager, resolveFreshAutoClaimCandidates, type AutoClaimCandidate } from "./scheduling/auto-claim-snapshot.js";
+import { emitBoundedRunAudit } from "./util/emit-bounded-run-audit.js";
 import {
   ApprovalRequestStore,
   buildExecutionMemoryInstructions,
@@ -28,6 +29,11 @@ import {
   resolveEffectiveAgentPermissionPolicy,
   canAgentTakeImplementationTask,
   evaluateImplementationTaskBind,
+  resolveTaskImplementationColumns,
+  formatLaneCapabilityDeclineReason,
+  laneCapabilityDeclinePolicy,
+  LANE_CAPABILITY_DECLINE_CODE,
+  type WorkflowIr,
   resolvePersistAgentThinkingLog,
   resolveAgentMemoryInclusionMode,
   resolvePermanentAgentEffectiveThinkingLevel,
@@ -41,12 +47,18 @@ import {
   resolveWorkflowIrForTask,
   columnsWithFlag,
   resolveTaskLifecycleColumns,
+  buildOperatorLanguageDirective,
+  resolveColumnFlags,
+  isReviewColumnRole,
+  isTerminalColumnRole,
+  readHeartbeatRecoveryState,
 } from "@fusion/core";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "@earendil-works/pi-ai";
 import { createHash } from "node:crypto";
 import { createTaskCreateTool, createTaskLogToolWithContext, createTaskLogsReadTool, createTaskDocumentWriteTool, createTaskDocumentReadTool, createTaskReadTools, createArtifactRegisterTool, createArtifactListTool, createArtifactViewTool, createListAgentsTool, createDelegateTaskTool, createTaskAssignTool, createGetAgentConfigTool, createUpdateAgentConfigTool, createAgentCreateTool, createAgentDeleteTool, createSendMessageTool, createReadMessagesTool, createPostRoomMessageTool, createMemoryTools, createGoalRetrievalTools, createMissionTools, createIdeationTools, createReadEvaluationsTool, createUpdateIdentityTool, createReflectOnPerformanceTool, createWebFetchTool, createWorkflowListTool, createWorkflowGetTool, createWorkflowValidateTool, createWorkflowSelectTool, createTaskPromoteTool, createWorkflowCreateTool, createWorkflowUpdateTool, createWorkflowDeleteTool, createWorkflowSettingsTool, createTraitListTool, createAskQuestionTool, createResearchTools, readAgentMemoryWorkspaceLongTerm, taskCreateParams } from "./agent-tools.js";
 import { AgentLogger } from "./agents/agent-logger.js";
+import { isTaskPlanningOrExecutionLive } from "./agents/planning-execution-liveness.js";
 import { attachAgentUsageTelemetry, emitAgentSessionStart } from "./agents/agent-usage-telemetry.js";
 import { emitApprovalMail } from "./agents/approval-mail.js";
 import {
@@ -58,8 +70,10 @@ import {
 import { resolveHeartbeatPromptTemplate, resolveHeartbeatScopeDisciplineMode, selectHeartbeatProcedure } from "./agents/heartbeat-procedure-resolver.js";
 import { buildPromptLayers, collapsePromptLayers } from "./execution/prompt-layers.js";
 import { resolveAndEmitGoalContext } from "./goals/goal-injection-diagnostics.js";
+import type { EventEmitter } from "node:events";
 import { createLogger, heartbeatLog, formatError } from "./logger.js";
-import { mergeEffectiveSettings, mergeProjectWorkflowModelLaneBaseline } from "./project/effective-settings.js";
+import { awaitTaskDisposalBarrier } from "./executor/task-disposal-barrier.js";
+import { mergeEffectiveSettings } from "./project/effective-settings.js";
 import {
   extractConcurrentSoftDeleteRaceDetails,
   isConcurrentSoftDeleteRaceError,
@@ -94,7 +108,13 @@ FNXC:HeartbeatRecovery 2026-07-15-08:50:
 heartbeat-model-unavailable parks from assignment/on-demand runs were terminal until a human Retry, even when the next attempt succeeds with unchanged credentials (false "model unavailable" / registry / credential-probe blips). Admit those parks to the same bounded heartbeatErrorRecovery budget as error-state recovery so the engine auto-retries like operator Retry, while genuine missing credentials re-park after the budget exhausts.
 */
 import { acquireTaskWorktree, WorktreeBaseRefreshError } from "./worktree/worktree-acquisition.js";
-import { resolvePendingOverlapWaits } from "./workflows/overlap-plan-revalidation.js";
+import { isTaskBranchBaseDivergedError } from "./worktree/task-base-resolution.js";
+/* RUFU-200: the phantom re-arm guard reuses the scheduler's dependency-satisfaction verdict rather
+   than writing a second one — `getUnmetSchedulingDependencies` is the authority the scheduler, the
+   dispatch gate, and self-healing all use to answer "is this card still blocked?". */
+import { getUnmetSchedulingDependencies } from "./scheduler.js";
+import { acknowledgeOverlapResumeContext, type OverlapResumeContextDelivery } from "./execution/overlap-resume-context.js";
+
 import { createRunAuditor, generateSyntheticRunId, type DatabaseMutationType, type EngineRunContext } from "./util/run-audit.js";
 import { promptWithFallback } from "./pi.js";
 import { withRateLimitRetry } from "./errors/rate-limit-retry.js";
@@ -110,6 +130,16 @@ import { detectDeicticReference, extractAntecedentCandidates, renderAmbiguityPro
 import { countActiveAgentMembers, decideRoomCoordination, detectTaskFilingIntent, renderRoomCoordinationPromptBlock } from "./triage-domain/room-coordination.js";
 import { evaluateParkedAgentTaskLink, isParkedTaskColumn, type AgentTaskLinkExecutionProof } from "./agents/task-agent-sync.js";
 import { MemoryConsolidationError, MemoryConsolidationService, resolveMemoryConsolidationPorts } from "./memory/index.js";
+
+export async function dispatchHeartbeatTransportWithOverlapAck(input: {
+  send: () => Promise<void>;
+  store: Pick<TaskStore, "completeTaskOverlapWait">;
+  taskId?: string;
+  delivery?: OverlapResumeContextDelivery;
+}): Promise<void> {
+  await input.send();
+  if (input.taskId && input.delivery) await acknowledgeOverlapResumeContext(input.store, input.taskId, input.delivery);
+}
 
 /*
 FNXC:WorkflowLifecycleColumns 2026-07-28-09:25 (U11 conversion):
@@ -133,6 +163,7 @@ async function resolveHeartbeatReboundColumn(taskStore: TaskStore, taskId: strin
   }
 }
 import { classifyReportHealth } from "./reports-health.js";
+import { describeHeartbeatThrottle } from "@fusion/core";
 import { accumulateSessionTokenUsage, captureSessionTokenBaseline } from "./execution/session-token-usage.js";
 
 const promptSizeLog = createLogger("prompt-size");
@@ -278,6 +309,20 @@ export interface WakeMessageContext {
   fromId: string;
   forced: boolean;
   createdAt: string;
+}
+
+/*
+FNXC:AssigneeTransferAtomicity 2026-09-15-05:05 (RUFU-260):
+A wake that took the `(agentId, taskId)` goal slot. `runId` is filled once the claimant's run opens, so
+a refused wake can name the session it stood in for; `opened` is how it waits for that identity without
+fabricating a run row of its own.
+*/
+interface HeartbeatWakeClaim {
+  taskId: string;
+  runId?: string;
+  /** Resolves with the claimant's run, or `undefined` when the claimant never opened one. */
+  opened: Promise<AgentHeartbeatRun | undefined>;
+  settle(run: AgentHeartbeatRun | undefined): void;
 }
 
 export interface HeartbeatExecutionOptions {
@@ -579,6 +624,10 @@ export {
   buildHeartbeatErrorRecoveryMetadata,
   incrementHeartbeatErrorRecoveryMetadata,
   resetHeartbeatErrorRecoveryMetadata,
+  armHeartbeatThrottleCooldown,
+  buildHeartbeatErrorRecoveryMetadataPreservingThrottle,
+  buildHeartbeatThrottleExhaustionMetadata,
+  isHeartbeatThrottleCooldownActive,
   isHeartbeatErrorRecoverable,
   isModelUnavailablePark,
   isModelUnavailableParkRecoveryEligible,
@@ -591,13 +640,18 @@ import {
   HEARTBEAT_MODEL_UNAVAILABLE_PAUSE_REASON,
   resolveErrorRecoveryLimit,
   readHeartbeatErrorRetryCount,
+  buildHeartbeatErrorRecoveryMetadata,
   incrementHeartbeatErrorRecoveryMetadata,
   resetHeartbeatErrorRecoveryMetadata,
+  armHeartbeatThrottleCooldown,
+  buildHeartbeatThrottleExhaustionMetadata,
+  isHeartbeatThrottleCooldownActive,
   isHeartbeatErrorRecoverable,
   isModelUnavailablePark,
   isErrorRecoveryEligible,
   isHeartbeatManaged,
 } from "./agents/agent-heartbeat-error-recovery.js";
+import { isProviderThrottleEnvelopeError } from "./errors/transient-error-detector.js";
 
 
 /** Parameter schema for the fn_heartbeat_done tool */
@@ -706,9 +760,9 @@ async function getHeartbeatMemorySettings(taskStore: TaskStore): Promise<Setting
  */
 /**
  * FNXC:WorkflowLifecycleColumns 2026-08-01-07:20 (fleet — heartbeat terminal checks):
- * Is this task finished — resting in its OWN board's complete or archived lane?
+ * Is this task finished — resting in its own board's Complete lane?
  *
- * Both heartbeat call sites asked with `column === "done" || "archived"`. Neither is cosmetic:
+ * Both heartbeat call sites once used hardcoded terminal ids. Neither is cosmetic:
  *
  *   - the linked-task check clears an agent's assignment once its card is finished. Keyed on the
  *     literals, an agent on a renamed board stayed bound to a completed card indefinitely, so every
@@ -717,7 +771,7 @@ async function getHeartbeatMemorySettings(taskStore: TaskStore): Promise<Setting
  *     A card resting in a renamed complete lane read as non-terminal, so an acquisition failure
  *     could stamp `status: "failed"` and an error onto work that was already done.
  *
- * Fail-soft to the legacy pair: an unresolvable workflow keeps exactly today's answer rather than
+ * Fail-soft to Done: an unresolvable workflow keeps the built-in answer rather than
  * treating every card as unfinished, which is the expensive direction here (the second site WRITES).
  */
 export async function isTaskInTerminalLane(
@@ -729,8 +783,136 @@ export async function isTaskInTerminalLane(
   /* DELIBERATE-LITERAL — the no-metadata fallback. Deleting it makes an unresolvable workflow read
      as NEVER terminal, which is the direction that writes: the second call site would then run its
      failure bookkeeping against finished work. Strictly worse than the legacy answer. */
-  if (!columns) return task.column === "done" || task.column === "archived";
-  return task.column === columns.complete || task.column === columns.archived;
+  if (!columns) return task.column === "done";
+  return task.column === columns.complete;
+}
+
+/*
+FNXC:OverlapScheduling 2026-09-08-23:45 (RUFU-200):
+Why a heartbeat must NOT acquire a worktree for a dependency-blocked planning-lane card.
+
+The scheduler classifies a task with a retained `task.worktree` as a dormant file-scope lease holder,
+which blocks any overlapping peer's admission. RUFU-198 sat in `todo` behind a paused, unparseable
+RUFU-196: it could never dispatch, so it never reached any dispatch-time metadata recovery, and every
+~15-minute heartbeat patrol called `acquireTaskWorktree` for it (RUFU-198 logged acquisition at 16:29,
+16:44, 16:51 while parked `todo`/`queued`). Each patrol re-armed the very lease that blocked RUFU-199,
+so the phantom outlived any sweep that cleared it — the deadlock was self-rearming.
+
+RUFU-200 fixes the classification (a provably empty checkout is not a holder) and the reclaim
+ candidacy (a blocked planning-lane holder is now recoverable). This guard closes the third door:
+ a card that CANNOT dispatch must not be handed a checkout at all. A planning-lane card with unmet
+ scheduling dependencies is precisely the shape that generates the phantom, so its patrol skips the
+ acquisition and the session runs from the project root instead.
+
+FNXC:OverlapScheduling 2026-09-09-05:31 (RUFU-200, CEO ruling 2026-09-08T19:30Z):
+Unmet dependency edges are only ONE reason a planning-lane card is admitted-blocked. The dispatch
+ gate also marks a card blocked by its OWN overlap signal — `task.overlapBlockedBy` (written at
+ `executor/file-scope-lease-dispatch-gate.ts:163`) — which is the deps=[] variant of the identical
+ self-rearming shape: the card has no dependency edges, but its retained checkout is the dormant
+ lease refusing an overlapping peer's admission, and the card itself is held from dispatch by that
+ same overlap episode. Handing it a checkout re-arms the lease it is supposed to be waiting out,
+ so a planning-lane card with `overlapBlockedBy` set is admitted-blocked and MUST NOT acquire.
+ `getUnmetSchedulingDependencies` returns [] for such a card — the block lives on the row, not on
+ an edge — so the overlap signal is checked explicitly rather than through the dependency helper.
+
+Scope kept deliberately narrow, per the task's constraints:
+- WIP-lane cards keep acquiring: a card already executing owns its checkout regardless of deps.
+- Planning cards with neither unmet deps nor an overlap block keep acquiring: their next patrol may
+  legitimately dispatch.
+- `isNoTaskRun` patrols never enter this path (they had no task checkout to begin with).
+- The check is READ-ONLY. The guard clears nothing; only `reclaimSelfOwnedBranchConflicts` remains
+  the writer of `worktree`/`branch`/`baseCommitSha` for this shape.
+
+Returns the blocking ids (unmet dependency ids, or the overlap blocker id when the card has no
+unmet deps) when the acquisition must be skipped, else null. Fail-soft to NOT skipping: if the
+lane or the task list cannot be resolved, today's acquisition happens unchanged — withholding a
+checkout on an unproven reading would break a card that is legitimately ready.
+*/
+/*
+FNXC:AssigneeTransferAtomicity 2026-09-15-05:05 (RUFU-260):
+Is an assignment wake's goal still live, i.e. is this agent still the one that should run this card?
+
+An `assignment` wake is created at the moment `agent:assigned` fires, but the session it opens runs
+minutes later — after the per-agent start lock and (since this task) after the task disposal
+barrier. A transfer that lands inside that window makes the wake's goal stale: the previous owner
+would open a session for a card it no longer owns and re-acquire a checkout the handoff just handed
+over. That is the RUFU-260 signature (FN-2027 and FN-2029 in one run: two agents, two worktrees).
+
+The executable lane is decided from workflow TRAIT FLAGS, not column literals, mirroring
+`resolveLeaseRoles` in `executor/file-scope-lease-dispatch-gate.ts`: a review-role card is awaiting a
+verdict its assignee cannot produce, and a complete/terminal card is finished work. Everything else
+(ready/hold/intake/WIP) stays wakeable, because the engine's own resume sweep
+(`executor/resume-task-for-agent.ts`) dispatches from those lanes too. The one literal is the
+no-metadata fallback, which is the documented no-flags branch of each role helper — restating board
+ids here would raise the lifecycle-column census ratchet.
+
+Returns `undefined` when the wake is still live. Callers fail OPEN on an unreadable card or board:
+withholding a legitimately-owned wake on an unproven reading strands the card with no owner, which
+is the expensive direction.
+*/
+export async function resolveStaleAssignmentWakeReason(
+  taskStore: TaskStore,
+  agentId: string,
+  taskId: string,
+): Promise<"task-gone" | "assignee-transferred" | "lane-not-executable" | undefined> {
+  let fresh: Awaited<ReturnType<TaskStore["getTask"]>> | undefined;
+  try {
+    // The wake carries a goal read BEFORE the wait; trust only the post-wait read.
+    fresh = await taskStore.getTask(taskId);
+  } catch {
+    return undefined;
+  }
+  if (!fresh || fresh.deletedAt) return "task-gone";
+  /*
+  Only an AFFIRMATIVE other owner proves the card moved. `AgentStore.assignTask` binds the wake's
+  provenance on the agent side (`agent.taskId`) and never writes `task.assignedAgentId`, so a row
+  with no assignee is consistent with a live assignment wake — treating absence as a transfer would
+  drop every wake whose card was bound through that primitive. A row naming somebody else is the
+  RUFU-251 signature: the board moved the card while this wake was still carrying the old goal.
+  */
+  if (fresh.assignedAgentId && fresh.assignedAgentId !== agentId) return "assignee-transferred";
+  try {
+    const ir = await resolveWorkflowIrForTask(taskStore, fresh.id);
+    const column = (ir as { columns?: Array<{ id: string; traits?: unknown }> } | undefined)
+      ?.columns?.find((candidate) => candidate.id === fresh.column);
+    const flags = column ? resolveColumnFlags(column as never) : undefined;
+    if (isReviewColumnRole(flags, fresh.column) || isTerminalColumnRole(flags, fresh.column)) {
+      return "lane-not-executable";
+    }
+  } catch {
+    /* The board could not be read: keep the wake. See the fail-open note above. */
+  }
+  return undefined;
+}
+
+export async function heartbeatPlanningLaneAcquisitionSkip(
+  taskStore: TaskStore,
+  task: TaskDetail,
+): Promise<string[] | null> {
+  /* Two independent reasons a planning-lane card is admitted-blocked: unmet dependency edges, or
+     its own overlap lease on a peer (CEO ruling 2026-09-08T19:30Z). Neither ⇒ today's acquire. */
+  if (task.dependencies.length === 0 && !task.overlapBlockedBy) return null;
+  const columns = await resolveTaskLifecycleColumns(taskStore, task.id).catch(() => undefined);
+  const inPlanningLane = columns
+    ? task.column === columns.hold || task.column === columns.intake
+    /* DELIBERATE-LITERAL — the no-metadata fallback, the same fail-soft convention as
+       `isTaskInTerminalLane` above: an unresolvable workflow keeps the built-in answer rather than
+       silently disabling the guard (or, worse, disabling acquisition board-wide). */
+    : task.column === "todo" || task.column === "triage";
+  if (!inPlanningLane) return null;
+  /* A card with no dependency edges provably has no unmet ones — `getUnmetSchedulingDependencies`
+     filters `task.dependencies` — so the board read cannot change its verdict and this path does
+     not depend on it. The overlap signal is the whole answer, and it lives on the row. */
+  if (task.dependencies.length === 0) {
+    return task.overlapBlockedBy ? [task.overlapBlockedBy] : null;
+  }
+  const tasks = await taskStore.listTasks({ includeArchived: false, slim: true }).catch(() => null);
+  if (!tasks) return null;
+  const unmet = getUnmetSchedulingDependencies(task, tasks);
+  if (unmet.length > 0) return unmet;
+  /* Deps are all satisfied but the card's own dormant lease is blocking an overlapping peer: the
+     overlap blocker id is the skip marker. Unmet deps win the label when both are present. */
+  return task.overlapBlockedBy ? [task.overlapBlockedBy] : null;
 }
 
 export class HeartbeatMonitor {
@@ -772,6 +954,22 @@ export class HeartbeatMonitor {
 
   /** Tasks created per agent during heartbeat runs (keyed by agentId) */
   private runCreatedTasks: Map<string, Array<{ id: string; description: string }>> = new Map();
+
+  /*
+  FNXC:AssigneeTransferAtomicity 2026-09-15-05:05 (RUFU-260):
+  One in-flight session per (agent, goal). `agentStartLocks` serializes run starts, which is exactly
+  why it cannot prevent the duplicate: a second wake for a card the agent is already working queues
+  behind the first, then opens a fresh session for the same goal (and `startRun` fails the active run
+  on the way in). The claim is therefore keyed by GOAL, not by agent, and is taken synchronously in
+  `executeHeartbeat` before the lock is queued on, so a wake arriving mid-session is refused instead of
+  queued.
+
+  `opened` exists so the refused wake can return the identity of the session it stood in for instead of
+  fabricating a run row: the claimant resolves it once `startRun` returns. If the claimant never opens
+  a run (it failed before that point), `opened` resolves undefined and the refused wake falls through
+  and runs normally — a goal nobody is working on must not be swallowed.
+  */
+  private wakeGoalClaims: Map<string, HeartbeatWakeClaim> = new Map();
 
   constructor(options: HeartbeatMonitorOptions) {
     this.store = options.store;
@@ -1709,10 +1907,29 @@ export class HeartbeatMonitor {
             && retryCount > 0
             && failedWithRecoverableError
           ) {
+            /*
+            FNXC:ProviderThrottleIsTransient 2026-09-30-13:37 (RUFU-286):
+            Exhaustion is what ends a throttle episode's WAIT: the park drops any still-unexpired
+            `cooldownUntilAt`, because a `paused` card that advertised a re-probe instant would promise a
+            retry nothing owns (the timer stops dispatching paused agents) and surfaces would read a live
+            throttle pill off a durably parked agent. What keeps this card parked is the shared budget,
+            never the wait, and it gets the same `error-retry-exhausted` park every other recoverable
+            class gets — the fleet-wide throttle fix stays "more recoverable", never a coordinator-specific
+            park reason.
+
+            FNXC:ProviderThrottleIsTransient 2026-09-30-16:26 (RUFU-286 code review P0):
+            The write is the exhaustion-specific builder, not the clearing one: `throttleStreak` stays on
+            the row so the shared reader can classify this park `throttle-exhausted` ("the retries ran out
+            while the provider kept throttling") instead of an unattributable exhausted park. The clearing
+            builder used to erase that evidence on the most common exhaustion route (a failed run at the
+            budget cap), while the run-entry exhaustion route — which writes no metadata at all — kept it,
+            so the same park read differently depending on which lane noticed.
+            */
             await this.store.updateAgentState(agentId, "paused");
             await this.store.updateAgent(agentId, {
               lastError: failedError,
               pauseReason: HEARTBEAT_ERROR_RETRY_EXHAUSTED_PAUSE_REASON,
+              ...(latestAgent ? { metadata: buildHeartbeatThrottleExhaustionMetadata(latestAgent, retryCount) } : {}),
             });
             heartbeatLog.warn(`Agent ${agentId} error recovery exhausted after ${retryCount}/${errorRecoveryLimit} attempts — pausing`);
             if (this.taskStore) {
@@ -1770,8 +1987,69 @@ export class HeartbeatMonitor {
               }
             }
           } else {
+            /*
+            FNXC:ProviderThrottleIsTransient 2026-09-30-13:37 (RUFU-286):
+            A provider throttle envelope (a 429 carrying `rate_limit_error` / `rate_limit_exceeded`, or an
+            unambiguous request-rate code like AWS `ThrottlingException`) is a self-clearing accounting
+            window, not an operator-actionable durable failure, so this recoverable branch arms the bounded
+            re-probe instead of leaving the card in bare `error`
+
+            FNXC:ProviderThrottleIsTransient 2026-10-01-06:20 (RUFU-286 code review P2):
+            The example list names only tokens `isProviderThrottleEnvelopeError` actually carries. Google
+            `RESOURCE_EXHAUSTED` is NOT one of them — Vertex/Gemini use that single code for both a
+            per-minute request rate and a hard per-project quota, so classing it as a wait could backoff
+            forever against a dead account; it keeps the ordinary bounded budget and parks
+            `error-retry-exhausted`, which is visible. Listing it here promised a wait the code refuses.
+            with only the plain heartbeat interval to wake it. The wait is written on THIS state write
+            (`throttleStreak` + `cooldownUntilAt` in `metadata.heartbeatErrorRecovery`) so there is one
+            durable record of "we are waiting, and until when"; the run-entry gate reads it back and
+            defers until the horizon. Arming burns no budget unit — the failed re-probe at the horizon
+            does, through the normal increment at run entry — and only the budget cap ends the episode,
+            via the exhaustion park above (`error-retry-exhausted`). No arm on the durable park branch
+            and none once the budget is exhausted: both would schedule a re-probe nothing owns.
+            */
+            const throttleArm = latestAgent && failedWithRecoverableError && isProviderThrottleEnvelopeError(failedError)
+              ? armHeartbeatThrottleCooldown(latestAgent)
+              : null;
+            /*
+            FNXC:ProviderThrottleIsTransient 2026-09-30-16:26 (RUFU-286 code review P0):
+            A recoverable failure that is NOT a throttle envelope ends the throttle episode: the streak
+            counted consecutive provider rate-limits, so carrying it past a socket hang-up or a model error
+            would let a much later exhaustion park claim credit for a throttle that stopped happening. Only
+            the stale attribution is cleared here — the clearing builder keeps the shared budget counter —
+            and only when the row actually carries a streak, so ordinary non-throttle failures keep writing
+            exactly the metadata they wrote before this change.
+            */
+            const staleThrottleEpisode = !throttleArm
+              && latestAgent
+              && readHeartbeatRecoveryState(latestAgent).throttleStreak > 0;
             await this.store.updateAgentState(agentId, "error");
-            await this.store.updateAgent(agentId, { lastError: failedError });
+            await this.store.updateAgent(agentId, {
+              lastError: failedError,
+              ...(throttleArm
+                ? { metadata: throttleArm.metadata }
+                : staleThrottleEpisode
+                  ? { metadata: buildHeartbeatErrorRecoveryMetadata(latestAgent, readHeartbeatErrorRetryCount(latestAgent)) }
+                  : {}),
+            });
+            if (throttleArm && this.taskStore) {
+              // IDs/counts/outcomes only: the provider envelope stays on `agent.lastError`, never in run-audit.
+              await emitBoundedRunAudit(this.taskStore, {
+                agentId,
+                runId,
+                domain: "database",
+                mutationType: "agent:throttle-cooldown-armed",
+                target: agentId,
+                metadata: {
+                  agentId,
+                  attempt: retryCount,
+                  limit: errorRecoveryLimit,
+                  backoffMs: throttleArm.backoffMs,
+                  source: "run-failure",
+                },
+              });
+              heartbeatLog.debug(`Agent ${agentId} provider throttle: re-probe scheduled in ${throttleArm.backoffMs}ms (streak ${throttleArm.throttleStreak})`);
+            }
           }
           }
         } else if (completionResult.status === "terminated") {
@@ -1930,7 +2208,6 @@ export class HeartbeatMonitor {
     if (this.taskStore && cascadeToTasks) {
       const pausedTasks = await this.taskStore.getTasksByAssignedAgent(agentId, {
         pausedOnly: true,
-        excludeArchived: true,
       });
       const toUnpause = pausedTasks.filter((task) => task.pausedByAgentId === agentId && !task.userPaused);
       const results = await Promise.allSettled(toUnpause.map((task) => this.taskStore!.pauseTask(task.id, false)));
@@ -2095,6 +2372,36 @@ export class HeartbeatMonitor {
   // Heartbeat execution (Paperclip wake → check → work → exit)
   // ─────────────────────────────────────────────────────────────────────────
 
+  /*
+  FNXC:AssigneeTransferAtomicity 2026-09-15-05:05 (RUFU-260):
+  Wait out the card's live teardowns, then decide whether this wake's goal is still live.
+
+  Fail-soft by construction: everything it does is an OBSERVATION, so a throw inside it (a logger
+  regression, an unreadable board) must never surface as a worktree-acquisition failure — that arm
+  charges a strike against the card and rebounds it. On any error it reports "not superseded" and the
+  acquisition proceeds exactly as before this task.
+
+  Only `assignment` provenance is revalidated. A review-dispatch (`automation`) wake legitimately
+  targets a card its agent is not assigned to, and message/routine wakes make no ownership claim.
+  */
+  private async observeDisposalBarrierForWake(
+    taskStore: TaskStore,
+    agentId: string,
+    taskId: string,
+    source: HeartbeatInvocationSource,
+  ): Promise<{ reason: string; taskId: string } | undefined> {
+    try {
+      await awaitTaskDisposalBarrier(taskId);
+      if (source !== "assignment") return undefined;
+      const staleReason = await resolveStaleAssignmentWakeReason(taskStore, agentId, taskId);
+      return staleReason ? { reason: staleReason, taskId } : undefined;
+    } catch (observationErr) {
+      heartbeatLog.warn(`Disposal-barrier observation for ${agentId} on ${taskId} failed: ${observationErr instanceof Error ? observationErr.message : String(observationErr)} — proceeding with acquisition`);
+      return undefined;
+    }
+  }
+
+
   /**
    * Execute a heartbeat run for an agent.
    * 
@@ -2135,6 +2442,42 @@ export class HeartbeatMonitor {
     const taskStore = this.taskStore;
     const rootDir = this.rootDir;
 
+    /*
+    FNXC:AssigneeTransferAtomicity 2026-09-15-05:05 (RUFU-260):
+    One in-flight session per (agent, goal): the goal is resolved and its claim taken BEFORE the per-agent
+    start lock, on every backend.
+
+    The lock serializes run starts, which is exactly why it cannot host this guard. A claim taken inside it
+    is invisible to the queued caller that has to be deduped — `clearRunState` runs in the lock's `finally`
+    before the next queued callback begins — and the queued wake then opens a second session for a goal
+    that was just being worked on, with `startRun` terminating the run it is deduping against on the way
+    in. `getCachedAgent` is the synchronous goal hint and returns null on PostgreSQL, so a wake that
+    inherits the agent's bound task reads the agent once here too; the hint is deliberately NOT reused as
+    the body's agent read, so the session still runs against a freshly-read agent if the assignment moved
+    while this wake was queued.
+
+    The `runId` hand-back stays truthful because a refused wake awaits the claimant's opened run instead
+    of inventing a run row, and a claim whose owner never opened a run resolves `undefined` so the refused
+    wake falls through and runs — a goal nobody is working on is never swallowed.
+    */
+    let wakeGoalTaskId = explicitTaskId ?? this.store.getCachedAgent?.(agentId)?.taskId ?? undefined;
+    if (!wakeGoalTaskId) {
+      try {
+        wakeGoalTaskId = (await this.store.getAgent(agentId))?.taskId ?? undefined;
+      } catch (preloadErr) {
+        heartbeatLog.warn(`Agent ${agentId} wake-goal agent read failed: ${preloadErr instanceof Error ? preloadErr.message : String(preloadErr)} — skipping wake dedupe`);
+      }
+    }
+
+    let wakeClaim: HeartbeatWakeClaim | undefined;
+    if (wakeGoalTaskId) {
+      const duplicate = await this.findDuplicateInFlightRun(agentId, wakeGoalTaskId, source);
+      if (duplicate) {
+        return duplicate;
+      }
+      wakeClaim = this.claimWakeGoal(agentId, wakeGoalTaskId);
+    }
+
     // Serialize per-agent
     return this.withAgentStartLock(agentId, async () => {
       heartbeatLog.log(`Executing heartbeat for ${agentId} (source=${source})`);
@@ -2147,6 +2490,25 @@ export class HeartbeatMonitor {
       }
 
       const resolvedTaskId = explicitTaskId ?? preloadedAgent?.taskId;
+
+      /*
+      FNXC:AssigneeTransferAtomicity 2026-09-15-05:05 (RUFU-260):
+      The goal can differ from the pre-lock hint (the assignment moved while this wake was queued, or the
+      hint read failed). Re-check against the fresh goal — still before `startRun`, never after, because
+      `startRun` terminates a run it finds active. `wakeClaim` is passed so a wake never dedupes against
+      its own claim; the claim is retargeted when the goal turned out different.
+      */
+      if (resolvedTaskId && wakeClaim?.taskId !== resolvedTaskId) {
+        const duplicate = await this.findDuplicateInFlightRun(agentId, resolvedTaskId, source, wakeClaim);
+        if (duplicate) {
+          // This wake is leaving without opening a run; hand back its own claim so a later wake for that
+          // goal is not refused against a session that will never arrive.
+          this.releaseWakeGoalClaim(agentId, wakeClaim);
+          return duplicate;
+        }
+        wakeClaim = this.claimWakeGoal(agentId, resolvedTaskId);
+      }
+
       const contextTriggeringCommentIds = Array.isArray(contextSnapshot?.triggeringCommentIds)
         ? contextSnapshot.triggeringCommentIds.filter((id): id is string => typeof id === "string" && id.length > 0)
         : undefined;
@@ -2174,6 +2536,9 @@ export class HeartbeatMonitor {
         triggerDetail,
         contextSnapshot: Object.keys(runContextSnapshot).length > 0 ? runContextSnapshot : undefined,
       });
+
+      // Hand the opened run's identity to any wake that deduped against this goal.
+      this.settleWakeGoalClaim(agentId, run);
 
       // Build run context for mutation correlation
       const runContext: RunMutationContext = {
@@ -2278,6 +2643,55 @@ export class HeartbeatMonitor {
         Include paused/heartbeat-model-unavailable in the same run-entry recovery gate as bare error. Assignment/on-demand model-unavailable parks previously never re-entered the timer path, so false positives stayed parked until a human Retry even though the next session start would succeed.
         */
         if (agent.state === "error" || isModelUnavailablePark(agent)) {
+          /*
+          FNXC:ProviderThrottleIsTransient 2026-09-30-13:37 (RUFU-286):
+          A provider throttle armed a cooldown on the failing run, so until that horizon the agent must not
+          dispatch at all. The gate sits INSIDE this recovery block and BEFORE `canAttemptErrorRecovery` so a
+          deferred tick burns no budget unit — deferral is not an attempt, and if it were, a throttle episode
+          would exhaust the shared budget while merely waiting. The tick completes as a skipped run
+          (`status:"completed"`, `skipStateTransition:true`, reason `throttle-cooldown`) shaped like the
+          `global_pause` / `engine_paused` / budget skips above, so the interval stays armed and the card
+          never re-enters `running`.
+
+          Once the horizon passes, the NEXT tick falls through to the ordinary recovery ladder: it consumes
+          one shared-budget attempt, emits `agent:auto-recover-error-state`, and clears `error` for a probe
+          run. If the budget is already spent, the ladder's exhausted branch parks
+          `pauseReason:"error-retry-exhausted"` — NOT `error-unrecoverable` — deliberately:
+          `error-unrecoverable` means "a human must fix credentials/quota/model access", is excluded from
+          FN-7884 startup recovery, and is re-parked on every restart, so a throttle parked that way re-arms
+          the sweep-rejection loop this change removes and a fleet-wide throttle would end the day with N
+          cards demanding an operator action that was never needed. `error-retry-exhausted` is the park every
+          other recoverable class already gets — restart clears it, `fn_agent_start` clears it, and the
+          invariant stays "a throttle is more recoverable", never coordinator-specific special-casing.
+          */
+          if (agent.state === "error" && isHeartbeatThrottleCooldownActive(agent)) {
+            const throttleCooldown = readHeartbeatRecoveryState(agent);
+            heartbeatLog.debug(`Agent ${agentId} heartbeat deferred — provider throttle cooldown active until ${throttleCooldown.cooldownUntilAt} (source=${source})`);
+            /*
+            FNXC:ProviderThrottleIsTransient 2026-09-30-13:37 (RUFU-286):
+            `startRun` already flipped the row to `running`, and a `skipStateTransition` completion leaves it
+            there — which would erase the very condition this gate reads. `reconcileOrphanedRunningAgents`
+            (every `checkMissedHeartbeats` poll) flips a running row with no active run back to `active`, so
+            the SECOND deferred tick would find a healthy-looking agent and dispatch straight into the same
+            429. Restoring the state the tick arrived in is therefore part of the deferral, not a state
+            change: this branch is only reachable when the preloaded row was `error`, so the write can never
+            lift an operator pause, and it is the same explicit-state-then-skip pattern the budget-park and
+            exhausted-park branches use.
+            */
+            await this.store.updateAgentState(agentId, "error");
+            await this.completeRun(agentId, run.id, {
+              status: "completed",
+              resultJson: {
+                reason: "throttle-cooldown",
+                source,
+                cooldownUntilAt: throttleCooldown.cooldownUntilAt,
+                throttleStreak: throttleCooldown.throttleStreak,
+              },
+              skipStateTransition: true,
+            });
+            return (await this.store.getRunDetail(agentId, run.id))!;
+          }
+
           const errorRecoveryLimit = resolveErrorRecoveryLimit(heartbeatModelSettings);
           const currentRetryCount = readHeartbeatErrorRetryCount(agent);
           const canAttemptErrorRecovery = isErrorRecoveryEligible(agent, errorRecoveryLimit);
@@ -2447,15 +2861,76 @@ export class HeartbeatMonitor {
         let taskId = explicitTaskId ?? agent.taskId;
         let inboxSelection: InboxTask | null = null;
 
+        /*
+        FNXC:LaneCapabilityRevalidation 2026-09-26-19:40 (RUFU-272 Step 2):
+        A wake on `explicitTaskId ?? agent.taskId` never re-ran the bind policy, so an
+        implementation-class card bound to a capability-ineligible lane (audit-only roles, or
+        `assignmentPolicy: "none"`/`"explicit-only"` without the durable-owner witness) executed on
+        that lane every heartbeat forever — the RUFU-222/254/256/257 wedge, with no named decline
+        anywhere. The claim-time gates (`claimTaskForAgent` witness, auto-claim filter) were right;
+        the wake path simply re-trusted the stored binding.
+
+        The revalidation now runs the SAME verdict as every bind surface, with the durable-owner
+        witness (`task.assignedAgentId === agent.id`, not the presence of an explicitTaskId) and the
+        card's workflow-resolved implementation lanes. A refusal declines ONLY for this wake: the
+        binding is never mutated here (the `reconcile-lane-capability-misbind` sweep is the single
+        mutation owner), and the wake falls through to inbox/auto-claim exactly as an unbound lane
+        does, so the lane stays useful. Suppressions are absolute: paused/user-paused cards
+        (RUFU-260 pause constraint), cards carried by a live session or a live heartbeat run other
+        than this tick (a running card is never declined out from under itself), and any unreadable
+        or absent task row — the gate fails OPEN to the pre-existing behavior.
+        */
+        if (taskId) {
+          const wakeTaskId = taskId;
+          // Fail-open: an unreadable (or absent, in reduced fakes) bound row keeps the pre-existing
+          // wake behavior; the deeper task_not_found handling stays the authority for missing cards.
+          const boundTask = await Promise.resolve().then(() => taskStore.getTask(wakeTaskId)).catch(() => null);
+          const declineable = boundTask
+            && !boundTask.paused && !boundTask.userPaused
+            && !isTaskPlanningOrExecutionLive(wakeTaskId);
+          if (declineable) {
+            // Liveness of the carrying run: an active heartbeat run OTHER than this tick whose
+            // snapshot names this card. This tick's own run may hold a stale snapshot from the
+            // previous wake, so its id is explicitly excluded — otherwise the first decline would
+            // erase itself on the second wake.
+            const activeRun = await Promise.resolve().then(() => this.store.getActiveHeartbeatRun(agentId)).catch(() => null);
+            const liveCarried = Boolean(activeRun)
+              && activeRun!.id !== run.id
+              && activeRun!.contextSnapshot?.taskId === wakeTaskId;
+            if (!liveCarried) {
+              const wakeBindVerdict = evaluateImplementationTaskBind(agent, boundTask, {
+                explicitRouting: boundTask.assignedAgentId === agent.id,
+                executorRoleOverride: boundTask.sourceMetadata?.executorRoleOverride === true,
+                implementationColumns: await resolveTaskImplementationColumns(taskStore, wakeTaskId),
+              });
+              if (!wakeBindVerdict.allowed) {
+                heartbeatLog.warn(`Agent ${agentId} declined bound task ${wakeTaskId}: ${formatLaneCapabilityDeclineReason(agent, boundTask)}`);
+                await this.auditLaneCapabilityDecline(agentId, boundTask.id, boundTask.column, agent, run.id);
+                // Decline ≠ unbind: fall through to inbox/auto-claim without touching the binding.
+                taskId = undefined;
+              }
+            }
+          }
+        }
+
         if (!taskId) {
-          // FNXC:AgentRouting 2026-07-12-12:10: pass runtimeConfig so the inbox selector can enforce per-agent assignmentPolicy (issue #2015).
-          inboxSelection = await taskStore.selectNextTaskForAgent(agentId, { id: agent.id, role: agent.role, runtimeConfig: agent.runtimeConfig });
+          /*
+          FNXC:AgentRouting 2026-07-12-12:10: pass runtimeConfig so the inbox selector can enforce per-agent assignmentPolicy (issue #2015).
+
+          FNXC:LaneCapabilityVocabulary 2026-09-26-19:40 (RUFU-272 Step 2):
+          The projection carried only the deprecated singular `role`, so a multi-role lane (e.g.
+          ["reviewer","executor"]) read to the selector's bind evaluator as reviewer-only and its
+          implementation work vanished from the offer list. `agentRoles()` prefers the full `roles`
+          array — project it and every tag becomes visible; the singular field stays for legacy lanes.
+          */
+          inboxSelection = await taskStore.selectNextTaskForAgent(agentId, { id: agent.id, role: agent.role, roles: agent.roles, runtimeConfig: agent.runtimeConfig });
           if (inboxSelection) {
             // Defense-in-depth re-check with the shared evaluator: executorRoleOverride bypasses the role
             // check only — assignmentPolicy "none" is never overridable (issue #2015).
             const bindVerdict = evaluateImplementationTaskBind(agent, inboxSelection.task, {
               explicitRouting: true,
               executorRoleOverride: inboxSelection.task.sourceMetadata?.executorRoleOverride === true,
+              implementationColumns: await resolveTaskImplementationColumns(taskStore, inboxSelection.task.id),
             });
             if (!bindVerdict.allowed) {
               heartbeatLog.log(
@@ -2524,7 +2999,22 @@ export class HeartbeatMonitor {
             const freshCandidates = await resolveFreshAutoClaimCandidates(taskStore, snapshot.tasks);
             autoClaimSnapshotCandidateCount = freshCandidates.length;
             autoClaimPromptCandidates = freshCandidates;
-            const roleCompatibleCandidates = freshCandidates.filter((candidate) => canAgentTakeImplementationTask(agent, candidate, { allowEngineer: engineerBacklogAutoClaim }));
+            /*
+            FNXC:LaneCapabilityVocabulary 2026-09-26-19:40 (RUFU-272 Step 2):
+            The auto-claim filter judged candidates with the LEGACY column vocabulary, so on a
+            renamed board no candidate ever read as implementation work — the filter vacuously
+            passed (harmless) while the wake gate and dispatcher disagreed about what implementation
+            work IS. Candidates are now evaluated over legacy ∪ workflow-resolved lanes, with ONE
+            shared IR cache across the whole candidate list (resolution dedupes per workflow).
+            */
+            const autoClaimIrCache = new Map<string, WorkflowIr>();
+            const roleCompatibleCandidates: AutoClaimCandidate[] = [];
+            for (const candidate of freshCandidates) {
+              const implementationColumns = await resolveTaskImplementationColumns(taskStore, candidate.id, autoClaimIrCache);
+              if (canAgentTakeImplementationTask(agent, candidate, { allowEngineer: engineerBacklogAutoClaim, implementationColumns })) {
+                roleCompatibleCandidates.push(candidate);
+              }
+            }
             const skippedIncompatibleCount = freshCandidates.length - roleCompatibleCandidates.length;
             autoClaimRoleFilteredCount = skippedIncompatibleCount;
             if (skippedIncompatibleCount > 0) {
@@ -2808,12 +3298,25 @@ export class HeartbeatMonitor {
         const plannerHeartbeatPatrolEnabled = isNoTaskRun
           ? await resolveNoTaskHeartbeatPatrolEnabled(taskStore, heartbeatModelSettings)
           : true;
-        const baseHeartbeatSystemPrompt = adjustHeartbeatMemoryPrimer(
-          isNoTaskRun
-            ? renderHeartbeatNoTaskSystemPrompt({ plannerHeartbeatPatrolEnabled })
-            : HEARTBEAT_SYSTEM_PROMPT,
-          resolvedMemoryMode.mode,
-        );
+        /*
+        FNXC:OperatorLanguage 2026-09-15-07:18:
+        Heartbeat lanes generate operator-facing prose (mailbox messages via fn_send_message,
+        reports, task logs) with no operator message in the turn to mirror — that is why English
+        maily arrived even while the operator chats in Slovak. The global operatorLanguage
+        directive rides the same store settings this lane already loads (heartbeatModelSettings,
+        which also carries globalPause), so an operator change takes effect on the next heartbeat
+        tick without a restart. Unset/"auto" appends nothing — the prompt stays byte-identical.
+        */
+        const heartbeatLanguageDirective = buildOperatorLanguageDirective(heartbeatModelSettings);
+        const baseHeartbeatSystemPrompt = [
+          adjustHeartbeatMemoryPrimer(
+            isNoTaskRun
+              ? renderHeartbeatNoTaskSystemPrompt({ plannerHeartbeatPatrolEnabled })
+              : HEARTBEAT_SYSTEM_PROMPT,
+            resolvedMemoryMode.mode,
+          ),
+          heartbeatLanguageDirective,
+        ].filter(Boolean).join("\n\n");
         let resolvedInstructionsText = "";
         let resolvedInstructionsForIdentity: SnapshotFieldState = { status: "unset" };
         let workspaceMemoryForIdentity: SnapshotFieldState = { status: "unset" };
@@ -3008,41 +3511,64 @@ export class HeartbeatMonitor {
         }
 
         let sessionCwd = rootDir;
+        let overlapResumeDelivery: OverlapResumeContextDelivery | undefined;
         /*
-        FNXC:OverlapWaitSynchronization 2026-09-18-01:45:
-        A heartbeat-driven implementation session is another resume path, same as the graph's own
-        executeWorkflowGraph entry (executor/execute-workflow-graph.ts). Resolve any pending
-        overlap-wait episodes here too so a heartbeat run cannot proceed on stale knowledge of what
-        a predecessor delivered while the task sat between drain ticks. Best-effort and gated on the
-        store actually exposing the overlap-wait methods; resolvePendingOverlapWaits already
-        completes each episode (claim -> receipt -> "delivered"/"revalidation-pending") rather than
-        deferring acknowledgement until after the prompt is sent, which keeps this heartbeat
-        integration self-contained without a separate post-send ack step.
+        FNXC:AssigneeTransferAtomicity 2026-09-15-05:05 (RUFU-260):
+        Set when the acquisition seam proved this wake's goal went stale while it waited on the task
+        disposal barrier. Declared here (outside the `if`) so the drop check below can settle the run
+        AFTER the acquisition try/catch: keeping it out of the `catch (worktreeErr)` arm is what stops
+        a superseded wake from being miscounted as a broken checkout (strike, rebound move).
         */
-        let overlapResumeContext: string | undefined;
+        let wakeSuperseded: { reason: string; taskId: string } | undefined;
         if (!isNoTaskRun && taskDetail) {
-          try {
-            const acquisition = await acquireTaskWorktree({
-              task: taskDetail,
-              rootDir,
-              store: taskStore,
-              settings: heartbeatModelSettings ?? {},
-              logger: heartbeatLog,
-              audit,
-              runContext,
-              runInitCommand: false,
-              secretsStore: this.secretsStore,
-              refreshStaleBase: true,
-            });
-            sessionCwd = acquisition.worktreePath;
-            if (typeof taskStore.listTaskOverlapWaits === "function") {
-              try {
-                const resolutions = await resolvePendingOverlapWaits({ store: taskStore, task: taskDetail, owner: `heartbeat:${agentId}` });
-                const briefings = resolutions.map((resolution) => resolution.receipt.briefing).filter((briefing): briefing is string => Boolean(briefing));
-                if (briefings.length > 0) overlapResumeContext = briefings.join("\n");
-              } catch (overlapErr) {
-                heartbeatLog.warn(`Heartbeat overlap-wait resolution failed for ${agentId}: ${overlapErr instanceof Error ? overlapErr.message : String(overlapErr)}`);
-              }
+          /*
+          FNXC:OverlapScheduling 2026-09-09-05:31 (RUFU-200):
+          A planning-lane card that cannot dispatch this patrol must not be handed a checkout: the
+          retained worktree is what re-creates the dormant file-scope lease that blocks its
+          overlapping peers. The phantom holder RUFU-198 was re-armed by exactly this call on every
+          heartbeat while it sat `todo` behind a paused dependency. Two admission blocks reach this
+          skip: unmet scheduling dependencies, and (CEO ruling 2026-09-08T19:30Z) the card's own
+          `overlapBlockedBy` signal — the deps=[] variant where this card IS the lease blocking a
+          peer. Skip either way and run the patrol from the project root; the log names which one so
+          an overlap-only hold is never misread as a dependency wait.
+          */
+          const blockedPlanningReasons = await heartbeatPlanningLaneAcquisitionSkip(taskStore, taskDetail);
+          if (blockedPlanningReasons) {
+            const skipReason = taskDetail.dependencies.length === 0
+              ? `blocked by its own file-scope lease on ${taskDetail.overlapBlockedBy}`
+              : `with unmet dependencies [${blockedPlanningReasons.join(", ")}]`;
+            heartbeatLog.debug(`Skipping heartbeat worktree acquisition for ${agentId} on ${taskDetail.id}: ${taskDetail.column} ${skipReason} (RUFU-200 phantom re-arm guard)`);
+          } else try {
+            /*
+            FNXC:AssigneeTransferAtomicity 2026-09-15-05:05 (RUFU-260):
+            Every task-bound heartbeat checkout waits for the card's live teardowns BEFORE acquiring,
+            so a handoff cannot hand a worktree to a new owner while the previous owner's session is
+            still writing to it. The barrier is published by `trackTaskDisposal` and never times out,
+            so "wake after stopped" is enforced here rather than by ordering luck. Afterwards an
+            `assignment`-provenance wake re-reads the card, because its goal was resolved BEFORE the
+            wait and a transfer landing during it makes that goal stale.
+
+            The observation runs through a fail-soft helper rather than inline: an exception raised by
+            the observation itself must not reach the `catch (worktreeErr)` arm below, which would
+            charge a stale-wake check against the three-strike broken-checkout budget and rebound a
+            healthy card.
+            */
+            wakeSuperseded = await this.observeDisposalBarrierForWake(taskStore, agentId, taskDetail.id, source);
+            if (!wakeSuperseded) {
+              const acquisition = await acquireTaskWorktree({
+                task: taskDetail,
+                rootDir,
+                store: taskStore,
+                settings: heartbeatModelSettings ?? {},
+                logger: heartbeatLog,
+                audit,
+                runContext,
+                runInitCommand: false,
+                secretsStore: this.secretsStore,
+                refreshStaleBase: true,
+              });
+              sessionCwd = acquisition.worktreePath;
+              overlapResumeDelivery = acquisition.overlapResumeDelivery;
             }
           } catch (worktreeErr) {
             const detail = worktreeErr instanceof Error ? worktreeErr.message : String(worktreeErr);
@@ -3068,12 +3594,55 @@ export class HeartbeatMonitor {
                 await taskStore.moveTask(
                   taskDetail.id,
                   await resolveHeartbeatReboundColumn(taskStore, taskDetail.id),
-                  { preserveProgress: true },
+                  /*
+                  FNXC:MoveSource 2026-09-17-06:35: this recovery rebound declares its provenance
+                  explicitly instead of inheriting the implicit default — behavior-identical to
+                  `moveSource ?? "engine"`, but it keeps the move-target ratchet's unattributed
+                  heartbeat-call baseline at three, and the `Worktree base refresh blocked`
+                  task-log line above is the audit attribution for this rehome.
+                  */
+                  { preserveProgress: true, moveSource: "engine" },
                 );
               }
               await this.completeRun(agentId, run.id, {
                 status: "completed",
                 resultJson: { reason: "worktree_base_refresh_blocked", refreshKind, detail },
+                stderrExcerpt: detail,
+                skipStateTransition: true,
+              });
+              return (await this.store.getRunDetail(agentId, run.id))!;
+            }
+
+            /*
+             * FNXC:TaskBaseResolution 2026-09-16-02:57 (RUFU-245):
+             * Proven divergence between local `main` and its remote-tracking counterpart is an operator
+             * decision (push vs. pull), so no later heartbeat can repair it. Park `failed` with the
+             * refusal sentence itself — the `TASK_BASE_DIVERGED:` prefix and remedy already live in
+             * `detail`, which is the single operator-visible reason (the gate in acquisition already
+             * wrote the task-log entry and the single `refused-diverged` audit row).
+             *
+             * Deliberately ahead of the generic three-strike budget below and OUTSIDE it: incrementing
+             * `recoveryRetryCount` and calling `onTaskAcquisitionExhausted` would file a deterministic
+             * base-policy refusal as an ordinary broken-checkout flake, and the requeue-to-rebound
+             * re-dispatch it enables is the RUFU-231 wedge. The cap-exhausted `preserveStatus` move
+             * IS reused, because without it moveTask's reopen semantics wipe the `failed` status just
+             * written (see the FN-7721 note below).
+             */
+            if (isTaskBranchBaseDivergedError(worktreeErr)) {
+              if (!(await isTaskInTerminalLane(taskStore, taskDetail))) {
+                await taskStore.updateTask(taskDetail.id, {
+                  status: "failed",
+                  error: detail,
+                });
+                await taskStore.moveTask(
+                  taskDetail.id,
+                  await resolveHeartbeatReboundColumn(taskStore, taskDetail.id),
+                  { preserveProgress: true, preserveStatus: true },
+                );
+              }
+              await this.completeRun(agentId, run.id, {
+                status: "completed",
+                resultJson: { reason: "task_base_diverged", detail },
                 stderrExcerpt: detail,
                 skipStateTransition: true,
               });
@@ -3131,6 +3700,30 @@ export class HeartbeatMonitor {
         }
 
         /*
+        FNXC:AssigneeTransferAtomicity 2026-09-15-05:05 (RUFU-260):
+        Graceful drop of a superseded wake, mirroring the budget-exhausted park above: settle the run
+        as completed with the reason, then return. No `moveTask`, no `status: "failed"`, no strike —
+        the new owner is doing the work this wake would have done, so the only honest outcome is a
+        recorded no-op. Placed after the acquisition try/catch (see `wakeSuperseded`) so a store
+        failure inside `completeRun` propagates as an ordinary run error instead of landing in the
+        worktree-rebound arm.
+        */
+        if (wakeSuperseded) {
+          heartbeatLog.log(`Stale ${source} wake dropped for ${agentId} on ${wakeSuperseded.taskId} (${wakeSuperseded.reason}) — goal revalidated after the disposal barrier`);
+          await this.completeRun(agentId, run.id, {
+            status: "completed",
+            resultJson: {
+              reason: "wake_superseded",
+              detail: wakeSuperseded.reason,
+              taskId: wakeSuperseded.taskId,
+              source,
+            },
+            skipStateTransition: true,
+          });
+          return (await this.store.getRunDetail(agentId, run.id))!;
+        }
+
+        /*
         FNXC:ArtifactRegistry 2026-07-11-09:55:
         Task-scoped heartbeat tools are built before the worktree is acquired, so the initial
         fn_artifact_register binding has no baseDir and would reject relative artifact paths.
@@ -3146,9 +3739,14 @@ export class HeartbeatMonitor {
         }
 
         const heartbeatBaseSettings = heartbeatModelSettings ?? ({} as Settings);
+        /*
+        FNXC:ModelResolution 2026-09-14-19:07:
+        Idle heartbeats consume project role lanes directly from project settings. Only a heartbeat
+        attached to a task overlays that task's selected workflow tier.
+        */
         heartbeatModelSettings = taskDetail
           ? await mergeEffectiveSettings(taskStore, taskDetail, heartbeatBaseSettings)
-          : await mergeProjectWorkflowModelLaneBaseline(taskStore, heartbeatBaseSettings);
+          : heartbeatBaseSettings;
         /*
         FNXC:AgentModelInheritance 2026-08-09-22:38:
         A model-less durable workflow role agent inherits its own role lane rather than always
@@ -3331,9 +3929,20 @@ export class HeartbeatMonitor {
           const wakeInboxSnapshotLine = wakeInboxEmpty
             ? "- inbox snapshot: empty (already consumed)"
             : `- inbox snapshot: ${pendingMessages.length} message(s)`;
+          /*
+          FNXC:CommentDelivery 2026-09-27-17:30 (RUFU-259):
+          The consumed branch used to print the message id anyway. `fn_read_messages` defaults to unread
+          rows, so an id the sender had already marked read names a row the recipient cannot fetch — the
+          wake then spent the agent's first turns on a lookup that could not succeed (RUFU-251 observed the
+          same shape for steering). A consumed trigger is therefore reported by origin WITHOUT an id, and
+          says plainly that the body is not retrievable; only a still-unread id is advertised, because that
+          one the agent can actually open.
+          */
           const wakeTriggerSourceLine = isWakeOnMessageTrigger
             ? (`- wake trigger source: ${wakeMessage
-              ? `message ${wakeMessage.messageId} from ${wakeMessage.fromType}:${wakeMessage.fromId}${wakeMessage.forced ? " (forced)" : ""}, ${wakeMessageStillUnread ? "still unread" : "already consumed at snapshot"}`
+              ? wakeMessageStillUnread
+                ? `message ${wakeMessage.messageId} from ${wakeMessage.fromType}:${wakeMessage.fromId}${wakeMessage.forced ? " (forced)" : ""}, still unread — read it with fn_read_messages`
+                : `a message from ${wakeMessage.fromType}:${wakeMessage.fromId}${wakeMessage.forced ? " (forced)" : ""} was already marked read before this snapshot — its body is NOT retrievable from fn_read_messages, so do not guess its content`
               : "no triggering-message metadata"}`)
             : null;
 
@@ -3348,25 +3957,29 @@ export class HeartbeatMonitor {
           let multiAssignWakeDeltaLines: string[] = [];
           if (!isAgentEphemeral && this.taskStore && typeof this.taskStore.getTasksByAssignedAgent === "function") {
             try {
-              const assignedOpen = await this.taskStore.getTasksByAssignedAgent(agentId, { excludeArchived: true });
+              const assignedOpen = await this.taskStore.getTasksByAssignedAgent(agentId);
               /*
               FNXC:WorkflowLifecycleColumns 2026-07-30-13:40:
               Pass the resolved lane flags so the ranking's terminal filter is not the literal pair.
 
-              `rankAssignedTasksForWakeDelta` gained `flagsByColumnId` and this, its only production
-              caller, passed nothing — so the conversion was inert here. Auditing it also surfaced the
-              larger defect one level down in `getTasksByAssignedAgent`, whose `excludeArchived`
-              filtered on the literal id and therefore returned archived cards as open assigned work.
-              Both halves are needed: the store read stops handing back archived rows, and this stops
-              the ranking counting a finished card as open.
+              `rankAssignedTasksForWakeDelta` uses `flagsByColumnId` to keep workflow Complete rows out
+              of open assignment inventory. `getTasksByAssignedAgent` already reads the live task set,
+              so soft-deleted and historical-sentinel rows never enter this ranking.
+
+              FNXC:WakeDeltaMultiAssign 2026-09-23-21:35 (RUFU-264):
+              `assignedOpen` is passed VERBATIM, which is the threading contract for park flags:
+              both `paused` and `userPaused` ride on the store rows, and the core ranker now
+              treats either flag as parked per `FNXC:TaskDispatch 2026-07-19-14:40`.
+              If this call site ever reshapes rows field-by-field, it must forward BOTH flags —
+              dropping `userPaused` re-creates the tick where 7 operator-parked Move-Task cards
+              were offered to the agent as actionable `[ready_todo]` work (measured 2026-09-22T00:55Z).
               */
-              const wakeLaneFlags = new Map<string, { complete?: boolean; archived?: boolean }>();
+              const wakeLaneFlags = new Map<string, { complete?: boolean }>();
               const wakeIrCache = new Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>();
               for (const assignedTask of assignedOpen) {
                 const ir = await resolveWorkflowIrForTask(this.taskStore, assignedTask.id, wakeIrCache).catch(() => undefined);
                 if (!ir) continue;
                 for (const id of columnsWithFlag(ir, "complete")) wakeLaneFlags.set(id, { ...wakeLaneFlags.get(id), complete: true });
-                for (const id of columnsWithFlag(ir, "archived")) wakeLaneFlags.set(id, { ...wakeLaneFlags.get(id), archived: true });
               }
               const ranked = rankAssignedTasksForWakeDelta(assignedOpen, {
                 agentId,
@@ -3565,9 +4178,26 @@ export class HeartbeatMonitor {
             heartbeatLog.log(`[auto-claim-prompt] agent=${agentId} chars=${executionPrompt.length} count=${Math.min(promptCandidateLimit, autoClaimCandidates.length)}`);
           } else {
             // Task-scoped heartbeat: agent has an assigned task
-            const taskTitle = taskDetail!.title ?? taskDetail!.description.slice(0, 100);
+            // FNXC:TaskTitleDerivation 2026-09-26-02:43: RUFU-295 — the heartbeat prompt header is a task
+            // label, so a titleless card gets the canonical derived label rather than a raw 100-character
+            // markdown prefix that reads as `## Pôvodný popis` to the agent.
+            const taskTitle = taskDetail!.title?.trim() || deriveTaskLabelFromDescription(taskDetail!.description ?? "", 100);
 
+            /*
+            FNXC:CommentDelivery 2026-09-27-17:25 (RUFU-259):
+            This block used to skip any id it could not resolve and print nothing about the skip, while the
+            wake delta still counted that comment. An agent woken by a comment it could neither see nor name
+            has no way to learn that its own steering is missing — that is the silent-drop behaviour this
+            replaces. Now every advertised id gets a line: the body when the card holds it, an explicit
+            "not on this card" when it does not, and the ids always travel with the line so
+            `fn_task_show(id, commentIds=[…])` is a call the agent can actually make.
+            */
             const triggeringCommentLines: string[] = [];
+            let hiddenTriggeringCommentIds: string[] = [];
+            const readableTriggeringCommentCount = resolveAdvertisedCommentIds(
+              taskDetail,
+              effectiveTriggeringCommentIds,
+            ).length;
             if (effectiveTriggeringCommentIds && effectiveTriggeringCommentIds.length > 0) {
               const commentLookup = new Map<string, { author: string; text: string }>();
               for (const comment of taskDetail!.comments ?? []) {
@@ -3578,20 +4208,37 @@ export class HeartbeatMonitor {
               }
 
               const formatCommentText = (text: string): string => text.replace(/\s+/g, " ").trim();
+              const readableIds: string[] = [];
+              const missingIds: string[] = [];
+              const bodyLines: string[] = [];
 
               for (const commentId of effectiveTriggeringCommentIds) {
                 const comment = commentLookup.get(commentId);
                 if (comment) {
-                  triggeringCommentLines.push(`- [${comment.author}]: "${formatCommentText(comment.text)}"`);
+                  readableIds.push(commentId);
+                  bodyLines.push(`- [${comment.author}] (commentId: ${commentId}): "${formatCommentText(comment.text)}"`);
+                } else {
+                  missingIds.push(commentId);
                 }
               }
 
-              if (triggeringCommentLines.length > 0) {
-                triggeringCommentLines.unshift(
+              hiddenTriggeringCommentIds = [...readableIds, ...missingIds];
+
+              if (bodyLines.length > 0 || missingIds.length > 0) {
+                triggeringCommentLines.push(
                   "",
                   "You were woken because of new comments on this task. Review them and take appropriate action.",
                   `Triggering comment type: ${effectiveTriggeringCommentType ?? "task"}`,
                   "New comments since last run:",
+                  ...bodyLines,
+                );
+                for (const commentId of missingIds) {
+                  triggeringCommentLines.push(
+                    `- [unknown] (commentId: ${commentId}): body is NOT on this card — do not guess its content`,
+                  );
+                }
+                triggeringCommentLines.push(
+                  `Re-read any of these bodies with fn_task_show(id: "${taskId}", commentIds: [...]) — that tool returns comment bodies by id.`,
                 );
               }
             }
@@ -3625,7 +4272,7 @@ export class HeartbeatMonitor {
               ...(wakeTriggerSourceLine ? [wakeTriggerSourceLine] : []),
               `- pending messages: ${pendingMessages.length}`,
               `- pending room messages: ${pendingRoomMessages.total}`,
-              `- triggering comments: ${effectiveTriggeringCommentIds?.length ?? 0}`,
+              `- triggering comments: ${readableTriggeringCommentCount} of ${(effectiveTriggeringCommentIds ?? []).length} readable on this card`,
               "",
               "Treat this wake delta as the highest-priority change for this heartbeat.",
               "This is an autonomous heartbeat run (manual or automatic): re-anchor on",
@@ -3640,7 +4287,7 @@ export class HeartbeatMonitor {
               trimTaskDescription(taskDetail!.description, promptTemplate),
               "",
               taskDetail!.prompt ? `PROMPT.md:\n${trimPromptMd(taskDetail!.prompt, promptTemplate)}` : "No PROMPT.md available.",
-              ...trimTriggeringComments(triggeringCommentLines, promptTemplate),
+              ...trimTriggeringComments(triggeringCommentLines, promptTemplate, hiddenTriggeringCommentIds),
               ...pendingMessagesLines,
               ...pendingRoomMessagesLines,
               ...roomAmbiguityNoticesLines,
@@ -3695,12 +4342,24 @@ export class HeartbeatMonitor {
           FNXC:AgentHeartbeat 2026-07-12-21:05:
           PR #2027 review (side-effect replay): the retry re-prompts the SAME session, whose transcript already contains any tool calls completed before the failure, so the model continues from its partial work rather than blindly re-executing it — the same continuation semantics executor/triage/merger rely on under this wrapper. A rotation 401 additionally fails on the turn's FIRST provider call (the stale token never reaches a tool call), so the dominant retry case has no partial work to duplicate.
           */
-          if (overlapResumeContext) {
-            executionPrompt = [executionPrompt, "", "## Overlap wait synchronization", overlapResumeContext].join("\n");
-          }
           let rotationEvent: import("./credential-instance-rotation.js").RotationEvent | undefined;
           let rotationDeclined = false;
           let activeInstanceId = heartbeatSessionModels.credentialInstanceId ?? DEFAULT_PROVIDER_INSTANCE_ID;
+          /*
+          FNXC:MergeRebuild0919 2026-09-19-21:45:
+          Two vintages of the overlap-wait briefing reached this line: upstream resolved pending
+          overlap waits inline here (`resolvePendingOverlapWaits` + a local `overlapResumeContext`),
+          while this line carries the delivery out of `acquireTaskWorktree` and only acknowledges the
+          episodes AFTER the prompt is actually sent (`dispatchHeartbeatTransportWithOverlapAck`).
+          The acquisition-owned delivery wins: it is the newer seam, it keeps an unacked episode
+          retryable when the send fails, and running both resolvers would append the briefing twice
+          and claim the same episodes from two owners. Upstream's inline block is therefore dropped,
+          not merged.
+          */
+          if (overlapResumeDelivery?.context) {
+            executionPrompt = [executionPrompt, "", "## Overlap wait synchronization", overlapResumeDelivery.context].join("\n");
+          }
+
           let dispatchedRotation = false;
           /*
           FNXC:CredentialInstanceRotation 2026-08-01-09:07:
@@ -3710,7 +4369,11 @@ export class HeartbeatMonitor {
           session is then resolved for the offered instance rather than mutating credentials
           on the live session.
           */
-          await withRateLimitRetry(async () => promptWithFallback(session, executionPrompt), {
+          await dispatchHeartbeatTransportWithOverlapAck({
+            store: taskStore,
+            taskId,
+            delivery: overlapResumeDelivery,
+            send: () => withRateLimitRetry(async () => promptWithFallback(session, executionPrompt), {
             signal: heartbeatRetryAbortController.signal,
             rotation: this.credentialRotator && heartbeatSessionModels.defaultProvider ? {
               providerId: heartbeatSessionModels.defaultProvider,
@@ -3786,6 +4449,7 @@ export class HeartbeatMonitor {
               const delaySec = Math.round(delayMs / 1000);
               heartbeatLog.warn(`Agent ${agentId} heartbeat prompt hit retryable provider error — retry ${attempt} in ${delaySec}s: ${retryError.message}`);
             },
+          }),
           });
           if (dispatchedRotation) rotationEvent?.recordOutcome("rotation-succeeded");
 
@@ -4076,6 +4740,14 @@ export class HeartbeatMonitor {
         }
       }
 
+      /*
+      FNXC:ProviderThrottleIsTransient 2026-09-30-14:17 (RUFU-286):
+      The health cell must not cry "needs operator repair" for a provider throttle the heartbeat
+      timer is already scheduled to re-probe, so the deadline comes from the single shared reader
+      rather than a second parse of `metadata.heartbeatErrorRecovery` here. Only the cooldown kind
+      is forwarded: an exhausted throttle park still needs a human restart.
+      */
+      const throttleDisplay = describeHeartbeatThrottle(report);
       const classification = classifyReportHealth({
         state: report.state,
         pauseReason: report.pauseReason,
@@ -4083,6 +4755,7 @@ export class HeartbeatMonitor {
         heartbeatTimeoutMs,
         staleThresholdMs,
         staleParkedAssignment,
+        throttleCooldownUntilAt: throttleDisplay?.kind === "throttle-cooldown" ? throttleDisplay.retryingAt : null,
       });
       if (classification.bucket === "stale") {
         heartbeatLog.log(`[reports-health] stale report ${report.id} intervalSource=${intervalSource} staleThresholdMs=${staleThresholdMs} heartbeatAgeMs=${heartbeatAgeMs}`);
@@ -4303,6 +4976,178 @@ export class HeartbeatMonitor {
    */
   clearRunState(agentId: string): void {
     this.runCreatedTasks.delete(agentId);
+    /*
+    FNXC:AssigneeTransferAtomicity 2026-09-15-05:05 (RUFU-260):
+    The wake-goal claim lives and dies with the run state: releasing it here is what lets the NEXT wake
+    for the same card open a session once the current one is genuinely over. Releasing settles `opened`
+    so a wake that was refused against this claim is never left waiting on a run that will not arrive.
+
+    `clearRunState` also runs inside `startRun`'s stale-run cleanup, which can therefore drop the claim a
+    moment early — one tick of the wake it belongs to. That is accepted rather than threaded around, because
+    the DB-backed active-run consult is the layer that refuses the duplicate in exactly that window (the
+    run row exists by then, the in-flight session does not depend on the claim). Do not move this release
+    later without re-checking that both layers still cover their own window.
+    */
+    this.releaseWakeGoalClaim(agentId);
+  }
+
+  /**
+   * Claim `(agentId, taskId)` for the wake that is about to open a session.
+   *
+   * An existing claim for the SAME goal is left untouched — its owner releases it — while a claim for a
+   * DIFFERENT goal is replaced, because the agent can only run one session at a time and the newer wake
+   * is the goal it will actually work on.
+   *
+   * FNXC:AssigneeTransferAtomicity 2026-09-15-05:05 (RUFU-260)
+   */
+  private claimWakeGoal(agentId: string, taskId: string): HeartbeatWakeClaim {
+    let settle!: (run: AgentHeartbeatRun | undefined) => void;
+    const opened = new Promise<AgentHeartbeatRun | undefined>((resolve) => {
+      settle = resolve;
+    });
+    const claim: HeartbeatWakeClaim = { taskId, opened, settle };
+    /*
+    FNXC:AssigneeTransferAtomicity 2026-09-15-05:05 (RUFU-260):
+    A replaced claim must settle, not just disappear: whoever was waiting on the previous goal's identity
+    would otherwise wait on a claim that can never open a run.
+    */
+    this.wakeGoalClaims.get(agentId)?.settle(undefined);
+    this.wakeGoalClaims.set(agentId, claim);
+    return claim;
+  }
+
+  /** Record the run the claimant opened and release any wake waiting for its identity. */
+  private settleWakeGoalClaim(agentId: string, run: AgentHeartbeatRun): void {
+    const claim = this.wakeGoalClaims.get(agentId);
+    if (!claim) return;
+    claim.runId = run.id;
+    claim.settle(run);
+  }
+
+  /**
+   * Drop the claim and resolve any pending identity wait as "no run arrived". Passing `claim` releases
+   * only that exact claim, so a late release from an abandoned wake cannot evict a newer wake's slot.
+   */
+  private releaseWakeGoalClaim(agentId: string, claim?: HeartbeatWakeClaim): void {
+    const current = this.wakeGoalClaims.get(agentId);
+    if (!current) return;
+    if (claim && current !== claim) return;
+    this.wakeGoalClaims.delete(agentId);
+    current.settle(undefined);
+  }
+
+  /**
+   * Decide whether a wake for `(agentId, taskId)` would duplicate a session that is already running.
+   *
+   * Two sources, in order of trust:
+   * 1. this monitor's own claim — proof a session for that exact goal is live in this process;
+   * 2. the persisted active-run row, so a wake arriving through a different entry point (another
+   *    monitor instance, another process) is deduped against the same goal.
+   *
+   * Source 2 is deliberately skipped for `source: "automation"`: the review-lane dispatch sweep is the
+   * recovery path for a dispatch whose session never materialized, and its stalled-attempt buckets must
+   * stay able to supersede a run row that merely looks active (a zombie left by a dead process). A
+   * live in-process claim still dedupes it, because there the session really is running.
+   *
+   * FNXC:AssigneeTransferAtomicity 2026-09-15-05:05 (RUFU-260)
+   */
+  private async findDuplicateInFlightRun(
+    agentId: string,
+    taskId: string,
+    source: HeartbeatInvocationSource,
+    selfClaim?: HeartbeatWakeClaim,
+  ): Promise<AgentHeartbeatRun | undefined> {
+    const claim = this.wakeGoalClaims.get(agentId);
+    // The wake's own claim is not a duplicate — awaiting it would await itself.
+    if (selfClaim && claim === selfClaim) return undefined;
+    if (claim && claim.taskId === taskId) {
+      const inFlight = await claim.opened;
+      if (inFlight) {
+        await this.auditWakeDeduped(agentId, taskId, inFlight.id);
+        return inFlight;
+      }
+      // The claimant never opened a run, so nothing is in flight for this goal; fall through and run.
+      return undefined;
+    }
+
+    if (source === "automation") return undefined;
+
+    try {
+      const active = await this.store.getActiveHeartbeatRun(agentId);
+      if (!active) return undefined;
+      const detail = active.contextSnapshot?.taskId
+        ? active
+        : ((await this.store.getRunDetail?.(agentId, active.id)) ?? active);
+      const boundTaskId = detail.taskId ?? detail.contextSnapshot?.taskId;
+      if (boundTaskId !== taskId) return undefined;
+      await this.auditWakeDeduped(agentId, taskId, detail.id);
+      return detail;
+    } catch (error) {
+      /*
+      FNXC:AssigneeTransferAtomicity 2026-09-15-05:05 (RUFU-260):
+      Fail-open. A store that cannot answer the active-run question must not cost the agent its wake —
+      the pre-existing scheduler guard still defers timer ticks, so the worst case is today's behavior.
+      */
+      heartbeatLog.debug(`Heartbeat wake dedupe lookup failed for ${agentId}: ${error instanceof Error ? error.message : String(error)} — proceeding`);
+      return undefined;
+    }
+  }
+
+  /**
+   * The dedup audit row: ids and a fixed outcome only — never the agent name, the trigger detail, or
+   * any error prose, per the run-audit metadata rule.
+   *
+   * FNXC:AssigneeTransferAtomicity 2026-09-15-05:05 (RUFU-260)
+   */
+  /*
+  FNXC:LaneCapabilityDecline 2026-09-26-19:40 (RUFU-272 Step 2):
+  Wake declines repeat every heartbeat cadence while the misbind stands, so the audit row is
+  deduped per (lane, card, policy-signature) on a cooldown — the operator sees the named decline
+  once per episode, not every 30 seconds. The bounded seam keeps a stalled audit sink from ever
+  turning the decline itself into a lifecycle failure (FN-9175).
+  */
+  private static readonly LANE_CAPABILITY_DECLINE_AUDIT_COOLDOWN_MS = 10 * 60 * 1000;
+  private readonly laneCapabilityDeclineAuditAt = new Map<string, number>();
+
+  private async auditLaneCapabilityDecline(
+    agentId: string,
+    taskId: string,
+    column: string,
+    agent: Agent,
+    runId: string,
+  ): Promise<void> {
+    const key = `${agentId}:${taskId}:${laneCapabilityDeclinePolicy(agent)}`;
+    const now = Date.now();
+    const prior = this.laneCapabilityDeclineAuditAt.get(key);
+    if (prior !== undefined && now - prior < HeartbeatMonitor.LANE_CAPABILITY_DECLINE_AUDIT_COOLDOWN_MS) return;
+    this.laneCapabilityDeclineAuditAt.set(key, now);
+    if (this.laneCapabilityDeclineAuditAt.size > 512) {
+      for (const oldestKey of [...this.laneCapabilityDeclineAuditAt.keys()].slice(0, 256)) this.laneCapabilityDeclineAuditAt.delete(oldestKey);
+    }
+    await emitBoundedRunAudit(this.taskStore, {
+      taskId,
+      agentId,
+      runId,
+      domain: "database",
+      mutationType: "task:lane-capability-declined",
+      target: taskId,
+      metadata: { outcome: "declined", taskId, agentId, column, code: LANE_CAPABILITY_DECLINE_CODE },
+    });
+  }
+
+  private async auditWakeDeduped(agentId: string, taskId: string, runId: string): Promise<void> {
+    heartbeatLog.debug(`Heartbeat wake for ${agentId} deduped against in-flight run ${runId} on ${taskId}`);
+    // The TaskStore is the run-audit sink; the AgentStore has no audit surface. An absent TaskStore is
+    // absorbed by the bounded seam as `absent`, never as a failure of the wake.
+    await emitBoundedRunAudit(this.taskStore, {
+      taskId,
+      agentId,
+      runId,
+      domain: "database",
+      mutationType: "task:heartbeat-wake-deduped",
+      target: taskId,
+      metadata: { outcome: "deduped", taskId, runId },
+    });
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -4668,6 +5513,17 @@ export class HeartbeatTriggerScheduler {
   private currentTimerArm: Map<string, number> = new Map();
   private running = false;
   private assignedListener: ((agent: import("@fusion/core").Agent, taskId: string) => void) | null = null;
+  /*
+  FNXC:AssigneeTransferAtomicity 2026-09-15-05:05 (RUFU-260):
+  TaskStore subscription that keeps a deferred (`pendingAssignments`) wake honest. A wake parked
+  because the agent was busy encodes a goal — "you own this card" — that a transfer can invalidate
+  while it waits. Without this listener the stale wake re-fires on the next run-completion edge and
+  the previous owner opens a session for a card it no longer owns (the RUFU-260 double-worktree
+  signature). The same event also carries the NEW owner, so the handoff wakes them here instead of
+  waiting for an unrelated timer tick — but only after the previous owner's work has stopped, which
+  the acquisition-side disposal barrier inside `executeHeartbeat` enforces.
+  */
+  private assigneeChangeListener: ((event: import("@fusion/core").TaskAssigneeChangedEvent) => void) | null = null;
   private createdListener: ((agent: import("@fusion/core").Agent) => void) | null = null;
   private updatedListener: ((agent: import("@fusion/core").Agent) => void) | null = null;
   private configRevisionListener: ((agentId: string, revision: AgentConfigRevision) => void) | null = null;
@@ -5098,9 +5954,58 @@ export class HeartbeatTriggerScheduler {
   watchAssignments(): void {
     if (this.assignedListener) return; // Already watching
 
-    this.assignedListener = async (agent, taskId) => {
-      if (!this.running) return;
+    this.assignedListener = (agent, taskId) => {
+      void this.fireAssignmentTrigger(agent, taskId);
+    };
 
+    this.store.on("agent:assigned", this.assignedListener);
+    heartbeatLog.log("Watching agent:assigned events");
+
+    /*
+    FNXC:AssigneeTransferAtomicity 2026-09-15-05:05 (RUFU-260):
+    The handoff side of the same event. Guarded on `taskStore` because the scheduler is constructible
+    with only an AgentStore (tests, standalone runtimes); without the task board there is no card to
+    re-check, so the wake provenance stays as it was before this task.
+    */
+    const taskEvents = this.taskEventSurface();
+    if (taskEvents && !this.assigneeChangeListener) {
+      this.assigneeChangeListener = (event) => {
+        void this.onTaskAssigneeChanged(event);
+      };
+      taskEvents.on("task:assignee-changed", this.assigneeChangeListener);
+      heartbeatLog.log("Watching task:assignee-changed events");
+    }
+  }
+
+  /*
+  FNXC:AssigneeTransferAtomicity 2026-09-15-05:05 (RUFU-260):
+  The TaskStore event surface, probed rather than assumed. The assignment-wake subscription is an
+  enhancement layered on a scheduler whose timer lane is critical infrastructure: hosts that hand the
+  scheduler a task-store view without `on`/`off` must keep their timers, they just lose the
+  event-driven pruning (the drain-time re-read still catches a transferred card). This is the same
+  capability-probe convention the graph uses for optional TaskStore seams.
+  */
+  private taskEventSurface(): Pick<EventEmitter, "on" | "off"> | undefined {
+    const store = this.taskStore as unknown as { on?: unknown; off?: unknown } | undefined;
+    if (!store) return undefined;
+    if (typeof store.on !== "function" || typeof store.off !== "function") {
+      heartbeatLog.debug("TaskStore has no event surface; assignee-change wake pruning relies on drain-time revalidation");
+      return undefined;
+    }
+    return store as unknown as Pick<EventEmitter, "on" | "off">;
+  }
+
+  /*
+  FNXC:AssigneeTransferAtomicity 2026-09-15-05:05 (RUFU-260):
+  The single assignment-wake body, reached from `agent:assigned` AND from a transfer that names a new
+  owner. Sharing one body is deliberate: the new owner must clear exactly the same gates the direct
+  assignment clears (managed, enabled, active run → defer, parallel-execution, budget, steering
+  comments), so a handoff can neither skip a guard nor invent a second wake path.
+  */
+  private async fireAssignmentTrigger(agent: import("@fusion/core").Agent, taskId: string): Promise<void> {
+    if (!this.running) return;
+
+    {
       try {
         if (!isHeartbeatManaged(agent)) {
           /*
@@ -5193,8 +6098,46 @@ export class HeartbeatTriggerScheduler {
       }
     };
 
-    this.store.on("agent:assigned", this.assignedListener);
-    heartbeatLog.log("Watching agent:assigned events");
+  }
+
+  /*
+  FNXC:AssigneeTransferAtomicity 2026-09-15-05:05 (RUFU-260):
+  React to a transferred card: drop wake goals that are no longer this agent's to run, then wake the
+  new owner — but only for a card it can actually execute.
+
+  Ordering guarantees live in `executeHeartbeat`, not here: this listener only *requests* the wake,
+  and the requested session waits on the task disposal barrier before it touches a checkout. Keeping
+  the wait there means every wake path (timer, message, transfer, drain) inherits it, rather than
+  this one call site remembering to.
+  */
+  private async onTaskAssigneeChanged(event: import("@fusion/core").TaskAssigneeChangedEvent): Promise<void> {
+    if (!this.running || !this.taskStore) return;
+    const { taskId, newOwnerId } = event;
+
+    for (const [agentId, pending] of Array.from(this.pendingAssignments)) {
+      if (pending.taskId !== taskId || newOwnerId === agentId) continue;
+      this.pendingAssignments.delete(agentId);
+      heartbeatLog.log(`Deferred assignment pruned for ${agentId} (task ${taskId} transferred to ${newOwnerId ?? "nobody"})`);
+    }
+
+    if (!newOwnerId) return;
+
+    /*
+    A transferred card is only actionable when its NEW owner can run it from where it sits. A card
+    resting in a review or complete lane needs a verdict, not another implementation session, so it
+    must not wake its new assignee at all — that wake would be the same stale-goal shape the pruning
+    above removes. This gate is scoped to the transfer path; the legacy `agent:assigned` path keeps
+    its pre-existing behavior byte-for-byte.
+    */
+    const staleReason = await resolveStaleAssignmentWakeReason(this.taskStore, newOwnerId, taskId);
+    if (staleReason) {
+      heartbeatLog.debug(`Transfer wake withheld for ${newOwnerId} on ${taskId} (${staleReason})`);
+      return;
+    }
+
+    const agent = await this.store.getAgent(newOwnerId).catch(() => null);
+    if (!agent) return;
+    await this.fireAssignmentTrigger(agent, taskId);
   }
 
   /**
@@ -5273,6 +6216,22 @@ export class HeartbeatTriggerScheduler {
         heartbeatLog.warn(`Deferred assignment budget check failed for ${agentId}: ${budgetErr instanceof Error ? budgetErr.message : String(budgetErr)} — proceeding without budget check`);
       }
 
+      /*
+      FNXC:AssigneeTransferAtomicity 2026-09-15-05:05 (RUFU-260):
+      Last-chance provenance check. The event-side pruning covers transfers this process observed;
+      this re-read covers the ones it did not (another process, a direct store write, or a card that
+      simply moved lanes while its wake waited). A deferred wake is a claim about the future, so it
+      is only honoured against the card as it is NOW.
+      */
+      if (this.taskStore) {
+        const staleReason = await resolveStaleAssignmentWakeReason(this.taskStore, agentId, pending.taskId);
+        if (staleReason) {
+          this.pendingAssignments.delete(agentId);
+          heartbeatLog.log(`Deferred assignment dropped for ${agentId} (task ${pending.taskId} ${staleReason})`);
+          return;
+        }
+      }
+
       this.pendingAssignments.delete(agentId);
       heartbeatLog.log(`Deferred assignment re-fired for ${agentId} (task: ${pending.taskId})`);
       await this.callback(agentId, "assignment", {
@@ -5300,6 +6259,10 @@ export class HeartbeatTriggerScheduler {
       this.store.off("agent:assigned", this.assignedListener);
       this.assignedListener = null;
       heartbeatLog.log("Stopped watching agent:assigned events");
+    }
+    if (this.assigneeChangeListener) {
+      this.taskEventSurface()?.off("task:assignee-changed", this.assigneeChangeListener);
+      this.assigneeChangeListener = null;
     }
   }
 

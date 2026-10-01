@@ -28,7 +28,14 @@ afterEach(() => {
 });
 
 function setup(availableModels: Array<{ provider: string; id: string; name: string; reasoning: boolean; contextWindow: number }>) {
+  /*
+  FNXC:ModelCatalog 2026-08-23-02:16:
+  RUFU-163: production registerModelRoutes also registers POST /models/refresh
+  (register-model-routes.ts:259); the fixture router must expose the full
+  production route surface or registration throws at setup.
+  */
   const getHandlers = new Map<string, (req: unknown, res: { json: (body: unknown) => void }) => Promise<void>>();
+  const postHandlers = new Map<string, (req: unknown, res: { json: (body: unknown) => void }) => Promise<void>>();
   const router = {
     get: vi.fn((path: string, handler: (req: unknown, res: { json: (body: unknown) => void }) => Promise<void>) => {
       getHandlers.set(path, handler);
@@ -60,7 +67,7 @@ function setup(availableModels: Array<{ provider: string; id: string; name: stri
     options: { modelRegistry } as never,
   } as never);
 
-  return { handler: getHandlers.get("/models")! };
+  return { handler: getHandlers.get("/models")!, refreshCatalog: postHandlers.get("/models/refresh")! };
 }
 
 async function callModels(handler: (req: unknown, res: { json: (body: unknown) => void }) => Promise<void>) {
@@ -74,6 +81,14 @@ async function callModels(handler: (req: unknown, res: { json: (body: unknown) =
 // final response does not depend on the test runner's ambient auth-storage
 // files (~/.fusion/agent/auth.json etc.), which vary across environments.
 const OPENAI_MODEL = { provider: "droid-cli", id: "droid/model", name: "Droid", reasoning: false, contextWindow: 0 };
+/*
+FNXC:ModelCatalog 2026-08-23-02:16:
+RUFU-163 (RUFU-143 follow-up): GET /models enriches registry-derived rows with
+supportedThinkingLevels (register-model-routes.ts:393); a non-reasoning row
+carries ["off"]. Hermes-merged rows are appended after that enrichment map, so
+only the registry-derived response row carries the field.
+*/
+const OPENAI_MODEL_ROW = { ...OPENAI_MODEL, supportedThinkingLevels: ["off"] as const };
 
 /*
 FNXC:ModelThinkingCapabilities 2026-08-23-23:20:
@@ -190,5 +205,14 @@ describe("register-model-routes: Hermes additive surfacing", () => {
     // Both requests hit register-model-routes' default (unconfigured ttl ->
     // module default ~60s) cache window, so only the first should spawn.
     expect(mockedList).toHaveBeenCalledTimes(1);
+  });
+
+  it("registers POST /models/refresh alongside GET /models with production refresh semantics", async () => {
+    const { handler, refreshCatalog } = setup([OPENAI_MODEL]);
+    expect(handler).toBeTypeOf("function");
+    expect(refreshCatalog).toBeTypeOf("function");
+    const json = vi.fn();
+    await refreshCatalog({}, { json });
+    expect(json.mock.calls[0][0]).toEqual({ outcome: "completed" });
   });
 });

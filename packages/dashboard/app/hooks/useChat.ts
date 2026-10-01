@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import type { SetStateAction } from "react";
 import {
   fetchChatSessions,
   fetchChatSession,
   createChatSession as apiCreateChatSession,
+  handoffChatSession,
   fetchChatMessages,
   updateChatSession,
   deleteChatSession,
@@ -23,11 +24,14 @@ import {
 } from "../api";
 import { subscribeSse } from "../sse-bus";
 import { createResyncRetryRunner } from "./resyncRetry";
-import { getScopedItem, setScopedItem, removeScopedItem } from "../utils/projectStorage";
+import {
+  clearPersistedChatOpenSession,
+  getPersistedChatOpenSession,
+  setPersistedChatOpenSession,
+} from "../utils/projectStorage";
 import { recordResumeEvent } from "../utils/resumeInstrumentation";
 import type { Agent, ChatInFlightGenerationState, ChatMessage, ChatTag } from "@fusion/core";
 
-const ACTIVE_SESSION_STORAGE_KEY = "kb-chat-active-session";
 /**
  * FNXC:Chat-ModelSwitch 2026-07-12-00:00:
  * Model-loop direct sessions store this sentinel agent id so the UI and hook share one target-mode check instead of duplicating the literal in each composer surface.
@@ -67,6 +71,17 @@ function isEmptyTaskPlannerSession(session: ChatSessionInfo): boolean {
   return isTaskPlannerSession(session) && !session.lastMessageAt && !session.lastMessagePreview;
 }
 
+/*
+FNXC:ChatSidebarPerf 2026-09-16-02:15:
+Self-describing envelope for the chat-session snapshot. It carries the server-applied common-feed
+visibility next to the rows so a cold open can rehydrate task-linked conversations without a network
+round trip. Legacy bare-array payloads remain readable and are treated as "visibility unknown".
+*/
+interface CachedChatSessionsPayload {
+  sessions: ChatSessionInfo[];
+  taskChatsVisibleInCommonFeed: boolean;
+}
+
 export interface ChatSessionInfo {
   id: string;
   title?: string | null;
@@ -103,8 +118,9 @@ export interface ChatSessionInfo {
 
 // Re-export shared chat types so existing consumers (`import { ChatMessageInfo } from "../hooks/useChat"`)
 // keep working — single source of truth lives in chatTypes.ts.
-export type { ChatMessageInfo, FailureInfo, FallbackInfo, ToolCallInfo } from "./chatTypes";
-import type { ChatMessageInfo, FailureInfo, FallbackInfo, ToolCallInfo } from "./chatTypes";
+export type { ChatMessageInfo, ChatEnginePhase, FailureInfo, FallbackInfo, ToolCallInfo } from "./chatTypes";
+import type { ChatMessageInfo, ChatEnginePhase, FailureInfo, FallbackInfo, ToolCallInfo } from "./chatTypes";
+import { isPersistedChatMessageId } from "./chatTypes";
 import { createChatStreamHandlers } from "./createChatStreamHandlers";
 import {
   getPersistedPendingChatMessages,
@@ -118,8 +134,35 @@ import { useAgentsMapCache } from "./useAgentsMapCache";
 export interface UseChatOptions {
   /** Forces a window-local Direct selection instead of restoring the shared host selection. */
   initialSession?: ChatSessionInfo;
-  /** Secondary Quick Chats must never rewrite the ordinary host's session preference. */
+  /** Detached conversations must never rewrite the canonical host's session preference. */
   persistActiveSession?: boolean;
+}
+
+/*
+FNXC:ChatSendDurability 2026-09-07-11:00:
+RUFU-192: the durability contract for a chat send. A composer may destroy its text only when a
+durable owner has taken it over, and each callback below names exactly one such hand-off:
+- `onPersisted(true)`  — the server broadcast `user_persisted`: the user row is committed. This is
+  the ONLY positive persistence proof; `onAccepted` fires at `res.ok`, which precedes
+  `ChatManager.sendMessage` and therefore never proved the turn was stored.
+- `onPersisted(false)` — the turn ended with server acceptance but WITHOUT ever producing that
+  proof (e.g. store persistence failed after the response was accepted). Consumers restore text.
+- `onQueued()`        — the FIFO queue durably took the text over (queueing while busy).
+- `onDelivered()`     — the turn completed. A lost `user_persisted` frame does NOT retract
+  delivery: a full turn that ended `done` is consumed (re-sending would duplicate the prompt),
+  so `done` without `onPersisted(true)` must not restore or requeue.
+- `onFailed()`        — pre-acceptance failure; nothing was persisted; restore text.
+*/
+export interface ChatSendCallbacks {
+  onAccepted?: () => void;
+  /**
+   * Durability verdict for the sent turn. `persisted: true` carries the persisted user-row id
+   * (the `user_persisted` ack payload) so callers can capture the turn id for later reconciliation.
+   */
+  onPersisted?: (persisted: boolean, messageId?: string) => void;
+  onQueued?: () => void;
+  onDelivered?: () => void;
+  onFailed?: () => void;
 }
 
 export interface UseChatReturn {
@@ -138,6 +181,12 @@ export interface UseChatReturn {
   streamingText: string;
   streamingThinking: string;
   streamingToolCalls: ToolCallInfo[];
+  /**
+   * FNXC:ChatPhaseStatus 2026-09-05-10:23:
+   * RUFU-188: the live engine phase ("compacting" | null) the streaming placeholder reads, mirrored
+   * from the transient `phase` side-channel — never a persisted message field.
+   */
+  streamingPhase: ChatEnginePhase | null;
   pendingMessages: string[];
   /** Optional for legacy lightweight ChatView test doubles; the real hook always provides it. */
   pendingQueueAction?: boolean;
@@ -154,6 +203,13 @@ export interface UseChatReturn {
     options?: { keepActiveSession?: boolean },
   ) => Promise<ChatSessionInfo>;
   archiveSession: (id: string) => Promise<void>;
+  /**
+   * RUFU-199: hand a long Direct chat off to a fresh sibling conversation (same agent/model/
+   * thinking target, seeded with a briefing of the old one) and archive the source. Resolves with
+   * the new session and `degraded` — true when the server could not produce an LLM briefing and
+   * seeded a deterministic digest instead, which the caller must surface rather than hide.
+   */
+  handoffSession: (id: string) => Promise<{ session: ChatSessionInfo; degraded: boolean }>;
   archivedSessions: ChatSessionInfo[];
   refreshArchivedSessions: () => Promise<void>;
   unarchiveSession: (id: string) => Promise<void>;
@@ -188,11 +244,12 @@ export interface UseChatReturn {
   /**
    * Send a message, optionally with file attachments to upload with the prompt. Attachment
    * callbacks distinguish a rejected upload from a server-accepted turn whose reply later fails.
+   * Durability callbacks (`onPersisted`/`onQueued`) are documented on {@link ChatSendCallbacks}.
    */
   sendMessage: (
     content: string,
     attachments?: File[],
-    callbacks?: { onAccepted?: () => void; onDelivered?: () => void; onFailed?: () => void },
+    callbacks?: ChatSendCallbacks,
   ) => void;
   /**
    * FNXC:ChatMessageEdit 2026-08-19-03:34:
@@ -200,6 +257,15 @@ export interface UseChatReturn {
    * fences and rewinds before acceptance; the hook changes its local range only on acceptance.
    */
   editMessageAndResend: (messageId: string, newContent: string) => Promise<void>;
+  /**
+   * FNXC:ChatMessageEdit 2026-09-16-05:58:
+   * FN-459. A rejected edit reloads the authoritative rows, which changes the target row id and
+   * therefore remounts its virtualized row — destroying the inline editor's local `editedText` and
+   * losing the operator's correction. This publishes that correction (keyed by the RELOADED row id)
+   * so the surface can reopen the editor pre-filled instead of discarding typed work.
+   */
+  editDraftRestore: { messageId: string; content: string } | null;
+  clearEditDraftRestore: (messageId: string) => void;
   stopStreaming: () => Promise<void>;
   clearPendingMessage: (index?: number) => void;
   updatePendingMessage?: (index: number, content: string) => void;
@@ -207,6 +273,10 @@ export interface UseChatReturn {
   forceSendPendingMessage?: (index: number) => void;
   loadMoreMessages: () => Promise<void>;
   hasMoreMessages: boolean;
+  loadMoreSessions: (status?: "active" | "archived") => Promise<void>;
+  hasMoreSessions: boolean;
+  hasMoreArchivedSessions: boolean;
+  sessionsLoadingMore: boolean;
 
   // Search/filter
   searchQuery: string;
@@ -254,6 +324,23 @@ function extractCompletedToolCalls(metadata: Record<string, unknown> | null | un
       const toolName = typeof record.toolName === "string" ? record.toolName : "";
       if (!toolName) {
         return null;
+      }
+
+      /*
+      FNXC:ChatFeedCompaction 2026-09-17-15:38:
+      A compacted feed entry has no bodies to rebuild — pass the markers through untouched so the
+      surface can render the preview and offer the lazy full-body disclosure.
+      */
+      if (record.compacted === true) {
+        return {
+          toolName,
+          isError: Boolean(record.isError),
+          status: record.status === "running" ? "running" : "completed",
+          compacted: true,
+          ...(record.previewKind === "args" || record.previewKind === "result" ? { previewKind: record.previewKind } : {}),
+          ...(typeof record.previewText === "string" ? { previewText: record.previewText } : {}),
+          ...(record.hasFullDetails === true ? { hasFullDetails: true } : {}),
+        };
       }
 
       const args = record.args;
@@ -422,6 +509,28 @@ export function appendChatMessageChronologically(
   return sortChatMessagesChronologically([...previous, message]);
 }
 
+/*
+FNXC:ChatMessageEdit 2026-09-16-05:58:
+FN-459. Deterministic replacement of the optimistic bubble by EXACT temp id, driven by the in-band
+`user_message` stream event. `reconcileOptimisticSentMessage` below matches on content equality,
+which cannot distinguish two identical consecutive sends and depends on an out-of-band echo that can
+never arrive — leaving a `temp-<ts>` id in the transcript and turning the first edit into a
+guaranteed `Message temp-… not found in session …` 404. When the temp row is gone (stream preempted,
+transcript reloaded), fall back to the content-based reconciliation, which stays the safety net.
+*/
+function replaceOptimisticSentMessageById(
+  previous: ChatMessageInfo[],
+  tempUserMessageId: string,
+  persisted: ChatMessageInfo,
+): ChatMessageInfo[] {
+  if (previous.some((message) => message.id === persisted.id)) return sortChatMessagesChronologically(previous);
+  const optimisticIndex = previous.findIndex((candidate) => candidate.id === tempUserMessageId);
+  if (optimisticIndex < 0) return reconcileOptimisticSentMessage(previous, persisted);
+  const next = [...previous];
+  next[optimisticIndex] = persisted;
+  return sortChatMessagesChronologically(next);
+}
+
 function reconcileOptimisticSentMessage(previous: ChatMessageInfo[], persisted: ChatMessageInfo): ChatMessageInfo[] {
   if (previous.some((message) => message.id === persisted.id)) return sortChatMessagesChronologically(previous);
   const optimisticIndex = previous.findIndex((candidate) =>
@@ -463,15 +572,32 @@ export function useChat(
         return [] as ChatSessionInfo[];
       }
 
-      const cachedSessions = readCache<ChatSessionInfo[]>(cacheKey, { maxAgeMs: SWR_TASKS_MAX_AGE_MS }) ?? [];
       /*
-      FNXC:ChatModal 2026-07-01-00:00:
-      Server settings decide whether task-planner sessions belong in the common feed. Do not hydrate cached task chats before that filtered list returns, otherwise a stale cache can briefly expose hidden task-detail conversations and their controls.
+      FNXC:ChatSidebarPerf 2026-09-16-02:15:
+      The local snapshot is self-describing: it is only ever written from a server list response that
+      has ALREADY applied the project `showTaskChatsInCommonFeed` gate plus the "no empty planner row"
+      guard, and it persists that effective visibility alongside the rows. Replaying the persisted
+      decision offline is what lets task-linked conversations paint on first render instead of waiting
+      for `GET /api/chat/sessions` (the visible delay this replaces). Safety is preserved rather than
+      dropped: a persisted `false` or a legacy bare-array payload (visibility UNKNOWN) still filters
+      every `task-planner:` row exactly as before, empty planner rows are never rehydrated, and the
+      staleness window is bounded to one revalidation — the next refresh rewrites the flag and the
+      rows, so disabling the setting removes them on the following load.
 
       FNXC:MessageArchive 2026-08-12-22:36:
       Archived sessions must not flash from a cached list before the active-only refresh completes.
       */
-      return cachedSessions.filter((session) => !isTaskPlannerSession(session) && session.status !== "archived");
+      const cached = readCache<ChatSessionInfo[] | CachedChatSessionsPayload>(cacheKey, { maxAgeMs: SWR_TASKS_MAX_AGE_MS });
+      const isLegacyPayload = Array.isArray(cached);
+      const cachedSessions: ChatSessionInfo[] = isLegacyPayload ? cached : (cached?.sessions ?? []);
+      const taskChatsVisible = !isLegacyPayload && cached?.taskChatsVisibleInCommonFeed === true;
+
+      return cachedSessions.filter((session) => {
+        if (session.status === "archived") return false;
+        if (!isTaskPlannerSession(session)) return true;
+        if (!taskChatsVisible) return false;
+        return !isEmptyTaskPlannerSession(session);
+      });
     },
     [getChatSessionsCacheKey],
   );
@@ -491,7 +617,19 @@ export function useChat(
   const [streamingText, setStreamingText] = useState("");
   const [streamingThinking, setStreamingThinking] = useState("");
   const [streamingToolCalls, setStreamingToolCalls] = useState<ToolCallInfo[]>([]);
+  // RUFU-188: live engine-phase label slot; mirrors the paired `phase` side-channel frames (see
+  // chatTypes.ChatEnginePhase). Defaults to null = no label.
+  const [streamingPhase, setStreamingPhase] = useState<ChatEnginePhase | null>(null);
   const [pendingMessages, setPendingMessages] = useState<string[]>([]);
+  /*
+  FNXC:ChatMessageEdit 2026-09-16-05:58:
+  FN-459. Correction text rescued from a rejected edit. It is stored by transcript POSITION, not by
+  id, because the failure reload is exactly what changes the target row's id; the published id is
+  derived at render time from the settled transcript so it always names the row now on screen.
+  */
+  const [editDraftRestoreTarget, setEditDraftRestoreTarget] = useState<
+    { targetIndex: number; fallbackMessageId: string; content: string } | null
+  >(null);
   const [pendingQueueAction, setPendingQueueAction] = useState(false);
 
   // Search/filter
@@ -502,12 +640,22 @@ export function useChat(
   client toggle to restrict this back to title/agentId-only (FN-7651 removed the button).
   */
   const [contentMatchedPreviews, setContentMatchedPreviews] = useState<Map<string, string>>(new Map());
+  const [serverSearchSessions, setServerSearchSessions] = useState<ChatSessionInfo[]>([]);
   // Monotonic request counter: guards against an out-of-order/superseded debounced content
   // search response overwriting a newer query's results.
   const contentSearchRequestIdRef = useRef(0);
 
   // Pagination
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
+  const sessionCursorRef = useRef<{ active: string | null; archived: string | null }>({ active: null, archived: null });
+  const [hasMoreSessions, setHasMoreSessions] = useState(false);
+  const [hasMoreArchivedSessions, setHasMoreArchivedSessions] = useState(false);
+  const [sessionsLoadingMore, setSessionsLoadingMore] = useState(false);
+  const sessionPageInFlightRef = useRef(false);
+  const paginationInFlightRef = useRef(new Map<string, Promise<void>>());
+  const activeSessionListScopeRef = useRef("");
+  const activeSessionListGenerationRef = useRef(0);
+  activeSessionListScopeRef.current = `${projectId ?? "default"}:${selectedTagId ?? "all"}:${searchQuery.trim()}`;
 
   // Agent name resolution map
   const { agentsMap } = useAgentsMapCache(projectId);
@@ -516,7 +664,7 @@ export function useChat(
   const streamRef = useRef<{ close: () => void } | null>(null);
   const lastAttachedGenerationRef = useRef<{ sessionId: string; replayFromEventId: number | null } | null>(null);
   const cancelledByUserRef = useRef(false);
-  const cancellationInProgressRef = useRef<Promise<void> | null>(null);
+  const cancellationsInProgressRef = useRef<Map<string, Promise<void>>>(new Map());
   const streamingTextRef = useRef("");
   const streamingThinkingRef = useRef("");
   const streamingToolCallsRef = useRef<ToolCallInfo[]>([]);
@@ -543,6 +691,22 @@ export function useChat(
   // distinguish an old A refresh from the newly re-entered A thread.
   const activeSessionSelectionRef = useRef(0);
   const authoritativeSelectionRefreshRef = useRef<{ sessionId: string; version: number } | null>(null);
+  /*
+  FNXC:ChatWindows 2026-09-16-05:27:
+  A `chat:session:updated` payload that lands while the authoritative selection snapshot is still
+  in flight used to be dropped entirely, and the snapshot (read BEFORE the server wrote the
+  generated title) then reinstated the old title — the list row showed the generated name while
+  the chat window header kept "Untitled conversation". Only the TITLE is deferred, and it is
+  stored as a bare string rather than the session object so no out-of-allowlist field can ever
+  leak through a future type change. Cursor/generation ownership stays with the snapshot.
+  */
+  /*
+  FNXC:ChatWindows 2026-09-18-01:28:
+  FN-524: `title` is `string | null` because an ERASED name is a real rename. Arming the deferral
+  only for a non-empty string let a cleared title be dropped, so the list row went blank while the
+  window header resurrected the old name. Absence of the field (undefined) still defers nothing.
+  */
+  const deferredSessionTitleRef = useRef<{ sessionId: string; version: number; title: string | null } | null>(null);
   sessionsRef.current = sessions;
   activeSessionRef.current = activeSession;
   messagesRef.current = messages;
@@ -605,19 +769,54 @@ export function useChat(
     if (sessionsRef.current.length === 0) {
       setSessionsLoading(true);
     }
+    const scope = activeSessionListScopeRef.current;
+    const scopeGeneration = activeSessionListGenerationRef.current;
+    const query = searchQuery.trim();
+    const tagId = selectedTagId;
     try {
-      const data: ChatSessionListResponse = await fetchChatSessions(projectId, "active");
+      const data: ChatSessionListResponse = await fetchChatSessions(projectId, "active", {
+        limit: 50,
+        ...(query ? { q: query, titleOnly: false } : {}),
+        ...(tagId ? { tagId } : {}),
+      });
+      if (activeSessionListScopeRef.current !== scope || activeSessionListGenerationRef.current !== scopeGeneration) return;
       /*
       FNXC:MessageArchive 2026-08-12-22:36:
       The default sidebar excludes archived sessions even when an intermediary ignores status=active.
       */
       const sorted = sortChatSessions(data.sessions.filter((session) => session.status !== "archived"));
-      setSessions(sorted);
-      const cacheKey = getChatSessionsCacheKey(projectId);
+      const active = activeSessionRef.current;
+      const next = active && !sorted.some((session) => session.id === active.id) ? sortChatSessions([active, ...sorted]) : sorted;
+      if (query) {
+        setServerSearchSessions(next);
+        const previews = new Map<string, string>();
+        for (const session of next) {
+          if (session.matchedMessagePreview) previews.set(session.id, session.matchedMessagePreview);
+        }
+        setContentMatchedPreviews(previews);
+      } else {
+        setServerSearchSessions([]);
+        setContentMatchedPreviews(new Map());
+        setSessions(next);
+      }
+      sessionCursorRef.current.active = data.nextCursor ?? null;
+      setHasMoreSessions(data.hasMore === true);
+      const cacheKey = !query && !tagId ? getChatSessionsCacheKey(projectId) : null;
       if (cacheKey) {
-        writeCache(cacheKey, sorted, { maxBytes: 500_000 });
+        /*
+        FNXC:ChatSidebarPerf 2026-09-16-02:15:
+        Persist the server's effective task-chat visibility with the rows so the next cold open can
+        replay that project gate instead of discarding every task conversation. Normalized to a strict
+        boolean: an older server omits the field, and "absent" must read back as not-visible.
+        */
+        const payload: CachedChatSessionsPayload = {
+          sessions: next,
+          taskChatsVisibleInCommonFeed: data.taskChatsVisibleInCommonFeed === true,
+        };
+        writeCache(cacheKey, payload, { maxBytes: 500_000 });
       }
     } catch {
+      if (activeSessionListScopeRef.current !== scope || activeSessionListGenerationRef.current !== scopeGeneration) return;
       const cacheHydratedSessions = readCachedSessions(projectId);
       if (sessionsRef.current.length === 0 && cacheHydratedSessions.length === 0) {
         const cacheKey = getChatSessionsCacheKey(projectId);
@@ -627,9 +826,9 @@ export function useChat(
       }
       // Silently fail on refresh
     } finally {
-      setSessionsLoading(false);
+      if (activeSessionListScopeRef.current === scope && activeSessionListGenerationRef.current === scopeGeneration) setSessionsLoading(false);
     }
-  }, [getChatSessionsCacheKey, projectId]);
+  }, [getChatSessionsCacheKey, projectId, searchQuery, selectedTagId]);
 
   useEffect(() => {
     const cachedSessions = sortChatSessions(readCachedSessions(projectId));
@@ -644,11 +843,6 @@ export function useChat(
     void fetchChatTags(projectId).then((data) => { if (live) setTags(data.tags); }).catch(() => { if (live) setTags([]); });
     return () => { live = false; };
   }, [projectId]);
-
-  // Initial load
-  useEffect(() => {
-    refreshSessions();
-  }, [refreshSessions, projectId]);
 
   // Restore active session from localStorage after initial load.
   // Uses refs to avoid circular dependency with selectSession and to avoid
@@ -671,9 +865,8 @@ export function useChat(
     if (hasRestoredActiveSessionRef.current) return;
 
     /*
-    FNXC:ChatWindows 2026-08-21-18:24:
-    A secondary Quick Chat owns an explicit session and must not let a stale ordinary-host
-    preference replace it. Its later selections stay local when persistence is disabled.
+    FNXC:ChatWindows 2026-09-14-11:35:
+    A detached conversation owns an explicit session and must not let a stale canonical-host preference replace it. Its later selections stay local when persistence is disabled.
     */
     if (initialSession) {
       hasRestoredActiveSessionRef.current = true;
@@ -688,7 +881,7 @@ export function useChat(
       return;
     }
 
-    const savedSessionId = getScopedItem(ACTIVE_SESSION_STORAGE_KEY, projectId);
+    const savedSessionId = getPersistedChatOpenSession(projectId);
     if (!savedSessionId) {
       hasRestoredActiveSessionRef.current = true;
       return;
@@ -701,6 +894,8 @@ export function useChat(
       return;
     }
 
+    // A removed or archived saved session represents no restorable detail and must not retry forever.
+    clearPersistedChatOpenSession(projectId);
     hasRestoredActiveSessionRef.current = true;
   }, [initialSession, persistActiveSession, sessionsLoading, sessions, projectId]);
 
@@ -735,7 +930,7 @@ export function useChat(
 
   // Load messages when active session changes
   const loadMessages = useCallback(
-    async (sessionId: string, opts?: { offset?: number; before?: string; commitForStreamingAttach?: boolean }) => {
+    async (sessionId: string, opts?: { offset?: number; before?: string; beforeId?: string; commitForStreamingAttach?: boolean }) => {
       const isPaginationRequest = (typeof opts?.offset === "number" && opts.offset > 0) || typeof opts?.before === "string";
       const cacheKey = getChatMessagesCacheKey(projectId, sessionId);
       const cachedMessages = !isPaginationRequest ? readCachedMessages(projectId, sessionId) : [];
@@ -765,8 +960,12 @@ export function useChat(
           || (opts?.commitForStreamingAttach === true && lastAttachedGenerationRef.current?.sessionId === sessionId);
         if (isPaginationRequest) {
           if (shouldCommitMessages) {
-            setMessages((prev) => sortChatMessagesChronologically([...mappedMessages, ...prev]));
-            setHasMoreMessages(data.messages.length >= 50);
+            setMessages((prev) => {
+              const byId = new Map(prev.map((message) => [message.id, message]));
+              for (const message of mappedMessages) byId.set(message.id, message);
+              return sortChatMessagesChronologically([...byId.values()]);
+            });
+            setHasMoreMessages(data.messages.length >= 50 && mappedMessages.some((message) => !messagesRef.current.some((current) => current.id === message.id)));
           }
         } else {
           if (shouldCommitMessages) {
@@ -819,19 +1018,22 @@ export function useChat(
     [getChatMessagesCacheKey, projectId, readCachedMessages],
   );
 
-  const resetTransientComposerState = useCallback(() => {
+  const resetTransientComposerState = useCallback((hasCancellationBarrier = false) => {
     cancelStreamingFlushesRef.current?.();
     cancelStreamingFlushesRef.current = null;
     pendingMessagesRef.current = [];
     setPendingMessages([]);
-    pendingQueueActionRef.current = false;
-    setPendingQueueAction(false);
+    pendingQueueActionRef.current = hasCancellationBarrier;
+    setPendingQueueAction(hasCancellationBarrier);
     streamingTextRef.current = "";
     streamingThinkingRef.current = "";
     streamingToolCallsRef.current = [];
     setStreamingText("");
     setStreamingThinking("");
     setStreamingToolCalls([]);
+    // FNXC:ChatPhaseStatus 2026-09-05-10:23: RUFU-188 — clear the live engine-phase label with the
+    // rest of the transient streaming state so a phase can never follow the card to another session.
+    setStreamingPhase(null);
     setIsStreaming(false);
   }, []);
 
@@ -877,17 +1079,64 @@ export function useChat(
   }, [replacePendingMessages]);
 
   const flushPendingMessage = useCallback(() => {
+    const sessionId = activeSessionRef.current?.id;
+    if (!sessionId || cancellationsInProgressRef.current.has(sessionId)) {
+      return;
+    }
+
     const [queuedMessage, ...remainingMessages] = pendingMessagesRef.current;
     const trimmedQueuedMessage = queuedMessage?.trim();
     if (!trimmedQueuedMessage) {
       return;
     }
 
-    const sessionId = activeSessionRef.current?.id;
     pendingMessagesRef.current = remainingMessages;
     setPendingMessages(remainingMessages);
     setPersistedPendingChatMessages(sessionId, remainingMessages);
-    sendMessageRef.current(trimmedQueuedMessage);
+    /*
+    FNXC:ChatSendDurability 2026-09-07-11:00:
+    RUFU-192: the automatic FIFO drain used to dequeue with no durability contract — if the send
+    died before the user row was stored (pre-acceptance failure, or an accepted-but-unpersisted
+    error like a store write rejection), the head text was silently destroyed with it. The drain
+    now owns the same contract as a direct composer: requeue at the head UNLESS the turn reached
+    a durable outcome — persisted (server row) or delivered-done (consumed; a lost ack after a
+    full turn must not re-enter the model).
+    */
+    let flushedPersisted = false;
+    let flushRequeued = false;
+    const requeueFlushedHead = () => {
+      if (flushRequeued || flushedPersisted) return;
+      flushRequeued = true;
+      const isCurrentSession = activeSessionRef.current?.id === sessionId;
+      const current = isCurrentSession
+        ? pendingMessagesRef.current
+        : getPersistedPendingChatMessages(sessionId);
+      const restored = [trimmedQueuedMessage, ...current];
+      setPersistedPendingChatMessages(sessionId, restored);
+      if (isCurrentSession) {
+        pendingMessagesRef.current = restored;
+        setPendingMessages(restored);
+      }
+    };
+    /*
+    FNXC:ChatSendDurability 2026-09-07-11:00:
+    The requeue is deferred by one microtask on purpose: the very `onError` that produced this
+    failure ends with its own `flushPendingMessage()` auto-drain. A synchronous requeue would put
+    the text back in front of that drain, which dequeues and re-dispatches it into the same dead
+    send — an unbounded retry loop against a persistently failing server. Deferred, the in-flight
+    drain sees an empty queue, and the text returns for the next legitimate trigger (a later done,
+    a manual force-send, or a new submit's busy-queueing). Guards are re-checked at execution, so
+    an ack that lands between scheduling and running still suppresses the requeue.
+    */
+    sendMessageRef.current(trimmedQueuedMessage, undefined, {
+      onPersisted: (persisted) => {
+        if (persisted) flushedPersisted = true;
+        else queueMicrotask(requeueFlushedHead);
+      },
+      onFailed: () => {
+        queueMicrotask(requeueFlushedHead);
+      },
+    });
   }, []);
 
   const flushPendingMessageAfterAttachedError = useCallback(async (
@@ -963,6 +1212,15 @@ export function useChat(
     const updateAttachedStreamingToolCalls = (next: SetStateAction<ToolCallInfo[]>) => {
       if (ownsAttachedSession()) updateStreamingToolCalls(next);
     };
+    /*
+    FNXC:ChatPhaseStatus 2026-09-05-11:45:
+    RUFU-188 (Code Review P1): the phase label crosses sessions exactly like text/thinking do, so the attach
+    path binds it to the same `ownsAttachedSession()` guard instead of the bare setter — a replayed `phase`
+    frame from a departed attachment can no longer paint a label onto a session the user has moved on to.
+    */
+    const updateAttachedStreamingPhase = (next: SetStateAction<ChatEnginePhase | null>) => {
+      if (ownsAttachedSession()) setStreamingPhase(next);
+    };
     const currentMessages = messagesRef.current;
     const needsPriorThreadLoad = currentMessages.length === 0 || currentMessages[0]?.sessionId !== sessionId;
     lastAttachedGenerationRef.current = {
@@ -1007,6 +1265,7 @@ export function useChat(
       setStreamingText: updateAttachedStreamingText,
       setStreamingThinking: updateAttachedStreamingThinking,
       setStreamingToolCalls: updateAttachedStreamingToolCalls,
+      setStreamingPhase: updateAttachedStreamingPhase,
       cancelStreamingFlushesRef,
       addToast: options?.silent ? undefined : addToast,
       onFallbackSession: (data, fallbackSessionId) => {
@@ -1022,6 +1281,7 @@ export function useChat(
         setStreamingText("");
         setStreamingThinking("");
         setStreamingToolCalls([]);
+        setStreamingPhase(null);
         setIsStreaming(false);
         isStreamingRef.current = false;
         streamRef.current = null;
@@ -1034,6 +1294,7 @@ export function useChat(
         setStreamingText("");
         setStreamingThinking("");
         setStreamingToolCalls([]);
+        setStreamingPhase(null);
         setIsStreaming(false);
         isStreamingRef.current = false;
         streamRef.current = null;
@@ -1075,6 +1336,9 @@ export function useChat(
       const selectionVersion = ++activeSessionSelectionRef.current;
       streamRequestRef.current += 1;
       authoritativeSelectionRefreshRef.current = id ? { sessionId: id, version: selectionVersion } : null;
+      // A deferred title belongs to the selection incarnation that was awaiting a snapshot;
+      // a new selection retires it so it can never be applied to another thread.
+      deferredSessionTitleRef.current = null;
       // Close any existing stream before its transient state is reset.
       if (streamRef.current) {
         streamRef.current.close();
@@ -1086,6 +1350,32 @@ export function useChat(
       const session = sessionOverride ?? sessions.find((s) => s.id === id);
       setActiveSession(session || null);
       activeSessionRef.current = session || null;
+
+      /*
+      FNXC:ChatWindows 2026-09-18-01:28:
+      FN-524: the ACTIVE conversation's title write must be exactly as reliable as the list write.
+      Every authoritative-refresh exit path — divergent identity, missing `isGenerating` boolean, and
+      transport failure — goes through this single seam instead of discarding the deferred value, so
+      the header can never diverge from the list row. The allowlist stays closed on `title`: the
+      snapshot keeps sovereignty over the cursor, generation state, and every other field (FN-455).
+      */
+      const applyDeferredTitleToActiveSession = () => {
+        const deferredTitle = deferredSessionTitleRef.current;
+        deferredSessionTitleRef.current = null;
+        if (
+          !deferredTitle
+          || deferredTitle.sessionId !== id
+          || deferredTitle.version !== selectionVersion
+          || activeSessionSelectionRef.current !== selectionVersion
+        ) {
+          return;
+        }
+        const current = activeSessionRef.current;
+        if (!current || current.id !== id) return;
+        const withTitle = { ...current, title: deferredTitle.title };
+        activeSessionRef.current = withTitle;
+        setActiveSession(withTitle);
+      };
 
       if (id) {
         void fetchChatSession(id, projectId)
@@ -1100,6 +1390,7 @@ export function useChat(
                 && authoritativeSelectionRefreshRef.current?.version === selectionVersion
               ) {
                 authoritativeSelectionRefreshRef.current = null;
+                applyDeferredTitleToActiveSession();
                 if (session?.isGenerating && !streamRef.current) {
                   attachIfGenerating(id, session.inFlightGeneration, { silent: true });
                 }
@@ -1114,6 +1405,7 @@ export function useChat(
               must include the boolean and therefore cannot bypass snapshot reconciliation.
               */
               authoritativeSelectionRefreshRef.current = null;
+              applyDeferredTitleToActiveSession();
               if (session?.isGenerating && !streamRef.current) {
                 attachIfGenerating(id, session.inFlightGeneration, { silent: true });
               }
@@ -1121,7 +1413,23 @@ export function useChat(
             }
             const authoritativeSession = { ...activeSessionRef.current, ...refreshedSession };
             authoritativeSelectionRefreshRef.current = null;
-            setActiveSession(authoritativeSession);
+            /*
+            FNXC:ChatWindows 2026-09-16-05:28:
+            The authoritative snapshot is a read that PRECEDES the server's generated-title write,
+            so letting it win reinstates the stale title. Reapply the deferred value through a
+            CLOSED allowlist of exactly `{ title }` — never an object merge: the snapshot remains
+            sovereign for the cursor, generation state, and every other field, which is precisely
+            what the `awaitingAuthoritativeSnapshot` guard exists to protect. No stream ownership
+            is claimed from this path.
+            */
+            const deferredTitle = deferredSessionTitleRef.current;
+            const reconciledSession =
+              deferredTitle && deferredTitle.sessionId === id && deferredTitle.version === selectionVersion
+                ? { ...authoritativeSession, title: deferredTitle.title }
+                : authoritativeSession;
+            deferredSessionTitleRef.current = null;
+            activeSessionRef.current = reconciledSession;
+            setActiveSession(reconciledSession);
 
             /*
             FNXC:ChatStreaming 2026-07-20-19:15:
@@ -1153,6 +1461,9 @@ export function useChat(
             }
 
             authoritativeSelectionRefreshRef.current = null;
+            // A transport failure leaves the deferred title as the only fresh data available;
+            // apply that single field over the current active session and nothing else.
+            applyDeferredTitleToActiveSession();
             // A transport failure is not an idle verdict. Retain the prior recovery behavior,
             // but only for this still-current selection incarnation.
             if (session?.isGenerating && !streamRef.current) {
@@ -1161,7 +1472,7 @@ export function useChat(
           });
       }
 
-      resetTransientComposerState();
+      resetTransientComposerState(Boolean(id && cancellationsInProgressRef.current.has(id)));
       setHasMoreMessages(false);
 
       // Load messages for this session while the authoritative request is pending.
@@ -1172,12 +1483,12 @@ export function useChat(
         setMessages([]);
       }
 
-      // Ordinary Chat hosts retain the project-scoped selection; secondary windows do not.
+      // Ordinary Chat hosts retain the project-scoped open detail; secondary windows do not.
       if (persistActiveSession) {
         if (id) {
-          setScopedItem(ACTIVE_SESSION_STORAGE_KEY, id, projectId);
+          setPersistedChatOpenSession(id, projectId);
         } else {
-          removeScopedItem(ACTIVE_SESSION_STORAGE_KEY, projectId);
+          clearPersistedChatOpenSession(projectId);
         }
       }
     },
@@ -1289,12 +1600,14 @@ export function useChat(
   );
 
   const refreshArchivedSessions = useCallback(async () => {
-    const data = await fetchChatSessions(projectId, "archived");
+    const data = await fetchChatSessions(projectId, "archived", { limit: 50 });
     /*
     FNXC:MessageArchive 2026-08-12-22:38:
     The Archived view is a restore surface, so it filters a stale/proxied response locally when status=archived is ignored.
     */
     setArchivedSessions(sortChatSessions(data.sessions.filter((session) => session.status === "archived")));
+    sessionCursorRef.current.archived = data.nextCursor ?? null;
+    setHasMoreArchivedSessions(data.hasMore === true);
   }, [projectId]);
 
   const unarchiveSession = useCallback(async (id: string) => {
@@ -1318,6 +1631,69 @@ export function useChat(
       }
     },
     [activeSession, projectId],
+  );
+
+  /**
+   * FNXC:ChatHandoff 2026-09-09-19:05:
+   * RUFU-199: continue a long Direct chat in a fresh conversation. The server owns the whole
+   * lifecycle (create sibling + seed the model-context primer + archive the source + dedupe
+   * retries), so this action only mirrors the local list/switch bookkeeping that `createSession`
+   * already performs: close the source stream, swap the composer transient, drop the now-archived
+   * source from the active list, prepend the child, and select it. `degraded` is returned so the
+   * click handler can tell the operator the briefing was a deterministic digest, never hide a
+   * false success.
+   */
+  const handoffSession = useCallback(
+    async (id: string): Promise<{ session: ChatSessionInfo; degraded: boolean }> => {
+      const data = await handoffChatSession(id, projectId);
+
+      if (streamRef.current) {
+        streamRef.current.close();
+        streamRef.current = null;
+      }
+      lastAttachedGenerationRef.current = null;
+
+      const newSession: ChatSessionInfo = {
+        id: data.session.id,
+        title: data.session.title,
+        agentId: data.session.agentId,
+        status: data.session.status,
+        modelProvider: data.session.modelProvider,
+        modelId: data.session.modelId,
+        thinkingLevel: data.session.thinkingLevel,
+        pinnedAt: data.session.pinnedAt,
+        createdAt: data.session.createdAt,
+        updatedAt: data.session.updatedAt,
+      };
+
+      setSessions((prev) => {
+        const withoutSource = prev.filter((s) => s.id !== id);
+        if (withoutSource.some((s) => s.id === newSession.id)) return sortChatSessions(withoutSource);
+        return sortChatSessions([newSession, ...withoutSource]);
+      });
+      removePersistedPendingChatMessages(id);
+      resetTransientComposerState();
+      selectSession(newSession.id, newSession);
+
+      /*
+      FNXC:ChatHandoff 2026-09-10-01:13:
+      RUFU-199 code review: the server has already archived the source, so an Archived panel that is open
+      across the handoff keeps showing its pre-handoff page — the just-archived source stays missing from
+      it until the panel is toggled off and on again, because the only other refresh site is the toggle's
+      own handler. `refreshArchivedSessions` re-fetches that page — `refreshSessions` covers only
+      the active status, so it cannot fix it. The await is best-effort ON PURPOSE: `refreshArchivedSessions`
+      lets a fetch failure reject, and a stale LIST must never be reported as a failed handoff — the
+      continuation already exists and the caller would toast "Handoff failed" over a committed success.
+      */
+      try {
+        await refreshArchivedSessions();
+      } catch (err) {
+        console.warn("[useChat] handoff committed but the archived session list could not be refreshed:", err);
+      }
+
+      return { session: newSession, degraded: data.degraded };
+    },
+    [projectId, refreshArchivedSessions, resetTransientComposerState, selectSession],
   );
 
   /**
@@ -1407,6 +1783,19 @@ export function useChat(
    * (or stale modelProvider/modelId) persisted server-side, so the next send could still resolve
    * against the PREVIOUS target — silently breaking the retarget this control exists for.
    */
+  /*
+  FNXC:ChatSendDurability 2026-09-07-14:20:
+  RUFU-192: a rejected target PATCH no longer rolls the UI back to the pre-switch LOCAL snapshot.
+  That snapshot was itself only a client guess, so the operator could end up looking at a target the
+  server never had either — the next send is then built against a target nobody agreed to, which is
+  the failure mode that hid the operator's prompt behind the wrong brain. The failure path now asks
+  the server what the session's target actually is (`fetchChatSession`) and applies that answer to
+  both collections; the snapshot rollback survives only as the fallback for a session read that also
+  fails, so the UI can never be left showing the rejected target. The rethrow is DROPPED rather than
+  swallowed at the caller: the reconcile is now authoritative — every outcome ends in a target some
+  store actually holds — so the sole call site's `void setSessionModel(...)` (ChatView) had nothing
+  to do with a rejection except raise an unhandled promise rejection.
+  */
   const setSessionModel = useCallback(
     async (id: string, selection: { agentId?: string; modelProvider?: string | null; modelId?: string | null }) => {
       const previousSessions = sessions;
@@ -1432,14 +1821,27 @@ export function useChat(
           prev.map((session) => (session.id === id ? { ...session, ...reconciledPatch } : session)),
         );
         setActiveSession((prev) => (prev?.id === id ? { ...prev, ...reconciledPatch } : prev));
-      } catch (error) {
-        setSessions(previousSessions);
-        setActiveSession(previousActiveSession);
-        addToast?.("Failed to update chat model", "error");
-        throw error;
+      } catch {
+        // Server truth beats a local guess, but only when it is actually readable.
+        const serverRead = await fetchChatSession(id, projectId).catch(() => null);
+        const serverSession = serverRead?.session;
+        if (serverSession) {
+          const serverPatch = {
+            agentId: serverSession.agentId,
+            modelProvider: serverSession.modelProvider,
+            modelId: serverSession.modelId,
+            updatedAt: serverSession.updatedAt,
+          };
+          setSessions((prev) => prev.map((session) => (session.id === id ? { ...session, ...serverPatch } : session)));
+          setActiveSession((prev) => (prev?.id === id ? { ...prev, ...serverPatch } : prev));
+        } else {
+          setSessions(previousSessions);
+          setActiveSession(previousActiveSession);
+        }
+        addToast?.(t("chat.failedToUpdateChatModel", "Failed to update chat model"), "error");
       }
     },
-    [activeSession, addToast, projectId, sessions],
+    [activeSession, addToast, projectId, sessions, t],
   );
 
   /**
@@ -1532,28 +1934,63 @@ export function useChat(
     [projectId],
   );
 
-  // Load more messages (pagination — use before cursor for oldest displayed message)
-  // messagesRef is assigned on every render; reading from the ref here avoids
-  // closing over `messages` and prevents this callback from being recreated on
-  // every streamed token (which would cause the IntersectionObserver to churn).
+  /*
+  FNXC:ChatMessagePagination 2026-09-06-13:40:
+  Direct Chat serializes one strict tuple page per session. A response may prepend only while its session and oldest-row cursor are still current; stable-ID merging protects defensive overlap, and a duplicate-only page stops rather than spinning without progress.
+  */
   const loadMoreMessages = useCallback(async () => {
     if (!activeSession || !hasMoreMessages) return;
-    // messagesRef.current[0] is the oldest visible message; fetch older ones using its createdAt
-    const cursor = messagesRef.current[0]?.createdAt;
-    if (!cursor) return;
-    await loadMessages(activeSession.id, { before: cursor });
-  }, [activeSession, hasMoreMessages, loadMessages]);
+    const sessionId = activeSession.id;
+    const existing = paginationInFlightRef.current.get(sessionId);
+    if (existing) return existing;
+    const cursor = messagesRef.current[0];
+    if (!cursor?.createdAt || !cursor.id) return;
+
+    const request = (async () => {
+      setMessagesLoading(true);
+      try {
+        const data = await fetchChatMessages(sessionId, {
+          limit: 50,
+          order: "desc",
+          before: cursor.createdAt,
+          beforeId: cursor.id,
+        }, projectId);
+        if (activeSessionRef.current?.id !== sessionId || messagesRef.current[0]?.id !== cursor.id) return;
+        const mapped = sortChatMessagesChronologically(data.messages.map(mapChatMessageToInfo));
+        const existingIds = new Set(messagesRef.current.map((message) => message.id));
+        const added = mapped.filter((message) => !existingIds.has(message.id));
+        if (added.length > 0) {
+          setMessages((current) => {
+            const byId = new Map(current.map((message) => [message.id, message]));
+            for (const message of mapped) byId.set(message.id, message);
+            return sortChatMessagesChronologically([...byId.values()]);
+          });
+        }
+        setHasMoreMessages(data.messages.length >= 50 && added.length > 0);
+      } catch {
+        // Keep the current page and cursor retryable after a transient read failure.
+      } finally {
+        if (activeSessionRef.current?.id === sessionId) setMessagesLoading(false);
+      }
+    })();
+    paginationInFlightRef.current.set(sessionId, request);
+    try {
+      await request;
+    } finally {
+      if (paginationInFlightRef.current.get(sessionId) === request) paginationInFlightRef.current.delete(sessionId);
+    }
+  }, [activeSession, hasMoreMessages, projectId]);
 
   /*
-  FNXC:ChatPendingQueue 2026-08-19-05:47:
-  Direct Stop and selected Force share one durable cancellation/history barrier. The queue is not
-  released until that barrier succeeds, so a closed transport or failed reconciliation cannot lose
-  a pending turn or let a stale callback dispatch it into a different session incarnation.
+  FNXC:ChatPendingQueue 2026-09-06-01:36:
+  Direct Stop and selected Force share one durable cancellation/history barrier per conversation. The queue is not released until its own barrier succeeds, so concurrent cancellations in A and B cannot overwrite or release each other; re-entering either conversation restores its barrier controls and drains its text exactly once after reconciliation.
+  The dispatch threshold owns ordering while the keyboard remains local: text submitted during streaming or cancellation is queued, every flush remains fenced until the session's promise is removed, and that removal must precede onReconciled. A selected Force intent belongs to its session and exact queued slot rather than one selection incarnation, so A → B → A re-entry preserves its priority without letting a stale callback remove changed queue content. The persisted queue is text-only, so attachment-bearing submissions fail instead of silently dropping files.
   */
   const cancelAndReconcile = useCallback((onReconciled: () => void): Promise<void> | undefined => {
     const session = activeSessionRef.current;
     if (!session) return undefined;
-    if (cancellationInProgressRef.current) return cancellationInProgressRef.current;
+    const existingCancellation = cancellationsInProgressRef.current.get(session.id);
+    if (existingCancellation) return existingCancellation;
 
     pendingQueueActionRef.current = true;
     setPendingQueueAction(true);
@@ -1591,6 +2028,9 @@ export function useChat(
     setStreamingText("");
     setStreamingThinking("");
     setStreamingToolCalls([]);
+    // FNXC:ChatPhaseStatus 2026-09-05-10:23: RUFU-188 — a user Stop aborts the stream before its
+    // terminal event, so clear the phase label here or the "(compacting…)" suffix would linger.
+    setStreamingPhase(null);
 
     const cancellation = cancelChatResponse(session.id, projectId)
       .then(async (result) => {
@@ -1606,10 +2046,6 @@ export function useChat(
         } catch {
           // The queue remains durable unless the cancel response itself proves the interrupted row.
         }
-        if (activeSessionRef.current?.id !== session.id || activeSessionSelectionRef.current !== sessionSelectionVersion) {
-          return;
-        }
-
         const persistedInterruptedMessage = cancellationResult.message
           ? mapChatMessageToInfo(cancellationResult.message)
           : undefined;
@@ -1617,43 +2053,55 @@ export function useChat(
           throw new Error("Chat history reconciliation did not complete");
         }
 
-        const reconciled = [
-          ...(refreshedMessages ?? []),
-          ...(persistedInterruptedMessage && !(refreshedMessages ?? []).some((message) => message.id === persistedInterruptedMessage.id)
-            ? [persistedInterruptedMessage]
-            : []),
-        ];
-        const hasDurableInterruptedMessage = Boolean(persistedInterruptedMessage)
-          || reconciled.some((message) =>
-            message.role === "assistant"
-            && message.content === stoppedText
-            && message.metadata?.interrupted === true,
-          );
-        setMessages((current) => {
-          let next = current.filter((message) =>
-            message.id !== "streaming-assistant"
-            && (!hasDurableInterruptedMessage || message.id !== interruptedLocalId),
-          );
-          for (const persisted of reconciled) {
-            next = reconcileOptimisticSentMessage(next, persisted);
+        if (activeSessionRef.current?.id === session.id && activeSessionSelectionRef.current === sessionSelectionVersion) {
+          const reconciled = [
+            ...(refreshedMessages ?? []),
+            ...(persistedInterruptedMessage && !(refreshedMessages ?? []).some((message) => message.id === persistedInterruptedMessage.id)
+              ? [persistedInterruptedMessage]
+              : []),
+          ];
+          const hasDurableInterruptedMessage = Boolean(persistedInterruptedMessage)
+            || reconciled.some((message) =>
+              message.role === "assistant"
+              && message.content === stoppedText
+              && message.metadata?.interrupted === true,
+            );
+          setMessages((current) => {
+            let next = current.filter((message) =>
+              message.id !== "streaming-assistant"
+              && (!hasDurableInterruptedMessage || message.id !== interruptedLocalId),
+            );
+            for (const persisted of reconciled) {
+              next = reconcileOptimisticSentMessage(next, persisted);
+            }
+            return sortChatMessagesChronologically(next);
+          });
+        }
+
+        if (cancellationsInProgressRef.current.get(session.id) === cancellation) {
+          cancellationsInProgressRef.current.delete(session.id);
+          if (activeSessionRef.current?.id === session.id) {
+            pendingQueueActionRef.current = false;
+            setPendingQueueAction(false);
+            onReconciled();
           }
-          return sortChatMessagesChronologically(next);
-        });
-        onReconciled();
+        }
       })
       .catch(() => {
-        if (activeSessionRef.current?.id === session.id && activeSessionSelectionRef.current === sessionSelectionVersion) {
+        if (activeSessionRef.current?.id === session.id) {
           addToast?.("Failed to save the interrupted response; it remains visible for recovery.", "error");
         }
       })
       .finally(() => {
-        pendingQueueActionRef.current = false;
-        setPendingQueueAction(false);
-        if (cancellationInProgressRef.current === cancellation) {
-          cancellationInProgressRef.current = null;
+        if (cancellationsInProgressRef.current.get(session.id) === cancellation) {
+          cancellationsInProgressRef.current.delete(session.id);
+          if (activeSessionRef.current?.id === session.id) {
+            pendingQueueActionRef.current = false;
+            setPendingQueueAction(false);
+          }
         }
       });
-    cancellationInProgressRef.current = cancellation;
+    cancellationsInProgressRef.current.set(session.id, cancellation);
     return cancellation;
   }, [addToast, projectId]);
 
@@ -1669,7 +2117,7 @@ export function useChat(
   const sendMessageRef = useRef<(
     content: string,
     attachments?: File[],
-    callbacks?: { onAccepted?: () => void; onDelivered?: () => void; onFailed?: () => void },
+    callbacks?: ChatSendCallbacks,
     options?: { replacementMessageId?: string; replacementTargetIndex?: number },
   ) => void>(() => {
     // no-op until sendMessage is defined
@@ -1697,6 +2145,10 @@ export function useChat(
         setStreamingText("");
         setStreamingThinking("");
         setStreamingToolCalls([]);
+        // FNXC:ChatPhaseStatus 2026-09-05-11:45: RUFU-188 (Code Review P1) — the silent reconnect rebaselines
+        // every streaming carrier from the durable snapshot before re-attaching; the phase label joins the
+        // sweep so a pre-reconnect `(compacting…)` can't ride into the reattached bubble's first frames.
+        setStreamingPhase(null);
         setIsStreaming(true);
         isStreamingRef.current = true;
         attachIfGenerating(sessionId, refreshedSession.session.inFlightGeneration, { silent: true });
@@ -1704,6 +2156,7 @@ export function useChat(
         setStreamingText("");
         setStreamingThinking("");
         setStreamingToolCalls([]);
+        setStreamingPhase(null);
         setIsStreaming(false);
         isStreamingRef.current = false;
         await loadMessages(sessionId);
@@ -1717,7 +2170,7 @@ export function useChat(
     (
       content: string,
       attachments?: File[],
-      callbacks?: { onAccepted?: () => void; onDelivered?: () => void; onFailed?: () => void },
+      callbacks?: ChatSendCallbacks,
       streamOptions?: { replacementMessageId?: string; replacementTargetIndex?: number },
     ) => {
       if (!activeSession) {
@@ -1725,19 +2178,46 @@ export function useChat(
         return;
       }
 
-      if (isStreamingRef.current) {
+      const activeSessionCancellation = cancellationsInProgressRef.current.has(activeSession.id);
+      if (isStreamingRef.current || activeSessionCancellation) {
+        if (attachments && attachments.length > 0) {
+          callbacks?.onFailed?.();
+          return;
+        }
         const trimmedContent = content.trim();
         if (!trimmedContent) {
+          /*
+          FNXC:ChatSendDurability 2026-09-07-11:00:
+          RUFU-192: whitespace-only sends while busy stay a silent no-op (pre-existing behavior).
+          No hand-off occurred, so no durability callback fires — callers that clear composer text
+          on hand-off signals only simply keep the (whitespace) text, which is correct.
+          */
           return;
         }
         const nextMessages = [...pendingMessagesRef.current, trimmedContent];
         pendingMessagesRef.current = nextMessages;
         setPendingMessages(nextMessages);
         setPersistedPendingChatMessages(activeSession.id, nextMessages);
+        /*
+        FNXC:ChatSendDurability 2026-09-07-11:00:
+        RUFU-192: the FIFO now holds the trimmed text durably (state + persisted storage written
+        synchronously above), so the composer's hand-off is complete — this is the second legal
+        commit point alongside onPersisted(true). Fires BEFORE the return so a queueing submit
+        can clear its text in the same tick without ever seeing isStreaming flip.
+        */
+        callbacks?.onQueued?.();
         return;
       }
 
       cancelledByUserRef.current = false;
+      /*
+      FNXC:ChatSendDurability 2026-09-07-11:00:
+      RUFU-192: per-send durability ledger. `turnPersisted` latches true the moment the server's
+      `user_persisted` ack arrives (idempotent against mid-send `Last-Event-ID` replay redelivery).
+      A terminal error with server acceptance but no latched ack is the not-persisted verdict
+      delivered to onPersisted(false) below.
+      */
+      let turnPersisted = false;
 
       // Close any existing stream
       if (streamRef.current) {
@@ -1757,6 +2237,14 @@ export function useChat(
       const updateOwnedStreamingToolCalls = (next: SetStateAction<ToolCallInfo[]>) => {
         if (ownsStream()) updateStreamingToolCalls(next);
       };
+      /*
+      FNXC:ChatPhaseStatus 2026-09-05-11:45:
+      RUFU-188 (Code Review P1): same ownership guard as the text/thinking/tool-call mirrors — a stale
+      stream's replayed `phase` frame must not decorate a send the user already replaced.
+      */
+      const updateOwnedStreamingPhase = (next: SetStateAction<ChatEnginePhase | null>) => {
+        if (ownsStream()) setStreamingPhase(next);
+      };
 
       // Optimistically add user message
       const tempId = `temp-${Date.now()}`;
@@ -1773,6 +2261,10 @@ export function useChat(
       setStreamingText("");
       setStreamingThinking("");
       setStreamingToolCalls([]);
+      // FNXC:ChatPhaseStatus 2026-09-05-11:45: RUFU-188 (Code Review P1) — a new send starts with no phase;
+      // without this a `(compacting…)` label stranded by a lost inactive frame on the previous stream would
+      // decorate the first moments of this one.
+      setStreamingPhase(null);
       setIsStreaming(true);
       isStreamingRef.current = true;
 
@@ -1782,6 +2274,20 @@ export function useChat(
         setStreamingText: updateOwnedStreamingText,
         setStreamingThinking: updateOwnedStreamingThinking,
         setStreamingToolCalls: updateOwnedStreamingToolCalls,
+        setStreamingPhase: updateOwnedStreamingPhase,
+        /*
+        FNXC:ChatSendDurability 2026-09-07-11:00:
+        RUFU-192: forward the durable-user-turn ack to the caller (see {@link ChatSendCallbacks}).
+        Duplicate deliveries from stream replay latch silently — the caller's commit (clear /
+        capture turn id) must be idempotent anyway, and a replayed ack is proof of the same row.
+        */
+        onUserPersisted: (messageId) => {
+          if (!ownsStream()) return;
+          if (!turnPersisted) {
+            turnPersisted = true;
+            callbacks?.onPersisted?.(true, messageId);
+          }
+        },
         cancelStreamingFlushesRef,
         addToast,
         onFallbackSession: (data, sessionId) => {
@@ -1792,6 +2298,17 @@ export function useChat(
           ));
           setActiveSession((prev) => prev && prev.id === sessionId ? { ...prev, ...nextModel } : prev);
         },
+        /*
+        FNXC:ChatMessageEdit 2026-09-16-05:58:
+        FN-459. In-band persisted identity for THIS turn's user bubble. Replacing by exact temp id
+        retires `temp-<ts>` before the reply even finishes, so the edit affordance and
+        `editMessageAndResend` always work against a server-known id.
+        */
+        onUserMessage: ({ message, tempUserMessageId }) => {
+          if (!ownsStream()) return;
+          const persistedUserMessage = mapChatMessageToInfo(message);
+          setMessages((previous) => replaceOptimisticSentMessageById(previous, tempUserMessageId, persistedUserMessage));
+        },
         onAgentMessage: ({ message }) => {
           if (!ownsStream()) return;
           const agentMessage = mapChatMessageToInfo(message);
@@ -1800,6 +2317,9 @@ export function useChat(
           setStreamingText("");
           setStreamingThinking("");
           setStreamingToolCalls([]);
+          // FNXC:ChatPhaseStatus 2026-09-05-11:45: RUFU-188 (Code Review P1) — the agent-message handoff ends
+          // this stream segment's live bubble, so the phase carrier resets with its siblings.
+          setStreamingPhase(null);
           setTimeout(() => streamingMessageIdsRef.current.delete(agentMessage.id), 1000);
         },
         onDone: ({ messageId, message: finalMessage, dispatch, failedAgentNames, accumulated }) => {
@@ -1808,6 +2328,7 @@ export function useChat(
             setStreamingText("");
             setStreamingThinking("");
             setStreamingToolCalls([]);
+            setStreamingPhase(null);
             setIsStreaming(false);
             isStreamingRef.current = false;
             streamRef.current = null;
@@ -1847,6 +2368,10 @@ export function useChat(
           setStreamingText("");
           setStreamingThinking("");
           setStreamingToolCalls([]);
+          // FNXC:ChatPhaseStatus 2026-09-05-11:45: RUFU-188 (Code Review P1): the factory already clears the
+          // phase on `done`, but this grouped reset is the transcript's own rebaseline — a carrier cleared
+          // by three of its siblings and missed by one is how stuck labels come back after refactors.
+          setStreamingPhase(null);
           setIsStreaming(false);
           isStreamingRef.current = false;
           streamRef.current = null;
@@ -1876,6 +2401,17 @@ export function useChat(
           release them after an accepted turn even when the provider cannot produce a reply.
           */
           if (acceptedByServer) {
+            /*
+            FNXC:ChatSendDurability 2026-09-07-11:00:
+            RUFU-192: an accepted turn that ends in error without ever producing `user_persisted`
+            proved the user row was NOT stored — `res.ok` alone was the exact false-proof this
+            task exists to dismantle. Deliver the negative verdict first so durability-aware
+            callers (queued-dispatch requeue, composer restore) act before the attachment-level
+            onDelivered below.
+            */
+            if (!turnPersisted) {
+              callbacks?.onPersisted?.(false);
+            }
             callbacks?.onDelivered?.();
           } else {
             callbacks?.onFailed?.();
@@ -1907,6 +2443,7 @@ export function useChat(
           setStreamingText("");
           setStreamingThinking("");
           setStreamingToolCalls([]);
+          setStreamingPhase(null);
           setIsStreaming(false);
           isStreamingRef.current = false;
           streamRef.current = null;
@@ -1919,6 +2456,7 @@ export function useChat(
               setStreamingText("");
               setStreamingThinking("");
               setStreamingToolCalls([]);
+              setStreamingPhase(null);
               setIsStreaming(true);
               isStreamingRef.current = true;
               void reconnectSessionSilently(activeSession.id);
@@ -1968,10 +2506,9 @@ export function useChat(
 
   sendMessageRef.current = sendMessage;
 
-  const dispatchPendingMessage = useCallback((sessionId: string, selectionVersion: number, index: number, content: string) => {
+  const dispatchPendingMessage = useCallback((sessionId: string, index: number, content: string) => {
     if (
       activeSessionRef.current?.id !== sessionId
-      || activeSessionSelectionRef.current !== selectionVersion
       || pendingMessagesRef.current[index]?.trim() !== content
     ) {
       return;
@@ -1981,20 +2518,39 @@ export function useChat(
       pendingMessagesRef.current.filter((_, messageIndex) => messageIndex !== index),
       sessionId,
     );
+    /*
+    FNXC:ChatSendDurability 2026-09-07-11:00:
+    RUFU-192: the restore-at-original-index path previously covered only onFailed (pre-acceptance
+    loss). An accepted-but-unpersisted turn (onPersisted(false)) loses the row just as surely and
+    must restore identically; once the server HAS the row (onPersisted(true)), restoring would
+    schedule a duplicate model entry, so later failures no longer requeue. Like the auto-drain
+    requeue, restoration defers one microtask so the same `onError`'s trailing auto-drain cannot
+    bounce the item straight back into a dying send.
+    */
+    let dispatchedPersisted = false;
+    let dispatchRequeued = false;
+    const requeueDispatched = () => {
+      if (dispatchRequeued || dispatchedPersisted) return;
+      dispatchRequeued = true;
+      const isCurrentSession = activeSessionRef.current?.id === sessionId;
+      const current = isCurrentSession
+        ? pendingMessagesRef.current
+        : getPersistedPendingChatMessages(sessionId);
+      const insertionIndex = Math.min(Math.max(index, 0), current.length);
+      const restored = [...current.slice(0, insertionIndex), content, ...current.slice(insertionIndex)];
+      setPersistedPendingChatMessages(sessionId, restored);
+      if (isCurrentSession) {
+        pendingMessagesRef.current = restored;
+        setPendingMessages(restored);
+      }
+    };
     sendMessageRef.current(content, undefined, {
+      onPersisted: (persisted) => {
+        if (persisted) dispatchedPersisted = true;
+        else queueMicrotask(requeueDispatched);
+      },
       onFailed: () => {
-        const isCurrentSelection = activeSessionRef.current?.id === sessionId
-          && activeSessionSelectionRef.current === selectionVersion;
-        const current = isCurrentSelection
-          ? pendingMessagesRef.current
-          : getPersistedPendingChatMessages(sessionId);
-        const insertionIndex = Math.min(Math.max(index, 0), current.length);
-        const restored = [...current.slice(0, insertionIndex), content, ...current.slice(insertionIndex)];
-        setPersistedPendingChatMessages(sessionId, restored);
-        if (isCurrentSelection) {
-          pendingMessagesRef.current = restored;
-          setPendingMessages(restored);
-        }
+        queueMicrotask(requeueDispatched);
       },
     });
   }, [replacePendingMessages]);
@@ -2004,8 +2560,7 @@ export function useChat(
     const content = pendingMessagesRef.current[index]?.trim();
     if (!session || !content || pendingQueueActionRef.current) return;
 
-    const selectionVersion = activeSessionSelectionRef.current;
-    const dispatch = () => dispatchPendingMessage(session.id, selectionVersion, index, content);
+    const dispatch = () => dispatchPendingMessage(session.id, index, content);
     if (isStreamingRef.current || streamRef.current) {
       cancelAndReconcile(dispatch);
       return;
@@ -2027,11 +2582,38 @@ export function useChat(
       if (!trimmed) return;
 
       const sessionId = activeSession.id;
-      const previousMessages = messagesRef.current;
-      const targetIndex = previousMessages.findIndex((message) => message.id === messageId);
+      const targetIndex = messagesRef.current.findIndex((message) => message.id === messageId);
       if (targetIndex === -1) return;
 
-      pendingReplacementRef.current = { sessionId, messageId };
+      /*
+      FNXC:ChatMessageEdit 2026-09-16-05:58:
+      FN-459. Never post a purely local id as `replacementMessageId`: the server's
+      `prepareReplacement` guard rejects it with a guaranteed 404 (`Message temp-… not found in
+      session …`). The in-band `user_message` event normally retires the optimistic id before the
+      pencil is even offered; this is the belt-and-braces realignment for a row that slipped through
+      (interrupted stream, stale surface). Re-resolve the SAME position from authoritative rows, and
+      refuse locally rather than provoking the 404. A row that is already persisted (`msg-…`) is sent
+      straight through: no extra fetch, no added latency.
+      */
+      let replacementMessageId = messageId;
+      let replacementTargetIndex = targetIndex;
+      if (!isPersistedChatMessageId(messageId)) {
+        try {
+          const data = await fetchChatMessages(sessionId, { limit: 50, order: "desc" }, projectId);
+          const authoritative = sortChatMessagesChronologically(data.messages.map(mapChatMessageToInfo));
+          const realigned = authoritative[targetIndex];
+          if (!realigned || realigned.role !== "user" || !isPersistedChatMessageId(realigned.id)) {
+            throw new Error("Message is not persisted yet");
+          }
+          replacementMessageId = realigned.id;
+          replacementTargetIndex = targetIndex;
+        } catch {
+          setEditDraftRestoreTarget({ targetIndex, fallbackMessageId: messageId, content: trimmed });
+          throw new Error("Failed to edit message");
+        }
+      }
+
+      pendingReplacementRef.current = { sessionId, messageId: replacementMessageId };
       await new Promise<void>((resolve, reject) => {
         sendMessage(
           trimmed,
@@ -2044,16 +2626,44 @@ export function useChat(
             onFailed: () => {
               void loadMessages(sessionId).finally(() => {
                 pendingReplacementRef.current = null;
+                /*
+                FNXC:ChatMessageEdit 2026-09-16-05:58:
+                FN-459. The reload changes the target row id, remounting the virtualized row and
+                destroying the inline editor's local state. Republish the correction against the
+                RELOADED id so the surface reopens the editor pre-filled instead of losing it.
+                */
+                setEditDraftRestoreTarget({
+                  targetIndex: replacementTargetIndex,
+                  fallbackMessageId: replacementMessageId,
+                  content: trimmed,
+                });
                 reject(new Error("Failed to edit message"));
               });
             },
           },
-          { replacementMessageId: messageId, replacementTargetIndex: targetIndex },
+          { replacementMessageId, replacementTargetIndex },
         );
       });
     },
-    [activeSession, loadMessages, sendMessage],
+    [activeSession, loadMessages, projectId, sendMessage],
   );
+
+  const editDraftRestore = useMemo(
+    () => (editDraftRestoreTarget
+      ? {
+          messageId: messages[editDraftRestoreTarget.targetIndex]?.id ?? editDraftRestoreTarget.fallbackMessageId,
+          content: editDraftRestoreTarget.content,
+        }
+      : null),
+    [editDraftRestoreTarget, messages],
+  );
+  const editDraftRestoreRef = useRef(editDraftRestore);
+  editDraftRestoreRef.current = editDraftRestore;
+
+  const clearEditDraftRestore = useCallback((messageId: string) => {
+    if (editDraftRestoreRef.current?.messageId !== messageId) return;
+    setEditDraftRestoreTarget(null);
+  }, []);
 
   /*
   FNXC:ChatSearch 2026-07-07-12:00:
@@ -2066,37 +2676,72 @@ export function useChat(
   */
   const trimmedSearchQuery = searchQuery.trim();
   useEffect(() => {
+    activeSessionListGenerationRef.current += 1;
+    const requestId = ++contentSearchRequestIdRef.current;
+    sessionCursorRef.current.active = null;
+    setHasMoreSessions(false);
+    sessionPageInFlightRef.current = false;
+    setSessionsLoadingMore(false);
+
+    /*
+    FNXC:ChatSessionPagination 2026-09-07-17:38:
+    Project, tag and content query form one server pagination scope. Every transition resets the cursor before requesting page one, and the monotonic request fence rejects delayed A → B → A responses so no page can merge against another tag's boundary.
+    */
     if (!trimmedSearchQuery) {
-      contentSearchRequestIdRef.current++;
-      setContentMatchedPreviews(new Map());
+      void refreshSessions();
       return;
     }
-
-    const requestId = ++contentSearchRequestIdRef.current;
     const timeoutId = setTimeout(() => {
-      void (async () => {
-        try {
-          const data = await fetchChatSessions(projectId, undefined, {
-            status: "active",
-            q: trimmedSearchQuery,
-            titleOnly: false,
-          });
-          if (contentSearchRequestIdRef.current !== requestId) return;
-          const previews = new Map<string, string>();
-          for (const s of data.sessions) {
-            if (s.matchedMessagePreview) previews.set(s.id, s.matchedMessagePreview);
-          }
-          setContentMatchedPreviews(previews);
-        } catch {
-          if (contentSearchRequestIdRef.current === requestId) {
-            setContentMatchedPreviews(new Map());
-          }
-        }
-      })();
+      if (contentSearchRequestIdRef.current !== requestId) return;
+      void refreshSessions();
     }, 300);
 
     return () => clearTimeout(timeoutId);
-  }, [trimmedSearchQuery, projectId]);
+  }, [projectId, refreshSessions, selectedTagId, trimmedSearchQuery]);
+
+  /*
+  FNXC:ChatSessionPagination 2026-09-07-16:03:
+  Active, archived, tag-filtered, and searched conversation lists keep independent server cursors at their owning status boundary. Page requests are single-flight and project/query fenced; rows merge by ID so a live session update cannot be duplicated or discarded by an older page.
+  */
+  const loadMoreSessions = useCallback(async (status: "active" | "archived" = "active") => {
+    const cursor = sessionCursorRef.current[status];
+    const hasMore = status === "archived" ? hasMoreArchivedSessions : hasMoreSessions;
+    if (!cursor || !hasMore || sessionPageInFlightRef.current) return;
+    sessionPageInFlightRef.current = true;
+    setSessionsLoadingMore(true);
+    const projectVersion = projectContextVersionRef.current;
+    const scopeGeneration = activeSessionListGenerationRef.current;
+    const query = status === "active" ? trimmedSearchQuery : "";
+    const tagId = status === "active" ? selectedTagId : null;
+    try {
+      const data = await fetchChatSessions(projectId, status, {
+        limit: 50,
+        cursor,
+        ...(query ? { q: query } : {}),
+        ...(tagId ? { tagId } : {}),
+      });
+      if (
+        projectContextVersionRef.current !== projectVersion
+        || (status === "active" && (searchQuery.trim() !== query || selectedTagId !== tagId || activeSessionListGenerationRef.current !== scopeGeneration))
+      ) return;
+      const merge = (current: ChatSessionInfo[]) => {
+        const byId = new Map(current.map((session) => [session.id, session]));
+        for (const session of data.sessions) byId.set(session.id, { ...byId.get(session.id), ...session });
+        return sortChatSessions([...byId.values()]);
+      };
+      if (status === "archived") setArchivedSessions(merge);
+      else if (query) setServerSearchSessions(merge);
+      else setSessions(merge);
+      sessionCursorRef.current[status] = data.nextCursor ?? null;
+      if (status === "archived") setHasMoreArchivedSessions(data.hasMore === true);
+      else setHasMoreSessions(data.hasMore === true);
+    } finally {
+      if (projectContextVersionRef.current === projectVersion && (status === "archived" || activeSessionListGenerationRef.current === scopeGeneration)) {
+        sessionPageInFlightRef.current = false;
+        setSessionsLoadingMore(false);
+      }
+    }
+  }, [hasMoreArchivedSessions, hasMoreSessions, projectId, searchQuery, selectedTagId, trimmedSearchQuery]);
 
   /* FNXC:ChatTags 2026-07-25-10:55: optimistic assignment keeps shared Chat hosts in sync while a failed API mutation rolls back exactly the prior session snapshot. */
   const createTag = useCallback(async (name: string): Promise<ChatTag> => { const response = await apiCreateChatTag(name, projectId); setTags((previous) => [...previous, response.tag].sort((a, b) => a.name.localeCompare(b.name))); return response.tag; }, [projectId]);
@@ -2119,7 +2764,9 @@ export function useChat(
     if (!trimmedSearchQuery) return selectedTagId ? sessions.filter((session) => (session.tags ?? []).some((tag) => tag.id === selectedTagId)) : sessions;
 
     const lowerQuery = trimmedSearchQuery.toLowerCase();
-    const titleMatched = sessions.filter(
+    const searchBase = new Map(sessions.map((session) => [session.id, session]));
+    for (const session of serverSearchSessions) searchBase.set(session.id, { ...searchBase.get(session.id), ...session });
+    const titleMatched = [...searchBase.values()].filter(
       (s) =>
         s.title?.toLowerCase().includes(lowerQuery) ||
         s.agentId.toLowerCase().includes(lowerQuery),
@@ -2131,7 +2778,7 @@ export function useChat(
 
     const merged = new Map<string, ChatSessionInfo>();
     for (const s of titleMatched) merged.set(s.id, s);
-    for (const session of sessions) {
+    for (const session of searchBase.values()) {
       const preview = contentMatchedPreviews.get(session.id);
       if (preview === undefined) continue;
       const existing = merged.get(session.id);
@@ -2197,6 +2844,9 @@ export function useChat(
           setStreamingText("");
           setStreamingThinking("");
           setStreamingToolCalls([]);
+          // FNXC:ChatPhaseStatus 2026-09-05-11:45: RUFU-188 (Code Review P1) — the server says the turn is
+          // over; every live carrier the poll loop rebaselines must include the phase label.
+          setStreamingPhase(null);
           setIsStreaming(false);
           isStreamingRef.current = false;
           flushPendingMessage();
@@ -2249,6 +2899,9 @@ export function useChat(
       setStreamingText("");
       setStreamingThinking("");
       setStreamingToolCalls([]);
+      // FNXC:ChatPhaseStatus 2026-09-05-11:45: RUFU-188 (Code Review P1) — rebaseline before re-attach; see
+      // the reconnectSessionSilently note for why the phase label is part of the sweep.
+      setStreamingPhase(null);
       setIsStreaming(true);
       isStreamingRef.current = true;
       attachIfGenerating(currentSession.id, data.session.inFlightGeneration, { silent: true });
@@ -2267,6 +2920,7 @@ export function useChat(
       setStreamingText("");
       setStreamingThinking("");
       setStreamingToolCalls([]);
+      setStreamingPhase(null);
       setIsStreaming(false);
       isStreamingRef.current = false;
       flushPendingMessage();
@@ -2313,7 +2967,27 @@ export function useChat(
 
     const handleChatSessionUpdated = (e: MessageEvent) => {
       if (isStale()) return;
-      const updatedSession: ChatSessionInfo = JSON.parse(e.data);
+      const rawSession = JSON.parse(e.data) as ChatSessionInfo;
+      /*
+      FNXC:ChatRemoteGenerationMirror 2026-09-17-18:57:
+      An older server (or any emit path that bypasses the SSE enrichment) delivers the raw store
+      row: `inFlightGeneration` present, `isGenerating` absent. Deriving the flag here keeps the
+      remote-generation transcript attach working across the wire upgrade boundary. The flag's
+      only consumer here is the attach below: no chat sidebar row renders a generating indicator
+      (`chat-session-item` shows pin / unread / window / preview only), so nothing in this handler
+      feeds a session-list spinner — that indicator is a deliberate follow-up, not this contract.
+
+      FNXC:ChatSidebarLiveness 2026-09-24-07:07 (RUFU-220):
+      The sidebar chip from that follow-up exists now, but it is still NOT a consumer of this flag,
+      and this handler must stay as it is. The chip classifies the raw `inFlightGeneration` claim
+      through core's shared liveness classifier — the one the engine's reclaim sweep delegates to —
+      because a flag derived here can only ever say "generating" and could never name a claim old
+      enough to be reclaimed. Note that this line also repairs the flag for SSE-delivered rows,
+      which is why the chip must not read `isGenerating`: a row patched here would look live even
+      when its claim's age says the sweep already considers it reclaimable.
+      */
+      const derivedGenerating = rawSession.isGenerating ?? rawSession.inFlightGeneration?.status === "generating";
+      const updatedSession: ChatSessionInfo = { ...rawSession, isGenerating: derivedGenerating };
       setSessions((prev) => {
         const updated = prev.map((s) => (s.id === updatedSession.id ? updatedSession : s));
         return sortChatSessions(updated);
@@ -2326,8 +3000,29 @@ export function useChat(
         && pendingRefresh.version === activeSessionSelectionRef.current;
       if (activeSessionRef.current?.id === updatedSession.id && !awaitingAuthoritativeSnapshot) {
         setActiveSession(updatedSession);
-        if (updatedSession.isGenerating && !streamRef.current) {
+        if (derivedGenerating && !streamRef.current) {
           attachIfGenerating(updatedSession.id, updatedSession.inFlightGeneration);
+        }
+      } else if (awaitingAuthoritativeSnapshot) {
+        /*
+        FNXC:ChatWindows 2026-09-16-05:29:
+        Remember ONLY the title so the pending authoritative snapshot cannot silently discard a
+        freshly generated conversation name. The payload object itself is deliberately not retained.
+
+        FNXC:ChatWindows 2026-09-18-01:28:
+        FN-524: arm the deferral whenever the payload ASSERTS a title, including an erased one
+        (`""`, whitespace, or `null`) — clearing a name is a rename like any other and the header
+        must fall back to "Untitled conversation" instead of resurrecting the old name. Only an
+        ABSENT `title` field asserts nothing and defers nothing. The verbatim payload value is
+        stored so the active conversation and the list row converge on the exact same string.
+        */
+        const assertsTitle = Object.prototype.hasOwnProperty.call(updatedSession, "title");
+        if (assertsTitle && pendingRefresh) {
+          deferredSessionTitleRef.current = {
+            sessionId: pendingRefresh.sessionId,
+            version: pendingRefresh.version,
+            title: typeof updatedSession.title === "string" ? updatedSession.title : null,
+          };
         }
       }
     };
@@ -2390,6 +3085,9 @@ export function useChat(
         setStreamingText("");
         setStreamingThinking("");
         setStreamingToolCalls([]);
+        // FNXC:ChatPhaseStatus 2026-09-05-11:45: RUFU-188 (Code Review P1) — recovery-mode finalization via
+        // the SSE echo ends the stream's claim on the bubble; the phase label resets with its siblings.
+        setStreamingPhase(null);
         setIsStreaming(false);
         isStreamingRef.current = false;
         flushPendingMessage();
@@ -2505,11 +3203,13 @@ export function useChat(
     streamingText,
     streamingThinking,
     streamingToolCalls,
+    streamingPhase,
     pendingMessages,
     pendingQueueAction,
     selectSession,
     createSession,
     archiveSession,
+    handoffSession,
     archivedSessions,
     refreshArchivedSessions,
     unarchiveSession,
@@ -2526,6 +3226,8 @@ export function useChat(
     setSessionTags,
     sendMessage,
     editMessageAndResend,
+    editDraftRestore,
+    clearEditDraftRestore,
     stopStreaming,
     clearPendingMessage,
     updatePendingMessage,
@@ -2533,6 +3235,10 @@ export function useChat(
     forceSendPendingMessage,
     loadMoreMessages,
     hasMoreMessages,
+    loadMoreSessions,
+    hasMoreSessions,
+    hasMoreArchivedSessions,
+    sessionsLoadingMore,
     searchQuery,
     setSearchQuery,
     filteredSessions,

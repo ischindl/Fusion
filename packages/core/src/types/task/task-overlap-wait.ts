@@ -49,6 +49,22 @@ export interface OverlapWaitDeliveryProof {
   repository: string;
   target?: string;
   landedSha?: string;
+  /*
+  FNXC:OverlapWaitSynchronization 2026-09-15-19:20:
+  FN-429. A delivery rewritten by an integration-branch rebase keeps its patch and Fusion trailers while
+  changing SHA, so freshness cannot be proven from `landedSha` alone. `reconciledSha` records the SHA that
+  was proven equivalent and `reconciliationProof` the cumulative evidence that admitted it, both stored in
+  the existing receipt JSON (no migration). Persisting them is what lets Retry, an engine restart, or a
+  deleted worktree resume without re-deriving the proof — and `landedSha` is preserved, never rewritten.
+
+  FNXC:MergeRebuild0919 2026-09-19-21:45:
+  Canonical's compact line never carried FN-429, so its `OverlapWaitDeliveryProof` has neither field.
+  This line does: `packages/engine/src/executor/overlap-resume-gate.ts` writes and re-reads them, so they
+  stay. Union, not a vintage choice — the canonical `revalidate` decision/phase below and these two fields
+  are independent additions to the same receipt JSON.
+  */
+  reconciledSha?: string;
+  reconciliationProof?: string;
   landedFiles?: string[];
   noOp?: boolean;
   evidence?: "merge-details" | "workspace-landing" | "git-recapture" | "unavailable";

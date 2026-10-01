@@ -14,7 +14,7 @@
  * so it stays honest about which keys land in which scope.
  */
 import { describe, it, expect } from "vitest";
-import { isGlobalSettingsKey, isProjectSettingsKey } from "@fusion/core";
+import { isGlobalSettingsKey, isProjectSettingsKey, type McpServersSettings } from "@fusion/core";
 import { resolveScopedMcpSettings, splitSettingsSave, MODEL_LANE_KEYS } from "../components/settings/save-split";
 
 // Sanity-anchor the scope of the concrete keys this test relies on, so the
@@ -78,6 +78,29 @@ describe("resolveScopedMcpSettings", () => {
       global: { mcpServers: { enabled: true, servers: [globalServer] } },
       project: {},
     } as never)).toBeUndefined();
+  });
+});
+
+/*
+FNXC:TaskWindowIdentity 2026-09-14-17:46:
+FN-392 removed `taskPopupsBoardListOnly` from the settings schema without a migration. A historical stored value must
+stay inert: the key is neither a global nor a project key any more, so the save split cannot route it into a patch and
+can never rewrite it back to the server.
+*/
+describe("removed task popup scoping setting", () => {
+  it("belongs to no settings scope and is omitted from every patch", () => {
+    expect(isProjectSettingsKey("taskPopupsBoardListOnly")).toBe(false);
+    expect(isGlobalSettingsKey("taskPopupsBoardListOnly")).toBe(false);
+
+    const result = splitSettingsSave({
+      payload: { taskPopupsBoardListOnly: false, requireTaskRecommendations: true } as never,
+      initialValues: { taskPopupsBoardListOnly: true, requireTaskRecommendations: false } as never,
+      initialScopedValues: { global: {}, project: { taskPopupsBoardListOnly: true, requireTaskRecommendations: false } } as never,
+      activeSection: "appearance",
+    });
+
+    expect(result.projectPatch).not.toHaveProperty("taskPopupsBoardListOnly");
+    expect(result.globalPatch).not.toHaveProperty("taskPopupsBoardListOnly");
   });
 });
 
@@ -461,6 +484,110 @@ describe("splitSettingsSave", () => {
     expect(globalPatch).toEqual({ gitlabEnabled: true });
   });
 
+  /*
+  FNXC:VerificationResourceBound 2026-09-10-13:09:
+  RUFU-212: the three verification resource-bound keys are dual-scope and route by ACTIVE SECTION
+  exactly like the GitLab pair above — both directions pinned. Without the global-branch gate a
+  project-section edit of the CPU quota would leak into global defaults; without the project mirror
+  a machine-wide edit would rewrite the project override. The FN-7535 shape is included: a project
+  override shadows the raw global initials, so the global diff must stay scoped-only or a genuine
+  global edit becomes a permanently dead config.
+  */
+  it("routes verification resource-bound edits to global settings only from the scheduling-global section", () => {
+    const initialScopedValues = {
+      global: { verificationCpuQuotaPercent: 150, verificationCpuIoWeight: 10, verificationMemoryMaxMb: undefined },
+      // A divergent project override exists and must remain untouched by a global-section save.
+      project: { verificationCpuQuotaPercent: 400 },
+    } as never;
+
+    const { globalPatch, projectPatch } = splitSettingsSave({
+      payload: { verificationCpuQuotaPercent: 200, verificationCpuIoWeight: 5, verificationMemoryMaxMb: undefined },
+      initialValues: null,
+      initialScopedValues,
+      activeSection: "scheduling-global",
+    });
+
+    // memoryMaxMb stayed unset (present-but-undefined both sides) → no spurious write.
+    expect(globalPatch).toEqual({ verificationCpuQuotaPercent: 200, verificationCpuIoWeight: 5 });
+    // 200 !== the project's 400 override: only the project-mirror gate keeps it out of projectPatch.
+    expect(projectPatch).toEqual({});
+  });
+
+  it("routes verification resource-bound edits to project settings outside the scheduling-global section", () => {
+    const initialScopedValues = {
+      global: { verificationCpuQuotaPercent: 150 },
+      project: { verificationCpuIoWeight: 10 },
+    } as never;
+
+    const { globalPatch, projectPatch } = splitSettingsSave({
+      payload: { verificationCpuQuotaPercent: 150, verificationCpuIoWeight: 7 },
+      // Merged effective values: quota inherited from global, weight from the project override.
+      initialValues: { verificationCpuQuotaPercent: 150, verificationCpuIoWeight: 10 } as never,
+      initialScopedValues,
+      activeSection: "scheduling",
+    });
+
+    // The weight edit must not reach global defaults even though global never held the key —
+    // a raw scoped-global diff would see `changed` here; only the section gate suppresses it.
+    expect(globalPatch).toEqual({});
+    // The untouched inherited quota must not be materialized as a project override.
+    expect(projectPatch).toEqual({ verificationCpuIoWeight: 7 });
+  });
+
+  it("persists an explicit global resource-bound edit when scoped global initials omit the key but merged initialValues matches the new value", () => {
+    const initialScopedValues = {
+      global: {}, // the operator never saved a machine-wide value; key absent, not `undefined`
+      project: { verificationCpuQuotaPercent: 200 },
+    } as never;
+
+    const { globalPatch, projectPatch } = splitSettingsSave({
+      payload: { verificationCpuQuotaPercent: 200 },
+      // The project override makes the merged effective value equal the new global edit. Diffing
+      // against initialValues would classify this genuine global edit as "unchanged" and drop it
+      // (the FN-7535 dead-config shape) — scopedOnly routing is what keeps it alive.
+      initialValues: { verificationCpuQuotaPercent: 200 } as never,
+      initialScopedValues,
+      activeSection: "scheduling-global",
+    });
+
+    expect(globalPatch).toEqual({ verificationCpuQuotaPercent: 200 });
+    expect(projectPatch).toEqual({});
+  });
+
+  it("does not materialize inherited global resource-bound values as project overrides on a no-op project save", () => {
+    const initialScopedValues = {
+      global: { verificationCpuQuotaPercent: 150, verificationCpuIoWeight: 10, verificationMemoryMaxMb: 2048 },
+      project: {},
+    } as never;
+
+    const { globalPatch, projectPatch } = splitSettingsSave({
+      payload: { verificationCpuQuotaPercent: 150, verificationCpuIoWeight: 10, verificationMemoryMaxMb: 2048 },
+      initialValues: { verificationCpuQuotaPercent: 150, verificationCpuIoWeight: 10, verificationMemoryMaxMb: 2048 } as never,
+      initialScopedValues,
+      activeSection: "scheduling",
+    });
+
+    expect(globalPatch).toEqual({});
+    expect(projectPatch).toEqual({});
+  });
+
+  it("clears a project resource-bound override with null-as-delete when the row is emptied", () => {
+    const initialScopedValues = {
+      global: { verificationCpuQuotaPercent: 150 },
+      project: { verificationCpuQuotaPercent: 400 },
+    } as never;
+
+    const { globalPatch, projectPatch } = splitSettingsSave({
+      payload: { verificationCpuQuotaPercent: undefined }, // operator emptied the row → back to inheriting
+      initialValues: { verificationCpuQuotaPercent: 150 } as never, // merged effective falls back to global
+      initialScopedValues,
+      activeSection: "scheduling",
+    });
+
+    expect(projectPatch).toEqual({ verificationCpuQuotaPercent: null });
+    expect(globalPatch).toEqual({});
+  });
+
   it("clears a project GitLab token with null-as-delete while preserving selected token type", () => {
     const initialScopedValues = {
       global: {},
@@ -525,10 +652,10 @@ describe("splitSettingsSave", () => {
   });
 
   it("persists changed MCP scopes after navigating away from the MCP sections", () => {
-    const initialGlobalMcp = { enabled: false, servers: [] } as const;
-    const initialProjectMcp = { enabled: true, servers: [{ name: "deepwiki", transport: "stdio", command: "docs" }] } as const;
-    const nextGlobalMcp = { enabled: true, servers: [{ name: "global-docs", transport: "stdio", command: "docs" }] } as const;
-    const nextProjectMcp = { enabled: false, servers: [{ name: "deepwiki", transport: "stdio", command: "docs" }] } as const;
+    const initialGlobalMcp = { enabled: false, servers: [] } as McpServersSettings;
+    const initialProjectMcp = { enabled: true, servers: [{ name: "deepwiki", transport: "stdio", command: "docs" }] } as McpServersSettings;
+    const nextGlobalMcp = { enabled: true, servers: [{ name: "global-docs", transport: "stdio", command: "docs" }] } as McpServersSettings;
+    const nextProjectMcp = { enabled: false, servers: [{ name: "deepwiki", transport: "stdio", command: "docs" }] } as McpServersSettings;
 
     const { globalPatch, projectPatch } = splitSettingsSave({
       payload: { mcpServers: initialProjectMcp, language: "en" },
@@ -549,7 +676,7 @@ describe("splitSettingsSave", () => {
   });
 
   it("does not materialize inherited global MCP settings as a project override on a no-op save", () => {
-    const globalMcp = { enabled: true, servers: [{ name: "global-docs", transport: "stdio", command: "docs" }] } as const;
+    const globalMcp = { enabled: true, servers: [{ name: "global-docs", transport: "stdio", command: "docs" }] } as McpServersSettings;
     const { globalPatch, projectPatch } = splitSettingsSave({
       payload: { language: "en" },
       initialValues: { language: "en", mcpServers: globalMcp } as never,
@@ -569,8 +696,8 @@ describe("splitSettingsSave", () => {
   });
 
   it("persists scoped MCP edits when the initial scoped snapshot is unavailable", () => {
-    const globalMcp = { enabled: true, servers: [{ name: "global-docs", transport: "stdio", command: "docs" }] } as const;
-    const projectMcp = { enabled: true, servers: [{ name: "project-docs", transport: "stdio", command: "project-docs" }] } as const;
+    const globalMcp = { enabled: true, servers: [{ name: "global-docs", transport: "stdio", command: "docs" }] } as McpServersSettings;
+    const projectMcp = { enabled: true, servers: [{ name: "project-docs", transport: "stdio", command: "project-docs" }] } as McpServersSettings;
     const { globalPatch, projectPatch } = splitSettingsSave({
       payload: {},
       initialValues: null,

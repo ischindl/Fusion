@@ -1,7 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { execSync, spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { Settings, Task, TaskStore } from "@fusion/core";
 import { GridlockDetector } from "../healing/gridlock-detector.js";
 import type { GridlockEvent } from "../healing/gridlock-detector.js";
+import { resetCheckoutEmptinessProversForTesting } from "../worktree/checkout-emptiness.js";
 import { RENAMED_VOCAB, lifecycleIr } from "./_workflow-vocabulary-fixture.js";
 
 function createTask(id: string, overrides: Partial<Task> = {}): Task {
@@ -51,6 +56,14 @@ describe("GridlockDetector", () => {
       listTasks: vi.fn(async () => tasks),
       getSettings: vi.fn(async () => settings),
       parseFileScopeFromPrompt: vi.fn(async (taskId: string) => scopes[taskId] ?? []),
+      /*
+      RUFU-200: the detector now proves a would-be-dormant holder's checkout emptiness, so the fixture
+      must answer `getRootDir`. This root is not a git repository, so every proof here resolves to
+      `unknown`, which is the FAIL-CLOSED answer: the fixture's own dormant-holder cases below keep
+      asserting today's behavior (a retained checkout is a holder) rather than silently passing on a
+      downgrade. Proven-empty behavior is asserted against real git in the dedicated suite at the end.
+      */
+      getRootDir: vi.fn(() => "/rufu-200-nonexistent-root"),
     } as unknown as TaskStore;
     detector = new GridlockDetector(store, { onGridlock, onGridlockCleared });
   });
@@ -336,5 +349,95 @@ describe("GridlockDetector", () => {
 
     const event = await detector.detectGridlock();
     expect(event).toBeNull();
+  });
+});
+
+/*
+FNXC:OverlapScheduling 2026-09-08-23:35 (RUFU-200):
+Step 2's cross-surface invariant: the detector must reach the SAME lease verdict admission reaches, or
+it announces a gridlock the scheduler has already resolved. The cases above run against an unresolvable
+root (proof `unknown`, holder preserved); this suite runs the REAL prover against a REAL temporary
+repository so the `empty` downgrade is proven, not mocked. The holder keeps `baseCommitSha` pinned to
+the base commit so no test depends on remote-branch detection.
+*/
+const hasGit = spawnSync("git", ["--version"], { stdio: "pipe" }).status === 0;
+const describeIfGit = hasGit ? describe : describe.skip;
+
+describeIfGit("GridlockDetector dormant-lease emptiness agreement with admission (real git)", () => {
+  const repos: string[] = [];
+
+  function git(repo: string, command: string): string {
+    return execSync(command, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+  }
+
+  beforeEach(() => {
+    resetCheckoutEmptinessProversForTesting();
+  });
+
+  afterEach(() => {
+    resetCheckoutEmptinessProversForTesting();
+    for (const repo of repos.splice(0)) rmSync(repo, { recursive: true, force: true });
+  });
+
+  function setupRepoWithCleanHolderWorktree(): { repo: string; worktree: string; baseSha: string } {
+    const repo = mkdtempSync(path.join(os.tmpdir(), "rufu-200-detector-"));
+    repos.push(repo);
+    git(repo, "git init -b main");
+    git(repo, 'git config user.email "test@example.com"');
+    git(repo, 'git config user.name "Test"');
+    git(repo, "git commit --allow-empty -m init");
+    const baseSha = git(repo, "git rev-parse HEAD");
+    git(repo, "git branch fusion/HOLD");
+    const worktree = path.join(repo, "wt-hold");
+    git(repo, `git worktree add ${worktree} fusion/HOLD`);
+    return { repo, worktree, baseSha };
+  }
+
+  function board(repo: string, holderOverrides: Partial<Task>) {
+    const scope = ["packages/core/src/store.ts"];
+    const holder = createTask("FN-HOLD", {
+      column: "triage",
+      priority: "high",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      ...holderOverrides,
+    });
+    const localTasks = [createTask("FN-1", { column: "todo" }), holder];
+    const detectorStore = {
+      listTasks: vi.fn(async () => localTasks),
+      getSettings: vi.fn(async () => createSettings()),
+      parseFileScopeFromPrompt: vi.fn(async (taskId: string) => (taskId === "FN-1" ? scope : scope)),
+      getRootDir: vi.fn(() => repo),
+    } as unknown as TaskStore;
+    return new GridlockDetector(detectorStore, { onGridlock: vi.fn(), onGridlockCleared: vi.fn() });
+  }
+
+  it("reports no gridlock when the dormant holder's checkout is proven clean at base", async () => {
+    const { repo, worktree, baseSha } = setupRepoWithCleanHolderWorktree();
+    const detector = board(repo, { worktree, branch: "fusion/HOLD", baseCommitSha: baseSha });
+
+    expect(await detector.detectGridlock()).toBeNull();
+    detector.stop();
+  });
+
+  it("still reports the holder once it is one commit ahead of base", async () => {
+    const { repo, worktree, baseSha } = setupRepoWithCleanHolderWorktree();
+    git(worktree, "git commit --allow-empty -m 'work not yet landed'");
+    const detector = board(repo, { worktree, branch: "fusion/HOLD", baseCommitSha: baseSha });
+
+    const event = await detector.detectGridlock();
+    expect(event?.blockedTaskIds).toEqual(["FN-1"]);
+    expect(event?.blockingTaskIds).toEqual(["FN-HOLD"]);
+    detector.stop();
+  });
+
+  it("still reports the holder when its tree is dirty with zero commits ahead", async () => {
+    const { repo, worktree, baseSha } = setupRepoWithCleanHolderWorktree();
+    writeFileSync(path.join(worktree, "uncommitted.txt"), "draft\n", "utf-8");
+    const detector = board(repo, { worktree, branch: "fusion/HOLD", baseCommitSha: baseSha });
+
+    const event = await detector.detectGridlock();
+    expect(event?.blockedTaskIds).toEqual(["FN-1"]);
+    expect(event?.blockingTaskIds).toEqual(["FN-HOLD"]);
+    detector.stop();
   });
 });

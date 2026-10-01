@@ -1243,6 +1243,7 @@ describe("TaskReviewTab", () => {
         number: 1,
         title: "Existing PR",
         url: "https://example.com/pr/1",
+        commentCount: 0,
         status: "open",
         headBranch: "fusion/FN-1",
         baseBranch: "main",

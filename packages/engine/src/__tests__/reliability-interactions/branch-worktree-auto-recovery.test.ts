@@ -68,6 +68,11 @@ describe("reliability interaction: branch/worktree auto-recovery", () => {
     // The reset is an in-place atomic metadata patch, not an invalid same-column transition.
     expect(taskStore.updateTask).not.toHaveBeenCalled();
     expect(taskStore.updateTaskAtomic).toHaveBeenCalledTimes(1);
+    /* FNXC:BranchWriteProvenance 2026-08-23-18:30: clearing `branch` is a branch write, so recovery
+       stamps `branchWriteOrigin: "engine"`. Upstream moved this reset from updateTask to
+       updateTaskAtomic (in-place fenced patch), so the provenance assertion follows the mutator. */
+    const resetPatch = taskStore.updateTaskAtomic.mock.calls[0][1]({ ...t });
+    expect(resetPatch).toMatchObject({ branch: null, baseCommitSha: null, branchWriteOrigin: "engine" });
     expect(taskStore.moveTask).not.toHaveBeenCalled();
     expect(audit.database).toHaveBeenCalledWith(expect.objectContaining({ type: "branch-worktree:auto-requeue" }));
   });

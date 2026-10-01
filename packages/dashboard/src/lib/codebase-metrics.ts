@@ -1,6 +1,11 @@
 import { spawn } from "node:child_process";
 import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import { basename, resolve, sep } from "node:path";
+import {
+  AGGREGATE_RECORD_BYTES,
+  STRING_BYTES_PER_CHAR,
+} from "./retention-census.js";
+import { expiryAtOrBefore, registerBoundedWindowMap } from "./retention/bounded-window-map.js";
 
 export interface CodebaseMetrics {
   tokenEstimate: number;
@@ -30,6 +35,12 @@ export const MAX_FILE_BYTES = 2 * 1024 * 1024;
 export const MAX_DISK_ENTRIES = 500_000;
 export const MAX_WALK_MS = 4_000;
 export const CACHE_TTL_MS = 120_000;
+/**
+ * Ceiling on distinct project roots whose metrics are retained. Each entry holds an aggregate scan
+ * record, so the ceiling is a retention bound, not a tuning knob: a dashboard with more distinct
+ * roots than this recomputes the oldest rather than retaining every project forever.
+ */
+export const CODEBASE_METRICS_CACHE_MAX = 500;
 const RUN_SEGMENT_LENGTH = 4;
 const CALIBRATION_MULTIPLIER = 51 / 66;
 
@@ -42,6 +53,32 @@ Git source enumeration uses bounded `git ls-files -z`. Non-git fallback includes
 
 const cache = new Map<string, { result: CodebaseMetrics; expiresAt: number }>();
 export function resetCodebaseMetricsCache(): void { cache.clear(); }
+
+/*
+FNXC:RetentionCensus 2026-09-21-21:40 (RUFU-257):
+This cache was keyed by resolved project root with a 2-minute TTL that only ever *bypassed* an
+expired record on read — a root scanned once and never revisited retained its aggregate forever.
+The census owns reclamation here because no sweep existed: its tick deletes expired roots and
+clamps the remainder to CODEBASE_METRICS_CACHE_MAX.
+*/
+registerBoundedWindowMap<string, { result: CodebaseMetrics; expiresAt: number }>({
+  id: "codebase_metrics",
+  map: cache,
+  ceiling: CODEBASE_METRICS_CACHE_MAX,
+  ceilingConstant: "CODEBASE_METRICS_CACHE_MAX",
+  kind: "cache",
+  keys: "ttl",
+  expiryOf: (entry) => entry.expiresAt,
+  /*
+  FNXC:RetentionCensus 2026-09-21-23:20 (RUFU-257):
+  The read path serves a cached entry only while `expiresAt > now()`, so an entry is dead at its own
+  expiry instant. Reclaiming on that same comparison stops the census from retaining a row the cache
+  already refuses to serve; the helper's default strict rule is one tick lazier than any reader.
+  */
+  isExpired: expiryAtOrBefore,
+  now: () => Date.now(),
+  valueBytes: (entry) => AGGREGATE_RECORD_BYTES + entry.result.method.length * STRING_BYTES_PER_CHAR,
+});
 
 export function countPreTokenPieces(text: string): number {
   let pieces = 0;
@@ -121,6 +158,8 @@ export async function computeCodebaseMetrics(rootDir: string, options: CodebaseM
   };
   const cacheKey = resolve(rootDir); const cached = options.now === undefined ? cache.get(cacheKey) : undefined;
   if (cached && cached.expiresAt > now()) return cached.result;
+  // Delete-on-expire: a bypassed-but-retained record is the leak this path used to have.
+  if (cached) cache.delete(cacheKey);
   const root = await realpath(rootDir);
   let truncated = false; const sourceStart = now();
   const git = await gitFiles(root, limits.maxSourceEntries, now, sourceStart + limits.maxSourceWalkMs);
@@ -156,6 +195,13 @@ export async function computeCodebaseMetrics(rootDir: string, options: CodebaseM
   }
   await walkDisk(root);
   const result = { tokenEstimate, sourceFileCount, sourceByteCount, diskBytes, diskFileCount, method: "local-pretokenization-cl100k_base", truncated };
-  if (options.now === undefined) cache.set(cacheKey, { result, expiresAt: now() + limits.cacheTtlMs });
+  if (options.now === undefined) {
+    // Clamp at the insert site so the ceiling holds between census ticks, not only at a sweep.
+    if (cache.size >= CODEBASE_METRICS_CACHE_MAX && !cache.has(cacheKey)) {
+      const oldest = cache.keys().next();
+      if (!oldest.done) cache.delete(oldest.value);
+    }
+    cache.set(cacheKey, { result, expiresAt: now() + limits.cacheTtlMs });
+  }
   return result;
 }

@@ -84,12 +84,10 @@ export const PROJECT_SECTION_KEYS: Readonly<Record<string, readonly string[]>> =
     "mailAutoCleanupDays",
     "maxRecommendationsPerTask",
     "requireTaskRecommendations",
-    "recommendationMailboxNoticeEnabled",
     "mobileNavPrimaryItems",
+    /* FN-511 : option mobile de tiroir gestuel, réinitialisable avec la section General comme les autres clés de navigation. */
+    "mobileNavMenuSwipeGesture",
     "operationalLogRetentionDays",
-    "quickChatButtonMode",
-    "quickChatCloseOnOutsideClick",
-    "showQuickChatFAB",
     "showTaskChatsInCommonFeed",
     "taskPrefix",
     "workspaceMode",
@@ -133,9 +131,6 @@ export const PROJECT_SECTION_KEYS: Readonly<Record<string, readonly string[]>> =
     "worktrunk",
   ],
   scheduling: [
-    "archiveAgentLogMode",
-    "autoArchiveDoneAfterMs",
-    "autoArchiveDoneTasksEnabled",
     "engineerBacklogAutoClaim",
     "executorToolFailureRetryCount",
     "executorToolFailureRetryBackoffMs",
@@ -155,6 +150,16 @@ export const PROJECT_SECTION_KEYS: Readonly<Record<string, readonly string[]>> =
     "specStalenessMaxAgeMs",
     "staleHighFanoutBlockerAgeThresholdMs",
     "taskStuckTimeoutMs",
+    /*
+    FNXC:VerificationResourceBound 2026-09-10-13:09:
+    RUFU-212 dual-scope keys listed under the PROJECT section that EDITS them as overrides;
+    the same keys also appear under GLOBAL_SECTION_KEYS["scheduling-global"] (the section that
+    edits the machine-wide fallback). Section keys partition editing authority, not schema
+    scope, so this is not a membership conflict — same precedent as githubTrackingDefaultRepo.
+    */
+    "verificationCpuIoWeight",
+    "verificationCpuQuotaPercent",
+    "verificationMemoryMaxMb",
   ],
   "scheduled-evals": ["evalSettings"],
   "node-routing": ["defaultNodeId", "unavailableNodePolicy"],

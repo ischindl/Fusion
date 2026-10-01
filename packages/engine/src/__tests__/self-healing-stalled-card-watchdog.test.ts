@@ -2,23 +2,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import type { Settings, Task, TaskStore } from "@fusion/core";
 
-const { recordRunAuditEventMock } = vi.hoisted(() => ({
-  recordRunAuditEventMock: vi.fn(async () => undefined),
-}));
 /*
-FNXC:StalledCardWatchdog 2026-08-23-19:02:
-`src/run-audit.ts` was folded into `src/util/run-audit.ts` by the domain-folder move (cb57093d03), so a
-mock aimed at the old specifier intercepted nothing and every audit assertion in this file went silent —
-the detect count still passed while the emission was never observed. Mock the module self-healing.ts
-actually imports.
+FNXC:StalledCardWatchdog 2026-08-22-15:18 (RUFU-164):
+Audit assertions target the CURRENT emit path (createRunAuditor → emitBoundedRunAudit →
+store `recordRunAuditEvent`, FN-9175) instead of a module mock. The previous top-level
+`vi.mock("../run-audit.js")` factory targeted a root-level module path production no
+longer imports (the sweep imports the auditor from the `./util` subtree), so the factory
+never engaged: the audited mock stayed at 0 calls while the real emission went unobserved.
+The event at the store sink is the `RunAuditEventInput` shape (`mutationType` /
+`domain: "database"` / merged metadata that also carries `phase`), not the raw
+database-input shape — assertions pin the ids/counts-only subset, never a raw-input
+`type` key.
 */
-vi.mock("../util/run-audit.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../util/run-audit.js")>();
-  return {
-    ...actual,
-    createRunAuditor: vi.fn(() => ({ database: recordRunAuditEventMock, git: vi.fn(), filesystem: vi.fn(), sandbox: vi.fn() })),
-  };
-});
 
 import { SelfHealingManager } from "../self-healing.js";
 import { executingTaskLock } from "../agents/active-session-registry.js";
@@ -64,7 +59,15 @@ function storeFor(tasks: Task[], workItems: Record<string, Array<{ state: string
     moveTask: vi.fn(async () => undefined),
     logEntry: vi.fn(async () => undefined),
     listWorkflowWorkItemsForTask: vi.fn(async (id: string) => workItems[id] ?? []),
+    /* FN-9175 sink: the real createRunAuditor → emitBoundedRunAudit path writes here;
+       without it createRunAuditor no-ops and audit assertions would be vacuous. */
+    recordRunAuditEvent: vi.fn(async () => undefined),
   }) as unknown as TaskStore & EventEmitter;
+}
+
+/** Run-audit sink accessor for assertions — mirrors the file's vi.fn cast idiom. */
+function auditSink(store: TaskStore & EventEmitter) {
+  return store.recordRunAuditEvent as ReturnType<typeof vi.fn>;
 }
 
 function manager(store: TaskStore, opts: Record<string, unknown> = {}) {
@@ -86,9 +89,12 @@ describe("stalled-card watchdog", () => {
     const store = storeFor([task("FN-STALL", { column: "triage", status: "planning" })]);
 
     expect(await manager(store).detectStalledCards()).toBe(1);
-    expect(recordRunAuditEventMock).toHaveBeenCalledWith(expect.objectContaining({
-      type: "task:stall-watchdog-detected",
+    const audit = auditSink(store);
+    expect(audit).toHaveBeenCalledTimes(1);
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+      mutationType: "task:stall-watchdog-detected",
       target: "FN-STALL",
+      domain: "database",
       metadata: expect.objectContaining({ taskId: "FN-STALL", column: "triage", status: "planning" }),
     }));
   });
@@ -99,7 +105,7 @@ describe("stalled-card watchdog", () => {
       { "FN-QUEUED": [{ state: "held" }] },
     );
     expect(await manager(store).detectStalledCards()).toBe(0);
-    expect(recordRunAuditEventMock).not.toHaveBeenCalled();
+    expect(auditSink(store)).not.toHaveBeenCalled();
   });
 
   it("stays silent for a card that is actively executing", async () => {
@@ -119,7 +125,6 @@ describe("stalled-card watchdog", () => {
   it("stays silent for terminal columns and for recently-touched cards", async () => {
     const store = storeFor([
       task("FN-DONE", { column: "done" }),
-      task("FN-ARCHIVED", { column: "archived" }),
       task("FN-FRESH", { updatedAt: new Date(NOW - 60_000).toISOString() }),
     ]);
     expect(await manager(store).detectStalledCards()).toBe(0);
@@ -128,7 +133,7 @@ describe("stalled-card watchdog", () => {
   /*
   FNXC:WorkflowResolvedColumns 2026-07-31-17:45:
   `sweepTerminalColumns` was UNCOVERED on the #3115 map. The case directly above asserts the terminal
-  skip using `done` and `archived` — the ids — so blinding the resolver leaves it green.
+  skip using the built-in `done` id, so blinding the resolver leaves it green.
 
   On a renamed board the skip matched nothing, so FINISHED cards were scanned as live and a card
   parked in a renamed completion lane could be reported stalled. A watchdog that cries about
@@ -138,7 +143,6 @@ describe("stalled-card watchdog", () => {
   it("stays silent for a card resting in a RENAMED terminal lane", async () => {
     const store = storeFor([
       task("FN-SHIPPED", { column: "shipped", status: "planning" }),
-      task("FN-VAULT", { column: "vault", status: "planning" }),
     ]);
     (store as unknown as { listWorkflowDefinitions: unknown }).listWorkflowDefinitions = vi.fn(async () => [{
       ir: {
@@ -149,7 +153,6 @@ describe("stalled-card watchdog", () => {
         columns: [
           { id: "building", name: "building", traits: [{ trait: "wip", config: { limitSetting: "maxConcurrent" } }] },
           { id: "shipped", name: "shipped", traits: [{ trait: "complete" }] },
-          { id: "vault", name: "vault", traits: [{ trait: "archived" }] },
         ],
       },
     }]);

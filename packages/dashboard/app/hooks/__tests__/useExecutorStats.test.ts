@@ -345,6 +345,8 @@ describe("useExecutorStats", () => {
           globalPause: false,
           enginePaused: false,
           maxConcurrent: 6,
+          effectiveMaxConcurrent: 6,
+          concurrencyBindingKnob: "maxConcurrent",
           lastActivityAt: "2026-04-01T12:05:00.000Z",
         });
         await projectBFetch.promise;
@@ -429,6 +431,8 @@ describe("useExecutorStats", () => {
           globalPause: false,
           enginePaused: false,
           maxConcurrent: 4,
+          effectiveMaxConcurrent: 4,
+          concurrencyBindingKnob: "maxConcurrent",
           lastActivityAt: "2026-04-01T12:00:00.000Z",
         });
         await initialFetch.promise;
@@ -467,6 +471,8 @@ describe("useExecutorStats", () => {
           globalPause: false,
           enginePaused: false,
           maxConcurrent: 7,
+          effectiveMaxConcurrent: 7,
+          concurrencyBindingKnob: "maxConcurrent",
           lastActivityAt: "2026-04-01T12:05:00.000Z",
         });
         await backgroundFetch.promise;
@@ -669,7 +675,6 @@ describe("useExecutorStats", () => {
         { ...createMockTask("FN-004", "in-progress"), updatedAt: freshUpdatedAt },
         createMockTask("FN-005", "in-review"),
         { ...createMockTask("FN-006", "done"), status: "running" } as Task,
-        createMockTask("FN-007", "archived"),
         { ...createMockTask("FN-008", "todo"), blockedBy: "FN-006" },
         { ...createMockTask("FN-009", "todo"), dependencies: ["FN-006"] },
         { ...createMockTask("FN-010", "todo"), blockedBy: ["FN-006", "FN-006"] } as unknown as Task,
@@ -700,7 +705,6 @@ describe("useExecutorStats", () => {
         createMockTask("FN-001", "triage"),
         { ...createMockTask("FN-002", "triage"), status: "planning" } as Task,
         createMockTask("FN-003", "done"),
-        createMockTask("FN-004", "archived"),
         { ...createMockTask("FN-005", "custom-column" as Task["column"]) },
         { ...createMockTask("FN-006", "custom-planning" as Task["column"]), status: "planning" } as Task,
       ];

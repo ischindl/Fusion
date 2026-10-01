@@ -197,6 +197,159 @@ describe("streamChatResponse SSE parser", () => {
     });
   });
 
+  /*
+  FNXC:ChatMessageEdit 2026-09-16-05:58:
+  FN-459. A valid in-band `user_message` must reach `onUserMessage` carrying the persisted row, and a
+  malformed one must be skipped WITHOUT terminating the stream (`done` still arrives). Without the
+  in-band identity the optimistic `temp-<ts>` id survived and an edit produced a guaranteed 404.
+  */
+
+  /*
+  FNXC:ChatPhaseStatus 2026-09-05-11:45:
+  RUFU-188 (Code Review P0): the `phase` case added to the SSE dispatch switch had no test on either
+  client entry point — a dropped `case "phase"` would keep every component test green because they stub
+  the handler layer. These pin that both `streamChatResponse` and `attachChatStream` parse
+  `{ phase, active }` frames and hand them to `onPhase` in stream order.
+  */
+  it("dispatches phase frames to onPhase in stream order", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        createChunkedStream([
+          "event: phase\n",
+          "data: {\"phase\":\"compacting\",\"active\":true}\n\n",
+          "event: phase\n",
+          "data: {\"phase\":\"compacting\",\"active\":false}\n\n",
+          "event: text\n",
+          "data: \"answer\"\n\n",
+          "event: done\n",
+          "data: {\"messageId\":\"msg-phase\"}\n\n",
+        ]),
+        { status: 200 },
+      ),
+    );
+
+    const events: string[] = [];
+
+    streamChatResponse("s-1", "hi", {
+      onPhase: (data) => events.push(`phase:${data.phase}:${data.active}`),
+      onText: () => events.push("text"),
+      onDone: () => events.push("done"),
+      onError: vi.fn(),
+    });
+
+    await vi.waitFor(() => {
+      expect(events).toEqual(["phase:compacting:true", "phase:compacting:false", "text", "done"]);
+    });
+  });
+
+  /*
+  FNXC:ChatSendDurability 2026-09-07-11:00:
+  RUFU-192: same double-entry-point trap RUFU-188 hit with `phase` — a dropped `case "user_persisted"`
+  keeps every component/hook test green (they stub this layer), yet the composer loses its only
+  durable-acknowledgement signal and destroys text on unproven sends. These pin that both
+  `streamChatResponse` and `attachChatStream` parse `{ messageId }` acks, hand them to
+  `onUserPersisted` in stream order, and SKIP malformed or non-string-messageId frames without
+  erroring the stream (a lost ack is safer than a fabricated durability claim).
+  */
+  it("dispatches user_persisted frames to onUserPersisted in stream order and skips malformed acks", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        createChunkedStream([
+          "event: text\n",
+          "data: \"answer\"\n\n",
+          "event: user_persisted\n",
+          "data: {\"messageId\":42}\n\n",
+          "event: user_persisted\n",
+          "data: not-json\n\n",
+          "event: user_persisted\n",
+          "data: {\"messageId\":\"user-row-1\"}\n\n",
+          "event: done\n",
+          "data: {\"messageId\":\"msg-ack\"}\n\n",
+        ]),
+        { status: 200 },
+      ),
+    );
+
+    const events: string[] = [];
+    const onError = vi.fn();
+
+    streamChatResponse("s-1", "hi", {
+      onText: () => events.push("text"),
+      onUserPersisted: (messageId) => events.push(`user_persisted:${messageId}`),
+      onDone: () => events.push("done"),
+      onError,
+    });
+
+    await vi.waitFor(() => {
+      expect(events).toEqual(["text", "user_persisted:user-row-1", "done"]);
+    });
+    expect(onError).not.toHaveBeenCalled();
+  });
+  it("delivers a valid user_message event to onUserMessage", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        createChunkedStream([
+          "event: user_message\n",
+          "data: {\"message\":{\"id\":\"msg-ab12cd34\",\"sessionId\":\"s-1\",\"role\":\"user\",\"content\":\"bonjour\",\"thinkingOutput\":null,\"metadata\":null,\"createdAt\":\"2026-09-16T00:00:00.000Z\"}}\n\n",
+          "event: done\n",
+          "data: {\"messageId\":\"msg-reply\"}\n\n",
+        ]),
+        { status: 200 },
+      ),
+    );
+
+    const userMessages: Array<{ message: { id: string; content: string } }> = [];
+    const donePayloads: Array<{ messageId: string }> = [];
+
+    streamChatResponse("s-1", "bonjour", {
+      onUserMessage: (data) => userMessages.push(data as { message: { id: string; content: string } }),
+      onDone: (data) => donePayloads.push(data),
+      onError: vi.fn(),
+    });
+
+    await vi.waitFor(() => {
+      expect(userMessages).toHaveLength(1);
+      expect(donePayloads).toHaveLength(1);
+    });
+    expect(userMessages[0]?.message.id).toBe("msg-ab12cd34");
+    expect(userMessages[0]?.message.content).toBe("bonjour");
+  });
+
+  it("skips a malformed user_message without terminating the stream", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        createChunkedStream([
+          "event: user_message\n",
+          "data: {\"message\":{\"sessionId\":\"s-1\"}}\n\n",
+          "event: user_message\n",
+          "data: not-json\n\n",
+          "event: text\n",
+          "data: \"still streaming\"\n\n",
+          "event: done\n",
+          "data: {\"messageId\":\"msg-reply\"}\n\n",
+        ]),
+        { status: 200 },
+      ),
+    );
+
+    const onUserMessage = vi.fn();
+    const textChunks: string[] = [];
+    const donePayloads: Array<{ messageId: string }> = [];
+
+    streamChatResponse("s-1", "bonjour", {
+      onUserMessage,
+      onText: (data) => textChunks.push(data),
+      onDone: (data) => donePayloads.push(data),
+      onError: vi.fn(),
+    });
+
+    await vi.waitFor(() => {
+      expect(donePayloads).toEqual([{ messageId: "msg-reply" }]);
+    });
+    expect(onUserMessage).not.toHaveBeenCalled();
+    expect(textChunks).toEqual(["still streaming"]);
+  });
+
   it("keeps accepted streams open when no real stream events arrive before timeout", async () => {
     vi.useFakeTimers();
     const encoder = new TextEncoder();
@@ -223,9 +376,11 @@ describe("streamChatResponse SSE parser", () => {
 
     expect(onError).not.toHaveBeenCalled();
 
-    streamController?.enqueue(encoder.encode("event: text\ndata: \"Late reply\"\n\n"));
-    streamController?.enqueue(encoder.encode("event: done\ndata: {\"messageId\":\"msg-late\"}\n\n"));
-    streamController?.close();
+    /* TS narrows the let to null across the closure assignment; re-widen to the declared type (no behavior change — ReadableStream's start callback runs synchronously). */
+    const lateStreamController = streamController as ReadableStreamDefaultController<Uint8Array> | null;
+    lateStreamController?.enqueue(encoder.encode("event: text\ndata: \"Late reply\"\n\n"));
+    lateStreamController?.enqueue(encoder.encode("event: done\ndata: {\"messageId\":\"msg-late\"}\n\n"));
+    lateStreamController?.close();
 
     await vi.waitFor(() => {
       expect(textChunks).toEqual(["Late reply"]);
@@ -353,10 +508,72 @@ describe("attachChatStream", () => {
     });
   });
 
+
+  it("replays phase frames through the attach dispatch to onPhase", async () => {
+    // FNXC:ChatPhaseStatus 2026-09-05-11:45: RUFU-188 (Code Review P0) — reconnect replay goes through the
+    // SECOND switch block in the SSE client; both must dispatch `phase` or a resumed tab loses the label.
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        createChunkedStream([
+          "event: phase\n",
+          "data: {\"phase\":\"compacting\",\"active\":true}\n\n",
+          "event: phase\n",
+          "data: {\"phase\":\"compacting\",\"active\":false}\n\n",
+          "event: done\n",
+          "data: {\"messageId\":\"m-phase\"}\n\n",
+        ]),
+        { status: 200 },
+      ),
+    );
+
+    const events: string[] = [];
+
+    attachChatStream("s-1", {
+      onPhase: (data) => events.push(`phase:${data.phase}:${data.active}`),
+      onDone: () => events.push("done"),
+      onError: vi.fn(),
+    });
+
+    await vi.waitFor(() => {
+      expect(events).toEqual(["phase:compacting:true", "phase:compacting:false", "done"]);
+    });
+  });
+
+  /*
+  FNXC:ChatSendDurability 2026-09-07-11:00:
+  RUFU-192: reconnect replay goes through the SECOND switch block in the SSE client; a resumed tab
+  must re-receive the ack (consumers treat it idempotently) or a mid-send reload silently downgrades
+  a proven-persisted turn to unproven.
+  */
+  it("replays user_persisted frames through the attach dispatch to onUserPersisted", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        createChunkedStream([
+          "event: user_persisted\n",
+          "data: {\"messageId\":\"user-row-replay\"}\n\n",
+          "event: done\n",
+          "data: {\"messageId\":\"m-ack\"}\n\n",
+        ]),
+        { status: 200 },
+      ),
+    );
+
+    const events: string[] = [];
+
+    attachChatStream("s-1", {
+      onUserPersisted: (messageId) => events.push(`user_persisted:${messageId}`),
+      onDone: () => events.push("done"),
+      onError: vi.fn(),
+    });
+
+    await vi.waitFor(() => {
+      expect(events).toEqual(["user_persisted:user-row-replay", "done"]);
+    });
+  });
   it("aborts fetch when close is called", async () => {
     let signal: AbortSignal | undefined;
     vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => {
-      signal = init?.signal;
+      signal = init?.signal ?? undefined;
       return new Promise<Response>(() => {
         // keep open until aborted
       });

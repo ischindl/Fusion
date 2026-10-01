@@ -9,13 +9,15 @@ type TaskRecommendationNoticeMetadata = MessageMetadata & {
   recommendationIds?: unknown;
 };
 
+
 type NoticeTarget = {
   taskId: string;
   recommendationIds?: string[];
 };
 
 function getNoticeTarget(metadata?: MessageMetadata): NoticeTarget | null {
-  if (metadata?.kind !== "task-recommendation-notice") return null;
+  /* FNXC:TaskRecommendations 2026-09-04 (this line): completion notices carry the same payload and render the same affordance. */
+  if (metadata?.kind !== "task-recommendation-notice" && metadata?.kind !== "task-completion-notice") return null;
   const notice = metadata as TaskRecommendationNoticeMetadata;
   const taskId = notice.taskId?.trim();
   if (!taskId) return null;

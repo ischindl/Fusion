@@ -106,6 +106,12 @@ const INSIGHT_CATEGORY_BY_MEMORY_CATEGORY: Record<MemoryInsightCategory, Insight
   context: "other",
 };
 
+/*
+FNXC:RetentionCensus 2026-09-23-09:35 (RUFU-257):
+`activeRunControllers` exists so DELETE /api/insights/runs/:id can abort a live run. Both the manual and
+scheduled run paths delete the entry in their `finally`, so the map holds only runs in flight.
+*/
+// retention-owner-deleted: one AbortController per running insight run — deleted in the run's finally block on success, failure and abort
 const activeRunControllers = new Map<string, AbortController>();
 
 /*

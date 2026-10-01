@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type { JSX } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -12,7 +13,6 @@ vi.mock("react-i18next", () => ({
 
 function makeProps(overrides: Partial<MergeSectionProps["form"]> = {}): MergeSectionProps {
   return {
-    scopeBanner: null,
     form: { autoMerge: true, planApprovalMode: "workflow", merger: { mode: "ai" }, testMode: false, mergeStrategy: "pull-request", ...overrides } as MergeSectionProps["form"],
     setForm: vi.fn(),
     integrationBranchOptions: ["main"],

@@ -10,11 +10,13 @@ import type {
   WorkflowNodeExtensionResult,
   WorkflowStepResult,
   WorkflowStepNotRunReason,
+  PostMergeEvidenceKind,
 } from "@fusion/core";
-import { BUILTIN_CODING_WORKFLOW_IR, FAST_LANE_SKIP_VALUE, FAST_MODE_BYPASS_ACTOR, PLAN_REVIEW_GROUP_ID, WORKFLOW_STEP_NOT_RUN_REASONS, WorkflowIrError, computeWorkflowIrPin, getWorkflowExtensionRegistry, instanceNodeId, resolveFastLaneRoute, resolveMaxReworkCycles, isExperimentalFeatureEnabled, GRAPH_NATIVE_POST_MERGE_FLAG, isCompletionSummaryNode, classifyReviewLease, isWorkflowOptionalGroupEnabled, isPlanReviewSatisfied, parseNoOpCompletionMarker, requiresContentReviewProof, resolveRequiredPreMergeStepIds } from "@fusion/core";
+import { BUILTIN_CODING_WORKFLOW_IR, FAST_LANE_SKIP_VALUE, FAST_MODE_BYPASS_ACTOR, PLAN_REVIEW_GROUP_ID, WORKFLOW_STEP_NOT_RUN_REASONS, WorkflowIrError, computeWorkflowIrPin, getWorkflowExtensionRegistry, instanceNodeId, resolveFastLaneRoute, resolveMaxReworkCycles, isExperimentalFeatureEnabled, GRAPH_NATIVE_POST_MERGE_FLAG, isCompletionSummaryNode, classifyReviewLease, isWorkflowOptionalGroupEnabled, isPlanReviewSatisfied, parseNoOpCompletionMarker, requiresContentReviewProof, resolveRequiredPreMergeStepIds, authoredPostMergeEvidenceKindOf } from "@fusion/core";
 import { isNonPlanDefectPlanReviewFailure } from "../errors/transient-error-detector.js";
 import { isSessionContentionError } from "../errors/transient-error-patterns.js";
 import { isRequiredArtifactReadFailedValue, parseRequiredArtifactMissingValue } from "../execution/required-workflow-artifacts.js";
+import { workflowStepMissingVerdictNotice } from "../executor/workflow-step-verdict.js";
 
 import {
   createDefaultNodeHandlers,
@@ -62,9 +64,7 @@ function parseWorkflowStepNotRunReason(value: unknown): WorkflowStepNotRunReason
     : undefined;
 }
 
-type WorkflowNodeSettings = Pick<Settings, "experimentalFeatures"> & {
-  reviewerInlineFixes?: boolean;
-};
+type WorkflowNodeSettings = Pick<Settings, "experimentalFeatures">;
 
 /** A classified Plan Review provider outage terminates the graph without replan traversal. */
 export const PLAN_REVIEW_PROVIDER_FAILURE_HOLD_VALUE = "plan-review-provider-failure-hold";
@@ -164,9 +164,31 @@ export type WorkflowNodeAbortKind = "engine-pause";
 export const WORKFLOW_INTERRUPTED_NODE_ID_CONTEXT_KEY = "workflow:interruptedNodeId";
 export const WORKFLOW_INTERRUPTED_NODE_ABORT_KIND_CONTEXT_KEY = "workflow:interruptedNodeAbortKind";
 export const WORKFLOW_OPTIONAL_GROUP_CONTEXT_KEY = "workflow:optionalGroupActive";
+/** Failure value consumed as a graph suspension before the Plan Review replan edge. */
+export const WORKFLOW_DEPENDENCY_CONFIGURATION_BLOCK_VALUE = "dependency-configuration-blocked";
 /** Explicit parent marker for template execution; never inferred from template labels or output. */
 export const WORKFLOW_REVIEW_KIND_CONTEXT_KEY = "workflow:reviewKind";
 export const WORKFLOW_BLOCKING_SEVERITY_CONTEXT_KEY = "workflow:blockingSeverity";
+/*
+FNXC:PostMergeEvidenceContract 2026-10-01-07:58 (RUFU-457):
+The evidence kind an optional-group AUTHORS lives on the group node's config, but the prompt runs in the
+template child, which cannot see it. Carry it the same way review kind and blocking severity are carried, so
+the dispatch-time prompt materialization applies the same authored-first rule the gate-status seam applies —
+otherwise a workflow that authored `integration-only` would be handed a pipeline demand by the platform
+substitution and contradicted by its own gate. Absent = authored nothing, which is every built-in.
+*/
+export const WORKFLOW_POST_MERGE_EVIDENCE_KIND_CONTEXT_KEY = "workflow:postMergeEvidenceKind";
+
+/**
+ * Read the propagated evidence kind out of a run context, validating it through the same allow-list that
+ * authored it. A persisted continuation from an older build, a hand-written context value, or a value
+ * renamed upstream all read as "authored nothing", which is the safe reading: the platform default applies.
+ */
+export function postMergeEvidenceKindOfContext(
+  context: Record<string, unknown> | undefined,
+): PostMergeEvidenceKind | undefined {
+  return authoredPostMergeEvidenceKindOf({ evidence: { kind: context?.[WORKFLOW_POST_MERGE_EVIDENCE_KIND_CONTEXT_KEY] } });
+}
 export const WORKFLOW_NODE_ENGINE_PAUSE_ABORT_KIND: WorkflowNodeAbortKind = "engine-pause";
 
 export interface WorkflowNodeResult {
@@ -287,6 +309,21 @@ export interface WorkflowGraphExecutorDeps {
     task: TaskDetail,
     requirement: WorkflowNodePreparationRequirement,
   ) => void | Promise<void>;
+  /*
+   * FNXC:HumanMergeApproval 2026-09-17-18:09:
+   * FN-514's DELIVERY BARRIER. Invoked immediately before a delivery-effecting node
+   * (`merge-attempt`, `branch-group-member-integration`, `branch-group-promotion`, `pr-merge`)
+   * executes, with the freshly read task. A `hold` outcome suspends traversal on the existing
+   * admission-hold marker family instead of following a failure edge, so the card parks on a `held`
+   * continuation rather than terminalizing or writing a fake pending step result.
+   *
+   * Absent → no barrier, so every legacy graph test stays byte-identical. Planning, execution,
+   * verification, review and a workflow's preparatory `pr-create` node are never consulted.
+   */
+  humanMergeDeliveryBarrier?: (
+    node: WorkflowIrNode,
+    task: TaskDetail,
+  ) => Promise<{ kind: "proceed" } | { kind: "hold"; marker: string; reason: string }>;
   /**
    * Invoked immediately before an agent-executed node handler. Implementations
    * may fence a durable workflow principal or fail closed before any session is
@@ -1210,11 +1247,13 @@ export class WorkflowGraphExecutor {
               FNXC:FastOptionalSteps 2026-06-30-09:12:
               Optional-group template execution carries the parent group id in context so fast mode can skip only top-level review/validation gates. Once an operator explicitly enables an optional group, that selection is stronger than the fast default and its prompt/script/gate body must run.
               */
+              const authoredEvidenceKind = authoredPostMergeEvidenceKindOf(node.config);
               const optionalGroupContext = {
                 ...(contextOverride ?? context),
                 [WORKFLOW_OPTIONAL_GROUP_CONTEXT_KEY]: node.id,
                 ...(this.workflowReviewKind(node) ? { [WORKFLOW_REVIEW_KIND_CONTEXT_KEY]: this.workflowReviewKind(node) } : {}),
                 ...(this.workflowBlockingSeverity(node) ? { [WORKFLOW_BLOCKING_SEVERITY_CONTEXT_KEY]: this.workflowBlockingSeverity(node) } : {}),
+                ...(authoredEvidenceKind ? { [WORKFLOW_POST_MERGE_EVIDENCE_KIND_CONTEXT_KEY]: authoredEvidenceKind } : {}),
               };
               return this.executeMaterializedTemplateNode(tNode, task, settings, optionalGroupContext, ir, sig);
             },
@@ -1250,6 +1289,7 @@ export class WorkflowGraphExecutor {
           const notRunReason = node.id === PLAN_REVIEW_GROUP_ID
             ? undefined
             : parseWorkflowStepNotRunReason(exitContextPatch?.notRunReason);
+          const verdictRequired = exitContextPatch?.verdictRequired === true;
           /*
           FNXC:WorkflowStepNotRun 2026-08-28-14:13:
           A successful graph edge can mean no check ran. Persist that outcome as terminal `skipped`
@@ -1257,14 +1297,27 @@ export class WorkflowGraphExecutor {
           merge, retry, and status-switch behavior non-blocking. Plan Review is excluded because its
           fail-closed satisfaction gate would turn this record into an automatic hold with no exit.
           */
+          /*
+          FNXC:ReviewVerdictAuthority 2026-09-03-05:40:
+          A verdict-required result with no verdict must be terminally failed before advisory mapping.
+          `advisory_failure` is invisible to both the merge blocker's failed-status branch and the
+          privileged latest-failed-review selector, which otherwise leaves a merge block with no
+          recovery owner or audited bypass. A fixed not-run reason remains terminally skipped.
+          */
           let stepStatus: WorkflowStepResult["status"];
           if (groupResult.outcome === "failure") stepStatus = "failed";
+          else if (notRunReason) stepStatus = "skipped";
+          else if (verdictRequired && !verdict) stepStatus = "failed";
           else if (groupResult.value === "advisory_failure") stepStatus = "advisory_failure";
           else if (verdict === "REVISE") stepStatus = "advisory_failure";
-          else if (notRunReason) stepStatus = "skipped";
           else stepStatus = "passed";
           let stepOutput = typeof exitContextPatch?.output === "string" ? exitContextPatch.output : undefined;
-          const stepNotes = typeof exitContextPatch?.notes === "string" ? exitContextPatch.notes : undefined;
+          let stepNotes = typeof exitContextPatch?.notes === "string" ? exitContextPatch.notes : undefined;
+          if (verdictRequired && !verdict && !notRunReason) {
+            const missingVerdictNotice = workflowStepMissingVerdictNotice("no-verdict");
+            stepOutput = missingVerdictNotice;
+            stepNotes = missingVerdictNotice;
+          }
           const closeMarker = verdict === "CLOSE_NO_OP" ? parseNoOpCompletionMarker(stepNotes) : null;
           if (verdict === "CLOSE_NO_OP" && !closeMarker) {
             stepStatus = "failed";
@@ -1333,6 +1386,7 @@ export class WorkflowGraphExecutor {
             source: "optional-group",
             status: stepStatus,
             ...(notRunReason && stepStatus === "skipped" ? { notRunReason } : {}),
+            ...(verdictRequired ? { verdictRequired: true } : {}),
             ...(this.workflowReviewKind(node) ? { reviewKind: this.workflowReviewKind(node) } : {}),
             ...(verdict ? { verdict } : {}),
             ...(stepOutput !== undefined ? { output: stepOutput } : {}),
@@ -1366,7 +1420,6 @@ export class WorkflowGraphExecutor {
           const authoritativeResult = terminalPersistence.persistedResult;
           const effectiveStepStatus = authoritativeResult?.status ?? stepStatus;
           const effectiveVerdict = authoritativeResult ? authoritativeResult.verdict : verdict;
-          const verdictRequired = false;
           /*
           FNXC:PostMergeEvidenceFence 2026-09-23-07:48:
           An enabled gate-mode post-merge group is a required follow-up, not an advisory
@@ -1393,6 +1446,7 @@ export class WorkflowGraphExecutor {
            */
           const requiresAuthoritativeApproval = verdictRequired
             || requiredPostMergeGate
+            || authoritativeResult?.verdictRequired === true
             || this.workflowReviewKind(node) !== undefined;
           /*
            * FNXC:AuthoritativeGateResult 2026-09-13-05:59:
@@ -1645,6 +1699,15 @@ export class WorkflowGraphExecutor {
           }
           const scheduled = await this.deps.requestPreMergeOptionalStepFix?.(task.id, failureContext);
           if (!scheduled) {
+            /*
+            FNXC:PlanReviewOutputExclusivity 2026-09-06-01:01:
+            An integrated Plan Review remediation decline must stop before execution and retain its
+            exact terminal value in graph context. The workflow-action branch returns before the
+            generic node recorder, so without this explicit projection the card stops correctly but
+            downstream recovery cannot distinguish the refusal from an unclassified graph failure.
+            */
+            context[`node:${node.id}:outcome`] = "failure";
+            context[`node:${node.id}:value`] = "remediation-not-scheduled";
             return { outcome: "failure", value: "remediation-not-scheduled" };
           }
           /*
@@ -2237,7 +2300,29 @@ export class WorkflowGraphExecutor {
       progressRecord = null;
       let releasePrincipal: (() => void) | undefined;
       try {
-        await this.prepareNodeExecution(node, task, context, settings);
+        /*
+         * FNXC:HumanMergeApproval 2026-09-17-18:09:
+         * FN-514 — the delivery barrier runs BEFORE worktree preparation and before the handler, so
+         * an unauthorized card performs no Git or provider work at all. Its hold reuses the same
+         * suspension primitive as a principal hold: the context marker survives the unwind, the
+         * executor recognises it and parks the continuation `held` with a blocked reason, and no
+         * failure edge is traversed (a human wait must never terminalize the task).
+         */
+        if (this.deps.humanMergeDeliveryBarrier) {
+          const barrier = await this.deps.humanMergeDeliveryBarrier(node, task);
+          if (barrier.kind === "hold") {
+            context[`node:${node.id}:principal-hold`] = barrier.marker;
+            context[`node:${node.id}:human-merge-hold-reason`] = barrier.reason;
+            throw new WorkflowGraphSuspended({
+              reason: "hold",
+              nodeId: node.id,
+              fromColumn: task.column,
+              toColumn: task.column,
+              irHash: "human-merge-approval-hold",
+            });
+          }
+        }
+        await this.prepareNodeExecution(node, task, context);
         const preflight = await this.deps.beforeNodeExecution?.(node, task, context);
         releasePrincipal = typeof context["workflow:release-principal"] === "function"
           ? context["workflow:release-principal"] as () => void
@@ -2292,6 +2377,11 @@ export class WorkflowGraphExecutor {
           if (this.isAbortNodeResult(projected)) {
             return this.withEnginePauseAbortContext(node, projected);
           }
+          if (projected.value === WORKFLOW_DEPENDENCY_CONFIGURATION_BLOCK_VALUE) {
+            if (progressRecord) await this.discardWorkflowStepLease(task.id, node.id, progressRecord.result.startedAt!);
+            context[`node:${node.id}:dependency-configuration-block`] = String(projected.contextPatch?.output ?? projected.value);
+            throw new WorkflowGraphSuspended({ reason: "pause", nodeId: node.id, fromColumn: task.column, toColumn: task.column, irHash: "dependency-configuration-block" });
+          }
           const terminalResult = progressRecord
             ? await this.recordNodeProgressFinish(task.id, node, progressRecord, projected)
             : undefined;
@@ -2314,6 +2404,12 @@ export class WorkflowGraphExecutor {
         if (this.isAbortNodeResult(projected)) {
           return this.withEnginePauseAbortContext(node, projected);
         }
+        /* FNXC:WorktreeDependencies 2026-09-13-06:25: Proven repeated configuration failures suspend before Plan Review can consume a replan edge. */
+        if (projected.value === WORKFLOW_DEPENDENCY_CONFIGURATION_BLOCK_VALUE) {
+          if (progressRecord) await this.discardWorkflowStepLease(task.id, node.id, progressRecord.result.startedAt!);
+          context[`node:${node.id}:dependency-configuration-block`] = String(projected.contextPatch?.output ?? projected.value);
+          throw new WorkflowGraphSuspended({ reason: "pause", nodeId: node.id, fromColumn: task.column, toColumn: task.column, irHash: "dependency-configuration-block" });
+        }
         const terminalResult = progressRecord
           ? await this.recordNodeProgressFinish(task.id, node, progressRecord, projected)
           : undefined;
@@ -2331,7 +2427,8 @@ export class WorkflowGraphExecutor {
            * node's admission marker through the unwind; otherwise the outer executor sees a
            * wait without its reason and leaves the continuation running until dead-lease recovery.
            */
-          for (const suffix of ["principal-hold", "dependency-configuration-block"]) {
+          /* FNXC:HumanMergeApproval 2026-09-17-18:09: FN-514's human-wait reason travels with the hold marker so the operator-facing park names the actual wait. */
+          for (const suffix of ["principal-hold", "dependency-configuration-block", "human-merge-hold-reason"]) {
             const key = `node:${error.suspension.nodeId}:${suffix}`;
             if (typeof context[key] === "string") error.admissionHoldContext[key] = context[key];
           }
@@ -2652,9 +2749,8 @@ export class WorkflowGraphExecutor {
     node: WorkflowIrNode,
     task: TaskDetail,
     context: Record<string, unknown>,
-    settings: WorkflowNodeSettings | undefined,
   ): Promise<void> {
-    const requirement = this.classifyNodePreparation(node, context, settings);
+    const requirement = this.classifyNodePreparation(node, context);
     if (!requirement.requiresWorktree) return;
     await this.deps.prepareNodeExecution?.(node, task, requirement);
   }
@@ -2662,28 +2758,17 @@ export class WorkflowGraphExecutor {
   private classifyNodePreparation(
     node: WorkflowIrNode,
     context: Record<string, unknown>,
-    settings: WorkflowNodeSettings | undefined,
   ): WorkflowNodePreparationRequirement {
     const optionalGroupId = typeof context[WORKFLOW_OPTIONAL_GROUP_CONTEXT_KEY] === "string"
       ? context[WORKFLOW_OPTIONAL_GROUP_CONTEXT_KEY]
       : undefined;
-    /*
-     * FNXC:WorkflowExecution 2026-07-15-00:00:
-     * Graph preparation receives the optional-group context and effective inline-fix
-     * setting so it applies the same classifier as runtime. Only an explicit false
-     * disables inline fixes, preserving the default-enabled review worktree contract
-     * that prevents issue #2075's pre-review no-worktree failure.
-     */
     /*
     FNXC:WorktreeBaseRefresh 2026-08-01-16:04:
     A graph `code` node is the implementation boundary even when its sandbox runner does not
     otherwise advertise a worktree need. Force preparation so an existing planning checkout is
     refreshed before code executes; review and planning retain their normal classifier behavior.
     */
-    const requiresWorktree = workflowNodeRequiresWorktree(node, {
-      optionalGroupId,
-      reviewerInlineFixes: settings?.reviewerInlineFixes,
-    }) || node.kind === "code";
+    const requiresWorktree = workflowNodeRequiresWorktree(node, { optionalGroupId }) || node.kind === "code";
     return {
       requiresWorktree,
       reason: node.kind === "code" ? "implementation-code-node" : requiresWorktree ? "write-capable-node" : undefined,

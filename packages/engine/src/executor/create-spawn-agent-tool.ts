@@ -22,7 +22,7 @@ import type {
   Settings,
   TaskStore,
 } from "@fusion/core";
-import { resolveEffectiveConcurrency, resolveExecutorFallbackModel, resolveProjectColumnsForRoles } from "@fusion/core";
+import { buildOperatorLanguageDirective, resolveEffectiveConcurrency, resolveExecutorFallbackModel, resolveProjectColumnsForRoles } from "@fusion/core";
 import type { ToolDefinition, AgentSession } from "@earendil-works/pi-coding-agent";
 import {
   createResolvedAgentSession,
@@ -37,6 +37,7 @@ import { resolveTaskWorktreePath } from "../worktree/worktree-paths.js";
 import { createRunAuditor, type EngineRunContext } from "../util/run-audit.js";
 import { executorLog } from "../logger.js";
 import type { PluginRunner } from "../plugins/plugin-runner.js";
+import { storeErrorResult } from "../tool-store-errors.js";
 
 export const spawnAgentParams = Type.Object({
   name: Type.String({ description: "Name for the child agent" }),
@@ -140,7 +141,7 @@ export function createSpawnAgentTool(
           store: deps.store,
           tasks: await deps.store.listTasks({ slim: true, includeArchived: false }),
         });
-        const spawnCap = resolveEffectiveConcurrency(settings).effectiveLimit;
+        const spawnCap = resolveEffectiveConcurrency(settings).maxConcurrent;
         const liveChildren = deps.getTotalSpawnedCount();
         if (spawnClaimed + liveChildren >= spawnCap) {
           return {
@@ -201,7 +202,8 @@ export function createSpawnAgentTool(
             board with no single task to resolve against; it is legacy-seeded, so a default board
             still excludes exactly `done` and `archived` and this is byte-identical there.
             */
-            const spawnTerminalColumns = await resolveProjectColumnsForRoles(deps.store, ["complete", "archived"]);
+            const spawnCompleteColumns = await resolveProjectColumnsForRoles(deps.store, ["complete"]);
+            const spawnTerminalColumns = new Set(spawnCompleteColumns);
             const heldWorktrees = spawnTasks.filter((t) =>
               !spawnTerminalColumns.has(t.column)
               && typeof t.worktree === "string" && t.worktree.length > 0).length;
@@ -276,7 +278,16 @@ export function createSpawnAgentTool(
 
   Parent task: ${taskId}
   Child agent: ${agent.id} (${name})`;
-          const childSystemPrompt = buildSystemPromptWithInstructions(childBasePrompt, childInstructions);
+          /*
+          FNXC:OperatorLanguage 2026-09-16-13:05:
+          Spawned child agents report back into the parent task log the operator reads, so the
+          child prompt carries the operator language directive like the parent lane.
+          */
+          const childOperatorLanguageDirective = buildOperatorLanguageDirective(settings);
+          const childSystemPrompt = buildSystemPromptWithInstructions(
+            childBasePrompt,
+            childOperatorLanguageDirective ? `${childInstructions}\n\n${childOperatorLanguageDirective}` : childInstructions,
+          );
 
           // Build skill selection context for child agent session
           const childTask = await deps.store.getTask(taskId);
@@ -367,11 +378,7 @@ export function createSpawnAgentTool(
           // it reserved, or a project permanently loses capacity to a spawn that
           // never happened.
           releaseSpawnReservation();
-          const errorMessage = err instanceof Error ? err.message : String(err);
-          return {
-            content: [{ type: "text" as const, text: `Failed to spawn agent: ${errorMessage}` }],
-            details: { agentId: "", state: "error", message: errorMessage },
-          };
+          return storeErrorResult("agent spawn", err);
         }
       },
     };

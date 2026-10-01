@@ -52,12 +52,14 @@ describe("reliability interaction: foreign-only contamination recovery", () => {
       getTask: vi.fn(async () => ({ column: "in-review" })),
       logEntry: vi.fn(async () => {}),
       moveTask: vi.fn(async () => {}),
+      logEntry: vi.fn(async () => {}),
       updateTask: vi.fn(async () => {}),
     } as any;
     const runAudit = { database: vi.fn(async () => {}), git: vi.fn(), filesystem: vi.fn(), sandbox: vi.fn() } as any;
 
     const result = await recoverForeignOnlyContamination({
       id: "FN-8001",
+      column: "in-review",
       branch: "fusion/fn-x",
       worktree: worktreePath,
       baseCommitSha: baseSha,
@@ -89,6 +91,7 @@ describe("reliability interaction: foreign-only contamination recovery", () => {
     const { repoDir, baseSha } = await setupRepo();
     const store = {
       moveTask: vi.fn(async () => {}),
+      logEntry: vi.fn(async () => {}),
       updateTask: vi.fn(async () => {}),
     } as any;
     const runAudit = { database: vi.fn(async () => {}), git: vi.fn(), filesystem: vi.fn(), sandbox: vi.fn() } as any;

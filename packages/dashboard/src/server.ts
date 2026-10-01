@@ -2,12 +2,12 @@ import { createLogger } from "@fusion/core";
 
 const severityAuditLog = createLogger("dashboard-server");
 import express, { type Router } from "express";
-import { archivedColumnsForTask } from "./task-lifecycle-lanes.js";
 import { randomUUID } from "node:crypto";
 import { join, dirname } from "node:path";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createSecureServer as createHttp2SecureServer, type Http2SecureServer } from "node:http2";
+import type { CliAgentMemoryRecallHandle } from "./routes/cli-agent-memory-recall.js";
 import type { Server as HttpServer } from "node:http";
 import type {
   Task,
@@ -22,7 +22,6 @@ import type {
 } from "@fusion/core";
 import {
   AgentStore,
-  bulkDeleteStashChatSessions,
   ChatStore,
   cloudRedeemTicket,
   loadCloudLinkState,
@@ -42,7 +41,7 @@ import {
   evictAllProjectStores,
   setOnProjectFirstCreated,
 } from "./project-store-resolver.js";
-import { getOrCreateScopedChatStore } from "./chat-project-services.js";
+import { getOrCreateScopedChatManager, getOrCreateScopedChatStore, listLiveScopedChatStores, onScopedChatStoreCreated } from "./chat-project-services.js";
 import { MAX_FILE_SIZE } from "./file-service.js";
 import { TerminalViewportRegistry } from "./terminal-viewport.js";
 import { getTerminalService, STALE_SESSION_THRESHOLD_MS } from "./terminal-service.js";
@@ -53,6 +52,7 @@ import { WebSocketManager, type BadgeSnapshot } from "./websocket.js";
 import type { BadgePubSub } from "./badge-pubsub.js";
 import { createBadgePubSub, type BadgePubSubMessage } from "./badge-pubsub.js";
 import { createRuntimeLogger, type RuntimeLogger } from "./runtime-logger.js";
+import { createRetentionPressureNotifier } from "./retention-pressure-notice.js";
 import { registerGithubTrackingHook } from "./github-tracking-hook.js";
 import { registerBeforeExitCleanup } from "./process-lifecycle.js";
 import { createTerminalWebSocketDiagnostics } from "./terminal-websocket-diagnostics.js";
@@ -73,7 +73,7 @@ import {
   setAiSessionStore as setMilestoneSliceAiSessionStore,
   rehydrateFromStore as rehydrateMilestoneSliceSessions,
 } from "./milestone-slice-interview.js";
-import { ChatManager, TASK_PLANNER_CHAT_AGENT_ID_PREFIX } from "./chat.js";
+import { ChatManager } from "./chat.js";
 import { CliChatSessionRunner } from "./cli-chat.js";
 import { stopAllDevServers } from "./dev-server-routes.js";
 import type { SkillsAdapter } from "./skills-adapter.js";
@@ -244,6 +244,15 @@ export interface ServerOptions {
   engineManager?: import("@fusion/engine").ProjectEngineManager;
   /** Optional HybridExecutor orchestration context for multi-project runtime plumbing. */
   hybridExecutor?: import("@fusion/engine").HybridExecutor;
+  /*
+  FNXC:HybridExecutorBoot 2026-09-26-03:10:
+  RUFU-322: upper bound on how long PATCH /api/projects/:id waits for HybridExecutor project-runtime
+  readiness before answering 503 `hybrid_executor_starting`. The boot no longer blocks HTTP listen, so
+  an isolation transition can arrive while runtimes are still loading; this keeps that window honest
+  and bounded instead of holding the request open. Injectable for tests; defaults to
+  DEFAULT_HYBRID_EXECUTOR_READY_WAIT_MS.
+  */
+  hybridExecutorReadyWaitMs?: number;
   /**
    * Resolver for the engine-held CLI-agent telemetry hub (U17 hook route).
    * Given a request's projectId (if any) and the target session id, returns the
@@ -256,6 +265,20 @@ export interface ServerOptions {
     projectId: string | undefined,
     sessionId: string,
   ) => import("@fusion/engine").TelemetryHub | undefined;
+  /*
+  FNXC:CliChatRecall 2026-08-19-11:08:
+  Resolver for the engine-held CLI-agent per-turn memory-recall handle
+  (RUFU-128). Given a request's projectId (if any) and the target session id,
+  returns the in-process recall handle (token validation + session existence
+  + recall service) or undefined when no recall wiring is live. The
+  memory-recall route authenticates with the per-session token, then delegates
+  the cue to the handle — the cue travels only through the CLI agent's native
+  extension channel, never the PTY/composer.
+  */
+  cliAgentMemoryRecallResolver?: (
+    projectId: string | undefined,
+    sessionId: string,
+  ) => CliAgentMemoryRecallHandle | undefined;
   /** Shared CentralCore instance used by the engine manager.
    *  Routes that mutate central runtime state should use this instance so
    *  in-process listeners (for example global concurrency changes) are notified. */
@@ -854,6 +877,34 @@ GROK_API_KEY threw "getRuntimeById is not a function" and surfaced the misleadin
 engine.getPluginRunner()); fall back to `options.pluginRunner` only in UI-only
 mode where no engine exists.
 */
+/*
+FNXC:ChatRestartAutoContinue 2026-09-17-21:05:
+Operator decision: when the engine sweep recovers a restart-orphaned generation as an
+interrupted row, Chat must not just record it - it continues the turn ONCE automatically.
+The guard re-reads the transcript at fire time so an operator who already continued
+manually, or a session that started generating in the meantime, is never double-continued.
+The synthetic continuation is the same visible autoRetry user row the live auto-retry uses
+(reason `restart-recovery`), so the operator can always see why a new turn began.
+*/
+export const CHAT_RESTART_CONTINUATION_TEXT =
+  "System auto-retry: your previous turn was ended by a server restart before it finished. Resume the work requested by the last user message and finish with a reply the user can read.";
+
+export async function maybeContinueRecoveredChatGeneration(deps: {
+  sessionId: string;
+  chatStore: { getMessages(sessionId: string, filter?: { limit?: number; order?: "asc" | "desc" }): Promise<Array<{ role: string; metadata?: Record<string, unknown> | null }>> };
+  isGenerating: (sessionId: string) => boolean;
+  sendContinuation: (sessionId: string) => Promise<void>;
+}): Promise<"continued" | "skipped-generating" | "skipped-state"> {
+  if (deps.isGenerating(deps.sessionId)) return "skipped-generating";
+  const latest = await deps.chatStore.getMessages(deps.sessionId, { limit: 1, order: "desc" });
+  const last = latest[0];
+  if (!last || last.role !== "assistant" || last.metadata?.recoveredFromStaleGeneration !== true) {
+    return "skipped-state";
+  }
+  await deps.sendContinuation(deps.sessionId);
+  return "continued";
+}
+
 export function resolveChatManagerPluginRunner(
   options?: Pick<ServerOptions, "engine" | "pluginRunner">,
 ): ServerOptions["pluginRunner"] {
@@ -998,8 +1049,22 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
   headless and non-headless servers. Its latency-recorder middleware is mounted
   below, before route handlers, so it times the LIVE serving path.
   */
-  const metricsSampler = createMetricsSampler();
+  /*
+  FNXC:RetentionPressureNotice 2026-09-23-18:55:
+  RUFU-257: the pressure decision is made in the retention sampler's tick; this is where it becomes
+  operator-visible. The sink writes the dashboard runtime log plus the operator mailbox (through the
+  engine's existing one-shot `MessageStore` seam — no new channel), so a heap pile-up is announced before
+  the process dies instead of after. The mailbox lookup is lazy because `options.engine` may attach its
+  store after `createServer()` returns; the sink itself never awaits and never throws, so census
+  reporting cannot be blocked by mailbox health. Declared above the sampler because the sampler takes it
+  at construction time.
+  */
   const runtimeLogger = options?.runtimeLogger ?? createRuntimeLogger("server");
+  const retentionPressureNotifier = createRetentionPressureNotifier({
+    logger: runtimeLogger.child("retention-pressure"),
+    resolveMailbox: () => options?.engine?.getMessageStore(),
+  });
+  const metricsSampler = createMetricsSampler({ retention: { onPressure: retentionPressureNotifier } });
   const mutationRateLimit = rateLimit(RATE_LIMITS.mutation);
   const setupRateLimit = rateLimit(RATE_LIMITS.api);
   const setupReadRateLimit = rateLimit(RATE_LIMITS.api);
@@ -1055,7 +1120,14 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
   const isChatMessagePath = (path: string): boolean =>
     /^\/api\/chat\/(?:sessions|rooms)\/[^/]+\/messages\/?$/.test(path);
   const isTaskMessagePath = (method: string, path: string): boolean =>
-    (method === "POST" && /^\/api\/tasks\/[^/]+\/(?:steer|comments|refine|spec\/revise)\/?$/.test(path))
+    /*
+    FNXC:TaskFollowUp 2026-09-17-17:30:
+    FN-513's follow-up request is operator prose bounded by the same `MAX_TASK_MESSAGE_LENGTH` limit
+    as steer/comment/refine, so it needs the same enlarged JSON envelope. The alternation is extended
+    by one EXACT path segment — never widened to the `/tasks` prefix — so neighbouring routes keep
+    the default parser and its smaller body ceiling.
+    */
+    (method === "POST" && /^\/api\/tasks\/[^/]+\/(?:steer|comments|refine|follow-up|spec\/revise)\/?$/.test(path))
     || (method === "PATCH" && /^\/api\/tasks\/[^/]+\/comments\/[^/]+\/?$/.test(path));
   const isTaskFileSavePath = (path: string): boolean =>
     /^\/api\/tasks\/[^/]+\/files\/.+\/?$/.test(path);
@@ -1215,82 +1287,6 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
   // FNXC:PostgresSatelliteCutover 2026-07-14-17:30: Dashboard chat persistence is PostgreSQL-only and shares the scoped project layer.
   const chatLayer = requireAsyncLayer(store, "Dashboard ChatStore");
   const chatStore = options?.chatStore ?? new ChatStore(chatLayer);
-  store.on("task:moved", (data: { task: Task; from: string; to: string }) => {
-    /*
-    FNXC:WorkflowResolvedColumns 2026-07-30-04:05 (batch-core):
-    Planner-chat retention is cut off by ARCHIVAL, resolved from the task's own workflow. Keyed on the
-    literal, a board that renamed its archived lane never reached the delete, so task-planner chat
-    sessions were retained forever — the retention cutoff this listener exists to enforce simply never
-    fired, and nothing surfaced that.
-
-    The handler stays synchronous and the resolution is awaited inside the existing fire-and-forget
-    chain rather than by making the listener `async`. `task:moved` has synchronous subscribers whose
-    ordering relative to the emitter is load-bearing elsewhere in this codebase, and this listener
-    only deletes chat rows — there is no reason to make it the one that introduces a microtask
-    boundary into that emit.
-    */
-    void (async () => {
-      const archivedLanes = await archivedColumnsForTask(store, data.task.id).catch(() => undefined);
-      if (!(archivedLanes ?? new Set(["archived"])).has(data.to)) return;
-    /*
-    FNXC:TaskDetailPlannerChatRetention 2026-06-30-18:45:
-    Task-detail planner chats are retained after done when a user interacted, but task archival is the retention cutoff. Delete exact task-planner sessions on archive so normal chats and other tasks' planner chats remain intact while chat:session:deleted events clear dashboard caches.
-    */
-      const plannerAgentId = `${TASK_PLANNER_CHAT_AGENT_ID_PREFIX}${data.task.id}`;
-      try {
-        /*
-        FNXC:RUFU125BulkArchiveSync 2026-08-19-06:07:
-        RUFU-125: snapshot the doomed local session ids BEFORE the local bulk delete —
-        no projectId (mirrors the RUFU-121 per-session route guard, which also omits it)
-        so the Stash sync targets exactly the rows the archive is about to drop. The read
-        is fail-open: a listSessions failure degrades to an empty list and must never
-        prevent the local delete below.
-        */
-        const doomed = await chatStore.listSessions({ agentId: plannerAgentId }).catch(() => []);
-        const deletedCount = await chatStore.deleteSessionsForAgentId(plannerAgentId);
-        if (deletedCount === 0 || doomed.length === 0) return;
-        /*
-        FNXC:RUFU125BulkArchiveSync 2026-08-19-06:07:
-        RUFU-125: the bulk local delete above bypasses the per-session DELETE route RUFU-121
-        hooks, so soft-delete the matching Stash rows in a SEPARATE fire-and-forget IIFE —
-        a Stash stall can never delay local archival bookkeeping. Mirrors the RUFU-121 route
-        sync (skip-guards, url fallback, never-throws): a skip is debug-logged with its
-        reason, and a partial window match (matched < doomed.length) is debug-logged as a
-        window miss with matched/total + truncated (the bounded lookback's documented
-        residual — rows older than 10 × 200 recent rows remain in Stash).
-        */
-        void (async () => {
-          try {
-            const summary = await bulkDeleteStashChatSessions(store, doomed.map((s) => s.id));
-            if (summary.skipped) {
-              severityAuditLog.debug(
-                `[RUFU-125] stash bulk sync skipped on archive task=${data.task.id} reason=${summary.skipReason}`,
-              );
-              return;
-            }
-            if (summary.result.matched < doomed.length) {
-              const r = summary.result;
-              severityAuditLog.debug(
-                `[RUFU-125] stash bulk sync window miss task=${data.task.id} matched=${r.matched}/${doomed.length} deleted=${r.deleted} truncated=${r.truncated} pagesScanned=${r.pagesScanned}`,
-              );
-            }
-          } catch (err: unknown) {
-            // bulkDeleteStashChatSessions never throws by core contract; this is the
-            // never-reject safety net for any future regression.
-            severityAuditLog.warn(
-              `[RUFU-125] stash bulk sync failed task=${data.task.id} (best-effort, non-blocking): ${err instanceof Error ? err.message : String(err)}`,
-            );
-          }
-        })();
-      } catch (err: unknown) {
-        // Unexpected failure in the archival chain (e.g. the local delete throwing —
-        // previously an unhandled rejection): warn, never reject the task:moved chain.
-        severityAuditLog.warn(
-          `[RUFU-125] archive chat cleanup failed task=${data.task.id} (non-blocking): ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    })();
-  });
   options?.engine?.attachChatStore?.(chatStore);
   if (typeof options?.engineManager?.getAllEngines === "function") {
     for (const engine of options.engineManager.getAllEngines().values()) {
@@ -1346,15 +1342,27 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
       });
       await defaultAgentStore.init();
       const defaultMessageStore = options?.engine?.getMessageStore();
+      /*
+      FNXC:ChatRemoteGenerationMirror 2026-09-17-19:25:
+      A connection without a projectId previously bridged only the default ChatStore, leaving an
+      open global chat view deaf to every scoped project's generations. Bridge the default store
+      plus every live scoped store; createSSE dedupes by identity so a shared instance fires once.
+
+      FNXC:ChatRemoteGenerationMirror 2026-09-21-10:45:
+      RUFU-252: the set above is a snapshot taken when the browser opened the stream, so it is
+      paired with the registry's creation publisher. Without it a project whose chat had not been
+      touched yet produced an emitter no open tab was subscribed to, and its generations stayed
+      invisible in already-open tabs until a remount.
+      */
       createSSE(
         store,
         safeGetMissionStore(store),
         aiSessionStore!,
         store.getPluginStore(),
-        undefined,
+        { liveChatStores: { onCreated: onScopedChatStoreCreated } },
         defaultAgentStore,
         defaultMessageStore,
-        chatStore,
+        [chatStore, ...listLiveScopedChatStores()],
         options?.automationStore,
       )(req, res);
       return;
@@ -1716,6 +1724,53 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
     options?.engine?.isMergePending?.bind(options.engine),
     options?.engine?.resetInReviewMergeRetry?.bind(options.engine),
   );
+
+  /*
+  FNXC:ChatRestartAutoContinue 2026-09-17-21:05:
+  Attach the restart-continuation handler to every engine the dashboard can reach: the default
+  engine now, engines created later through the manager's started-hook. The engine only reports
+  the recovered session id; the manager, guards, and the visible synthetic user row all live here.
+  */
+  const wireChatRestartContinuation = (engineLike: unknown): void => {
+    const engine = engineLike as {
+      getSelfHealingManager?: () => { setChatGenerationRecoveredFromStaleInFlightHandler?: (h?: (id: string) => void | Promise<void>) => void } | undefined;
+      getTaskStore?: () => TaskStore | undefined;
+      getChatStore?: () => ChatStore | undefined;
+    } | undefined;
+    const selfHealing = engine?.getSelfHealingManager?.();
+    if (!selfHealing?.setChatGenerationRecoveredFromStaleInFlightHandler) return;
+    selfHealing.setChatGenerationRecoveredFromStaleInFlightHandler(async (sessionId) => {
+      const scopedStore = engine?.getTaskStore?.();
+      const scopedChatStore = engine?.getChatStore?.();
+      if (!scopedStore || !scopedChatStore) return;
+      const manager = getOrCreateScopedChatManager(scopedStore, scopedChatStore, resolveChatManagerPluginRunner(options));
+      const outcome = await maybeContinueRecoveredChatGeneration({
+        sessionId,
+        chatStore: scopedChatStore,
+        isGenerating: (id) => Boolean((manager as unknown as { isGenerating?: (id: string) => boolean }).isGenerating?.(id)),
+        sendContinuation: (id) => manager.sendMessage(id, CHAT_RESTART_CONTINUATION_TEXT, undefined, undefined, undefined, {
+          autoRetry: true,
+          userMessageMetadata: { autoRetry: true, reason: "restart-recovery" },
+        }),
+      });
+      if (outcome !== "continued") {
+        options?.runtimeLogger?.info?.("chat restart auto-continue skipped", { sessionId, outcome });
+      }
+    });
+  };
+  try {
+    if (options?.engineManager) {
+      options.engineManager.setEngineStartedHook(wireChatRestartContinuation);
+      for (const started of options.engineManager.getAllEngines().values()) {
+        wireChatRestartContinuation(started);
+      }
+    }
+    wireChatRestartContinuation(options?.engine);
+  } catch (wireErr: unknown) {
+    options?.runtimeLogger?.warn?.("chat restart auto-continue wiring failed", {
+      message: wireErr instanceof Error ? wireErr.message : String(wireErr),
+    });
+  }
 
   // CLI Agent Executor — chat surface wiring. When the cli-session transport is
   // supplied (the runtime is live), broker cli-backed chat sends to the PTY and
@@ -3060,14 +3115,6 @@ export function setupBadgeWebSocket(
 
     const onTaskUpdated = (task: Task) => {
       const cacheKey = `${scopeKey}:${task.id}`;
-      // FNXC:BadgeSnapshotEviction 2026-07-10-15:00: evict (not re-cache) when a
-      // task is archived off the live board, and skip the publish so peers don't
-      // re-cache it. An unarchive re-emits task:updated with a live column and
-      // re-primes the entry. See isBadgeEligibleTask.
-      if (!isBadgeEligibleTask(task)) {
-        badgeSnapshots.delete(cacheKey);
-        return;
-      }
       const previousSnapshot = badgeSnapshots.get(cacheKey);
       const nextSnapshot: BadgeSnapshot = {
         prInfo: task.prInfo ?? null,
@@ -3103,13 +3150,6 @@ export function setupBadgeWebSocket(
 
     const onTaskCreated = (task: Task) => {
       const cacheKey = `${scopeKey}:${task.id}`;
-      // FNXC:BadgeSnapshotEviction 2026-07-10-15:00: an already-archived task
-      // (e.g. restored/imported into the archive) must not seed the live-board
-      // badge cache — same eligibility rule as the update listener.
-      if (!isBadgeEligibleTask(task)) {
-        badgeSnapshots.delete(cacheKey);
-        return;
-      }
       badgeSnapshots.set(cacheKey, {
         prInfo: task.prInfo ?? null,
         issueInfo: task.issueInfo ?? null,
@@ -3269,43 +3309,6 @@ export function setupBadgeWebSocket(
     dashboardApp.badgeWsManager = null;
     dashboardApp.__fnWebSocketsAttached = false;
   });
-}
-
-/*
-FNXC:BadgeSnapshotEviction 2026-07-10-15:00:
-The in-memory badge-snapshot cache is keyed by task id and only ever removed a task
-on hard-delete, so archived tasks accumulated for the daemon's whole lifetime — a slow
-memory leak on long-running servers with task churn. Badge snapshots are only needed for
-tasks visible on the live board; archived tasks leave it. This predicate is the single
-eligibility rule used by both the create and update listeners (and mirrored by the
-startup prime's `includeArchived:false`). Exported for unit coverage of the invariant.
-*/
-/*
-FNXC:WorkflowResolvedColumns 2026-07-30-04:20 DELIBERATE-LITERAL: sync predicate behind a sync listener.
-
-NOT OVERLOOKED. On a renamed board this is genuinely wrong — an archived card stays badge-eligible, so
-its snapshot is never evicted and the cache grows for the daemon's lifetime. That is the exact memory
-leak this predicate was added to fix (FNXC:BadgeSnapshotEviction above), reappearing under a different
-column name. It is real backlog, deliberately left counted rather than marked away.
-
-WHAT BLOCKS IT, measured rather than assumed. Resolving the archived role is async, and both callers
-are SYNCHRONOUS `task:updated` / `task:created` listeners whose next statement is documented as
-"Update local cache immediately" — the snapshot is written, compared, and published in the same tick.
-Awaiting here introduces a microtask boundary into that path, so a second event for the same task can
-interleave between the eligibility check and the cache write and publish a stale snapshot.
-
-WHY NOT AN OPTIONAL `archivedColumns` PARAMETER. Because nothing could fill it: the callers are the
-sync listeners. An optional parameter that only tests supply is the inert-injection shape — the
-predicate would read as converted, its test would pass by injecting the value, and production would
-keep the literal. #2780 caught exactly that twice in this program.
-
-WHAT WOULD ACTUALLY UNBLOCK IT: give the badge-snapshot scope a resolved-archived-lane cache populated
-when a project's workflow is loaded, so the predicate stays sync and reads a map instead of a literal.
-That is a lifecycle change to the snapshot scope, not a rename, so it is stated here rather than
-quietly skipped.
-*/
-export function isBadgeEligibleTask(task: Pick<Task, "column">): boolean {
-  return task.column !== "archived";
 }
 
 /** Compare two badge snapshots for equality */

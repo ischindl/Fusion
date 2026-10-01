@@ -219,10 +219,11 @@ export async function resolveTaskPlanningPrompt(
  */
 export async function resolveWorkflowIrById(
   store: Pick<WorkflowIrResolverStore, "getWorkflowDefinition"> & Partial<Pick<WorkflowIrResolverStore, "getWorkflowSettingsProjectId" | "getWorkflowPromptOverrides" | "getWorkflowPromptOverridesAsync">>,
-  workflowId: string,
+  requestedWorkflowId: string,
   irCache?: Map<string, WorkflowIr>,
   definitionReadTally?: WorkflowDefinitionReadTally,
 ): Promise<WorkflowIr> {
+  const workflowId = requestedWorkflowId;
   let projectId: string | undefined;
   try { projectId = store.getWorkflowSettingsProjectId?.(); } catch { projectId = undefined; }
   const cacheKey = projectId ? `${workflowId}\u0000${projectId}` : workflowId;

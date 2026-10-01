@@ -44,6 +44,15 @@ export interface ApiRoutesContext {
   store: TaskStore;
   /** Narrow multipart seam for routes that must accept local binary artifacts. */
   reportUpload?: { single(fieldName: string): RequestHandler };
+  /*
+  FNXC:FileBrowserUpload 2026-09-05-15:01:
+  RUFU-189 gives the Files-browser upload route the same narrow, injected-multer treatment
+  reportUpload gave the report route, but for multiple files: the dashboard constructs one shared
+  memoryStorage instance (100 MB transport ceiling) and passes it into the registrar, instead of
+  the route importing multer itself and forking a second transport policy. array() mirrors
+  multer's own signature so the route can set the per-request file-count bound.
+  */
+  workspaceUpload?: { array(fieldName: string, maxCount: number): RequestHandler };
   options?: ServerOptions;
   /*
   FNXC:ApprovalDecisionAuthority 2026-07-26-16:10:

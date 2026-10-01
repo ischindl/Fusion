@@ -47,6 +47,8 @@ The initial warm min/median/max was **9.3s / 9.5s / 9.9s**; the post-repair warm
 
 The gate actually runs 15 static validators, 21 explicit engine-core files containing **432 tests**, two PG canaries, four unit-gate files, and CI-shape after successful concurrent lanes. `project-engine.test.ts` was removed from engine-core by FN-8937 (`0fbeba50d1`), so this is one fewer engine-core file than the W32 baseline. The policy contract now pins the 15-validator ordered inventory and its cardinality, and the corresponding static-runner and verify-fast test inventories match it.
 
+**Counts and the pinning claim above are dated measurements of 2026-08-16, superseded in kind by RUFU-197.** The membership they describe drifted on schedule (the 2026-09-06 deletion ratchet retired one engine-core file), and `scripts/__tests__/engine-vitest-gate-policy.test.mjs` no longer freezes an inventory or its cardinality — it derives membership from `test:gate:static`, `packages/engine/vitest.config.ts`, `packages/core/package.json`, the quarantine ledger, and the filesystem. Read the file counts here as W33 telemetry; read the contract from those declarations.
+
 ## Attribution
 
 | Phase | Warm timing |

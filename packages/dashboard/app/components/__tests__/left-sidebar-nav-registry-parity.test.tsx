@@ -51,17 +51,26 @@ declared by LeftSidebarNav. Deliberately excluded and why:
 const SIDEBAR_REGISTRY_VIEW_IDS = [
   "command-center",
   "board",
+  /*
+   * FN-403 made History a modal, so it is not a sidebar destination any more. List left this rail under FN-382 for the
+   * same reason and is back under FN-439, which returns it to primary navigation so the Header stops producing a
+   * tablet/desktop List button; it must therefore be enrolled here again.
+   */
   "list",
-  "patchnode",
   "planning",
   "missions",
   "agents",
+  "fleet",
   "chat",
   "mailbox",
   "skills",
   "memory",
-  "documents",
+  "notes",
   "goalsView",
+  /* FN-426: Files, Git Manager, and Dev Server became real destinations when the right dock became optional. */
+  "files",
+  "git-manager",
+  "dev-server",
   "automations",
   "import-tasks",
   "workflows",
@@ -83,6 +92,7 @@ describe("LeftSidebarNav ↔ dashboard view registry parity", () => {
         onNewTask={() => {}}
         onOpenSettings={() => {}}
         showAgentsTab
+        showFleetTab
         showSkillsTab
         experimentalFeatures={{
           insights: true,

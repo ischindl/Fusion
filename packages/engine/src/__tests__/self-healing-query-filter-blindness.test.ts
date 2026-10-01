@@ -125,6 +125,27 @@ function productionFaithfulStore(tasks: Task[]) {
     }),
     transitionQueuedEpisode: vi.fn(async () => ({ appended: true })),
     /*
+    FNXC:WorkflowResolvedColumns 2026-09-14-13:32 (RUFU-217, stale-seam repair):
+    `surfaceInReviewStalls` moved its observation write into `applyInReviewStallObservationFenced`
+    (the observation-fence work), but this shared factory never grew the seam, so every surfacing
+    card aborted with "is not a function" and this file's renamed-lane ratchet went silently vacuous
+    (proven failing on dc4d0feeee with the RUFU-217 sweep edits stashed — both files identical to
+    main bfdfbc0004 — before any RUFU-217 change). Semantics mirror the fenced
+    fake in in-review-stall-deadlock-disposition.test.ts: refuse on a null patch, else append the
+    log entry, apply the field patch, and report the applied task.
+    */
+    applyInReviewStallObservationFenced: vi.fn(async (id: string, compute: (current: Task) => any) => {
+      const current = tasksById.get(id);
+      if (!current) return { applied: false, reason: "refused" };
+      const patch = compute(current);
+      if (!patch) return { applied: false, reason: "refused" };
+      const { logEntry, ...fields } = patch;
+      if (logEntry) await (current as { log?: Array<{ timestamp: string; action: string }> }).log!.push({ timestamp: new Date().toISOString(), action: logEntry.action });
+      const next = { ...current, ...fields } as Task;
+      tasksById.set(id, next);
+      return { applied: true, task: next };
+    }),
+    /*
     FNXC:WorkflowResolvedColumns 2026-08-10-10:32:
     `surfaceInReviewStalls` reads the merge queue before reporting a stalled renamed-lane card.
     Mirror its Promise<MergeQueueEntry[]> seam so a missing fake method cannot abort the sweep and

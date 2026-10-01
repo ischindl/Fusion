@@ -12,13 +12,24 @@ remain visible without changing timeout budgets or adding retries.
 */
 
 function createModelsHandler(modelRegistry: ReturnType<typeof createKimiModelCatalogRegistry>) {
+  /*
+  FNXC:ModelCatalog 2026-08-23-02:16:
+  RUFU-163: production registerModelRoutes also registers POST /models/refresh
+  (register-model-routes.ts:259); the fixture router must expose the full
+  production route surface or registration throws at setup.
+  */
   const handlers = new Map<string, (req: unknown, res: { json: (body: unknown) => void }) => Promise<void>>();
+  const postHandlers = new Map<string, (req: unknown, res: { json: (body: unknown) => void }) => Promise<void>>();
   const router = {
     get: vi.fn((path: string, handler: (req: unknown, res: { json: (body: unknown) => void }) => Promise<void>) => {
       handlers.set(path, handler);
     }),
     // FNXC:ModelCatalog 2026-08-23-23:12: registerModelRoutes also registers POST /models/refresh (FN-019 operator catalog refresh), so a router fake exposing only `get` throws before any GET handler is captured.
-    post: vi.fn(),
+    // FNXC:ModelCatalog 2026-09-06 (merge FN-295 sync): the fixture captures POST handlers so
+    // refreshCatalog resolves the registered /models/refresh handler instead of undefined.
+    post: vi.fn((path: string, handler: (req: unknown, res: { json: (body: unknown) => void }) => Promise<void>) => {
+      postHandlers.set(path, handler);
+    }),
   } as unknown as Router;
   const authStorage = {
     reload: vi.fn(),
@@ -39,11 +50,11 @@ function createModelsHandler(modelRegistry: ReturnType<typeof createKimiModelCat
     options: { modelRegistry, authStorage } as never,
   } as never);
 
-  return handlers.get("/models")!;
+  return { handler: handlers.get("/models")!, refreshCatalog: postHandlers.get("/models/refresh")! };
 }
 
 async function getK3Rows(modelRegistry: ReturnType<typeof createKimiModelCatalogRegistry>) {
-  const handler = createModelsHandler(modelRegistry);
+  const { handler } = createModelsHandler(modelRegistry);
   const json = vi.fn();
 
   await handler({}, { json });
@@ -70,5 +81,14 @@ describe("FN-8180: Kimi K3 /api/models catalog", () => {
   it("makes a missing native K3 catalog row explicit instead of passing vacuously", async () => {
     const k3Rows = await getK3Rows(createKimiModelCatalogRegistry({ omitK3: true }));
     expect(k3Rows).toEqual([]);
+  });
+
+  it("registers POST /models/refresh alongside GET /models with production refresh semantics", async () => {
+    const { handler, refreshCatalog } = createModelsHandler(createKimiModelCatalogRegistry());
+    expect(handler).toBeTypeOf("function");
+    expect(refreshCatalog).toBeTypeOf("function");
+    const json = vi.fn();
+    await refreshCatalog({}, { json });
+    expect(json.mock.calls[0][0]).toEqual({ outcome: "completed" });
   });
 });

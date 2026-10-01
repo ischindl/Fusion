@@ -37,6 +37,7 @@
  */
 
 import { getTraitRegistry } from "./trait-registry.js";
+import { applyPauseAccounting } from "../tasks/task-pause-accounting.js";
 import type { LifecycleColumns } from "./workflow-lifecycle-traits.js";
 import type { TraitAuditWarning } from "./trait-registry.js";
 import type { Settings, Task } from "../types.js";
@@ -74,6 +75,15 @@ export interface DefaultWorkflowMoveContext {
     preserveProgress?: boolean;
     preserveWorktree?: boolean;
     preservePause?: boolean;
+    /**
+     * FNXC:TaskRetryReleaseIntent 2026-09-22-07:39:
+     * RUFU-261 release-intent mirror of `MoveTaskOptions.parkOnHold` (see the doc there).
+     * Threaded through the single `DefaultWorkflowMoveContext` construction in
+     * `task-store/moves.ts`; read ONLY by the hold-lane park predicate below. Consumed as
+     * `options.parkOnHold !== false`, so an absent value (every non-retry caller) preserves the
+     * existing park behavior bit-for-bit.
+     */
+    parkOnHold?: boolean;
   };
   /**
    * FNXC:WorkflowLifecycleColumns 2026-07-30-08:05 (Phase C convergence):
@@ -157,6 +167,17 @@ function inRole(
  *  arbitrary human merge-wait, so counting it would overstate active time by hours of idle
  *  latency — a worse distortion than omitting the gate's own minutes. Attributing gate runtime
  *  properly needs node-scoped timing (a separate field), not a column trait.
+ *
+ *  FNXC:WorkflowReviewGates 2026-09-16-06:16:
+ *  FN-457 — gate runtime IS now restored at the display layer, without changing this scope. The
+ *  card's clock chip adds a third bucket computed by `getVerificationRuntimeMs`
+ *  (`packages/dashboard/app/utils/taskTiming.ts`) from the gates' own `startedAt`/`completedAt`
+ *  windows, unioned so overlapping `foreach` instances count once. That is the node-scoped timing
+ *  the paragraph above says the problem needs, taken from durable `workflowStepResults` rather than
+ *  from a new field, so no idle merge-wait is swept in.
+ *  `cumulativeActiveMs` keeps its "implementation time" meaning EXACTLY as written above, and the
+ *  Plan Review gate stays counted as PLANNING, not verification, because it opens a
+ *  `planningStartedAt` segment and is therefore already inside `cumulativePlanningMs`.
  *  Consumers of this scope: `packages/core/src/productivity-analytics.ts`,
  *  `packages/core/src/task-timing.ts`, and the dashboard duration displays.
  */
@@ -265,6 +286,13 @@ export function applyResetOnEntryEffects(ctx: DefaultWorkflowMoveContext): void 
   task.blockedBy = undefined;
   task.overlapBlockedBy = undefined;
   if (!options.preservePause) {
+    /*
+    FNXC:TaskPauseAccounting 2026-09-16-06:16:
+    FN-457 — reopen-into-planning clears the park, so any open pause segment must be banked here.
+    Skipped under `preservePause` precisely because the park survives: the segment is still running
+    and closing it would bank a pause that has not ended.
+    */
+    applyPauseAccounting(task, false, ctx.movedAt, false);
     task.paused = undefined;
     task.pausedByAgentId = undefined;
   }
@@ -276,11 +304,26 @@ export function applyResetOnEntryEffects(ctx: DefaultWorkflowMoveContext): void 
   operator dragging a card back to the queue is parking it, and on a renamed board that
   park silently stopped happening — the scheduler then re-dispatched the card the
   operator had just pulled back.
+
+  FNXC:TaskRetryReleaseIntent 2026-09-22-07:39:
+  RUFU-261 — this predicate is the ONLY move-path writer of `userPaused = true`, and it keyed on
+  requester (`moveSource === "user"`) when the durable question is intent. An operator Retry is
+  also operator-attributed (FNXC:ToolPermissionGates keeps the `"user"` source on `fn_task_retry`
+  for the audit trail), so the retry rebound walked into the hold lane and parked the card it was
+  asked to run: the scheduler treats `userPaused` as a durable operator stop, nothing ever clears
+  it, and 11 real cards sat dispatch-refused 2–14 days (AGENTS.md Move-Task contract: "Engine
+  rebounds must not set `userPaused`"). The predicate now reads intent, not just requester:
+  `options.parkOnHold === false` is the explicit RELEASE statement every Retry surface carries,
+  and the move falls through to the existing clear below — which also lifts a stale park from a
+  pre-fix retry or an earlier drag, making a re-Retry self-healing. Drag-to-queue (no option),
+  intake creation, and engine rebounds are untouched. `preservePause` keeps precedence: the clear
+  branch stays guarded by `!options.preservePause` (FN-7851), and this option — like
+  `preservePause` — never SETS a pause, only suppresses or clears one.
   */
   const holdLane = ctx.lifecycleColumns
     ? ctx.lifecycleColumns.hold ?? ctx.lifecycleColumns.intake
     : "todo";
-  if (moveSource === "user" && toColumn === holdLane) {
+  if (moveSource === "user" && toColumn === holdLane && options.parkOnHold !== false) {
     task.userPaused = true;
   } else if (!options.preservePause) {
     task.userPaused = undefined;
@@ -416,6 +459,42 @@ export function applyReopenFieldClears(ctx: DefaultWorkflowMoveContext): void {
 }
 
 /**
+ * Clear a stale TERMINAL planning failure when a card advances forward from a planning lane
+ * into the WIP lane.
+ *
+ * FNXC:PlanningFailureClear 2026-09-12-13:36 (RUFU-228):
+ * A card that recovers from a terminal planning failure (triage's `PLANNING_FAILED_EXHAUSTED`
+ * park: `status:"failed"` + `error`) and advances into the work lane must not keep that failure.
+ * RUFU-225 proved the cost of the missing clear: an FN-8592 stranded-hold reseed passed plan-review,
+ * the graph boundary moved the card todo → in-progress, and the board rendered one live card as two
+ * stacked cards — the WIP card plus the red `.card-error` band of a failure it had already recovered
+ * from. `task:error` is last-failure-wins transient state (RUFU-225's own row was later overwritten
+ * by a branch-conflict error), so surviving a crossing is corruption, not history.
+ *
+ * THE COMPLETE SET of transient-failure clear points is four lane crossings: reopen → planning
+ * (applyResetOnEntryEffects), review entry (applyInReviewEnterEffects), Done (clearDoneTransientFieldsImpl),
+ * and this forward planning → WIP crossing. Anything outside these four crossings must not clear.
+ *
+ * BLANKET-CLEARING ON WIP ENTRY IS FORBIDDEN, and this gate is why it is safe: only a FORWARD
+ * crossing FROM a planning lane carries a stale planning verdict, and only `failed` is terminal —
+ * `needs-replan`/`planning`/null are planning-owned signals the clear must leave for triage, and an
+ * in-progress card may legitimately carry the very error its retry is about (mid-retry in-progress →
+ * in-progress moves preserve it; a same-column move never reaches hooks anyway). `preserveStatus`
+ * suppresses the clear so explicit callers (plan-approval rebound et al.) keep their exact semantics.
+ * Only `status`+`error` are touched — triage/self-healing own `recoveryRetryCount`/`nextRecoveryAt`,
+ * pause fields, steps, and worktrees.
+ */
+export function applyStalePlanningFailureClearEffects(ctx: DefaultWorkflowMoveContext): void {
+  const { task, fromColumn, toColumn, options } = ctx;
+  if (options.preserveStatus || task.status !== "failed") return;
+  const fromPlanning = planningColumnsOf(ctx.lifecycleColumns).includes(fromColumn);
+  const intoWip = inRole(toColumn, ctx.lifecycleColumnSets?.wip, ctx.lifecycleColumns?.wip, "in-progress");
+  if (!fromPlanning || !intoWip) return;
+  task.status = undefined;
+  task.error = undefined;
+}
+
+/**
  * Apply ALL default-workflow field-mutation move effects (the parallel of the
  * legacy inline block) in the legacy order. Pure in-memory mutation of
  * `ctx.task`; queue/filesystem/post-commit effects remain store-owned.
@@ -464,6 +543,10 @@ let registered = false;
  * The legacy effects map onto traits as:
  *   timing.onExit / timing.onEnter   → applyTimingEffects + completion stamp
  *   reset-on-entry.onEnter           → applyResetOnEntryEffects + reopen clears
+ *                                       + applyStalePlanningFailureClearEffects
+ *                                       (self-gated to the forward planning → WIP crossing;
+ *                                       `toRun` resolves registered trait ids on EVERY move,
+ *                                       so role self-gating — not trait declaration — bounds it)
  *   abort-on-exit.onExit             → (userPaused handled in reset-on-entry;
  *                                       session abort is an engine effect U6/U7)
  *   merge.onEnter                    → applyInReviewEnterEffects
@@ -497,6 +580,11 @@ export function registerDefaultWorkflowHooks(): void {
     cast((ctx) => {
       applyResetOnEntryEffects(ctx);
       applyReopenFieldClears(ctx);
+      // RUFU-228: the forward planning → WIP stale-failure clear lives on the same
+      // adapter because `toRun` resolves `reset-on-entry.onEnter` on every move — the
+      // effect self-gates by role crossing (planning → WIP), exactly as the reopen
+      // effects self-gate to live-work → planning.
+      applyStalePlanningFailureClearEffects(ctx);
     }),
   );
   registry.registerTraitHookImpl(

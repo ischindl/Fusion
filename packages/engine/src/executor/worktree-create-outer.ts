@@ -11,6 +11,11 @@ import type { RunMutationContext, Settings } from "@fusion/core";
 import { isBranchConflictError } from "../execution/branch-conflicts.js";
 import { StaleWorktreeIndexLockError } from "../worktree/worktree-stale-lock.js";
 import { resolveIntegrationBranch } from "../merge/integration-branch.js";
+import {
+  namesIntegrationBranch,
+  resolveLocalIntegrationBase,
+  type TaskBaseExecImpl,
+} from "../worktree/task-base-resolution.js";
 import { executorLog } from "../logger.js";
 import { quoteShellArg } from "./shell-quote.js";
 import { NonRetryableWorktreeError } from "./worktree-registry-helpers.js";
@@ -62,6 +67,8 @@ export type WorktreeOuterCreateDeps = {
     taskId: string,
     settingsOverride?: Settings,
   ) => Promise<void>;
+  /** Optional git seam for the local-base probe; production omits it and uses the real `exec`. */
+  execImpl?: TaskBaseExecImpl;
 };
 
 /**
@@ -262,9 +269,60 @@ export async function rebaseNewWorktreeOntoRemote(
     return;
   }
 
+  /*
+  FNXC:TaskBaseResolution 2026-09-16-03:26 (RUFU-245):
+  Rebasing a fresh branch onto `<remote>/<integration>` is only coherent while one side is a
+  descendant of the other. When local integration and the freshly-fetched remote-tracking ref have
+  PROVEN-diverged (both `merge-base --is-ancestor` checks fail with git's definitive exit code 1),
+  the rebase would graft the entire upstream lineage onto a branch whose local base already carries
+  different commits — the zero-own-commit foreign-base branch RUFU-245 refuses at acquisition must
+  not be re-introduced by the post-create rebase. Skipping is safe and never wedges anything: the
+  branch simply keeps its local base and the merge-time rebase stays untouched.
+
+  Fail open on every other shape: a strictly-behind (linear) remote still rebases exactly as today
+  (FN-8839), and an unreadable ref, a non-definitive git failure (exit code other than 1), or any
+  probe error runs today's rebase unchanged — a git read must never block work, and the existing
+  mocked suites (empty rev-parse stdout = unreadable) keep flowing to the rebase.
+  */
+  try {
+    const localProbe = await execAsync(`git rev-parse --verify ${quoteShellArg(`${integrationBranch}^{commit}`)}`, { cwd: rootDir });
+    const remoteProbe = await execAsync(`git rev-parse --verify ${quoteShellArg(`${remoteRef}^{commit}`)}`, { cwd: rootDir });
+    const localIntegrationSha = localProbe.stdout.trim();
+    const remoteIntegrationSha = remoteProbe.stdout.trim();
+    if (localIntegrationSha && remoteIntegrationSha) {
+      const isDefinitivelyNotAncestor = async (candidate: string, other: string): Promise<boolean> => {
+        try {
+          await execAsync(`git merge-base --is-ancestor ${quoteShellArg(candidate)} ${quoteShellArg(other)}`, { cwd: rootDir });
+          return false;
+        } catch (err) {
+          if ((err as { code?: unknown }).code === 1) return true;
+          throw err;
+        }
+      };
+      const remoteHasAllLocal = !await isDefinitivelyNotAncestor(localIntegrationSha, remoteIntegrationSha);
+      const localHasAllRemote = !await isDefinitivelyNotAncestor(remoteIntegrationSha, localIntegrationSha);
+      if (!remoteHasAllLocal && !localHasAllRemote) {
+        safeLog(`Skipped new worktree rebase refresh — local ${integrationBranch} and ${remoteRef} have diverged; kept local base.`);
+        return;
+      }
+    }
+  } catch {
+    // Probe unreadable or ambiguous — fail open to today's rebase.
+  }
+
   try {
     await execAsync(`git rebase ${quoteShellArg(remoteRef)}`, { cwd: worktreePath });
     safeLog(`Rebased new worktree branch ${branch} onto ${remoteRef}`);
+    /*
+    FNXC:BranchBaseIdentity 2026-09-13-00:25:
+    This rebase IS the divergence source the RUFU-217 wedge traced: for a card that later
+    commits nothing, the branch tip literally becomes `<remote>/<integrationBranch>` —
+    another lineage's landed commit — while local main sits elsewhere. Acquisition's
+    finalizeCreatedWorktree therefore records the base identity AFTER this rebase, using the
+    descendant-aware fork-point rule in resolveCapturedBaseCommitSha, so the row's
+    `baseCommitSha` names the remote-tracking identity the branch actually sits on (which
+    remote was used is visible by resolving `<remote>/<integrationBranch>` against it).
+    */
   } catch (rebaseErr) {
     const msg = rebaseErr instanceof Error ? rebaseErr.message : String(rebaseErr);
     executorLog.warn(
@@ -311,29 +369,35 @@ export async function createWorktree(
     }
   }
 
-  // When the task declares a non-main base (a sibling task's branch), the
-  // legacy behavior was to fork the worktree from that branch's tip,
-  // inheriting all of its commits. That caused content leakage when the
-  // dep was later squash-merged to main: the dep's raw commits became
-  // orphans whose content already existed in main, blocking the
-  // dependent's own merge with phantom conflicts.
-  //
-  // Prevention: instead of forking from the dep's tip, fork from `main`
-  // (or the configured remote/main if rebase-from-remote is enabled) and
-  // then `git merge --squash` the dep's content into a single import
-  // commit. The dependent branch then carries main's history + 1 commit
-  // for the dep's content; if the dep is later squash-merged to main, the
-  // patch-id on that import commit will match main's squash and Layer 2
-  // recovery (or a clean rebase) handles it.
-  //
-  // Fall-soft: any failure in this path falls back to the legacy behavior
-  // so we don't break worktree creation for setups where the squash flow
-  // can't run (no main branch resolvable, network down, etc.).
-  const squashImport = resolvedStartPoint
+  /*
+  FNXC:TaskBaseResolution 2026-09-16-02:35 (RUFU-245):
+  A default-base card names the integration branch itself as its start point (`main`, `origin/main`,
+  `refs/heads/main` — all one base). Running the squash-import planner for such a card treats the
+  card's OWN base as a dependency: it plans an import of the integration tip onto the integration
+  base and leaves the new branch with zero commits of its own — the exact zero-own-commit shape that
+  wedge RUFU-231/RUFU-237 could not clear. So the planner runs only for a genuine dependency base,
+  and a card whose start point already IS the integration base starts straight from the resolved local
+  integration SHA (FN-2729's dep-squash path is untouched: distinct bases still plan an import).
+  */
+  const settings = await deps.store.getSettings();
+  const localBase = resolvedStartPoint
+    ? await resolveLocalIntegrationBase({
+        rootDir: deps.rootDir,
+        settings,
+        execImpl: deps.execImpl,
+      }).catch(() => ({ integrationBranch: "", localSha: null as string | null }))
+    : null;
+  const remoteCandidates = [settings.worktreeRebaseRemote, "origin"].filter(
+    (remote): remote is string => typeof remote === "string" && remote.length > 0,
+  );
+  const startPointIsIntegrationBase = !!localBase && (
+    namesIntegrationBranch(startPoint, localBase.integrationBranch, remoteCandidates)
+    || (!!localBase.localSha && resolvedStartPoint === localBase.localSha)
+  );
+  const squashImport = resolvedStartPoint && !startPointIsIntegrationBase
     ? await deps.planSquashImportFromDep(taskId, resolvedStartPoint, startPoint)
     : null;
   const initialStartPoint = squashImport ? squashImport.mainBase : resolvedStartPoint;
-  const settings = await deps.store.getSettings();
 
   for (let attempt = 0; attempt < deps.maxWorktreeRetries; attempt++) {
     try {

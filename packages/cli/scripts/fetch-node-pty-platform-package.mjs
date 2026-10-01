@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 /* global console, process, setTimeout */
+/* FNXC:Terminal 2026-09-12-08:52: FN-9295 added the retry backoff below but did not declare setTimeout
+   in this file's global comment; packages/cli/scripts is outside the eslint Node-globals blocks, so
+   the bare setTimeout broke `pnpm lint`. Declaring it here matches the existing global-comment pattern. */
 /*
 FNXC:Terminal 2026-09-04-02:00:
 Foreign standalone targets are absent from the script-free workspace install.

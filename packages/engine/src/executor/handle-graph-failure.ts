@@ -19,6 +19,7 @@ import {
   resolveLifecycleColumns,
   resolveMaxConsecutiveToolFailureRetries,
   hasPendingReviewRemediationWork,
+  isVerdictLessFailedGateRow,
   resolveReboundTarget,
   resolveStepReopenPolicy,
   resolveWorkflowIrForTask,
@@ -40,14 +41,14 @@ import { generateSyntheticRunId, type EngineRunContext } from "../util/run-audit
 import { emitBoundedRunAudit } from "./emit-bounded-run-audit.js";
 import { captureMergeContentDescriptor } from "../merge/merge-content-capture.js";
 import {
-  rerouteFailedNoVerdictPreMergeGateToReview,
   rerouteUnrunPreMergeGateToReview,
 } from "../merge/pre-merge-gate-reseed.js";
 import { MERGE_BOUNDARY_RECOVERY_VALUE, MERGE_BOUNDARY_UNPROVEN_VALUE } from "../workflows/workflow-merge-nodes.js";
 import { emitMergeBoundaryUnprovenParked } from "./emit-merge-boundary-unproven-audit.js";
 import { PAUSE_ABORT_PARK_ERROR_MARKER, PAUSE_ABORT_PARK_OPERATOR_MARKER } from "../self-healing.js";
 import {
-  graphFailureErrorTexts,
+  formatGraphFailureDiagnostic,
+  graphFailureNodeErrorText,
   graphFailureValue,
   graphRunReportedPendingReview,
   isMergeGraphFailure,
@@ -74,6 +75,7 @@ import {
 import {
   isAwaitingGraphFailureValue,
   isTerminalMergeGraphFailureValue,
+  isHandedOffAndWorkComplete,
 } from "./task-predicates.js";
 import type { PausedAbortProvenance } from "./paused-abort-provenance.js";
 
@@ -170,6 +172,7 @@ async function retryTerminalFailurePersistence(
   message: string,
   runContext: EngineRunContext | undefined,
   capturedColumnMovedAt: string | undefined,
+  declineIfHandedOff?: (current: Task) => boolean,
 ): Promise<boolean> {
   /*
   FNXC:MergeRetryReliability 2026-09-04-02:24:
@@ -190,6 +193,16 @@ async function retryTerminalFailurePersistence(
           || (typeof capturedColumnMovedAt === "string"
             && typeof current.columnMovedAt === "string"
             && current.columnMovedAt !== capturedColumnMovedAt)
+          // FNXC:WorkflowExecutor 2026-09-15-23:31: RUFU-237 Step 5 — the
+          // callback answers "may the terminal write still proceed?" (it is
+          // built as `!isHandedOffAndWorkComplete(...)` at the execute-family
+          // sink); false means the row became a completed handoff mid-flight.
+          // Covers the handoff whose columnMovedAt stamp is NOT comparable
+          // (absent or non-string on either side) — the stamp fence above is
+          // skipped in exactly that shape. This is defense in depth: the sink's
+          // honor guard is the primary fix (RUFU-217's row was already in
+          // review when the sink read it); the old stamp fence is not broken.
+          || (declineIfHandedOff !== undefined && !declineIfHandedOff(current))
         ) return null;
         return { error: message, status: "failed" };
       }, runContext);
@@ -204,6 +217,46 @@ async function retryTerminalFailurePersistence(
   }
   return false;
 }
+
+/*
+FNXC:WorkflowExecutionOwnership 2026-09-16-00:35 (RUFU-237):
+Record that the graph-failure sink honored a completed handoff instead of terminalizing it.
+
+Sighting (RUFU-217 card, 2026-09-14): `fn_task_done` succeeded and the row moved to review at
+16:28:44Z; ~90 s later the SAME dispatch's session tail resolved a `failed` disposition (the execute
+seam collapses out-of-band exits to `taskDone:false`) and the generic sink rewrote the delivered row
+with "Workflow graph terminated with failure at node 'steps#0:step-execute'".
+
+The card is left exactly as found — no store write, no clearPausedAborted, no `activeWorktrees`
+delete: the generic sink never released those and neither do the benign neighbours, because slot
+release is owned by the caller's `finally`. Only a warn + task log + audit row are recorded; the
+benign sentence never enters run-audit, and token totals are persisted by the caller.
+
+Why a free function instead of inline: `handleGraphFailure` is the U4-peeled junction box whose body
+the U8 ownership ledger range-checks (`extracts both junction-box method bodies at their real size`
+in executor-lifecycle-ownership-ledger.test.ts); inlining this record pushed that body past its
+ceiling, so the emit lives here and the ledger guard stays honest instead of being widened.
+*/
+async function recordHandoffHonored(
+  deps: HandleGraphFailureDeps,
+  taskId: string,
+  reviewLane: string,
+  failedNode: string | undefined,
+): Promise<void> {
+  const benignMessage = `Workflow graph ended at execute-family node '${failedNode ?? "unknown"}' after the task already completed and handed off to '${reviewLane}' — honoring the handoff, card left in place`;
+  executorLog.warn(`${taskId}: ${benignMessage}`);
+  await deps.store.logEntry(taskId, benignMessage, undefined, deps.getRunContextFor(taskId));
+  await emitBoundedRunAudit(deps.store, {
+    taskId,
+    agentId: "executor",
+    runId: generateSyntheticRunId("graph-failure-after-handoff-honored", taskId),
+    domain: "database",
+    mutationType: "task:graph-failure-after-handoff-honored",
+    target: taskId,
+    metadata: { taskId, nodeId: failedNode ?? "unknown", column: reviewLane, reason: "work-complete-handoff" },
+  });
+}
+
 export async function handleGraphFailure(
   deps: HandleGraphFailureDeps,
   task: Task,
@@ -356,8 +409,10 @@ export async function handleGraphFailure(
        * freshly-created checkout or consume graph/provider retry budgets.
        */
       if (graphFailureValue(result) === BRANCH_WRITE_PROVENANCE_FAILURE_VALUE) {
-        const diagnostic = graphFailureErrorTexts(result).find((message) => message.includes("branchWriteOrigin is required when branch is provided"))
-          ?? "branchWriteOrigin is required when branch is provided";
+        const branchWriteNodeError = graphFailureNodeErrorText(result);
+        const diagnostic = branchWriteNodeError?.includes("branchWriteOrigin is required when branch is provided")
+          ? branchWriteNodeError
+          : "branchWriteOrigin is required when branch is provided";
         await deps.store.logEntry(task.id, diagnostic, undefined, deps.getRunContextFor(task.id));
         await deps.store.updateTask(task.id, { status: "failed", error: diagnostic }, deps.getRunContextFor(task.id));
         await deps.persistTokenUsage(task.id);
@@ -375,7 +430,7 @@ export async function handleGraphFailure(
       Git diagnostics remain actionable and provider retry accounting is untouched.
       */
       if (isWorkspacePreparationGraphFailure(result)) {
-        const diagnostic = graphFailureErrorTexts(result)[0]
+        const diagnostic = graphFailureNodeErrorText(result)
           ?? "Workspace repository preparation failed before a reviewer session started";
         /*
         FNXC:WorkspacePreparation 2026-08-21-19:52:
@@ -908,9 +963,9 @@ export async function handleGraphFailure(
           graph run reach this sink, where it logged "Workflow graph failure
           surfaced ... operator action required; retry or explicitly
           unpause/resume" on a task that finished perfectly. The `status:
-          "failed"` write below was already guarded for done/archived, but the
+          "failed"` write below was already guarded for workflow Complete, but the
           alarming operator-action log entry (and its warn) still fired on
-          every auto-merged task. Treat done/archived like the todo benign
+          every auto-merged task. Treat Complete like the todo benign
           case: clear the abort marker, release the worktree slot, log a
           benign completion note, and never emit the PAUSE_ABORT_PARK markers
           (so self-healing's recoverPausedAbortFailures has nothing to chase).
@@ -976,6 +1031,7 @@ export async function handleGraphFailure(
         await deps.persistTokenUsage(live.id);
         return;
       }
+      const nodeError = graphFailureNodeErrorText(result);
       const recoveryCode = result.context?.["workflow:merge-boundary-recovery-code"];
       const recoveryMissingIds = result.context?.["workflow:merge-boundary-missing-instance-ids"];
       const recoveryNonTerminalNodeId = result.context?.["workflow:merge-boundary-non-terminal-node-id"];
@@ -1239,7 +1295,7 @@ export async function handleGraphFailure(
       if (await deps.routeRetryableRemediationGraphFailureToPreMergeFix(live, failedNode, failureValue)) {
         return;
       }
-      if (await deps.routeGraphFailureToExecutionResume(live, failedNode ?? "unknown", failureValue, resumeLanesMemo)) {
+      if (await deps.routeGraphFailureToExecutionResume(live, failedNode ?? "unknown", failureValue, resumeLanesMemo, undefined, nodeError)) {
         return;
       }
       /*
@@ -1253,30 +1309,12 @@ export async function handleGraphFailure(
         const failedPreMergeStep = latestFailedPreMergeWorkflowStep(live);
         if (failedPreMergeStep) {
           /*
-          FNXC:NoVerdictReviewRecovery 2026-09-23-20:52:
-          Graph-failure recovery can race a just-queued merger after its last durable probe.
-          Production delegates to ProjectEngine's admission fence; the direct helper remains only
-          for isolated executor fixtures that do not construct a ProjectEngine.
+          FNXC:SyncMerge0924 2026-09-24-06:55 (merge origin/main 67c7d80531 → main):
+          FN-9373's raw no-verdict re-seed for this sink is intentionally absent: the verdict-less
+          block below is this line's owning lane — same seed primitive, plus the persisted per-gate
+          three-strike budget and `task:merge-unrun-pre-merge-gate-rerouted` audit that the sink
+          contract requires. An unbudgeted seed here would defeat the exhaustion park.
           */
-          const noVerdictReroute = await (async () => {
-            if (deps.rerouteFailedNoVerdictPreMergeReview) {
-              return deps.rerouteFailedNoVerdictPreMergeReview(live);
-            }
-            const gate = await resolvePreMergeGateForTask(deps.store, live.id, live.enabledWorkflowSteps, live);
-            const settings = await deps.store.getSettings();
-            const mergeContent = await captureMergeContentDescriptor(live, { workspaceRootDir: deps.rootDir, settings });
-            return rerouteFailedNoVerdictPreMergeGateToReview(deps.store, live, {
-              requiredPreMergeStepIds: gate.requiredPreMergeStepIds,
-              mergeContent,
-              expectedWorkflowSelection: gate.expectedWorkflowSelection,
-            });
-          })().catch(() => undefined);
-          if (noVerdictReroute && (typeof noVerdictReroute === "string" ? noVerdictReroute === "rerouted" : noVerdictReroute.rerouted)) {
-            const message = `Workflow graph re-seeded at failed no-verdict pre-merge review gate '${typeof noVerdictReroute === "string" ? "unknown" : noVerdictReroute.nodeId ?? "unknown"}'`;
-            executorLog.warn(`${task.id}: ${message}`);
-            await deps.store.logEntry(task.id, message, undefined, deps.getRunContextFor(task.id));
-            return;
-          }
           /*
           FNXC:LifecycleContainment 2026-08-30-12:57:
           A graph route may end in review without traversing its remediation edge. Before parking a
@@ -1285,8 +1323,59 @@ export async function handleGraphFailure(
           */
           const workflowIr = await resolveWorkflowIrForTask(deps.store, task.id).catch(() => undefined);
           const stepReopenPolicy = resolveStepReopenPolicy(workflowIr);
+          /*
+          FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217, AC1 — graph-failure sink, hazard-3):
+          A verdict-less failed gate row means the gate CRASHED — no reviewer opinion exists — so the
+          recovery is a fresh GATE RUN, not review remediation: `requestPreMergeOptionalStepFix` below
+          would ask the executor to fix findings that were never authored and park the card exactly
+          like RUFU-204's (its remediation feedback would be "(no feedback captured)"). The FN-9243
+          reseed lane owns admission and its budget: it only seeds gates classified verdict-less or
+          missing, refuses while a continuation is active, and stops seeding once the persisted
+          per-task per-gate rerun budget is spent. The same resolver trio as the unrun-gate block
+          below runs here — one resolution per failure, so blocker and reroute decide from identical
+          evidence. A DECLINED seed (budget spent, active continuation, or resolve failure) falls
+          through to the pre-existing "remediation was not scheduled" park with that message byte-
+          identical to the authored-REVISE answer (AC3), skipping remediation because there is no
+          authored opinion to remediate.
+          */
+          let verdictlessRerunDeclined = false;
+          if (isVerdictLessFailedGateRow(failedPreMergeStep)
+            && live.column === failureLanes.review
+            && !live.paused
+            && !hasPendingReviewRemediationWork(live, { stepReopenPolicy })) {
+            let reroute: Awaited<ReturnType<typeof rerouteUnrunPreMergeGateToReview>> | undefined;
+            let resolvedGateCount: number | undefined;
+            try {
+              const gate = await resolvePreMergeGateForTask(deps.store, live.id, live.enabledWorkflowSteps, live);
+              resolvedGateCount = gate.requiredPreMergeStepIds.size;
+              const settings = await deps.store.getSettings();
+              const mergeContent = await captureMergeContentDescriptor(live, { workspaceRootDir: deps.rootDir, settings });
+              reroute = await rerouteUnrunPreMergeGateToReview(deps.store, live, {
+                requiredPreMergeStepIds: gate.requiredPreMergeStepIds,
+                mergeContent,
+              });
+            } catch {
+              reroute = undefined;
+            }
+            if (reroute) {
+              // AC5: the park-routing decision is auditable, ids/counts/fixed outcomes only.
+              await emitBoundedRunAudit(deps.store, {
+                taskId: task.id, agentId: "graph-failure", runId: generateSyntheticRunId("graph-failure", task.id), domain: "database",
+                mutationType: "task:merge-unrun-pre-merge-gate-rerouted", target: task.id,
+                metadata: { taskId: task.id, nodeId: reroute.nodeId, workflowStepId: reroute.workflowStepId, reason: reroute.reason, source: "graph-failure", missingGateCount: resolvedGateCount },
+              });
+            }
+            if (reroute?.rerouted) {
+              const message = `Workflow graph re-seeded for a re-run of pre-merge gate '${reroute.nodeId ?? "unknown"}' whose last run died without a verdict`;
+              executorLog.warn(`${task.id}: ${message}`);
+              await deps.store.logEntry(task.id, message, undefined, deps.getRunContextFor(task.id));
+              return;
+            }
+            verdictlessRerunDeclined = true;
+          }
           if (live.column === failureLanes.review
             && !live.paused
+            && !verdictlessRerunDeclined
             && !hasPendingReviewRemediationWork(live, { stepReopenPolicy })) {
             /*
             FNXC:LifecycleContainment 2026-08-30-13:36:
@@ -1472,7 +1561,29 @@ export async function handleGraphFailure(
           return;
         }
       }
-      const message = `Workflow graph terminated with failure at node '${failedNode ?? "unknown"}'`;
+      /*
+      FNXC:WorkflowExecutionOwnership 2026-09-15-22:51 (RUFU-237):
+      Honor a completed handoff that already landed in the review lane (see `recordHandoffHonored`
+      for the RUFU-217 sighting and the audit record). This is the LAST classifier before the
+      terminal write, deliberately: FN-9243's unrun-gate reroute, RUFU-217's verdict-less re-run, and
+      the remediation producers own the review lane ahead of it — and their whole block is skipped
+      when the workflow yields no `wip` column (see `wipColumn`, whose `"in-progress"` fallback only
+      covers the unresolvable-IR shape, not a valid IR that simply declares no wip trait). A
+      completed+clean row in the RESOLVED review lane has no producer left to consult: the execution
+      is over, so terminalizing it launders a delivered card into a spurious Task Failed.
+      `autoMerge: false` makes the consequence sharper — in-review is terminal-until-human there, so
+      it must never be rewritten by a stale signal.
+
+      Placement is load-bearing in the other direction too: `isTaskWorkComplete` reads steps only and
+      cannot see unrun workflow gates, so running this earlier would preempt FN-9243 — pinned by the
+      executor-graph-failure-after-handoff test ("E"), which fails on any earlier placement.
+      */
+      if (isExecuteFamilyNode && isHandedOffAndWorkComplete(live, failureLanes.review)) {
+        await recordHandoffHonored(deps, task.id, live.column, failedNode);
+        await deps.persistTokenUsage(task.id);
+        return;
+      }
+      const message = formatGraphFailureDiagnostic(failedNode, failureValue, nodeError);
       const settings = await deps.store.getSettings();
       const maxToolFailureRetries = resolveMaxConsecutiveToolFailureRetries(settings);
       if (maxToolFailureRetries > 0 && isExecuteFamilyNode && !live.paused && !live.userPaused && !live.deletedAt && live.column === wipColumn) {
@@ -1621,12 +1732,25 @@ export async function handleGraphFailure(
         if (!escalationTerminalParked) return;
         await emitBoundedRunAudit(deps.store, { taskId: task.id, agentId: "executor", runId: generateSyntheticRunId("escalation-exhausted", task.id), domain: "database", mutationType: "task:execution-escalation-exhausted", target: task.id, metadata: { taskId: task.id, nodeId: failedNode ?? "unknown", hadModelTarget: escalationHadModelTarget, hadNodeTarget: escalationHadNodeTarget } });
       } else {
+        /*
+        FNXC:WorkflowExecutor 2026-09-15-23:31: RUFU-237 Step 5 — execute-family
+        terminal writes re-check the handoff contract AT THE WRITE. The honor
+        guard above ran many awaits earlier (settings read, tool-failure claim,
+        backoff ladder, and the deferred chain fires up to 120 s later); between
+        then and the fenced write the row can complete and move into the review
+        lane. The callback is execute-family only: merge-boundary and other
+        non-execute parks keep their existing behavior byte-identical.
+        */
+        const declineIfHandedOff = isExecuteFamilyNode
+          ? (current: Task): boolean => !isHandedOffAndWorkComplete(current, failureLanes.review)
+          : undefined;
         const parked = await retryTerminalFailurePersistence(
           deps.store,
           task.id,
           message,
           deps.getRunContextFor(task.id),
           live.columnMovedAt,
+          declineIfHandedOff,
         );
         if (!parked) {
           /*
@@ -1740,6 +1864,12 @@ export async function handleGraphFailure(
                       || (typeof capturedColumnMovedAt === "string"
                         && typeof current.columnMovedAt === "string"
                         && current.columnMovedAt !== capturedColumnMovedAt)
+                      // FNXC:WorkflowExecutor 2026-09-15-23:31: RUFU-237 Step 5 —
+                      // same handoff fence as retryTerminalFailurePersistence:
+                      // this chain can fire ~120 s after exhaustion, long after
+                      // a benign completion handoff moved the row to review with
+                      // a columnMovedAt stamp that may not be comparable.
+                      || (declineIfHandedOff !== undefined && !declineIfHandedOff(current))
                     ) return null;
                     fencedParked = true;
                     return { error: message, status: "failed" };

@@ -17,6 +17,13 @@ import type {
 } from "./workflow-ir-types.js";
 import { classifyWorkflowAgentNode } from "./workflow-ir-types.js";
 import { MERGE_REGION_ENTRY_NODE_KINDS } from "./workflow-merge-region.js";
+/*
+FNXC:PostMergeEvidenceContract 2026-10-01-06:36 (RUFU-457):
+The optional-group evidence allow-list is owned by the module that owns the prompt builder, so the parser
+accepts exactly the kinds that have prompt text. Safe as a value import: `builtin-post-merge-group.ts`
+depends only on `workflow-ir-types.ts`, so this adds no cycle.
+*/
+import { authoredPostMergeEvidenceKindOf, describePostMergeEvidenceKinds } from "./builtin-post-merge-group.js";
 import { getWorkflowExtensionRegistry } from "./workflow-extension-registry.js";
 import type { WorkflowExtensionConfigField } from "./workflow-extension-types.js";
 import { THINKING_LEVELS } from "../types.js";
@@ -144,7 +151,6 @@ export const DEFAULT_WORKFLOW_COLUMN_IDS = [
   "in-progress",
   "in-review",
   "done",
-  "archived",
 ] as const;
 
 /** Place a v1 node into a synthesized default-workflow column by its seam. */
@@ -761,6 +767,27 @@ function validateOptionalGroup(
   // "pre-merge"; only "pre-merge" | "post-merge" are valid when present.
   if (cfg.phase !== undefined && cfg.phase !== "pre-merge" && cfg.phase !== "post-merge") {
     throw new WorkflowIrError(`optional-group node '${node.id}' phase must be 'pre-merge' or 'post-merge'`);
+  }
+  /*
+   * FNXC:PostMergeEvidenceRequirement 2026-09-30-22:51 (RUFU-430):
+   * An authored evidence contract is validated at parse so a custom workflow cannot persist a kind the
+   * reviewer prompt builder has no text for — a typo there would silently downgrade a delivery gate to an
+   * unrecognisable demand. Absent stays valid and means the historical full-suite contract.
+   *
+   * FNXC:PostMergeEvidenceContract 2026-10-01-06:36 (RUFU-457):
+   * The allow-list and its error sentence now come from one shared list (`POST_MERGE_EVIDENCE_KINDS`, four
+   * kinds since OneDev/GitLab got their own), because the old shape enumerated them twice and a kind added to
+   * one place but not the other tells an operator their valid workflow is invalid. Absent is still valid and
+   * still means the historical reading — the parse layer stays deliberately silent about hosts, since which
+   * reporter a board has is the engine reader's fact to resolve, not the IR's.
+   */
+  if (cfg.evidence !== undefined) {
+    // The reader takes the node CONFIG (`{ evidence: { kind } }`), so pass `cfg`, not `cfg.evidence`.
+    if (authoredPostMergeEvidenceKindOf(cfg as { evidence?: { kind?: unknown } }) === undefined) {
+      throw new WorkflowIrError(
+        `optional-group node '${node.id}' evidence.kind must be ${describePostMergeEvidenceKinds()}`,
+      );
+    }
   }
   /*
    * FNXC:WorkflowOptionalStepRevisionBudget 2026-06-27-12:22:

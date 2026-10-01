@@ -9,7 +9,7 @@ const severityAuditLog = createLogger("dashboard-board-workflows");
  * tasks, the workflow each card belongs to plus the (deduplicated) set of
  * workflow definitions referenced — each carrying its ordered columns, display
  * names, and *resolved trait flags* (archived / hold / complete / wip etc.) so
- * the client can render lanes, hide archived columns, show promote affordances,
+ * the client can render live lanes and show promote affordances,
  * and pre-check drag adjacency/capacity without a second round-trip.
  *
  * The payload is served by a sibling endpoint (`GET /tasks/board-workflows`)
@@ -110,7 +110,6 @@ const BUILTIN_WORKFLOW_COLUMN_LABELS: Record<string, string> = {
   "in-progress": "In Progress",
   "in-review": "In Review",
   done: "Done",
-  archived: "Archived",
 };
 
 function toV2(ir: WorkflowIr): WorkflowIrV2 | undefined {
@@ -155,6 +154,21 @@ function isManualIntakeColumn(col: WorkflowIrColumn): boolean {
   if (flags.intake !== true) return false;
   const intakeTrait = (col.traits ?? []).find((trait) => trait.trait === "intake");
   return (intakeTrait?.config as { autoTriage?: boolean } | undefined)?.autoTriage === false;
+}
+
+/*
+FNXC:TaskQueueOrder 2026-09-17-13:51:
+FN-509: the SERVER needs the same column facts the board card reasons about, so the Boost endpoint
+can refuse a lane that has no automatic queue instead of persisting a durable rank on a Complete or
+manual-capture card. Reusing this module keeps `manualIntake` a single derivation.
+*/
+export function resolveBoardColumnFlags(
+  ir: WorkflowIr,
+  columnId: string,
+): BoardWorkflowColumn["flags"] | undefined {
+  const column = toV2(ir)?.columns.find((col) => col.id === columnId);
+  if (!column) return undefined;
+  return { ...resolveColumnFlags(column), ...(isManualIntakeColumn(column) ? { manualIntake: true } : {}) };
 }
 
 function describeColumns(ir: WorkflowIr, canonicalizeLifecycle = false): BoardWorkflowColumn[] {
@@ -271,17 +285,23 @@ export async function buildBoardWorkflowsPayload(
   const selectableWorkflowIds = new Set<string>([defaultWorkflowId]);
 
   /*
-  FNXC:WorkflowScheduling 2026-09-19-04:10:
-  This loop used to await store.getTaskWorkflowSelectionAsync(taskId) one task at a
-  time, so a board load issued one DB round-trip per visible task — thousands of
-  sequential awaits on a project with a large non-archived task count, easily
-  exceeding any reasonable request timeout and leaving the board stuck on its
-  skeleton loading state forever. Batch through getTaskWorkflowSelectionsAsync
-  (already built for exactly this — FN-9261) when the store exposes it, falling
-  back to the historical per-task path for stores that only implement the
-  singular method.
+  FNXC:BoardLoad 2026-09-11-21:12:
+  Board metadata must resolve task workflow selections in ONE query. This loop
+  awaited one selection read per card, so a 65-card board paid N+1 round-trips
+  before rendering: measured 12-25s on the deployed 0.78.0-beta.4 dashboard for
+  GET /tasks/board-workflows while its two sibling list reads answered in <1s.
+  That serial fan-out — amplified by GC pressure under heap saturation — is what
+  made the board look unable to load at all.
+
+  `getTaskWorkflowSelectionsAsync` already resolves every id in a single
+  `inArray` query and canonicalizes retired builtin ids identically to the
+  singular reader, and `workflow-ir-resolver` uses the same batched-then-singles
+  shape, so it is reused rather than re-derived. Stores predating the batched
+  reader (and partial test stores) keep the per-task path. Ids absent from the
+  batch fall back to the effective default exactly as before, and a failed batch
+  degrades every card to the default instead of failing the board load.
   */
-  let batchedSelections: Map<string, { workflowId: string; stepIds: string[] }> | undefined;
+  let batchedSelections: Map<string, { workflowId: string }> | undefined;
   if (store.getTaskWorkflowSelectionsAsync) {
     try {
       batchedSelections = await store.getTaskWorkflowSelectionsAsync(taskIds);
@@ -289,18 +309,20 @@ export async function buildBoardWorkflowsPayload(
       batchedSelections = undefined;
     }
   }
-
   for (const taskId of taskIds) {
     let workflowId = defaultWorkflowId;
-    try {
-      const selection = batchedSelections
-        ? batchedSelections.get(taskId)
-        : store.getTaskWorkflowSelectionAsync
+    if (batchedSelections) {
+      const batchedWorkflowId = batchedSelections.get(taskId)?.workflowId;
+      if (batchedWorkflowId) workflowId = batchedWorkflowId;
+    } else {
+      try {
+        const selection = store.getTaskWorkflowSelectionAsync
           ? await store.getTaskWorkflowSelectionAsync(taskId)
           : store.getTaskWorkflowSelection(taskId);
-      if (selection?.workflowId) workflowId = selection.workflowId;
-    } catch {
-      workflowId = defaultWorkflowId;
+        if (selection?.workflowId) workflowId = selection.workflowId;
+      } catch {
+        workflowId = defaultWorkflowId;
+      }
     }
     taskWorkflowIds[taskId] = workflowId;
     referenced.add(workflowId);

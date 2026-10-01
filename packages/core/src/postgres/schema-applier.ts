@@ -27,32 +27,34 @@ import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { sql } from "drizzle-orm";
 import { runPluginSchemaInitHooks, DEFAULT_PLUGIN_SCHEMA_INIT_HOOKS, type PluginSchemaInitHook } from "./plugin-schema-hook.js";
 import { acquireSchemaMutationLocks } from "./advisory-locks.js";
-import { createLogger } from "../process/logger.js";
-
-const schemaApplierLog = createLogger("schema-applier");
 
 /** The latest PostgreSQL schema version known to this applier. */
 /*
 FNXC:GitHubImportTranslate 2026-07-17-23:48:
 Advances to 0019 for the import-translation legacy-partition backfill. Per-migration identities above stay fixed; only this latest-version marker moves.
 
+/*
 FNXC:PostgresBigintCounters 2026-07-19-12:00:
 SCHEMA_BASELINE_VERSION advances to 0026 for the bigint counters migration.
 Per-migration identities above stay fixed; only this latest-version marker moves.
 
+/*
 FNXC:WorkflowTaskContinuations 2026-07-21:
 SCHEMA_BASELINE_VERSION advances to 0031 for durable, single-owner task
 continuations at workflow column boundaries.
 
+/*
 FNXC:LegacyAdoption 2026-07-21-17:30:
 SCHEMA_BASELINE_VERSION advances to 0037 for dropping the cross-project concurrency table; it previously advanced to 0036 for normalized Direct conversation tags; it previously advanced to 0032 for fusion_runtime SELECT +
 SECURITY DEFINER write access to the legacy-adoption drained marker.
 
+/*
 FNXC:TaskWedgeNotifications 2026-07-23-00:00:
 Advance the PostgreSQL schema ceiling for the durable wedge episode column. The
 forward migration must run before TaskStore writes the new field on fresh and
 upgraded databases.
 
+/*
 FNXC:MissionTaskPrefix 2026-07-30-21:10 (rebase onto migrated main):
 SCHEMA_BASELINE_VERSION advances to 0038 for optional per-mission task_prefix — 0037 is the
 capacity-model table drop that landed while this PR was open.
@@ -69,6 +71,7 @@ capacity-model table drop that landed while this PR was open.
 /* FNXC:TaskRecommendations 2026-08-13-22:23: upgrades must install the source-agent index before duplicate intake queries it. */
 /* FNXC:WorkspaceLease 2026-08-15-12:00: the baseline ceiling must include durable coordination tables so an upgraded database is never rejected by the current binary. */
 /* FNXC:ActivityLogTaskSearch 2026-08-20-04:17: advance the schema ceiling so durable central task-ID lookups receive their indexed upgrade. */
+/* FNXC:MemoryFocus 2026-08-21-06:10: 0065 adds the per-conversation chat_sessions.memory_focus read-time topic column (RUFU-068); renumbered from 0059 (FN-9037), then 0060 (FN-9059 workspace leases), then 0061 (FN-066 activity-log index), landing on 0065 above the FN-066..FN-101 batch. Advancing the baseline to 0065 keeps the upgrade guard (${SCHEMA_BASELINE_VERSION} vs applied) from rejecting databases that already carry the batch. */
 /*
 FNXC:ReviewConvergence 2026-08-22-18:58:
 Advance the ceiling to 0065 for FN-149's review-convergence columns. FN-149 registered
@@ -84,12 +87,20 @@ touches no data; it must advance in the same change that ships a new migration f
 /* FNXC:MemoryFocus 2026-08-20-22:10: the upstream 2026-08-20 batch (FN-066..FN-094) claimed 0061-0064 after this branch had already taken 0061, so the memory-focus migration was renumbered to 0065 and the baseline ceiling advanced with it. */
 /* FNXC:MemoryFocus 2026-08-23-12:50: upstream then shipped FN-149's 0065_fn_149_review_convergence_stage.sql on origin/main, claiming 0065 for its own migration. Upstream's 0065 is canonical (already released), so the memory-focus migration is renumbered to 0066 and the ceiling advances to 0066. Production databases that already applied the memory-focus SQL under ledger row "0065" (v17-era ledger) need a one-time ledger remap 0065->0066 before first boot of a 0066-ceiling binary, or the fresh 0065_fn_149 migration would be skipped as "already applied". */
 /* FNXC:WorkspaceContention 2026-08-24-03:34: origin/main owns released migration 0066 for chat memory focus, so FN-179's session-contention wait state moves to 0067 and the binary ceiling advances with it. */
+/* FNXC:MigrationCollisionRepair 2026-08-27-05:06: renumbered 0067 -> 0068 when the fusion/rufu-141 squash merge integrated the deploy line: that line owns released 0067 (FN-179). */
+/* FNXC:MigrationCollisionRepair 2026-08-30-09:05 (merge origin/main c7a5e74a6a → main): renumbered again 0068 -> 0072 because upstream shipped 0068 (FN-208 task_step_reports), 0069 (FN-209), 0070 (FN-212) and 0071 (FN-227 patchnode). The repair migration must sort after every released migration it repairs, so the ceiling advances to 0072. */
 /* FNXC:ExternalBlock 2026-08-28-03:48: advance the schema ceiling so upgraded projects materialize the external-obstacle freeze before task reads begin. */
 /* FNXC:PlanApproval 2026-08-28-06:24: advance the ceiling with the per-task approval migration so task reads never precede its column. */
 /* FNXC:PatchnodeLedger 2026-08-28-12:16: the permanent ledger table must exist before TaskStore can commit a completion move atomically with its entry. */
 /* FNXC:ChatSidebarPerf 2026-09-08-04:48: baseline marker includes the chat-message recency index required for index-backed sidebar previews. */
-/* FNXC:OverlapWaitSynchronization 2026-09-17-00:22: advance the ceiling so an upgraded project has the durable wait table before any overlap-marker transition tries to record into it. Renumbered 0074->0084 (2026-09-18): upstream's own migrations 0074 (FN-323 project notes) through 0083 (FN-514) are absent from this branch by design (it excludes their source commits), but the numeric slots are real and must not be reused, or a database that ran the real 0074..0083 would be misread as compatible with this branch's different 0074. */
-export const SCHEMA_BASELINE_VERSION = "0086";
+/* FNXC:OverlapWaitSynchronization 2026-09-13-05:10: the ceiling includes the retired-phase drain, so startup completes it before overlap readers run. */
+/* FNXC:WorkflowIdentity 2026-09-14-19:06: the ceiling includes the transactional Coding (Ideas) identity convergence and its recovery archives. */
+/* FNXC:HumanPlanApproval 2026-09-15-06:24: the ceiling includes FN-408's per-card decision column, so no release gate reads tasks before it exists. */
+/* FNXC:TaskPauseAccounting 2026-09-16-06:16: the ceiling includes FN-457's paused-time columns, so timing readers never query a tasks table that lacks them. */
+/* FNXC:ReviewLaneDispatch 2026-09-16-18:30 (merge origin/main): the ceiling includes the renumbered ledger migration. The stale-binary guard compares the DB's highest marker against Number(SCHEMA_BASELINE_VERSION), so a bundled migration ABOVE the ceiling would make the ledger's self-marked version look like a newer Fusion's write and every boot after it would raise StaleBinarySchemaError.
+FNXC:ReviewLaneDispatch 2026-09-18-13:40 (sync the FN-511..526 wave): upstream released FN-509 queue order as 0082 and human merge approval as 0083 while the main-local ledger held 0082 — the ledger renumbered to 0084 (same renumbering as open PR #3619's branch) and the ceiling follows. */
+/* FNXC:MigrationVersionCollision 2026-10-01-15:26: upstream FN-9429 claimed 0086, the slot this line had already given its review-lane ledger, so one marker named two migrations. The ledger is re-issued at 0088 and FN-9429's receipts at 0089; the ceiling tracks the highest file so no boot can call a migration it just applied a newer Fusion's write. */
+export const SCHEMA_BASELINE_VERSION = "0089";
 /** FNXC:SymbolLock 2026-07-20-10:00: upgrades need durable task declarations before admission resolves symbols. */
 export const TASK_DECLARED_SYMBOLS_VERSION = "0028";
 const INITIAL_SCHEMA_VERSION = "0000";
@@ -272,15 +283,56 @@ export const PATCHNODE_ENTRIES_VERSION = "0071";
 export const TASK_PLANNING_FAILURE_VERSION = "0072";
 /** FNXC:ChatSidebarPerf 2026-09-08-04:48: upgrades need the descending per-session recency index before sidebar lateral lookups run. */
 export const CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION = "0073";
-/** FNXC:OverlapWaitSynchronization 2026-09-17-00:22: upgraded projects need durable wait episodes before transient blocker markers may clear. Renumbered 0074->0084 (2026-09-18) after upstream's own 0074 (FN-323 project notes) and its migrations through 0083 (FN-514) claimed that range. */
-export const OVERLAP_WAIT_SYNC_VERSION = "0084";
-/** FNXC:ForkedProductLine 2026-09-18-19:40: relocates (never deletes) tables/columns owned by upstream features this binary permanently excludes, out of the active `project` schema and into `deprecated_excluded_features`. */
-export const DROP_EXCLUDED_UPSTREAM_FEATURE_SCHEMA_VERSION = "0085";
-/** FN-9429: project-scoped authority receipts for automated stale callback waivers. */
-export const STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_VERSION = "0086";
+/** FNXC:ProjectNotes 2026-09-09-17:08: upgraded projects require revision-fenced personal notes before the API is served. */
+export const PROJECT_NOTES_VERSION = "0074";
+/** FNXC:OverlapWaitSynchronization 2026-09-09-23:53: upgraded projects need durable wait episodes before transient blocker markers may clear. */
+export const OVERLAP_WAIT_SYNC_VERSION = "0075";
+/** FNXC:WhiteboardAlpha 2026-09-10-05:42: Upgraded projects must install both Whiteboard tables before project routes resolve their lazy store. */
+export const WHITEBOARDS_SCHEMA_VERSION = "0076";
+/** FNXC:OverlapWaitSynchronization 2026-09-13-05:10: 0075's phase CHECK omitted `repair-required`, so existing delta REVISE rows can be migrated before the drain retires that phase. */
+export const OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_VERSION = "0077";
+/** FNXC:OverlapWaitSynchronization 2026-09-13-05:10: upgrades drain model-verdict overlap phases after 0077 has made all historical states readable. */
+export const OVERLAP_REVALIDATION_DRAIN_VERSION = "0078";
+/** FNXC:ReviewLaneDispatch 2026-09-09 (STAS-205): upgraded projects need the live-reviewer-run partial unique index before the dispatch sweep can claim one attempt per card. */
+/* FNXC:ReviewLaneDispatch 2026-09-15-00:24 (STAS-205 landing onto main): renumbered 0077 -> 0079 -> 0082: upstream released its own 0079/0080/0081 in the 2026-09-16 merge, so the ledger takes the next free slot; the bookkeeping-string rationale below still holds. Bookkeeping keys on the version STRING, so a branch claiming a slot main already recorded (0077 = the overlap repair phase) would make `applied.includes(...)` report the ledger as applied, the SQL would never run, and the sweep would lose its one-live-attempt-per-card enforcement silently. The deploy line owns released 0077-0078. */
+/* FNXC:OverlapWait 2026-09-21-09:55: this line's original 0075 owner FK is not ON UPDATE CASCADE /
+DEFERRABLE; project-partition promotion refuses it, so applied databases get upstream b1db055c27's
+repair as an additive migration. Fresh databases get the hardened FK inline in 0075. */
+export const OVERLAP_OWNER_FK_DEFERRABLE_REPAIR_VERSION = "0087";
+export const REVIEW_LANE_LEDGER_VERSION = "0088";
+/** FNXC:WorkflowIdentity 2026-09-14-19:06: upgraded projects converge the temporary Coding (Ideas) v2 identity without losing conflicting settings or prompts. */
+export const WORKFLOW_IDENTITY_AND_MODEL_LANES_VERSION = "0079";
+/** FNXC:HumanPlanApproval 2026-09-15-06:24: upgraded projects need the per-card human plan decision column before any release gate evaluates it. */
+export const TASK_HUMAN_PLAN_APPROVAL_VERSION = "0080";
+/** FNXC:TaskPauseAccounting 2026-09-16-06:16: upgraded projects need the durable paused-time columns before the card chip subtracts pause from worked time. */
+export const TASK_PAUSE_ACCOUNTING_VERSION = "0081";
+/** FNXC:TaskQueueOrder 2026-09-17-12:07: upgraded projects need the durable Boost column and its ordering sequence before any queue read runs. */
+export const TASK_QUEUE_ORDER_VERSION = "0082";
+/** FNXC:HumanMergeApproval 2026-09-17-18:09: upgraded projects need the per-card delivery lock column before any merge door evaluates it. */
+export const TASK_HUMAN_MERGE_APPROVAL_VERSION = "0083";
+/** FNXC:MigrationVersionCollision 2026-10-01-15:26: upstream FN-9429 released these receipts as 0086, already held here by the review-lane ledger, so both were re-issued (ledger 0088, receipts 0089). One marker must name exactly one migration. */
+export const STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_VERSION = "0089";
 
-/** FNXC:MemoryFocus 2026-08-13-15:57: explicit registration prevents the per-conversation memory-focus migration from being skipped. Renumbered to 0060 (FN-9037 took 0059), then 0061, then 0065 (2026-08-20) when the upstream FN-066..FN-094 batch claimed 0061-0064. */
+/** FNXC:MemoryFocus 2026-08-21-06:10: explicit registration prevents the per-conversation memory-focus migration from being skipped. Renumbered to 0060, then 0061, then 0065: the upstream FN-066..FN-101 batch (2026-08-21) owns 0061-0064 (activity-log index, splitting removal, AI-merge review, repository scope). */
+/* FNXC:MemoryFocus 2026-08-23-07:07: renumbered 0065 -> 0066 in the RUFU-160 origin/main merge: origin/main independently shipped 0065 as FN-149's review-convergence migration (v0.77.0-beta.7); keeping both lines' migrations requires the deploy-line file to take the next free sequence. */
 export const CHAT_SESSION_MEMORY_FOCUS_VERSION = "0066";
+/* FNXC:MigrationCollisionRepair 2026-08-23-07:07: idempotent re-run of both 0065-collision migrations; repairs databases that recorded 0065 with the other line's content. */
+/* FNXC:MigrationCollisionRepair 2026-08-27-05:06: renumbered 0067 -> 0068 in the fusion/rufu-141 merge, and 0068 -> 0072 in the beta.11 merge when upstream released its own 0068 (FN-208). */
+/*
+FNXC:MigrationCollisionRepair 2026-09-09-15:13 (merge origin/main f59f9ead92 -> main):
+the repair leaves the numeric sequence for good. Upstream owns released 0072 (FN-9273 planning-failure
+evidence) and 0073 (FN-9275 chat recency index), so any numeric identity here collides again: the
+bookkeeping table is keyed on the bare version string, so `applied.includes("0072")` answers "already
+applied" for BOTH migrations and upstream's `tasks.planning_failure` column is silently skipped on every
+database that recorded this repair. A fourth renumber (0072 -> 0074) only postpones the same collision to
+the next upstream batch, so the repair now carries a permanent non-numeric identity, the kind
+LEGACY_ADOPTION_DRAINED_MARKER already uses: assertBinaryNotOlderThanDatabase ignores non-numeric rows,
+so this row can never read as a newer database than the binary. Every database holding an older numeric
+repair row re-runs the step once under this identifier (the SQL is `ADD COLUMN IF NOT EXISTS`, so the
+re-run is a no-op); only a database whose repair row collides with an upstream-released number needs the
+one-time ledger remap described on this constant before that binary first boots.
+*/
+export const MIXED_0065_REPAIR_VERSION = "local-repair-mixed-0065";
 
 /** SECURITY DEFINER helper that only inserts LEGACY_ADOPTION_DRAINED_MARKER. */
 export const LEGACY_ADOPTION_DRAINED_MARKER_FUNCTION = "fusion_mark_legacy_adoption_drained";
@@ -312,6 +364,7 @@ the old binary proceed writes rows using the previous schema's assumptions (the 
 stale-Homebrew-binary failure mode). Compared numerically, not lexically; unparseable
 identifiers are ignored so a plugin marker cannot brick every open.
 
+/*
 FNXC:LegacyAdoption 2026-07-19-14:30 (PR #2341 review):
 The ignore-unparseable rule is a load-bearing coupling, not just plugin defense:
 LEGACY_ADOPTION_DRAINED_MARKER (below) is a deliberately NON-NUMERIC bookkeeping row that
@@ -319,17 +372,6 @@ LEGACY_ADOPTION_DRAINED_MARKER (below) is a deliberately NON-NUMERIC bookkeeping
 fusion_schema_migrations after a fully-drained adoption sweep. This guard MUST keep
 skipping non-numeric versions, or the marker would present as a "newer database" and
 brick every open.
-
-FNXC:ForkedProductLine 2026-09-18-19:05:
-This binary is a permanently feature-reduced fork: it never applies (and never will apply)
-some numeric migration slots a full-featured build owns (e.g. real upstream 0074-0083 —
-project notes, whiteboards, workflow-identity lanes, task queue ordering, human approval
-flows). A database that ran those migrations is not a corruption/downgrade risk for THIS
-binary's own tables and columns — Drizzle queries name their columns explicitly, so extra
-tables/columns from features this build doesn't implement are inert, not unsafe. Refusing to
-open here would mean nobody could ever point this build at a database a full build already
-touched. Downgrade to a WARNING: still refuse nothing, but keep the signal for an operator
-who wants to know their database carries schema this binary will never use.
 */
 export function assertBinaryNotOlderThanDatabase(applied: readonly string[]): void {
   const binaryVersion = Number(SCHEMA_BASELINE_VERSION);
@@ -345,12 +387,7 @@ export function assertBinaryNotOlderThanDatabase(applied: readonly string[]): vo
     }
   }
   if (highest > binaryVersion) {
-    schemaApplierLog.warn(
-      `database has schema migration ${highestRaw} applied, but this binary only knows up to `
-      + `${SCHEMA_BASELINE_VERSION}. Continuing: this binary intentionally does not implement every `
-      + `migration slot a full-featured build owns, and unknown tables/columns are ignored rather than `
-      + `written to.`,
-    );
+    throw new StaleBinarySchemaError(highestRaw, SCHEMA_BASELINE_VERSION);
   }
 }
 
@@ -536,7 +573,7 @@ const REMOVE_TASK_SUBTASK_SPLITTING_MIGRATION_PATH = join(MIGRATIONS_DIR, "0062_
 const AI_MERGE_REVIEW_RECONCILIATION_MIGRATION_PATH = join(MIGRATIONS_DIR, "0063_fn_090_ai_merge_review_reconciliation.sql");
 const TASK_REPOSITORY_SCOPE_MIGRATION_PATH = join(MIGRATIONS_DIR, "0064_fn_094_task_repository_scope.sql");
 const REVIEW_CONVERGENCE_STAGE_MIGRATION_PATH = join(MIGRATIONS_DIR, "0065_fn_149_review_convergence_stage.sql");
-/* FNXC:MemoryFocus 2026-08-14-10:30: renumbered to 0061 (FN-9059 workspace leases own 0060), then to 0065 (2026-08-20) when the upstream FN-066..FN-094 batch claimed 0061-0064, then to 0066 (2026-08-23) when upstream's FN-149 claimed 0065. */
+/* FNXC:MemoryFocus 2026-08-23-07:07: renumbered 0065 -> 0066 in the RUFU-160 origin/main merge: origin/main shipped 0065 as FN-149's review-convergence migration (v0.77.0-beta.7), so the deploy line's chat_sessions.memory_focus migration takes the next free sequence. */
 const CHAT_SESSION_MEMORY_FOCUS_MIGRATION_PATH = join(MIGRATIONS_DIR, "0066_chat_session_memory_focus.sql");
 const SESSION_CONTENTION_WAIT_STATE_MIGRATION_PATH = join(MIGRATIONS_DIR, "0067_fn_179_session_contention_wait_state.sql");
 const TASK_STEP_REPORTS_MIGRATION_PATH = join(MIGRATIONS_DIR, "0068_fn_208_task_step_reports.sql");
@@ -545,9 +582,23 @@ const TASK_REQUIRE_PLAN_APPROVAL_MIGRATION_PATH = join(MIGRATIONS_DIR, "0070_fn_
 const PATCHNODE_ENTRIES_MIGRATION_PATH = join(MIGRATIONS_DIR, "0071_fn_227_patchnode_entries.sql");
 const TASK_PLANNING_FAILURE_MIGRATION_PATH = join(MIGRATIONS_DIR, "0072_fn_9273_task_planning_failure.sql");
 const CHAT_MESSAGES_SESSION_RECENCY_INDEX_MIGRATION_PATH = join(MIGRATIONS_DIR, "0073_fn_9275_chat_messages_session_recency_index.sql");
-const OVERLAP_WAIT_SYNC_MIGRATION_PATH = join(MIGRATIONS_DIR, "0084_fn_332_overlap_sync.sql");
-const DROP_EXCLUDED_UPSTREAM_FEATURE_SCHEMA_MIGRATION_PATH = join(MIGRATIONS_DIR, "0085_drop_excluded_upstream_feature_schema.sql");
-const STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_MIGRATION_PATH = join(MIGRATIONS_DIR, "0086_fn_9429_stale_review_callback_waiver_receipts.sql");
+/* FNXC:MigrationCollisionRepair 2026-08-23-07:07: re-runs both idempotent 0065-collision migrations so databases that recorded 0065 with the other line's content converge on the full schema. Renumbered 0067 -> 0068 in the fusion/rufu-141 merge: the deploy line owns released 0067 (FN-179 session contention). */
+/* FNXC:MigrationCollisionRepair 2026-09-09-15:13: the file moves out of the four-digit namespace (`local_repair_...`) because it is not a released migration — it is this repository's repair step, and sharing a numeric prefix with upstream's released 0072 is exactly what made the two ledger rows indistinguishable. The wiring-integrity inventory scans only `^\d{4}_`, so this step must stay explicitly wired here. */
+const MIXED_0065_REPAIR_MIGRATION_PATH = join(MIGRATIONS_DIR, "local_repair_mixed_0065_migrations.sql");
+const PROJECT_NOTES_MIGRATION_PATH = join(MIGRATIONS_DIR, "0074_fn_323_project_notes.sql");
+const OVERLAP_WAIT_SYNC_MIGRATION_PATH = join(MIGRATIONS_DIR, "0075_fn_332_overlap_sync.sql");
+const OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_MIGRATION_PATH = join(MIGRATIONS_DIR, "0077_fn_332_overlap_wait_repair_required_phase.sql");
+const WHITEBOARDS_MIGRATION_PATH = join(MIGRATIONS_DIR, "0076_fn_333_whiteboards.sql");
+const OVERLAP_REVALIDATION_DRAIN_MIGRATION_PATH = join(MIGRATIONS_DIR, "0078_fn_375_overlap_revalidation_drain.sql");
+const REVIEW_LANE_LEDGER_MIGRATION_PATH = join(MIGRATIONS_DIR, "0088_stas_205_review_lane_ledger.sql");
+const OVERLAP_OWNER_FK_REPAIR_MIGRATION_PATH = join(MIGRATIONS_DIR, "0087_fn_332_overlap_owner_fk_repair.sql");
+const WORKFLOW_IDENTITY_AND_MODEL_LANES_MIGRATION_PATH = join(MIGRATIONS_DIR, "0079_fn_393_workflow_identity_and_project_model_lanes.sql");
+const TASK_HUMAN_PLAN_APPROVAL_MIGRATION_PATH = join(MIGRATIONS_DIR, "0080_fn_408_task_human_plan_approval.sql");
+const TASK_PAUSE_ACCOUNTING_MIGRATION_PATH = join(MIGRATIONS_DIR, "0081_fn_457_task_pause_accounting.sql");
+const TASK_QUEUE_ORDER_MIGRATION_PATH = join(MIGRATIONS_DIR, "0082_fn_509_task_queue_order.sql");
+const TASK_HUMAN_MERGE_APPROVAL_MIGRATION_PATH = join(MIGRATIONS_DIR, "0083_fn_514_task_human_merge_approval.sql");
+/* FNXC:MigrationVersionCollision 2026-10-01-15:26: FN-9429 re-issued at 0089 (upstream shipped it as 0086; see STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_VERSION). */
+const STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_MIGRATION_PATH = join(MIGRATIONS_DIR, "0089_fn_9429_stale_review_callback_waiver_receipts.sql");
 
 /**
  * Ensure the migration bookkeeping table exists. Lives in the public schema so
@@ -592,7 +643,7 @@ export async function getAppliedMigrations(
  */
 export async function applySchemaBaseline(
   db: PostgresJsDatabase<Record<string, never>>,
-  options: { pluginHooks?: readonly PluginSchemaInitHook[] } = {},
+  options: { pluginHooks?: readonly PluginSchemaInitHook[]; schemaMutationLockTimeoutMs?: number } = {},
 ): Promise<{ applied: boolean; pluginHooksRun: number }> {
   /*
    * FNXC:PostgresSchema 2026-07-14-00:05:
@@ -601,7 +652,7 @@ export async function applySchemaBaseline(
    * cannot both apply a version or race its primary-key marker.
   */
   return db.transaction(async (tx) => {
-    await acquireSchemaMutationLocks(tx);
+    await acquireSchemaMutationLocks(tx, options.schemaMutationLockTimeoutMs);
     await ensureBookkeepingTable(tx);
     /*
     FNXC:PostgresSchema 2026-07-16-00:55:
@@ -691,8 +742,19 @@ export async function applySchemaBaseline(
     const patchnodeEntriesAlreadyApplied = applied.includes(PATCHNODE_ENTRIES_VERSION);
     const taskPlanningFailureAlreadyApplied = applied.includes(TASK_PLANNING_FAILURE_VERSION);
     const chatMessagesSessionRecencyIndexAlreadyApplied = applied.includes(CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION);
+    const mixed0065RepairAlreadyApplied = applied.includes(MIXED_0065_REPAIR_VERSION);
+    const projectNotesAlreadyApplied = applied.includes(PROJECT_NOTES_VERSION);
     const overlapWaitSyncAlreadyApplied = applied.includes(OVERLAP_WAIT_SYNC_VERSION);
-    const dropExcludedUpstreamFeatureSchemaAlreadyApplied = applied.includes(DROP_EXCLUDED_UPSTREAM_FEATURE_SCHEMA_VERSION);
+    const whiteboardsAlreadyApplied = applied.includes(WHITEBOARDS_SCHEMA_VERSION);
+    const overlapWaitRepairRequiredPhaseAlreadyApplied = applied.includes(OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_VERSION);
+    const overlapRevalidationDrainAlreadyApplied = applied.includes(OVERLAP_REVALIDATION_DRAIN_VERSION);
+    const reviewLaneLedgerAlreadyApplied = applied.includes(REVIEW_LANE_LEDGER_VERSION);
+    const overlapOwnerFkRepairAlreadyApplied = applied.includes(OVERLAP_OWNER_FK_DEFERRABLE_REPAIR_VERSION);
+    const builtinWorkflowIdentityAlreadyApplied = applied.includes(WORKFLOW_IDENTITY_AND_MODEL_LANES_VERSION);
+    const taskHumanPlanApprovalAlreadyApplied = applied.includes(TASK_HUMAN_PLAN_APPROVAL_VERSION);
+    const taskPauseAccountingAlreadyApplied = applied.includes(TASK_PAUSE_ACCOUNTING_VERSION);
+    const taskQueueOrderAlreadyApplied = applied.includes(TASK_QUEUE_ORDER_VERSION);
+    const taskHumanMergeApprovalAlreadyApplied = applied.includes(TASK_HUMAN_MERGE_APPROVAL_VERSION);
     const staleReviewCallbackWaiverReceiptsAlreadyApplied = applied.includes(STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_VERSION);
     assertBinaryNotOlderThanDatabase(applied);
     let schemaChanged = false;
@@ -785,6 +847,7 @@ export async function applySchemaBaseline(
     FNXC:ProjectDataIsolation 2026-07-14-12:10:
     Run universal ownership once, after plugin hooks, so first application covers core and plugin tables without duplicate DDL. Later boots validate that every newly introduced plugin table declared the same ownership contract instead of rebuilding primary keys, foreign keys, and policies on every startup.
 
+/*
     FNXC:ProjectArchiveIsolation 2026-07-14-14:31:
     The steady-state audit includes archive.archived_tasks because archived task IDs are project-local and must retain the same forced-RLS boundary as live task rows.
     */
@@ -906,6 +969,7 @@ export async function applySchemaBaseline(
     FNXC:MissionFixIdempotency 2026-07-14-18:55:
     Existing PostgreSQL databases receive the validator-run lineage uniqueness invariant independently of earlier schema versions. Duplicate historical rows fail the migration visibly instead of being silently discarded.
 
+/*
     FNXC:PostgresConflictResolution 2026-07-14-20:52:
     Main assigned migration 0008 to session-advisor state before the cutover landed, so mission lineage uniqueness advances to 0009. Both migrations must run in order; sharing a bookkeeping version would silently skip one invariant.
     */
@@ -1580,6 +1644,15 @@ export async function applySchemaBaseline(
       await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION}) ON CONFLICT (version) DO NOTHING`);
       schemaChanged = true;
     }
+    const projectNotesMissing = ((await tx.execute(sql`
+      SELECT to_regclass('project.tasks') IS NOT NULL AND to_regclass('project.notes') IS NULL AS missing
+    `)) as unknown as Array<{ missing: boolean }>)[0]?.missing ?? true;
+    if (!projectNotesAlreadyApplied || projectNotesMissing) {
+      const migrationSql = await readFile(PROJECT_NOTES_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${PROJECT_NOTES_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
     const taskRequirePlanApprovalColumnState = (await tx.execute(sql`
       SELECT
         to_regclass('project.tasks') IS NOT NULL AS tasks_exists,
@@ -1599,17 +1672,8 @@ export async function applySchemaBaseline(
       await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${TASK_REQUIRE_PLAN_APPROVAL_VERSION}) ON CONFLICT (version) DO NOTHING`);
       schemaChanged = true;
     }
-    const patchnodeEntriesMissing = ((await tx.execute(sql`
-      SELECT to_regclass('project.patchnode_entries') IS NULL AS missing
-    `)) as unknown as Array<{ missing: boolean }>)[0]?.missing ?? true;
-    if (!patchnodeEntriesAlreadyApplied || patchnodeEntriesMissing) {
-      const migrationSql = await readFile(PATCHNODE_ENTRIES_MIGRATION_PATH, "utf8");
-      await tx.execute(sql.raw(migrationSql));
-      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${PATCHNODE_ENTRIES_VERSION}) ON CONFLICT (version) DO NOTHING`);
-      schemaChanged = true;
-    }
     const overlapWaitSyncMissing = ((await tx.execute(sql`
-      SELECT to_regclass('project.task_overlap_waits') IS NULL AS missing
+      SELECT to_regclass('project.tasks') IS NOT NULL AND to_regclass('project.task_overlap_waits') IS NULL AS missing
     `)) as unknown as Array<{ missing: boolean }>)[0]?.missing ?? true;
     if (!overlapWaitSyncAlreadyApplied || overlapWaitSyncMissing) {
       const migrationSql = await readFile(OVERLAP_WAIT_SYNC_MIGRATION_PATH, "utf8");
@@ -1617,24 +1681,246 @@ export async function applySchemaBaseline(
       await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${OVERLAP_WAIT_SYNC_VERSION}) ON CONFLICT (version) DO NOTHING`);
       schemaChanged = true;
     }
-    const excludedFeatureSchemaStillPresent = ((await tx.execute(sql`
-      SELECT (
-        to_regclass('project.notes') IS NOT NULL
-        OR to_regclass('project.whiteboards') IS NOT NULL
-        OR to_regclass('project.whiteboard_revisions') IS NOT NULL
-        OR to_regclass('project.archived_workflow_settings') IS NOT NULL
-        OR to_regclass('project.workflow_prompt_overrides_archive') IS NOT NULL
-        OR EXISTS (
-          SELECT 1 FROM information_schema.columns
-          WHERE table_schema = 'project' AND table_name = 'tasks'
-            AND column_name IN ('human_plan_approval', 'human_merge_approval', 'queue_boost', 'cumulative_paused_ms', 'paused_started_at')
-        )
-      ) AS present
-    `)) as unknown as Array<{ present: boolean }>)[0]?.present ?? false;
-    if (!dropExcludedUpstreamFeatureSchemaAlreadyApplied || excludedFeatureSchemaStillPresent) {
-      const migrationSql = await readFile(DROP_EXCLUDED_UPSTREAM_FEATURE_SCHEMA_MIGRATION_PATH, "utf8");
+    /*
+    FNXC:OverlapWaitSynchronization 2026-09-13-05:10:
+    Re-apply whenever the live constraint still rejects `repair-required`, not only when bookkeeping is
+    absent: a project that already recorded 0075 carries the narrow CHECK and would otherwise keep raising
+    on every delta REVISE.
+    */
+    const overlapWaitRepairRequiredPhaseMissing = ((await tx.execute(sql`
+      SELECT to_regclass('project.task_overlap_waits') IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = to_regclass('project.task_overlap_waits')
+          AND conname = 'ck_task_overlap_wait_phase'
+          AND pg_get_constraintdef(oid) LIKE '%repair-required%'
+      ) AS missing
+    `)) as unknown as Array<{ missing: boolean }>)[0]?.missing ?? false;
+    if (!overlapRevalidationDrainAlreadyApplied && (!overlapWaitRepairRequiredPhaseAlreadyApplied || overlapWaitRepairRequiredPhaseMissing)) {
+      const migrationSql = await readFile(OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_MIGRATION_PATH, "utf8");
       await tx.execute(sql.raw(migrationSql));
-      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${DROP_EXCLUDED_UPSTREAM_FEATURE_SCHEMA_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+    const whiteboardsMissing = ((await tx.execute(sql`
+      SELECT to_regclass('project.tasks') IS NOT NULL AND (to_regclass('project.whiteboards') IS NULL OR to_regclass('project.whiteboard_revisions') IS NULL) AS missing
+    `)) as unknown as Array<{ missing: boolean }>)[0]?.missing ?? true;
+    if (!whiteboardsAlreadyApplied || whiteboardsMissing) {
+      const migrationSql = await readFile(WHITEBOARDS_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${WHITEBOARDS_SCHEMA_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+    /*
+    FNXC:OverlapWaitSynchronization 2026-09-15-22:18:
+    PostgreSQL resolves every relation name in a statement at ANALYSIS time, before any branch is evaluated,
+    so an in-statement existence guard cannot protect a relation that the same statement names as a range
+    table entry. The previous one-statement probe wrapped the phase-row `EXISTS` in
+    `CASE WHEN to_regclass(...) IS NULL THEN false ELSE … END` and still raised 42P01 on a database whose
+    bookkeeping recorded 0075+ without the table, so such a project failed to boot instead of self-healing.
+    The invariant is a catalog-only predicate: presence is decided by its own statement, and the phase rows
+    are read by a second statement the applier runs only when that probe reported the relation present. The
+    CHECK-shape half now reads pg_constraint joined to pg_class and pg_namespace through
+    pg_get_constraintdef, matching the review-lane-ledger probe and namespace-qualifying what used to be a
+    cluster-wide conname lookup.
+    */
+    const overlapRevalidationDrainTablePresent = ((await tx.execute(sql`
+      SELECT to_regclass('project.task_overlap_waits') IS NOT NULL AS present
+    `)) as unknown as Array<{ present: boolean }>)[0]?.present ?? false;
+    const overlapRevalidationDrainRowDrift = overlapRevalidationDrainTablePresent
+      ? ((await tx.execute(sql`
+          SELECT EXISTS (
+            SELECT 1 FROM project.task_overlap_waits WHERE phase IN ('revalidation-pending', 'repair-required')
+          ) AS needed
+        `)) as unknown as Array<{ needed: boolean }>)[0]?.needed ?? true
+      : false;
+    const overlapRevalidationDrainConstraintDrift = overlapRevalidationDrainTablePresent
+      ? ((await tx.execute(sql`
+          SELECT EXISTS (
+            SELECT 1 FROM pg_constraint c
+              JOIN pg_class t ON t.oid = c.conrelid
+              JOIN pg_namespace n ON n.oid = t.relnamespace
+             WHERE n.nspname = 'project'
+               AND t.relname = 'task_overlap_waits'
+               AND c.conname = 'ck_task_overlap_wait_phase'
+               AND pg_get_constraintdef(c.oid) LIKE '%revalidation-pending%'
+          ) AS needed
+        `)) as unknown as Array<{ needed: boolean }>)[0]?.needed ?? true
+      : false;
+    const overlapRevalidationDrainNeeded = overlapRevalidationDrainRowDrift || overlapRevalidationDrainConstraintDrift;
+    /*
+    FNXC:OverlapWaitSynchronization 2026-09-15-22:18:
+    The application is gated on the same presence result, not only the probe. Migration 0078 is a run of
+    ALTER TABLE / UPDATE statements against that one table and carries no in-SQL guard of its own, unlike
+    0077's DO block, so applying it where the table is absent would only move the 42P01 from the probe into
+    the migration. Deferring instead leaves the marker unrecorded, so the drain still applies on a later
+    boot once the table exists — through this baseline path or 0075's repair — which is the drift-probe
+    design intent: a database missing the object is repaired later rather than crashing the boot now. The
+    marker-saturated database with zero product relations is the regression fixture for this decision.
+    */
+    if (overlapRevalidationDrainTablePresent && (!overlapRevalidationDrainAlreadyApplied || overlapRevalidationDrainNeeded)) {
+      const migrationSql = await readFile(OVERLAP_REVALIDATION_DRAIN_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${OVERLAP_REVALIDATION_DRAIN_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+    /*
+    FNXC:ReviewLaneDispatch 2026-09-09 (STAS-205):
+    Registered after the highest released migration so it sorts after every released schema change.
+    The probe checks the two enforceable facts the dispatch sweep depends on instead of trusting the
+    bookkeeping row alone: a database that already carries both objects records the version without
+    redundant SQL, and a database missing either object gets the migration even if an earlier
+    partial run recorded the version.
+/*
+    FNXC:ReviewLaneDispatch 2026-09-14 (clean-rebase-v2 replay):
+    The drift check only makes sense where the product tables exist, so it is gated on their
+    presence. A recorded marker in a database without `task_reviewer_runs`/`task_lifecycle_events`
+    is either a fresh/empty fixture (the baseline path owns it) or a corrupt install whose real
+    failure surfaces at first store read — re-running this SQL there would only fail on missing
+    relations. Drift (table present, index or widened CHECK lost) still forces the re-apply.
+/*
+    FNXC:ReviewLaneDispatch 2026-09-15-00:24 (STAS-205 landing onto main):
+    On the branch this block sat after the collision repair (it was the last step there). main keeps
+    the repair last in apply order — see the MigrationCollisionRepair note below — so on landing the
+    block moved to follow release 0078, which preserves both invariants: it still sorts after every
+    released migration, and the repair step stays last.
+    */
+    const reviewLaneLedgerMissing = ((await tx.execute(sql`
+      SELECT (
+        to_regclass('project.task_reviewer_runs') IS NOT NULL
+        AND to_regclass('project.task_lifecycle_events') IS NOT NULL
+        AND (
+          to_regclass('project.task_reviewer_runs_live_unique') IS NULL
+          OR NOT EXISTS (
+            SELECT 1 FROM pg_constraint c
+              JOIN pg_class t ON t.oid = c.conrelid
+             WHERE t.relname = 'task_lifecycle_events'
+               AND c.conname = 'task_lifecycle_events_type_check'
+               AND pg_get_constraintdef(c.oid) LIKE '%entered-review%'
+          )
+        )
+      ) AS missing
+    `)) as unknown as Array<{ missing: boolean }>)[0]?.missing ?? true;
+    if (!overlapOwnerFkRepairAlreadyApplied) {
+      const migrationSql = await readFile(OVERLAP_OWNER_FK_REPAIR_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${OVERLAP_OWNER_FK_DEFERRABLE_REPAIR_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+    if (!reviewLaneLedgerAlreadyApplied || reviewLaneLedgerMissing) {
+      const migrationSql = await readFile(REVIEW_LANE_LEDGER_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${REVIEW_LANE_LEDGER_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+    if (!builtinWorkflowIdentityAlreadyApplied) {
+      const migrationSql = await readFile(WORKFLOW_IDENTITY_AND_MODEL_LANES_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${WORKFLOW_IDENTITY_AND_MODEL_LANES_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+    /*
+    FNXC:HumanPlanApproval 2026-09-15-06:24:
+    Probe the column as well as the bookkeeping row so a restored database that rewound the tasks
+    table re-applies the additive column instead of trusting a stale applied-version marker.
+    */
+    const taskHumanPlanApprovalColumnState = (await tx.execute(sql`
+      SELECT
+        to_regclass('project.tasks') IS NOT NULL AS tasks_exists,
+        EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema = 'project' AND table_name = 'tasks' AND column_name = 'human_plan_approval'
+        ) AS human_plan_approval_exists
+    `)) as unknown as Array<{ tasks_exists: boolean; human_plan_approval_exists: boolean }>;
+    const taskHumanPlanApprovalColumnMissing = taskHumanPlanApprovalColumnState[0]?.tasks_exists
+      && !taskHumanPlanApprovalColumnState[0]?.human_plan_approval_exists;
+    if (!taskHumanPlanApprovalAlreadyApplied || taskHumanPlanApprovalColumnMissing) {
+      const migrationSql = await readFile(TASK_HUMAN_PLAN_APPROVAL_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${TASK_HUMAN_PLAN_APPROVAL_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+    /*
+    FNXC:TaskPauseAccounting 2026-09-16-06:16:
+    Probe the column as well as the bookkeeping row, exactly like FN-408 above, so a restored
+    database that rewound the tasks table re-applies the additive columns instead of trusting a
+    stale applied-version marker.
+    */
+    const taskPauseAccountingColumnState = (await tx.execute(sql`
+      SELECT
+        to_regclass('project.tasks') IS NOT NULL AS tasks_exists,
+        EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema = 'project' AND table_name = 'tasks' AND column_name = 'cumulative_paused_ms'
+        ) AS cumulative_paused_ms_exists
+    `)) as unknown as Array<{ tasks_exists: boolean; cumulative_paused_ms_exists: boolean }>;
+    const taskPauseAccountingColumnMissing = taskPauseAccountingColumnState[0]?.tasks_exists
+      && !taskPauseAccountingColumnState[0]?.cumulative_paused_ms_exists;
+    if (!taskPauseAccountingAlreadyApplied || taskPauseAccountingColumnMissing) {
+      const migrationSql = await readFile(TASK_PAUSE_ACCOUNTING_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${TASK_PAUSE_ACCOUNTING_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+    /*
+    FNXC:TaskQueueOrder 2026-09-17-12:07:
+    Probe the column AND the sequence, not only the bookkeeping row: a restored database that
+    rewound the tasks table (or was dumped without sequences) must re-apply both halves rather than
+    trust a stale applied-version marker. Without the sequence, every boost write would fail.
+    */
+    const taskQueueOrderState = (await tx.execute(sql`
+      SELECT
+        to_regclass('project.tasks') IS NOT NULL AS tasks_exists,
+        EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema = 'project' AND table_name = 'tasks' AND column_name = 'queue_boost'
+        ) AS queue_boost_exists,
+        to_regclass('project.task_queue_boost_seq') IS NOT NULL AS boost_sequence_exists
+    `)) as unknown as Array<{ tasks_exists: boolean; queue_boost_exists: boolean; boost_sequence_exists: boolean }>;
+    const taskQueueOrderMissing = taskQueueOrderState[0]?.tasks_exists
+      && (!taskQueueOrderState[0]?.queue_boost_exists || !taskQueueOrderState[0]?.boost_sequence_exists);
+    if (!taskQueueOrderAlreadyApplied || taskQueueOrderMissing) {
+      const migrationSql = await readFile(TASK_QUEUE_ORDER_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${TASK_QUEUE_ORDER_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+    /*
+    FNXC:HumanMergeApproval 2026-09-17-18:09:
+    FN-514 re-applies on a missing column even when the bookkeeping row exists, for the same reason the
+    queue-order migration above does: a delivery door that reads a column the database does not have
+    fails every merge, so a stale applied-version marker must never be trusted alone.
+    */
+    const taskHumanMergeApprovalState = (await tx.execute(sql`
+      SELECT
+        to_regclass('project.tasks') IS NOT NULL AS tasks_exists,
+        EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema = 'project' AND table_name = 'tasks' AND column_name = 'human_merge_approval'
+        ) AS column_exists
+    `)) as unknown as Array<{ tasks_exists: boolean; column_exists: boolean }>;
+    const taskHumanMergeApprovalMissing = taskHumanMergeApprovalState[0]?.tasks_exists
+      && !taskHumanMergeApprovalState[0]?.column_exists;
+    if (!taskHumanMergeApprovalAlreadyApplied || taskHumanMergeApprovalMissing) {
+      const migrationSql = await readFile(TASK_HUMAN_MERGE_APPROVAL_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${TASK_HUMAN_MERGE_APPROVAL_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+    const patchnodeEntriesMissing = ((await tx.execute(sql`
+      SELECT to_regclass('project.tasks') IS NOT NULL AND to_regclass('project.patchnode_entries') IS NULL AS missing
+    `)) as unknown as Array<{ missing: boolean }>)[0]?.missing ?? true;
+    if (!patchnodeEntriesAlreadyApplied || patchnodeEntriesMissing) {
+      const migrationSql = await readFile(PATCHNODE_ENTRIES_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${PATCHNODE_ENTRIES_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+    /* FNXC:MigrationCollisionRepair 2026-09-09-15:13: identity is now the non-numeric `local-repair-mixed-0065`, so the step stays last in apply order but no longer rides the numeric ceiling; see MIXED_0065_REPAIR_VERSION for the ledger-remap caveat. */
+    /* FNXC:MigrationCollisionRepair 2026-08-30-09:05: register the repair migration LAST; upstream owns released 0068-0071. It is idempotent, so databases that already carry both 0065-collision migrations simply record the version; databases that recorded the repair under its earlier 0068 number re-run it harmlessly. it is idempotent, so databases that already carry both 0065-collision migrations simply record the version. Renumbered from 0067 in the fusion/rufu-141 merge: released 0067 is FN-179's session-contention wait state on the deploy line. */
+    if (!mixed0065RepairAlreadyApplied) {
+      const migrationSql = await readFile(MIXED_0065_REPAIR_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${MIXED_0065_REPAIR_VERSION}) ON CONFLICT (version) DO NOTHING`);
       schemaChanged = true;
     }
     const staleReviewCallbackWaiverReceiptsMissing = ((await tx.execute(sql`

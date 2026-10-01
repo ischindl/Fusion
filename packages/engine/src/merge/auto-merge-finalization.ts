@@ -11,10 +11,28 @@ import {
   type MergeResult,
   type Task,
   type TaskStore,
-} from "@fusion/core";
+  getPostMergeEvidenceGateStatuses,
+ } from "@fusion/core";
+import {
+  isTerminalPostMergeReseedRefusal,
+  type PostMergeGateReseedReason,
+} from "./post-merge-gate-reseed.js";
+import { resolvePostMergeEvidenceContract } from "./post-merge-evidence-contract.js";
+import { deliverMailboxMessageOnce } from "../notification/mailbox-delivery.js";
+import { emitBoundedRunAudit } from "../util/emit-bounded-run-audit.js";
 import { createRunAuditor, generateSyntheticRunId, type DatabaseMutationType, type RunAuditor } from "../util/run-audit.js";
 import { cleanupLandedTaskWorktree } from "./post-landing-worktree-cleanup.js";
+import { DASHBOARD_USER_ID, type MessageStore } from "@fusion/core";
 import type { MergeWriteFence } from "./merge-write-fence.js";
+/*
+FNXC:ZeroCommitDeliveryProof 2026-09-26-09:40 (RUFU-274):
+This module is the shared finalize primitive every merge lane ends in, so it is the last place a
+`mergeConfirmed` / no-op claim can be tested against git before a card becomes `done`. `hasDurableMergeProof`
+below proves that a CLAIM is durable; it cannot prove the claim is TRUE — RUFU-262's card reached done with
+a confirmed no-op claim while its deliverable sat uncommitted in the worktree. The landing-proof door is
+therefore asked separately, and before any cleanup, because a cleanup would destroy the evidence it reads.
+*/
+import { enforceZeroCommitLandingProof } from "./zero-commit-finalization-guard.js";
 import { resumeMissingPostMergeGate } from "./post-merge-gate-reseed.js";
 
 /*
@@ -90,6 +108,14 @@ export interface FinalizeProvenAutoMergeTaskOptions {
   source: "direct-ai-merge" | "merge-confirmed-fast-path" | "self-healing" | "workflow-graph-merge-finalize";
   log?: (message: string) => void | Promise<void>;
   fence?: MergeWriteFence;
+  /*
+  FNXC:UnrunPostMergeGateRecovery 2026-09-28-07:34 (RUFU-370):
+  Optional by design. The mailbox lives on `MessageStore`, which `TaskStore` does not expose, so a finalizer
+  only hands off through the mailbox where the caller already holds one (self-healing, project-engine).
+  Every other caller still gets the durable audit row, and `deliverMailboxMessageOnce` reports
+  `unavailable` rather than failing finalization when no store is wired.
+  */
+  messageStore?: Pick<MessageStore, "sendMessageOnce"> | null;
 }
 
 export type WorkflowDoneMergeProofVerdict =
@@ -173,6 +199,92 @@ function buildMismatchMetadata(task: Task, reason: string): Record<string, unkno
   };
 }
 
+/**
+ * FNXC:UnrunPostMergeGateRecovery 2026-09-28-07:34 (RUFU-370):
+ * One operator-visible notice per (task, gate, refusal) per cooldown window. The key carries a time
+ * bucket so repeats of the same refusal collapse to one mailbox row while a genuinely new refusal (or a
+ * refusal still unaddressed after the window) announces again — the same discipline as RUFU-283's
+ * `system:vanished-work:*` notice, chosen because this class has no wedge row to hang dedupe off. The
+ * write goes through `deliverMailboxMessageOnce`, so a missing, throwing, or stalled mailbox store cannot
+ * delay or change finalization: it returns `unavailable` and the deferral stands on its own.
+ */
+const POST_MERGE_GATE_NOTICE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * The blocker sentence plus the machine-readable terminal marker. The suffix is what lets the merge-retry
+ * router and an operator tell "deferred, try again" from "this seam can never produce the evidence" —
+ * RUFU-370's whole point is that the two used to be one indistinguishable warn line.
+ */
+export function unreachablePostMergeGateReason(
+  evidenceBlocker: string,
+  refusal: PostMergeGateReseedReason,
+): string {
+  return `${evidenceBlocker} [post-merge gate unreachable: ${refusal}]`;
+}
+
+export function unreachablePostMergeGateNoticeKey(
+  taskId: string,
+  gateId: string | undefined,
+  refusal: PostMergeGateReseedReason,
+  now: number,
+): string {
+  const bucket = Math.floor(now / POST_MERGE_GATE_NOTICE_COOLDOWN_MS);
+  return `system:unrun-post-merge-gate:${taskId}:${gateId ?? "unknown"}:${refusal}:${bucket}`;
+}
+
+export async function notifyUnreachablePostMergeGate(args: {
+  store: TaskStore;
+  messageStore?: Pick<MessageStore, "sendMessageOnce"> | null;
+  taskId: string;
+  gateId?: string;
+  refusal: PostMergeGateReseedReason;
+  evidenceBlocker: string;
+  /** Injectable clock so the cooldown bucket is testable without waiting for a window to roll. */
+  now?: number;
+  /** Bound on the optional mailbox write; forwarded to `deliverMailboxMessageOnce`. */
+  timeoutMs?: number;
+}): Promise<"delivered" | "unavailable"> {
+  const now = args.now ?? Date.now();
+  const sentence = `Auto-merge cannot finish ${args.taskId}: ${args.evidenceBlocker}, and the post-merge gate `
+    + `cannot be re-seeded (${args.refusal}). The landed work is preserved — this card needs a human decision, `
+    + `either an operator bypass of the gate or a workflow whose post-merge node can run.`;
+  const notice = await deliverMailboxMessageOnce(
+    args.messageStore ?? undefined,
+    {
+      fromId: "system",
+      fromType: "system",
+      toId: DASHBOARD_USER_ID,
+      toType: "user",
+      type: "system",
+      content: sentence,
+      metadata: {
+        kind: "unreachable-post-merge-gate",
+        taskId: args.taskId,
+        workflowStepId: args.gateId ?? null,
+        refusal: args.refusal,
+      },
+    },
+    unreachablePostMergeGateNoticeKey(args.taskId, args.gateId, args.refusal, now),
+    args.timeoutMs,
+  );
+  // Best-effort telemetry must never become a finalization dependency (FN-9175).
+  await emitBoundedRunAudit(args.store, {
+    taskId: args.taskId,
+    agentId: "merger",
+    runId: generateSyntheticRunId("auto-merge-finalize", args.taskId),
+    domain: "database",
+    mutationType: "task:auto-merge-finalize-post-merge-gate-unreachable" as DatabaseMutationType,
+    target: args.taskId,
+    metadata: {
+      taskId: args.taskId,
+      workflowStepId: args.gateId ?? null,
+      refusal: args.refusal,
+      notice,
+    },
+  });
+  return notice;
+}
+
 async function recordFinalizationAudit(args: {
   store: TaskStore;
   audit?: RunAuditor;
@@ -242,6 +354,7 @@ export async function finalizeProvenAutoMergeTask({
   source,
   log,
   fence,
+  messageStore,
 }: FinalizeProvenAutoMergeTaskOptions): Promise<AutoMergeFinalizationResult> {
   const initialTask = await store.getTask(taskId).catch(() => null);
   if (!initialTask) {
@@ -272,19 +385,63 @@ export async function finalizeProvenAutoMergeTask({
     if (persisted) latest = persisted;
   }
 
-  const evidenceDecision = await getRequiredPostMergeEvidenceDecision(store, latest);
-  if (evidenceDecision.outcome !== "finalizable") {
-    const evidenceBlocker = await getRequiredPostMergeEvidenceBlocker(store, latest)
-      ?? `required post-merge evidence gate '${evidenceDecision.gateId}' is not approved`;
+  /*
+  FNXC:PostMergeEvidenceContract 2026-09-30-22:29 (RUFU-430):
+  Which evidence reporter this PROJECT has is a precondition to asking for a GitHub Actions delivery record
+  at all. It is resolved once per finalize pass (cached per project root in the resolver, so no shellout
+  enters the retry loop) and handed to every read of the gate below, so the blocker, the deferral fact, and
+  the fenced re-read answer the same question. An unresolvable contract keeps today's demand unchanged.
+  */
+  const evidenceContract = await resolvePostMergeEvidenceContract(store, { auditHost: store });
+
+  const evidenceBlocker = await getRequiredPostMergeEvidenceBlocker(store, latest, evidenceContract);
+  if (evidenceBlocker) {
     /*
-    FNXC:PostMergeRecovery 2026-10-01-06:36:
-    A recovery finalizer has no active graph left to traverse an absent post-merge edge. Only the
-    structured resumable decision may seed that authored node; display text never authorizes work.
+    FNXC:PostMergeEvidence 2026-09-30-09:57:
+    Whether the active graph traversal can still produce the required post-merge gate result is a STRUCTURED
+    fact (`state === "missing"`), not a property of the blocker sentence. The flag used to be derived by
+    matching "has not reported" in prose, so any wording change upstream silently converted a claimable
+    deferral into a fatal block at `merger-ai`'s `!deferredPostMergeEvidence` throw. FN-9422 makes the merge
+    proof durable before the deferral, so every absent-gate deferral below is a deferral with proof, and a
+    pending / non-approval stays fatal.
     */
-    if (evidenceDecision.outcome === "resumable") {
-      const resume = () => resumeMissingPostMergeGate(store, taskId);
-      if (fence) await fence.write("finalization", resume);
-      else await resume();
+    const postMergeIr = await resolveWorkflowIrForTask(store, latest.id).catch(() => null);
+    const deferredPostMergeEvidence = postMergeIr
+      ? getPostMergeEvidenceGateStatuses(latest, postMergeIr, evidenceContract).some((status) => status.state === "missing") || undefined
+      : evidenceBlocker.includes("has not reported") || undefined;
+    /*
+    FNXC:PostMergeRecovery 2026-10-01-09:01 (upstream FN-9442 adopted; RUFU-306 / RUFU-370 kept on top):
+    Upstream hands an absent gate back to the graph through the idle continuation fence, and the fence write
+    is the part our seam lacked: a resume that races the finalize fence is the race FN-9442 was written
+    against. Two things are layered onto their call rather than kept as a second implementation. The prose
+    trigger is replaced by the structured flag above, so a PENDING or non-approved result never seeds a
+    second run over a result that already exists. And the refusal is classified: a refusal that can never
+    produce evidence goes to the operator once instead of deferring forever (SANE-452 and STAS-288 were
+    re-announced seconds apart indefinitely), while every other refusal keeps the transient-defer shape.
+    Seeding is not a verdict — the blocker still stands and this path never completes a card itself.
+    */
+    const resume = () => resumeMissingPostMergeGate(store, latest, { source: "auto-merge", contract: evidenceContract });
+    const reseed = (fence ? await fence.write("finalization", resume) : await resume())
+      // A fenced write that was suppressed means this lane no longer owns the card: nothing was seeded.
+      ?? { outcome: "not-seeded" as const, reason: "finalize-blocked" as const };
+    if (reseed.outcome !== "seeded" && isTerminalPostMergeReseedRefusal(reseed.reason)) {
+      const notice = await notifyUnreachablePostMergeGate({
+        store,
+        messageStore,
+        taskId,
+        gateId: reseed.workflowStepId,
+        refusal: reseed.reason,
+        evidenceBlocker,
+      });
+      await log?.(`Auto-merge finalization deferred for ${taskId}: ${evidenceBlocker}`
+        + ` [post-merge gate reseed: ${reseed.reason}; operator handoff: ${notice}]`);
+      return {
+        outcome: "blocked",
+        task: latest,
+        previousColumn: latest.column,
+        reason: unreachablePostMergeGateReason(evidenceBlocker, reseed.reason),
+        deferredPostMergeEvidence,
+      };
     }
     await recordFinalizationAudit({
       store,
@@ -295,20 +452,17 @@ export async function finalizeProvenAutoMergeTask({
       auditAgentId,
       auditPhase,
     });
-    await log?.(`Auto-merge finalization deferred for ${taskId}: ${evidenceBlocker}`);
+    await log?.(`Auto-merge finalization deferred for ${taskId}: ${evidenceBlocker}`
+      + ` [post-merge gate reseed: ${reseed.outcome === "seeded" ? `seeded '${reseed.workflowStepId}'` : reseed.reason}]`);
     return {
       outcome: "blocked",
       task: latest,
       previousColumn: latest.column,
       reason: evidenceBlocker,
-      /*
-      FNXC:PostMergeEvidenceOrdering 2026-09-25-20:05:
-      Only an absent result can be claimed by the active graph traversal. A pending or terminal
-      non-approval is durable evidence that must remain a blocker, not a retry signal.
-      */
-      deferredPostMergeEvidence: evidenceDecision.outcome === "resumable" || undefined,
+      deferredPostMergeEvidence,
     };
   }
+
 
   const validationMergeDetails = buildFinalizationMergeDetails(latest, result);
   const cleanupLandedWorktree = async (task: Task, mergeDetails: NonNullable<Task["mergeDetails"]>): Promise<void> => {
@@ -319,6 +473,8 @@ export async function finalizeProvenAutoMergeTask({
       worktreePath: task.worktree,
       rootDir,
       landedSha: mergeDetails.commitSha ?? result?.commitSha,
+      // RUFU-274 Step 5: the row is passed so cleanup can see a durable delivery-unproven hold.
+      task,
       source,
       audit,
       log: async (message) => {
@@ -377,6 +533,40 @@ export async function finalizeProvenAutoMergeTask({
       auditPhase,
     });
     return { outcome: "blocked", task: latest, previousColumn: latest.column, reason };
+  }
+
+  /*
+  FNXC:ZeroCommitDeliveryProof 2026-09-26-09:45 (RUFU-274):
+  The delivery-proof door on the shared finalize primitive. It runs only when both facts needed to probe are
+  on the row: a repository root, and the integration branch the landing claims to have reached. Without
+  either there is nothing to corroborate against, and inventing a ref (or trusting a `mergeConfirmed` flag
+  to substitute for a probe) is the failure mode this door exists to remove — so the historical behaviour
+  stands for those cards. A `held` refusal has already written its durable hold, row sentence, and bounded
+  audit row inside the guard; here the only job is to stop — before cleanup and before the complete-column
+  move — and to report a deferral, the same non-burning `blocked` class `missing-merge-confirmation` uses.
+  A `retry` is the opposite case: the probe could not see the content, which is not evidence that work is at
+  risk, so finalizing proceeds on today's rules rather than wedging a card over an unreadable checkout. The
+  guard's own deferred row records that abstention, and this lane adds no audit event of its own: the
+  refusal's forensic record and its fixed reason codes belong to the one writer.
+  */
+  const landingProofBranch = mergeDetails.mergeTargetBranch;
+  if (rootDir && landingProofBranch) {
+    const landingProof = await enforceZeroCommitLandingProof({
+      store,
+      task: latest,
+      repoDir: rootDir,
+      integrationBranch: landingProofBranch,
+      source: "finalize-proven-auto-merge",
+      fence,
+    });
+    if (landingProof.disposition === "held") {
+      const reason = landingProof.refusal;
+      await log?.(`Auto-merge finalization refused for ${taskId}: ${reason}`);
+      return { outcome: "blocked", task: latest, previousColumn: latest.column, reason };
+    }
+    if (landingProof.disposition === "retry") {
+      await log?.(`Auto-merge finalization proceeding without a zero-commit delivery probe for ${taskId}: ${landingProof.reason}`);
+    }
   }
 
   /*
@@ -456,7 +646,7 @@ export async function finalizeProvenAutoMergeTask({
         finalizationBlocker = "missing-merge-confirmation";
         return false;
       }
-      finalizationBlocker = await getRequiredPostMergeEvidenceBlocker(store, live);
+      finalizationBlocker = await getRequiredPostMergeEvidenceBlocker(store, live, evidenceContract);
       if (finalizationBlocker) return false;
       finalizationBlocker = getPostMergeFinalizeBlocker({
         status: clearMergeConfirmedTransientStatus(live.status),
@@ -478,7 +668,7 @@ export async function finalizeProvenAutoMergeTask({
       : { moveSource: "engine", workflowMoveSource: "auto-merge-finalization", preserveProgress: true });
     if (!move.moved) {
       const currentBlocker = finalizationBlocker
-        ?? await getRequiredPostMergeEvidenceBlocker(store, move.task)
+        ?? await getRequiredPostMergeEvidenceBlocker(store, move.task, evidenceContract)
         ?? "finalization-fence-refused";
       await recordFinalizationAudit({
         store,

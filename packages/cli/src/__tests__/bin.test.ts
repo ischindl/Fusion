@@ -15,6 +15,7 @@ const commandMocks = vi.hoisted(() => ({
   runTaskCreate: vi.fn(),
   runTaskList: vi.fn(),
   runTaskMove: vi.fn(),
+  runTaskRename: vi.fn(),
   runTaskMerge: vi.fn(),
   runTaskReconcile: vi.fn(),
   runTaskUpdate: vi.fn(),
@@ -140,13 +141,57 @@ const ttyState = vi.hoisted(() => ({
   isTTYAvailable: true,
 }));
 
-vi.mock("@fusion/core", async () => {
-  const actual = await vi.importActual<typeof import("@fusion/core")>("@fusion/core");
+/*
+FNXC:CliTests 2026-09-04-12:55: RUFU-185 quarantine rescue — the previous factory
+spread `...await vi.importActual("@fusion/core")`, which pulled the real core barrel
+(packages/core/src/index.ts, ~3.2k lines re-exporting ~550 modules) through the Vite
+transform on first dispatching test. Measured: ~9.6-10.6s of transform per cold lane,
+so the first `runBin()` routinely exceeded the 15s per-test budget under a loaded
+8-worker lane (quarantine row: 15.39s wall, transform 10.59s, zero failures).
+
+The spread is replaced by the named surface the mocked graph actually reaches:
+- `getDefaultCentralDbPath` + `GlobalSettingsStore`: onboard-autolaunch.ts (imported by
+  bin.ts's auto-launch probe) touches only these; the completion marker itself is read
+  through the already-mocked onboard.js `isCliOnboardingComplete`, and a store probe
+  failure is caught as "incomplete", so a no-op store keeps that fallback semantics.
+- `isPostgresUniqueError` + `ProjectPartitionRekeyError` + `FUSION_NON_RETRYABLE_EXIT_CODE`:
+  bin.ts's main() catch destructures these dynamically on every rejected exit path. No
+  case here rejects with a PG unique violation or rekey error, so the classifiers return
+  false and the exit code mirrors the real sysexits EX_TEMPFAIL (75).
+
+A test that starts reaching another core export fails with a clear
+`No "X" export is defined on the "@fusion/core" mock` instead of silently inheriting
+real core behavior — the narrowing is visible, not hidden.
+*/
+vi.mock("@fusion/core", () => {
   return {
-    ...actual,
     getDefaultCentralDbPath: vi.fn(() => onboardEnv.centralDbPath),
+    GlobalSettingsStore: class {
+      async init() {}
+      async getSettings() { return {}; }
+      async saveSettings() {}
+    },
+    isPostgresUniqueError: () => false,
+    ProjectPartitionRekeyError: class extends Error {},
+    FUSION_NON_RETRYABLE_EXIT_CODE: 75,
   };
 });
+
+/*
+FNXC:CliTests 2026-09-04-12:55: RUFU-185 — bin.ts's `loadCommandHandlers()` eagerly
+imports every command module before dispatch, and the unmocked ones (chat, branch-group,
+workflow, experiment-finalize, update, plugin-publish, …) statically import the real
+@fusion/engine and @fusion/dashboard barrels — engine/src/index.ts alone re-exports a
+5k-line agent-tools module that accesses @fusion/core at evaluation time. No test in
+this file asserts engine or dashboard behavior (they arrive only as incidental routing
+deps), and the mock-completeness guard's required surface is what this file's sources
+import (bin.ts imports neither barrel), so empty barrel mocks keep the routing contract
+intact while keeping ~10s of incidental transform out of every cold lane. If a future
+test starts exercising a command that uses these barrels, it will fail loudly on a
+missing export and the name gets added here deliberately.
+*/
+vi.mock("@fusion/engine", () => ({}));
+vi.mock("@fusion/dashboard", () => ({}));
 
 vi.mock("../commands/dashboard-tui/index.js", () => ({
   isTTYAvailable: vi.fn(() => ttyState.isTTYAvailable),
@@ -169,6 +214,7 @@ vi.mock("../commands/task.js", () => ({
   runTaskCreate: commandMocks.runTaskCreate,
   runTaskList: commandMocks.runTaskList,
   runTaskMove: commandMocks.runTaskMove,
+  runTaskRename: commandMocks.runTaskRename,
   runTaskMerge: commandMocks.runTaskMerge,
   runTaskReconcile: commandMocks.runTaskReconcile,
   runTaskUpdate: commandMocks.runTaskUpdate,
@@ -326,18 +372,35 @@ const originalExit = process.exit;
 const originalPiPackageDir = process.env.PI_PACKAGE_DIR;
 const originalSkipOnboardingEnv = process.env.FUSION_SKIP_ONBOARDING;
 
-let importCounter = 0;
-
+/*
+FNXC:CliTests 2026-09-04-12:55: RUFU-185 — module freshness now comes from
+`vi.resetModules()` + a plain `await import("../bin.ts")` instead of the
+`?test=${importCounter}` cache-bust query. The query gave every runBin() call a new
+module id, so Vite re-transformed bin.ts (~2500 lines, plus its per-import import
+graph revalidation) on each of the ~103 instantiations and charged that wall-clock to
+whichever test happened to bear the call — the scaling this quarantine row blames.
+resetModules clears the module registry (bin.ts re-evaluates, `main()` re-runs, top-level
+side effects re-execute) while the stable specifier lets Vite serve bin.ts from its
+transform cache, so freshness is kept and the per-instantiation transform work is gone.
+This also supersedes the FN-8093/FN-6839 history below: the module-graph imports those
+comments describe are no longer static imports in this file.
+*/
 async function runBin(args: string[]) {
   process.argv = ["node", "bin.ts", ...args];
-  importCounter += 1;
-  await import(/* @vite-ignore */ `../bin.ts?test=${importCounter}`);
+  vi.resetModules();
+  await import("../bin.ts");
 }
 
 /*
  * FNXC:CloudLink 2026-09-04-03:44:
  * Synthesize fixture credentials so code scanning does not treat test data as a
  * hardcoded credential and a real value cannot be pasted in as a fixture.
+ *
+ * FNXC:SyncMergeRepair 2026-09-23-00:12 (RUFU-269 verification): this declaration existed TWICE,
+ * byte-identical, after the 2026-09-21 cross-lineage sync merge 2c09516986 kept both parents' copies.
+ * A duplicate `function` in one module scope is a parse error, so esbuild refused the whole file and
+ * every test in it silently stopped running — including the global-flag parser cases RUFU-269 needed as
+ * evidence. Repaired because it blocks verification of this change, not as cleanup; delete one copy only.
  */
 function fixtureSecret(label: string): string {
   return ["fixture", label, "value"].join("-");
@@ -348,7 +411,8 @@ describe("bin command routing and fallbacks", () => {
     const previous = process.env.FUSION_CLI_SKIP_MAIN;
     process.env.FUSION_CLI_SKIP_MAIN = "1";
     try {
-      const { extractGlobalProjectFlag } = await import("../bin.ts?quiet-parser");
+      vi.resetModules();
+      const { extractGlobalProjectFlag } = await import("../bin.ts");
       expect(extractGlobalProjectFlag(["task", "list"]).quiet).toBeUndefined();
       expect(extractGlobalProjectFlag(["task", "--quiet", "list"]).cleanedArgs).toEqual(["task", "list"]);
       expect(extractGlobalProjectFlag(["serve", "-q", "--port", "0"]).cleanedArgs).toEqual(["serve", "--port", "0"]);
@@ -673,6 +737,27 @@ describe("bin command routing and fallbacks", () => {
       ["FN-191"],
       "atlas-notes",
     );
+  });
+
+  /*
+  FNXC:TaskTitleHygiene 2026-09-26-04:45 (RUFU-295): `fn task rename` is the agent-reachable rename edge —
+  the CLI process is where a fixer session lives, and until now renaming required either the operator or a
+  card deletion the card's own creator is refused. These two cases pin that the subcommand actually
+  dispatches (a `case` added to the wrong switch would otherwise fall through to "Unknown subcommand") and
+  that an argument-less call exits non-zero instead of renaming nothing silently.
+  */
+  it("routes task rename with the joined title and project", async () => {
+    await runBin(["task", "rename", "FN-155", "Authored", "REVISE", "must", "not", "deadlock", "--project", "atlas-notes"]);
+    expect(commandMocks.runTaskRename).toHaveBeenCalledWith(
+      "FN-155",
+      "Authored REVISE must not deadlock",
+      "atlas-notes",
+    );
+  });
+
+  it("errors for task rename without a title", async () => {
+    await expect(runBin(["task", "rename", "FN-155"])).rejects.toThrow("process.exit:1");
+    expect(errorSpy).toHaveBeenCalledWith('Usage: fn task rename <id> "<one-line title>"');
   });
 
   it("errors for task deps missing operation", async () => {

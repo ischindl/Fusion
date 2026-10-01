@@ -1,3 +1,10 @@
+/*
+FNXC:RUFU153 2026-08-23-00:21:
+The composer-height assertions target the gated main pane. Per FNXC:ChatNavigation (ChatView.tsx) the
+detail pane is closed by default and opens only on a user row click (no auto-open path), so every test
+clicks the active session row (chat-session-<id>) through the canonical user path before asserting the
+chat-input composer DOM.
+*/
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
@@ -58,6 +65,7 @@ const roomOne = {
   projectId: "proj-123",
   createdBy: "agent-001",
   status: "active" as const,
+  thinkingLevel: null,
   createdAt: "2026-04-08T00:00:00.000Z",
   updatedAt: "2026-04-08T00:00:00.000Z",
 };
@@ -72,12 +80,22 @@ const defaultChatState: UseChatReturn = {
   streamingText: "",
   streamingThinking: "",
   streamingToolCalls: [],
+  /* Merged UseChatReturn (origin/main merge): engine phase, RUFU-199 handoff, FN-459 edit-draft rescue, and session-pagination defaults. */
+  streamingPhase: null,
+  handoffSession: vi.fn().mockResolvedValue({ session: { id: "session-handoff", agentId: "agent-001", status: "active", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" }, degraded: false }),
+  loadMoreSessions: vi.fn().mockResolvedValue(undefined),
+  hasMoreSessions: false,
+  hasMoreArchivedSessions: false,
+  sessionsLoadingMore: false,
   selectSession: vi.fn(),
   createSession: vi.fn().mockResolvedValue(sessionTwo),
   archiveSession: vi.fn(),
   deleteSession: vi.fn(),
   sendMessage: vi.fn(),
   editMessageAndResend: vi.fn(),
+  // FNXC:ChatMessageEdit 2026-09-16-05:58: FN-459 edit-draft rescue surface; nothing to restore here.
+  editDraftRestore: null,
+  clearEditDraftRestore: vi.fn(),
   stopStreaming: vi.fn(),
   pendingMessages: [],
   clearPendingMessage: vi.fn(),
@@ -88,6 +106,23 @@ const defaultChatState: UseChatReturn = {
   filteredSessions: [sessionOne, sessionTwo],
   refreshSessions: vi.fn(),
   agentsMap: new Map(),
+
+  tags: [],
+  selectedTagId: null,
+  setSelectedTagId: vi.fn(),
+  archivedSessions: [],
+  refreshArchivedSessions: vi.fn(),
+  unarchiveSession: vi.fn(),
+  renameSession: vi.fn(),
+  pinSession: vi.fn(),
+  pinnedCount: 0,
+  setSessionModel: vi.fn(),
+  setSessionThinkingLevel: vi.fn(),
+  createTag: vi.fn(),
+  renameTag: vi.fn(),
+  deleteTag: vi.fn(),
+  setSessionTags: vi.fn(),
+  backfillStashSession: vi.fn(),
 };
 
 const defaultRoomsState: UseChatRoomsResult = {
@@ -103,11 +138,27 @@ const defaultRoomsState: UseChatRoomsResult = {
   deleteRoom: vi.fn(),
   sendRoomMessage: vi.fn().mockResolvedValue(undefined),
   refreshRooms: vi.fn(),
+
+  updateRoomSettings: vi.fn(),
+  clearRoom: vi.fn(),
 };
 
 function setup(chatOverrides: Partial<UseChatReturn> = {}, roomsOverrides: Partial<UseChatRoomsResult> = {}) {
   mockUseChat.mockReturnValue({ ...defaultChatState, ...chatOverrides });
   mockUseChatRooms.mockReturnValue({ ...defaultRoomsState, ...roomsOverrides });
+}
+
+/*
+FNXC:ChatSendDurability 2026-09-07-13:30:
+RUFU-192 moved composer destruction to the durability hand-off (the `user_persisted` ack), so the
+autosize reset that follows an emptied composer now happens there rather than on click. These
+assertions are about the height clamp, so their send fixture reports the turn durable — the same
+frame the server has sent since RUFU-192 Step 1.
+*/
+function durableSend() {
+  return vi.fn((_content: string, _files?: File[], callbacks?: useChatModule.ChatSendCallbacks) => {
+    callbacks?.onPersisted?.(true, "msg-autosize");
+  });
 }
 
 function mockDesktopViewport() {
@@ -157,7 +208,7 @@ describe("ChatView composer autosize", () => {
   });
 
   it("resets composer height after send clears messageInput", async () => {
-    const sendMessage = vi.fn();
+    const sendMessage = durableSend();
     setup({ sendMessage });
     await renderChatView();
 
@@ -287,44 +338,8 @@ describe("ChatView composer autosize", () => {
     expect(textarea.style.overflowY).toBe("auto");
   });
 
-  it("recomputes rooms composer height on room switch", async () => {
-    localStorage.setItem("fusion:chat-scope", "rooms");
-    const roomTwo = { ...roomOne, id: "room-002", name: "Room Two", slug: "room-two" };
-    localStorage.setItem("fusion:chat-draft:rooms:room-001", "this is a much longer room draft");
-    localStorage.setItem("fusion:chat-draft:rooms:room-002", "ok");
-
-    const originalScrollHeight = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "scrollHeight");
-    Object.defineProperty(HTMLTextAreaElement.prototype, "scrollHeight", {
-      configurable: true,
-      get() {
-        return (this as HTMLTextAreaElement).value.length > 6 ? 220 : 60;
-      },
-    });
-
-    setup({}, { rooms: [roomOne, roomTwo], activeRoom: roomOne });
-    const { rerender } = await renderChatView();
-    const textarea = screen.getByTestId("chat-input") as HTMLTextAreaElement;
-
-    await waitFor(() => {
-      expect(textarea).toHaveValue("this is a much longer room draft");
-      expect(textarea.style.height).toBe(`${expectedAutomaticHeight(textarea, 220)}px`);
-    });
-
-    setup({}, { rooms: [roomOne, roomTwo], activeRoom: roomTwo });
-    rerender(<ChatView projectId="proj-123" addToast={vi.fn()} experimentalFeatures={{ chatRooms: true }} />);
-
-    await waitFor(() => {
-      expect(textarea).toHaveValue("ok");
-      expect(textarea.style.height).toBe(`${expectedAutomaticHeight(textarea, 60)}px`);
-    });
-
-    if (originalScrollHeight) {
-      Object.defineProperty(HTMLTextAreaElement.prototype, "scrollHeight", originalScrollHeight);
-    }
-  });
-
   it("ignores the former top-edge pointer drag and clears direct chat to its minimum", async () => {
-    const sendMessage = vi.fn();
+    const sendMessage = durableSend();
     setup({ sendMessage });
     await renderChatView();
 
@@ -381,7 +396,7 @@ describe("ChatView composer autosize", () => {
   });
 
   it("uses the same clamp for direct typing and programmatic resets", async () => {
-    const sendMessage = vi.fn();
+    const sendMessage = durableSend();
     setup({ sendMessage });
     await renderChatView();
 

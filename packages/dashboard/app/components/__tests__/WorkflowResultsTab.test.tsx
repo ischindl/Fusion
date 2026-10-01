@@ -72,6 +72,7 @@ describe("WorkflowResultsTab", () => {
       name: "QA Check",
       description: "Run test suite",
       mode: "prompt",
+      gateMode: "gate",
       phase: "pre-merge",
       prompt: "Run QA checks",
       enabled: true,
@@ -83,6 +84,7 @@ describe("WorkflowResultsTab", () => {
       name: "Docs Review",
       description: "Review docs",
       mode: "prompt",
+      gateMode: "gate",
       phase: "post-merge",
       prompt: "Review docs",
       enabled: true,
@@ -94,6 +96,7 @@ describe("WorkflowResultsTab", () => {
       name: "Browser Verification",
       description: "Verify web application functionality using browser automation",
       mode: "prompt",
+      gateMode: "gate",
       phase: "pre-merge",
       prompt: "Verify browser flows",
       enabled: true,
@@ -119,7 +122,7 @@ describe("WorkflowResultsTab", () => {
         { from: "execute", to: "end" },
       ],
     },
-  } as WorkflowDefinition;
+  } as unknown as WorkflowDefinition;
 
   const selectedWorkflow: WorkflowDefinition = {
     id: "WF-001",
@@ -137,7 +140,7 @@ describe("WorkflowResultsTab", () => {
         { from: "prompt-1", to: "end" },
       ],
     },
-  } as WorkflowDefinition;
+  } as unknown as WorkflowDefinition;
 
   type TaskWorkflowSelection = Awaited<ReturnType<typeof api.fetchTaskWorkflow>>;
   type WorkflowSelectionResult = Awaited<ReturnType<typeof api.selectTaskWorkflow>>;
@@ -211,7 +214,7 @@ describe("WorkflowResultsTab", () => {
     autoMergeMode: "squash",
     paused: false,
     userPaused: false,
-  } as Task;
+  } as unknown as Task;
 
   const mockSettings: Settings = {
     modelProvider: "openai",
@@ -220,7 +223,7 @@ describe("WorkflowResultsTab", () => {
     validatorModel: "claude-3-5-haiku",
     planningModelProvider: "google",
     planningModel: "gemini-2.5-flash",
-  } as Settings;
+  } as unknown as Settings;
 
   afterAll(() => {
     vi.restoreAllMocks();
@@ -507,10 +510,10 @@ describe("WorkflowResultsTab", () => {
   });
 
   it.each([
-    { name: "not started", task: { ...baseTask, status: "todo", column: "todo" } as Task, results: [] as WorkflowStepResult[], testId: "workflow-phase-badge-not-started", text: "Not started" },
-    { name: "in progress", task: { ...baseTask, status: "in-progress", column: "in-progress" } as Task, results: [{ workflowStepId: "WS-004", workflowStepName: "Performance Check", phase: "pre-merge", status: "pending" }] as WorkflowStepResult[], testId: "workflow-phase-badge-pre-merge", text: "Pre-merge steps running" },
-    { name: "paused", task: { ...baseTask, status: "paused", column: "in-progress" } as Task, results: [] as WorkflowStepResult[], testId: "workflow-phase-badge-paused", text: "Paused" },
-    { name: "completed", task: { ...baseTask, status: "done", column: "done" } as Task, results: [{ workflowStepId: "WS-001", workflowStepName: "QA Check", phase: "pre-merge", status: "passed" }] as WorkflowStepResult[], testId: "workflow-phase-badge-completed", text: "Completed" },
+    { name: "not started", task: { ...baseTask, status: "todo", column: "todo" } as unknown as Task, results: [] as WorkflowStepResult[], testId: "workflow-phase-badge-not-started", text: "Not started" },
+    { name: "in progress", task: { ...baseTask, status: "in-progress", column: "in-progress" } as unknown as Task, results: [{ workflowStepId: "WS-004", workflowStepName: "Performance Check", phase: "pre-merge", status: "pending" }] as WorkflowStepResult[], testId: "workflow-phase-badge-pre-merge", text: "Pre-merge steps running" },
+    { name: "paused", task: { ...baseTask, status: "paused", column: "in-progress" } as unknown as Task, results: [] as WorkflowStepResult[], testId: "workflow-phase-badge-paused", text: "Paused" },
+    { name: "completed", task: { ...baseTask, status: "done", column: "done" } as unknown as Task, results: [{ workflowStepId: "WS-001", workflowStepName: "QA Check", phase: "pre-merge", status: "passed" }] as WorkflowStepResult[], testId: "workflow-phase-badge-completed", text: "Completed" },
   ])("shows correct workflow phase for $name", async ({ task, results, testId, text }) => {
     render(<WorkflowResultsTab taskId="FN-001" task={task} settings={mockSettings} results={results} taskStatus={task.status} />);
     await waitFor(() => expect(screen.getByTestId(testId)).toHaveTextContent(text));
@@ -668,6 +671,7 @@ describe("WorkflowResultsTab", () => {
   });
 
   it("shows graph unavailable when a fetched workflow has no mappable nodes", async () => {
+
     const emptyWorkflow = { id: "WF-EMPTY", name: "Empty Workflow", ir: { version: 1, nodes: [], edges: [] } } as WorkflowDefinition;
     mockTaskWorkflowByRequest({
       [workflowRequestKey("FN-001", "project-empty")]: { workflowId: "WF-EMPTY" },
@@ -797,7 +801,7 @@ describe("WorkflowResultsTab", () => {
       validatorModelId: "configured-reviewer-model",
       planningModelProvider: null,
       planningModelId: null,
-    } as Task;
+    } as unknown as Task;
     const agentLogEntries: AgentLogEntry[] = [
       {
         timestamp: "2026-06-25T00:00:00Z",
@@ -830,7 +834,7 @@ describe("WorkflowResultsTab", () => {
       updatedAt: "2026-06-25T00:00:00Z",
       metadata: {},
       runtimeConfig: { model: "assigned-provider/assigned-model" },
-    } as Agent;
+    } as unknown as Agent;
 
     render(
       <WorkflowResultsTab
@@ -866,7 +870,7 @@ describe("WorkflowResultsTab", () => {
       validatorModelId: null,
       planningModelProvider: null,
       planningModelId: null,
-    } as Task;
+    } as unknown as Task;
     const workflowOverlaidSettings = {
       ...mockSettings,
       executionProvider: "workflow-executor",
@@ -875,7 +879,7 @@ describe("WorkflowResultsTab", () => {
       validatorModelId: "workflow-reviewer-model",
       planningProvider: "workflow-planner",
       planningModelId: "workflow-planner-model",
-    } as Settings;
+    } as unknown as Settings;
 
     render(<WorkflowResultsTab taskId="FN-001" task={taskWithoutOverrides} settings={workflowOverlaidSettings} results={mockResults} />);
 
@@ -905,7 +909,7 @@ describe("WorkflowResultsTab", () => {
     rerender(
       <WorkflowResultsTab
         taskId="FN-001"
-        task={{ ...baseTask, modelProvider: null, modelId: null, validatorModelProvider: null, validatorModelId: null, planningModelProvider: null, planningModelId: null, thinkingLevel: null } as Task}
+        task={{ ...baseTask, modelProvider: null, modelId: null, validatorModelProvider: null, validatorModelId: null, planningModelProvider: null, planningModelId: null, thinkingLevel: null } as unknown as Task}
         settings={undefined}
         results={mockResults}
       />,
@@ -1094,6 +1098,82 @@ describe("WorkflowResultsTab", () => {
       fireEvent.scroll(container);
       geometry.scrollTop = 960;
       fireEvent.scroll(container);
+      geometry.scrollHeight = 1200;
+      mockedUseAgentLogs.mockReturnValue({ entries: appendedEntries, loading: false, clear: vi.fn(), loadMore: vi.fn(), hasMore: false, total: appendedEntries.length, loadingMore: false });
+      view.rerender(<WorkflowResultsTab taskId="FN-001" results={mockResults} isTaskInProgress />);
+
+      expect(geometry.scrollTop).toBe(1200);
+    });
+
+    /*
+    FNXC:StickyBottomScroll 2026-09-14-20:19:
+    FN-398 : une molette de 30 px — sous l'ancien seuil de 50 px — doit libérer le lecteur. Avant, `isFollowingRef`
+    restait vrai et `followTail` (plus le `ResizeObserver` du contenu) réécrivait `scrollTop` en bas.
+    */
+    /*
+    FNXC:StickyBottomScroll 2026-09-14-21:29:
+    FN-398 : le journal en direct affiche « Waiting for agent output… » avant la première entrée, donc son
+    conteneur de défilement n'existe pas au premier rendu. Le propriétaire doit s'abonner au nœud tardif,
+    sinon aucun geste n'est jamais entendu et le lecteur reste collé à la queue.
+    */
+    it("subscribes to a live-log container that only mounts with the first entry", () => {
+      const view = renderLiveLog([]);
+      // La branche vide rend un nœud DIFFÉRENT, sans `ref` : le conteneur de défilement arrive plus tard.
+      expect(screen.getByTestId("workflow-live-log-WS-004").querySelector(".workflow-live-log-empty")).not.toBeNull();
+
+      mockedUseAgentLogs.mockReturnValue({ entries: initialEntries, loading: false, clear: vi.fn(), loadMore: vi.fn(), hasMore: false, total: initialEntries.length, loadingMore: false });
+      view.rerender(<WorkflowResultsTab taskId="FN-001" results={mockResults} isTaskInProgress />);
+      const container = screen.getByTestId("workflow-live-log-WS-004") as HTMLDivElement;
+      const geometry = mockWorkflowLiveLogGeometry(container, 800);
+
+      const wheel = new Event("wheel", { bubbles: true });
+      Object.defineProperty(wheel, "deltaY", { value: -30 });
+      Object.defineProperty(wheel, "target", { value: container });
+      act(() => { container.dispatchEvent(wheel); });
+      geometry.scrollTop = 770;
+      fireEvent.scroll(container);
+
+      geometry.scrollHeight = 1200;
+      mockedUseAgentLogs.mockReturnValue({ entries: appendedEntries, loading: false, clear: vi.fn(), loadMore: vi.fn(), hasMore: false, total: appendedEntries.length, loadingMore: false });
+      view.rerender(<WorkflowResultsTab taskId="FN-001" results={mockResults} isTaskInProgress />);
+
+      expect(geometry.scrollTop).toBe(770);
+    });
+
+    it("stops following after a wheel-up smaller than the bottom threshold", () => {
+      const view = renderLiveLog(initialEntries);
+      const container = screen.getByTestId("workflow-live-log-WS-004") as HTMLDivElement;
+      const geometry = mockWorkflowLiveLogGeometry(container, 800);
+
+      const wheel = new Event("wheel", { bubbles: true });
+      Object.defineProperty(wheel, "deltaY", { value: -30 });
+      Object.defineProperty(wheel, "target", { value: container });
+      act(() => { container.dispatchEvent(wheel); });
+      geometry.scrollTop = 770;
+      fireEvent.scroll(container);
+
+      geometry.scrollHeight = 1200;
+      mockedUseAgentLogs.mockReturnValue({ entries: appendedEntries, loading: false, clear: vi.fn(), loadMore: vi.fn(), hasMore: false, total: appendedEntries.length, loadingMore: false });
+      view.rerender(<WorkflowResultsTab taskId="FN-001" results={mockResults} isTaskInProgress />);
+
+      expect(geometry.scrollTop).toBe(770);
+    });
+
+    it("rearms following after the reader scrolls manually back to the bottom", () => {
+      const view = renderLiveLog(initialEntries);
+      const container = screen.getByTestId("workflow-live-log-WS-004") as HTMLDivElement;
+      const geometry = mockWorkflowLiveLogGeometry(container, 800);
+
+      const wheel = new Event("wheel", { bubbles: true });
+      Object.defineProperty(wheel, "deltaY", { value: -30 });
+      Object.defineProperty(wheel, "target", { value: container });
+      act(() => { container.dispatchEvent(wheel); });
+      geometry.scrollTop = 770;
+      fireEvent.scroll(container);
+
+      geometry.scrollTop = 800;
+      fireEvent.scroll(container);
+
       geometry.scrollHeight = 1200;
       mockedUseAgentLogs.mockReturnValue({ entries: appendedEntries, loading: false, clear: vi.fn(), loadMore: vi.fn(), hasMore: false, total: appendedEntries.length, loadingMore: false });
       view.rerender(<WorkflowResultsTab taskId="FN-001" results={mockResults} isTaskInProgress />);

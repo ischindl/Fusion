@@ -1,6 +1,5 @@
 import { createLogger } from "../process/logger.js";
-import { columnsWithFlag, declaresAnyLifecycleTrait } from "../workflows/workflow-lifecycle-traits.js";
-import { resolveWorkflowIrForTask } from "../workflows/workflow-ir-resolver.js";
+
 
 const severityAuditLog = createLogger("core-async-mission-store");
 /**
@@ -60,7 +59,7 @@ import type { Goal } from "../goals/goal-types.js";
 import {
   deriveMilestoneAcceptanceCriteriaFromFeatures,
 } from "../missions/mission-store.js";
-import { resolveProjectColumnsForRoles } from "../project-lane-vocabulary.js";
+import { ARCHIVED_SENTINEL_LANES, resolveProjectColumnsForRoles } from "../project-lane-vocabulary.js";
 import type {
   MissionSummary,
   MissionAssertionBackfillReport,
@@ -208,7 +207,7 @@ export type TerminalTaskReconciliationErrorCode =
   | "FEATURE_NOT_FOUND"
   | "TASK_NOT_FOUND"
   | "TASK_NOT_TERMINAL"
-  | "TASK_ARCHIVE_INVALID"
+  | "TASK_DELIVERY_DELETED"
   | "FEATURE_TASK_CONFLICT"
   | "TASK_FEATURE_CONFLICT";
 
@@ -1268,26 +1267,12 @@ export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
   }
 
   /*
-  FNXC:WorkflowResolvedColumns 2026-07-30-12:50 (batch-core):
-  "Is this linked task ARCHIVED?" for the two mission guards below, resolved from the task's own
-  workflow. Keyed on the literal, a renamed board answered NO for every archived card: `deleteFeature`
-  treated an archived task as still live and refused the delete without `force`, and feature bootstrap
-  accepted an archived task as an active target.
-
-  `taskStore` is optional on this class, and a workflow that expresses no trait at all is a v1 upgrade
-  rather than a board without an archive lane — both keep the legacy id, which is the behaviour these
-  guards already had.
+  FNXC:WorkflowResolvedColumns 2026-07-30-12:50:
+  Mission linkage treats only soft-delete/historical sentinels as absent. Live workflow Complete rows
+  remain linked tasks and are not confused with deletion.
   */
-  private async archivedLanesFor(taskId: string): Promise<ReadonlySet<string>> {
-    if (!this.taskStore) return new Set(["archived"]);
-    try {
-      const ir = await resolveWorkflowIrForTask(this.taskStore, taskId);
-      if (!ir || !declaresAnyLifecycleTrait(ir)) return new Set(["archived"]);
-      const archived = columnsWithFlag(ir, "archived");
-      return archived.length > 0 ? new Set(archived) : new Set(["archived"]);
-    } catch {
-      return new Set(["archived"]);
-    }
+  private async historicalSentinelLanesFor(_taskId: string): Promise<ReadonlySet<string>> {
+    return ARCHIVED_SENTINEL_LANES;
   }
 
   async deleteFeature(id: string, force = false): Promise<void> {
@@ -1295,7 +1280,7 @@ export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
     if (!feature) throw new Error(`Feature ${id} not found`);
     if (feature.taskId) {
       const linkedTask = await getLiveTaskById(this.db, feature.taskId);
-      const linkedToLiveTask = linkedTask && !(await this.archivedLanesFor(feature.taskId)).has(linkedTask.column);
+      const linkedToLiveTask = linkedTask && !(await this.historicalSentinelLanesFor(feature.taskId)).has(linkedTask.column);
       if (linkedToLiveTask && !force) {
         throw new Error(`Feature ${id} is linked to task ${feature.taskId}; pass force to delete anyway`);
       }
@@ -1328,7 +1313,7 @@ export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
 
   /**
    * FNXC:MissionReconciliation 2026-07-20-08:34:
-   * Shipped-delivery repair is a dedicated transaction, not ordinary feature linking. It accepts only a live done row or the supported retained archived tombstone+cold snapshot, preserves conflict guards, leaves loop attempts and mission run controls untouched, and updates only the live task backlink because archived evidence must never be resurrected.
+   * Shipped-delivery repair is a dedicated transaction, not ordinary feature linking. It accepts only a live workflow Complete row, preserves conflict guards, leaves loop attempts and mission run controls untouched, and never turns deleted or historical evidence into delivery proof.
    */
   async reconcileFeatureDoneWithTerminalTask(featureId: string, taskId: string): Promise<MissionFeature> {
     const outcome = await this.layer.transactionImmediate(async (tx) => {
@@ -1359,7 +1344,6 @@ export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
       const terminalColumns = this.taskStore
         ? {
             complete: await resolveProjectColumnsForRoles(this.taskStore, ["complete"]).catch(() => undefined),
-            archived: await resolveProjectColumnsForRoles(this.taskStore, ["archived"]).catch(() => undefined),
           }
         : undefined;
       const evidence = await getTerminalTaskEvidence(tx, taskId, terminalColumns);
@@ -1369,21 +1353,21 @@ export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
       if (evidence.kind === "nonterminal") {
         throw new TerminalTaskReconciliationError(
           "TASK_NOT_TERMINAL",
-          `Delivery task ${taskId} must be in done or supported archived state, not ${evidence.column}`,
+          `Delivery task ${taskId} must be in a workflow Complete column, not ${evidence.column}`,
         );
       }
       if (evidence.kind === "invalid-deleted") {
         throw new TerminalTaskReconciliationError(
-          "TASK_ARCHIVE_INVALID",
-          `Delivery task ${taskId} is deleted or archived without a valid retained tombstone and archive snapshot`,
+          "TASK_DELIVERY_DELETED",
+          `Delivery task ${taskId} is deleted or historical and cannot prove delivery`,
         );
       }
 
       /*
       FNXC:MissionFeatureClaimRace 2026-08-19-21:24 (RUFU-134 / PR #3491 Greptile P1):
       A live done target is claimable by concurrent link/re-point; hold its row lock before the
-      conflict check so two claimants cannot both observe it as unclaimed. The archived-tombstone
-      arm is soft-deleted and unclaimable by design, so it needs no lock.
+      conflict check so two claimants cannot both observe it as unclaimed. Deleted and historical
+      rows are rejected before this point.
       */
       if (evidence.kind === "done") {
         await lockLiveTaskForClaim(tx, taskId);
@@ -1559,7 +1543,7 @@ export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
 
   async claimDefinedFeatureTask(input: { featureId: string; taskId: string; missionId: string; sliceId: string }): Promise<MissionFeature> {
     const statusEvent: { value?: MissionEvent } = {};
-    const archivedLanes = await this.archivedLanesFor(input.taskId);
+    const archivedLanes = await this.historicalSentinelLanesFor(input.taskId);
     const feature = await this.layer.transactionImmediate((tx) => this.claimDefinedFeatureTaskInTransaction(tx, { ...input, archivedLanes, requireExistingFeatureLink: true, statusEvent }));
     this.emit("feature:updated", feature);
     if (statusEvent.value) this.emit("mission:event", statusEvent.value);
@@ -1570,17 +1554,16 @@ export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
 
   /**
    * Keep the task that atomically claimed a defined Feature as the sole live
-   * deterministic-duplicate canonical. This compensates for a duplicate that
-   * became visible only after the create preflight, without ever allowing the
-   * generic intake path to archive feature.taskId.
+   * deterministic-duplicate canonical. A late unclaimed duplicate is soft-deleted
+   * atomically so no live task is moved into the removed archive lane.
    */
-  async archiveDefinedFeatureBootstrapDuplicate(input: { featureId: string; taskId: string; duplicateTaskId: string }): Promise<void> {
-    /* Resolve workflow vocabulary before holding a pool connection. Three concurrent
+  async deleteDefinedFeatureBootstrapDuplicate(input: { featureId: string; taskId: string; duplicateTaskId: string }): Promise<void> {
+    /* Resolve the lane vocabulary before holding a pool connection. Three concurrent
        duplicate reconciliations must not occupy the whole runtime pool while each
-       waits for archivedLanesFor() to borrow a fourth connection. */
+       waits for historicalSentinelLanesFor() to borrow a fourth connection. */
     const [claimedArchivedLanes, duplicateArchivedLanes] = await Promise.all([
-      this.archivedLanesFor(input.taskId),
-      this.archivedLanesFor(input.duplicateTaskId),
+      this.historicalSentinelLanesFor(input.taskId),
+      this.historicalSentinelLanesFor(input.duplicateTaskId),
     ]);
     /*
     FNXC:MissionAdmission 2026-07-23-21:10:
@@ -1591,9 +1574,9 @@ export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
     await this.layer.transactionImmediate(async (tx) => {
       /*
       FNXC:MissionAdmission 2026-07-23-20:00:
-      A late deterministic duplicate must not reverse the first-task claim and
-      archive feature.taskId. Verify that the feature still owns the claimed,
-      project-scoped live task, then archive only the competing live task in
+      A late deterministic duplicate must not reverse the first-task claim or
+      delete feature.taskId. Verify that the feature still owns the claimed,
+      project-scoped live task, then soft-delete only the competing live task in
       this transaction. `defined` remains scheduler-ineligible throughout.
       */
       const feature = await getFeature(tx, input.featureId);
@@ -1612,7 +1595,7 @@ export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
       /*
       FNXC:MissionAdmission 2026-07-23-21:10:
       Fingerprint equality does not make work interchangeable across Features.
-      A late sibling already claimed by another Feature remains live; archiving
+      A late sibling already claimed by another Feature remains live; deleting
       it here would corrupt that Feature's canonical task. Keep both tasks and
       let each feature retain its own transactional bootstrap claim.
       */
@@ -1626,24 +1609,14 @@ export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
       const duplicateFeature = await getConflictingFeatureByTaskId(tx, input.duplicateTaskId, input.featureId);
       if (duplicateFeature) return;
       /*
-      FNXC:WorkflowResolvedColumns 2026-07-31-10:10:
-      THE ARCHIVE TARGET IS RESOLVED, not the literal `archived`.
-
-      This writes `tasks.column` DIRECTLY rather than going through `moveTask`, so neither the
-      lifecycle census (which reads comparisons) nor the move-target census (which reads
-      `moveTask` call arguments) could see it. On a board whose archive lane is named anything
-      else, it parked the duplicate in a column that workflow does not declare — a card in a lane
-      the board cannot render.
-
-      `archivedLanesFor` already exists on this class for the guards above and returns the legacy
-      id when the task has no resolvable workflow, so an unconverted board is byte-identical.
-      A board declaring several archive lanes is arbitrated by taking the first; that is the same
-      choice `resolveLifecycleColumns` makes, and multiple archive lanes are not a shape the
-      builtin lineages produce.
+      FNXC:TaskArchiveRemoval 2026-09-04-14:51:
+      Deterministic duplicate cleanup uses the ordinary historical tombstone shape: `deletedAt`
+      and the internal archived sentinel are written together. It never creates a live archive-lane card.
       */
-      const archiveTarget = [...duplicateArchivedLanes][0] ?? "archived";
+      const deletedSentinel = [...duplicateArchivedLanes][0] ?? "archived";
+      const deletedAt = new Date().toISOString();
       await tx.update(schema.project.tasks)
-        .set({ column: archiveTarget, updatedAt: new Date().toISOString() })
+        .set({ column: deletedSentinel, deletedAt, updatedAt: deletedAt })
         .where(and(
           eq(schema.project.tasks.projectId, projectId),
           eq(schema.project.tasks.id, input.duplicateTaskId),
@@ -1675,7 +1648,7 @@ export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
       const liveTask = await lockLiveTaskForClaim(tx, taskId);
       if (!liveTask) {
         throw new Error(
-          `Cannot link feature ${featureId} to task ${taskId}: task is not on the active board (it may be archived, deleted, or never existed). Only active tasks can be linked to features.`,
+          `Cannot link feature ${featureId} to task ${taskId}: task is not on the active board (it may be deleted, historical, or never existed). Only active tasks can be linked to features.`,
         );
       }
       const conflictingFeature = await getConflictingFeatureByTaskId(tx, taskId, featureId);
@@ -1775,7 +1748,7 @@ export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
       const liveTask = await lockLiveTaskForClaim(tx, taskId);
       if (!liveTask) {
         throw new Error(
-          `Cannot re-point feature ${featureId} to task ${taskId}: task is not on the active board (it may be archived, deleted, or never existed). Only active tasks can be linked to features.`,
+          `Cannot re-point feature ${featureId} to task ${taskId}: task is not on the active board (it may be deleted, historical, or never existed). Only active tasks can be linked to features.`,
         );
       }
       const conflictingFeature = await getConflictingFeatureByTaskId(tx, taskId, featureId);
@@ -1868,16 +1841,15 @@ export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
           /*
           FNXC:MissionValidationRepair 2026-08-11-02:05:
           This verifier deliberately uses the engine producer's physical absence predicate only:
-          a missing/soft-deleted row or the legacy `archived` column. It must not resolve workflow
-          lanes under the lock; renamed archived lanes become absent only once archived physically.
+          a missing/soft-deleted row or the historical `archived` sentinel. It must not resolve workflow
+          lanes under the lock because live terminality is irrelevant to liveness.
           */
           const rows = await tx.select({ column: schema.project.tasks.column, updatedAt: schema.project.tasks.updatedAt, deletedAt: schema.project.tasks.deletedAt })
             .from(schema.project.tasks).where(and(eq(schema.project.tasks.projectId, missionProjectId()), eq(schema.project.tasks.id, fence.taskId))).for("update");
           const task = rows[0];
           /*
           FNXC:MissionValidationRepair 2026-08-11-03:04 DELIBERATE-LITERAL:
-          The locked verifier must match the producer's physical legacy-row predicate; renamed
-          archive lanes remain live until archival soft-deletes them.
+          The locked verifier must match the producer's physical historical-row predicate.
           */
           const liveness = task && !task.deletedAt && task.column !== "archived" ? "live" : "absent";
           if (fence.taskLiveness === "live") {

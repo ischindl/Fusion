@@ -201,6 +201,38 @@ Resolution order without `--project`:
 2. default project
 3. current-directory auto-detection
 
+### Routing visibility
+
+<!--
+FNXC:ProjectRoutingVisibility 2026-09-23-00:20:
+RUFU-269. The order above is the contract and is deliberately unchanged — cwd-over-default would break
+agent lanes that rely on a configured default. What changed is the silence around it: a default project
+pointing at another repo used to file cards there with no output naming the target, and the printed
+`Path:` looked cwd-relative. An operator standing in Fusion created two cards that landed physically in
+another project's checkout and only found out by listing that disk. Resolution provenance is now recorded
+on the project context, printed by every card-minting command, and confirmed interactively when the
+central default disagrees with the project the shell sits in.
+-->
+
+The order itself is unchanged; what changed is that the CLI now tells you which branch of it fired. `ProjectContext` carries the resolution source (`flag` / `default` / `cwd` / `cwd-fallback`) plus the project detected from the current directory, and every command that mints a card (`fn task create`, `duplicate`, `refine`) prints the target before it writes:
+
+```
+  Project: gedapp  /home/me/code/gedapp  (resolved via the central default project)
+  ✓ Created GEDA-1057: Fix checkout button
+    Column: triage
+    Path:   /home/me/code/gedapp/.fusion/tasks/GEDA-1057/
+```
+
+When the **default project** wins but the current directory belongs to a **different registered project**, the CLI writes a warning naming both projects to **stderr** before any board write. On `fn task create` at a real terminal it then asks `Create this card in project "<name>" anyway? [y/N]:`; declining exits 0 having written nothing — no task row and no `.fusion/tasks/<id>/` directory. `duplicate` and `refine` warn but never block, since they already name an existing card.
+
+The prompt never fires — the warning is still shown — when an answer cannot be typed:
+
+- `--yes` on `fn task create` (also stops `--yes` from leaking into the card title).
+- `--quiet` or `FUSION_QUIET=1`.
+- Piped or non-TTY stdin/stdout, so scripted pipelines cannot hang.
+
+An explicit `--project`, a cwd-detected target, and the unregistered-cwd local-store fallback are what the operator already asked for or already see announced elsewhere, so they are never second-guessed. An invalid `--project` value errors out during resolution and creates nothing. See [CLI reference — Project routing visibility](./cli-reference.md#project-routing-visibility).
+
 ## Project Health Tracking
 
 Central health tracking keeps mutable project metrics, including:
@@ -346,6 +378,31 @@ Gate policy is centralized in `shouldUseHybridExecutor(centralCore)` and evaluat
 5. central lookup failures degrade to disabled (`reason: "central-unavailable"`)
 
 When enabled, shutdown ordering is deterministic: `hybridExecutor.shutdown()` runs before `engineManager.stopAll()` so runtime orchestration services (including node health monitoring) tear down before project engines.
+
+### Boot lifecycle: background init, bounded shutdown, readiness gate
+
+`HybridExecutor.initialize()` loads one project runtime per registered project, and each load boots a project store to read that project's concurrency settings. On a 24-project deployment that loop is tens of seconds and is coupled to database latency, so **no boot surface awaits it any more**. `fn dashboard`, `fn serve`, and `fn daemon` construct the executor, start the boot in the background, and go straight to releasing the migration holding server and binding the real HTTP listener — the same pattern `engineManager.startAll()` already uses. Before this, the awaited boot kept the holding server bound, and the holding server answers every non-health `/api/*` request with `503 "Fusion is starting (database migration may be in progress)"`, which froze the board for writing for as long as the boot took.
+
+What that guarantees, and what replaces the old implicit "HTTP is up ⇒ the executor is up" assumption:
+
+- **Observable completion.** When the loop finishes, the log carries one greppable marker: `HybridExecutor initialized: <N> project runtimes in <X>ms`. Projects that fail to load are counted into a separate warning, so the marker's count is the number of runtimes actually serving.
+- **Bounded per-project probing.** The concurrency probe is capped by `startupCapacityProbeTimeoutMs` (default `2500` ms). A project whose probe times out or throws falls back to the registry concurrency snapshot and logs the project plus the reason, so one slow or broken project cannot stretch the boot.
+- **Self-contained shutdown bound.** `shutdown()` waits at most `shutdownInitWaitTimeoutMs` (default `5000` ms) for an in-flight boot, then aborts it, tears down every runtime that did load (including ones that finish later), names the projects still loading in a warning, and rejects with `HybridExecutor shutdown incomplete: …`. `serve`/`daemon` have no shutdown-step timeout wrapper to lean on, so the bound lives inside the executor and every call site turns that rejection into a warning — an incomplete stop is reported, and the teardown queued behind it still runs.
+- **Readiness is asked, never assumed.** `whenReady()` resolves when project runtime loading is complete, shares the in-flight boot with `initialize()`, and rejects when no boot has completed. A failed boot is not cached: a later `initialize()` starts a fresh attempt.
+
+The one route that genuinely needs loaded runtimes is the live isolation-mode transition, `PATCH /api/projects/:id`. It now waits for readiness under a bounded, injectable window (`ServerOptions.hybridExecutorReadyWaitMs`, default `DEFAULT_HYBRID_EXECUTOR_READY_WAIT_MS = 5000` ms) and answers honestly instead of running the transition against a half-built executor:
+
+| State | Answer |
+| --- | --- |
+| Runtimes loaded | unchanged `200`, or `409 active_tasks` when the project is busy |
+| Still loading when the window expires | `503 hybrid_executor_starting` — retry shortly |
+| Boot never completed / last attempt failed | `503 hybrid_executor_failed` — waiting will not help |
+
+Both refusals leave the stored `isolationMode` untouched, which is the same consistency guarantee the pre-existing `503 isolation_transition_unavailable` (no executor at all) already gave. The wait is floored at 1 ms, so a mis-set knob produces a retryable `503` instead of a request that hangs — the hang being the failure mode this whole change removes.
+
+Note the wiring asymmetry: only `fn dashboard` passes `hybridExecutor` into its HTTP server, so the readiness branch is reachable there; `serve` and `daemon` construct and background the executor without exposing it to their routers, and that route keeps its existing `isolation_transition_unavailable` answer on those surfaces.
+
+Guarded by `packages/engine/src/__tests__/hybrid-executor-boot-lifecycle.test.ts` (lifecycle, probing bound, shutdown drain, marker, readiness classification), `packages/cli/src/commands/__tests__/serve.test.ts` and `daemon.test.ts` (the real listener is reached while `initialize()` is still pending), and `packages/dashboard/src/__tests__/routes-project-isolation-transition.test.ts` (the transition refusals).
 
 ### Distributed claim mutex
 

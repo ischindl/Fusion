@@ -55,12 +55,19 @@ function resolveRelative(from: string, specifier: string): string | undefined {
  * unclassified until its durable-write semantics are reviewed here.
  */
 const STORE_METHOD_CLASSIFICATION: Record<string, Omit<SurfaceClassification, "method">> = {
+  /*
+  FNXC:MergeReliability 2026-09-25-00:20:
+  Our line added durable TaskStore surfaces upstream never classified: the fenced in-review
+  stall observation, the versioned script catalog, and the human-merge-approval family. They are
+  declared writers here so the regeneration gate stays fail-closed instead of silently dropping them.
+  */
+
   // FN-8923: These are public TaskStore operations that persist, mutate, or announce task-scoped state.
   // They must remain writers even when no current merge path calls them, or a future merge call would evade the frontier.
   _createTaskInternal: { kind: "writer", reason: "persists or mutates TaskStore state" },
   _createTaskInternalBackend: { kind: "writer", reason: "persists or mutates TaskStore state" },
-  _maybeAutoArchiveSameAgentDuplicate: { kind: "writer", reason: "persists or mutates TaskStore state" },
-  _maybeAutoArchiveSameAgentDuplicateBackend: { kind: "writer", reason: "persists or mutates TaskStore state" },
+  _resolveSameAgentDuplicateIntake: { kind: "writer", reason: "persists or mutates TaskStore state" },
+  _resolveSameAgentDuplicateIntakeBackend: { kind: "writer", reason: "persists or mutates TaskStore state" },
   addAttachment: { kind: "writer", reason: "persists or mutates TaskStore state" },
   addComment: { kind: "writer", reason: "persists or mutates TaskStore state" },
   addPrInfo: { kind: "writer", reason: "persists or mutates TaskStore state" },
@@ -73,6 +80,7 @@ const STORE_METHOD_CLASSIFICATION: Record<string, Omit<SurfaceClassification, "m
   `wedgeNotification.pending` through `updateTaskAtomic`, so an orphaned merge body reaching either
   method would mutate state it no longer owns; classify by that durable semantic, not current callers.
   */
+  applyInReviewStallObservationFenced: { kind: "writer", reason: "persists a fenced in-review stall observation under the task advisory lock" },
   clearTaskWedgeNotificationPending: { kind: "writer", reason: "removes deferred wedge-notification evidence from the task row" },
   markTaskWedgeNotificationPending: { kind: "writer", reason: "persists deferred wedge-notification evidence on the task row" },
   appendCurrentPlanEvidence: { kind: "writer", reason: "persists or mutates TaskStore state" },
@@ -87,12 +95,8 @@ const STORE_METHOD_CLASSIFICATION: Record<string, Omit<SurfaceClassification, "m
   applyPrMergedTransition: { kind: "writer", reason: "persists or mutates TaskStore state" },
   approveCliAutonomy: { kind: "writer", reason: "persists or mutates TaskStore state" },
   approveWorkflowCliCommand: { kind: "writer", reason: "persists or mutates TaskStore state" },
-  archiveAllDone: { kind: "writer", reason: "persists or mutates TaskStore state" },
   archiveDb: { kind: "writer", reason: "persists or mutates TaskStore state" },
   archiveEntryToTask: { kind: "writer", reason: "persists or mutates TaskStore state" },
-  archiveTask: { kind: "writer", reason: "persists or mutates TaskStore state" },
-  archiveTaskAndCleanup: { kind: "writer", reason: "persists or mutates TaskStore state" },
-  archiveTaskBackend: { kind: "writer", reason: "persists or mutates TaskStore state" },
   atomicCreateTaskJson: { kind: "writer", reason: "persists or mutates TaskStore state" },
   atomicWriteTaskJson: { kind: "writer", reason: "persists or mutates TaskStore state" },
   atomicWriteTaskJsonWithAudit: { kind: "writer", reason: "persists or mutates TaskStore state" },
@@ -111,10 +115,10 @@ const STORE_METHOD_CLASSIFICATION: Record<string, Omit<SurfaceClassification, "m
   claimTaskOverlapWait: { kind: "writer", reason: "claims and fences durable overlap-wait episode ownership" },
   completeTaskOverlapWait: { kind: "writer", reason: "persists a fenced overlap-wait receipt and completion phase" },
   listTaskOverlapWaits: { kind: "non-writer", reason: "reads durable overlap-wait episodes without mutation" },
+  mutateScript: { kind: "writer", reason: "persists script-catalog mutations with settings-version attribution" },
   publishTaskOverlapDeliveries: { kind: "writer", reason: "persists delivery snapshots on open overlap-wait episodes" },
   claimTaskVerificationRequest: { kind: "writer", reason: "persists or mutates TaskStore state" },
   claimTaskWedgeNotificationEpisode: { kind: "writer", reason: "persists or mutates TaskStore state" },
-  cleanupArchivedTasks: { kind: "writer", reason: "persists or mutates TaskStore state" },
   cleanupBranchForTask: { kind: "writer", reason: "persists or mutates TaskStore state" },
   cleanupNoOpTaskMovedActivityRowsOnce: { kind: "writer", reason: "persists or mutates TaskStore state" },
   cleanupOrphanedMaterializedSteps: { kind: "writer", reason: "persists or mutates TaskStore state" },
@@ -198,9 +202,17 @@ const STORE_METHOD_CLASSIFICATION: Record<string, Omit<SurfaceClassification, "m
   pruneImportTranslations: { kind: "writer", reason: "persists or mutates TaskStore state" },
   pruneOperationalLogs: { kind: "writer", reason: "persists or mutates TaskStore state" },
   pruneOperationalLogsAsync: { kind: "writer", reason: "persists or mutates TaskStore state" },
-  publishArchivedTaskDocumentAddition: { kind: "writer", reason: "persists or mutates TaskStore state" },
   purgeTaskWorkflowSelectionRows: { kind: "writer", reason: "persists or mutates TaskStore state" },
   reconcileActiveTimingForEngineDowntime: { kind: "writer", reason: "persists or mutates TaskStore state" },
+  /*
+  FNXC:MergeReliability 2026-09-06-21:24:
+  FN-303 added four public TaskStore archive-history methods without classifying them here, which
+  reds this guard on every full-suite run. Classification is decided from the implementation, never
+  from the method name: reconcileArchivedTasksIntoDone drains through reconcileArchivedTasksIntoDonePass,
+  which mutates rows via store.moveTaskIf, and supplementTaskHistoryFromEvidence issues
+  tx.update(schema.project.tasks).set(...) whenever dryRun is false. Both are durable writers.
+  */
+  reconcileArchivedTasksIntoDone: { kind: "writer", reason: "persists or mutates TaskStore state" },
   reconcileDistributedTaskIdStateOnOpen: { kind: "writer", reason: "persists or mutates TaskStore state" },
   reconcileLegacyAutoMergeStamps: { kind: "writer", reason: "persists or mutates TaskStore state" },
   reconcileOrphanedTaskDirs: { kind: "writer", reason: "persists or mutates TaskStore state" },
@@ -215,6 +227,7 @@ const STORE_METHOD_CLASSIFICATION: Record<string, Omit<SurfaceClassification, "m
   recordAgentActivity: { kind: "writer", reason: "persists or mutates TaskStore state" },
   recordDependencyCycleRejectedAudit: { kind: "writer", reason: "persists or mutates TaskStore state" },
   recordGoalCitations: { kind: "writer", reason: "persists or mutates TaskStore state" },
+  recordHumanMergeDecision: { kind: "writer", reason: "persists the operator's human merge decision row" },
   recordImportTranslation: { kind: "writer", reason: "persists or mutates TaskStore state" },
   recordPluginActivation: { kind: "writer", reason: "persists or mutates TaskStore state" },
   recordPluginGateVerdict: { kind: "writer", reason: "persists or mutates TaskStore state" },
@@ -231,6 +244,7 @@ const STORE_METHOD_CLASSIFICATION: Record<string, Omit<SurfaceClassification, "m
   removeMaterializedSelection: { kind: "writer", reason: "persists or mutates TaskStore state" },
   renewCheckoutLease: { kind: "writer", reason: "persists or mutates TaskStore state" },
   renewSymbolLocks: { kind: "writer", reason: "persists or mutates TaskStore state" },
+  reconcileTaskOverlapWaits: { kind: "writer", reason: "reconciles abandoned overlap episodes and scheduling indicators" },
   repairOverlapBlocker: { kind: "writer", reason: "persists or mutates TaskStore state" },
   replaceActiveTaskWorkflowContinuation: { kind: "writer", reason: "persists or mutates TaskStore state" },
   replaceLegacyTaskCommitAssociations: { kind: "writer", reason: "persists or mutates TaskStore state" },
@@ -256,6 +270,7 @@ const STORE_METHOD_CLASSIFICATION: Record<string, Omit<SurfaceClassification, "m
   selectTaskWorkflowAndReconcile: { kind: "writer", reason: "persists or mutates TaskStore state" },
   setCompletionHandoffAcceptedMarker: { kind: "writer", reason: "persists or mutates TaskStore state" },
   setDefaultWorkflowId: { kind: "writer", reason: "persists or mutates TaskStore state" },
+  setHumanMergeApprovalLock: { kind: "writer", reason: "takes or releases the durable human merge approval lock" },
   setPluginPostgresSchemaExecutor: { kind: "writer", reason: "persists or mutates TaskStore state" },
   setPluginWorkflowStepTemplates: { kind: "writer", reason: "persists or mutates TaskStore state" },
   setTaskBranchGroup: { kind: "writer", reason: "persists or mutates TaskStore state" },
@@ -269,12 +284,13 @@ const STORE_METHOD_CLASSIFICATION: Record<string, Omit<SurfaceClassification, "m
   transitionWorkflowWorkItem: { kind: "writer", reason: "persists or mutates TaskStore state" },
   transitionWorkflowWorkItemSync: { kind: "writer", reason: "persists or mutates TaskStore state" },
   tryClaimCheckout: { kind: "writer", reason: "persists or mutates TaskStore state" },
-  unarchiveTask: { kind: "writer", reason: "persists or mutates TaskStore state" },
   unlinkGithubIssue: { kind: "writer", reason: "persists or mutates TaskStore state" },
   updateArtifact: { kind: "writer", reason: "persists or mutates TaskStore state" },
   updateBranchGroup: { kind: "writer", reason: "persists or mutates TaskStore state" },
   updateGithubTracking: { kind: "writer", reason: "persists or mutates TaskStore state" },
   updateGlobalSettings: { kind: "writer", reason: "persists or mutates TaskStore state" },
+  updateHumanMergeDecisionReceipt: { kind: "writer", reason: "persists the approval receipt attached to a human merge decision" },
+  updateHumanMergeRejectionState: { kind: "writer", reason: "persists the rejection state transition of a human merge decision" },
   updateIssueInfo: { kind: "writer", reason: "persists or mutates TaskStore state" },
   updatePrEntity: { kind: "writer", reason: "persists or mutates TaskStore state" },
   updatePrInfo: { kind: "writer", reason: "persists or mutates TaskStore state" },
@@ -297,6 +313,7 @@ const STORE_METHOD_CLASSIFICATION: Record<string, Omit<SurfaceClassification, "m
   seedWorkspaceCodeReviewContinuationIfIdle: { kind: "writer", reason: "persists or mutates TaskStore state" },
   updateStep: { kind: "writer", reason: "persists or mutates TaskStore state" },
   updateTaskRepositoryScope: { kind: "writer", reason: "persists or mutates TaskStore state" },
+  publishReviewRemediationFenced: { kind: "writer", reason: "atomically publishes remediation work and its paired revision charge" },
   publishWorkspaceCodeReviewEvidence: { kind: "writer", reason: "persists or mutates TaskStore state" },
   updateWorkspaceReviewState: { kind: "writer", reason: "persists or mutates TaskStore state" },
   updateTaskAtomic: { kind: "writer", reason: "persists or mutates TaskStore state" },
@@ -368,15 +385,20 @@ const STORE_METHOD_CLASSIFICATION: Record<string, Omit<SurfaceClassification, "m
   renewWorkspaceLease: { kind: "writer", reason: "persists workspace coordination lease state" },
   resolveOrphanedWorkspaceLandIntent: { kind: "writer", reason: "persists workspace land write-ahead intent state" },
   resolveWorkspaceLandIntent: { kind: "writer", reason: "persists workspace land write-ahead intent state" },
+  supplementTaskHistoryFromEvidence: { kind: "writer", reason: "persists or mutates TaskStore state" },
   withValidWorkspaceLease: { kind: "writer", reason: "runs caller mutations transactionally under a validated workspace lease fence" },
+  /* FNXC:TaskQueueOrder 2026-09-17-12:07: FN-509's durable queue rank has exactly one writer. It is
+     reached only from the project-scoped Boost route, so it contributes no merge-reachable call
+     site to the inventory below. */
+  boostTask: { kind: "writer", reason: "persists the durable task queue rank (queue_boost) under the task advisory lock" },
 };
 const NON_WRITER_REASONS: Record<string, string> = Object.fromEntries([
   "__invokeHandoffMergeQueueFailureInjectorForTesting",
   "__setHandoffMergeQueueFailureInjectorForTesting",
   "_createTaskInternal",
   "_createTaskInternalBackend",
-  "_maybeAutoArchiveSameAgentDuplicate",
-  "_maybeAutoArchiveSameAgentDuplicateBackend",
+  "_resolveSameAgentDuplicateIntake",
+  "_resolveSameAgentDuplicateIntakeBackend",
   "acquireMergeQueueLease",
   "acquireSymbolLocks",
   "acquireWorkflowWorkItemLease",
@@ -396,13 +418,9 @@ const NON_WRITER_REASONS: Record<string, string> = Object.fromEntries([
   "applyPrMergedTransition",
   "approveCliAutonomy",
   "approveWorkflowCliCommand",
-  "archiveAllDone",
   "archiveDb",
   "archiveEntryToTask",
   "archiveFts5Available",
-  "archiveTask",
-  "archiveTaskAndCleanup",
-  "archiveTaskBackend",
   "areAllDependenciesDone",
   "artifactRegistryDir",
   "artifactStoredName",
@@ -425,7 +443,6 @@ const NON_WRITER_REASONS: Record<string, string> = Object.fromEntries([
   "claimNextToolFailureRetry",
   "claimTaskVerificationRequest",
   "claimTaskWedgeNotificationEpisode",
-  "cleanupArchivedTasks",
   "cleanupBranchForTask",
   "cleanupNoOpTaskMovedActivityRowsOnce",
   "cleanupOrphanedMaterializedSteps",
@@ -519,6 +536,7 @@ const NON_WRITER_REASONS: Record<string, string> = Object.fromEntries([
   "getDatabase",
   "getDatabaseHealth",
   "getDefaultWorkflowId",
+  "getDispatchWakeSignal",
   "getDistributedTaskIdAllocator",
   "getEvalStore",
   "getExperimentSessionStore",
@@ -541,10 +559,10 @@ const NON_WRITER_REASONS: Record<string, string> = Object.fromEntries([
   "getMergeQueuedTaskIdsAsync",
   "getMergeRequestRecord",
   "getMergeRequestRecordAsync",
-  /* FNXC:MergeAuthority 2026-08-23-00:40: batched sibling of the read above; same read-only shape. */
   "getMergeRequestRecordsAsync",
   "getMissionStore",
   "getMutationsForRun",
+  "getNoteStore",
   "getOrCreateForProject",
   "getPluginStore",
   "getPrEntity",
@@ -586,6 +604,7 @@ const NON_WRITER_REASONS: Record<string, string> = Object.fromEntries([
   "getTasksDir",
   "getTodoStore",
   "getVerificationCacheHit",
+  "getWhiteboardStore",
   "getWorkflowDefinition",
   "getWorkflowPromptOverrides",
   "getWorkflowPromptOverridesAsync",
@@ -608,6 +627,7 @@ const NON_WRITER_REASONS: Record<string, string> = Object.fromEntries([
   "insertTask",
   "insertTaskWithFtsRecovery",
   "insertWorkflowDefinitionSync",
+  "inspectArchivedTaskHistory",
   "inspectSymbolLockConflicts",
   "inspectWorkspaceLeases",
   "invalidateConfigCacheAfterMigration",
@@ -617,8 +637,6 @@ const NON_WRITER_REASONS: Record<string, string> = Object.fromEntries([
   "isCliAutonomyApproved",
   "isLegacyAutoMergeStampCandidate",
   "isPluginInstalled",
-  "isTaskArchived",
-  "isTaskArchivedAsync",
   "isTaskIdConflictError",
   "isTaskIdPresentInArchivedTasksTable",
   "isTaskIdPresentInArchivedTasksTableAsync",
@@ -633,7 +651,9 @@ const NON_WRITER_REASONS: Record<string, string> = Object.fromEntries([
   "listArchivedTasks",
   "listArtifacts",
   "listBranchGroups",
+  "listCompletedTasks",
   "listCurrentPlanEvidence",
+  "listCurrentTasksPage",
   "listDueWorkflowWorkItems",
   "listGoalCitations",
   "listLegacyAutoMergeStampCandidates",
@@ -642,6 +662,7 @@ const NON_WRITER_REASONS: Record<string, string> = Object.fromEntries([
   "listSpecDriftReports",
   "listSpecLocks",
   "listStrandedRefinements",
+  "listTaskQueuePage",
   "listTaskRecommendations",
   "listTasks",
   "listTasksByBranchGroup",
@@ -655,9 +676,8 @@ const NON_WRITER_REASONS: Record<string, string> = Object.fromEntries([
   "listWorkflowSettingValuesForProject",
   "listWorkflowSteps",
   "listWorkflowWorkItemsForTask",
-  /* FNXC:MergeAuthority 2026-08-23-00:40: batched sibling of the read above; same read-only shape. */
-  "listWorkflowWorkItemsForTasks",
   "listWorkflowWorkItemsForTaskSync",
+  "listWorkflowWorkItemsForTasks",
   "loadWorkflowRunBranches",
   "loadWorkflowRunStepInstances",
   "loadWorkflowRunStepInstancesAsync",
@@ -711,7 +731,6 @@ const NON_WRITER_REASONS: Record<string, string> = Object.fromEntries([
   "pruneImportTranslations",
   "pruneOperationalLogs",
   "pruneOperationalLogsAsync",
-  "publishArchivedTaskDocumentAddition",
   "purgeTaskWorkflowSelectionRows",
   "readAllWorkflowDefinitions",
   "readArchiveLog",
@@ -722,6 +741,7 @@ const NON_WRITER_REASONS: Record<string, string> = Object.fromEntries([
   "readRawProjectSettings",
   "readTaskForMove",
   "readTaskFromDb",
+  "readTaskHistoryArtifact",
   "readTaskJson",
   "readTaskRowFromDb",
   "rebuildArchiveFts5Index",
@@ -771,6 +791,8 @@ const NON_WRITER_REASONS: Record<string, string> = Object.fromEntries([
   "resolvePluginWorkflowStep",
   "resolvePrimaryPrInfo",
   "resolveTaskCustomFieldDefsSync",
+  "resolveTaskIdPresence",
+  "resolveTaskIdPresenceForIds",
   "resolveTaskSymbols",
   "resolveTaskSymbolsForWorkItem",
   "resolveTaskWedgeNotificationEpisode",
@@ -814,6 +836,7 @@ const NON_WRITER_REASONS: Record<string, string> = Object.fromEntries([
   "serializeConfigForDisk",
   "setCompletionHandoffAcceptedMarker",
   "setDefaultWorkflowId",
+  "setDispatchWakeSignal",
   "setPluginPostgresSchemaExecutor",
   "setPluginWorkflowStepTemplates",
   "setTaskBranchGroup",
@@ -840,7 +863,6 @@ const NON_WRITER_REASONS: Record<string, string> = Object.fromEntries([
   "transitionWorkflowWorkItem",
   "transitionWorkflowWorkItemSync",
   "tryClaimCheckout",
-  "unarchiveTask",
   "unlinkGithubIssue",
   "updateArtifact",
   "updateBranchGroup",
@@ -879,7 +901,7 @@ const NON_WRITER_REASONS: Record<string, string> = Object.fromEntries([
   "writeArtifactData",
   "writeConfig",
   "writeTaskJsonFile",
-  "writeTaskWorkflowSelection"
+  "writeTaskWorkflowSelection",
 ].map((method) => [method, "reviewed public TaskStore operation; not a durable writer reached by this merge frontier"]));
 
 

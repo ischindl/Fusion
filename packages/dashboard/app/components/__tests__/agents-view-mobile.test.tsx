@@ -123,6 +123,7 @@ const mockAgents: Agent[] = [
     id: "agent-001",
     name: "Mobile Executor",
     role: "executor" as AgentCapability,
+    roles: ["executor"],
     state: "active" as AgentState,
     taskId: "FN-101",
     totalInputTokens: 60,
@@ -136,6 +137,7 @@ const mockAgents: Agent[] = [
     id: "agent-002",
     name: "Mobile Reviewer",
     role: "reviewer" as AgentCapability,
+    roles: ["reviewer"],
     state: "idle" as AgentState,
     totalInputTokens: 15,
     totalOutputTokens: 5,
@@ -166,6 +168,8 @@ describe("AgentsView mobile adaptations", () => {
       completedRuns: 0,
       failedRuns: 0,
       successRate: 1,
+      idleNonEphemeralCount: 0,
+      todoTaskCount: 0,
     });
     vi.mocked(updateAgent).mockResolvedValue(mockAgents[0]);
     vi.mocked(updateAgentState).mockResolvedValue(mockAgents[0]);

@@ -135,6 +135,27 @@ describe("buildResetTask", () => {
     expectClearedShape(reset);
     expect(() => assertResetTask(reset, "todo", original.description)).not.toThrow();
   });
+
+  /*
+  FNXC:PlanPremises 2026-09-16-04:08:
+  RUFU-246 — Reset is a fresh planning request, so a plan-premise refusal episode must not survive
+  it (a sticky-park episode would re-park the card at its first release against the NEW spec).
+  The clear is key-level: unrelated sourceMetadata provenance keys keep surviving Reset.
+  */
+  it("clears the plan-premise refusal episode while preserving other sourceMetadata keys", () => {
+    const original = populatedTask();
+    original.sourceMetadata = {
+      "duplicate-of": "FN-001",
+      planPremiseRejection: { signature: "s", refusalCount: 3, lastDetail: "d", lastAt: now, escalation: "park", detailHash: "h" },
+    };
+    const reset = buildResetTask(original, "todo");
+    expect(reset.sourceMetadata).toEqual({ "duplicate-of": "FN-001", planPremiseRejection: null });
+  });
+
+  it("keeps an absent sourceMetadata absent across Reset", () => {
+    const reset = buildResetTask(populatedTask(), "todo");
+    expect(reset.sourceMetadata).toBeUndefined();
+  });
 });
 
 describe("assertResetTask", () => {

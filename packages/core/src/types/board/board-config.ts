@@ -6,6 +6,7 @@
 import type { Column } from "../board/board.js";
 import type { Settings } from "../settings/settings-scope.js";
 import type { MergeDetails, Task } from "../task/task-core.js";
+import type { WorktreeContentState } from "../merge/worktree-content.js";
 
 export interface BoardConfig {
   nextId: number;
@@ -109,11 +110,37 @@ export type AutostashOutcome =
     }
   | { status: "failed"; stashSha?: string; errorMessage: string };
 
+/*
+FNXC:ZeroCommitDeliveryProof 2026-09-26-01:35 (RUFU-274):
+The ONLY thing a refusal may put on a merge result. `MergeResult` has no `status` field and must not gain
+one: RUFU-274 adds no new merge status, no new MergeDetails field, and no graph edge, because a new
+terminal-looking value would re-open the `merge-failed` path this contract forbids (retry budgets, failed
+badges, `merge-failed` routing). A refusal is therefore a WAIT layered on the existing
+`manual-required`/held shape, and this marker is what distinguishes "held because content delivery could
+not be proven" from every other reason a merge stops.
+
+`worktreePathPreserved` is asserted, not hoped for: a refusal that deleted the tree it was refusing about
+would destroy the evidence an operator needs, so a lane cannot report a refusal while claiming nothing was
+preserved.
+*/
+export interface DeliveryUnprovenMarker {
+  /** Which content classification produced the refusal. */
+  contentState: WorktreeContentState;
+  modifiedCount?: number;
+  untrackedCount?: number;
+  /** The card's worktree path survived the refusal (never deleted, never reset). */
+  worktreePathPreserved: true;
+  /** A durable row-visible hold was written. `true` always — an unwitnessed refusal is not this marker. */
+  refusalRecorded: true;
+}
+
 export interface MergeResult extends MergeDetails {
   task: Task;
   branch: string;
   merged: boolean;
   noOp?: boolean;
+  /** Present when automatic finalization was REFUSED for unproven content delivery. Never a `status`. */
+  deliveryUnproven?: DeliveryUnprovenMarker;
   ok?: true;
   reason?: string;
   worktreeRemoved: boolean;
@@ -163,13 +190,12 @@ export interface CommitAssociationDiffBackfillReport {
   dryRun: boolean;
 }
 
-export const COLUMN_LABELS: Record<Column, string> = {
+export const COLUMN_LABELS: Partial<Record<Column, string>> = {
   triage: "Planning",
   todo: "Todo",
   "in-progress": "In Progress",
   "in-review": "In Review",
   done: "Done",
-  archived: "Archived",
 };
 
 /*
@@ -181,7 +207,6 @@ export const COLUMN_DESCRIPTIONS: Partial<Record<Column, string>> = {
   triage: "Raw ideas — AI will plan these",
   "in-progress": "AI is working on this in a worktree",
   done: "Merged and closed",
-  archived: "Completed and archived",
 };
 
 /**
@@ -192,15 +217,14 @@ export const COLUMN_DESCRIPTIONS: Partial<Record<Column, string>> = {
  * while legacy call sites are retired.
  */
 export const VALID_TRANSITIONS: Record<Column, Column[]> = {
-  // FN-4892: intake-side heuristics may cold-archive tasks before execution starts.
-  triage: ["todo", "archived"],
-  // FN-4892: allow direct archival for newly specified intake tasks.
-  todo: ["in-progress", "triage", "archived"],
+  triage: ["todo"],
+  todo: ["in-progress", "triage"],
   // NOTE: "in-progress" → "done" is enabled for mission validation tasks that complete directly.
   // Regular implementation tasks should move through "in-review" before "done".
   "in-progress": ["in-review", "todo", "triage", "done"],
   "in-review": ["done", "in-progress", "todo", "triage"],
-  done: ["todo", "triage", "archived"],
-  archived: ["done"],
+  done: ["todo", "triage"],
+  // Historical soft-delete sentinel: never a production move source or target.
+  archived: [],
 };
 

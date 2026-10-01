@@ -2,7 +2,7 @@ import type { ComponentProps } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { InlineCreateCard } from "../InlineCreateCard";
-import type { Task, Column } from "@fusion/core";
+import type { Task, Column, WorkflowDefinition } from "@fusion/core";
 import { fetchModels, fetchSettings, fetchAgents, checkDuplicateTasks, fetchWorkflows, fetchWorkflowOptionalSteps, selectTaskWorkflow } from "../../api";
 import { useNodes } from "../../hooks/useNodes";
 import type { ModelInfo } from "../../api";
@@ -10,6 +10,7 @@ import { scopedKey } from "../../utils/projectStorage";
 
 // Mock lucide-react
 vi.mock("lucide-react", () => ({
+  Lock: () => null,
   Brain: () => null,
   Cpu: () => null,
   Link: () => null,
@@ -103,8 +104,8 @@ vi.mock("../ModelSelectionModal", () => ({
 vi.mock("../../hooks/useNodes", () => ({
   useNodes: vi.fn(() => ({
     nodes: [
-      { id: "node-1", name: "Node One", status: "online", type: "remote", createdAt: "", updatedAt: "" },
-      { id: "node-2", name: "Node Two", status: "offline", type: "remote", createdAt: "", updatedAt: "" },
+      { id: "node-1", name: "Node One", status: "online", type: "remote", maxConcurrent: 2, createdAt: "", updatedAt: "" },
+      { id: "node-2", name: "Node Two", status: "offline", type: "remote", maxConcurrent: 2, createdAt: "", updatedAt: "" },
     ],
     loading: false,
     error: null,
@@ -194,7 +195,7 @@ function createMockTask(overrides: Partial<Task> = {}): Task {
 
 function mockInlineNodes(nodes: Array<{ id: string; name: string; status: "online" | "offline" | "connecting" | "error"; type: "local" | "remote" }>) {
   vi.mocked(useNodes).mockReturnValue({
-    nodes: nodes.map((node) => ({ ...node, createdAt: "", updatedAt: "" })),
+    nodes: nodes.map((node) => ({ ...node, maxConcurrent: 2, createdAt: "", updatedAt: "" })),
     loading: false,
     error: null,
     refresh: vi.fn(),
@@ -202,6 +203,10 @@ function mockInlineNodes(nodes: Array<{ id: string; name: string; status: "onlin
     update: vi.fn(),
     unregister: vi.fn(),
     healthCheck: vi.fn(),
+    fetchDockerConfig: vi.fn(),
+    patchDockerConfig: vi.fn(),
+    fetchDockerDiff: vi.fn(),
+    discoverRemoteProjects: vi.fn(),
   });
 }
 
@@ -242,8 +247,8 @@ beforeEach(() => {
   vi.mocked(fetchAgents).mockResolvedValue([]);
   vi.mocked(useNodes).mockReturnValue({
     nodes: [
-      { id: "node-1", name: "Node One", status: "online", type: "remote", createdAt: "", updatedAt: "" },
-      { id: "node-2", name: "Node Two", status: "offline", type: "remote", createdAt: "", updatedAt: "" },
+      { id: "node-1", name: "Node One", status: "online", type: "remote", maxConcurrent: 2, createdAt: "", updatedAt: "" },
+      { id: "node-2", name: "Node Two", status: "offline", type: "remote", maxConcurrent: 2, createdAt: "", updatedAt: "" },
     ],
     loading: false,
     error: null,
@@ -252,6 +257,10 @@ beforeEach(() => {
     update: vi.fn(),
     unregister: vi.fn(),
     healthCheck: vi.fn(),
+    fetchDockerConfig: vi.fn(),
+    patchDockerConfig: vi.fn(),
+    fetchDockerDiff: vi.fn(),
+    discoverRemoteProjects: vi.fn(),
   });
   vi.mocked(checkDuplicateTasks).mockResolvedValue([]);
   vi.mocked(fetchSettings).mockResolvedValue({
@@ -267,7 +276,7 @@ beforeEach(() => {
   vi.mocked(fetchWorkflows).mockResolvedValue([
     { id: "wf-a", name: "Workflow A" },
     { id: "wf-b", name: "Workflow B" },
-  ]);
+  ] as unknown as WorkflowDefinition[]);
   vi.mocked(fetchWorkflowOptionalSteps).mockResolvedValue([
     {
       templateId: "browser-verification",
@@ -1091,27 +1100,26 @@ describe("InlineCreateCard button visibility when collapsed", () => {
     });
   });
 
-  it("includes priority in submit payload and resets to normal after successful create", async () => {
+  /*
+  FNXC:TaskQueueOrder 2026-09-17-12:07:
+  FN-509 deleted the inline priority select, so "submits the chosen level" has no subject. The
+  replacement invariant is that the control is gone and no level reaches the payload — a create is
+  an ordinary arrival-ordered task, raised later with Boost if the operator wants it sooner.
+  */
+  it("offers no priority control and submits no level", async () => {
     const mockOnSubmit = vi.fn().mockResolvedValue(createMockTask());
     renderCard([], { onSubmit: mockOnSubmit });
     expandCard();
 
-    fireEvent.change(screen.getByTestId("inline-create-priority-select"), { target: { value: "urgent" } });
+    expect(screen.queryByTestId("inline-create-priority-select")).toBeNull();
+
     fireEvent.change(screen.getByPlaceholderText("What needs to be done?"), {
-      target: { value: "Task with urgent priority" },
+      target: { value: "Ordinary arrival-ordered task" },
     });
     fireEvent.click(screen.getByTestId("save-button"));
 
-    await waitFor(() => {
-      expect(mockOnSubmit).toHaveBeenCalledWith(
-        expect.objectContaining({
-          priority: "urgent",
-        }),
-      );
-    });
-
-    expandCard();
-    expect(screen.getByTestId("inline-create-priority-select")).toHaveValue("normal");
+    await waitFor(() => expect(mockOnSubmit).toHaveBeenCalled());
+    expect(mockOnSubmit.mock.calls[0][0]).not.toHaveProperty("priority");
   });
 
   describe("Consolidated controls layout (FN-781, FN-1292)", () => {
@@ -1682,8 +1690,8 @@ describe("InlineCreateCard workflow selection at create time (FN-7591)", () => {
   beforeEach(() => {
     vi.mocked(fetchWorkflows).mockResolvedValue([
       { id: "wf-a", name: "Workflow A" },
-      { id: "builtin:coding-ideas", name: "Coding (Ideas)" },
-    ]);
+      { id: "builtin:coding-ideas-v2", name: "Coding (Ideas)" },
+    ] as unknown as WorkflowDefinition[]);
   });
 
   it("submits workflowId in the create input and omits column:triage when a workflow is selected", async () => {
@@ -1747,6 +1755,98 @@ describe("InlineCreateCard workflow selection at create time (FN-7591)", () => {
     fireEvent.click(screen.getByTestId("save-button"));
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ description: "inline task survives quota" })));
+  });
+
+  /*
+  FNXC:InlineCreate 2026-09-15-09:12:
+  FN-411 negative control. This composer exposes no Start affordance at all, so the new Cmd/Ctrl+Enter
+  create-and-start accelerator must not leak into it: the modifier stays an ordinary single create with no
+  start column and no column move.
+  */
+  it.each([
+    ["ctrlKey" as const],
+    ["metaKey" as const],
+  ])("creates exactly once on %s+Enter without any Start affordance", async (modifier) => {
+    const onSubmit = vi.fn().mockResolvedValue({ id: "FN-411-inline" } as Task);
+    renderCard([], { onSubmit });
+    expandCard();
+    const textarea = screen.getByPlaceholderText("What needs to be done?");
+    fireEvent.change(textarea, { target: { value: "inline accelerator task" } });
+
+    expect(screen.queryByTestId("task-form-inline-start")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
+
+    fireEvent.keyDown(textarea, { key: "Enter", [modifier]: true });
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]![0]).toEqual(expect.objectContaining({ description: "inline accelerator task" }));
+    expect(onSubmit.mock.calls[0]![0]).not.toHaveProperty("column");
+  });
+});
+
+/*
+FNXC:HumanMergeApproval 2026-09-17-22:32:
+FN-514 P1 remediation — the inline composer's delivery lock had no payload coverage, so the control
+could have been armed and dropped before reaching the server. The keyboard accelerator is covered
+too, because that is the path that bypasses the Save button entirely.
+*/
+describe("FN-514 delivery lock in the inline composer", () => {
+  it("sends humanMergeApproval when armed after typing", async () => {
+    const onSubmit = vi.fn().mockResolvedValue({ id: "FN-514-inline" } as Task);
+    renderCard([], { onSubmit });
+    expandCard();
+
+    fireEvent.change(screen.getByPlaceholderText("What needs to be done?"), { target: { value: "locked delivery" } });
+    fireEvent.click(screen.getByTestId("inline-create-human-merge-approval"));
+    expect(screen.getByTestId("inline-create-human-merge-approval")).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]![0]).toEqual(expect.objectContaining({
+      description: "locked delivery",
+      humanMergeApproval: true,
+    }));
+  });
+
+  it("omits it for an ordinary creation — the default is automatic delivery", async () => {
+    const onSubmit = vi.fn().mockResolvedValue({ id: "FN-514-inline-default" } as Task);
+    renderCard([], { onSubmit });
+    expandCard();
+
+    fireEvent.change(screen.getByPlaceholderText("What needs to be done?"), { target: { value: "default delivery" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]![0]).not.toHaveProperty("humanMergeApproval");
+  });
+
+  it("carries the armed lock through the keyboard accelerator", async () => {
+    const onSubmit = vi.fn().mockResolvedValue({ id: "FN-514-inline-kbd" } as Task);
+    renderCard([], { onSubmit });
+    expandCard();
+
+    const textarea = screen.getByPlaceholderText("What needs to be done?");
+    fireEvent.change(textarea, { target: { value: "keyboard locked" } });
+    fireEvent.click(screen.getByTestId("inline-create-human-merge-approval"));
+    fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]![0]).toEqual(expect.objectContaining({ humanMergeApproval: true }));
+  });
+
+  it("disarms back to automatic delivery", async () => {
+    const onSubmit = vi.fn().mockResolvedValue({ id: "FN-514-inline-off" } as Task);
+    renderCard([], { onSubmit });
+    expandCard();
+
+    fireEvent.change(screen.getByPlaceholderText("What needs to be done?"), { target: { value: "changed my mind" } });
+    fireEvent.click(screen.getByTestId("inline-create-human-merge-approval"));
+    fireEvent.click(screen.getByTestId("inline-create-human-merge-approval"));
+    expect(screen.getByTestId("inline-create-human-merge-approval")).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]![0]).not.toHaveProperty("humanMergeApproval");
   });
 });
 

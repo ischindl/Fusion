@@ -6,6 +6,11 @@ import { ApiError, badRequest, conflict, notFound, rateLimited } from "../api-er
 // FNXC:TaskLookup404 2026-07-26-11:40: shared task-miss -> 404 mapping seam.
 import { rethrowTaskApiError } from "./task-lookup-error.js";
 import { emitWorkflowSseEvent } from "../sse.js";
+import { RATE_LIMIT_ENTRY_BYTES } from "../lib/retention-census.js";
+import {
+  enforceEntryCeiling,
+  registerBoundedWindowMap,
+} from "../lib/retention/bounded-window-map.js";
 import type { ApiRoutesContext } from "./types.js";
 
 type SkillPluginRunner = Parameters<typeof buildSessionSkillContextSync>[3];
@@ -55,6 +60,27 @@ interface DesignRateLimitEntry {
 // (per-process) exactly like ai-refine's limiter.
 const designRateLimits = new Map<string, DesignRateLimitEntry>();
 
+/**
+ * Ceiling on distinct client addresses holding a design-request window.
+ *
+ * FNXC:RetentionCensus 2026-09-21-21:40 (RUFU-257): this limiter prunes expired windows inline on
+ * every request, so expiry deletion needs no new owner, but the prune is traffic-gated and nothing
+ * bounded the row count inside a single window. The ceiling is therefore enforced at the insert site
+ * and reported to the census; the 10/hour limit and one-hour window are unchanged.
+ */
+export const DESIGN_RATE_LIMIT_IP_MAX = 10_000;
+
+registerBoundedWindowMap<string, DesignRateLimitEntry>({
+  id: "workflow_design_rate_limits",
+  map: designRateLimits,
+  ceiling: DESIGN_RATE_LIMIT_IP_MAX,
+  ceilingConstant: "DESIGN_RATE_LIMIT_IP_MAX",
+  expiryOf: (entry) => entry.firstRequestAt + DESIGN_RATE_LIMIT_WINDOW_MS,
+  // The inline per-request prune stays the single expiry deleter for this map.
+  sweptElsewhere: true,
+  valueBytes: () => RATE_LIMIT_ENTRY_BYTES,
+});
+
 /** Returns true when the IP may make a design request (and records it); false
  *  when the 10/hour window is exhausted. Same shape as ai-refine.checkRateLimit. */
 function checkDesignRateLimit(ip: string): boolean {
@@ -69,6 +95,7 @@ function checkDesignRateLimit(ip: string): boolean {
   const entry = designRateLimits.get(ip);
   if (!entry || now - entry.firstRequestAt > DESIGN_RATE_LIMIT_WINDOW_MS) {
     designRateLimits.set(ip, { count: 1, firstRequestAt: now });
+    enforceEntryCeiling(designRateLimits, DESIGN_RATE_LIMIT_IP_MAX);
     return true;
   }
   if (entry.count >= MAX_DESIGN_REQUESTS_PER_HOUR) return false;

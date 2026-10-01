@@ -194,6 +194,7 @@ function createMockStore(overrides: Partial<TaskStore> = {}): TaskStore {
   return {
     getTask: vi.fn(),
     listTasks: vi.fn().mockResolvedValue([]),
+    listCurrentTasksPage: vi.fn().mockResolvedValue({ tasks: [], total: 0, hasMore: false, nextCursor: null }),
     searchTasks: vi.fn().mockResolvedValue([]),
     findRecentTasksByContentFingerprint: vi.fn().mockResolvedValue([]),
     createTask: vi.fn(),
@@ -205,8 +206,6 @@ function createMockStore(overrides: Partial<TaskStore> = {}): TaskStore {
     setTaskBranchGroup: vi.fn().mockResolvedValue(undefined),
     deleteTask: vi.fn(),
     mergeTask: vi.fn(),
-    archiveTask: vi.fn(),
-    unarchiveTask: vi.fn(),
     getSettings: vi.fn().mockResolvedValue({}),
     getSettingsFast: vi.fn().mockResolvedValue({}),
     updateSettings: vi.fn(),
@@ -413,6 +412,31 @@ describe("GET /tasks", () => {
       slim: true,
       includeArchived: false,
     });
+  });
+
+  it.each(["52", ".txt"])("forwards literal search query %s to shared task search", async (query) => {
+    (store.searchTasks as ReturnType<typeof vi.fn>).mockResolvedValueOnce([FAKE_TASK_DETAIL]);
+
+    const res = await GET(buildApp(), `/api/tasks?q=${encodeURIComponent(query)}`);
+
+    expect(res.status).toBe(200);
+    expect(store.searchTasks).toHaveBeenCalledWith(query, {
+      limit: undefined,
+      offset: undefined,
+      slim: true,
+      includeArchived: false,
+    });
+  });
+
+  it.each(["52", ".txt"])("forwards literal paginated query %s without normalization", async (query) => {
+    (store.listCurrentTasksPage as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      tasks: [FAKE_TASK_DETAIL], total: 1, hasMore: false, nextCursor: null,
+    });
+
+    const res = await GET(buildApp(), `/api/tasks/page?q=${encodeURIComponent(query)}&limit=8`);
+
+    expect(res.status).toBe(200);
+    expect(store.listCurrentTasksPage).toHaveBeenCalledWith({ limit: 8, query });
   });
 
   it("returns tasks for search query with limit", async () => {
@@ -702,6 +726,37 @@ describe("GET /tasks/:id", () => {
 
     expect(res.status).toBe(500);
     expect(res.body.error).toContain("Unexpected end of JSON input");
+  });
+
+  it("refuses a path-unsafe agent-log target with 400 before consulting the store", async () => {
+    // FNXC:TaskLogsRead 2026-09-09-15:19:
+    // RUFU-204: a log-read id must name one safe path segment. The `a%5Cb` backslash id stays inside one URL
+    // segment (so the route still matches it) yet names an unsafe path. The handler validates the raw param
+    // and answers 400 BEFORE the store is consulted — the store is exactly what must never be reached.
+    (store.getAgentLogs as ReturnType<typeof vi.fn>).mockClear();
+
+    const res = await GET(buildApp(), "/api/tasks/a%5Cb/logs");
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("invalid task id");
+    expect(store.getAgentLogs).not.toHaveBeenCalled();
+  });
+
+  it("answers a well-formed but unknown task id with an empty log list, never an error", async () => {
+    // FNXC:TaskLogsRead 2026-09-09-22:26:
+    // RUFU-204 Step 4: the unknown-id contract is an honest empty answer, not a fabrication and not an error.
+    // A single well-formed segment names a legal card directory that simply has no `agent-log.jsonl`, so the
+    // store readers return `[]` and the route must pass that through as 200 + `[]`. Only a target that cannot
+    // name one safe path segment (the case above) is refused before the store is consulted.
+    (store.getAgentLogs as ReturnType<typeof vi.fn>).mockClear();
+    (store.getAgentLogs as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+
+    const res = await GET(buildApp(), "/api/tasks/FN-DOES-NOT-EXIST/logs");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+    expect(store.getAgentLogs).toHaveBeenCalledTimes(1);
+    expect(store.getAgentLogs).toHaveBeenCalledWith("FN-DOES-NOT-EXIST", undefined);
   });
 });
 
@@ -2535,9 +2590,28 @@ describe("POST /tasks/:id/pr/address-feedback", () => {
       runtimeConfig: { messageResponseMode: "immediate" },
     } as any);
     const activeRunSpy = vi.spyOn(AgentStore.prototype, "getActiveHeartbeatRun").mockResolvedValue(null);
+    /*
+    FNXC:CommentDelivery 2026-09-28-02:46 (RUFU-259 merge fix):
+    Two facts the pre-delivery route never needed and the delivery route does:
+    (1) the assignee must exist in the durable agent pool — the recipient ladder skips a `dangling-assignee`
+        rather than waking an agent it cannot name, so the pool the host reads (`listAgents`) is seeded;
+    (2) `addSteeringComment` resolves the TASK, and the route now reads the appended steering ROW off that
+        result (`steeringComments.at(-1)`) — reading `result.id` off it, which is the task id, is exactly the
+        defect RUFU-259 removes. The store fake therefore returns a task carrying the new steering row.
+    */
+    const listAgentsSpy = vi.spyOn(AgentStore.prototype, "listAgents").mockResolvedValue([{
+      id: "agent-1",
+      name: "Executor",
+      role: "executor",
+      state: "idle",
+      runtimeConfig: { messageResponseMode: "immediate" },
+    }] as never);
     (store.getFusionDir as ReturnType<typeof vi.fn>).mockReturnValue("/fake/root/.fusion");
     (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValueOnce(task).mockResolvedValueOnce(task);
-    (store.addSteeringComment as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "sc-1" });
+    (store.addSteeringComment as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...task,
+      steeringComments: [{ id: "sc-1", text: "Address PR feedback", author: "user", createdAt: "2026-06-28T00:00:00.000Z" }],
+    });
 
     try {
       const res = await REQUEST(
@@ -2568,6 +2642,7 @@ describe("POST /tasks/:id/pr/address-feedback", () => {
       initSpy.mockRestore();
       getAgentSpy.mockRestore();
       activeRunSpy.mockRestore();
+      listAgentsSpy.mockRestore();
     }
   });
 

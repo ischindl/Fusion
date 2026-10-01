@@ -6,30 +6,27 @@ import {
 } from "./active-session-registry.js";
 import { planningLivenessRegistry } from "./planning-liveness.js";
 
-/*
-FNXC:PlanningExecutionLiveness 2026-09-17-00:30:
-Reimplemented for FN-332 "overlap wait synchronization", which needs a liveness check before it
-claims/completes an overlap-wait episode (a claim on a task whose planner or executor no longer
-owns it must not be allowed to publish). The historical "is this task live" triple (active session
-path, executingTaskLock, isTaskActive) misses a planner that has not yet acquired a worktree: it
-registers no active path, does not hold executingTaskLock, and is not executor-active. Treat
-planner ownership (the process-wide `planningLivenessRegistry` probe, or an injected task-id set)
-as a fourth first-class signal.
-*/
-
 export const PLANNING_CONTINUATION_DISPATCH_LEASE_OWNER_PREFIX = "planning-continuation-dispatch:";
 
-/** Deterministic lease-owner string for a work item's current dispatch attempt. */
-export function planningContinuationDispatchLeaseOwner(item: Pick<WorkflowWorkItem, "id" | "attempt">): string {
+export function planningContinuationDispatchLeaseOwner(
+  item: Pick<WorkflowWorkItem, "id" | "attempt">,
+): string {
   return `${PLANNING_CONTINUATION_DISPATCH_LEASE_OWNER_PREFIX}${item.id}:${item.attempt}`;
 }
 
-/** True when a work item is currently held by the planning-continuation dispatcher (as opposed to some other lease owner). */
-export function isPlanningContinuationDispatchClaim(item: Pick<WorkflowWorkItem, "state" | "leaseOwner">): boolean {
-  return item.state === "running" && item.leaseOwner?.startsWith(PLANNING_CONTINUATION_DISPATCH_LEASE_OWNER_PREFIX) === true;
+export function isPlanningContinuationDispatchClaim(
+  item: Pick<WorkflowWorkItem, "state" | "leaseOwner">,
+): boolean {
+  return item.state === "running"
+    && item.leaseOwner?.startsWith(PLANNING_CONTINUATION_DISPATCH_LEASE_OWNER_PREFIX) === true;
 }
 
-export type TaskLivenessSignal = "active-session" | "executing-lock" | "task-active" | "planning-processor" | "planning-probe";
+export type TaskLivenessSignal =
+  | "active-session"
+  | "executing-lock"
+  | "task-active"
+  | "planning-processor"
+  | "planning-probe";
 
 export interface PlanningExecutionLivenessDeps {
   activeSessionRegistry?: Pick<ActiveSessionRegistry, "pathsForTask" | "isPathActive">;
@@ -39,14 +36,32 @@ export interface PlanningExecutionLivenessDeps {
   isPlanningLive?: (taskId: string) => boolean;
 }
 
-/**
- * Resolves which liveness signal (if any) currently proves a task is planning or executing.
- * A throwing planning-processor getter is treated as "planning-processor" (fail closed: ambiguity
- * must preserve a possibly-live planner rather than let a caller treat the task as free).
- */
-export function getTaskPlanningOrExecutionLivenessSignal(taskId: string, deps: PlanningExecutionLivenessDeps = {}): TaskLivenessSignal | undefined {
+/*
+FNXC:PlanningExecutionLiveness 2026-09-06-00:29:
+FN-299 exposed a fourth owner that the historical execution triple cannot see: a planner without a
+worktree registers no active path, does not hold `executingTaskLock`, and is not an executor-active
+task. Treat planner ownership as first-class liveness, and retain the planning registry's fail-closed
+contract: a throwing probe means the planner may still be alive and therefore refuses recovery.
+
+`getPlanningTaskIds` and the process-wide probe deliberately coexist. Triage's production probe is
+backed by that same getter, but self-healing tests and integrations can construct a manager without
+the option while a registered planner is still live. Keeping both independently injectable makes
+that redundancy a defence-in-depth boundary rather than an accidental duplicate.
+
+FNXC:PlanningContinuationDispatch 2026-09-06-01:58:
+The planning lifecycle lock orders contenders, but ordering alone is not ownership: after the drain
+releases that lock, a late planner needs durable evidence that graph dispatch already won. A running
+continuation whose owner uses the dispatch prefix is that claim. Triage must refuse to replace it,
+so either the graph or the planner starts, never both.
+*/
+export function getTaskPlanningOrExecutionLivenessSignal(
+  taskId: string,
+  deps: PlanningExecutionLivenessDeps = {},
+): TaskLivenessSignal | undefined {
   const sessions = deps.activeSessionRegistry ?? defaultActiveSessionRegistry;
-  if (sessions.pathsForTask(taskId).some((path) => sessions.isPathActive(path))) return "active-session";
+  if (sessions.pathsForTask(taskId).some((path) => sessions.isPathActive(path))) {
+    return "active-session";
+  }
 
   const lock = deps.executingTaskLock ?? defaultExecutingTaskLock;
   if (lock.has(taskId)) return "executing-lock";
@@ -63,6 +78,9 @@ export function getTaskPlanningOrExecutionLivenessSignal(taskId: string, deps: P
   return undefined;
 }
 
-export function isTaskPlanningOrExecutionLive(taskId: string, deps: PlanningExecutionLivenessDeps = {}): boolean {
+export function isTaskPlanningOrExecutionLive(
+  taskId: string,
+  deps: PlanningExecutionLivenessDeps = {},
+): boolean {
   return getTaskPlanningOrExecutionLivenessSignal(taskId, deps) !== undefined;
 }

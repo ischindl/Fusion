@@ -24,7 +24,7 @@ import { executorLog } from "../logger.js";
 import type { EngineRunContext } from "../util/run-audit.js";
 import { resolveTerminalColumnsFor } from "./lifecycle-columns.js";
 import { hasNonTerminalWorkflowSteps } from "./workflow-step-satisfaction.js";
-import { isMergeGraphFailure } from "./graph-failure-pure.js";
+import { formatGraphFailureDiagnostic, isMergeGraphFailure } from "./graph-failure-pure.js";
 import { MERGE_BOUNDARY_RECOVERY_VALUE } from "../workflows/workflow-merge-nodes.js";
 import type { MergeBoundaryRecoveryEvidence } from "./workflow-merge-boundary.js";
 import type { ResumeLanes } from "./resolve-resume-lanes.js";
@@ -324,6 +324,7 @@ export async function routeGraphFailureToExecutionResume(
   failureValue: string | undefined,
   resumeLanesMemo?: { lanes?: ResumeLanes },
   boundaryEvidence?: MergeBoundaryRecoveryEvidence,
+  nodeError?: string,
 ): Promise<boolean> {
     /*
      * FNXC:WorkflowLifecycle 2026-06-29-11:08:
@@ -408,7 +409,7 @@ export async function routeGraphFailureToExecutionResume(
     // foreach/node result was persisted, so select and fence the durable IR owner below.
     const mayRepairBoundary = boundaryEvidenceRecovery && live.column === resumeRouterLanes.review;
     if (!mayResumeInPlace && !mayRepairBoundary) {
-      const message = `Workflow graph failed at node '${failedNode}'${failureValue ? ` (${failureValue})` : ""} — automatic recovery cannot move '${live.column}' backward; card remains in place`;
+      const message = `${formatGraphFailureDiagnostic(failedNode, failureValue, nodeError, "Workflow graph failed")} — automatic recovery cannot move '${live.column}' backward; card remains in place`;
       executorLog.warn(`${live.id}: ${message}`);
       await deps.store.logEntry(live.id, message, undefined, deps.getRunContextFor(live.id));
       return false;
@@ -448,7 +449,7 @@ export async function routeGraphFailureToExecutionResume(
     }
     const message = mayRepairBoundary
       ? `Workflow merge evidence recovery scheduled implementation resume in '${resumeRouterLanes.wip}'`
-      : `Workflow graph failed at node '${failedNode}'${failureValue ? ` (${failureValue})` : ""} with incomplete work — resuming in place in '${live.column}'`;
+      : `${formatGraphFailureDiagnostic(failedNode, failureValue, nodeError, "Workflow graph failed")} with incomplete work — resuming in place in '${live.column}'`;
     executorLog.warn(`${live.id}: ${message}`);
     await deps.store.logEntry(live.id, message, undefined, deps.getRunContextFor(live.id));
     if (!mayRepairBoundary) {

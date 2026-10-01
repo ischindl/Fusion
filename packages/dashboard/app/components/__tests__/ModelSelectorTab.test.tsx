@@ -61,7 +61,7 @@ describe("ModelSelectorTab", () => {
       ...task,
       modelProvider: "pi-claude-cli",
       modelId: "claude-sonnet-5",
-      credentialInstanceId: null,
+      credentialInstanceId: undefined,
     });
 
     render(
@@ -92,7 +92,7 @@ describe("ModelSelectorTab", () => {
       expect(onTaskUpdated).toHaveBeenCalledWith(expect.objectContaining({
         modelProvider: "pi-claude-cli",
         modelId: "claude-sonnet-5",
-        credentialInstanceId: null,
+        credentialInstanceId: undefined,
       }));
     });
   });
@@ -130,25 +130,25 @@ describe("ModelSelectorTab", () => {
         ...task,
         modelProvider: "pi-claude-cli",
         modelId: "claude-sonnet-5",
-        credentialInstanceId: null,
+        credentialInstanceId: undefined,
       })
       .mockResolvedValueOnce({
         ...task,
         validatorModelProvider: "pi-claude-cli",
         validatorModelId: "claude-sonnet-5",
-        validatorCredentialInstanceId: null,
+        validatorCredentialInstanceId: undefined,
       })
       .mockResolvedValueOnce({
         ...task,
         planningModelProvider: "pi-claude-cli",
         planningModelId: "claude-sonnet-5",
-        planningCredentialInstanceId: null,
+        planningCredentialInstanceId: undefined,
       })
       .mockResolvedValueOnce({
         ...task,
         mergerModelProvider: "pi-claude-cli",
         mergerModelId: "claude-sonnet-5",
-        mergerCredentialInstanceId: null,
+        mergerCredentialInstanceId: undefined,
       })
       .mockResolvedValueOnce({
         ...task,
@@ -257,9 +257,9 @@ describe("ModelSelectorTab", () => {
     });
     mockUpdateTask.mockResolvedValueOnce({
       ...task,
-      modelProvider: null,
-      modelId: null,
-      credentialInstanceId: null,
+      modelProvider: undefined,
+      modelId: undefined,
+      credentialInstanceId: undefined,
     });
 
     render(
@@ -303,7 +303,7 @@ describe("ModelSelectorTab", () => {
     });
     mockUpdateTask
       .mockResolvedValueOnce({ ...task, credentialInstanceId: "anthropic-secondary" })
-      .mockResolvedValueOnce({ ...task, modelId: "claude-sonnet-5", credentialInstanceId: null });
+      .mockResolvedValueOnce({ ...task, modelId: "claude-sonnet-5", credentialInstanceId: undefined });
 
     render(<ModelSelectorTab task={task} addToast={vi.fn()} onTaskUpdated={vi.fn()} projectId="project-alpha" />);
 

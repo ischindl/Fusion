@@ -76,7 +76,7 @@ const models: ProjectModelsSectionModelProps = {
   getLaneThinkingValue: () => "",
   updateLaneThinkingValue: vi.fn(),
   resetLaneThinkingValue: vi.fn(),
-  availableModels: [{ id: "claude-sonnet-4-5", provider: "anthropic", name: "Claude Sonnet" }],
+  availableModels: [{ id: "claude-sonnet-4-5", provider: "anthropic", name: "Claude Sonnet", reasoning: true, contextWindow: 200000 }],
   modelsLoading: false,
   favoriteProviders: [],
   favoriteModels: [],
@@ -101,7 +101,6 @@ function renderSection(initialForm: SettingsFormState = { defaultThinkingLevel: 
         setForm={setForm}
         models={models}
         projectId="project-1"
-        addToast={vi.fn()}
       />
     );
   }
@@ -203,7 +202,7 @@ describe("ProjectModelsSection Chat default settings", () => {
     function Host() {
       const [form, setForm] = useState(latestForm);
       latestForm = form;
-      return <ProjectModelsSection form={form} setForm={setForm} models={laneModels} projectId="project-1" addToast={vi.fn()} />;
+      return <ProjectModelsSection form={form} setForm={setForm} models={laneModels} projectId="project-1" />;
     }
     render(<Host />);
 

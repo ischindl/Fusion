@@ -17,13 +17,12 @@ Surfaces (FN-5893):
 - FORK-A: branch-gone + landedSha-unset → parked failed; branch-gone + landedSha-set → skipped as landed.
 - regression: a single-repo (non-workspace) task → reconcilers behave identically.
 */
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { registerArchiveWorkspaceWorktreeDisposer, type Settings, type Task, type TaskStore, type WorkspaceLandIntent } from "@fusion/core";
-import { createSharedPgTaskStoreTestHarness, pgDescribe, type SharedPgTaskStoreHarness } from "../../../core/src/__test-utils__/pg-test-harness.js";
+import { hasZeroCommitDeliveryAuthorization, type Settings, type Task, type TaskStore, type WorkspaceLandIntent, WORKSPACE_PARTIAL_LAND_EVIDENCE_UNAVAILABLE_PREFIX, WORKSPACE_PARTIAL_LAND_UNRECOVERABLE_PREFIX } from "@fusion/core";
 import { SelfHealingManager } from "../self-healing.js";
 import { classifyBranchProbeError } from "../self-healing-git-evidence.js";
 import { activeSessionRegistry, executingTaskLock } from "../agents/active-session-registry.js";
@@ -45,6 +44,7 @@ interface RecordingStore extends EventEmitter {
   emitted: Array<{ event: string; payload: unknown }>;
   enqueued: string[];
   updateTask: ReturnType<typeof vi.fn>;
+  updateTaskAtomic: ReturnType<typeof vi.fn>;
   mergeWorkspaceWorktreeEntry: ReturnType<typeof vi.fn>;
   moveTask: ReturnType<typeof vi.fn>;
 }
@@ -68,6 +68,15 @@ function createStore(rows: Task[], settings: Partial<Settings> = {}): TaskStore 
     updateTask: vi.fn(async (id: string, patch: Partial<Task>) => {
       const cur = tasks.get(id);
       if (cur) tasks.set(id, { ...cur, ...patch } as Task);
+      return tasks.get(id) as Task;
+    }),
+    // Recovery park clears are compare-and-set writes, so the fake needs the same seam the product uses.
+    updateTaskAtomic: vi.fn(async (id: string, mutate: (live: Task) => Partial<Task> | null) => {
+      const cur = tasks.get(id);
+      if (!cur) return null;
+      const patch = mutate(cur);
+      if (!patch) return null;
+      tasks.set(id, { ...cur, ...patch } as Task);
       return tasks.get(id) as Task;
     }),
     mergeWorkspaceWorktreeEntry: vi.fn(async (
@@ -211,102 +220,6 @@ function workspaceTask(workspaceWorktrees: Task["workspaceWorktrees"], extra: Pa
     ...extra,
   } as unknown as Task;
 }
-
-/*
-FNXC:WorkspaceArchiveRestore 2026-08-15-05:55:
-The archive-to-unarchive regression below uses the real PostgreSQL restore transaction and the
-store-scoped archive disposal seam. Booting Executor would add unrelated session lifecycle work;
-the seam is the production boundary that owns removing each sub-repo worktree and branch.
-*/
-const pgDescribeIfGit = hasGit ? pgDescribe : describe.skip;
-
-pgDescribeIfGit("FN-9048 workspace archive restore reaches self-healing cleanly", () => {
-  const h: SharedPgTaskStoreHarness = createSharedPgTaskStoreTestHarness({
-    prefix: "fusion_workspace_archive_restore_e2e",
-  });
-  let fx: WorkspaceFixture;
-
-  beforeAll(h.beforeAll);
-  beforeEach(async () => {
-    await h.beforeEach();
-    fx = await createWorkspaceFixture(["repo-a", "repo-b"]);
-  });
-  afterEach(async () => {
-    fx?.cleanup();
-    await h.afterEach();
-  });
-  afterAll(h.afterAll);
-
-  it("archives, disposes, restores, then skips FORK-A after its stale map is reconciled", async () => {
-    const store = h.store();
-    const id = "FN-9048-RESTORE-E2E";
-    const branch = `fusion/${id.toLowerCase()}`;
-    const workspaceWorktrees: NonNullable<Task["workspaceWorktrees"]> = {};
-    for (const repoRel of fx.repos) {
-      const worktreePath = path.join(fx.rootDir, ".worktrees", repoRel);
-      mkdirSync(path.dirname(worktreePath), { recursive: true });
-      fx.git(repoRel, `git worktree add -b ${branch} ${worktreePath} HEAD`);
-      workspaceWorktrees[repoRel] = { worktreePath, branch };
-    }
-    const task = await store.createTaskWithReservedId(
-      { description: "archive workspace restore regression", column: "in-review" },
-      { taskId: id, applyDefaultWorkflowSteps: false },
-    );
-    /* FNXC:RepositoryScope 2026-08-23-23:59: partial-land recovery admits only CONFIRMED repository
-       intent plus qualified modified evidence (see makeWorkspaceTask above). This card is built
-       through the real store, so it must state the same contract or the sweep never considers it. */
-    await store.updateTask(id, {
-      workspaceWorktrees,
-      branch: undefined,
-      repositoryScope: { repositories: [...fx.repos].sort(), state: "confirmed", revision: 1 },
-      /* Recovery is another merge door: default task creation seeds pending implementation steps and
-         `getTaskMergeBlocker` refuses them, so this post-implementation fixture states them done. */
-      steps: [{ name: "Implementation", status: "done" }],
-      modifiedFiles: [...fx.repos].sort().map((repo) => `${repo}/feature.txt`),
-    } as never);
-    const stalePreArchive = (await store.getTask(id))!;
-    const unregister = registerArchiveWorkspaceWorktreeDisposer(store, async (_task, plan) => {
-      for (const entry of plan) {
-        fx.git(entry.repoRel, `git worktree remove --force ${entry.worktreePath}`);
-        fx.git(entry.repoRel, `git branch -D ${entry.branch}`);
-      }
-      return { removed: plan.map((entry) => entry.repoRel), failed: [] };
-    });
-
-    try {
-      await store.archiveTask(id);
-      for (const repoRel of fx.repos) {
-        expect(existsSync(workspaceWorktrees[repoRel]!.worktreePath)).toBe(false);
-        expect(fx.git(repoRel, `git show-ref --verify --quiet refs/heads/${branch}; echo $?`)).toBe("1");
-      }
-
-      /*
-      FNXC:WorkspaceArchiveRestore 2026-08-15-05:55:
-      This captures the exact pre-fix resurrection shape: archive removed both branches, but the
-      soft-deleted row still has the old map and FORK-A proves it is unrecoverable.
-      */
-      const staleStore = createStore([stalePreArchive]);
-      const staleManager = makeManager(staleStore, fx.rootDir);
-      await staleManager.reconcileWorkspacePartialLands();
-      expect(staleStore.updateTask).toHaveBeenCalledWith(id, expect.objectContaining({ status: "failed" }));
-
-      const restored = await store.unarchiveTask(id);
-      expect(restored.workspaceWorktrees).toBeUndefined();
-      const updateTask = vi.spyOn(store, "updateTask");
-      const recordRunAuditEvent = vi.spyOn(store, "recordRunAuditEvent");
-      const manager = makeManager(store, fx.rootDir);
-
-      expect(await manager.reconcileWorkspacePartialLands()).toBe(0);
-      expect(updateTask).not.toHaveBeenCalledWith(id, expect.objectContaining({ status: "failed" }));
-      expect(recordRunAuditEvent).not.toHaveBeenCalledWith(expect.objectContaining({
-        mutationType: "task:reconcile-workspace-partial-land",
-        metadata: expect.objectContaining({ action: "park-failed" }),
-      }));
-    } finally {
-      unregister();
-    }
-  });
-});
 
 describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
   let fx: WorkspaceFixture;
@@ -492,6 +405,98 @@ describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
     expect(store.enqueued).not.toContain(TASK_ID);
   });
 
+  /*
+  FNXC:WorkspacePartialLandStallPark 2026-09-27-08:57:
+  The GUARD 2 invariant across all four pause shapes. An operator stop is `userPaused:true` or a
+  `paused:true` with no engine reason; the engine's OWN `in-review-stall-deadlock` park is not one,
+  because this sweep is the only owner that re-enqueues a workspace card's per-repo land. Measured on
+  a live board: 25 cards sat parked with `userPaused:false, pausedReason:"in-review-stall-deadlock"`
+  while the sweep reported `reason:"user-paused"` 106 times — the two owners deadlocked each other.
+  Any other named park stays refused, so the recovery cannot drive over `external-block` /
+  `awaiting-approval` / `error-unrecoverable` holds.
+  */
+  const STALL_DEADLOCK_ERROR = "In-review stall deadlock: completed-review-status-none repeated 3× without progress. Completed review task has no merge owner or status for >= 5 min";
+
+  /** A workspace card whose every sub-repo has proven landing evidence, in the given pause shape. */
+  async function landedParkedCard(pause: Partial<Task>): Promise<{ store: TaskStore & RecordingStore; manager: SelfHealingManager }> {
+    fx = await createWorkspaceFixture(["repo-a", "repo-b"]);
+    addRepoBranch(fx, "repo-a", "a\n");
+    addRepoBranch(fx, "repo-b", "b\n");
+    const landedA = landRepoForReal(fx, "repo-a");
+    const landedB = landRepoForReal(fx, "repo-b");
+    const task = workspaceTask(
+      {
+        "repo-a": { worktreePath: fx.repoPath("repo-a"), branch: BRANCH, landedSha: landedA },
+        "repo-b": { worktreePath: fx.repoPath("repo-b"), branch: BRANCH, landedSha: landedB },
+      },
+      { status: "failed", steps: [{ status: "done" }, { status: "done" }], ...pause },
+    );
+    const store = createStore([task]);
+    return { store, manager: makeManager(store, fx.rootDir) };
+  }
+
+  it("partial-land reconciler refuses a pause the operator took without an engine reason", async () => {
+    const { store, manager } = await landedParkedCard({ paused: true });
+
+    expect(await manager.reconcileWorkspacePartialLands()).toBe(0);
+    expect(store.enqueued).not.toContain(TASK_ID);
+  });
+
+  it("partial-land reconciler refuses a park it did not write (external-block)", async () => {
+    const { store, manager } = await landedParkedCard({ paused: true, pausedReason: "external-block", error: "external block" });
+
+    expect(await manager.reconcileWorkspacePartialLands()).toBe(0);
+    expect(store.enqueued).not.toContain(TASK_ID);
+  });
+
+  it("partial-land reconciler drives its OWN stall-deadlock park: re-enqueues and clears the park in place", async () => {
+    const { store, manager } = await landedParkedCard({
+      paused: true,
+      pausedReason: "in-review-stall-deadlock",
+      error: STALL_DEADLOCK_ERROR,
+    });
+
+    expect(await manager.reconcileWorkspacePartialLands()).toBe(1);
+    expect(store.enqueued).toEqual([TASK_ID]);
+    const row = store.tasks.get(TASK_ID)!;
+    // The park is the exact inverse of the deadlock disposition's write: nothing else, no column move.
+    expect(row.paused).toBe(false);
+    expect(row.pausedReason).toBeNull();
+    expect(row.status).toBeNull();
+    expect(row.error).toBeNull();
+    expect(row.column).toBe("in-review");
+    expect(row.userPaused).toBeFalsy();
+    const audit = (store.recordRunAuditEvent as unknown as { mock: { calls: Array<[Record<string, unknown>]> } }).mock.calls
+      .map(([arg]) => arg)
+      .find((arg) => (arg?.type ?? arg?.mutationType) === "task:reconcile-workspace-partial-land");
+    expect(audit?.metadata).toMatchObject({ action: "re-enqueue", parkCleared: true });
+  });
+
+  it("partial-land reconciler leaves a stall-parked card frozen when an operator pauses it meanwhile", async () => {
+    const { store, manager } = await landedParkedCard({
+      paused: true,
+      pausedReason: "in-review-stall-deadlock",
+      error: STALL_DEADLOCK_ERROR,
+    });
+    // The compare-and-set re-reads the live row, so a pause that lands before the write is honoured.
+    store.updateTaskAtomic.mockImplementation(async (id: string, mutate: (live: Task) => Partial<Task> | null) => {
+      const cur = store.tasks.get(id);
+      if (!cur) return null;
+      const raced = { ...cur, userPaused: true } as Task;
+      store.tasks.set(id, raced);
+      const patch = mutate(raced);
+      if (!patch) return null;
+      store.tasks.set(id, { ...raced, ...patch } as Task);
+      return store.tasks.get(id) as Task;
+    });
+
+    await manager.reconcileWorkspacePartialLands();
+
+    const row = store.tasks.get(TASK_ID)!;
+    expect(row.paused).toBe(true);
+    expect(row.pausedReason).toBe("in-review-stall-deadlock");
+  });
+
   it("partial-land reconciler emits -no-action when a sub-repo worktree is live", async () => {
     fx = await createWorkspaceFixture(["repo-a", "repo-b"]);
     const wtPath = fx.repoPath("repo-a");
@@ -582,6 +587,103 @@ describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
     expect(store.tasks.get(TASK_ID)?.status).toBe("failed");
     expect(entries?.["repo-a"]?.landFailure).toMatchObject({ branch: BRANCH });
     expect(entries?.["repo-b"]?.landFailure).toMatchObject({ branch: BRANCH });
+  });
+
+  /*
+  FNXC:ZeroCommitWorkspaceDelivery 2026-09-30-21:00 (RUFU-451):
+  A card whose own plan declares `noCommitsExpected` delivers without commits, so FORK-A's evidence
+  ("no branch, no landedSha") is the delivery shape rather than lost work. Live case SANE-509: source-free
+  File Scope, both member branches at zero unique commits, review re-executed green — and the sweep parked
+  it `failed`, whose refusal then blocked the merge, the recovery doors, AND the operator's manual drag
+  (`409 code=merge-blocked`). These cases pin the three observable consequences: no new park, no `landFailure`
+  breadcrumb claiming lost work, and an in-place clear of a park an earlier build already wrote. The
+  `noCommitsExpected: false` control keeps the original FORK-A park, so the exemption cannot widen.
+  */
+  it("FORK-A: a card authorized to deliver zero commits is not parked and its stale park is cleared", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const stalePark = `${WORKSPACE_PARTIAL_LAND_UNRECOVERABLE_PREFIX} sub-repo(s) repo-a have no branch (${BRANCH}) and no landedSha — manual intervention required.`;
+    const task = workspaceTask(
+      { "repo-a": { worktreePath: fx.repoPath("repo-a"), branch: BRANCH } },
+      { noCommitsExpected: true, status: "failed", error: stalePark },
+    );
+    const store = createStore([task]);
+    const manager = makeManager(store, fx.rootDir);
+
+    expect(await manager.reconcileWorkspacePartialLands()).toBe(0);
+
+    const row = store.tasks.get(TASK_ID)!;
+    expect(row.status ?? undefined).toBeUndefined();
+    expect(row.error).toBeUndefined();
+    expect(row.column).toBe("in-review");
+    // No display-only breadcrumb: it would state lost work for a delivery that never had any.
+    expect(row.workspaceWorktrees?.["repo-a"]?.landFailure).toBeUndefined();
+    expect(store.enqueued).not.toContain(TASK_ID);
+
+    const noticeRows = () => (store.recordRunAuditEvent as ReturnType<typeof vi.fn>).mock.calls.filter(
+      ([event]) =>
+        (event as { mutationType?: string }).mutationType === "task:reconcile-workspace-partial-land-no-action"
+        && (event as { metadata?: { reason?: string } }).metadata?.reason === "no-commits-expected",
+    );
+    expect(noticeRows()).toHaveLength(1);
+    expect((noticeRows()[0] as [unknown])[0]).toMatchObject({
+      metadata: { taskId: TASK_ID, reason: "no-commits-expected" },
+    });
+
+    /*
+    The class is permanently exempt, so the notice is written once per candidate episode rather than once
+    per sweep — the card stays a candidate and a five-minute row stating an unchanging fact buries it.
+    */
+    await manager.reconcileWorkspacePartialLands();
+    await manager.reconcileWorkspacePartialLands();
+    expect(noticeRows()).toHaveLength(1);
+    expect(store.tasks.get(TASK_ID)?.status ?? undefined).toBeUndefined();
+  });
+
+  it("control: the same shape without the zero-commit authorization keeps the FORK-A park", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const task = workspaceTask(
+      { "repo-a": { worktreePath: fx.repoPath("repo-a"), branch: BRANCH } },
+      // Written explicitly rather than omitted: the exemption must key on an affirmative answer.
+      { noCommitsExpected: false },
+    );
+    const store = createStore([task]);
+    const manager = makeManager(store, fx.rootDir);
+
+    expect(await manager.reconcileWorkspacePartialLands()).toBe(1);
+    const row = store.tasks.get(TASK_ID)!;
+    expect(row.status).toBe("failed");
+    // Coupling guard: the writer builds its sentence from the same fact the core waiver recognizes.
+    expect(row.error?.startsWith(WORKSPACE_PARTIAL_LAND_UNRECOVERABLE_PREFIX)).toBe(true);
+    expect(hasZeroCommitDeliveryAuthorization(row)).toBe(false);
+    expect(store.enqueued).not.toContain(TASK_ID);
+  });
+
+  it("starvation park: an unreadable branch state never terminalizes a zero-commit card", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    addRepoBranch(fx, "repo-a", "a\n");
+    const task = workspaceTask(
+      { "repo-a": { worktreePath: fx.repoPath("repo-a"), branch: BRANCH } },
+      { noCommitsExpected: true },
+    );
+    const store = createStore([task]);
+    const manager = new UnavailableBranchProbeManager(store, managerOptions(store, fx.rootDir) as never);
+
+    // The control's sibling: the ordinary card parks after the bounded budget (see the starvation
+    // case above); past that budget this card must still carry no failure state at all.
+    for (let pass = 0; pass < 5; pass++) await manager.reconcileWorkspacePartialLands();
+
+    const row = store.tasks.get(TASK_ID)!;
+    expect(row.status ?? undefined).toBeUndefined();
+    expect(row.error).toBeUndefined();
+    expect(store.enqueued).not.toContain(TASK_ID);
+    expect(
+      (store.recordRunAuditEvent as ReturnType<typeof vi.fn>).mock.calls.some(
+        ([event]) =>
+          (event as { mutationType?: string }).mutationType === "task:reconcile-workspace-partial-land"
+          && typeof (event as { metadata?: { reason?: string } }).metadata?.reason === "string"
+          && (event as { metadata?: { reason?: string } }).metadata?.reason?.includes("evidence-unavailable-exhausted"),
+      ),
+    ).toBe(false);
   });
 
   it("skips a restored fully-disposed workspace task after restore clears its map", async () => {
@@ -839,18 +941,17 @@ describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
 
   /*
   FNXC:Workspace 2026-08-15-04:11:
-  The archived-owner symptom failed before FN-9054: `getTask` returned the cold-storage snapshot
-  in `archived`, which the terminal predicate read as live. After the staleness floor, reclaim must
-  free that real sub-repo path so a different workspace task can acquire the next land lease.
+  A completed owner has no live land operation. After the staleness floor, reclaim must free that
+  real sub-repo path so a different workspace task can acquire the next land lease.
   */
-  it("reclaims an archived owner's stale lease and makes the repo re-leasable", async () => {
+  it("reclaims a completed owner's stale lease and makes the repo re-leasable", async () => {
     fx = await createWorkspaceFixture(["repo-a"]);
     const leasePath = fx.repoPath("repo-a");
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-15T00:00:00.000Z"));
     activeSessionRegistry.registerPath(leasePath, { taskId: TASK_ID, kind: "workspace-repo-land", ownerKey: "land" });
 
-    const task = workspaceTask({ "repo-a": { worktreePath: leasePath, branch: BRANCH } }, { column: "archived" });
+    const task = workspaceTask({ "repo-a": { worktreePath: leasePath, branch: BRANCH } }, { column: "done" });
     const store = createStore([task]);
     const manager = makeManager(store, fx.rootDir);
 
@@ -862,40 +963,6 @@ describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
       taskId: "FN-7002", kind: "workspace-repo-land", ownerKey: "next-land",
     })).not.toThrow();
     expect(activeSessionRegistry.lookupByPath(leasePath)?.taskId).toBe("FN-7002");
-  });
-
-  /*
-  FNXC:Workspace 2026-08-15-04:11:
-  Archive terminality follows the archived trait rather than the legacy literal, so a project that
-  renames its archive lane cannot leave a crashed workspace land holder blocking future tasks.
-  */
-  it("reclaims a land lease whose owner rests in a RENAMED archive lane", async () => {
-    fx = await createWorkspaceFixture(["repo-a"]);
-    const leasePath = fx.repoPath("repo-a");
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-08-15T00:00:00.000Z"));
-    activeSessionRegistry.registerPath(leasePath, { taskId: TASK_ID, kind: "workspace-repo-land", ownerKey: "land" });
-
-    const task = workspaceTask({ "repo-a": { worktreePath: leasePath, branch: BRANCH } }, { column: "retained" });
-    const store = createStore([task]);
-    (store as unknown as { listWorkflowDefinitions: unknown }).listWorkflowDefinitions = vi.fn(async () => [{
-      id: "custom:renamed-archive",
-      ir: {
-        version: "v2",
-        id: "custom:renamed-archive",
-        nodes: [],
-        edges: [],
-        columns: [
-          { id: "building", name: "building", traits: [{ trait: "wip", config: { limitSetting: "maxConcurrent" } }] },
-          { id: "retained", name: "retained", traits: [{ trait: "archived" }] },
-        ],
-      },
-    }]);
-    const manager = makeManager(store, fx.rootDir);
-
-    vi.setSystemTime(new Date("2026-08-15T00:10:00.000Z"));
-    expect(await manager.reclaimPhantomWorkspaceLandLeases()).toBe(1);
-    expect(activeSessionRegistry.isPathActive(leasePath)).toBe(false);
   });
 
   /*
@@ -929,17 +996,17 @@ describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
 
   /*
   FNXC:Workspace 2026-08-15-04:11:
-  Archive terminality does not shorten the existing floor; a newly registered archived snapshot
-  remains protected while a legitimate land operation is still warming.
+  Completion does not shorten the existing floor; a newly registered Done task remains protected
+  while a legitimate land operation is still warming.
   */
-  it("does NOT reclaim a young lease owned by an archived task", async () => {
+  it("does NOT reclaim a young lease owned by a completed task", async () => {
     fx = await createWorkspaceFixture(["repo-a"]);
     const leasePath = fx.repoPath("repo-a");
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-15T00:00:00.000Z"));
     activeSessionRegistry.registerPath(leasePath, { taskId: TASK_ID, kind: "workspace-repo-land", ownerKey: "land" });
 
-    const task = workspaceTask({ "repo-a": { worktreePath: leasePath, branch: BRANCH } }, { column: "archived" });
+    const task = workspaceTask({ "repo-a": { worktreePath: leasePath, branch: BRANCH } }, { column: "done" });
     const manager = makeManager(createStore([task]), fx.rootDir);
 
     vi.setSystemTime(new Date("2026-08-15T00:01:00.000Z"));
@@ -949,17 +1016,17 @@ describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
 
   /*
   FNXC:Workspace 2026-08-15-04:11:
-  An archived snapshot cannot override the merge-pending guard: queued land work remains live until
+  A completed row cannot override the merge-pending guard: queued land work remains live until
   its in-memory merge pipeline releases the lease.
   */
-  it("does NOT reclaim an archived owner's lease while it is merge-pending", async () => {
+  it("does NOT reclaim a completed owner's lease while it is merge-pending", async () => {
     fx = await createWorkspaceFixture(["repo-a"]);
     const leasePath = fx.repoPath("repo-a");
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-15T00:00:00.000Z"));
     activeSessionRegistry.registerPath(leasePath, { taskId: TASK_ID, kind: "workspace-repo-land", ownerKey: "land" });
 
-    const task = workspaceTask({ "repo-a": { worktreePath: leasePath, branch: BRANCH } }, { column: "archived" });
+    const task = workspaceTask({ "repo-a": { worktreePath: leasePath, branch: BRANCH } }, { column: "done" });
     const manager = makeManager(createStore([task]), fx.rootDir, { isMergePending: (id: string) => id === TASK_ID });
 
     vi.setSystemTime(new Date("2026-08-15T00:10:00.000Z"));
@@ -969,17 +1036,17 @@ describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
 
   /*
   FNXC:Workspace 2026-08-15-04:11:
-  An active executor remains authoritative over row terminality; even a stale archived snapshot
+  An active executor remains authoritative over row terminality; even a stale completed row
   cannot make self-healing yank its workspace land lease.
   */
-  it("does NOT reclaim an archived owner's lease while its task is active", async () => {
+  it("does NOT reclaim a completed owner's lease while its task is active", async () => {
     fx = await createWorkspaceFixture(["repo-a"]);
     const leasePath = fx.repoPath("repo-a");
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-15T00:00:00.000Z"));
     activeSessionRegistry.registerPath(leasePath, { taskId: TASK_ID, kind: "workspace-repo-land", ownerKey: "land" });
 
-    const task = workspaceTask({ "repo-a": { worktreePath: leasePath, branch: BRANCH } }, { column: "archived" });
+    const task = workspaceTask({ "repo-a": { worktreePath: leasePath, branch: BRANCH } }, { column: "done" });
     const manager = makeManager(createStore([task]), fx.rootDir, { isTaskActive: (id: string) => id === TASK_ID });
 
     vi.setSystemTime(new Date("2026-08-15T00:10:00.000Z"));
@@ -1130,18 +1197,33 @@ describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
     );
   });
 
+  it("keeps a recently failed workspace worktree until the ordinary terminal floor expires", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const worktreePath = path.join(fx.repoPath("repo-a"), ".wt-recent-failed");
+    fx.git("repo-a", `git worktree add -b ${BRANCH} ${worktreePath} HEAD`);
+    const recent = new Date().toISOString();
+    const task = workspaceTask(
+      { "repo-a": { worktreePath, branch: BRANCH, landedSha: fx.git("repo-a", "git rev-parse HEAD").trim() } },
+      { status: "failed", updatedAt: recent, columnMovedAt: recent },
+    );
+
+    expect(await makeManager(createStore([task]), fx.rootDir).reconcileOrphanedWorkspaceWorktrees()).toBe(0);
+    expect(existsSync(worktreePath)).toBe(true);
+    expect(fx.git("repo-a", `git branch --list ${BRANCH}`).trim()).toContain(BRANCH);
+  });
+
   /*
   FNXC:Workspace 2026-08-15-05:33:
-  Failed and soft-deleted workspace rows are destructive candidates only after their one-day floor.
-  These real-git cases lock the worktree/prune/branch policy so terminal cleanup cannot regress into
-  either leaking abandoned repositories or destroying an unlanded failed-task branch.
+  Failed workspace rows remain destructive candidates only after their one-day floor. Explicitly
+  soft-deleted rows are immediately eligible because the operator authorized discarding task-owned
+  checkout content; real-Git cases keep failed-task unlanded branches protected.
   */
   it("tears down a soft-deleted workspace worktree and branch as operator-discarded", async () => {
     fx = await createWorkspaceFixture(["repo-a"]);
     const worktreePath = path.join(fx.repoPath("repo-a"), ".wt-deleted");
     fx.git("repo-a", `git worktree add -b ${BRANCH} ${worktreePath} HEAD`);
-    const old = new Date(Date.now() - 25 * 60 * 60_000).toISOString();
-    const task = workspaceTask({ "repo-a": { worktreePath, branch: BRANCH } }, { deletedAt: old, updatedAt: old, columnMovedAt: old });
+    const deletedAt = new Date().toISOString();
+    const task = workspaceTask({ "repo-a": { worktreePath, branch: BRANCH } }, { deletedAt, updatedAt: deletedAt, columnMovedAt: deletedAt });
     const manager = makeManager(createStore([task]), fx.rootDir);
 
     expect(await manager.reconcileOrphanedWorkspaceWorktrees()).toBe(1);

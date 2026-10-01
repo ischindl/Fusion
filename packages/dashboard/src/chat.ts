@@ -37,14 +37,29 @@ import {
   resolveEffectiveAgentPermissionPolicy,
   resolveTaskOutputLanguage,
   summarizeTitle,
+  summarizeChatHandoff,
+  emitBoundedRunAudit,
   FUSION_RUNTIME_SELF_AWARENESS,
   createLogger,
   resolvePermanentAgentEffectiveModel,
   resolvePermanentAgentEffectiveThinkingLevel,
   isExperimentalFeatureEnabled,
   CHAT_FOCUS_FLAG,
+  deliverTaskCommentFromStore,
+  describeTaskCommentDelivery,
 } from "@fusion/core";
 import { EventEmitter } from "node:events";
+import { RATE_LIMIT_ENTRY_BYTES } from "./lib/retention-census.js";
+import {
+  enforceEntryCeiling,
+  registerBoundedWindowMap,
+} from "./lib/retention/bounded-window-map.js";
+import { isQuestionToolName } from "./shared/chat-toolcall-compact.js";
+import {
+  findAwaitingQuestionMessageId,
+  QUESTION_ANSWER_TAIL_LIMIT,
+  withQuestionAnswerLink,
+} from "./shared/chat-question-link.js";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join, resolve, relative } from "node:path";
@@ -55,15 +70,24 @@ import {
   formatChatImageAttachmentHints,
   readChatAttachmentContents,
 } from "./chat-attachment-content.js";
+import { buildProvisionalChatTitle } from "./chat-title.js";
 import { buildTaskPlannerChatContext, TASK_PLANNER_CHAT_CONTEXT_PROMPT_GUIDANCE } from "./task-planner-chat-context.js";
 import { formatTaskPlannerChatMetrics } from "./task-planner-chat-metrics.js";
 import { formatTaskPlannerPrStatus, resolveTaskPlannerPrStatus } from "./task-planner-pr-status.js";
 import { emitWorkflowSseEvent, type WorkflowSseEventType } from "./sse.js";
+import {
+  buildConversationReferenceContext,
+  createChatConversationTools,
+} from "./chat-conversation-references.js";
 
 import {
   createFnAgent as engineCreateFnAgent,
   createResolvedAgentSession as engineCreateResolvedAgentSession,
   promptWithFallback as enginePromptWithFallback,
+  ChatContextOverflowError,
+  ensureContextWithinCompactionThreshold,
+  estimatePendingRequestTokens,
+  type CompactionGateResult,
   extractRuntimeHint,
   extractRuntimeModel,
   buildSessionSkillContextSync,
@@ -78,7 +102,7 @@ import {
   createTaskListTool,
   createTaskShowTool,
   createTaskSearchTool,
-  createPatchnodeReadTool,
+  createHistoryReadTool,
   createListAgentsTool,
   createDelegateTaskTool,
   createTaskAssignTool,
@@ -92,8 +116,6 @@ import {
   resolveMcpServersForStore,
   resolveExecutorThinkingLevel,
   wrapToolsWithActionGate,
-  createTaskArchiveTool,
-  createTaskUnarchiveTool,
   createTaskDeleteTool,
   createTaskRetryTool,
   createTaskPauseTool,
@@ -103,6 +125,7 @@ import {
   createTraitListTool,
   createReadEvaluationsTool,
   createUpdateIdentityTool,
+  storeErrorResult,
 } from "@fusion/engine";
 import * as engineModule from "@fusion/engine";
 
@@ -369,6 +392,18 @@ const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 /** Max messages per IP per minute */
 const MAX_MESSAGES_PER_IP_PER_MINUTE = 30;
 
+/**
+ * Ceiling on distinct client addresses holding an in-window chat counter.
+ *
+ * FNXC:RetentionCensus 2026-09-21-21:40 (RUFU-257): the window is 60 seconds but nothing ever
+ * deleted expired chat counters, so the map grew one row per distinct address for the life of the
+ * process. The retention census now reclaims expired windows every sample; this ceiling is the
+ * backstop for a burst of distinct addresses inside a single window. Eviction order is oldest
+ * insertion, so a counter can only be lost after more distinct clients have appeared than any real
+ * deployment produces — and losing one resets that address's 60-second window, never another's.
+ */
+export const CHAT_RATE_LIMIT_IP_MAX = 10_000;
+
 /** Maximum file size for # mentions (50KB). Files larger than this are skipped. */
 const MAX_REFERENCED_FILE_SIZE = 50 * 1024;
 export const TASK_PLANNER_CHAT_AGENT_ID_PREFIX = "task-planner:";
@@ -378,6 +413,61 @@ FNXC:ChatCodingTools 2026-07-19-00:00:
 Dashboard Chat sessions intentionally use the project-root coding workspace builtins so direct, room, and task-detail planner Chat can read, write, edit, and investigate with bash. Keep this shared mode unfiltered: permanent-agent action gates still enforce file-write and command-execution policy when a durable agent is bound, while task-planner Chat reaches the same direct-chat session path.
 */
 const CHAT_CODING_TOOLS = "coding" as const;
+
+/*
+FNXC:ChatContextBudget 2026-08-20-11:56:
+User requirement: agent chat must keep working when the selected model has only a
+64K context window. The measured static floor of an agent-bound CEO chat on the
+128K-window qwen38 model was ~124K tokens — made up of the full project long-term
+memory (~65K tokens), the 50K-char agent workspace memory clamp (~14K tokens), the
+86 fn_* host-extension executor tool schemas (~15K+ tokens), and the pi-injected
+AGENTS.md (~15K tokens). That exceeded the 80% compaction threshold (102400) so the
+guard's pre-overflow compaction had no conversation branch left to compress and
+every send failed with ChatContextOverflowError (observed on chat-f7689c06 and
+chat-02c9c9de, 2026-08-19/20).
+
+CHAT_MEMORY_CAP_CHARS bounds the memory sections of the chat system prompt (see
+buildAgentChatPrompt `memoryCapChars`): oversized memory is inlined as a heading
+index and stays reachable through fn_memory_search / fn_memory_get. With the cap,
+the static floor drops to roughly ~35K tokens, which fits a 64K window with
+conversation + output headroom (guard threshold 51200, hard limit 48K).
+*/
+const CHAT_MEMORY_CAP_CHARS = 8_000;
+
+/*
+FNXC:ChatContextBudget 2026-08-20-11:56:
+The dashboard process loads the @runfusion/fusion host extension into every pi
+session, so without a filter the chat session also exposes all 86 executor
+fn_* tools (task delete/bypass, agent create, insights, evals, …) on top of the
+curated chat toolset — a large static schema payload that chat does not need.
+CHAT_CODING_TOOL_ALLOWLIST names the builtin coding tools. The engine applies a
+toolsAllowlist to EVERY registered tool — caller customTools included — so the
+allowlist passed to createResolvedAgentSession must also contain the curated
+chat toolset names (see the call sites), or the custom tools are filtered out
+before the session is created (observed 2026-08-20: chat sessions shrank to the
+7 builtin coding tools only, dropping fn_memory_search / fn_task_show / workflow
+tools). The 86 host-extension executor tools are excluded by pi's session-level
+registry filter because their names are not in the list. The chat surface is
+designed around the curated toolset (action-gate semantics included); losing the
+raw executor tools is intentional. Engine lanes (triage/executor/reviewer/merger)
+do not pass this allowlist and keep the full extension surface.
+*/
+const CHAT_CODING_TOOL_ALLOWLIST = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
+
+/**
+ * FNXC:ChatContextBudget 2026-08-20-12:43:
+ * Combine the builtin coding allowlist with the curated chat toolset names.
+ * The engine's toolsAllowlist is a GLOBAL allowlist (builtins + customTools +
+ * host-extension tools are all filtered by name — pi.ts isAllowedByToolAllowlist
+ * also filters caller-supplied customTools), so passing only the builtin names
+ * silently dropped the entire curated chat toolset from chat sessions. The
+ * host-extension executor tools stay hidden because their names are not in the
+ * combined list; pi's session-level tool filter removes them from the registry.
+ */
+export function chatToolAllowlist(customToolNames: string[]): string[] {
+  return [...CHAT_CODING_TOOL_ALLOWLIST, ...customToolNames];
+}
+
 const ROOM_AMBIENT_MAX_RESPONDERS = 5;
 
 type ChatSessionStatsLike = {
@@ -521,7 +611,10 @@ export interface ChatFusionToolsetOptions {
   until operators opt in; enabled sessions still scope fn_memory_search at the backend.
   */
   focus?: string;
-  /** ProjectEngine queue/active-merge probe for mutating task recovery tools. */
+  chatStore?: ChatStore;
+  currentChatSessionId?: string;
+  currentProjectId?: string | null;
+/** ProjectEngine queue/active-merge probe for mutating task recovery tools. */
   isMergePending?: (taskId: string) => boolean | Promise<boolean>;
   /** ProjectEngine-owned fence that serializes a retry reset with merge admission. */
   resetInReviewMergeRetry?: (task: import("@fusion/core").Task) => Promise<"reset" | "pending" | "changed" | "unavailable">;
@@ -682,9 +775,68 @@ function createTaskVerificationTools(taskStore: TaskStore, actionGateContext?: A
   ];
 }
 
+/*
+FNXC:ChatAgentMemory 2026-09-22-03:01:
+Structural clone of the engine's (unexported) AgentMemoryContext — the shape
+`createMemoryTools` consumes for agent-scoped recall. Kept structural so the engine can
+rename the type without a cross-package export churn.
+*/
+type ChatAgentMemoryContext = { agentId: string; agentName?: string; memory?: string | null };
+
+/** Resolve the bound agent's memory context; any lookup failure yields project-scoped recall. */
+async function resolveChatAgentMemoryContext(
+  agentStore: { getAgent?: (id: string) => Promise<{ id: string; name: string; memory?: string | null } | null | undefined> },
+  agentId: string,
+): Promise<ChatAgentMemoryContext | undefined> {
+  try {
+    const agent = await agentStore.getAgent?.(agentId);
+    if (!agent) return undefined;
+    return { agentId: agent.id, agentName: agent.name, memory: agent.memory ?? null };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Compose createMemoryTools options; empty composition collapses to undefined (pre-existing call shape). */
+function buildChatMemoryToolOptions(input: {
+  focusEnabled: boolean;
+  focus?: string;
+  agentMemory?: ChatAgentMemoryContext;
+}): { focus?: string; agentMemory?: ChatAgentMemoryContext } | undefined {
+  const options: { focus?: string; agentMemory?: ChatAgentMemoryContext } = {};
+  if (input.focusEnabled && input.focus) options.focus = input.focus;
+  if (input.agentMemory) options.agentMemory = input.agentMemory;
+  return Object.keys(options).length > 0 ? options : undefined;
+}
+
 export async function createChatFusionToolset(options: ChatFusionToolsetOptions): Promise<ChatCustomTool[]> {
-  const { taskStore, agentStore, rootDir, agentId, missionMutationGated = false, actionGateContext, focus, isMergePending, resetInReviewMergeRetry, rerouteFailedNoVerdictPreMergeReview } = options;
+  const {
+    taskStore,
+    agentStore,
+    rootDir,
+    agentId,
+    missionMutationGated = false,
+    actionGateContext,
+    focus,
+    chatStore,
+    currentChatSessionId,
+    currentProjectId,
+    isMergePending,
+    resetInReviewMergeRetry,
+    rerouteFailedNoVerdictPreMergeReview,
+  } = options;
   const tools: ChatCustomTool[] = [];
+
+  /*
+  FNXC:ChatConversationReferences 2026-09-04-09:58:
+  Cross-conversation read tools require a current Direct chat identity and its store. Room responders and explicitly mentioned-agent responders deliberately omit both, matching the existing Direct-only file-reference context path.
+  */
+  if (chatStore && currentChatSessionId) {
+    tools.push(...createChatConversationTools(chatStore, {
+      currentSessionId: currentChatSessionId,
+      projectId: currentProjectId ?? null,
+    }));
+  }
 
   if (taskStore) {
     const settings = await taskStore.getSettings?.();
@@ -692,7 +844,7 @@ export async function createChatFusionToolset(options: ChatFusionToolsetOptions)
       createTaskListTool(taskStore),
       createTaskShowTool(taskStore),
       createTaskSearchTool(taskStore),
-      createPatchnodeReadTool(taskStore),
+      createHistoryReadTool(taskStore),
       ...createTaskVerificationTools(taskStore, options.actionGateContext),
       createTaskCreateTool(taskStore, { sourceType: "api" }, { rootDir }),
     );
@@ -711,8 +863,6 @@ export async function createChatFusionToolset(options: ChatFusionToolsetOptions)
     */
     if (actionGateContext) {
       tools.push(
-        createTaskArchiveTool(taskStore),
-        createTaskUnarchiveTool(taskStore),
         createTaskDeleteTool(taskStore),
         createTaskRetryTool(taskStore, { isMergePending, resetInReviewMergeRetry, rerouteFailedNoVerdictPreMergeReview }),
         createTaskPauseTool(taskStore),
@@ -728,11 +878,24 @@ export async function createChatFusionToolset(options: ChatFusionToolsetOptions)
       /* FNXC:Ideation 2026-07-30-15:30: Unbound or ephemeral chat exposes only positive ideation reads; mutations require the same durable gate context as Mission writes. */
       ...createIdeationTools(taskStore).filter((tool) => missionMutationGated || CHAT_IDEATION_READ_TOOL_NAMES.has(tool.name)),
       ...createGoalRetrievalTools(taskStore),
-      /* FNXC:ChatAgentTools 2026-07-15-00:00: Chat exposes memory retrieval only and respects the workspace memory-enabled setting; prompt-triggered persistent writes stay excluded without an action-gate context. */
+      /*
+      FNXC:ChatAgentMemory 2026-09-22-03:01:
+      Chat binds to a real durable agent (direct chat) or a room responder; both must
+      recall THAT agent's memory. Without the agentMemory context, fn_memory_search
+      skipped agent memory and fn_memory_get fell through to project memory — and once
+      the prompt budget replaces an oversized agent-memory body with an index, that
+      index tells the model to recall via these tools, so a blind recall path is a dead
+      end (review finding). Lookup failure degrades to project-scoped recall instead of
+      dropping the read-only memory tools.
+      */
       ...createMemoryTools(
         rootDir,
         settings,
-        focus && isExperimentalFeatureEnabled(settings, CHAT_FOCUS_FLAG) ? { focus } : undefined,
+        buildChatMemoryToolOptions({
+          focusEnabled: Boolean(focus) && isExperimentalFeatureEnabled(settings, CHAT_FOCUS_FLAG),
+          focus,
+          agentMemory: agentId && agentStore ? await resolveChatAgentMemoryContext(agentStore, agentId) : undefined,
+        }),
       ).filter((tool) => tool.name !== "fn_memory_append"),
       ...createResearchTools({ store: taskStore, rootDir, getSettings: () => taskStore.getSettings() }),
     );
@@ -874,8 +1037,8 @@ function createTaskPlannerRefinementTool(taskStore: TaskStore, taskId: string) {
         const sourceTask = await taskStore.getTask(taskId);
         /*
         FNXC:WorkflowResolvedColumns 2026-07-30-05:05 (batch-core):
-        Refinement is for FINISHED work — complete only, not the landed set: an archived task is off
-        the board and is not a refinement source. Paired with the tool-registration guard in
+        Refinement is for workflow Complete work only. Deleted tasks are absent from the live task
+        model and are not refinement sources. Paired with the tool-registration guard in
         `createSession`; if only one of the two resolved, the tool would either be offered and then
         refuse, or be withheld from tasks it would have accepted. Both move together.
         */
@@ -898,12 +1061,7 @@ function createTaskPlannerRefinementTool(taskStore: TaskStore, taskId: string) {
           },
         };
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        return {
-          content: [{ type: "text" as const, text: `ERROR: Could not create a refinement for the current task ${taskId}: ${message}` }],
-          details: { sourceTaskId: taskId, error: message },
-          isError: true,
-        };
+        return storeErrorResult(`refinement task for ${taskId}`, err);
       }
     },
   };
@@ -931,12 +1089,37 @@ function createTaskPlannerSteeringTool(taskStore: TaskStore, taskId: string) {
       const steeringComment = task.steeringComments
         ?.filter((comment) => comment.author === "user" && comment.text === text)
         .at(-1);
+
+      /*
+      FNXC:CommentDelivery 2026-09-27-21:00 (RUFU-259 Step 4):
+      This tool is how an operator steers a card through the planner chat, and until now its whole effect
+      was one row on the card: the answer said "Added as steering comment" while nothing was handed to the
+      agent that would act on it. The body now goes through the same seam every other write surface uses.
+      Deliberately WITHOUT `onRouted`: a planner-chat session already owns this card's planning lane, and a
+      second forced run from here would race it — the durable inbox row is the hand-off, and the heartbeat
+      (or the message hook, for an immediate-mode agent) decides when to read it. A failed hand-off cannot
+      undo the write, so it degrades to the reported sentence below rather than erroring the tool.
+      */
+      const delivery = await deliverTaskCommentFromStore({
+        store: taskStore,
+        task,
+        comment: {
+          id: steeringComment?.id ?? "",
+          text: steeringComment?.text ?? text,
+          author: "user",
+          createdAt: steeringComment?.createdAt,
+          kind: "steering",
+        },
+        source: "planner-chat",
+      }).catch(() => null);
+
       return {
-        content: [{ type: "text" as const, text: `Added as steering comment on ${task.id}.` }],
+        content: [{ type: "text" as const, text: `Added as steering comment on ${task.id}. ${describeTaskCommentDelivery(delivery)}` }],
         details: {
           taskId: task.id,
           text,
           taskUpdatedAt: task.updatedAt,
+          delivery: delivery ?? { outcome: "not-attempted" },
           steeringComment: steeringComment
             ? {
                 id: steeringComment.id,
@@ -963,6 +1146,17 @@ const ROOM_THREAD_CONTEXT_MAX_CHARS = 20_000;
 const ROOM_THREAD_MESSAGE_CONTENT_MAX_CHARS = 1_200;
 const DEFAULT_ROOM_THREAD_SUMMARY_MAX_CHARS = 3_000;
 const IN_FLIGHT_PERSIST_DEBOUNCE_MS = 200;
+
+/*
+FNXC:ChatHandoff 2026-09-09-17:21:
+RUFU-199: bounds for the handoff affordance threshold. The threshold gates on the same advisory
+context-usage estimate the read-only thread-header meter renders, so it is clamped away from both
+ends: below 50% the button would interrupt chats that are nowhere near the model wall, and above
+95% it would appear only when there is too little room left to continue productively.
+*/
+export const CHAT_HANDOFF_DEFAULT_THRESHOLD_PCT = 75;
+export const CHAT_HANDOFF_THRESHOLD_MIN_PCT = 50;
+export const CHAT_HANDOFF_THRESHOLD_MAX_PCT = 95;
 
 type RoomTranscriptMessage = Pick<ChatRoomMessage, "id" | "role" | "content" | "createdAt" | "senderAgentId">;
 
@@ -1083,6 +1277,136 @@ export function buildCompactedRoomTranscript(
   return transcript;
 }
 
+/*
+FNXC:ChatHandoff 2026-09-09-17:36:
+RUFU-199 carries a Direct conversation's substance into a fresh session. The digest below is BOTH the
+summarizer's input AND the degraded fallback primer body, so one builder serves both lanes and is
+deterministic: no clock, no locale, no LLM, no ranking heuristic. Caps reuse the room transcript
+compaction caps because the consumer in both lanes is a model context window — an unbounded digest
+would recreate the context wall the handoff exists to escape.
+*/
+const CHAT_HANDOFF_TRANSCRIPT_FETCH_LIMIT = 400;
+const CHAT_HANDOFF_MESSAGE_MAX_CHARS = ROOM_THREAD_MESSAGE_CONTENT_MAX_CHARS;
+const CHAT_HANDOFF_TRANSCRIPT_MAX_CHARS = ROOM_THREAD_CONTEXT_MAX_CHARS;
+const CHAT_HANDOFF_EMPTY_TRANSCRIPT_PRIMER = "(The source conversation had no messages to carry over.)";
+
+/*
+FNXC:ChatHandoff 2026-09-09-18:38:
+A handoff child has AT MOST ONE row written before its first send: the role:"system" primer, created
+in the same call that creates the session. So a forward page of a handful of rows can always find it
+without a role filter (ChatMessagesFilter has none) or a new store method, and an ordinary chat —
+whose first row is a real turn, not a primer — returns in one cheap read. Larger pages are pure waste.
+*/
+const CHAT_HANDOFF_PRIMER_SCAN_LIMIT = 4;
+
+function formatHandoffMessageLine(message: ChatMessage): string {
+  const body = truncateWithEllipsis(message.content ?? "", CHAT_HANDOFF_MESSAGE_MAX_CHARS).replace(/\s+/g, " ");
+  const attachments = message.attachments?.length
+    ? ` [attached: ${message.attachments.map((attachment) => attachment.originalName || attachment.filename).join(", ")}]`
+    : "";
+  return `(${message.role}) ${body}${attachments}`;
+}
+
+/**
+ * Deterministic chronological digest of a Direct transcript: role-prefixed lines, per-message
+ * truncation, and a total cap enforced by dropping the OLDEST lines (the tail is what a continued
+ * conversation needs most). Attachments appear as names only — bytes have no place in a digest.
+ */
+export function buildHandoffTranscript(messages: ChatMessage[], opts?: { earlierElided?: boolean }): string {
+  const lines = messages.map(formatHandoffMessageLine);
+  const kept: string[] = [];
+  let used = 0;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]!;
+    const cost = line.length + 1;
+    if (used + cost > CHAT_HANDOFF_TRANSCRIPT_MAX_CHARS) {
+      if (kept.length === 0) {
+        kept.push(line.slice(0, CHAT_HANDOFF_TRANSCRIPT_MAX_CHARS));
+      }
+      break;
+    }
+    kept.push(line);
+    used += cost;
+  }
+  kept.reverse();
+  const elidedCount = messages.length - kept.length;
+  const notes: string[] = [];
+  if (elidedCount > 0) {
+    notes.push(`[${elidedCount} earlier message(s) elided for length]`);
+  }
+  // The fetch is bounded, so a long conversation loses its opening before the digest ever runs.
+  // Saying so keeps the briefing from presenting a truncated record as the whole conversation.
+  if (opts?.earlierElided) {
+    notes.push(`[older messages beyond the last ${CHAT_HANDOFF_TRANSCRIPT_FETCH_LIMIT} were not read]`);
+  }
+  const header = notes.length > 0 ? `${notes.join("\n")}\n` : "";
+  return `${header}${kept.join("\n")}`;
+}
+
+export type ChatHandoffRefusalCode =
+  | "not-found"
+  | "disabled"
+  | "room-unsupported"
+  | "cli-backed-unsupported"
+  | "task-planner-unsupported"
+  | "source-not-active"
+  | "generation-in-progress"
+  | "unknown-model"
+  | "archival-failed";
+
+/**
+ * The two run-audit markers a handoff produces. Their names and metadata keys are the RUFU-199 audit
+ * contract: `created` covers both the briefed and the degraded primer, `failed` covers every refusal
+ * and the archival compensation.
+ */
+export type ChatHandoffAuditMarker = "chat:handoff-session-created" | "chat:handoff-session-failed";
+
+/**
+ * Fixed audit outcomes. `summarizer-failed` is part of the declared contract but unreachable in v1:
+ * honest degradation means a briefing failure still CREATES the handoff, so it reports
+ * `degraded-created` instead of failing the card.
+ */
+export type ChatHandoffAuditOutcome =
+  | "created"
+  | "degraded-created"
+  | "summarizer-failed"
+  | "archival-failed"
+  | "refused";
+
+/**
+ * RUFU-199 refusal carrying the HTTP status the route maps, so the manager owns eligibility and the
+ * route stays a thin translator. `code` is a fixed enum: it is what lands in run-audit, never prose.
+ */
+export class ChatHandoffError extends Error {
+  constructor(
+    readonly code: ChatHandoffRefusalCode,
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ChatHandoffError";
+  }
+}
+
+/**
+ * The primer row's `metadata.handoff` object, composed COMPLETE in the creating write and never patched
+ * afterwards: `updateChatMessageMetadata` merges one level deep, so a later partial object here would
+ * erase the fields the visible notice and the one-time injection gate both read. Delivery state lives
+ * beside it as the separate top-level `handoffDeliveredAt` scalar for the same reason.
+ */
+export interface ChatHandoffLineage {
+  fromSessionId: string;
+  fromTitle: string;
+  degraded: boolean;
+}
+
+export interface ChatHandoffResult {
+  session: ChatSession;
+  degraded: boolean;
+  summaryChars: number;
+  sourceSessionId: string;
+}
+
 function formatAttachmentSize(size: number): string {
   if (size < 1024) return `${size}B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)}KB`;
@@ -1183,6 +1507,23 @@ export interface ChatFailureInfo {
   reference?: ChatFailureReference;
 }
 
+/**
+ * FNXC:ChatMessageEdit 2026-09-16-05:58:
+ * Wire shape of the persisted user row carried by the in-band `user_message` stream event. It is the
+ * `ChatMessage` structure narrowed to `role: "user"`; `ChatStore.addMessage` returns the persisted
+ * `msg-<uuid8>` id that the client uses to retire its optimistic `temp-<ts>` bubble.
+ */
+export interface ChatStreamUserMessagePayload {
+  id: string;
+  sessionId: string;
+  role: "user";
+  content: string;
+  thinkingOutput: string | null;
+  metadata: Record<string, unknown> | null;
+  attachments?: ChatAttachment[];
+  createdAt: string;
+}
+
 /** SSE event types for chat streaming */
 export type ChatStreamEvent =
   | { type: "thinking"; data: string }
@@ -1201,6 +1542,32 @@ export type ChatStreamEvent =
         projectId: string | null;
       };
     }
+  /*
+  FNXC:ChatPhaseStatus 2026-09-05-10:23:
+  RUFU-188 (operator-requested): a chat reply waiting on long engine-internal background work
+  showed a bare "Working…" with no hint of what was running. This side-channel variant — the
+  sibling of the existing `fallback`/`warning` side channels — reports an engine phase so the
+  streaming placeholder can read "Working (compacting…)" while the work is in flight.
+  Exactly one phase value (`compacting`) exists today; the `phase`/`active` shape lets later
+  phases be added without re-designing the channel. A phase is transient render state: it is
+  never persisted to a message row, and `active: false` is always emitted with `active: true`
+  as a pair so a `Last-Event-ID` buffer replay cannot leave the label stuck on its own.
+  */
+  | { type: "phase"; data: { phase: "compacting"; active: boolean } }
+  /*
+  FNXC:ChatSendDurability 2026-09-07-11:00:
+  RUFU-192 (operator lost prompts): the SSE route flushes its headers and the client's `onAccepted`
+  fires at `res.ok` BEFORE `ChatManager.sendMessage` runs, so acceptance has never been proof that
+  the user turn was stored — every send that died between those points (or at `addMessage` itself)
+  silently destroyed the typed prompt. This side-channel variant — the sibling of the existing
+  `fallback`/`warning`/`phase` channels — acknowledges that the user row now exists: it is broadcast
+  immediately after `chatStore.addMessage` resolves, before agent resolution and mention dispatch.
+  The payload is the persisted row id ONLY; prompt text, drafts, and any payload content must never
+  enter this event (ids and counts only). Consumers must treat it as advisory and idempotent: a
+  `Last-Event-ID` replay can redeliver it, and the absence of it (with or without a later `error`
+  broadcast) is the non-persisted signal the composer uses to keep its text.
+  */
+  | { type: "user_persisted"; data: { messageId: string } }
   | {
       type: "done";
       data: {
@@ -1220,6 +1587,21 @@ export type ChatStreamEvent =
         dispatch?: "agents";
         failedAgentNames?: string[];
       };
+    }
+  /*
+  FNXC:ChatMessageEdit 2026-09-16-05:58:
+  The persisted identity of the user turn must travel in-band on the reply stream. The out-of-band
+  `chat:message:added` echo cannot be a correctness dependency for message identity: the `ChatStore`
+  instance resolved by `resolveProjectChatContext` on the send route is not necessarily the instance
+  subscribed by `createSSEHandler`, and `enrichChatMessageSsePayload` rejections are swallowed inside
+  a detached `void (async () => …)` in `sse.ts`. Without this event the optimistic `temp-<ts>` bubble
+  could keep its local id forever, and an edit saved against it produced a guaranteed 404
+  (`Message temp-… not found in session …`). The generic `writeSSEEvent(res, event.type, …)` bridge in
+  `register-chat-routes.ts` forwards this variant with no route change.
+  */
+  | {
+      type: "user_message";
+      data: { message: ChatStreamUserMessagePayload };
     }
   | {
       type: "agent_message";
@@ -1258,6 +1640,18 @@ interface RateLimitEntry {
 
 /** Rate limiting state indexed by IP */
 const rateLimits = new Map<string, RateLimitEntry>();
+
+// Census registration is the reclamation owner for this map: no sweep existed before RUFU-257, so
+// expiry deletion and the ceiling clamp both run from the census sample. Limit, window, and the
+// reset time reported to clients are unchanged.
+registerBoundedWindowMap<string, RateLimitEntry>({
+  id: "chat_rate_limits",
+  map: rateLimits,
+  ceiling: CHAT_RATE_LIMIT_IP_MAX,
+  ceilingConstant: "CHAT_RATE_LIMIT_IP_MAX",
+  expiryOf: (entry) => entry.firstRequestAt.getTime() + RATE_LIMIT_WINDOW_MS,
+  valueBytes: () => RATE_LIMIT_ENTRY_BYTES,
+});
 
 // ── File Reference Resolution ───────────────────────────────────────────────
 
@@ -1515,6 +1909,9 @@ export function checkRateLimit(ip: string): boolean {
       count: 1,
       firstRequestAt: new Date(),
     });
+    // Ceiling is enforced at the insert site so a burst of distinct addresses inside one census
+    // interval cannot outrun the bound; expired-window deletion is the census sweep's job.
+    enforceEntryCeiling(rateLimits, CHAT_RATE_LIMIT_IP_MAX);
     return true;
   }
 
@@ -1525,6 +1922,7 @@ export function checkRateLimit(ip: string): boolean {
       count: 1,
       firstRequestAt: new Date(),
     });
+    enforceEntryCeiling(rateLimits, CHAT_RATE_LIMIT_IP_MAX);
     return true;
   }
 
@@ -1599,11 +1997,47 @@ export class ChatReplacementError extends Error {
 
 export class ChatManager {
   private agentStoreReady?: Promise<void>;
+  /**
+   * FNXC:ChatContextBudget 2026-09-02-15:58 (merge origin/main 572beadbb2 → main):
+   * Latest settings snapshot used ONLY by the RUFU-135 chat-context-budget kill switch
+   * on the direct-chat send path. Upstream FN-9241 made "sending never waits on
+   * settings" a hard invariant (title work moved into a detached read; pinned by
+   * chat-manager.test "does not wait for title settings before prompting the chat
+   * agent"), which the awaited kill-switch read violated. The switch now reads this
+   * cache (undefined → default ON) and refreshes it fire-and-forget per send AFTER the
+   * detached title block, so the refresh never steals the title operation's first
+   * settings-read slot (the FN-9241 pin mock hangs read #1 and asserts summarizeTitle
+   * stays uncalled). The hot toggle still takes effect from the next send without ever
+   * gating a prompt.
+   */
+  private chatBudgetSnapshot?: { chatContextBudgetEnabled?: boolean };
   private generationCounter = 0;
   private inFlightPersistTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private inFlightPersistChains = new Map<string, Promise<void>>();
   private activeGenerations = new Map<string, ActiveChatGeneration>();
   private replacementPreparations = new Map<string, ChatReplacementPreparation>();
+  /*
+  FNXC:ChatHandoff 2026-09-09-17:36:
+  RUFU-199 single-flight guard: two simultaneous handoff clicks on one source would otherwise each
+  archive-check a still-active source and create two siblings. Keyed by SOURCE id, because that is the
+  resource being consumed; it is an in-process guard only, and the durable guard is the source's
+  `archived` status re-read immediately before the archive write.
+  */
+  private handoffInFlight = new Map<string, Promise<ChatHandoffResult>>();
+
+  /*
+  FNXC:ChatHandoff 2026-09-09-18:38:
+  In-process record of primers already handed to a model this process, keyed source-agnostic by the
+  CHILD session id -> primer message id. Consulted ALONGSIDE the durable `handoffDeliveredAt` stamp so
+  a stamp write that fails mid-process cannot silently re-inject on the next turn. A brand-new process
+  is a blank slate (documented residual), and the durable stamp remains the cross-process authority;
+  at-least-once is acceptable, at-most-once-by-a-premature-stamp is not (a lost primer is a lost
+  conversation context). Cleared per (session, primer) implicitly when the primer row is archived with
+  the session — it is never re-read once the stamp is set, EXCEPT that a rewind which replaces the pi
+  session file clears both records (see `rearmHandoffPrimerAfterContextLoss`): the fresh file no longer
+  carries the briefing the stamp attests was delivered.
+  */
+  private handoffPrimersDelivered = new Map<string, string>();
 
   constructor(
     private chatStore: ChatStore,
@@ -1800,6 +2234,13 @@ export class ChatManager {
       return;
     }
 
+    /*
+     * FNXC:ChatCancellation 2026-09-12-20:50:
+     * RUFU-230. A baked streamed prefix is an INTERRUPTED turn, not a completed one, so it is recorded with
+     * pi-ai's legal `"aborted"` stopReason instead of `"stop"`. Honest state matters twice over here: the model
+     * still sees the prefix it already produced, and the done-handler authoritative-reply join can now filter the
+     * ghost slice out of the next turn's persisted text instead of prepending it ("Sk" before "Skúsim — priamo.").
+     */
     sessionManager.appendMessage({
       role: "assistant",
       content: [{ type: "text", text }],
@@ -1814,7 +2255,7 @@ export class ChatManager {
         totalTokens: 0,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
       },
-      stopReason: "stop",
+      stopReason: "aborted",
       timestamp: Date.now(),
     });
   }
@@ -1890,6 +2331,27 @@ export class ChatManager {
       diagnostics.warn(`Failed to load room compaction settings: ${message}`);
       return defaults;
     }
+  }
+
+  /**
+   * FNXC:ChatHandoff 2026-09-09-17:21:
+   * RUFU-199: sanitized read of the cross-session handoff knobs. Mirrors getRoomCompactionSettings()
+   * rather than trusting getChatModelSettings()'s raw passthrough, because an unusable threshold would
+   * otherwise spam the affordance on a short chat (a tiny number) or hide it forever (a huge one):
+   * the percent is clamped to CHAT_HANDOFF_THRESHOLD_MIN/MAX_PCT with fallback to the schema default
+   * for a non-finite or out-of-range value. The enable flag is strict-true coercion, so only an
+   * explicit true/false is honoured and an absent value keeps the feature on.
+   */
+  private async getChatHandoffSettings(): Promise<{ enabled: boolean; thresholdPercent: number }> {
+    const settings = await this.getChatModelSettings();
+    const raw = settings?.chatHandoffThresholdPercent;
+    const thresholdPercent = typeof raw === "number" && Number.isFinite(raw)
+      ? Math.min(CHAT_HANDOFF_THRESHOLD_MAX_PCT, Math.max(CHAT_HANDOFF_THRESHOLD_MIN_PCT, Math.round(raw)))
+      : CHAT_HANDOFF_DEFAULT_THRESHOLD_PCT;
+    return {
+      enabled: settings?.chatHandoffEnabled !== false,
+      thresholdPercent,
+    };
   }
 
   private handleFallbackModelUsed(
@@ -2347,14 +2809,48 @@ export class ChatManager {
     await ensureEngineReady();
 
     let systemPrompt = CHAT_SYSTEM_PROMPT;
+    // FNXC:ChatContextBudget 2026-08-20-16:20:
+    // Runtime kill switch for the RUFU-135 chat context budget
+    // (Settings.chatContextBudgetEnabled): false restores the pre-RUFU-135
+    // prompt shape — unbounded memory inlining and the full registered tool
+    // set — so a production regression in the budget is disableable without
+    // a redeploy. Read per reply (hot) like the pre-overflow guard toggle.
+    const roomChatBudgetOn = (await this.getChatModelSettings()).chatContextBudgetEnabled !== false;
     if (buildAgentChatPromptFn) {
       try {
+        /*
+        FNXC:PerTurnMemoryRecall 2026-08-19-01:05:
+        RUFU-120 (B.2): room-responder replies rebuild the system prompt per reply, so
+        passing the reply input as the recall topic gives each responder a deduped, bounded
+        per-turn memory cue for the current topic (sessionKey room:<roomId> keeps dedup
+        scoped per room). This composes with, never replaces, RUFU-118's between-turn
+        compaction gate (chat-context-guard) — recall runs inside prompt assembly, strictly
+        before that turn's LLM call, and is additive (recall failures leave the prompt unchanged).
+        */
         systemPrompt = await buildAgentChatPromptFn({
           agent: input.responder,
           rootDir: this.rootDir,
           agentStore: this.agentStore,
           basePrompt: CHAT_SYSTEM_PROMPT,
           includeProjectMemory: true,
+          /*
+          FNXC:ChatContextBudget 2026-08-20-11:56:
+          Room responders share the direct-chat context budget: unbounded project +
+          agent memory injection is what pushed agent-bound chat past the 80%
+          compaction threshold on 128K-window models (ChatContextOverflowError
+          dead-end) and made 64K-window models unusable (user requirement: chat
+          must work on 64K-context models). Oversized memory is inlined as a
+          bounded heading index instead; full content stays reachable via
+          fn_memory_search / fn_memory_get.
+          */
+          memoryCapChars: roomChatBudgetOn ? CHAT_MEMORY_CAP_CHARS : undefined,
+          topic: input.content,
+          sessionId: `room:${input.roomId}`,
+          // FNXC:OperatorLanguage 2026-09-16-13:05: room responders honor the operator language setting (PR review).
+          settings: await this.getChatModelSettings(),
+          // RUFU-172: no focus is passed — a ChatRoom has no persisted memory_focus field
+          // (only a ChatSession does), so room responders honestly carry no focus and their
+          // recall stays on the whole-project single-search cue. Not an omission.
         });
       } catch (error) {
         diagnostics.warn(`Failed to build chat prompt for room responder ${input.responder.id}: ${error instanceof Error ? error.message : String(error)}`);
@@ -2427,6 +2923,13 @@ export class ChatManager {
      */
     const allowFallback = true;
     let roomFallbackInfo: { primaryModel: string; fallbackModel: string; triggerPoint: "session-creation" | "prompt-time" } | undefined;
+    /*
+    FNXC:ChatContextGuardTier3 2026-09-04-22:51:
+    RUFU-183: room replies carry the same tier-3 disclosure as direct-chat replies - the
+    gate's rescue evidence rides `metadata.contextTruncation` on the responder's NEW room
+    message (see the sendMessage lane for the notice contract). History rows untouched.
+    */
+    let roomContextTruncationNotice: CompactionGateResult["fallback"];
 
     const roomSkillContext = buildSessionSkillContextSync(
       input.responder,
@@ -2455,6 +2958,7 @@ export class ChatManager {
       rerouteFailedNoVerdictPreMergeReview: this.rerouteFailedNoVerdictPreMergeReview,
     });
 
+    const roomCustomTools = dedupeChatTools([...workflowTools, ...chatFusionTools]);
     const resolvedSession = await createResolvedAgentSession({
       sessionPurpose: "heartbeat",
       pluginRunner: this.pluginRunner,
@@ -2472,9 +2976,20 @@ export class ChatManager {
       cwd: this.rootDir,
       systemPrompt,
       tools: CHAT_CODING_TOOLS,
-      ...(workflowTools.length + chatFusionTools.length > 0
-        ? { customTools: dedupeChatTools([...workflowTools, ...chatFusionTools]) }
-        : {}),
+      /*
+      FNXC:ChatContextBudget 2026-08-20-11:56:
+      Explicit tool-name allowlist: hides the 86 host-extension executor fn_* tools
+      from room-responder sessions (see CHAT_CODING_TOOL_ALLOWLIST) so the static
+      tool-schema payload stays within the chat context budget.
+      FNXC:ChatContextBudget 2026-08-20-12:43:
+      The allowlist is global (the engine also filters caller customTools by it),
+      so it must include the curated room customTools names or they are dropped —
+      only the builtin coding tools would remain.
+      */
+      toolsAllowlist: roomChatBudgetOn ? chatToolAllowlist(roomCustomTools.map((tool) => tool.name)) : undefined,
+      // Room responders are a chat surface — same scoped MCP pass-through as direct chat.
+      allowMcpToolsThroughAllowlist: true,
+      ...(roomCustomTools.length > 0 ? { customTools: roomCustomTools } : {}),
       ...(effectiveModelProvider && effectiveModelId
         ? {
             defaultProvider: effectiveModelProvider,
@@ -2499,6 +3014,41 @@ export class ChatManager {
     });
 
     try {
+      /*
+      FNXC:ChatContextGuard 2026-08-18-18:06:
+      RUFU-118: same deterministic pre-overflow compaction gate as sendMessage, on the room
+      responder seam. tokenCap is the operator's upper bound on the effective threshold;
+      unset means the engine default of 80% of the per-model context window. A
+      ChatContextOverflowError thrown here propagates through the responder catch into
+      responderFailures (and RoomReplyGenerationError → ApiError 502 when every responder
+      fails) — the existing room failure pattern — so the operator sees which responder's
+      context overflowed instead of receiving a doomed 1-token reply.
+      RUFU-182 (2026-09-04): the gate now reports its per-invocation compaction decision
+      (tier attempted, refusal reason, before/after tokens) to the task-store run-audit
+      sink, keyed to `room:<roomId>` so a room responder's overflow is answerable after
+      the fact. A missing/throwing sink never changes the gate's outcome.
+
+      FNXC:ChatPhaseStatus 2026-09-05-10:23:
+      RUFU-188 deliberately does NOT emit a `phase` event around this room gate. A room responder
+      has no stream to report a phase over: this function's input carries no sessionId and no
+      generationId, it issues no `chatStreamManager` broadcast anywhere, and its only caller
+      `sendRoomMessage` likewise does not touch the stream manager — `POST /chat/rooms/:id/messages`
+      is an awaited JSON request/response (`register-chat-room-routes.ts`) with no SSE subscribe and
+      no generation begin, so a phase frame emitted here would have no subscriber to reach. Room
+      behaviour stays exactly as it is today; giving room sends a stream so engine phases can surface
+      is deferred to a separate follow-up task that must land the room stream first.
+      */
+      const roomGateResult = await ensureContextWithinCompactionThreshold(resolvedSession.session, {
+        tokenCap: chatModelSettings.tokenCap,
+        enabled: chatModelSettings.chatPreOverflowCompactionEnabled !== false,
+        // See the direct-chat gate: room responders price their composed roomPrompt too.
+        pendingRequestTokens: estimatePendingRequestTokens(roomPrompt),
+        audit: { sink: this.taskStore, sessionId: `room:${input.roomId}` },
+      });
+      if (roomGateResult.fallback) {
+        roomContextTruncationNotice = roomGateResult.fallback;
+      }
+
       await enginePromptWithFallback(
         resolvedSession.session,
         roomPrompt,
@@ -2541,6 +3091,7 @@ export class ChatManager {
         metadata: {
           roomId: input.roomId,
           ...(roomFallbackInfo ? { fallback: roomFallbackInfo } : {}),
+          ...(roomContextTruncationNotice ? { contextTruncation: roomContextTruncationNotice } : {}),
         },
         ...(tokenDelta ? { tokenUsage: { ...tokenDelta, modelProvider: model.provider, modelId: model.modelId } } : {}),
       };
@@ -2609,7 +3160,15 @@ export class ChatManager {
     await ensureEngineReady();
     let systemPrompt = CHAT_SYSTEM_PROMPT;
     if (buildAgentChatPromptFn) {
-      try { systemPrompt = await buildAgentChatPromptFn({ agent: input.responder, rootDir: this.rootDir, agentStore: this.agentStore, basePrompt: CHAT_SYSTEM_PROMPT, includeProjectMemory: true }); }
+      /*
+      FNXC:RUFU172MentionedAgentLane 2026-09-01-17:42:
+      RUFU-172 threads an operator focus into proactive per-turn recall, and this site
+      deliberately passes none — it passes no `topic` either, so recall is already inert
+      here (the core returns "" for a blank topic before searching). Deliberate, not a
+      missed surface.
+      */
+      // FNXC:OperatorLanguage 2026-09-16-13:05: mentioned room responders honor the operator language setting (PR review).
+      try { systemPrompt = await buildAgentChatPromptFn({ agent: input.responder, rootDir: this.rootDir, agentStore: this.agentStore, basePrompt: CHAT_SYSTEM_PROMPT, includeProjectMemory: true, settings: await this.getChatModelSettings() }); }
       catch (error) { diagnostics.warn(`Failed to build mentioned chat prompt for ${input.responder.id}: ${error instanceof Error ? error.message : String(error)}`); }
     }
     const mentionContext = await this.buildMentionContext(input.mentions);
@@ -2699,13 +3258,144 @@ export class ChatManager {
    * @param modelProvider - Optional model provider override
    * @param modelId - Optional model ID override
    */
+  /*
+  FNXC:ChatTitleGeneration 2026-09-16-05:27:
+  Automatic chat-title generation is a SINGLE shared seam reached by both `sendMessage` paths.
+  The CLI-agent-backed branch returns before the model loop, so when the generation block lived
+  inline after the agent-model resolution those conversations stayed "Untitled" forever.
+  The store write is AWAITED inside the detached task because `ChatStore.updateSession` is what
+  emits `chat:session:updated`. The task itself is never awaited by the caller: message sending
+  and response generation must never wait on the summary.
+  Only `{ title }` is written — no other session field is touched on the way through.
+
+  FNXC:ChatTitleGeneration 2026-09-17-11:42:
+  FN-505 splits naming into two stages because this seam alone could never satisfy the operator
+  requirement "the conversation is named before the agent replies": `summarizeTitle` builds a full
+  pi agent session before emitting a character, so its write structurally landed after the main
+  response had begun. Stage one is now `applyProvisionalSessionTitle`, AWAITED before any model
+  work on all three `sendMessage` paths (model loop, CLI agent, and the `mentions` dispatch that
+  previously returned before the title was ever scheduled, leaving those conversations unnamed
+  forever). This detached stage two only REFINES that name.
+  Because the provisional title is already persisted, the refinement writes CONDITIONALLY: it
+  re-reads the session immediately before writing and keeps quiet unless the stored title is still
+  exactly the provisional one (or still empty). That compare-and-set is what keeps a manual rename
+  landing mid-generation authoritative. For the same reason the old "retry with the truncated
+  fallback" branch is REMOVED: the truncated title is now written up front, so retrying it here
+  would only emit a second, redundant `chat:session:updated`.
+  */
+  private scheduleSessionTitleGeneration(
+    sessionId: string,
+    content: string,
+    modelProvider?: string,
+    modelId?: string,
+    provisionalTitle: string | null = null,
+  ): void {
+    const titleSettingsPromise = this.getChatModelSettings();
+    /*
+    FNXC:ChatTitleLanguage 2026-09-01-21:25:
+    Chat titles follow the resolved taskOutputLanguage policy just like task titles. Resolve the
+    settings only inside this detached title operation so message sending never waits on title work.
+    */
+    void (async () => {
+      let title: string | null = null;
+      try {
+        const titleLanguageTarget = resolveTaskOutputLanguage(await titleSettingsPromise, content.trim());
+        // The summarizer always receives the RAW first message, never the provisional title.
+        title = await summarizeTitle(
+          content.trim(),
+          this.rootDir,
+          modelProvider,
+          modelId,
+          titleLanguageTarget,
+        );
+      } catch {
+        // A failed summary keeps the already-persisted provisional title.
+        return;
+      }
+      const refined = title?.trim();
+      if (!refined || refined === provisionalTitle) return;
+      try {
+        // Compare-and-set: never clobber a title the user (or anything else) wrote meanwhile.
+        const current = await this.chatStore.getSession(sessionId);
+        const storedTitle = current?.title ?? null;
+        const storedIsProvisional = provisionalTitle !== null && storedTitle === provisionalTitle;
+        if (!storedIsProvisional && !this.sessionNeedsGeneratedTitle(storedTitle)) return;
+        await this.chatStore.updateSession(sessionId, { title: refined });
+      } catch {
+        // Swallow: title refinement is best-effort and never blocks the conversation.
+      }
+    })();
+  }
+
+  /*
+  FNXC:ChatTitleGeneration 2026-09-17-11:42:
+  Stage one of FN-505's two-stage naming: a deterministic title derived from the first user message,
+  written and broadcast BEFORE any model work so the header never shows "Untitled conversation"
+  while the assistant is already replying. The store write is awaited (it is what emits
+  `chat:session:updated`), but a failing write is swallowed: naming is a nicety and must never fail
+  an accepted send. Only `{ title }` is written, and only when the session has no usable title yet.
+  The current title is passed in rather than re-read: `sendMessage` already holds the session, and
+  this write sits on the latency-critical path that must complete before any model work starts.
+  */
+  private async applyProvisionalSessionTitle(
+    sessionId: string,
+    content: string,
+    currentTitle: string | null | undefined,
+  ): Promise<string | null> {
+    try {
+      if (!this.sessionNeedsGeneratedTitle(currentTitle)) return null;
+      const title = buildProvisionalChatTitle(content);
+      if (!title) return null;
+      await this.chatStore.updateSession(sessionId, { title });
+      return title;
+    } catch {
+      // Swallow: an unnamed conversation is preferable to a rejected send.
+      return null;
+    }
+  }
+
+  /** True when a session carries no usable title yet and should be auto-named. */
+  private sessionNeedsGeneratedTitle(title: string | null | undefined): boolean {
+    return title === null || title === undefined || title.trim() === "";
+  }
+
+  /*
+  FNXC:ChatQuestionAnswerLink 2026-09-23-13:59:
+  RUFU-258: the single writer for the durable question→answer link. Returns the id of the assistant
+  row whose `fn_ask_question` is awaiting input, so the caller stamps the user row it is about to
+  persist. System sends are excluded before any read: an auto-retry or restart-recovery message is
+  machine text, never an operator answer, and stamping it would make a question card quote a
+  "System auto-retry…" paragraph as its submitted answer.
+
+  The read is bounded (DESC, QUESTION_ANSWER_TAIL_LIMIT) — this sits on every chat send, so a
+  whole-history read would be a latency regression — and its failure is swallowed to `null`: a
+  telemetry-quality derivation must never reject the send that carries the operator's message.
+  */
+  private async resolveOutgoingQuestionAnswerLink(
+    sessionId: string,
+    options?: { autoRetry?: boolean; userMessageMetadata?: Record<string, unknown> },
+  ): Promise<string | null> {
+    if (options?.autoRetry === true) return null;
+    const systemReason = options?.userMessageMetadata?.reason;
+    if (typeof systemReason === "string" && systemReason.trim().length > 0) return null;
+    try {
+      const newestFirst = await this.chatStore.getMessages(sessionId, {
+        order: "desc",
+        limit: QUESTION_ANSWER_TAIL_LIMIT,
+      });
+      return findAwaitingQuestionMessageId([...newestFirst].reverse());
+    } catch {
+      return null;
+    }
+  }
+
   async sendMessage(
     sessionId: string,
     content: string,
     modelProvider?: string,
     modelId?: string,
     attachments?: ChatAttachment[],
-    options?: { generationId?: number },
+    options?: { generationId?: number; autoRetry?: boolean; userMessageMetadata?: Record<string, unknown> },
   ): Promise<void> {
     // The SSE route allocates a generation via `beginGeneration` so it can subscribe
     // with a matching filter before this method runs. Direct callers (tests, internal
@@ -2743,6 +3433,25 @@ export class ChatManager {
     */
     if (session?.cliExecutorAdapterId && this.cliChatRunner) {
       const runner = this.cliChatRunner;
+      /*
+      FNXC:ChatTitleGeneration 2026-09-16-05:27:
+      CLI-agent-backed chat returns before the model loop, so it must reach the shared title seam
+      here or the conversation is never named. `summarizeTitle` already supports an absent model.
+
+      FNXC:ChatTitleGeneration 2026-09-17-11:42:
+      FN-505: the provisional name is awaited BEFORE `runner.ensureSession`, so the PTY handshake
+      (and everything it waits on) can no longer delay the conversation getting a readable name.
+      */
+      if (this.sessionNeedsGeneratedTitle(session.title)) {
+        const provisionalTitle = await this.applyProvisionalSessionTitle(sessionId, content, session.title);
+        this.scheduleSessionTitleGeneration(
+          sessionId,
+          content,
+          session.modelProvider ?? undefined,
+          session.modelId ?? undefined,
+          provisionalTitle,
+        );
+      }
       try {
         await runner.ensureSession(sessionId, {
           projectId: this.cliChatProjectId ?? session.projectId ?? "",
@@ -2779,9 +3488,29 @@ export class ChatManager {
     }
 
     let agentResult: AgentResult | undefined;
+    /*
+    FNXC:ChatAutoRetry 2026-09-17-16:30:
+    A turn that ends without a visible reply (model stopped right after tools, or an error
+    interrupted it mid-work) previously left the operator to copy-paste their own prompt.
+    The manager now re-prompts ONCE per operator turn - never for an explicit user Stop,
+    never for a budget-exhausted turn (a retry would hit the same wall), never while a
+    question tool is legitimately waiting for the user's answer, and never as a chain
+    (auto-retries themselves cannot trigger another). Set in the completion branches, fired
+    after the finally clears this generation's slot.
+    */
+    let autoRetryReason: "empty" | "provider-error" | undefined;
     let accumulatedThinking = "";
     let accumulatedText = "";
     let lastStreamEventId = 0;
+    /*
+    FNXC:ChatInFlightRecovery 2026-08-20-20:17 (RUFU-144):
+    Stamp the generation's start time into every in-flight snapshot persist (initial
+    flush and each streamed checkpoint). A generation cannot outlive the dashboard
+    process that started it and no owner/PID is recorded, so `startedAt` is the liveness
+    proof the engine self-healing sweep uses to clear flags stranded by a restart. The
+    null-clear flushes deliberately drop the whole payload and are untouched.
+    */
+    const generationStartedAt = new Date().toISOString();
     type ToolCallRecord = {
       toolName: string;
       args?: Record<string, unknown>;
@@ -2794,6 +3523,16 @@ export class ChatManager {
     let fallbackInfo:
       | { primaryModel: string; fallbackModel: string; triggerPoint: "session-creation" | "prompt-time" }
       | undefined;
+    /*
+    FNXC:ChatContextGuardTier3 2026-09-04-22:51:
+    RUFU-183: a successful tier-3 deterministic truncation must be operator-visible in the
+    chat, not only in run-audit. The gate's rescue evidence (dropped counts, static floor,
+    rebuilt measurement) is captured here and merged as `metadata.contextTruncation` into
+    whichever message this send ultimately persists - reply, interrupted partial, or
+    failure - so a deterministic shortening is never silent. Existing history rows are
+    never rewritten: the notice rides only the NEW message this turn appends.
+    */
+    let contextTruncationNotice: CompactionGateResult["fallback"];
     let failureContextProvider: string | undefined;
     let failureContextModelId: string | undefined;
 
@@ -2824,6 +3563,7 @@ export class ChatManager {
         ],
         replayFromEventId: lastStreamEventId,
         updatedAt: new Date().toISOString(),
+        startedAt: generationStartedAt,
       }, generationId);
     };
 
@@ -2844,6 +3584,7 @@ export class ChatManager {
         toolCalls: [],
         replayFromEventId: 0,
         updatedAt: new Date().toISOString(),
+        startedAt: generationStartedAt,
       }, generationId);
 
       const parsedSkillCommands = parseSkillCommands(content);
@@ -2852,16 +3593,58 @@ export class ChatManager {
       const mentionAgents = hasMentionCandidates ? await this.listAgentsForMentions() : [];
       const mentions = hasMentionCandidates ? await this.parseMentions(content, mentionAgents) : [];
 
+      /*
+      FNXC:ChatQuestionAnswerLink 2026-09-23-13:59:
+      RUFU-258: resolve the link BEFORE the insert, while the transcript still ends at the question
+      row the operator is answering. The stamped key is merged into the same object the mention and
+      caller-metadata spread already build, so `mentions` and any caller metadata survive — the merge
+      never replaces the object. An edit-and-resend needs no branch here: `prepareReplacement` has
+      already rewound the transcript, so this read sees the post-rewind tail and re-stamps correctly.
+      */
+      const baseUserMetadata: Record<string, unknown> = {
+        ...(mentions.length > 0 ? { mentions } : {}),
+        ...(options?.userMessageMetadata ?? {}),
+      };
+      const questionAnswerMessageId = await this.resolveOutgoingQuestionAnswerLink(sessionId, options);
+
       // Persist user message
       let persistedUserMessageId: string | undefined;
       try {
         const persistedUserMessage = await this.chatStore.addMessage(sessionId, {
           role: "user",
           content,
-          metadata: mentions.length > 0 ? { mentions } : undefined,
+          metadata: questionAnswerMessageId
+            ? withQuestionAnswerLink(baseUserMetadata, questionAnswerMessageId)
+            : (Object.keys(baseUserMetadata).length > 0 ? baseUserMetadata : undefined),
           attachments,
         });
         persistedUserMessageId = persistedUserMessage.id;
+        /*
+        FNXC:ChatSendDurability 2026-09-07-11:00:
+        RUFU-192: acknowledge durability the instant the row exists. The client composer keeps the
+        typed text (and its draft key) until this `user_persisted` event or an equivalent durable
+        hand-off, so the acknowledgement must fire here — before mention dispatch and before any
+        agent/model work that can fail — and carries the send's generation-scoped `broadcastOptions`
+        so the route's fenced subscriber receives it. Content stays an id only.
+        */
+        chatStreamManager.broadcast(sessionId, {
+          type: "user_persisted",
+          data: { messageId: persistedUserMessageId },
+        }, broadcastOptions);
+
+        /*
+        FNXC:ChatMessageEdit 2026-09-16-05:58:
+        Broadcast the persisted user row on the reply stream as soon as it exists, BEFORE any early
+        return (the mentions dispatch path returns here), so the client can replace its optimistic
+        `temp-<ts>` bubble by exact temp id. Identity telemetry is best-effort and must never enter
+        the message-save failure path, exactly like the usage event below.
+        */
+        try {
+          chatStreamManager.broadcast(sessionId, {
+            type: "user_message",
+            data: { message: persistedUserMessage as ChatStreamUserMessagePayload },
+          }, broadcastOptions);
+        } catch { /* best-effort identity echo; never fail the accepted send */ }
         /*
         FNXC:CommandCenterActivity 2026-08-09-10:46:
         A persisted human chat turn contributes one content-free usage event. Analytics must never enter
@@ -2888,7 +3671,29 @@ export class ChatManager {
         return;
       }
 
+      /*
+      FNXC:ChatTitleGeneration 2026-09-17-11:42:
+      FN-505: write the provisional title here — after the user message is persisted and echoed, and
+      before ANY model work on either remaining path. Placing it above the `mentions` dispatch is
+      what closes the real hole: that branch returns before the title was ever scheduled, so a first
+      message mentioning an agent left the conversation permanently unnamed.
+      */
+      const needsTitle = this.sessionNeedsGeneratedTitle(session.title);
+      const provisionalTitle = needsTitle
+        ? await this.applyProvisionalSessionTitle(sessionId, content, session.title)
+        : null;
+
       if (mentions.length > 0 && this.activeGenerations.get(sessionId)?.generationId === generationId) {
+        if (needsTitle) {
+          // The mentions path has no resolved chat model of its own; use the session's own pair.
+          this.scheduleSessionTitleGeneration(
+            sessionId,
+            content,
+            session.modelProvider ?? undefined,
+            session.modelId ?? undefined,
+            provisionalTitle,
+          );
+        }
         await this.dispatchMentionedAgentReplies({
           session,
           sessionId,
@@ -2910,8 +3715,6 @@ export class ChatManager {
       failureContextModelId = effectiveModelId;
       let hasExplicitAgentRuntimeModel = false;
 
-      const needsTitle = session.title === null || session.title === undefined || session.title.trim() === "";
-
       // Ensure engine is loaded
       await ensureEngineReady();
 
@@ -2920,6 +3723,19 @@ export class ChatManager {
       }
 
       let systemPrompt = CHAT_SYSTEM_PROMPT;
+      // FNXC:ChatContextBudget 2026-08-20-16:20:
+      // Runtime kill switch for the RUFU-135 chat context budget
+      // (Settings.chatContextBudgetEnabled): false restores the pre-RUFU-135
+      // prompt shape — unbounded memory inlining and the full registered tool
+      // set — so a production regression in the budget is disableable without
+      // a redeploy. Read per send (hot) like the pre-overflow guard toggle;
+      // declared here (function scope) so the session-creation toolsAllowlist
+      // below uses the same value as the prompt build.
+      // FNXC:ChatContextBudget 2026-09-02-15:58: the read is now non-blocking — this
+      // path reads only the cached snapshot (no settings call here) — to honor upstream
+      // FN-9241's invariant that prompting the chat agent never awaits settings; the
+      // fire-and-forget refresh runs below, after the detached title block.
+      const directChatBudgetOn = this.chatBudgetSnapshot?.chatContextBudgetEnabled !== false;
       let agent: Agent | null = null;
 
       if (this.agentStore && session.agentId) {
@@ -2935,12 +3751,50 @@ export class ChatManager {
 
       if (agent && buildAgentChatPromptFn) {
         try {
+          /*
+          FNXC:PerTurnMemoryRecall 2026-08-19-01:05:
+          RUFU-120 (B.2 LCM phase 2): this prompt is rebuilt before EVERY chat turn's LLM
+          call, so the per-turn recall topic is the user message of this turn
+          (skill-command-parsed content, falling back to the raw content). sessionKey
+          chat:<session.id> dedupes identical cues within the session only. Composes with,
+          never replaces, RUFU-118's between-turn compaction gate: recall is part of prompt
+          assembly (before this turn's LLM call) and any recall failure leaves the prompt unchanged.
+
+          FNXC:RUFU172ChatFocusLane 2026-08-31-19:41:
+          RUFU-172: an operator-set chat focus now also biases the PROACTIVE per-turn recall
+          cue, not just the fn_memory_search tool schema (previously the focus reached only the
+          toolset at createChatFusionToolset and the automatic cue ignored it). Gate it the
+          SAME way the toolset does — the persisted topic stays inert until
+          experimentalFeatures.chatFocus is on — and reuse one settings read for both the
+          recall gates and this gate. An undefined focus keeps the whole-project single-search
+          cue byte-identical, so room/flag-off/unset sessions are unaffected.
+          */
+          const chatPromptSettings = await this.getSettings?.();
+          const chatRecallFocus =
+            isExperimentalFeatureEnabled(chatPromptSettings, CHAT_FOCUS_FLAG) && session.memoryFocus?.trim()
+              ? session.memoryFocus
+              : undefined;
           systemPrompt = await buildAgentChatPromptFn({
             agent,
             rootDir: this.rootDir,
             agentStore: this.agentStore,
             basePrompt: CHAT_SYSTEM_PROMPT,
             includeProjectMemory: true,
+            /*
+            FNXC:ChatContextBudget 2026-08-20-11:56:
+            Chat context budget (see CHAT_MEMORY_CAP_CHARS): the CEO agent's chat
+            measured a ~124K-token static floor (full 228K-char project memory +
+            50K-char agent memory clamp + 86 executor tool schemas + AGENTS.md),
+            which dead-ended every send on 128K-window models and made 64K-window
+            models unusable. With the cap, oversized memory becomes a bounded
+            heading index, keeping the static floor near ~35K tokens.
+            */
+            memoryCapChars: directChatBudgetOn ? CHAT_MEMORY_CAP_CHARS : undefined,
+            topic: parsedSkillCommands.strippedContent || content,
+            sessionId: session.id,
+            // FNXC:OperatorLanguage 2026-09-16-13:05: direct agent chat honors the operator language setting (PR review).
+            settings: await this.getChatModelSettings(),
+            focus: chatRecallFocus,
           });
           systemPrompt = `${systemPrompt}\n\n${CHAT_AGENT_MESSAGE_ROUTING_GUIDANCE}`;
         } catch (promptBuildError) {
@@ -2998,39 +3852,25 @@ export class ChatManager {
         failureContextModelId = effectiveModelId;
       }
 
-      // Auto-generate chat title on first message if session has no title.
+      // Refine the already-persisted provisional chat title in the background.
       // Run after the agent fetch so the title-summarizer uses the agent's model.
       if (needsTitle) {
-        const titleSettingsPromise = this.getChatModelSettings();
-        /*
-        FNXC:ChatTitleLanguage 2026-09-01-21:25:
-        Chat titles follow the resolved taskOutputLanguage policy just like task titles. Resolve the
-        settings only inside this detached title operation so message sending never waits on title work.
-        */
-        // Fire-and-forget title generation (non-blocking)
-        (async () => {
-          try {
-            const titleLanguageTarget = resolveTaskOutputLanguage(await titleSettingsPromise, content.trim());
-            const generated = await summarizeTitle(
-              content.trim(),
-              this.rootDir,
-              effectiveModelProvider,
-              effectiveModelId,
-              titleLanguageTarget,
-            );
-            const title = generated ?? content.trim().slice(0, 60).trim();
-            if (title) {
-              this.chatStore.updateSession(sessionId, { title });
-            }
-          } catch {
-            // Fallback on any error
-            const fallback = content.trim().slice(0, 60).trim();
-            if (fallback) {
-              this.chatStore.updateSession(sessionId, { title: fallback });
-            }
-          }
-        })();
+        this.scheduleSessionTitleGeneration(
+          sessionId,
+          content,
+          effectiveModelProvider,
+          effectiveModelId,
+          provisionalTitle,
+        );
       }
+
+      // FNXC:ChatContextBudget 2026-09-02-16:02: per-send kill-switch refresh, fired
+      // AFTER the title block so the detached title read keeps the first settings-read
+      // slot that upstream FN-9241's pin mock relies on. Never awaited — see
+      // chatBudgetSnapshot.
+      void this.getChatModelSettings()
+        .then((snapshot) => { this.chatBudgetSnapshot = snapshot; })
+        .catch(() => { /* keep last-known snapshot; default-ON covers cold cache */ });
 
       if (mentions.length > 0) {
         const mentionContext = await this.buildMentionContext(mentions, mentionAgents);
@@ -3039,8 +3879,17 @@ export class ChatManager {
         }
       }
 
-      // Resolve #file references in the current message before sending to AI
-      const resolvedContent = await resolveFileReferences(parsedSkillCommands.strippedContent, this.rootDir);
+      // Resolve bounded #file and #chat references in the current message before sending to AI.
+      const fileResolvedContent = await resolveFileReferences(parsedSkillCommands.strippedContent, this.rootDir);
+      const conversationReferenceContext = await buildConversationReferenceContext({
+        chatStore: this.chatStore,
+        content: parsedSkillCommands.strippedContent,
+        currentSessionId: sessionId,
+        currentProjectId: session.projectId ?? null,
+      });
+      const resolvedContent = conversationReferenceContext
+        ? `${fileResolvedContent}\n\n${conversationReferenceContext}`
+        : fileResolvedContent;
 
       const attachmentSummary = attachments && attachments.length > 0
         ? `[User attached: ${attachments
@@ -3061,11 +3910,27 @@ export class ChatManager {
       */
       const imagePathHints = formatChatImageAttachmentHints(imageContents);
 
+      /*
+      FNXC:ChatHandoff 2026-09-09-18:38:
+      A handoff child's model context is its file-backed pi session, NOT chat_messages rows, so the
+      LLM-generated briefing written as a role:"system" primer row would never reach the model on its
+      own — it is display-only unless injected into the FIRST prompt turn. Resolve it (gated on the
+      primer row's delivery stamp, not on cliSessionFile — see resolveHandoffPrimerForInjection) and
+      prepend it as the first part. A store hiccup here must not cost the operator the send they asked
+      for, so a read failure degrades to "no primer" rather than throwing.
+      */
+      let handoffPrimer: { primerMessageId: string; block: string } | null = null;
+      try {
+        handoffPrimer = await this.resolveHandoffPrimerForInjection(sessionId);
+      } catch {
+        handoffPrimer = null;
+      }
+
       // Send only the new user content. Prior turns are reloaded by the
       // pi/Claude CLI session via SessionManager.open() below — stuffing the
       // transcript back into the user message would balloon the on-disk
       // session every turn (and previously did, see chat-store.ts:setCliSessionFile).
-      const promptContent = [attachmentSummary, imagePathHints, attachmentContentBlock, resolvedContent]
+      const promptContent = [handoffPrimer?.block, attachmentSummary, imagePathHints, attachmentContentBlock, resolvedContent]
         .filter(Boolean)
         .join("\n\n");
 
@@ -3211,6 +4076,9 @@ export class ChatManager {
         value is inert and both direct and room chat recall remain whole-project.
         */
         focus: session?.memoryFocus ?? undefined,
+        chatStore: this.chatStore,
+        currentChatSessionId: sessionId,
+        currentProjectId: session?.projectId ?? null,
         isMergePending: this.isMergePending,
         resetInReviewMergeRetry: this.resetInReviewMergeRetry,
         rerouteFailedNoVerdictPreMergeReview: this.rerouteFailedNoVerdictPreMergeReview,
@@ -3233,6 +4101,20 @@ export class ChatManager {
         cwd: this.rootDir,
         systemPrompt,
         tools: CHAT_CODING_TOOLS,
+        /*
+        FNXC:ChatContextBudget 2026-08-20-11:56:
+        Hide the 86 host-extension executor fn_* tools from direct chat/QuickChat
+        sessions (explicit allowlist → pi filters every registered tool to the
+        curated chat toolset + builtin coding tools). See CHAT_CODING_TOOL_ALLOWLIST.
+        FNXC:ChatContextBudget 2026-08-20-12:43:
+        The allowlist is global (the engine also filters caller customTools by it),
+        so the curated chat toolset names must be included or every fn_* chat tool
+        is dropped from the session (observed: chat shrank to the 7 builtin tools).
+        */
+        toolsAllowlist: directChatBudgetOn ? chatToolAllowlist(customTools.map((tool) => tool.name)) : undefined,
+        // Chat's own MCP integrations (fusion-memory) connect after the allowlist is built;
+        // only chat opts into letting them pass it (#3620 review — automation lanes stay strict).
+        allowMcpToolsThroughAllowlist: true,
         ...(customTools.length > 0 ? { customTools } : {}),
         sessionManager,
         ...(effectiveModelProvider && effectiveModelId
@@ -3361,12 +4243,112 @@ export class ChatManager {
         throw new Error("Generation cancelled");
       }
 
+      /*
+      FNXC:ChatContextGuard 2026-08-18-18:06:
+      RUFU-118: deterministic pre-overflow compaction gate on the dashboard chat model seam.
+      Re-measure the loaded context and compact BEFORE the prompt so a context that no
+      longer fits the model window never becomes an over-window provider call (pi's own
+      threshold compaction is blind when the provider omits usage — see Step 1 root cause).
+      tokenCap is the operator's upper bound on the effective threshold; unset means the
+      engine default of 80% of the per-model context window. The gate throws
+      ChatContextOverflowError instead of sending a doomed prompt; that error is caught
+      in the dedicated branch below and surfaced through the existing failure pattern.
+      RUFU-118 (2026-08-19-15:05): the gate is an opt-out project option (selectable
+      feature, not always-on) — chatPreOverflowCompactionEnabled === false bypasses it
+      entirely for the project.
+      RUFU-182 (2026-09-04): the gate reports its per-invocation compaction decision
+      (tier attempted, refusal reason, before/after tokens) to the task-store run-audit
+      sink keyed to this chat session, so a refused send is answerable after the fact
+      without reading provider logs. A missing/throwing sink never changes the outcome.
+
+      FNXC:ChatPhaseStatus 2026-09-05-10:23:
+      RUFU-188 (operator-requested): while this gate ran its compaction tiers the streaming bubble
+      showed a bare "Working…", so the operator could not tell a rescued reply from a stalled one.
+      The gate call is now bracketed by a `phase` side-channel pair — `active: true` immediately
+      before the await and `active: false` in a `finally` — so the clear also runs on a refusal
+      result and on any throw, including `ChatContextOverflowError` (which propagates to the
+      overflow branch of the surrounding `catch` unchanged).
+      Emission policy, as a decision rather than an accident of coalescing: when the operator opted
+      out of pre-overflow compaction the gate is a no-op, so the bracket is skipped entirely and the
+      opted-out stream stays frame-for-frame what it was before; when enabled the bracket is emitted
+      even though a below-threshold send returns from the gate within a tick — that true/false pair
+      is batched into one client render, and the client-side clearing rules bound any residual by the
+      first text delta or `done`.
+      Telemetry must never cost the user their send: each broadcast runs through a local try/catch,
+      because `ChatStreamManager.broadcast` only guards its subscriber callbacks, not its own
+      serialize/buffer path. The RUFU-182/183 `chat:pre-overflow-compaction` run-audit contract is
+      untouched — that row stays the durable forensic record while this event is only a live label.
+      */
+      /*
+      FNXC:ChatContextBudget 2026-09-16-20:10 (merge origin/main):
+      The gate keeps main's RUFU-188 phase-broadcast bracket AND the PR's pendingRequestTokens
+      review fix, so the streaming label and the priced request both survive.
+      */
+      const compactionGateEnabled = chatModelSettings.chatPreOverflowCompactionEnabled !== false;
+      const broadcastCompactionPhase = (active: boolean): void => {
+        if (!compactionGateEnabled) return;
+        try {
+          chatStreamManager.broadcast(
+            sessionId,
+            { type: "phase", data: { phase: "compacting", active } },
+            broadcastOptions,
+          );
+        } catch (err) {
+          diagnostics.error(`Chat compaction phase broadcast failed for session ${sessionId}:`, err);
+        }
+      };
+      let gateResult: CompactionGateResult | undefined;
+      broadcastCompactionPhase(true);
+      try {
+        gateResult = await ensureContextWithinCompactionThreshold(agentResult.session, {
+          tokenCap: chatModelSettings.tokenCap,
+          enabled: compactionGateEnabled,
+          // The gate must price the prompt it is about to receive, not only what is
+          // loaded (2026-09-16 review): a zero-usage provider prices the composed
+          // outbound request via estimatePendingRequestTokens.
+          pendingRequestTokens: estimatePendingRequestTokens(promptContent),
+          audit: { sink: this.taskStore, sessionId: session.id },
+        });
+      } finally {
+        broadcastCompactionPhase(false);
+      }
+      if (gateResult?.fallback) {
+        contextTruncationNotice = gateResult.fallback;
+      }
+
+      /*
+      FNXC:ChatGenerationFence 2026-09-22-03:01:
+      The gate await can take seconds (LLM compaction). A second send during that window
+      calls beginGeneration, which aborts this send's controller and steals the
+      active-generation slot, but the code previously reached enginePromptWithFallback
+      anyway and ran an obsolete model/tool turn concurrently with the replacement against
+      the same CLI session file (review finding). Re-check cancellation here, before the
+      prompt; the throw lands in the silent aborted-cleanup arm below, so no error frame
+      can leak into the newer generation's stream and the handoff primer stays pending.
+      */
+      if (abortController.signal.aborted) {
+        throw new Error("Generation cancelled");
+      }
+
       // Send user message and get response
       await enginePromptWithFallback(
         agentResult.session,
         promptContent,
         imageContents.length > 0 ? { images: imageContents } : undefined,
       );
+
+      /*
+      FNXC:ChatHandoff 2026-09-09-18:38:
+      The primer only counts as delivered once the dispatch call has RETURNED — the model has actually
+      received it. Stamping here (before the cancellation check below) is what makes a post-dispatch
+      cancellation count as delivered: the prompt already reached the model, so a re-injection on the
+      next turn would duplicate labeled context. A pre-dispatch exit (generation-fence return, abort
+      throw, `createResolvedAgentSession` failure, or a ChatContextOverflowError refusal from the gate
+      above) never reaches this line, so the primer correctly stays pending for the next send.
+      */
+      if (handoffPrimer) {
+        await this.recordHandoffPrimerDelivered(sessionId, handoffPrimer.primerMessageId);
+      }
 
       if (abortController.signal.aborted) {
         throw new Error("Generation cancelled");
@@ -3375,6 +4357,19 @@ export class ChatManager {
       interface AgentMessage {
         role: string;
         content?: string | Array<{ type: string; text: string }>;
+        /**
+         * FNXC:ChatOutputBudget 2026-08-20-20:17 (RUFU-144):
+         * pi-shaped runtimes report the pi-ai assistant `stopReason` ("stop" | "length" | …)
+         * on state messages; plugin CLI runtimes may omit it. Only a proven "length" on the
+         * final assistant message drives the output-budget-exhausted marker below.
+         *
+         * FNXC:ChatPersistence 2026-09-12-22:47 (RUFU-230):
+         * The same field also carries "aborted" (a cancelled turn whose half-typed prefix
+         * `persistInterruptedSessionContext` baked as its own assistant message) and "error" (provider
+         * failure). Both are now read, not just carried: the authoritative-reply join below excludes
+         * them so an interrupted or failed slice can never prefix the persisted reply.
+         */
+        stopReason?: string;
       }
       /*
        * FNXC:Chat 2026-07-10-00:00:
@@ -3422,14 +4417,26 @@ export class ChatManager {
 
       const lastUserIndex = agentMessages.map((message) => message.role).lastIndexOf("user");
       const turnMessages = lastUserIndex >= 0 ? agentMessages.slice(lastUserIndex + 1) : agentMessages;
-      const authoritativeText = turnMessages
-        .filter((message) => message.role === "assistant")
+      const assistantSliceTexts = turnMessages
+        .filter((message) => message.role === "assistant" && message.stopReason !== "error" && message.stopReason !== "aborted")
         .map((message) => typeof message.content === "string"
           ? message.content
           : Array.isArray(message.content)
             ? message.content.filter((part): part is { type: "text"; text: string } => part.type === "text" && typeof part.text === "string").map((part) => part.text).join("")
             : "")
-        .filter(Boolean)
+        .filter(Boolean);
+      /*
+       FNXC:ChatPersistence 2026-09-12-20:50:
+       RUFU-230 authoritative-reply reconciliation. `turnMessages` is the pi transcript for this turn, so it can
+       hold slices that must never reach the persisted reply: (1) a turn whose stopReason is "error" or "aborted"
+       (a Stop or a provider failure bakes a half-typed prefix as its own assistant message — see
+       `persistInterruptedSessionContext`), and (2) a retry ghost whose text is a STRICT prefix of a later
+       assistant slice in the same turn (the "Sk" before "Skúsim — priamo." shape). Either way the ghost join is
+       LONGER than the streamed text, so the length comparison below would otherwise prefer it and persist the
+       stutter. A legitimate multi-part assistant turn (no slice a prefix of another) still joins with "\n\n".
+       */
+      const authoritativeText = assistantSliceTexts
+        .filter((text, index) => !assistantSliceTexts.slice(index + 1).some((later) => later !== text && later.startsWith(text)))
         .join("\n\n");
       /*
        FNXC:AssistantTextCapture 2026-09-22-02:30:
@@ -3448,6 +4455,23 @@ export class ChatManager {
       }
       if (fallbackInfo) {
         assistantMetadata.fallback = fallbackInfo;
+      }
+      if (contextTruncationNotice) {
+        assistantMetadata.contextTruncation = contextTruncationNotice;
+      }
+      /*
+      FNXC:ChatOutputBudget 2026-08-20-20:17 (RUFU-144):
+      A turn can end with stopReason "length" and NO visible content: the model spent the
+      entire maxTokens budget on thinking and was truncated before emitting any output
+      tokens, so the persisted assistant message is empty. Without an explicit marker the
+      UI shows a blank bubble and the user sees "thinking…" with no answer and no
+      explanation (the RUFU-144 complaint). Persist `budgetExhausted: true` exactly when
+      stopReason "length" is proven on the final assistant message AND the visible
+      content is empty; it is never set for failure turns (the failureInfo path) or
+      non-empty content, and the dashboard renders an inline notice from it.
+      */
+      if (lastMessage?.stopReason === "length" && finalResponseText.trim().length === 0) {
+        assistantMetadata.budgetExhausted = true;
       }
       const usageSnapshot = await readChatSessionUsageSnapshot(agentResult.session);
       if (usageSnapshot.contextUsage) {
@@ -3480,6 +4504,25 @@ export class ChatManager {
       }
 
       await this.flushInFlightGenerationPersist(sessionId, null, generationId);
+
+      /*
+      FNXC:ChatAutoRetry 2026-09-17-16:30:
+      Successful completion with whitespace-only text is the "thinking ended, no reply" shape
+      the operator complained about; one bounded auto-continuation gives the model a chance to
+      finish its answer. The turn must carry evidence of work (thinking or tool calls) - a
+      runtime's silent nothing (no text, no thinking, no tools) has no interrupted work to
+      resume, and auto-prompting it would double every plugin-CLI turn for nothing.
+      */
+      const lastToolBeforeCompletion = toolCallsAccum[toolCallsAccum.length - 1];
+      if (
+        finalResponseText.trim().length === 0
+        && (accumulatedThinking.length > 0 || toolCallsAccum.length > 0)
+        && !assistantMetadata.budgetExhausted
+        && !options?.autoRetry
+        && !(lastToolBeforeCompletion && isQuestionToolName(lastToolBeforeCompletion.toolName))
+      ) {
+        autoRetryReason = "empty";
+      }
 
       // Broadcast done event with persisted assistant snapshot so clients can
       // render completion even when incremental text deltas were absent.
@@ -3527,6 +4570,7 @@ export class ChatManager {
               metadata: {
                 interrupted: true,
                 ...(fallbackInfo ? { fallback: fallbackInfo } : {}),
+                ...(contextTruncationNotice ? { contextTruncation: contextTruncationNotice } : {}),
                 ...(toolCallsAccum.length > 0 ? { toolCalls: toolCallsAccum } : {}),
               },
             });
@@ -3574,6 +4618,40 @@ export class ChatManager {
         return;
       }
 
+      /*
+      FNXC:ChatContextGuard 2026-08-18-18:06:
+      RUFU-118: the pre-overflow gate's fail-loud error gets a dedicated branch with a
+      descriptive summary instead of the generic "AI processing failed". The prompt was
+      NOT sent. buildChatFailureInfo carries code CHAT_CONTEXT_OVERFLOW and errorClass
+      ChatContextOverflowError so the client can distinguish an overflow from a provider
+      failure; the message persists and broadcasts exactly like the generic failure path.
+      */
+      if (err instanceof ChatContextOverflowError) {
+        const failureInfo = addModelContextToFailureInfo(
+          buildChatFailureInfo(err, "Chat context overflow"),
+          failureContextProvider,
+          failureContextModelId,
+        );
+        diagnostics.error(`Chat context overflow in sendMessage for session ${sessionId}:`, err);
+
+        try {
+          await persistFailureMessage(this.chatStore, sessionId, failureInfo);
+        } catch (persistErr) {
+          diagnostics.error(`Failed to persist context-overflow failure for session ${sessionId}:`, persistErr);
+        }
+
+        // Overflow ends this generation; scope the checkpoint clear to it so a newer send's
+        // checkpoint cannot be wiped by this stale branch (2026-09-16 review), matching every
+        // other clear site in sendMessage.
+        await this.flushInFlightGenerationPersist(sessionId, null, generationId);
+
+        chatStreamManager.broadcast(sessionId, {
+          type: "error",
+          data: failureInfo,
+        }, broadcastOptions);
+        return;
+      }
+
       let failureInfo = buildChatFailureInfo(err, "AI processing failed");
       if (!fallbackInfo) {
         failureInfo = addModelContextToFailureInfo(failureInfo, failureContextProvider, failureContextModelId);
@@ -3589,6 +4667,7 @@ export class ChatManager {
             metadata: {
               interrupted: true,
               ...(fallbackInfo ? { fallback: fallbackInfo } : {}),
+              ...(contextTruncationNotice ? { contextTruncation: contextTruncationNotice } : {}),
               ...(toolCallsAccum.length > 0 ? { toolCalls: toolCallsAccum } : {}),
             },
           });
@@ -3598,12 +4677,33 @@ export class ChatManager {
       }
 
       try {
-        await persistFailureMessage(this.chatStore, sessionId, failureInfo, fallbackInfo ? { fallback: fallbackInfo } : undefined);
+        await persistFailureMessage(this.chatStore, sessionId, failureInfo, {
+          ...(fallbackInfo ? { fallback: fallbackInfo } : {}),
+          ...(contextTruncationNotice ? { contextTruncation: contextTruncationNotice } : {}),
+        });
       } catch (persistErr) {
         diagnostics.error(`Failed to persist failure message for session ${sessionId}:`, persistErr);
       }
 
       await this.flushInFlightGenerationPersist(sessionId, null, generationId);
+
+      /*
+      FNXC:ChatAutoRetry 2026-09-17-16:30:
+      A provider error that interrupted WORK IN PROGRESS (partial text, thinking, or tool calls
+      already streamed - e.g. the model container restarted under the agent) persisted its partial
+      + failure rows; retry ONCE so a transient death recovers on its own. An error that failed
+      BEFORE any output is not retried: the failure bubble already explains it and the row carries
+      the manual Retry action. Either way the retry never chains, and a turn parked on a question
+      tool is not retried.
+      */
+      const lastToolBeforeError = toolCallsAccum[toolCallsAccum.length - 1];
+      if (
+        !options?.autoRetry
+        && Boolean(accumulatedText || accumulatedThinking || toolCallsAccum.length > 0)
+        && !(lastToolBeforeError && isQuestionToolName(lastToolBeforeError.toolName))
+      ) {
+        autoRetryReason = "provider-error";
+      }
 
       chatStreamManager.broadcast(sessionId, {
         type: "error",
@@ -3638,6 +4738,35 @@ export class ChatManager {
           agentResult.session.dispose?.();
         } catch (err) {
           diagnostics.error(`Error disposing agent session:`, err);
+        }
+      }
+    }
+
+    /*
+    FNXC:ChatAutoRetry 2026-09-17-16:30:
+    Fire the single bounded auto-retry only after this generation's slot is released, and only
+    while no newer send has claimed the session - an operator prompt always wins over the
+    synthetic continuation. The continuation rides the normal send path as a visible, metadata-
+    marked user row so the transcript never hides why a second attempt exists. It is awaited
+    (no timer) so the retry cannot leak across lifetimes into a newer send.
+    */
+    if (autoRetryReason) {
+      const activeAfterSettle = this.activeGenerations.get(sessionId);
+      if (!activeAfterSettle || activeAfterSettle.generationId === generationId) {
+        const reason = autoRetryReason;
+        try {
+          await this.sendMessage(
+            sessionId,
+            reason === "empty"
+              ? "System auto-retry: your previous turn ended without a visible reply. Resume the work requested by the last user message and finish with a reply the user can read."
+              : "System auto-retry: your previous turn was interrupted by an error before finishing. Resume the work requested by the last user message and finish with a reply the user can read.",
+            undefined,
+            undefined,
+            undefined,
+            { autoRetry: true, userMessageMetadata: { autoRetry: true, reason } },
+          );
+        } catch (err) {
+          diagnostics.error(`Auto-retry send failed for session ${sessionId}:`, err);
         }
       }
     }
@@ -3781,6 +4910,378 @@ export class ChatManager {
     return [...this.activeGenerations.keys()];
   }
 
+  /*
+  FNXC:ChatHandoff 2026-09-09-17:36:
+  RUFU-199 ids/counts/enums-only run-audit for a handoff. The transcript, the generated briefing, and
+  refusal prose never enter audit — only which session became which, how much material moved, and a
+  fixed outcome code. `emitBoundedRunAudit` absorbs an absent or hostile sink so telemetry can never
+  decide whether a handoff lands.
+  */
+  private emitHandoffAudit(
+    mutationType: ChatHandoffAuditMarker,
+    fields: {
+      fromSessionId: string;
+      toSessionId?: string;
+      outcome: ChatHandoffAuditOutcome;
+      refusalCode?: ChatHandoffRefusalCode;
+      messageCount?: number;
+      summaryChars?: number;
+    },
+  ): void {
+    void emitBoundedRunAudit(this.taskStore, {
+      agentId: "chat-handoff",
+      runId: mutationType,
+      domain: "database",
+      mutationType,
+      /*
+       * A created row is filed under the continuation the operator now types into; a failed row is filed
+       * under the source they clicked, because that is the card whose action failed.
+       */
+      target: mutationType === "chat:handoff-session-created" && fields.toSessionId
+        ? `chat:${fields.toSessionId}`
+        : `chat:${fields.fromSessionId}`,
+      metadata: {
+        fromSessionId: fields.fromSessionId,
+        ...(fields.toSessionId ? { toSessionId: fields.toSessionId } : {}),
+        outcome: fields.outcome,
+        ...(fields.refusalCode ? { refusalCode: fields.refusalCode } : {}),
+        ...(fields.messageCount !== undefined ? { messageCount: fields.messageCount } : {}),
+        ...(fields.summaryChars !== undefined ? { summaryChars: fields.summaryChars } : {}),
+      },
+    });
+  }
+
+  /**
+   * Hand an ineligible or refused handoff into a typed error carrying the HTTP status the route maps,
+   * and record the fixed refusal code in audit (never the reason sentence).
+   */
+  private refuseHandoff(sourceSessionId: string, code: ChatHandoffRefusalCode, status: number, message: string): never {
+    this.emitHandoffAudit("chat:handoff-session-failed", {
+      fromSessionId: sourceSessionId,
+      outcome: "refused",
+      refusalCode: code,
+    });
+    throw new ChatHandoffError(code, status, message);
+  }
+
+  /**
+   * FNXC:ChatHandoff 2026-09-09-17:36:
+   * RUFU-199: continue a Direct conversation in a FRESH session seeded with a briefing of the old one.
+   *
+   * Why a new session instead of compacting the current one: the pi session file IS the per-session
+   * model context, so a new `SessionManager` genuinely starts at zero tokens, while in-place compaction
+   * would have to rewrite the pi JSONL (a format we do not own) and its own audit proved compaction can
+   * refuse or measure-unknown. Why the briefing reaches the model on the NEXT turn's prompt (see the
+   * seeding gate in `sendMessage`) rather than being written into the session file: a fabricated pi
+   * entry would corrupt the session tree.
+   *
+   * Why archive rather than delete the source (decision 6): the source is conversation history the
+   * operator may still want to read or export, and deleting it would make a summarizer failure
+   * unrecoverable. Archive is reversible, so the source stays readable in the Archived list.
+   *
+   * Ineligible sources are refused with a `ChatHandoffError` whose `status` the route maps directly.
+   */
+  async handoffSession(sourceSessionId: string): Promise<ChatHandoffResult> {
+    const inFlight = this.handoffInFlight.get(sourceSessionId);
+    if (inFlight) return inFlight;
+    const attempt = this.runHandoffSession(sourceSessionId).finally(() => {
+      if (this.handoffInFlight.get(sourceSessionId) === attempt) {
+        this.handoffInFlight.delete(sourceSessionId);
+      }
+    });
+    this.handoffInFlight.set(sourceSessionId, attempt);
+    return attempt;
+  }
+
+  private async runHandoffSession(sourceSessionId: string): Promise<ChatHandoffResult> {
+    const handoffSettings = await this.getChatHandoffSettings();
+    if (!handoffSettings.enabled) {
+      return this.refuseHandoff(sourceSessionId, "disabled", 409, "Chat handoff is disabled for this project.");
+    }
+
+    const source = await this.chatStore.getSession(sourceSessionId);
+    if (!source) {
+      return this.refuseHandoff(sourceSessionId, "not-found", 404, `Chat session ${sourceSessionId} not found`);
+    }
+    if (source.kind === "room") {
+      return this.refuseHandoff(sourceSessionId, "room-unsupported", 409, "Room conversations cannot be handed off.");
+    }
+    if (source.cliExecutorAdapterId) {
+      return this.refuseHandoff(sourceSessionId, "cli-backed-unsupported", 409, "CLI-backed chats cannot be handed off.");
+    }
+    if (source.agentId.startsWith(TASK_PLANNER_CHAT_AGENT_ID_PREFIX)) {
+      return this.refuseHandoff(sourceSessionId, "task-planner-unsupported", 409, "Task-planner chats cannot be handed off.");
+    }
+    if (source.status !== "active") {
+      return this.refuseHandoff(sourceSessionId, "source-not-active", 409, "Only an active conversation can be handed off.");
+    }
+    if (this.activeGenerations.has(sourceSessionId)) {
+      return this.refuseHandoff(sourceSessionId, "generation-in-progress", 409, "A reply is still in flight in this conversation.");
+    }
+
+    /*
+     * Read one extra message: its presence is the proof that the fetch bound elided the opening of a
+     * long conversation, which the digest then states instead of silently presenting a partial
+     * record as the whole exchange.
+     */
+    const fetched = await this.chatStore.getMessages(sourceSessionId, {
+      order: "desc",
+      limit: CHAT_HANDOFF_TRANSCRIPT_FETCH_LIMIT + 1,
+    });
+    const earlierElided = fetched.length > CHAT_HANDOFF_TRANSCRIPT_FETCH_LIMIT;
+    const transcript = fetched.slice(0, CHAT_HANDOFF_TRANSCRIPT_FETCH_LIMIT).reverse();
+    const digest = buildHandoffTranscript(transcript, { earlierElided });
+    const sourceTitle = source.title?.trim() || "Untitled conversation";
+
+    /*
+     * v1 exclusion — an unknown-model source has no usage signal, so no threshold can be attributed to it.
+     * The affordance only ever renders from a MEASURED `metadata.contextUsage` record (both the pending and
+     * the estimated branches of app/utils/chatContextUsage.ts return `percent: null`), so requiring a known
+     * context window on one fetched row is exactly as strict as the gate and can never contradict a button
+     * the operator was shown. A chat long enough to push every usage record outside the read window
+     * necessarily has newer ones, so the bounded read costs no eligible source.
+     */
+    const hasUsageSignal = fetched.some((row) => {
+      const contextWindow = (row.metadata as { contextUsage?: { contextWindow?: unknown } } | null | undefined)
+        ?.contextUsage?.contextWindow;
+      return typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0;
+    });
+    if (!hasUsageSignal) {
+      return this.refuseHandoff(
+        sourceSessionId,
+        "unknown-model",
+        409,
+        "This conversation has no context-usage signal to hand off from.",
+      );
+    }
+
+    /*
+     * Honest degradation, not a refusal: a briefing failure must never cost the operator the context
+     * they can still see on screen, and a blank new chat is a false success. The deterministic digest
+     * becomes the primer body and `degraded` tells the notice to say so.
+     */
+    const laneSettings = await this.getChatModelSettings();
+    let degraded = false;
+    let primerBody: string;
+    try {
+      primerBody = await summarizeChatHandoff(
+        digest,
+        this.rootDir,
+        source.modelProvider ?? laneSettings?.defaultProvider,
+        source.modelId ?? laneSettings?.defaultModelId,
+      );
+    } catch {
+      degraded = true;
+      primerBody = digest.trim() || CHAT_HANDOFF_EMPTY_TRANSCRIPT_PRIMER;
+    }
+    if (!primerBody.trim()) {
+      degraded = true;
+      primerBody = digest.trim() || CHAT_HANDOFF_EMPTY_TRANSCRIPT_PRIMER;
+    }
+
+    /*
+     * Identity-identical continuation: the same agent and the same model lane, so a handoff is only an
+     * escape from context pressure and never silently upgrades or downgrades the model. `memoryFocus`
+     * is deliberately NOT copied — the fresh session starts a fresh recall scope by design.
+     */
+    const child = await this.chatStore.createSession({
+      agentId: source.agentId,
+      title: `Continue: ${sourceTitle}`,
+      projectId: source.projectId ?? null,
+      modelProvider: source.modelProvider ?? null,
+      modelId: source.modelId ?? null,
+      thinkingLevel: source.thinkingLevel ?? null,
+    });
+
+    // The complete lineage object is composed in THIS write and never patched afterwards:
+    // `updateChatMessageMetadata` merges one level deep, so a later partial `handoff` object would
+    // erase the fields the notice and the injection gate depend on.
+    const lineage: ChatHandoffLineage = { fromSessionId: sourceSessionId, fromTitle: sourceTitle, degraded };
+    await this.chatStore.addMessage(child.id, {
+      role: "system",
+      content: primerBody,
+      metadata: { handoff: lineage },
+    });
+
+    /*
+     * Re-read before archiving: the in-process single-flight cannot see another process, so the
+     * durable claim on the source is its status. If anyone else already consumed it, drop the sibling
+     * we just made rather than leave an active source with two continuations.
+     */
+    const freshSource = await this.chatStore.getSession(sourceSessionId);
+    if (!freshSource || freshSource.status !== "active") {
+      await this.discardHandoffChild(child.id, sourceSessionId, "source-not-active");
+      return this.refuseHandoff(sourceSessionId, "source-not-active", 409, "Only an active conversation can be handed off.");
+    }
+
+    try {
+      await this.chatStore.archiveSession(sourceSessionId);
+    } catch (error) {
+      /*
+       * Compensation: an archived source without its continuation would strand the operator with
+       * nothing to type into, so the half-built child is removed and the source stays active.
+       */
+      await this.discardHandoffChild(child.id, sourceSessionId, "archival-failed");
+      this.emitHandoffAudit("chat:handoff-session-failed", {
+        fromSessionId: sourceSessionId,
+        outcome: "archival-failed",
+        refusalCode: "archival-failed",
+        messageCount: fetched.length,
+        summaryChars: primerBody.length,
+      });
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new ChatHandoffError("archival-failed", 500, `Failed to archive the source conversation: ${detail}`);
+    }
+
+    this.emitHandoffAudit("chat:handoff-session-created", {
+      fromSessionId: sourceSessionId,
+      toSessionId: child.id,
+      outcome: degraded ? "degraded-created" : "created",
+      messageCount: fetched.length,
+      summaryChars: primerBody.length,
+    });
+
+    const refreshedChild = (await this.chatStore.getSession(child.id)) ?? child;
+    return {
+      session: refreshedChild,
+      degraded,
+      summaryChars: primerBody.length,
+      sourceSessionId,
+    };
+  }
+
+  /**
+   * Remove a handoff child created before a failure proved the handoff could not complete. Cleanup is
+   * best-effort: a failed delete must not mask the original refusal, it only leaves an orphan to be
+   * reconciled, so the error is logged with ids only.
+   */
+  private async discardHandoffChild(childSessionId: string, sourceSessionId: string, reason: ChatHandoffRefusalCode): Promise<void> {
+    try {
+      await this.chatStore.deleteSession(childSessionId);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      diagnostics.warn(`[chat-handoff] failed to discard orphaned continuation (reason=${reason}) source=${sourceSessionId} child=${childSessionId}: ${detail}`);
+    }
+  }
+
+  /**
+   * FNXC:ChatHandoff 2026-09-09-18:38:
+   * Resolve the one-time model-facing primer block for a direct-chat send, or null when nothing should
+   * be injected. The gate is the primer ROW's delivery stamp, never `session.cliSessionFile`: that
+   * pointer is persisted hundreds of lines before the prompt reaches the model (at SessionManager
+   * construction), so a turn-1 exit between the two — the generation-fence return, the pre-dispatch
+   * abort throw, `createResolvedAgentSession` throwing, or a ChatContextOverflowError refusal — would
+   * leave it set with the primer NEVER delivered, and a file-based gate would then suppress it forever
+   * (the operator keeps the button and the transcript but the model never gets the context, while the
+   * visible notice lies that it was handed off).
+   *
+   * A handoff child carries at most ONE row before its first send — the role:"system" primer — so a
+   * bounded forward page (no role filter exists on ChatMessagesFilter) can only ever find that row; on
+   * an ordinary chat it reads one non-primer row and returns. Injection is at-most-once by the
+   * combination of the durable `handoffDeliveredAt` scalar and the in-process delivered map.
+   */
+  private async resolveHandoffPrimerForInjection(sessionId: string): Promise<{ primerMessageId: string; block: string } | null> {
+    const primer = await this.findHandoffPrimerRow(sessionId);
+    if (!primer) return null;
+
+    const metadata = (primer.metadata ?? {}) as { handoff?: ChatHandoffLineage; handoffDeliveredAt?: unknown };
+    if (typeof metadata.handoffDeliveredAt === "string" && metadata.handoffDeliveredAt.length > 0) {
+      return null;
+    }
+    if (this.handoffPrimersDelivered.get(sessionId) === primer.id) {
+      return null;
+    }
+
+    const lineage = metadata.handoff!;
+    const title = typeof lineage.fromTitle === "string" && lineage.fromTitle.trim() ? lineage.fromTitle.trim() : "Untitled conversation";
+    // The label doubles as the prompt guard: it frames the carried text as a prior conversation's
+    // record, so the model continues from it instead of treating it as the user's new turn.
+    const block = `[Handoff from conversation "${title}"]\n${primer.content ?? ""}`;
+    return { primerMessageId: primer.id, block };
+  }
+
+  /**
+   * FNXC:ChatHandoff 2026-09-10-01:13:
+   * Locate a session's handoff primer row — the row whose metadata carries the complete `handoff`
+   * lineage object — through the same bounded forward page the injection gate reads (no role filter
+   * exists on `ChatMessagesFilter`, and a handoff child has at most one row before its first send).
+   * Shared by the injection gate and by the context-loss re-arm below so the two can never disagree
+   * about what counts as a primer.
+   */
+  private async findHandoffPrimerRow(sessionId: string): Promise<ChatMessage | null> {
+    const rows = await this.chatStore.getMessages(sessionId, { order: "asc", limit: CHAT_HANDOFF_PRIMER_SCAN_LIMIT });
+    return rows.find((row) => {
+      const handoff = (row.metadata as { handoff?: ChatHandoffLineage } | null | undefined)?.handoff;
+      return handoff != null && typeof handoff.fromSessionId === "string";
+    }) ?? null;
+  }
+
+  /**
+   * FNXC:ChatHandoff 2026-09-10-01:13:
+   * Re-arm a session's one-time primer after its pi context has been REPLACED by a fresh session file.
+   *
+   * Editing the FIRST user message of a handoff child takes the `parentLeafId == null` branch of
+   * `rewindSessionForEdit` (a brand-new empty `SessionManager.create`), and the legacy / failed-branch
+   * fallback rebuilds a session that replays only `user`/`assistant` rows — the `role:"system"` primer
+   * is never replayed in either. Without this re-arm the retained primer row stays stamped delivered, so
+   * `resolveHandoffPrimerForInjection` refuses to inject again: the model then continues with ZERO
+   * inherited context while the visible "Continues from <title>" notice still claims it was briefed —
+   * the same silent-empty-handoff that Required behaviour #5 forbids at creation time. A rewind that
+   * branches from a recorded parent leaf is NOT context loss (the branched file keeps the first turn,
+   * into which the primer was already embedded), so only the file-replacing branches call this.
+   *
+   * The clear is a top-level `handoffDeliveredAt: null` scalar written with `merge: true` — never a
+   * nested `handoff` patch, because the store merges one level deep and would erase the lineage fields
+   * the notice reads. Both delivery records drop: the durable scalar and the in-process entry.
+   * Best-effort: a failed clear costs at most one duplicate labeled primer on the next turn (the
+   * accepted at-least-once trade), while skipping the clear would lose the carried context.
+   */
+  private async rearmHandoffPrimerAfterContextLoss(sessionId: string, reason: string): Promise<void> {
+    try {
+      const primer = await this.findHandoffPrimerRow(sessionId);
+      if (!primer) return;
+      const stamp = (primer.metadata as { handoffDeliveredAt?: unknown } | null | undefined)?.handoffDeliveredAt;
+      if (typeof stamp !== "string" && !this.handoffPrimersDelivered.has(sessionId)) {
+        // Nothing was ever recorded as delivered, so the next send already injects — no write needed.
+        return;
+      }
+      this.handoffPrimersDelivered.delete(sessionId);
+      await this.chatStore.updateMessageMetadata(primer.id, { handoffDeliveredAt: null }, { merge: true });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      diagnostics.warn(`[chat-handoff] failed to re-arm primer after pi context loss session=${sessionId} reason=${reason}: ${detail}`);
+    }
+  }
+
+  /**
+   * FNXC:ChatHandoff 2026-09-09-18:38:
+   * Record that a handoff primer ACTUALLY reached the model. Called only AFTER the dispatch call
+   * returned, so a turn whose dispatch returned counts as delivered (including a post-dispatch
+   * cancellation — the model already received the primer). Ordering is load-bearing: at-least-once is
+   * acceptable (a duplicate labeled primer is legible to human and model) while a premature stamp is a
+   * silent loss of the entire carried context, so this must never move earlier than the dispatch.
+   *
+   * Two independent records so neither write is a single point of failure: the in-process map (set
+   * FIRST, so a store throw still prevents same-process re-injection) and the durable top-level
+   * `handoffDeliveredAt` scalar. The scalar is merged with `merge: true` and lives OUTSIDE the
+   * `handoff` object on purpose — `updateChatMessageMetadata` merges one level deep, so patching a
+   * nested `handoff` field here would ERASE fromSessionId/fromTitle/degraded that the visible notice
+   * and this very gate read. Best-effort: a stamp write failure must never fail the send.
+   */
+  private async recordHandoffPrimerDelivered(sessionId: string, primerMessageId: string): Promise<void> {
+    this.handoffPrimersDelivered.set(sessionId, primerMessageId);
+    try {
+      await this.chatStore.updateMessageMetadata(
+        primerMessageId,
+        { handoffDeliveredAt: new Date().toISOString() },
+        { merge: true },
+      );
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      diagnostics.warn(`[chat-handoff] failed to stamp primer delivery for continuation session=${sessionId} primer=${primerMessageId}: ${detail}`);
+    }
+  }
+
   /**
    * FNXC:ChatMessageEdit 2026-07-07-09:00:
    * Rewind a direct (model-loop) chat session so an edit to an earlier user message resumes
@@ -3790,6 +5291,14 @@ export class ChatManager {
    * so `buildSessionContext()` no longer includes the discarded turns, otherwise the model would
    * still "remember" content that the UI claims was forgotten. Regeneration is NOT triggered
    * here — callers resend the edited content through the existing streaming `sendMessage` path.
+   *
+   * FNXC:ChatHandoff 2026-09-10-01:13:
+   * A rewind that REPLACES the pi session file (first-turn fresh session, retained-history rebuild, or
+   * the clear-on-failure fallback) also destroys the handoff primer that turn 1 injected as prompt
+   * text, because only `user`/`assistant` rows are replayed. Those branches therefore re-arm the
+   * primer (see `rearmHandoffPrimerAfterContextLoss`). A rewind that branches from a recorded parent
+   * leaf keeps the first turn — and with it the embedded briefing — so it must NOT re-arm: doing that
+   * would only duplicate a briefing the branched file already carries.
    */
   async rewindSessionForEdit(sessionId: string, fromMessageId: string): Promise<{ retained: ChatMessage[] }> {
     const session = await this.chatStore.getSession(sessionId);
@@ -3840,6 +5349,10 @@ export class ChatManager {
           // branch from. A brand-new empty session is the correct "forget everything" state.
           const fresh = SessionManager.create(this.rootDir);
           await this.chatStore.setCliSessionFile(sessionId, fresh.getSessionFile() ?? null);
+          // RUFU-199: this fresh file holds no primer, and turn 1's injected briefing lived only inside
+          // the old file, so a stamped handoff primer must re-arm or the resend runs unbriefed while
+          // the notice still claims continuity.
+          await this.rearmHandoffPrimerAfterContextLoss(sessionId, "first-turn-edit-fresh-session");
         }
         return { retained };
       } catch (err) {
@@ -3887,6 +5400,10 @@ export class ChatManager {
       }
       const rebuiltFile = rebuilt.getSessionFile();
       await this.chatStore.setCliSessionFile(sessionId, rebuiltFile ?? null);
+      // RUFU-199: the rebuild above replays only `user`/`assistant` rows, so a handoff primer (role
+      // "system", and delivered as prompt text rather than a stored session message) cannot survive
+      // it. Re-arm so the next send re-briefs the model instead of running unbriefed.
+      await this.rearmHandoffPrimerAfterContextLoss(sessionId, "rebuilt-from-retained-history");
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       diagnostics.warn(
@@ -3894,6 +5411,9 @@ export class ChatManager {
       );
       try {
         await this.chatStore.setCliSessionFile(sessionId, null);
+        // RUFU-199: same invariant at the furthest fallback — a cleared session file cannot carry a
+        // primer, so the delivery record must not keep suppressing the briefing.
+        await this.rearmHandoffPrimerAfterContextLoss(sessionId, "session-file-cleared");
       } catch {
         // best-effort; nothing further we can do here
       }

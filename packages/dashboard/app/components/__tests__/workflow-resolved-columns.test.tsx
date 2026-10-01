@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
-import type { Task } from "@fusion/core";
+import type { Task, ColumnId } from "@fusion/core";
 import { Board } from "../Board";
 import { ListView } from "../ListView";
 import { type TaskContextMenuColumnMetadata } from "../TaskContextMenu";
@@ -119,16 +119,15 @@ function renderBoard(tasks: Task[]) {
       tasks={tasks}
       projectId={PROJECT_ID}
       maxConcurrent={2}
+      maxWorktrees={2}
       showWorktreeGrouping={false}
       onMoveTask={vi.fn(async () => tasks[0]!)}
       onOpenDetail={vi.fn()}
       addToast={vi.fn()}
       onNewTask={vi.fn()}
       autoMerge
-      onToggleAutoMerge={vi.fn()}
       planAutoApproveEnabled={false}
       onTogglePlanAutoApprove={vi.fn()}
-      settingsLoaded
     />,
   );
 }
@@ -138,7 +137,6 @@ function renderList(tasks: Task[]) {
     <ListView
       tasks={tasks}
       projectId={PROJECT_ID}
-      onMoveTask={vi.fn(async () => tasks[0]!)}
       onRetryTask={vi.fn(async () => tasks[0]!)}
       onDeleteTask={vi.fn(async () => tasks[0]!)}
       onMergeTask={vi.fn()}
@@ -148,7 +146,6 @@ function renderList(tasks: Task[]) {
       addToast={vi.fn()}
       globalPaused={false}
       onNewTask={vi.fn()}
-      settingsLoaded
     />,
   );
 }

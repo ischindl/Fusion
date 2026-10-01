@@ -5,6 +5,7 @@ import { SettingsSelectRow } from "../SettingsSelectRow";
 import { SettingsHelpTip } from "../SettingsHelpTip";
 import type { SectionBaseProps } from "./context";
 import { useTranslation } from "react-i18next";
+import { normalizeChatSubmitOnEnterMode } from "../../../context/ChatSubmitOnEnterContext";
 export type GlobalGeneralSectionProps = SectionBaseProps;
 /*
 FNXC:SettingsStyling 2026-07-15-17:35:
@@ -51,11 +52,58 @@ export function GlobalGeneralSection({ form, setForm }: GlobalGeneralSectionProp
         descriptor={{
           key: "quickAddSubmitOnEnter",
           label: t("settings.globalGeneral.quickAddSubmitOnEnter", " Press Enter to save a task in Quick Add "),
-          help: t("settings.globalGeneral.quickAddSubmitOnEnterHint", " Default: enabled. When disabled, Enter inserts a newline and Cmd/Ctrl+Enter saves. "),
+          help: t("settings.globalGeneral.quickAddSubmitOnEnterHint", " Default: enabled. When disabled, Enter inserts a newline. Cmd/Ctrl+Enter always creates and starts the task when the selected workflow allows it, and saves otherwise. "),
           scope: "global",
         }}
         value={form.quickAddSubmitOnEnter !== false}
         onChange={(v) => setForm((f) => ({ ...f, quickAddSubmitOnEnter: v === true }))}
+      />
+      <SettingsSelectRow
+        descriptor={{
+          key: "chatSubmitOnEnter",
+          label: t("settings.globalGeneral.chatSubmitOnEnter", " Enter key behavior in conversations "),
+          help: t("settings.globalGeneral.chatSubmitOnEnterHint", " Default: automatic — Enter inserts a newline on touch devices with an on-screen keyboard, and sends on desktop. Shift+Enter never sends, even with Cmd/Ctrl held; it inserts a newline except in Chat while an autocomplete menu is open, where the files/tasks, agents and skills menus consume it instead. Cmd/Ctrl+Enter without Shift sends regardless of this setting and of the device. While an autocomplete menu is open it takes priority and consumes both Enter and Cmd/Ctrl+Enter; press Escape to close it. In the task chat, an in-progress IME composition takes priority over all of these. The Send button stays available whenever the draft is not empty. "),
+          scope: "global",
+          options: [
+            { value: "auto", label: t("settings.globalGeneral.chatSubmitOnEnterAuto", "Automatic (recommended)") },
+            { value: "always", label: t("settings.globalGeneral.chatSubmitOnEnterAlways", "Always send") },
+            { value: "never", label: t("settings.globalGeneral.chatSubmitOnEnterNever", "Never send") },
+          ],
+        }}
+        value={normalizeChatSubmitOnEnterMode(form.chatSubmitOnEnter)}
+        onChange={(v) => setForm((f) => ({ ...f, chatSubmitOnEnter: normalizeChatSubmitOnEnterMode(v) }))}
+      />
+      {/*
+      FNXC:OperatorLanguage 2026-09-15-07:18:
+      The operator chats with Fusion in their own language, but autonomous lanes (heartbeat
+      mailbox reports, task logs, completion summaries) have no incoming message to mirror and
+      always answered in English. This global row sets the prose language injected into every
+      operator-facing agent prompt; "Automatic" preserves the pre-feature behavior byte-for-byte.
+      Global-only on purpose: the reader's language belongs to the human, so a shared project must
+      not be able to flip it. Option labels stay in each language's endonym — the name of a
+      language is not a translatable string.
+      */}
+      <SettingsSelectRow
+        descriptor={{
+          key: "operatorLanguage",
+          label: t("settings.globalGeneral.operatorLanguage", " Operator language for agent text "),
+          help: t("settings.globalGeneral.operatorLanguageHint", " Language agents use for operator-facing text: mailbox messages, reports, task logs, completion summaries, and chat replies. Code, commands, identifiers, and quoted log output always stay in their original language. Default: Automatic — reply in the language of each message, which leaves autonomous lanes on English. "),
+          scope: "global",
+          options: [
+            { value: "auto", label: t("settings.globalGeneral.operatorLanguageAuto", " Automatic (reply in each message's language) ") },
+            { value: "en", label: "English" },
+            { value: "sk", label: "Slovenčina" },
+            { value: "cs", label: "Čeština" },
+            { value: "de", label: "Deutsch" },
+            { value: "es", label: "Español" },
+            { value: "fr", label: "Français" },
+            { value: "pt", label: "Português" },
+            { value: "zh", label: "中文" },
+            { value: "ko", label: "한국어" },
+          ],
+        }}
+        value={form.operatorLanguage ?? "auto"}
+        onChange={(v) => setForm((f) => ({ ...f, operatorLanguage: v ?? "auto" }))}
       />
       <SettingsToggleRow
         descriptor={{

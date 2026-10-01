@@ -40,6 +40,7 @@ import {
   classifyLifecycleRole,
   findWorkflowColumn,
   isHoldToWipBoundary,
+  isReviewGateNode,
   resolveColumnFlags,
   TransitionRejectionError,
   emitWorkflowLifecycleEvent,
@@ -379,8 +380,13 @@ export function createWorkflowColumnBoundary(
       FN-9243 preserves FN-207's no-backward-authority rule for graph routing. A review gate authored
       in a WIP column runs where an in-review card already is, rather than attempting the rejected
       backward move that killed the graph and stranded both unrun gates and stale-content reroutes.
+
+      FNXC:LifecycleContainment 2026-09-02-22:41:
+      RUFU-178: the review-gate predicate is now the shared core helper, so the FN-9243 unrun-gate
+      re-seed clamps its continuation targetColumn with the EXACT same decision this boundary makes
+      — the seed can never name a column the card will not actually stand in.
       */
-      const isReviewGate = node.kind === "optional-group" || node.kind === "step-review";
+      const isReviewGate = isReviewGateNode(node);
       const direction = classifyLifecycleDirection(
         classifyLifecycleRole(flagsFor(fromColumn)),
         classifyLifecycleRole(flagsFor(toColumn)),

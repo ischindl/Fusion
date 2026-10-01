@@ -23,12 +23,27 @@ function result(
   };
 }
 
-function approvals(results: WorkflowStepResult[], required: string[]) {
+function approvals(results: WorkflowStepResult[], required: string[], mergeContent?: MergeContentDescriptor) {
   return evaluatePreMergeApprovals(
     { workflowStepResults: results },
-    { requiredPreMergeStepIds: new Set(required) },
+    { requiredPreMergeStepIds: new Set(required), mergeContent },
   );
 }
+
+/** The archive shape `archiveTerminalWorkflowStepFailures` writes: skipped + stamp, no bypass fields. */
+function archivedCarrier(workflowStepId: string, overrides: Partial<WorkflowStepResult> = {}): WorkflowStepResult {
+  return result(workflowStepId, {
+    notRunReason: undefined,
+    remediationArchivedAt: "2026-08-28T00:00:00.000Z",
+    remediationArchivedFromStatus: "failed",
+    ...overrides,
+  });
+}
+
+const workspaceDiff: MergeContentDescriptor = {
+  kind: "workspace",
+  repositories: { state: "captured", inScopeModified: ["apps/web"], fingerprints: {} },
+};
 
 function reviewTask(workflowStepResults: WorkflowStepResult[]): Task {
   return {
@@ -65,13 +80,14 @@ describe("pre-merge approval for not-run workflow gates", () => {
     expect(approvals([
       result("custom-plan-review", { reviewKind: "plan" }),
     ], ["custom-plan-review"])[0]?.state).toBe("not-approved");
+    // FN-286 removed status-only approval authority from legacy review-kind rows.
     expect(approvals([
       result("custom-plan-review", {
         status: "passed",
         notRunReason: undefined,
         reviewKind: "plan",
       }),
-    ], ["custom-plan-review"])[0]?.state).toBe("approved");
+    ], ["custom-plan-review"])[0]?.state).toBe("not-approved");
   });
 
   it("keeps an honestly not-run non-content gate mergeable", () => {
@@ -130,6 +146,25 @@ describe("pre-merge approval for not-run workflow gates", () => {
       first,
       result("verification", { status: "passed", notRunReason: undefined }),
     ], ["verification"])[0]?.state).toBe("approved");
+
+    /*
+    FNXC:PreMergeApproval 2026-09-02-22:35 (RUFU-178), retargeted 2026-09-06 (merge FN-295):
+    Latest-wins must not resurrect the archive refusal: an archived carrier followed by a genuine
+    passed verdict approves — the recovery the remediation rerun exists to produce, asserted at the
+    classifier. Under upstream FN-295 an archive that IS latest answers `not-approved` (recovery is
+    self-healing's collateral restore or the audited bypass), never the old RUFU-178 `missing`.
+    */
+    expect(approvals([
+      archivedCarrier("verification"),
+      result("verification", { status: "passed", notRunReason: undefined }),
+    ], ["verification"])[0]?.state).toBe("approved");
+
+    // Control: the archive still refuses when it IS the latest row (FN-295: not-approved, recoverable
+    // via collateral restore or audited bypass — never a silent approval).
+    expect(approvals([
+      result("verification", { status: "passed", notRunReason: undefined }),
+      archivedCarrier("verification"),
+    ], ["verification"])[0]?.state).toBe("not-approved");
   });
 
   it("counts not-run evaluation evidence as neither passed nor failed", () => {

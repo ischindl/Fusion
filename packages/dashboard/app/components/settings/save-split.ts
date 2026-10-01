@@ -34,8 +34,10 @@ import type { GlobalSettings, McpServersSettings, Settings } from "@fusion/core"
  *
  * The title-summarizer lane was restored to project settings in FN-5994, so it
  * needs the same changed-only/null-as-delete handling as the project default
- * lane overrides. Execution/planning/validator lanes still live on workflow
- * settings and are filtered out before the project branch is reached.
+ * lane overrides.
+ *
+ * FNXC:ProjectModels 2026-09-14-19:24:
+ * Planner, Executor, Reviewer, and Merger now persist independently at project scope while workflows retain optional overrides. Keep every primary/fallback provider, model, credential, and thinking companion in this list so Settings saves and per-section resets use the project authority rather than dropping an edited companion.
  *
  * FNXC:Settings-ThinkingLevel 2026-07-10-12:10:
  * The project-scoped title-summarizer fallback thinking companion must travel
@@ -59,13 +61,19 @@ import type { GlobalSettings, McpServersSettings, Settings } from "@fusion/core"
  * scope and are gated by GLOBAL_SECTION_KEYS below.
  */
 export const MODEL_LANE_KEYS = [
-  "defaultProviderOverride", "defaultModelIdOverride",
-  "titleSummarizerProvider", "titleSummarizerModelId",
-  "titleSummarizerFallbackProvider", "titleSummarizerFallbackModelId", "titleSummarizerFallbackThinkingLevel",
-  "mergerProvider", "mergerModelId", "mergerThinkingLevel",
-  "mergerFallbackProvider", "mergerFallbackModelId", "mergerFallbackThinkingLevel",
+  "defaultProviderOverride", "defaultModelIdOverride", "defaultCredentialInstanceIdOverride", "defaultThinkingLevelOverride",
+  "planningProvider", "planningModelId", "planningCredentialInstanceId", "planningThinkingLevel",
+  "planningFallbackProvider", "planningFallbackModelId", "planningFallbackCredentialInstanceId", "planningFallbackThinkingLevel",
+  "executionProvider", "executionModelId", "executionCredentialInstanceId", "executionThinkingLevel",
+  "executionFallbackProvider", "executionFallbackModelId", "executionFallbackCredentialInstanceId", "executionFallbackThinkingLevel",
+  "validatorProvider", "validatorModelId", "validatorCredentialInstanceId", "validatorThinkingLevel",
+  "validatorFallbackProvider", "validatorFallbackModelId", "validatorFallbackCredentialInstanceId", "validatorFallbackThinkingLevel",
+  "mergerProvider", "mergerModelId", "mergerCredentialInstanceId", "mergerThinkingLevel",
+  "mergerFallbackProvider", "mergerFallbackModelId", "mergerFallbackCredentialInstanceId", "mergerFallbackThinkingLevel",
+  "titleSummarizerProvider", "titleSummarizerModelId", "titleSummarizerCredentialInstanceId", "titleSummarizerThinkingLevel",
+  "titleSummarizerFallbackProvider", "titleSummarizerFallbackModelId", "titleSummarizerFallbackCredentialInstanceId", "titleSummarizerFallbackThinkingLevel",
   "githubImportAutoTranslate", "importTranslateTargetLocale",
-  "importTranslateProvider", "importTranslateModelId", "importTranslateThinkingLevel",
+  "importTranslateProvider", "importTranslateModelId", "importTranslateCredentialInstanceId", "importTranslateThinkingLevel",
   "fastCheapProvider", "fastCheapModelId", "fastCheapCredentialInstanceId", "fastCheapThinkingLevel",
 ] as const;
 
@@ -131,6 +139,23 @@ const JIRA_SOURCE_CONTROL_KEYS = new Set<string>([
   "jiraBranchNameTemplate",
 ]);
 
+/*
+FNXC:VerificationResourceBound 2026-09-10-13:09:
+RUFU-212's three verification resource-bound knobs are dual scope: declared in BOTH
+`DEFAULT_GLOBAL_SETTINGS` (machine-wide fallback) and `DEFAULT_PROJECT_SETTINGS` (per-project
+override). `isGlobalSettingsKey` alone would leak the copy into the global patch on EVERY
+section save — the exact failure the `DUAL_SCOPE_SOURCE_CONTROL_KEYS` guard above exists for
+— so routing is decided by the ACTIVE SECTION: the global fallback is editable only while
+"scheduling-global" is open; the same key in any other section (the paired "scheduling"
+section included) is a per-project override. Without both-direction guards the operator's
+global edit silently lands as a project override (or is dropped entirely) — dead config.
+*/
+export const DUAL_SCOPE_VERIFICATION_BOUND_KEYS = new Set<string>([
+  "verificationCpuQuotaPercent",
+  "verificationCpuIoWeight",
+  "verificationMemoryMaxMb",
+]);
+
 type RemoteAccessProvider = "tailscale" | "cloudflare";
 type RemoteAccessPatch = NonNullable<GlobalSettings["remoteAccess"]>;
 
@@ -147,6 +172,8 @@ export const GLOBAL_SECTION_KEYS: Record<string, ReadonlySet<string>> = {
   appearance: new Set([
     "themeMode",
     "colorTheme",
+    /* FNXC:UiStyleAxis 2026-09-15-00:20: the interface style is a global Appearance key, so "Reset this menu" restores it with the other appearance defaults. */
+    "uiStyle",
     "dashboardFontScalePct",
     "shadcnCustomColors",
   ]),
@@ -168,6 +195,18 @@ export const GLOBAL_SECTION_KEYS: Record<string, ReadonlySet<string>> = {
     "notificationProviders",
   ]),
   experimental: new Set(["experimentalFeatures"]),
+  /*
+  FNXC:VerificationResourceBound 2026-09-10-13:09:
+  RUFU-212: the machine-wide verification resource-bound fallbacks (CPU quota %, CPU/IO weight,
+  MemoryMax MB) live in their own `scheduling-global` section, paired with the project `scheduling`
+  section. The dual-scope guards in this file name this id literally — renaming it without updating
+  them would route global saves into project settings or drop them.
+  */
+  "scheduling-global": new Set([
+    "verificationCpuQuotaPercent",
+    "verificationCpuIoWeight",
+    "verificationMemoryMaxMb",
+  ]),
   /*
   FNXC:SourceControl 2026-07-15-20:30:
   The global GitLab fallbacks and the global default tracking repo moved out of "global-general" into their own "source-control-global" section, paired with the project "source-control" section under the Integrations nav group.
@@ -196,6 +235,7 @@ export const GLOBAL_SECTION_KEYS: Record<string, ReadonlySet<string>> = {
     "dismissModalsOnOutsideClick",
     "skipConfirmationDialogs",
     "quickAddSubmitOnEnter",
+    "chatSubmitOnEnter",
     "persistAgentToolOutput",
     "agentToolOutputMaxChars",
     "proactiveTaskChatEnabled",
@@ -218,8 +258,10 @@ export const GLOBAL_SECTION_KEYS: Record<string, ReadonlySet<string>> = {
   "global-models": new Set([
     "defaultProvider",
     "defaultModelId",
+    "defaultCredentialInstanceId",
     "fallbackProvider",
     "fallbackModelId",
+    "fallbackCredentialInstanceId",
     "fallbackThinkingLevel",
     "defaultThinkingLevel",
     "modelRouterEnabled",
@@ -237,15 +279,40 @@ export const GLOBAL_SECTION_KEYS: Record<string, ReadonlySet<string>> = {
     "orcarouterModelSync",
     "executionGlobalProvider",
     "executionGlobalModelId",
+    "executionGlobalCredentialInstanceId",
+    "executionGlobalThinkingLevel",
+    "executionGlobalFallbackProvider",
+    "executionGlobalFallbackModelId",
+    "executionGlobalFallbackThinkingLevel",
+    "executionGlobalFallbackCredentialInstanceId",
     "planningGlobalProvider",
     "planningGlobalModelId",
+    "planningGlobalCredentialInstanceId",
+    "planningGlobalThinkingLevel",
+    "planningGlobalFallbackProvider",
+    "planningGlobalFallbackModelId",
+    "planningGlobalFallbackThinkingLevel",
+    "planningGlobalFallbackCredentialInstanceId",
     "validatorGlobalProvider",
     "validatorGlobalModelId",
+    "validatorGlobalCredentialInstanceId",
+    "validatorGlobalThinkingLevel",
+    "validatorGlobalFallbackProvider",
+    "validatorGlobalFallbackModelId",
+    "validatorGlobalFallbackThinkingLevel",
+    "validatorGlobalFallbackCredentialInstanceId",
     "titleSummarizerGlobalProvider",
     "titleSummarizerGlobalModelId",
+    "titleSummarizerGlobalCredentialInstanceId",
+    "titleSummarizerGlobalThinkingLevel",
     "mergerGlobalProvider",
     "mergerGlobalModelId",
+    "mergerGlobalCredentialInstanceId",
     "mergerGlobalThinkingLevel",
+    "mergerGlobalFallbackProvider",
+    "mergerGlobalFallbackModelId",
+    "mergerGlobalFallbackThinkingLevel",
+    "mergerGlobalFallbackCredentialInstanceId",
     /*
     FNXC:GitHubImportTranslate 2026-07-15-09:30:
     The import-translate GLOBAL lane keys must be section-allowlisted in both Models
@@ -254,13 +321,16 @@ export const GLOBAL_SECTION_KEYS: Record<string, ReadonlySet<string>> = {
     */
     "importTranslateGlobalProvider",
     "importTranslateGlobalModelId",
+    "importTranslateGlobalCredentialInstanceId",
     "importTranslateGlobalThinkingLevel",
   ]),
   "project-models": new Set([
     "defaultProvider",
     "defaultModelId",
+    "defaultCredentialInstanceId",
     "fallbackProvider",
     "fallbackModelId",
+    "fallbackCredentialInstanceId",
     "fallbackThinkingLevel",
     "defaultThinkingLevel",
     "modelRouterEnabled",
@@ -278,17 +348,43 @@ export const GLOBAL_SECTION_KEYS: Record<string, ReadonlySet<string>> = {
     "orcarouterModelSync",
     "executionGlobalProvider",
     "executionGlobalModelId",
+    "executionGlobalCredentialInstanceId",
+    "executionGlobalThinkingLevel",
+    "executionGlobalFallbackProvider",
+    "executionGlobalFallbackModelId",
+    "executionGlobalFallbackThinkingLevel",
+    "executionGlobalFallbackCredentialInstanceId",
     "planningGlobalProvider",
     "planningGlobalModelId",
+    "planningGlobalCredentialInstanceId",
+    "planningGlobalThinkingLevel",
+    "planningGlobalFallbackProvider",
+    "planningGlobalFallbackModelId",
+    "planningGlobalFallbackThinkingLevel",
+    "planningGlobalFallbackCredentialInstanceId",
     "validatorGlobalProvider",
     "validatorGlobalModelId",
+    "validatorGlobalCredentialInstanceId",
+    "validatorGlobalThinkingLevel",
+    "validatorGlobalFallbackProvider",
+    "validatorGlobalFallbackModelId",
+    "validatorGlobalFallbackThinkingLevel",
+    "validatorGlobalFallbackCredentialInstanceId",
     "titleSummarizerGlobalProvider",
     "titleSummarizerGlobalModelId",
+    "titleSummarizerGlobalCredentialInstanceId",
+    "titleSummarizerGlobalThinkingLevel",
     "mergerGlobalProvider",
     "mergerGlobalModelId",
+    "mergerGlobalCredentialInstanceId",
     "mergerGlobalThinkingLevel",
+    "mergerGlobalFallbackProvider",
+    "mergerGlobalFallbackModelId",
+    "mergerGlobalFallbackThinkingLevel",
+    "mergerGlobalFallbackCredentialInstanceId",
     "importTranslateGlobalProvider",
     "importTranslateGlobalModelId",
+    "importTranslateGlobalCredentialInstanceId",
     "importTranslateGlobalThinkingLevel",
   ]),
   "node-sync": new Set([
@@ -508,6 +604,15 @@ export function splitSettingsSave({
     if (DUAL_SCOPE_SOURCE_CONTROL_KEYS.has(key) && activeSection !== "source-control-global") {
       continue;
     }
+    /*
+    FNXC:VerificationResourceBound 2026-09-10-13:09:
+    Same guard for RUFU-212's dual verification resource-bound keys: the global machine-wide
+    fallback is editable only from "scheduling-global"; elsewhere the value is the project's
+    effective (possibly override) value and must never touch global defaults.
+    */
+    if (DUAL_SCOPE_VERIFICATION_BOUND_KEYS.has(key) && activeSection !== "scheduling-global") {
+      continue;
+    }
     if (key === "mcpServers" && scopedMcpValues) {
       continue;
     }
@@ -542,7 +647,15 @@ export function splitSettingsSave({
         continue;
       }
 
-      const scopedOnly = GLOBAL_SOURCE_CONTROL_SCOPED_ONLY_KEYS.has(key);
+      /*
+      FNXC:VerificationResourceBound 2026-09-10-13:09:
+      The dual verification-bound keys are scoped-only for the SAME FN-7535 reason as the
+      source-control set: a project override makes the merged `initialValues` differ from "no
+      global value yet", so without this a genuine global edit that happens to equal the project
+      override (or a clear of a never-saved global) would be judged "unchanged" and dropped.
+      */
+      const scopedOnly =
+        GLOBAL_SOURCE_CONTROL_SCOPED_ONLY_KEYS.has(key) || DUAL_SCOPE_VERIFICATION_BOUND_KEYS.has(key);
       const hasScopedInitial = hasOwn(initialScopedValues?.global, key);
       const hasMergedInitial = !scopedOnly && hasOwn(initialValues, key);
       const initialValue = hasScopedInitial
@@ -574,6 +687,10 @@ export function splitSettingsSave({
     // also be written as project overrides. See the FNXC note in the global branch.
     if (key === "githubTrackingDefaultRepo" && activeSection === "source-control-global") continue;
     if ((DUAL_SCOPE_SOURCE_CONTROL_KEYS.has(key) || ["reportRoadmapDedupeEnabled", "reportRoadmapLabel", "reportRoadmapRepo"].includes(key)) && activeSection === "source-control-global") continue;
+    // FNXC:VerificationResourceBound 2026-09-10-13:09: RUFU-212 mirror of the source-control guard
+    // above — the project patch must ignore the dual verification-bound keys while their GLOBAL
+    // section is open, or the operator's global edit would ALSO materialize as a project override.
+    if (DUAL_SCOPE_VERIFICATION_BOUND_KEYS.has(key) && activeSection === "scheduling-global") continue;
     if (key === "mcpServers" && scopedMcpValues) continue;
     if (key === "mcpServers" && activeSection === "global-mcp") continue;
     if (!isProjectSettingsKey(key)) continue;
@@ -588,6 +705,17 @@ export function splitSettingsSave({
     edits stop propagating to that project. Explicit edits and clears still use normal diffing.
     */
     if (JIRA_SOURCE_CONTROL_KEYS.has(key) && !hasProjectOverride && settingsValueEquals(value, initialValues?.[key as keyof Settings])) {
+      continue;
+    }
+
+    /*
+    FNXC:VerificationResourceBound 2026-09-10-13:09:
+    RUFU-212, mirroring the JIRA guard above: the project scheduling form displays the effective
+    (global-inherited) verification-bound values. With no raw project override, an unchanged
+    effective value must not be materialized as a project setting — later global edits would stop
+    propagating to that project. Explicit edits and clears still use normal diffing.
+    */
+    if (DUAL_SCOPE_VERIFICATION_BOUND_KEYS.has(key) && !hasProjectOverride && settingsValueEquals(value, initialValues?.[key as keyof Settings])) {
       continue;
     }
 

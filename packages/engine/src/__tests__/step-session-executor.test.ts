@@ -13,6 +13,7 @@ import { AgentLogger } from "../agents/agent-logger.js";
 import { expectAppendAgentLog } from "./agent-log-assertions.js";
 import * as worktreeBackendModule from "../worktree/worktree-backend.js";
 import type { TaskDetail, Settings, TaskStore } from "@fusion/core";
+import { registerMemoryBackend, __resetPerTurnRecallDedupForTests, MEMORY_PRE_STEERING_MARKER } from "@fusion/core";
 import { installTaskWorktreeIdentityGuard } from "../worktree/worktree-hooks.js";
 
 vi.mock("../worktree/worktree-hooks.js", () => ({
@@ -1208,12 +1209,10 @@ vi.mock("../worktree/worktree-names.js", async () => {
 vi.mock("node:child_process", async () => {
   const { promisify } = await import("node:util");
   const execSyncFn = vi.fn();
-   
-  const execFn: any = vi.fn((cmd: string, opts: any, cb: any) => {
-    const callback = typeof opts === "function" ? opts : cb;
-    const options = typeof opts === "function" ? {} : (opts ?? {});
+
+  const runThroughExecSync = (cmd: string, options: any, callback: any) => {
     try {
-      const out = execSyncFn(cmd, { ...options, stdio: ["pipe", "pipe", "pipe"] });
+      const out = execSyncFn(cmd, { ...(options ?? {}), stdio: ["pipe", "pipe", "pipe"] });
       const stdout = out === undefined ? "" : out.toString();
       if (typeof callback === "function") callback(null, stdout, "");
     } catch (err) {
@@ -1222,11 +1221,16 @@ vi.mock("node:child_process", async () => {
         callback(err, error?.stdout?.toString?.() ?? "", error?.stderr?.toString?.() ?? "");
       }
     }
+  };
+
+  const execFn: any = vi.fn((cmd: string, opts: any, cb: any) => {
+    const callback = typeof opts === "function" ? opts : cb;
+    const options = typeof opts === "function" ? {} : (opts ?? {});
+    runThroughExecSync(cmd, options, callback);
   });
-   
+
   execFn[promisify.custom] = (cmd: string, opts?: any) =>
     new Promise((resolve, reject) => {
-       
       execFn(cmd, opts, (err: any, stdout: string, stderr: string) => {
         if (err) {
           (err as Record<string, unknown>).stdout = stdout;
@@ -1239,47 +1243,32 @@ vi.mock("node:child_process", async () => {
     });
 
   /*
-  FNXC:WorktreeCleanup 2026-09-25-00:16:
-  execFile must route through the same execSync mock (reconstructing "<file> <args…>" so command
-  matchers keep working) AND expose promisify.custom. An inert `execFile: vi.fn()` never invokes its
-  callback, so `promisify(execFile)` in worktree-backend's assertCleanForDefensiveRemoval (`git status`
-  during defensive worktree removal) returned a promise that NEVER settled — hanging every parallel
-  worktree cleanup test until the 30s timeout (10 tests × 30s = ~300s file wall-time + 10 failures).
+  FNXC:EngineTestDrift 2026-09-02-06:19:
+  FN-251's defensive-removal status probe (`assertCleanForDefensiveRemoval` in
+  worktree-backend.ts) runs `git status --porcelain` through `promisify(execFile)` on every
+  `removeWorktree({ reason: StepSessionCleanup })` — i.e. each parallel-step wave cleanup.
+  The previous `execFile: vi.fn()` never invoked its callback, so the generic promisify
+  promise never settled and all nine `parallel execution` cases hung at the test timeout
+  (identically at 120s — see docs/solutions/test-failures/parallel-step-executor-cases-never-settle.md
+  for the pre-fix evidence). Route `execFile` through the same `execSync` mock surface and
+  mirror Node's real `util.promisify(execFile)` contract: the promisified call resolves to
+  `{ stdout, stderr }` (and rejects with `stdout`/`stderr` attached), matching `exec`.
   */
-  const execFileFn: any = vi.fn((file: string, argsOrOpts?: any, optsOrCb?: any, cb?: any) => {
-    let args: string[] = [];
-    let options: any = {};
-    let callback: any;
-    if (typeof argsOrOpts === "function") {
-      callback = argsOrOpts;
-    } else if (Array.isArray(argsOrOpts)) {
-      args = argsOrOpts;
-      if (typeof optsOrCb === "function") {
-        callback = optsOrCb;
-      } else {
-        options = optsOrCb ?? {};
-        callback = cb;
-      }
+  const execFileFn: any = vi.fn((file: string, a?: any, b?: any, c?: any) => {
+    if (Array.isArray(a)) {
+      const cmd = [file, ...a].join(" ");
+      if (typeof b === "function") runThroughExecSync(cmd, {}, b);
+      else runThroughExecSync(cmd, b ?? {}, c);
+    } else if (typeof a === "function") {
+      runThroughExecSync(file, {}, a);
     } else {
-      options = argsOrOpts ?? {};
-      callback = typeof optsOrCb === "function" ? optsOrCb : cb;
-    }
-    const cmd = [file, ...args].join(" ");
-    try {
-      const out = execSyncFn(cmd, { ...options, stdio: ["pipe", "pipe", "pipe"] });
-      const stdout = out === undefined ? "" : out.toString();
-      if (typeof callback === "function") callback(null, stdout, "");
-    } catch (err) {
-      if (typeof callback === "function") {
-        const error = err as { stdout?: string; stderr?: string };
-        callback(err, error?.stdout?.toString?.() ?? "", error?.stderr?.toString?.() ?? "");
-      }
+      runThroughExecSync(file, a ?? {}, typeof b === "function" ? b : undefined);
     }
   });
-  execFileFn[promisify.custom] = (file: string, args?: any, opts?: any) =>
+
+  execFileFn[promisify.custom] = (file: string, args?: string[], opts?: any) =>
     new Promise((resolve, reject) => {
-       
-      execFileFn(file, args, opts, (err: any, stdout: string, stderr: string) => {
+      execFileFn(file, Array.isArray(args) ? args : [], opts, (err: any, stdout: string, stderr: string) => {
         if (err) {
           (err as Record<string, unknown>).stdout = stdout;
           (err as Record<string, unknown>).stderr = stderr;
@@ -1289,6 +1278,7 @@ vi.mock("node:child_process", async () => {
         }
       });
     });
+
   return { execSync: execSyncFn, exec: execFn, execFile: execFileFn };
 });
 vi.mock("node:fs", () => ({
@@ -1330,6 +1320,16 @@ function makeSettings(overrides: Record<string, any> = {}): Settings {
     maxConcurrent: 2,
     maxWorktrees: 4,
     maxParallelSteps: 1,
+    /*
+    FNXC:PerTurnMemoryRecall 2026-08-19-01:20:
+    RUFU-120: executeStep now runs per-turn memory recall against the configured
+    backend before each step prompt. The default qmd backend spawns the real `qmd`
+    CLI (up to a 4s timeout per call), which would add real subprocess latency to
+    every executor test. Pin the neutral readonly backend (search returns [] →
+    silent skip, no I/O); the recall-seam tests register an explicit fake backend
+    instead.
+    */
+    memoryBackendType: "readonly",
     ...overrides,
   } as Settings;
 }
@@ -2565,8 +2565,15 @@ describe("StepSessionExecutor", () => {
         });
         const settings = makeSettings({ maxParallelSteps: 2 });
 
-        // FNXC:TaskWorktreeNames 2026-09-25-00:16: parallel step worktrees are deterministic
-        // `<taskId>-step-<n>` paths under `.fusion/worktrees`, not generateWorktreeName values.
+        /*
+        FNXC:EngineTestDrift 2026-09-02-06:21:
+        createStepWorktree no longer consumes generateWorktreeName — FNXC:TaskWorktreeNames
+        2026-08-29-08:51 made parallel-step paths deterministic (`<task>-step-<n>` under the
+        resolved worktrees dir). The old `wt-step-0` fixture was dead since then and stayed
+        red-invisible because FN-251's execFile probe hung this describe before the
+        assertions could run.
+        */
+
         let worktreeAddCount = 0;
         mockedExecSync.mockImplementation((cmd: string) => {
           if (cmd.includes("git worktree add")) {
@@ -2648,8 +2655,8 @@ describe("StepSessionExecutor", () => {
         });
         const settings = makeSettings({ maxParallelSteps: 3 });
 
-        let nameCounter = 0;
-        mockedGenerateWorktreeName.mockImplementation(() => `wt-fail-${nameCounter++}`);
+        // No generateWorktreeName fixture: step worktree names are deterministic since
+        // FNXC:TaskWorktreeNames 2026-08-29-08:51, and every add throws here anyway.
         mockedExecSync.mockImplementation((cmd: string) => {
           if (cmd.includes("git worktree add")) {
             throw new Error("worktree creation failed");
@@ -2707,6 +2714,7 @@ describe("StepSessionExecutor", () => {
         });
         const settings = makeSettings({ maxParallelSteps: 3 });
 
+        // Names are deterministic (fn-001-step-N) since FNXC:TaskWorktreeNames 2026-08-29-08:51.
         let worktreeAddCount = 0;
         mockedExecSync.mockImplementation((cmd: string) => {
           if (cmd.includes("git worktree add")) {
@@ -2857,6 +2865,7 @@ describe("StepSessionExecutor", () => {
         });
         const settings = makeSettings({ maxParallelSteps: 3 });
 
+        // Names are deterministic (fn-001-step-N) since FNXC:TaskWorktreeNames 2026-08-29-08:51.
         let worktreeAddCount = 0;
         mockedExecSync.mockImplementation((cmd: string) => {
           if (cmd.includes("git worktree add")) {
@@ -3035,7 +3044,9 @@ describe("StepSessionExecutor", () => {
           rootDir: "/project",
           taskId: "FN-001",
           settings,
-          worktreePath: expect.stringContaining("/project/.fusion/worktrees/"),
+          // Deterministic step paths (FNXC:TaskWorktreeNames 2026-08-29-08:51): the resolved
+          // worktrees dir is rootDir/.fusion/worktrees absent a configured worktreesDir.
+          worktreePath: expect.stringMatching(/^\/project\/\.fusion\/worktrees\/fn-001-step-\d+$/),
         }),
       );
     });
@@ -3233,11 +3244,20 @@ describe("StepSessionExecutor", () => {
         // Subsequent calls (compact-and-resume) succeed
       });
 
-      // Mock compactSessionContext to succeed
+      /*
+      FNXC:ChatContextGuardEscalation 2026-09-04-10:57:
+      RUFU-182: the helper resolves a reason-preserving CompactionOutcome, so the success
+      fixture states the compacted arm explicitly (the old {summary,tokensBefore} object
+      had no discriminant and would now read as non-compacted).
+      */
       const { compactSessionContext } = await import("../pi.js");
       vi.mocked(compactSessionContext).mockResolvedValue({
+        reason: "compacted",
+        branchMutated: true,
         summary: "Compacted",
         tokensBefore: 150000,
+        estimatedTokensAfter: 40_000,
+        reduced: true,
       });
 
       const executor = new StepSessionExecutor({
@@ -3255,7 +3275,7 @@ describe("StepSessionExecutor", () => {
       expect(results[0].retries).toBe(0);
     });
 
-    it("succeeds with reduced-prompt retry when compact returns null", async () => {
+    it("succeeds with reduced-prompt retry when compaction reports nothing-to-compact", async () => {
       const task = makeTaskDetail({
         prompt: makeStepPrompt("FN-001", 1),
         steps: [{ name: "Step 0", status: "pending" }],
@@ -3279,9 +3299,19 @@ describe("StepSessionExecutor", () => {
         // Reduced-prompt succeeds
       });
 
-      // Mock compactSessionContext to return null (no history)
+      /*
+      FNXC:ChatContextGuardEscalation 2026-09-04-10:57:
+      RUFU-182: the old `mockResolvedValue(null)` encoded "compaction unavailable" by
+      laundering every refusal into null. The fixture now states its intent directly — a
+      too-small session is pi's literal nothing-to-compact refusal, which the recovery
+      paths map to the same reduced-prompt fallback branch.
+      */
       const { compactSessionContext } = await import("../pi.js");
-      vi.mocked(compactSessionContext).mockResolvedValue(null);
+      vi.mocked(compactSessionContext).mockResolvedValue({
+        reason: "nothing-to-compact",
+        branchMutated: false,
+        engineMessage: "Nothing to compact (session too small)",
+      });
 
       const executor = new StepSessionExecutor({
         store,
@@ -3316,9 +3346,13 @@ describe("StepSessionExecutor", () => {
         new Error("context window exceeds limit (2013)"),
       );
 
-      // Mock compactSessionContext to return null (no history)
+      // RUFU-182: too-small session stated as the nothing-to-compact arm (was null).
       const { compactSessionContext } = await import("../pi.js");
-      vi.mocked(compactSessionContext).mockResolvedValue(null);
+      vi.mocked(compactSessionContext).mockResolvedValue({
+        reason: "nothing-to-compact",
+        branchMutated: false,
+        engineMessage: "Nothing to compact (session too small)",
+      });
 
       const executor = new StepSessionExecutor({
         store,
@@ -3841,5 +3875,201 @@ describe("StepSessionExecutor credential-instance retargeting", () => {
 
     await expect(execution).resolves.toEqual([expect.objectContaining({ success: true, retries: 1 })]);
     expect(mockedCreateFnAgent.mock.calls[1]?.[0]).toMatchObject({ credentialInstanceId: "account-b" });
+  });
+});
+
+// ── StepSessionExecutor: per-turn memory recall (RUFU-120 B.2) ─────────────
+
+/*
+FNXC:PerTurnMemoryRecall 2026-08-19-01:15:
+RUFU-120 (B.2 LCM phase 2) symptom-verification seam tests: the executor step
+prompt must carry the deduped per-turn recall cue ONCE per task-scoped topic
+(task:<id>), never on feature-off, and the context-limit reduced-prompt
+recovery path must stay cue-free (it stays minimal by contract). In-memory
+fake backend via registerMemoryBackend (unique type name, no real LLM).
+*/
+describe("executor step-session per-turn memory recall (RUFU-120 B.2)", () => {
+  const RECALL_FAKE_TYPE = "perturn-step-fake";
+  /*
+  FNXC:RUFU172ExecutorFocusLane 2026-08-31-21:49:
+  RUFU-172 Step 5 proof seam: the fake records every search query the executor's recall
+  lane issues, so a fabricated focus would surface as a SECOND raw-text query. Cleared in
+  beforeEach alongside the per-test backend re-registration.
+  */
+  const recallSearchQueries: string[] = [];
+
+  function makeRecallFakeBackend() {
+    return {
+      type: RECALL_FAKE_TYPE,
+      name: "Per-turn step recall fake",
+      capabilities: {
+        readable: true,
+        writable: false,
+        supportsAtomicWrite: false,
+        hasConflictResolution: false,
+        persistent: false,
+      },
+      async read() {
+        return { content: "", exists: true, backend: RECALL_FAKE_TYPE };
+      },
+      async write() {
+        return { success: false, backend: RECALL_FAKE_TYPE };
+      },
+      async search(_rootDir: string, opts: { query: string }) {
+        recallSearchQueries.push(opts.query);
+        return [
+          {
+            path: ".fusion/memory/MEMORY.md",
+            lineStart: 12,
+            lineEnd: 14,
+            snippet: "merge gate flake: quarantine on sight, deletion ratchet",
+            score: 0.8,
+            backend: RECALL_FAKE_TYPE,
+          },
+        ];
+      },
+    };
+  }
+
+  function makeRecallExecutor(overrides: { taskDetail?: Partial<TaskDetail>; settings?: Record<string, unknown> } = {}) {
+    const task = makeTaskDetail({
+      prompt: makeStepPrompt("FN-001", 1),
+      steps: [{ name: "Implement merge gate", status: "pending" }],
+      ...(overrides.taskDetail ?? {}),
+    });
+    const settings = makeSettings({
+      memoryBackendType: RECALL_FAKE_TYPE,
+      ...(overrides.settings ?? {}),
+    });
+    mockedCreateFnAgent.mockResolvedValue({ session: makeMockSession() } as any);
+    const store = {
+      appendAgentLog: vi.fn().mockResolvedValue(undefined),
+      emitUsageEvent: vi.fn().mockResolvedValue(undefined),
+    } as unknown as TaskStore;
+    return {
+      task,
+      settings,
+      executor: new StepSessionExecutor({
+        store,
+        taskDetail: task,
+        worktreePath: "/project/.worktrees/main",
+        rootDir: "/project",
+        settings,
+      } as any),
+    };
+  }
+
+  const promptAt = (callIndex: number): string =>
+    vi.mocked(promptWithAutoRetry).mock.calls[callIndex]?.[1] as string;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mockedGenerateWorktreeName.mockReturnValue("test-worktree");
+    __resetPerTurnRecallDedupForTests();
+    registerMemoryBackend(makeRecallFakeBackend());
+    // Re-establish the factory delegation: later-ordered describes' beforeEach
+    // hooks can replace these mocks' implementations, and vi.clearAllMocks() does
+    // not remove them — pin the module-factory behavior for this block.
+    const { promptWithFallback } = await import("../pi.js");
+    vi.mocked(promptWithFallback).mockImplementation(async (session: any, prompt: string) => {
+      await (session as any).prompt?.(prompt);
+    });
+    vi.mocked(promptWithAutoRetry).mockImplementation(async (session: any, prompt: string, options?: unknown) =>
+      vi.mocked(promptWithFallback)(session, prompt, options as any),
+    );
+    recallSearchQueries.length = 0;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    __resetPerTurnRecallDedupForTests();
+  });
+
+  it("injects the deduped recall cue into the first step prompt for the step topic", async () => {
+    const { executor } = makeRecallExecutor();
+
+    const results = await executor.executeAll();
+
+    expect(results).toHaveLength(1);
+    expect(results[0].success).toBe(true);
+    const firstPrompt = promptAt(0);
+    expect(firstPrompt).toContain("## Memory Recall");
+    expect(firstPrompt).toContain(MEMORY_PRE_STEERING_MARKER);
+    expect(firstPrompt).toContain(".fusion/memory/MEMORY.md");
+    expect(firstPrompt).toContain("merge gate flake: quarantine on sight");
+  });
+
+  it("does not re-inject the same cue when the same step topic recurs in the same task (task-scoped dedup)", async () => {
+    const { executor } = makeRecallExecutor();
+
+    const first = await (executor as any).executeStep(0, "/project/.worktrees/main");
+    const second = await (executor as any).executeStep(0, "/project/.worktrees/main");
+
+    expect(first.success).toBe(true);
+    expect(second.success).toBe(true);
+    expect(promptAt(0)).toContain("## Memory Recall");
+    expect(promptAt(1)).not.toContain("## Memory Recall");
+    expect(promptAt(1)).not.toContain(MEMORY_PRE_STEERING_MARKER);
+  });
+
+  it("skips the recall cue entirely when memoryPerTurnRecallEnabled is false", async () => {
+    const { executor } = makeRecallExecutor({ settings: { memoryPerTurnRecallEnabled: false } });
+
+    const results = await executor.executeAll();
+
+    expect(results[0].success).toBe(true);
+    expect(promptAt(0)).not.toContain("## Memory Recall");
+    expect(promptAt(0)).not.toContain(MEMORY_PRE_STEERING_MARKER);
+  });
+
+  it("keeps the context-limit reduced-prompt recovery prompt cue-free", async () => {
+    const { executor } = makeRecallExecutor();
+
+    // Force the main-prompt context-limit failure: first promptWithAutoRetry
+    // call throws, the reduced-prompt recovery call succeeds (same pattern as
+    // the "succeeds with reduced-prompt retry when compaction reports nothing-to-compact" test).
+    const { promptWithFallback, compactSessionContext } = await import("../pi.js");
+    let callCount = 0;
+    vi.mocked(promptWithFallback).mockImplementation(async () => {
+      callCount++;
+      if (callCount === 1) {
+        throw new Error("context window exceeds limit (2013)");
+      }
+    });
+    // RUFU-182: compaction unavailable stated as an explicit arm (was mockResolvedValue(null)).
+    vi.mocked(compactSessionContext).mockResolvedValue({
+      reason: "nothing-to-compact",
+      branchMutated: false,
+      engineMessage: "Nothing to compact (session too small)",
+    });
+    const results = await executor.executeAll();
+
+    expect(results[0].success).toBe(true);
+    // The main prompt carried the cue for this turn…
+    expect(promptAt(0)).toContain("## Memory Recall");
+    // …and the recovery prompt stayed minimal.
+    expect(promptAt(1)).not.toContain("## Memory Recall");
+    expect(promptAt(1)).not.toContain(MEMORY_PRE_STEERING_MARKER);
+  });
+
+  /*
+  FNXC:RUFU172ExecutorFocusLane 2026-08-31-21:49:
+  RUFU-172 Step 5 honest-lane contract: a mission-linked task must NOT fabricate a recall
+  focus (e.g. from the mission title). The executor lane stays focus-less: exactly ONE
+  recall search (the derived step-topic keywords) and the same whole-project cue as before.
+  */
+  it("issues exactly one whole-project recall search for a mission-linked task (no fabricated focus)", async () => {
+    const { executor } = makeRecallExecutor({ taskDetail: { missionId: "M-001" } });
+
+    const results = await executor.executeAll();
+
+    expect(results).toHaveLength(1);
+    expect(results[0].success).toBe(true);
+    // One search only — a fabricated focus would appear as a second raw-text query.
+    expect(recallSearchQueries).toHaveLength(1);
+    // And the prompt carries the unchanged whole-project cue.
+    expect(promptAt(0)).toContain("## Memory Recall");
+    expect(promptAt(0)).toContain(MEMORY_PRE_STEERING_MARKER);
   });
 });

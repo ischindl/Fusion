@@ -9,7 +9,7 @@
  * finds orphans and the filter drops every one — recovery silently does nothing after restart.
  */
 import type { Task, TaskStore } from "@fusion/core";
-import { resolveProjectColumnsForRoles } from "@fusion/core";
+import { deriveTaskLabelFromDescription, resolveProjectColumnsForRoles } from "@fusion/core";
 import { setImmediate as setImmediateCb } from "node:timers";
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -213,7 +213,10 @@ export async function resumeOrphaned(deps: ResumeOrphanedDeps): Promise<void> {
       continue;
     }
 
-    executorLog.log(`Resuming ${task.id}: ${task.title || task.description.slice(0, 60)}`);
+    // FNXC:TaskTitleDerivation 2026-09-26-02:28: RUFU-295 — the resume log line names the card with the
+    // canonical markdown-aware label instead of the raw first 60 characters, which printed a heading or
+    // markdown body in the log for every spec-shaped card.
+    executorLog.log(`Resuming ${task.id}: ${task.title?.trim() || deriveTaskLabelFromDescription(task.description, 60)}`);
     try {
       await deps.clearResumeFailureState(task);
       await deps.store.logEntry(task.id, "Resumed after engine restart");

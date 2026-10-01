@@ -1,4 +1,5 @@
 import * as fusionCore from "@fusion/core";
+import { storeErrorResult } from "@fusion/engine";
 import { MAX_TASK_LIST_TEXT_CHARS, type TaskStore } from "@fusion/core";
 import { completeColumnsForTask } from "./task-lifecycle-lanes.js";
 import type { WorkflowIr } from "@fusion/core";
@@ -37,10 +38,23 @@ export function resolveTaskListFormatter(core: { formatTaskListText?: unknown })
 }
 
 export function createPlanningBoardTools(store: TaskStore): ToolDefinition[] {
+  /*
+  FNXC:CommentDelivery 2026-09-27-17:05 (RUFU-259):
+  The planning interview lane receives operator steering too, so its `fn_task_show` carries the same
+  optional comment-id read as the engine factory, the planner lane, and the pi extension. A fourth
+  variant without it would just move the unreadable-comment bug to whichever surface the planner
+  happens to be holding.
+  */
   const taskGetParams = {
     type: "object",
     properties: {
       id: { type: "string", description: "Task ID (e.g. KB-001)" },
+      commentIds: {
+        type: "array",
+        items: { type: "string" },
+        maxItems: 20,
+        description: "Optional comment or steering-comment ids to return bodies for. Resolved against both `comments` and `steeringComments`.",
+      },
     },
     required: ["id"],
     additionalProperties: false,
@@ -77,7 +91,9 @@ export function createPlanningBoardTools(store: TaskStore): ToolDefinition[] {
         };
       }
       const lines = active.map((t) => {
-        const desc = t.title || t.description.slice(0, 80);
+        // FNXC:TaskTitleDerivation 2026-09-26-02:43: RUFU-295 — planning-board task listings show the
+        // canonical derived label instead of a raw 80-character description prefix.
+        const desc = t.title?.trim() || fusionCore.deriveTaskLabelFromDescription(t.description, 80);
         const deps = t.dependencies.length ? ` [deps: ${t.dependencies.join(", ")}]` : "";
         return `${t.id} (${t.column}): ${desc}${deps}`;
       });
@@ -108,9 +124,10 @@ export function createPlanningBoardTools(store: TaskStore): ToolDefinition[] {
     label: "Get Task",
     description:
       "Get full details of a specific task including its PROMPT.md content. " +
-      "Use to verify duplicates and to read dependency task specs before writing a new PROMPT.md.",
+      "Use to verify duplicates and to read dependency task specs before writing a new PROMPT.md. " +
+      "Pass commentIds to read the body of comment or steering comments by id.",
     parameters: taskGetParams,
-    execute: async (_callId: string, params: { id: string }) => {
+    execute: async (_callId: string, params: { id: string; commentIds?: string[] }) => {
       try {
         const task = await store.getTask(params.id);
         const parts = [
@@ -121,12 +138,17 @@ export function createPlanningBoardTools(store: TaskStore): ToolDefinition[] {
           "",
           "PROMPT.md:",
           task.prompt || "(not yet specified)",
+          fusionCore.renderTaskCommentSection(task, params.commentIds) || null,
         ].filter(Boolean);
         return {
           content: [{ type: "text" as const, text: parts.join("\n") }],
           details: {},
         };
-      } catch {
+      } catch (err: unknown) {
+        // A store outage is not a missing card: only the store's own not-found may say so.
+        if (!fusionCore.isTaskNotFoundError(err)) {
+          return storeErrorResult(`Task ${params.id} could not be read`, err);
+        }
         return {
           content: [{ type: "text" as const, text: `Task ${params.id} not found.` }],
           details: {},

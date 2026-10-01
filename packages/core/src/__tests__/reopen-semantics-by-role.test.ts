@@ -157,11 +157,19 @@ describe("a reopen is decided by lifecycle ROLE, not by the default lineage's na
 
   it("does NOT treat a forward move into wip as a reopen on a renamed board", () => {
     // The paired negative: "clears everything always" must not be able to pass for
-    // "reads the roles". A backlog -> building move keeps the card's own state.
+    // "reads the roles". RUFU-228 moved ONE narrow status clear onto this crossing —
+    // the stale TERMINAL planning failure — so the reopen's destructive evidence
+    // (workflowStepResults/branch/summary) surviving is what discriminates "reads the
+    // roles" from "clears everything"; a reopen reading this move would destroy them.
     const task = applyOn(RENAMED_IR, "backlog", "building");
 
-    expect(task.status).toBe("failed");
+    // Stale failed+error clears on the forward planning -> WIP crossing (RUFU-228).
+    expect(task.status).toBeUndefined();
+    expect(task.error).toBeUndefined();
+    // Reopen effects do NOT fire: destructive reopen resets would have wiped these.
     expect(task.workflowStepResults).toHaveLength(1);
+    expect(task.branch).toBe("fusion/FN-1");
+    expect(task.summary).toBe("old summary");
   });
 
   it("does NOT clear results on the graph's own review -> wip crossing (carve-out survives)", () => {

@@ -174,6 +174,91 @@ pgDescribe("project-context (PostgreSQL-backed detection)", () => {
         "No fusion project found"
       );
     });
+
+    /*
+    FNXC:ProjectRoutingVisibility 2026-09-22-16:37:
+    The measured mis-routing incident (GEDA-1057/1058): the operator stood in the `runfusion` checkout
+    while the central DEFAULT project named another project, and `fn task create` filed cards there
+    with nothing in the output saying so. Resolution precedence (flag → default → cwd) is the documented
+    contract in docs/multi-project.md and stays unchanged; what the resolved context must now carry is
+    the PROVENANCE of the choice plus what cwd discovery saw, so the CLI can report and warn.
+    These three cases pin one branch of that precedence each.
+    */
+    it("records that the central default won over a different cwd project", async () => {
+      const runfusionPath = createMockProject("runfusion");
+      const gedappPath = createMockProject("gedapp");
+      const runfusion = await central.registerProject({ name: "runfusion", path: resolve(runfusionPath) });
+      const gedapp = await central.registerProject({ name: "gedapp", path: resolve(gedappPath) });
+      createdProjectIds.push(runfusion.id, gedapp.id);
+      await setDefaultProject(gedapp.id, homeDir);
+
+      const context = await resolveProject(undefined, runfusionPath, homeDir);
+      try {
+        expect(context.projectName).toBe("gedapp");
+        expect(context.projectPath).toBe(resolve(gedappPath));
+        expect(context.resolvedFrom).toBe("default");
+        expect(context.cwdProject).toMatchObject({
+          id: runfusion.id,
+          name: "runfusion",
+          path: resolve(runfusionPath),
+        });
+      } finally {
+        await closeProjectStore(context);
+      }
+    });
+
+    it("records an explicit --project flag as the source even when cwd names another project", async () => {
+      const runfusionPath = createMockProject("runfusion");
+      const gedappPath = createMockProject("gedapp");
+      const runfusion = await central.registerProject({ name: "runfusion", path: resolve(runfusionPath) });
+      const gedapp = await central.registerProject({ name: "gedapp", path: resolve(gedappPath) });
+      createdProjectIds.push(runfusion.id, gedapp.id);
+      // The default is deliberately the OTHER project: a flag must still win over it.
+      await setDefaultProject(runfusion.id, homeDir);
+
+      const context = await resolveProject("gedapp", runfusionPath, homeDir);
+      try {
+        expect(context.projectName).toBe("gedapp");
+        expect(context.resolvedFrom).toBe("flag");
+        expect(context.cwdProject?.name).toBe("runfusion");
+      } finally {
+        await closeProjectStore(context);
+      }
+    });
+
+    it("records cwd detection as the source and reports no disagreement when no default is set", async () => {
+      const runfusionPath = createMockProject("runfusion");
+      const runfusion = await central.registerProject({ name: "runfusion", path: resolve(runfusionPath) });
+      createdProjectIds.push(runfusion.id);
+
+      const context = await resolveProject(undefined, runfusionPath, homeDir);
+      try {
+        expect(context.projectName).toBe("runfusion");
+        expect(context.resolvedFrom).toBe("cwd");
+        expect(context.cwdProject?.path).toBe(resolve(runfusionPath));
+      } finally {
+        await closeProjectStore(context);
+      }
+    });
+
+    it("keeps resolution working when cwd discovery finds nothing", async () => {
+      const gedappPath = createMockProject("gedapp");
+      const gedapp = await central.registerProject({ name: "gedapp", path: resolve(gedappPath) });
+      createdProjectIds.push(gedapp.id);
+      await setDefaultProject(gedapp.id, homeDir);
+      const unrelatedDir = join(tempDir, "not-a-project");
+      mkdirSync(unrelatedDir, { recursive: true });
+
+      const context = await resolveProject(undefined, unrelatedDir, homeDir);
+      try {
+        expect(context.projectName).toBe("gedapp");
+        expect(context.resolvedFrom).toBe("default");
+        // No evidence is not the same as a disagreement: consumers must degrade to silence.
+        expect(context.cwdProject).toBeUndefined();
+      } finally {
+        await closeProjectStore(context);
+      }
+    });
   });
 });
 

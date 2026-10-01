@@ -41,11 +41,67 @@ vi.mock("../pi.js", () => ({
     const suffixes = [thinking ? `thinking effort: ${thinking}` : "", ...annotations].filter(Boolean);
     return suffixes.length ? `${model} ${suffixes.map((suffix) => `(${suffix})`).join(" ")}` : model;
   }),
+  /*
+  FNXC:ChatContextGuardEscalation 2026-09-04-10:57:
+  RUFU-182 changed `compactSessionContext` from `{…}|null` to a reason-preserving
+  CompactionOutcome, so this pass-through converts the raw pi resolve into the same
+  arms the real helper builds (the factory mocks ../pi.js itself and cannot import the
+  real classifier). Old consumers saw raw-truthiness success and null failure; they now
+  observe the compacted arm and the error/refusal arms with identical branch semantics.
+
+  FNXC:CompactionNoProgress 2026-09-04-16:35:
+  RUFU-187's `no-progress` arm is mirrored here with the same pi-reported rule (a non-empty summary
+  whose `estimatedTokensAfter` does not beat `tokensBefore`), otherwise every consumer test in this
+  factory would read a non-reducing compaction as `compacted` and the refusal could not be tested.
+  The `pure-estimate` fallback is intentionally NOT mirrored: this factory has no estimator to
+  snapshot before/after (it mocks the module that ships one), and its session fixtures expose no
+  `state.messages` anyway. That fallback is covered against the REAL classifier in pi.test.ts.
+  */
   compactSessionContext: vi.fn(async (session, instructions) => {
-    if (typeof (session as any).compact === "function") {
-      return (session as any).compact(instructions);
+    if (typeof (session as any).compact !== "function") {
+      return { reason: "unsupported", branchMutated: false, engineMessage: null };
     }
-    return null;
+    try {
+      const result = await (session as any).compact(instructions);
+      if (result && typeof result === "object") {
+        const summary = typeof result.summary === "string" ? result.summary : "";
+        const tokensBefore =
+          typeof result.tokensBefore === "number" && Number.isFinite(result.tokensBefore)
+            ? result.tokensBefore
+            : 0;
+        const estimatedTokensAfter =
+          typeof result.estimatedTokensAfter === "number" && Number.isFinite(result.estimatedTokensAfter)
+            ? result.estimatedTokensAfter
+            : null;
+        if (summary.trim().length > 0 && estimatedTokensAfter !== null && estimatedTokensAfter >= tokensBefore) {
+          return {
+            reason: "no-progress",
+            branchMutated: true,
+            tokensBefore,
+            estimatedTokensAfter,
+            basis: "pi-reported",
+          };
+        }
+        return {
+          reason: "compacted",
+          branchMutated: true,
+          summary,
+          tokensBefore,
+          estimatedTokensAfter,
+          reduced: estimatedTokensAfter !== null && estimatedTokensAfter < tokensBefore,
+        };
+      }
+      return { reason: "error", branchMutated: false, engineMessage: "session.compact() produced no compaction result" };
+    } catch (err: unknown) {
+      const engineMessage = err instanceof Error ? err.message : String(err);
+      if (/already compacted/i.test(engineMessage)) {
+        return { reason: "already-compacted", branchMutated: false, engineMessage };
+      }
+      if (/nothing to compact/i.test(engineMessage)) {
+        return { reason: "nothing-to-compact", branchMutated: false, engineMessage };
+      }
+      return { reason: "error", branchMutated: false, engineMessage };
+    }
   }),
   promptWithFallback: vi.fn(async (session, prompt, options) => {
     if (options === undefined) {
@@ -252,6 +308,16 @@ vi.mock("../worktree/worktree-pool.js", async (importOriginal) => {
     RemovalReason: backend.RemovalReason,
     removeWorktree: vi.fn(actual.removeWorktree),
     classifyTaskWorktree: vi.fn().mockResolvedValue({ ok: true }),
+    /*
+    FNXC:ExecutorTests 2026-09-02-19:43:
+    Shared executor fixtures model FN-001's already-acquired pinned checkout. The acquisition boundary
+    now requires a non-empty registered branch probe in addition to classification, so provide matching
+    evidence rather than letting every session-oriented test fail before it opens an agent session.
+    */
+    getRegisteredWorktreeBranches: vi.fn().mockResolvedValue([{
+      worktreePath: "/tmp/test/.fusion/worktrees/fn-001",
+      branch: "fusion/fn-001",
+    }]),
     describeRegisteredWorktrees: vi.fn().mockResolvedValue({ rawOutput: "", canonicalized: [] }),
     isUsableTaskWorktree: vi.fn().mockResolvedValue(true),
   };

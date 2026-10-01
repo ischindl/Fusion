@@ -74,6 +74,37 @@ describe("startMigrationHoldingServer", () => {
     });
   });
 
+  /*
+  FNXC:HybridExecutorBoot 2026-09-26-02:14:
+  RUFU-322 recorded the honest boundary of the operator's "reads worked, only mutations failed"
+  report. While the holding server is bound, refusal is uniform: every `/api/` route is 503 with the
+  operator's exact sentence, a read as much as a mutation. What actually answered during the boot
+  stall was `/api/health` and the HTML holding page — not `/api/` reads. This pins that so nobody
+  later narrows the outage to the write path, and pins the literal sentence the operator quotes.
+  */
+  it("refuses reads and mutations alike with the operator's quoted 503 sentence while bound", async () => {
+    await withServer(async (server) => {
+      const read = await fetch(`http://${HOST}:${server.port}/api/tasks`);
+      const mutation = await fetch(`http://${HOST}:${server.port}/api/projects/proj_1`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ isolationMode: "child-process" }),
+      });
+
+      expect(read.status).toBe(503);
+      expect(mutation.status).toBe(503);
+      const readBody = await read.json();
+      const mutationBody = await mutation.json();
+      expect(readBody.error).toBe("Fusion is starting (database migration may be in progress)");
+      expect(mutationBody.error).toBe(readBody.error);
+
+      // The only surfaces that answer during the hold are health and the holding page itself.
+      const health = await fetch(`http://${HOST}:${server.port}/api/health`);
+      expect(health.status).toBe(200);
+      expect((await health.json()).holding).toBe(true);
+    });
+  });
+
   it("releases the port on close so the real server can bind", async () => {
     const server = await startMigrationHoldingServer({ port: 0, host: HOST });
     expect(server).not.toBeNull();

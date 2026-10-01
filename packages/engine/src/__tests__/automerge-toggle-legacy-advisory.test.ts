@@ -76,7 +76,9 @@ describe("auto-merge toggle legacy advisory", () => {
       const autoMergeOffHandler = engine.settingsHandlers[2];
       await autoMergeOffHandler?.({ settings: makeSettings(false), previous: makeSettings(true) });
 
-      expect(store.listTasks).toHaveBeenCalledWith({ column: "in-review" });
+      // RUFU-201: lane-role board reads opt out of UI signal derivation (see the audit on
+      // `listTasksInLaneRoles`), so the asserted call shape carries `derive: false`.
+      expect(store.listTasks).toHaveBeenCalledWith({ column: "in-review", derive: false });
       expect(warnSpy).toHaveBeenCalledTimes(1);
       expect(String(warnSpy.mock.calls[0]?.[0])).toContain("FN-LEGACY");
       expect(String(warnSpy.mock.calls[0]?.[0])).toContain("FN-ABSENT");

@@ -19,7 +19,12 @@ a mocked cache is what let the missing `savedAt` plumbing hide.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import type { Task } from "@fusion/core";
-import { applyLocalTaskPatch, mergeTaskSnapshot, useTasks } from "../useTasks";
+import {
+  applyLocalTaskPatch,
+  mergeTaskSnapshot,
+  reconcileConfirmedResetSnapshot,
+  useTasks,
+} from "../useTasks";
 import * as api from "../../api";
 import { SWR_CACHE_KEYS } from "../../utils/swrCache";
 /*
@@ -61,8 +66,14 @@ function emitSse(event: string, payload: unknown): void {
 
 vi.mock("../../api", async (importOriginal) => {
   const { createDashboardApiMock } = await import("../../test/mockApi");
+  const fetchTasks = vi.fn().mockResolvedValue([]);
   return createDashboardApiMock(() => importOriginal<typeof import("../../api")>(), {
-    fetchTasks: vi.fn().mockResolvedValue([]),
+    fetchTasks,
+    fetchTaskPage: vi.fn(async (projectId?: string) => {
+      const tasks = await fetchTasks(undefined, undefined, projectId);
+      return { tasks, total: tasks.length, hasMore: false, nextCursor: null };
+    }),
+    fetchCompletedTasks: vi.fn().mockResolvedValue({ tasks: [], total: 0, hasMore: false }),
   });
 });
 
@@ -82,7 +93,14 @@ class MockEventSource {
 }
 
 const originalEventSource = globalThis.EventSource;
-const mockFetchTasks = vi.mocked(api.fetchTasks);
+const mockFetchBoard = vi.mocked(api.fetchTaskPage);
+
+type BoardPage = Awaited<ReturnType<typeof api.fetchTaskPage>>;
+
+function page(tasks: Task[]): BoardPage {
+  return { tasks, total: tasks.length, hasMore: false, nextCursor: null };
+}
+
 const PROJECT_ID = "proj-freshness";
 const CACHE_KEY = `${SWR_CACHE_KEYS.TASKS_PREFIX}${PROJECT_ID}`;
 const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
@@ -103,7 +121,7 @@ function createInProgressTask(id: string, updatedAtMs: number): Task {
     log: [],
     createdAt: new Date(updatedAtMs - 60_000).toISOString(),
     updatedAt: new Date(updatedAtMs).toISOString(),
-  } as Task;
+  } as unknown as Task;
 }
 
 /** Seed the project snapshot with an explicit write time, mimicking a tab discarded `ageMs` ago. */
@@ -127,7 +145,7 @@ beforeEach(() => {
   MockEventSource.instances = [];
   (globalThis as unknown as { EventSource: unknown }).EventSource = MockEventSource;
   localStorage.clear();
-  mockFetchTasks.mockReset().mockResolvedValue([]);
+  mockFetchBoard.mockReset().mockResolvedValue(page([]));
 });
 
 afterEach(() => {
@@ -145,6 +163,70 @@ a real newer column move can advance it. Full-detail prompt/log data is retained
 */
 describe("task snapshot lifecycle freshness", () => {
   const todo = createInProgressTask("FN-ORDER", Date.parse("2026-08-05T10:00:00.000Z"));
+
+  it("treats an equal-clock Reset response as complete while leaving generic sparse merges unchanged", () => {
+    const populated = {
+      ...todo,
+      error: "old failure",
+      steps: [{ name: "Old work", status: "done" }],
+      workflowStepResults: [{ workflowStepId: "code-review", workflowStepName: "Code review", status: "failed" }],
+      mergeRetries: 3,
+    } as Task;
+    const confirmed = {
+      id: populated.id,
+      title: populated.title,
+      description: populated.description,
+      column: "triage",
+      dependencies: [],
+      steps: [],
+      currentStep: 0,
+      log: [],
+      createdAt: populated.createdAt,
+      updatedAt: populated.updatedAt,
+      columnMovedAt: populated.updatedAt,
+    } as Task;
+
+    expect(mergeTaskSnapshot(populated, confirmed)).toMatchObject({
+      error: "old failure",
+      mergeRetries: 3,
+    });
+    const reset = reconcileConfirmedResetSnapshot(populated, confirmed, populated);
+    expect(reset).toEqual(confirmed);
+    expect(reset).not.toHaveProperty("status");
+    expect(reset).not.toHaveProperty("error");
+    expect(reset).not.toHaveProperty("workflowStepResults");
+  });
+
+  it("admits only fields proven newer than the pre-Reset row", () => {
+    const before = {
+      ...todo,
+      error: "old failure",
+      steps: [{ name: "Old work", status: "done" }],
+    } as Task;
+    const confirmed = {
+      id: todo.id,
+      title: todo.title,
+      description: todo.description,
+      column: "triage",
+      dependencies: [],
+      steps: [],
+      log: [],
+      createdAt: todo.createdAt,
+      updatedAt: "2026-08-05T10:01:00.000Z",
+      columnMovedAt: "2026-08-05T10:01:00.000Z",
+    } as Task;
+    const newerSseMergedWithOldRow = {
+      ...before,
+      column: "todo",
+      status: "planning",
+      updatedAt: "2026-08-05T10:02:00.000Z",
+      columnMovedAt: "2026-08-05T10:02:00.000Z",
+    } as Task;
+
+    const reset = reconcileConfirmedResetSnapshot(newerSseMergedWithOldRow, confirmed, before);
+    expect(reset).toMatchObject({ column: "todo", status: "planning", steps: [] });
+    expect(reset).not.toHaveProperty("error");
+  });
 
   it("keeps a newer queued status through an old → new → stale-old scheduler ordering", () => {
     const queued = {
@@ -172,13 +254,13 @@ describe("task snapshot lifecycle freshness", () => {
       status: "queued-overlap",
       updatedAt: "2026-08-05T10:02:00.000Z",
       overlapBlockedBy: "FN-HOLDER",
-      workflowStepResults: [{ stepId: "plan", status: "failed" }],
+      workflowStepResults: [{ stepId: "plan", status: "failed" as const, workflowStepName: "Plan", workflowStepId: "plan-review" }],
     };
     const equalSparseEvent = {
       ...todo,
       status: "todo",
       updatedAt: queued.updatedAt,
-      overlapBlockedBy: null,
+      overlapBlockedBy: null as unknown as string | undefined,
       workflowStepResults: [],
       title: "Scheduler summary",
     };
@@ -292,7 +374,7 @@ describe("task snapshot lifecycle freshness", () => {
     const completeFetch = {
       ...todo,
       column: "in-progress",
-      status: null,
+      status: null as unknown as string | undefined,
       updatedAt: current.updatedAt,
     } as Task;
 
@@ -335,7 +417,7 @@ describe("task snapshot lifecycle freshness", () => {
     const staleCompleteFetch = {
       ...todo,
       column: "triage",
-      status: null,
+      status: null as unknown as string | undefined,
       updatedAt: current.updatedAt,
       columnMovedAt: current.columnMovedAt,
     } as Task;
@@ -464,7 +546,7 @@ describe("useTasks hydration freshness (dataAsOfMs)", () => {
   it("reports the envelope savedAt, not now, on the first render after a 2-hour discard", () => {
     const savedAt = seedSnapshot([createInProgressTask("FN-1", Date.now() - TWO_HOURS_MS)], TWO_HOURS_MS);
     // Never resolves: everything asserted here is the pre-revalidation restore frame.
-    mockFetchTasks.mockReturnValue(new Promise<Task[]>(() => {}));
+    mockFetchBoard.mockReturnValue(new Promise<BoardPage>(() => {}));
 
     const { result } = renderHook(() => useTasks({ projectId: PROJECT_ID }));
 
@@ -480,7 +562,7 @@ describe("useTasks hydration freshness (dataAsOfMs)", () => {
       createInProgressTask(`FN-${index}`, savedAt - 60_000),
     );
     seedSnapshot(tasks, TWO_HOURS_MS);
-    mockFetchTasks.mockReturnValue(new Promise<Task[]>(() => {}));
+    mockFetchBoard.mockReturnValue(new Promise<BoardPage>(() => {}));
 
     const { result } = renderHook(() => useTasks({ projectId: PROJECT_ID }));
     const dataAsOfMs = result.current.lastFetchTimeMs;
@@ -509,7 +591,7 @@ describe("useTasks hydration freshness (dataAsOfMs)", () => {
       ],
       TWO_HOURS_MS,
     );
-    mockFetchTasks.mockReturnValue(new Promise<Task[]>(() => {}));
+    mockFetchBoard.mockReturnValue(new Promise<BoardPage>(() => {}));
 
     const { result } = renderHook(() => useTasks({ projectId: PROJECT_ID }));
     const dataAsOfMs = result.current.lastFetchTimeMs;
@@ -522,7 +604,7 @@ describe("useTasks hydration freshness (dataAsOfMs)", () => {
 
   it("advances the clock to now once the mount revalidation lands real data", async () => {
     const savedAt = seedSnapshot([createInProgressTask("FN-OLD", Date.now() - TWO_HOURS_MS)], TWO_HOURS_MS);
-    mockFetchTasks.mockResolvedValue([createInProgressTask("FN-NEW", Date.now())]);
+    mockFetchBoard.mockResolvedValue(page([createInProgressTask("FN-NEW", Date.now())]));
 
     const { result } = renderHook(() => useTasks({ projectId: PROJECT_ID }));
     expect(result.current.lastFetchTimeMs).toBe(savedAt);
@@ -533,7 +615,7 @@ describe("useTasks hydration freshness (dataAsOfMs)", () => {
   });
 
   it("leaves the clock undefined when there is no snapshot to describe", async () => {
-    mockFetchTasks.mockReturnValue(new Promise<Task[]>(() => {}));
+    mockFetchBoard.mockReturnValue(new Promise<BoardPage>(() => {}));
 
     const { result } = renderHook(() => useTasks({ projectId: PROJECT_ID }));
 
@@ -550,7 +632,7 @@ describe("useTasks hydration freshness (dataAsOfMs)", () => {
       otherKey,
       JSON.stringify({ savedAt: otherSavedAt, data: [createInProgressTask("FN-B", otherSavedAt - 60_000)] }),
     );
-    mockFetchTasks.mockReturnValue(new Promise<Task[]>(() => {}));
+    mockFetchBoard.mockReturnValue(new Promise<BoardPage>(() => {}));
 
     const { result, rerender } = renderHook(
       ({ projectId }: { projectId: string }) => useTasks({ projectId }),
@@ -618,7 +700,7 @@ describe("applyLocalTaskPatch", () => {
   });
 
   it("applies a patch clock when the current row has no clock", () => {
-    const clocklessCurrent = { ...current, updatedAt: undefined, columnMovedAt: undefined } as Task;
+    const clocklessCurrent = { ...current, updatedAt: undefined, columnMovedAt: undefined } as unknown as Task;
     expect(applyLocalTaskPatch(clocklessCurrent, {
       column: "done",
       columnMovedAt: "2026-08-09T11:00:00.000Z",
@@ -653,7 +735,7 @@ describe("useTasks freshness clock vs single-row live updates", () => {
       );
       seedSnapshot(hydrated, TWO_HOURS_MS);
       // Never resolves: the mount revalidation is still in flight, exactly as on a waking radio.
-      mockFetchTasks.mockReturnValue(new Promise<Task[]>(() => {}));
+      mockFetchBoard.mockReturnValue(new Promise<BoardPage>(() => {}));
 
       const { result } = renderHook(() => useTasks({ projectId: PROJECT_ID }));
       expect(result.current.lastFetchTimeMs).toBe(savedAt);
@@ -673,7 +755,7 @@ describe("useTasks freshness clock vs single-row live updates", () => {
   it("ingestCreatedTasks does not advance the clock while the snapshot is unconfirmed", () => {
     const savedAt = Date.now() - TWO_HOURS_MS;
     seedSnapshot([createInProgressTask("FN-0", savedAt - 60_000)], TWO_HOURS_MS);
-    mockFetchTasks.mockReturnValue(new Promise<Task[]>(() => {}));
+    mockFetchBoard.mockReturnValue(new Promise<BoardPage>(() => {}));
 
     const { result } = renderHook(() => useTasks({ projectId: PROJECT_ID }));
 
@@ -687,7 +769,7 @@ describe("useTasks freshness clock vs single-row live updates", () => {
 
   it("still advances the clock on a live update once a fetch has confirmed the whole board", async () => {
     seedSnapshot([createInProgressTask("FN-0", Date.now() - TWO_HOURS_MS)], TWO_HOURS_MS);
-    mockFetchTasks.mockResolvedValue([createInProgressTask("FN-CONFIRMED", Date.now())]);
+    mockFetchBoard.mockResolvedValue(page([createInProgressTask("FN-CONFIRMED", Date.now())]));
 
     const { result } = renderHook(() => useTasks({ projectId: PROJECT_ID }));
     await flushAsyncUpdates();

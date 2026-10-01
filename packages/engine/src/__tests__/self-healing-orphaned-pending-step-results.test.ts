@@ -2,28 +2,33 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import type { Settings, Task, TaskStore, WorkflowStepResult } from "@fusion/core";
 
-const { recordRunAuditEventMock, captureMergeContentDescriptorMock } = vi.hoisted(() => ({
-  recordRunAuditEventMock: vi.fn(async () => undefined),
+/*
+FNXC:StaleReviewCallbackWaiver 2026-10-01-06:20 (upstream FN-9429 port):
+The waiver branch of this sweep reads the merge-content descriptor before it may issue a receipt,
+so the module is mocked for the whole file. Every pre-existing FN-8492 case here lacks a review-lane
+gate, an eligible selection, or an auto-merge resolution, so it still falls through to the
+rewrite-to-failed path — the mock cannot turn a historic case into a waiver.
+*/
+const { captureMergeContentDescriptorMock } = vi.hoisted(() => ({
   captureMergeContentDescriptorMock: vi.fn(async () => ({ kind: "singular", diff: { state: "empty" } })),
 }));
-/*
-FNXC:EngineTests 2026-08-23-18:47:
-The auditor module moved to `util/run-audit.js` in the domain folder layout; the stale
-`../run-audit.js` specifier matched nothing, so this mock was inert and the sweep ran against the
-real auditor — the `toHaveBeenCalled` cases failed while the `not.toHaveBeenCalled` cases passed
-for the wrong reason. Mock the path `self-healing.ts` actually imports.
-*/
-vi.mock("../util/run-audit.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../util/run-audit.js")>();
-  return {
-    ...actual,
-    createRunAuditor: vi.fn(() => ({ database: recordRunAuditEventMock, git: vi.fn(), filesystem: vi.fn(), sandbox: vi.fn() })),
-  };
-});
 
 vi.mock("../merge/merge-content-capture.js", () => ({
   captureMergeContentDescriptor: captureMergeContentDescriptorMock,
 }));
+
+/*
+FNXC:OrphanedPendingSteps 2026-08-22-14:19 (RUFU-151):
+Audit assertions target the CURRENT emit path (createRunAuditor → emitBoundedRunAudit →
+store `recordRunAuditEvent`, FN-9175) instead of a module mock. The previous top-level
+`vi.mock` factory replaced `createRunAuditor` for a root-level module path production no
+longer imports (the sweep imports the auditor from the `./util` subtree), so the factory
+never engaged: the audited mock stayed at 0 calls while the real emission went unobserved.
+The event at the store sink is the `RunAuditEventInput` shape (`mutationType`/`domain`/
+merged metadata that also carries `phase` and `needsOperatorBypass`), not the raw
+database-input shape — assertions pin the ids/counts-only subset, never a raw-input
+`type` key.
+*/
 
 import { SelfHealingManager } from "../self-healing.js";
 import { activeSessionRegistry, executingTaskLock } from "../agents/active-session-registry.js";
@@ -87,7 +92,15 @@ function storeFor(tasks: Task[]): TaskStore & EventEmitter {
       tasksById.set(id, next);
       return next;
     }),
+    /* FN-9175 sink: the real createRunAuditor → emitBoundedRunAudit path writes here;
+       without it createRunAuditor no-ops and audit assertions would be vacuous. */
+    recordRunAuditEvent: vi.fn(async () => undefined),
   }) as unknown as TaskStore & EventEmitter;
+}
+
+/** Run-audit sink accessor for assertions — mirrors the file's vi.fn cast idiom. */
+function auditSink(store: TaskStore & EventEmitter) {
+  return store.recordRunAuditEvent as ReturnType<typeof vi.fn>;
 }
 
 describe("FN-8492: reconcile orphaned pending step results", () => {
@@ -116,14 +129,29 @@ describe("FN-8492: reconcile orphaned pending step results", () => {
     expect(recovered?.workflowStepResults?.[1]?.completedAt).toBeTruthy();
     expect(recovered?.workflowStepResults?.[1]?.output).toBe("Pending step result had no live session or lease; marked failed by self-healing (FN-8492).");
     expect(recovered?.workflowStepResults?.[1]?.output).not.toMatch(/restart|crash/i);
-    expect(recordRunAuditEventMock).toHaveBeenCalledTimes(1);
-    expect(recordRunAuditEventMock).toHaveBeenCalledWith(expect.objectContaining({
-      type: "task:reconcile-orphaned-pending-step-results",
+    /*
+    FNXC:OrphanedPendingSteps 2026-09-07-00:40:
+    Upstream added these output-text assertions (FN-8492 user-facing copy must not claim
+    a restart/crash); they are kept and paired with the real-store-sink harness above
+    (RUFU-151) rather than upstream's module mock, whose createRunAuditor path no longer
+    matches production imports.
+    */
+    const audit = auditSink(store);
+    expect(audit).toHaveBeenCalledTimes(1);
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+      mutationType: "task:reconcile-orphaned-pending-step-results",
       target: "FN-1",
+      domain: "database",
       metadata: expect.objectContaining({ taskId: "FN-1", orphanedCount: 1, resultCount: 2 }),
     }));
   });
 
+  /*
+  FNXC:StaleReviewCallbackWaiver 2026-10-01-06:20 (upstream FN-9429 port):
+  A receipt-backed waiver is only ever issued inside the resolved review lane. Outside it, the
+  candidate keeps the historic FN-8492 failed rewrite, because silently waiving a callback the merge
+  door never required would approve work no gate asked for.
+  */
   it("does not issue a stale-callback waiver outside the resolved custom review lane", async () => {
     const outsideReviewLane = task("FN-OUTSIDE-REVIEW", {
       column: "custom-hold",
@@ -151,6 +179,12 @@ describe("FN-8492: reconcile orphaned pending step results", () => {
     expect((await store.getTask("FN-OUTSIDE-REVIEW"))?.workflowStepResults?.[0]?.status).toBe("failed");
   });
 
+  /*
+  FNXC:StaleReviewCallbackWaiver 2026-10-01-06:20 (upstream FN-9429 port):
+  PostgreSQL receipt coverage proves transaction durability; these manager-path assertions prove the
+  production sweep selects the exact stale attempt and delegates it — instead of failing the row and
+  then reseeding it — for both stale shapes (`pending` and a verdict-less `failed` callback).
+  */
   it.each(["pending", "failed"] as const)("routes an eligible stale %s code-review callback to one receipt issuance instead of failing or reseeding it", async (status) => {
     const startedAt = new Date(Date.now() - 16 * 60_000).toISOString();
     const candidate = task(`FN-WAIVE-${status}`, {
@@ -198,7 +232,6 @@ describe("FN-8492: reconcile orphaned pending step results", () => {
             attemptId: issue.attemptId,
           },
         }],
-        log: [...current!.log, { timestamp: issuedAt, action: "System waived a proven stale code-review callback after the safety wait." }],
       });
       return { applied: true as const, task: (await store.getTask(id))!, receipt };
     });
@@ -216,12 +249,24 @@ describe("FN-8492: reconcile orphaned pending step results", () => {
       expectedStatus: status,
       expectedStartedAt: startedAt,
     }));
-    /*
-    FNXC:StaleReviewCallbackWaiver 2026-10-01-04:54:
-    PostgreSQL receipt coverage proves transaction durability; this manager-path assertion proves the
-    production sweep selects the exact stale attempt and delegates it instead of failing then reseeding.
-    */
-    expect(recordRunAuditEventMock).not.toHaveBeenCalled();
+    // The row is waived (skipped + receipt marker), not rewritten to failed, and the sweep's own
+    // rewrite event is not emitted; the only audit row is the waiver receipt event.
+    const waived = await store.getTask(candidate.id);
+    expect(waived?.workflowStepResults?.[0]?.status).toBe("skipped");
+    expect(waived?.workflowStepResults?.[0]?.automatedStaleCallbackWaiver?.receiptId).toBe(`receipt-${status}`);
+    const audit = auditSink(store);
+    expect(audit).toHaveBeenCalledTimes(1);
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+      mutationType: "task:stale-review-callback-waived",
+      target: candidate.id,
+      metadata: expect.objectContaining({
+        taskId: candidate.id,
+        workflowStepId: "code-review",
+        receiptIssued: true,
+        priorStatus: status,
+        threshold: "15-minutes",
+      }),
+    }));
   });
 
   it("vetoes on every leg of the liveness triple: isTaskActive, registry path, executing lock", async () => {
@@ -240,7 +285,7 @@ describe("FN-8492: reconcile orphaned pending step results", () => {
     for (const id of ["FN-CB", "FN-REG", "FN-LOCK"]) {
       expect((await store.getTask(id))?.workflowStepResults?.[0]?.status).toBe("pending");
     }
-    expect(recordRunAuditEventMock).not.toHaveBeenCalled();
+    expect(auditSink(store)).not.toHaveBeenCalled();
   });
 
   it("skips user-paused and in-progress rows, and tasks with no pending results", async () => {
@@ -266,7 +311,7 @@ describe("FN-8492: reconcile orphaned pending step results", () => {
     expect((await store.getTask("FN-PAUSED"))?.workflowStepResults?.[0]?.status).toBe("pending");
     expect((await store.getTask("FN-INPROG"))?.workflowStepResults?.[0]?.status).toBe("pending");
     expect((await store.getTask("FN-DONE-STEPS"))?.workflowStepResults).toHaveLength(2);
-    expect(recordRunAuditEventMock).not.toHaveBeenCalled();
+    expect(auditSink(store)).not.toHaveBeenCalled();
   });
 
   it("paginates past 500 rows and recovers orphans on every page", async () => {
@@ -295,8 +340,9 @@ describe("FN-8492: reconcile orphaned pending step results", () => {
 
     expect(await manager.reconcileOrphanedPendingStepResults()).toBe(1);
     expect((await store.getTask("FN-OK"))?.workflowStepResults?.[0]?.status).toBe("failed");
-    expect(recordRunAuditEventMock).toHaveBeenCalledTimes(1);
-    expect(recordRunAuditEventMock).toHaveBeenCalledWith(expect.objectContaining({ target: "FN-OK" }));
+    const audit = auditSink(store);
+    expect(audit).toHaveBeenCalledTimes(1);
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({ target: "FN-OK" }));
   });
 });
 
@@ -405,7 +451,7 @@ describe("review-gate lease liveness (in-review gates)", () => {
     expect(await manager.reconcileOrphanedPendingStepResults()).toBe(0);
     /* The executor's lease is untouched. */
     expect((await store.getTask("FN-WIP"))?.workflowStepResults?.[0]?.status).toBe("pending");
-    expect(recordRunAuditEventMock).not.toHaveBeenCalled();
+    expect(auditSink(store)).not.toHaveBeenCalled();
   });
 
   it("still recovers a genuine orphan on that same renamed board", async () => {

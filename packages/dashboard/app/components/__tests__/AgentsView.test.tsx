@@ -5,6 +5,7 @@ import i18next from "i18next";
 import { loadAllAppCss } from "../../test/cssFixture";
 import { AgentsView } from "../AgentsView";
 import { ToastProvider } from "../../hooks/useToast";
+import { ViewLayoutProvider } from "../../context/ViewLayoutContext";
 import * as apiModule from "../../api";
 import type { Agent, AgentState, AgentCapability, OrgTreeNode } from "../../api";
 import { scopedKey } from "../../utils/projectStorage";
@@ -112,19 +113,24 @@ const mockResizeObserverDisconnect = vi.fn();
 // unconditionally, so every AgentsView mount must be wrapped in a real ToastProvider
 // (see RuntimeFallbackBadge.test.tsx for the reference pattern this replicates).
 function renderView(ui: ReactElement) {
-  return render(<ToastProvider>{ui}</ToastProvider>);
+  return render(
+    <ViewLayoutProvider projectId="proj_123">
+      <ToastProvider>{ui}</ToastProvider>
+    </ViewLayoutProvider>,
+  );
 }
 
 describe("AgentsView", () => {
   const mockAddToast = vi.fn();
   const projectId = "proj_123";
-  const agentsSidebarWidthKey = "kb-dashboard-agents-sidebar-width";
+  const agentsSidebarWidthKey = "kb-dashboard-view-sidebar-width";
 
   const mockAgents: Agent[] = [
     {
       id: "agent-001",
       name: "Test Agent 1",
       role: "executor" as AgentCapability,
+      roles: ["executor"],
       state: "idle" as AgentState,
       totalInputTokens: 100,
       totalOutputTokens: 20,
@@ -136,6 +142,7 @@ describe("AgentsView", () => {
       id: "agent-002",
       name: "Test Agent 2",
       role: "triage" as AgentCapability,
+      roles: ["triage"],
       state: "active" as AgentState,
       taskId: "FN-001",
       totalInputTokens: 10,
@@ -150,6 +157,7 @@ describe("AgentsView", () => {
       id: "agent-003",
       name: "Test Agent 3",
       role: "custom" as AgentCapability,
+      roles: ["custom"],
       state: "paused" as AgentState,
       createdAt: new Date(Date.now() - 172800000).toISOString(),
       updatedAt: new Date().toISOString(),
@@ -159,6 +167,7 @@ describe("AgentsView", () => {
       id: "agent-004",
       name: "Test Agent 4",
       role: "reviewer" as AgentCapability,
+      roles: ["reviewer"],
       state: "error" as AgentState,
       totalInputTokens: 1,
       totalOutputTokens: 1,
@@ -337,7 +346,7 @@ describe("AgentsView", () => {
         expect(card).toBeTruthy();
         const row = card?.querySelector<HTMLElement>(".agent-model-runtime");
         expect(row).toBeTruthy();
-        return row;
+        return row!;
       };
 
       expect(getCardModelRow("agent-provider-model").textContent).toMatch(/Model:\s*openai\/gpt-4\.1/);
@@ -371,17 +380,25 @@ describe("AgentsView", () => {
       });
     });
 
-    it("renders cross-pane overview above split layout", async () => {
+    it("hosts the overview trigger in the header and drops its content above the split layout", async () => {
       const { container } = renderView(<AgentsView addToast={mockAddToast} />);
 
       await waitFor(() => {
-        expect(container.querySelector(".agents-overview-bar")).toBeTruthy();
         expect(container.querySelector(".agents-split-layout")).toBeTruthy();
       });
 
-      const overview = container.querySelector(".agents-overview-bar");
+      // The trigger is a header action, and the rail carries the agent collection alone.
+      const trigger = screen.getByTestId("agents-overview-toggle");
+      expect(container.querySelector(".view-header")?.contains(trigger)).toBe(true);
+      expect(container.querySelector("section.agents-overview-bar")).toBeNull();
+
+      fireEvent.click(trigger);
+
+      const overview = container.querySelector("section.agents-overview-bar");
       const splitLayout = container.querySelector(".agents-split-layout");
+      expect(overview).toBeTruthy();
       expect(overview?.nextElementSibling).toBe(splitLayout);
+      expect(overview?.querySelector("button.agents-overview-bar__toggle")).toBeNull();
       const sidebar = container.querySelector(".agents-split-sidebar");
       expect(sidebar).toBeTruthy();
       expect(sidebar?.querySelector(".agents-overview-bar")).toBeNull();
@@ -430,10 +447,10 @@ describe("AgentsView", () => {
       const handle = await screen.findByTestId("agents-sidebar-resize-handle");
       expect(handle).toHaveAttribute("role", "separator");
       expect(handle).toHaveAttribute("aria-orientation", "vertical");
-      expect(handle).toHaveAttribute("aria-valuemin", "260");
-      expect(handle).toHaveAttribute("aria-valuemax", "520");
-      expect(handle).toHaveAttribute("aria-valuenow", "320");
-      expect(container.querySelector<HTMLElement>(".agents-split-layout")?.style.gridTemplateColumns).toBe("320px var(--space-sm) minmax(0, 1fr)");
+      expect(handle).toHaveAttribute("aria-valuemin", "220");
+      expect(handle).toHaveAttribute("aria-valuemax", "560");
+      expect(handle).toHaveAttribute("aria-valuenow", "300");
+      expect(container.querySelector<HTMLElement>(".agents-split-sidebar")?.style.getPropertyValue("--view-sidebar-current-width")).toBe("300px");
     });
 
     it("does not render the resize handle or inline split width on mobile", async () => {
@@ -445,15 +462,15 @@ describe("AgentsView", () => {
       });
 
       expect(screen.queryByTestId("agents-sidebar-resize-handle")).toBeNull();
-      expect(container.querySelector<HTMLElement>(".agents-split-layout")?.style.gridTemplateColumns).toBe("");
+      expect(container.querySelector(".agents-split-sidebar")).toHaveClass("view-sidebar--mobile");
     });
 
     it.each([
-      { label: "no stored value", stored: null, expected: 320 },
+      { label: "no stored value", stored: null, expected: 300 },
       { label: "valid stored value", stored: "410", expected: 410 },
-      { label: "corrupt stored value", stored: "not-a-number", expected: 320 },
-      { label: "above max stored value", stored: "999", expected: 520 },
-      { label: "below min stored value", stored: "10", expected: 260 },
+      { label: "corrupt stored value", stored: "not-a-number", expected: 300 },
+      { label: "above max stored value", stored: "999", expected: 560 },
+      { label: "below min stored value", stored: "10", expected: 220 },
     ])("initializes sidebar width from $label", async ({ stored, expected }) => {
       if (stored !== null) {
         localStorage.setItem(scopedKey(agentsSidebarWidthKey, projectId), stored);
@@ -463,7 +480,7 @@ describe("AgentsView", () => {
 
       const handle = await screen.findByTestId("agents-sidebar-resize-handle");
       expect(handle).toHaveAttribute("aria-valuenow", String(expected));
-      expect(container.querySelector<HTMLElement>(".agents-split-layout")?.style.gridTemplateColumns).toBe(`${expected}px var(--space-sm) minmax(0, 1fr)`);
+      expect(container.querySelector<HTMLElement>(".agents-split-sidebar")?.style.getPropertyValue("--view-sidebar-current-width")).toBe(`${expected}px`);
     });
 
     it("supports keyboard resizing with project-scoped persistence and clamping", async () => {
@@ -472,30 +489,30 @@ describe("AgentsView", () => {
 
       const handle = await screen.findByTestId("agents-sidebar-resize-handle");
 
-      fireEvent.keyDown(handle, { key: "ArrowRight", shiftKey: true });
+      fireEvent.keyDown(handle, { key: "End" });
       await waitFor(() => {
-        expect(handle).toHaveAttribute("aria-valuenow", "520");
-        expect(localStorage.getItem(scopedKey(agentsSidebarWidthKey, projectId))).toBe("520");
+        expect(handle).toHaveAttribute("aria-valuenow", "560");
+        expect(localStorage.getItem(scopedKey(agentsSidebarWidthKey, projectId))).toBe("560");
       });
 
-      fireEvent.keyDown(handle, { key: "ArrowLeft", shiftKey: true });
-      expect(handle).toHaveAttribute("aria-valuenow", "470");
-      expect(localStorage.getItem(scopedKey(agentsSidebarWidthKey, projectId))).toBe("470");
-
       fireEvent.keyDown(handle, { key: "ArrowLeft" });
-      expect(handle).toHaveAttribute("aria-valuenow", "460");
-      expect(localStorage.getItem(scopedKey(agentsSidebarWidthKey, projectId))).toBe("460");
+      expect(handle).toHaveAttribute("aria-valuenow", "544");
+      expect(localStorage.getItem(scopedKey(agentsSidebarWidthKey, projectId))).toBe("544");
+
+      fireEvent.keyDown(handle, { key: "Home" });
+      expect(handle).toHaveAttribute("aria-valuenow", "220");
+      expect(localStorage.getItem(scopedKey(agentsSidebarWidthKey, projectId))).toBe("220");
     });
 
     it("clamps keyboard resizing at the minimum width", async () => {
-      localStorage.setItem(scopedKey(agentsSidebarWidthKey, projectId), "260");
+      localStorage.setItem(scopedKey(agentsSidebarWidthKey, projectId), "220");
       renderView(<AgentsView addToast={mockAddToast} projectId={projectId} />);
 
       const handle = await screen.findByTestId("agents-sidebar-resize-handle");
-      fireEvent.keyDown(handle, { key: "ArrowLeft", shiftKey: true });
+      fireEvent.keyDown(handle, { key: "ArrowLeft" });
 
-      expect(handle).toHaveAttribute("aria-valuenow", "260");
-      expect(localStorage.getItem(scopedKey(agentsSidebarWidthKey, projectId))).toBe("260");
+      expect(handle).toHaveAttribute("aria-valuenow", "220");
+      expect(localStorage.getItem(scopedKey(agentsSidebarWidthKey, projectId))).toBe("220");
     });
 
     it("supports pointer drag resizing with capture, cleanup, persistence, and max clamping", async () => {
@@ -513,14 +530,14 @@ describe("AgentsView", () => {
 
       fireEvent.pointerMove(document, { pointerId: 1, clientX: 400 });
       await waitFor(() => {
-        expect(handle).toHaveAttribute("aria-valuenow", "520");
+        expect(handle).toHaveAttribute("aria-valuenow", "560");
       });
-      expect(container.querySelector<HTMLElement>(".agents-split-layout")?.style.gridTemplateColumns).toBe("520px var(--space-sm) minmax(0, 1fr)");
+      expect(container.querySelector<HTMLElement>(".agents-split-sidebar")?.style.getPropertyValue("--view-sidebar-current-width")).toBe("560px");
 
       fireEvent.pointerUp(document, { pointerId: 1 });
       expect(releasePointerCapture).toHaveBeenCalledWith(1);
       expect(document.body.style.userSelect).toBe("");
-      expect(localStorage.getItem(scopedKey(agentsSidebarWidthKey, projectId))).toBe("520");
+      expect(localStorage.getItem(scopedKey(agentsSidebarWidthKey, projectId))).toBe("560");
     });
 
     it("supports pointer drag resizing with min clamping", async () => {
@@ -531,11 +548,11 @@ describe("AgentsView", () => {
       fireEvent.pointerDown(handle, { pointerId: 2, clientX: 300 });
       fireEvent.pointerMove(document, { pointerId: 2, clientX: 0 });
       await waitFor(() => {
-        expect(handle).toHaveAttribute("aria-valuenow", "260");
+        expect(handle).toHaveAttribute("aria-valuenow", "220");
       });
       fireEvent.pointerUp(document, { pointerId: 2 });
 
-      expect(localStorage.getItem(scopedKey(agentsSidebarWidthKey, projectId))).toBe("260");
+      expect(localStorage.getItem(scopedKey(agentsSidebarWidthKey, projectId))).toBe("220");
     });
 
     it("supports mobile drill-in detail with back navigation", async () => {
@@ -573,6 +590,7 @@ describe("AgentsView", () => {
             id: "agent-org-1",
             name: "Org Lead",
             role: "scheduler",
+            roles: ["scheduler"],
             state: "active",
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
@@ -715,12 +733,12 @@ describe("AgentsView", () => {
       const { container } = renderView(<AgentsView addToast={mockAddToast} />);
 
       expect(screen.queryByRole("button", { name: "Import" })).toBeNull();
-      expect(screen.queryByRole("button", { name: "New Agent" })).toBeNull();
+      expect(screen.getByRole("button", { name: "New Agent" })).toHaveClass("view-action-button--mobile-icon-only");
 
       await openControlsPanel();
       expect(container.querySelector(".agents-view-primary-actions--controls-open")).toBeTruthy();
       expect(screen.getByRole("button", { name: "Import" })).toBeTruthy();
-      expect(screen.getByRole("button", { name: "New Agent" })).toBeTruthy();
+      expect(screen.getAllByRole("button", { name: "New Agent" })).toHaveLength(1);
     });
 
     it("closes controls popup on Escape and outside click", async () => {
@@ -846,6 +864,7 @@ describe("AgentsView", () => {
           id: `agent-highlight-${state}`,
           name: `Highlight ${state}`,
           role: "executor",
+          roles: ["executor"],
           state,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
@@ -968,6 +987,7 @@ describe("AgentsView", () => {
         id: "agent-marketing-manager",
         name: "Marketing Manager",
         role: "custom",
+        roles: ["custom"],
         state: "active",
         runtimeConfig: { enabled: false },
         metadata: {
@@ -1065,14 +1085,8 @@ describe("AgentsView", () => {
         id: "agent-005",
         name: "Runner",
         role: "executor",
+        roles: ["executor"],
         state: "running",
-        activeRun: {
-          id: "run-555",
-          agentId: "agent-005",
-          startedAt: new Date().toISOString(),
-          endedAt: null,
-          status: "active",
-        },
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         metadata: {},
@@ -1673,6 +1687,7 @@ describe("AgentsView", () => {
           id: "agent-root-1",
           name: "Chief Agent",
           role: "scheduler",
+          roles: ["scheduler"],
           state: "active",
           lastHeartbeatAt: new Date().toISOString(),
           createdAt: new Date().toISOString(),
@@ -1687,6 +1702,7 @@ describe("AgentsView", () => {
               id: "agent-child-1",
               name: "Director One",
               role: "executor",
+              roles: ["executor"],
               state: "running",
               lastHeartbeatAt: new Date().toISOString(),
               createdAt: new Date().toISOString(),
@@ -1699,6 +1715,7 @@ describe("AgentsView", () => {
                   id: "agent-grandchild-1",
                   name: "Manager Alpha",
                   role: "reviewer",
+                  roles: ["reviewer"],
                   state: "idle",
                   createdAt: new Date().toISOString(),
                   updatedAt: new Date().toISOString(),
@@ -1713,6 +1730,7 @@ describe("AgentsView", () => {
               id: "agent-child-2",
               name: "Director Two",
               role: "triage",
+              roles: ["triage"],
               state: "paused",
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),
@@ -1727,6 +1745,7 @@ describe("AgentsView", () => {
           id: "agent-root-2",
           name: "Independent Lead",
           role: "engineer",
+          roles: ["engineer"],
           state: "error",
           lastError: "Agent stalled",
           createdAt: new Date().toISOString(),
@@ -1989,6 +2008,13 @@ describe("AgentsView", () => {
       expect(filterSelect).toBeTruthy();
     });
 
+    /*
+    FNXC:FleetVerdict 2026-09-02-15:47 (RUFU-176 code review P2):
+    These three asserted `fetchAgents({ state, … })`, i.e. the server-side `WHERE state = ?` that the review rejected:
+    narrowing the fetch also narrowed the fleet verdict's input, so the strip collapsed to zeros for any choice other
+    than "All States". They now assert the replacement contract — the dropdown narrows the RENDERED roster and never
+    reaches the wire — which is the same operator-visible outcome (a shorter list) over an honest population.
+    */
     it("can filter agents by state", async () => {
       renderView(<AgentsView addToast={mockAddToast} />);
       await openControlsPanel();
@@ -1996,9 +2022,15 @@ describe("AgentsView", () => {
       const filterSelect = screen.getByLabelText("Filter agents by state");
       fireEvent.change(filterSelect, { target: { value: "active" } });
 
-      await waitFor(() => {
-        expect(mockFetchAgents).toHaveBeenCalledWith({ state: "active", includeEphemeral: false }, undefined);
-      });
+      // Only the one active agent survives in the list (mockAgents: 1 active, 1 idle, 1 paused, 1 error).
+      // Names are queried with the *AllBy* variant because an active agent's name also appears in the token panel.
+      await waitFor(() => expect(screen.queryByText("Test Agent 1")).toBeNull());
+      expect(screen.getAllByText("Test Agent 2").length).toBeGreaterThan(0);
+      expect(screen.queryByText("Test Agent 3")).toBeNull();
+      expect(screen.queryByText("Test Agent 4")).toBeNull();
+
+      // …and the narrowing never reached the server, so the roster the verdict counts stayed whole.
+      expect(mockFetchAgents.mock.calls.every(([filter]) => filter?.state === undefined)).toBe(true);
     });
 
     it("clears filter when selecting 'all'", async () => {
@@ -2008,15 +2040,20 @@ describe("AgentsView", () => {
       const filterSelect = screen.getByLabelText("Filter agents by state");
       fireEvent.change(filterSelect, { target: { value: "idle" } });
 
-      await waitFor(() => {
-        expect(mockFetchAgents).toHaveBeenLastCalledWith({ state: "idle", includeEphemeral: false }, undefined);
-      });
+      await waitFor(() => expect(screen.queryByText("Test Agent 2")).toBeNull());
+      expect(screen.getAllByText("Test Agent 1").length).toBeGreaterThan(0);
+      // The roster fetch stayed unfiltered, and opening the Controls panel's separate bulk-eligibility probe never
+      // grew a `state` clause either.
+      expect(mockFetchAgents).toHaveBeenCalledWith({ includeEphemeral: false }, undefined);
+      expect(mockFetchAgents.mock.calls.every(([filter]) => filter?.state === undefined)).toBe(true);
 
       fireEvent.change(filterSelect, { target: { value: "all" } });
 
-      await waitFor(() => {
-        expect(mockFetchAgents).toHaveBeenLastCalledWith({ includeEphemeral: false }, undefined);
-      });
+      await waitFor(() => expect(screen.getAllByText("Test Agent 2").length).toBeGreaterThan(0));
+      expect(screen.getAllByText("Test Agent 1").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("Test Agent 3").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("Test Agent 4").length).toBeGreaterThan(0);
+      expect(mockFetchAgents.mock.calls.every(([filter]) => filter?.state === undefined)).toBe(true);
     });
   });
 
@@ -2055,7 +2092,7 @@ describe("AgentsView", () => {
       renderView(<AgentsView addToast={mockAddToast} projectId={projectId} />);
       await openControlsPanel();
 
-      // First enable system agents toggle
+      // First enable system agents toggle — this one IS a server-side population switch and stays one.
       const checkbox = screen.getByLabelText("Show system agents");
       fireEvent.click(checkbox);
 
@@ -2063,13 +2100,15 @@ describe("AgentsView", () => {
         expect(mockFetchAgents).toHaveBeenLastCalledWith({ includeEphemeral: true }, projectId);
       });
 
-      // Then filter by state
+      // Then filter by state: narrows the list only, never the fetched population.
       const filterSelect = screen.getByLabelText("Filter agents by state");
       fireEvent.change(filterSelect, { target: { value: "active" } });
 
-      await waitFor(() => {
-        expect(mockFetchAgents).toHaveBeenLastCalledWith({ state: "active", includeEphemeral: true }, projectId);
-      });
+      await waitFor(() => expect(screen.queryByText("Test Agent 1")).toBeNull());
+      expect(screen.getAllByText("Test Agent 2").length).toBeGreaterThan(0);
+      // The system-agent toggle is still a server-side population switch; the state choice is not.
+      expect(mockFetchAgents).toHaveBeenCalledWith({ includeEphemeral: true }, projectId);
+      expect(mockFetchAgents.mock.calls.every(([filter]) => filter?.state === undefined)).toBe(true);
     });
 
     it("hides system agents by default and reveals them when Show system agents is enabled", async () => {
@@ -2078,6 +2117,7 @@ describe("AgentsView", () => {
           id: "agent-sys-001",
           name: "executor-FN-TEST",
           role: "executor" as AgentCapability,
+          roles: ["executor"],
           state: "active" as AgentState,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
@@ -2787,6 +2827,7 @@ describe("AgentsView", () => {
           id: "agent-005",
           name: "Idle Agent",
           role: "executor" as AgentCapability,
+          roles: ["executor"],
           state: "idle" as AgentState,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
@@ -2811,6 +2852,7 @@ describe("AgentsView", () => {
           id: "spawned-001",
           name: "Spawned Worker",
           role: "custom" as AgentCapability,
+          roles: ["custom"],
           state: "active" as AgentState,
           taskId: "FN-100",
           lastHeartbeatAt: new Date().toISOString(),
@@ -2852,6 +2894,7 @@ describe("AgentsView", () => {
         id: "bulk-active",
         name: "Active Agent",
         role: "executor" as AgentCapability,
+        roles: ["executor"],
         state: "active" as AgentState,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -2861,6 +2904,7 @@ describe("AgentsView", () => {
         id: "bulk-running",
         name: "Running Agent",
         role: "reviewer" as AgentCapability,
+        roles: ["reviewer"],
         state: "running" as AgentState,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -2870,6 +2914,7 @@ describe("AgentsView", () => {
         id: "bulk-paused",
         name: "Paused Agent",
         role: "triage" as AgentCapability,
+        roles: ["triage"],
         state: "paused" as AgentState,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -2879,6 +2924,7 @@ describe("AgentsView", () => {
         id: "bulk-idle",
         name: "Idle Agent",
         role: "engineer" as AgentCapability,
+        roles: ["engineer"],
         state: "idle" as AgentState,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -2888,6 +2934,7 @@ describe("AgentsView", () => {
         id: "bulk-system",
         name: "System Worker",
         role: "executor" as AgentCapability,
+        roles: ["executor"],
         state: "active" as AgentState,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -3118,6 +3165,43 @@ describe("AgentsView", () => {
       await waitFor(() => {
         expect(slider).toBeDisabled();
       });
+    });
+  });
+
+  /*
+  FNXC:FleetVerdict 2026-09-02-15:47 (RUFU-176 code review P2):
+  "Is the project moving?" is a property of the roster, not of the state dropdown. The first implementation forwarded
+  `filterState` into `useAgents`, which turned it into a server-side `WHERE state = ?`, so any choice other than
+  "All States" narrowed the very population the verdict counts and collapsed waitingHuman / noHeartbeat / stalled
+  toward zero. `mockFetchAgents` below emulates that SQL filter: the shared `beforeEach` stub answers with all four
+  agents regardless of arguments, so a fixture that never withholds rows could not have caught the defect.
+  */
+  describe("fleet verdict against the state filter", () => {
+    const chipText = (container: HTMLElement, bucket: string) =>
+      container.querySelector(`.agents-fleet-verdict__item--${bucket}`)?.textContent ?? "";
+
+    it("keeps counting the whole roster while the operator narrows the list by state", async () => {
+      mockFetchAgents.mockImplementation((filter?: { state?: AgentState }) =>
+        Promise.resolve(filter?.state ? mockAgents.filter((agent) => agent.state === filter.state) : mockAgents),
+      );
+      const { container } = renderView(<AgentsView addToast={mockAddToast} />);
+
+      // idle never beat -> noHeartbeat; active -> active; paused and error -> stalled.
+      await waitFor(() => expect(chipText(container, "stalled")).toContain("2 stalled"));
+      expect(chipText(container, "active")).toContain("1 active");
+      expect(chipText(container, "no-heartbeat")).toContain("1 no heartbeat");
+
+      await openControlsPanel();
+      fireEvent.change(screen.getByLabelText("Filter agents by state"), { target: { value: "paused" } });
+
+      // The roster list narrows to the paused agent — the filter still filters.
+      await waitFor(() => expect(screen.queryByText("Test Agent 1")).toBeNull());
+      expect(screen.getByText("Test Agent 3")).toBeInTheDocument();
+
+      // And the verdict, derived from the unfiltered roster, is untouched.
+      expect(chipText(container, "stalled")).toContain("2 stalled");
+      expect(chipText(container, "active")).toContain("1 active");
+      expect(chipText(container, "no-heartbeat")).toContain("1 no heartbeat");
     });
   });
 });

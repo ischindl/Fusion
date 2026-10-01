@@ -8,6 +8,9 @@
  */
 
 import { CronExpressionParser } from "cron-parser";
+// FNXC:TaskTitleDerivation 2026-09-26-02:28: RUFU-295 — value import (the core import below is
+// type-only) for the canonical label used in the create-task step's run output.
+import { deriveTaskLabelFromDescription } from "@fusion/core";
 import { isInProcessBackupCommand, isInProcessMemoryBackupCommand } from "./cron-runner.js";
 import type {
   RoutineStore,
@@ -534,7 +537,9 @@ export class RoutineRunner {
       };
       try {
         const task = await this.options.taskStore.createTask(taskInput);
-        return { stepId: step.id, stepName: step.name, stepIndex, success: true, output: `Created task ${task.id}: ${task.title || task.description.slice(0, 80)}`, startedAt, completedAt: new Date().toISOString() };
+        // RUFU-295: name the card with the same markdown-aware label the board shows.
+        const createdLabel = task.title?.trim() || deriveTaskLabelFromDescription(task.description, 80);
+        return { stepId: step.id, stepName: step.name, stepIndex, success: true, output: `Created task ${task.id}: ${createdLabel}`, startedAt, completedAt: new Date().toISOString() };
       } catch (err) {
         return { stepId: step.id, stepName: step.name, stepIndex, success: false, output: "", error: err instanceof Error ? err.message : String(err), startedAt, completedAt: new Date().toISOString() };
       }

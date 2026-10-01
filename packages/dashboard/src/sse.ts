@@ -37,6 +37,42 @@ let nextConnectionId = 1;
 FNXC:EngineDiagnostics 2026-07-26-08:15:
 SSE open/close fires on every dashboard tab, reconnect, and focus flip. Logging each +/- connection at info filled the TUI log pane with steady-state transport chatter. Gate behind FUSION_DEBUG=sse (or FUSION_DEBUG=1/all/*). Keep backpressure and real failures on warn/error.
 */
+/*
+FNXC:ChatRemoteGenerationMirror 2026-09-17-18:57:
+Chat store emits carry the RAW store row: it has `inFlightGeneration` but not `isGenerating`,
+which GET routes derive. A client that only checks `isGenerating` therefore never learned that
+an externally-started generation (another tab, an API call, an engine auto-retry) began - it
+rendered the foreign user row instantly yet showed no working state until reload. The bus
+payload now carries the derived flag so the transcript attach reacts on the same event the
+routes would return.
+
+FNXC:ChatRemoteGenerationMirror 2026-09-21-11:52:
+The derived flag drives the transcript attach and nothing else. No chat sidebar row renders a
+generating indicator (a `chat-session-item` shows pin / unread / window / preview only), so this
+enrichment must not be described as feeding a session-list spinner; a sidebar indicator is a
+deliberate follow-up outside this contract.
+
+FNXC:ChatSidebarLiveness 2026-09-24-07:07 (RUFU-220):
+That follow-up has now shipped, so the sentence above is history, not a current constraint: a
+sidebar row DOES render a liveness chip. It is not this derived flag, though, and the distinction
+is the reason this enrichment stays exactly as narrow as it was. The chip classifies the raw
+`inFlightGeneration` claim through core's `classifyChatInFlightLiveness` — the same classifier the
+engine's reclaim sweep delegates to — because a chip driven by `isGenerating` could only ever say
+"generating", never "this claim is old enough to be reclaimed", and would disagree with the sweep
+that clears it. So the flag still feeds only the transcript attach, while the list reads the claim.
+*/
+export function enrichChatSessionEventPayload(session: unknown): unknown {
+  if (!session || typeof session !== "object" || Array.isArray(session)) {
+    return session;
+  }
+  const record = session as Record<string, unknown>;
+  if ("isGenerating" in record) {
+    return session;
+  }
+  const inFlight = record.inFlightGeneration as { status?: unknown } | null | undefined;
+  return { ...record, isGenerating: inFlight?.status === "generating" };
+}
+
 function isSseDebugEnabled(): boolean {
   const raw = process.env.FUSION_DEBUG?.trim();
   if (!raw) return false;
@@ -101,6 +137,12 @@ interface ManagedSSEConnection {
   markAlive?: () => void;
 }
 
+/*
+FNXC:RetentionCensus 2026-09-23-09:35 (RUFU-257):
+`managedConnections` is the write-serialization registry for currently-open SSE streams. Each connection
+registers on accept and is removed by its close/error handler, so the map is sized by live connections.
+*/
+// retention-owner-deleted: one entry per live SSE connection — removed by the connection's close/error handler
 const managedConnections = new Map<number, ManagedSSEConnection>();
 
 function normalizeSSEClientId(value: unknown): string | undefined {
@@ -286,7 +328,7 @@ export function stripTaskEventHeavyFields<T>(payload: T): T {
   return stripTaskListHeavyFields(payload);
 }
 
-async function enrichChatMessageSsePayload<T>(message: T, store: TaskStore, chatStore?: ChatStore): Promise<T> {
+async function enrichChatMessageSsePayload<T>(message: T, store: TaskStore, chatStore?: ChatStore | ChatStore[]): Promise<T> {
   if (!message || typeof message !== "object" || Array.isArray(message) || !chatStore) {
     return message;
   }
@@ -295,7 +337,17 @@ async function enrichChatMessageSsePayload<T>(message: T, store: TaskStore, chat
   const sessionId = typeof payload.sessionId === "string" ? payload.sessionId : undefined;
   if (!sessionId) return message;
 
-  const session = await chatStore.getSession(sessionId);
+  /* FNXC:ChatRemoteGenerationMirror 2026-09-17-19:25: with a fan-out set, resolve the owning store by first session hit. */
+  const stores = Array.isArray(chatStore) ? chatStore : [chatStore];
+  let session: Awaited<ReturnType<ChatStore["getSession"]>> = undefined;
+  for (const candidate of stores) {
+    try {
+      session = await candidate.getSession(sessionId);
+    } catch {
+      session = undefined;
+    }
+    if (session) break;
+  }
   if (!session) return message;
 
   const agentId = typeof payload.agentId === "string" ? payload.agentId : session.agentId;
@@ -338,6 +390,7 @@ export type ApprovalSseEventType = "approval:requested" | "approval:updated" | "
 
 type ApprovalSseListener = (event: ApprovalSseEventType, payload: unknown, projectId?: string) => void;
 
+// retention-owner-deleted: one listener set per SSE stream — every add is paired with a delete in the unsubscribe path, so cardinality is live streams, not traffic
 const approvalSseListeners = new Set<ApprovalSseListener>();
 
 export function emitApprovalSseEvent(event: ApprovalSseEventType, payload: unknown, projectId?: string): void {
@@ -357,11 +410,46 @@ export type WorkflowSseEventType = "workflow:created" | "workflow:updated" | "wo
 
 type WorkflowSseListener = (event: WorkflowSseEventType, payload: unknown, projectId?: string) => void;
 
+// retention-owner-deleted: one listener set per SSE stream — every add is paired with a delete in the unsubscribe path, so cardinality is live streams, not traffic
 const workflowSseListeners = new Set<WorkflowSseListener>();
 
 export function emitWorkflowSseEvent(event: WorkflowSseEventType, payload: unknown, projectId?: string): void {
   for (const listener of workflowSseListeners) {
     listener(event, payload, projectId);
+  }
+}
+
+/**
+ * FNXC:SnippetsDestination 2026-09-16-21:44:
+ * FN-476: chat snippets are a GLOBAL (user-level) resource edited from a destination that no longer offers a manual
+ * refresh, so a write has to tell every open client that its cached list is stale. This mirrors the workflow seam
+ * above because the global settings store has no EventEmitter the SSE stream can subscribe to.
+ *
+ * The notification carries NO settings content and no prompt text — only the fact that the snippet list changed, plus
+ * the write timestamp — so an unrelated tab learns nothing about the operator's saved prompts. It is deliberately
+ * UNSCOPED: snippets are global, so a client subscribed to another project must receive it too, which is why the
+ * forwarder below does not filter on project id. Publishing happens only AFTER a write succeeded and its caches were
+ * invalidated; a failed write publishes nothing, and a slow or disconnected client can never fail an accepted write.
+ */
+export type ChatSnippetsSseEventType = "settings:chat-snippets-updated";
+
+export interface ChatSnippetsSsePayload {
+  at: string;
+}
+
+type ChatSnippetsSseListener = (payload: ChatSnippetsSsePayload) => void;
+
+// retention-owner-deleted: one listener set per SSE stream — every add is paired with a delete in the unsubscribe path, so cardinality is live streams, not traffic
+const chatSnippetsSseListeners = new Set<ChatSnippetsSseListener>();
+
+export function emitChatSnippetsUpdatedSseEvent(at: string = new Date().toISOString()): void {
+  const payload: ChatSnippetsSsePayload = { at };
+  for (const listener of [...chatSnippetsSseListeners]) {
+    try {
+      listener(payload);
+    } catch {
+      // A broken or closing stream must never turn an already-persisted settings write into a failure.
+    }
   }
 }
 
@@ -380,6 +468,7 @@ export type PluginCustomSseListener = (
   projectId?: string,
 ) => void;
 
+// retention-owner-deleted: one listener set per SSE stream — every add is paired with a delete in the unsubscribe path, so cardinality is live streams, not traffic
 const pluginCustomSseListeners = new Set<PluginCustomSseListener>();
 
 export function emitPluginCustomSseEvent(
@@ -422,6 +511,7 @@ type CliSessionStateSseListener = (
   projectId?: string,
 ) => void;
 
+// retention-owner-deleted: one listener set per SSE stream — every add is paired with a delete in the unsubscribe path, so cardinality is live streams, not traffic
 const cliSessionStateSseListeners = new Set<CliSessionStateSseListener>();
 
 /** Module-level ring buffer of cli-session-state events for lastEventId replay. */
@@ -552,9 +642,67 @@ function createPluginLifecyclePayload(
   };
 }
 
+/*
+FNXC:ChatRemoteGenerationMirror 2026-09-21-10:45:
+The chat bridge names its events from one table so attach and detach cannot drift apart. ChatStore
+extends the generic EventEmitter, whose overloads demand a LITERAL event name, so the table-driven
+wiring goes through this narrow structural view instead of a cast at each call site.
+
+FNXC:ChatRemoteGenerationMirror 2026-09-21-10:45:
+`ChatBridgeListener` uses `never` rest params rather than `any`: `@typescript-eslint/no-explicit-any`
+is an error in production source, and contravariance still admits every concrete handler (a `never`
+argument is assignable to the `string`/`ChatSession` parameter each handler declares).
+*/
+type ChatBridgeEvent =
+  | "chat:session:created"
+  | "chat:session:updated"
+  | "chat:session:deleted"
+  | "chat:message:added"
+  | "chat:message:deleted"
+  | "chat:room:created"
+  | "chat:room:updated"
+  | "chat:room:deleted"
+  | "chat:room:member:added"
+  | "chat:room:member:removed"
+  | "chat:room:message:added"
+  | "chat:room:message:updated"
+  | "chat:room:message:deleted";
+
+type ChatBridgeListener = (...args: never[]) => void;
+
+type ChatBridgeEmitter = {
+  on(event: ChatBridgeEvent, listener: ChatBridgeListener): unknown;
+  off(event: ChatBridgeEvent, listener: ChatBridgeListener): unknown;
+};
+
+function bridgeChatEmitter(chatEventStore: ChatStore): ChatBridgeEmitter {
+  return chatEventStore as unknown as ChatBridgeEmitter;
+}
+
+/*
+FNXC:ChatRemoteGenerationMirror 2026-09-21-10:45:
+RUFU-252 gap B. Chat stores are created lazily, per project, the first time that project's chat is
+touched; a bus connection built from `listLiveScopedChatStores()` snapshots that set exactly once,
+so a project opened in another tab AFTER this connection was established never reached an
+already-open tab — the foreign generation produced no frame at all, so there was nothing for the
+mirror to react to. A connection that wants to keep following the registry as it grows declares a
+live bridge; the registry hands it every store created later, and the connection detaches them at
+cleanup exactly like the initial set.
+*/
+export interface ChatStoreLiveBridge {
+  /** Receive every chat store created after this call. Returns the unsubscribe function. */
+  onCreated(listener: (chatStore: ChatStore) => void): () => void;
+}
+
 export interface CreateSSEOptions {
   /** Project ID for project-scoped streams (enables scope attribution) */
   projectId?: string;
+  /**
+   * Live chat-store registry bridge. Only meaningful for an UNSCOPED connection: a project-scoped
+   * stream is deliberately bound to its one project's store, and adopting another project's store
+   * would leak its events into that stream.
+   */
+  liveChatStores?: ChatStoreLiveBridge;
 }
 
 export function createSSE(
@@ -565,10 +713,22 @@ export function createSSE(
   options?: CreateSSEOptions,
   agentStore?: AgentStore,
   messageStore?: MessageStore,
-  chatStore?: ChatStore,
+  chatStore?: ChatStore | ChatStore[],
   automationStore?: AutomationStore,
 ) {
-  const { projectId } = options ?? {};
+  const { projectId, liveChatStores } = options ?? {};
+  /*
+  FNXC:ChatRemoteGenerationMirror 2026-09-17-19:25:
+  Chat mutations run on per-project scoped ChatStore instances; a bus connection without a
+  projectId previously bridged ONLY the default store, so an open global chat view received no
+  chat events at all for scoped projects. A connection may therefore be given the full set of
+  live chat stores; duplicate identities (default === scoped) are bridged exactly once.
+  */
+  const chatStores: ChatStore[] = chatStore
+    ? Array.isArray(chatStore)
+      ? [...new Set(chatStore.filter(Boolean) as ChatStore[])]
+      : [chatStore]
+    : [];
 
   return (_req: Request, res: Response) => {
     const connectionId = nextConnectionId++;
@@ -1010,6 +1170,11 @@ export function createSSE(
       send(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
     };
 
+    /* FNXC:SnippetsDestination 2026-09-16-21:44: global resource — forwarded to every stream, never project-filtered. */
+    const onChatSnippetsEvent: ChatSnippetsSseListener = (payload) => {
+      send(`event: settings:chat-snippets-updated\ndata: ${JSON.stringify(payload)}\n\n`);
+    };
+
     const onPluginCustomEvent: PluginCustomSseListener = (pluginId, event, payload, eventProjectId) => {
       // Scope match mirrors approvals: a project-scoped stream only forwards
       // events for its own project; the default stream forwards unscoped events.
@@ -1028,7 +1193,7 @@ export function createSSE(
     };
 
     const onChatSessionUpdated = (session: unknown) => {
-      send(`event: chat:session:updated\ndata: ${JSON.stringify(session)}\n\n`);
+      send(`event: chat:session:updated\ndata: ${JSON.stringify(enrichChatSessionEventPayload(session))}\n\n`);
     };
 
     const onChatSessionDeleted = (sessionId: string) => {
@@ -1098,6 +1263,15 @@ export function createSSE(
     const onScheduleRun = (data: unknown) => {
       send(`event: schedule:run\ndata: ${JSON.stringify(data)}\n\n`);
     };
+
+    /*
+    FNXC:ChatRemoteGenerationMirror 2026-09-21-10:45:
+    Per-connection chat-bridge bookkeeping. Declared BEFORE `cleanup` on purpose: the close path is
+    reachable synchronously during setup (`send` backpressure calls `closeConnection`), so cleanup
+    must never dereference a binding that is still in its temporal dead zone.
+    */
+    const chatBridges = new Map<ChatStore, () => void>();
+    let offLiveChatStoreCreated: (() => void) | undefined;
 
     // --- Cleanup (all handlers are defined above, safe to reference) ---
 
@@ -1188,23 +1362,24 @@ export function createSSE(
       }
       approvalSseListeners.delete(onApprovalEvent);
       workflowSseListeners.delete(onWorkflowEvent);
+      chatSnippetsSseListeners.delete(onChatSnippetsEvent);
       pluginCustomSseListeners.delete(onPluginCustomEvent);
       cliSessionStateSseListeners.delete(onCliSessionStateEvent);
-      if (chatStore) {
-        chatStore.off("chat:session:created", onChatSessionCreated);
-        chatStore.off("chat:session:updated", onChatSessionUpdated);
-        chatStore.off("chat:session:deleted", onChatSessionDeleted);
-        chatStore.off("chat:message:added", onChatMessageAdded);
-        chatStore.off("chat:message:deleted", onChatMessageDeleted);
-        chatStore.off("chat:room:created", onChatRoomCreated);
-        chatStore.off("chat:room:updated", onChatRoomUpdated);
-        chatStore.off("chat:room:deleted", onChatRoomDeleted);
-        chatStore.off("chat:room:member:added", onChatRoomMemberAdded);
-        chatStore.off("chat:room:member:removed", onChatRoomMemberRemoved);
-        chatStore.off("chat:room:message:added", onChatRoomMessageAdded);
-        chatStore.off("chat:room:message:updated", onChatRoomMessageUpdated);
-        chatStore.off("chat:room:message:deleted", onChatRoomMessageDeleted);
+      /*
+      FNXC:ChatRemoteGenerationMirror 2026-09-21-10:45:
+      Teardown runs the detach closure recorded for every store this connection ACTUALLY bridged —
+      the initial set plus any the live registry published afterwards — and releases its registry
+      subscription, so a closed tab cannot keep an ever-growing set of chat stores subscribed (the
+      default listener cap would turn later connections into MaxListenersExceededWarnings and hide
+      real leaks). Storing the teardown here, rather than a detach helper next to the binding table,
+      is what keeps this path free of temporal-dead-zone references.
+      */
+      for (const detachChatBridge of chatBridges.values()) {
+        detachChatBridge();
       }
+      chatBridges.clear();
+      offLiveChatStoreCreated?.();
+      offLiveChatStoreCreated = undefined;
       if (automationStore) {
         automationStore.off("schedule:created", onScheduleCreated);
         automationStore.off("schedule:updated", onScheduleUpdated);
@@ -1314,20 +1489,47 @@ export function createSSE(
       messageStore.on("message:deleted", onMessageDeleted);
     }
 
-    if (chatStore) {
-      chatStore.on("chat:session:created", onChatSessionCreated);
-      chatStore.on("chat:session:updated", onChatSessionUpdated);
-      chatStore.on("chat:session:deleted", onChatSessionDeleted);
-      chatStore.on("chat:message:added", onChatMessageAdded);
-      chatStore.on("chat:message:deleted", onChatMessageDeleted);
-      chatStore.on("chat:room:created", onChatRoomCreated);
-      chatStore.on("chat:room:updated", onChatRoomUpdated);
-      chatStore.on("chat:room:deleted", onChatRoomDeleted);
-      chatStore.on("chat:room:member:added", onChatRoomMemberAdded);
-      chatStore.on("chat:room:member:removed", onChatRoomMemberRemoved);
-      chatStore.on("chat:room:message:added", onChatRoomMessageAdded);
-      chatStore.on("chat:room:message:updated", onChatRoomMessageUpdated);
-      chatStore.on("chat:room:message:deleted", onChatRoomMessageDeleted);
+    /*
+    FNXC:ChatRemoteGenerationMirror 2026-09-21-10:45:
+    The chat bridge is now attach/detach symmetric because a store can join mid-connection. The
+    binding table is the single source of both directions: a 14th chat event added here is bridged
+    AND detached, which the previous two hand-written 13-line loops could not guarantee.
+    */
+    const chatBridgeBindings: ReadonlyArray<readonly [ChatBridgeEvent, ChatBridgeListener]> = [
+      ["chat:session:created", onChatSessionCreated],
+      ["chat:session:updated", onChatSessionUpdated],
+      ["chat:session:deleted", onChatSessionDeleted],
+      ["chat:message:added", onChatMessageAdded],
+      ["chat:message:deleted", onChatMessageDeleted],
+      ["chat:room:created", onChatRoomCreated],
+      ["chat:room:updated", onChatRoomUpdated],
+      ["chat:room:deleted", onChatRoomDeleted],
+      ["chat:room:member:added", onChatRoomMemberAdded],
+      ["chat:room:member:removed", onChatRoomMemberRemoved],
+      ["chat:room:message:added", onChatRoomMessageAdded],
+      ["chat:room:message:updated", onChatRoomMessageUpdated],
+      ["chat:room:message:deleted", onChatRoomMessageDeleted],
+    ];
+
+    const attachChatBridge = (chatEventStore: ChatStore): void => {
+      // Identity guard: the default store is also cached as its own project's scoped store, and the
+      // live registry can publish an instance the initial set already bridged.
+      if (chatBridges.has(chatEventStore)) return;
+      const emitter = bridgeChatEmitter(chatEventStore);
+      for (const [event, handler] of chatBridgeBindings) emitter.on(event, handler);
+      chatBridges.set(chatEventStore, () => {
+        for (const [event, handler] of chatBridgeBindings) emitter.off(event, handler);
+      });
+    };
+
+    for (const chatEventStore of chatStores) {
+      attachChatBridge(chatEventStore);
+    }
+
+    if (liveChatStores) {
+      offLiveChatStoreCreated = liveChatStores.onCreated((chatEventStore) => {
+        attachChatBridge(chatEventStore);
+      });
     }
 
     if (automationStore) {
@@ -1350,6 +1552,7 @@ export function createSSE(
     // fire event listeners in the browser).
     approvalSseListeners.add(onApprovalEvent);
     workflowSseListeners.add(onWorkflowEvent);
+    chatSnippetsSseListeners.add(onChatSnippetsEvent);
     pluginCustomSseListeners.add(onPluginCustomEvent);
     cliSessionStateSseListeners.add(onCliSessionStateEvent);
 

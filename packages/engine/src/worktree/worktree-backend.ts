@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { access, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { basename, isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
-import type { Settings } from "@fusion/core";
+import type { Settings, WorktreeContentClassification } from "@fusion/core";
 import {
   activeSessionRegistry,
   reconcileSelfOwnedActiveSessionForRemoval,
@@ -247,6 +247,7 @@ async function resolveWorktreeBackendMarkerPath(worktreePath: string): Promise<s
   const { stdout } = await execAsync(`git rev-parse --git-path ${JSON.stringify(WORKTREE_BACKEND_MARKER)}`, {
     cwd: worktreePath,
     encoding: "utf-8",
+    timeout: NATIVE_TIMEOUT_MS,
   });
   const markerPath = stdout.trim();
   return isAbsolute(markerPath) ? markerPath : resolve(worktreePath, markerPath);
@@ -348,6 +349,26 @@ function findStringByKey(value: unknown, key: string): string | null {
     if (found) return found;
   }
   return null;
+}
+
+/*
+FNXC:ZeroCommitLandingProof 2026-09-25-11:17 (RUFU-274):
+RUFU-274 needs to answer "did any checkout of this repository still hold this card's branch?" before
+it can call a worktree's content absent: the recorded path being gone is only half of
+`provably gone`, and a branch checked out in a second worktree means the content still exists.
+Existed privately inside the native backend's registration scan; exported so the landing-proof
+classifier reads the same registry the backend maintains rather than a second `git worktree list`
+interpretation.
+*/
+/** Every checkout registered in `repoDir`, with the local branch it has checked out when one does. */
+export async function listWorktreeRegistrations(repoDir: string): Promise<Array<{ path: string; branch?: string }>> {
+  const { stdout } = await execFileAsync("git", ["worktree", "list", "--porcelain"], {
+    cwd: repoDir,
+    encoding: "utf-8",
+    timeout: 15_000,
+    maxBuffer: MAX_BUFFER,
+  });
+  return parseWorktreesFromPorcelain(stdout);
 }
 
 function parseWorktreesFromPorcelain(porcelain: string): Array<{ path: string; branch?: string }> {
@@ -1114,16 +1135,23 @@ export const RemovalReason = {
   TaskReset: "task-reset",
   WorkspaceAcquireRollback: "workspace-acquire-rollback",
   CompletionLandedCleanup: "completion-landed-cleanup",
+  TaskDeletion: "task-deletion",
 } as const;
 
 export type RemovalReason = typeof RemovalReason[keyof typeof RemovalReason];
 
+/*
+FNXC:TaskDeletionWorktrees 2026-09-07-12:00:
+Explicit task deletion may force-discard a proven task-owned checkout, including dirty content, but it
+never inherits executor teardown's authority to remove a currently registered session worktree.
+*/
 const ALLOWED_FORCE_REASONS = new Set<RemovalReason>([
   RemovalReason.HardCancel,
   RemovalReason.ExecutorDispose,
   RemovalReason.ExecutorTransientRetry,
   RemovalReason.ExecutorStuckKilled,
   RemovalReason.WorkspaceAcquireRollback,
+  RemovalReason.TaskDeletion,
 ]);
 
 const DEFENSIVE_REMOVAL_REASONS = new Set<RemovalReason>([
@@ -1166,6 +1194,24 @@ export class ActiveSessionWorktreeRemovalError extends Error {
   }) {
     super(`cannot remove active-session worktree ${details.worktreePath} (${details.taskId}/${details.kind})`);
     this.name = "ActiveSessionWorktreeRemovalError";
+  }
+}
+
+/*
+FNXC:WorktreeCleanup 2026-09-25-19:30:
+A preservation refusal is a deliberate policy outcome, not a removal failure — but while both surface as a
+bare `Error` no caller can tell them apart. RUFU-278 measured the cost: pinned-worktree reclaim terminalised
+RUFU-260 over two *generated* git-ignored directories (`packages/core/.gate-bundle`,
+`packages/dashboard/app/locales`), and that card's retained checkout then head-of-line blocked 14 other
+RunFusion cards through the file-scope dispatch gate. The cap-enforcement sweep already treats the identical
+condition as a no-op (`FNXC:WorktreeCleanup 2026-09-08-06:13`), so the policy was right and only the missing
+type distinction was wrong. Callers that own a safe preserve path must discriminate by type: matching the
+message would stop working the moment the wording changes, so the message text is preserved verbatim.
+*/
+export class WorktreeContentPreservationError extends Error {
+  constructor(public readonly worktreePath: string) {
+    super(`preserving ${worktreePath}: uncommitted or ignored content present`);
+    this.name = "WorktreeContentPreservationError";
   }
 }
 
@@ -1225,19 +1271,64 @@ export function classifyWorktreeRemovalContent(
     : "ignored-only";
 }
 
-interface DefensiveRemovalContentProbe {
+export interface DefensiveRemovalContentProbe {
   classification: WorktreeRemovalContentClassification;
   entryCount: number;
+  /*
+  FNXC:ZeroCommitLandingProof 2026-09-25-11:17 (RUFU-274):
+  The non-ignored paths behind a `deliverable` classification, so a refusal can NAME them on the row.
+  RUFU-274's refusal sentence has to say which files survived; the removal gate only ever needed a
+  yes/no, so this is the probe's only addition over it. Capped — the row stays readable on a 400-file
+  tree and the count carries the rest.
+  */
+  uncommittedPaths: string[];
+  /** `classified` ran the probe; `path-absent` means nothing is on disk; `probe-failed` means the tree could not be read. */
+  status: "classified" | "path-absent" | "probe-failed";
+  /** Present when `status === "probe-failed"`, for the removal gate's own message. */
+  probeError?: string;
+  /*
+  FNXC:ZeroCommitLandingProof 2026-09-26-01:30 (RUFU-274):
+  Modified vs untracked split of the NON-ignored entries. The removal gate only ever needed a yes/no,
+  but a refusal has to state its evidence: run-audit metadata and the `deliveryUnproven` marker carry
+  counts, not paths, so the counts must come from the same probe that produced the classification —
+  never from a second `git status` that could disagree with it.
+  */
+  modifiedCount: number;
+  untrackedCount: number;
 }
 
-/** Fail closed when an automatic sweep cannot prove the checkout is empty of user content. */
-async function assertCleanForDefensiveRemoval(rootDir: string, worktreePath: string): Promise<DefensiveRemovalContentProbe> {
-  if (resolve(worktreePath) === resolve(rootDir)) {
-    throw new Error(`preserving ${worktreePath}: refusing to remove the project root checkout`);
-  }
+/** Cap on paths a refusal may name, so a huge tree cannot make the row unreadable. */
+const MAX_REPORTED_UNCOMMITTED_PATHS = 25;
+
+/**
+ * Extract the first path of a non-ignored porcelain entry.
+ *
+ * FNXC:ZeroCommitLandingProof 2026-09-25-11:17 (RUFU-274):
+ * `git status --porcelain=v1` fields are `XY<space>path`, with renames as `old -> new` and
+ * non-ASCII/quote-needing paths wrapped in double quotes. Only the FIRST path is named — it is the
+ * one an operator acts on — and quotes are stripped so the row shows a path, not git's escaping.
+ */
+function porcelainEntryPath(entry: string): string {
+  const raw = entry.slice(3).trim();
+  const arrowSplit = raw.split(" -> ")[0] ?? raw;
+  return arrowSplit.replace(/^"|"$/g, "");
+}
+
+/**
+ * Non-throwing worktree-content classification — the evidence half of the durable landing-proof
+ * predicate. `assertCleanForDefensiveRemoval` is this probe plus the removal gate's refusals; the
+ * finalization lanes need the classification WITHOUT the throw, because their answer for a dirty
+ * tree is "hold the card for a human and keep the worktree", not "skip the removal".
+ *
+ * FNXC:ZeroCommitLandingProof 2026-09-25-11:17 (RUFU-274):
+ * Exported rather than duplicated so the removal gate and the finalization guard read the tree the
+ * same way. A second implementation is how `assertCleanForDefensiveRemoval` ended up with seven
+ * call sites passing inconsistent options.
+ */
+export async function probeWorktreeRemovalContent(worktreePath: string): Promise<DefensiveRemovalContentProbe> {
   // Nothing on disk means nothing to preserve — stale registrations prune normally below.
   if (!existsSync(worktreePath)) {
-    return { classification: "clean", entryCount: 0 };
+    return { classification: "clean", entryCount: 0, uncommittedPaths: [], status: "path-absent", modifiedCount: 0, untrackedCount: 0 };
   }
   let stdout: string;
   try {
@@ -1248,7 +1339,15 @@ async function assertCleanForDefensiveRemoval(rootDir: string, worktreePath: str
       maxBuffer: MAX_BUFFER,
     }));
   } catch (error) {
-    throw new Error(`preserving ${worktreePath}: status probe failed (${error instanceof Error ? error.message : String(error)})`);
+    return {
+      classification: "ignored-only",
+      entryCount: 0,
+      uncommittedPaths: [],
+      status: "probe-failed",
+      modifiedCount: 0,
+      untrackedCount: 0,
+      probeError: error instanceof Error ? error.message : String(error),
+    };
   }
   const provenScratchRootEntries = new Set<string>();
   const entries = stdout.split(/\r?\n/).filter((line) => line.trim().length > 0);
@@ -1262,14 +1361,282 @@ async function assertCleanForDefensiveRemoval(rootDir: string, worktreePath: str
     }
   }));
   const classification = classifyWorktreeRemovalContent(stdout, { provenScratchRootEntries });
-  if (classification === "deliverable") {
-    throw new Error(`preserving ${worktreePath}: uncommitted or ignored content present`);
-  }
+  /*
+  FNXC:WorktreeCleanup 2026-09-29-22:04 (fusion/rufu-274 squash merge):
+  RUFU-278's typed `WorktreeContentPreservationError` refusal for a `deliverable` tree lives in
+  `assertCleanForDefensiveRemoval` (below), not here: this probe is deliberately non-throwing so the
+  finalization lanes can read the classification of a dirty tree instead of catching a refusal.
+  */
+  const deliverableEntries = entries.filter((line) => !line.startsWith("!! "));
   return {
     classification,
-    entryCount: stdout.split(/\r?\n/).filter((line) => line.trim().length > 0).length,
+    entryCount: entries.length,
+    uncommittedPaths: deliverableEntries.slice(0, MAX_REPORTED_UNCOMMITTED_PATHS).map(porcelainEntryPath).filter(Boolean),
+    status: "classified",
+    /*
+    FNXC:ZeroCommitLandingProof 2026-09-26-01:30 (RUFU-274):
+    Porcelain `XY` codes: `??` is untracked, every other non-ignored code is a tracked change. Ignored
+    (`!!`) entries are counted by `entryCount` instead, because FN-9234's rule is that an ignored-only
+    tree is not uncommitted delivery.
+    */
+    modifiedCount: deliverableEntries.filter((line) => !line.startsWith("?? ")).length,
+    untrackedCount: deliverableEntries.filter((line) => line.startsWith("?? ")).length,
   };
 }
+
+/*
+FNXC:WorktreeCleanup 2026-09-25-19:30:
+RUFU-278: a caller that can safely *vacate* a checkout instead of deleting it needs to know whether a
+defensive removal would refuse, before it picks a strategy. This is the same predicate `removeWorktree`
+applies to its defensive reasons (probe classification plus the `ignored-only`-without-landing-proof
+refusal), reused rather than re-derived so the two cannot drift. It mutates nothing: `true` means
+"do not attempt the removal, vacate the checkout by another means", never "delete it carefully".
+*/
+export async function defensiveRemovalWouldPreserve(rootDir: string, worktreePath: string): Promise<boolean> {
+  try {
+    const probe = await assertCleanForDefensiveRemoval(rootDir, worktreePath);
+    return probe.classification === "ignored-only";
+  } catch (error) {
+    return error instanceof WorktreeContentPreservationError;
+  }
+}
+
+/*
+FNXC:CardOwnershipGuard 2026-09-26-05:16:
+STAS-273's card-ownership preservation guard (its `WorktreeCardOwnershipError`, the `store`/`branch`/
+`triggeredBy` funnel inputs, the worktree-pool prune gate, and the `worktree:removed-card-owned` /
+`worktree:card-ownership-gate-skipped` audit types) was withdrawn from `main` by explicit operator
+decision, so every automatic removal below is ownership-blind again — a removal no longer checks whether
+another live card still needs the checkout. This note exists because the guard's own FNXC blocks were
+deleted with it and the work was never board-delivered (the STAS-273 card is still `todo/queued`), so no
+task record explains the absence. Re-adding an ownership check needs a new card plus operator approval.
+*/
+
+/*
+FNXC:ZeroCommitLandingProof 2026-09-26-01:30 (RUFU-274):
+The ONE exported worktree-content classification (RUFU-274 Step 5), built here rather than in a new
+module on purpose: `probeWorktreeRemovalContent` is already what the removal gate reads the tree with,
+so the guard call sites, the cleanup gate, and the refusal marker all resolve to this single probe and
+cannot drift into disagreeing about what the same tree held. The core type
+(`WorktreeContentClassification` in `@fusion/core`) stays the vocabulary so the pure decision table and
+the git observation cannot name different states.
+*/
+
+/** Map a removal-content probe onto the shared worktree-content classification. */
+export function worktreeContentClassificationFromProbe(
+  probe: DefensiveRemovalContentProbe,
+): WorktreeContentClassification {
+  if (probe.status === "probe-failed") {
+    return { state: "unverifiable", probeDetail: probe.probeError ? "status-probe-failed" : undefined };
+  }
+  if (probe.status === "path-absent") return { state: "absent" };
+  switch (probe.classification) {
+    case "clean":
+      return { state: "clean" };
+    case "regenerable-ignored":
+      return { state: "regenerable-ignored", scratchEntryCount: probe.entryCount };
+    case "ignored-only":
+      return { state: "ignored-only", entryCount: probe.entryCount };
+    case "deliverable":
+      return {
+        state: "deliverable",
+        modifiedCount: probe.modifiedCount,
+        untrackedCount: probe.untrackedCount,
+        paths: probe.uncommittedPaths,
+      };
+  }
+}
+
+/** Why a content classification came from the route it did — fixed vocabulary, safe to log and audit. */
+export type WorktreeContentEvidenceBasis =
+  | "recorded-worktree-classified"
+  | "recorded-worktree-absent-from-disk"
+  | "branch-checked-out-in-other-worktree"
+  | "other-worktree-classified"
+  | "worktree-registrations-unreadable"
+  | "status-probe-failed"
+  | "singular-checkout-not-exclusively-owned"
+  | "no-recorded-worktree";
+
+export interface TaskWorktreeContentEvidence {
+  content: WorktreeContentClassification;
+  basis: WorktreeContentEvidenceBasis;
+}
+
+export interface TaskWorktreeContentEvidenceInput {
+  /** Repository root; also the singular checkout a task must never be finalised from by accident. */
+  rootDir: string;
+  taskId: string;
+  /** `task.worktree` as recorded on the row. */
+  worktreePath?: string | null;
+  /** `task.branch` as recorded on the row. */
+  branch?: string | null;
+  /**
+   * Prove that a checkout shared with the project root belongs exclusively to this card
+   * (RUFU-200's singular-worktree ownership). Without a proof the tree's content is another card's or
+   * the operator's and CANNOT justify a refusal, so it is reported as holding nothing deliverable.
+   */
+  proveExclusiveSingularCheckout?: (worktreePath: string) => Promise<boolean>;
+}
+
+/**
+ * Classify what a card's checkout holds, honouring both halves of `absent`: the recorded path is
+ * provably gone AND no other registered checkout has the card's branch. A branch checked out twice
+ * means the work still exists on disk, so the surviving tree is classified instead.
+ */
+export async function classifyTaskWorktreeContent(
+  input: TaskWorktreeContentEvidenceInput,
+): Promise<TaskWorktreeContentEvidence> {
+  const recorded = input.worktreePath?.trim();
+
+  if (!recorded) {
+    const branch = input.branch?.trim();
+    const holder = branch ? await findOtherCheckoutHoldingBranch(input.rootDir, branch) : undefined;
+    if (holder === "unreadable") {
+      return { content: { state: "unverifiable", probeDetail: "registrations-unreadable" }, basis: "worktree-registrations-unreadable" };
+    }
+    if (holder === undefined) return { content: { state: "absent" }, basis: "no-recorded-worktree" };
+    return classifyOtherCheckout(holder, "branch-checked-out-in-other-worktree");
+  }
+
+  if (resolve(recorded) === resolve(input.rootDir)) {
+    const exclusive = (await input.proveExclusiveSingularCheckout?.(recorded).catch(() => false)) ?? false;
+    if (!exclusive) {
+      return { content: { state: "clean" }, basis: "singular-checkout-not-exclusively-owned" };
+    }
+  }
+
+  const probe = await probeWorktreeRemovalContent(recorded);
+  if (probe.status === "classified") {
+    return { content: worktreeContentClassificationFromProbe(probe), basis: "recorded-worktree-classified" };
+  }
+  if (probe.status === "probe-failed") {
+    return { content: worktreeContentClassificationFromProbe(probe), basis: "status-probe-failed" };
+  }
+
+  /*
+  FNXC:ZeroCommitLandingProof 2026-09-25-11:26 (RUFU-274):
+  The recorded directory is gone. That is only half of `provably gone`: the same branch can be checked
+  out in a second worktree, and then the work is very much still on disk. Reading the registry is a
+  git read of the project root, so a failure there is the absence of proof, not proof of absence.
+  */
+  const branch = input.branch?.trim();
+  if (!branch) return { content: { state: "absent" }, basis: "recorded-worktree-absent-from-disk" };
+  const holder = await findOtherCheckoutHoldingBranch(input.rootDir, branch, recorded).catch(() => "unreadable" as const);
+  if (holder === "unreadable") {
+    return { content: { state: "unverifiable", probeDetail: "registrations-unreadable" }, basis: "worktree-registrations-unreadable" };
+  }
+  if (holder === undefined) return { content: { state: "absent" }, basis: "recorded-worktree-absent-from-disk" };
+  return classifyOtherCheckout(holder, "branch-checked-out-in-other-worktree");
+}
+
+/** Re-classify a surviving checkout that holds the card's branch. */
+async function classifyOtherCheckout(
+  worktreePath: string,
+  basis: WorktreeContentEvidenceBasis,
+): Promise<TaskWorktreeContentEvidence> {
+  const probe = await probeWorktreeRemovalContent(worktreePath);
+  return {
+    content: worktreeContentClassificationFromProbe(probe),
+    basis: probe.status === "classified" ? "other-worktree-classified" : basis,
+  };
+}
+
+/**
+ * A registered checkout other than `excludePath` that has `branch` checked out.
+ * `undefined` = none holds it; `"unreadable"` = the registry could not be read.
+ */
+export async function findOtherCheckoutHoldingBranch(
+  rootDir: string,
+  branch: string,
+  excludePath?: string,
+): Promise<string | undefined | "unreadable"> {
+  let registrations: Array<{ path: string; branch?: string }>;
+  try {
+    registrations = await listWorktreeRegistrations(rootDir);
+  } catch {
+    return "unreadable";
+  }
+  const match = registrations.find((entry) => {
+    if (entry.branch !== branch) return false;
+    if (excludePath && resolve(entry.path) === resolve(excludePath)) return false;
+    return true;
+  });
+  return match ? match.path : undefined;
+}
+
+/**
+ * Commits on the card's branch that the integration branch does not already have.
+ *
+ * `null` is the honest answer whenever git cannot produce the count — the branch is gone, the
+ * integration ref does not resolve, the repository is mid-operation. The predicate reads `null` as
+ * "zero-ness is unproven" and stays out of the way, which is what keeps an unreadable repository from
+ * turning into a fabricated refusal on a card that does have commits.
+ */
+export async function measureAheadCommitCount(input: {
+  repoDir: string;
+  integrationBranch: string;
+  branch: string;
+}): Promise<number | null> {
+  const range = `${input.integrationBranch}..${input.branch}`;
+  try {
+    const { stdout } = await execFileAsync("git", ["rev-list", "--count", range], {
+      cwd: input.repoDir,
+      encoding: "utf-8",
+      timeout: 15_000,
+      maxBuffer: MAX_BUFFER,
+    });
+    const count = Number.parseInt(stdout.trim(), 10);
+    return Number.isFinite(count) && count >= 0 ? count : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Prove a commit is already contained in the integration branch, which is what turns a recorded
+ * `mergeDetails.commitSha` into durable landing proof rather than a remembered string.
+ */
+export async function isCommitContainedInBranch(input: {
+  repoDir: string;
+  commitSha: string;
+  integrationBranch: string;
+}): Promise<boolean> {
+  try {
+    await execFileAsync("git", ["merge-base", "--is-ancestor", input.commitSha, input.integrationBranch], {
+      cwd: input.repoDir,
+      encoding: "utf-8",
+      timeout: 15_000,
+      maxBuffer: MAX_BUFFER,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Fail closed when an automatic sweep cannot prove the checkout is empty of user content. */
+async function assertCleanForDefensiveRemoval(rootDir: string, worktreePath: string): Promise<DefensiveRemovalContentProbe> {
+  if (resolve(worktreePath) === resolve(rootDir)) {
+    throw new Error(`preserving ${worktreePath}: refusing to remove the project root checkout`);
+  }
+  const probe = await probeWorktreeRemovalContent(worktreePath);
+  if (probe.status === "probe-failed") {
+    throw new Error(`preserving ${worktreePath}: status probe failed (${probe.probeError})`);
+  }
+  if (probe.classification === "deliverable") {
+    /*
+    FNXC:WorktreeCleanup 2026-09-29-22:04 (fusion/rufu-274 squash merge):
+    RUFU-274 moved the tree read into the non-throwing `probeWorktreeRemovalContent`; RUFU-278's typed
+    `WorktreeContentPreservationError` stays on this refusal so callers that own a safe preserve path
+    (`defensiveRemovalWouldPreserve`, the pinned-worktree reclaim) can still discriminate by type. The
+    class reproduces the original message verbatim, so nothing matching on the wording changed either.
+    */
+    throw new WorktreeContentPreservationError(worktreePath);
+  }
+  return probe;
+}
+
 
 /**
  * FNXC:WorkspaceWorktree 2026-08-20-07:08:
@@ -1348,7 +1715,7 @@ export async function removeWorktree(input: {
           hasPostLandingProof: false,
         },
       }).catch(() => undefined);
-      throw new Error(`preserving ${input.worktreePath}: uncommitted or ignored content present`);
+      throw new WorktreeContentPreservationError(input.worktreePath);
     }
   }
 
@@ -1404,7 +1771,12 @@ export async function removeWorktree(input: {
   }
 
   const active = activeSessionRegistry.lookupByPath(input.worktreePath);
-  if (active && input.force !== true) {
+  const ownsDeletionReservation = input.reason === RemovalReason.TaskDeletion
+    && active?.kind === "task-deletion-cleanup"
+    && active.taskId === input.taskId;
+  const mayBypassActiveSession = ownsDeletionReservation
+    || (input.force === true && input.reason !== RemovalReason.TaskDeletion);
+  if (active && !mayBypassActiveSession) {
     await input.audit?.git({
       type: "worktree:removal-refused-active-session",
       target: input.worktreePath,
@@ -1419,7 +1791,7 @@ export async function removeWorktree(input: {
     });
   }
 
-  if (active && input.force === true) {
+  if (active && mayBypassActiveSession && !ownsDeletionReservation) {
     await input.audit?.git({
       type: "worktree:removal-forced-over-active-session",
       target: input.worktreePath,

@@ -71,9 +71,6 @@ const qualityAppFoundationUiTests = [
   "app/__tests__/no-legacy-public.test.ts",
   "app/__tests__/onboarding-overlay-layering.test.ts",
   "app/__tests__/pwa.test.ts",
-  "app/__tests__/quick-chat-mobile-keyboard-layout.test.ts",
-  "app/__tests__/quick-chat-session-dropdown.test.ts",
-  "app/__tests__/quick-chat-tool-calls-mobile-layout.test.ts",
   "app/__tests__/quick-entry-expanded-height.test.tsx",
   "app/__tests__/settings-mobile-wrap.test.ts",
   "app/__tests__/setup-wizard-modal-layout.test.ts",
@@ -93,7 +90,8 @@ const qualityAppFoundationUiTests = [
 const qualityAppHooksAndUtilsTests = [
   // Hooks and utilities are fast, user-visible state/formatting behavior.
   "app/context/**/*.test.tsx",
-  "app/hooks/__tests__/{useAgents,useAgentLogs,useAgentLogs.resume-instrumentation,useAppSettings,useAuthOnboarding,useConfirm,useCurrentProject,useNavigationHistory,useNodes,useNodes.resume-instrumentation,useNodeSettingsSync,useProjects,useProjects.resume-instrumentation,useMeshState.resume-instrumentation,useManagedDockerNodes.resume-instrumentation,usePrChecksStream.resume-instrumentation,useDevServerLogs.resume-instrumentation,useResearch.resume-instrumentation,useBackgroundSessions.resume-instrumentation,useQuickChat,useTasks,useTasks.resume-instrumentation,useChatRooms,useTerminalSessions,useTheme,useToast,useUsageData,useViewportMode,useViewState,useMergeAdvanceNotice}.test.{ts,tsx}",
+  /* FNXC:DashboardTests 2026-09-12-17:32: Shared and Board-specific horizontal mouse-pan contracts belong in the fast hooks/utils shard so delayed capture and consumer exclusions are always collected together. */
+  "app/hooks/__tests__/{useAgents,useAgentLogs,useAgentLogs.resume-instrumentation,useAppSettings,useAuthOnboarding,useConfirm,useCurrentProject,useNavigationHistory,useNodes,useNodes.resume-instrumentation,useNodeSettingsSync,useProjects,useProjects.resume-instrumentation,useMeshState.resume-instrumentation,useManagedDockerNodes.resume-instrumentation,usePrChecksStream.resume-instrumentation,useDevServerLogs.resume-instrumentation,useResearch.resume-instrumentation,useBackgroundSessions.resume-instrumentation,useQuickChat,useTasks,useTasks.resume-instrumentation,useChatRooms,usePoppedOutNotes,useTerminalSessions,useTheme,useToast,useUsageData,useViewportMode,useViewState,useMergeAdvanceNotice,useVirtualizedChatTranscript,useVirtualizedList,useAutoPaginationSentinel,useBoardMousePan,useHorizontalMousePan,useOutsidePointerDismiss,listSurfaceInventory}.test.{ts,tsx}",
   "app/utils/**/*.test.{ts,tsx}",
 ];
 
@@ -106,11 +104,9 @@ const qualityAppComponentTests = [
   "AgentReflectionsTab",
   "AgentTokenStatsPanel",
   "App",
-  "AuthTokenRecoveryDialog",
+  "AuthTokenRecoveryPage",
   "Board",
   "Board.canDropTask",
-  "auto-merge-toggle-blank.mobile",
-  "auto-merge-toggle-blank.mobile-integration",
   "board-mobile",
   "board-mobile-view-switch",
   "BranchGroupCard",
@@ -153,6 +149,7 @@ const qualityAppComponentTests = [
   "PluginManager.registry",
   "PrChecksList",
   "PrCreateModal",
+  "PrCreateModal.escape",
   "PrCreateModal.layout",
   "ProjectCard",
   "ProjectHealthBadge",
@@ -161,8 +158,6 @@ const qualityAppComponentTests = [
   "PrPanel",
   "PrPanel.merge",
   "PrPanel.reviews",
-  "QuickChatFAB",
-  "QuickChatFAB.shared-cache",
   "ReliabilityView",
   "ResearchView",
   "RightDock",
@@ -256,6 +251,7 @@ const qualityAppChatOnlyTests = [
   "app/components/__tests__/ChatView.mobile.test.tsx",
   "app/components/__tests__/ChatView.mobile-render.test.tsx",
   "app/components/__tests__/ChatView.new-chat-default.test.tsx",
+  "app/components/__tests__/ChatView.open-at-latest.test.tsx",
   "app/components/__tests__/ChatView.sessions-rooms.test.tsx",
   "app/components/__tests__/ChatView.swipe-back.test.tsx",
   "app/components/__tests__/overflowViewRegistry.chat.test.tsx",
@@ -376,6 +372,16 @@ const quarantinedDashboardTests: string[] = [
   async-store or applicable mock/non-store contracts. Remove their ledger/exclude
   pairs so dashboard-api-quality-backfill collects the restored coverage.
   */
+  /*
+  FNXC:DashboardTestQuarantine 2026-09-07-07:55:
+  Two v0.78.0-beta.4 merge-window load flakes quarantined with matching ledger rows:
+  AgentDetailView.core is a SECOND on-sight observation of the register-entry-18 skill-badge
+  race (passes isolated 53/53); TaskPlannerChatTab.virtualization is a first on-sight quarantine
+  whose IntersectionObserver capture race failed only under shard load. File-level exclusion drops
+  the whole files for 14 days; rescue needs a root-cause fix, not a stabilization pass.
+  */
+  "app/components/__tests__/AgentDetailView.core.test.tsx", // quarantined 2026-09-07 — skill-badge suite-only flake (sighting 2)
+  "app/components/__tests__/TaskPlannerChatTab.virtualization.test.tsx", // quarantined 2026-09-07 — IntersectionObserver capture race under load (sighting 1)
 ];
 
 /*
@@ -384,7 +390,59 @@ Chromium CDP touch geometry needs its own opt-in project: browser launch is cost
 and coordinate hit testing cannot run in jsdom or an API shard. Keep this single spec outside both the
 quality backfill and deep API lanes so Chromium availability produces an explicit lane result, not duplicate coverage.
 */
-const browserTouchTests = ["src/__tests__/task-modal-touch-resize-browser.test.ts"];
+/*
+FNXC:StandardizedViewLayout 2026-09-13-20:32:
+FN-379's rendered geometry (shared rail width, header creation placement, tactile back target, phone pane
+exclusivity) joins the existing touch lane so it is collected exactly once and self-gates without a local Chromium.
+*/
+const browserTouchTests = [
+  "src/__tests__/task-modal-touch-resize-browser.test.ts",
+  "src/__tests__/view-layout-browser.test.ts",
+  /* FNXC:UiStyleAxis 2026-09-15-00:20: FN-399's appearance axes need a real engine to compose theme colour against style geometry. */
+  "src/__tests__/ui-style-browser.test.ts",
+  /*
+  FNXC:FileBrowserScroll 2026-09-16-22:33:
+  FN-479 : la propriété de défilement du navigateur de fichiers (hauteur calculée, conteneur défilant effectif,
+  pan tactile natif) ne peut être prouvée que par un moteur réel ; jsdom en calcule aucune des trois.
+  */
+  "src/__tests__/file-browser-scroll-browser.test.ts",
+  /*
+  FNXC:MobileKeyboardViewport 2026-09-17-14:23:
+  FN-512 : les deux moitiés du symptôme clavier (champ recouvert, bande vide) sont des résultats rendus — bord
+  calculé du conteneur propriétaire et distance réelle sous le champ. jsdom n'en calcule aucun, donc la preuve
+  passe par un vrai moteur ; la suite s'auto-gate sans Chromium local comme ses voisines.
+  */
+  "src/__tests__/mobile-keyboard-browser.test.ts",
+  /*
+  FNXC:MobileDrawerGesture 2026-09-17-03:18:
+  FN-486 : la fermeture d'un tiroir depuis une ligne de liste, le placement du menu d'appui long et la parité
+  de géométrie entre le chevron Retour et le « + » sont des résultats RENDUS ; ils exigent un moteur réel et
+  s'auto-désactivent lorsqu'aucun navigateur n'est disponible.
+  */
+  "src/__tests__/drawer-list-interactions-browser.test.ts",
+  /*
+  FNXC:BoardNavigation 2026-09-17-09:49:
+  FN-500 : la fluidité du défilement horizontal du tableau, l'ancrage exact sur une colonne et l'absence
+  d'arrêt intermédiaire sont des résultats RENDUS, pilotés par de vrais gestes tactiles ; jsdom ne calcule
+  ni le layout flex, ni la cascade de snap, ni le pipeline d'entrée. Collectée une seule fois dans cette
+  lane, avec auto-clôture sur la présence d'un Chromium local.
+  */
+  "src/__tests__/board-scroll-browser.test.ts",
+  /*
+  FNXC:TaskSearch 2026-09-17-09:41:
+  FN-477 : la largeur égale à une carte du tableau et la réserve de 1,5 carte sont des géométries
+  rendues ; jsdom retourne des rectangles nuls et ne fait aucune mise en page flex/overflow. Collecté
+  une seule fois dans cette lane, avec auto-clôture sur la présence d'un Chromium local.
+  */
+  "src/__tests__/task-search-browser.test.ts",
+  /*
+  FNXC:BoardNavigation 2026-09-18-02:12:
+  FN-522 : la bande parasite et la hauteur utile réduite du tableau au retour de Planning/Missions sont des
+  géométries rendues, et le défaut ne durait qu'un commit — seule une mesure par frame dans un vrai moteur peut
+  le prouver. Collectée une seule fois dans cette lane, avec auto-clôture sur la présence d'un Chromium local.
+  */
+  "src/__tests__/board-return-browser.test.ts",
+];
 
 const qualityApiTests = [
   // Critical HTTP/server behavior: auth, task/project/settings mutation,
@@ -532,6 +590,15 @@ export const dashboardQualityProjectGlobs = {
 export default defineConfig({
   plugins: [react()],
   resolve: {
+    /*
+    FNXC:StandardizedPluginViews 2026-09-13-22:40:
+    Bundled plugin sources are authored as NodeNext ESM and import siblings with an explicit `.js` suffix.
+    Mapping that suffix back to the TypeScript sources lets the dashboard runner mount the REAL plugin
+    destinations for FN-379's shared-chrome proof instead of a stand-in, and it changes no production build.
+    */
+    extensionAlias: {
+      ".js": [".ts", ".tsx", ".js"],
+    },
     alias: {
       /*
       FNXC:GitHubImportTranslate 2026-07-15-09:30:
@@ -545,6 +612,16 @@ export default defineConfig({
       */
       "@fusion/core/task-delete-attribution": resolve(__dirname, "../core/src/task-delete-attribution.ts"),
       "@fusion/core/column-roles": resolve(__dirname, "../core/src/column-roles.ts"),
+      /*
+      FNXC:ProviderThrottleIsTransient 2026-09-30-14:58 (RUFU-286):
+      The heartbeat throttle-recovery reader is the ONE authority for "is this agent waiting on a
+      provider rate limit, and until when", and the pill, org node, stall resolver and mapper all import
+      it as a VALUE. Ordered before the broader `@fusion/core` alias because Vite matches by prefix and
+      the root key would rewrite the subpath and fail to resolve.
+      */
+      "@fusion/core/heartbeat-recovery-state": resolve(__dirname, "../core/src/agents/heartbeat-recovery-state.ts"),
+      // FNXC:ChatSidebarLiveness 2026-09-24-05:55 (RUFU-220): Mirror vite.config.ts so the sidebar classifier resolves identically under Vitest and the browser bundle; the root `@fusion/core` alias here points at the full index, so leaving the subpath unaliased would test a different module than production ships. Ordered before the broader alias because Vite matches in order.
+      "@fusion/core/chat-liveness": resolve(__dirname, "../core/src/chat/chat-liveness.ts"),
       // FNXC:MemoryMcp 2026-08-11-00:19: Route tests use the Node-only factory subpath; browser components remain on the pure descriptor barrel.
       "@fusion/core/mcp-builtin-servers": resolve(__dirname, "../core/src/config/mcp-builtin-servers.ts"),
       "@fusion/core": resolve(__dirname, "../core/src/index.ts"),
@@ -556,6 +633,8 @@ export default defineConfig({
       // FNXC:Quality 2026-07-19-12:00: Keep the Quality plugin's tokenized artifact-media bridge resolvable under host Vitest just as it is in the production dashboard bundle.
       "@fusion/dashboard/app/api/tasks/task-content": resolve(__dirname, "app/api/tasks/task-content.ts"),
       "@fusion/dashboard/app/plugins/types": resolve(__dirname, "app/plugins/types.ts"),
+      // FNXC:StandardizedPluginViews 2026-09-13-22:40: Bundled plugin destinations adopt the cooperative header; keep that bridge resolvable when the host runner mounts the real plugin component.
+      "@fusion/dashboard/app/plugins/PluginDashboardViewHeader": resolve(__dirname, "app/plugins/PluginDashboardViewHeader.tsx"),
       "@fusion/dashboard/app/utils/projectStorage": resolve(__dirname, "app/utils/projectStorage.ts"),
       "@fusion-plugin-examples/droid-runtime/probe": resolve(
         __dirname,
@@ -866,7 +945,19 @@ export default defineConfig({
       reporter: ["text", "html", "json"],
       reportsDirectory: "./coverage",
       include: ["app/**/*.{ts,tsx}", "src/**/*.{ts,tsx}"],
-      exclude: ["**/*.test.{ts,tsx}", "**/*.d.ts", "dist/**"],
+      /*
+      FNXC:DashboardTestQuarantine 2026-08-22-23:28:
+      RUFU-153 rescues the voice-dictation-composers quarantine before its 2026-09-05 deadline:
+      the seven stale real-ChatView-surface cases now drive the list-first user path (session
+      row / room row / QuickChatFAB open + session row), so the concrete coverage.exclude entry
+      and the paired quarantinedDashboardTests const-array entry are removed in the same commit,
+      in lockstep with the scripts/lib/test-quarantine.json ledger row.
+      */
+      exclude: [
+        "**/*.test.{ts,tsx}",
+        "**/*.d.ts",
+        "dist/**",
+      ],
     },
   },
 });

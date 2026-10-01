@@ -3,7 +3,7 @@ import type { PipelineTerminalState } from "./_pipeline-terminal-state.js";
 import { PIPELINE_SCENARIO_DRIVERS } from "./_pipeline-drivers.js";
 import { PIPELINE_SCENARIO_MANIFEST } from "./_pipeline-scenario-manifest.mjs";
 
-export type PipelineWorkflowId = "builtin:coding-ideas" | "builtin:coding-ideas-v2" | "builtin:coding" | "renamed-clone";
+export type PipelineWorkflowId = "builtin:coding-ideas" | "builtin:coding" | "renamed-clone";
 
 export interface PipelineScenarioContext {
   readonly harness: PipelineSmokeHarness;
@@ -113,9 +113,12 @@ export const PIPELINE_SCENARIOS: readonly PipelineScenario[] = [
   },
   {
     id: "S07",
-    title: "Advisory-only review feedback completes without a human park",
+    title: "Unactionable review rejection parks then recovers",
     workflows: ["builtin:coding-ideas", "builtin:coding-ideas-v2"],
-    expectedTerminal: "merged-done",
+    /* FNXC:MergeRebuild0921 2026-09-21: upstream's advisory-only rewrite (FN-9339) encodes the
+       human-review park they excluded; this line keeps the park contract, manifest-aligned
+       workflows (S07 = ideas + v2). */
+    expectedTerminal: "parked",
     arrange: PIPELINE_SCENARIO_DRIVERS.s07Arrange,
     act: PIPELINE_SCENARIO_DRIVERS.s07Act,
     invariants: ["empty review feedback is an advisory approval", "production graph merges without a human park"],
@@ -239,7 +242,7 @@ export const PIPELINE_SCENARIOS: readonly PipelineScenario[] = [
   breadcrumb on a card that was never interrupted, a line written twice, and an approval whose own
   text admitted it had verified nothing. Each was the observable trace of a real defect — a lying
   provenance label, a duplicated invocation, a merge approved without checks — and each was dismissed
-  as noise until traced. Running on all three coding built-ins because the defects were not specific
+  as noise until traced. Running on both offered coding built-ins because the defects are not specific
   to one lane.
   */
   {

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { ChatView } from "../ChatView";
 import { loadAllAppCss } from "../../test/cssFixture";
 import * as useChatModule from "../../hooks/useChat";
@@ -21,6 +22,7 @@ import {
   setupMockChat,
   setupMockRooms,
   simulateKeyboardOpen,
+  stubMeasuredRect,
 } from "./ChatView.test-harness";
 
 vi.mock("../../hooks/useChat");
@@ -70,8 +72,19 @@ function getThread() {
   return screen.getByTestId("chat-input").closest(".chat-thread") as HTMLElement;
 }
 
-async function openKeyboard(input: HTMLTextAreaElement, vv: VisualViewport, height: number) {
+/** Give the thread the rectangle a browser would lay out, then open the keyboard. */
+async function openKeyboard(
+  input: HTMLTextAreaElement,
+  vv: VisualViewport,
+  height: number,
+  rect: { top: number; height: number } = { top: 0, height: window.innerHeight },
+) {
+  stubMeasuredRect(getThread(), rect);
   await act(async () => simulateKeyboardOpen({ input, vv, visualHeight: height }));
+}
+
+function readBound() {
+  return getThread().style.getPropertyValue("--chat-thread-visible-block-size");
 }
 
 function observeKeyboardScroll() {
@@ -89,6 +102,22 @@ function observeKeyboardScroll() {
   return () => scrollTop;
 }
 
+/*
+FNXC:MobileKeyboardViewport 2026-09-17-14:23:
+jsdom has no TouchEvent constructor, and a bare `Event("touchmove")` has no `touches` list at all.
+The sticky-bottom follow handler reads `event.touches[0]`, so an untyped event threw an unhandled
+TypeError out of the listener — the assertion still passed while the suite reported an error. Give
+the event a real touch list so the production handler runs the branch the test claims to exercise.
+*/
+function createTouchMove(clientY: number): Event {
+  const event = new Event("touchmove", { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "touches", {
+    value: [{ clientY, clientX: 0 }],
+    configurable: true,
+  });
+  return event;
+}
+
 function isInsideNarrowMediaRule(source: string, ruleIndex: number) {
   const mediaIndex = source.lastIndexOf("@media (max-width: 768px)", ruleIndex);
   if (mediaIndex < 0) return false;
@@ -101,6 +130,16 @@ function isInsideNarrowMediaRule(source: string, ruleIndex: number) {
   return depth > 0;
 }
 
+/*
+FNXC:MobileKeyboardViewport 2026-09-17-14:23:
+FN-512 rewrote the assertions in this file because the mechanism they described was deleted, not
+because they were failing. The old contract was `--vv-height` minus a measured thread top, plus a
+`translateY(offsetTop)` on `.chat-thread`, plus a constant iOS accessory margin. Those were three
+simultaneous adjustments to one rectangle, and the reported defect was their race.
+
+The observable contract is now a single published bound: the thread's own usable height measured
+against the visible bottom edge, or nothing at all when an ancestor already bounded it.
+*/
 describe("FN-9195 Chat composer visual viewport", () => {
   it("preserves the layout-versus-visual viewport helper contract", () => {
     const { vv, restore } = mockVisualViewport({ width: 375, height: 812 });
@@ -118,62 +157,84 @@ describe("FN-9195 Chat composer visual viewport", () => {
     } finally { restore(); }
   });
 
-  it("activates the focused composer for an iOS collapsed-layout keyboard frame", async () => {
-    const viewport = mockVisualViewport({ width: 375, height: 812 });
-    const mode = mockViewportMode("mobile");
-    try {
-      const input = await renderChat();
-      await act(async () => {
-        input.focus();
-        input.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
-        setLayoutViewportHeight(viewport.vv, 520);
-      });
-
-      const thread = getThread();
-      expect(thread).toHaveClass("chat-thread--keyboard-active");
-      expect(thread.style.getPropertyValue("--vv-height")).toBe("520px");
-      expect(thread.style.getPropertyValue("--keyboard-overlap")).toBe("0px");
-      expect(thread.contains(input)).toBe(true);
-      expect(css).toMatch(/\.chat-thread--keyboard-active\s*\{[^}]*--vv-height/m);
-    } finally { mode.mockRestore(); viewport.restore(); }
-  });
-
-  it("keeps the portrait phone composer in a keyboard-active thread", async () => {
+  it("bounds the portrait phone thread to the visible area so the composer is not under the keyboard", async () => {
+    /* FNXC:MergeRebuild0921 2026-09-21: upstream's collapsed-layout case asserted the --vv-height /
+    --keyboard-overlap writer this line deleted (shared useKeyboardViewportSurface owns placement via
+    --chat-thread-visible-block-size); case dropped, coverage lives in the bounded-thread tests. */
     const viewport = mockVisualViewport({ width: 375, height: 812 });
     const mode = mockViewportMode("mobile");
     try {
       const input = await renderChat();
       expect(window.visualViewport).toBe(viewport.vv);
-      await openKeyboard(input, viewport.vv, 400);
+      await openKeyboard(input, viewport.vv, 400, { top: 0, height: 812 });
       expect(getThread()).toHaveClass("chat-thread--keyboard-active");
-      expect(getThread().style.getPropertyValue("--vv-height")).toBe("400px");
-      expect(getThread().style.getPropertyValue("--keyboard-overlap")).toBe("412px");
+      expect(readBound()).toBe("400px");
       expect(getThread().contains(input)).toBe(true);
     } finally { mode.mockRestore(); viewport.restore(); }
   });
 
+  it("subtracts only the part of the thread below the visible bound, not the whole keyboard", async () => {
+    const viewport = mockVisualViewport({ width: 375, height: 812 });
+    const mode = mockViewportMode("mobile");
+    try {
+      const input = await renderChat();
+      // The thread starts under a 60px host header, as it does in the app shell.
+      await openKeyboard(input, viewport.vv, 400, { top: 60, height: 752 });
+      expect(readBound()).toBe("340px");
+    } finally { mode.mockRestore(); viewport.restore(); }
+  });
+
+  /*
+  FNXC:MergeRebuild0919 2026-09-19-21:45:
+  Upstream's empty/populated/streaming sweep is folded into this line's accessory-band test instead
+  of kept as a parallel case: both assert the same post-FN-512 invariant. The merged implementation
+  publishes `--chat-thread-visible-block-size`; upstream's `--vv-height` writer was deleted by
+  FN-512, so the bound assertion moved to the surface that exists and the sweep is re-asserted here.
+  */
   it.each([
     ["empty", {}],
     ["populated", { messages: [{ id: "message-001", sessionId: activeSessionFixture.id, role: "assistant" as const, content: "Hello", createdAt: "2026-09-19T00:00:00.000Z" }] }],
     ["streaming", { isStreaming: true, streamingText: "Replying" }],
-  ] satisfies [string, Partial<UseChatReturn>][])("keeps the %s Direct composer gap-free above the keyboard", async (_state, chatOverrides) => {
+  ] satisfies [string, Partial<UseChatReturn>][])("adds no constant accessory band above the %s Direct composer", async (_state, chatOverrides) => {
     const viewport = mockVisualViewport({ width: 375, height: 812 });
     const mode = mockViewportMode("mobile");
     try {
       const input = await renderChat({}, chatOverrides);
-      await openKeyboard(input, viewport.vv, 400);
+      await openKeyboard(input, viewport.vv, 400, { top: 0, height: 812 });
 
       const thread = getThread();
       expect(thread).toHaveClass("chat-thread--keyboard-active");
-      expect(thread.style.getPropertyValue("--vv-height")).toBe("400px");
+      expect(readBound()).toBe("400px");
       expect(thread.style.getPropertyValue("--chat-keyboard-accessory-clearance")).toBe("");
       const inputRule = css.match(/\.chat-thread--keyboard-active \.chat-input-area\s*\{([^}]*)\}/m);
       expect(inputRule?.[1]).toContain("padding-bottom: var(--space-md)");
-      expect(inputRule?.[1]).not.toContain("chat-keyboard-accessory-clearance");
+      // The removed compensations must not come back under any name.
+      expect(inputRule?.[1]).not.toContain("accessory-clearance");
       expect(inputRule?.[1]).not.toContain("env(safe-area-inset-bottom");
+      // No stylesheet consumes the removed custom property any more, and nothing writes it.
+      expect(css).not.toMatch(/var\(\s*--chat-keyboard-accessory-clearance/);
+      expect(getThread().style.getPropertyValue("--chat-keyboard-accessory-clearance")).toBe("");
 
       await act(async () => setVisualViewportHeight(viewport.vv, 390));
       expect(thread.style.getPropertyValue("--chat-keyboard-accessory-clearance")).toBe("");
+    } finally { mode.mockRestore(); viewport.restore(); }
+  });
+
+  it("reserves NOTHING once the browser already resized the layout viewport", async () => {
+    const viewport = mockVisualViewport({ width: 375, height: 812 });
+    const mode = mockViewportMode("mobile");
+    try {
+      const input = await renderChat();
+      // Android resizes-content: the thread follows the reduced layout, so nothing is occluded.
+      stubMeasuredRect(getThread(), { top: 0, height: 400 });
+      await act(async () => {
+        input.focus();
+        input.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+        setLayoutViewportHeight(viewport.vv, 400);
+      });
+
+      expect(readBound()).toBe("");
+      expect(getThread()).not.toHaveClass("chat-thread--keyboard-active");
     } finally { mode.mockRestore(); viewport.restore(); }
   });
 
@@ -182,10 +243,9 @@ describe("FN-9195 Chat composer visual viewport", () => {
     const viewport = mockVisualViewport({ width: 932, height: 430 });
     try {
       const input = await renderChat();
-      await openKeyboard(input, viewport.vv, 200);
+      await openKeyboard(input, viewport.vv, 200, { top: 0, height: 430 });
       expect(getThread()).toHaveClass("chat-thread--keyboard-active");
-      expect(getThread().style.getPropertyValue("--vv-height")).toBe("200px");
-      expect(getThread().style.getPropertyValue("--keyboard-overlap")).toBe("230px");
+      expect(readBound()).toBe("200px");
       const ruleIndex = css.indexOf(".chat-thread--keyboard-active {");
       expect(ruleIndex).toBeGreaterThan(-1);
       expect(isInsideNarrowMediaRule(css, ruleIndex)).toBe(false);
@@ -200,9 +260,9 @@ describe("FN-9195 Chat composer visual viewport", () => {
     const viewport = mockVisualViewport({ width, height: layoutHeight });
     try {
       const input = await renderChat();
-      await openKeyboard(input, viewport.vv, visualHeight);
+      await openKeyboard(input, viewport.vv, visualHeight, { top: 0, height: layoutHeight });
       expect(getThread()).toHaveClass("chat-thread--keyboard-active");
-      expect(getThread().style.getPropertyValue("--vv-height")).toBe(`${visualHeight}px`);
+      expect(readBound()).toBe(`${visualHeight}px`);
     } finally { viewport.restore(); restoreHost(); }
   });
 
@@ -214,10 +274,21 @@ describe("FN-9195 Chat composer visual viewport", () => {
     const viewport = mockVisualViewport({ width: 1280, height: 900 });
     try {
       const input = await renderChat(props);
-      await openKeyboard(input, viewport.vv, 500);
+      await openKeyboard(input, viewport.vv, 500, { top: 0, height: 900 });
       expect(getThread()).toHaveClass("chat-thread--keyboard-active");
-      expect(getThread().style.getPropertyValue("--chat-keyboard-accessory-clearance")).toBe("");
+      expect(readBound()).toBe("500px");
       if (props.floating) expect(document.querySelector(".chat-view")).toHaveClass("chat-view--narrow");
+    } finally { viewport.restore(); restoreHost(); }
+  });
+
+  it("never grows a small dock host up to the viewport", async () => {
+    const restoreHost = mockDesktopNonTouchViewport();
+    const viewport = mockVisualViewport({ width: 1280, height: 900 });
+    try {
+      const input = await renderChat({ compactLayout: true });
+      await openKeyboard(input, viewport.vv, 500, { top: 100, height: 300 });
+      expect(readBound()).toBe("");
+      expect(getThread()).not.toHaveClass("chat-thread--keyboard-active");
     } finally { viewport.restore(); restoreHost(); }
   });
 
@@ -226,9 +297,9 @@ describe("FN-9195 Chat composer visual viewport", () => {
     const viewport = mockVisualViewport({ width: 1280, height: 900 });
     try {
       const input = await renderChat();
-      await openKeyboard(input, viewport.vv, 500);
+      await openKeyboard(input, viewport.vv, 500, { top: 0, height: 900 });
       expect(getThread()).not.toHaveClass("chat-thread--keyboard-active");
-      expect(getThread().style.getPropertyValue("--vv-height")).toBe("");
+      expect(readBound()).toBe("");
       expect(getThread().style.transform).toBe("");
     } finally { viewport.restore(); restoreHost(); }
   });
@@ -238,13 +309,13 @@ describe("FN-9195 Chat composer visual viewport", () => {
     const viewport = mockVisualViewport({ width: 932, height: 430 });
     try {
       const input = await renderChat();
-      await openKeyboard(input, viewport.vv, 200);
+      await openKeyboard(input, viewport.vv, 200, { top: 0, height: 430 });
       await act(async () => undefined);
-      const outsideMove = new Event("touchmove", { bubbles: true, cancelable: true });
+      const outsideMove = createTouchMove(10);
       document.body.dispatchEvent(outsideMove);
       expect(outsideMove.defaultPrevented).toBe(true);
       const messages = document.querySelector(".chat-messages") as HTMLElement;
-      const messagesMove = new Event("touchmove", { bubbles: true, cancelable: true });
+      const messagesMove = createTouchMove(10);
       messages.dispatchEvent(messagesMove);
       expect(messagesMove.defaultPrevented).toBe(false);
       expect(document.body.style.position).not.toBe("fixed");
@@ -262,7 +333,7 @@ describe("FN-9195 Chat composer visual viewport", () => {
       try {
         const input = await renderChat(props);
         const readScrollTop = observeKeyboardScroll();
-        await openKeyboard(input, viewport.vv, visualHeight);
+        await openKeyboard(input, viewport.vv, visualHeight, { top: 0, height: layoutHeight });
         expect(readScrollTop(), name).toBe(1000);
       } finally { cleanup(); viewport.restore(); restoreHost(); }
     }
@@ -273,24 +344,28 @@ describe("FN-9195 Chat composer visual viewport", () => {
     const viewport = mockVisualViewport({ width: 1280, height: 900 });
     try {
       const input = await renderChat({ compactLayout: true });
+      stubMeasuredRect(getThread(), { top: 0, height: 900 });
       await act(async () => input.focus());
-      const move = new Event("touchmove", { bubbles: true, cancelable: true });
+      const move = createTouchMove(10);
       document.body.dispatchEvent(move);
       expect(getThread()).not.toHaveClass("chat-thread--keyboard-active");
       expect(move.defaultPrevented).toBe(false);
     } finally { viewport.restore(); restoreHost(); }
   });
 
-  it("only applies drift compensation when visual viewport offset is nonzero", async () => {
+  it("never transforms the thread, so it cannot establish a containing block over the composer", async () => {
     const viewport = mockVisualViewport({ width: 375, height: 812 });
     const mode = mockViewportMode("mobile");
     try {
       const input = await renderChat();
-      await openKeyboard(input, viewport.vv, 400);
+      await openKeyboard(input, viewport.vv, 400, { top: 0, height: 812 });
       expect(getThread().style.transform).toBe("");
       await act(async () => setVisualViewportOffsetTop(viewport.vv, 40));
-      expect(getThread().style.transform).toBe("translateY(40px)");
-      expect(getThread().style.willChange).toBe("transform");
+      // A positive offsetTop moves the visible BOUND; it never becomes a translate on an ancestor
+      // of the focused composer. WebKit collapses the keyboard when that containing block appears.
+      expect(getThread().style.transform).toBe("");
+      expect(getThread().style.willChange).toBe("");
+      expect(readBound()).toBe("440px");
       expect(css.slice(css.indexOf(".chat-thread--keyboard-active {"), css.indexOf(".chat-thread-header"))).not.toMatch(/\n\s*(transform|will-change)\s*:/);
     } finally { mode.mockRestore(); viewport.restore(); }
   });
@@ -302,11 +377,9 @@ describe("FN-9195 Chat composer visual viewport", () => {
       const input = await renderChat();
       observeKeyboardScroll();
       Object.defineProperty(viewport.vv, "scale", { value: 1.5, writable: true, configurable: true });
-      await openKeyboard(input, viewport.vv, 200);
-      const move = new Event("touchmove", { bubbles: true, cancelable: true });
+      await openKeyboard(input, viewport.vv, 200, { top: 0, height: 430 });
+      const move = createTouchMove(10);
       document.body.dispatchEvent(move);
-      // The visual-viewport writer deliberately remains scale-agnostic; this verifies the shared
-      // keyboard hook does not turn a pinch sample into touch keyboard state.
       expect(move.defaultPrevented).toBe(false);
     } finally { viewport.restore(); restoreHost(); }
   });
@@ -317,42 +390,88 @@ describe("FN-9195 Chat composer visual viewport", () => {
     try {
       delete (window as { visualViewport?: VisualViewport }).visualViewport;
       const input = await renderChat();
+      // With no Visual Viewport API the layout viewport IS the visible rectangle.
+      stubMeasuredRect(getThread(), { top: 0, height: document.documentElement.clientHeight });
       await act(async () => input.focus());
       expect(getThread()).not.toHaveClass("chat-thread--keyboard-active");
+      expect(readBound()).toBe("");
     } finally {
       mode.mockRestore();
       if (descriptor) Object.defineProperty(window, "visualViewport", descriptor);
     }
   });
 
-  it("clears keyboard layout state during blur suppression and unmount", async () => {
+  it("clears the bound on blur and on unmount", async () => {
     const viewport = mockVisualViewport({ width: 375, height: 812 });
     const mode = mockViewportMode("mobile");
     try {
       const input = await renderChat();
-      await openKeyboard(input, viewport.vv, 400);
+      await openKeyboard(input, viewport.vv, 400, { top: 0, height: 812 });
       const thread = getThread();
       expect(thread).toHaveClass("chat-thread--keyboard-active");
+
       await act(async () => input.blur());
-      await act(async () => setVisualViewportHeight(viewport.vv, 400));
+      await act(async () => setVisualViewportHeight(viewport.vv, 812));
       expect(thread).not.toHaveClass("chat-thread--keyboard-active");
-      expect(thread.style.getPropertyValue("--chat-keyboard-accessory-clearance")).toBe("");
+      expect(thread.style.getPropertyValue("--chat-thread-visible-block-size")).toBe("");
       expect(thread.style.transform).toBe("");
+
       cleanup();
       expect(thread).not.toHaveClass("chat-thread--keyboard-active");
-      expect(thread.style.getPropertyValue("--chat-keyboard-accessory-clearance")).toBe("");
+      expect(thread.style.getPropertyValue("--chat-thread-visible-block-size")).toBe("");
       expect(thread.style.willChange).toBe("");
     } finally { viewport.restore(); mode.mockRestore(); }
   });
 
-  it("uses the header fallback when a test layout has no measurable thread rectangle", async () => {
+  it("stays at its resting geometry when no rectangle can be measured", async () => {
+    const viewport = mockVisualViewport({ width: 375, height: 812 });
+    const mode = mockViewportMode("mobile");
+    try {
+      // No stubbed rect: jsdom reports an all-zero box, which proves nothing about occlusion.
+      const input = await renderChat();
+      await act(async () => simulateKeyboardOpen({ input, vv: viewport.vv, visualHeight: 400 }));
+      expect(readBound()).toBe("");
+      expect(getThread()).not.toHaveClass("chat-thread--keyboard-active");
+      // The CSS fallback keeps the thread filling its parent rather than collapsing.
+      expect(css).toContain("var(--chat-thread-visible-block-size, 100%)");
+    } finally { mode.mockRestore(); viewport.restore(); }
+  });
+
+  it("restores the exact resting state across close → reopen → close", async () => {
     const viewport = mockVisualViewport({ width: 375, height: 812 });
     const mode = mockViewportMode("mobile");
     try {
       const input = await renderChat();
-      await openKeyboard(input, viewport.vv, 400);
-      expect(getThread().style.getPropertyValue("--chat-thread-viewport-top")).toBe("");
-      expect(css).toContain("var(--chat-thread-viewport-top, var(--header-height))");
+      await openKeyboard(input, viewport.vv, 400, { top: 0, height: 812 });
+      expect(readBound()).toBe("400px");
+
+      await act(async () => input.blur());
+      await act(async () => setVisualViewportHeight(viewport.vv, 812));
+      expect(readBound()).toBe("");
+
+      await act(async () => simulateKeyboardOpen({ input, vv: viewport.vv, visualHeight: 400 }));
+      expect(readBound()).toBe("400px");
+
+      await act(async () => input.blur());
+      await act(async () => setVisualViewportHeight(viewport.vv, 812));
+      expect(readBound()).toBe("");
+    } finally { mode.mockRestore(); viewport.restore(); }
+  });
+
+  it("keeps the draft, the field identity, and the selection through a keyboard cycle", async () => {
+    const viewport = mockVisualViewport({ width: 375, height: 812 });
+    const mode = mockViewportMode("mobile");
+    try {
+      const input = await renderChat();
+      await userEvent.type(input, "brouillon");
+      await act(async () => input.setSelectionRange(3, 3));
+      await openKeyboard(input, viewport.vv, 400, { top: 0, height: 812 });
+      await act(async () => setVisualViewportHeight(viewport.vv, 812));
+
+      const current = screen.getByTestId("chat-input") as HTMLTextAreaElement;
+      expect(current).toBe(input);
+      expect(current.value).toBe("brouillon");
+      expect(current.selectionStart).toBe(3);
     } finally { mode.mockRestore(); viewport.restore(); }
   });
 });

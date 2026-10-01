@@ -38,7 +38,7 @@ function deferred<T>() {
 }
 
 function room(id: string, updatedAt: string): ChatRoom {
-  return { id, name: id, slug: id, description: null, projectId: "proj-1", createdBy: null, status: "active", createdAt: updatedAt, updatedAt };
+  return { id, name: id, slug: id, description: null, projectId: "proj-1", createdBy: null, status: "active", thinkingLevel: null, createdAt: updatedAt, updatedAt };
 }
 function member(roomId: string, agentId: string): ChatRoomMember {
   return { roomId, agentId, role: "member", addedAt: "2026-05-20T00:00:00.000Z" };
@@ -55,7 +55,7 @@ describe("useChatRooms cache behavior", () => {
     window.localStorage.clear();
     events = {};
     mockSubscribeSse.mockImplementation((_url, sub) => {
-      events = sub.events ?? {};
+      events = sub?.events ?? {};
       return () => {};
     });
     mockFetchChatRooms.mockResolvedValue({ rooms: [room("room-a", "2026-05-20T00:00:00.000Z"), room("room-b", "2026-05-20T00:00:01.000Z")] });

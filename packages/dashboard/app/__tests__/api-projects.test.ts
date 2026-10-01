@@ -10,12 +10,9 @@ import {
   updateTask,
   createTask,
   connectPlanningStream,
-  connectSubtaskStream,
   connectMissionInterviewStream,
   assignTask,
   fetchAgentTasks,
-  archiveTask,
-  unarchiveTask,
   deleteTask,
   ApiRequestError,
   moveTask,
@@ -50,6 +47,7 @@ import {
   fetchTasks,
   summarizeTitle,
   fetchProjects,
+  fetchProjectsAcrossNodes,
   registerProject,
   unregisterProject,
   fetchProjectHealth,
@@ -92,6 +90,7 @@ const TASK_TOKEN_USAGE_FIXTURE = {
   outputTokens: 300,
   cachedTokens: 125,
   totalTokens: 1425,
+  cacheWriteTokens: 0,
   firstUsedAt: "2026-04-24T08:00:00.000Z",
   lastUsedAt: "2026-04-24T09:30:00.000Z",
 };
@@ -673,7 +672,141 @@ describe("fetchProjects", () => {
 
     await expect(fetchProjects()).rejects.toThrow("Database error");
   });
+
+  /*
+  FNXC:CrossProjectHandoff 2026-09-10-18:05 (RUFU-211):
+  A transfer picker that could not cancel its project-list read stayed on "Loading projects…" forever,
+  and — because the across-nodes read is deduplicated — took the header switcher down with it. These
+  cases pin the cancellation contract itself rather than the dialog that uses it: the caller's signal
+  must actually reach `fetch` (an `api()` option that is dropped on the floor would look fine in every
+  other test here), and a zero-argument call must keep sending the exact request shape existing callers
+  depend on.
+  */
+  it("hands its AbortSignal to fetch and rejects with an abort error when aborted", async () => {
+    const controller = new AbortController();
+    const fetchSpy = vi.fn(
+      () =>
+        new Promise<Response>((_resolve, reject) => {
+          controller.signal.addEventListener("abort", () => reject(abortRejection()));
+        }),
+    );
+    globalThis.fetch = fetchSpy;
+
+    const call = fetchProjects({ signal: controller.signal });
+
+    // The signal is the only thing that can cancel the request: assert it survives down to fetch.
+    expect(fetchSpy.mock.calls[0]?.[1]?.signal).toBe(controller.signal);
+    controller.abort();
+    await expect(call).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("sends no signal key at all for a zero-argument call, keeping the request shape byte-for-byte", async () => {
+    const fetchSpy = vi.fn().mockReturnValue(mockFetchResponse(true, [FAKE_PROJECT]));
+    globalThis.fetch = fetchSpy;
+
+    await fetchProjects();
+
+    // `{ signal: undefined }` would satisfy the type but change the object handed to fetch, which the
+    // exact-shape assertions in this file exist to catch.
+    expect(fetchSpy.mock.calls[0]?.[1]).not.toBeUndefined();
+    expect("signal" in (fetchSpy.mock.calls[0]?.[1] as RequestInit)).toBe(false);
+  });
 });
+
+/*
+FNXC:CrossProjectHandoff 2026-09-10-18:05 (RUFU-211):
+`fetchProjectsAcrossNodes` is the shared entry every project-list consumer mounts on, so its behaviour
+under cancellation is what decides whether a stalled server produces a temporary spinner or a permanent
+one. These cases run the real `dedupe` module with a `fetch` stand-in that mirrors the platform: the
+response arrives only if the signal never aborts.
+*/
+describe("fetchProjectsAcrossNodes — cancellation and the shared dedupe entry", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const REMOTE_ONLY: ProjectInfo[] = [{ ...FAKE_PROJECT, id: "proj_remote" }];
+
+  /** Mirrors a hung request: pending forever unless its signal aborts first. */
+  function hangingUntilAborted() {
+    return (_input: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        if (!init?.signal) return; // nothing wired to cancel it — the pre-RUFU-211 hang
+        init.signal.addEventListener("abort", () => reject(abortRejection()));
+      });
+  }
+
+  /** A normal, immediately-successful response. */
+  function responding(body: unknown) {
+    return () => mockFetchResponse(true, body);
+  }
+
+  it("leaves no live dedupe entry behind after an abort, so a reopened caller issues a new request", async () => {
+    const controller = new AbortController();
+    const fetchSpy = vi.fn()
+      .mockImplementationOnce(hangingUntilAborted())
+      .mockImplementationOnce(responding(REMOTE_ONLY));
+    globalThis.fetch = fetchSpy;
+
+    const cancelled = fetchProjectsAcrossNodes({ signal: controller.signal });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    controller.abort();
+    await expect(cancelled).rejects.toMatchObject({ name: "AbortError" });
+
+    // The crux of "reopening the picker never recovers": the next caller must NOT inherit the dead
+    // request. A new network call is the only acceptable outcome.
+    const reopened = await fetchProjectsAcrossNodes();
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(reopened).toHaveLength(1);
+  });
+
+  it("does not report another caller's abort as the joined caller's own failure", async () => {
+    const controller = new AbortController();
+    const fetchSpy = vi.fn()
+      .mockImplementationOnce(hangingUntilAborted())
+      .mockImplementationOnce(responding(REMOTE_ONLY));
+    globalThis.fetch = fetchSpy;
+
+    const picker = fetchProjectsAcrossNodes({ signal: controller.signal });
+    // The header switcher mounts while the picker's request is in flight, so it JOINS that request.
+    const header = fetchProjectsAcrossNodes();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    controller.abort();
+    await expect(picker).rejects.toMatchObject({ name: "AbortError" });
+
+    // The header never cancelled, so it must not surface a failure to its own consumer: it re-issues
+    // once (the aborted entry is no longer joinable) and receives real data.
+    await expect(header).resolves.toHaveLength(1);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("forceFresh starts a new request instead of joining a still-pending one, and repairs its joiners", async () => {
+    const controller = new AbortController(); // never aborted: models a genuinely hung server
+    const fetchSpy = vi.fn()
+      .mockImplementationOnce(hangingUntilAborted())
+      .mockImplementationOnce(responding(REMOTE_ONLY));
+    globalThis.fetch = fetchSpy;
+
+    const hung = fetchProjectsAcrossNodes({ signal: controller.signal });
+    const retried = fetchProjectsAcrossNodes({ forceFresh: true });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    await expect(retried).resolves.toHaveLength(1);
+    // A Retry must not merely rescue itself: the caller parked on the hung entry is redirected too.
+    await expect(hung).resolves.toHaveLength(1);
+    controller.abort(); // release the never-resolving stand-in
+  });
+});
+
+/** The rejection the platform's own `fetch` produces when its signal aborts. */
+function abortRejection(): Error {
+  const err = new Error("The operation was aborted");
+  err.name = "AbortError";
+  return err;
+}
 
 describe("registerProject", () => {
   const originalFetch = globalThis.fetch;
@@ -1133,6 +1266,8 @@ describe("ExecutorStats type", () => {
       inReviewCount: 4,
       executorState: "running",
       maxConcurrent: 4,
+      effectiveMaxConcurrent: 4,
+      concurrencyBindingKnob: "maxConcurrent",
       lastActivityAt: "2026-04-01T12:00:00.000Z",
     };
 
@@ -1153,6 +1288,8 @@ describe("ExecutorStats type", () => {
       inReviewCount: 0,
       executorState: "idle",
       maxConcurrent: 2,
+      effectiveMaxConcurrent: 2,
+      concurrencyBindingKnob: "maxConcurrent",
     };
 
     const runningStats: ExecutorStats = {
@@ -1162,6 +1299,8 @@ describe("ExecutorStats type", () => {
       inReviewCount: 1,
       executorState: "running",
       maxConcurrent: 2,
+      effectiveMaxConcurrent: 2,
+      concurrencyBindingKnob: "maxConcurrent",
     };
 
     const pausedStats: ExecutorStats = {
@@ -1171,6 +1310,8 @@ describe("ExecutorStats type", () => {
       inReviewCount: 2,
       executorState: "paused",
       maxConcurrent: 2,
+      effectiveMaxConcurrent: 2,
+      concurrencyBindingKnob: "maxConcurrent",
     };
 
     expect(idleStats.executorState).toBe("idle");
@@ -1186,6 +1327,8 @@ describe("ExecutorStats type", () => {
       inReviewCount: 0,
       executorState: "idle",
       maxConcurrent: 2,
+      effectiveMaxConcurrent: 2,
+      concurrencyBindingKnob: "maxConcurrent",
     };
 
     expect(stats.lastActivityAt).toBeUndefined();

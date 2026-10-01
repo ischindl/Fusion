@@ -21,9 +21,10 @@ future cleanup revisits this, the question to ask is whether dependency and over
 deadlock are still possible — not whether capacity is simpler.
 */
 import type { MissionStore, Task, TaskStore, WorkflowIr } from "@fusion/core";
-import { compareTasksByPriorityThenAgeAndId, fileScopeLeaseBlocksCandidate, normalizeOverlapScopeForTask, resolveTaskLifecycleColumns, resolveWorkflowIrForTask, columnsWithFlag } from "@fusion/core";
+import { compareTasksByQueueOrder, fileScopeLeaseBlocksCandidate, normalizeOverlapScopeForTask, resolveTaskLifecycleColumns, resolveWorkflowIrForTask, columnsWithFlag, taskHoldsUnmergedCheckout } from "@fusion/core";
 import { createLogger } from "../logger.js";
 import { classifyFileScopeLease, filterPathsByIgnoreList, isCoordinationOnlyTask, pathsOverlap } from "../scheduler.js";
+import { proveDormantCheckoutEmptiness } from "../worktree/checkout-emptiness.js";
 
 const gridlockLog = createLogger("gridlock-detector");
 
@@ -77,8 +78,18 @@ export class GridlockDetector {
   }
 
   async detectGridlock(): Promise<GridlockEvent | null> {
+    /*
+    FNXC:ListTasksDeriveOptOut 2026-09-08-23:08 (RUFU-201 — gridlock sweep):
+    The 5 s sweep reads persisted fields only: directly in `detectGridlock`/`isMissionBlocked` it reads
+    id, column, paused, nextRecoveryAt and sliceId; through `classifyFileScopeLease` it reads column,
+    deletedAt, worktree, workspaceWorktrees and dependencies; through `normalizeOverlapScopeForTask`
+    workspaceWorktrees; through `isCoordinationOnlyTask` noCommitsExpected and sourceMetadata; through
+    the priority/age tie-break priority, createdAt and id. None is a derived badge — grepping this file
+    for the derived fields returns nothing. Settings stay correct because this site calls
+    `store.getSettings()` itself; `derive: false` only skips the derivation block's internal fast read.
+    */
     const [tasks, settings] = await Promise.all([
-      this.store.listTasks({ slim: true, includeArchived: false }),
+      this.store.listTasks({ slim: true, includeArchived: false, derive: false }),
       this.store.getSettings(),
     ]);
 
@@ -97,12 +108,25 @@ export class GridlockDetector {
     alarm, and inventing candidates would raise false ones.
     */
     const irCache = new Map<string, WorkflowIr>();
-    const holdByTask = new Map<string, string | undefined>();
+    /*
+    FNXC:GridlockLifecycleResolution 2026-09-08-23:08 (RUFU-201):
+    One lifecycle resolution per card per pass, keyed by id and read by BOTH classification loops.
+    Resolving twice was not merely redundant: each uncached call re-issued a live workflow-selection
+    read per card and re-ran the non-memoized column resolution, so a pass of N cards cost 2N of them.
+    Building the map eagerly costs exactly what the schedulable loop cost before, because that loop ran
+    first and resolved every card anyway before the empty-set early return. Storing the full struct
+    keeps the previous truthiness contract: a struct with all-undefined roles was truthy then and is
+    truthy now, so consumers still pass explicit `false` role answers rather than legacy literals, and
+    id-keyed lookups are iteration-order independent. A side effect in the safe direction: the two
+    loops used to resolve independently, so a selection write landing between them could give one card
+    role answers from two different workflows.
+    */
+    const lifecycleByTask = new Map<string, Awaited<ReturnType<typeof resolveTaskLifecycleColumns>>>();
     for (const task of tasks) {
-      holdByTask.set(task.id, (await resolveTaskLifecycleColumns(this.store, task.id, irCache))?.hold);
+      lifecycleByTask.set(task.id, await resolveTaskLifecycleColumns(this.store, task.id, irCache));
     }
     const schedulable = tasks.filter((task) => {
-      const hold = holdByTask.get(task.id);
+      const hold = lifecycleByTask.get(task.id)?.hold;
       if (hold === undefined || task.column !== hold || task.paused) return false;
       if (task.nextRecoveryAt && new Date(task.nextRecoveryAt).getTime() > now) return false;
       if (this.isMissionBlocked(task)) return false;
@@ -119,40 +143,56 @@ export class GridlockDetector {
     Gridlock reporting must use the same active/dormant lease classification as admission. A preserved
     worktree outside WIP or review remains a dormant holder, and priority → age → id picks the one
     holder that genuinely blocks a waiting card instead of reporting its files as free.
+
+/*
+    FNXC:OverlapScheduling 2026-09-01-14:49:
+    Checkout-free planning cards are not overlap holders and cannot manufacture a planning gridlock;
+    a retained checkout remains the durable evidence for a genuine dormant-holder cycle.
     */
-    const rolesByTask = new Map<string, { wip?: string; review?: string; complete?: string; archived?: string } | undefined>();
-    for (const task of tasks) {
-      const roles = await resolveTaskLifecycleColumns(this.store, task.id, irCache);
-      rolesByTask.set(task.id, roles ? {
-        wip: roles.wip,
-        review: roles.review,
-        complete: roles.complete,
-        archived: roles.archived,
-      } : undefined);
-    }
     const handoffAcceptedByTaskId = new Map<string, boolean>();
     if (settings.mergeRequestContractShadowEnabled === true) {
       for (const task of tasks) {
-        const roles = rolesByTask.get(task.id);
+        const roles = lifecycleByTask.get(task.id);
         if (roles?.review === task.column) {
           handoffAcceptedByTaskId.set(task.id, (await this.store.getCompletionHandoffAcceptedMarker(task.id)) !== null);
         }
       }
     }
+    /*
+    FNXC:OverlapScheduling 2026-09-08-21:35 (RUFU-200):
+    The detector must reach the SAME lease verdict as admission for the same holder, otherwise it reports
+    a gridlock the scheduler has already resolved (or stays silent about one it cannot resolve). It
+    therefore consumes the same downgrade-only checkout-emptiness proof over the same shared prover.
+    Candidates are limited to holders whose lane could actually change; an unresolved-roles task is
+    proven rather than filtered on legacy column literals, which this file must not restate.
+    */
+    const dormantProofCandidates = tasks.filter((task) => {
+      if (task.deletedAt || !taskHoldsUnmergedCheckout(task)) return false;
+      const roles = lifecycleByTask.get(task.id);
+      if (!roles) return true;
+      return roles.wip !== task.column && roles.review !== task.column && roles.complete !== task.column;
+    });
+    const checkoutEmptinessByTaskId = await proveDormantCheckoutEmptiness({
+      rootDir: () => this.store.getRootDir(),
+      settings,
+      candidates: dormantProofCandidates,
+    });
     const classifications = new Map(
       tasks.map((task) => {
-        const roles = rolesByTask.get(task.id);
+        const roles = lifecycleByTask.get(task.id);
         return [task.id, classifyFileScopeLease(task, tasks, roles
           ? {
             mergeRequestContractShadowEnabled: settings.mergeRequestContractShadowEnabled,
             handoffAccepted: handoffAcceptedByTaskId.get(task.id) ?? false,
+            checkoutEmptiness: checkoutEmptinessByTaskId.get(task.id),
             isWipColumn: roles.wip === task.column,
             isReviewColumn: roles.review === task.column,
-            isTerminalColumn: roles.complete === task.column || roles.archived === task.column,
+            isTerminalColumn: roles.complete === task.column,
           }
           : {
             mergeRequestContractShadowEnabled: settings.mergeRequestContractShadowEnabled,
             handoffAccepted: handoffAcceptedByTaskId.get(task.id) ?? false,
+            checkoutEmptiness: checkoutEmptinessByTaskId.get(task.id),
           })] as const;
       }),
     );
@@ -169,7 +209,7 @@ export class GridlockDetector {
       .sort((a, b) => a.id.localeCompare(b.id));
     const dormantLeaseHolders = leaseHolders
       .filter((task) => classifications.get(task.id)?.kind === "dormant")
-      .sort(compareTasksByPriorityThenAgeAndId);
+      .sort(compareTasksByQueueOrder);
     const leaseScopes = new Map<string, string[]>();
     if (settings.groupOverlappingFiles) {
       for (const holder of leaseHolders) {
@@ -202,21 +242,21 @@ export class GridlockDetector {
     deadlocks a board, so the three roles stay a union rather than becoming `resolveLifecycleColumns`'s
     first-per-role.
 
-    Unioned with the legacy trio because `resolveWorkflowIrForTask` returns the BUILT-IN IR for a missing
+    Unioned with the legacy review/completion pair because `resolveWorkflowIrForTask` returns the built-in IR for a missing
     or corrupt workflow rather than throwing; without the union a degraded board resolves a satisfied set
     that excludes its own terminal lanes and every dependency reads as unmet.
     */
     const satisfiedColumnsByTaskId = new Map<string, ReadonlySet<string>>();
     for (const task of tasks) {
-      const columns = new Set<string>(["done", "in-review", "archived"]);
+      const columns = new Set<string>(["done", "in-review"]);
       try {
         const ir = await resolveWorkflowIrForTask(this.store, task.id, irCache);
         if (ir) {
-          for (const flag of ["complete", "archived", "mergeOrchestration", "mergeBlocker", "humanReview"] as const) {
+          for (const flag of ["complete", "mergeOrchestration", "mergeBlocker", "humanReview"] as const) {
             for (const id of columnsWithFlag(ir, flag)) columns.add(id);
           }
         }
-      } catch { /* degraded: legacy trio only */ }
+      } catch { /* degraded: legacy pair only */ }
       satisfiedColumnsByTaskId.set(task.id, columns);
     }
 

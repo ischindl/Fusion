@@ -1,7 +1,9 @@
 import {
   AiServiceError,
+  FALLBACK_TASK_TITLE,
   columnsWithFlag,
   createLogger,
+  deriveTaskLabelFromDescription,
   declaresAnyLifecycleTrait,
   parseRepoSlug,
   resolveTaskGithubTracking,
@@ -41,55 +43,30 @@ function truncateWithEllipsis(value: string, maxLength: number): string {
   return `${value.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 }
 
+/**
+ * Title candidate for a tracking issue derived from a task description.
+ *
+ * FNXC:GithubTracking 2026-09-08-00:00:
+ * GitHub issue titles must be one line, must not carry markdown structure, and must stay under the
+ * provider length cap; an undescribable description returns null so the caller falls back to the task
+ * id rather than a generic label.
+ *
+ * FNXC:TaskTitleDerivation 2026-09-26-02:43:
+ * RUFU-295 deleted this file's local markdown-stripping / sentence-cutting copy. It was a second
+ * authority for one rule and already disagreed on one dimension: it truncated with a "…" suffix while
+ * the canonical derivation hard-truncates with no suffix. The sentence now comes from core's
+ * `deriveTaskLabelFromDescription`, so a tracking issue and the card it tracks cannot describe
+ * different things. Only GitHub-specific presentation stays here: the null-for-undescribable contract
+ * (the caller's fallback is the task id, which is the honest identifier when the description says
+ * nothing describable) and the caller-side `[…id] ` prefix budget.
+ */
 export function deriveTitleFromDescription(description: string | undefined, maxLength: number): string | null {
   if (!description || !description.trim()) {
     return null;
   }
 
-  const lines = description.split(/\r?\n/);
-  const cleanedLines: string[] = [];
-  let inCodeFence = false;
-
-  for (const line of lines) {
-    if (/^\s*```/.test(line)) {
-      inCodeFence = !inCodeFence;
-      continue;
-    }
-    if (inCodeFence) {
-      continue;
-    }
-
-    let cleaned = line.trim();
-    while (cleaned) {
-      const next = cleaned
-        .replace(/^>\s*/, "")
-        .replace(/^#{1,6}\s+/, "")
-        .replace(/^(?:[-*+]\s+|\d+\.\s+)/, "");
-      if (next === cleaned) {
-        break;
-      }
-      cleaned = next.trimStart();
-    }
-
-    cleanedLines.push(cleaned);
-  }
-
-  const firstLine = cleanedLines.find((line) => line.trim().length > 0);
-  if (!firstLine) {
-    return null;
-  }
-
-  const terminatorMatch = /[.!?](?=\s|$)/.exec(firstLine);
-  const candidate = terminatorMatch
-    ? firstLine.slice(0, terminatorMatch.index + 1)
-    : firstLine;
-  const collapsed = collapseWhitespace(candidate);
-
-  if (!collapsed) {
-    return null;
-  }
-
-  return truncateWithEllipsis(collapsed, maxLength);
+  const derived = deriveTaskLabelFromDescription(description, maxLength);
+  return derived === FALLBACK_TASK_TITLE ? null : derived;
 }
 
 function firstNonEmptyParagraph(value: string | undefined): string | null {
@@ -167,6 +144,13 @@ FNXC:GitHubPlanningSourceIssue 2026-08-09-05:36:
 Create-time serialization narrows same-process races, but shared database nodes can still race.
 Source adoption rechecks after linking and deterministically suppresses the loser so one issue has one tracker.
 */
+/*
+FNXC:RetentionCensus 2026-09-23-09:35 (RUFU-257):
+`planningSourceIssueLocks` is a serialization queue, not a cache: each key holds the tail promise of that
+issue's queue and is deleted when it settles (guarded by an identity check so a newer tail is never
+dropped by an older one). Cardinality is concurrent planning-source issue operations.
+*/
+// retention-owner-deleted: per-source-issue serialization queue — the queued tail is deleted once it settles and is owner-checked before deletion
 const planningSourceIssueLocks = new Map<string, Promise<unknown>>();
 function sourceIssueKey(store: TaskStore, issue: { owner: string; repo: string; number: number }): string {
   return `github-source-tracking:${(store as unknown as { projectId?: string }).projectId ?? "__legacy_unscoped__"}:${issue.owner.toLowerCase()}/${issue.repo.toLowerCase()}#${issue.number}`;
@@ -265,11 +249,12 @@ export type MaybeCreateTrackingIssueReason =
 
 /*
 FNXC:GithubTracking 2026-08-15-22:27:
-A tracking issue created AFTER the Fusion task is already done/archived has no later
-task:moved event, so GitHubTrackingStateService never closes it. Observed on FN-9046 /
-FN-9054 / FN-9061: executionCompletedAt preceded issue.createdAt by 4–15 minutes, and
-the issues stayed OPEN. After create or dedup-link, close immediately when the task is
-already in a complete or archived lane. Failures are logged and never undo the link.
+A tracking issue created after the Fusion task is already complete has no later task:moved event, so GitHubTrackingStateService never closes it. After create or dedup-link, close immediately when the task is already in a Complete lane. Failures are logged and never undo the link.
+*/
+/*
+FNXC:TerminalTaskWrites 2026-09-15-21:55:
+A terminal-move helper re-reads the task but can still race archival before its audit breadcrumb.
+Use safeLogTaskEntry for every completion outcome so terminal records never receive a raw maintenance write.
 */
 /*
 FNXC:TerminalTaskWrites 2026-09-15-21:55:
@@ -288,10 +273,8 @@ async function closeTrackingIssueIfTaskAlreadyTerminal(
   const ir = await resolveWorkflowIrForTask(store, latest.id).catch(() => undefined);
   const traitsExpressed = ir !== undefined && declaresAnyLifecycleTrait(ir);
   const completeLanes = ir === undefined || !traitsExpressed ? ["done"] : columnsWithFlag(ir, "complete");
-  const archivedLanes = ir === undefined || !traitsExpressed ? ["archived"] : columnsWithFlag(ir, "archived");
   const isComplete = completeLanes.includes(latest.column);
-  const isArchived = archivedLanes.includes(latest.column);
-  if (!isComplete && !isArchived) {
+  if (!isComplete) {
     return;
   }
 
@@ -300,8 +283,7 @@ async function closeTrackingIssueIfTaskAlreadyTerminal(
     if (!existing || existing.state === "closed") {
       return;
     }
-    const stateReason = isArchived && !latest.executionCompletedAt ? "not_planned" : "completed";
-    await client.setIssueState(issue.owner, issue.repo, issue.number, "closed", stateReason);
+    await client.setIssueState(issue.owner, issue.repo, issue.number, "closed", "completed");
     await safeLogTaskEntry(store, latest.id, "Closed linked GitHub tracking issue", `${issue.owner}/${issue.repo}#${issue.number}`, { logger: terminalTaskWriteLog, context: "github-tracking" });
     if (typeof store.recordActivity === "function") {
       await store.recordActivity({

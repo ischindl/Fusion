@@ -7,11 +7,13 @@ FN-6444 confirmed this ChatManager API-path suite is deterministic under dashboa
  * These tests verify the fix for FN-1857: Chat assistant messages not persisted after navigating away
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runWithFusionSessionIdentity, resolveFusionSessionPrincipal, type Settings } from "@fusion/core";
+import { mkdtempSync, rmSync } from "node:fs";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { QUESTION_ANSWER_METADATA_KEY, readQuestionAnswerLink } from "../shared/chat-question-link.js";
 import { GitHubClient } from "../github.js";
 import {
   ChatManager,
@@ -20,11 +22,37 @@ import {
   __setCreateResolvedAgentSession,
   __resetChatState,
   chatStreamManager,
+  chatToolAllowlist,
   __getChatDiagnostics,
   __setChatDiagnostics,
   CHAT_ASK_QUESTION_GUIDANCE,
   CHAT_CODEBASE_ACCURACY_GUIDANCE,
 } from "../chat.js";
+
+/*
+FNXC:PerTurnMemoryRecall 2026-09-04-04:43:
+ThreatCrush CWE-377: LCM recall tests (and the shared ChatManager helpers) must not use a
+predictable OS temporary-directory path. mkdtempSync gives an exclusive directory; afterAll
+removes it even though most cases never write through this path.
+
+FNXC:PerTurnMemoryRecall 2026-09-06-21:24:
+The scanner matches a predictable path string even inside a comment, so the root is described
+rather than named here. Plugin skill roots in this file use the same exclusive parent through
+makePluginRoot() so they are not hardcoded either.
+*/
+const TEST_ROOT = mkdtempSync(join(tmpdir(), "fusion-chat-manager-"));
+afterAll(() => {
+  rmSync(TEST_ROOT, { recursive: true, force: true });
+});
+
+/*
+FNXC:TestHygiene 2026-09-06-21:24:
+Plugin skill roots are read by the skill-discovery seam as a real directory, so each case needs
+its own exclusive child of TEST_ROOT rather than a fixed name a parallel run could share.
+*/
+function makePluginRoot(prefix: string): string {
+  return mkdtempSync(join(TEST_ROOT, `${prefix}-`));
+}
 
 // ── Mock Setup ──────────────────────────────────────────────────────────────
 
@@ -60,13 +88,13 @@ vi.mock("../sse.js", () => ({
 // for the edit-and-resend flow.
 const { mockSessionManagerCreate, mockSessionManagerOpen } = vi.hoisted(() => {
   const fakeManager = {
-    getSessionFile: () => "/tmp/test/.pi-fake/session-abc.jsonl",
+    getSessionFile: () => join(TEST_ROOT, ".pi-fake/session-abc.jsonl"),
     getLeafId: () => "leaf-fake",
     branch: () => {},
     resetLeaf: () => {},
     appendMessage: () => "entry-fake",
     buildSessionContext: () => ({ messages: [] }),
-    createBranchedSession: () => "/tmp/test/.pi-fake/session-branched.jsonl",
+    createBranchedSession: () => join(TEST_ROOT, ".pi-fake/session-branched.jsonl"),
   };
   return {
     mockSessionManagerCreate: vi.fn(() => fakeManager),
@@ -105,7 +133,7 @@ const mockAgentStore = {
 };
 
 function createChatManager(pluginRunner?: Record<string, unknown>, messageStore?: Record<string, unknown>): ChatManager {
-  return new ChatManager(mockChatStore as any, "/tmp/test", mockAgentStore as any, pluginRunner as any, undefined, messageStore as any);
+  return new ChatManager(mockChatStore as any, TEST_ROOT, mockAgentStore as any, pluginRunner as any, undefined, messageStore as any);
 }
 
 function createChatManagerForRoot(rootDir: string): ChatManager {
@@ -115,7 +143,7 @@ function createChatManagerForRoot(rootDir: string): ChatManager {
 function createChatManagerWithSettings(settings: Partial<Settings>): ChatManager {
   return new ChatManager(
     mockChatStore as any,
-    "/tmp/test",
+    TEST_ROOT,
     mockAgentStore as any,
     undefined,
     async () => settings,
@@ -123,7 +151,7 @@ function createChatManagerWithSettings(settings: Partial<Settings>): ChatManager
 }
 
 function createChatManagerWithoutAgentStore(): ChatManager {
-  return new ChatManager(mockChatStore as any, "/tmp/test");
+  return new ChatManager(mockChatStore as any, TEST_ROOT);
 }
 
 // Minimal stand-in TaskStore. The workflow tool factories only capture the
@@ -133,7 +161,7 @@ const mockTaskStore = {} as any;
 function createChatManagerWithTaskStore(): ChatManager {
   return new ChatManager(
     mockChatStore as any,
-    "/tmp/test",
+    TEST_ROOT,
     mockAgentStore as any,
     undefined,
     undefined,
@@ -217,7 +245,7 @@ describe("ChatManager.sendMessage", () => {
       sessionId: "chat-001", content: input.content, createdAt: "2026-08-09T00:00:00.000Z",
     }));
 
-    const manager = new ChatManager(mockChatStore as any, "/tmp/test", mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
+    const manager = new ChatManager(mockChatStore as any, TEST_ROOT, mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
     await manager.sendMessage("chat-001", "private chat text");
 
     expect(taskStore.emitUsageEvent).toHaveBeenCalledTimes(1);
@@ -234,7 +262,7 @@ describe("ChatManager.sendMessage", () => {
       session: { prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn(), state: { messages: [] } },
     }) as any);
 
-    const manager = new ChatManager(mockChatStore as any, "/tmp/test", mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
+    const manager = new ChatManager(mockChatStore as any, TEST_ROOT, mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
     await manager.sendMessage("chat-001", "private task chat text");
 
     expect(taskStore.emitUsageEvent).toHaveBeenCalledWith({
@@ -258,7 +286,7 @@ describe("ChatManager.sendMessage", () => {
       emitUsageEvent: vi.fn(),
     };
     try {
-      await new ChatManager(mockChatStore as any, "/tmp/test", mockAgentStore as any, undefined, undefined, undefined, taskStore as any).sendMessage("chat-001", "resolve memory tools");
+      await new ChatManager(mockChatStore as any, TEST_ROOT, mockAgentStore as any, undefined, undefined, undefined, taskStore as any).sendMessage("chat-001", "resolve memory tools");
       expect(resolvedOptions?.mcpServers).toContainEqual(expect.objectContaining({ name: "fusion-memory" }));
     } finally {
       if (previousEntry === undefined) delete process.env.FUSION_MEMORY_MCP_ENTRY;
@@ -281,7 +309,7 @@ describe("ChatManager.sendMessage", () => {
       session: { prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn(), state: { messages: [] } },
     }) as any);
 
-    await expect(new ChatManager(mockChatStore as any, "/tmp/test", mockAgentStore as any, undefined, undefined, undefined, taskStore as any)
+    await expect(new ChatManager(mockChatStore as any, TEST_ROOT, mockAgentStore as any, undefined, undefined, undefined, taskStore as any)
       .sendMessage("chat-001", "telemetry-failure turn")).resolves.toBeUndefined();
     await Promise.resolve();
 
@@ -293,7 +321,7 @@ describe("ChatManager.sendMessage", () => {
     const taskStore = { emitUsageEvent: vi.fn(), getSettings: vi.fn().mockResolvedValue({}) };
     mockChatStore.addMessage.mockRejectedValueOnce(new Error("database unavailable"));
 
-    await expect(new ChatManager(mockChatStore as any, "/tmp/test", mockAgentStore as any, undefined, undefined, undefined, taskStore as any)
+    await expect(new ChatManager(mockChatStore as any, TEST_ROOT, mockAgentStore as any, undefined, undefined, undefined, taskStore as any)
       .sendMessage("chat-001", "failed user turn")).resolves.toBeUndefined();
 
     expect(taskStore.emitUsageEvent).not.toHaveBeenCalled();
@@ -308,7 +336,7 @@ describe("ChatManager.sendMessage", () => {
       },
     }) as any);
 
-    await new ChatManager(mockChatStore as any, "/tmp/test", mockAgentStore as any, undefined, undefined, undefined, taskStore as any)
+    await new ChatManager(mockChatStore as any, TEST_ROOT, mockAgentStore as any, undefined, undefined, undefined, taskStore as any)
       .sendMessage("chat-001", "human turn");
 
     expect(taskStore.emitUsageEvent).toHaveBeenCalledTimes(1);
@@ -644,7 +672,7 @@ describe("ChatManager.sendMessage", () => {
       getSettings: vi.fn().mockResolvedValue({}),
     };
 
-    const chatManager = new ChatManager(mockChatStore as any, "/tmp/test", mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
+    const chatManager = new ChatManager(mockChatStore as any, TEST_ROOT, mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
     await chatManager.sendMessage("chat-planner", "How many tokens?");
 
     expect(mockChatStore.recordTokenUsage).toHaveBeenCalledWith(expect.objectContaining({
@@ -655,7 +683,18 @@ describe("ChatManager.sendMessage", () => {
       totalTokens: 14,
     }));
     expect(createOptions.tools).toBe("coding");
-    expect(createOptions).not.toHaveProperty("toolsAllowlist");
+    /*
+    FNXC:ChatContextBudget 2026-08-22-17:20:
+    RUFU-150 — RUFU-135 made chat session-creation options carry `toolsAllowlist`
+    (builtin coding tools + curated chat toolset names) under the default-on
+    `chatContextBudgetEnabled` project setting. This assertion pins that union
+    shape via the exported `chatToolAllowlist` helper instead of the pre-RUFU-135
+    absent-property shape, and preserves the planner-chat tool isolation intent
+    by pinning the task-scoped metrics tool inside the planner session's allowlist.
+    */
+    const plannerToolNames = (createOptions.customTools ?? []).map((tool: { name: string }) => tool.name);
+    expect(createOptions.toolsAllowlist).toEqual(chatToolAllowlist(plannerToolNames));
+    expect(createOptions.toolsAllowlist).toContain("fn_task_planner_get_task_metrics");
   });
 
   it("does not record chat token usage when session stats are unavailable or zero", async () => {
@@ -672,6 +711,202 @@ describe("ChatManager.sendMessage", () => {
     await chatManager.sendMessage("chat-001", "Hello");
 
     expect(mockChatStore.recordTokenUsage).not.toHaveBeenCalled();
+  });
+
+  /*
+  FNXC:ChatQuestionAnswerLink 2026-09-23-13:59:
+  RUFU-258: `ChatManager.sendMessage` is the single writer of the durable question-answer link. These
+  cases pin the rules every client reader depends on: an operator send whose transcript tail is an
+  awaiting question row is stamped; system-originated sends are never stamped; a non-question tail is
+  never stamped; and the stamp merges into (never replaces) the metadata the mention/caller spread
+  already built. This file's shared store fake ignores filters by default, so each case installs a
+  fake that honours `order`/`limit` - otherwise a whole-history read would look identical to a
+  bounded tail read and the read-cost guard could not fail.
+  */
+  describe("durable question-answer link stamping", () => {
+    type StoredRow = { id: string; role: string; content?: string; metadata?: Record<string, unknown> | null };
+
+    /** Store fake that honours the `order`/`limit` filter the bounded tail read relies on. */
+    function seedTranscript(rows: StoredRow[]) {
+      mockChatStore.getMessages.mockImplementation(
+        (_sessionId: string, filter?: { order?: "asc" | "desc"; limit?: number }) => {
+          const ordered = filter?.order === "desc" ? [...rows].reverse() : [...rows];
+          return Promise.resolve(typeof filter?.limit === "number" ? ordered.slice(0, filter.limit) : ordered);
+        },
+      );
+    }
+
+    function questionAssistantRow(id: string): StoredRow {
+      const call = {
+        toolName: "fn_ask_question",
+        args: { questions: [{ id: "q1", type: "text", question: "Which branch?" }] },
+        isError: false,
+        status: "completed",
+      };
+      return { id, role: "assistant", content: "Which branch should I use?", metadata: { toolCalls: [call] } };
+    }
+
+    function plainAssistantRow(id: string): StoredRow {
+      return { id, role: "assistant", content: "Here is the summary.", metadata: { model: "test" } };
+    }
+
+    function stubModelLoop() {
+      const session = {
+        prompt: vi.fn().mockResolvedValue(undefined),
+        dispose: vi.fn(),
+        state: { messages: [{ role: "assistant", content: "ok" }] },
+      };
+      __setCreateResolvedAgentSession(async () => ({ session }) as any);
+    }
+
+    /*
+    A DESC-ordered bounded page is the stamp read's signature. The send path legitimately reads the
+    ascending handoff-primer page, so `getMessages` itself is not the proof - only a DESC page is.
+    */
+    function descTailReads(): unknown[] {
+      return mockChatStore.getMessages.mock.calls.filter(
+        (c) => (c[1] as { order?: string } | undefined)?.order === "desc",
+      );
+    }
+
+    function persistedUserRow(): { metadata?: Record<string, unknown> } | undefined {
+      const call = mockChatStore.addMessage.mock.calls.find(
+        (c) => (c[1] as { role?: string } | undefined)?.role === "user",
+      );
+      return call ? (call[1] as { metadata?: Record<string, unknown> }) : undefined;
+    }
+
+    beforeEach(() => {
+      stubModelLoop();
+      mockChatStore.addMessage.mockImplementation((_sessionId: string, input: { role: string }) => ({
+        id: input.role === "user" ? "user-row" : "assistant-row",
+        sessionId: "chat-001",
+        role: input.role,
+        content: "",
+        createdAt: "2026-09-23T00:00:00.000Z",
+      }));
+    });
+
+    it("stamps metadata.questionAnswer.questionMessageId on the operator answer row", async () => {
+      seedTranscript([
+        { id: "u-1", role: "user", content: "start the refactor" },
+        questionAssistantRow("a-question"),
+      ]);
+
+      await createChatManager().sendMessage("chat-001", "Use the feature branch");
+
+      const metadata = persistedUserRow()?.metadata;
+      expect((metadata?.[QUESTION_ANSWER_METADATA_KEY] as { questionMessageId?: string } | undefined)?.questionMessageId)
+        .toBe("a-question");
+      expect(readQuestionAnswerLink(metadata)).toBe("a-question");
+    });
+
+    it("never stamps an auto-retry send", async () => {
+      seedTranscript([questionAssistantRow("a-question")]);
+      const manager = createChatManager();
+
+      await manager.sendMessage("chat-001", "System auto-retry: resume", undefined, undefined, undefined, {
+        autoRetry: true,
+        userMessageMetadata: { autoRetry: true, reason: "empty" },
+      });
+
+      expect(readQuestionAnswerLink(persistedUserRow()?.metadata)).toBeNull();
+      expect(descTailReads()).toEqual([]);
+    });
+
+    it("never stamps a system-reason send even when a question is awaiting", async () => {
+      seedTranscript([questionAssistantRow("a-question")]);
+      const manager = createChatManager();
+
+      await manager.sendMessage("chat-001", "Continue after restart", undefined, undefined, undefined, {
+        userMessageMetadata: { reason: "restart-recovery" },
+      });
+
+      expect(readQuestionAnswerLink(persistedUserRow()?.metadata)).toBeNull();
+      expect(descTailReads()).toEqual([]);
+    });
+
+    it("does not stamp when the transcript tail is not an awaiting question", async () => {
+      seedTranscript([
+        questionAssistantRow("a-question"),
+        { id: "u-2", role: "user", content: "earlier answer" },
+        plainAssistantRow("a-later"),
+      ]);
+
+      await createChatManager().sendMessage("chat-001", "Unrelated later request");
+
+      expect(readQuestionAnswerLink(persistedUserRow()?.metadata)).toBeNull();
+    });
+
+    it("preserves coexisting mentions metadata in the stamped row", async () => {
+      seedTranscript([questionAssistantRow("a-question")]);
+      mockAgentStore.listAgents.mockResolvedValue([
+        {
+          id: "agent-001",
+          name: "Alpha",
+          role: "executor",
+          state: "idle",
+          createdAt: "2026-04-08T00:00:00.000Z",
+          updatedAt: "2026-04-08T00:00:00.000Z",
+          metadata: {},
+        },
+      ]);
+
+      await createChatManager().sendMessage("chat-001", "@Alpha use the feature branch");
+
+      const metadata = persistedUserRow()?.metadata;
+      expect(metadata?.mentions).toEqual([{ agentId: "agent-001", agentName: "Alpha" }]);
+      expect(readQuestionAnswerLink(metadata)).toBe("a-question");
+    });
+
+    it("reads a bounded DESC tail instead of the whole transcript", async () => {
+      seedTranscript([questionAssistantRow("a-question")]);
+
+      await createChatManager().sendMessage("chat-001", "The answer");
+
+      const tailRead = mockChatStore.getMessages.mock.calls.find(
+        (c) => (c[1] as { order?: string } | undefined)?.order === "desc",
+      );
+      expect(tailRead).toBeTruthy();
+      const filter = tailRead?.[1] as { order?: string; limit?: number };
+      expect(filter.order).toBe("desc");
+      expect(typeof filter.limit).toBe("number");
+      expect(filter.limit).toBeGreaterThan(0);
+      expect(filter.limit!).toBeLessThanOrEqual(10);
+    });
+
+    it("keeps the send working when the tail read fails", async () => {
+      mockChatStore.getMessages.mockRejectedValue(new Error("store unavailable"));
+
+      await expect(createChatManager().sendMessage("chat-001", "The answer")).resolves.not.toThrow();
+
+      expect(readQuestionAnswerLink(persistedUserRow()?.metadata)).toBeNull();
+    });
+
+    it("does not stamp CLI-agent-backed chat whose runner persists the row", async () => {
+      __setCreateResolvedAgentSession(vi.fn() as any);
+      mockChatStore.getSession.mockReturnValue({
+        id: "chat-001",
+        agentId: "agent-001",
+        status: "active",
+        projectId: "project-a",
+        cliExecutorAdapterId: "adapter-1",
+      });
+      seedTranscript([questionAssistantRow("a-question")]);
+      const runner = {
+        ensureSession: vi.fn().mockResolvedValue("cli-session-1"),
+        send: vi.fn().mockResolvedValue("sent"),
+        getTokenUsageSnapshot: vi.fn().mockResolvedValue(undefined),
+        getSessionStats: vi.fn().mockResolvedValue(undefined),
+      };
+
+      const manager = createChatManagerWithSettings({ defaultThinkingLevel: "low" });
+      manager.setCliChatRunner(runner as any, "project-a");
+      await manager.sendMessage("chat-001", "Hello CLI");
+
+      expect(runner.send).toHaveBeenCalledWith("chat-001", "Hello CLI");
+      expect(descTailReads()).toEqual([]);
+    });
   });
 
   describe("mention parsing and context", () => {
@@ -1000,14 +1235,14 @@ describe("ChatManager.sendMessage", () => {
     const createWorkflowDefinition = vi.fn().mockResolvedValue({ id: "WF-chat", name: "Chat Created" });
     const chatManager = new ChatManager(
       mockChatStore as any,
-      "/tmp/test",
+      TEST_ROOT,
       mockAgentStore as any,
       undefined,
       undefined,
       undefined,
       {
         createWorkflowDefinition,
-        getFusionDir: () => "/tmp/test/.fusion",
+        getFusionDir: () => join(TEST_ROOT, ".fusion"),
       } as any,
     );
     await chatManager.sendMessage("chat-001", "Author me a workflow");
@@ -1078,12 +1313,12 @@ describe("ChatManager.sendMessage", () => {
         defaultAgentPermissionPolicy: { rules: { task_agent_mutation: "block" } },
       }),
       getAsyncLayer: vi.fn(() => ({})),
-      getFusionDir: () => "/tmp/test/.fusion",
+      getFusionDir: () => join(TEST_ROOT, ".fusion"),
     };
 
     const chatManager = new ChatManager(
       mockChatStore as any,
-      "/tmp/test",
+      TEST_ROOT,
       mockAgentStore as any,
       undefined,
       undefined,
@@ -1151,7 +1386,7 @@ describe("ChatManager.sendMessage", () => {
     } as any;
     const chatManager = new ChatManager(
       mockChatStore as any,
-      "/tmp/test",
+      TEST_ROOT,
       mockAgentStore as any,
       undefined,
       undefined,
@@ -1251,6 +1486,20 @@ describe("ChatManager.sendMessage", () => {
       expect.objectContaining({ status: "generating" }),
     );
     expect(mockChatStore.setInFlightGeneration).toHaveBeenLastCalledWith("chat-001", null);
+    /*
+    FNXC:ChatInFlightRecovery 2026-08-20-20:17 (RUFU-144):
+    Every persisted in-flight snapshot (the initial "generating" flush and every streamed
+    checkpoint) must carry the `startedAt` liveness timestamp so the engine self-healing
+    sweep can prove a flag older than its floor cannot belong to a live generation. The
+    final clear (null) drops the whole payload by design.
+    */
+    const generatingSnapshots = mockChatStore.setInFlightGeneration.mock.calls
+      .map((call) => call[1] as { status?: string } | null)
+      .filter((snapshot): snapshot is { status: string } => snapshot !== null && snapshot.status === "generating");
+    expect(generatingSnapshots.length).toBeGreaterThanOrEqual(1);
+    for (const snapshot of generatingSnapshots) {
+      expect(snapshot).toEqual(expect.objectContaining({ startedAt: expect.any(String) }));
+    }
   });
 
   it("observes a debounced checkpoint rejection without an unhandled rejection", async () => {
@@ -1629,7 +1878,64 @@ describe("ChatManager.sendMessage", () => {
     await chatManager.sendMessage("chat-001", "Hello");
 
     expect(createOptions.tools).toBe("coding");
-    expect(createOptions).not.toHaveProperty("toolsAllowlist");
+    /*
+    FNXC:ChatContextBudget 2026-08-22-17:20:
+    RUFU-150 — RUFU-135 made chat session-creation options carry `toolsAllowlist`
+    (builtin coding tools + curated chat toolset names) under the default-on
+    `chatContextBudgetEnabled` project setting. This assertion pins that union
+    shape via the exported `chatToolAllowlist` helper instead of the pre-RUFU-135
+    absent-property shape, and preserves the "full coding toolset" intent by
+    pinning the builtin coding tools as the allowlist prefix.
+    */
+    const customToolNames = (createOptions.customTools ?? []).map((tool: { name: string }) => tool.name);
+    expect(createOptions.toolsAllowlist).toEqual(chatToolAllowlist(customToolNames));
+    expect(createOptions.toolsAllowlist.slice(0, 7)).toEqual(["read", "bash", "edit", "write", "grep", "find", "ls"]);
+  });
+
+  /*
+  FNXC:ChatContextBudget 2026-08-22-17:20:
+  RUFU-150 — pins the `chatContextBudgetEnabled: false` kill-switch half of the
+  RUFU-135 contract. The session-options literal assigns `toolsAllowlist`
+  unconditionally (`<flag> ? chatToolAllowlist(...) : undefined`) at both
+  session-creation call sites, and the `__setCreateResolvedAgentSession` seam
+  captures the raw options reference — so with the budget disabled the
+  `toolsAllowlist` key is present as an own property with value `undefined`.
+  Asserted value-based (`toBeUndefined`), never key-presence (`not.toHaveProperty`),
+  which cannot pass for any test-only change.
+  */
+  it("omits the toolsAllowlist when the chat context budget is disabled (RUFU-135 kill switch)", async () => {
+    let createOptions: any;
+    __setCreateResolvedAgentSession(async (options: any) => {
+      createOptions = options;
+      return {
+        session: {
+          prompt: vi.fn().mockResolvedValue(undefined),
+          dispose: vi.fn(),
+          state: { messages: [{ role: "assistant", content: "Done" }] },
+        },
+      };
+    });
+
+    const chatManager = new ChatManager(
+      mockChatStore as any,
+      TEST_ROOT,
+      mockAgentStore as any,
+      undefined,
+      async () => ({ chatContextBudgetEnabled: false }),
+    );
+    /*
+    FNXC:ChatContextBudget 2026-09-02-16:02:
+    Upstream FN-9241 made "sending never waits on settings" a hard invariant, so the
+    RUFU-135 kill switch reads a fire-and-forget-refreshed cache snapshot instead of
+    awaiting settings. The switch therefore takes effect from the send AFTER the
+    settings read lands: the first send warms the cache, the second send must omit the
+    allowlist. This is the intended hot-toggle contract, not a stabilization hack.
+    */
+    await chatManager.sendMessage("chat-001", "Hello");
+    await chatManager.sendMessage("chat-001", "Hello again");
+
+    expect(createOptions.tools).toBe("coding");
+    expect(createOptions.toolsAllowlist).toBeUndefined();
   });
 
   it("requests bound agent and enabled plugin skills for regular chat", async () => {
@@ -1651,7 +1957,7 @@ describe("ChatManager.sendMessage", () => {
       runtimeConfig: {},
       metadata: { skills: ["agent-debug", "ce-debug"] },
     });
-    const pluginRoot = "/tmp/plugin-chat-skills";
+    const pluginRoot = makePluginRoot("plugin-chat-skills");
     const pluginSkillDir = join(pluginRoot, "skills", "ce-debug");
     const pluginRunner = {
       getPluginSkills: vi.fn(() => [
@@ -1665,7 +1971,7 @@ describe("ChatManager.sendMessage", () => {
 
     expect(pluginRunner.getPluginSkills).toHaveBeenCalledTimes(1);
     expect(createOptions.skillSelection).toMatchObject({
-      projectRootDir: "/tmp/test",
+      projectRootDir: TEST_ROOT,
       sessionPurpose: "executor",
     });
     expect(createOptions.skillSelection.requestedSkillNames).toEqual(["fusion", "ce-debug"]);
@@ -1691,7 +1997,7 @@ describe("ChatManager.sendMessage", () => {
         },
       };
     });
-    const pluginRoot = "/tmp/plugin-quick-chat-skills";
+    const pluginRoot = makePluginRoot("plugin-quick-chat-skills");
     const pluginSkillDir = join(pluginRoot, "skills", "ce-debug");
     const pluginRunner = {
       getPluginSkills: vi.fn(() => [
@@ -1866,7 +2172,7 @@ describe("ChatManager.sendMessage", () => {
     await chatManager.sendMessage("chat-001", "/skill:foo answer directly");
 
     expect(createOptions.skillSelection).toMatchObject({
-      projectRootDir: "/tmp/test",
+      projectRootDir: TEST_ROOT,
       sessionPurpose: "executor",
     });
     expect(createOptions.skillSelection.requestedSkillNames).toContain("foo");
@@ -1985,7 +2291,14 @@ describe("ChatManager.sendMessage", () => {
     unsubscribe();
 
     const assistantCalls = mockChatStore.addMessage.mock.calls.filter((call) => call[1].role === "assistant");
-    expect(assistantCalls).toHaveLength(2);
+    /*
+    FNXC:ChatAutoRetry 2026-09-17-16:30:
+    Work-in-progress interruption now auto-retries exactly once, so the failing fake produces
+    its partial+failure pair twice - the first pair is the honest record, the second pair is the
+    bounded retry attempt, and `autoRetry` never chains to a third.
+    */
+    expect(assistantCalls).toHaveLength(4);
+    expect(mockChatStore.addMessage.mock.calls.filter((call) => call[1].role === "user" && call[1].metadata?.autoRetry === true)).toHaveLength(1);
     expect(assistantCalls[0]).toEqual([
       "chat-001",
       expect.objectContaining({
@@ -2417,7 +2730,7 @@ describe("ChatManager.sendMessage", () => {
     } as any);
     const chatManager = new ChatManager(
       mockChatStore as any,
-      "/tmp/test",
+      TEST_ROOT,
       mockAgentStore as any,
       undefined,
       undefined,
@@ -2529,7 +2842,7 @@ describe("ChatManager.sendMessage", () => {
         "test-provider:model-a": { inputPer1M: 1, outputPer1M: 2, cacheReadPer1M: 0.5, cacheWritePer1M: 1.5, source: "test" },
       },
     }));
-    const chatManager = new ChatManager(mockChatStore as any, "/tmp/test", mockAgentStore as any, undefined, getSettings as any, undefined, taskStore as any);
+    const chatManager = new ChatManager(mockChatStore as any, TEST_ROOT, mockAgentStore as any, undefined, getSettings as any, undefined, taskStore as any);
 
     await chatManager.sendMessage("chat-001", "How much did this task cost?");
 
@@ -2573,7 +2886,7 @@ describe("ChatManager.sendMessage", () => {
       addSteeringComment: vi.fn(),
       getSettings: vi.fn().mockResolvedValue({}),
     };
-    const chatManager = new ChatManager(mockChatStore as any, "/tmp/test", mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
+    const chatManager = new ChatManager(mockChatStore as any, TEST_ROOT, mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
 
     await chatManager.sendMessage("chat-001", "How many tokens?");
 
@@ -2594,7 +2907,7 @@ describe("ChatManager.sendMessage", () => {
     }));
     __setCreateResolvedAgentSession(createResolvedSession as any);
     const taskStore = { getTask: vi.fn(), refineTask: vi.fn(), getSettings: vi.fn().mockResolvedValue({}) };
-    const chatManager = new ChatManager(mockChatStore as any, "/tmp/test", mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
+    const chatManager = new ChatManager(mockChatStore as any, TEST_ROOT, mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
 
     await chatManager.sendMessage("chat-001", "How many tokens did FN-7310 use?");
 
@@ -2627,7 +2940,7 @@ describe("ChatManager.sendMessage", () => {
       refineTask: vi.fn().mockResolvedValue(refinedTask),
       getSettings: vi.fn().mockResolvedValue({}),
     };
-    const chatManager = new ChatManager(mockChatStore as any, "/tmp/test", mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
+    const chatManager = new ChatManager(mockChatStore as any, TEST_ROOT, mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
 
     await chatManager.sendMessage("chat-001", "Please create a follow-up to add export support");
 
@@ -2707,7 +3020,7 @@ describe("ChatManager.sendMessage", () => {
       getTaskWorkflowSelectionAsync: async () => selection,
       getWorkflowDefinition: async () => ({ id: "wf-renamed", ir: renamedIr }),
     };
-    const chatManager = new ChatManager(mockChatStore as any, "/tmp/test", mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
+    const chatManager = new ChatManager(mockChatStore as any, TEST_ROOT, mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
 
     await chatManager.sendMessage("chat-001", "Follow up on this");
 
@@ -2734,7 +3047,7 @@ describe("ChatManager.sendMessage", () => {
       refineTask: vi.fn(),
       getSettings: vi.fn().mockResolvedValue({}),
     };
-    const chatManager = new ChatManager(mockChatStore as any, "/tmp/test", mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
+    const chatManager = new ChatManager(mockChatStore as any, TEST_ROOT, mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
 
     await chatManager.sendMessage("chat-001", "Please update the implementation");
 
@@ -2759,7 +3072,7 @@ describe("ChatManager.sendMessage", () => {
       refineTask: vi.fn(),
       getSettings: vi.fn().mockResolvedValue({}),
     };
-    const chatManager = new ChatManager(mockChatStore as any, "/tmp/test", mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
+    const chatManager = new ChatManager(mockChatStore as any, TEST_ROOT, mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
 
     await chatManager.sendMessage("chat-001", "Create a follow-up");
 
@@ -2797,6 +3110,14 @@ describe("ChatManager.sendMessage", () => {
       author: "user",
       createdAt: "2026-06-30T23:59:00.000Z",
     };
+    /*
+    FNXC:CommentDelivery 2026-09-27-21:55 (RUFU-259 Step 4):
+    `getFusionDir` points the delivery host at an empty durable-agent pool so this case is deterministic
+    instead of inheriting whatever agents happen to live in the developer's real `.fusion`. With an empty
+    pool the hand-off is honestly `unrouted`, which is the outcome this test needs: it proves the tool
+    REPORTS the fate of the body and hands the seam the appended steering row's OWN id.
+    */
+    const auditEvents: Array<{ mutationType: string; metadata: Record<string, unknown> }> = [];
     const taskStore = {
       getTask: vi.fn().mockResolvedValue({ id: "FN-7310", title: "Add planner chat", column: "todo" }),
       addSteeringComment: vi.fn().mockResolvedValue({
@@ -2805,10 +3126,14 @@ describe("ChatManager.sendMessage", () => {
         steeringComments: [persistedComment],
       }),
       getSettings: vi.fn().mockResolvedValue({}),
+      getFusionDir: () => mkdtempSync(join(TEST_ROOT, "fusion-empty-")),
+      recordRunAuditEvent: vi.fn(async (event: { mutationType: string; metadata: Record<string, unknown> }) => {
+        auditEvents.push({ mutationType: event.mutationType, metadata: event.metadata });
+      }),
     };
     const chatManager = new ChatManager(
       mockChatStore as any,
-      "/tmp/test",
+      TEST_ROOT,
       mockAgentStore as any,
       undefined,
       undefined,
@@ -2836,7 +3161,28 @@ describe("ChatManager.sendMessage", () => {
       text: "Keep the new Chat tab separate from Activity.",
       taskUpdatedAt: "2026-06-30T23:59:01.000Z",
       steeringComment: persistedComment,
+      delivery: expect.objectContaining({ via: "none", unroutedReason: "pool-empty" }),
     });
+
+    /*
+    FNXC:CommentDelivery 2026-09-27-21:55 (RUFU-259 Step 4, symptom verification):
+    Before this card, the planner-chat steering tool's whole effect was the row above: it answered
+    "Added as steering comment" and told nobody. The tool now runs the same delivery seam every write
+    surface uses, and the audit row is where its payload is observable. `commentId` is the assertion that
+    carries the defect: `addSteeringComment` returns the TASK, so reading `.id` off its result would name
+    FN-7310 and every delivery would claim the card's id as the comment's identity.
+    */
+    const delivery = auditEvents.find((event) => event.mutationType.startsWith("task:comment-delivery"));
+    expect(delivery, "the steering tool must attempt the hand-off, not only write the row").toBeDefined();
+    expect(delivery!.metadata).toMatchObject({
+      source: "planner-chat",
+      kind: "steering",
+      commentId: "steer-7310",
+      outcome: "unrouted",
+    });
+    expect(delivery!.metadata.commentId).not.toBe("FN-7310");
+    // The answer text must state the fate of the body rather than only that a row was written.
+    expect(result.content[0].text).toMatch(/no agent|delivered|nobody/i);
   });
 
   it("persists duplicate clear planner steering requests only when the tool is called again", async () => {
@@ -2852,7 +3198,7 @@ describe("ChatManager.sendMessage", () => {
         .mockResolvedValueOnce({ id: "FN-7310", steeringComments: [{ id: "steer-2", text: "Keep the narrow approach", author: "user" }] }),
       getSettings: vi.fn().mockResolvedValue({}),
     };
-    const chatManager = new ChatManager(mockChatStore as any, "/tmp/test", mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
+    const chatManager = new ChatManager(mockChatStore as any, TEST_ROOT, mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
 
     await chatManager.sendMessage("chat-001", "Tell the executor to keep the narrow approach");
 
@@ -2877,7 +3223,7 @@ describe("ChatManager.sendMessage", () => {
       addSteeringComment: vi.fn(),
       getSettings: vi.fn().mockResolvedValue({}),
     };
-    const chatManager = new ChatManager(mockChatStore as any, "/tmp/test", mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
+    const chatManager = new ChatManager(mockChatStore as any, TEST_ROOT, mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
 
     await chatManager.sendMessage("chat-001", "Tell the executor something");
 
@@ -3116,7 +3462,13 @@ describe("ChatManager.sendMessage", () => {
     await chatManager.sendMessage("chat-001", "Hello");
 
     const assistantCalls = mockChatStore.addMessage.mock.calls.filter((call) => call[1].role === "assistant");
-    expect(assistantCalls).toHaveLength(2);
+    /*
+    FNXC:ChatAutoRetry 2026-09-17-16:30:
+    Thinking-only work that dies mid-turn now also earns the single bounded auto-retry:
+    interrupted+failure persisted, retried once, and the retry never chains further.
+    */
+    expect(assistantCalls).toHaveLength(4);
+    expect(mockChatStore.addMessage.mock.calls.filter((call) => call[1].role === "user" && call[1].metadata?.autoRetry === true)).toHaveLength(1);
     expect(assistantCalls[0]).toEqual([
       "chat-001",
       expect.objectContaining({
@@ -3464,11 +3816,11 @@ describe("ChatManager.sendMessage", () => {
     const chatManager = createChatManager();
     await chatManager.sendMessage("chat-001", "First message");
 
-    expect(mockSessionManagerCreate).toHaveBeenCalledWith("/tmp/test");
+    expect(mockSessionManagerCreate).toHaveBeenCalledWith(TEST_ROOT);
     expect(mockSessionManagerOpen).not.toHaveBeenCalled();
     expect(mockChatStore.setCliSessionFile).toHaveBeenCalledWith(
       "chat-001",
-      "/tmp/test/.pi-fake/session-abc.jsonl",
+      join(TEST_ROOT, ".pi-fake/session-abc.jsonl"),
     );
     expect(createSpy.mock.calls[0]?.[0]?.sessionManager).toBeDefined();
   });
@@ -3554,7 +3906,7 @@ describe("ChatManager.sendMessage", () => {
       // Assert - summarizeTitle was called with the message content and model params
       expect(mockSummarizeTitle).toHaveBeenCalledWith(
         "This is a long message that needs to be summarized",
-        "/tmp/test",
+        TEST_ROOT,
         undefined,
         undefined,
         expect.objectContaining({ mode: "english", locale: "en" }),
@@ -3584,7 +3936,7 @@ describe("ChatManager.sendMessage", () => {
 
     expect(mockSummarizeTitle).toHaveBeenLastCalledWith(
       "Compare v2 par default vs v3, plus check the est timezone handling in scheduling.",
-      "/tmp/test",
+      TEST_ROOT,
       undefined,
       undefined,
       expect.objectContaining({ mode: "interface", locale: "fr" }),
@@ -3602,7 +3954,7 @@ describe("ChatManager.sendMessage", () => {
     }));
     const chatManager = new ChatManager(
       mockChatStore as any,
-      "/tmp/test",
+      TEST_ROOT,
       mockAgentStore as any,
       undefined,
       async () => Promise.reject(new Error("settings unavailable")),
@@ -3613,7 +3965,7 @@ describe("ChatManager.sendMessage", () => {
 
     expect(mockSummarizeTitle).toHaveBeenLastCalledWith(
       "Compare v2 par default vs v3, plus check the est timezone handling in scheduling.",
-      "/tmp/test",
+      TEST_ROOT,
       undefined,
       undefined,
       expect.objectContaining({ mode: "english", locale: "en" }),
@@ -3628,7 +3980,7 @@ describe("ChatManager.sendMessage", () => {
     let settingsReadCount = 0;
     const chatManager = new ChatManager(
       mockChatStore as any,
-      "/tmp/test",
+      TEST_ROOT,
       undefined,
       undefined,
       async () => {
@@ -3669,10 +4021,80 @@ describe("ChatManager.sendMessage", () => {
       // Assert - summarizeTitle was called
       expect(mockSummarizeTitle).toHaveBeenCalled();
 
-      // Assert - session was updated with truncated content (first 60 chars)
+      // FN-505: an unusable summary writes nothing; the provisional truncated title already stands.
       expect(mockChatStore.updateSession).toHaveBeenCalledWith("chat-001", { title: "A".repeat(60) });
+      expect(mockChatStore.updateSession).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  // (S3) A whitespace-only title is not a title: the session must still be auto-named.
+  it("generates title when the session title is whitespace only", async () => {
+    mockChatStore.getSession.mockReturnValue({
+      id: "chat-001",
+      agentId: "agent-001",
+      status: "active",
+      title: "   ",
+    });
+    mockSummarizeTitle.mockResolvedValue("Blank Title Replaced");
+
+    __setCreateFnAgent(async () => ({
+      session: { prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn(), state: { messages: [] } },
+    }));
+
+    const chatManager = createChatManager();
+    await chatManager.sendMessage("chat-001", "Whitespace titled session");
+    await vi.waitFor(() =>
+      expect(mockChatStore.updateSession).toHaveBeenCalledWith("chat-001", { title: "Blank Title Replaced" }),
+    );
+  });
+
+  // (S5) A rejecting summarizer must still name the session from the truncated content.
+  it("falls back to truncated content when summarizeTitle rejects", async () => {
+    mockSummarizeTitle.mockRejectedValue(new Error("summarizer unavailable"));
+
+    __setCreateFnAgent(async () => ({
+      session: { prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn(), state: { messages: [] } },
+    }));
+
+    const chatManager = createChatManager();
+    const longMessage = "B".repeat(300);
+    await chatManager.sendMessage("chat-001", longMessage);
+
+    await vi.waitFor(() =>
+      expect(mockChatStore.updateSession).toHaveBeenCalledWith("chat-001", { title: "B".repeat(60) }),
+    );
+  });
+
+  // (S6) A rejecting session write must not escape the detached title task nor break sending.
+  it("does not surface an unhandled rejection when the title write fails", async () => {
+    mockSummarizeTitle.mockResolvedValue("Write Fails");
+    mockChatStore.updateSession.mockRejectedValue(new Error("store offline"));
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+
+    try {
+      __setCreateFnAgent(async () => ({
+        session: { prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn(), state: { messages: [] } },
+      }));
+
+      const chatManager = createChatManager();
+      await expect(chatManager.sendMessage("chat-001", "Store is offline right now")).resolves.toBeUndefined();
+
+      // FN-505: the provisional write runs first and fails; the refinement still attempts its own
+      // write afterwards, and both failures are swallowed.
+      await vi.waitFor(() =>
+        expect(mockChatStore.updateSession).toHaveBeenCalledWith("chat-001", { title: "Store is offline right now" }),
+      );
+      await vi.waitFor(() =>
+        expect(mockChatStore.updateSession).toHaveBeenCalledWith("chat-001", { title: "Write Fails" }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", unhandled);
+      mockChatStore.updateSession.mockReset();
     }
   });
 
@@ -3710,6 +4132,297 @@ describe("ChatManager.sendMessage", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  /*
+  FNXC:ChatTitleGeneration 2026-09-17-11:42:
+  FN-505 symptom acceptance. The original defect is an ORDERING defect: the conversation header still
+  read "Untitled conversation" while the assistant was already streaming, because the only title
+  write happened behind `summarizeTitle`, which builds a full pi agent session first. A green suite
+  that does not record WHEN the title is written cannot prove the fix, so every case below asserts
+  the provisional write's position in a shared call-order array.
+  */
+  describe("provisional title before any model work (FN-505)", () => {
+    function titleWrites(): string[] {
+      return mockChatStore.updateSession.mock.calls
+        .filter((call) => typeof call[1]?.title === "string" || call[1]?.title === null)
+        .map((call) => call[1].title as string);
+    }
+
+    // (a) Model-loop path: the name exists before the chat agent is even created.
+    it("writes the provisional title before creating the chat agent", async () => {
+      const order: string[] = [];
+      mockChatStore.updateSession.mockImplementation(async (_id: string, input: any) => {
+        if (input?.title !== undefined) order.push(`updateSession:${input.title}`);
+      });
+      mockSummarizeTitle.mockResolvedValue(null);
+      __setCreateFnAgent(async () => {
+        order.push("createFnAgent");
+        return {
+          session: { prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn(), state: { messages: [] } },
+        };
+      });
+
+      const chatManager = createChatManager();
+      await chatManager.sendMessage("chat-001", "Fix the broken conversation header");
+
+      expect(order[0]).toBe("updateSession:Fix the broken conversation header");
+      expect(order).toContain("createFnAgent");
+      expect(order.indexOf("updateSession:Fix the broken conversation header")).toBeLessThan(
+        order.indexOf("createFnAgent"),
+      );
+      // Only `{ title }` crosses the title seam.
+      expect(mockChatStore.updateSession).toHaveBeenCalledWith("chat-001", {
+        title: "Fix the broken conversation header",
+      });
+    });
+
+    // (b) CLI-agent path: it returns before the model loop, so it needs its own early write.
+    it("writes the provisional title before the CLI runner opens its session", async () => {
+      const order: string[] = [];
+      mockChatStore.updateSession.mockImplementation(async (_id: string, input: any) => {
+        if (input?.title !== undefined) order.push(`updateSession:${input.title}`);
+      });
+      mockSummarizeTitle.mockResolvedValue(null);
+      mockChatStore.getSession.mockReturnValue({
+        id: "chat-001",
+        agentId: "agent-001",
+        status: "active",
+        projectId: "project-a",
+        cliExecutorAdapterId: "adapter-1",
+      });
+      const runner = {
+        ensureSession: vi.fn().mockImplementation(async () => {
+          order.push("runner.ensureSession");
+          return "cli-session-1";
+        }),
+        send: vi.fn().mockImplementation(async () => {
+          order.push("runner.send");
+          return "sent";
+        }),
+        getTokenUsageSnapshot: vi.fn().mockResolvedValue(undefined),
+        getSessionStats: vi.fn().mockResolvedValue(undefined),
+      };
+
+      const chatManager = createChatManager();
+      chatManager.setCliChatRunner(runner as any, "project-a");
+      await chatManager.sendMessage("chat-001", "Start the CLI agent conversation");
+
+      expect(order[0]).toBe("updateSession:Start the CLI agent conversation");
+      expect(order.indexOf("updateSession:Start the CLI agent conversation")).toBeLessThan(
+        order.indexOf("runner.ensureSession"),
+      );
+    });
+
+    // (c) Mentions path: it returned BEFORE title scheduling, so these conversations were never named.
+    it("names a conversation whose first message mentions an agent", async () => {
+      const order: string[] = [];
+      mockChatStore.updateSession.mockImplementation(async (_id: string, input: any) => {
+        if (input?.title !== undefined) order.push(`updateSession:${input.title}`);
+      });
+      mockSummarizeTitle.mockResolvedValue(null);
+      mockChatStore.addMessage.mockImplementation((_sessionId: string, input: any) => ({
+        id: input.role === "user" ? "user-msg" : "assistant-msg",
+        role: input.role,
+        sessionId: "chat-001",
+        content: input.content,
+        createdAt: "2026-09-17T00:00:00.000Z",
+      }));
+      __setCreateResolvedAgentSession((async () => {
+        order.push("createResolvedAgentSession");
+        return {
+          session: {
+            prompt: vi.fn().mockResolvedValue(undefined),
+            dispose: vi.fn(),
+            state: { messages: [{ role: "assistant", content: "On it" }] },
+          },
+        };
+      }) as any);
+
+      const chatManager = createChatManager();
+      await chatManager.sendMessage("chat-001", "@Avery please review the merge queue");
+
+      expect(titleWrites()).toEqual(["@Avery please review the merge queue"]);
+      expect(order[0]).toBe("updateSession:@Avery please review the merge queue");
+      expect(order).toContain("createResolvedAgentSession");
+      expect(order.indexOf("updateSession:@Avery please review the merge queue")).toBeLessThan(
+        order.indexOf("createResolvedAgentSession"),
+      );
+      // The mentions path also reaches the detached refinement it previously never scheduled.
+      await vi.waitFor(() => expect(mockSummarizeTitle).toHaveBeenCalled());
+    });
+
+    // (g) A whitespace-only stored title is not a title.
+    it("treats a whitespace-only stored title as unnamed", async () => {
+      mockChatStore.getSession.mockReturnValue({
+        id: "chat-001",
+        agentId: "agent-001",
+        status: "active",
+        title: "   ",
+      });
+      mockSummarizeTitle.mockResolvedValue(null);
+      __setCreateFnAgent(async () => ({
+        session: { prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn(), state: { messages: [] } },
+      }));
+
+      const chatManager = createChatManager();
+      await chatManager.sendMessage("chat-001", "Blank titled session gets named");
+
+      expect(mockChatStore.updateSession).toHaveBeenCalledWith("chat-001", {
+        title: "Blank titled session gets named",
+      });
+    });
+
+    // (h) An already-named conversation is never renamed automatically.
+    it("writes nothing when the session already has a title", async () => {
+      mockChatStore.getSession.mockReturnValue({
+        id: "chat-001",
+        agentId: "agent-001",
+        status: "active",
+        title: "Operator chosen name",
+      });
+      __setCreateFnAgent(async () => ({
+        session: { prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn(), state: { messages: [] } },
+      }));
+
+      const chatManager = createChatManager();
+      await chatManager.sendMessage("chat-001", "A later message must not rename anything");
+
+      expect(mockChatStore.updateSession).not.toHaveBeenCalled();
+      expect(mockSummarizeTitle).not.toHaveBeenCalled();
+    });
+
+    // (d) The background refinement replaces the provisional title once it lands.
+    it("replaces the provisional title with the refined one", async () => {
+      const writes: string[] = [];
+      mockChatStore.updateSession.mockImplementation(async (_id: string, input: any) => {
+        if (typeof input?.title === "string") writes.push(input.title);
+      });
+      mockSummarizeTitle.mockResolvedValue("Merge queue triage");
+      __setCreateFnAgent(async () => ({
+        session: { prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn(), state: { messages: [] } },
+      }));
+
+      const chatManager = createChatManager();
+      await chatManager.sendMessage("chat-001", "Please triage the merge queue for me");
+
+      await vi.waitFor(() => expect(writes).toEqual([
+        "Please triage the merge queue for me",
+        "Merge queue triage",
+      ]));
+      // The summarizer always sees the raw first message, never the provisional title.
+      // Sync-merge note (FN-505 vs our unique-tmp harness): the assertion must follow the
+      // manager's actual rootDir (TEST_ROOT), which the parallel-safe harness mkdtemps per run.
+      /*
+      FNXC:ChatTitleGeneration 2026-09-17-23:50 (RUFU-255 stale-seam repair):
+      FN-505's original expectation hardcoded "/tmp/test" as the rootDir argument, but the
+      suite's manager root is the mkdtemp TEST_ROOT (line 41, a375f402d46), so the assertion
+      was unsatisfiable on any host. The sibling assertion in this file already passes
+      TEST_ROOT; this one now states the same truth — the summarizer receives the manager's
+      rootDir. Deterministic failure proven on base 7f052a59 and on origin/main.
+      */
+      expect(mockSummarizeTitle).toHaveBeenCalledWith(
+        "Please triage the merge queue for me",
+        TEST_ROOT,
+        undefined,
+        undefined,
+        expect.objectContaining({ mode: "english", locale: "en" }),
+      );
+    });
+
+    // (e) A manual rename landing mid-generation is never clobbered.
+    it("does not overwrite a manual rename that lands during generation", async () => {
+      const writes: string[] = [];
+      mockChatStore.updateSession.mockImplementation(async (_id: string, input: any) => {
+        if (typeof input?.title === "string") writes.push(input.title);
+      });
+      // The compare-and-set re-read observes the operator's own name, not the provisional one.
+      mockChatStore.getSession.mockImplementation(() => ({
+        id: "chat-001",
+        agentId: "agent-001",
+        status: "active",
+        title: writes.length > 0 ? "Operator renamed this" : undefined,
+      }));
+      let resolveSummary: ((title: string) => void) | undefined;
+      mockSummarizeTitle.mockReturnValue(new Promise<string>((resolve) => { resolveSummary = resolve; }));
+      __setCreateFnAgent(async () => ({
+        session: { prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn(), state: { messages: [] } },
+      }));
+
+      const chatManager = createChatManager();
+      await chatManager.sendMessage("chat-001", "Investigate the flaky merge test");
+
+      expect(writes).toEqual(["Investigate the flaky merge test"]);
+      resolveSummary!("Flaky merge test");
+      await vi.waitFor(() => expect(mockSummarizeTitle).toHaveBeenCalled());
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // Exactly one write: the provisional one. The rename wins.
+      expect(writes).toEqual(["Investigate the flaky merge test"]);
+    });
+
+    // (f) A rejecting or empty summary writes nothing more and never escapes the detached task.
+    it("writes nothing more when the summarizer rejects or returns nothing", async () => {
+      const unhandled = vi.fn();
+      process.on("unhandledRejection", unhandled);
+      try {
+        for (const summary of [Promise.reject(new Error("summarizer down")), Promise.resolve(null), Promise.resolve("   ")]) {
+          vi.clearAllMocks();
+          mockChatStore.getSession.mockReturnValue({ id: "chat-001", agentId: "agent-001", status: "active" });
+          mockChatStore.addMessage.mockReturnValue({ id: "msg-001", sessionId: "chat-001", role: "assistant", content: "" });
+          mockChatStore.getMessages.mockReturnValue([]);
+          const writes: string[] = [];
+          mockChatStore.updateSession.mockImplementation(async (_id: string, input: any) => {
+            if (typeof input?.title === "string") writes.push(input.title);
+          });
+          mockSummarizeTitle.mockReturnValue(summary);
+          __setCreateFnAgent(async () => ({
+            session: { prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn(), state: { messages: [] } },
+          }));
+
+          const chatManager = createChatManager();
+          await chatManager.sendMessage("chat-001", "Summarizer is unhappy today");
+          await vi.waitFor(() => expect(mockSummarizeTitle).toHaveBeenCalled());
+          await new Promise((resolve) => setTimeout(resolve, 10));
+
+          expect(writes).toEqual(["Summarizer is unhappy today"]);
+        }
+        expect(unhandled).not.toHaveBeenCalled();
+      } finally {
+        process.off("unhandledRejection", unhandled);
+      }
+    });
+
+    // The detached refinement is never awaited: sending finishes while the summary is still in flight.
+    it("returns from sendMessage while the summary is still pending", async () => {
+      let settled = false;
+      mockSummarizeTitle.mockReturnValue(new Promise<string>(() => undefined));
+      mockChatStore.updateSession.mockResolvedValue(undefined);
+      __setCreateFnAgent(async () => ({
+        session: { prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn(), state: { messages: [] } },
+      }));
+
+      const chatManager = createChatManager();
+      await chatManager.sendMessage("chat-001", "The send must not wait for the summary").then(() => { settled = true; });
+
+      expect(settled).toBe(true);
+      expect(mockChatStore.updateSession).toHaveBeenCalledWith("chat-001", {
+        title: "The send must not wait for the summary",
+      });
+    });
+
+    // (i) An empty first message must never persist an empty title.
+    it("writes nothing when the first message carries no usable text", async () => {
+      mockSummarizeTitle.mockResolvedValue(null);
+      __setCreateFnAgent(async () => ({
+        session: { prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn(), state: { messages: [] } },
+      }));
+
+      const chatManager = createChatManager();
+      await chatManager.sendMessage("chat-001", "   \n\t ");
+
+      expect(titleWrites()).toEqual([]);
+    });
   });
 
   describe("native runtime interruption", () => {
@@ -4579,12 +5292,22 @@ describe("ChatManager generation isolation", () => {
     });
 
     const taskStore = { getTask: vi.fn(), getSettings: vi.fn().mockResolvedValue({}) };
-    const chatManager = new ChatManager(mockChatStore as any, "/tmp/test", mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
+    const chatManager = new ChatManager(mockChatStore as any, TEST_ROOT, mockAgentStore as any, undefined, undefined, undefined, taskStore as any);
     await chatManager.sendRoomMessage("room-1", "How many tokens did FN-7310 use?");
 
     const names = capturedTools.map((tool) => tool.name);
     expect(createOptions.tools).toBe("coding");
-    expect(createOptions).not.toHaveProperty("toolsAllowlist");
+    /*
+    FNXC:ChatContextBudget 2026-08-22-17:20:
+    RUFU-150 — RUFU-135 made chat session-creation options carry `toolsAllowlist`
+    (builtin coding tools + curated chat toolset names) under the default-on
+    `chatContextBudgetEnabled` project setting. This assertion pins that union
+    shape via the exported `chatToolAllowlist` helper instead of the pre-RUFU-135
+    absent-property shape, and preserves the room metrics-tool exclusion intent
+    by pinning the planner metrics tool out of the room responder's allowlist.
+    */
+    expect(createOptions.toolsAllowlist).toEqual(chatToolAllowlist(names));
+    expect(createOptions.toolsAllowlist).not.toContain("fn_task_planner_get_task_metrics");
     expect(names).not.toContain("fn_task_planner_get_task_metrics");
     for (const required of [
       "fn_task_list",
@@ -4643,7 +5366,7 @@ describe("ChatManager generation isolation", () => {
         },
       };
     });
-    const pluginRoot = "/tmp/plugin-room-chat-skills";
+    const pluginRoot = makePluginRoot("plugin-room-chat-skills");
     const pluginSkillDir = join(pluginRoot, "skills", "ce-debug");
     const pluginRunner = {
       getPluginSkills: vi.fn(() => [
@@ -4792,4 +5515,164 @@ describe("ChatManager generation isolation", () => {
     }));
   });
 
+});
+
+/*
+FNXC:PerTurnMemoryRecall 2026-08-19-01:05:
+RUFU-120 (B.2 LCM phase 2): ChatManager forwards the per-turn recall inputs at BOTH prompt
+assembly seams — sendMessage (topic = user message content, sessionId = chat session id) and
+the room-responder path (topic = room reply input, sessionId = room:<roomId>). The prompt
+builder (engine buildAgentChatPrompt) owns the actual recall search/injection; this seam test
+asserts the forwarding contract via the __setBuildAgentChatPrompt hook so a regression that
+drops any of topic/sessionId/settings would leave the model without a recall cue.
+*/
+describe("ChatManager per-turn memory recall forwarding (RUFU-120 B.2)", () => {
+  const RECALL_SETTINGS = {
+    memoryEnabled: true,
+    memoryBackendType: "stash",
+    memoryPerTurnRecallEnabled: true,
+    memoryPerTurnRecallTopK: 3,
+  };
+
+  let capturedPromptOptions: any;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetChatState();
+
+    mockChatStore.getSession.mockReturnValue({
+      id: "chat-001",
+      agentId: "agent-001",
+      status: "active",
+    });
+    mockChatStore.addMessage.mockReturnValue({
+      id: "msg-001",
+      sessionId: "chat-001",
+      role: "assistant",
+      content: "",
+    });
+    mockChatStore.getMessages.mockReturnValue([]);
+    mockChatStore.getRoomMessages.mockReturnValue([]);
+    mockAgentStore.init.mockResolvedValue(undefined);
+    mockAgentStore.getAgent.mockResolvedValue({
+      id: "agent-001",
+      name: "Avery",
+      role: "executor",
+      state: "idle",
+    });
+    mockAgentStore.listAgents.mockResolvedValue([{ id: "agent-001", name: "Avery", role: "executor", state: "idle" }]);
+
+    capturedPromptOptions = undefined;
+    __setBuildAgentChatPrompt(async (options: any) => {
+      capturedPromptOptions = options;
+      return options.basePrompt;
+    });
+    __setCreateResolvedAgentSession(async () => ({
+      session: {
+        prompt: vi.fn().mockResolvedValue(undefined),
+        dispose: vi.fn(),
+        state: { messages: [{ role: "assistant", content: "Done" }] },
+      },
+    }) as any);
+  });
+
+  afterEach(() => {
+    __setChatDiagnostics(null);
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function managerWithSettings(): ChatManager {
+    return new ChatManager(
+      mockChatStore as any,
+      TEST_ROOT,
+      mockAgentStore as any,
+      undefined,
+      async () => RECALL_SETTINGS,
+    );
+  }
+
+  it("sendMessage forwards topic (user content), chat sessionId, and settings to the prompt builder", async () => {
+    const manager = managerWithSettings();
+    await manager.sendMessage("chat-001", "čo sme diskutovali o LCM B.1");
+
+    expect(capturedPromptOptions).toBeDefined();
+    // Topic is the user message content (skill-command-stripped; raw content here).
+    expect(capturedPromptOptions.topic).toContain("čo sme diskutovali o LCM B.1");
+    // Stable per-chat session key for the session-scoped cue dedup.
+    expect(capturedPromptOptions.sessionId).toBe("chat-001");
+    // Settings forwarded so the enable/topK/memoryEnabled gates apply.
+    expect(capturedPromptOptions.settings).toEqual(RECALL_SETTINGS);
+    // Existing options untouched (compose, don't replace).
+    expect(capturedPromptOptions.includeProjectMemory).toBe(true);
+    expect(capturedPromptOptions.agent.id).toBe("agent-001");
+  });
+
+  it("sendRoomMessage forwards topic (room input), room-scoped sessionId, and settings", async () => {
+    (mockChatStore as any).getRoom = vi.fn().mockReturnValue({ id: "room-1", name: "team" });
+    (mockChatStore as any).listRoomMembers = vi.fn().mockReturnValue([
+      { roomId: "room-1", agentId: "agent-001", role: "member", addedAt: "2026-01-01" },
+    ]);
+    (mockChatStore as any).addRoomMessage = vi.fn().mockImplementation((_roomId: string, input: any) => ({
+      id: "room-msg",
+      roomId: "room-1",
+      ...input,
+    }));
+
+    const manager = managerWithSettings();
+    await manager.sendRoomMessage("room-1", "hello @Avery what is the merge gate status");
+
+    expect(capturedPromptOptions).toBeDefined();
+    expect(capturedPromptOptions.topic).toContain("what is the merge gate status");
+    // Stable per-room session key.
+    expect(capturedPromptOptions.sessionId).toBe("room:room-1");
+    expect(capturedPromptOptions.settings).toEqual(RECALL_SETTINGS);
+  });
+
+  /*
+  FNXC:RUFU172ChatFocusLane 2026-09-02-05:20:
+  RUFU-172 chat-lane production gate. The operator's persisted `chat_sessions.memory_focus`
+  must reach the PROACTIVE per-turn recall cue only while `experimentalFeatures.chatFocus`
+  is enabled — the same gate `createChatFusionToolset` applies — because a persisted focus
+  is inert by contract until the operator turns the flag on. Two regressions this seam
+  catches that the core/engine lane tests cannot: dropping the value (restores the RUFU-172
+  symptom — focus visible in the tool schema but ignored by the cue) and dropping or
+  inverting the gate (silently activates an operator-disabled experimental feature).
+  */
+  it("sendMessage forwards the session focus to the prompt builder only while chatFocus is enabled", async () => {
+    const withFlag = (chatFocus: boolean) =>
+      new ChatManager(
+        mockChatStore as any,
+        TEST_ROOT,
+        mockAgentStore as any,
+        undefined,
+        async () => ({ ...RECALL_SETTINGS, experimentalFeatures: { chatFocus } }),
+      );
+
+    mockChatStore.getSession.mockReturnValue({
+      id: "chat-001",
+      agentId: "agent-001",
+      status: "active",
+      memoryFocus: "pamäťové hladiny LCM",
+    });
+
+    // Flag on: the persisted focus reaches the recall input as-is.
+    await withFlag(true).sendMessage("chat-001", "what changed in the recall cue");
+    expect(capturedPromptOptions).toBeDefined();
+    expect(capturedPromptOptions.focus).toBe("pamäťové hladiny LCM");
+
+    // Flag off: the persisted focus stays inert, so the cue keeps the whole-project path.
+    await withFlag(false).sendMessage("chat-001", "what changed in the recall cue");
+    expect(capturedPromptOptions.focus).toBeUndefined();
+
+    // Flag on but the focus is whitespace-only: no focus is forwarded (no empty lane-T query).
+    mockChatStore.getSession.mockReturnValue({
+      id: "chat-001",
+      agentId: "agent-001",
+      status: "active",
+      memoryFocus: "   ",
+    });
+    await withFlag(true).sendMessage("chat-001", "what changed in the recall cue");
+    expect(capturedPromptOptions.focus).toBeUndefined();
+  });
 });

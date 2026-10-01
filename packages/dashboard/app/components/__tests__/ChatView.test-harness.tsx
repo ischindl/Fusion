@@ -10,6 +10,7 @@ import * as apiModule from "../../api";
 import { _resetInitialViewportHeight } from "../../hooks/useMobileKeyboard";
 import * as useChatRoomsModule from "../../hooks/useChatRooms";
 import type { UseChatRoomsResult } from "../../hooks/useChatRooms";
+import type { ChatRoom } from "@fusion/core";
 
 /*
 FNXC:DashboardTests 2026-06-25-16:30:
@@ -54,15 +55,42 @@ export const defaultChatState: UseChatReturn = {
   sessions: [],
   activeSession: null,
   sessionsLoading: false,
+  /*
+  FNXC:RUFU-140 2026-08-20-19:42:
+  tags/selectedTagId, pinSession, tag CRUD and backfillStashSession (RUFU-123,
+  2026-08-20) became REQUIRED on UseChatReturn after this fixture was written;
+  the shared double carries them so every ChatView.* split file that spreads
+  defaultChatState typechecks. backfillStashSession resolves the minimal
+  ChatStashBackfillResponse shape (ok/inserted/skipped/uploaded).
+  */
+  tags: [],
+  selectedTagId: null,
+  setSelectedTagId: vi.fn(),
+  pinSession: vi.fn().mockResolvedValue(undefined),
+  pinnedCount: 0,
+  setSessionModel: vi.fn().mockResolvedValue(undefined),
+  createTag: vi.fn().mockResolvedValue({ id: "tag-new", name: "tag" } as never),
+  renameTag: vi.fn().mockResolvedValue(undefined),
+  deleteTag: vi.fn().mockResolvedValue(undefined),
+  setSessionTags: vi.fn().mockResolvedValue(undefined),
+  backfillStashSession: vi.fn().mockResolvedValue({ ok: true, inserted: 0, skipped: 0, uploaded: 0 }),
   messages: [],
   messagesLoading: false,
   isStreaming: false,
   streamingText: "",
   streamingThinking: "",
   streamingToolCalls: [],
+  /*
+  FNXC:ChatPhaseStatus 2026-09-16 (origin/main merge):
+  streamingPhase (RUFU-188) became REQUIRED on UseChatReturn — the transient engine
+  phase the streaming placeholder reads. The shared default is "no phase".
+  */
+  streamingPhase: null,
   selectSession: vi.fn(),
   createSession: vi.fn().mockResolvedValue({ id: "session-new", agentId: "__fn_agent__", status: "active", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" } satisfies ChatSessionInfo),
   archiveSession: vi.fn(),
+  // RUFU-199: handoffSession became REQUIRED on UseChatReturn; this shared fixture must carry it.
+  handoffSession: vi.fn().mockResolvedValue({ session: { id: "session-handoff", agentId: "__fn_agent__", status: "active", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" } satisfies ChatSessionInfo, degraded: false }),
   archivedSessions: [],
   refreshArchivedSessions: vi.fn().mockResolvedValue(undefined),
   unarchiveSession: vi.fn().mockResolvedValue(undefined),
@@ -71,6 +99,13 @@ export const defaultChatState: UseChatReturn = {
   deleteSession: vi.fn(),
   sendMessage: vi.fn(),
   editMessageAndResend: vi.fn(),
+  /*
+  FNXC:ChatMessageEdit 2026-09-16-05:58:
+  FN-459. A rejected edit rescues the typed correction through these two fields instead of losing it
+  when the reload remounts the target row. The shared default is "nothing to restore".
+  */
+  editDraftRestore: null,
+  clearEditDraftRestore: vi.fn(),
   /*
   FNXC:ChatStreamCancel 2026-08-23-23:20:
   stopStreaming resolves a durable cancellation promise, and ChatView's `/new` and `/clear` handlers
@@ -82,6 +117,15 @@ export const defaultChatState: UseChatReturn = {
   clearPendingMessage: vi.fn(),
   loadMoreMessages: vi.fn(),
   hasMoreMessages: false,
+  /*
+  FNXC:ChatSessionPagination 2026-09-16 (origin/main merge):
+  Session-list pagination (loadMoreSessions/hasMore*) and sessionsLoadingMore became
+  REQUIRED on UseChatReturn; the shared double carries the exhausted-list defaults.
+  */
+  loadMoreSessions: vi.fn().mockResolvedValue(undefined),
+  hasMoreSessions: false,
+  hasMoreArchivedSessions: false,
+  sessionsLoadingMore: false,
   searchQuery: "",
   setSearchQuery: vi.fn(),
   filteredSessions: [],
@@ -99,8 +143,15 @@ export const defaultRoomsState: UseChatRoomsResult = {
   messagesLoading: false,
   selectRoom: vi.fn(),
   createRoom: vi.fn(),
+  /*
+  FNXC:RUFU-140 2026-08-20-19:42:
+  updateRoomSettings (room thinkingLevel, 2026-07-12) and clearRoom became
+  required on UseChatRoomsResult after this double was written.
+  */
+  updateRoomSettings: vi.fn(),
   deleteRoom: vi.fn(),
   sendRoomMessage: vi.fn(),
+  clearRoom: vi.fn().mockResolvedValue(undefined),
   refreshRooms: vi.fn(),
 };
 
@@ -185,12 +236,23 @@ export function setupMockRooms(overrides: Partial<UseChatRoomsResult> = {}) {
   mockUseChatRooms.mockReturnValue(state);
 }
 
-export function createRoomFixture(name: string) {
+/*
+FNXC:RUFU-140 2026-08-20-19:42:
+createRoomFixture now returns a fully-typed ChatRoom: description/createdBy/
+status/thinkingLevel became required (non-optional) on ChatRoom after this
+fixture was written, and the untyped shape leaked TS2739/TS2345 into every
+file that spreads or returns it.
+*/
+export function createRoomFixture(name: string): ChatRoom {
   return {
     id: `room-${name}`,
     projectId: "proj-123",
     slug: name,
     name,
+    description: null,
+    createdBy: null,
+    status: "active",
+    thinkingLevel: null,
     createdAt: "2026-05-12T00:00:00.000Z",
     updatedAt: "2026-05-12T00:00:00.000Z",
   };
@@ -268,7 +330,7 @@ export function mockViewportMode(mode: "mobile" | "tablet" | "desktop") {
   return vi.spyOn(window, "matchMedia").mockImplementation((query: string = "") => ({
     matches:
       (mode === "mobile" && (query === "(max-width: 768px)" || query === "(max-width: 768px), (max-height: 480px)")) ||
-      (mode === "tablet" && query.includes("min-width: 769px") && query.includes("max-width: 1024px")),
+      (mode === "tablet" && query.includes("min-width: 769px") && query.includes("max-width: 1023.98px")),
     media: query,
     onchange: null,
     addListener: vi.fn(),
@@ -334,6 +396,36 @@ export function simulateKeyboardOpen({ vv, input, visualHeight }: { vv: VisualVi
   input.focus();
   input.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
   setVisualViewportHeight(vv, visualHeight);
+}
+
+/*
+FNXC:MobileKeyboardViewport 2026-09-17-14:23:
+FN-512 sizes a container from its OWN measured rectangle instead of applying a keyboard height
+blindly, which is the only reading that stays correct for a full-screen drawer, a small floating
+window, and an already-resized layout alike. jsdom performs no layout and returns an all-zero rect,
+so a test that wants to observe that decision must state the rectangle it is pretending to measure.
+
+Without this the adapter is correctly inert, and a test asserting "no bound published" would prove
+nothing about production.
+*/
+export function stubMeasuredRect(
+  element: HTMLElement,
+  { top, height, left = 0, width = 375 }: { top: number; height: number; left?: number; width?: number },
+) {
+  Object.defineProperty(element, "getBoundingClientRect", {
+    configurable: true,
+    value: () => ({
+      top,
+      bottom: top + height,
+      height,
+      left,
+      right: left + width,
+      width,
+      x: left,
+      y: top,
+      toJSON: () => ({}),
+    }),
+  });
 }
 
 /*

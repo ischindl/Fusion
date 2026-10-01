@@ -8,7 +8,7 @@ import { isTaskExternallyBlocked } from "../tasks/task-external-block.js";
 export type RunningAgentCountSource = (projectIds: readonly string[]) => Promise<Record<string, number>> | Record<string, number>;
 
 /** Terminal classification supplied by a workflow-IR or board-flags enricher. */
-export type ColumnTerminalKind = "none" | "complete" | "archived";
+export type ColumnTerminalKind = "none" | "complete";
 
 /**
  * The deliberately small, pure shape used by all top-level live-agent counts.
@@ -22,6 +22,11 @@ export type RunningAgentTaskShape = Pick<Task, "column" | "status" | "paused" | 
   columnCountsTowardWip?: boolean;
   /** Trait-derived review/merge membership; active merge statuses are live only here. */
   columnIsReviewOrMerge?: boolean;
+  /**
+   * Process-liveness proof for `status:"planning"`. Supplied by store-backed capacity
+   * callers; absent means a flag-less legacy caller that cannot observe planners.
+   */
+  planningIsLive?: boolean;
 };
 
 /*
@@ -61,7 +66,6 @@ export interface RunningAgentCounts {
 
 /** Resolve the terminal classification of one column from its workflow IR. */
 export function resolveColumnTerminalKind(columnId: string, ir: WorkflowIr): ColumnTerminalKind {
-  if (columnHasFlag(ir, columnId, "archived")) return "archived";
   if (columnHasFlag(ir, columnId, "complete")) return "complete";
   return "none";
 }
@@ -126,10 +130,10 @@ The fix for a renamed board is at the CALLER — pass flags, or use `enrichRunni
 which takes the IR and resolves every role by trait. Same reasoning as the marker above
 `isLegacyPreImplementationColumn`, which this file already records.
 */
-export function enrichRunningAgentTaskShapeFromFlags<T extends RunningAgentTaskShape>(task: T, flags?: Pick<TraitFlags, "complete" | "archived" | "intake" | "hold" | "countsTowardWip" | "mergeOrchestration" | "mergeBlocker">): T & Required<Pick<RunningAgentTaskShape, "columnTerminalKind" | "columnIsIntakeOrHold" | "columnCountsTowardWip" | "columnIsReviewOrMerge">> {
+export function enrichRunningAgentTaskShapeFromFlags<T extends RunningAgentTaskShape>(task: T, flags?: Pick<TraitFlags, "complete" | "intake" | "hold" | "countsTowardWip" | "mergeOrchestration" | "mergeBlocker">): T & Required<Pick<RunningAgentTaskShape, "columnTerminalKind" | "columnIsIntakeOrHold" | "columnCountsTowardWip" | "columnIsReviewOrMerge">> {
   return {
     ...task,
-    columnTerminalKind: flags?.archived ? "archived" : flags?.complete ? "complete" : "none",
+    columnTerminalKind: flags?.complete ? "complete" : "none",
     columnIsIntakeOrHold: flags ? flags.intake === true || flags.hold === true : isLegacyPreImplementationColumn(task.column),
     columnCountsTowardWip: flags ? flags.countsTowardWip === true : task.column === LEGACY_WIP_COLUMN_ID,
     /*
@@ -163,7 +167,7 @@ guess, and a wrong guess under-reports the queued total. Fix at the CALLER by pa
 */
 function terminalKind(task: RunningAgentTaskShape): ColumnTerminalKind {
   // Legacy literals are intentionally fixture-only degradation when workflow IR is unavailable.
-  return task.columnTerminalKind ?? (task.column === "done" ? "complete" : task.column === "archived" ? "archived" : "none");
+  return task.columnTerminalKind ?? (task.column === "done" ? "complete" : "none");
 }
 
 /**
@@ -201,7 +205,34 @@ export function isRunningAgentTask(task: RunningAgentTaskShape): boolean {
   already exclude status:"failed" from active merge holders.
   */
   if (task.status === "failed") return false;
-  if (task.status === "planning") return true;
+  /*
+  FNXC:CapacitySlotLeak 2026-09-19-04:07:
+  Requisito (relato do operador): "um card sem sessão viva não pode segurar vaga de capacidade; caso
+  contrário o planejador se auto-bloqueia e o board inteiro congela".
+
+  `status:"planning"` is a DURABLE row field, so it outlives a planner that was stuck-killed, died, or
+  was never started. Counting it unconditionally as a live agent let orphaned planning rows pin every
+  project slot and starve planning itself. Measured in production on 2026-09-18: 677
+  "Plan throttled by running-agent cap" lines over ~2.8 h, 258 of them logging
+  `claimed=2, processing=0` — two durable planning claims and NO planner in the process, while one
+  eligible card waited (FUSI-018, idle 32 min). The slow repair path (`sweepStalePlanningStatuses`,
+  20-minute grace) cleared two rows in the whole log and never unblocked that stall.
+
+  Capacity now requires positive liveness proof for a planning claim, exactly as the review-status
+  branch below already requires review/merge lane membership for its statuses. Lane membership cannot be the
+  discriminator: a planning card is legitimately dispatched from either the intake or the hold lane, so
+  only liveness separates a real planner from a stale status. `undefined` keeps the historical count for
+  flag-less callers (dashboard footer, CLI, the synchronous semaphore leak valve) that cannot observe
+  planner sessions; every store-backed engine capacity path supplies the flag.
+
+  This cannot release a slot an EXECUTOR owns: `status:"planning"` means the scope is not finalized
+  (`HARD_BLOCKING_TASK_STATUSES`), so the card is not dispatchable for execution until the status is
+  cleared — the scheduler's planning-finished wake is guarded on `!task.status`. Known, accepted
+  tradeoff: a planner on ANOTHER node is invisible to this process's registry, so its claim stops
+  counting here and this node may admit one extra agent for the project; the durable status repair
+  still clears the row later. That is strictly better than the whole board freezing for hours.
+  */
+  if (task.status === "planning") return task.planningIsLive !== false;
   // Review statuses are not globally live: a stale status in intake/WIP must not consume capacity.
   if (ACTIVE_IN_REVIEW_AGENT_STATUSES.has(String(task.status ?? ""))) {
     return task.columnIsReviewOrMerge ?? task.column === "in-review";

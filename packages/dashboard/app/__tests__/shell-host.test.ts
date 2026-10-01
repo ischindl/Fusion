@@ -10,7 +10,7 @@ describe("shell-host", () => {
     __resetShellHostContextForTests();
     window.history.replaceState({}, "", "/");
     delete (window as Window & { fusionAPI?: unknown }).fusionAPI;
-    delete (window as Window & Record<string, unknown>).__FUSION_SHELL_HOST_CONTEXT__;
+    delete (window as unknown as Record<string, unknown>).__FUSION_SHELL_HOST_CONTEXT__;
   });
 
   it("falls back to browser when no shell signals are present", () => {
@@ -23,7 +23,7 @@ describe("shell-host", () => {
   });
 
   it("normalizes explicit global handoff", () => {
-    (window as Window & Record<string, unknown>).__FUSION_SHELL_HOST_CONTEXT__ = {
+    (window as unknown as Record<string, unknown>).__FUSION_SHELL_HOST_CONTEXT__ = {
       kind: "mobile-shell",
       mode: "remote",
       connectionId: "conn-1",

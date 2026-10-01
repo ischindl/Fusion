@@ -37,7 +37,6 @@ describe("triage-preflight", () => {
       "pnpm --filter @fusion/core test",
       "pnpm --filter @fusion/core test",
     ].join("\n");
-
     const constructs = extractCitedConstructs(prompt);
     expect(constructs.some((c) => c.kind === "identifier" && c.raw === "secrets_sync.handle()")).toBe(true);
     expect(constructs.some((c) => c.filePath === "packages/core/src/secrets-sync.ts" && c.line === 12)).toBe(true);
@@ -50,20 +49,18 @@ describe("triage-preflight", () => {
     expect(extractCitedConstructs(lines)).toHaveLength(20);
   });
 
-  it("uses shell-free repository-wide argv, not a packages/-scoped shell string", async () => {
-    const exec = vi.fn(async (argv: string[]) => ({ stdout: `src/App.ts:1:${argv[4]}`, stderr: "", exitCode: 0 }));
+  it("uses shell-free repository-wide argv and passes the source-less packages reproduction", async () => {
+    const exec = vi.fn(async (argv: string[]) => ({ stdout: `src/App.ts:1:${argv[5]}`, stderr: "", exitCode: 0 }));
     const decision = await runGhostBugPreflight(task, "`Task.CompletedTask`\n`MyFixture.RunOnUiThreadAsync`", options(exec));
     expect(decision).toMatchObject({ decision: "pass", reason: "construct_found_or_inconclusive" });
     for (const argv of exec.mock.calls.map(([argv]) => argv as string[])) {
       expect(Array.isArray(argv)).toBe(true);
       expect(argv[0]).toBe("git");
-      // Every argv entry is a discrete array element — nothing here is a shell-interpolated string
-      // that could smuggle a pipe, subshell, or path-scoped filter.
       expect(argv.join(" ")).not.toMatch(/packages\/|\|\| true|\||&&|;|\$\(|`/);
     }
   });
 
-  it("classifies exit codes and never treats stderr output as a match", async () => {
+  it("classifies exit codes and output without treating stderr as a match", async () => {
     const exec = vi.fn()
       .mockResolvedValueOnce({ stdout: "hit", stderr: "", exitCode: 0 })
       .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 1 })
@@ -86,7 +83,7 @@ describe("triage-preflight", () => {
     ]);
   });
 
-  it("never executes command citations and fails open when they are the only signal", async () => {
+  it("fails open for rejected execution and non-executed commands", async () => {
     const exec = vi.fn().mockRejectedValue(new Error("spawn failed"));
     const findings = await probeCitedConstructs([{ kind: "command", raw: "pnpm dangerous" }], options(exec));
     expect(findings[0]).toMatchObject({ matched: false, probeError: "command_probes_not_executed" });
@@ -95,7 +92,7 @@ describe("triage-preflight", () => {
     expect(decision).toMatchObject({ decision: "pass", reason: "no_definitive_probe_signal" });
   });
 
-  it("keeps a leading-dash raw value as pure data and refuses genuinely unsafe values without executing", async () => {
+  it("keeps leading-dash raw values as data and refuses unsafe values without execution", async () => {
     const exec = vi.fn().mockResolvedValue({ stdout: "", stderr: "", exitCode: 1 });
     const leadingDash = await probeCitedConstructs([{ kind: "snippet", raw: "-not-an-option" }], options(exec));
     expect(leadingDash[0].probeError).toBeUndefined();
@@ -109,51 +106,61 @@ describe("triage-preflight", () => {
     expect(exec).not.toHaveBeenCalled();
   });
 
-  it("truncates oversized stdout before retaining a finding", async () => {
+  it("truncates large stdout before retaining findings", async () => {
     const exec = vi.fn().mockResolvedValue({ stdout: "x".repeat(200 * 1024), stderr: "", exitCode: 0 });
     const [finding] = await probeCitedConstructs([{ kind: "identifier", raw: "large_output" }], options(exec));
     expect(finding.output).toHaveLength(512);
     expect(finding.output?.endsWith("…[truncated]")).toBe(true);
   });
 
-  it("archives only when every probe is missing AND the positive control matches", async () => {
+  /*
+  FNXC:MergeRebuild0919 2026-09-19-21:45:
+  Canonical still returns `decision: "archive"` here; this line retired task archiving, so the
+  ghost-bug verdict is `delete` and triage hands the card to `softDeleteAsGhostBug`. The case set is
+  otherwise canonical's — canonical's archive-worded twin of every case here was dropped rather than
+  kept as a dead duplicate.
+  */
+  it("deletes only when all probes are missing and the positive control matches", async () => {
     const exec = vi.fn((argv: string[]) => argv[1] === "grep" && argv[4] !== "export const knownControl = true;"
       ? Promise.resolve({ stdout: "", stderr: "", exitCode: 1 })
       : Promise.resolve(controlMatched(argv)));
     const decision = await runGhostBugPreflight(task, "`foo_bar`", options(exec));
-    expect(decision).toMatchObject({ decision: "archive", reason: "all_cited_constructs_missing_on_main" });
+    expect(decision).toMatchObject({ decision: "delete", reason: "all_cited_constructs_missing_on_main" });
   });
 
-  it("passes instead of archiving when the positive control is unmatched or unavailable", async () => {
-    const unmatched = vi.fn((argv: string[]) => (argv[1] === "grep" ? { stdout: "", stderr: "", exitCode: 1 } : controlMatched(argv)));
+  it("passes when positive control is unmatched or unavailable", async () => {
+    const unmatched = vi.fn((argv: string[]) => argv[1] === "grep" && argv[4] !== "export const knownControl = true;"
+      ? Promise.resolve({ stdout: "", stderr: "", exitCode: 1 })
+      : Promise.resolve(argv[1] === "grep" ? { stdout: "", stderr: "", exitCode: 1 } : controlMatched(argv)));
     expect(await runGhostBugPreflight(task, "`foo_bar`", options(unmatched))).toMatchObject({ decision: "pass", reason: "probe_control_failed" });
-
     for (const lsFiles of [{ stdout: "", stderr: "", exitCode: 1 }, { stdout: "", stderr: "", exitCode: 0 }]) {
-      const unavailable = vi.fn((argv: string[]) => (argv[1] === "grep" ? { stdout: "", stderr: "", exitCode: 1 } : lsFiles));
+      const unavailable = vi.fn((argv: string[]) => argv[1] === "grep"
+        ? Promise.resolve({ stdout: "", stderr: "", exitCode: 1 })
+        : Promise.resolve(lsFiles));
       expect(await runGhostBugPreflight(task, "`foo_bar`", options(unavailable))).toMatchObject({ decision: "pass", reason: "probe_control_failed" });
     }
   });
 
-  it("makes a failed `git show` and unusable sampled content report the control as unavailable", async () => {
-    const showFails = vi.fn((argv: string[]) => (argv[1] === "ls-files"
-      ? { stdout: "src/App.ts\n", stderr: "", exitCode: 0 }
-      : { stdout: "", stderr: "", exitCode: 1 }));
+  it("makes show failures and unusable sampled content unavailable", async () => {
+    const showFails = vi.fn((argv: string[]) => {
+      if (argv[1] === "ls-files") return Promise.resolve({ stdout: "src/App.ts\n", stderr: "", exitCode: 0 });
+      return Promise.resolve({ stdout: "", stderr: "", exitCode: 1 });
+    });
     expect(await runProbePositiveControl(options(showFails))).toBe("unavailable");
-
-    const noUsableSample = vi.fn((argv: string[]) => (argv[1] === "ls-files"
-      ? { stdout: "src/App.ts\n", stderr: "", exitCode: 0 }
-      : { stdout: "tiny\n", stderr: "", exitCode: 0 }));
-    expect(await runProbePositiveControl(options(noUsableSample))).toBe("unavailable");
+    const noSample = vi.fn((argv: string[]) => argv[1] === "ls-files"
+      ? Promise.resolve({ stdout: "src/App.ts\n", stderr: "", exitCode: 0 })
+      : Promise.resolve({ stdout: "tiny\n", stderr: "", exitCode: 0 }));
+    expect(await runProbePositiveControl(options(noSample))).toBe("unavailable");
   });
 
-  it("skips the positive control entirely when a construct already matches", async () => {
+  it("does not run the positive control when a construct already matches", async () => {
     const exec = vi.fn().mockResolvedValue({ stdout: "src/a.ts:1:foo_bar", stderr: "", exitCode: 0 });
     await runGhostBugPreflight(task, "`foo_bar`", options(exec));
     expect(exec).toHaveBeenCalledTimes(1);
   });
 
-  it("runs the positive control using argv-only sampled text", async () => {
-    const exec = vi.fn((argv: string[]) => controlMatched(argv));
+  it("runs a positive control with argv-only sampled text", async () => {
+    const exec = vi.fn((argv: string[]) => Promise.resolve(controlMatched(argv)));
     expect(await runProbePositiveControl(options(exec))).toBe("matched");
     const grep = exec.mock.calls.map(([argv]) => argv as string[]).find((argv) => argv[1] === "grep")!;
     expect(grep.slice(0, 6)).toEqual(["git", "grep", "-nF", "-e", "export const knownControl = true;", "--"]);
@@ -167,7 +174,7 @@ describe("triage-preflight", () => {
     await expect(createGhostBugProbeExec(vi.fn().mockRejectedValue({ stdout: "", stderr: "fatal" }))(["git", "status"])).resolves.toEqual({ stdout: "", stderr: "fatal" });
   });
 
-  it("passes non bug-shape tasks without probing", async () => {
+  it("passes non bug-shape tasks", async () => {
     const exec = vi.fn();
     const decision = await runGhostBugPreflight({ title: "docs", description: "desc" }, "`foo_bar`", options(exec));
     expect(decision.decision).toBe("pass");

@@ -40,7 +40,15 @@ import * as schema from "../postgres/schema/index.js";
 import {diffSettingsForActivity, formatSettingsActivity} from "./settings-activity.js";
 import {LIFECYCLE_ROLE_RANK} from "../workflows/workflow-lifecycle-direction.js";
 
-export async function initImpl(store: TaskStore): Promise<void> {
+/*
+FNXC:TaskStoreLightBoot 2026-09-26-19:30 (RUFU-275):
+Transient agent-tool store opens (fn extension, one-shot `fn task list`) must not pay the
+full store-open backlog. `skipArchiveReintegration` already existed; `skipPatchnodeReconcile`
+adds the second bounded pass. Both default false — every host-path boot keeps the complete
+backlog — because these are warn-degraded conveniences whose work self-heals on the next
+full-boot host (engine/dashboard) or via the completion-time writers.
+*/
+export async function initImpl(store: TaskStore, options?: { skipArchiveReintegration?: boolean; skipPatchnodeReconcile?: boolean }): Promise<void> {
     store.closing = false;
     await mkdir(store.tasksDir, { recursive: true });
 
@@ -76,11 +84,25 @@ export async function initImpl(store: TaskStore): Promise<void> {
     */
     await adoptLegacyTaskRowsOnOpen(store);
     /*
+    FNXC:TaskArchiveReintegration 2026-09-06-08:00:
+    Legacy status adoption must finish before the cooperative archive drain. Run the same idempotent
+    primitive here as engine maintenance so dashboard-only and CLI hosts expose every eligible
+    completed task before later completion-column consumers run.
+    */
+    try {
+      if (!options?.skipArchiveReintegration) await store.reconcileArchivedTasksIntoDone();
+    } catch (error) {
+      storeLog.warn("Archived task reintegration failed during backend init", {
+        phase: "init:archive-reintegration",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    /*
     FNXC:PatchnodeLedger 2026-08-28-12:16:
     Store-open reconciliation is a warn-degraded backlog convenience, not the live durability guarantee. Init runs once per process; completion writers capture in their own transactions, while the TTL-rearmed read path revisits surviving legacy evidence.
     */
     try {
-      await store.reconcilePatchnodeLedger({ force: true });
+      if (!options?.skipPatchnodeReconcile) await store.reconcilePatchnodeLedger({ force: true });
     } catch (error) {
       storeLog.warn("Patchnode reconciliation failed during backend init", {
         phase: "init:patchnode-reconcile",
@@ -239,7 +261,14 @@ export async function adoptLegacyTaskRowsOnOpen(store: TaskStore): Promise<numbe
     let adopted = 0;
     let mutationPlanned = false;
     for (;;) {
-      const tasks = await store.listTasks({ slim: true, includeArchived: false, limit: pageSize, offset });
+      /*
+      FNXC:LegacyAdoption 2026-09-26-19:30 (RUFU-275):
+      `derive: false` — the adoption plan consumes only persisted fields (id/status/column/
+      reviewLevel/enabledWorkflowSteps/legacyAdoptedAt), so the per-row UI-signal derivation
+      (stall chips, review signals, workflow IR) is pure waste here. Measured at saneca calibre
+      (310 fat-log cards): 173 ms → 22 ms per census page-set (boot-measurements doc).
+      */
+      const tasks = await store.listTasks({ slim: true, derive: false, includeArchived: false, limit: pageSize, offset });
       for (const task of tasks) {
         const plan = planLegacyAdoption(
           {
@@ -550,7 +579,21 @@ export async function reconcileOrphanedTaskDirsImpl(store: TaskStore, opts: { ig
       let recovered = false;
       let skipReason: string | undefined;
       try {
-                if (await store.taskIdExistsAnywhere(id)) {
+                /*
+                FNXC:OrphanTaskDirReconcile 2026-09-24-00:57:
+        This guard is why RUFU-225's disappearance produced no report. `taskIdExistsAnywhere` is one
+        boolean for live row, soft-delete tombstone, and archive snapshot, so this skip cannot say
+        which of the three it met, and the skip is recorded as `skipped`, never as an anomaly. RUFU-225
+        provably missed the window — its mirror was 6.4 days old against the 2-7 day candidate bound — and
+        a tombstone is the only read-consistent explanation for the id staying reserved while every read
+        path resolved it as absent, though the live store was never readable from this investigation to
+        prove it. Either branch silences the same way. The re-import behavior here is
+        unchanged — re-importing over a tombstone would be wrong — but the state this guard cannot
+        name is now named by `TaskStore.resolveTaskIdPresence`, and the disk-side half of the gap is
+        reported by the engine's `reconcile-vanished-task-dirs` sweep. See
+        `docs/solutions/reliability/vanished-task-directory-rufu-225.md`.
+        */
+        if (await store.taskIdExistsAnywhere(id)) {
           skipReason = "id-exists-anywhere";
         } else {
           try {

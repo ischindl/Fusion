@@ -1,4 +1,11 @@
 /*
+FNXC:RUFU153 2026-08-23-00:21:
+Per FNXC:ChatNavigation (ChatView.tsx) the main pane (messages + composer) is gated behind the
+closed-by-default detailOpen state and opens only on a user row click. Every test clicks the active
+session row (chat-session-<id>) through the canonical user path before asserting command-menu and
+composer DOM, keeping the original assertions intact.
+*/
+/*
 FNXC:DashboardTests 2026-07-08-00:00:
 Sibling ChatView test file (kept separate from ChatView.core-interactions.test.tsx per the
 suite's split convention) covering the generalized "/" command registry: the /steer entry
@@ -42,6 +49,8 @@ vi.mock("../../api", () => ({
   }),
   fetchAgents: vi.fn().mockResolvedValue([]),
   fetchDiscoveredSkills: vi.fn().mockResolvedValue([]),
+  fetchGlobalSettings: vi.fn().mockResolvedValue({ chatSnippets: [] }),
+  updateGlobalSettings: vi.fn().mockResolvedValue({ chatSnippets: [] }),
   fetchTasks: vi.fn().mockResolvedValue([]),
   searchFiles: vi.fn().mockResolvedValue({ files: [] }),
   addSteeringComment: vi.fn(),
@@ -63,6 +72,8 @@ describe("ChatView slash-command dispatch (/steer)", () => {
     setupMockChat({ activeSession: activeSessionFixture, messages: [] });
     await renderChatDetailWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} />);
 
+    // RUFU-153: the detail pane (composer included) opens only on row click (FNXC:ChatNavigation 2026-08-19-19:36).
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const textarea = screen.getByTestId("chat-input");
     await userEvent.type(textarea, "/");
 
@@ -80,6 +91,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
       <ChatView projectId="proj-123" addToast={vi.fn()} chatCommandContext={commandContext} />,
     );
 
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const textarea = screen.getByTestId("chat-input");
     await userEvent.type(textarea, "/");
 
@@ -97,6 +109,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
       <ChatView projectId="proj-123" addToast={vi.fn()} chatCommandContext={commandContext} />,
     );
 
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const textarea = screen.getByTestId("chat-input");
     await userEvent.type(textarea, "/ste");
 
@@ -110,6 +123,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
       <ChatView projectId="proj-123" addToast={vi.fn()} chatCommandContext={commandContext} />,
     );
 
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const textarea = screen.getByTestId("chat-input");
     await userEvent.type(textarea, "/");
     await userEvent.click(await screen.findByRole("option", { name: /steer/i }));
@@ -129,6 +143,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
       <ChatView projectId="proj-123" addToast={vi.fn()} chatCommandContext={commandContext} />,
     );
 
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const textarea = screen.getByTestId("chat-input");
     await userEvent.type(textarea, "/re");
     await userEvent.click(await screen.findByRole("option", { name: /review\/pr/i }));
@@ -146,6 +161,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
       <ChatView projectId="proj-123" addToast={addToast} chatCommandContext={commandContext} />,
     );
 
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const textarea = screen.getByTestId("chat-input");
     fireEvent.change(textarea, { target: { value: "/steer do X" } });
     fireEvent.keyDown(textarea, { key: "Enter" });
@@ -164,6 +180,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
       <ChatView projectId="proj-123" addToast={addToast} chatCommandContext={commandContext} />,
     );
 
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const textarea = screen.getByTestId("chat-input");
     fireEvent.change(textarea, { target: { value: "hello there" } });
     fireEvent.keyDown(textarea, { key: "Enter" });
@@ -191,6 +208,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
       <ChatView projectId="proj-123" addToast={addToast} chatCommandContext={commandContext} />,
     );
 
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const textarea = screen.getByTestId("chat-input");
     fireEvent.change(textarea, { target: { value: "please /steer this" } });
     fireEvent.keyDown(textarea, { key: "Enter" });
@@ -216,6 +234,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
       />,
     );
 
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const textarea = screen.getByTestId("chat-input");
     fireEvent.change(textarea, { target: { value: "/steer do X" } });
     fireEvent.keyDown(textarea, { key: "Enter" });
@@ -236,6 +255,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
       />,
     );
 
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const textarea = screen.getByTestId("chat-input");
     await userEvent.type(textarea, "/");
 
@@ -246,10 +266,14 @@ describe("ChatView slash-command dispatch (/steer)", () => {
 
   // FUX-015 composer-wipe race: the composer is cleared on submit — BEFORE the
   // network round-trip — so text the user types while the command is in flight
-  // is never wiped by a late callback. This matches normal chat send (which also
-  // clears immediately and does not restore on failure), so the composer stays
-  // empty after run() rejects; the error is surfaced via a toast.
-  it("clears the composer on submit and shows an error toast when run() fails", async () => {
+  // is never wiped by a late callback.
+  //
+  // FNXC:ChatSendDurability 2026-09-07-13:35:
+  // What RUFU-192 changed is the failure half. A rejected command used to leave the submission
+  // nowhere — no transcript row, no draft, nothing to recover — which is the silent-destruction
+  // defect this task removes. The early clear stays (it is what keeps the wipe race closed, and it
+  // is what makes a duplicate re-submit detectable), and the rejection now hands the text back.
+  it("hands the prompt back and shows an error toast when run() fails", async () => {
     const sendMessage = vi.fn();
     setupMockChat({ activeSession: activeSessionFixture, messages: [], sendMessage });
     mockAddSteeringComment.mockRejectedValueOnce(new Error("network down"));
@@ -259,12 +283,15 @@ describe("ChatView slash-command dispatch (/steer)", () => {
       <ChatView projectId="proj-123" addToast={addToast} chatCommandContext={commandContext} />,
     );
 
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const textarea = screen.getByTestId("chat-input");
     fireEvent.change(textarea, { target: { value: "/steer do X" } });
     fireEvent.keyDown(textarea, { key: "Enter" });
+    // The clear is still pre-round-trip, which is what the in-flight typing race depends on.
+    expect(textarea).toHaveValue("");
 
     await waitFor(() => expect(addToast).toHaveBeenCalledWith("network down", "error"));
-    expect(textarea).toHaveValue("");
+    expect(textarea).toHaveValue("/steer do X");
   });
 
   // FUX-015 composer-wipe race: text typed AFTER submit (while the command is
@@ -281,6 +308,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
       <ChatView projectId="proj-123" addToast={addToast} chatCommandContext={commandContext} />,
     );
 
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const textarea = screen.getByTestId("chat-input");
     fireEvent.change(textarea, { target: { value: "/steer do X" } });
     fireEvent.keyDown(textarea, { key: "Enter" });
@@ -305,6 +333,7 @@ describe("ChatView slash-command dispatch (/steer)", () => {
       <ChatView projectId="proj-123" addToast={addToast} chatCommandContext={commandContext} />,
     );
 
+    await userEvent.click(screen.getByTestId("chat-session-session-001"));
     const textarea = screen.getByTestId("chat-input");
     const file = new File(["hi"], "note.txt", { type: "text/plain" });
     const fileInput = screen.getByTestId("chat-file-input");

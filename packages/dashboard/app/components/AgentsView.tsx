@@ -2,23 +2,36 @@ import "./AgentsView.css";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { useState, useEffect, useCallback, useRef, useMemo, useId, useLayoutEffect, lazy, Suspense, type CSSProperties, type ReactNode, type MutableRefObject, type RefObject, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { Plus, Play, Pause, Activity, Trash2, RefreshCw, Bot, List, ChevronRight, Filter, Upload, Network, SlidersHorizontal, ZoomIn, ZoomOut, Minimize2, Move, Info } from "lucide-react";
+import { Play, Pause, Activity, Trash2, RefreshCw, Bot, List, ChevronRight, Filter, Upload, Network, SlidersHorizontal, ZoomIn, ZoomOut, Minimize2, Move, Info, ScrollText } from "lucide-react";
 import type { Agent, AgentCapability, AgentOnboardingSummary, AgentState, OrgTreeNode } from "../api";
 import { fetchAgents, updateAgent, updateAgentState, deleteAgent, startAgentRun, fetchOrgTree, fetchSettings, updateSettings, isAgentHeartbeatEnabled, withAgentHeartbeatEnabled } from "../api";
 
 const AgentDetailView = lazy(() => import("./AgentDetailView").then((m) => ({ default: m.AgentDetailView })));
 import { AgentTokenStatsPanel } from "./AgentTokenStatsPanel";
-import { AgentsOverviewBar } from "./AgentsOverviewBar";
+import { AgentsOverviewBar, AgentsOverviewToggle } from "./AgentsOverviewBar";
 import { ViewHeader } from "./ViewHeader";
+import { ViewActionButton } from "./ViewActionButton";
+import { ViewSidebar } from "./ViewSidebar";
+import { ViewLayout } from "./ViewLayout";
 import { AgentEmptyState } from "./AgentEmptyState";
 import { useAgents } from "../hooks/useAgents";
 import { useConfirm } from "../hooks/useConfirm";
 import { NewAgentDialog } from "./NewAgentDialog";
 import { AgentImportModal } from "./AgentImportModal";
+import { AgentActionLogPanel } from "./AgentActionLogPanel";
 import { getScopedItem, setScopedItem } from "../utils/projectStorage";
 import { useViewportMode } from "../hooks/useViewportMode";
-import { getAgentHealthStatus } from "../utils/agentHealth";
+import { getAgentHealthStatus, formatDuration } from "../utils/agentHealth";
 import type { AgentHealthStatus } from "../utils/agentHealth";
+import { elapsedSinceMs } from "../utils/dataFreshness";
+import { useColumnLabel } from "../i18n/labels";
+/*
+FNXC:FleetVerdict 2026-09-02-05:40 (RUFU-176):
+The verdict strip classifies the FULL system-filtered roster, never `displayActiveAgents`: that memo is already filtered
+to {active, running}, and classifying it would pin waitingHuman / noHeartbeat / stalled at structural zero — a strip
+that always reads "0 waiting on a human" is worse than no strip, because it is the exact question the operator asks.
+*/
+import { classifyFleetVerdict, resolveFleetStallReason } from "../utils/fleetVerdict";
 import {
   formatHeartbeatInterval,
   getHeartbeatIntervalOptions,
@@ -26,7 +39,7 @@ import {
   MIN_HEARTBEAT_INTERVAL_MS,
   HEARTBEAT_INTERVAL_PRESETS,
 } from "../utils/heartbeatIntervals";
-import { isEphemeralAgent, getErrorMessage, resolvePermanentAgentEffectiveModel, type Settings } from "@fusion/core";
+import { isEphemeralAgent, getErrorMessage, resolvePermanentAgentEffectiveModel, type ColumnId, type Settings } from "@fusion/core";
 import { classifyAgentSkill, formatAgentSkillBadgeLabel } from "../utils/agentSkills";
 import { useDiscoveredSkillsCache } from "../hooks/useDiscoveredSkillsCache";
 import { isInsidePortaledModelMenu } from "../utils/portalSurfaces";
@@ -73,28 +86,6 @@ const ORG_CHART_SCALE_MIN = 0.25;
 const ORG_CHART_SCALE_MAX = 3;
 const ORG_CHART_KEYBOARD_PAN_STEP = 16;
 const ORG_CHART_OVERSCROLL = 32;
-
-/*
-FNXC:AgentsView 2026-06-20-00:00:
-The Agents split view needs a wider tablet default than the old fixed CSS column and the sidebar must be user-resizable on non-mobile viewports.
-Persist the clamped width per project so desktop and tablet users keep their preferred agent-list/detail balance without affecting the stacked mobile layout.
-*/
-const AGENTS_SIDEBAR_DEFAULT_WIDTH = 320;
-const AGENTS_SIDEBAR_MIN_WIDTH = 260;
-const AGENTS_SIDEBAR_MAX_WIDTH = 520;
-const AGENTS_SIDEBAR_WIDTH_STORAGE_KEY = "kb-dashboard-agents-sidebar-width";
-
-function clampAgentsSidebarWidth(width: number): number {
-  return Math.max(AGENTS_SIDEBAR_MIN_WIDTH, Math.min(AGENTS_SIDEBAR_MAX_WIDTH, width));
-}
-
-function readAgentsSidebarWidth(projectId?: string): number {
-  if (typeof window === "undefined") return AGENTS_SIDEBAR_DEFAULT_WIDTH;
-  const stored = getScopedItem(AGENTS_SIDEBAR_WIDTH_STORAGE_KEY, projectId);
-  const parsed = stored ? Number(stored) : NaN;
-  if (!Number.isFinite(parsed)) return AGENTS_SIDEBAR_DEFAULT_WIDTH;
-  return clampAgentsSidebarWidth(parsed);
-}
 
 function getStateBadgeClass(state: AgentState): string {
   switch (state) {
@@ -196,6 +187,158 @@ function getHealthSummary(agent: Agent, health: AgentHealthStatus, t: TFunction<
   };
 }
 
+/*
+FNXC:FleetVerdict 2026-09-02-06:35 (RUFU-176):
+Heartbeat countdown for an org node — the operator's „koľku mu chýba do heartbeatu".
+
+FNXC:FleetVerdict 2026-09-02-15:47 (RUFU-176 code review P1):
+The first draft anchored on `getStalenessThresholdMs` (interval x heartbeatMultiplier, 5-minute floor) because that is
+what `getAgentHealthStatus` compares against. But the row is labelled `agents.nextHeartbeat` — "Next heartbeat in …" —
+and an agent with the 1h default cadence beat 40 minutes ago then reads "Next heartbeat in 2h 20m" on the node while
+`ActiveAgentsPanel` reads "Next heartbeat in 20m" for the SAME agent under the SAME label. A countdown that reaches
+zero when the agent is merely 4 beats silent does not answer "when does it beat next", so the anchor is the configured
+interval — the one `ActiveAgentsPanel` uses (`resolveHeartbeatIntervalMs`) — and the overdue flip means "its next beat
+should already have arrived". The health glyph keeps its own 4x-grace authority unchanged; overdue here is deliberately
+earlier and softer than "Unresponsive", which is why the row is colour-tokened, not alarming.
+
+Anchoring here, on the label's own promise, is the requirement; anchoring on staleness would need a separate key.
+
+`dataAsOfMs` is the activity store's `nowTick`: a wall-clock instant republished on every event AND on the store's
+expiry sweep, so the card re-renders with an aging countdown even while a stalled agent emits nothing. It is the same
+anchor the node's activity ring already uses. Because it is wall-clock based, it cannot resurrect the mobile-tab-discard
+defect `dataFreshness.ts` exists for (an hours-old snapshot); it can lag real now by at most one expiry sweep.
+
+Absent facts render nothing rather than a zero: a stopped runtime (paused/error) is named by the stall line, and a
+heartbeat that is switched off or has never fired has no cadence to count down to.
+*/
+function getOrgNodeHeartbeat(
+  agent: Agent,
+  t: TFunction<"app">,
+  dataAsOfMs: number,
+): { text: string; title: string; overdue: boolean } | null {
+  if (agent.state === "paused" || agent.state === "error") return null;
+  if (!isAgentHeartbeatEnabled(agent)) return null;
+  if (!agent.lastHeartbeatAt) return null;
+
+  const lastBeatMs = Date.parse(agent.lastHeartbeatAt);
+  if (!Number.isFinite(lastBeatMs)) return null;
+
+  const intervalMs = resolveHeartbeatIntervalMs(agent.runtimeConfig?.heartbeatIntervalMs);
+  const elapsedMs = elapsedSinceMs(lastBeatMs, dataAsOfMs);
+  const remainingMs = intervalMs - elapsedMs;
+  const title = `${t("agents.timeSinceLastHeartbeat", "Time since last heartbeat")}: ${formatDuration(elapsedMs)}`;
+
+  if (remainingMs <= 0) {
+    return {
+      overdue: true,
+      title,
+      text: t("agents.heartbeatOverdue", "Heartbeat overdue {{elapsed}}", { elapsed: formatDuration(-remainingMs) }),
+    };
+  }
+
+  return {
+    overdue: false,
+    title,
+    text: t("agents.nextHeartbeat", "Next heartbeat in {{elapsed}}", { elapsed: formatDuration(remainingMs) }),
+  };
+}
+
+/*
+FNXC:FleetVerdict 2026-09-02-07:20 (RUFU-176):
+The per-node answer to „prečo je niečo paused a iné stojí": one line naming why this agent is not moving. Wording comes
+from `resolveFleetStallReason` codes translated under `agents.stallReason.<code>`. Only agents the classifier already
+counts as waitingHuman / noHeartbeat / stalled get a line, so a node can never contradict the strip's count. A hold on a
+specific card also gets an address in its tooltip, named the same way the node's task chip names it.
+*/
+
+/*
+FNXC:FleetVerdict 2026-09-02-08:05 (RUFU-176):
+Known stall codes translate through LITERAL `t("key", "English")` calls: `pnpm i18n:extract` only catalogs keys and
+English values it can see in source — and it harvests key-shaped strings even from comments (measured: a comment quoting
+a dynamic template call minted a dead "${code}" catalog entry) — and it prunes keys no source references (measured:
+the retired `agents.statusCount` call site made extract delete the key). A bare dynamic template-key lookup as the
+headline would therefore never be translated, and a raw code as headline text is forbidden. `pauseReason` is a
+free-form string, so a never-seen future engine code keeps the `useColumnLabel`-style raw-code fallback instead of
+blanking the line.
+*/
+function stallReasonLabel(code: string, t: TFunction<"app">): string {
+  switch (code) {
+    case "awaiting-approval":
+      return t("agents.stallReason.awaiting-approval", "Waiting for approval");
+    case "state-error":
+      return t("agents.stallReason.state-error", "Last run failed");
+    /*
+    FNXC:ProviderThrottleIsTransient 2026-09-30-14:52 (RUFU-286):
+    The sibling of `state-error` — the same `state: "error"` row, the opposite operator action. These
+    two lines sit adjacent on purpose: a reader comparing them should see that one says "go look" and
+    the other says "nothing to do", which is the whole distinction RUFU-286 exists to make visible.
+    */
+    case "rate-limited":
+      return t("agents.stallReason.rate-limited", "Rate limited — retry scheduled");
+    case "paused":
+      return t("agents.stallReason.paused", "Paused");
+    case "held-human-review":
+      return t("agents.stallReason.held-human-review", "Waiting on a person");
+    case "heartbeat-disabled":
+      return t("agents.stallReason.heartbeat-disabled", "Heartbeat switched off");
+    case "never-beat":
+      return t("agents.stallReason.never-beat", "No heartbeat yet");
+    case "heartbeat-unresponsive":
+      return t("agents.stallReason.heartbeat-unresponsive", "No heartbeat");
+    case "heartbeat-model-unavailable":
+      return t("agents.stallReason.heartbeat-model-unavailable", "Model unavailable");
+    case "budget-exhausted":
+      return t("agents.stallReason.budget-exhausted", "Budget exhausted");
+    case "error-retry-exhausted":
+      return t("agents.stallReason.error-retry-exhausted", "Error retries exhausted");
+    case "error-unrecoverable":
+      return t("agents.stallReason.error-unrecoverable", "Needs a person to fix");
+    case "migrated-from-terminated":
+      return t("agents.stallReason.migrated-from-terminated", "Migrated from a dead agent");
+    case "user-requested":
+      return t("agents.stallReason.user-requested", "Paused on request");
+    case "manual":
+      return t("agents.stallReason.manual", "Paused by a person");
+    case "testing":
+      return t("agents.stallReason.testing", "Paused for testing");
+    default:
+      /*
+       Raw-code fallback for a never-seen free-form `pauseReason`, like `useColumnLabel` does for unknown columns. No
+       `t()` lookup: a code no source references is never in the catalog (extract prunes unreferenced keys), so a
+       catalog lookup here could only ever mint a dead `"${code}"` entry.
+      */
+      return code;
+  }
+}
+
+function getOrgNodeStall(
+  agent: Agent,
+  t: TFunction<"app">,
+  columnLabel: (column: ColumnId) => string,
+  context: { heartbeatMultiplier: number; dataAsOfMs: number },
+): { text: string; title: string | undefined; modifier: string } | null {
+  const reason = resolveFleetStallReason(agent, context);
+  if (!reason) return null;
+
+  const modifier = reason.bucket === "waitingHuman"
+    ? "waiting-human"
+    : reason.bucket === "noHeartbeat"
+      ? "no-heartbeat"
+      : "stalled";
+
+  const cardAddress = reason.taskId
+    ? reason.taskColumn
+      ? `${reason.taskId} · ${columnLabel(reason.taskColumn as ColumnId)}`
+      : reason.taskId
+    : undefined;
+
+  return {
+    modifier,
+    title: reason.detail ?? cardAddress,
+    text: stallReasonLabel(reason.code, t),
+  };
+}
+
 type OrgChartLink = { parentId: string; childId: string };
 type OrgChartTransform = { scale: number; x: number; y: number };
 
@@ -240,10 +383,13 @@ type OrgChartNodeProps = {
   linksRef: MutableRefObject<OrgChartLink[]>;
   activityByAgentId: ReadonlyMap<string, AgentActivityEvent>;
   nowTick: number;
+  /** Project heartbeat multiplier, threaded so the node's countdown ages on the same threshold its health label uses. */
+  heartbeatMultiplier: number;
 };
 
-function OrgChartNode({ node, onSelect, getHealthStatus, selectedAgentId, registerNodeElement, linksRef, activityByAgentId, nowTick }: OrgChartNodeProps) {
+function OrgChartNode({ node, onSelect, getHealthStatus, selectedAgentId, registerNodeElement, linksRef, activityByAgentId, nowTick, heartbeatMultiplier }: OrgChartNodeProps) {
   const { t } = useTranslation("app");
+  const columnLabel = useColumnLabel();
   const { agent, children } = node;
   const health = getHealthStatus(agent);
   const healthSummary = getHealthSummary(agent, health, t);
@@ -253,6 +399,8 @@ function OrgChartNode({ node, onSelect, getHealthStatus, selectedAgentId, regist
   const activityState = resolveNodeActivityState(agent, activityByAgentId.get(agent.id), nowTick, health);
   const activityClass = activityState === "unknown" ? "" : ` org-chart-node-card--activity-${activityState}`;
   const nodeStyle = { "--org-chart-subtree-leaves": String(subtreeLeafCount) } as CSSProperties;
+  const heartbeat = getOrgNodeHeartbeat(agent, t, nowTick);
+  const stall = getOrgNodeStall(agent, t, columnLabel, { heartbeatMultiplier, dataAsOfMs: nowTick });
 
   return (
     <div className={`org-chart-node${children.length > 0 ? " org-chart-node--has-children" : ""}`} style={nodeStyle}>
@@ -284,6 +432,30 @@ function OrgChartNode({ node, onSelect, getHealthStatus, selectedAgentId, regist
             {healthSummary.label && <span className="text-secondary">{healthSummary.label}</span>}
           </span>
         </div>
+        {/*
+        FNXC:FleetVerdict 2026-09-02-06:45 (RUFU-176):
+        The three runtime-fact rows answer "is this agent moving, and if not, why" without opening the detail view:
+        what it is holding, when its next beat is due, and the reason it is parked. Each row is absent rather than
+        showing a placeholder zero, and every one of them is already-wired roster data.
+        */}
+        {agent.taskId && (
+          <div className="org-chart-node__task">
+            <AgentTaskBadge taskId={agent.taskId} taskColumn={agent.taskColumn} />
+          </div>
+        )}
+        {heartbeat && (
+          <div
+            className={`org-chart-node__heartbeat${heartbeat.overdue ? " org-chart-node__heartbeat--overdue" : ""}`}
+            title={heartbeat.title}
+          >
+            {heartbeat.text}
+          </div>
+        )}
+        {stall && (
+          <div className={`org-chart-node__stall org-chart-node__stall--${stall.modifier}`} title={stall.title}>
+            {stall.text}
+          </div>
+        )}
       </div>
       {children.length > 0 && (
         <div className="org-chart-children" role="group" aria-label={t("agents.orgChartEmployees", "{{name}} employees", { name: agent.name })}>
@@ -300,6 +472,7 @@ function OrgChartNode({ node, onSelect, getHealthStatus, selectedAgentId, regist
                 linksRef={linksRef}
                 activityByAgentId={activityByAgentId}
                 nowTick={nowTick}
+                heartbeatMultiplier={heartbeatMultiplier}
               />
             );
           })}
@@ -502,15 +675,31 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
   );
   const viewportMode = useViewportMode();
   const isMobileViewport = viewportMode === "mobile";
-  const [sidebarWidth, setSidebarWidth] = useState<number>(() => readAgentsSidebarWidth(projectId));
   const [filterState, setFilterState] = useState<AgentState | "all">("all");
+  /*
+  FNXC:FleetVerdict 2026-09-02-15:47 (RUFU-176 code review P2):
+  The state dropdown no longer travels to the server. `useAgents` mapped `filterState` into a server-side SQL
+  `WHERE state = ?`, so the roster handed to the fleet verdict was already narrowed to one state and three of the four
+  buckets (waitingHuman / noHeartbeat / stalled) structurally collapsed to zero whenever the operator had picked any
+  state other than "All States" — a strip that changes its answer about "is the project moving?" because a display
+  filter moved. The roster is fetched unfiltered and the operator's choice is applied client-side to the roster list
+  only (`stateFilteredAgents`), while the verdict reads the full population (`fleetRosterAgents`).
+  Side effect worth recording: the SWR cache key is not keyed by filter state, so a filtered fetch used to overwrite
+  the shared `AGENTS:<project>` snapshot with the narrowed list for every other surface that reads that key.
+  */
   const { agents, stats, isLoading, loadAgents, refreshAgents } = useAgents(projectId, {
-    filterState,
     showSystemAgents,
   });
   const [isCreating, setIsCreating] = useState(false);
   const [onboardingDraft, setOnboardingDraft] = useState<AgentOnboardingSummary | null>(null);
   const [isImporting, setIsImporting] = useState(false);
+  /*
+  FNXC:FleetActionLog 2026-09-02-06:45 (RUFU-176):
+  The action-log drawer's open flag lives here (not inside the panel) because the trigger button sits in the shared
+  `agents-view-controls` cluster that both desktop and mobile breakpoints render, so the control and its surface must
+  share one owner. The panel mounts only while open, but that is a conditional MOUNT, never a conditional hook call.
+  */
+  const [isActionLogOpen, setIsActionLogOpen] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [selectedOrgChartAgentId, setSelectedOrgChartAgentId] = useState<string | null>(null);
   const isMobileDetailOpen = isMobileViewport && !!selectedAgentId;
@@ -554,10 +743,6 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
   const controlsPanelId = useId();
 
   useEffect(() => {
-    setSidebarWidth(readAgentsSidebarWidth(projectId));
-  }, [projectId]);
-
-  useEffect(() => {
     const saved = getScopedItem("fn-agent-view", projectId);
     if (saved === "list" || saved === "board" || saved === "org") {
       setAgentView(saved);
@@ -579,59 +764,6 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
   useEffect(() => {
     setScopedItem(ORG_CHART_LAYOUT_STORAGE_KEY, orgChartLayoutPreference, projectId);
   }, [orgChartLayoutPreference, projectId]);
-
-  const persistSidebarWidth = useCallback((width: number) => {
-    try {
-      setScopedItem(AGENTS_SIDEBAR_WIDTH_STORAGE_KEY, String(width), projectId);
-    } catch {
-      // Ignore storage errors.
-    }
-  }, [projectId]);
-
-  const handleSidebarResizeStart = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (isMobileViewport) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const handle = event.currentTarget;
-    if (typeof handle.setPointerCapture === "function") {
-      handle.setPointerCapture(event.pointerId);
-    }
-    const startX = event.clientX;
-    const startWidth = sidebarWidth;
-    let latestWidth = startWidth;
-    document.body.style.userSelect = "none";
-
-    const onPointerMove = (moveEvent: PointerEvent) => {
-      const deltaX = moveEvent.clientX - startX;
-      const nextWidth = clampAgentsSidebarWidth(startWidth + deltaX);
-      latestWidth = nextWidth;
-      setSidebarWidth(nextWidth);
-    };
-
-    const onPointerUp = (upEvent: PointerEvent) => {
-      if (typeof handle.releasePointerCapture === "function") {
-        handle.releasePointerCapture(upEvent.pointerId);
-      }
-      document.body.style.userSelect = "";
-      document.removeEventListener("pointermove", onPointerMove);
-      document.removeEventListener("pointerup", onPointerUp);
-      persistSidebarWidth(latestWidth);
-    };
-
-    document.addEventListener("pointermove", onPointerMove);
-    document.addEventListener("pointerup", onPointerUp);
-  }, [isMobileViewport, persistSidebarWidth, sidebarWidth]);
-
-  const handleSidebarResizeKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (isMobileViewport) return;
-    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-    event.preventDefault();
-    const step = event.shiftKey ? 50 : 10;
-    const delta = event.key === "ArrowLeft" ? -step : step;
-    const nextWidth = clampAgentsSidebarWidth(sidebarWidth + delta);
-    setSidebarWidth(nextWidth);
-    persistSidebarWidth(nextWidth);
-  }, [isMobileViewport, persistSidebarWidth, sidebarWidth]);
 
   const [editingRoleForAgent, setEditingRoleForAgent] = useState<string | null>(null);
   const roleSelectRef = useRef<HTMLSelectElement>(null);
@@ -702,42 +834,96 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
   }, [agents, optimisticStateOverrides]);
 
 
+  /*
+  FNXC:FleetVerdict 2026-09-02-15:47 (RUFU-176 code review P2):
+  The classifier's input: the roster filtered ONLY by the system/ephemeral predicate, never by agent state — the input
+  invariant stated in `fleetVerdict.ts`. The state dropdown cannot shrink the population the verdict counts.
+  */
+  const fleetRosterAgents = useMemo(() => {
+    return optimisticAgents.filter((agent) => showSystemAgents || !isEphemeralAgent(agent));
+  }, [optimisticAgents, showSystemAgents]);
+
+  // The operator's "Filter agents by state" choice, now applied client-side (see the `useAgents` note above), so it
+  // narrows the roster list and board without narrowing the verdict. "All States" is the identity filter.
+  const stateFilteredAgents = useMemo(() => {
+    if (filterState === "all") return optimisticAgents;
+    return optimisticAgents.filter((agent) => agent.state === filterState);
+  }, [optimisticAgents, filterState]);
+
   // Filter agents for display. "All States" means all non-ephemeral agents,
   // including paused/error agents and heartbeat-disabled agents that still carry configuration.
   // When "Show system agents" is enabled, include ephemeral/internal agents.
   const displayAgents = useMemo(() => {
-    return optimisticAgents.filter((agent) => showSystemAgents || !isEphemeralAgent(agent));
-  }, [optimisticAgents, showSystemAgents]);
+    return stateFilteredAgents.filter((agent) => showSystemAgents || !isEphemeralAgent(agent));
+  }, [stateFilteredAgents, showSystemAgents]);
 
   const displayActiveAgents = useMemo(() => {
-    return optimisticAgents.filter((agent) => {
+    return stateFilteredAgents.filter((agent) => {
       if (agent.state !== "active" && agent.state !== "running") {
         return false;
       }
       return showSystemAgents || !isEphemeralAgent(agent);
     });
-  }, [optimisticAgents, showSystemAgents]);
+  }, [stateFilteredAgents, showSystemAgents]);
 
-  // Filter org tree to exclude ephemeral agents in default view.
+  /*
+  FNXC:FleetVerdict 2026-09-02-05:41 (RUFU-176):
+  The "is the project moving?" verdict over the whole roster, forwarding the project's heartbeat multiplier so
+  staleness matches the per-node health badge (same two-arg convention as `getHealthStatus`).
+
+  FNXC:FleetVerdict 2026-09-02-15:47 (RUFU-176 code review P2):
+  Input is `fleetRosterAgents` (system/ephemeral filter only), NOT `displayAgents` — the state dropdown narrows
+  `displayAgents`, and classifying that pinned three of the four buckets at zero. See the input invariant in
+  `fleetVerdict.ts`.
+  The RUFU-174 `linkedTaskStallCodes` seam stays unwired here: the roster response carries no linked-task stall codes,
+  and fetching them per agent would be a new read path this card is scoped not to add. Unwired is an allowed, logged
+  state — the classifier then reads human-hold purely from `pendingApprovalCount` / `pauseReason` / `taskColumn`.
+  */
+  const fleetVerdict = useMemo(
+    () => classifyFleetVerdict(fleetRosterAgents, { heartbeatMultiplier }),
+    [fleetRosterAgents, heartbeatMultiplier],
+  );
+
+  /*
+  FNXC:FleetVerdict 2026-09-02-15:47 (RUFU-176 code review P0):
+  The org tree arrives from `/api/agents/org-tree`, which returns raw `AgentStore.getOrgTree()` records — a plain
+  `listAgents()` tree build. The two response enrichments the node reads are applied ONLY by `/api/agents`
+  (`src/routes/register-agent-core-routes.ts`): `sanitizeAgentTaskLinks` (supplies `taskColumn`, and deletes `taskId` when the
+  linked task is `done`/`archived`) and `withPendingApprovalCounts` (supplies `pendingApprovalCount`). Reading the tree
+  records straight meant every node's chip said "· Unresolved task" because `taskColumn` was never on the wire, a
+  terminal-linked node kept a `taskId` the roster had already dropped, and a node could never show "waiting for a
+  human" while the strip one row above counted it — two surfaces disagreeing on one screen.
+
+  The join re-points each tree node at the roster record sharing its id — the whole record, not a field merge, so a
+  sanitizer-deleted `taskId` cannot resurrect from the raw tree copy. A tree id absent from the roster keeps its raw
+  record rather than losing the node. Populations match because both requests carry the same `includeEphemeral`.
+  */
   const displayOrgTree = useMemo(() => {
+    const rosterById = new Map(optimisticAgents.map((agent) => [agent.id, agent] as const));
+    const joinRoster = (node: OrgTreeNode): OrgTreeNode => ({
+      agent: rosterById.get(node.agent.id) ?? node.agent,
+      children: node.children.map(joinRoster),
+    });
+    const joined = orgTree.map(joinRoster);
+
     if (showSystemAgents) {
-      return orgTree;
+      return joined;
     }
 
     // Recursively filter out ephemeral agents from the org tree.
     const filterNode = (node: OrgTreeNode): OrgTreeNode | null => {
       if (isEphemeralAgent(node.agent)) return null;
       return {
-        ...node,
+        agent: node.agent,
         children: node.children
           .map(filterNode)
           .filter((n): n is OrgTreeNode => n !== null),
       };
     };
-    return orgTree
+    return joined
       .map(filterNode)
       .filter((n): n is OrgTreeNode => n !== null);
-  }, [orgTree, showSystemAgents]);
+  }, [orgTree, showSystemAgents, optimisticAgents]);
 
   useEffect(() => {
     if (agentView !== "org") return;
@@ -1524,7 +1710,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
   }, []);
 
   return (
-    <div className="agents-view">
+    <ViewLayout className="agents-view" contentOwnsScroll header={<>
       {/*
       FNXC:Navigation 2026-06-22-01:10:
       Agents adopts the shared ViewHeader (Command Center-modeled) title row for cross-view consistency. The deeply-integrated controls (view-toggle, controls popup, refresh, import, new-agent) keep working by passing the existing agents-view-controls cluster through the header actions prop. The agents-view-controls / agents-view-primary-actions class names are preserved so existing scoped CSS (incl. mobile rules covered by the CSS string-match test) still applies.
@@ -1535,8 +1721,24 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
       <ViewHeader
         icon={Bot}
         title={t("agents.title", "Agents")}
+        backAction={selectedAgentId && (isMobileViewport || agentView === "org") ? {
+          label: agentView === "org" ? t("agents.backToOrgChart", "Back to org chart") : t("agents.backToAgents", "Back to agents"),
+          onClick: handleCloseDetail,
+          "data-testid": "agents-detail-back",
+        } : undefined}
         actions={
         <div className="agents-view-controls">
+          {/*
+          FNXC:StandardizedViewActions 2026-09-14-02:47:
+          Overview is a view-level disclosure, so its trigger sits with the other header actions. The rail keeps only the
+          agent collection and the expanded overview drops in as a sibling section beneath the header.
+          */}
+          <AgentsOverviewToggle
+            activeAgents={displayActiveAgents}
+            verdict={fleetVerdict}
+            isOpen={isOverviewOpen}
+            onToggle={() => setIsOverviewOpen((open) => !open)}
+          />
           <div className="view-toggle">
             <button
               className={`view-toggle-btn${agentView === "list" ? " active" : ""}`}
@@ -1579,6 +1781,24 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
             >
               <SlidersHorizontal size={16} />
             </button>
+            {/*
+            FNXC:FleetActionLog 2026-09-02-06:45 (RUFU-176):
+            The action-log trigger sits in the always-rendered primary cluster (not the desktop-only secondary block) because
+            the operator asked that "why is the project standing still" be answerable from this tab on any device, and a touch
+            viewport has no hover to discover a hover-only affordance. The stable test id pins its visibility on both
+            breakpoints (`AgentsView.actionlog.test.tsx`).
+            */}
+            <button
+              type="button"
+              className={`btn-icon agent-action-log-trigger${isActionLogOpen ? " active" : ""}`}
+              onClick={() => setIsActionLogOpen((open) => !open)}
+              title={t("agents.actionLog.trigger", "Action log")}
+              aria-label={t("agents.actionLog.trigger", "Action log")}
+              aria-expanded={isActionLogOpen}
+              data-testid="agent-action-log-trigger"
+            >
+              <ScrollText size={16} />
+            </button>
             <button
               className="btn-icon"
               onClick={() => void loadAgents()}
@@ -1587,34 +1807,27 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
             >
               <RefreshCw size={16} className={isLoading ? "spin" : undefined} />
             </button>
-            {!isMobileViewport && (
-              <>
-                <button
-                  className="btn btn-sm agent-import-trigger"
-                  onClick={() => {
-                    setIsImporting(true);
-                    setIsControlsPanelOpen(false);
-                  }}
-                  aria-label={t("agents.import", "Import")}
-                  title={t("agents.import", "Import")}
-                >
-                  <Upload size={16} />
-                  {t("agents.import", "Import")}
-                </button>
-                <button
-                  className="btn btn-task-create btn-sm"
-                  onClick={() => {
-                    handleOpenNewAgent();
-                    setIsControlsPanelOpen(false);
-                  }}
-                  aria-label={t("agents.newAgent", "New Agent")}
-                  title={t("agents.newAgent", "New Agent")}
-                >
-                  <Plus size={16} />
-                  {t("agents.newAgent", "New Agent")}
-                </button>
-              </>
-            )}
+            {!isMobileViewport ? <button
+              className="btn btn-sm agent-import-trigger"
+              onClick={() => {
+                setIsImporting(true);
+                setIsControlsPanelOpen(false);
+              }}
+              aria-label={t("agents.import", "Import")}
+              title={t("agents.import", "Import")}
+            >
+              <Upload size={16} />
+              {t("agents.import", "Import")}
+            </button> : null}
+            <ViewActionButton
+              kind="create"
+              label={t("agents.newAgent", "New Agent")}
+              onClick={() => {
+                handleOpenNewAgent();
+                setIsControlsPanelOpen(false);
+              }}
+              data-testid="agents-new-agent"
+            />
             {isControlsPanelOpen && (
               <div
                 ref={controlsPanelRef}
@@ -1668,18 +1881,6 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                     >
                       <Upload size={16} />
                       {t("agents.import", "Import")}
-                    </button>
-                    <button
-                      className="btn btn-task-create btn-sm"
-                      onClick={() => {
-                        handleOpenNewAgent();
-                        setIsControlsPanelOpen(false);
-                      }}
-                      aria-label={t("agents.newAgent", "New Agent")}
-                      title={t("agents.newAgent", "New Agent")}
-                    >
-                      <Plus size={16} />
-                      {t("agents.newAgent", "New Agent")}
                     </button>
                   </div>
                 )}
@@ -1812,6 +2013,8 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
         </div>
         }
       />
+    </>}
+    >
 
       <NewAgentDialog
         isOpen={isCreating}
@@ -1834,12 +2037,27 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
         projectId={projectId}
       />
 
+      {/*
+      FNXC:FleetActionLog 2026-09-02-06:45 (RUFU-176):
+      The roster passed here is `optimisticAgents` (the full roster, ephemeral included), NOT `displayAgents`: the panel
+      uses the roster ONLY to resolve a human-readable label per action, never to build nodes, so an event whose agent is
+      hidden by the show-system-agents filter must still name that agent rather than degrade to "unrecognized". This is a
+      conditional MOUNT (the drawer's own retainer on the shared activity hook attaches only while open), never a
+      conditional hook call.
+      */}
+      {isActionLogOpen && (
+        <AgentActionLogPanel
+          projectId={projectId}
+          rosterAgents={optimisticAgents}
+          onClose={() => setIsActionLogOpen(false)}
+        />
+      )}
+
       <AgentsOverviewBar
         stats={stats}
         activeAgents={displayActiveAgents}
         projectId={projectId}
         isOpen={isOverviewOpen}
-        onToggle={() => setIsOverviewOpen((open) => !open)}
         onSelectAgent={handleOverviewAgentSelect}
         onOpenTaskLogs={onOpenTaskLogs}
       />
@@ -1849,14 +2067,6 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
           <div className="agents-view-content agents-view-content--org-full">
             {selectedAgentId ? (
               <div className="agents-org-detail-view" data-testid="agents-org-detail-view">
-                <button
-                  type="button"
-                  className="btn btn-sm agents-org-detail-back"
-                  onClick={handleCloseDetail}
-                  aria-label={t("agents.backToOrgChart", "Back to org chart")}
-                >
-                  {t("agents.backToOrgChart", "Back to org chart")}
-                </button>
                 <Suspense fallback={null}>
                   <AgentDetailView
                     key={selectedAgentId}
@@ -1940,6 +2150,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
                               linksRef={orgChartLinksRef}
                               activityByAgentId={activitySnapshot.activityByAgentId}
                               nowTick={activitySnapshot.nowTick}
+                              heartbeatMultiplier={heartbeatMultiplier}
                             />
                           ));
                         })()
@@ -1962,11 +2173,17 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
           </div>
         </div>
       ) : (
-      <div
-        className="agents-split-layout"
-        style={isMobileViewport ? undefined : { gridTemplateColumns: `${sidebarWidth}px var(--space-sm) minmax(0, 1fr)` }}
-      >
-        <div className={`agents-split-sidebar${isMobileDetailOpen ? " agents-split-sidebar--hidden-mobile" : ""}`}>
+      <div className="agents-split-layout">
+        <ViewSidebar
+          ariaLabel={t("agents.agentList", "Agent list")}
+          resizeLabel={t("agents.resizeSidebar", "Resize agent list")}
+          hostIdentity="agents-main"
+          mobile={isMobileViewport}
+          panelTestId="agents-split-sidebar"
+          panelClassName="agents-split-sidebar__panel"
+          separatorTestId="agents-sidebar-resize-handle"
+          className={`agents-split-sidebar${isMobileDetailOpen ? " agents-split-sidebar--hidden-mobile" : ""}`}
+        >
           <div className="agents-view-content">
         {/* Agent Collection */}
         {showInitialAgentsLoading ? (
@@ -2413,23 +2630,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
         )}
           </div>
 
-        </div>
-
-        {!isMobileViewport && (
-          <div
-            className="agents-split-resize-handle"
-            data-testid="agents-sidebar-resize-handle"
-            role="separator"
-            aria-orientation="vertical"
-            aria-valuemin={AGENTS_SIDEBAR_MIN_WIDTH}
-            aria-valuemax={AGENTS_SIDEBAR_MAX_WIDTH}
-            aria-valuenow={sidebarWidth}
-            aria-label={t("agents.resizeSidebar", "Resize agents sidebar")}
-            tabIndex={0}
-            onPointerDown={handleSidebarResizeStart}
-            onKeyDown={handleSidebarResizeKeyDown}
-          />
-        )}
+        </ViewSidebar>
 
         <div className={`agents-split-detail${isMobileViewport && !selectedAgentId ? " agents-split-detail--hidden-mobile" : ""}`}>
           {selectedAgentId ? (
@@ -2437,7 +2638,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
               <AgentDetailView
                 key={selectedAgentId}
                 inline
-                showInlineBackButton={isMobileViewport}
+                showInlineBackButton={false}
                 agentId={selectedAgentId}
                 projectId={projectId}
                 onClose={handleCloseDetail}
@@ -2459,6 +2660,6 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
         </div>
       </div>
       )}
-    </div>
+    </ViewLayout>
   );
 }

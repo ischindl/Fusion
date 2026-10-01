@@ -1,14 +1,14 @@
 import type { Agent, AgentCapability, Task } from "../types.js";
 
 /*
-FNXC:WorkflowResolvedColumns 2026-07-30-15:20 (FLAGGED, NOT FIXED — found by a #2739 review thread):
-THE ROLE-ROUTING POLICY IS BYPASSED ENTIRELY ON A RENAMED BOARD.
+FNXC:WorkflowResolvedColumns 2026-07-30-15:20 (found by a #2739 review thread):
+THE ROLE-ROUTING POLICY WAS BYPASSED ENTIRELY ON A RENAMED BOARD.
 
 `isImplementationTask` is a Set membership test over these hardcoded ids, and
 `evaluateImplementationTaskBind` short-circuits to `{ allowed: true }` when it returns false. So on a
-workflow whose lanes are named anything else, EVERY agent is bind-compatible with EVERY task: the role
+workflow whose lanes are named anything else, EVERY agent was bind-compatible with EVERY task: the role
 check that exists to stop a liaison/custom agent being handed implementation work — the NEXT-871 loop
-FN-7851 fixed — silently does not apply.
+FN-7851 fixed — silently did not apply.
 
 HOW IT SURFACED, which is the part worth keeping: a reviewer noticed my dispatch test claimed to exercise
 the bind evaluator while omitting the optional `agent` argument. Passing a real agent was not enough to
@@ -20,11 +20,16 @@ WHY THE CENSUS NEVER FLAGGED IT: these are Set MEMBERS, not comparisons. The lif
 raw-`sql` encoding of the archived gate (PR #2724). Worth knowing that the backlog number is a floor, not a
 total.
 
-NOT FIXED HERE. `isImplementationTask` is a SYNC pure predicate with no store and no task id, called from
-`evaluateImplementationTaskBind`, which gates agent assignment; resolving a workflow inside it means
-threading a resolver through the routing policy and making its callers async. That is a behaviour change to
-agent admission, not a vocabulary conversion, and the failure mode of getting it wrong is either handing
-implementation work to a liaison or refusing work to a valid executor.
+FNXC:LaneCapabilityVocabulary 2026-09-26-18:46 (RUFU-272 — RESOLVED, the sync-purity constraint lifted
+without making the predicate async):
+This stayed FLAGGED because resolving a workflow inside the predicate meant threading a resolver through
+the routing policy. The resolution instead makes the resolved set an OPTIONAL parameter of every policy
+surface: callers that HOLD the task's resolved IR (the dispatch selector via
+`resolveTaskImplementationColumns`, the heartbeat wake gate) pass `implementationColumns` and get the
+board's real lane vocabulary — a UNION with this legacy set, never a replacement, so a v1-upgraded
+trait-less IR and every failure path classify exactly as before; callers that pass nothing keep the
+legacy-only classification byte-for-byte. The hole closes where a caller can resolve; nothing gets
+async, and no admission path silently widens.
 */
 const IMPLEMENTATION_TASK_COLUMNS: ReadonlySet<Task["column"]> = new Set([
   "triage",
@@ -129,8 +134,21 @@ export function isWorkflowPrincipalEligible(
   return agent.runtimeConfig?.enabled !== false;
 }
 
-export function isImplementationTask(task: Pick<Task, "column">): boolean {
-  return IMPLEMENTATION_TASK_COLUMNS.has(task.column);
+/**
+ * Is a card in this column implementation-class (subject to role/assignment admission)?
+ *
+ * FNXC:LaneCapabilityVocabulary 2026-09-26-18:46 (RUFU-272): `implementationColumns` is the caller's
+ * RESOLVED lane vocabulary (`implementationColumns(ir)` from the card's workflow IR). It is UNIONED
+ * with the static legacy set — supplying it can only ADD lanes the renamed board names, never remove
+ * one the legacy vocabulary already classified — so the default (omitted) behavior is unchanged and a
+ * synthesized trait-less v1 IR cannot shrink admission scope. See the FNXC note on
+ * `implementationColumns` in workflow-lifecycle-traits.ts.
+ */
+export function isImplementationTask(
+  task: Pick<Task, "column">,
+  implementationColumns?: ReadonlySet<string>,
+): boolean {
+  return IMPLEMENTATION_TASK_COLUMNS.has(task.column) || implementationColumns?.has(task.column) === true;
 }
 
 export function isExecutorRoleAgent(agent: RoleTaggedAgent): boolean {
@@ -194,8 +212,9 @@ export function hasWorkflowRoleCapability(
 export function canAgentTakeImplementationTaskForExplicitRouting(
   agent: AgentAssignmentPolicyInput,
   task: Pick<Task, "column">,
+  implementationColumns?: ReadonlySet<string>,
 ): boolean {
-  if (!isImplementationTask(task)) return true;
+  if (!isImplementationTask(task, implementationColumns)) return true;
   if (!canAgentReceiveImplementationTasks(agent)) return false;
   return isExecutorRoleAgent(agent) || isEngineerRoleAgent(agent);
 }
@@ -203,6 +222,8 @@ export function canAgentTakeImplementationTaskForExplicitRouting(
 export interface BacklogPickupRoleOptions {
   /** Allow durable engineer-role agents to auto-claim implementation backlog work. Default: false. */
   allowEngineer?: boolean;
+  /** Caller-resolved implementation-class lanes for the task's workflow (RUFU-272; unioned with legacy). */
+  readonly implementationColumns?: ReadonlySet<string>;
 }
 
 /*
@@ -217,7 +238,7 @@ export function canAgentTakeImplementationTaskForBacklogPickup(
   task: Pick<Task, "column">,
   options: BacklogPickupRoleOptions = {},
 ): boolean {
-  if (!isImplementationTask(task)) return true;
+  if (!isImplementationTask(task, options.implementationColumns)) return true;
   // FNXC:AgentRouting 2026-07-12-11:20: backlog pickup is automatic routing — only "auto"-policy agents qualify (#2015).
   if (!isAgentAutoAssignable(agent)) return false;
   return isExecutorRoleAgent(agent) || (options.allowEngineer === true && isEngineerRoleAgent(agent));
@@ -247,6 +268,13 @@ export interface ImplementationTaskBindContext {
   executorRoleOverride?: boolean;
   /** Backlog-pickup engineer opt-in (settings/runtimeConfig engineerBacklogAutoClaim). Only relevant when not explicit. */
   allowEngineer?: boolean;
+  /**
+   * Caller-resolved implementation-class lanes for `task`'s workflow (RUFU-272). Unioned with the
+   * legacy column set inside `isImplementationTask`; omitting it preserves the legacy-only
+   * classification exactly. A caller that HAS the card's IR and omits this reopens the renamed-board
+   * no-op this closes.
+   */
+  readonly implementationColumns?: ReadonlySet<string>;
 }
 
 export type ImplementationTaskBindVerdict = { allowed: true } | { allowed: false; reason: string };
@@ -256,7 +284,7 @@ export function evaluateImplementationTaskBind(
   task: Pick<Task, "id" | "column">,
   context: ImplementationTaskBindContext = {},
 ): ImplementationTaskBindVerdict {
-  if (!isImplementationTask(task)) {
+  if (!isImplementationTask(task, context.implementationColumns)) {
     return { allowed: true };
   }
   if (!canAgentReceiveImplementationTasks(agent)) {
@@ -267,8 +295,11 @@ export function evaluateImplementationTaskBind(
   }
   const explicit = context.explicitRouting === true;
   const roleAllowed = explicit
-    ? canAgentTakeImplementationTaskForExplicitRouting(agent, task)
-    : canAgentTakeImplementationTask(agent, task, { allowEngineer: context.allowEngineer });
+    ? canAgentTakeImplementationTaskForExplicitRouting(agent, task, context.implementationColumns)
+    : canAgentTakeImplementationTask(agent, task, {
+        allowEngineer: context.allowEngineer,
+        implementationColumns: context.implementationColumns,
+      });
   return roleAllowed ? { allowed: true } : { allowed: false, reason: formatRoleMismatchReason(agent, task) };
 }
 

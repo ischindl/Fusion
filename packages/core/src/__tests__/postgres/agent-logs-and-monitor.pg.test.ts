@@ -16,6 +16,8 @@
  * no longer merge green. Auto-skipped via pgDescribe when PostgreSQL is absent.
  */
 
+import { existsSync, readFileSync, statSync } from "node:fs";
+
 import { it, expect, beforeAll, beforeEach, afterEach, afterAll } from "vitest";
 
 import {
@@ -23,6 +25,7 @@ import {
   createSharedPgTaskStoreTestHarness,
   type SharedPgTaskStoreHarness,
 } from "../../__test-utils__/pg-test-harness.js";
+import { getAgentLogFilePath } from "../../agents/agent-log-file-store.js";
 import { aggregateActivityAnalytics, aggregateMonitorMetrics } from "../../board/activity-analytics.js";
 import { sql } from "drizzle-orm";
 import * as schema from "../../postgres/schema/index.js";
@@ -123,6 +126,69 @@ pgTest("agent-log buffer + monitor metrics (PostgreSQL backend mode)", () => {
     expect(emitted[1]?.detail).toBe(entries[1]?.detail);
     expect(emitted[0]?.timeToFirstTokenMs).toBe(entries[0]?.timeToFirstTokenMs);
     expect(emitted[1]?.durationMs).toBe(entries[1]?.durationMs);
+  });
+
+  /*
+  FNXC:AgentLogRead 2026-09-09-15:19:
+  RUFU-204's report claimed a log READ grew the POLLED card's log. Disk forensics falsified that: the flush
+  groups buffered entries by their OWN taskId and appends each group to its own taskDir, so a read never
+  writes into the card it polls. This is a permanent ratchet for that invariant at the PG backend, where the
+  same flush runs: after polling A twice while the reader card holds pending buffered rows, A's
+  agent-log.jsonl is byte-for-byte unchanged (content AND mtime) and holds none of the reader's text, while
+  the reader's own rows land ONLY in the reader's file. It also pins the store-side path-safety guard that
+  now refuses a target which cannot name a card directory — the defense-in-depth layer behind the engine's
+  pre-check.
+  The unchanged-A-file assertion already held before the RUFU-204 fix: this test is a regression net against
+  re-introducing a write (refresh/touch/append) into the polled card, not evidence the defect existed here.
+  */
+  it("reading a card's log is write-isolated and refuses a path-unsafe target (ratchet)", async () => {
+    const store = h.store();
+    await store.createTaskWithReservedId(
+      { description: "polled card", column: "todo" },
+      { taskId: "FN-LOG-POLL-A", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", applyDefaultWorkflowSteps: false },
+    );
+    await store.createTaskWithReservedId(
+      { description: "reader card", column: "todo" },
+      { taskId: "FN-LOG-POLL-READER", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", applyDefaultWorkflowSteps: false },
+    );
+
+    // Land two durable rows on the polled card, then snapshot its raw JSONL bytes.
+    await store.appendAgentLog("FN-LOG-POLL-A", "poll-a-1", "text");
+    await store.appendAgentLog("FN-LOG-POLL-A", "poll-a-2", "text");
+    expect(await store.getAgentLogs("FN-LOG-POLL-A")).toHaveLength(2);
+    const aPath = getAgentLogFilePath(store.taskDir("FN-LOG-POLL-A"));
+    expect(existsSync(aPath)).toBe(true);
+    const bytesBefore = readFileSync(aPath, "utf8");
+    expect(bytesBefore).toContain("poll-a-1");
+    expect(bytesBefore).toContain("poll-a-2");
+    // RUFU-204 Step 5: the incident's author read a growing `total` as proof of an append. The disk-proof
+    // rebuttal was `stat -c %Y` (modification time) — so the ratchet pins mtime, not just content bytes:
+    // a hypothetical "touch on read" would keep the bytes and still lie about the card's liveness.
+    const mtimeBefore = statSync(aPath).mtimeMs;
+
+    // The reader card appends a row that is pending in the shared buffer at this instant.
+    await store.appendAgentLog("FN-LOG-POLL-READER", "READER-PENDING", "text");
+
+    // Poll A twice. Whether the pending row is flushed by the read's internal flush or the buffer's own
+    // timer first, it must land in the READER's file only — never in the card being polled.
+    const firstPoll = await store.getAgentLogs("FN-LOG-POLL-A");
+    const secondPoll = await store.getAgentLogs("FN-LOG-POLL-A");
+
+    expect(readFileSync(aPath, "utf8")).toBe(bytesBefore); // a read never appended into the polled card
+    expect(readFileSync(aPath, "utf8")).not.toContain("READER-PENDING");
+    expect(statSync(aPath).mtimeMs).toBe(mtimeBefore); // reads never refresh the polled card's freshness
+    // Repeated reads are byte-stable: identical rows and identical last entry across the two polls.
+    expect(secondPoll).toEqual(firstPoll);
+    expect(secondPoll.at(-1)?.text).toBe("poll-a-2");
+
+    const readerPath = getAgentLogFilePath(store.taskDir("FN-LOG-POLL-READER"));
+    expect(existsSync(readerPath)).toBe(true);
+    expect(readFileSync(readerPath, "utf8")).toContain("READER-PENDING");
+
+    // Store-side guard: every non-route lane (chat/pi/project-engine/evaluator) gets the same refusal,
+    // before any path join against the real tasks root.
+    await expect(store.getAgentLogs("../FN-LOG-POLL-A")).rejects.toThrow(/invalid task id/);
+    await expect(store.getAgentLogCount("..")).rejects.toThrow(/invalid task id/);
   });
 
   it("aggregateActivityAnalytics resolves against real Postgres (no deployments 500)", async () => {

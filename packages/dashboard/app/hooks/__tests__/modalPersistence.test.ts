@@ -158,7 +158,7 @@ describe("modalPersistence", () => {
       const originalSetItem = localStorage.setItem;
       const setItem = vi.spyOn(localStorage, "setItem")
         .mockImplementationOnce(() => { throw new DOMException("Quota exceeded"); })
-        .mockImplementation(function (key: string, value: string) {
+        .mockImplementation(function (this: Storage, key: string, value: string) {
           originalSetItem.call(this, key, value);
         });
       const removeItem = vi.spyOn(localStorage, "removeItem");

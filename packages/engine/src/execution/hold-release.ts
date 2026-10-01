@@ -44,16 +44,21 @@ import {
   PLAN_REVIEW_GROUP_ID,
   ACTIVE_WORKFLOW_WORK_ITEM_STATES,
   resolveCapacityPoolId,
-  sortTasksByPriorityThenAgeAndId,
+  sortTasksByQueueOrder,
   TransitionRejectionError,
   resolveWorkflowIrForTask,
   isUnplannedSeedPrompt,
   isDuplicateRedirectOnlyPrompt,
   isFastExecutionMode,
+  PLAN_PREMISE_REJECTION_METADATA_KEY,
   isWorkflowOptionalGroupEnabled,
   resolveEffectiveAutoMerge,
   isTaskBlockedOnApproval,
   isPlanReviewSatisfied,
+  type PlanPremiseRejectionEpisode,
+  /* FNXC:HumanPlanApproval 2026-09-15-06:24: FN-408 per-card decision gate. */
+  isHumanPlanApprovalEnabled,
+  isHumanPlanApprovalPending,
   type TaskStore,
   type Task,
   type TaskReleaseGateVerdict,
@@ -71,8 +76,18 @@ import { readFile } from "node:fs/promises";
 import { schedulerLog } from "../logger.js";
 import { emitBoundedRunAudit } from "../util/emit-bounded-run-audit.js";
 import { getPromptPath } from "./spec-staleness.js";
-import { activeSessionRegistry, executingTaskLock } from "../agents/active-session-registry.js";
+import { isTaskPlanningOrExecutionLive } from "../agents/planning-execution-liveness.js";
 import { evaluateStrandedHoldContinuation } from "../plan-review-continuation.js";
+import { checkPlanPremises, type PlanPremiseCheckResult } from "./plan-premise-check.js";
+import {
+  advancePlanPremiseRejectionEpisode,
+  buildPlanPremiseExhaustedError,
+  isPlanPremiseParkTerminal,
+  PLAN_PREMISE_REFUSAL_LOG_WINDOW_MS,
+  TRIAGE_PLAN_PREMISE_INVALIDATED_BY_DELIVERY_LOG_ACTION,
+  TRIAGE_PLAN_PREMISE_REJECTED_REPLAN_LOG_ACTION,
+  type PlanPremiseEscalation,
+} from "./plan-premise-ladder.js";
 
 // FNXC:StrandedHoldContinuation 2026-07-26-14:15:
 // A genuine stranded-plan fault is warned once per held location; ordinary
@@ -83,6 +98,130 @@ const strandedHoldWarningMemo = new Set<string>();
  *  sweep calls `release()` if the subsequent move rejects on capacity. */
 export interface SlotReservation {
   release(): void;
+}
+
+/*
+FNXC:HoldReleaseAttribution 2026-09-09-21:15 (RUFU-209):
+The sweep's `evaluate=<ms>` token had no structure, so when it dominated the sweep budget
+(field evidence: boards of 151-215 tasks took 2132-10327 ms per sweep — 71 of 76 logged sweeps
+over the 2000 ms warn threshold, one 20117 ms — with the evaluate residual alone sampled at
+2012-8928 ms) the operator could not tell which sub-phase to cut, and the same task's
+PROMPT.md / work-item list / settings were re-read by every consumer of the same scheduler pass —
+twice for an ordinary card, three times when a second card depends on it. This pass object is the
+per-scheduler-pass observation record: it accumulates non-overlapping phase timings and memoises
+STABLE INPUT FACTS (prompt contents, work-item list, settings snapshot) keyed by task id for the
+pass only. It is deliberately never module-scoped — a cross-pass cache would be a stale-read bug.
+Computed release VERDICTS are never cached here; only the facts a verdict reads.
+*/
+
+/** A settings snapshot as the sweep's own store returns it (structural to avoid a new import). */
+type HoldReleaseSettingsSnapshot = Awaited<ReturnType<TaskStore["getSettings"]>>;
+/** A workflow work item row, taken from the store reader's own return type. */
+type WorkflowWorkItemRow = NonNullable<Awaited<ReturnType<TaskStore["listWorkflowWorkItemsForTask"]>>>[number];
+
+/** Per-scheduler-pass observation: phase timings + memoised stable input facts. */
+export interface HoldReleasePass {
+  /** Controllable clock (ms) so phase durations are exact under fake timers. */
+  now: () => number;
+  /** Accumulated ms per named phase bucket. Leaves are subtracted from the coarser net that contains them. */
+  phases: Map<string, number>;
+  /** PROMPT.md contents per task id for THIS pass only (a stable input fact, not a verdict). */
+  promptMemo: Map<string, string | null>;
+  /** Workflow work items per task id for THIS pass only. `null` records "this store exposes no reader". */
+  workItemMemo: Map<string, WorkflowWorkItemRow[] | null>;
+  /** Memoised settings snapshot for THIS pass (prefetched once at the top of the sweep). */
+  settings?: HoldReleaseSettingsSnapshot;
+  /** The sweep's read tally. Present only for sweep-created passes so memo-backed helpers can
+   *  count the round trips they ACTUALLY perform (cache hits cost nothing and must not be
+   *  counted); direct scheduler callers create passes without a tally. RUFU-209. */
+  counters?: SweepCounters;
+  /** Record the wall time of `fn` under `name` (a leaf). */
+  time<T>(name: string, fn: () => T | Promise<T>): Promise<T>;
+  /** Record `fn`'s wall time MINUS the time already recorded by nested `time`/`net` calls (a net). */
+  net<T>(name: string, fn: () => T | Promise<T>): Promise<T>;
+  /** Total ms recorded so far (used by `net` to subtract nested leaves). */
+  recordedMs(): number;
+}
+
+/** Build a fresh per-pass observation record. Never reuse across passes. */
+function createHoldReleasePass(now: () => number, counters?: SweepCounters): HoldReleasePass {
+  const phases = new Map<string, number>();
+  let recorded = 0;
+  const add = (name: string, ms: number): void => {
+    phases.set(name, (phases.get(name) ?? 0) + ms);
+    recorded += ms;
+  };
+  const pass: HoldReleasePass = {
+    now,
+    phases,
+    promptMemo: new Map(),
+    workItemMemo: new Map(),
+    counters,
+    recordedMs: () => recorded,
+    async time<T>(name: string, fn: () => T | Promise<T>): Promise<T> {
+      const start = now();
+      const value = await fn();
+      add(name, Math.max(0, now() - start));
+      return value;
+    },
+    async net<T>(name: string, fn: () => T | Promise<T>): Promise<T> {
+      const start = now();
+      const before = recorded;
+      const value = await fn();
+      // Net = wall time minus everything attributed inside `fn`, so buckets stay non-overlapping.
+      add(name, Math.max(0, (now() - start) - (recorded - before)));
+      return value;
+    },
+  };
+  return pass;
+}
+
+/**
+ * Read a task's PROMPT.md through the pass memo. Returns `null` for a missing/unreadable prompt or
+ * a store without a tasks dir — the same "no prompt" signal each caller already handled in a catch.
+ * Without a pass (direct scheduler callers) it reads the file every time, preserving prior behavior.
+ */
+async function readPromptObs(pass: HoldReleasePass | undefined, store: TaskStore, taskId: string): Promise<string | null> {
+  let attempted = false;
+  const read = async (): Promise<string | null> => {
+    try {
+      const tasksDir = (store as { getTasksDir?: () => string }).getTasksDir?.();
+      if (!tasksDir) return null;
+      attempted = true;
+      return await readFile(getPromptPath(tasksDir, taskId), "utf-8");
+    } catch {
+      return null;
+    }
+  };
+  if (!pass) return read();
+  if (pass.promptMemo.has(taskId)) return pass.promptMemo.get(taskId) ?? null;
+  const value = await pass.time("prompt", read);
+  // RUFU-209: count the PROMPT.md read that actually happened. A memo hit performs no I/O and
+  // must stay uncounted — the sweep summary's `prompts=` field is the honest per-pass read tally.
+  if (attempted && pass.counters) pass.counters.prompts += 1;
+  pass.promptMemo.set(taskId, value);
+  return value;
+}
+
+/**
+ * Read a task's workflow work items through the pass memo. Returns `null` when the store exposes no
+ * such reader — matching the unplanned gate's `typeof !== "function"` guard and the stranded block's
+ * absent-reader case (which threw into its catch and stayed quiet). Without a pass it reads every time.
+ */
+async function listWorkItemsObs(pass: HoldReleasePass | undefined, store: TaskStore, taskId: string): Promise<WorkflowWorkItemRow[] | null> {
+  let attempted = false;
+  const read = async (): Promise<WorkflowWorkItemRow[] | null> => {
+    if (typeof store.listWorkflowWorkItemsForTask !== "function") return null;
+    attempted = true;
+    return (await store.listWorkflowWorkItemsForTask.call(store, taskId)) ?? [];
+  };
+  if (!pass) return read();
+  if (pass.workItemMemo.has(taskId)) return pass.workItemMemo.get(taskId) ?? null;
+  const value = await pass.time("workitem", read);
+  // RUFU-209: honest per-pass tally of work-item reads actually issued (memo hits cost nothing).
+  if (attempted && pass.counters) pass.counters.workItems += 1;
+  pass.workItemMemo.set(taskId, value);
+  return value;
 }
 
 /** Injected dependencies so the sweep stays unit-testable with fake timers and
@@ -103,7 +242,13 @@ export interface HoldReleaseDeps {
    * default-workflow legacy parity path where the scheduler dispatch loop owns
    * worktree allocation via `allocateWorktree`.
    */
-  reserveSlot?: (task: Task, targetColumn: string) => SlotReservation | null | Promise<SlotReservation | null>;
+  /**
+   * `pass` (RUFU-209) is the sweep's per-pass observation record, threaded so a scheduler-provided
+   * reservation can share the pass's prompt memo (its own planning guard re-checks the SAME snapshot
+   * task the sweep just checked) and record its cost into the `slot` phase instead of vanishing from
+   * attribution. Callers that do not pass it keep their own live read.
+   */
+  reserveSlot?: (task: Task, targetColumn: string, pass?: HoldReleasePass) => SlotReservation | null | Promise<SlotReservation | null>;
   /** Allocate a worktree path for a release into a processing column (passed
    *  through to `moveTask`'s `allocateWorktree`). */
   allocateWorktree?: (task: Task, reservedNames: Set<string>) => string | null;
@@ -125,9 +270,27 @@ export interface HoldReleaseResult {
   unevaluatedCount?: number;
 }
 
-type IssueReleaseResult =
-  | { released: true }
-  | { released: false; rejection?: "unplanned-for-execution" };
+export type WipAdmissionRejection =
+  | "unplanned-for-execution"
+  | "plan-premise-stale"
+  | "plan-premise-invalid"
+  | "plan-premise-unavailable"
+  /*
+  FNXC:PlanPremises 2026-09-16-04:08:
+  RUFU-246 — the terminal refusal. The card was refused for the identical premise violation three
+  times and parked (`failed` + PLAN PREMISE CONTRACT EXHAUSTED sentinel); every release entry point
+  short-circuits to this code without re-evaluating anything until an operator Retry/Reset clears
+  the refusal episode. Non-retryable by policy (the dashboard classifies it so).
+  */
+  | "plan-premise-exhausted"
+  | "capacity-exhausted-or-no-slot"
+  | "source-changed";
+
+export type WipAdmissionResult =
+  | { released: true; task: Task }
+  | { released: false; rejection?: WipAdmissionRejection; detail?: string };
+
+type IssueReleaseResult = WipAdmissionResult;
 
 // ── Workflow IR resolution (read-only) ────────────────────────────────────────
 // The selection → builtin/custom → default rule lives in @fusion/core's
@@ -194,6 +357,7 @@ export async function checkAndRecordUnplannedExecutionBlock(
   store: TaskStore,
   task: Task,
   ir: WorkflowIr,
+  pass?: HoldReleasePass,
 ): Promise<void> {
   const recorder = (store as Partial<Pick<TaskStore, "checkAndRecordUnplannedExecutionBlock">>).checkAndRecordUnplannedExecutionBlock;
   if (!recorder) return;
@@ -201,11 +365,10 @@ export async function checkAndRecordUnplannedExecutionBlock(
   let promptContent = typeof task.prompt === "string" ? task.prompt : "";
   const tasksDir = typeof store.getTasksDir === "function" ? store.getTasksDir() : undefined;
   if (tasksDir) {
-    try {
-      promptContent = await readFile(getPromptPath(tasksDir, task.id), "utf8");
-    } catch {
-      promptContent = "";
-    }
+    // RUFU-209: route through the pass memo so the durable refusal marker shares the PROMPT.md read
+    // the readiness gate already paid for this pass. A failed/absent read still yields the empty
+    // content → `missing` marker, exactly as the old direct readFile + catch did.
+    promptContent = (await readPromptObs(pass, store, task.id)) ?? "";
   }
   const promptMarker = promptContent.length > 0
     ? createHash("sha256").update(promptContent).digest("hex")
@@ -228,7 +391,8 @@ export async function checkAndRecordUnplannedExecutionBlock(
 
 export interface UnplannedForExecutionEvaluation {
   unplanned: boolean;
-  reason: "plan-review-pending" | "planning-status" | "needs-replan" | "duplicate-prompt" | "seed-prompt" | null;
+  /* FNXC:HumanPlanApproval 2026-09-15-06:24: FN-408's per-card decision hold is its OWN reason, distinct from the revision-cap and generic approval parks. */
+  reason: "plan-review-pending" | "human-plan-approval-pending" | "planning-status" | "needs-replan" | "duplicate-prompt" | "seed-prompt" | null;
   readyAtCapacityBoundary: boolean;
   planReview?: NonNullable<TaskReleaseGateVerdict["planReview"]>;
 }
@@ -238,7 +402,13 @@ FNXC:PromoteVisibility 2026-08-11-20:38:
 Release dispatch and board enrichment consume one structured decision so the browser does not keep a
 second gate. Continuations, PROMPT.md, and workflow IR are invisible to the browser, so verdicts carry expiry evidence.
 */
-export async function evaluateUnplannedForExecution(store: TaskStore, task: Task, ir: WorkflowIr): Promise<UnplannedForExecutionEvaluation> {
+export async function evaluateUnplannedForExecution(store: TaskStore, task: Task, ir: WorkflowIr, pass?: HoldReleasePass): Promise<UnplannedForExecutionEvaluation> {
+  if (!pass) return evaluateUnplannedForExecutionInner(store, task, ir, undefined);
+  // Net: the unplanned gate's own CPU/gating time, excluding the prompt/workitem leaves it records.
+  return pass.net("unplanned", () => evaluateUnplannedForExecutionInner(store, task, ir, pass));
+}
+
+async function evaluateUnplannedForExecutionInner(store: TaskStore, task: Task, ir: WorkflowIr, pass: HoldReleasePass | undefined): Promise<UnplannedForExecutionEvaluation> {
   const preReleaseReview = resolvePreReleasePlanReviewNode(ir);
   const defaultOn = (preReleaseReview?.config as { defaultOn?: boolean } | undefined)?.defaultOn ?? false;
   const enabled = preReleaseReview ? isWorkflowOptionalGroupEnabled(task.enabledWorkflowSteps, preReleaseReview.id, defaultOn) : false;
@@ -246,11 +416,36 @@ export async function evaluateUnplannedForExecution(store: TaskStore, task: Task
   const satisfied = task.workflowStepResults?.some(isPlanReviewSatisfied) === true;
   const planReview = preReleaseReview ? { nodeId: preReleaseReview.id, column: preReleaseReview.column!, defaultOn, enabled, appliesToColumn, satisfied } : undefined;
   let readyAtCapacityBoundary = false;
-  if (!isFastExecutionMode(task) && preReleaseReview && enabled && appliesToColumn && !satisfied) {
+  /*
+  FNXC:HumanPlanApproval 2026-09-15-06:24:
+  FN-408 — the per-card human requirement has priority over Fast and over project auto-approve-all.
+  Fast is planless by design and normally short-circuits the Plan Review wait below, so an armed card
+  must keep that wait: its mandated order is plan -> Plan Review -> human decision -> execution.
+
+  FNXC:HumanPlanApproval 2026-09-15-07:30:
+  Since the remediation, `isFastExecutionMode` already reports an armed card as non-fast (Fast is
+  neutralized at creation/update AND in that shared predicate, so triage plans the card and the
+  graph does not bypass plan review). The explicit `|| humanApprovalArmed` stays as a local, readable
+  statement of the invariant — this gate must never be the place that lets an armed card through.
+  */
+  const humanApprovalArmed = isHumanPlanApprovalEnabled(task);
+  if ((!isFastExecutionMode(task) || humanApprovalArmed) && preReleaseReview && enabled && appliesToColumn && !satisfied) {
     if (typeof store.listWorkflowWorkItemsForTask !== "function") return { unplanned: true, reason: "plan-review-pending", readyAtCapacityBoundary, planReview };
-    const active = (await store.listWorkflowWorkItemsForTask(task.id)).filter((item) => ACTIVE_WORKFLOW_WORK_ITEM_STATES.includes(item.state));
+    const active = (await listWorkItemsObs(pass, store, task.id) ?? []).filter((item) => ACTIVE_WORKFLOW_WORK_ITEM_STATES.includes(item.state));
     readyAtCapacityBoundary = active.some((item) => item.waitReason === "capacity" && item.sourceColumn === task.column);
     if (!readyAtCapacityBoundary) return { unplanned: true, reason: "plan-review-pending", readyAtCapacityBoundary, planReview };
+  }
+  /*
+  FNXC:HumanPlanApproval 2026-09-15-06:24:
+  FN-408 — THE convergence point. Every release surface (background hold release, explicit promote,
+  expedite, direct move, event release, restart recovery) reaches execution through this evaluation,
+  so the per-card decision is enforced once here instead of in each caller. It is deliberately NOT
+  keyed on `task.status`: a stop between persisting the satisfied Plan Review result and publishing
+  `awaiting-approval` would otherwise leave an open execution window. Planning and review columns are
+  unaffected because this evaluation only gates release into a capacity-bearing column.
+  */
+  if (humanApprovalArmed && isHumanPlanApprovalPending(task)) {
+    return { unplanned: true, reason: "human-plan-approval-pending", readyAtCapacityBoundary: false, planReview };
   }
   /*
   FNXC:FastLane 2026-08-29-04:23:
@@ -278,19 +473,18 @@ export async function evaluateUnplannedForExecution(store: TaskStore, task: Task
   */
   if (isFastExecutionMode(task)) return { unplanned: false, reason: null, readyAtCapacityBoundary, planReview };
   if (typeof store.getTasksDir !== "function") return { unplanned: false, reason: null, readyAtCapacityBoundary, planReview };
-  try {
-    const prompt = await readFile(getPromptPath(store.getTasksDir(), task.id), "utf-8");
-    if (isDuplicateRedirectOnlyPrompt(prompt, task.title)) return { unplanned: true, reason: "duplicate-prompt", readyAtCapacityBoundary, planReview };
-    const unplanned = isUnplannedSeedPrompt(prompt, task.id, task.title, task.description);
-    return { unplanned, reason: unplanned ? "seed-prompt" : null, readyAtCapacityBoundary, planReview };
-  } catch {
-    return { unplanned: false, reason: null, readyAtCapacityBoundary, planReview };
-  }
+  const prompt = await readPromptObs(pass, store, task.id);
+  if (prompt === null) return { unplanned: false, reason: null, readyAtCapacityBoundary, planReview };
+  if (isDuplicateRedirectOnlyPrompt(prompt, task.title)) return { unplanned: true, reason: "duplicate-prompt", readyAtCapacityBoundary, planReview };
+  const unplanned = isUnplannedSeedPrompt(prompt, task.id, task.title, task.description);
+  return { unplanned, reason: unplanned ? "seed-prompt" : null, readyAtCapacityBoundary, planReview };
 }
 
-/** Compatibility wrapper retained for scheduler and release callers. */
-export async function isUnplannedForExecution(store: TaskStore, task: Task, ir: WorkflowIr): Promise<boolean> {
-  return (await evaluateUnplannedForExecution(store, task, ir)).unplanned;
+/** Compatibility wrapper retained for scheduler and release callers. `pass` shares the prompt memo
+ *  across every consumer of one scheduler pass (RUFU-209); a caller that passes no `pass` keeps its
+ *  own live read. */
+export async function isUnplannedForExecution(store: TaskStore, task: Task, ir: WorkflowIr, pass?: HoldReleasePass): Promise<boolean> {
+  return (await evaluateUnplannedForExecution(store, task, ir, pass)).unplanned;
 }
 
 export type CapacityHoldReadiness =
@@ -307,6 +501,20 @@ export async function evaluateCapacityHoldReadiness(
   task: Task,
   ir: WorkflowIr,
   targetColumnId: string,
+  pass?: HoldReleasePass,
+): Promise<CapacityHoldReadiness> {
+  if (!pass) return evaluateCapacityHoldReadinessInner(store, deps, task, ir, targetColumnId, undefined);
+  // Net: the readiness gate's own gating time, excluding the unplanned/prompt/work-item work it records.
+  return pass.net("readiness", () => evaluateCapacityHoldReadinessInner(store, deps, task, ir, targetColumnId, pass));
+}
+
+async function evaluateCapacityHoldReadinessInner(
+  store: TaskStore,
+  deps: HoldReleaseDeps,
+  task: Task,
+  ir: WorkflowIr,
+  targetColumnId: string,
+  pass: HoldReleasePass | undefined,
 ): Promise<CapacityHoldReadiness> {
   const targetColumn = findColumn(ir, targetColumnId);
   const targetIsProcessing = targetColumn ? resolveColumnFlags(targetColumn).countsTowardWip === true : false;
@@ -315,7 +523,7 @@ export async function evaluateCapacityHoldReadiness(
     return { releasable: false, kind: "awaiting-approval", reason: "awaiting-approval" };
   }
 
-  const evaluation = await evaluateUnplannedForExecution(store, task, ir);
+  const evaluation = await evaluateUnplannedForExecution(store, task, ir, pass);
   if (!evaluation.unplanned) return { releasable: true };
 
   /*
@@ -330,11 +538,25 @@ export async function evaluateCapacityHoldReadiness(
     const column = findColumn(ir, task.column);
     const tasksDir = typeof store.getTasksDir === "function" ? store.getTasksDir() : undefined;
     if (column && tasksDir) {
-      let promptContent: string | null = null;
-      try { promptContent = await readFile(getPromptPath(tasksDir, task.id), "utf8"); } catch { /* missing prompt is a quiet non-candidate */ }
-      const settings = await store.getSettings();
-      const continuations = await store.listWorkflowWorkItemsForTask(task.id);
-      const live = activeSessionRegistry.pathsForTask(task.id).some((path) => activeSessionRegistry.isPathActive(path)) || executingTaskLock.has(task.id) || deps.isTaskActive?.(task.id) === true;
+      // RUFU-209: the unplanned gate above may already have read this task's prompt for the pass;
+      // reuse the memo, and reuse the sweep's prefetched settings snapshot rather than re-reading it.
+      const promptContent = await readPromptObs(pass, store, task.id);
+      let settings = pass?.settings;
+      if (!settings) {
+        settings = await store.getSettings();
+        // RUFU-209: the sweep prefetches settings once; a fallback read here is real extra work and
+        // must show up in the summary as `evalSettings>0` instead of hiding behind `settings=1`.
+        if (pass?.counters) pass.counters.evalSettings += 1;
+      }
+      const continuations = await listWorkItemsObs(pass, store, task.id);
+      if (!continuations) throw new Error("no-work-item-reader");
+      /*
+      FNXC:PlanningExecutionLiveness 2026-09-06-00:29:
+      This shared liveness classification only suppresses a stranded-continuation warning; it does not
+      widen or release the execution gate. Including the planner here keeps diagnostics aligned with the
+      self-healing decisions without turning an in-flight plan into a release candidate.
+      */
+      const live = isTaskPlanningOrExecutionLive(task.id, { isTaskActive: deps.isTaskActive });
       const stranded = evaluateStrandedHoldContinuation({
         task,
         columnFlags: resolveColumnFlags(column),
@@ -456,30 +678,52 @@ yet, so grep `DELIBERATE-LITERAL` to enumerate the sites it must admit.
 */
 /** Legacy completion signal: dependency's column is a terminal/handoff column. */
 function legacyDependencySatisfied(dep: Task): boolean {
-  return dep.column === "done" || dep.column === "in-review" || dep.column === "archived";
+  return dep.column === "done" || dep.column === "in-review";
 }
 
 /**
  * KTD-5 dependency satisfaction: the dependency task's current column has the
  * `complete` trait flag in ITS resolved workflow. Dual-accept (FN-5719): the
- * legacy completion signal (done/in-review/archived column, or an accepted
+ * legacy completion signal (done/in-review column, or an accepted
  * completion-handoff marker) is also honored; when the two disagree an
  * audit-diff event is logged.
  */
 type DependencyEvaluation = { satisfied: boolean; truncated: boolean };
-type SweepCounters = { settings: number; tasks: number; batchSelections: number; selections: number; definitions: number; handoffMarkers: number; heldCandidates: number };
+type SweepCounters = { settings: number; tasks: number; batchSelections: number; selections: number; definitions: number; handoffMarkers: number; prompts: number; workItems: number; evalSettings: number; heldCandidates: number };
 type SweepCtx = {
   store: TaskStore;
   resolverStore: WorkflowIrResolverStore;
   irCache: Map<string, WorkflowIr>;
   selectionCache: WorkflowSelectionCache;
   handoffMemo: Map<string, boolean>;
+  /**
+   * RUFU-209: per-pass non-truncated verdict per dependency id. `handoffMemo` only de-duplicated the
+   * marker read; two cards depending on the same unfinished task still re-resolved its IR and
+   * re-emitted `merge:dependency-parity-diff` once each. The verdict is pure over pass-stable inputs
+   * (IR + selection + marker are all memoised), so computing it once per dependency id and reusing it
+   * changes no release decision — it just stops the redundant pass. Truncated (budget) results are
+   * deliberately NOT stored, so a card re-entered under budget still gets a fresh, non-truncated answer.
+   */
+  dependencyMemo: Map<string, DependencyEvaluation>;
   counters: SweepCounters;
   expired: () => boolean;
+  pass: HoldReleasePass;
 };
 
 async function dependencySatisfied(ctx: SweepCtx, dep: Task): Promise<DependencyEvaluation> {
   if (ctx.expired()) return { satisfied: false, truncated: true };
+  /*
+  FNXC:HoldReleaseAttribution 2026-09-09-23:25 (RUFU-209):
+  Every edge used to re-run the dependency's readiness decision — IR resolve, handoff-marker
+  read, column scan — so a fan-out board (K cards on one dependency) paid K× for the same
+  answer. The decision is a pure function of the dependency's ROW in this pass's board snapshot
+  plus pass-cached facts, so it is memoised per distinct dependency id for THIS PASS only
+  (ctx.dependencyMemo dies with the pass). Budget-truncated outcomes never reach the memo: the
+  expiry checks above return before the memo write, so a timing cut is never laundered into a
+  durable "unsatisfied" verdict for later dependents.
+  */
+  const memo = ctx.dependencyMemo.get(dep.id);
+  if (memo) return memo;
   const ir = await resolveWorkflowIrForTask(ctx.resolverStore, dep.id, ctx.irCache, ctx.selectionCache);
   const column = findColumn(ir, dep.column);
   const completeFlag = column ? resolveColumnFlags(column).complete === true : false;
@@ -492,7 +736,7 @@ async function dependencySatisfied(ctx: SweepCtx, dep: Task): Promise<Dependency
     if (ctx.expired()) return { satisfied: false, truncated: true };
     try {
       ctx.counters.handoffMarkers += 1;
-      markerAccepted = (await ctx.store.getCompletionHandoffAcceptedMarker(dep.id)) !== null;
+      markerAccepted = (await ctx.pass.time("handoff", () => ctx.store.getCompletionHandoffAcceptedMarker(dep.id))) !== null;
     } catch {
       markerAccepted = false;
     }
@@ -523,7 +767,18 @@ async function dependencySatisfied(ctx: SweepCtx, dep: Task): Promise<Dependency
   }
   // Dual-accept: satisfied if EITHER signal says so (the dual-accept window
   // closes at graduation per U12; until then both are accepted).
-  return { satisfied: completeFlag || legacy, truncated: false };
+  const result: DependencyEvaluation = { satisfied: completeFlag || legacy, truncated: false };
+  ctx.dependencyMemo.set(dep.id, result);
+  return result;
+}
+
+/**
+ * RUFU-209: the sweep's `dependency` phase = one card's whole dependency-gate wall time, with the
+ * handoff-marker leaf subtracted so `handoff` is not double-counted. Memoised verdicts make the
+ * shared-dependency re-check near-instant, so the recorded time reflects real work, not re-derivation.
+ */
+async function evaluateDependenciesPhase(ctx: SweepCtx, task: Task, allTasks: Task[]): Promise<DependencyEvaluation> {
+  return ctx.pass.net("dependency", () => allDependenciesSatisfied(ctx, task, allTasks));
 }
 
 async function allDependenciesSatisfied(ctx: SweepCtx, task: Task, allTasks: Task[]): Promise<DependencyEvaluation> {
@@ -700,25 +955,43 @@ export async function runHoldReleaseSweep(
     const evaluatedTaskIds = new Set<string>();
     const irCache = new Map<string, WorkflowIr>();
     const selectionCache = deps.selectionCache ?? new Map<string, { workflowId: string; stepIds: string[] } | undefined>();
-    const counters: SweepCounters = { settings: 0, tasks: 0, batchSelections: 0, selections: 0, definitions: 0, handoffMarkers: 0, heldCandidates: 0 };
+    const counters: SweepCounters = { settings: 0, tasks: 0, batchSelections: 0, selections: 0, definitions: 0, handoffMarkers: 0, prompts: 0, workItems: 0, evalSettings: 0, heldCandidates: 0 };
     const resolverStore = createCountingResolverStore(store, counters);
-    const ctx: SweepCtx = { store, resolverStore, irCache, selectionCache, handoffMemo: new Map(), counters, expired };
+    // RUFU-209: one observation record per scheduler pass — phase timings + per-pass fact memos.
+    // Never module-scoped: a cross-pass cache would serve stale prompt/settings reads.
+    const pass = createHoldReleasePass(deps.now, counters);
+    const ctx: SweepCtx = { store, resolverStore, irCache, selectionCache, handoffMemo: new Map(), dependencyMemo: new Map(), counters, expired, pass };
+    /*
+    FNXC:HoldReleaseAttribution 2026-09-09-23:25 (RUFU-209):
+    The phase buckets in the sweep summary, in one shared definition so BOTH summary sites
+    (preamble budget-truncation and the full line) print the same field set. The buckets are
+    disjoint by construction: every wrapper is recorded with `net`, which subtracts the time its
+    nested buckets already claimed, so the listed values plus `unattributed` reconcile to
+    `evaluate` — `unattributed` is the honest residual, never a hidden slice.
+    */
+    const PHASE_ORDER = ["release-config", "dependency", "readiness", "issue-release", "prompt", "unplanned", "workitem", "handoff", "slot"] as const;
+    const phasesSummary = (evaluateMs: number): string => {
+      const bucket = (name: string): number => Math.max(0, pass.phases.get(name) ?? 0);
+      const attributedMs = PHASE_ORDER.reduce((sum, name) => sum + bucket(name), 0);
+      return ` (${PHASE_ORDER.map((name) => `${name}=${bucket(name)}ms`).join(", ")}, unattributed=${Math.max(0, evaluateMs - attributedMs)}ms)`;
+    };
     const prefetchStartedMs = sweepStartedMs;
     let prefetchMs = 0;
     let irResolveMs = 0;
     const logPreambleTruncation = (unevaluatedCount: number): HoldReleaseResult => {
       prefetchMs = deps.now() - prefetchStartedMs;
       const sweepMs = deps.now() - sweepStartedMs;
-      const summary = `Hold-release sweep: ${sweepMs}ms (prefetch ${prefetchMs}ms, ir-resolve ${irResolveMs}ms, evaluate 0ms over ${unevaluatedCount} tasks), released=0, held=0`
+      const summary = `Hold-release sweep: project=${projectKey}: ${sweepMs}ms (prefetch ${prefetchMs}ms, ir-resolve ${irResolveMs}ms, evaluate 0ms over ${unevaluatedCount} tasks${phasesSummary(0)}), released=0, held=0`
         + `, budget-truncated unevaluated=${unevaluatedCount}`
         + (sweepMs > budgetMs ? `, budgetOverrunMs=${sweepMs - budgetMs}` : "")
-        + `, reads(settings=${counters.settings}, tasks=${counters.tasks}, batchSelections=${counters.batchSelections}, selections=${counters.selections}, definitions=${counters.definitions}, handoffMarkers=${counters.handoffMarkers}), scanned=0, heldCandidates=0`;
+        + `, reads(settings=${counters.settings}, tasks=${counters.tasks}, batchSelections=${counters.batchSelections}, selections=${counters.selections}, definitions=${counters.definitions}, handoffMarkers=${counters.handoffMarkers}, prompts=${counters.prompts}, workItems=${counters.workItems}, evalSettings=${counters.evalSettings}), scanned=0, heldCandidates=0`;
       schedulerLog.warn(summary);
       return { ...result, budgetTruncated: true, unevaluatedCount };
     };
 
     counters.settings += 1;
     const settings = await store.getSettings();
+    pass.settings = settings;
     if (expired()) return logPreambleTruncation(0);
     counters.tasks += 1;
     /*
@@ -734,7 +1007,52 @@ export async function runHoldReleaseSweep(
     List hydration uses the raw store and its observed-read tally; evaluation uses the counting proxy.
     Each definition read uses exactly one accounting mechanism, since cache growth is not read evidence.
     */
-    const allTasks = await store.listTasks({ includeArchived: false, selectionCache, selectionReadTally, irCache, definitionReadTally });
+    /*
+    FNXC:ListTasksDeriveOptOut 2026-09-09-00:55 (RUFU-202):
+    This full-board read is the engine's single most expensive one. Live it measured avg 10.6 s /
+    max 159.8 s once per scheduler pass, with `prefetch` at ~100 % of the sweep and `evaluate` at
+    0 ms, so it starved dispatch (`[backlog-pressure] todo=11 inProgress=0`), left 489 passes
+    budget-truncated, and forced scheduler/continuation-drain/triage guard openings.
+
+    A field-read audit over all 1118 lines of this file proves no consumer reads a derived UI signal:
+    none of `inReviewStall`, `stalePausedReview`, `inReviewStalled`, `stalePausedTodo`, `ageStaleness`,
+    `stalledReview`, `retrySummary`, `stallReason`, `reviewBypass`, `timedExecutionMs` appears here,
+    while release decisions do read persisted fields (`column`, `status`, `paused`/`userPaused`/
+    `pausedReason`, `nextRecoveryAt`, `columnMovedAt`, `dependencies`, `enabledWorkflowSteps`,
+    `workflowStepResults`, `approvedPlanFingerprint`, `prompt`, `title`, `description`, timestamps).
+    UI-signal derivation is therefore pure cost at this call site.
+
+    The selection read this sweep still needs is not lost with the derivation feed: the batch fallback
+    below resolves every id through `getTaskWorkflowSelectionsAsync(missingIds)` in one round trip, so
+    `selectionReadTally` reports 0 from `listTasks` while `counters.batchSelections` counts that batch
+    and the logged read tally stays truthful. All three accounting objects are still passed so a future
+    caller that re-enables derivation gets the shared caches back.
+
+    FNXC:WorkflowScheduling 2026-09-09-15:10 (origin/main sync):
+    Upstream concurrently added `definitionReadTally` (its own comment above) to this same call. The two
+    changes compose: upstream accounts for workflow-definition reads, while derivation and the log column
+    stay switched off here. Do not drop either half — removing `derive: false`/`excludeLog: true` restores
+    the 10.6 s avg board read; removing `definitionReadTally` loses upstream's read accounting.
+
+    FNXC:ListTasksExcludeLog 2026-09-09-01:49 (RUFU-202):
+    `excludeLog` is the second, bigger half: `log` is ~11 KB/row and this sweep never reads it, nor
+    does any of the 14 `@fusion/core` helpers it calls with a task (`resolveColumnCapacity`,
+    `isUnplannedSeedPrompt`, `isTaskBlockedOnApproval`, `isPlanReviewSatisfied`, ...) — none touches
+    `task.log`, and the log-backed merge/heal readers that do exist (`hasAutoHealableVerification
+    BufferFailure`) are reached from the merge lane, not from here.
+
+    Two cheaper-looking variants are deliberately NOT used because each costs more than it saves:
+    - `slim: true` also drops `log`, but it bundles the drop with `finalizeSlimListTask`, which
+      re-parses PROMPT.md for every task whose persisted `steps` is empty via the unmemoised
+      `parseStepsFromPromptImpl` — one `existsSync` + `readFile` per such task, per pass, on the
+      sweep's hot path. It additionally blanks `prInfo`/`review`/`attachments` and can newly populate
+      `steps`, and the sweep's own release decisions must not shift as a side effect of a bandwidth
+      change. `excludeLog` buys the same byte saving with neither.
+    - `excludeColumns: ["log"]` is not a column projection at all: it filters board LANES, and setting
+      it also switches off `listTasksImpl`'s `excludeColumn: "archived"` narrowing, which would put
+      archived cards back into a release-decision pass.
+    */
+    const allTasks = await store.listTasks({ includeArchived: false, selectionCache, selectionReadTally, irCache, definitionReadTally, derive: false, excludeLog: true });
     counters.batchSelections += selectionReadTally.batched;
     counters.selections += selectionReadTally.singles;
     counters.definitions += definitionReadTally.definitions;
@@ -778,55 +1096,81 @@ export async function runHoldReleaseSweep(
     dispatcher and board ordering cannot drift; retain allTasks as the occupancy
     and dependency snapshot rather than changing the global listTasks order.
     */
-    const tasksForReleaseEvaluation = sortTasksByPriorityThenAgeAndId(allTasks);
+    const tasksForReleaseEvaluation = sortTasksByQueueOrder(allTasks);
 
     let breakIndex: number | undefined;
     for (let index = 0; index < tasksForReleaseEvaluation.length; index += 1) {
       if (expired()) { breakIndex = index; break; }
       const task = tasksForReleaseEvaluation[index]!;
       if (task.paused || task.userPaused || (task.nextRecoveryAt && Date.parse(task.nextRecoveryAt) > deps.now())) continue;
+      /*
+      FNXC:PlanPremises 2026-09-16-04:08:
+      RUFU-246 — a premise-exhausted park is skipped here, at the top of the candidate loop and
+      before the per-task IR resolve: a parked card draws no PROMPT.md read (`reads(prompts=…)`
+      stays flat), no premise evaluation, no reservation, no refusal log, and no audit row on later
+      passes. Like the paused-skip above it is deliberately NOT marked evaluated — it was not.
+      */
+      if (isPlanPremiseParkTerminal(task)) continue;
       if (expired()) { breakIndex = index; break; }
       const irStartedMs = deps.now();
       const ir = await resolveWorkflowIrForTask(resolverStore, task.id, irCache, selectionCache);
       irResolveMs += deps.now() - irStartedMs;
       if (!isHeldTask(ir, task)) { evaluatedTaskIds.add(task.id); continue; }
-      const column = findColumn(ir, task.column);
-      const holdConfig = column ? resolveHoldConfig(column) : undefined;
-      if (!column || !holdConfig) { evaluatedTaskIds.add(task.id); continue; }
-      counters.heldCandidates += 1;
-      const release = typeof holdConfig.release === "string" ? holdConfig.release : "manual";
-      if (release === "manual" || release === "external-event") {
-        trackHeld(task.id, `${release}-only`, deps.now()); result.held.push({ taskId: task.id, reason: `${release}-only` }); evaluatedTaskIds.add(task.id); continue;
-      }
-      let shouldRelease = false;
-      if (release === "timer") {
-        const deadline = resolveTimerDeadline(holdConfig, task);
-        shouldRelease = deadline !== undefined && deps.now() >= deadline;
-        if (!shouldRelease) { trackHeld(task.id, "timer-not-elapsed", deps.now()); result.held.push({ taskId: task.id, reason: "timer-not-elapsed" }); evaluatedTaskIds.add(task.id); continue; }
-      } else if (release === "dependency") {
-        const evaluation = await allDependenciesSatisfied(ctx, task, allTasks);
-        if (evaluation.truncated) { result.held.push({ taskId: task.id, reason: "sweep-budget-exhausted" }); breakIndex = index + 1; break; }
-        if (!evaluation.satisfied) { trackHeld(task.id, "deps-unsatisfied", deps.now()); result.held.push({ taskId: task.id, reason: "deps-unsatisfied" }); evaluatedTaskIds.add(task.id); continue; }
-        shouldRelease = true;
-      } else if (release === "capacity") {
-        const target = resolveReleaseTarget(ir, task.column, true);
-        if (!target) { trackHeld(task.id, "no-downstream-capacity-column", deps.now()); result.held.push({ taskId: task.id, reason: "no-downstream-capacity-column" }); evaluatedTaskIds.add(task.id); continue; }
-        const capacity = resolveColumnCapacity(ir, target, settings);
-        if (capacity.hasCapacity && Number.isFinite(capacity.limit)) {
-          const workflowId = resolveCapacityPoolId(effectiveWorkflowIdByTask.get(task.id));
-          const occupants = countCapacitySlot(allTasks, effectiveWorkflowIdByTask, new Set(resolveWipBudgetColumns(ir, target)), workflowId, capacity.countPending);
-          if (occupants >= capacity.limit) { trackHeld(task.id, "downstream-full", deps.now()); result.held.push({ taskId: task.id, reason: "downstream-full" }); evaluatedTaskIds.add(task.id); continue; }
+      /*
+      FNXC:HoldReleaseAttribution 2026-09-09-23:25 (RUFU-209):
+      The release-config decision — hold-kind resolution, manual/external-event short-circuit,
+      timer deadline, dependency gate, capacity pre-check — was previously unmeasured, so when it
+      dominated, `evaluate`'s residual blamed an anonymous number. It is now one net bucket:
+      nested measured phases (dependency, handoff) are subtracted from it, keeping the summary's
+      buckets disjoint. The `continue`/`break` control flow became a tagged return consumed
+      immediately below; the release decisions themselves are byte-identical.
+      */
+      const decision = await pass.net("release-config", async (): Promise<
+        { kind: "skip" } | { kind: "budget-break"; at: number } | { kind: "proceed"; target: string; release: string }
+      > => {
+        const column = findColumn(ir, task.column);
+        const holdConfig = column ? resolveHoldConfig(column) : undefined;
+        if (!column || !holdConfig) { evaluatedTaskIds.add(task.id); return { kind: "skip" };
         }
-        shouldRelease = true;
-      }
-      if (!shouldRelease) { evaluatedTaskIds.add(task.id); continue; }
-      const target = resolveReleaseTarget(ir, task.column, release === "capacity");
-      if (!target) { trackHeld(task.id, "no-release-target", deps.now()); result.held.push({ taskId: task.id, reason: "no-release-target" }); evaluatedTaskIds.add(task.id); continue; }
+        counters.heldCandidates += 1;
+        const release = typeof holdConfig.release === "string" ? holdConfig.release : "manual";
+        if (release === "manual" || release === "external-event") {
+          trackHeld(task.id, `${release}-only`, deps.now()); result.held.push({ taskId: task.id, reason: `${release}-only` }); evaluatedTaskIds.add(task.id); return { kind: "skip" };
+        }
+        let shouldRelease = false;
+        if (release === "timer") {
+          const deadline = resolveTimerDeadline(holdConfig, task);
+          shouldRelease = deadline !== undefined && deps.now() >= deadline;
+          if (!shouldRelease) { trackHeld(task.id, "timer-not-elapsed", deps.now()); result.held.push({ taskId: task.id, reason: "timer-not-elapsed" }); evaluatedTaskIds.add(task.id); return { kind: "skip" }; }
+        } else if (release === "dependency") {
+          const evaluation = await evaluateDependenciesPhase(ctx, task, allTasks);
+          if (evaluation.truncated) { result.held.push({ taskId: task.id, reason: "sweep-budget-exhausted" }); return { kind: "budget-break", at: index + 1 }; }
+          if (!evaluation.satisfied) { trackHeld(task.id, "deps-unsatisfied", deps.now()); result.held.push({ taskId: task.id, reason: "deps-unsatisfied" }); evaluatedTaskIds.add(task.id); return { kind: "skip" }; }
+          shouldRelease = true;
+        } else if (release === "capacity") {
+          const capacityTarget = resolveReleaseTarget(ir, task.column, true);
+          if (!capacityTarget) { trackHeld(task.id, "no-downstream-capacity-column", deps.now()); result.held.push({ taskId: task.id, reason: "no-downstream-capacity-column" }); evaluatedTaskIds.add(task.id); return { kind: "skip" }; }
+          const capacity = resolveColumnCapacity(ir, capacityTarget, settings);
+          if (capacity.hasCapacity && Number.isFinite(capacity.limit)) {
+            const workflowId = resolveCapacityPoolId(effectiveWorkflowIdByTask.get(task.id));
+            const occupants = countCapacitySlot(allTasks, effectiveWorkflowIdByTask, new Set(resolveWipBudgetColumns(ir, capacityTarget)), workflowId, capacity.countPending);
+            if (occupants >= capacity.limit) { trackHeld(task.id, "downstream-full", deps.now()); result.held.push({ taskId: task.id, reason: "downstream-full" }); evaluatedTaskIds.add(task.id); return { kind: "skip" }; }
+          }
+          shouldRelease = true;
+        }
+        if (!shouldRelease) { evaluatedTaskIds.add(task.id); return { kind: "skip" }; }
+        const target = resolveReleaseTarget(ir, task.column, release === "capacity");
+        if (!target) { trackHeld(task.id, "no-release-target", deps.now()); result.held.push({ taskId: task.id, reason: "no-release-target" }); evaluatedTaskIds.add(task.id); return { kind: "skip" }; }
+        return { kind: "proceed", target, release };
+      });
+      if (decision.kind === "skip") continue;
+      if (decision.kind === "budget-break") { breakIndex = decision.at; break; }
+      const { target, release } = decision;
       /*
       FNXC:WorkflowScheduling 2026-08-28-21:24:
       The automatic sweep records readiness as a held reason and never calls the refusal-producing release path for a card nobody requested to start. Explicit promote and external-event requests still reach `issueRelease`, where FN-7648 records their durable refusal.
       */
-      const readiness = await evaluateCapacityHoldReadiness(store, deps, task, ir, target);
+      const readiness = await evaluateCapacityHoldReadiness(store, deps, task, ir, target, pass);
       if (!readiness.releasable) {
         const reason = readiness.kind === "awaiting-planning"
           ? `awaiting-planning:${readiness.reason}`
@@ -838,7 +1182,7 @@ export async function runHoldReleaseSweep(
       }
       // Once issueRelease starts it must complete: it may own a reservation and move transaction.
       if (expired()) { breakIndex = index; break; }
-      const releaseResult = await issueRelease(store, deps, task, target, ir);
+      const releaseResult = await issueRelease(store, deps, task, target, ir, { pass, readinessAlreadyVerified: true });
       if (releaseResult.released) { const waitedMs = deps.now() - (heldSince.get(task.id)?.sinceMs ?? deps.now()); heldSince.delete(task.id); schedulerLog.log(`Hold release for ${task.id} → ${target} after ${waitedMs}ms held (release=${release})`); result.released.push(task.id); }
       else { trackHeld(task.id, "move-rejected-or-no-slot", deps.now()); result.held.push({ taskId: task.id, reason: "move-rejected-or-no-slot" }); }
       evaluatedTaskIds.add(task.id);
@@ -846,10 +1190,20 @@ export async function runHoldReleaseSweep(
     if (breakIndex !== undefined) { result.budgetTruncated = true; result.unevaluatedCount = tasksForReleaseEvaluation.length - breakIndex; }
     const sweepMs = deps.now() - sweepStartedMs;
     const longestHeldMs = result.held.reduce((max, held) => Math.max(max, deps.now() - (heldSince.get(held.taskId)?.sinceMs ?? deps.now())), 0);
-    const summary = `Hold-release sweep: ${sweepMs}ms (prefetch ${prefetchMs}ms, ir-resolve ${irResolveMs}ms, evaluate ${Math.max(0, sweepMs - prefetchMs - irResolveMs)}ms over ${allTasks.length} tasks), released=${result.released.length}, held=${result.held.length}`
+    const evaluateMs = Math.max(0, sweepMs - prefetchMs - irResolveMs);
+    /*
+    FNXC:HoldReleaseAttribution 2026-09-09-21:15 (RUFU-209):
+    `evaluate` was the sweep's largest phase (field evidence: the residual alone sampled at
+    2012-8928 ms while whole sweeps ran 2132-10327 ms, 71 of 76 over the 2000 ms warn threshold)
+    and had zero structure, so an operator could not tell which sub-phase to cut. These buckets are
+    the answer: each is non-overlapping (a net has its nested leaves subtracted), and `unattributed`
+    is the honest residual so the phase list always reconciles with `evaluate` rather than silently
+    hiding a slice of it.
+    */
+    const summary = `Hold-release sweep: project=${projectKey}: ${sweepMs}ms (prefetch ${prefetchMs}ms, ir-resolve ${irResolveMs}ms, evaluate ${evaluateMs}ms over ${allTasks.length} tasks${phasesSummary(evaluateMs)}), released=${result.released.length}, held=${result.held.length}`
       + (result.budgetTruncated ? `, budget-truncated unevaluated=${result.unevaluatedCount ?? 0}` : "")
       + (sweepMs > budgetMs ? `, budgetOverrunMs=${sweepMs - budgetMs}` : "")
-      + `, reads(settings=${counters.settings}, tasks=${counters.tasks}, batchSelections=${counters.batchSelections}, selections=${counters.selections}, definitions=${counters.definitions}, handoffMarkers=${counters.handoffMarkers})`
+      + `, reads(settings=${counters.settings}, tasks=${counters.tasks}, batchSelections=${counters.batchSelections}, selections=${counters.selections}, definitions=${counters.definitions}, handoffMarkers=${counters.handoffMarkers}, prompts=${counters.prompts}, workItems=${counters.workItems}, evalSettings=${counters.evalSettings})`
       + `, scanned=${allTasks.length}, heldCandidates=${counters.heldCandidates}`
       + (longestHeldMs > 0 ? `, longest held ${longestHeldMs}ms` : "");
     if (result.budgetTruncated) schedulerLog.warn(summary);
@@ -862,6 +1216,215 @@ export async function runHoldReleaseSweep(
     inFlightSweepProjects.delete(projectKey);
   }
 }
+export function isFirstPlanningToWipAdmission(ir: WorkflowIr, sourceColumn: string, targetColumn: string): boolean {
+  const source = findColumn(ir, sourceColumn);
+  const target = findColumn(ir, targetColumn);
+  if (!target || resolveColumnFlags(target).countsTowardWip !== true) return false;
+  if (!source) return sourceColumn === "todo" || sourceColumn === "triage";
+  const flags = resolveColumnFlags(source);
+  return flags.hold === true || flags.intake === true || sourceColumn === "todo";
+}
+
+/*
+FNXC:PlanPremises 2026-09-16-03:20:
+RUFU-246 turned this single-shot replan into the escalation ladder's single choke point. Every
+stale/invalid-contract premise refusal from any release door funnels through here under the task
+lock: the re-check runs against the LIVE row, the durable episode (sourceMetadata.planPremiseRejection)
+is advanced, and the patch follows the ladder — refusal 1 records the episode and stays held, refusal
+2 sets needs-replan, refusal 3 parks failed with the exhaustion sentinel. An outcome race (re-check
+came back satisfied/unavailable/other) still writes nothing and reports the race to the door.
+*/
+async function publishPremiseReplan(
+  store: TaskStore,
+  taskId: string,
+  expectedColumn: string,
+  expected: "stale" | "invalid-contract",
+  door: { planReviewNodeId: string },
+): Promise<{ check: PlanPremiseCheckResult; escalation: PlanPremiseEscalation | null }> {
+  let final: { check: PlanPremiseCheckResult; escalation: PlanPremiseEscalation | null } = {
+    check: { outcome: "unavailable", detail: "Plan premise check lost its source-column race", promptFingerprint: "", premiseViolations: [] },
+    escalation: null,
+  };
+  let episode: PlanPremiseRejectionEpisode | null = null;
+  let parkedNow = false;
+  await store.updateTaskAtomic(taskId, async (live) => {
+    if (live.column !== expectedColumn || live.paused === true || live.userPaused === true) return null;
+    /*
+    FNXC:PlanPremises 2026-09-16-04:08:
+    RUFU-246 refuse-to-touch: once the live row carries a terminal premise park, this publisher
+    writes NOTHING at all — the episode, sentinel error, and failed status stay exactly as parked.
+    Release doors short-circuit parked cards before reaching here; this guard closes the race where
+    the park lands between a door's candidate read and this lock.
+    */
+    if (isPlanPremiseParkTerminal(live)) return null;
+    /*
+    FNXC:PlanPremises 2026-09-16-04:08:
+    RUFU-246 removes the synthetic fast-lane "satisfied" verdict: Fast cards evaluate their premises
+    for real, so the door and this under-lock re-check can no longer disagree on a fast card — a
+    disagreement there reported a permanent source-changed race and stalled escalation forever.
+    */
+    const checked: PlanPremiseCheckResult = await checkPlanPremises(store, live);
+    final = { check: checked, escalation: null };
+    if (checked.outcome !== expected) return null;
+    const step = advancePlanPremiseRejectionEpisode(live, { planReviewNodeId: door.planReviewNodeId, check: checked });
+    final = { check: checked, escalation: step.escalation };
+    episode = step.episode;
+    const sourceMetadataPatch = { [PLAN_PREMISE_REJECTION_METADATA_KEY]: step.episode };
+    if (step.escalation === "park") {
+      parkedNow = true;
+      return { status: "failed", error: buildPlanPremiseExhaustedError(checked.detail), recoveryRetryCount: null, nextRecoveryAt: null, sourceMetadataPatch };
+    }
+    if (step.escalation === "replan") {
+      return { status: "needs-replan", error: null, sourceMetadataPatch };
+    }
+    return { sourceMetadataPatch };
+  });
+  const { check } = final;
+  // Re-widen past control-flow analysis: `episode` is assigned inside the transaction closure.
+  const refusalEpisode = episode as PlanPremiseRejectionEpisode | null;
+  /*
+  FNXC:PlanPremises 2026-09-16-03:36:
+  RUFU-246 — one action-keyed History entry per action+detail: `logEntryOnce` dedupes on the
+  refusal detail's hash over a wide window, so the whole hold→replan→park walk over one unchanged
+  rejection (and every sticky-park re-refusal) writes a single entry instead of one line per gate
+  poll. The planner-facing detail rides the durable episode, never this log. Stores without the
+  once-seam keep the historical single-message shape.
+  */
+  if (refusalEpisode && (check.outcome === "stale" || check.outcome === "invalid-contract")) {
+    const logOnce = (store as Partial<TaskStore>).logEntryOnce;
+    if (typeof logOnce === "function") {
+      await logOnce.call(store, taskId, {
+        action: TRIAGE_PLAN_PREMISE_REJECTED_REPLAN_LOG_ACTION,
+        outcome: check.detail,
+        dedupeKey: `plan-premise-refusal:${refusalEpisode.detailHash}`,
+        windowMs: PLAN_PREMISE_REFUSAL_LOG_WINDOW_MS,
+      }).catch(() => undefined);
+    } else {
+      await store.logEntry(taskId, `${TRIAGE_PLAN_PREMISE_REJECTED_REPLAN_LOG_ACTION}: ${check.detail}`).catch(() => undefined);
+    }
+  }
+  /*
+  FNXC:PlanPremises 2026-09-16-04:08:
+  RUFU-246 — the FRESH park transition is the one audit-worthy moment of an episode: refusals 1/2
+  stay quiet (History and the durable episode carry them), but a card that now sits failed until an
+  operator acts records exactly one `task:plan-premise-parked` row with ids/counts/fixed enums only.
+  Bounded best-effort so a hostile audit sink can never gate or delay the park itself.
+  */
+  if (parkedNow) {
+    void emitBoundedRunAudit(store, {
+      taskId,
+      agentId: "scheduler",
+      runId: `hold-release:${taskId}`,
+      domain: "database",
+      mutationType: "task:plan-premise-parked",
+      target: taskId,
+      metadata: {
+        taskId,
+        refusalCount: refusalEpisode?.refusalCount ?? 0,
+        escalation: "park",
+        reason: "plan-premise-exhausted",
+        source: "hold-release.premise",
+      },
+    }, { log: schedulerLog });
+  }
+  return final;
+}
+
+/*
+FNXC:PlanPremises 2026-09-27-03:05:
+STAS-282 — `premise-invalidated-by-delivery` RELEASES. The assumed facts were destroyed by commits
+this card itself produced, which is the ordinary shape of work that removed a flag or renamed a module
+its plan had assumed stable. Refusing such a card parks finished work behind a gate no executor can
+satisfy — the premise is self-refuting, so it cannot be made true again on any tree that carries the
+delivery — and replanning it would dispatch a second implementation of work that already exists. The
+door therefore records the evidence once and lets the release proceed. The dedupe key carries the
+prompt fingerprint and the evaluated commit, so a re-plan or a new commit re-reports while repeated
+polls of the same verdict stay one History line. This path never touches the refusal episode, never
+sets `needs-replan`, and never parks: the ladder is for plans that are wrong, not for plans that came
+true. The card's `premise-invalidated` document carries the same facts in readable form.
+*/
+const PLAN_PREMISE_EVIDENCE_DOCUMENT_KEY = "premise-invalidated";
+
+async function recordDeliveryInvalidatedPremises(
+  store: TaskStore,
+  taskId: string,
+  check: Extract<PlanPremiseCheckResult, { outcome: "premise-invalidated-by-delivery" }>,
+): Promise<void> {
+  const dedupeKey = `plan-premise-delivery-invalidated:${createHash("sha256").update(`${check.promptFingerprint}|${check.detail}`).digest("hex")}`;
+  const logOnce = (store as Partial<TaskStore>).logEntryOnce;
+  if (typeof logOnce === "function") {
+    await logOnce.call(store, taskId, {
+      action: TRIAGE_PLAN_PREMISE_INVALIDATED_BY_DELIVERY_LOG_ACTION,
+      outcome: check.detail,
+      dedupeKey,
+      windowMs: PLAN_PREMISE_REFUSAL_LOG_WINDOW_MS,
+    }).catch(() => undefined);
+  } else {
+    await store.logEntry(taskId, `${TRIAGE_PLAN_PREMISE_INVALIDATED_BY_DELIVERY_LOG_ACTION}: ${check.detail}`).catch(() => undefined);
+  }
+  await recordPremiseEvidenceDocument(store, taskId, check);
+}
+
+/*
+FNXC:PlanPremises 2026-09-27-03:30:
+The card's `premise-invalidated` document is the readable half of the same evidence: the operator who
+has to amend the plan needs the premise JSON, the commit that consumed it, and the instruction that the
+PLAN changes rather than the delivered code (deleting delivered content to satisfy a stale assumption
+would un-ship the card — the trap this verdict exists to prevent). The History entry above is the
+mandatory record, so identical bytes are skipped (a repeated door pass adds no revision) and a document
+that cannot be written is reported to the scheduler log instead of un-authorising the release.
+*/
+async function recordPremiseEvidenceDocument(
+  store: TaskStore,
+  taskId: string,
+  check: Extract<PlanPremiseCheckResult, { outcome: "premise-invalidated-by-delivery" }>,
+): Promise<void> {
+  const content = [
+    `# Plan premises invalidated by \`${taskId}\`'s own delivery`,
+    "",
+    `Verdict: \`${check.outcome}\`. Release is not refused and the card was not re-planned: the`,
+    "assumption was destroyed by the very commits that satisfy the card, so the disagreement is fixed by",
+    "amending the PLAN — never by deleting delivered content to make an old assumption true again.",
+    "",
+    check.detail,
+    "",
+    ...check.premiseViolations.map((violation) => `- \`${JSON.stringify(violation.premise)}\`: ${violation.reason}`),
+    "",
+    `Prompt fingerprint: \`${check.promptFingerprint}\``,
+  ].join("\n");
+  try {
+    const existing = await store.getTaskDocument(taskId, PLAN_PREMISE_EVIDENCE_DOCUMENT_KEY);
+    if (existing?.content === content) return;
+    await store.upsertTaskDocument(taskId, {
+      key: PLAN_PREMISE_EVIDENCE_DOCUMENT_KEY,
+      content,
+      author: "engine:plan-premises",
+    });
+  } catch (error) {
+    schedulerLog.warn(`plan premise evidence document for ${taskId} could not be written: ${String(error)}`);
+  }
+}
+
+/*
+FNXC:PlanPremises 2026-09-13-04:01:
+Every first planning/hold-to-WIP public admission uses this release authority. Premises are checked before reservation and again from the live row inside moveTaskIf; stale contracts re-enter the existing needs-replan loop without allocating a worktree or creating validation state.
+*/
+export async function admitTaskToWip(
+  store: TaskStore,
+  deps: HoldReleaseDeps,
+  task: Task,
+  target: string,
+  ir: WorkflowIr,
+  options: {
+    expectedColumn?: string;
+    moveSource?: "scheduler" | "user";
+    workflowMoveSource?: string;
+    preserveProgress?: boolean;
+  } = {},
+): Promise<WipAdmissionResult> {
+  return issueRelease(store, deps, task, target, ir, options);
+}
+
 /**
  * Issue a single release move (`moveSource: "scheduler"`). For releases into a
  * processing (capacity) column the reservation-first ordering (KTD-10) reserves
@@ -875,9 +1438,33 @@ async function issueRelease(
   task: Task,
   target: string,
   ir: WorkflowIr,
+  options: {
+    expectedColumn?: string;
+    moveSource?: "scheduler" | "user";
+    workflowMoveSource?: string;
+    preserveProgress?: boolean;
+    pass?: HoldReleasePass;
+    readinessAlreadyVerified?: boolean;
+  } = {},
 ): Promise<IssueReleaseResult> {
+  /*
+  FNXC:PlanPremises 2026-09-16-04:08:
+  RUFU-246 — the terminal premise park is honored at this single choke point: the scheduler sweep,
+  the automatic admission in admitTaskToWip, operator promoteHeldTask, and event release all funnel
+  through here. A parked card is refused BEFORE any PROMPT.md read, premise evaluation, capacity
+  reservation, status write, log append, or audit row. The park is durable by design — only an
+  operator Retry/Reset, which clears the refusal episode, lifts it.
+  */
+  if (isPlanPremiseParkTerminal(task)) {
+    return { released: false, rejection: "plan-premise-exhausted", detail: task.error ?? undefined };
+  }
   const targetColumn = findColumn(ir, target);
   const targetIsProcessing = targetColumn ? resolveColumnFlags(targetColumn).countsTowardWip === true : false;
+  /*
+  FNXC:PlanPremises 2026-09-16-03:20: RUFU-246 — the pre-release plan-review node identity is part
+  of the refusal-episode signature, resolved once per release from the same IR the door acts on.
+  */
+  const planReviewNodeId = resolvePreReleasePlanReviewNode(ir)?.id ?? "";
 
   /*
   FNXC:WorkflowScheduling 2026-08-29-00:24:
@@ -885,25 +1472,74 @@ async function issueRelease(
   waiver. Every release surface funnels through this choke point, so an
   unplanned or approval-held card is refused before it can enter a processing
   column; no caller can bypass either gate.
+
+  FNXC:HoldReleaseAttribution 2026-09-09-21:15 (RUFU-209):
+  The background sweep already ran `evaluateCapacityHoldReadiness` on this exact
+  snapshot task immediately before calling here (and `continue`d when it was not
+  releasable), so re-running it here evaluated the SAME task a second time and
+  re-read its PROMPT.md. `readinessAlreadyVerified` suppresses only that
+  automatic-path duplicate; the under-lock `moveTaskIf` predicate still
+  re-checks the LIVE row, so a replan/approval that lands mid-release is still
+  refused. Operator/event surfaces pass no `readinessAlreadyVerified` and keep
+  this pre-move check (and its FN-7648 refusal recording) exactly as before.
   */
   if (targetIsProcessing) {
-    const readiness = await evaluateCapacityHoldReadiness(store, deps, task, ir, target);
-    if (!readiness.releasable && readiness.kind === "awaiting-approval") {
-      schedulerLog.debug(
-        `Hold release for ${task.id} blocked — awaiting a human approval decision (status=${task.status ?? "null"}, pausedReason=${task.pausedReason ?? "null"})`,
-      );
-      return { released: false };
+    /*
+    FNXC:PlanPremises 2026-09-16-04:08:
+    RUFU-246 removes the fast-lane premise bypass here: whether the plan's stated facts still match
+    the repository is a plain evaluation, not a planning-requiredness rule, so Fast/FN-8304 cards
+    verify premises too. What stays UNTOUCHED is what this bypass was conflating with — FN-8304's
+    Fast exemptions from planning-requiredness readiness (evaluateCapacityHoldReadiness /
+    evaluateExecutionReadiness): fast cards remain exempt there and are never made plan-required.
+    */
+    const premiseCheck = await checkPlanPremises(store, task);
+    if (premiseCheck.outcome === "stale" || premiseCheck.outcome === "invalid-contract") {
+      const recorded = await publishPremiseReplan(store, task.id, options.expectedColumn ?? task.column, premiseCheck.outcome, { planReviewNodeId });
+      if (recorded.check.outcome === "unavailable" || recorded.check.outcome === "satisfied") {
+        return { released: false, rejection: "source-changed", detail: "detail" in recorded.check ? recorded.check.detail : "Plan premise changed during release" };
+      }
+      return {
+        released: false,
+        rejection: recorded.check.outcome === "stale" ? "plan-premise-stale" : "plan-premise-invalid",
+        detail: "detail" in recorded.check ? recorded.check.detail : premiseCheck.detail,
+      };
     }
-    if (!readiness.releasable) {
-      await checkAndRecordUnplannedExecutionBlock(store, task, ir);
-      schedulerLog.debug(`Hold release for ${task.id} blocked — card is unplanned and cannot enter processing column ${target}`);
-      return { released: false, rejection: "unplanned-for-execution" };
+    if (premiseCheck.outcome === "premise-invalidated-by-delivery") {
+      // STAS-282: evidence, not a refusal — record it and fall through to a normal release.
+      await recordDeliveryInvalidatedPremises(store, task.id, premiseCheck);
+    }
+    if (premiseCheck.outcome === "unavailable") {
+      return { released: false, rejection: "plan-premise-unavailable", detail: premiseCheck.detail };
+    }
+    /*
+    FNXC:HoldReleaseReadinessDedup 2026-09-14-21:42 (upstream sync merge):
+    The RUFU-209 readinessAlreadyVerified gate suppresses ONLY the duplicated evaluateCapacityHoldReadiness
+    call on the automatic sweep path. The upstream plan-premise check added above must run on every
+    non-fast release regardless of that flag — so the premise check sits directly in the
+    targetIsProcessing branch and the readiness block is the one nested under the dedup gate.
+    */
+    if (!options.readinessAlreadyVerified) {
+      const readiness = await evaluateCapacityHoldReadiness(store, deps, task, ir, target);
+      if (!readiness.releasable && readiness.kind === "awaiting-approval") {
+        schedulerLog.debug(
+          `Hold release for ${task.id} blocked — awaiting a human approval decision (status=${task.status ?? "null"}, pausedReason=${task.pausedReason ?? "null"})`,
+        );
+        return { released: false };
+      }
+      if (!readiness.releasable) {
+        await checkAndRecordUnplannedExecutionBlock(store, task, ir, options.pass);
+        schedulerLog.debug(`Hold release for ${task.id} blocked — card is unplanned and cannot enter processing column ${target}`);
+        return { released: false, rejection: "unplanned-for-execution" };
+      }
     }
   }
 
   let reservation: SlotReservation | null = null;
   if (targetIsProcessing && deps.reserveSlot) {
-    reservation = await deps.reserveSlot(task, target);
+    // RUFU-209: thread the pass so the scheduler reservation's own planning guard shares the
+    // pass's prompt memo and its cost lands in the `slot` phase rather than vanishing from attribution.
+    const doReserve = () => deps.reserveSlot!(task, target, options.pass);
+    reservation = options.pass ? await options.pass.net("slot", doReserve) : await doReserve();
     if (!reservation) {
       /*
       Semaphore/worktree exhausted — reservation-first means no move at all.
@@ -917,8 +1553,12 @@ async function issueRelease(
   }
 
   try {
-    const originalColumn = task.column;
+    const originalColumn = options.expectedColumn ?? task.column;
     let liveUnplanned: Task | undefined;
+    let livePremiseFailure: Extract<PlanPremiseCheckResult, { outcome: "stale" | "invalid-contract" | "unavailable" }> | undefined;
+    let livePremiseDeliveryInvalidated: Extract<PlanPremiseCheckResult, { outcome: "premise-invalidated-by-delivery" }> | undefined;
+    // RUFU-246: set when the locked live row already carries a terminal premise park (see predicate).
+    let livePremiseExhausted = false;
     /*
     FNXC:UserPausedDispatch 2026-07-21-21:45:
     Hold release must test the source column and both pause flags under the same task lock as the move. This makes an operator pause win atomically against scheduler dispatch and also replaces event-identity inference for concurrent release attempts.
@@ -934,7 +1574,7 @@ async function issueRelease(
     pending Plan Review that lands while capacity is reserved keeps the card
     held; refusal evidence is recorded after the lock releases.
     */
-    const result = await store.moveTaskIf(
+    const doMove = () => store.moveTaskIf(
       task.id,
       target,
       async (live) => {
@@ -942,9 +1582,39 @@ async function issueRelease(
           || (targetIsProcessing && isTaskBlockedOnApproval(live))) {
           return false;
         }
-        if (targetIsProcessing && await isUnplannedForExecution(store, live, ir)) {
+        // RUFU-209: the verdict stays live — it runs against the row held by the move lock, so a
+        // replan (`status=needs-replan`), newly pending Plan Review, or approval hold that landed
+        // mid-pass still refuses the move. Only the STABLE INPUT FACTS (PROMPT.md contents, work
+        // items, settings) come from the pass memo; like the selection/IR caches this pass owns, a
+        // mid-pass change to them can at worst delay a release to the next pass, never force one.
+        if (targetIsProcessing && await isUnplannedForExecution(store, live, ir, options.pass)) {
           liveUnplanned = live;
           return false;
+        }
+        /*
+        FNXC:PlanPremises 2026-09-16-04:08:
+        RUFU-246 — under-lock park preservation: a concurrent release surface may have terminally
+        parked this card since the pre-move check. The live park wins — refuse the move WITHOUT
+        evaluating premises or recording a new refusal (no episode, History, or audit write), and
+        report the terminal code after the lock releases.
+        */
+        if (isPlanPremiseParkTerminal(live)) {
+          livePremiseExhausted = true;
+          return false;
+        }
+        // RUFU-246: the fast-lane premise bypass is removed here too (see the pre-move door note);
+        // premises are repository facts, not planning-requiredness rules.
+        if (targetIsProcessing) {
+          const checked = await checkPlanPremises(store, live);
+          if (checked.outcome === "premise-invalidated-by-delivery") {
+            // STAS-282: releases on the same terms as a satisfied verdict. The verdict is only
+            // remembered here — the History entry is written once the move lock is released, so a
+            // premise evaluation never performs a write inside the move transaction.
+            livePremiseDeliveryInvalidated = checked;
+          } else if (checked.outcome !== "satisfied") {
+            livePremiseFailure = checked;
+            return false;
+          }
         }
         return true;
       },
@@ -955,25 +1625,42 @@ async function issueRelease(
         this authority so the timeline distinguishes its deliberate todo-to-WIP dispatch from an
         unexplained automatic move; plugin move policies receive the same source literal.
         */
-        moveSource: "scheduler",
-        workflowMoveSource: "scheduler-hold-release",
+        moveSource: options.moveSource ?? "scheduler",
+        workflowMoveSource: options.workflowMoveSource ?? "scheduler-hold-release",
+        preserveProgress: options.preserveProgress,
         allocateWorktree:
           targetIsProcessing && deps.allocateWorktree
             ? (reservedNames) => deps.allocateWorktree!(task, reservedNames)
             : undefined,
       },
     );
+    const result = options.pass ? await options.pass.net("issue-release", doMove) : await doMove();
     if (!result.moved) {
       reservation?.release();
       if (liveUnplanned) {
-        await checkAndRecordUnplannedExecutionBlock(store, liveUnplanned, ir);
+        await checkAndRecordUnplannedExecutionBlock(store, liveUnplanned, ir, options.pass);
         schedulerLog.debug(`Hold release for ${task.id} blocked — card became unplanned before entering processing column ${target}`);
         return { released: false, rejection: "unplanned-for-execution" };
+      }
+      if (livePremiseExhausted) {
+        return { released: false, rejection: "plan-premise-exhausted", detail: "Plan premise contract exhausted; operator Retry/Reset required to clear the refusal episode" };
+      }
+      if (livePremiseFailure) {
+        if (livePremiseFailure.outcome === "unavailable") {
+          return { released: false, rejection: "plan-premise-unavailable", detail: livePremiseFailure.detail };
+        }
+        const recorded = await publishPremiseReplan(store, task.id, originalColumn, livePremiseFailure.outcome, { planReviewNodeId });
+        return {
+          released: false,
+          rejection: recorded.check.outcome === "stale" ? "plan-premise-stale" : recorded.check.outcome === "invalid-contract" ? "plan-premise-invalid" : "source-changed",
+          detail: "detail" in recorded.check ? recorded.check.detail : livePremiseFailure.detail,
+        };
       }
       schedulerLog.log(`Hold release for ${task.id} skipped — task became paused or left ${originalColumn}`);
       return { released: false };
     }
-    return { released: true };
+    if (livePremiseDeliveryInvalidated) await recordDeliveryInvalidatedPremises(store, task.id, livePremiseDeliveryInvalidated);
+    return { released: true, task: result.task };
   } catch (error) {
     if (error instanceof TransitionRejectionError && error.rejection.code === "capacity-exhausted") {
       // Lost the in-txn race for the slot — release the reservation, stay held.

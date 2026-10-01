@@ -16,7 +16,6 @@ import type {
   PlanningQuestion,
   PlanningSummary,
   PlanningResponse,
-  TaskPriority,
   TaskSourceIssue,
   TaskStore,
   Settings,
@@ -25,8 +24,6 @@ import type {
   MessageStore,
 } from "@fusion/core";
 import {
-  DEFAULT_TASK_PRIORITY,
-  TASK_PRIORITIES,
   THINKING_LEVELS,
   formatPlanningPlanMd,
   resolvePlanningSettingsModel,
@@ -41,6 +38,18 @@ import { EventEmitter } from "node:events";
 import type { AiSessionStore, AiSessionRow } from "./ai-session-store.js";
 import { SessionEventBuffer, type SessionBufferedEvent } from "./sse-buffer.js";
 import { registerBeforeExitCleanup } from "./process-lifecycle.js";
+import {
+  HISTORY_ENTRY_BYTES,
+  RATE_LIMIT_ENTRY_BYTES,
+  SESSION_RECORD_BYTES,
+  STRING_BYTES_PER_CHAR,
+} from "./lib/retention-census.js";
+import {
+  clampEntryCeilingWithCleanup,
+  enforceEntryCeiling,
+  registerBoundedRegistryMap,
+  registerBoundedWindowMap,
+} from "./lib/retention/bounded-window-map.js";
 import {
   createSessionDiagnostics,
   resetDiagnosticsSink,
@@ -285,9 +294,9 @@ Use a deliberate iterative narrowing loop: analyze → concrete options → oper
 
 After every selected option, multi-selection, or free-text Other answer, treat the choice as a durable decision and rebuild every affected running-plan field around all accumulated decisions. The title, description, proposedChanges, acceptanceCriteria, keyDeliverables, and suggestedRefinements must make the selected direction—not the original vague complaint or an unselected alternative—the central intended outcome. Preserve Other text verbatim as steering. Then inspect the selected direction and relevant repository context and ask exactly one consequential next question that narrows it one level further with concrete, materially distinct options. A refine turn uses the selected or free-text focus to choose that next question. Continue this loop until the operator chooses Proceed with plan. The model never validates or terminates the session. Only the user can validate it through the visible Proceed with plan action.
 
-For every initial, answer, or refine turn respond only with JSON: {"type":"question","data":{"id":"unique-id","type":"single_select|multi_select","question":"...","description":"...","options":[{"id":"option-a","label":"...","description":"...","pros":["..."],"cons":["..."]},{"id":"option-b","label":"...","description":"...","pros":["..."],"cons":["..."]},{"id":"option-c","label":"...","description":"...","pros":["..."],"cons":["..."]},{"id":"other","label":"...","isOther":true}],"runningPlan":{"title":"...","description":"...","proposedChanges":["specific change"],"acceptanceCriteria":["observable outcome"],"suggestedSize":"S|M|L","priority":"normal","suggestedDependencies":[],"keyDeliverables":["concrete work item"],"suggestedRefinements":["next focus 1","next focus 2"]}}}. Include normally 3–5 substantive alternatives in options; this example is illustrative rather than a maximum.
+For every initial, answer, or refine turn respond only with JSON: {"type":"question","data":{"id":"unique-id","type":"single_select|multi_select","question":"...","description":"...","options":[{"id":"option-a","label":"...","description":"...","pros":["..."],"cons":["..."]},{"id":"option-b","label":"...","description":"...","pros":["..."],"cons":["..."]},{"id":"option-c","label":"...","description":"...","pros":["..."],"cons":["..."]},{"id":"other","label":"...","isOther":true}],"runningPlan":{"title":"...","description":"...","proposedChanges":["specific change"],"acceptanceCriteria":["observable outcome"],"suggestedSize":"S|M|L","suggestedDependencies":[],"keyDeliverables":["concrete work item"],"suggestedRefinements":["next focus 1","next focus 2"]}}}. Include normally 3–5 substantive alternatives in options; this example is illustrative rather than a maximum.
 
-Every turn must include the running-plan fields: only title, description, concrete proposedChanges, observable acceptanceCriteria, suggestedSize, optional priority, suggestedDependencies, concrete keyDeliverables, and concise suggestedRefinements informed by the idea and answers so far. suggestedDependencies may contain only existing task IDs in canonical PREFIX-NUMBER form; never include task titles, descriptions, question text, or proposed work, and omit an unknown dependency rather than guessing. Include every distinct, high-value unresolved refinement area; do not cap the list at three. Never use interview question text as a deliverable. Proceed with plan serializes the plan as plan.md without priority or suggestedRefinements; priority remains a task field. Every question must provide normally 3–5 materially distinct actionable alternatives, each with a non-empty description, pros, and cons, plus exactly one Other/write-your-own option. Never treat two alternatives as sufficient or truncate a genuinely useful larger set. Write every label, option, and Other label in the language of the user's original input. Incorporate free-text Other answers verbatim as steering context for the following question.`;
+Every turn must include the running-plan fields: only title, description, concrete proposedChanges, observable acceptanceCriteria, suggestedSize, suggestedDependencies, concrete keyDeliverables, and concise suggestedRefinements informed by the idea and answers so far. suggestedDependencies may contain only existing task IDs in canonical PREFIX-NUMBER form; never include task titles, descriptions, question text, or proposed work, and omit an unknown dependency rather than guessing. Include every distinct, high-value unresolved refinement area; do not cap the list at three. Never use interview question text as a deliverable. Proceed with plan serializes the plan as plan.md without suggestedRefinements. Never emit a priority: tasks run in arrival order and an operator raises one explicitly with Boost. Every question must provide normally 3–5 materially distinct actionable alternatives, each with a non-empty description, pros, and cons, plus exactly one Other/write-your-own option. Never treat two alternatives as sufficient or truncate a genuinely useful larger set. Write every label, option, and Other label in the language of the user's original input. Incorporate free-text Other answers verbatim as steering context for the following question.`;
 
 /*
 FNXC:PlanningMode 2026-07-23-11:35:
@@ -371,6 +380,32 @@ const MAX_SESSIONS_PER_IP_PER_HOUR = 1000;
 
 /** Rate limiting window in milliseconds (1 hour) */
 const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
+
+/*
+FNXC:RetentionCensus 2026-09-21-21:40 (RUFU-257):
+planning.ts holds seven module-scope structures, and before this change only `liveStreams` was capped.
+`cleanupExpiredSessions` already deletes expired sessions and stale rate windows on a five-minute
+timer, so expiry has one owner; what nothing bounded was the *count* inside a TTL window — planning
+sessions carry a seven-day TTL, so a long-lived dashboard retained every session ever started.
+PLANNING_SESSION_MAX is therefore clamped inside that same sweep through `cleanupInMemorySession`, the
+owner that also disposes the session agent and its stream buffer. The per-session promise maps
+(reservations, settling operations, persistence queues) are keyed by session id and delete themselves
+when their promise settles, so their ceilings are reporting thresholds: deleting a row whose promise is
+still in flight would drop turn-admission or write-ordering state, which is a correctness bug the leak
+fix must not introduce.
+*/
+
+/** Ceiling on planning sessions retained in memory. */
+export const PLANNING_SESSION_MAX = 5_000;
+
+/** Ceiling on distinct client addresses holding a planning-session window. */
+export const PLANNING_RATE_LIMIT_IP_MAX = 10_000;
+
+/** Reporting ceiling on simultaneously in-flight planning generations. */
+export const PLANNING_ACTIVE_GENERATION_MAX = 500;
+
+/** Reporting ceiling on sessions holding a turn reservation, settling operation, or persist queue. */
+export const PLANNING_PER_SESSION_OPERATION_MAX = 5_000;
 
 /*
 FNXC:PlanningLiveness 2026-06-24-00:00:
@@ -679,9 +714,67 @@ let _aiSessionStore: AiSessionStore | undefined;
 let _aiSessionDeletedListener: ((sessionId: string) => void) | undefined;
 const sessionPersistenceQueues = new Map<string, Promise<void>>();
 
-function isTaskPriority(value: unknown): value is TaskPriority {
-  return typeof value === "string" && (TASK_PRIORITIES as readonly string[]).includes(value);
-}
+// Census rows for the module-scope planning structures. `sweptElsewhere` marks the two maps whose
+// expiry deleter stays `cleanupExpiredSessions`; the operation maps report pressure only.
+registerBoundedWindowMap<string, Session>({
+  id: "planning_sessions",
+  map: sessions,
+  ceiling: PLANNING_SESSION_MAX,
+  ceilingConstant: "PLANNING_SESSION_MAX",
+  kind: "session",
+  expiryOf: (session) => session.updatedAt.getTime() + SESSION_TTL_MS,
+  sweptElsewhere: true,
+  valueBytes: (session) =>
+    SESSION_RECORD_BYTES
+    + session.thinkingOutput.length * STRING_BYTES_PER_CHAR
+    + session.history.length * HISTORY_ENTRY_BYTES,
+});
+
+registerBoundedWindowMap<string, RateLimitEntry>({
+  id: "planning_rate_limits",
+  map: rateLimits,
+  ceiling: PLANNING_RATE_LIMIT_IP_MAX,
+  ceilingConstant: "PLANNING_RATE_LIMIT_IP_MAX",
+  expiryOf: (entry) => entry.firstRequestAt.getTime() + RATE_LIMIT_WINDOW_MS,
+  sweptElsewhere: true,
+  valueBytes: () => RATE_LIMIT_ENTRY_BYTES,
+});
+
+registerBoundedRegistryMap<string, ActivePlanningGeneration>({
+  id: "planning_active_generations",
+  map: activeGenerations,
+  ceiling: PLANNING_ACTIVE_GENERATION_MAX,
+  ceilingConstant: "PLANNING_ACTIVE_GENERATION_MAX",
+  evictLiveEntries: false,
+  valueBytes: () => SESSION_RECORD_BYTES,
+});
+
+registerBoundedRegistryMap<string, PlanningTurnReservation>({
+  id: "planning_turn_reservations",
+  map: pendingTurnReservations,
+  ceiling: PLANNING_PER_SESSION_OPERATION_MAX,
+  ceilingConstant: "PLANNING_PER_SESSION_OPERATION_MAX",
+  evictLiveEntries: false,
+  valueBytes: () => SESSION_RECORD_BYTES,
+});
+
+registerBoundedRegistryMap<string, Promise<void>>({
+  id: "planning_settling_turn_operations",
+  map: settlingTurnOperations,
+  ceiling: PLANNING_PER_SESSION_OPERATION_MAX,
+  ceilingConstant: "PLANNING_PER_SESSION_OPERATION_MAX",
+  evictLiveEntries: false,
+  valueBytes: () => SESSION_RECORD_BYTES,
+});
+
+registerBoundedRegistryMap<string, Promise<void>>({
+  id: "planning_persistence_queues",
+  map: sessionPersistenceQueues,
+  ceiling: PLANNING_PER_SESSION_OPERATION_MAX,
+  ceilingConstant: "PLANNING_PER_SESSION_OPERATION_MAX",
+  evictLiveEntries: false,
+  valueBytes: () => SESSION_RECORD_BYTES,
+});
 
 function normalizeStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) {
@@ -760,8 +853,10 @@ export function normalizePlanningSummaryPayload(
     suggestedSize: summary.suggestedSize === "S" || summary.suggestedSize === "M" || summary.suggestedSize === "L"
       ? summary.suggestedSize
       : "M",
-    priority: isTaskPriority(summary.priority) ? summary.priority : DEFAULT_TASK_PRIORITY,
-    suggestedDependencies: normalizePlanningSuggestedDependencies(summary.suggestedDependencies),
+    /* FNXC:TaskQueueOrder 2026-09-17-12:07: FN-509 — a legacy saved summary may still carry a level
+         in its raw JSON. It is DROPPED here rather than converted into a rank, so resuming an old
+         planning session keeps working without reintroducing a priority. */
+    suggestedDependencies: normalizeStringArray(summary.suggestedDependencies),
     keyDeliverables: normalizeStringArray(summary.keyDeliverables),
     suggestedRefinements: normalizeStringArray(summary.suggestedRefinements),
   };
@@ -1142,6 +1237,13 @@ function cleanupExpiredSessions(): void {
     }
   }
 
+  // Count ceiling, enforced through the same owner so an over-ceiling session releases its agent and
+  // stream buffer exactly like an expired one.
+  clampEntryCeilingWithCleanup(
+    sessions,
+    PLANNING_SESSION_MAX,
+    (id) => { cleanupInMemorySession(id); },
+  );
   // Clean up stale rate limit entries
   for (const [ip, entry] of rateLimits) {
     if (now - entry.firstRequestAt.getTime() > RATE_LIMIT_WINDOW_MS) {
@@ -1156,6 +1258,18 @@ function cleanupExpiredSessions(): void {
       { cleanedSessions, cleanedRateLimits, operation: "cleanup-expired" }
     );
   }
+}
+
+/*
+FNXC:RetentionCensus 2026-09-21-22:50 (RUFU-257):
+Synchronous seam over `cleanupExpiredSessions` — the single reclamation owner for the planning session
+map and its IP window (the census deliberately registers those rows `sweptElsewhere`). A test on a
+faked clock cannot fire the import-armed interval, so it invokes the owner through this seam. Mirrors
+`__runAgentGenerationCleanupForTests`.
+*/
+/** @internal Run the periodic session/rate-window reclamation immediately; test-only seam. */
+export function __runPlanningCleanupForTests(): void {
+  cleanupExpiredSessions();
 }
 
 // Start cleanup interval
@@ -1328,6 +1442,7 @@ export function checkRateLimit(ip: string): boolean {
       count: 1,
       firstRequestAt: new Date(),
     });
+    enforceEntryCeiling(rateLimits, PLANNING_RATE_LIMIT_IP_MAX);
     return true;
   }
 
@@ -1338,6 +1453,7 @@ export function checkRateLimit(ip: string): boolean {
       count: 1,
       firstRequestAt: new Date(),
     });
+    enforceEntryCeiling(rateLimits, PLANNING_RATE_LIMIT_IP_MAX);
     return true;
   }
 
@@ -2766,7 +2882,6 @@ function buildRunningSummary(
       ? previousSummary.acceptanceCriteria
       : [`The requested outcome works end to end for: ${subject}`],
     suggestedSize: previousSummary?.suggestedSize ?? "M",
-    priority: previousSummary?.priority,
     suggestedDependencies: previousSummary?.suggestedDependencies ?? [],
     keyDeliverables: previousSummary?.keyDeliverables?.length ? previousSummary.keyDeliverables : buildFallbackDeliverables(subject),
     suggestedRefinements: previousSummary?.suggestedRefinements?.length
@@ -2795,7 +2910,7 @@ function mergeRunningSummary(session: Session, response?: PlanningResponse): Pla
     FNXC:PlanningMode 2026-07-20-00:00:
     FN-8434 permits a question to carry a partial running-plan update. Merge that patch over
     the prior work product before normalization so an update to one field cannot reset the
-    model's previously established title, deliverables, dependencies, size, or priority.
+    model's previously established title, deliverables, dependencies, or size.
     */
     const priorPlan = session.summary ?? buildRunningSummary(session.initialPlan, session.history);
     return normalizePlanningSummaryPayload({
@@ -4113,7 +4228,7 @@ export function formatResponseForAgent(
   FNXC:PlanningMode 2026-07-23-14:10:
   System prompts can be displaced by long tool/context turns. Repeat the selection-as-plan-backbone contract at the invocation boundary so every submitted option, multi-selection, or Other answer rebuilds the work product before the one deeper question, instead of becoming an append-only note or inviting model-authored completion.
   */
-  return `${answerContext}\n\nThis answer is a durable planning decision, not an append-only note. Regenerate the runningPlan fields (title, description, concrete proposedChanges, observable acceptanceCriteria, suggestedSize, optional priority, suggestedDependencies, concrete keyDeliverables, and all distinct high-value suggestedRefinements) around this selected label/description and every accumulated decision; do not cap suggestedRefinements at three. Rewrite every affected field so the selected direction is the central intended outcome, not the original vague complaint or an unselected alternative. Preserve free-text Other verbatim as steering. Author the operator-facing plan in Markdown: use concise GitHub-flavored Markdown in the description, with the structured fields supplying its Markdown sections and lists. Never list interview questions as deliverables or PROMPT.md sections such as Mission, Steps, File Scope, Review Level, Completion Criteria, or Do NOT. Inspect the selected direction and relevant repository context, return type:"question" with that complete runningPlan, and ask exactly one next question: a deeper concrete option-driven question with normally 3–5 materially distinct alternatives, descriptions, and pros/cons plus one write-your-own option. Two alternatives are not sufficient; include more when genuinely useful. Do not validate the plan; only the user can proceed with it.`;
+  return `${answerContext}\n\nThis answer is a durable planning decision, not an append-only note. Regenerate the runningPlan fields (title, description, concrete proposedChanges, observable acceptanceCriteria, suggestedSize, suggestedDependencies, concrete keyDeliverables, and all distinct high-value suggestedRefinements) around this selected label/description and every accumulated decision; do not cap suggestedRefinements at three. Rewrite every affected field so the selected direction is the central intended outcome, not the original vague complaint or an unselected alternative. Preserve free-text Other verbatim as steering. Author the operator-facing plan in Markdown: use concise GitHub-flavored Markdown in the description, with the structured fields supplying its Markdown sections and lists. Never list interview questions as deliverables or PROMPT.md sections such as Mission, Steps, File Scope, Review Level, Completion Criteria, or Do NOT. Inspect the selected direction and relevant repository context, return type:"question" with that complete runningPlan, and ask exactly one next question: a deeper concrete option-driven question with normally 3–5 materially distinct alternatives, descriptions, and pros/cons plus one write-your-own option. Two alternatives are not sufficient; include more when genuinely useful. Do not validate the plan; only the user can proceed with it.`;
 }
 
 function coerceResponseRecord(question: PlanningQuestion, response: unknown): Record<string, unknown> {
@@ -4395,7 +4510,7 @@ export async function createTaskFromPlanSession(
   let claimEpoch = session.taskCreationEpoch ?? 0;
   const currentProposalClaimId = () => planningProposalClaimId(sessionId, claimEpoch);
   const findCreatedTask = async (): Promise<Task | undefined> =>
-    (await store.listTasks({ includeArchived: true })).find((candidate) => candidate.proposalClaimId === currentProposalClaimId());
+    (await store.listTasks({ includeArchived: false })).find((candidate) => candidate.proposalClaimId === currentProposalClaimId());
   const markSessionComplete = async (): Promise<void> => {
     const current = await getSession(sessionId);
     if (current && !current.validated) {
@@ -4414,13 +4529,12 @@ export async function createTaskFromPlanSession(
   /*
   FNXC:PlanningMultiTask 2026-07-24-03:20:
   Reported bug (dashboard surface, same contract here): deleting the task created from a plan
-  dead-ended the session forever. When the linked task is absent from the include-archived
-  task list (task-row authority — a successful scan proves deletion, not a flaky read), clear
+  dead-ended the session forever. When the linked task is absent from the live task list (task-row authority — a successful scan proves deletion, not a flaky read), clear
   the stale linkage so this attempt creates a fresh task; a transient read failure keeps
   failing closed so we never fork on a hiccup.
   */
   const clearStaleLinkedTask = async (staleTaskId: string): Promise<boolean> => {
-    const allTasks = await store.listTasks({ includeArchived: true }).catch(() => null);
+    const allTasks = await store.listTasks({ includeArchived: false }).catch(() => null);
     if (allTasks === null || allTasks.some((candidate) => candidate.id === staleTaskId)) return false;
     diagnostics.warn("Planning session linked task no longer exists; advancing creation epoch", {
       sessionId,
@@ -4508,8 +4622,6 @@ export async function createTaskFromPlanSession(
     const task = await store.createTask({
       title: summary.title,
       description: sourceContext ? (await import("./github.js")).appendSourceIssueBlock(planMd, sourceContext.markdown, sourceContext.sourceIssue.url ?? "") : planMd,
-      dependencies: dependencies.length > 0 ? dependencies : undefined,
-      priority: isTaskPriority(summary.priority) ? summary.priority : DEFAULT_TASK_PRIORITY,
       ...(sourceContext ? { sourceIssue: sourceContext.sourceIssue, source: { sourceType: "github_import" as const, sourceMetadata: sourceContext.sourceMetadata }, ...(trackingDecision?.githubTracking ? { githubTracking: trackingDecision.githubTracking } : {}) } : { source: { sourceType: options?.sourceType ?? "cli" } }),
       ...(options?.baseBranch?.trim() ? { baseBranch: options.baseBranch.trim() } : {}),
       proposalClaimId: currentProposalClaimId(),
@@ -4591,7 +4703,7 @@ export async function finalizePlanningTaskCreation(sessionId: string, ownerToken
   return row ? restoreClaimSession(row) : undefined;
 }
 
-// FNXC:PlanningMultiTask 2026-07-24-01:40: expectedTaskCreationEpoch makes reconcile a no-op when the plan was edited (epoch rotated) since the task's claim key was derived — never re-link an archived task to the new epoch.
+// FNXC:PlanningMultiTask 2026-07-24-01:40: expectedTaskCreationEpoch makes reconcile a no-op when the plan was edited (epoch rotated) since the task's claim key was derived; never re-link a stale task to the new epoch.
 export async function reconcilePlanningTaskCreation(sessionId: string, taskId: string, expectedTaskCreationEpoch?: number): Promise<Session | undefined> {
   if (!_aiSessionStore || typeof (_aiSessionStore as unknown as { reconcilePlanningTaskCreation?: unknown }).reconcilePlanningTaskCreation !== "function") {
     const session = await getSession(sessionId);

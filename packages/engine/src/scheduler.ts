@@ -1,7 +1,9 @@
 import {
   getCurrentRepo,
   computeBlockerFanoutMap,
-  compareTasksByPriorityThenAgeAndId,
+  compareTasksByQueueOrder,
+  fileScopeLeaseBlocksCandidate,
+  isSharedBarrelOnlyMatch,
   normalizeOverlapScopeForTask,
   taskHoldsUnmergedCheckout,
   HIGH_FANOUT_BLOCKER_TODO_THRESHOLD,
@@ -16,6 +18,7 @@ import {
   type AgentStore,
   type Settings,
   type FileScopeLeaseClassification,
+  type CheckoutEmptinessProofMap,
 } from "@fusion/core";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -24,12 +27,14 @@ import {
   dropPreHeldExecutorSlot,
   projectAdmissionCoordinator,
   persistedTopLevelAgentTaskIdsFromStore,
+  persistedWorktreeHolderTaskIdsFromStore,
   recoverIdleSemaphoreLeakCandidate,
   registerPreHeldExecutorSlot,
-  resolveActiveTaskCapacityLimit,
+  resolveAgentCapacityLimit,
   type AgentSemaphore,
 } from "./concurrency/concurrency.js";
 import { planTaskWorktreePath, resolveTaskWorkingBranch } from "./worktree/worktree-names.js";
+import { proveDormantCheckoutEmptiness } from "./worktree/checkout-emptiness.js";
 import { schedulerLog } from "./logger.js";
 import { emitBoundedRunAudit } from "./util/emit-bounded-run-audit.js";
 import { createRepeatSuppressedLog } from "./util/repeat-suppressed-log.js";
@@ -51,12 +56,13 @@ import { resolveProjectColumnsForRoles, resolveWorkflowIrForTask, resolveWorkflo
 import type { WorkflowIr, WorkflowIrV2, WorkflowSelectionCache } from "@fusion/core";
 import type { ColumnRoleTraitFlags } from "@fusion/core";
 
-import { checkAndRecordUnplannedExecutionBlock, runHoldReleaseSweep, isUnplannedForExecution, type SlotReservation } from "./execution/hold-release.js";
+import { checkAndRecordUnplannedExecutionBlock, runHoldReleaseSweep, isUnplannedForExecution, type SlotReservation, type HoldReleasePass } from "./execution/hold-release.js";
 import { evaluateParkedAgentTaskLink } from "./agents/task-agent-sync.js";
 import { decideMissionSymbolAdmission, resolveMissionFeatureForTask } from "./missions/mission-symbol-admission.js";
 import { computeRecoveryDecision, formatDelay, MAX_RECOVERY_RETRIES } from "./healing/recovery-policy.js";
 
 const SYMBOL_LOCK_LEASE_MS = 10 * 60_000;
+type TaskUpdatePatch = Parameters<TaskStore["updateTask"]>[1];
 
 /*
 FNXC:WorkflowScheduling 2026-07-15-12:55:
@@ -95,12 +101,24 @@ export interface FileScopeOverlapMatch {
 /*
 FNXC:OverlapScheduling 2026-08-27-11:06:
 The scheduler's boolean admission predicate and the operator-facing overlap pairs must share one matcher. Returning every sorted, deduplicated match explains an existing blocker without changing whether work is serialized.
+
+FNXC:OverlapScheduling 2026-09-11-22:51:
+A matched pair is skipped when both sides name the same canonical package barrel export
+(`isSharedBarrelOnlyMatch`): barrel lines are append-only shared traffic, so a shared barrel alone
+must never serialize two cards. The exemption is per matched pair — scopes that also share any real
+file still produce a match there, and a directory/glob entry covering a barrel (either side a
+pattern) still matches through the prefix arms below. One rule here covers every consumer
+(admission, dispatch gate, gridlock detector, self-healing reconciliation, overlap report) because
+all of them route through this function; core's repair matcher mirrors it via the same shared
+predicate since `@fusion/core` cannot import `@fusion/engine`. The review-lane lease lifetime that
+feeds these decisions is intentionally unchanged — pausing a review card does not release its lease.
 */
 export function findFileScopeOverlaps(a: string[], b: string[]): FileScopeOverlapMatch[] {
   const matches = new Map<string, FileScopeOverlapMatch>();
   for (const path of a) {
     const prefixA = path.endsWith("/*") ? path.slice(0, -1) : null;
     for (const blockerPath of b) {
+      if (isSharedBarrelOnlyMatch(path, blockerPath)) continue;
       const prefixB = blockerPath.endsWith("/*") ? blockerPath.slice(0, -1) : null;
       const cleanA = prefixA ? path.slice(0, -2) : path;
       const cleanB = prefixB ? blockerPath.slice(0, -2) : blockerPath;
@@ -190,10 +208,20 @@ export function filterPathsByIgnoreList(
   });
 }
 
+/*
+FNXC:TaskQueueOrder 2026-09-17-12:07:
+FN-509: a dormant overlap holder is chosen by the SHARED queue order, so the card that overlap
+defers to is the same card admission would start next. The boost scope fields travel with the
+candidate because the comparator needs them; without `column`/`columnMovedAt` a boost would be
+silently ineffective here while being effective in admission, and the two would pick different
+winners on the same pair.
+*/
 export interface QueuedOverlapCandidate {
   id: string;
-  priority?: Task["priority"] | null;
   createdAt: string;
+  column?: string;
+  columnMovedAt?: string;
+  queueBoost?: Task["queueBoost"];
   scope: string[];
 }
 
@@ -248,20 +276,18 @@ A dependency's satisfaction is decided on ITS OWN board, because a dependency ed
 workflows: the dependent can sit on the default board while the dependency lives on a renamed one.
 
 THE TWO RULES THIS FILE ALREADY HAD, PRESERVED EXACTLY:
-  legacy (live)   satisfied = COMPLETE or ARCHIVED or the REVIEW lane (mergeBlocker/humanReview)
-  marker (shadow) satisfied = COMPLETE or ARCHIVED, else the handoff marker decides
+  legacy (live)   satisfied = COMPLETE or the REVIEW lane (mergeBlocker/humanReview)
+  marker (shadow) satisfied = COMPLETE, else the handoff marker decides
 
-They genuinely differ on the review lane, and the conversion does NOT reconcile them — that is a
-product decision, not a vocabulary one. See the PR body: #2720 settled "satisfied = complete or
-archived" for `update-task-deps.ts`, which matches the MARKER rule, so the live legacy rule here is
-the broader of the two. Narrowing it silently would strand every dependent of an in-review card.
+They genuinely differ on the review lane. Narrowing the live rule silently would strand every
+dependent of an in-review card.
 
 `columns` is resolved per dependency and passed in by the caller. Omitted (or absent for a given
 dependency) → the legacy literals, i.e. exactly today's behaviour, so no unconverted call site
 changes meaning and an unresolvable workflow fails soft rather than reading as unsatisfied forever.
 */
 export interface DependencySatisfactionColumns {
-  /** COMPLETE ∪ ARCHIVED for the dependency's own workflow. */
+  /** Complete columns for the dependency's own workflow. */
   terminal: ReadonlySet<string>;
   /** The dependency's own review lane (mergeBlocker ∪ humanReview). */
   review: ReadonlySet<string>;
@@ -276,7 +302,7 @@ dependent forever. That is strictly worse than the legacy behaviour it would rep
 */
 function isTerminalDependencyColumn(dep: Task, columns: DependencySatisfactionColumns | undefined): boolean {
   if (columns) return columns.terminal.has(dep.column);
-  return dep.column === "done" || dep.column === "archived";
+  return dep.column === "done";
 }
 
 /* DELIBERATE-LITERAL — same no-metadata fallback as above, reviewed 2026-07-30-20:40. */
@@ -318,7 +344,7 @@ export async function resolveDependencySatisfactionColumns(
     try {
       const ir = await resolveWorkflowIrForTask(store, dep.id, irCache);
       if (!ir) continue;
-      const terminal = new Set([...columnsWithFlag(ir, "complete"), ...columnsWithFlag(ir, "archived")]);
+      const terminal = new Set(columnsWithFlag(ir, "complete"));
       const review = new Set([...columnsWithFlag(ir, "mergeBlocker"), ...columnsWithFlag(ir, "humanReview")]);
       if (terminal.size === 0 && review.size === 0) continue;
       resolved.set(dep.id, { terminal, review });
@@ -445,12 +471,11 @@ Overlay emitter-resolved lanes onto the fail-soft defaults. Only fields the emit
 are taken, so a partial payload cannot blank a lane back to a wrong answer.
 */
 function mergeParkedColumns(
-  base: { hold: string; intake: string; wip: string; wipColumns: ReadonlySet<string>; review: string; complete: string; archived: string; terminal: ReadonlySet<string> },
+  base: { hold: string; intake: string; wip: string; wipColumns: ReadonlySet<string>; review: string; complete: string; terminal: ReadonlySet<string> },
   lanes: TaskMoveLanes | undefined,
-): { hold: string; intake: string; wip: string; wipColumns: ReadonlySet<string>; review: string; complete: string; archived: string; terminal: ReadonlySet<string> } {
+): { hold: string; intake: string; wip: string; wipColumns: ReadonlySet<string>; review: string; complete: string; terminal: ReadonlySet<string> } {
   if (!lanes) return base;
   const complete = lanes.complete ?? base.complete;
-  const archived = lanes.archived ?? base.archived;
   return {
     hold: lanes.hold ?? base.hold,
     intake: lanes.intake ?? base.intake,
@@ -466,12 +491,9 @@ function mergeParkedColumns(
     ]),
     review: lanes.review ?? base.review,
     complete,
-    archived,
     /*
     FNXC:WorkflowResolvedColumns 2026-07-31-11:10 (u12 — the overlay NARROWED a membership set):
-    This rebuilt `terminal` as `new Set([complete, archived])`, which is first-match-per-role and so
-    contradicted the note above ("`terminal` is a MEMBERSHIP set, and it is not the same question as
-    `complete`/`archived`"). Two losses in one line: it DISCARDED `base.terminal`, which the sync IR
+    This rebuilt `terminal` from only one Complete id, which is first-match-per-role. It discarded `base.terminal`, which the sync IR
     path had already resolved correctly, and it had no way to express a second complete-trait column
     even when the emitter knew about one.
 
@@ -479,7 +501,7 @@ function mergeParkedColumns(
     argues for at line ~422: a superset makes the reconciliation run on a move it would otherwise
     ignore — one extra query — while a subset silently withholds work from a card that is finished.
     */
-    terminal: new Set([...base.terminal, ...(lanes.terminal ?? []), complete, archived]),
+    terminal: new Set([...base.terminal, ...(lanes.terminal ?? []), complete]),
   };
 }
 
@@ -503,11 +525,10 @@ const LEGACY_PARKED_COLUMNS = {
   wipColumns: new Set(["in-progress"]),
   review: "in-review",
   complete: "done",
-  archived: "archived",
-  terminal: new Set(["done", "archived"]),
+  terminal: new Set(["done"]),
 };
 
-async function resolveTaskParkedColumns(store: TaskStore, taskId: string, selectionCache?: WorkflowSelectionCache): Promise<{ hold: string; intake: string; wip: string; wipColumns: ReadonlySet<string>; review: string; complete: string; archived: string; terminal: ReadonlySet<string>; wake: ReadonlySet<string> }> {
+async function resolveTaskParkedColumns(store: TaskStore, taskId: string, selectionCache?: WorkflowSelectionCache): Promise<{ hold: string; intake: string; wip: string; wipColumns: ReadonlySet<string>; review: string; complete: string; terminal: ReadonlySet<string>; wake: ReadonlySet<string> }> {
   try {
     /*
     FNXC:WorkflowScheduling 2026-08-12-20:00 (RUFU-073):
@@ -526,7 +547,6 @@ async function resolveTaskParkedColumns(store: TaskStore, taskId: string, select
     const ir = await resolveWorkflowIrForTask(store, taskId, undefined, selectionCache);
     const l = resolveLifecycleColumns(ir);
     const complete = l?.complete ?? LEGACY_PARKED_COLUMNS.complete;
-    const archived = l?.archived ?? LEGACY_PARKED_COLUMNS.archived;
     return {
       hold: l?.hold ?? LEGACY_PARKED_COLUMNS.hold,
       intake: l?.intake ?? LEGACY_PARKED_COLUMNS.intake,
@@ -538,13 +558,10 @@ async function resolveTaskParkedColumns(store: TaskStore, taskId: string, select
       ]),
       review: l?.review ?? LEGACY_PARKED_COLUMNS.review,
       complete,
-      archived,
       terminal: new Set([
         ...LEGACY_PARKED_COLUMNS.terminal,
         ...columnsWithFlag(ir, "complete"),
-        ...columnsWithFlag(ir, "archived"),
         complete,
-        archived,
       ]),
       /*
       FNXC:WorkflowResolvedColumns 2026-07-31-06:35 (fleet):
@@ -577,19 +594,28 @@ export interface FileScopeLeaseOptions {
   isWipColumn?: boolean;
   isReviewColumn?: boolean;
   isTerminalColumn?: boolean;
+  /**
+   * RUFU-200: per-repository proof that this task's retained checkouts hold nothing (`empty`),
+   * `occupied` of work, or could not be proven (`unknown`). Consumed by the DORMANT branch only.
+   * Absent ⇒ today's behavior: a retained checkout is a holder.
+   */
+  checkoutEmptiness?: CheckoutEmptinessProofMap;
 }
 
 /*
 FNXC:OverlapScheduling 2026-08-29-05:49:
 File-scope ownership is a lifetime contract: a task keeps its claim until its work has landed, is
-archived/deleted, or a non-WIP lane has released its checkout. Paused, failed, and external-blocked
-cards therefore retain their claim while their unmerged singular or per-repository checkout exists;
-archiving, deleting, or clearing those checkouts is the explicit escape hatch for a dead holder.
+deleted, or a non-WIP lane has released its checkout. Paused, failed, and external-blocked cards therefore retain their claim while their unmerged singular or per-repository checkout exists; deleting or clearing those checkouts is the explicit escape hatch for a dead holder.
 
 Check every checkout form before granting a non-WIP card an active lease. A workspace task deliberately
 has no singular `task.worktree`, so review and dormant classification must recognize its repository
 checkouts. WIP deliberately skips that check because the scheduler moves a task there before implementation
 persists a checkout; gating that interval would let a second task begin editing the same files.
+
+FNXC:OverlapScheduling 2026-09-01-14:49:
+A card whose only live state is checkout-free planning owns no lease, so overlapping planners remain
+independently dispatchable. A hold-lane card retaining a checkout after a replan bounce still owns
+unmerged work and keeps its dormant lease; never replace this checkout proof with a column exemption.
 */
 export function classifyFileScopeLease(
   task: Task,
@@ -606,7 +632,7 @@ export function classifyFileScopeLease(
   // FNXC:WorkflowLifecycle 2026-08-30-07:27: DELIBERATE-LITERAL — callers without resolved workflow roles require the legacy review fallback.
   const isReviewColumn = options?.isReviewColumn ?? task.column === "in-review";
   // FNXC:WorkflowLifecycle 2026-08-30-07:27: DELIBERATE-LITERAL — callers without resolved workflow roles require the legacy terminal fallback.
-  const isTerminalColumn = options?.isTerminalColumn ?? (task.column === "done" || task.column === "archived");
+  const isTerminalColumn = options?.isTerminalColumn ?? task.column === "done";
 
   if (isTerminalColumn || task.deletedAt) {
     return { kind: "none", waivedForTaskIds: [] };
@@ -632,7 +658,22 @@ export function classifyFileScopeLease(
     return { kind: taskHoldsUnmergedCheckout(task) ? "active" : "none", waivedForTaskIds: [] };
   }
 
-  return { kind: taskHoldsUnmergedCheckout(task) ? "dormant" : "none", waivedForTaskIds: [] };
+  /*
+  FNXC:OverlapScheduling 2026-09-08-20:55 (RUFU-200):
+  This is the ONLY branch that consults the checkout-emptiness proof, and it is a downgrade-only input:
+  an `empty` proof releases the dormant lease, while `occupied`, `unknown`, or no proof at all keeps it.
+  A retained checkout in a planning/hold lane with zero commits and a clean tree is not work to preserve
+  — it is the phantom that deadlocked RUFU-198's peer RUFU-199 forever.
+
+  The review branch above deliberately does NOT consult it. A review-lane checkout is still the merge's
+  source: the merger reads it, and `autoMerge:false` leaves `in-review` terminal-until-merged by a human,
+  so releasing that lease on an `empty` verdict would free overlapping files while a human still owns
+  the merge. WIP skips the checkout question entirely by design (see the FNXC above).
+  */
+  return {
+    kind: taskHoldsUnmergedCheckout(task, options?.checkoutEmptiness) ? "dormant" : "none",
+    waivedForTaskIds: [],
+  };
 }
 
 /**
@@ -644,9 +685,12 @@ export function shouldHoldActiveFileScopeLease(
   options?: FileScopeLeaseOptions,
 ): boolean {
   /* FNXC:LaneWiring 2026-08-30-00:20: name the lane answers this wrapper forwards. A bare `options`
-     pass reads as unwired to the lane-wiring census; the spread keeps every other option intact. */
+     pass reads as unwired to the lane-wiring census; the spread keeps every other option intact.
+     RUFU-200 adds the named `checkoutEmptiness` forward for the same reason — a wrapper that silently
+     dropped the proof would make the two entry points disagree on the same holder. */
   return classifyFileScopeLease(task, tasks, {
     ...options,
+    checkoutEmptiness: options?.checkoutEmptiness,
     isWipColumn: options?.isWipColumn,
     isReviewColumn: options?.isReviewColumn,
     isTerminalColumn: options?.isTerminalColumn,
@@ -665,8 +709,8 @@ export function findHigherPriorityQueuedOverlap(
     if (!queued.scope.length || !candidate.scope.length) continue;
     if (!overlap(candidate.scope, queued.scope)) continue;
 
-    if (compareTasksByPriorityThenAgeAndId(queued, candidate) < 0) {
-      if (!higher || compareTasksByPriorityThenAgeAndId(queued, higher) < 0) {
+    if (compareTasksByQueueOrder(queued, candidate) < 0) {
+      if (!higher || compareTasksByQueueOrder(queued, higher) < 0) {
         higher = queued;
       }
     }
@@ -843,15 +887,7 @@ export function formatConcurrencyLimitReason(diagnostic: ConcurrencyGateDiagnost
     return holders && holders.length > 0 ? holders.join(", ") : "none";
   };
   const gateLabel = diagnostic.bindingGates.join(", ");
-  const effectiveLimit = Math.min(
-    diagnostic.maxConcurrentGate.limit,
-    diagnostic.maxWorktreesGate?.limit ?? Infinity,
-  );
-  const bindingKnob = diagnostic.maxWorktreesGate && diagnostic.maxWorktreesGate.limit <= diagnostic.maxConcurrentGate.limit
-    ? "maxWorktrees"
-    : "maxConcurrent";
   const details = [
-    `effectiveLimit=${effectiveLimit} (bindingKnob=${bindingKnob})`,
     `maxConcurrent used=${diagnostic.maxConcurrentGate.used}/${diagnostic.maxConcurrentGate.limit} (holders: ${holdersText("maxConcurrent")})`,
   ];
   /*
@@ -995,6 +1031,7 @@ export class Scheduler {
   private running = false;
   private scheduling = false;
   private schedulingSince = 0;
+  private immediateSchedulePending = false;
   private wasWorktreeLimited = false;
   private wasGlobalPaused = false;
   private wasEnginePaused = false;
@@ -1085,12 +1122,17 @@ export class Scheduler {
           taskId: task.id,
           projectId,
           lane: "execute",
+          consumesWorktree: true,
           createdAt: task.createdAt,
+          // FNXC:TaskQueueOrder 2026-09-17-12:07: Boost scope travels with the candidate.
+          column: task.column,
+          ...(task.columnMovedAt ? { columnMovedAt: task.columnMovedAt } : {}),
+          ...(task.queueBoost ? { queueBoost: task.queueBoost } : {}),
           reserve: () => registerPreHeldExecutorSlot(task.id, this.options.semaphore !== undefined),
           start: async () => {
             this.coordinatorReadyTasks.delete(task.id);
             this.coordinatorAdmittedTaskIds.add(task.id);
-            void this.schedule();
+            this.requestImmediateSchedule();
           },
         })),
     });
@@ -1108,7 +1150,7 @@ export class Scheduler {
       visible on the board and via task:moved logs. Keep the trigger line debug-only.
       */
       schedulerLog.debug("Task created — triggering scheduling");
-      this.schedule();
+      this.requestImmediateSchedule();
     });
 
     /**
@@ -1117,12 +1159,12 @@ export class Scheduler {
      * for the next poll interval (up to 15 s). Only reacts to true→false
      * transitions — no-ops on false→false and true→true.
      *
-     * The re-entrance guard (`this.scheduling`) inside `schedule()` safely
-     * drops the call if a poll-based pass is already in flight.
+     * The coalesced immediate-schedule primitive preserves one follow-up pass
+     * when a poll-based pass is already in flight.
      */
     this.store.on("settings:updated", ({ settings, previous }) => {
       if (previous.globalPause && !settings.globalPause && this.running) {
-        this.schedule();
+        this.requestImmediateSchedule();
       }
     });
 
@@ -1134,7 +1176,7 @@ export class Scheduler {
      */
     this.store.on("settings:updated", ({ settings, previous }) => {
       if (previous.enginePaused && !settings.enginePaused && this.running) {
-        this.schedule();
+        this.requestImmediateSchedule();
       }
     });
 
@@ -1354,7 +1396,7 @@ export class Scheduler {
         Duplicate of the column-move lifecycle line; schedule side-effect is not operator-facing.
         */
         schedulerLog.debug(`Task moved to ${to} — triggering scheduling`);
-        this.schedule();
+        this.requestImmediateSchedule();
       }
     });
 
@@ -1433,7 +1475,7 @@ export class Scheduler {
           const unpausedParked = await resolveTaskParkedColumns(this.store, task.id, updatedSelectionCache);
           if (this.running && unpausedParked.wake.has(task.column)) {
             schedulerLog.log(`Task ${task.id} unpaused — triggering scheduling`);
-            void this.schedule();
+            this.requestImmediateSchedule();
           }
         })().catch((error) => {
           schedulerLog.warn(`Failed to resolve unpaused task parked columns for ${task.id}: ${error instanceof Error ? error.message : String(error)}`);
@@ -1453,8 +1495,8 @@ export class Scheduler {
       Same shape as the pausedTaskIds tracker above: remember ids seen mid-planning, then fire once
       on the transition back to a dispatchable state. Guarded on `!task.status` so a planning ->
       failed/awaiting-approval park does not trigger a pointless pass, and on column so a card
-      finishing planning somewhere unschedulable is ignored. schedule()'s re-entrance guard drops
-      the call harmlessly if a poll-based pass is already running.
+      finishing planning somewhere unschedulable is ignored. The immediate request coalesces one
+      follow-up when a poll-based pass is already running.
       */
       if (task.status === "planning") {
         this.planningTaskIds.add(task.id);
@@ -1473,7 +1515,7 @@ export class Scheduler {
             && planningParked.wake.has(task.column)
           ) {
             schedulerLog.log(`Task ${task.id} finished planning — triggering scheduling`);
-            void this.schedule();
+            this.requestImmediateSchedule();
           }
         })().catch((error) => {
           schedulerLog.warn(`Failed to resolve planning task parked columns for ${task.id}: ${error instanceof Error ? error.message : String(error)}`);
@@ -1506,7 +1548,7 @@ export class Scheduler {
             && approvalParked.wake.has(task.column)
           ) {
             schedulerLog.log(`Task ${task.id} plan approval cleared — triggering scheduling`);
-            void this.schedule();
+            this.requestImmediateSchedule();
           }
         })().catch((error) => {
           schedulerLog.warn(`Failed to resolve approval task parked columns for ${task.id}: ${error instanceof Error ? error.message : String(error)}`);
@@ -1634,7 +1676,7 @@ export class Scheduler {
             }
           }
 
-          this.schedule();
+          this.requestImmediateSchedule();
         } catch (error) {
           schedulerLog.error(`Failed event-driven soft-delete blocker reconciliation for ${task.id}`, error);
         }
@@ -1745,6 +1787,7 @@ export class Scheduler {
 
   stop(): void {
     this.running = false;
+    this.immediateSchedulePending = false;
     if (this.pollInterval) {
       clearInterval(this.pollInterval);
       this.pollInterval = null;
@@ -1938,7 +1981,7 @@ export class Scheduler {
       holdByTaskId.set(task.id, columnsWithFlag(ir, "hold").includes(task.column));
       terminalByTaskId.set(
         task.id,
-        columnsWithFlag(ir, "complete").includes(task.column) || columnsWithFlag(ir, "archived").includes(task.column),
+        columnsWithFlag(ir, "complete").includes(task.column),
       );
     }
     const fanoutMap = computeBlockerFanoutMap(tasks, 3, {
@@ -1962,7 +2005,7 @@ export class Scheduler {
          the answer `computeBlockerFanoutMap` would have given it with no options at all. */
       classify: (task: Task) => ({
         isHold: holdByTaskId.get(task.id) ?? task.column === "todo",
-        isTerminal: terminalByTaskId.get(task.id) ?? (task.column === "done" || task.column === "archived"),
+        isTerminal: terminalByTaskId.get(task.id) ?? task.column === "done",
       }),
     });
     const seenBlockers = new Set<string>();
@@ -2183,6 +2226,23 @@ export class Scheduler {
   }
 
   /**
+   * Request an event-driven pass without losing a wake that arrives during an active pass.
+   *
+   * FNXC:OverlapScheduling 2026-09-07-14:23:
+   * A terminal move can wake the scheduler before completion fan-out commits its overlap clear.
+   * Preserve one coalesced follow-up request until the active pass finishes so the post-commit wake
+   * observes durable state, while `stop()` cancels pending work and normal pause guards remain authoritative.
+   */
+  requestImmediateSchedule(): void {
+    if (!this.running) return;
+    if (this.scheduling) {
+      this.immediateSchedulePending = true;
+      return;
+    }
+    void this.schedule();
+  }
+
+  /**
    * Run one scheduling pass.
    *
    * Uses a re-entrance guard (`this.scheduling`) to prevent overlapping
@@ -2204,7 +2264,23 @@ export class Scheduler {
     this.schedulingSince = Date.now();
 
     try {
-      let tasks = await this.store.listTasks({ slim: true, includeArchived: false, startupMemo: false });
+      /*
+      FNXC:ListTasksDeriveOptOut 2026-09-08-23:08 (RUFU-201 — schedule() tick read):
+      This board read feeds three consumers, all of which read persisted columns only:
+      `recoverIdleSemaphoreLeak` (id, column, status, paused, userPaused, workflowStepResults,
+      externalBlock), `renewActiveMissionSymbolLocks` (id, column, declaredSymbols, missionId,
+      sliceId), and `runHoldReleaseSweepPass` (id, column, status, priority, createdAt, dependencies,
+      deletedAt, overlapBlockedBy, workspaceWorktrees, worktree, branch). `workflowStepResults` is a
+      real slim-selected column and `columnCountsTowardWip` is caller-side enrichment that is
+      undefined in both modes, so neither is affected. Greps for the derived-badge fields across
+      `scheduler.ts`, `concurrency/concurrency.ts`, and `core/src/tasks/*` return no matches. The 10
+      fields the derivation block writes are all UI-only, so the derivation is provably waste here.
+
+      `startupMemo: false` pre-dates RUFU-201 and stays: this is the read that gates todo→in-progress
+      graduation, so it must not act on a snapshot an out-of-process writer already invalidated. See the
+      corrected rationale at the post-sweep re-read below.
+      */
+      let tasks = await this.store.listTasks({ slim: true, includeArchived: false, startupMemo: false, derive: false });
       let settings = await this.store.getSettings();
       this.idleSemaphoreLeakCandidateSince = recoverIdleSemaphoreLeak(
         this.options.semaphore,
@@ -2262,7 +2338,29 @@ export class Scheduler {
       */
       if (shouldRunWorkflowColumnScheduler(settings)) {
         await this.runHoldReleaseSweepPass(tasks, settings);
-        tasks = await this.store.listTasks({ slim: true, includeArchived: false, startupMemo: false });
+        /*
+        FNXC:ListTasksDeriveOptOut 2026-09-08-23:08 (RUFU-201 — post-sweep re-read):
+        This re-read feeds only `emitHighOverlapFanoutWarnings` → `computeBlockerFanoutMap`, which reads
+        id, column, dependencies, and blockedBy (`blocker-fanout.ts`); the reporters re-query the store
+        themselves. `derive: false` is therefore safe.
+
+        FNXC:StartupSlimListMemo 2026-09-09-02:04 (RUFU-201, correction — the real reason `startupMemo: false` stays):
+        An earlier draft of this note claimed a move invalidates the snapshot only "as a side effect
+        nothing guards". That was wrong on both halves and is corrected rather than left in place.
+        In-process, a move invalidates the snapshot at a deliberate seam, not an incidental one: every
+        lane-changing `moveTask` writes `task.json` through `writeTaskJsonFileImpl`, which clears the
+        memo unconditionally (`moves.ts`; the same-column backend-handoff early return touches no
+        board-visible field, so it needs no invalidation), and the complete-lane arm additionally emits
+        `task:updated` (`moves.ts`) — an event the memo listens to. The move coupling is now named by a
+        test (`list-tasks-derive-optout.pg.test.ts`), beside the existing `updateTask` event arm.
+
+        The gap that does remain is cross-process only: the subscription is in-process, so a second
+        engine, the CLI, or a mesh peer writing the shared database emits nothing here and the 15 s TTL
+        becomes the sole bound. This tick's board read gates todo→in-progress graduation, where a card
+        another process already moved means a double dispatch, so both tick reads keep a
+        guaranteed-fresh read instead of inheriting that ceiling.
+        */
+        tasks = await this.store.listTasks({ slim: true, includeArchived: false, startupMemo: false, derive: false });
         settings = await this.store.getSettings();
         await this.emitHighOverlapFanoutWarnings(tasks);
 
@@ -2303,6 +2401,11 @@ export class Scheduler {
       schedulerLog.error("Scheduling error:", err);
     } finally {
       this.scheduling = false;
+      this.schedulingSince = 0;
+      if (this.running && this.immediateSchedulePending) {
+        this.immediateSchedulePending = false;
+        void this.schedule();
+      }
     }
   }
 
@@ -2411,7 +2514,7 @@ export class Scheduler {
       };
       const maxWorktrees = resolveWorktreeCapacityLimit(capacitySettings);
       const maxConcurrent = resolveMaxConcurrentSetting(capacitySettings);
-      const activeTaskLimit = resolveActiveTaskCapacityLimit(capacitySettings);
+      const activeTaskLimit = resolveAgentCapacityLimit(capacitySettings);
       /*
       FNXC:WorkflowScheduling 2026-07-19-02:35 (U4/KTD-9):
       Count active WIP reservations by the `wip` trait, not the literal
@@ -2507,13 +2610,11 @@ export class Scheduler {
         .filter((task) => isWipColumnTask(task) && task.status !== "failed")
         .map((task) => task.id);
       /*
-      FNXC:WorktreeCapacity 2026-08-01-04:38 (inactive retained-worktree capacity inversion):
-      Worktree capacity is a LIVE-TASK budget, not a count of directories retained on disk. The
-      dashboard showed seven active tasks against maxWorktrees=9, but two dependency-blocked queued
-      cards retained worktree paths. Counting those inactive paths filled the ledger and prevented
-      the dependency-free roots from starting. Use the canonical enriched running-agent predicate
-      shared with the board; planning, WIP, and active review count, while queued/paused/terminal
-      tasks do not. Same-sweep reservations below keep newly released tasks visible immediately.
+      FNXC:CapacityModel 2026-09-01-14:49:
+      Worktree capacity counts canonically live tasks that are in WIP or retain an unmerged singular
+      or workspace checkout. Checkout-free planning is excluded, while WIP counts before acquisition
+      to close the dispatch-to-persistence window and a live replan card retains its real disk slot.
+      Same-sweep reservations below keep newly released execution candidates visible immediately.
       */
       /*
       FNXC:WorkflowScheduling 2026-08-09-11:01:
@@ -2538,7 +2639,13 @@ export class Scheduler {
           return typeof value === "function" ? value.bind(target) : value;
         },
       });
-      const activeWorktreeTaskIds = await persistedTopLevelAgentTaskIdsFromStore(selectionCachedStore, tasks);
+      /* RUFU-200: pass the emptiness proof so a retained checkout that is clean AND zero commits
+         ahead of base releases its `maxWorktrees` slot instead of phantom-holding capacity; the
+         shared prover cache makes this the same git evidence the dormant-lease pass reads below. */
+      const activeWorktreeTaskIds = await persistedWorktreeHolderTaskIdsFromStore(selectionCachedStore, tasks, {
+        rootDir: () => this.store.getRootDir(),
+        settings,
+      });
       let reservedWorktreeSlots = activeWorktreeTaskIds.length;
       let reservedConcurrentSlots = wipTaskIds.length;
       const dispatchPrepByTaskId = new Map<string, {
@@ -2547,6 +2654,7 @@ export class Scheduler {
         dispatchTimestamp: string;
         effectiveNodeId: string | null;
         effectiveNodeSource: string;
+        observedOverlapBlockedBy: string | null;
         task: Task;
       }>();
       const activeScopes = new Map<string, string[]>();
@@ -2608,12 +2716,37 @@ export class Scheduler {
         }
       }
 
+      /*
+      FNXC:OverlapScheduling 2026-09-08-21:05 (RUFU-200):
+      Prove emptiness ONCE per pass, for exactly the cards that would otherwise be registered as dormant
+      holders. A per-candidate proof would fan out `tasks x candidates` git calls on a scheduling hot
+      path; the shared prover bounds that to one `concurrency`-wide wave with a short TTL. Restricting to
+      the would-be-dormant set is also what keeps a live WIP or review holder from being re-proven under
+      a verdict its lane never consumes.
+      */
+      const dormantProofCandidates = settings.groupOverlappingFiles
+        ? tasks.filter((task) =>
+            !task.deletedAt
+            && !isWipColumnTask(task)
+            && !isReviewColumnTask(task)
+            && !isTerminalColumnTask(task)
+            && taskHoldsUnmergedCheckout(task))
+        : [];
+      const checkoutEmptinessByTaskId = await proveDormantCheckoutEmptiness({
+        rootDir: () => this.store.getRootDir(),
+        settings,
+        candidates: dormantProofCandidates,
+      });
+
       if (settings.groupOverlappingFiles) {
         for (const task of tasks) {
           const classification = classifyFileScopeLease(task, tasks, {
             mergeRequestContractShadowEnabled: mergeShadowEnabled,
             handoffAccepted: reviewHandoffMarkerMap.get(task.id) ?? false,
             schedulingDependencyOptions,
+            /* FNXC:OverlapScheduling 2026-09-08-21:05 (RUFU-200): the pass-level proof for THIS holder;
+               undefined when the prover did not run (feature off) or could not key it — both fail closed. */
+            checkoutEmptiness: checkoutEmptinessByTaskId.get(task.id),
             isWipColumn: isWipColumnTask(task),
             isReviewColumn: isReviewColumnTask(task),
             isTerminalColumn: isTerminalColumnTask(task),
@@ -2630,8 +2763,10 @@ export class Scheduler {
           } else {
             dormantScopes.set(task.id, {
               id: task.id,
-              priority: task.priority,
               createdAt: task.createdAt,
+              column: task.column,
+              ...(task.columnMovedAt ? { columnMovedAt: task.columnMovedAt } : {}),
+              ...(task.queueBoost ? { queueBoost: task.queueBoost } : {}),
               scope: filteredScope,
             });
             dormantScopeColumns.set(task.id, task.column);
@@ -2661,8 +2796,10 @@ export class Scheduler {
         const dormantHolder = findHigherPriorityQueuedOverlap(
           {
             id: candidate.id,
-            priority: candidate.priority,
             createdAt: candidate.createdAt,
+            column: candidate.column,
+            ...(candidate.columnMovedAt ? { columnMovedAt: candidate.columnMovedAt } : {}),
+            ...(candidate.queueBoost ? { queueBoost: candidate.queueBoost } : {}),
             scope: candidateScope,
           },
           Array.from(dormantScopes.values()).filter(
@@ -2678,10 +2815,83 @@ export class Scheduler {
         };
       };
 
+      const freshOverlapBlockerStillBlocks = async (
+        candidate: Task,
+        blockerId: string,
+      ): Promise<boolean> => {
+        const freshSettings = await this.store.getSettings();
+        if (freshSettings.groupOverlappingFiles !== true) return false;
+        const blocker = await this.store.getTask(blockerId).catch(() => null);
+        if (!blocker) return false;
+        const liveTasks = tasks.map((entry) => {
+          if (entry.id === candidate.id) return candidate;
+          if (entry.id === blocker.id) return blocker;
+          return entry;
+        });
+        if (!liveTasks.some((entry) => entry.id === blocker.id)) liveTasks.push(blocker);
+        if (!liveTasks.some((entry) => entry.id === candidate.id)) liveTasks.push(candidate);
+        const classification = classifyFileScopeLease(blocker, liveTasks, {
+          mergeRequestContractShadowEnabled: freshSettings.mergeRequestContractShadowEnabled === true,
+          handoffAccepted: freshSettings.mergeRequestContractShadowEnabled === true && isReviewColumnTask(blocker)
+            ? (await this.store.getCompletionHandoffAcceptedMarker(blocker.id)) !== null
+            : false,
+          schedulingDependencyOptions,
+          /*
+          FNXC:OverlapScheduling 2026-09-08-21:05 (RUFU-200):
+          Re-use the pass-level proof so this revalidation can never disagree with the admission decision
+          that produced the wedge it is clearing: two different answers for one holder would make the
+          card oscillate between "blocked" and "free". A blocker the pass did not prove (it was not a
+          would-be-dormant holder then) has no entry, which is the fail-closed holder answer.
+          */
+          checkoutEmptiness: checkoutEmptinessByTaskId.get(blocker.id),
+          isWipColumn: isWipColumnTask(blocker),
+          isReviewColumn: isReviewColumnTask(blocker),
+          isTerminalColumn: isTerminalColumnTask(blocker),
+        });
+        if (!fileScopeLeaseBlocksCandidate(blocker, candidate, classification)) return false;
+        const freshIgnorePaths = freshSettings.overlapIgnorePaths ?? [];
+        const candidateScope = normalizeOverlapScopeForTask(candidate, filterPathsByIgnoreList(
+          await this.store.parseFileScopeFromPrompt(candidate.id),
+          freshIgnorePaths,
+          { ignoreHiddenOverlapPaths: freshSettings.ignoreHiddenOverlapPaths },
+        ));
+        if (candidateScope.length === 0 || isCoordinationOnlyTask(candidate, candidateScope)) return false;
+        const blockerScope = normalizeOverlapScopeForTask(blocker, filterPathsByIgnoreList(
+          await this.store.parseFileScopeFromPrompt(blocker.id),
+          freshIgnorePaths,
+          { ignoreHiddenOverlapPaths: freshSettings.ignoreHiddenOverlapPaths },
+        ));
+        if (blockerScope.length === 0 || isCoordinationOnlyTask(blocker, blockerScope)) return false;
+        return this.pathsOverlap(candidateScope, blockerScope);
+      };
+      const clearObservedOverlapIfStillStale = async (
+        candidate: Task,
+        observedBlockerId: string | null | undefined,
+      ): Promise<boolean> => {
+        if (typeof observedBlockerId !== "string" || observedBlockerId.trim().length === 0) return false;
+        if (await freshOverlapBlockerStillBlocks(candidate, observedBlockerId)) return false;
+        let cleared = false;
+        const clearIfUnchanged = (live: Task): TaskUpdatePatch | null => {
+          if (live.deletedAt != null || (live.overlapBlockedBy ?? null) !== observedBlockerId) return null;
+          cleared = true;
+          return { overlapBlockedBy: null };
+        };
+        if (typeof this.store.updateTaskAtomic === "function") {
+          await this.store.updateTaskAtomic(candidate.id, clearIfUnchanged);
+          return cleared;
+        }
+        // Compatibility only for structural test/extension stores; production TaskStore is atomic.
+        const live = await this.store.getTask(candidate.id).catch(() => null);
+        if (!live) return false;
+        const patch = clearIfUnchanged(live);
+        if (patch) await this.store.updateTask(candidate.id, patch);
+        return cleared;
+      };
+
       const result = await runHoldReleaseSweep(this.store, {
         now: () => Date.now(),
         selectionCache,
-        reserveSlot: async (task): Promise<SlotReservation | null> => {
+        reserveSlot: async (task, _target, pass?: HoldReleasePass): Promise<SlotReservation | null> => {
           let reservedScope = false;
           let priorActiveScope: string[] | undefined;
           let priorActiveScopeColumn: Task["column"] | undefined;
@@ -2718,8 +2928,14 @@ export class Scheduler {
           */
           try {
             const ir = await resolveWorkflowIrForTask(this.store, task.id, wipIrCache, selectionCache);
-            if (await isUnplannedForExecution(this.store, task, ir)) {
-              await checkAndRecordUnplannedExecutionBlock(this.store, task, ir);
+            // RUFU-209: this guard re-checks the SAME snapshot task the sweep just checked for readiness,
+            // so forward the sweep's pass and its PROMPT.md memo. A reservation invoked outside a sweep
+            // (pass undefined) keeps its own live read.
+            if (await isUnplannedForExecution(this.store, task, ir, pass)) {
+              // RUFU-209: the guard above just resolved this task's PROMPT.md (via the pass memo or a
+              // live read); the refusal marker re-reads the SAME fact, so forward the pass and the
+              // recorder's read becomes a memo hit instead of a second PROMPT.md round trip.
+              await checkAndRecordUnplannedExecutionBlock(this.store, task, ir, pass);
               return null;
             }
           } catch {
@@ -2825,8 +3041,44 @@ export class Scheduler {
             });
             if (staleness.isStale) {
               schedulerLog.warn(`Task ${task.id} specification is stale — ${staleness.reason}`);
-              await this.store.updateTask(task.id, { status: "needs-replan" });
-              await this.store.logEntry(task.id, staleness.reason);
+              /*
+              FNXC:PlanReplanSessionBudget 2026-09-21-10:45 (RUFU-251):
+              The staleness rebound used to be a bare `needs-replan` write with no counter and no
+              backoff. Staleness is measured by PROMPT.md's mtime, so a planner session that returns
+              the specification unchanged — which is exactly what a Plan Review `REVISE` episode asks
+              for when the planner considers the spec already correct — leaves the card stale forever
+              and the scheduler rebounded it on every pass. Share the planning recovery budget like the
+              filesystem-validation rebound above: backoff while attempts remain, then park `failed`
+              with a greppable prefix so a spec that cannot be rewritten stops looping. A genuine
+              rewrite refreshes the mtime and successful planning clears the counter.
+              */
+              const stalenessDecision = computeRecoveryDecision({
+                recoveryRetryCount: task.recoveryRetryCount,
+                nextRecoveryAt: task.nextRecoveryAt,
+              });
+              if (!stalenessDecision.shouldRetry) {
+                const error = `SPEC_STALENESS_RECOVERY_EXHAUSTED: specification stayed stale (${staleness.reason}) after ${MAX_RECOVERY_RETRIES} automatic replans.`;
+                await this.store.updateTask(task.id, {
+                  status: "failed",
+                  error,
+                  recoveryRetryCount: null,
+                  nextRecoveryAt: null,
+                });
+                await this.store.logEntry(task.id, error, staleness.reason);
+                return null;
+              }
+              const stalenessAttempt = stalenessDecision.nextState.recoveryRetryCount ?? MAX_RECOVERY_RETRIES;
+              await this.store.updateTask(task.id, {
+                status: "needs-replan",
+                error: null,
+                recoveryRetryCount: stalenessDecision.nextState.recoveryRetryCount,
+                nextRecoveryAt: stalenessDecision.nextState.nextRecoveryAt,
+              });
+              await this.store.logEntry(
+                task.id,
+                `Task retained in ${task.column} for in-place specification repair — specification is stale (attempt ${stalenessAttempt}/${MAX_RECOVERY_RETRIES} in ${formatDelay(stalenessDecision.delayMs)})`,
+                staleness.reason,
+              );
               return null;
             }
           }
@@ -2839,6 +3091,7 @@ export class Scheduler {
             }
             return null;
           }
+          let observedOverlapBlockedBy = freshTask.overlapBlockedBy ?? null;
 
           if (freshTask.checkedOutBy && this.options.leaseManager) {
             const recovered = await this.options.leaseManager.recoverAbandonedLease(
@@ -3095,7 +3348,11 @@ export class Scheduler {
             { planApprovalRequired: latestSettings.planApprovalMode === "require-all" },
           );
           if (missionAdmission.kind === "lineage-blocked") {
-            await this.store.updateTask(task.id, { status: "queued", blockedBy: null, overlapBlockedBy: null });
+            if (observedOverlapBlockedBy) {
+              const cleared = await clearObservedOverlapIfStillStale(freshTask, observedOverlapBlockedBy);
+              if (cleared) observedOverlapBlockedBy = null;
+            }
+            await this.store.updateTask(task.id, { status: "queued", blockedBy: null });
             await this.logDispatchQueuedReason(task.id, `queued — mission lineage blocked: ${missionAdmission.reason}`);
             return null;
           }
@@ -3116,8 +3373,9 @@ export class Scheduler {
                 return null;
               }
 
-              if (task.overlapBlockedBy) {
-                await this.store.updateTask(task.id, { overlapBlockedBy: null });
+              if (observedOverlapBlockedBy) {
+                const cleared = await clearObservedOverlapIfStillStale(freshTask, observedOverlapBlockedBy);
+                if (cleared) observedOverlapBlockedBy = null;
               }
 
               priorActiveScope = activeScopes.get(task.id);
@@ -3137,8 +3395,9 @@ export class Scheduler {
               activeScopeColumns.set(task.id, "in-progress");
               leaseWaiverIds.set(task.id, []);
               reservedScope = true;
-            } else if (task.overlapBlockedBy) {
-              await this.store.updateTask(task.id, { overlapBlockedBy: null });
+            } else if (observedOverlapBlockedBy) {
+              const cleared = await clearObservedOverlapIfStillStale(freshTask, observedOverlapBlockedBy);
+              if (cleared) observedOverlapBlockedBy = null;
               if (isCoordinationOnlyTask(task, taskScope)) {
                 await this.store.logEntry(
                   task.id,
@@ -3155,34 +3414,56 @@ export class Scheduler {
           claim the final slot. The reservation remains until the executor observes the persisted
           WIP row and takes the handoff.
           */
-          let finalClaimSnapshot: Promise<{ count: number; ids: string[] }> | undefined;
+          let finalClaimSnapshot: Promise<{
+            agent: { count: number; ids: string[] };
+            worktree: { count: number; ids: string[] };
+          }> | undefined;
           const getFinalClaimSnapshot = () => finalClaimSnapshot ??= (async () => {
             /*
-            FNXC:WorkflowContinuationCapacity 2026-08-01-07:10:
-            Worktree preparation and startup recovery can make the sweep's original task list stale
-            before this serialized admission point. A planner that became live after that snapshot
-            was absent from `activeWorktreeTaskIds`; once its handoff reservation transferred to the
-            durable planning status, the coordinator could no longer see either claim and admitted a
-            tenth active task against maxWorktrees=9. Re-read full rows lazily inside the coordinator
-            drain so pending workflow-step leases and every newly durable lane holder participate in
-            the final decision. Same-sweep transient starts remain covered by coordinator reservations.
+            FNXC:CapacityModel 2026-09-01-14:49:
+            Re-read full rows inside the serialized drain and derive each dimension from its own
+            canonical predicate. Reservations bridge both persistence transfers without making
+            checkout-free planners appear in the worktree holder set.
             */
             const liveTasks = await this.store.listTasks({ slim: false, includeArchived: false });
-            const ids = await persistedTopLevelAgentTaskIdsFromStore(this.store, liveTasks);
-            return { count: ids.length, ids };
+            const [agentIds, worktreeIds] = await Promise.all([
+              persistedTopLevelAgentTaskIdsFromStore(this.store, liveTasks),
+              /* RUFU-200: same proof as the reservation above, so the serialized final-claim
+                 snapshot and the capacity readout never disagree with admission. */
+              persistedWorktreeHolderTaskIdsFromStore(this.store, liveTasks, {
+                rootDir: () => this.store.getRootDir(),
+                settings,
+              }),
+            ]);
+            return {
+              agent: { count: agentIds.length, ids: agentIds },
+              worktree: { count: worktreeIds.length, ids: worktreeIds },
+            };
           })();
           let projectSlotReserved = false;
           const admittedTaskId = await projectAdmissionCoordinator.admitNext({
             projectId: this.store.getRootDir(),
             maxConcurrent: activeTaskLimit,
-            claimed: async () => (await getFinalClaimSnapshot()).count,
-            claimedTaskIds: async () => (await getFinalClaimSnapshot()).ids,
+            claimed: async () => (await getFinalClaimSnapshot()).agent.count,
+            claimedTaskIds: async () => (await getFinalClaimSnapshot()).agent.ids,
+            ...(maxWorktrees === null ? {} : {
+              worktreeGate: {
+                limit: maxWorktrees,
+                claimed: async () => (await getFinalClaimSnapshot()).worktree.count,
+                claimedTaskIds: async () => (await getFinalClaimSnapshot()).worktree.ids,
+              },
+            }),
             semaphore: this.options.semaphore,
             refresh: async () => [{
               taskId: task.id,
               projectId: this.store.getRootDir(),
               lane: "execute",
+              consumesWorktree: true,
               createdAt: task.createdAt,
+              // FNXC:TaskQueueOrder 2026-09-17-12:07: Boost scope travels with the candidate.
+              column: task.column,
+              ...(task.columnMovedAt ? { columnMovedAt: task.columnMovedAt } : {}),
+              ...(task.queueBoost ? { queueBoost: task.queueBoost } : {}),
               reserve: () => registerPreHeldExecutorSlot(task.id, this.options.semaphore !== undefined),
               start: async () => {
                 projectSlotReserved = true;
@@ -3202,14 +3483,14 @@ export class Scheduler {
             const freshClaims = await getFinalClaimSnapshot();
             const exhausted = admittedTaskId === undefined;
             const freshDiagnostic = computeConcurrencyGateDiagnostic({
-              agentSlots: freshClaims.count,
+              agentSlots: freshClaims.agent.count,
               maxConcurrent,
-              activeWorktrees: freshClaims.count,
+              activeWorktrees: freshClaims.worktree.count,
               maxWorktrees,
-              worktreeHolderTaskIds: freshClaims.ids,
+              worktreeHolderTaskIds: freshClaims.worktree.ids,
               semaphore: this.options.semaphore,
-              inProgressTaskIds: freshClaims.ids,
-              topLevelClaimedSlots: freshClaims.count,
+              inProgressTaskIds: freshClaims.agent.ids,
+              topLevelClaimedSlots: freshClaims.agent.count,
             });
             const reason = exhausted
               ? formatConcurrencyLimitReason(freshDiagnostic)
@@ -3241,7 +3522,11 @@ export class Scheduler {
                 if (dropPreHeldExecutorSlot(task.id)) sem?.release();
                 releaseReservedScope();
                 const conflict = lockResult.conflicts[0];
-                await this.store.updateTask(task.id, { status: "queued", blockedBy: null, overlapBlockedBy: null });
+                if (observedOverlapBlockedBy) {
+                  const cleared = await clearObservedOverlapIfStillStale(freshTask, observedOverlapBlockedBy);
+                  if (cleared) observedOverlapBlockedBy = null;
+                }
+                await this.store.updateTask(task.id, { status: "queued", blockedBy: null });
                 await this.logDispatchQueuedReason(
                   task.id,
                   `queued — symbol contention: symbol=${conflict?.symbolKey ?? "unknown"} holder=${conflict?.ownerTaskId ?? "unknown"}`,
@@ -3258,6 +3543,7 @@ export class Scheduler {
               dispatchTimestamp,
               effectiveNodeId: effectiveNode.nodeId ?? null,
               effectiveNodeSource: effectiveNode.source,
+              observedOverlapBlockedBy,
               task: freshTask,
             });
 
@@ -3305,30 +3591,70 @@ export class Scheduler {
         */
         schedulerLog.log(`Starting ${taskId}: ${prep.task.title || taskId} (deps satisfied)`);
         const latest = await this.store.getTask(taskId).catch(() => null);
-        const dispatchUpdate = {
+        const dispatchUpdate: TaskUpdatePatch = {
           status: null,
           blockedBy: null,
           executionStartBranch: prep.baseBranch ?? undefined,
           effectiveNodeId: prep.effectiveNodeId,
-          effectiveNodeSource: prep.effectiveNodeSource,
+          effectiveNodeSource: prep.effectiveNodeSource as Task["effectiveNodeSource"],
           mergeRetries: 0,
           dispatchStormCount: prep.dispatchStormCount,
           lastDispatchAt: prep.dispatchTimestamp,
         };
-        const scheduledTask = {
-          ...(latest?.id === taskId ? latest : prep.task),
-          ...dispatchUpdate,
-          status: undefined,
-          blockedBy: undefined,
-          effectiveNodeId: prep.effectiveNodeId ?? undefined,
-          effectiveNodeSource: prep.effectiveNodeSource as Task["effectiveNodeSource"],
-          column: "in-progress" as const,
+        const observedOverlapBlockedBy = prep.observedOverlapBlockedBy;
+        const mayClearObservedOverlap = typeof observedOverlapBlockedBy === "string"
+          && observedOverlapBlockedBy.trim().length > 0
+          && latest?.id === taskId
+          && (latest.overlapBlockedBy ?? null) === observedOverlapBlockedBy
+          && !await freshOverlapBlockerStillBlocks(latest, observedOverlapBlockedBy);
+        let overlapClearApplied = false;
+        let persistedTask = latest?.id === taskId ? latest : prep.task;
+        const buildDispatchPatch = (live: Task): TaskUpdatePatch => {
+          const clearObservedOverlap = mayClearObservedOverlap
+            && live.deletedAt == null
+            && (live.overlapBlockedBy ?? null) === observedOverlapBlockedBy;
+          if (clearObservedOverlap) overlapClearApplied = true;
+          return {
+            ...dispatchUpdate,
+            ...(clearObservedOverlap ? { overlapBlockedBy: null } : {}),
+          };
         };
+        /*
+        FNXC:OverlapScheduling 2026-09-02-04:46:
+        Hold → WIP has no workflow-hook overlap clear, so the committed dispatch must scrub the stale
+        blocker it actually reserved against. Build the whole metadata patch under the task lock and
+        clear only that exact observed id: the executor pre-dispatch gate can stamp a different fresh
+        in-place hold between reservation and commit, and that newer edge must reach onSchedule intact.
+        */
         try {
-          await this.store.updateTask(taskId, dispatchUpdate);
+          if (typeof this.store.updateTaskAtomic === "function") {
+            persistedTask = await this.store.updateTaskAtomic(taskId, buildDispatchPatch);
+          } else {
+            // Compatibility only for structural test/extension stores; production TaskStore is atomic.
+            persistedTask = await this.store.updateTask(taskId, buildDispatchPatch(persistedTask));
+          }
         } catch (error) {
+          overlapClearApplied = false;
           schedulerLog.error(`Post-release dispatch metadata update failed for ${taskId}:`, error);
         }
+        /*
+        DELIBERATE-LITERAL — runHoldReleaseSweep has committed this task to its WIP lane before it
+        appears in `released`. Keep the legacy WIP fallback on the synthetic handoff shape so an
+        isolated post-release read/update failure cannot hand the executor the task's stale hold lane.
+        */
+        const scheduledTask: Task = {
+          ...persistedTask,
+          status: undefined,
+          blockedBy: undefined,
+          executionStartBranch: prep.baseBranch ?? undefined,
+          effectiveNodeId: prep.effectiveNodeId ?? undefined,
+          effectiveNodeSource: prep.effectiveNodeSource as Task["effectiveNodeSource"],
+          mergeRetries: 0,
+          dispatchStormCount: prep.dispatchStormCount,
+          lastDispatchAt: prep.dispatchTimestamp,
+          ...(overlapClearApplied ? { overlapBlockedBy: undefined } : {}),
+          column: "in-progress",
+        };
         try {
           this.options.onSchedule?.(scheduledTask);
         } catch (error) {

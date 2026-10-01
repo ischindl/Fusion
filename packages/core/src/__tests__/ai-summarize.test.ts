@@ -15,6 +15,11 @@ import {
   sanitizeCommitSubject,
   sanitizeTitle,
   deriveFallbackTaskTitle,
+  deriveTaskLabelFromDescription,
+  deriveTaskLabelDetails,
+  isHeadingShapedTaskTitle,
+  resolveTaskTitleWrite,
+  MAX_TASK_LABEL_LENGTH,
   FALLBACK_TASK_TITLE,
   MAX_COMMIT_SUBJECT_LENGTH,
   checkRateLimit,
@@ -588,15 +593,26 @@ describe("ai-summarize", () => {
         .toBe("Fix blank task titles after triage failure");
     });
 
-    it("strips common markdown heading and list prefixes", () => {
-      expect(deriveFallbackTaskTitle("### Restore workflow selection state\n\nDetails follow."))
-        .toBe("Restore workflow selection state");
+    it("strips common markdown list prefixes", () => {
       expect(deriveFallbackTaskTitle("- Add a retry budget for planning failures"))
         .toBe("Add a retry budget for planning failures");
       expect(deriveFallbackTaskTitle("1. Backfill failed task titles"))
         .toBe("Backfill failed task titles");
       expect(deriveFallbackTaskTitle("[ ] Cover blank-title failures"))
         .toBe("Cover blank-title failures");
+    });
+
+    /*
+    FNXC:TaskTitleDerivation 2026-09-26-01:32 (RUFU-295):
+    These two cases previously asserted the OLD contract ("first non-empty line, markers stripped"),
+    which is exactly the behavior RUFU-295 removed: a heading line is section furniture, so the
+    prose below it is the label, and a heading may only be used when it is the whole description.
+    */
+    it("prefers prose over a leading ATX heading and uses the heading only when it is all there is", () => {
+      expect(deriveFallbackTaskTitle("### Restore workflow selection state\n\nDetails follow."))
+        .toBe("Details follow");
+      expect(deriveFallbackTaskTitle("### Restore workflow selection state"))
+        .toBe("Restore workflow selection state");
     });
 
     it("truncates long descriptions at a word boundary", () => {
@@ -619,6 +635,154 @@ describe("ai-summarize", () => {
         .toBe(FALLBACK_TASK_TITLE);
       expect(deriveFallbackTaskTitle("- ( )"))
         .toBe(FALLBACK_TASK_TITLE);
+    });
+  });
+
+  /*
+  FNXC:TaskTitleDerivation 2026-09-26-01:32 (RUFU-295):
+  The canonical description→label derivation. Each case below is a shape that actually reached a
+  Fusion board as a card label (heading prefix, whole multi-line spec body, raw 220-character
+  prefix) or a contract another durable surface depends on (the exact-length hard truncate).
+  */
+  describe("deriveTaskLabelFromDescription", () => {
+    it("skips fenced code blocks entirely, even prose-shaped fence content", () => {
+      expect(deriveTaskLabelFromDescription("```\nInstall the plugin now\n```\nThe real instruction follows."))
+        .toBe("The real instruction follows");
+      expect(deriveTaskLabelFromDescription("```ts\nconst x = 1;\n```\n"))
+        .toBe(FALLBACK_TASK_TITLE);
+    });
+
+    it("skips blank lines, thematic breaks, frontmatter delimiters, and table rows", () => {
+      const description = [
+        "---",
+        "title: spec",
+        "---",
+        "",
+        "| step | status |",
+        "| --- | --- |",
+        "",
+        "Reconcile the ledger on startup.",
+      ].join("\n");
+      expect(deriveTaskLabelFromDescription(description, 80)).toBe("Reconcile the ledger on startup");
+    });
+
+    it("treats an ATX heading as section furniture when any non-heading content exists", () => {
+      const specShaped = "## Pôvodný popis\n\nKarta RUFU-269 visela v stave merge bled.\n";
+      expect(deriveTaskLabelFromDescription(specShaped, 220)).toBe("Karta RUFU-269 visela v stave merge bled");
+      expect(deriveTaskLabelFromDescription(specShaped, 220)).not.toContain("##");
+    });
+
+    it("falls back to the heading text when headings are the only content", () => {
+      expect(deriveTaskLabelFromDescription("## Stranded continuation reclaim", 80))
+        .toBe("Stranded continuation reclaim");
+    });
+
+    it("strips blockquote, bullet, and task-list markers from real content", () => {
+      expect(deriveTaskLabelFromDescription("> Prefer the deterministic path.", 80))
+        .toBe("Prefer the deterministic path");
+      expect(deriveTaskLabelFromDescription("- [ ] Ship the write guard", 80)).toBe("Ship the write guard");
+      expect(deriveTaskLabelFromDescription("2. Backfill failed titles", 80)).toBe("Backfill failed titles");
+    });
+
+    it("cuts at the first sentence terminator and ignores abbreviation dots", () => {
+      expect(deriveTaskLabelFromDescription("Fix the titles. The rest is a long explanation of the plan.", 80))
+        .toBe("Fix the titles");
+      expect(deriveTaskLabelFromDescription("Gate the rollout, e.g. behind a flag, and verify.", 80))
+        .toBe("Gate the rollout, e.g. behind a flag, and verify");
+      expect(deriveTaskLabelFromDescription("Bump to v1.2 then verify the ledger.", 80))
+        .toBe("Bump to v1.2 then verify the ledger");
+    });
+
+    it("caps at maxLength on a word boundary and never adds an ellipsis", () => {
+      const sentence = `${"abcdefgh ".repeat(30)}stop.`;
+      const label = deriveTaskLabelFromDescription(sentence, 220);
+      expect(label.length).toBeLessThanOrEqual(220);
+      expect(label).toBe("abcdefgh ".repeat(24).trim());
+      expect(label).not.toContain("…");
+      expect(label).not.toContain("...");
+    });
+
+    it("hard-truncates at exactly maxLength when the content offers no whitespace boundary", () => {
+      const label = deriveTaskLabelFromDescription("z".repeat(400), 220);
+      expect(label).toBe("z".repeat(220));
+      expect(label.length).toBe(220);
+    });
+
+    it("never returns a label containing a newline", () => {
+      const multiLine = [
+        "## What This Delivers",
+        "Salvage the approved work and land it on main.",
+        "",
+        "- one",
+        "- two",
+      ].join("\n");
+      const label = deriveTaskLabelFromDescription(multiLine, 220);
+      expect(label).toBe("Salvage the approved work and land it on main");
+      expect(label).not.toContain("\n");
+    });
+
+    it("reports truncation only when the derivable sentence exceeded the budget", () => {
+      expect(deriveTaskLabelDetails("Short and complete.", 220)).toEqual({
+        label: "Short and complete",
+        truncated: false,
+      });
+      const bounded = deriveTaskLabelDetails("word ".repeat(60).trim(), 220);
+      expect(bounded.truncated).toBe(true);
+      expect(bounded.label.length).toBeLessThanOrEqual(220);
+    });
+
+    it("keeps the generic fallback for empty input and for rejected assistant prose", () => {
+      expect(deriveTaskLabelFromDescription("   \n\n  ")).toBe(FALLBACK_TASK_TITLE);
+      expect(deriveTaskLabelFromDescription("Created task **FN-3058** with the full spec")).toBe(FALLBACK_TASK_TITLE);
+    });
+  });
+
+  describe("isHeadingShapedTaskTitle", () => {
+    it("flags ATX headings and not ordinary text that merely contains a hash", () => {
+      expect(isHeadingShapedTaskTitle("## Pôvodný popis")).toBe(true);
+      expect(isHeadingShapedTaskTitle("   #### Deep heading")).toBe(true);
+      expect(isHeadingShapedTaskTitle("#")).toBe(true);
+      expect(isHeadingShapedTaskTitle("Fix #12 routing")).toBe(false);
+      expect(isHeadingShapedTaskTitle("#hashtag topic")).toBe(false);
+      expect(isHeadingShapedTaskTitle("")).toBe(false);
+      expect(isHeadingShapedTaskTitle(undefined)).toBe(false);
+    });
+  });
+
+  describe("resolveTaskTitleWrite", () => {
+    it("leaves an absent or blank title as no-title (the deferred summarizer lane owns it)", () => {
+      expect(resolveTaskTitleWrite({ description: "Anything" })).toBeUndefined();
+      expect(resolveTaskTitleWrite({ title: null, description: "Anything" })).toBeUndefined();
+      expect(resolveTaskTitleWrite({ title: "   \n ", description: "Anything" })).toBeUndefined();
+    });
+
+    it("passes a legitimate single-line title through untouched", () => {
+      expect(resolveTaskTitleWrite({ title: " Fix blank titles ", description: "## Body" }))
+        .toBe("Fix blank titles");
+    });
+
+    it("replaces a heading-shaped title with the derived label of the description", () => {
+      expect(resolveTaskTitleWrite({
+        title: "## Symptom (merané 2026-09-24)",
+        description: "## Symptom (merané 2026-09-24)\n\nWorktree recovery names the wrong task.\n",
+      })).toBe("Worktree recovery names the wrong task");
+    });
+
+    it("derives from the title's own text when a heading title arrives with no description", () => {
+      expect(resolveTaskTitleWrite({ title: "## Stranded continuation reclaim" }))
+        .toBe("Stranded continuation reclaim");
+    });
+
+    it("collapses a short multi-line title instead of discarding the author's words", () => {
+      expect(resolveTaskTitleWrite({ title: "Fix blank titles\nwhen the planner fails\n", description: "ignored" }))
+        .toBe("Fix blank titles when the planner fails");
+    });
+
+    it("replaces a multi-line title that cannot fit the durable budget with the derived label", () => {
+      const pastedBody = `${"A".repeat(300)}\n${"B".repeat(300)}`;
+      const resolved = resolveTaskTitleWrite({ title: pastedBody, description: "## Spec\n\nLand the salvage.\n" });
+      expect(resolved).toBe("Land the salvage");
+      expect(resolved!.length).toBeLessThanOrEqual(MAX_TASK_LABEL_LENGTH);
     });
   });
 

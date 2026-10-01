@@ -124,6 +124,121 @@ export function MemorySection({ form, setForm, memory }: MemorySectionProps) {
           onChange={(v) => setForm((f) => ({ ...f, executorSessionCaptureMaxEvents: v === null ? 20000 : v }))}
         />)}
 
+      {/*
+      FNXC:PerTurnMemoryRecall 2026-08-19-01:15:
+      RUFU-120 (B.2 LCM phase 2): per-turn proactive memory recall. Before every
+      agent chat/step prompt, a bounded recall for the current topic is prepended
+      so relevant memory stays in context even when older cues were evicted by
+      compaction. On by default (memoryPerTurnRecallEnabled: true); recall costs
+      nothing when there is no topical memory to surface, and the top-K row is
+      gated on the toggle (same pattern as the auto-summarize threshold below).
+      */}
+      <SettingsToggleRow
+        descriptor={{
+          key: "memoryPerTurnRecallEnabled",
+          label: t("settings.memory.perTurnRecall", " Per-turn memory recall "),
+          help: t("settings.memory.perTurnRecallHelp", "Recalls the most relevant memory snippets for the current topic before each chat or task step turn and injects a short, deduped cue into the prompt. Default: enabled."),
+          scope: "project",
+        }}
+        value={form.memoryPerTurnRecallEnabled !== false}
+        onChange={(v) => setForm((f) => ({ ...f, memoryPerTurnRecallEnabled: v === true }))}
+      />
+
+      {(form.memoryPerTurnRecallEnabled !== false) && (
+        <SettingsNumberRow
+          descriptor={{
+            key: "memoryPerTurnRecallTopK",
+            label: t("settings.memory.perTurnRecallTopK", " Max snippets per turn "),
+            help: t("settings.memory.perTurnRecallTopKHelp", "Maximum number of memory snippets injected per turn. Default: 3."),
+            scope: "project",
+            min: 1,
+            max: 10,
+            step: 1,
+          }}
+          value={form.memoryPerTurnRecallTopK ?? 3}
+          onChange={(v) => setForm((f) => ({ ...f, memoryPerTurnRecallTopK: v || 3 }))}
+        />
+      )}
+
+      {/*
+      FNXC:ChatContextGuard 2026-08-19-15:05:
+      RUFU-118: LCM B.1 as an opt-out project option (selectable feature, not
+      always-on — user requirement: not every operator wants the pre-overflow
+      compaction gate). On by default: without it a context at the model wall
+      degrades to 1-token replies (pi threshold compaction never fires for
+      zero-usage providers — earendil-works/pi#8328). Sits next to the B.2 recall
+      toggle because operators think of LCM as one feature pair.
+      */}
+      <SettingsToggleRow
+        descriptor={{
+          key: "chatPreOverflowCompactionEnabled",
+          label: t("settings.memory.preOverflowCompaction", "Pre-overflow compaction guard"),
+          help: t("settings.memory.preOverflowCompactionHelp", "Compacts the chat context at ~80% of the model window before a turn would overflow it, preventing single-token replies at the context wall. Default: enabled."),
+          scope: "project",
+        }}
+        value={form.chatPreOverflowCompactionEnabled !== false}
+        onChange={(v) => setForm((f) => ({ ...f, chatPreOverflowCompactionEnabled: v === true }))}
+      />
+
+      {/*
+      FNXC:ChatContextBudget 2026-08-20-16:20:
+      Runtime kill switch for the RUFU-135 chat context budget (bounded memory
+      inlining + curated chat tool allowlist). Sits next to the guard toggle
+      because operators think of LCM as one feature pair; disabling restores
+      the pre-RUFU-135 unbounded-memory / full-toolset prompt shape without a
+      redeploy (user requirement: every LCM behavior change must be disableable
+      as a feature).
+      */}
+      <SettingsToggleRow
+        descriptor={{
+          key: "chatContextBudgetEnabled",
+          label: t("settings.memory.chatContextBudget", "Chat context budget (64K window fit)"),
+          help: t("settings.memory.chatContextBudgetHelp", "Bounds the chat static context: oversized memory becomes a bounded heading index and chat sessions use the curated chat toolset, so agent chat fits 64K-window models. Disable to restore unbounded memory injection and the full tool set (pre-RUFU-135 behavior). Default: enabled."),
+          scope: "project",
+        }}
+        value={form.chatContextBudgetEnabled !== false}
+        onChange={(v) => setForm((f) => ({ ...f, chatContextBudgetEnabled: v === true }))}
+      />
+
+      {/*
+      FNXC:ChatHandoff 2026-09-09-22:00:
+      RUFU-199: cross-session Direct-chat handoff. Sits with the two compaction-adjacent
+      toggles above because operators evaluate them as one context-health group, but the
+      mechanism is deliberately different: those compact IN one session, while this offers a
+      fresh session seeded with a briefing of the old one. The enable row is the kill switch
+      (same opt-out-as-a-feature shape as the neighbors, per the LCM user requirement that
+      every behavior change be disableable without a redeploy); the threshold row gates when
+      the header button appears, measured against the same advisory percentage the read-only
+      context meter shows. Range matches the server clamp (50-95); values outside it fall
+      back to 75 rather than firing the button on every chat or never.
+      */}
+      <SettingsToggleRow
+        descriptor={{
+          key: "chatHandoffEnabled",
+          label: t("settings.memory.chatHandoff", "Chat handoff (continue in a fresh chat)"),
+          help: t("settings.memory.chatHandoffHelp", "Once a chat passes the context threshold below, its header offers one click to continue in a fresh chat with the same agent/model, briefed with a summary of the old conversation. The old chat is archived, not deleted. Unrelated to in-session compaction. Default: enabled."),
+          scope: "project",
+        }}
+        value={form.chatHandoffEnabled !== false}
+        onChange={(v) => setForm((f) => ({ ...f, chatHandoffEnabled: v === true }))}
+      />
+
+      {(form.chatHandoffEnabled !== false) && (
+        <SettingsNumberRow
+          descriptor={{
+            key: "chatHandoffThresholdPercent",
+            label: t("settings.memory.chatHandoffThreshold", "Chat handoff context threshold (%)"),
+            help: t("settings.memory.chatHandoffThresholdHelp", "Context-usage percentage past which the chat header offers the handoff button (50-95). Values outside the range fall back to the default: 75."),
+            scope: "project",
+            min: 50,
+            max: 95,
+            step: 1,
+          }}
+          value={form.chatHandoffThresholdPercent ?? 75}
+          onChange={(v) => setForm((f) => ({ ...f, chatHandoffThresholdPercent: v || 75 }))}
+        />
+      )}
+
       {backendLoading ? (<div className="form-group">
           <small className="settings-muted">{t("settings.memory.checkingMemoryWriteAccess", "Checking memory write access...")}</small>
         </div>) : backendError ? (<div className="form-group">

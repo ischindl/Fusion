@@ -199,6 +199,11 @@ export const tasks = projectSchema.table("tasks", {
   cumulativeActiveMs: bigint("cumulative_active_ms", { mode: "number" }),
   cumulativePlanningMs: bigint("cumulative_planning_ms", { mode: "number" }),
   planningStartedAt: text("planning_started_at"),
+  /* FNXC:TaskPauseAccounting 2026-09-16-06:16: FN-457 migration 0081 — durable paused-time accounting.
+     Display-only: `board/productivity-analytics.ts` deliberately keeps aggregating
+     `cumulative_active_ms + cumulative_planning_ms` unchanged, since no existing column changes meaning. */
+  cumulativePausedMs: bigint("cumulative_paused_ms", { mode: "number" }),
+  pausedStartedAt: text("paused_started_at"),
   /*
   FNXC:PostgresMigrationColumnCoverage 2026-07-14-13:17:
   Keep the task schema aligned with late SQLite lifecycle migrations. JSON lifecycle markers stay jsonb for native backend reads; retired board/question fields remain text so their legacy payloads round-trip byte-for-byte.
@@ -244,6 +249,15 @@ export const tasks = projectSchema.table("tasks", {
   repositoryScope: jsonb("repository_scope"),
   // FNXC:ExternalBlock 2026-08-28-03:48: obstacle origin and exact resume coordinates survive process restarts.
   externalBlock: jsonb("external_block"),
+  /* FNXC:HumanPlanApproval 2026-09-15-06:24: FN-408 per-card human plan decision state. */
+  humanPlanApproval: jsonb("human_plan_approval"),
+  /* FNXC:HumanMergeApproval 2026-09-17-18:09: FN-514 per-card human DELIVERY lock, decision, resolved
+     destination and rejection remediation state. A separate column from `human_plan_approval` and from
+     `auto_merge` so neither historical value can arm or disarm it. */
+  humanMergeApproval: jsonb("human_merge_approval"),
+  /* FNXC:TaskQueueOrder 2026-09-17-12:07: FN-509 durable per-stay Boost rank. The neighbouring
+     `priority` column is retired: it is retained as inert historical data and is never read. */
+  queueBoost: jsonb("queue_boost"),
   planningFailure: jsonb("planning_failure"),
   noCommitsExpected: integer("no_commits_expected").default(0),
   enabledWorkflowSteps: jsonb("enabled_workflow_steps").default([]),
@@ -370,12 +384,19 @@ export const tasks = projectSchema.table("tasks", {
   index("idxTasksSearchVector").using("gin", t.searchVector),
 ]);
 
+/* FNXC:SpecLock 2026-08-09-07:06: plan locks, evidence, and reports omit task FKs so immutable history survives archive cleanup and task tombstones. */
 /*
-FNXC:OverlapWaitSynchronization 2026-09-17-00:15:
-The display blocker (`tasks.overlap_blocked_by`) is transient, but each observed predecessor edge
-remains project-scoped until freshness, delta analysis, optional revalidation, and context delivery
-have all been acknowledged. Only the waiting task is foreign-keyed; predecessor identity survives
-its archival or deletion so the resume decision can still cite what it delivered.
+FNXC:OverlapWaitSynchronization 2026-09-09-23:53:
+The display blocker is transient, but each observed predecessor edge remains project-scoped until
+freshness, deterministic delta briefing, and context delivery have all been acknowledged.
+Only the waiting task is foreign-keyed; predecessor identity survives its archival or deletion.
+
+FNXC:MergeRebuild0919 2026-09-19-21:45:
+This line owns exactly one `task_overlap_waits` declaration. Canonical's reimplementation carries a twin
+with the pre-drain 8-phase CHECK (its `0084_fn_332_overlap_sync.sql` still permits revalidation-pending and
+repair-required); this line retired that state machine through 0075 -> 0077 -> 0078, so the rebuilt 6-phase
+CHECK below is the steady state the applier's drift probe expects. Canonical's duplicate was dropped: two
+declarations of the same export also collide as a duplicate binding.
 */
 export const taskOverlapWaits = projectSchema.table("task_overlap_waits", {
   projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
@@ -396,13 +417,13 @@ export const taskOverlapWaits = projectSchema.table("task_overlap_waits", {
   updatedAt: text("updated_at").notNull(),
 }, (t) => [
   primaryKey({ columns: [t.projectId, t.taskId, t.episodeId] }),
-  foreignKey({ columns: [t.projectId, t.taskId], foreignColumns: [tasks.projectId, tasks.id], name: "fk_task_overlap_wait_owner" }).onDelete("cascade"),
-  check("ck_task_overlap_wait_phase", sql`${t.phase} IN ('observed','analyzing','freshness-pending','revalidation-pending','repair-required','ready','delivered','cancelled')`),
+  foreignKey({ columns: [t.projectId, t.taskId], foreignColumns: [tasks.projectId, tasks.id], name: "fk_task_overlap_wait_owner" }).onUpdate("cascade").onDelete("cascade"),
+  // FNXC:OverlapWaitSynchronization 2026-09-13-05:10: runtime phases exclude the retired model-revalidation state machine after its historical rows drain to ready.
+  check("ck_task_overlap_wait_phase", sql`${t.phase} IN ('observed','analyzing','freshness-pending','ready','delivered','cancelled')`),
   uniqueIndex("uq_task_overlap_wait_open_blocker").on(t.projectId, t.taskId, t.blockerTaskId).where(sql`${t.phase} NOT IN ('delivered', 'cancelled')`),
   index("idx_task_overlap_wait_unconsumed").on(t.projectId, t.taskId, t.observedAt).where(sql`${t.phase} NOT IN ('delivered', 'cancelled')`),
 ]);
 
-/* FNXC:SpecLock 2026-08-09-07:06: plan locks, evidence, and reports omit task FKs so immutable history survives archive cleanup and task tombstones. */
 export const specLocks = projectSchema.table("spec_locks", {
   projectId: text("project_id").notNull(), taskId: text("task_id").notNull(), version: integer("version").notNull(),
   acceptedAt: text("accepted_at").notNull(), approvalFingerprint: text("approval_fingerprint").notNull(), currentPlanVersion: integer("current_plan_version").notNull(), currentPlanHash: text("current_plan_hash").notNull(),
@@ -559,6 +580,18 @@ export const legacyTaskReviewerRuns = projectSchema.table("task_reviewer_runs", 
   primaryKey({ columns: [t.projectId, t.id] }),
   index("idxLegacyTaskReviewerRunsTask").on(t.projectId, t.taskId),
   index("idxLegacyTaskReviewerRunsStatus").on(t.projectId, t.status),
+  /*
+  FNXC:ReviewLaneDispatch 2026-09-16-13:22 (#3619 review G1/C2):
+  The live slot is one unfinished attempt PER CARD: keyed on (projectId, taskId) and predicated on
+  both invalidated_at IS NULL AND completed_at IS NULL, mirroring the sweep classifier's own live
+  definition. The earlier draft keyed on the reviewer agent and dropped completed_at, so a completed
+  (e.g. dispatch-failed) attempt held the slot forever and the sweep's retry could never open a new
+  row. `migrations/0088_stas_205_review_lane_ledger.sql` is the source of truth; the drift probe in
+  schema-applier.ts is definition-aware so installs with the old definition re-converge.
+  */
+  uniqueIndex("task_reviewer_runs_live_unique")
+    .on(t.projectId, t.taskId)
+    .where(sql`${t.invalidatedAt} IS NULL AND ${t.completedAt} IS NULL`),
 ]);
 
 // ── Distributed task ID allocator ────────────────────────────────────
@@ -685,7 +718,7 @@ export const taskLifecycleEvents = projectSchema.table("task_lifecycle_events", 
 }, (t) => [
   primaryKey({ columns: [t.projectId, t.seq] }),
   unique("task_lifecycle_events_project_event_unique").on(t.projectId, t.eventId),
-  check("task_lifecycle_events_type_check", sql`${t.eventType} IN ('task:deleted')`),
+  check("task_lifecycle_events_type_check", sql`${t.eventType} IN ('task:deleted', 'task:entered-review')`),
   index("idxTaskLifecycleEventsTask").on(t.projectId, t.taskId),
 ]);
 
@@ -1231,6 +1264,26 @@ export const workflowSettings = projectSchema.table("workflow_settings", {
   index("idx_workflow_settings_project").on(t.projectId),
 ]);
 
+/*
+FNXC:WorkflowIdentity 2026-09-14-19:06:
+Built-in identity convergence is intentionally destructive only in the active tables. Preserve every displaced settings payload under a collision-free project-scoped identity so an operator can recover the old values without allowing them to participate in runtime resolution.
+*/
+export const archivedWorkflowSettings = projectSchema.table("archived_workflow_settings", {
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
+  archiveId: text("archive_id").notNull(),
+  workflowId: text("workflow_id").notNull(),
+  replacementWorkflowId: text("replacement_workflow_id"),
+  values: jsonb("values").notNull().default({}),
+  sourceUpdatedAt: text("source_updated_at").notNull(),
+  archivedAt: text("archived_at").notNull(),
+  reason: text("reason").notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.projectId, t.workflowId, t.reason, t.archivedAt] }),
+  unique("uq_archived_workflow_settings_episode").on(t.projectId, t.archiveId),
+  check("archived_workflow_settings_reason", sql`${t.reason} IN ('identity-merge-loser', 'model-lane-reset')`),
+  index("idx_archived_workflow_settings_project_workflow").on(t.projectId, t.workflowId),
+]);
+
 export const workflowPromptOverrides = projectSchema.table("workflow_prompt_overrides", {
   workflowId: text("workflow_id").notNull(),
   projectId: text("project_id").notNull(),
@@ -1239,6 +1292,20 @@ export const workflowPromptOverrides = projectSchema.table("workflow_prompt_over
 }, (t) => [
   primaryKey({ columns: [t.workflowId, t.projectId] }),
   index("idx_workflow_prompt_overrides_project").on(t.projectId),
+]);
+
+export const workflowPromptOverridesArchive = projectSchema.table("workflow_prompt_overrides_archive", {
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
+  archiveId: text("archive_id").notNull(),
+  workflowId: text("workflow_id").notNull(),
+  replacementWorkflowId: text("replacement_workflow_id"),
+  overrides: jsonb("overrides").notNull().default({}),
+  sourceUpdatedAt: text("source_updated_at").notNull(),
+  archivedAt: text("archived_at").notNull(),
+  reason: text("reason").notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.projectId, t.archiveId] }),
+  index("idx_workflow_prompt_overrides_archive_project_workflow").on(t.projectId, t.workflowId),
 ]);
 
 /*
@@ -1668,6 +1735,54 @@ export const goals = projectSchema.table("goals", {
 }, (t) => [
   primaryKey({ columns: [t.projectId, t.id] }),
   index("idxGoalsStatus").on(t.status),
+]);
+
+/*
+FNXC:ProjectNotes 2026-09-09-17:08:
+Personal notes use a project-local composite identity and revision counter. Duplicate titles are valid; identity and conflict detection never depend on title text.
+*/
+export const notes = projectSchema.table("notes", {
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
+  id: text("id").notNull(),
+  title: text("title").notNull(),
+  content: text("content").notNull().default(""),
+  revision: integer("revision").notNull().default(1),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.projectId, t.id] }),
+  index("idxNotesProjectUpdatedAt").on(t.projectId, t.updatedAt),
+  check("notes_title_length", sql`char_length(${t.title}) BETWEEN 1 AND 200`),
+  check("notes_content_length", sql`octet_length(${t.content}) <= 1048576`),
+  check("notes_revision_positive", sql`${t.revision} >= 1`),
+]);
+
+/*
+FNXC:WhiteboardAlpha 2026-09-10-05:42:
+Whiteboard heads and immutable snapshots share composite project identity. The current row advances only with its matching revision while the child FK cascades deletion without permitting cross-project history joins.
+*/
+export const whiteboards = projectSchema.table("whiteboards", {
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
+  id: text("id").notNull(), title: text("title").notNull(), document: jsonb("document").notNull(),
+  revision: integer("revision").notNull().default(1), createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.projectId, t.id] }),
+  index("idxWhiteboardsProjectUpdatedAt").on(t.projectId, t.updatedAt),
+  index("idxWhiteboardsProjectTitle").on(t.projectId, t.title),
+  check("whiteboards_title_length", sql`char_length(${t.title}) BETWEEN 1 AND 200`),
+  check("whiteboards_document_length", sql`octet_length(${t.document}::text) <= 5242880`),
+  check("whiteboards_revision_positive", sql`${t.revision} >= 1`),
+]);
+export const whiteboardRevisions = projectSchema.table("whiteboard_revisions", {
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
+  whiteboardId: text("whiteboard_id").notNull(), revision: integer("revision").notNull(), title: text("title").notNull(),
+  document: jsonb("document").notNull(), createdAt: text("created_at").notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.projectId, t.whiteboardId, t.revision] }),
+  foreignKey({ columns: [t.projectId, t.whiteboardId], foreignColumns: [whiteboards.projectId, whiteboards.id] }).onUpdate("cascade").onDelete("cascade"),
+  index("idxWhiteboardRevisionsRecent").on(t.projectId, t.whiteboardId, t.revision),
+  check("whiteboard_revisions_document_length", sql`octet_length(${t.document}::text) <= 5242880`),
+  check("whiteboard_revisions_revision_positive", sql`${t.revision} >= 1`),
 ]);
 
 export const missionGoals = projectSchema.table("mission_goals", {
@@ -2697,11 +2812,12 @@ export const projectTableNames = [
   "agent_config_revisions", "agent_blocked_states", "merge_queue", "merge_requests",
   "completion_handoff_markers", "workflow_work_items", "workflow_run_branches",
   "workflow_run_step_instances", "workflow_settings", "workflow_prompt_overrides",
+  "archived_workflow_settings", "workflow_prompt_overrides_archive",
   "task_documents", "artifacts", "task_document_revisions", "research_runs",
   "research_exports", "research_run_events", "experiment_sessions",
   "experiment_session_records", "eval_runs", "eval_task_results", "eval_run_events",
   "secrets", "__meta", "missions", "branch_groups", "pull_requests",
-  "pull_request_thread_state", "goals", "mission_goals", "goal_citations",
+  "pull_request_thread_state", "goals", "notes", "whiteboards", "whiteboard_revisions", "mission_goals", "goal_citations",
   "milestones", "slices", "mission_features", "ideation_sessions", "ideation_candidates", "mission_events", "plugins",
   "routines", "project_insights", "project_insight_runs", "project_insight_run_events",
   "todo_lists", "todo_items", "usage_events", "plugin_activations",

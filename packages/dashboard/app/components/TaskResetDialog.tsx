@@ -1,12 +1,12 @@
+import { ViewHeader } from "./ViewHeader";
 import "./TaskResetDialog.css";
+import { UiButton, UiDialog, UiTextArea } from "./ui";
 
 import { getErrorMessage } from "@fusion/core";
-import { useLayoutEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import type { ToastType } from "../hooks/useToast";
-import { nextFloatingZ } from "./floatingWindowStack";
 
 export interface TaskResetDialogProps {
   taskId: string;
@@ -20,6 +20,14 @@ export interface TaskResetDialogProps {
 /*
 FNXC:TaskReset 2026-08-28-16:31:
 Reset uses a dedicated dialog because it collects corrected task intent rather than simple agreement. `ConfirmOptions` cannot carry free text, and skip-confirmations would otherwise auto-resolve the destructive action without showing the description. Edited text travels in the options object at argument two to preserve the client transport contract.
+
+FNXC:TaskReset 2026-09-09-14:48:
+The first valid click claims submission synchronously before React can render the disabled controls. This prevents two same-frame clicks from issuing duplicate destructive requests while the visible pending state blocks edits, dismissal, and later clicks until publication succeeds or a failure makes the dialog retryable.
+
+FNXC:MergeRebuild0919 2026-09-19-21:45:
+Upstream's newer dismiss-immediately submit (toast-on-completion, no retry affordance) was NOT taken:
+this line's contract keeps the dialog open with pending feedback and a retryable failure path, and its
+portal/stacking concern is already owned by the shared UiDialog (FN-392), not a local overlay here.
 */
 export function TaskResetDialog({
   taskId,
@@ -31,82 +39,53 @@ export function TaskResetDialog({
 }: TaskResetDialogProps) {
   const { t } = useTranslation("app");
   const [description, setDescription] = useState(initialDescription ?? "");
-  const resetStartedRef = useRef(false);
-  /*
-  FNXC:TaskResetOverlay 2026-09-19-20:20:
-  The reset dialog is shared by Board cards, ListView, and task details, whose local stacking contexts can paint over an inline overlay. Portal it to the application root and claim the established floating stack so every host opens the blocking reset flow above its launcher rather than adding a Board-specific z-index.
-  */
-  const [overlayZ, setOverlayZ] = useState<number | undefined>(undefined);
-  useLayoutEffect(() => {
-    setOverlayZ(nextFloatingZ());
-  }, []);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const submissionRef = useRef(false);
   const trimmedDescription = description.trim();
   const trimmedInitialDescription = (initialDescription ?? "").trim();
   const titleId = `task-reset-title-${taskId}`;
   const helpId = `task-reset-help-${taskId}`;
 
-  /*
-  FNXC:TaskReset 2026-09-19-20:16:
-  Reset cleanup can take several seconds, so confirmation dismisses the dialog immediately and reports the background result by toast. Keep the one-shot ref because the dialog may not unmount until React processes the close state update.
-  */
-  const submit = () => {
-    if (!trimmedDescription || resetStartedRef.current) return;
-    resetStartedRef.current = true;
-    onClose();
-
-    void (async () => {
-      try {
-        if (trimmedDescription === trimmedInitialDescription) {
-          await onReset(taskId);
-        } else {
-          await onReset(taskId, { description: trimmedDescription });
-        }
-        addToast(
-          t("taskDetail.reset.resetSuccess", "Reset {{id}} — fresh run will be allocated", { id: taskId }),
-          "success",
-        );
-        onResetCompleted?.();
-      } catch (error) {
-        addToast(getErrorMessage(error), "error");
+  const submit = async () => {
+    if (!trimmedDescription || submissionRef.current) return;
+    submissionRef.current = true;
+    setIsSubmitting(true);
+    try {
+      if (trimmedDescription === trimmedInitialDescription) {
+        await onReset(taskId);
+      } else {
+        await onReset(taskId, { description: trimmedDescription });
       }
-    })();
+      addToast(
+        t("taskDetail.reset.resetSuccess", "Reset {{id}} — fresh run will be allocated", { id: taskId }),
+        "success",
+      );
+      onResetCompleted?.();
+      onClose();
+    } catch (error) {
+      submissionRef.current = false;
+      setIsSubmitting(false);
+      addToast(getErrorMessage(error), "error");
+    }
   };
 
-  return createPortal(
-    <div
-      className="modal-overlay open task-reset-overlay"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby={titleId}
-      data-testid="task-reset-dialog"
-      style={overlayZ ? { zIndex: overlayZ } : undefined}
-      onPointerDown={(event) => event.stopPropagation()}
-      onPointerMove={(event) => event.stopPropagation()}
-      onPointerUp={(event) => event.stopPropagation()}
-      onPointerCancel={(event) => event.stopPropagation()}
-      onTouchStart={(event) => event.stopPropagation()}
-      onTouchMove={(event) => event.stopPropagation()}
-      onTouchEnd={(event) => event.stopPropagation()}
-      onTouchCancel={(event) => event.stopPropagation()}
-      onFocus={(event) => event.stopPropagation()}
-      onKeyDown={(event) => event.stopPropagation()}
-      onClick={(event) => {
-        event.stopPropagation();
-        if (event.target === event.currentTarget) onClose();
-      }}
+  return (
+    <UiDialog
+      overlayClassName="modal-overlay open task-reset-overlay"
+      className="modal modal-md task-reset-dialog"
+      labelledBy={titleId}
+      onClose={isSubmitting ? undefined : onClose}
     >
-      <div className="modal modal-md task-reset-dialog" onClick={(event) => event.stopPropagation()}>
-        <div className="modal-header">
-          <h3 id={titleId}>{t("taskDetail.reset.confirmTitle", "Reset this task?")}</h3>
-          <button
-            type="button"
-            className="modal-close"
-            onClick={onClose}
-            aria-label={t("common.close", "Close")}
-          >
-            &times;
-          </button>
-        </div>
+      <div data-testid="task-reset-dialog">
+        {/* FNXC:StandardizedViewLayout 2026-09-13-21:49: Shared confirmation chrome; the only exit stays present and enabled by its own submit guard. */}
+        <ViewHeader
+          className="modal-header"
+          headingLevel={3}
+          titleId={titleId}
+          title={t("taskDetail.reset.confirmTitle", "Reset this task?")}
+          onClose={onClose}
+          closeButtonProps={{ disabled: isSubmitting, "aria-label": t("common.close", "Close") }}
+        />
         <div className="task-reset-dialog__body">
           <p className="task-reset-dialog__warning">
             {t(
@@ -117,7 +96,7 @@ export function TaskResetDialog({
           <label className="task-reset-dialog__label" htmlFor={`task-reset-description-${taskId}`}>
             {t("taskDetail.reset.descriptionLabel", "Original description")}
           </label>
-          <textarea
+          <UiTextArea
             id={`task-reset-description-${taskId}`}
             className="input task-reset-dialog__textarea"
             data-testid="task-reset-description"
@@ -126,6 +105,7 @@ export function TaskResetDialog({
             aria-describedby={helpId}
             rows={8}
             autoFocus
+            disabled={isSubmitting}
           />
           <p
             id={helpId}
@@ -137,26 +117,28 @@ export function TaskResetDialog({
           </p>
         </div>
         <div className="modal-actions task-reset-dialog__actions">
-          <button
+          <UiButton
             type="button"
             className="btn btn-sm"
             data-testid="task-reset-cancel"
             onClick={onClose}
+            disabled={isSubmitting}
           >
             {t("common.cancel", "Cancel")}
-          </button>
-          <button
+          </UiButton>
+          <UiButton
             type="button"
             className="btn btn-danger btn-sm"
             data-testid="task-reset-submit"
-            onClick={submit}
-            disabled={!trimmedDescription}
+            onClick={() => void submit()}
+            disabled={!trimmedDescription || isSubmitting}
           >
-            {t("taskDetail.reset.btn", "Reset")}
-          </button>
+            {isSubmitting
+              ? t("taskDetail.reset.submitting", "Resetting…")
+              : t("taskDetail.reset.btn", "Reset")}
+          </UiButton>
         </div>
       </div>
-    </div>,
-    document.body,
+    </UiDialog>
   );
 }

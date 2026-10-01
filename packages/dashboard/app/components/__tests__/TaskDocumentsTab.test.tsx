@@ -44,8 +44,10 @@ const mockArtifacts: ArtifactWithTask[] = [
     title: "Image artifact",
     description: "Screenshot from the agent",
     authorId: "agent-image",
+    authorType: "agent",
     taskId: "KB-001",
     createdAt: "2026-04-19T10:00:00.000Z",
+    updatedAt: "2026-04-19T10:00:00.000Z",
     sizeBytes: 2048,
   },
   {
@@ -53,16 +55,20 @@ const mockArtifacts: ArtifactWithTask[] = [
     type: "video",
     title: "Video artifact",
     authorId: "agent-video",
+    authorType: "agent",
     taskId: "KB-001",
     createdAt: "2026-04-19T10:01:00.000Z",
+    updatedAt: "2026-04-19T10:01:00.000Z",
   },
   {
     id: "artifact-audio",
     type: "audio",
     title: "Audio artifact",
     authorId: "agent-audio",
+    authorType: "agent",
     taskId: "KB-001",
     createdAt: "2026-04-19T10:02:00.000Z",
+    updatedAt: "2026-04-19T10:02:00.000Z",
   },
   {
     id: "artifact-document",
@@ -70,16 +76,20 @@ const mockArtifacts: ArtifactWithTask[] = [
     title: "Document artifact",
     content: "Inline document preview",
     authorId: "agent-doc",
+    authorType: "agent",
     taskId: "KB-001",
     createdAt: "2026-04-19T10:03:00.000Z",
+    updatedAt: "2026-04-19T10:03:00.000Z",
   },
   {
     id: "artifact-other",
     type: "other",
     title: "Other artifact",
     authorId: "agent-other",
+    authorType: "agent",
     taskId: "KB-001",
     createdAt: "2026-04-19T10:04:00.000Z",
+    updatedAt: "2026-04-19T10:04:00.000Z",
   },
 ];
 
@@ -93,6 +103,7 @@ const mockDocuments: TaskDocument[] = [
     contentHash: `sha256:${"a".repeat(64)}`,
     author: "agent",
     createdAt: "2026-04-19T10:00:00.000Z",
+
     updatedAt: "2026-04-19T12:00:00.000Z",
   },
   {
@@ -104,6 +115,7 @@ const mockDocuments: TaskDocument[] = [
     contentHash: `sha256:${"b".repeat(64)}`,
     author: "user",
     createdAt: "2026-04-19T09:00:00.000Z",
+
     updatedAt: "2026-04-19T11:00:00.000Z",
   },
 ];
@@ -272,7 +284,11 @@ describe("TaskDocumentsTab", () => {
 
     const dialog = screen.getByRole("dialog", { name: "Artifact media preview" });
     expect(dialog).toBeInTheDocument();
-    expect(screen.getAllByRole("img", { name: "Image artifact" })[1]).toHaveAttribute("src", "blob:secure-preview");
+    const expandedImage = screen.getAllByRole("img", { name: "Image artifact" })[1];
+    expect(expandedImage).toHaveAttribute("src", "blob:secure-preview");
+    expect(within(dialog).getByTestId("artifact-image-viewer-zoom-level")).toHaveTextContent("100%");
+    fireEvent.click(within(dialog).getByTestId("artifact-image-viewer-zoom-in"));
+    expect(expandedImage.style.transform).toContain("scale(1.25)");
 
     fireEvent.click(screen.getByRole("button", { name: "Close artifact preview" }));
 

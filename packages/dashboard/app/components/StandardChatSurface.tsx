@@ -1,12 +1,14 @@
 import type { Agent } from "@fusion/core";
+import { UiButton, UiTextArea } from "./ui";
 import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ArrowUpToLine, Bot, File, Pencil, Reply, Send, TriangleAlert } from "lucide-react";
+import { ArrowUpToLine, Archive, Bot, File, Pencil, Reply, RotateCcw, Send, TriangleAlert } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import type { ChatMessageInfo, FailureInfo, ToolCallInfo } from "../hooks/chatTypes";
+import type { ChatEnginePhase, ChatMessageInfo, FailureInfo, ToolCallInfo } from "../hooks/chatTypes";
 import { linkifyFilePaths, linkifyReactChildren } from "../utils/filePathLinkify";
+import { parseChatHandoffLineage, type ChatHandoffLineageView } from "../utils/chatHandoff";
 import { parseQuestionToolCall } from "../utils/parseQuestionToolCall";
 import { ChatQuestionResponse } from "./ChatQuestionResponse";
 import { ProviderIcon } from "./ProviderIcon";
@@ -15,7 +17,7 @@ import { openNativeStructure } from "./nativeStructureNavigation";
 import { nativeStructureChatRefMatcher, parseNativeStructureChatRef, splitNativeStructureChatRefMatch } from "./nativeStructureChatRef";
 import { MicButton } from "./MicButton";
 import { useComposerDictation } from "../hooks/useComposerDictation";
-import { ToolCallDetails, formatToolArgsPreview, formatToolPreview, hasToolCallDetails } from "./ToolCallDetails";
+import { LazyToolCallDetails, ToolCallDetails, formatToolArgsPreview, formatToolPreview, hasToolCallDetails, type FullToolCallLoader } from "./ToolCallDetails";
 import { isInteractiveDisclosureTarget, ThinkingTrace } from "./ThinkingTrace";
 import {
   createChatInputAutosizeController,
@@ -45,6 +47,14 @@ export interface StandardChatMessageItemProps {
   onQuoteMessage?: (message: ChatMessageInfo) => void;
   onScrollToTop?: (messageId: string) => void;
   /**
+   * FNXC:ChatTurnRetry 2026-09-17-16:30:
+   * When a turn ends without a reply (or is interrupted), the operator had to copy-paste their
+   * own prompt to rerun it. Callers that can resend the prompt (session chat, planner chat) wire
+   * this up and the honest notices render a Retry action; surfaces without a resend path omit it
+   * so no dead control is rendered.
+   */
+  onRetryTurn?: (message: ChatMessageInfo) => void;
+  /**
    * FNXC:ChatMessageScrollToTop 2026-07-12-23:09:
    * ChatView owns scroll-container measurement and sets this when the message top is clipped above the visible container top. StandardChatSurface keeps eligible go-to-top controls mounted for tests/accessibility wiring but hides them until this state is true, and renders the control inline with the Thinking row instead of a standalone action line.
    */
@@ -53,6 +63,12 @@ export interface StandardChatMessageItemProps {
   submittedQuestionAnswer?: string;
   onQuestionSubmit?: (answerText: string, structured: Record<string, unknown>) => void;
   toolCallRenderer?: (toolCall: ToolCallInfo, index: number) => ReactNode | undefined;
+  /**
+   * FNXC:ChatFeedCompaction 2026-09-17-15:38:
+   * Loads the full args/result of a compacted tool-call entry (the session feed ships previews).
+   * Surfaces that omit it still show the compact row — they just cannot expand it.
+   */
+  loadToolCallFull?: FullToolCallLoader;
   /**
    * FNXC:ChatMessageEdit 2026-07-07-09:00:
    * When set together with `canEdit`, a user message renders an edit affordance that swaps its
@@ -63,11 +79,28 @@ export interface StandardChatMessageItemProps {
    */
   onEditMessage?: (messageId: string, newContent: string) => void | Promise<void>;
   /**
+   * FNXC:ChatHandoff 2026-09-09-20:04:
+   * RUFU-199: Direct-chat callers pass this so the handoff primer notice can deep-link back to the
+   * archived source conversation. Surfaces without a session switcher (planner, popped-out windows)
+   * omit it and the notice still explains the lineage without the link.
+   */
+  onHandoffSourceOpen?: (sessionId: string) => void;
+  /**
    * Gate for whether editing is currently supported/allowed for this message's surface (direct
    * model-loop chat, not Rooms or CLI-agent sessions) and state (not while streaming). When
    * false or `onEditMessage` is absent, no affordance renders at all — never a disabled/dead one.
    */
   canEdit?: boolean;
+  /**
+   * FNXC:ChatMessageEdit 2026-09-16-05:58:
+   * FN-459. Correction text rescued from a REJECTED edit. A rejected edit reloads the authoritative
+   * rows, which changes this row's id and remounts it (transcripts key by message id), destroying
+   * the inline editor's local `editedText`. When this becomes defined and the editor is not already
+   * open, reopen it pre-filled and acknowledge through `onEditDraftConsumed` so the surface clears
+   * the draft exactly once instead of reopening the editor forever.
+   */
+  initialEditDraft?: string;
+  onEditDraftConsumed?: (messageId: string) => void;
   /** Optional ChatView-only find presentation; omitted consumers remain unchanged. */
   isSearchMatch?: boolean;
   isSearchActive?: boolean;
@@ -77,6 +110,14 @@ export interface StandardStreamingMessageProps {
   streamingText: string;
   streamingThinking?: string;
   streamingToolCalls?: ToolCallInfo[];
+  /**
+   * FNXC:ChatPhaseStatus 2026-09-05-10:23:
+   * RUFU-188: the live engine phase while a reply is still waiting on silent engine-internal work.
+   * When it is `"compacting"` the empty-placeholder shows "Working (compacting…)" so the operator can
+   * tell an active compaction from an idle/working wait. Transient render state only — a value never
+   * persisted on a message row, mirroring the transient `phase` side-channel from the stream.
+   */
+  streamingPhase?: ChatEnginePhase | null;
   forcePlain: boolean;
   agentName: string;
   hideAssistantIdentity: boolean;
@@ -171,9 +212,17 @@ function formatToolResultSummary(result: unknown): string | null {
 FNXC:ChatDisclosure 2026-08-19-02:42:
 Streaming status is presentation-only: disclosure state belongs to the user and must not be taken over by a running tool or thinking delta. The nested ThinkingTrace owns per-section body interaction while this host disclosure retains its existing default.
 */
-function StandardThinkingDisclosure({ thinking }: { thinking: string }) {
+/*
+FNXC:ChatInterruptedVisibility 2026-09-17-16:16:
+An interrupted turn's ONLY surviving output is its thinking and partial text, yet the
+disclosure defaulted to collapsed, so the operator read a dead agent where a recoverable
+transcript existed (ai_workstation chat-ed81f6e8 msg-7b71d32b: container restart killed
+the model mid-application and the chat looked empty). Interrupted rows must auto-expand
+the thinking; every other row keeps the user-owned collapsed default.
+*/
+function StandardThinkingDisclosure({ thinking, defaultOpen = false }: { thinking: string; defaultOpen?: boolean }) {
   const { t } = useTranslation("app");
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   const handleBodyClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     if (isInteractiveDisclosureTarget(event.target)) return;
     // FNXC:ThinkingTrace 2026-08-22-16:56: Per-title bodies own collapse clicks; the shared interactive-target guard also keeps the folded-title Raw trace button inside this disclosure.
@@ -233,6 +282,9 @@ export function renderStandardToolCalls(
     submittedAnswer?: string;
     onQuestionSubmit?: (answerText: string, structured: Record<string, unknown>) => void;
     toolCallRenderer?: (toolCall: ToolCallInfo, index: number) => ReactNode | undefined;
+    /** FNXC:ChatFeedCompaction 2026-09-17-15:38: message identity + lazy full-body loader for compacted entries. */
+    messageId?: string;
+    loadToolCallFull?: FullToolCallLoader;
   },
 ): ReactNode {
   if (!toolCalls || toolCalls.length === 0) return null;
@@ -261,7 +313,11 @@ export function renderStandardToolCalls(
     const isError = toolCall.status === "completed" && toolCall.isError;
     const argsSummary = formatToolArgsPreview(toolCall.args);
     const resultSummary = formatToolResultSummary(toolCall.result);
-    const summaryPreview = isRunning ? argsSummary : resultSummary ? `${t("chat.toolCallResultPrefix", "result")}: ${resultSummary}` : argsSummary ? `${t("chat.toolCallArgsPrefix", "args")}: ${argsSummary}` : null;
+    // FNXC:ChatFeedCompaction 2026-09-17-15:38: compacted entries carry the server-built preview instead of bodies.
+    const compactedPreview = toolCall.compacted && toolCall.previewText
+      ? `${t(toolCall.previewKind === "result" ? "chat.toolCallResultPrefix" : "chat.toolCallArgsPrefix", toolCall.previewKind === "result" ? "result" : "args")}: ${toolCall.previewText}`
+      : null;
+    const summaryPreview = toolCall.compacted ? compactedPreview : isRunning ? argsSummary : resultSummary ? `${t("chat.toolCallResultPrefix", "result")}: ${resultSummary}` : argsSummary ? `${t("chat.toolCallArgsPrefix", "args")}: ${argsSummary}` : null;
     const statusLabel = isRunning ? t("chat.toolCallStatusRunning", "running") : isError ? t("chat.toolCallStatusError", "error") : t("chat.toolCallStatusCompleted", "completed");
     const className = `chat-tool-call${isRunning ? " chat-tool-call--running" : ""}${isError ? " chat-tool-call--error" : ""}`;
     const summary = (
@@ -272,6 +328,22 @@ export function renderStandardToolCalls(
         <span className="chat-tool-call-status-text">{statusLabel}</span>
       </>
     );
+    // FNXC:ChatFeedCompaction 2026-09-17-15:38: a compacted entry with server-held bodies expands through a lazy disclosure.
+    if (toolCall.compacted && toolCall.hasFullDetails && options?.messageId && options?.loadToolCallFull) {
+      return (
+        <LazyToolCallDetails
+          key={`${toolCall.toolName}-${index}`}
+          className={className}
+          summary={summary}
+          messageId={options.messageId}
+          index={index}
+          loadFull={options.loadToolCallFull}
+          argumentsLabel={t("chat.toolCallArgsPrefix", "args")}
+          resultLabel={t("chat.toolCallResultPrefix", "result")}
+          resultIsError={isError}
+        />
+      );
+    }
     if (!hasToolCallDetails(toolCall.args, toolCall.result)) {
       return <div key={`${toolCall.toolName}-${index}`} className={className}><div className="chat-tool-call-summary">{summary}</div></div>;
     }
@@ -543,7 +615,7 @@ export function renderStandardAssistantContent(content: string, forcePlain: bool
 /**
  * FNXC:VoiceInput 2026-07-25-04:15:
  * Mount dictation only while the correction textarea is open. Message rows must not each poll
- * voice availability while merely rendering history; this editor remains the shared Quick Chat path.
+ * voice availability while merely rendering history; this editor remains shared by every Chat host.
  */
 function StandardChatMessageEditComposer({
   value,
@@ -589,7 +661,7 @@ function StandardChatMessageEditComposer({
 
   return (
     <div className="chat-message-edit-editor" data-testid={`chat-message-edit-editor-${messageId}`}>
-      <textarea
+      <UiTextArea
         ref={handleTextareaRef}
         className="input chat-message-edit-textarea"
         value={value}
@@ -608,9 +680,105 @@ function StandardChatMessageEditComposer({
       />
       <div className="chat-message-edit-actions">
         <MicButton {...dictation.micProps} disabled={disabled} />
-        <button type="button" className="btn btn-sm" data-testid={`chat-message-edit-cancel-${messageId}`} disabled={disabled} onClick={onCancel}>{t("chat.editMessageCancel", "Cancel")}</button>
-        <button type="button" className="btn btn-sm btn-primary" data-testid={`chat-message-edit-save-${messageId}`} disabled={saveDisabled} onClick={onSave}>{t("chat.editMessageSave", "Save")}</button>
+        <UiButton type="button" className="btn btn-sm" data-testid={`chat-message-edit-cancel-${messageId}`} disabled={disabled} onClick={onCancel}>{t("chat.editMessageCancel", "Cancel")}</UiButton>
+        <UiButton type="button" className="btn btn-sm btn-primary" data-testid={`chat-message-edit-save-${messageId}`} disabled={saveDisabled} onClick={onSave}>{t("chat.editMessageSave", "Save")}</UiButton>
       </div>
+    </div>
+  );
+}
+
+/*
+FNXC:ChatContextGuardTier3 2026-09-04-22:51:
+RUFU-183 Step 6 — the operator notice for a tier-3 deterministic truncation. When the chat
+overflow guard could not compact via either LLM tier and instead truncated old history
+deterministically, the dashboard seam persists the rescue evidence on the NEW assistant
+message (`metadata.contextTruncation`); this is the single shared renderer for that
+notice, so every surface that renders a persisted chat message (main ChatView, room
+transcripts, task-planner tab — all via StandardChatMessageItem) discloses it without a
+per-surface fork. Both breakpoints need no separate markup: the notice is a wrapping text
+strip inside the existing message column.
+*/
+
+/** Parsed, render-safe form of the persisted `metadata.contextTruncation` payload. */
+export interface ChatContextTruncationEvidence {
+  droppedMessageCount: number;
+  droppedTokens: number;
+  contextTokensAfter: number | null;
+}
+
+/**
+ * Validate the JSON-sourced truncation evidence before rendering. A payload whose counts
+ * are not finite numbers is not operator information — return null and render nothing
+ * rather than an invented notice. `contextTokensAfter: null` is meaningful (the honest
+ * re-measurement was unavailable) and renders an explicit unproven suffix.
+ */
+function parseContextTruncationEvidence(raw: unknown): ChatContextTruncationEvidence | null {
+  if (!raw || typeof raw !== "object") return null;
+  const record = raw as Record<string, unknown>;
+  const droppedMessageCount = record.droppedMessageCount;
+  const droppedTokens = record.droppedTokens;
+  if (typeof droppedMessageCount !== "number" || !Number.isFinite(droppedMessageCount) || droppedMessageCount <= 0) return null;
+  if (typeof droppedTokens !== "number" || !Number.isFinite(droppedTokens) || droppedTokens < 0) return null;
+  const contextTokensAfter = record.contextTokensAfter;
+  if (contextTokensAfter !== null && contextTokensAfter !== undefined && (typeof contextTokensAfter !== "number" || !Number.isFinite(contextTokensAfter))) return null;
+  return {
+    droppedMessageCount,
+    droppedTokens,
+    contextTokensAfter: typeof contextTokensAfter === "number" ? contextTokensAfter : null,
+  };
+}
+
+/** Inline notice strip (design tokens only; mirrors the budget-exhausted notice pattern). */
+export function ChatContextTruncationNotice({ evidence }: { evidence: ChatContextTruncationEvidence }) {
+  const { t } = useTranslation("app");
+  return (
+    <div className="chat-context-truncation-notice" role="note" data-testid="chat-context-truncation-notice">
+      <span>
+        {t("chat.contextTruncationNotice", {
+          count: evidence.droppedMessageCount,
+          tokens: evidence.droppedTokens,
+          defaultValue_one: "To fit the context window, {{count}} older message ({{tokens}} tokens) was dropped from this conversation's history.",
+          defaultValue_other: "To fit the context window, {{count}} older messages ({{tokens}} tokens) were dropped from this conversation's history.",
+        })}
+      </span>
+      {evidence.contextTokensAfter === null && (
+        <span className="chat-context-truncation-notice__unproven">{t("chat.contextTruncationUnproven", "The reduced context size could not be verified.")}</span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * FNXC:ChatHandoff 2026-09-09-20:04:
+ * RUFU-199: the operator-facing replacement for a handoff child's raw primer briefing. Module scope is
+ * mandatory (no component-in-component): it must keep reconciling across re-renders. The degraded copy is
+ * load-bearing honesty — a degraded child starts from a trimmed transcript digest, not a model summary,
+ * and the notice must say so instead of implying a full briefing was delivered.
+ */
+function StandardChatHandoffNotice({ lineage, onOpenSource }: { lineage: ChatHandoffLineageView; onOpenSource?: (sessionId: string) => void }) {
+  const { t } = useTranslation("app");
+  const fromTitle = lineage.fromTitle || t("chat.untitledConversation", "Untitled conversation");
+  return (
+    <div className="chat-message-content chat-message-handoff-notice" role="note" data-testid="chat-message-handoff">
+      <span className="chat-message-handoff-notice-line">
+        <Archive size={14} aria-hidden="true" />
+        <span>{t("chat.handoffContinuesFrom", "Continues from “{{title}}”", { title: fromTitle })}</span>
+        {onOpenSource && lineage.fromSessionId ? (
+          <button
+            type="button"
+            className="btn btn-sm chat-handoff-notice-open"
+            data-testid="chat-handoff-notice-open"
+            onClick={() => onOpenSource(lineage.fromSessionId)}
+          >
+            {t("chat.handoffOpenSource", "View original")}
+          </button>
+        ) : null}
+      </span>
+      {lineage.degraded ? (
+        <span className="chat-message-handoff-notice-degraded" data-testid="chat-handoff-notice-degraded">
+          {t("chat.handoffBriefingDegraded", "Handoff briefing degraded: this chat starts from a transcript digest instead of a model summary.")}
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -629,12 +797,17 @@ export const StandardChatMessageItem = memo(function StandardChatMessageItem({
   copyAction,
   onQuoteMessage,
   onScrollToTop,
+  onRetryTurn,
   isAwaitingQuestionAnswer = false,
   submittedQuestionAnswer,
   onQuestionSubmit,
   toolCallRenderer,
+  loadToolCallFull,
   onEditMessage,
+  onHandoffSourceOpen,
   canEdit = false,
+  initialEditDraft,
+  onEditDraftConsumed,
   isTopClipped = false,
   isSearchMatch = false,
   isSearchActive = false,
@@ -643,6 +816,14 @@ export const StandardChatMessageItem = memo(function StandardChatMessageItem({
   const { t } = useTranslation("app");
   const isAssistantMessage = message.role === "assistant";
   const isUserMessage = message.role === "user";
+  /*
+   * FNXC:ChatHandoff 2026-09-09-20:04:
+   * RUFU-199: a handoff child's role:"system" primer row carries the model-facing briefing in
+   * `content` — that text must NEVER render raw into the transcript (it reads as a wall of third-person
+   * summary). When the lineage object is present, the body slot renders a compact "Continues from …"
+   * notice instead, with a degraded warning when the server said the briefing was only a digest.
+   */
+  const handoffLineage = message.role === "system" ? parseChatHandoffLineage(message.metadata) : null;
   /*
    * FNXC:ChatMessageEdit 2026-07-07-09:00:
    * Edit affordance is scoped strictly to user messages on surfaces that opt in via both
@@ -667,6 +848,18 @@ export const StandardChatMessageItem = memo(function StandardChatMessageItem({
     setEditedText(message.content);
   }, [isSavingEdit, message.content]);
 
+  /*
+  FNXC:ChatMessageEdit 2026-09-16-05:58:
+  FN-459. Restore a rescued correction exactly once. Guarded on `isEditing` so an editor the operator
+  already reopened by hand is never overwritten mid-typing.
+  */
+  useEffect(() => {
+    if (initialEditDraft === undefined || isEditing) return;
+    setEditedText(initialEditDraft);
+    setIsEditing(true);
+    onEditDraftConsumed?.(message.id);
+  }, [initialEditDraft, isEditing, message.id, onEditDraftConsumed]);
+
   const saveEdit = useCallback(async () => {
     const trimmed = editedText.trim();
     if (!trimmed || trimmed === message.content.trim() || !onEditMessage || isSavingEdit) return;
@@ -689,6 +882,14 @@ export const StandardChatMessageItem = memo(function StandardChatMessageItem({
   }, [editedText, isSavingEdit, message.content, message.id, onEditMessage]);
 
   const failureInfo = isAssistantMessage ? message.failureInfo : undefined;
+  /*
+   * FNXC:ChatContextGuardTier3 2026-09-04-22:51:
+   * RUFU-183: the tier-3 rescue evidence rides the persisted row's metadata; parse it once
+   * per message so the notice renders below the body in EVERY assistant branch — normal
+   * reply, interrupted partial, empty body, or failure row (a rescue that preceded a later
+   * provider failure still must disclose that history was permanently dropped).
+   */
+  const contextTruncationEvidence = isAssistantMessage ? parseContextTruncationEvidence(message.metadata?.contextTruncation) : null;
   /*
    * FNXC:ChatEmptyMessage 2026-07-10-00:00:
    * Empty assistant responses, including Grok CLI runs that finish with no text, must show a muted "No message" placeholder instead of a blank bubble. Only final persisted assistant messages with no renderable body qualify; tool calls, thinking output, attachments, or failure info already carry meaningful content and must not trigger the placeholder.
@@ -759,11 +960,39 @@ export const StandardChatMessageItem = memo(function StandardChatMessageItem({
     if (failureInfo) {
       return <div className="chat-message-content chat-message-content--failure"><div className="chat-message-failure-summary-row"><span className="status-dot status-dot--error" aria-hidden="true" /><span className="chat-message-failure-label">{t("chat.responseFailed", "Response failed")}</span></div><div className="chat-message-failure-summary">{failureInfo.summary}</div>{(failureInfo.errorClass || failureInfo.code) && <div className="chat-message-failure-badges">{failureInfo.errorClass && <span className="chat-message-failure-badge">{failureInfo.errorClass}</span>}{failureInfo.code && <span className="chat-message-failure-badge">{failureInfo.code}</span>}</div>}{(failureInfo.detail || failureInfo.reference) && <details className="chat-message-failure-details"><summary><TriangleAlert size={14} aria-hidden="true" /><span>{t("chat.failureDetails", "Failure details")}</span></summary>{failureInfo.detail && <pre className="chat-message-failure-detail">{linkifyFilePaths(failureInfo.detail)}</pre>}{renderFailureReference(failureInfo.reference, t)}</details>}</div>;
     }
+    /*
+    FNXC:ChatOutputBudget 2026-08-20-20:17 (RUFU-144):
+    An empty assistant turn persisted with `metadata.budgetExhausted` means the model spent
+    the entire maxTokens budget on thinking and was truncated before emitting output. The
+    explicit inline notice replaces the silent empty body (failure UI still takes
+    precedence above; non-empty content never reaches this branch) and the thinking
+    disclosure below stays visible when `thinkingOutput` exists, so the user sees both
+    the explanation and what the model actually thought.
+    */
+    if (message.content.trim().length === 0 && message.metadata?.budgetExhausted === true) {
+      return <div className="chat-message-content chat-message-content--budget-exhausted" role="note" data-testid="chat-message-budget-exhausted">{t("chat.outputBudgetExhausted", "The model used its entire output budget on thinking — raise maxTokens for this model.")}</div>;
+    }
     if (isEmptyAssistantMessage) {
       return <div className="chat-message-content chat-message-content--empty" data-testid="chat-message-empty">{t("chat.noMessage", "No message")}</div>;
     }
+    /*
+    FNXC:ChatInterruptedVisibility 2026-09-17-16:16:
+    A whitespace-only assistant body WITH thinking or tool calls (the model ended the turn
+    straight after tools, or an abort landed between thinking and output) rendered a blank
+    bubble — the user could not tell "no reply was generated" from a broken UI. Say so
+    inline, the same honest-notice shape as the budget-exhausted case above; interrupted
+    rows get their own notice instead.
+    */
+    if (message.content.trim().length === 0 && message.metadata?.interrupted !== true) {
+      return (
+        <div className="chat-message-content chat-message-content--no-reply" role="note" data-testid="chat-message-no-reply">
+          <span>{t("chat.noReplyGenerated", "The model ended this turn without writing a reply. Expand Thinking below to see what it reached.")}</span>
+          {onRetryTurn && <UiButton type="button" className="btn btn-sm" data-testid={`chat-retry-turn-${message.id}`} onClick={() => onRetryTurn(message)}><RotateCcw size={14} aria-hidden="true" />{t("chat.retryTurn", "Retry")}</UiButton>}
+        </div>
+      );
+    }
     return renderStandardAssistantContent(message.content, forcePlain);
-  }, [failureInfo, forcePlain, isAssistantMessage, isEmptyAssistantMessage, message.content, t]);
+  }, [failureInfo, forcePlain, isAssistantMessage, isEmptyAssistantMessage, message.content, message.metadata, t]);
   /* FNXC:ChatQuoteReply 2026-08-23-02:31: A quote action is rendered only for persisted non-empty messages, allowing direct chat to re-mention an agent author without adding controls to streaming or planner surfaces. */
   const showQuoteAction = Boolean(onQuoteMessage) && !failureInfo && message.content.trim().length > 0;
   const hasAssistantFooterRow = isAssistantMessage && !failureInfo && Boolean(message.thinkingOutput || copyAction || onScrollToTop || showQuoteAction);
@@ -784,39 +1013,63 @@ export const StandardChatMessageItem = memo(function StandardChatMessageItem({
           projectId={projectId}
         />
       ) : (
-        isAssistantMessage ? assistantBody : <div className="chat-message-content">{renderedUserContent}</div>
+        isAssistantMessage ? assistantBody : handoffLineage ? <StandardChatHandoffNotice lineage={handoffLineage} onOpenSource={onHandoffSourceOpen} /> : <div className="chat-message-content">{renderedUserContent}</div>
+      )}
+      {contextTruncationEvidence && <ChatContextTruncationNotice evidence={contextTruncationEvidence} />}
+      {/* FNXC:ChatInterruptedVisibility 2026-09-17-16:16: an interrupted assistant row must announce itself; nothing else on the row distinguishes "stopped early" from "finished". */}
+      {isAssistantMessage && message.metadata?.interrupted === true && (
+        <div className="chat-message-content chat-message-content--interrupted" role="note" data-testid="chat-message-interrupted">
+          <span>{t("chat.responseInterrupted", "Response interrupted — whatever was produced before the stop is shown above and in Thinking.")}</span>
+          {onRetryTurn && <UiButton type="button" className="btn btn-sm" data-testid={`chat-retry-turn-${message.id}`} onClick={() => onRetryTurn(message)}><RotateCcw size={14} aria-hidden="true" />{t("chat.retryTurn", "Retry")}</UiButton>}
+        </div>
       )}
       {hasAssistantFooterRow && (
         <div className={`chat-message-thinking-row${hasVisibleAssistantFooterContent ? "" : " chat-message-thinking-row--collapsed"}`}>
-          {message.thinkingOutput && <StandardThinkingDisclosure thinking={message.thinkingOutput} />}
+          {message.thinkingOutput && <StandardThinkingDisclosure thinking={message.thinkingOutput} defaultOpen={message.metadata?.interrupted === true} />}
           {(copyAction || onScrollToTop || showQuoteAction) && (
             <div className="chat-message-actions">
               {copyAction}
-              {showQuoteAction && <button type="button" className="btn-icon chat-message-quote-action" aria-label={t("chat.quoteMessage", "Quote message")} data-testid={`chat-message-quote-${message.id}`} onClick={() => onQuoteMessage?.(message)}><Reply size={14} /></button>}
-              {onScrollToTop && <button type="button" className={`btn-icon chat-message-scroll-to-top-action${isTopClipped ? "" : " chat-message-scroll-to-top-action--hidden"}`} aria-label={t("chat.scrollMessageToTop", "Scroll message to top")} data-testid={`chat-message-scroll-to-top-${message.id}`} onClick={() => onScrollToTop(message.id)}><ArrowUpToLine size={14} /></button>}
+              {showQuoteAction && <UiButton type="button" className="btn-icon chat-message-quote-action" aria-label={t("chat.quoteMessage", "Quote message")} data-testid={`chat-message-quote-${message.id}`} onClick={() => onQuoteMessage?.(message)}><Reply size={14} /></UiButton>}
+              {onScrollToTop && <UiButton type="button" className={`btn-icon chat-message-scroll-to-top-action${isTopClipped ? "" : " chat-message-scroll-to-top-action--hidden"}`} aria-label={t("chat.scrollMessageToTop", "Scroll message to top")} data-testid={`chat-message-scroll-to-top-${message.id}`} onClick={() => onScrollToTop(message.id)}><ArrowUpToLine size={14} /></UiButton>}
             </div>
           )}
         </div>
       )}
-      {renderStandardToolCalls(message.toolCalls, t, { isAwaitingAnswer: isAwaitingQuestionAnswer, submittedAnswer: submittedQuestionAnswer, onQuestionSubmit, toolCallRenderer })}
+      {renderStandardToolCalls(message.toolCalls, t, { isAwaitingAnswer: isAwaitingQuestionAnswer, submittedAnswer: submittedQuestionAnswer, onQuestionSubmit, toolCallRenderer, messageId: message.id, loadToolCallFull })}
       {renderedAttachments}
       {isUserMessage ? (
         <div className="chat-message-time-row">
           {messageTime}
-          {showQuoteAction && <button type="button" className="btn-icon chat-message-quote-action" aria-label={t("chat.quoteMessage", "Quote message")} data-testid={`chat-message-quote-${message.id}`} onClick={() => onQuoteMessage?.(message)}><Reply size={14} /></button>}
-          {showEditAction && !isEditing && <button type="button" className="btn-icon chat-message-edit-action chat-message-edit-action--inline" aria-label={t("chat.editMessage", "Edit message")} data-testid={`chat-message-edit-${message.id}`} onClick={startEditing}><Pencil size={14} /></button>}
+          {showQuoteAction && <UiButton type="button" className="btn-icon chat-message-quote-action" aria-label={t("chat.quoteMessage", "Quote message")} data-testid={`chat-message-quote-${message.id}`} onClick={() => onQuoteMessage?.(message)}><Reply size={14} /></UiButton>}
+          {showEditAction && !isEditing && <UiButton type="button" className="btn-icon chat-message-edit-action chat-message-edit-action--inline" aria-label={t("chat.editMessage", "Edit message")} data-testid={`chat-message-edit-${message.id}`} onClick={startEditing}><Pencil size={14} /></UiButton>}
         </div>
       ) : messageTime}
     </div>
   );
 });
 
-export function StandardStreamingMessage({ streamingText, streamingThinking = "", streamingToolCalls = [], forcePlain, agentName, hideAssistantIdentity, showAssistantModelTag, activeModelTag, activeModelProvider, copyAction, onQuestionSubmit, toolCallRenderer, isSearchMatch = false, isSearchActive = false }: StandardStreamingMessageProps) {
+export function StandardStreamingMessage({ streamingText, streamingThinking = "", streamingToolCalls = [], streamingPhase = null, forcePlain, agentName, hideAssistantIdentity, showAssistantModelTag, activeModelTag, activeModelProvider, copyAction, onQuestionSubmit, toolCallRenderer, isSearchMatch = false, isSearchActive = false }: StandardStreamingMessageProps) {
   const { t } = useTranslation("app");
   return (
     <div className={`chat-message chat-message--assistant chat-message--streaming${isSearchMatch ? " chat-message--search-match" : ""}${isSearchActive ? " chat-message--search-active" : ""}`} data-testid="chat-message-__streaming__" data-message-id="__streaming__">
       {!hideAssistantIdentity && <div className="chat-message-avatar">{activeModelProvider ? <ProviderIcon provider={activeModelProvider} size="sm" /> : <Bot size={14} />}<span>{agentName}</span>{showAssistantModelTag && activeModelTag && <span className="chat-model-tag">{activeModelTag}</span>}</div>}
-      {streamingText ? renderStandardAssistantContent(streamingText, forcePlain) : <div className="chat-message-content chat-message-content--waiting">{streamingThinking ? t("chat.thinkingStatus", "Thinking…") : t("chat.workingStatus", "Working…")}</div>}
+      {/*
+      FNXC:ChatPhaseStatus 2026-09-05-10:23:
+      RUFU-188: while the engine runs the pre-overflow compaction gate the reply streams nothing, so the empty
+      placeholder previously read a bare "Working…" and hid minutes of real engine activity. A live `compacting`
+      phase decorates the wait as "Working (compacting…)", otherwise the label stays exactly as before
+      ("Thinking…" while a chain-of-thought is streaming, otherwise "Working…"). Only the copy differs — the
+      element/class and the persisted message are untouched.
+
+      FNXC:ChatPhaseStatus 2026-09-05-11:45:
+      RUFU-188 (Code Review P2): precedence is the spec's `thinking > phase > working`, not phase first — a
+      streamed chain-of-thought is the more informative signal, and a replayed phase frame (a stale
+      `active: true` from the durable event buffer reattaching after the gate already finished) must not
+      overpaint real thinking with a phase that no longer runs. The server brackets the gate strictly before
+      the prompt, so on a live send the two are never concurrent anyway; thinking winning only ever
+      suppresses a replay residual.
+      */}
+      {streamingText ? renderStandardAssistantContent(streamingText, forcePlain) : <div className="chat-message-content chat-message-content--waiting">{streamingThinking ? t("chat.thinkingStatus", "Thinking…") : streamingPhase === "compacting" ? t("chat.workingCompactingStatus", "Working (compacting…)") : t("chat.workingStatus", "Working…")}</div>}
       {copyAction}
       {renderStandardToolCalls(streamingToolCalls, t, { isAwaitingAnswer: true, onQuestionSubmit, toolCallRenderer })}
       {streamingThinking && <StandardThinkingDisclosure thinking={streamingThinking} />}
@@ -865,7 +1118,7 @@ export function StandardChatActionButton({ isStreaming, canSend, onSend, onStop,
   // independently of Send's, defaulting to showSendText when the caller doesn't opt in (FN-7655).
   const showStop = showStopText ?? showSendText;
   if (isStreaming) {
-    return <button type="button" className={classNameStop} onPointerDown={(event) => { if (event.pointerType && event.pointerType !== "mouse") { event.preventDefault(); if (!beginTouchActionGesture()) return; markHandledSendTouch(); onStop?.(); } }} onTouchStart={(event) => { event.preventDefault(); if (!beginTouchActionGesture()) return; markHandledSendTouch(); onStop?.(); }} onMouseDown={(event) => event.preventDefault()} onClick={() => { if (consumeHandledSendTouch()) return; onStop?.(); }} aria-label={stopLabel ?? t("chat.stopGeneration", "Stop generation")} data-testid={stopTestId} style={{ touchAction: "manipulation" }}><span className="chat-input-stop-icon" aria-hidden="true" />{showStop && <span>{stopLabel ?? t("chat.stopGeneration", "Stop generation")}</span>}</button>;
+    return <UiButton type="button" className={classNameStop} onPointerDown={(event) => { if (event.pointerType && event.pointerType !== "mouse") { event.preventDefault(); if (!beginTouchActionGesture()) return; markHandledSendTouch(); onStop?.(); } }} onTouchStart={(event) => { event.preventDefault(); if (!beginTouchActionGesture()) return; markHandledSendTouch(); onStop?.(); }} onMouseDown={(event) => event.preventDefault()} onClick={() => { if (consumeHandledSendTouch()) return; onStop?.(); }} aria-label={stopLabel ?? t("chat.stopGeneration", "Stop generation")} data-testid={stopTestId} style={{ touchAction: "manipulation" }}><span className="chat-input-stop-icon" aria-hidden="true" />{showStop && <span>{stopLabel ?? t("chat.stopGeneration", "Stop generation")}</span>}</UiButton>;
   }
-  return <button type="button" className={classNameSend} onPointerDown={(event) => { if (event.pointerType && event.pointerType !== "mouse") { event.preventDefault(); if (!beginTouchActionGesture()) return; markHandledSendTouch(); void onSend(); } }} onTouchStart={(event) => { event.preventDefault(); if (!beginTouchActionGesture()) return; markHandledSendTouch(); void onSend(); }} onMouseDown={(event) => event.preventDefault()} onClick={() => { if (consumeHandledSendTouch()) return; void onSend(); }} disabled={!canSend} data-testid={sendTestId} aria-label={sendLabel ?? t("chat.send", "Send")} style={{ touchAction: "manipulation" }}><Send size={16} />{showSendText && <span>{sendLabel ?? t("chat.send", "Send")}</span>}</button>;
+  return <UiButton type="button" className={classNameSend} onPointerDown={(event) => { if (event.pointerType && event.pointerType !== "mouse") { event.preventDefault(); if (!beginTouchActionGesture()) return; markHandledSendTouch(); void onSend(); } }} onTouchStart={(event) => { event.preventDefault(); if (!beginTouchActionGesture()) return; markHandledSendTouch(); void onSend(); }} onMouseDown={(event) => event.preventDefault()} onClick={() => { if (consumeHandledSendTouch()) return; void onSend(); }} disabled={!canSend} data-testid={sendTestId} aria-label={sendLabel ?? t("chat.send", "Send")} style={{ touchAction: "manipulation" }}><Send size={16} />{showSendText && <span>{sendLabel ?? t("chat.send", "Send")}</span>}</UiButton>;
 }

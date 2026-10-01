@@ -2,6 +2,19 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SWR_CACHE_KEYS } from "../../utils/swrCache";
 import { useDiscoveredSkillsCache } from "../useDiscoveredSkillsCache";
+import type { DiscoveredSkill } from "../../api";
+
+/** Build a type-complete DiscoveredSkill fixture (post-metadata-shape). */
+function makeSkill(name: string, enabled: boolean, source: string): DiscoveredSkill {
+  return {
+    id: name,
+    name,
+    path: `/skills/${name}`,
+    relativePath: source,
+    enabled,
+    metadata: { source, scope: "project", origin: "package" },
+  };
+}
 
 vi.mock("../../api", () => ({
   fetchDiscoveredSkills: vi.fn(),
@@ -15,7 +28,7 @@ describe("useDiscoveredSkillsCache", () => {
     vi.clearAllMocks();
     localStorage.clear();
     mockFetchDiscoveredSkills.mockResolvedValue([
-      { name: "agent-browser", enabled: true, source: "skills/browser" },
+      makeSkill("agent-browser", true, "skills/browser"),
     ]);
   });
 
@@ -61,7 +74,7 @@ describe("useDiscoveredSkillsCache", () => {
     expect(mockFetchDiscoveredSkills).toHaveBeenCalledTimes(1);
 
     await act(async () => {
-      resolveFetch?.([{ name: "agent-browser", enabled: true, source: "skills/browser" }]);
+      resolveFetch?.([makeSkill("agent-browser", true, "skills/browser")]);
     });
 
     await waitFor(() => {
@@ -87,7 +100,7 @@ describe("useDiscoveredSkillsCache", () => {
 
   it("clears its error after a successful retry", async () => {
     mockFetchDiscoveredSkills.mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce([
-      { name: "recovered-skill", enabled: true, source: "skills/recovered" },
+      makeSkill("recovered-skill", true, "skills/recovered"),
     ]);
     const { result } = renderHook(() => useDiscoveredSkillsCache("proj-error-retry"));
 
@@ -107,7 +120,7 @@ describe("useDiscoveredSkillsCache", () => {
       expect(result.current.loading).toBe(false);
     });
 
-    mockFetchDiscoveredSkills.mockResolvedValueOnce([{ name: "filesystem", enabled: false, source: "skills/fs" }]);
+    mockFetchDiscoveredSkills.mockResolvedValueOnce([makeSkill("filesystem", false, "skills/fs")]);
 
     await act(async () => {
       await result.current.refresh();

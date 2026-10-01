@@ -1,9 +1,9 @@
 import "./FileBrowser.css";
-import { useState, useCallback, useEffect, useId, useRef } from "react";
+import { useState, useCallback, useEffect, useId, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import { Folder, File, ChevronRight, Loader2, Copy, Move, Trash2, Pencil, Download, Archive, FilePlus2, FolderPlus, Plus, ChevronDown, Search } from "lucide-react";
-import type { FileNode } from "../api";
-import { copyFile, createWorkspaceDirectory, createWorkspaceFile, moveFile, deleteFile, renameFile, downloadFileUrl, downloadZipUrl, searchFiles } from "../api";
+import { Folder, File, ChevronRight, Loader2, Copy, Move, Trash2, Pencil, Download, Archive, FilePlus2, FolderPlus, Plus, ChevronDown, Search, ArrowUp, ArrowDown, Upload, X } from "lucide-react";
+import type { FileNode, WorkspaceUploadFailure } from "../api";
+import { copyFile, createWorkspaceDirectory, createWorkspaceFile, moveFile, deleteFile, renameFile, downloadFileUrl, downloadZipUrl, searchFiles, uploadWorkspaceFiles, MAX_WORKSPACE_UPLOAD_FILE_BYTES } from "../api";
 import { appendTokenQuery } from "../auth";
 import { getErrorMessage } from "@fusion/core";
 import { getParentDisplayPath, joinDisplayPath, normalizeDisplayPath } from "../utils/pathDisplay";
@@ -24,6 +24,13 @@ interface FileBrowserProps {
   projectId?: string;
   /** Show first-class Files — Project creation and recursive search controls instead of the compact picker chrome. */
   showProjectFileControls?: boolean;
+  /**
+   * Opt the surface into the upload affordance (button in the inline cluster, "Upload files…"
+   * item in the compact New menu). Deliberately independent of showProjectFileControls: the
+   * task-workspace browser shares the compact picker chrome yet still needs uploads, while
+   * Settings file pickers must stay upload-free regardless of chrome.
+   */
+  allowUpload?: boolean;
 }
 
 function formatBytes(bytes?: number): string {
@@ -37,6 +44,68 @@ function formatTime(mtime?: string): string {
   if (!mtime) return "";
   const date = new Date(mtime);
   return date.toLocaleDateString();
+}
+
+export type FileSortCriterion = "name" | "mtime" | "size";
+export type FileSortDirection = "ascending" | "descending";
+
+const FILE_NAME_COLLATOR = new Intl.Collator(undefined, {
+  sensitivity: "base",
+  numeric: true,
+});
+const FILE_NAME_TIE_BREAKER = new Intl.Collator(undefined, {
+  sensitivity: "variant",
+  numeric: true,
+});
+
+function compareNames(left: FileNode, right: FileNode): number {
+  return FILE_NAME_COLLATOR.compare(left.name, right.name)
+    || FILE_NAME_TIE_BREAKER.compare(left.name, right.name);
+}
+
+function sortableMetadata(entry: FileNode, criterion: Exclude<FileSortCriterion, "name">): number | undefined {
+  if (criterion === "size") {
+    return typeof entry.size === "number" && Number.isFinite(entry.size) ? entry.size : undefined;
+  }
+  if (!entry.mtime) return undefined;
+  const timestamp = Date.parse(entry.mtime);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
+/*
+FNXC:FileBrowser 2026-09-09-21:10:
+Folder listings sort only a copied display projection. Directories always precede files, unknown or invalid metadata stays after known values in either direction, and deterministic name ordering breaks metadata ties without inventing sizes or dates.
+*/
+export function compareFileNodes(
+  left: FileNode,
+  right: FileNode,
+  criterion: FileSortCriterion,
+  direction: FileSortDirection,
+): number {
+  if (left.type !== right.type) {
+    return left.type === "directory" ? -1 : 1;
+  }
+
+  if (criterion === "name") {
+    const nameOrder = compareNames(left, right);
+    return direction === "ascending" ? nameOrder : -nameOrder;
+  }
+  if (criterion === "size" && left.type === "directory") {
+    return compareNames(left, right);
+  }
+
+  const leftValue = sortableMetadata(left, criterion);
+  const rightValue = sortableMetadata(right, criterion);
+  if (leftValue === undefined || rightValue === undefined) {
+    if (leftValue === undefined && rightValue === undefined) return compareNames(left, right);
+    return leftValue === undefined ? 1 : -1;
+  }
+
+  if (leftValue !== rightValue) {
+    const metadataOrder = leftValue - rightValue;
+    return direction === "ascending" ? metadataOrder : -metadataOrder;
+  }
+  return compareNames(left, right);
 }
 
 /** Build the full relative path for a file/directory entry */
@@ -212,6 +281,44 @@ function FileContextMenu({ x, y, entry, onAction, onClose }: FileContextMenuProp
 
 // ── Operation Dialog Component ──────────────────────────────────────────
 
+/*
+FNXC:FileBrowserUpload 2026-09-05-15:57:
+RUFU-189: the Files browser had no upload path — files could only be created as empty text or
+downloaded. The affordance is opt-in per surface (allowUpload) because Settings file pickers
+reuse this component and must keep picker-only chrome (operator requirement). The server is
+safe-by-default (per-file EEXIST unless overwrite=true), so a collision routes through an
+explicit Replace/Keep-existing prompt; confirming re-sends ONLY the collided files with
+overwrite=true while the rest of the batch keeps its already-reported outcomes. Oversized
+picks are pre-rejected against the mirrored 25 MiB cap so bytes that would bounce as ETOOLARGE
+never leave the browser, and every per-file verdict renders inline as "name: reason" — one bad
+file never sinks the batch and no failure is silent.
+*/
+
+/** Settled result of one upload flow, rendered in the dismissible status strip. */
+interface UploadOutcome {
+  uploadedCount: number;
+  failures: WorkspaceUploadFailure[];
+  /** Files the operator declined to replace; the existing copies stay untouched. */
+  keptOldCount: number;
+  /** Whole-request rejection message (transport ceiling, >20 files, 501) distinct from per-file failures. */
+  error?: string;
+}
+
+/** Per-file EEXIST refusals awaiting the operator's Replace/Keep-existing decision. */
+interface PendingUploadCollisions {
+  files: File[];
+  /** Round's non-collision failures, preserved so the re-send outcome stays complete. */
+  carriedFailures: WorkspaceUploadFailure[];
+  uploadedCount: number;
+  keptOldCount: number;
+}
+
+/** Browsers hand us a basename, but legacy engines leaked full paths in File.name; match on basename. */
+function baseNameOf(name: string): string {
+  const normalized = name.replace(/\\/g, "/");
+  return normalized.slice(normalized.lastIndexOf("/") + 1);
+}
+
 interface OperationDialogProps {
   type: DialogType;
   entry: FileNode | null;
@@ -342,6 +449,7 @@ export function FileBrowser({
   onRefresh,
   projectId,
   showProjectFileControls = false,
+  allowUpload = false,
 }: FileBrowserProps) {
   const { t } = useTranslation("app");
   const searchInputId = useId();
@@ -356,12 +464,20 @@ export function FileBrowser({
   const [searchResults, setSearchResults] = useState<Array<{ path: string; name: string }>>([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [sortCriterion, setSortCriterion] = useState<FileSortCriterion>("name");
+  const [sortDirection, setSortDirection] = useState<FileSortDirection>("ascending");
+
+  const sortedEntries = useMemo(
+    () => [...entries].sort((left, right) => compareFileNodes(left, right, sortCriterion, sortDirection)),
+    [entries, sortCriterion, sortDirection],
+  );
 
   const longPressTimerRef = useRef<number | null>(null);
   const longPressFeedbackTimerRef = useRef<number | null>(null);
   const touchStartRef = useRef<TouchPoint | null>(null);
   const touchOpenHandledRef = useRef(false);
   const newMenuRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const searchRequestIdRef = useRef(0);
 
   const clearLongPressTimers = useCallback(() => {
@@ -409,8 +525,95 @@ export function FileBrowser({
     };
   }, [newMenuOpen]);
 
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadOutcome, setUploadOutcome] = useState<UploadOutcome | null>(null);
+  const [pendingCollisions, setPendingCollisions] = useState<PendingUploadCollisions | null>(null);
+
+  // A status strip describes the folder it was earned in; navigating away discards it.
+  useEffect(() => {
+    setUploadOutcome(null);
+  }, [currentPath]);
+
+  const runUpload = useCallback(async (
+    files: File[],
+    overwrite: boolean,
+    carried: { failures: WorkspaceUploadFailure[]; uploadedCount: number; keptOldCount: number },
+  ) => {
+    if (!workspace || files.length === 0) return;
+    setUploading(true);
+    try {
+      const failures: WorkspaceUploadFailure[] = [...carried.failures];
+      const sendable: File[] = [];
+      for (const file of files) {
+        if (file.size > MAX_WORKSPACE_UPLOAD_FILE_BYTES) {
+          failures.push({
+            name: baseNameOf(file.name),
+            code: "ETOOLARGE",
+            error: t("fileBrowser.uploadTooLarge", "Exceeds the {{max}} upload limit", { max: "25 MiB" }),
+          });
+        } else {
+          sendable.push(file);
+        }
+      }
+      let uploadedCount = carried.uploadedCount;
+      let error: string | undefined;
+      if (sendable.length > 0) {
+        try {
+          const result = await uploadWorkspaceFiles(workspace, sendable, { path: currentPath, overwrite, projectId });
+          uploadedCount += result.uploaded.length;
+          failures.push(...result.failed);
+        } catch (err) {
+          error = getErrorMessage(err) || t("fileBrowser.uploadFailed", "Upload failed");
+        }
+      }
+      const collisions = overwrite ? [] : failures.filter((failure) => failure.code === "EEXIST");
+      const collisionNames = new Set(collisions.map((failure) => failure.name));
+      const collisionFiles = sendable.filter((file) => collisionNames.has(baseNameOf(file.name)));
+      if (collisions.length > 0 && collisionFiles.length > 0) {
+        const carriedFailures = failures.filter((failure) => failure.code !== "EEXIST");
+        setPendingCollisions({
+          files: collisionFiles,
+          carriedFailures,
+          uploadedCount,
+          keptOldCount: carried.keptOldCount,
+        });
+        setUploadOutcome({ uploadedCount, failures: carriedFailures, keptOldCount: carried.keptOldCount, error });
+      } else {
+        setUploadOutcome({ uploadedCount, failures, keptOldCount: carried.keptOldCount, error });
+      }
+      if (uploadedCount > 0) {
+        onRefresh?.();
+      }
+    } finally {
+      setUploading(false);
+    }
+  }, [currentPath, onRefresh, projectId, t, workspace]);
+
+  const handleCollisionReplace = useCallback(() => {
+    if (!pendingCollisions) return;
+    const { files, carriedFailures, uploadedCount, keptOldCount } = pendingCollisions;
+    setPendingCollisions(null);
+    void runUpload(files, true, { failures: carriedFailures, uploadedCount, keptOldCount });
+  }, [pendingCollisions, runUpload]);
+
+  const handleCollisionKeep = useCallback(() => {
+    if (!pendingCollisions) return;
+    setUploadOutcome({
+      uploadedCount: pendingCollisions.uploadedCount,
+      failures: pendingCollisions.carriedFailures,
+      keptOldCount: pendingCollisions.keptOldCount + pendingCollisions.files.length,
+    });
+    setPendingCollisions(null);
+  }, [pendingCollisions]);
+
   const trimmedSearchQuery = searchQuery.trim();
   const isSearching = showProjectFileControls && Boolean(workspace) && trimmedSearchQuery.length > 0;
+  const sortCriterionLabel = sortCriterion === "name"
+    ? t("fileBrowser.sortName", "Name")
+    : sortCriterion === "mtime"
+      ? t("fileBrowser.sortModified", "Date modified")
+      : t("fileBrowser.sortSize", "Size");
 
   const runSearch = useCallback((query: string) => {
     if (!showProjectFileControls || !workspace) {
@@ -508,10 +711,17 @@ export function FileBrowser({
     cancelLongPress();
   }, [cancelLongPress]);
 
-  // Close context menu on scroll within the file browser
+  /*
+  FNXC:FileBrowser 2026-09-16-22:33:
+  Fermeture du menu contextuel au défilement DE CETTE instance. La souscription passait par
+  `document.querySelector(".file-browser-list")`, c'est-à-dire la PREMIÈRE liste du document : avec deux navigateurs
+  montés (dock + fenêtre, ou deux docks), le menu du second ne se fermait jamais sur son propre défilement et se
+  fermait à tort sur celui du premier. La référence locale lie l'écouteur à la liste de l'instance propriétaire ; la
+  liste peut être remplacée par un cycle chargement/erreur, donc la souscription est réévaluée à chaque ouverture.
+  */
   useEffect(() => {
     if (!contextMenu.visible) return;
-    const browserList = document.querySelector(".file-browser-list");
+    const browserList = listRef.current;
     const handleClose = () => {
       touchOpenHandledRef.current = false;
       cancelLongPress();
@@ -708,32 +918,93 @@ export function FileBrowser({
           </div>
         )}
         <div className="file-browser-header-actions">
+          <div className="file-browser-sort-controls">
+            <span id={`${searchInputId}-sort-search-note`} className="visually-hidden">
+              {t("fileBrowser.sortUnavailableDuringSearch", "Sorting applies to folder listings and is unavailable during search")}
+            </span>
+            <label className="file-browser-sort-label" htmlFor={`${searchInputId}-sort`}>
+              {t("fileBrowser.sortBy", "Sort by")}
+            </label>
+            <select
+              id={`${searchInputId}-sort`}
+              className="input file-browser-sort-select"
+              value={sortCriterion}
+              onChange={(event) => setSortCriterion(event.target.value as FileSortCriterion)}
+              disabled={isSearching}
+              aria-describedby={isSearching ? `${searchInputId}-sort-search-note` : undefined}
+              title={isSearching
+                ? t("fileBrowser.sortUnavailableDuringSearch", "Sorting applies to folder listings and is unavailable during search")
+                : `${t("fileBrowser.sortBy", "Sort by")}: ${sortCriterionLabel}`}
+            >
+              <option value="name">{t("fileBrowser.sortName", "Name")}</option>
+              <option value="mtime">{t("fileBrowser.sortModified", "Date modified")}</option>
+              <option value="size">{t("fileBrowser.sortSize", "Size")}</option>
+            </select>
+            <button
+              type="button"
+              className="btn btn-icon btn-sm file-browser-sort-direction"
+              onClick={() => setSortDirection((current) => current === "ascending" ? "descending" : "ascending")}
+              disabled={isSearching}
+              aria-describedby={isSearching ? `${searchInputId}-sort-search-note` : undefined}
+              aria-label={sortDirection === "ascending"
+                ? t("fileBrowser.sortDirectionAscending", "Sort direction: ascending")
+                : t("fileBrowser.sortDirectionDescending", "Sort direction: descending")}
+              title={isSearching
+                ? t("fileBrowser.sortUnavailableDuringSearch", "Sorting applies to folder listings and is unavailable during search")
+                : sortDirection === "ascending"
+                  ? t("fileBrowser.sortDirectionAscending", "Sort direction: ascending")
+                  : t("fileBrowser.sortDirectionDescending", "Sort direction: descending")}
+            >
+              {sortDirection === "ascending" ? <ArrowUp size={14} aria-hidden="true" /> : <ArrowDown size={14} aria-hidden="true" />}
+            </button>
+          </div>
           {showProjectFileControls ? (
             <>
               {/**
                * FNXC:FileBrowser 2026-07-02-00:00:
                * Files — Project needs visible create-file and create-folder targets plus recursive search, while embedded settings pickers keep the compact New menu to avoid misleading picker chrome.
                */}
+              {/**
+               * FNXC:FileBrowser 2026-09-16-15:58:
+               * FN-462: on a phone the two create buttons collapse to icon-only targets so the header stays within three
+               * touch rows and the list keeps real height. The label text is kept in the DOM (visually hidden in CSS, not
+               * `display: none`) and each button carries an explicit `aria-label` from the SAME existing i18n key, so the
+               * compact form never leaves an unnamed button behind.
+               */}
               <button
                 type="button"
                 className="btn btn-sm file-browser-create-button"
                 onClick={() => openCreateDialog("create-file")}
                 disabled={!workspace}
+                aria-label={t("fileBrowser.createNewFile", "Create new file")}
                 title={t("fileBrowser.createNewFile", "Create new file")}
               >
                 <FilePlus2 size={14} />
-                {t("fileBrowser.createNewFile", "Create new file")}
+                <span className="file-browser-create-button__label">{t("fileBrowser.createNewFile", "Create new file")}</span>
               </button>
               <button
                 type="button"
                 className="btn btn-sm file-browser-create-button"
                 onClick={() => openCreateDialog("create-folder")}
                 disabled={!workspace}
+                aria-label={t("fileBrowser.createNewFolder", "Create new folder")}
                 title={t("fileBrowser.createNewFolder", "Create new folder")}
               >
                 <FolderPlus size={14} />
-                {t("fileBrowser.createNewFolder", "Create new folder")}
+                <span className="file-browser-create-button__label">{t("fileBrowser.createNewFolder", "Create new folder")}</span>
               </button>
+              {allowUpload && (
+                <button
+                  type="button"
+                  className="btn btn-sm file-browser-create-button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={!workspace || uploading}
+                  title={t("fileBrowser.uploadTitle", "Upload files to this folder")}
+                >
+                  {uploading ? <Loader2 size={14} className="spin" /> : <Upload size={14} />}
+                  {uploading ? t("fileBrowser.uploading", "Uploading…") : t("fileBrowser.upload", "Upload")}
+                </button>
+              )}
             </>
           ) : (
           <div className="file-browser-new-menu" ref={newMenuRef}>
@@ -779,6 +1050,21 @@ export function FileBrowser({
                   <FolderPlus size={14} />
                   {t("fileBrowser.newFolder", "New Folder")}
                 </button>
+                {allowUpload && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="file-browser-new-menu-item"
+                    onClick={() => {
+                      setNewMenuOpen(false);
+                      fileInputRef.current?.click();
+                    }}
+                    disabled={!workspace || uploading}
+                  >
+                    <Upload size={14} />
+                    {uploading ? t("fileBrowser.uploading", "Uploading…") : t("fileBrowser.uploadFiles", "Upload files…")}
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -786,7 +1072,67 @@ export function FileBrowser({
         </div>
       </div>
 
-      <div className="file-browser-list">
+      {/*
+       * The hidden input only exists when uploads are allowed, so surfaces without the affordance
+       * leave no orphaned file-input shell; the visible button/menu item is the only trigger.
+       */}
+      {allowUpload && (
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          hidden
+          tabIndex={-1}
+          className="file-browser-upload-input"
+          aria-label={t("fileBrowser.uploadFilesInput", "Upload files")}
+          onChange={(event) => {
+            const files = Array.from(event.target.files ?? []);
+            event.target.value = "";
+            if (files.length === 0) return;
+            setPendingCollisions(null);
+            void runUpload(files, false, { failures: [], uploadedCount: 0, keptOldCount: 0 });
+          }}
+        />
+      )}
+
+      {/*
+       * FNXC:FileBrowserUpload 2026-09-05-17:21:
+       * RUFU-189: the upload strip announces itself as an alert (assertive) whenever any file failed
+       * or the whole request was refused, and as a polite status region on a clean success. Partial
+       * success must never be quiet, so the severity follows the presence of failures rather than the
+       * success count; the strip stays dismissible so the message remains re-readable after the
+       * one-time announcement.
+       */}
+      {uploadOutcome && (
+        <div
+          className={`file-browser-upload-status ${uploadOutcome.failures.length > 0 || uploadOutcome.error ? "file-browser-upload-status--error" : "file-browser-upload-status--success"}`}
+          role={uploadOutcome.failures.length > 0 || uploadOutcome.error ? "alert" : "status"}
+          aria-live={uploadOutcome.failures.length > 0 || uploadOutcome.error ? "assertive" : "polite"}
+        >
+          <div className="file-browser-upload-status-lines">
+            {uploadOutcome.uploadedCount > 0 && (
+              <span>{t("fileBrowser.uploadSummary", "{{count}} files uploaded", { count: uploadOutcome.uploadedCount })}</span>
+            )}
+            {uploadOutcome.keptOldCount > 0 && (
+              <span>{t("fileBrowser.uploadKeptOld", "Kept {{count}} existing files", { count: uploadOutcome.keptOldCount })}</span>
+            )}
+            {uploadOutcome.error && <span>{uploadOutcome.error}</span>}
+            {uploadOutcome.failures.map((failure, index) => (
+              <span key={`${failure.name}:${failure.code}:${index}`}>{failure.name}: {failure.error}</span>
+            ))}
+          </div>
+          <button
+            type="button"
+            className="file-browser-upload-status-dismiss"
+            aria-label={t("fileBrowser.uploadStatusDismiss", "Dismiss upload status")}
+            onClick={() => setUploadOutcome(null)}
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
+      <div className="file-browser-list" ref={listRef}>
         {isSearching ? (
           <div className="file-browser-search-results" aria-live="polite">
             {searchLoading ? (
@@ -821,10 +1167,10 @@ export function FileBrowser({
               ))
             )}
           </div>
-        ) : entries.length === 0 ? (
+        ) : sortedEntries.length === 0 ? (
           <div className="file-browser-empty">{t("fileBrowser.emptyDirectory", "(empty directory)")}</div>
         ) : (
-          entries.map((entry) => {
+          sortedEntries.map((entry) => {
             const fullPath = entryPath(currentPath, entry.name);
             const isLongPressTarget = isLongPressing && longPressTargetPath === fullPath;
 
@@ -884,6 +1230,32 @@ export function FileBrowser({
           loading={operationLoading}
           error={operationError}
         />
+      )}
+
+      {/* Upload collision prompt: server refused existing files; replacing requires an explicit operator decision. */}
+      {pendingCollisions && (
+        <div className="context-menu-overlay" onClick={handleCollisionKeep}>
+          <div className="file-browser-dialog" onClick={(event) => event.stopPropagation()}>
+            <div className="file-browser-dialog-title">{t("fileBrowser.uploadCollisionTitle", "Replace existing files?")}</div>
+            <div className="file-browser-dialog-info">
+              {pendingCollisions.files.slice(0, 5).map((file) => file.name).join(", ")}
+              {pendingCollisions.files.length > 5 && (
+                <span>{t("fileBrowser.uploadCollisionMore", " (+{{count}} more)", { count: pendingCollisions.files.length - 5 })}</span>
+              )}
+            </div>
+            <div className="file-browser-dialog-message">
+              {t("fileBrowser.uploadCollisionMessage", "These files already exist in this folder. Replace them with the uploaded versions?")}
+            </div>
+            <div className="file-browser-dialog-actions">
+              <button type="button" className="btn btn-sm" onClick={handleCollisionKeep} disabled={uploading}>
+                {t("fileBrowser.uploadKeepExisting", "Keep existing")}
+              </button>
+              <button type="button" className="btn btn-primary btn-sm" onClick={handleCollisionReplace} disabled={uploading}>
+                {uploading ? t("fileBrowser.uploadReplacing", "Replacing…") : t("fileBrowser.uploadReplace", "Replace")}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

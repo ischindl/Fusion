@@ -100,10 +100,59 @@ export interface InspectBranchConflictInput {
   integrationRef?: string;
 }
 
+/*
+FNXC:BranchBaseIdentity 2026-09-13-02:10:
+RUFU-231 Deliverable 1 (zero-own-commit wedge): every landed/foreign proof previously measured
+against the LOCAL integration identity only. A card whose branch was rebased onto
+`<remote>/<integrationBranch>` sits on a commit that local `<integrationBranch>` does not contain
+(local is behind), so its inherited foreign tip proved "not merged" while it was in fact landed
+upstream. The wedge re-detected `live-foreign` forever because no proof could ever pass against a
+mis-trusted identity. Trusted refs = the local integration branch plus its remote-tracking
+counterparts (`<remote>/<branch>`), discovered from `git remote show`.
+*/
+
+/**
+ * Resolve the ordered set of integration identities a task branch's landed state may be proven
+ * against: the local integration branch first, then each `<remote>/<integrationBranch>` that
+ * exists locally. Local-first keeps existing verdicts byte-identical; the remote-tracking
+ * entries are the additional trusted identity for a branch that was rebased onto it.
+ */
+export async function resolveTrustedIntegrationRefs(repoDir: string, integrationRef: string): Promise<string[]> {
+  const refs = [integrationRef];
+  let remotes: string[] = [];
+  try {
+    const output = await runGit(repoDir, "git remote");
+    remotes = output.split("\n").map((line) => line.trim()).filter(Boolean);
+  } catch {
+    return refs;
+  }
+  for (const remote of remotes) {
+    const remoteRef = `${remote}/${integrationRef}`;
+    try {
+      await revParse(repoDir, remoteRef);
+    } catch {
+      continue;
+    }
+    if (!refs.includes(remoteRef)) refs.push(remoteRef);
+  }
+  return refs;
+}
+
+export type TipLandedVia = "local" | "remote-tracking";
+
+export interface TipAlreadyLandedFields {
+  /**
+   * Which trusted integration identity the branch tip is proven landed against. `remote-tracking`
+   * marks a landing the LOCAL identity could not prove — the RUFU-231 wedge shape — and is the
+   * signal consumers must require an explicit clean-checkout proof before releasing the checkout.
+   */
+  landedVia: TipLandedVia;
+}
+
 export type BranchConflictInspectionResult =
   | { kind: "stale" }
   | { kind: "stale-resolved" }
-  | { kind: "tip-already-merged"; livePath: string | null; tipSha: string; integrationRef: string }
+  | { kind: "tip-already-merged"; livePath: string | null; tipSha: string; integrationRef: string } & TipAlreadyLandedFields
   | { kind: "fully-subsumed"; livePath: string; tipSha: string }
   | { kind: "reclaimable"; livePath: string; tipSha: string; taskAttributedCommitCount: number; strandedCommits: BranchConflictCommit[] }
   | { kind: "live-foreign"; livePath: string; error: BranchConflictError };
@@ -118,7 +167,7 @@ export type BranchConflictInspectionResult =
  */
 export type BareBranchCollisionInspectionResult =
   | { kind: "missing" }
-  | { kind: "tip-already-merged"; tipSha: string; integrationRef: string }
+  | { kind: "tip-already-merged"; tipSha: string; integrationRef: string } & TipAlreadyLandedFields
   | { kind: "fully-subsumed"; tipSha: string }
   | { kind: "reclaimable"; tipSha: string; taskAttributedCommitCount: number; uniqueCommitCount: number }
   | { kind: "foreign-unmerged"; tipSha: string; uniqueCommitCount: number; error: BranchConflictError }
@@ -257,17 +306,70 @@ async function getWorktreeBranchMap(repoDir: string): Promise<Map<string, string
 }
 
 
+/*
+FNXC:TaskIdAttribution 2026-09-26-21:54:
+Commit attribution recognised only `FN-<n>` as a task id. Card ids are minted from the PROJECT's
+`settings.taskPrefix` (`resolveTaskPrefix` feeding `async-allocator.ts`), and a mission can override
+it again, so any project whose prefix is not `FN` produced commits that every attribution scan below
+read as "no card at all". Saneca (prefix `SANE`) is the reproduced case: `SANE-452`'s root-repo
+workspace worktree path went missing, its two surviving commits (`Fusion-Task-Id: SANE-452`, subject
+`SANE-452: …`) were classified `unattributed`, so `inspectBareBranchCollision` refused `reclaimable`
+(`taskAttributedCommitCount === 0 && foreignOrUnattributedCount !== 0`) and answered
+`foreign-unmerged` — a card could never re-acquire the checkout that holds its own work, and every
+dispatch repeated the same refusal.
+
+The token shape is the canonical id grammar id minting and integrity checks already use
+(`^([A-Z][A-Z0-9]*)-(\d+)$` in `packages/core/src/tasks/task-id-integrity.ts`), matched
+case-insensitively because subjects and trailers are hand-authored as well as Fusion-authored.
+Anything outside that grammar stays unattributed: widening the prefix must never turn arbitrary
+trailer text into a claimed owner, because `foreign` drives contamination refusal while
+`unattributed` drives preservation.
+
+Attribution lives in these helpers for a second reason: every previous site indexed
+`subjectMatch[2]` behind a capture group for the commit type, so dropping that group would silently
+read `undefined` and classify real work as unattributed. `extractAttributedTaskId` returns the id
+instead of a match object, which removes that footgun from all five call sites.
+*/
+const TASK_ID_TOKEN_SOURCE = "[A-Z][A-Z0-9]*-\\d+";
+const CONVENTIONAL_COMMIT_TYPES = "feat|fix|test|chore|docs|refactor|perf|build";
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Conventional-subject scope naming this exact card: `fix(SANE-452): …`. */
+function ownCommitSubjectPattern(taskId: string): RegExp {
+  return new RegExp(`^(${CONVENTIONAL_COMMIT_TYPES})\\(${escapeRegExp(taskId)}\\):`, "i");
+}
+
+/** `Fusion-Task-Id: <taskId>` trailer for this exact card, tolerant of spacing and a missing final newline. */
+function ownCommitTrailerPattern(taskId: string): RegExp {
+  return new RegExp(`(?:^|\\n)${FUSION_TASK_ID_TRAILER_KEY}:\\s*${escapeRegExp(taskId)}\\s*(?:\\n|$)`, "i");
+}
+
+/* The task id is capture group 1 of BOTH generic patterns — `extractAttributedTaskId` reads `[1]`. */
+const genericCommitSubjectPattern = new RegExp(`^(?:${CONVENTIONAL_COMMIT_TYPES})\\((${TASK_ID_TOKEN_SOURCE})\\):`, "i");
+const genericCommitTrailerPattern = new RegExp(`(?:^|\\n)${FUSION_TASK_ID_TRAILER_KEY}:\\s*(${TASK_ID_TOKEN_SOURCE})\\s*(?:\\n|$)`, "i");
+
+/**
+ * The card a commit claims: its `Fusion-Task-Id` trailer (authoritative) or conventional-subject
+ * scope. Empty string means the commit names no card, and callers must treat that as unattributed
+ * work to preserve — never as belonging to whoever is asking.
+ */
+export function extractAttributedTaskId(subject: string, body: string): string {
+  const trailerMatch = body.match(genericCommitTrailerPattern);
+  const subjectMatch = subject.match(genericCommitSubjectPattern);
+  return (trailerMatch?.[1] ?? subjectMatch?.[1] ?? "").toUpperCase();
+}
+
 interface TaskAttributionSummary {
   ownCount: number;
   foreignCount: number;
 }
 
 async function summarizeTaskAttributedCommits(repoDir: string, range: string, taskId: string): Promise<TaskAttributionSummary> {
-  const escapedTaskId = taskId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const ownSubjectPattern = new RegExp(`^(feat|fix|test|chore|docs|refactor|perf|build)\\(${escapedTaskId}\\):`);
-  const ownTrailerPattern = new RegExp(`(?:^|\\n)${FUSION_TASK_ID_TRAILER_KEY}: ${escapedTaskId}(?:\\n|$)`);
-  const genericSubjectPattern = /^(feat|fix|test|chore|docs|refactor|perf|build)\((FN-\d+)\):/i;
-  const genericTrailerPattern = new RegExp(`(?:^|\\n)${FUSION_TASK_ID_TRAILER_KEY}:\\s*(FN-\\d+)(?:\\n|$)`, "i");
+  const ownSubjectPattern = ownCommitSubjectPattern(taskId);
+  const ownTrailerPattern = ownCommitTrailerPattern(taskId);
   let output = "";
   try {
     output = await runGit(repoDir, `git log --format=%H%x00%s%x00%b ${quoteShellArg(range)}`);
@@ -287,9 +389,7 @@ async function summarizeTaskAttributedCommits(repoDir: string, range: string, ta
       ownCount += 1;
       continue;
     }
-    const subjectMatch = subject.match(genericSubjectPattern);
-    const trailerMatch = body.match(genericTrailerPattern);
-    const attributedTaskId = (trailerMatch?.[1] ?? subjectMatch?.[2] ?? "").toUpperCase();
+    const attributedTaskId = extractAttributedTaskId(subject, body);
     if (attributedTaskId && attributedTaskId !== normalizedTaskId) {
       foreignCount += 1;
     }
@@ -311,6 +411,43 @@ export interface BranchAttributionReport {
 }
 
 /**
+ * FNXC:BranchAttribution 2026-09-29-21:50:
+ * Attribution must enumerate the SAME revision set the reclaim decision counts against. That decision
+ * counts `listUniqueBranchCommits` (git cherry — non-patch-equivalent commits only) while attribution
+ * enumerated `git log base..branch`, which also yields merge commits, and a merge body carries the
+ * trailer of the branch it merged. A fully own branch could therefore report ownTrailed=4 against
+ * unique=3 and never satisfy `4 === 3`, stranding it in `foreign-unmerged` (RUFU-434). When the caller
+ * supplies `commitShas` those shas are attributed instead; foreign work still surfaces because any
+ * merged commit that adds content appears in the unique set. Omitting `commitShas` keeps the
+ * whole-range post-session audit the executor relies on.
+ */
+async function collectBranchAttributionOutput(
+  repoDir: string,
+  branch: string,
+  baseSha: string,
+  commitShas?: string[],
+): Promise<string> {
+  const recordFormat = "%H%x1f%s%x1f%b%x1e";
+  if (!commitShas || commitShas.length === 0) {
+    return await runGit(
+      repoDir,
+      `git log --format=${recordFormat} ${quoteShellArg(`${baseSha}..${branch}`)}`,
+    ).catch(() => "");
+  }
+  const chunkSep = String.fromCharCode(0x1e);
+  const chunks: string[] = [];
+  // Chunked so a long branch cannot exceed the shell argument limit; one git call per chunk.
+  for (let i = 0; i < commitShas.length; i += 200) {
+    const batch = commitShas.slice(i, i + 200).map((sha) => quoteShellArg(sha)).join(" ");
+    if (!batch) continue;
+    // --no-walk keeps each listed commit's own message and never pulls in ancestors.
+    const out = await runGit(repoDir, `git log --no-walk=unsorted --format=${recordFormat} ${batch}`).catch(() => "");
+    if (out.trim()) chunks.push(out.trim());
+  }
+  return chunks.join(chunkSep);
+}
+
+/**
  * Post-session audit of every commit in `base..branch`. Used by the executor
  * immediately after a step-session completes to detect three classes of
  * contamination early — long before merge time:
@@ -321,6 +458,10 @@ export interface BranchAttributionReport {
  *   3. unattributed: commit lacks both subject prefix and trailer (often a
  *      hand-merged commit or plumbing-driven update).
  *
+ * Pass `commitShas` to attribute exactly the revisions the branch adds (the `git cherry` unique set)
+ * instead of the whole `base..branch` range — required whenever the caller compares these counts
+ * against that set, so both sides count the same commits.
+ *
  * Returns counts/details rather than throwing so callers can decide whether
  * to refuse, warn, or just audit.
  */
@@ -329,22 +470,17 @@ export async function reportBranchAttribution(
   branch: string,
   baseSha: string,
   taskId: string,
+  commitShas?: string[],
 ): Promise<BranchAttributionReport> {
   const report: BranchAttributionReport = { ownTrailed: 0, ownUntrailed: [], foreign: [], unattributed: [] };
-  const output = await runGit(repoDir, `git log --format=%H%x1f%s%x1f%b%x1e ${quoteShellArg(`${baseSha}..${branch}`)}`)
-    .catch(() => "");
+  const output = await collectBranchAttributionOutput(repoDir, branch, baseSha, commitShas);
   if (!output) return report;
-  const escapedTaskId = taskId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const ownSubjectPattern = new RegExp(`^(feat|fix|test|chore|docs|refactor|perf|build)\\(${escapedTaskId}\\):`, "i");
-  const ownTrailerPattern = new RegExp(`(?:^|\\n)${FUSION_TASK_ID_TRAILER_KEY}: ${escapedTaskId}\\s*(?:\\n|$)`, "i");
-  const genericSubjectPattern = /^(feat|fix|test|chore|docs|refactor|perf|build)\((FN-\d+)\):/i;
-  const genericTrailerPattern = new RegExp(`(?:^|\\n)${FUSION_TASK_ID_TRAILER_KEY}:\\s*(FN-\\d+)\\s*(?:\\n|$)`, "i");
+  const ownSubjectPattern = ownCommitSubjectPattern(taskId);
+  const ownTrailerPattern = ownCommitTrailerPattern(taskId);
   const normalizedTaskId = taskId.toUpperCase();
   for (const record of output.split("").map((entry) => entry.trim()).filter(Boolean)) {
     const [sha = "", subject = "", body = ""] = record.split("");
-    const subjectMatch = subject.match(genericSubjectPattern);
-    const trailerMatch = body.match(genericTrailerPattern);
-    const attributedTaskId = (trailerMatch?.[1] ?? subjectMatch?.[2] ?? "").toUpperCase();
+    const attributedTaskId = extractAttributedTaskId(subject, body);
     if (attributedTaskId && attributedTaskId !== normalizedTaskId) {
       report.foreign.push({ sha, subject, foreignTaskId: attributedTaskId });
       continue;
@@ -380,7 +516,7 @@ export async function branchTipCarriesTaskIdTrailer(
 ): Promise<boolean> {
   try {
     const body = await runGit(repoDir, `git log -1 --pretty=%B ${quoteShellArg(branch)}`);
-    const escaped = taskId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const escaped = escapeRegExp(taskId);
     const pattern = new RegExp(`(?:^|\\n)${FUSION_TASK_ID_TRAILER_KEY}: ${escaped}\\s*(?:\\n|$)`);
     return pattern.test(body);
   } catch {
@@ -465,11 +601,8 @@ export async function classifyBootstrapMisbinding(
     };
   }
 
-  const escapedTaskId = taskId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const ownSubjectPattern = new RegExp(`^(feat|fix|test|chore|docs|refactor|perf|build)\\(${escapedTaskId}\\):`, "i");
-  const ownTrailerPattern = new RegExp(`(?:^|\\n)${FUSION_TASK_ID_TRAILER_KEY}:\\s*${escapedTaskId}\\s*(?:\\n|$)`, "i");
-  const subjectPattern = /^(feat|fix|test|chore|docs|refactor|perf|build)\((FN-\d+)\):/i;
-  const trailerPattern = /(?:^|\n)Fusion-Task-Id:\s*(FN-\d+)\s*(?:\n|$)/i;
+  const ownSubjectPattern = ownCommitSubjectPattern(taskId);
+  const ownTrailerPattern = ownCommitTrailerPattern(taskId);
 
   let ownCommitCount = 0;
   let nonAttributedCount = 0;
@@ -481,9 +614,7 @@ export async function classifyBootstrapMisbinding(
       continue;
     }
 
-    const subjectMatch = subject.match(subjectPattern);
-    const trailerMatch = body.match(trailerPattern);
-    const attributedTaskId = (trailerMatch?.[1] ?? subjectMatch?.[2] ?? "").toUpperCase();
+    const attributedTaskId = extractAttributedTaskId(subject, body);
     if (!attributedTaskId) {
       nonAttributedCount += 1;
     } else {
@@ -505,6 +636,12 @@ export interface ClassifyForeignCommitsInput {
   baseSha: string;
   foreignCommits: BranchCrossContaminationCommit[];
   mainRef?: string;
+  /**
+   * Trusted integration identities for landedness (local integration branch first, then
+   * `<remote>/<integration>` refs). RUFU-231: a foreign commit landed on origin/main must
+   * classify `alreadyUpstream` even when local main never received it.
+   */
+  trustedRefs?: string[];
 }
 
 export interface ClassifyForeignCommitsResult {
@@ -530,6 +667,12 @@ export interface ClassifyForeignOnlyContaminationInput {
   baseSha: string;
   taskId: string;
   mainRef?: string;
+  /**
+   * Trusted integration identities (local integration branch first, then `<remote>/<integration>`
+   * refs). RUFU-231: landedness of foreign commits must consider every trusted identity so a
+   * commit landed on origin/main classifies `alreadyUpstream` against a behind local identity.
+   */
+  trustedRefs?: string[];
 }
 
 export interface ClassifyForeignOnlyContaminationResult {
@@ -541,29 +684,74 @@ export interface ClassifyForeignOnlyContaminationResult {
   uniqueShas: string[];
 }
 
-async function classifyForeignCommitsViaPatchId(
-  repoDir: string,
-  mainRef: string,
-  commits: BranchCrossContaminationCommit[],
-): Promise<ClassifyForeignCommitsResult> {
+async function buildUpstreamPatchIdSet(repoDir: string, ref: string): Promise<Set<string>> {
   const upstreamPatchIdsOutput = await runGit(
     repoDir,
-    `git rev-list ${quoteShellArg(mainRef)} | while read c; do git show "$c" | git patch-id --stable; done`,
+    `git rev-list ${quoteShellArg(ref)} | while read c; do git show "$c" | git patch-id --stable; done`,
   ).catch(() => "");
 
-  const upstreamPatchIds = new Set(
+  return new Set(
     upstreamPatchIdsOutput
       .split("\n")
       .map((line) => line.trim().split(" ")[0])
       .filter(Boolean),
   );
+}
 
+/*
+FNXC:BranchBaseIdentity 2026-09-13-02:25:
+RUFU-231: patch-id landedness is evaluated against EVERY trusted integration identity — a
+commit replayed by `rebaseNewWorktreeOntoRemote` (or rebase/merge elsewhere) keeps its patch
+against `<remote>/<integration>` even though the local identity never received it. A commit is
+landed when any trusted ref carries its patch; sets are built lazily so the common local hit
+never pays for the remote scan.
+*/
+async function commitPatchesLandedOnAnyTrustedRef(
+  repoDir: string,
+  shas: string[],
+  trustedRefs: string[],
+): Promise<Set<string>> {
+  const landed = new Set<string>();
+  if (shas.length === 0) return landed;
+  const builtSets: Array<{ ref: string; patchIds: Set<string> }> = [];
+  const patchIdsFor = async (ref: string) => {
+    const cached = builtSets.find((entry) => entry.ref === ref);
+    if (cached) return cached.patchIds;
+    const patchIds = await buildUpstreamPatchIdSet(repoDir, ref);
+    builtSets.push({ ref, patchIds });
+    return patchIds;
+  };
+  const shaPatchId = new Map<string, string>();
+  for (const sha of shas) {
+    const patchIdLine = await runGit(repoDir, `git show ${quoteShellArg(sha)} | git patch-id --stable`).catch(() => "");
+    shaPatchId.set(sha, patchIdLine.trim().split(" ")[0]);
+  }
+  for (const sha of shas) {
+    const patchId = shaPatchId.get(sha);
+    if (!patchId) continue;
+    for (const ref of trustedRefs) {
+      const patchIds = await patchIdsFor(ref);
+      if (patchIds.has(patchId)) {
+        landed.add(sha);
+        break;
+      }
+    }
+  }
+  return landed;
+}
+
+async function classifyForeignCommitsViaPatchId(
+  repoDir: string,
+  mainRef: string,
+  commits: BranchCrossContaminationCommit[],
+  trustedRefs?: string[],
+): Promise<ClassifyForeignCommitsResult> {
+  const refs = trustedRefs && trustedRefs.length > 0 ? trustedRefs : [mainRef];
+  const landed = await commitPatchesLandedOnAnyTrustedRef(repoDir, commits.map((commit) => commit.sha), refs);
   const alreadyUpstream: BranchCrossContaminationCommit[] = [];
   const unique: BranchCrossContaminationCommit[] = [];
   for (const commit of commits) {
-    const patchIdLine = await runGit(repoDir, `git show ${quoteShellArg(commit.sha)} | git patch-id --stable`).catch(() => "");
-    const patchId = patchIdLine.trim().split(" ")[0];
-    if (patchId && upstreamPatchIds.has(patchId)) {
+    if (landed.has(commit.sha)) {
       alreadyUpstream.push(commit);
     } else {
       unique.push(commit);
@@ -579,57 +767,70 @@ export async function classifyForeignCommits(
   const resolvedIntegrationBranch = await resolveIntegrationBranch(input.repoDir, undefined);
   const { repoDir, branchName, baseSha, foreignCommits } = input;
   const mainRef = input.mainRef?.trim() || resolvedIntegrationBranch;
+  const trustedRefs = input.trustedRefs && input.trustedRefs.length > 0
+    ? input.trustedRefs
+    : await resolveTrustedIntegrationRefs(repoDir, mainRef);
   const targetBySha = new Map(foreignCommits.map((commit) => [commit.sha, commit]));
   if (targetBySha.size === 0) {
     return { alreadyUpstream: [], unique: [] };
   }
 
-  const classifyFromCherryOutput = async (output: string): Promise<ClassifyForeignCommitsResult> => {
-    const alreadyUpstreamSha = new Set<string>();
-    const uniqueSha = new Set<string>();
+  try {
+    const comparisonBase = baseSha || await runGit(repoDir, `git merge-base ${quoteShellArg(mainRef)} ${quoteShellArg(branchName)}`);
+    /*
+    FNXC:BranchBaseIdentity 2026-09-13-02:30:
+    RUFU-231: landedness proof per trusted ref. Three channels, any one sufficient:
+    1. reachability — a foreign commit already ON a trusted ref never appears in that ref's
+       `git cherry` output (cherry enumerates `branch ^upstream` only), so prove it directly.
+    2. `git cherry` '-' — patch-equivalent copy landed on that ref (rebase replays).
+    3. everything else falls to the trusted-ref patch-id fallback below. A '+' from a BEHIND
+       ref must not foreclose the other refs' patch sets — that is exactly how the wedge
+       classification turned origin/main's landed commit into "unique".
+    */
+    const landedSha = new Set<string>();
     const resolveFullSha = (token: string): string | null => {
       if (targetBySha.has(token)) return token;
       const match = foreignCommits.find((commit) => commit.sha.startsWith(token));
       return match?.sha ?? null;
     };
-
-    for (const rawLine of output.split("\n")) {
-      const line = rawLine.trim();
-      if (!line) continue;
-      const [marker, token] = line.split(/\s+/, 2);
-      if (!token) continue;
-      const sha = resolveFullSha(token);
-      if (!sha) continue;
-      if (marker === "-") {
-        alreadyUpstreamSha.add(sha);
-      } else if (marker === "+") {
-        uniqueSha.add(sha);
+    let sawAnyOutput = false;
+    for (const trustedRef of trustedRefs) {
+      for (const commit of foreignCommits) {
+        if (landedSha.has(commit.sha)) continue;
+        if (await isAncestor(repoDir, commit.sha, trustedRef)) landedSha.add(commit.sha);
+      }
+      const output = await runGit(
+        repoDir,
+        `git cherry ${quoteShellArg(trustedRef)} ${quoteShellArg(branchName)} ${quoteShellArg(comparisonBase)}`,
+      ).catch(() => "");
+      if (!output.trim()) continue;
+      sawAnyOutput = true;
+      for (const rawLine of output.split("\n")) {
+        const line = rawLine.trim();
+        if (!line) continue;
+        const [marker, token] = line.split(/\s+/, 2);
+        if (!token) continue;
+        if (marker !== "-") continue;
+        const sha = resolveFullSha(token);
+        if (sha) landedSha.add(sha);
       }
     }
-
-    const unresolved = foreignCommits.filter((commit) => !alreadyUpstreamSha.has(commit.sha) && !uniqueSha.has(commit.sha));
+    if (!sawAnyOutput && landedSha.size === 0) {
+      return classifyForeignCommitsViaPatchId(repoDir, mainRef, foreignCommits, trustedRefs);
+    }
+    const unresolved = foreignCommits.filter((commit) => !landedSha.has(commit.sha));
     const unresolvedClassified = unresolved.length > 0
-      ? await classifyForeignCommitsViaPatchId(repoDir, mainRef, unresolved)
+      ? await classifyForeignCommitsViaPatchId(repoDir, mainRef, unresolved, trustedRefs)
       : { alreadyUpstream: [], unique: [] };
-
     return {
       alreadyUpstream: [
-        ...foreignCommits.filter((commit) => alreadyUpstreamSha.has(commit.sha)),
+        ...foreignCommits.filter((commit) => landedSha.has(commit.sha)),
         ...unresolvedClassified.alreadyUpstream,
       ],
-      unique: [
-        ...foreignCommits.filter((commit) => uniqueSha.has(commit.sha)),
-        ...unresolvedClassified.unique,
-      ],
+      unique: unresolvedClassified.unique,
     };
-  };
-
-  try {
-    const comparisonBase = baseSha || await runGit(repoDir, `git merge-base ${quoteShellArg(mainRef)} ${quoteShellArg(branchName)}`);
-    const output = await runGit(repoDir, `git cherry ${quoteShellArg(mainRef)} ${quoteShellArg(branchName)} ${quoteShellArg(comparisonBase)}`);
-    return await classifyFromCherryOutput(output);
   } catch {
-    return classifyForeignCommitsViaPatchId(repoDir, mainRef, foreignCommits);
+    return classifyForeignCommitsViaPatchId(repoDir, mainRef, foreignCommits, trustedRefs);
   }
 }
 
@@ -651,11 +852,7 @@ export async function classifyMisroutedForeignCommit(
   input: ClassifyMisroutedForeignCommitInput,
 ): Promise<ClassifyMisroutedForeignCommitResult> {
   const { repoDir, sha, commitSubject, commitBody, currentTaskId } = input;
-  const subjectPattern = /^(feat|fix|test|chore|docs|refactor|perf|build)\((FN-\d+)\):/i;
-  const trailerPattern = /(?:^|\n)Fusion-Task-Id:\s*(FN-\d+)\s*(?:\n|$)/i;
-  const subjectMatch = commitSubject.match(subjectPattern);
-  const trailerMatch = commitBody.match(trailerPattern);
-  const foreignTaskId = (trailerMatch?.[1] ?? subjectMatch?.[2] ?? "").toUpperCase();
+  const foreignTaskId = extractAttributedTaskId(commitSubject, commitBody);
   if (!foreignTaskId || foreignTaskId === currentTaskId.toUpperCase()) {
     return { misrouted: false, paths: [] };
   }
@@ -705,14 +902,10 @@ export async function classifyForeignOnlyContamination(
   }
   const persistedRangeOutput = await runGit(repoDir, `git log --format=%H%x1f%s%x1f%b ${quoteShellArg(`${baseSha}..${branchName}`)}`)
     .catch(() => "");
-  const subjectPattern = /^(feat|fix|test|chore|docs|refactor|perf|build)\((FN-\d+)\):/i;
-  const trailerPattern = /(?:^|\n)Fusion-Task-Id:\s*(FN-\d+)\s*(?:\n|$)/i;
   const foreignCommits: BranchCrossContaminationCommit[] = [];
   for (const line of persistedRangeOutput.split("\n").map((entry) => entry.trim()).filter(Boolean)) {
     const [sha, subject, body] = line.split("\u001f");
-    const subjectMatch = (subject ?? "").match(subjectPattern);
-    const trailerMatch = (body ?? "").match(trailerPattern);
-    const attributedTaskId = (trailerMatch?.[1] ?? subjectMatch?.[2] ?? "").toUpperCase();
+    const attributedTaskId = extractAttributedTaskId(subject ?? "", body ?? "");
     if (attributedTaskId && attributedTaskId !== taskId.toUpperCase()) {
       foreignCommits.push({ sha, subject: subject ?? "", foreignTaskId: attributedTaskId });
     }
@@ -743,6 +936,7 @@ export async function classifyForeignOnlyContamination(
     baseSha: effectiveBaseSha,
     foreignCommits,
     mainRef,
+    trustedRefs: input.trustedRefs,
   });
 
   const result: ClassifyForeignOnlyContaminationResult = {
@@ -904,6 +1098,15 @@ export async function autoRecoverCrossContamination(
   };
 }
 
+/*
+FNXC:TaskIdAttribution 2026-09-26-21:54:
+Deliberately still `FN-<n>`-only, unlike the commit-attribution helpers above. Every consumer of this
+derivation gates a git DELETION (`self-healing.ts` fully-subsumed auto-reclaim and stale-active-branch
+reclaim, plus `inspectBranchConflict`'s self-owned fallback), so widening it would grant reclaim
+authority to non-`FN` projects rather than restore information they already had. Commit-level
+attribution needs no such authority grant and is what unblocks acquisition for a non-`FN` prefix, so
+it is fixed there. Widening this belongs on a card carrying its own destructive-path proof.
+*/
 export function deriveTaskIdFromFusionBranch(branchName: string): string | null {
   const match = /^fusion\/(fn-\d+)$/i.exec(branchName.trim());
   if (!match) return null;
@@ -915,6 +1118,7 @@ async function isZeroUniqueCommitBranchViaPatchIdFallback(
   startPoint: string,
   branchName: string,
   mainRef: string,
+  trustedRefs?: string[],
 ): Promise<boolean> {
   const range = `${startPoint}..${branchName}`;
   const branchCommitsOutput = await runGit(repoDir, `git rev-list ${quoteShellArg(range)}`).catch(() => "");
@@ -927,31 +1131,16 @@ async function isZeroUniqueCommitBranchViaPatchIdFallback(
     return true;
   }
 
-  const upstreamPatchIdsOutput = await runGit(
-    repoDir,
-    `git rev-list ${quoteShellArg(mainRef)} | while read c; do git show "$c" | git patch-id --stable; done`,
-  ).catch(() => "");
-
-  const upstreamPatchIds = new Set(
-    upstreamPatchIdsOutput
-      .split("\n")
-      .map((line) => line.trim().split(" ")[0])
-      .filter(Boolean),
-  );
-
-  if (upstreamPatchIds.size === 0) {
-    return false;
-  }
-
-  for (const sha of branchCommitShas) {
-    const patchIdLine = await runGit(repoDir, `git show ${quoteShellArg(sha)} | git patch-id --stable`).catch(() => "");
-    const patchId = patchIdLine.trim().split(" ")[0];
-    if (!patchId || !upstreamPatchIds.has(patchId)) {
-      return false;
-    }
-  }
-
-  return true;
+  /*
+  FNXC:BranchBaseIdentity 2026-09-13-02:35:
+  RUFU-231: landedness against ANY trusted integration identity. A branch rebased onto
+  `<remote>/<integration>` keeps every commit's patch there even though the behind local
+  identity carries none of it; measuring only the local identity kept such branches out of
+  `fully-subsumed` and inside the `live-foreign` wedge.
+  */
+  const refs = trustedRefs && trustedRefs.length > 0 ? trustedRefs : [mainRef];
+  const landed = await commitPatchesLandedOnAnyTrustedRef(repoDir, branchCommitShas, refs);
+  return landed.size === branchCommitShas.length;
 }
 
 /**
@@ -1010,8 +1199,22 @@ export async function inspectBareBranchCollision(
     };
   }
 
-  if (await isAncestor(input.repoDir, tipSha, integrationRef)) {
-    return { kind: "tip-already-merged", tipSha, integrationRef };
+  /*
+  FNXC:BranchBaseIdentity 2026-09-13-02:20:
+  RUFU-231: bare-collision landing proof consults every trusted integration identity
+  (local first, then `<remote>/<integration>`). Recreating from the caller's startPoint
+  after a remote-landed tip discards only commits that are already upstream — zero loss.
+  */
+  const trustedRefs = await resolveTrustedIntegrationRefs(input.repoDir, integrationRef);
+  for (const trustedRef of trustedRefs) {
+    if (await isAncestor(input.repoDir, tipSha, trustedRef)) {
+      return {
+        kind: "tip-already-merged",
+        tipSha,
+        integrationRef: trustedRef,
+        landedVia: trustedRef === integrationRef ? "local" : "remote-tracking",
+      };
+    }
   }
 
   const zeroUnique = uniqueCommitResult.commits.length === 0 && (
@@ -1020,6 +1223,7 @@ export async function inspectBareBranchCollision(
       integrationRef,
       input.branchName,
       uniqueCommitResult.mainRef,
+      trustedRefs,
     )
   );
   if (zeroUnique) {
@@ -1031,9 +1235,14 @@ export async function inspectBareBranchCollision(
     input.branchName,
     uniqueCommitResult.mainRef,
     input.requestingTaskId,
+    // FNXC:BranchAttribution 2026-09-29-21:50: attribute the same unique set the equality below counts,
+    // so a branch whose own merge commit carries its own trailer can still be reclaimed.
+    uniqueCommitResult.commits.map((commit) => commit.sha),
   );
   const taskAttributedCommitCount = attribution.ownTrailed + attribution.ownUntrailed.length;
   const foreignOrUnattributedCount = attribution.foreign.length + attribution.unattributed.length;
+  // Both sides of this equality now come from the same unique revision set, so a merge commit can no
+  // longer inflate the attribution side and make an entirely own branch look contaminated.
   if (
     taskAttributedCommitCount === uniqueCommitResult.commits.length
     && foreignOrUnattributedCount === 0
@@ -1060,6 +1269,27 @@ export async function inspectBareBranchCollision(
       collisionKind: "foreign-unmerged",
     }),
   };
+}
+
+/**
+ * Proof that a checkout holds nothing uncommitted: an empty `git status --porcelain`
+ * (untracked files included, ignored excluded). Any doubt — a failing read, a dirty tree —
+ * returns false, because a checkout release must never destroy work it cannot prove absent.
+ * RUFU-231: required before releasing a checkout whose landedness was only proven against
+ * the remote-tracking identity (`landedVia: "remote-tracking"`).
+ */
+export async function taskWorktreeCheckoutIsClean(worktreePath: string): Promise<boolean> {
+  try {
+    const { stdout } = await execAsync("git status --porcelain", {
+      cwd: worktreePath,
+      encoding: "utf-8",
+      timeout: GIT_TIMEOUT_MS,
+      maxBuffer: GIT_MAX_BUFFER,
+    });
+    return stdout.trim() === "";
+  } catch {
+    return false;
+  }
 }
 
 export async function inspectBranchConflict(
@@ -1102,13 +1332,26 @@ export async function inspectBranchConflict(
   const existingTipSha = await revParse(input.repoDir, input.branchName);
   const requestedIntegrationRef = input.integrationRef ?? await resolveIntegrationBranch(input.repoDir, undefined);
   const integrationRef = await resolveBranchComparisonRef(input.repoDir, requestedIntegrationRef, input.branchName);
-  if (await isAncestor(input.repoDir, existingTipSha, integrationRef)) {
-    return {
-      kind: "tip-already-merged",
-      livePath: livePath ?? null,
-      tipSha: existingTipSha,
-      integrationRef,
-    };
+  /*
+  FNXC:BranchBaseIdentity 2026-09-13-02:20:
+  RUFU-231: prove the tip against EVERY trusted integration identity (local first, then
+  `<remote>/<integration>`). A zero-own-commit branch rebased onto origin/main is landed
+  upstream even though local main never caught up; measuring only against local main
+  labelled that landed tip `live-foreign` forever (the RUFU-217 wedge). A landing proven
+  only against the remote-tracking identity carries `landedVia: "remote-tracking"` so
+  checkout-releasing consumers must first prove the worktree clean.
+  */
+  const trustedRefs = await resolveTrustedIntegrationRefs(input.repoDir, integrationRef);
+  for (const trustedRef of trustedRefs) {
+    if (await isAncestor(input.repoDir, existingTipSha, trustedRef)) {
+      return {
+        kind: "tip-already-merged",
+        livePath: livePath ?? null,
+        tipSha: existingTipSha,
+        integrationRef: trustedRef,
+        landedVia: trustedRef === integrationRef ? "local" : "remote-tracking",
+      };
+    }
   }
 
   // FNXC:BranchConflictReachability 2026-10-01-05:33:
@@ -1137,6 +1380,7 @@ export async function inspectBranchConflict(
       integrationRef,
       input.branchName,
       uniqueCommitResult.mainRef,
+      trustedRefs,
     );
     if (isZeroUnique) {
       return {

@@ -214,7 +214,7 @@ describe("MCP Settings UI", () => {
 
   it("loads active-project plugin servers into the project MCP card", async () => {
     mockFetch({}, undefined, [{ pluginId: "roslyn", server: { name: "navigator", transport: "stdio", command: "plugin-command" } }]);
-    render(<ProjectMcpSection form={{ mcpServers: { enabled: true, servers: [] } } as Settings} setForm={vi.fn()} globalSettings={{ mcpServers: { enabled: true, servers: [] } }} projectId="project-a" addToast={vi.fn()} />);
+    render(<ProjectMcpSection form={{ mcpServers: { enabled: true, servers: [] } } as unknown as Settings} setForm={vi.fn()} globalSettings={{ mcpServers: { enabled: true, servers: [] } }} projectId="project-a" addToast={vi.fn()} />);
 
     const row = await screen.findByTestId("mcp-server-row-navigator");
     expect(row).toHaveTextContent("plugin-command");

@@ -335,7 +335,14 @@ describe("GithubArea", () => {
 
   it("disables and guards the button while a backfill is in flight", async () => {
     apiMock.mockResolvedValue(githubFixture());
-    let resolveBackfill: ((value: { scanned: number; filled: number; skipped: number; errors: number; hasMore: boolean }) => void) | null = null;
+    /*
+    FNXC:GithubAreaBackfill 2026-08-20-19:05:
+    RUFU-140: `| undefined` without initializer — an explicit `= null` narrows
+    the variable to `null` in linear control flow, so the direct
+    `resolveBackfill?.(...)` call site typechecks as `never` (TS2349).
+    Runtime behavior is unchanged (`?.` no-ops until the executor assigns).
+    */
+    let resolveBackfill: ((value: { scanned: number; filled: number; skipped: number; errors: number; hasMore: boolean }) => void) | undefined;
     backfillGithubSourceIssueClosedAtMock.mockImplementationOnce(
       () => new Promise((resolve) => {
         resolveBackfill = resolve;

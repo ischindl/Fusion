@@ -1,158 +1,110 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, beforeEach, vi } from "vitest";
-import type { Task } from "@fusion/core";
-import { TASK_DETAIL_FLOATING_GEOMETRY_KEY } from "../App";
+import { render, screen } from "@testing-library/react";
+import { describe, expect, it, beforeEach } from "vitest";
+import { DashboardWindowManagerProvider } from "../context/DashboardWindowManagerContext";
 import { FloatingWindow } from "../components/FloatingWindow";
-import { TaskDetailContent } from "../components/TaskDetailModal";
-import { writeBoardWorkflowsCache } from "../utils/boardWorkflowsCache";
+import { expectedOpeningSize } from "../components/__tests__/floatingWindowOpeningFixture";
 
-const workflowPayload = {
-  flagEnabled: true,
-  defaultWorkflowId: "builtin:coding",
-  workflows: [{
-    id: "builtin:coding",
-    name: "Coding",
-    columns: [
-      { id: "triage", name: "Planning", flags: { intake: true } },
-      { id: "todo", name: "Todo", flags: { hold: true } },
-      { id: "in-progress", name: "In progress", flags: { countsTowardWip: true } },
-      { id: "in-review", name: "In review", flags: { mergeBlocker: true } },
-      { id: "done", name: "Done", flags: { complete: true } },
-      { id: "archived", name: "Archived", flags: { archived: true } },
-    ],
-  }],
-  taskWorkflowIds: {},
-};
+/*
+FNXC:TaskWindowIdentity 2026-09-14-21:10:
+FN-394 deleted the shared `floating-window:task-detail` geometry key together with every durable window
+rectangle. Two task windows no longer inherit one another's size or place, a reopened task restarts at
+the standard task size, and task windows now share ONE stack with every other window type instead of
+sitting in a permanently lower band.
 
-function createTask(taskId: string, description = ""): Task {
-  return {
-    id: taskId,
-    title: description ? "Populated task" : "Minimal task",
-    description,
-    column: "todo",
-    status: "pending",
-    prompt: "",
-    steps: [],
-    attachments: [],
-    dependencies: [],
-    createdAt: "2026-09-20T00:00:00.000Z",
-    updatedAt: "2026-09-20T00:00:00.000Z",
-  } as Task;
+FNXC:TaskWindowIdentity 2026-09-15-13:41:
+FN-418 caps the standard OPENING height at a proportion of the live work area, so the expected height is
+derived from that contract instead of the host's declared 620px literal. The identity invariant is unchanged:
+two task windows still open at the same standard rectangle and the legacy record is still ignored.
+
+FNXC:TaskWindowIdentity 2026-09-16-05:45:
+FN-456 normalizes the opening to the shared 1.43 ratio, so a task window no longer opens at its declared
+820x620. The identity invariant is again unchanged; the expected rectangle simply comes from the shared
+opening fixture, which reads the production seam, instead of a local re-implementation of the formula.
+*/
+
+const LEGACY_TASK_DETAIL_GEOMETRY_KEY = "floating-window:task-detail";
+const TASK_DEFAULT_HEIGHT = 620;
+const TASK_DEFAULT_WIDTH = 820;
+
+/** Opening rectangle of a task window. No landmarks here, so the work area is the whole viewport. */
+function taskOpeningSize() {
+  return expectedOpeningSize({ width: TASK_DEFAULT_WIDTH, height: TASK_DEFAULT_HEIGHT }, { bounds: workArea() });
 }
 
-function renderTaskDetailPopup(taskId: string, onClose = vi.fn(), description = "") {
-  const task = createTask(taskId, description);
+function workArea() {
   return {
-    onClose,
-    ...render(
-      <FloatingWindow
-        windowKey={`task-detail-${taskId}`}
-        title={taskId}
-        onClose={onClose}
-        hideHeader
-        dragHandleSelector=".task-detail-content--embedded > .modal-header"
-        className="floating-window--task-detail"
-        persistGeometryKey={TASK_DETAIL_FLOATING_GEOMETRY_KEY}
-        layer="task-detail"
-      >
-        <TaskDetailContent
-          task={task}
-          onOpenDetail={() => {}}
-          onDeleteTask={async () => task}
-          onMergeTask={async () => ({ success: true } as never)}
-          addToast={() => {}}
-          embedded
-          onRequestClose={onClose}
-        />
-      </FloatingWindow>,
-    ),
+    left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight,
+    width: window.innerWidth, height: window.innerHeight,
   };
 }
 
+function taskWindow(taskId: string) {
+  return (
+    <FloatingWindow
+      windowKey={`task-detail-${taskId}`}
+      title={taskId}
+      onClose={() => {}}
+      hideHeader
+      dragHandleSelector=".task-detail-content--embedded > .modal-header"
+      className="floating-window--task-detail"
+      defaultSize={{ width: TASK_DEFAULT_WIDTH, height: TASK_DEFAULT_HEIGHT }}
+      layer="task-detail"
+    >
+      <div className="task-detail-content--embedded">
+        <div className="modal-header">{taskId}</div>
+        <div>Task detail body</div>
+      </div>
+    </FloatingWindow>
+  );
+}
+
+function renderTaskDetailPopup(taskId: string) {
+  return render(
+    <DashboardWindowManagerProvider>
+      {taskWindow(taskId)}
+    </DashboardWindowManagerProvider>,
+  );
+}
+
 describe("task-detail FloatingWindow geometry", () => {
+/* FNXC:MergeRebuild0921 2026-09-21: upstream's geometry-key/persistence/Close cases assert the durable
+   task-window rectangle FN-394 deleted on this line; cases dropped with their subject. */
+
+  /* FNXC:MergeRebuild0921 2026-09-21: upstream seeds the board-workflows cache because its cases mount
+     the real App; this line's cases render the FloatingWindow shell directly, so no cache seed applies. */
   beforeEach(() => {
     localStorage.clear();
-    writeBoardWorkflowsCache(undefined, workflowPayload);
   });
 
-  it("uses one stable task-detail persistence key across different task window identities", () => {
-    expect(TASK_DETAIL_FLOATING_GEOMETRY_KEY).toBe("floating-window:task-detail");
-  });
-
-  it("keeps one reachable embedded Close control for minimal and populated popups", () => {
-    for (const [taskId, description] of [
-      ["FN-9342-MINIMAL", ""],
-      ["FN-9342-POPULATED", "A populated task keeps its header close action reachable."],
-    ]) {
-      const onClose = vi.fn();
-      const popup = renderTaskDetailPopup(taskId, onClose, description);
-      const panel = screen.getByTestId(`floating-window-task-detail-${taskId}`);
-      const close = screen.getByRole("button", { name: "Close" });
-
-      expect(panel).toHaveClass("floating-window--headerless", "floating-window--task-detail");
-      expect(panel.querySelectorAll("button[aria-label='Close']")).toHaveLength(1);
-      expect(panel.querySelector(".floating-window__close")).toBeNull();
-      fireEvent.click(close);
-      expect(onClose).toHaveBeenCalledTimes(1);
-      expect(screen.getByTestId(`floating-window-task-detail-${taskId}`)).toBe(panel);
-      popup.unmount();
-    }
-  });
-
-  it("restores the saved task popup size and position when a different task opens", () => {
-    localStorage.setItem(
-      TASK_DETAIL_FLOATING_GEOMETRY_KEY,
-      JSON.stringify({
-        size: { width: 684, height: 512 },
-        position: { x: 144, y: 88 },
-      }),
-    );
+  it("opens each task window at the standard task size, ignoring the legacy shared record", () => {
+    const legacy = JSON.stringify({ size: { width: 684, height: 512 }, position: { x: 144, y: 88 } });
+    localStorage.setItem(LEGACY_TASK_DETAIL_GEOMETRY_KEY, legacy);
 
     const first = renderTaskDetailPopup("FN-7459-A");
     const firstPanel = screen.getByTestId("floating-window-task-detail-FN-7459-A");
-    expect(firstPanel.style.width).toBe("684px");
-    expect(firstPanel.style.height).toBe("512px");
-    expect(firstPanel.style.left).toBe("144px");
-    expect(firstPanel.style.top).toBe("88px");
+    expect(firstPanel.style.width).toBe(`${taskOpeningSize().width}px`);
+    expect(firstPanel.style.height).toBe(`${taskOpeningSize().height}px`);
 
     first.unmount();
     renderTaskDetailPopup("FN-7459-B");
 
     const secondPanel = screen.getByTestId("floating-window-task-detail-FN-7459-B");
-    expect(secondPanel.style.width).toBe("684px");
-    expect(secondPanel.style.height).toBe("512px");
-    expect(secondPanel.style.left).toBe("144px");
-    expect(secondPanel.style.top).toBe("88px");
+    expect(secondPanel.style.width).toBe(`${taskOpeningSize().width}px`);
+    expect(secondPanel.style.height).toBe(`${taskOpeningSize().height}px`);
     expect(secondPanel).toHaveClass("floating-window--task-detail");
+    // The legacy record is neither used nor rewritten; FN-394 performs no purge.
+    expect(localStorage.getItem(LEGACY_TASK_DETAIL_GEOMETRY_KEY)).toBe(legacy);
   });
 
-  it("raises multiple task-detail popups within the board layer below utility windows", () => {
+  it("puts the most recently opened window on top whether it is a task window or a utility window", () => {
     render(
-      <>
-        <FloatingWindow
-          windowKey="task-detail-FN-7493-A"
-          title="FN-7493-A"
-          onClose={() => {}}
-          className="floating-window--task-detail"
-          persistGeometryKey={TASK_DETAIL_FLOATING_GEOMETRY_KEY}
-          layer="task-detail"
-        >
-          <div>task a body</div>
-        </FloatingWindow>
-        <FloatingWindow
-          windowKey="task-detail-FN-7493-B"
-          title="FN-7493-B"
-          onClose={() => {}}
-          className="floating-window--task-detail"
-          persistGeometryKey={TASK_DETAIL_FLOATING_GEOMETRY_KEY}
-          layer="task-detail"
-        >
-          <div>task b body</div>
-        </FloatingWindow>
+      <DashboardWindowManagerProvider>
+        {taskWindow("FN-7493-A")}
+        {taskWindow("FN-7493-B")}
         <FloatingWindow windowKey="utility-FN-7493" title="Utility" onClose={() => {}}>
           <div>utility body</div>
         </FloatingWindow>
-      </>,
+      </DashboardWindowManagerProvider>,
     );
 
     const firstTask = screen.getByTestId("floating-window-task-detail-FN-7493-A");
@@ -160,62 +112,30 @@ describe("task-detail FloatingWindow geometry", () => {
     const utility = screen.getByTestId("floating-window-utility-FN-7493");
 
     expect(Number(secondTask.style.zIndex)).toBeGreaterThan(Number(firstTask.style.zIndex));
-    expect(Number(secondTask.style.zIndex)).toBeLessThan(Number(utility.style.zIndex));
+    expect(Number(utility.style.zIndex)).toBeGreaterThan(Number(secondTask.style.zIndex));
   });
 
-  it("keeps task-detail geometry and layer isolated from non-task FloatingWindow keys", () => {
-    localStorage.setItem(
-      TASK_DETAIL_FLOATING_GEOMETRY_KEY,
-      JSON.stringify({
-        size: { width: 650, height: 490 },
-        position: { x: 118, y: 76 },
-      }),
-    );
-    localStorage.setItem(
-      "floating-window:mission-interview",
-      JSON.stringify({
-        size: { width: 540, height: 420 },
-        position: { x: 210, y: 120 },
-      }),
-    );
+  it("keeps two simultaneous task windows independent of each other and of other window types", () => {
+    localStorage.setItem(LEGACY_TASK_DETAIL_GEOMETRY_KEY, JSON.stringify({ size: { width: 650, height: 490 }, position: { x: 118, y: 76 } }));
+    localStorage.setItem("floating-window:sample-secondary", JSON.stringify({ size: { width: 540, height: 420 }, position: { x: 210, y: 120 } }));
 
     render(
-      <>
-        <FloatingWindow
-          windowKey="task-detail-FN-7459"
-          title="FN-7459"
-          onClose={() => {}}
-          className="floating-window--task-detail"
-          persistGeometryKey={TASK_DETAIL_FLOATING_GEOMETRY_KEY}
-          layer="task-detail"
-        >
-          <div>task detail body</div>
-        </FloatingWindow>
-        <FloatingWindow
-          windowKey="mission"
-          title="Mission"
-          onClose={() => {}}
-          persistGeometryKey="floating-window:mission-interview"
-        >
+      <DashboardWindowManagerProvider>
+        {taskWindow("FN-7459")}
+        <FloatingWindow windowKey="mission" title="Mission" onClose={() => {}} defaultSize={{ width: 700, height: 520 }}>
           <div>mission body</div>
         </FloatingWindow>
-      </>
+      </DashboardWindowManagerProvider>,
     );
 
     const taskPanel = screen.getByTestId("floating-window-task-detail-FN-7459");
-    const taskOverlay = screen.getByTestId("floating-window-overlay-task-detail-FN-7459");
-    expect(taskPanel.style.width).toBe("650px");
-    expect(taskPanel.style.height).toBe("490px");
-    expect(taskPanel.style.left).toBe("118px");
-    expect(taskPanel.style.top).toBe("76px");
-
     const missionPanel = screen.getByTestId("floating-window-mission");
-    const missionOverlay = screen.getByTestId("floating-window-overlay-mission");
-    expect(Number(taskPanel.style.zIndex)).toBeLessThan(Number(missionPanel.style.zIndex));
-    expect(Number(taskOverlay.style.zIndex)).toBeLessThan(Number(missionOverlay.style.zIndex));
-    expect(missionPanel.style.width).toBe("540px");
-    expect(missionPanel.style.height).toBe("420px");
-    expect(missionPanel.style.left).toBe("210px");
-    expect(missionPanel.style.top).toBe("120px");
+    expect(taskPanel.style.width).toBe(`${taskOpeningSize().width}px`);
+    expect(missionPanel.style.width).toBe(
+      `${expectedOpeningSize({ width: 700, height: 520 }, { bounds: workArea() }).width}px`,
+    );
+    // Each window owns its own placement inside the shared pristine cohort.
+    expect(missionPanel.style.left).not.toBe(taskPanel.style.left);
+    expect(Number(missionPanel.style.zIndex)).toBeGreaterThan(Number(taskPanel.style.zIndex));
   });
 });

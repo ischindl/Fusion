@@ -156,9 +156,11 @@ export function buildExecuteWorkflowGraphDeps(host: any): any {
       "buildParseStepsDeps", "buildStepInstancePersistence", "createAuthoritativeWorkflowPrimitives",
       "createAuthoritativeWorkflowSeams", "finalizeMergeConfirmedWorkflowGraphTask", "handleGraphFailure",
       "isLiveSharedBranchGroupMember", "prepareGraphNodeExecution", "readTaskArtifact", "recoverMissingRequiredArtifacts",
-      "requestPreMergeOptionalStepFix", "runGraphCustomNode", "terminateAllChildren",
+      "requestPreMergeOptionalStepFix", "runGraphCustomNode", "executeWorkflowStep", "terminateAllChildren",
       // FNXC:PlanReviewNoOp 2026-08-09-22:10: CLOSE_NO_OP terminal route + hold (FN-8841).
       "completePlanReviewNoOp", "holdPlanReviewNoOpContinuation",
+      // FNXC:HumanMergeApproval 2026-09-17-22:32: FN-514 rejection corrections resume through the existing review → WIP bounce.
+      "scheduleWorkflowRerun",
     ]),
   };
 }
@@ -418,7 +420,7 @@ export function buildMarkStuckAbortedDeps(host: any): any {
     ]),
     ...facadeMethods(host, [
       "resolveResumeLanes", "getWorktreePath", "terminateAllChildren",
-      "awaitAbortInFlightTaskWork", "clearPausedAborted", "resetStepsIfWorkLost",
+      "prepareAbortInFlightTaskWork", "clearPausedAborted", "resetStepsIfWorkLost",
       "hasActiveWorktreeBinding",
     ]),
     ensureWorkspaceConfig: withWorkspaceResolver(host),
@@ -1523,14 +1525,6 @@ export function buildDisposeStoreLifecycleDisposersDeps(host: any): any {
     clearTaskMoveDisposer: () => {
       host.unregisterTaskMoveDisposer?.();
       host.unregisterTaskMoveDisposer = undefined;
-    },
-    clearArchiveWorktreeDisposer: () => {
-      host.unregisterArchiveWorktreeDisposer?.();
-      host.unregisterArchiveWorktreeDisposer = undefined;
-    },
-    clearArchiveWorkspaceWorktreeDisposer: () => {
-      host.unregisterArchiveWorkspaceWorktreeDisposer?.();
-      host.unregisterArchiveWorkspaceWorktreeDisposer = undefined;
     },
   };
 }

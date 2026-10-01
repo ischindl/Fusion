@@ -1,0 +1,298 @@
+/*
+FNXC:FleetObservation 2026-08-16-01:20:
+Scoped styling for the fleet roster/activity dashboard (F-MSL65UCH). Token-only: reuses the dashboard surface/border/text/space tokens and the same state text tokens
+(--state-active-text / --state-paused-text / --state-error-text / --text-muted) that
+agentHealth.tsx emits as inline colors, so Healthy/Unresponsive/Paused/Starting chips
+render with the canonical health palette everywhere.
+
+FNXC:FleetObservation 2026-09-01-14:20 (merge origin/main 35464605de → main):
+The shorthand previously carried only the color token --border (no width, no style), and a
+border shorthand without width+style resets border-style to none, so these borders never
+rendered. Upstream FN-9238's token-hygiene test (shorthand width slot must be a CSS length,
+and the scanner reads comment text too — keep this note free of the violated pattern)
+caught it. Canonical pattern now: var(--btn-border-width) solid var(--border).
+*/
+.fleet-view {
+  min-width: 0;
+}
+
+.fleet-view__refresh {
+  color: var(--text-secondary);
+}
+
+.fleet-view__refresh:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.fleet-view__system-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+/* Summary strip under the header. */
+.fleet-view__summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xl);
+  margin: 0 var(--space-xl) var(--space-lg);
+  padding: var(--space-md) var(--space-lg);
+  border: var(--btn-border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.fleet-view__summary-item {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.fleet-view__summary-value {
+  font-size: 1.5rem;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--text);
+}
+
+.fleet-view__summary-value--active {
+  color: var(--state-active-text);
+}
+
+.fleet-view__summary-value--unresponsive {
+  color: var(--state-error-text);
+}
+
+.fleet-view__summary-label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Desktop table. */
+.fleet-view__table-wrap {
+  margin: 0 var(--space-xl);
+  overflow-x: auto;
+  border: var(--btn-border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.fleet-view__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.fleet-view__table thead th {
+  padding: var(--space-sm) var(--space-md);
+  text-align: left;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  border-bottom: var(--btn-border-width) solid var(--border);
+  white-space: nowrap;
+}
+
+.fleet-view__table tbody td {
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: var(--btn-border-width) solid var(--border);
+  vertical-align: middle;
+}
+
+.fleet-view__table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.fleet-view__row--selectable {
+  cursor: pointer;
+}
+
+.fleet-view__row--selectable:hover {
+  background: var(--surface-hover);
+}
+
+.fleet-view__agent-cell {
+  width: 38%;
+  min-width: 220px;
+}
+
+.fleet-view__agent-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.fleet-view__agent-btn:not(:disabled) {
+  cursor: pointer;
+}
+
+.fleet-view__agent-meta {
+  display: inline-flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.fleet-view__agent-name {
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fleet-view__agent-roles {
+  font-size: 0.75rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fleet-view__state-cell {
+  white-space: nowrap;
+}
+
+.fleet-view__state-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.fleet-view__task-cell {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+
+.fleet-view__heartbeat-cell {
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+
+/* Loading + empty states. */
+.fleet-view__loading {
+  display: flex;
+  justify-content: center;
+  padding: var(--space-2xl);
+}
+
+/* Mobile card roster. */
+.fleet-view__cards {
+  list-style: none;
+  margin: 0 var(--space-lg) var(--space-2xl);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.fleet-view__card {
+  margin: 0;
+  padding: 0;
+}
+
+.fleet-view__card-inner {
+  padding: var(--space-sm) var(--space-md);
+  border: var(--btn-border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.fleet-view__card-head {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: var(--space-sm);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.fleet-view__card-main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.fleet-view__card-main .fleet-view__agent-roles {
+  white-space: normal;
+}
+
+.fleet-view__card-fields {
+  margin: var(--space-sm) 0 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.fleet-view__card-field {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.fleet-view__card-field dt {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.fleet-view__card-field dd {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  text-align: right;
+}
+
+.fleet-view__card-task {
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fleet-view__card-open {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-top: var(--space-sm);
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--todo);
+  font: inherit;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+/* Inline AgentDetailView drill-down, replacing the roster while open. */
+.fleet-view--detail {
+  min-width: 0;
+}
+
+.fleet-view__back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+}

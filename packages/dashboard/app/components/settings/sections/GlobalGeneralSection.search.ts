@@ -37,8 +37,29 @@ export const globalGeneralSearchEntries: SettingsSearchEntry[] = [
     labelKey: "settings.globalGeneral.quickAddSubmitOnEnter",
     labelFallback: " Press Enter to save a task in Quick Add ",
     helpKey: "settings.globalGeneral.quickAddSubmitOnEnterHint",
-    helpFallback: " Default: enabled. When disabled, Enter inserts a newline and Cmd/Ctrl+Enter saves. ",
+    helpFallback: " Default: enabled. When disabled, Enter inserts a newline. Cmd/Ctrl+Enter always creates and starts the task when the selected workflow allows it, and saves otherwise. ",
     keywords: ["enter", "keyboard", "quick add", "newline", "submit"],
+  },
+  {
+    sectionId: "global-general",
+    key: "chatSubmitOnEnter",
+    labelKey: "settings.globalGeneral.chatSubmitOnEnter",
+    labelFallback: " Enter key behavior in conversations ",
+    helpKey: "settings.globalGeneral.chatSubmitOnEnterHint",
+    helpFallback:
+      " Default: automatic — Enter inserts a newline on touch devices with an on-screen keyboard, and sends on desktop. Shift+Enter never sends, even with Cmd/Ctrl held; it inserts a newline except in Chat while an autocomplete menu is open, where the files/tasks, agents and skills menus consume it instead. Cmd/Ctrl+Enter without Shift sends regardless of this setting and of the device. While an autocomplete menu is open it takes priority and consumes both Enter and Cmd/Ctrl+Enter; press Escape to close it. In the task chat, an in-progress IME composition takes priority over all of these. The Send button stays available whenever the draft is not empty. ",
+    keywords: ["enter", "newline", "mobile", "keyboard", "chat", "send", "shift"],
+  },
+  {
+    /* FNXC:OperatorLanguage 2026-09-15-07:18: mirrors the section's new operatorLanguage row verbatim. */
+    sectionId: "global-general",
+    key: "operatorLanguage",
+    labelKey: "settings.globalGeneral.operatorLanguage",
+    labelFallback: " Operator language for agent text ",
+    helpKey: "settings.globalGeneral.operatorLanguageHint",
+    helpFallback:
+      " Language agents use for operator-facing text: mailbox messages, reports, task logs, completion summaries, and chat replies. Code, commands, identifiers, and quoted log output always stay in their original language. Default: Automatic — reply in the language of each message, which leaves autonomous lanes on English. ",
+    keywords: ["language", "slovak", "jazyk", "reply language", "output language", "maily", "mailbox language", "translation"],
   },
   {
     sectionId: "global-general",

@@ -2,9 +2,15 @@
  * Paperclip REST API client.
  *
  * Low-level HTTP helpers for the Paperclip control-plane API.
- * This module intentionally does not depend on @fusion/engine or any Fusion
- * internals — it is a pure HTTP client.
+ * This module intentionally does not depend on @fusion/engine — it is a pure HTTP client.
+ *
+ * FNXC:NonInteractiveGit 2026-09-12-12:58 (RUFU-216): the one deliberate exception is `@fusion/core`'s
+ * shared non-interactive git floor, which the two CLI-spawning helpers below apply to their spawn env.
+ * That is a fixed-key env helper, not engine or API coupling, and it keeps the floor's single source of
+ * truth in core instead of re-declaring git keys per plugin.
  */
+
+import { applyNonInteractiveGitEnv } from "@fusion/core";
 
 // ---------------------------------------------------------------------------
 // Public error types
@@ -774,7 +780,22 @@ export async function mintAgentApiKeyViaCli(opts: MintCliKeyOptions): Promise<Mi
   return new Promise<MintedApiKey>((resolve, reject) => {
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
+      /*
+      FNXC:NonInteractiveGit 2026-09-12-12:58 (RUFU-216):
+      Both CLI spawn seams in this file (here and `spawnPaperclipCliJson`) previously passed no `env`, so
+      the `paperclipai` child inherited `process.env` verbatim. A Paperclip agent turn that shells out to
+      git then reproduces RUFU-210's measured hang class exactly: `git commit -e` resolves an editor, the
+      session has no TTY, and the child blocks on input forever (the recorded orphan sat under PID 1 for
+      1d13h in a worktree already deleted underneath it). The helper returns a NEW object with its fixed
+      keys applied LAST, so the parent environment is never mutated — the operator's own terminal keeps a
+      real editor — and no ambient or injected value can clear the floor. The whole child process tree
+      inherits this env, so one wrap covers the runtime's shell/tool children too.
+
+      Deliberate side effect (accepted, not a miss): `spawnPaperclipCliJson` is shared by
+      `probePaperclipViaCli` and the other `*ViaCli` helpers (createIssue/getIssue/agentsMe/listCompanies…).
+      Hardening at that shared seam covers the probe class too, which is why no per-caller flag is threaded.
+      */
+      child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"], env: applyNonInteractiveGitEnv(process.env) });
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code === "ENOENT") {
@@ -933,7 +954,9 @@ async function spawnPaperclipCliJson<T = unknown>(
   return new Promise<T>((resolve, reject) => {
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(bin, fullArgs, { stdio: ["ignore", "pipe", "pipe"] });
+      // FNXC:NonInteractiveGit 2026-09-12-12:58 (RUFU-216): same floor as `mintAgentApiKeyViaCli` above —
+      // this is the shared seam every `*ViaCli` helper (including the probe class) spawns through.
+      child = spawn(bin, fullArgs, { stdio: ["ignore", "pipe", "pipe"], env: applyNonInteractiveGitEnv(process.env) });
     } catch (err) {
       reject(remapSpawnError(err, bin));
       return;

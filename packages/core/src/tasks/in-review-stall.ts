@@ -1,4 +1,11 @@
-import { getTaskMergeBlocker } from "../merge/task-merge.js";
+import { getTaskMergeBlocker, isPreMergeStepsNotRunBlocker } from "../merge/task-merge.js";
+/* FNXC:HumanMergeApproval 2026-09-17-22:32: FN-514's delivery lock is a human WAIT, never a stall. */
+import { isHumanMergeApprovalBlocker } from "../merge/human-merge-approval.js";
+/* FNXC:ReviewRevisionWait 2026-09-29-14:12 (RUFU-280): one predicate decides "this card is working through an authored revision" for the stall ladder, the derived chip, and the dashboard copy. */
+import {
+  AWAITING_REVIEW_REVISION_STALL_REASON,
+  isAwaitingReviewRevision,
+} from "./review-revision-wait.js";
 import type { Task, TaskLogEntry } from "../types.js";
 
 /*
@@ -24,6 +31,17 @@ const LEGACY_REVIEW_LANES: ReadonlySet<string> = new Set(["in-review"]);
  * because in-review tasks are expected to remain on the PR-based manual flow.
  */
 export type InReviewStallCode =
+  /*
+  FNXC:ReviewRevisionWait 2026-09-29-14:12 (RUFU-280):
+  An authored `REVISE` verdict with unfinished named remediation. The signal still fires — a card parked
+  in the review lane for days IS worth surfacing — but the deadlock ladder must not park on it. Returning
+  `undefined` here instead would have been the tempting wrong fix: it resets the identical-entry count, so
+  a card stuck at the boundary between remediation and re-review would never accumulate a park and would
+  sit silently forever. Naming the state keeps the count alive and defers only the terminal action, so when
+  remediation is exhausted the predicate's own second clause goes false and the pre-existing threshold
+  becomes reachable again.
+  */
+  | "awaiting-review-revision"
   | "merge-blocker"
   | "transient-merge-status-no-owner"
   | "merge-retries-exhausted"
@@ -58,10 +76,38 @@ export interface InReviewStallContext {
   byte-identical.
   */
   reviewColumns?: ReadonlySet<string>;
+  /*
+  FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217, AC4 — blocker-input parity):
+  RUFU-204's stall parked on a merge-blocker reason that the merge door would never have written.
+  This classifier called `getTaskMergeBlocker(task, { reviewColumns })` — gate ids withheld — while
+  the door, the queue, and `deriveTaskStallReason` all forward `requiredPreMergeStepIds`. On the same
+  card the door answered the gate-named refusal, the chip showed it, and this deadlock classifier
+  saw only the legacy results-only scan (or nothing at all): one row, three lane answers. The
+  deadlock park then consumed log entries the door never produced, and the verdict-less class — the
+  one shape with a bounded automatic re-run — terminalized instead of re-running.
+
+  Call sites that resolve the card's gates (the self-healing sweep, the store hydration sites) MUST
+  forward them so the stall reason is byte-identical to the door's refusal under the same evidence.
+  Optional, with the results-only fallback byte-identical for callers that cannot resolve a workflow.
+
+  Forwarding is paired with a deferral carve-out below (hazard 1: do not start parking what the door
+  defers): a gate that has not run yet, or whose approval is waiting on content proof, is not a
+  deadlock — those blockers name work the reseed and content-proof lanes are scheduled to do, and
+  the door itself refuses to consume merge retries on them (`PreMergeStepsNotRunError`). Parking an
+  in-flight pipeline at the stall threshold would be a new failure this parity change introduced.
+  */
+  requiredPreMergeStepIds?: ReadonlySet<string>;
 }
 
 /** Keep aligned with engine DEFAULT_STALE_MERGING_STATUS_MIN_AGE_MS. */
 export const DEFAULT_STALE_MERGING_MIN_AGE_MS = 5 * 60_000;
+export const DEFAULT_IN_REVIEW_STALL_DEADLOCK_THRESHOLD = 10;
+export function resolveInReviewStallDeadlockThreshold(settings?: { inReviewStallDeadlockThreshold?: unknown } | null): number {
+  return resolveNonNegativeInteger(
+    settings?.inReviewStallDeadlockThreshold,
+    DEFAULT_IN_REVIEW_STALL_DEADLOCK_THRESHOLD,
+  );
+}
 /** Historical default for the configurable auto-merge conflict retry cap. */
 export const DEFAULT_MAX_AUTO_MERGE_RETRIES = 3;
 export const DEFAULT_MAX_CONSECUTIVE_TOOL_FAILURE_RETRIES = 2;
@@ -199,21 +245,42 @@ export function classifyProviderError(error: string): ProviderErrorClassificatio
   return "unknown";
 }
 
+/*
+FNXC:InReviewStallProgress 2026-09-10-08:09:
+Identical merge-blocker text is not an episode identity: a newly started or completed top-level
+pre-merge failure proves that correction work advanced even when the blocker sentence is unchanged.
+Only valid durable timestamps reset the suffix; missing or malformed evidence keeps the conservative
+historical count, and priorAttempts never substitutes for the active result.
+*/
+export function getLatestFailedPreMergeStepProgressAt(
+  task: Pick<Task, "workflowStepResults">,
+): number | undefined {
+  let latest: number | undefined;
+  for (const result of task.workflowStepResults ?? []) {
+    if ((result.phase ?? "pre-merge") !== "pre-merge" || result.status !== "failed") continue;
+    for (const timestamp of [result.startedAt, result.completedAt]) {
+      if (!timestamp) continue;
+      const parsed = Date.parse(timestamp);
+      if (Number.isFinite(parsed) && (latest === undefined || parsed > latest)) latest = parsed;
+    }
+  }
+  return latest;
+}
+
 export function countRecentIdenticalStallEntries(
   task: Pick<Task, "log">,
   signal: Pick<InReviewStallSignal, "code" | "reason">,
+  progressAt?: number,
 ): number {
   const trimmedReason = signal.reason.trim();
   const reversed = [...(task.log ?? [])].reverse();
   let count = 0;
 
   for (const entry of reversed) {
-    if (!entry.action.startsWith(IN_REVIEW_STALL_LOG_PREFIX)) {
-      break;
-    }
-    if (!matchesStallEntry(entry, signal.code, trimmedReason)) {
-      break;
-    }
+    if (!entry.action.startsWith(IN_REVIEW_STALL_LOG_PREFIX)) break;
+    if (!matchesStallEntry(entry, signal.code, trimmedReason)) break;
+    const observedAt = Date.parse(entry.timestamp);
+    if (progressAt !== undefined && Number.isFinite(observedAt) && progressAt > observedAt) break;
     count += 1;
   }
 
@@ -228,7 +295,11 @@ function matchesStallEntry(entry: TaskLogEntry, code: InReviewStallCode, reason:
 }
 
 export function getInReviewStallReason(
-  task: Pick<Task, "column" | "paused" | "status" | "error" | "steps" | "workflowStepResults" | "worktree" | "mergeDetails" | "mergeRetries" | "updatedAt"> & { id?: string },
+  task: Pick<Task, "column" | "paused" | "status" | "error" | "steps" | "workflowStepResults" | "worktree" | "mergeDetails" | "mergeRetries" | "updatedAt">
+    /* FNXC:ZeroCommitWorkspaceDelivery 2026-09-30-20:52 (RUFU-451): forwards the zero-commit delivery
+    authorization to the merge authority below so this classifier and the door cannot disagree. */
+    & Partial<Pick<Task, "humanMergeApproval" | "noCommitsExpected">>
+    & { id?: string },
   context: InReviewStallContext = {},
 ): InReviewStallSignal | undefined {
   /*
@@ -335,8 +406,70 @@ export function getInReviewStallReason(
   The outer question was resolved and the inner one was not — the same half-conversion recorded at the
   helper itself for moves.ts, and fixed in #2963/#2964 for the merge paths.
   */
-  const mergeBlocker = getTaskMergeBlocker(task, { reviewColumns: context.reviewColumns });
+  const mergeBlocker = getTaskMergeBlocker(task, {
+    reviewColumns: context.reviewColumns,
+    requiredPreMergeStepIds: context.requiredPreMergeStepIds,
+  });
   if (mergeBlocker) {
+    /*
+    FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217 hazard 1 — deferral classes never park):
+    With gate ids forwarded, the approval-evaluation blockers become visible to this classifier for
+    the first time. The not-run sentence must not become a stall signal: the door raises
+    `PreMergeStepsNotRunError` (a deferral that never burns merge retries) and FN-9243's reseed lane
+    owns seeding the gate — a card whose earliest gate simply has not run yet is waiting on
+    scheduled work, not deadlocked. Without this arm, forwarding ids would have made every card
+    between "entered review" and "first gate ran" accumulate stall counts toward the deadlock park.
+    */
+    if (isPreMergeStepsNotRunBlocker(mergeBlocker)) {
+      return undefined;
+    }
+    /*
+    FNXC:HumanMergeApproval 2026-09-17-22:32:
+    FN-514 P0 remediation — A CARD WAITING FOR ITS OPERATOR IS NOT STALLED.
+
+    This classifier already exempts `awaiting-user-review`, `awaiting-approval` and `autoMerge:false`
+    for exactly this reason, but the new per-card delivery lock arrives as a merge BLOCKER, so a
+    locked card fell through to `{ code: "merge-blocker" }`. `surfaceInReviewStalls` then logged an
+    identical observation every `taskStuckTimeoutMs` (10 min by default) and, at
+    `inReviewStallDeadlockThreshold` (10), applied `paused: true` + `status: "failed"` — so a card
+    deliberately held for a human decision failed itself after roughly 100 minutes of patience, and
+    the decision panel then disappeared because a paused task reports `blocked`.
+
+    Both waits are exempt: « awaiting a decision » (including the `create-pr` transfer hold, which
+    reports the same blocker) and « a rejection owes corrections ». Neither is a deadlock: each ends
+    on an operator action or on the correction the graph publishes, and neither may be auto-paused,
+    auto-failed, or counted toward the deadlock ladder.
+    */
+    if (isHumanMergeApprovalBlocker(mergeBlocker)) return undefined;
+    /*
+    FNXC:ReviewRevisionWait 2026-09-29-14:12 (RUFU-280):
+    A REVIEW THAT AUTHORED A `REVISE` VERDICT CREATED WORK; IT DID NOT STOP THE CARD.
+
+    `isHumanMergeApprovalBlocker` above exempts only the two OPERATOR rejection sentences, so the
+    review-agent revision lane fell straight through to `{ code: "merge-blocker" }` below. This classifier
+    is not the only consumer of that code — `self-healing.ts`'s in-review stall ladder logs one identical
+    observation per `taskStuckTimeoutMs` (10 min by default) and at `inReviewStallDeadlockThreshold` (10)
+    writes `paused: true` + `pausedReason: "in-review-stall-deadlock"` + `status: "failed"`. Measured at
+    defaults, an authored revision terminalized its own card after ~100 minutes of the executor doing
+    exactly what the reviewer asked for.
+
+    Unlike the two exemptions around it, this arm RETURNS rather than suppressing the signal: the state is
+    genuinely reportable, only the park is withheld (see `InReviewStallCode`). The bound is this predicate's
+    own second clause rather than a new counter — the moment remediation stops being pending, this arm
+    falls through to the ordinary classification and the already-accumulated count parks on the next pass.
+    A card whose remediation was silently dropped is therefore still terminalized; it is only ever
+    terminalized later than the corrections it is waiting on.
+
+    `getTaskMergeBlocker` is evaluated first so the awaiting state is still anchored to a real refusal — a
+    card with pending remediation and a clear merge door needs no explanation at all.
+    */
+    if (isAwaitingReviewRevision(task)) {
+      return {
+        code: "awaiting-review-revision",
+        reason: AWAITING_REVIEW_REVISION_STALL_REASON,
+        observedAt,
+      };
+    }
     if (mergeBlocker.startsWith(FAILED_TASK_MERGE_BLOCKER_PREFIX)) {
       const error = mergeBlocker.slice(FAILED_TASK_MERGE_BLOCKER_PREFIX.length).trim();
       if (classifyProviderError(error) === "non_retryable") {

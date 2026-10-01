@@ -19,8 +19,29 @@ import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { AgentHeartbeatRun, AgentStore, MessageStore, PermanentAgentGatingContext, ProviderInstanceRef, ResolvedMcpServerDefinition, TaskDetail, Settings, SteeringComment, TaskStore, TaskStep } from "@fusion/core";
-import { isFastExecutionMode, isValidProviderInstanceId, resolvePersistAgentThinkingLog, resolveExecutorFallbackModel, resolveTrailingVerificationStepIndex, resolveAuthoredStepHeadingOffset, matchStepHeadings } from "@fusion/core";
+/*
+FNXC:StepSessionExecutor 2026-08-24-14:35 (merge origin/main 4475342145 → main):
+Upstream removed the `isFusionDeletableBranch` call sites (FN-9161 branch-deletability
+check) from the executor body; RUFU-132's per-turn memory recall cue (`buildPerTurnMemoryRecallCue`,
+called below) is local work that must survive the merge. Import the union of what the
+post-merge body actually calls: upstream's three core helpers + RUFU-132's recall cue.
 
+FNXC:StepSessionExecutor 2026-08-30-08:40 (merge origin/main c7a5e74a6a → main):
+Upstream added the fast-execution lane (isFastExecutionMode/buildFastLanePrompt,
+resolveTrailingVerificationStepIndex) beside the same body; the import union must keep
+RUFU-132's recall cue alongside the new upstream helpers.
+
+FNXC:StepSessionExecutor 2026-09-04-06:57 (merge origin/main 150755506f → main):
+Upstream FN-9248/FN-9254 added `resolveAuthoredStepHeadingOffset` (zero-based plan step
+headings) to the same import line. Union keeps RUFU-132's recall cue + upstream's new
+helper, and keeps upstream's `export { resolveAuthoredStepHeadingOffset }` re-export.
+
+FNXC:StepSessionExecutor 2026-09-06-09:47 (merge origin/main dd808ed2c6 → main):
+Upstream FN-293 renamed the Patchnode heading tools to history tools and added
+`matchStepHeadings`; the union import keeps RUFU-132's recall cue beside it.
+*/
+/* FNXC:HumanPlanApproval 2026-09-15-06:24: FN-408 shares one note formatter across the standard, Fast, per-step, and reduced-step prompts. */
+import { buildPerTurnMemoryRecallCue, formatApprovedHumanPlanNoteSection, isFastExecutionMode, isValidProviderInstanceId, resolvePersistAgentThinkingLog, resolveExecutorFallbackModel, resolveTrailingVerificationStepIndex, resolveAuthoredStepHeadingOffset, matchStepHeadings } from "@fusion/core";
 export { resolveAuthoredStepHeadingOffset };
 
 import {
@@ -59,6 +80,7 @@ import {
 } from "../agent-tools.js";
 import { RemovalReason, removeWorktree } from "../worktree/worktree-backend.js";
 import { resolveWorkflowStepRunAgentId } from "./resolve-activity-run-agent-id.js";
+import { acknowledgeOverlapResumeContext, readOverlapResumeContextDelivery } from "./overlap-resume-context.js";
 import { pruneWorktreeAdminEntries } from "../worktree/worktree-prune.js";
 import { activeSessionRegistry } from "../agents/active-session-registry.js";
 
@@ -446,9 +468,10 @@ export function buildStepPrompt(
   rootDir?: string,
   settings?: Settings,
   worktreePath?: string,
+  overlapResumeContext?: string,
 ): string {
   if (isFastExecutionMode(taskDetail)) {
-    return buildFastLanePrompt(taskDetail, rootDir, settings, worktreePath);
+    return buildFastLanePrompt(taskDetail, rootDir, settings, worktreePath, overlapResumeContext);
   }
   const { id, title, attachments } = taskDetail;
   const prompt = scopePromptToWorktree(taskDetail.prompt, rootDir, worktreePath);
@@ -533,8 +556,18 @@ export function buildStepPrompt(
     parts.push(attachmentsSection);
   }
 
+  if (overlapResumeContext) {
+    parts.push("## Overlap wait synchronization", "", overlapResumeContext, "");
+  }
+
   if (steeringSection) {
     parts.push(steeringSection, "");
+  }
+
+  /* FNXC:HumanPlanApproval 2026-09-15-06:24: FN-408 — every per-step session carries the note the operator attached when approving this plan. */
+  const stepApprovalNote = formatApprovedHumanPlanNoteSection(taskDetail);
+  if (stepApprovalNote) {
+    parts.push(stepApprovalNote, "");
   }
 
   if (isLastStep && completionSection) {
@@ -578,6 +611,7 @@ export function buildFastLanePrompt(
   rootDir?: string,
   settings?: Settings,
   worktreePath?: string,
+  overlapResumeContext?: string,
 ): string {
   const originalRequest = taskDetail.description || taskDetail.prompt || "";
   const parts = [
@@ -605,8 +639,12 @@ export function buildFastLanePrompt(
     if (settings.buildCommand) parts.push(`- **Build:** \`${settings.buildCommand}\``);
   }
 
+  if (overlapResumeContext) parts.push("", "## Overlap wait synchronization", "", overlapResumeContext);
   const steering = buildStepSteeringCommentsSection(taskDetail.steeringComments);
   if (steering) parts.push("", steering);
+  /* FNXC:HumanPlanApproval 2026-09-15-07:30: FN-408 — the Fast-lane prompt carries the approved operator note too. An armed card is never fast (arming neutralizes Fast), so this only ever fires for a legacy row, but the note formatter stays shared so no session shape can silently drop it. */
+  const fastLaneApprovalNote = formatApprovedHumanPlanNoteSection(taskDetail);
+  if (fastLaneApprovalNote) parts.push("", fastLaneApprovalNote);
 
   parts.push(
     "",
@@ -755,7 +793,7 @@ function escapeRegex(str: string): string {
  * @param rootDir - Optional project root directory used to render absolute attachment paths.
  * @returns A reduced prompt string focused on the current step only.
  */
-export function buildReducedStepPrompt(taskDetail: TaskDetail, stepIndex: number, rootDir?: string): string {
+export function buildReducedStepPrompt(taskDetail: TaskDetail, stepIndex: number, rootDir?: string, overlapResumeContext?: string): string {
   const { prompt, id, title, attachments } = taskDetail;
 
   // Extract the step-specific section
@@ -763,9 +801,17 @@ export function buildReducedStepPrompt(taskDetail: TaskDetail, stepIndex: number
   const hasAttachments = Boolean(attachments && attachments.length > 0);
   const attachmentDir = rootDir ? `${rootDir}/.fusion/tasks/${id}/attachments/` : `.fusion/tasks/${id}/attachments/`;
   const steeringSection = buildStepSteeringCommentsSection(taskDetail.steeringComments);
+  /*
+  FNXC:HumanPlanApproval 2026-09-15-06:24:
+  FN-408 — the reduced prompt exists because the previous attempt hit the context limit, but the
+  operator's approval note is a deliberate human instruction about this exact implementation, so it
+  is preserved here exactly like the overlap-resume context.
+  */
+  const approvalNoteSection = formatApprovedHumanPlanNoteSection(taskDetail);
 
   // Build a minimal prompt that focuses on the step without excessive context
   const parts: string[] = [
+    ...(approvalNoteSection ? [approvalNoteSection, ""] : []),
     `You are executing step ${stepIndex} of task ${id}.`,
     title ? `Task: ${title}` : "",
     "",
@@ -776,6 +822,8 @@ export function buildReducedStepPrompt(taskDetail: TaskDetail, stepIndex: number
     hasAttachments
       ? `${attachments?.length ?? 0} attachment(s) available at \`${attachmentDir}\` — read the files there for context. They live at the project root and are readable even when working in a worktree.`
       : "",
+    "",
+    overlapResumeContext ? `OVERLAP WAIT SYNCHRONIZATION (must be preserved in reduced prompts):\n${overlapResumeContext}` : "",
     "",
     steeringSection,
     "",
@@ -1453,14 +1501,57 @@ export class StepSessionExecutor {
       }
     }
 
-    // Build step prompt
+    // Build step prompt from the latest durable overlap receipt. Constructing a prompt does not consume it.
     const promptTaskDetail = this.consumeTaskDetailForStepPrompt();
-    const stepPrompt = buildStepPrompt(promptTaskDetail, stepIndex, this.options.rootDir, settings, worktreePath);
+    const overlapResumeDelivery = await readOverlapResumeContextDelivery(this.store, promptTaskDetail.id).catch(() => ({ context: undefined, episodes: [] }));
+    const overlapResumeContext = overlapResumeDelivery.context;
+    const stepPrompt = buildStepPrompt(promptTaskDetail, stepIndex, this.options.rootDir, settings, worktreePath, overlapResumeContext);
+
+    /*
+    FNXC:PerTurnMemoryRecall 2026-08-19-01:11:
+    RUFU-120 (B.2 LCM phase 2): per-step per-turn memory recall. The step topic
+    (task title + step name) drives a bounded, keyword-normalized recall for THIS
+    step's LLM call; dedup is task-scoped (sessionKey task:<id>) so a cue is not
+    re-injected when later steps repeat the topic. Compaction in a long session
+    may evict older cues — the bounded registry re-injects only if the topic
+    truly recurs.
+    */
+    let recallCue = "";
+    try {
+      const stepName = taskDetail.steps?.[stepIndex]?.name ?? `Step ${stepIndex + 1}`;
+      const recallTopic = `${taskDetail.title ?? taskDetail.id} — Step ${stepIndex + 1}: ${stepName}`;
+      /*
+      FNXC:RUFU172ExecutorFocusLane 2026-08-31-19:41:
+      RUFU-172 adds an optional `focus` (lane T) to the recall core; the executor passes
+      NONE — deliberately, not by omission. A focus is an operator-set per-conversation
+      value that lives on `chat_sessions.memory_focus`; a task has no focus field (nor does
+      its mission), and synthesizing one from the task title would be a second search over
+      nearly the text lane P already queries (the topic IS title + step name), i.e. cost
+      with zero added signal. Honest absence: no focus source → no lane T. Chat (chat.ts /
+      agent-instructions) and CLI (runtime handle via the linked chat session) lanes pass
+      the operator's real focus where one honestly exists.
+      */
+      recallCue = await buildPerTurnMemoryRecallCue({
+        rootDir: this.options.rootDir,
+        topic: recallTopic,
+        settings,
+        sessionKey: `task:${taskDetail.id}`,
+        // Explicit rather than omitted, so the honest absence above reads as a decision.
+        focus: undefined,
+      });
+    } catch (error) {
+      // Recall is additive: any failure leaves the step prompt unchanged.
+      const reason = error instanceof Error ? error.message : String(error);
+      stepExecLog.warn(`Step ${stepIndex} per-turn memory recall skipped: ${reason}`);
+    }
+    const stepPromptWithRecall = recallCue
+      ? `${stepPrompt}\n\n## Memory Recall\n\n${recallCue}`
+      : stepPrompt;
 
     // Fast recovery stays in the same original-request lane instead of restoring step scaffolding.
     const reducedStepPrompt = isFastExecutionMode(promptTaskDetail)
-      ? buildFastLanePrompt(promptTaskDetail, this.options.rootDir, settings, worktreePath)
-      : buildReducedStepPrompt(promptTaskDetail, stepIndex, this.options.rootDir);
+      ? buildFastLanePrompt(promptTaskDetail, this.options.rootDir, settings, worktreePath, overlapResumeContext)
+      : buildReducedStepPrompt(promptTaskDetail, stepIndex, this.options.rootDir, overlapResumeContext);
     const reusePrimarySession = await this.shouldReusePrimarySession(worktreePath);
 
     // Acquire semaphore if provided
@@ -1746,12 +1837,13 @@ Follow instructions precisely and avoid unrelated changes.`,
           );
 
           // Send prompt
-          await promptWithAutoRetry(session, stepPrompt);
+          await promptWithAutoRetry(session, stepPromptWithRecall);
 
           // Re-raise errors that pi-coding-agent swallowed after exhausting retries.
           // session.prompt() resolves normally even when retries are exhausted —
           // the error is stored on session.state.error instead of being thrown.
           checkSessionError(session);
+          await acknowledgeOverlapResumeContext(this.store, taskDetail.id, overlapResumeDelivery);
 
           const result: StepResult = {
             stepIndex,
@@ -1788,6 +1880,7 @@ Follow instructions precisely and avoid unrelated changes.`,
               stuckTaskDetector?.recordActivity(trackingKey);
               await promptWithAutoRetry(session, reducedStepPrompt);
               checkSessionError(session);
+              await acknowledgeOverlapResumeContext(this.store, taskDetail.id, overlapResumeDelivery);
               stepExecLog.log(`Step ${stepIndex} reduced-prompt recovery succeeded`);
               await this.store.appendAgentLog(
                 taskDetail.id,

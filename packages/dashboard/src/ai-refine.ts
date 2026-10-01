@@ -18,6 +18,11 @@ import type { PromptOverrideMap, TaskStore } from "@fusion/core";
 import { resolvePrompt } from "@fusion/core";
 
 import { createFnAgent as engineCreateFnAgent, resolveMcpServersForStore } from "@fusion/engine";
+import { RATE_LIMIT_ENTRY_BYTES } from "./lib/retention-census.js";
+import {
+  enforceEntryCeiling,
+  registerBoundedWindowMap,
+} from "./lib/retention/bounded-window-map.js";
 import { registerBeforeExitCleanup } from "./process-lifecycle.js";
 import { laneModelOptions, resolveLaneSessionModel } from "./lane-session-model.js";
 
@@ -122,6 +127,18 @@ export const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
 /** Cleanup interval in milliseconds (5 minutes) */
 export const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 
+/**
+ * Ceiling on distinct client addresses holding a refinement-family rate-limit window.
+ *
+ * FNXC:RetentionCensus 2026-09-21-21:40 (RUFU-257): this map is keyed by client address with a
+ * one-hour window and is shared by the refine, goal-draft, and interview lanes. `cleanupExpiredRateLimits`
+ * already deletes expired windows, but only every CLEANUP_INTERVAL_MS, so a burst of distinct
+ * addresses inside one interval grew the map without limit. The ceiling is enforced at the insert
+ * site; the existing sweep remains the single owner of expiry deletion, and no per-IP limit, window
+ * length, or reported reset time changes.
+ */
+export const REFINE_RATE_LIMIT_IP_MAX = 10_000;
+
 // ── Rate Limiting ─────────────────────────────────────────────────────────
 
 interface RateLimitEntry {
@@ -131,6 +148,18 @@ interface RateLimitEntry {
 
 /** Rate limiting state indexed by IP */
 const rateLimits = new Map<string, RateLimitEntry>();
+
+// Accounting row only: `sweptElsewhere` keeps `cleanupExpiredRateLimits` as the sole deleter so the
+// census never double-owns this structure.
+registerBoundedWindowMap<string, RateLimitEntry>({
+  id: "ai_refine_rate_limits",
+  map: rateLimits,
+  ceiling: REFINE_RATE_LIMIT_IP_MAX,
+  ceilingConstant: "REFINE_RATE_LIMIT_IP_MAX",
+  expiryOf: (entry) => entry.firstRequestAt.getTime() + RATE_LIMIT_WINDOW_MS,
+  sweptElsewhere: true,
+  valueBytes: () => RATE_LIMIT_ENTRY_BYTES,
+});
 
 /**
  * Check if IP can make a refinement request.
@@ -146,6 +175,7 @@ export function checkRateLimit(ip: string): boolean {
       count: 1,
       firstRequestAt: new Date(),
     });
+    enforceEntryCeiling(rateLimits, REFINE_RATE_LIMIT_IP_MAX);
     return true;
   }
 
@@ -156,6 +186,7 @@ export function checkRateLimit(ip: string): boolean {
       count: 1,
       firstRequestAt: new Date(),
     });
+    enforceEntryCeiling(rateLimits, REFINE_RATE_LIMIT_IP_MAX);
     return true;
   }
 
@@ -198,6 +229,17 @@ function cleanupExpiredRateLimits(): void {
   if (cleanedRateLimits > 0) {
     severityAuditLog.debug(`[ai-refine] Cleanup: removed ${cleanedRateLimits} rate limit entries`);
   }
+}
+
+/*
+FNXC:RetentionCensus 2026-09-21-22:50 (RUFU-257):
+Timer-driven reclamation cannot be observed by a test on a faked clock, because the interval was armed
+with real timers at import. This seam invokes the same owner synchronously, mirroring
+`__runAgentGenerationCleanupForTests`, so the retention invariant proves this map's expiry deletion.
+*/
+/** @internal Run the periodic rate-window reclamation immediately; test-only deterministic seam. */
+export function __runRefineRateLimitCleanupForTests(): void {
+  cleanupExpiredRateLimits();
 }
 
 // Start cleanup interval

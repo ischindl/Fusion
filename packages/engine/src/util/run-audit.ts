@@ -503,11 +503,38 @@ export type DatabaseMutationType =
   | "task:steering-comment:add"
   | "task:assign"
   | "task:checkout"
+  /*
+  FNXC:EventDrivenDispatch 2026-09-18-00:40:
+  FN-519. Metadata: { taskId?, nodeId?, wakeOrigin, phase, outcome, observedMs?, reasonCode? } — ids,
+  bounded enums, and one duration only. `wakeOrigin` names WHAT woke the lane (local publication,
+  remote notification, capacity release, owner cleanup, catch-up read, periodic backstop) and
+  `outcome` says whether the pass reached a claim or was refused, with `reasonCode` naming a refusal
+  from a fixed set. Purpose: before this event, "why did this card sit queued?" was unanswerable
+  after the fact — the binding gate lived only in a log line persisted nowhere — and the answer must
+  distinguish an added wait from a real gate, necessary I/O, and provider latency.
+
+  Deliberately EXCLUDED: prompts, titles, task content, reviewer prose, error text, blocker prose,
+  connection URLs, and secrets. `observedMs` is a wall-clock observation within ONE process; it is
+  never a duration computed between two unsynchronized clocks.
+
+  Emitted through `emitBoundedRunAudit` and never awaited before a claim or a handoff: a stalled
+  telemetry sink must not be able to delay the dispatch it describes.
+  */
+  | "task:dispatch-latency-observed"
   /* FNXC:ExternalBlock 2026-08-28-04:08: external-block telemetry contains ids and fixed classifications only; raw obstacle prose stays on the task. */
   | "task:external-block-parked"
   | "task:external-block-cleared"
   /** Metadata: { taskId, column, trigger, outcome, completedStepCount } */
   | "task:step-session-abort-contained"
+  /** Metadata: { taskId, blockerTaskIds, episodeCount, commonFileCount, decision, freshness } — paths and prose stay in the transactional receipt. */
+  | "task:overlap-wait-released"
+  /*
+  FNXC:OverlapWaitSynchronization 2026-09-15-19:20:
+  FN-429. Metadata: { taskId, blockerTaskId, repository, fromSha, toSha, proof, episodeCount } — a delivered
+  predecessor commit rewritten by an integration-branch rebase was proven equivalent to a commit the execution
+  checkout does contain. Ids and fixed outcomes only: paths, diffs, and summaries stay in the receipt.
+  */
+  | "task:overlap-delivery-reconciled"
   /** Metadata: { taskId, artifactKeys, owner, source, action, attempt, maxAttempts, nodeId? } */
   | "task:required-artifact-missing"
   /*
@@ -519,6 +546,8 @@ export type DatabaseMutationType =
   | "task:review-convergence-escalation"
   /** FNXC:ReviewVerdictNotes 2026-08-28-22:45: Records ids and fixed note-repair outcomes only; reviewer prose never enters run-audit. */
   | "task:review-notes-repaired"
+  /** FNXC:ReviewVerdictAuthority 2026-09-03-05:40: Records ids, the fixed repair outcome, and an authored repaired verdict only; reviewer prose never enters run-audit. */
+  | "task:review-verdict-repaired"
   /** FNXC:ReviewEmptyContent 2026-08-28-13:14: Records the ids-only terminal close for a provably empty Code Review input. */
   | "task:review-empty-content-parked"
   | "task:review-arbitration"
@@ -531,10 +560,26 @@ export type DatabaseMutationType =
    * Deduped on the gate signature, so a sustained stall emits one row, not one per poll.
    */
   | "task:plan-admission-throttled"
+  /*
+  * FNXC:PlanReplanSessionBudget 2026-09-21-10:45 (RUFU-251):
+  * One planner session was charged to, or refused by, the Plan Review replan budget.
+  * Metadata: { taskId, revisionKey, attempt, cap, remaining, outcome } where outcome is the fixed
+  * enum `consumed` | `exhausted` | `spec-complete-recycled`. Revision key, attempt, cap and
+  * remaining are the shared budget ledger's own values; reviewer feedback, PROMPT.md content and
+  * error prose are never recorded here.
+  */
+  | "task:plan-replan-session-failure-budget"
   | "agent:auto-recover-error-state"
   | "agent:reset-error-state-on-startup"
   | "agent:error-retry-exhausted"
   | "agent:error-parked-unrecoverable"
+  /*
+  FNXC:ProviderThrottleIsTransient 2026-09-30-13:37 (RUFU-286):
+  Records that a provider throttle envelope armed a bounded heartbeat re-probe cooldown. Metadata stays
+  ids/counts/outcomes-only (`agentId`, `attempt`, `limit`, `backoffMs`, fixed `source`); the provider error
+  text, model identifiers, and retry-after headers never enter run-audit.
+  */
+  | "agent:throttle-cooldown-armed"
   /*
   FNXC:RunAudit 2026-07-15-00:00:
   FN-8004 records a heartbeat move that lost a concurrent soft-delete using identifiers and timestamps only. Never place the failed run text or agent lastError in this event because the race is benign and audit metadata must remain structured.
@@ -583,9 +628,28 @@ export type DatabaseMutationType =
   /* FNXC:MissionAutoReconcile 2026-08-11-02:39: Periodic reconcile records only IDs, source enums, and bounded counters. */
   | "mission:reconcile-pass"
   | "task:auto-recover-branch-misbound"
+  /** Metadata: { taskId, source, branch, baseBranch, mergeSha, mergeStrategy, ownershipProof } — identifiers and fixed outcomes only. */
+  | "task:reconcile-absent-branch-landed"
+  /** Metadata: { taskId, source, branch, baseBranch, reason } — identifiers and fixed outcomes only. */
+  | "task:reconcile-absent-branch-unproven"
   | "task:auto-recover-misrouted-foreign-commit"
   | "task:auto-recover-foreign-only-contamination"
   | "task:auto-recover-foreign-only-contamination-skipped"
+  /*
+  FNXC:BranchConflictRecovery 2026-09-13-02:20:
+  RUFU-231: zero-loss proof recorded the moment the foreign-only classifier accepts a branch
+  (zero own commits, foreign content landed on a trusted integration identity), before any git
+  mutation. Metadata is ids/counts/fixed enums only (taskId, kind, trustedRefCount).
+  */
+  | "task:branch-conflict-zero-loss-proven"
+  /*
+  FNXC:BranchConflictRecovery 2026-09-13-01:20:
+  RUFU-231: terminal park emitted once when a branch-conflict refusal site's bounded
+  recovery budget (`recoveryRetryCount` vs `autoRecovery.maxRetries`) is spent. Metadata is
+  ids/counts/fixed-source only (taskId, attempt, maxRetries, source, terminal); refusal
+  prose and error text never enter run-audit.
+  */
+  | "task:branch-conflict-recovery-parked"
   | "task:auto-recover-node-unreachable"
   | "task:auto-recover-worktree-metadata-rebound"
   | "task:auto-recover-worktree-metadata-cleared"
@@ -594,8 +658,9 @@ export type DatabaseMutationType =
   | "task:auto-recover-paused-abort-park"
   // FNXC:Lifecycle FNXC_LOG 2026-06-20-00:00: audit type for reaping a leaked worktree/lease/semaphore slot whose holder left in-progress.
   | "task:reap-leaked-concurrency-slot"
-  // task:auto-archived-ghost-bug metadata: { findings: Array<{ construct: { kind: string; raw: string; filePath?: string; line?: number }; matched: boolean; probeError?: string; output?: string }>; reason: string }
-  // task:auto-archived-duplicate metadata: { siblingTaskIds: string[]; scores: Record<string, number> }
+  // Historical compatibility metadata: { findings: Array<{ construct: { kind: string; raw: string; filePath?: string; line?: number }; matched: boolean; probeError?: string; output?: string }>; reason: string }
+  // FNXC:GhostBugPreflight 2026-09-07-17:01: Auto-delete visibility records IDs, counts, and fixed outcomes only: { taskId, reason, constructCount, definitiveCount, missingCount, controlOutcome }.
+  | "task:auto-deleted-ghost-bug"
   | "task:auto-archived-ghost-bug"
   // FNXC:GhostBugPreflight 2026-09-17-00:00: detached, best-effort visibility emitted alongside the
   // task:auto-archived-ghost-bug activity row. Metadata is ids/counts/fixed-outcomes only:
@@ -603,6 +668,8 @@ export type DatabaseMutationType =
   // finding prose (that lives only in the task's logEntry, not run-audit).
   | "task:auto-archived-ghost-bug-visibility"
   | "task:auto-archived-duplicate"
+  /** Metadata: { taskId, source: "live-column" | "cold-storage", movedCount, restoredCount, outcome } */
+  | "task:reconcile-archived-into-done"
   /** Metadata: { taskId, attempts, maxAttempts, reason: "lineage-children" | "task-live" | "dependents" | "not-found" | "unknown" } */
   | "task:auto-archive-failure-budget-exhausted"
   | "task:auto-reconciled-self-defeating-dep"
@@ -659,13 +726,13 @@ export type DatabaseMutationType =
   /** Metadata: { shiftedTaskIds: [], downtimeMs, reason } */
   | "task:reconcile-engine-downtime-active-timing-no-action"
   /* FNXC:Workspace 2026-06-22-09:30 (Phase D U1) — workspace-mode self-healing run-audit events. */
-  /** Metadata: { taskId, landedRepos: string[], unlandedRepos: string[], failedRepos: string[], action: "re-enqueue" | "park-failed", reason } */
+  /** Metadata: { taskId, landedRepos: string[], unlandedRepos: string[], failedRepos: string[], action: "re-enqueue" | "re-enqueue-noop" | "re-enqueue-dropped" | "park-failed", reason, parkCleared?: boolean } */
   | "task:reconcile-workspace-partial-land"
   /** Metadata: { taskId, repo, resolution: "landed" | "not-landed" } */
   | "task:reconcile-workspace-land-intent"
   /** Metadata: { taskId, reason: "auto-merge-off" | "user-paused" | "live-worktree", livePaths: string[] } */
   | "task:reconcile-workspace-partial-land-no-action"
-  /** Metadata: { taskId, path, kind: "workspace-repo-land", registeredAt, ageMs, staleBindingAgeFloorMs, ownerColumn, ownerTerminalReason: "missing" | "complete" | "archived" | "deleted" | "failed" } */
+  /** Metadata: { taskId, path, kind: "workspace-repo-land", registeredAt, ageMs, staleBindingAgeFloorMs, ownerColumn, ownerTerminalReason: "missing" | "complete" | "deleted" | "failed" } */
   | "task:reclaim-phantom-workspace-land-lease"
   /** Metadata: { taskId, path, kind: "workspace-repo-acquire", registeredAt, ageMs, staleBindingAgeFloorMs, ownerColumn, ownerTerminalReason }. */
   | "task:reclaim-phantom-workspace-acquire-lease"
@@ -683,6 +750,15 @@ export type DatabaseMutationType =
   | "task:reconcile-stale-agent-assignment"
   /** Metadata: { taskId, canonicalId, canonicalColumn, canonicalDeleted, priorPausedReason } */
   | "task:reconcile-stale-duplicate-decision"
+  /*
+  FNXC:ApprovalHoldMoveClear 2026-09-25-11:12 (RUFU-297 defect B):
+  `reconcile-orphaned-non-convergence-holds` clears a drifted `code-review-non-convergence`
+  approval hold in place when no pre-merge step result carries the `failed`/`advisory_failure`
+  evidence the escalation was parked on. Metadata: { taskId, column, priorStatus, reasonCode,
+  outcome } — ids, the lane, the cleared status, the fixed reason code, and a fixed outcome;
+  never hold prose or reviewer text.
+  */
+  | "task:reconcile-orphaned-non-convergence-hold"
   /*
   FNXC:LegacyAdoption 2026-07-19-04:30 (U9b / R10 / KTD-8):
   Startup legacy-row adoption through the KTD-8 adoption table. Metadata is
@@ -734,6 +810,9 @@ export type DatabaseMutationType =
   | "task:completed-blocked-parked"
   /** Metadata: { taskId, priorColumn, priorStatus, source } */
   | "task:completed-blocked-advanced"
+  /* FNXC:TaskQueueOrder 2026-09-17-12:07: historical compatibility only. FN-509 retired the starved
+     refinement priority nudge with the priority system, so no live engine path emits this event;
+     the union member is kept so persisted rows remain readable. */
   | "task:auto-recover-starved-refinement"
   /** Metadata: { rawDiffFileCount: number; attributedFileCount: number; foreignCommitCount: number; foreignCommitShas: string[]; source: string } */
   | "task:worktree-contamination-detected"
@@ -880,6 +959,21 @@ export type DatabaseMutationType =
   | "memory:semantics-skipped"
   | "memory:capture-recorded"
   | "memory:capture-failed"
+  /*
+   * FNXC:MemoryBudget 2026-09-29-23:56:
+   * RUFU-279: long-term `MEMORY.md` grew to 594,273 bytes / 306 entries with zero `memory:*` rows in
+   * the store, because every memory row was gated behind the opt-in Memory Keeper runtime lane and no
+   * code path consolidated the file at all. These three rows are emitted by the default-on maintenance
+   * sweep (`runLongTermMemoryMaintenance`) instead, so breach evidence no longer depends on a toggle.
+   * Metadata is scope/ids/counts/fixed enums only: `scope` (project|agent), `agentId` (agent scope
+   * only), byte sizes, entry counts, `budgetBytes`, `overByBytes`, boolean findings, and the closed
+   * `stage` enum (read|too-large|backup|backup-scope|concurrent-write|write|verify). File paths, entry
+   * text, headings, diff text, and error class/message are never recorded; the file path lives on the
+   * engine log line, not in the audit row.
+   */
+  | "memory:long-term-over-budget"
+  | "memory:long-term-consolidated"
+  | "memory:long-term-consolidation-failed"
   | "task:in-review-stall-deadlock-disposed"
   | "task:in-review-stall-terminal-provider-error"
   | "task:finalize-unproven-blocked"
@@ -895,6 +989,18 @@ export type DatabaseMutationType =
   | "task:merge-boundary-unproven-parked"
   /** FNXC:WorkflowMergeRecovery 2026-09-20-19:38: Self-healing resumes a historic proofless park only after durable unfinished work and lifecycle ownership are re-verified. Metadata is ids/outcomes-only. */
   | "task:merge-boundary-evidence-recovered"
+  /**
+   * FNXC:ZeroCommitLandingProof 2026-09-25-12:20 (RUFU-274):
+   * One finalization lane refused to finalize a card whose branch carried zero commits while a checkout
+   * still held work (or could not be classified). Metadata is { taskId, source, code, pathCount,
+   * contentBasis, aheadCommitCount, pointersPreserved } — ids/counts/fixed enums only, never file paths
+   * or content. Emitted best-effort: a hostile audit sink cannot change the refusal.
+   */
+  | "task:zero-commit-landing-proof-refused"
+  /** FNXC:ZeroCommitLandingProof 2026-09-25-12:20 (RUFU-274): zero-ness or content could not be proven, so the lane deferred rather than finalizing. Metadata is ids/counts/fixed enums only. */
+  | "task:zero-commit-landing-proof-deferred"
+  /** FNXC:ZeroCommitLandingProof 2026-09-25-12:20 (RUFU-274): a re-probe showed the cause of a durable uncommitted-work hold is gone and the hold was cleared. Metadata is { taskId, source, priorCode } only. */
+  | "task:zero-commit-landing-proof-cleared"
   /** FNXC:MergeExecutionExclusion 2026-08-23-08:25: FN-180 records live-execution admission deferrals with ids and fixed signal/source/outcome enums only. */
   | "task:merge-admission-deferred-live-execution"
   /** FNXC:ConfirmedMergeFinalization 2026-08-23-08:25: FN-180 records counts-only reconciliation of stale checklist state after durable merge proof. */
@@ -923,7 +1029,7 @@ export type DatabaseMutationType =
   | "task:empty-merge-finalize-blocked-no-landed-proof"
   | "task:integrity-reconcile-modified-files"
   | "task:integrity-warning"
-  /** FN-5092 watchdog: stale `status: "merging"` / `"merging-pr"` cleared on a done/archived task. Metadata: { previousColumn, previousStatus, ageMs, mergeConfirmed?: boolean } */
+  /** FN-5092 watchdog: stale `status: "merging"` / `"merging-pr"` cleared on a workflow Complete task. Metadata: { previousColumn, previousStatus, ageMs, mergeConfirmed?: boolean } */
   | "task:auto-recover-stale-merger-status"
   | "auto-recovery:classify-decision"
   | "auto-recovery:retry-issued"
@@ -1035,6 +1141,26 @@ export type DatabaseMutationType =
    * Emitted at most once per taskId while the blocking provenance persists (deduped in-memory).
    * Metadata: { taskId, reason: "failure-provenance", sweep: "stuck-in-progress" | "stranded-todo", marker?: string }
    */
+  /**
+   * FNXC:StrandedContinuationReclaim 2026-09-22-14:21 (RUFU-263):
+   * The stranded-continuation reclaim sweep (FN-8901/FN-8902) — all three members, declared together
+   * because a caller that routes on a verdict emits whichever of the three its disposition names, and an
+   * undeclared literal only surfaces at runtime as an event row that no schema lists. `-requeued` and
+   * `-retired` shipped cast rather than declared; the no-action sibling is where that gap was noticed.
+   *
+   * `-requeued`: a stranded continuation was forced back to a claimable state. `-retired`: its task can no
+   * longer run it (missing/terminal), so the row was cancelled instead.
+   *
+   * `-no-action`: the sweep found a `held` continuation whose wait is REAL and therefore DEFERRED it on a
+   * durable `retryAfter` ladder instead of re-queueing it every maintenance pass. The row keeps its state
+   * and its `blockedReason`; this row is the only record that the sweep saw the condition and deliberately
+   * withheld recovery. Emitted at most once per (taskId, nodeId, state, blockedReason) condition while it
+   * persists (deduped in-memory; the durable bound is the deferral itself).
+   * Metadata: { taskId, workItemId, nodeId, kind, priorState, reason, stalenessMs, nextCheckAt }
+   */
+  | "workflowWorkItem:reconcile-stranded-requeued"
+  | "workflowWorkItem:reconcile-stranded-retired"
+  | "workflowWorkItem:reconcile-stranded-no-action"
   | "task:reconcile-stranded-completed-no-action"
   /**
    * FNXC:Lifecycle 2026-07-16-09:40:

@@ -94,8 +94,9 @@ import {
   MONITOR_APPROVAL_ISOLATION_SCHEMA_VERSION,
   MULTI_PROJECT_CUTOVER_SCHEMA_VERSION,
   MULTI_ROLE_WORKFLOW_AGENTS_VERSION,
-  OVERLAP_WAIT_SYNC_VERSION,
   OWNER_PROJECT_ID_SPLIT_VERSION,
+  OVERLAP_WAIT_SYNC_VERSION,
+  WHITEBOARDS_SCHEMA_VERSION,
   PATCHNODE_ENTRIES_VERSION,
   PLANNING_ACTIVE_TIMING_VERSION,
   PROJECT_OWNERSHIP_SCHEMA_VERSION,
@@ -118,6 +119,8 @@ import {
   TASK_RECOMMENDATIONS_VERSION,
   TASK_REPOSITORY_SCOPE_VERSION,
   TASK_REQUIRE_PLAN_APPROVAL_VERSION,
+  TASK_HUMAN_PLAN_APPROVAL_VERSION,
+  TASK_QUEUE_ORDER_VERSION,
   TASK_SOURCE_AGENT_INDEX_VERSION,
   TASK_STEP_REPORTS_VERSION,
   TASK_VERIFICATION_REQUEST_VERSION,
@@ -227,6 +230,13 @@ const OWNER_PROJECT_ID_SPLIT_TABLES = [
  * Early numbered migrations that add project objects must appear here in
  * version order. Skipping 0011 (or 0001/0002/0003/0005/0006) lets a later
  * present sentinel become the floor and leaves the omitted version stamped.
+ *
+ * FNXC:MergeRebuild0919 2026-09-19-21:45:
+ * Canonical's reimplementation of this registry is the same list minus this line's feature sentinels
+ * (FN-408 `tasks.human_plan_approval`, FN-509 `tasks.queue_boost`, FN-333 `project.whiteboards*`). A
+ * restored dump taken from this line's production database is missing exactly those objects when it
+ * predates them, so its sentinels stay: without them the rewind floor sits too high and those versions
+ * stay stamped while their objects are gone.
  */
 export const RESTORED_SCHEMA_RELATION_SENTINELS: readonly RestoredSchemaRelationSentinel[] = [
   {
@@ -364,8 +374,13 @@ export const RESTORED_SCHEMA_RELATION_SENTINELS: readonly RestoredSchemaRelation
   { version: TASK_STEP_REPORTS_VERSION, columns: [tasksColumn("step_reports")] },
   { version: TASK_EXTERNAL_BLOCK_VERSION, columns: [tasksColumn("external_block")] },
   { version: TASK_REQUIRE_PLAN_APPROVAL_VERSION, columns: [tasksColumn("require_plan_approval")] },
+  /* FNXC:HumanPlanApproval 2026-09-15-06:24: FN-408's per-card decision column participates in restore rewind detection. */
+  { version: TASK_HUMAN_PLAN_APPROVAL_VERSION, columns: [tasksColumn("human_plan_approval")] },
+  /* FNXC:TaskQueueOrder 2026-09-17-12:07: FN-509's durable Boost rank participates in restore rewind detection. */
+  { version: TASK_QUEUE_ORDER_VERSION, columns: [tasksColumn("queue_boost")] },
   { version: PATCHNODE_ENTRIES_VERSION, relations: ["project.patchnode_entries"] },
   { version: OVERLAP_WAIT_SYNC_VERSION, relations: ["project.task_overlap_waits"] },
+  { version: WHITEBOARDS_SCHEMA_VERSION, relations: ["project.whiteboards", "project.whiteboard_revisions"] },
 ];
 
 export async function detectRestoredSchemaRewindFloor(

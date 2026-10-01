@@ -87,7 +87,16 @@ function emitFailure(child: FakeChild, code: number, stderrMsg: string): void {
 
 const spawnMock = vi.fn();
 
-vi.mock("node:child_process", () => ({
+/*
+FNXC:NonInteractiveGit 2026-09-12-13:04 (RUFU-216):
+`pi-module.ts` now imports `@fusion/core` for the shared non-interactive git floor, and that barrel
+`promisify(execFile)`s at module init (`packages/core/src/git/git-repository.ts`). A whole-module replacement
+that exports only `spawn` therefore throws while the module graph is still loading, so only `spawn` is
+swapped and the real module supplies the rest — the same constraint RUFU-210 recorded for the hermes lane.
+Deliberately NOT mocking `@fusion/core`: this file must exercise the production floor, not a fake.
+*/
+vi.mock("node:child_process", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:child_process")>()),
   spawn: (...args: unknown[]) => spawnMock(...args),
 }));
 
@@ -526,5 +535,63 @@ describe("promptCli", () => {
       const [, args] = spawnMock.mock.calls[spawnMock.mock.calls.length - 1] as [string, string[]];
       expect(args).not.toContain("--local");
     }
+  });
+
+  /*
+  FNXC:NonInteractiveGit 2026-09-12-13:04 (RUFU-216):
+  The prompt-turn spawn previously passed no `env`, so the `openclaw` child inherited the host's interactive
+  git setup and a turn that shells out to git could block forever on an editor, a pager, or a credential
+  prompt (RUFU-210's measured immortal-orphan incident). The fixture installs hostile ambient values because
+  `packages/core/src/__test-utils__/vitest-setup.ts` nullish-assigns safe GIT_* defaults that would otherwise
+  mask the symptom, and the env is snapshot/restored exactly like the `resolveCliConfig` describe above so no
+  hostile value leaks into a sibling case.
+  */
+  describe("non-interactive git floor", () => {
+    const HOSTILE_ENV = {
+      GIT_EDITOR: "vi",
+      GIT_SEQUENCE_EDITOR: "humpty",
+      GIT_PAGER: "less",
+      GIT_TERMINAL_PROMPT: "1",
+      GIT_MERGE_AUTOEDIT: "yes",
+    };
+    const origEnv = { ...process.env };
+
+    beforeEach(() => {
+      Object.assign(process.env, HOSTILE_ENV);
+    });
+
+    afterEach(() => {
+      process.env = { ...origEnv };
+    });
+
+    it("floors the promptCli spawn instead of inheriting vi/less", async () => {
+      const child = makeFakeChild();
+      spawnMock.mockReturnValue(child);
+
+      const session = makeSession();
+      const run = promptCli(session, "hi", defaultConfig());
+      emitSuccess(child, makeSuccessJson({ text: "ok" }));
+      await run;
+
+      const { env } = spawnMock.mock.calls[0]![2] as { env: NodeJS.ProcessEnv };
+      expect(env.GIT_EDITOR).toBe("true");
+      expect(env.GIT_SEQUENCE_EDITOR).toBe("true");
+      expect(env.GIT_PAGER).toBe("cat");
+      expect(env.GIT_TERMINAL_PROMPT).toBe("0");
+      expect(env.GIT_MERGE_AUTOEDIT).toBe("no");
+      // The incident's own hostile values must not survive into the child (exact equality above already
+      // proves it; these negatives encode the symptom literally). A whole-env scan is deliberately avoided:
+      // vitest-setup's GIT_CONFIG_COUNT is legitimately "1", which collides with a fixture value.
+      expect(env.GIT_EDITOR).not.toBe("vi");
+      expect(env.GIT_SEQUENCE_EDITOR).not.toBe("humpty");
+      expect(env.GIT_PAGER).not.toBe("less");
+      expect(env.GIT_TERMINAL_PROMPT).not.toBe("1");
+      expect(env.GIT_MERGE_AUTOEDIT).not.toBe("yes");
+      // The floor is additive: replacing the child env wholesale would strip PATH and break binary lookup.
+      expect(env.PATH).toBe(origEnv.PATH);
+      // Design decision 1: scoped per spawn, never ambient — the operator's own terminal keeps its editor.
+      expect(process.env.GIT_EDITOR).toBe("vi");
+      expect(process.env.GIT_PAGER).toBe("less");
+    });
   });
 });

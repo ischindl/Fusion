@@ -31,6 +31,13 @@ function createStore(): TaskStore & EventEmitter {
   (emitter as any).moveTask = vi.fn().mockResolvedValue(undefined);
   (emitter as any).logEntry = vi.fn().mockResolvedValue(undefined);
   (emitter as any).recordRunAuditEvent = vi.fn().mockResolvedValue(undefined);
+  /*
+  FNXC:SelfHealingReclaim 2026-09-15-19:20:
+  FN-429. Declared intent: these ghost-branch cards carry NO pending overlap delivery evidence, so the
+  `tip-already-merged` reclaim is expected to run. Stating it explicitly keeps the withholding guard honest
+  instead of relying on an absent reader.
+  */
+  (emitter as any).listTaskOverlapWaits = vi.fn().mockResolvedValue([]);
   return emitter;
 }
 
@@ -67,7 +74,16 @@ describe("self-healing ghost branch reclaim", () => {
 
     expect(recovered).toBe(1);
     expect(store.updateTask).toHaveBeenCalledWith("FN-9001", expect.objectContaining({ worktree: null, branch: null, baseCommitSha: null }));
-    expect(store.moveTask).toHaveBeenCalledWith("FN-9001", "in-progress", expect.objectContaining({ preserveProgress: true, preserveResumeState: true }));
+    /*
+    FNXC:LifecycleContainment 2026-09-13 (RUFU-231 test reconciliation):
+    FN-207/FN-217 removed backward-move authority from recovery reasons — `self-healing-worktree-reclaim`
+    keeps the reclaimed card in its CURRENT lane (only a REVISE transition may move a card backward).
+    The pre-containment expectation `moveTask(FN-9001, "in-progress")` asserted a move the lifecycle
+    contract now refuses; assert the retained-in-place outcome instead (no store.moveTask, retention
+    log present).
+    */
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect(store.logEntry).toHaveBeenCalledWith("FN-9001", expect.stringContaining("Lifecycle recovery retained in 'in-review'"));
     expect(store.logEntry).toHaveBeenCalledWith("FN-9001", expect.stringContaining("[recovery] tip-already-merged FN-9001"));
     expect((store as any).recordRunAuditEvent).toHaveBeenCalledWith(expect.objectContaining({ mutationType: "branch:auto-reclaim", metadata: expect.objectContaining({ phase: "tip-already-merged" }) }));
   });

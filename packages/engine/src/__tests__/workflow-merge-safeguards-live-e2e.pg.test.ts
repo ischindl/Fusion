@@ -261,7 +261,7 @@ pgDescribe("live merge safeguards E2E: real store, real refusals", () => {
       .toEqual({ outcome: "blocked", reason: "missing-merge-confirmation" });
     const column = await persistedColumn("FN-SG-RENAMED");
     expect(column).toBe(RENAMED_VOCAB.review);
-    expect(["todo", "in-progress", "in-review", "done", "archived"]).not.toContain(column);
+    expect(["todo", "in-progress", "in-review", "done"]).not.toContain(column);
   });
   /* ── The MERGED board — U11's actual shape ────────────────────────────────────
      Every case above drives a board where intake and hold are SEPARATE columns. The
@@ -304,7 +304,7 @@ pgDescribe("live merge safeguards E2E: real store, real refusals", () => {
     expect(result.outcome).toBe("done");
     const column = await persistedColumn("FN-SG-MR");
     expect(column).toBe(MERGED_RENAMED_VOCAB.complete);
-    expect(["todo", "triage", "in-progress", "in-review", "done", "archived"]).not.toContain(column);
+    expect(["todo", "triage", "in-progress", "in-review", "done"]).not.toContain(column);
   });
 
   it("at-most-once holds on a merged+renamed board too", async () => {

@@ -23,9 +23,26 @@ const BADGE_LABEL_BY_CODE: Record<InReviewStallCode, string> = {
   "merge-blocker": "Merge blocked",
   "transient-merge-status-no-owner": "Merge stalled",
   "merge-retries-exhausted": "Retries exhausted",
-  "completed-review-status-none": "Merge retry stalled",
+  /*
+  FNXC:InReviewStallBadge 2026-09-28-18:56 (RUFU-393 era observation):
+  This badge used to read "Merge retry stalled". The classifier that produces this code REQUIRES
+  `mergeRetries === 0` (`packages/core/src/tasks/in-review-stall.ts`), so no merge retry had ever run
+  on any card carrying it — the label pointed the operator at merge-retry tooling for a state that
+  contains no retries at all. Measured the same day: 26 saneca `in-review` cards wore that badge while
+  their actual condition was a Code Review row that died with NO authored verdict. The badge now names
+  the observable fact (review finished, nothing merged) and the description carries both real causes.
+  The `merge-retries-exhausted` code keeps the retry wording, because there it is true.
+  */
+  "completed-review-status-none": "Review not merged",
   "no-worktree-no-merge-confirmed": "No worktree",
   "non-retryable-provider-error": "Provider error",
+  /*
+  FNXC:ReviewRevisionWait 2026-09-29-16:40 (RUFU-280):
+  The label names the observable fact (a reviewer asked for changes) and never the machinery. It is only
+  ever read on a surface that already opted in — this code is badge-suppressed below — so it exists to keep
+  the returned copy shape complete, the same role `held-human-review`'s badge label plays in the resolver.
+  */
+  "awaiting-review-revision": "Review corrections",
 };
 
 const COPY_BY_CODE: Record<InReviewStallCode, Omit<InReviewStallCopy, "badgeLabel" | "counter" | "code">> = {
@@ -48,11 +65,11 @@ const COPY_BY_CODE: Record<InReviewStallCode, Omit<InReviewStallCopy, "badgeLabe
       "Resolve the underlying merge problem manually and re-run the merge from the Review tab, or move the task back to in-progress.",
   },
   "completed-review-status-none": {
-    headline: "Completed review has no active merge",
+    headline: "Review finished but nothing was merged",
     description:
-      "All workflow steps are complete, but the task has no merge status or active merger. The automatic merge handoff did not durably start.",
+      "Every workflow step is done or skipped, yet the card has no status, no error, and zero merge retries — so this is not a retry that stalled. Two shapes produce it: a required review gate whose latest row has NO authored verdict (the review session died), or an approved card whose auto-merge hand-off never durably started.",
     suggestedAction:
-      "Retry the task to restart merge recovery. If the task-owned work is already on the target branch, use reconciliation to finalize it safely.",
+      "Open the Review tab. A missing verdict needs no manual repair — the no-verdict recovery re-seeds that gate and lifts the stall park itself. When a verdict exists, Retry restarts the merge hand-off.",
   },
   "no-worktree-no-merge-confirmed": {
     headline: "No worktree on disk and merge not confirmed",
@@ -60,6 +77,19 @@ const COPY_BY_CODE: Record<InReviewStallCode, Omit<InReviewStallCopy, "badgeLabe
       "The task's working tree is gone but the merge was never confirmed. Either the worktree was removed prematurely or the merge metadata is incomplete.",
     suggestedAction:
       "Check the Changes tab and Git history; if the work landed, mark the merge confirmed, otherwise re-create the worktree.",
+  },
+  /*
+  FNXC:ReviewRevisionWait 2026-09-29-16:40 (RUFU-280):
+  The state this code names is the review loop WORKING, so the copy must not read as a fault: no "blocked",
+  no pointer at merge-retry tooling (there is no retry to retry), and no instruction to intervene while the
+  remediation steps are still advancing. The operator's real action is to notice when they stop.
+  */
+  "awaiting-review-revision": {
+    headline: "Applying review corrections",
+    description:
+      "The latest code review authored a REVISE verdict and this card still has unfinished remediation steps. The engine is executing them, which is why the card sits in review without being stalled.",
+    suggestedAction:
+      "Let the next review round run. Open the Review tab only if the remediation steps stop advancing; Retry or a manual fix is for a card that stops producing progress, not for one mid-correction.",
   },
   "non-retryable-provider-error": {
     headline: "Terminal provider error",
@@ -165,6 +195,10 @@ visual affordance is withheld — so the Review tab, run-audit, and self-healing
 
 - `no-worktree-no-merge-confirmed`: never surfaced as a badge.
 - `merge-blocker`: ordinary waiting stays quiet; a current failed pre-merge gate overrides suppression.
+- `awaiting-review-revision` (RUFU-280): a REVISE verdict with unfinished remediation is the review loop
+  mid-flight, and the executor's remediation steps already name that work on the card. Badging it would
+  mark routine revision abnormal — the same reasoning that quiets `merge-blocker`, and the reason the
+  notification wedge table admits it as `null` rather than an alert.
 
 The other codes (transient-merge-status-no-owner, merge-retries-exhausted, non-retryable-provider-error)
 still badge — they report genuinely stuck states needing an operator.
@@ -172,6 +206,7 @@ still badge — they report genuinely stuck states needing an operator.
 const BADGE_SUPPRESSED_CODES: ReadonlySet<InReviewStallCode> = new Set([
   "no-worktree-no-merge-confirmed",
   "merge-blocker",
+  "awaiting-review-revision",
 ]);
 
 export function shouldShowInReviewStallBadge(

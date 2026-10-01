@@ -34,6 +34,15 @@ export interface ChatInFlightGenerationState {
   toolCalls: ChatInFlightToolCall[];
   replayFromEventId: number;
   updatedAt: string;
+  /**
+   * FNXC:ChatInFlightRecovery 2026-08-20-20:17:
+   * Liveness timestamp stamped when a generation starts (RUFU-144). A generation cannot
+   * outlive the dashboard process that started it and no owner/PID is recorded, so
+   * `startedAt` (fallback: the session's `updated_at` for pre-fix legacy rows) is the
+   * liveness proof the engine self-healing sweep uses to clear flags older than its
+   * staleness floor. Optional because rows written before this field existed lack it.
+   */
+  startedAt?: string;
 }
 
 export interface ChatTag {
@@ -117,6 +126,19 @@ export type ChatSessionSummary = ChatSession;
  * The server enriches sessions with lastMessagePreview and lastMessageAt
  * by fetching the most recent message for each session.
  */
+export interface ChatSessionCursor {
+  pinnedAt: string | null;
+  updatedAt: string;
+  id: string;
+}
+
+export interface ChatSessionPage {
+  sessions: ChatSession[];
+  total: number;
+  hasMore: boolean;
+  nextCursor: string | null;
+}
+
 export type EnrichedChatSession = ChatSession & {
   /** Preview of the last message in the session (truncated to 100 chars) */
   lastMessagePreview?: string;
@@ -289,7 +311,10 @@ export interface ChatSessionUpdateInput {
 
 /**
  * Filter options for retrieving messages.
- * Supports cursor-based pagination via `before` timestamp.
+ * Supports legacy timestamp pagination and strict tuple pagination.
+ *
+ * FNXC:ChatMessagePagination 2026-09-06-13:40:
+ * A timestamp alone is not a total cursor because bursts can contain more rows than one page with the same creation time. Pairing `before` with `beforeId` follows the store's `(createdAt, id)` order and preserves every older row; omitting the ID deliberately retains the inclusive legacy contract.
  */
 export interface ChatMessagesFilter {
   /** Maximum number of messages to return */
@@ -301,6 +326,8 @@ export interface ChatMessagesFilter {
    * Used for loading older messages in a conversation.
    */
   before?: string;
+  /** ID tie-breaker paired with `before` for a strict total cursor. */
+  beforeId?: string;
   /** Sort order: 'asc' (oldest first, default) or 'desc' (newest first) */
   order?: "asc" | "desc";
 }

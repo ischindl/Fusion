@@ -33,12 +33,23 @@ function waitForExit(child: ChildProcess): Promise<void> {
   });
 }
 
+// FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210): every buildSpawnEnv result carries this
+// fixed floor on top of the allow-list copy — the tests below assert the allow-list semantics
+// (only listed vars cross, secrets never do) PLUS exactly these keys.
+const GIT_FLOOR = {
+  GIT_EDITOR: "true",
+  GIT_SEQUENCE_EDITOR: "true",
+  GIT_PAGER: "cat",
+  GIT_TERMINAL_PROMPT: "0",
+  GIT_MERGE_AUTOEDIT: "no",
+};
+
 describe("buildSpawnEnv (KTD6b allow-list)", () => {
-  it("returns an empty env for an empty allow-list", () => {
+  it("returns only the git floor for an empty allow-list", () => {
     process.env.ACP_TEST_SECRET = "super-secret-value";
     try {
       const env = buildSpawnEnv([]);
-      expect(Object.keys(env)).toHaveLength(0);
+      expect(env).toEqual(GIT_FLOOR);
       expect(env.ACP_TEST_SECRET).toBeUndefined();
     } finally {
       delete process.env.ACP_TEST_SECRET;
@@ -52,7 +63,7 @@ describe("buildSpawnEnv (KTD6b allow-list)", () => {
     process.env.ANTHROPIC_AUTH_TOKEN = "do-not-forward";
     try {
       const env = buildSpawnEnv(["ACP_TEST_ALLOWED"]);
-      expect(env).toEqual({ ACP_TEST_ALLOWED: "ok" });
+      expect(env).toEqual({ ACP_TEST_ALLOWED: "ok", ...GIT_FLOOR });
       expect(env.ACP_TEST_SECRET).toBeUndefined();
       expect(env.ANTHROPIC_API_KEY).toBeUndefined();
       expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
@@ -75,7 +86,7 @@ describe("buildSpawnEnv (KTD6b allow-list)", () => {
         EXTRA_SECRET: "do-not-forward",
       },
     });
-    expect(env).toEqual({ HOME: "/Users/tester", PATH: "/usr/bin" });
+    expect(env).toEqual({ HOME: "/Users/tester", PATH: "/usr/bin", ...GIT_FLOOR });
   });
 
   it("rejects the Claude bridge env when HOME is missing", () => {

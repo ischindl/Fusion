@@ -35,7 +35,7 @@ describe("useTaskDiffStats", () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     expect(result.current.stats).toEqual({ filesChanged: 2, additions: 15, deletions: 2 });
-    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-123", undefined, undefined);
+    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-123", undefined, undefined, true);
   });
 
   it("passes projectId to fetchTaskDiff", async () => {
@@ -50,7 +50,7 @@ describe("useTaskDiffStats", () => {
 
     await waitFor(() => expect(result.current.loading).toBe(false));
 
-    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-123", undefined, "proj-1");
+    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-123", undefined, "proj-1", true);
   });
 
   it("fetches for active columns without a worktree", async () => {
@@ -71,7 +71,7 @@ describe("useTaskDiffStats", () => {
 
     expect(inProgress.current.stats).toEqual({ filesChanged: 2, additions: 4, deletions: 1 });
     expect(inReview.current.stats).toEqual({ filesChanged: 2, additions: 4, deletions: 1 });
-    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-123", undefined, undefined);
+    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-123", undefined, undefined, true);
   });
 
   it("fetches diff stats for active tasks with a worktree", async () => {
@@ -95,7 +95,7 @@ describe("useTaskDiffStats", () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     expect(result.current.stats).toEqual({ filesChanged: 1, additions: 10, deletions: 2 });
-    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-123", "/repo/.worktrees/fn-123", "proj-1");
+    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-123", "/repo/.worktrees/fn-123", "proj-1", true);
   });
 
   it("fetches for done tasks even when commit SHA is missing", async () => {
@@ -111,7 +111,7 @@ describe("useTaskDiffStats", () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     expect(result.current.stats).toEqual({ filesChanged: 4, additions: 20, deletions: 6 });
-    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-123", undefined, undefined);
+    expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-123", undefined, undefined, true);
   });
 
   it("does not fetch for empty task ID", async () => {
@@ -153,8 +153,9 @@ describe("useTaskDiffStats", () => {
       { initialProps: { taskId: "FN-100" } },
     );
 
-    // Rerender with a different taskId before the first fetch resolves
+    // Rerender with a different taskId before the first fetch resolves. No stale A state reaches B's render.
     rerender({ taskId: "FN-200" });
+    expect(result.current.stats).toBeNull();
 
     // Resolve the first (now cancelled) request
     resolveFirst!({
@@ -340,6 +341,49 @@ describe("useTaskDiffStats", () => {
       expect(second.current.loading).toBe(false);
       expect(second.current.stats).toEqual({ filesChanged: 7, additions: 30, deletions: 3 });
       expect(mockFetchTaskDiff).not.toHaveBeenCalled();
+    });
+
+    /*
+    FNXC:TaskDiffStats 2026-09-10-04:03:
+    The stats-only transport flag must NOT become cache identity: the key stays
+    (taskId, projectId, worktree, version, mode). These two observable halves are the proof — a same-mode
+    remount with identical key parts still hits the cache without a second request, while the OTHER mode
+    with every other part identical still gets its own entry. If `statsOnly` ever leaked into the key, or
+    `mode` were dropped, one of the two fetch counts below changes.
+    */
+    it("keeps the mode-partitioned cache key unchanged now that stats arrive stats-only", async () => {
+      mockFetchTaskDiff
+        .mockResolvedValueOnce({ stats: { filesChanged: 3, additions: 12, deletions: 2 } })
+        .mockResolvedValueOnce({ stats: { filesChanged: 4, additions: 14, deletions: 1 } });
+
+      // `mergeSignature` keys done mode and `stepVersion` keys active mode; both are set to the SAME
+      // version string so the only difference between the two keys below is the mode itself.
+      const options = { mergeSignature: "v1", stepVersion: "v1" };
+
+      const { result: doneFirst } = renderHook(() =>
+        useTaskDiffStats("FN-CACHE-KEY", "done", "abc1234", undefined, options),
+      );
+      await waitFor(() => expect(doneFirst.current.loading).toBe(false));
+      expect(doneFirst.current.stats).toEqual({ filesChanged: 3, additions: 12, deletions: 2 });
+
+      const { result: doneRepeat } = renderHook(() =>
+        useTaskDiffStats("FN-CACHE-KEY", "done", "abc1234", undefined, options),
+      );
+      expect(doneRepeat.current.loading).toBe(false);
+      expect(doneRepeat.current.stats).toEqual({ filesChanged: 3, additions: 12, deletions: 2 });
+      expect(mockFetchTaskDiff).toHaveBeenCalledTimes(1);
+
+      const { result: activeOtherMode } = renderHook(() =>
+        useTaskDiffStats("FN-CACHE-KEY", "in-progress", "abc1234", undefined, options),
+      );
+      await waitFor(() => expect(activeOtherMode.current.loading).toBe(false));
+      expect(activeOtherMode.current.stats).toEqual({ filesChanged: 4, additions: 14, deletions: 1 });
+      expect(mockFetchTaskDiff).toHaveBeenCalledTimes(2);
+
+      // The flag rides on every request and nowhere in the key.
+      for (const call of mockFetchTaskDiff.mock.calls) {
+        expect(call[3]).toBe(true);
+      }
     });
 
     it("caches stats separately per task ID", async () => {
@@ -593,13 +637,48 @@ describe("useTaskDiffStats", () => {
 
       await waitFor(() => expect(result.current.stats).toEqual({ filesChanged: 1, additions: 5, deletions: 1 }));
       expect(result.current.loading).toBe(false);
-      expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-STEP", "/repo/.worktrees/fn-step", undefined);
+      expect(mockFetchTaskDiff).toHaveBeenCalledWith("FN-STEP", "/repo/.worktrees/fn-step", undefined, true);
       expect(mockFetchTaskDiff).toHaveBeenCalledTimes(1);
 
       rerender({ stepVersion: 2 as number | string });
 
       await waitFor(() => expect(result.current.stats).toEqual({ filesChanged: 3, additions: 10, deletions: 2 }));
       expect(result.current.loading).toBe(false);
+      expect(mockFetchTaskDiff).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not expose cached stats after the active task snapshot changes without step changes", async () => {
+      mockFetchTaskDiff
+        .mockResolvedValueOnce({
+          files: [],
+          stats: { filesChanged: 1, additions: 5, deletions: 1 },
+        })
+        .mockResolvedValueOnce({
+          files: [],
+          stats: { filesChanged: 3, additions: 10, deletions: 2 },
+        });
+
+      const { result, rerender } = renderHook(
+        ({ snapshotVersion }) => useTaskDiffStats(
+          "FN-SNAPSHOT",
+          "in-progress",
+          undefined,
+          "project-a",
+          {
+            worktree: "/repo/.worktrees/fn-snapshot",
+            stepVersion: "unchanged-steps",
+            snapshotVersion,
+          },
+        ),
+        { initialProps: { snapshotVersion: "updated-1:[src/a.ts]" } },
+      );
+
+      await waitFor(() => expect(result.current.stats).toEqual({ filesChanged: 1, additions: 5, deletions: 1 }));
+
+      rerender({ snapshotVersion: "updated-2:[src/a.ts,src/b.ts,src/c.ts]" });
+      expect(result.current.stats).toBeNull();
+
+      await waitFor(() => expect(result.current.stats).toEqual({ filesChanged: 3, additions: 10, deletions: 2 }));
       expect(mockFetchTaskDiff).toHaveBeenCalledTimes(2);
     });
 

@@ -1,7 +1,8 @@
+import { ViewHeader } from "./ViewHeader";
 import "./ModelOnboardingModal.css";
 import "./SetupWizardModal.css";
 import { lazy, Suspense, useState, useEffect, useCallback, useRef, useMemo, type KeyboardEvent, type ReactNode } from "react";
-import { X, Loader2, CheckCircle, Key, Zap, GitPullRequest, Rocket, Plus, Sparkles, UserRound } from "lucide-react";
+import { Loader2, CheckCircle, Key, Zap, GitPullRequest, Rocket, Plus, Sparkles, UserRound } from "lucide-react";
 import { getErrorMessage, type Task } from "@fusion/core";
 import type { AuthProvider, ManualOAuthCodeInfo, ModelInfo, CustomProvider, CustomProviderConfig, OAuthDeviceCodeInfo } from "../api";
 import {
@@ -71,7 +72,20 @@ const mapLegacyCustomProviderToConfig = (
         ? "anthropic-messages"
         : "openai-responses",
   apiKey: provider.apiKey,
-  models: provider.models?.map((model) => ({ id: model.id, name: model.name })) ?? [],
+  // FNXC:CustomProviderModelWindows 2026-08-19-16:01:
+  // RUFU-123: carry persisted per-model contextWindow/maxTokens into the legacy form config
+  // so the row editor's numeric fields pre-fill on edit (the old mapping dropped them).
+  // FNXC:CustomProviderThinkingFormat 2026-08-21-06:40: RUFU-143 same for the per-model
+  // thinking flags — thinkingFormat when set, reasoning only when false (the only meaningful
+  // value; absent/true is the presumed-thinking-capable default).
+  models: provider.models?.map((model) => ({
+    id: model.id,
+    name: model.name,
+    ...(model.contextWindow !== undefined ? { contextWindow: model.contextWindow } : {}),
+    ...(model.maxTokens !== undefined ? { maxTokens: model.maxTokens } : {}),
+    ...(model.thinkingFormat !== undefined ? { thinkingFormat: model.thinkingFormat } : {}),
+    ...(model.reasoning === false ? { reasoning: false } : {}),
+  })) ?? [],
 });
 
 /** Provider-specific API key setup metadata for onboarding form rendering */
@@ -2625,16 +2639,27 @@ export function ModelOnboardingModal({
       className="floating-window--model-onboarding"
       defaultSize={{ width: 720, height: 640 }}
       minSize={{ width: 360, height: 280 }}
-      persistGeometryKey="floating-window:model-onboarding"
       suspendGeometryPersistenceOnMobile
       suspendGeometryPersistenceOnShortViewport
       ariaLabel={t("setup.titleAiSetup", "Set Up AI")}
       ariaLabelledBy="onboarding-title"
     >
       <div className="modal model-onboarding-modal">
-        {/* Header */}
-        <div className="model-onboarding-header">
-          <h2 id="onboarding-title" className="model-onboarding-title">
+        {/*
+        FNXC:StandardizedViewLayout 2026-09-13-22:40:
+        FN-379 remediation: onboarding shares the canonical header; the per-step identity stays rich title
+        content and the skip control stays the canonical close affordance.
+        */}
+        <ViewHeader
+          className="model-onboarding-header"
+          titleId="onboarding-title"
+          onClose={step !== "complete" ? handleDismiss : undefined}
+          closeButtonProps={{
+            "aria-label": t("setup.skipOnboardingAriaLabel", "Skip onboarding"),
+            title: t("setup.skipForNow", "Skip for now"),
+          }}
+          title={(
+          <>
             {step === "ai-setup" && (
               <>
                 <Zap size={24} /> {t("setup.titleAiSetup", "Set Up AI")} <span className="onboarding-optional-badge">{t("setup.optionalBadge", "Optional")}</span>
@@ -2665,18 +2690,9 @@ export function ModelOnboardingModal({
                 <CheckCircle size={24} /> {t("setup.titleAllSet", "All Set!")}
               </>
             )}
-          </h2>
-          {step !== "complete" && (
-            <button
-              className="modal-close"
-              onClick={handleDismiss}
-              aria-label={t("setup.skipOnboardingAriaLabel", "Skip onboarding")}
-              title={t("setup.skipForNow", "Skip for now")}
-            >
-              <X size={20} />
-            </button>
+          </>
           )}
-        </div>
+        />
 
         {/* Step indicator - progress steps + complete */}
         <div className="model-onboarding-steps">

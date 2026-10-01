@@ -1,5 +1,57 @@
-import { CONSECUTIVE_TOOL_FAILURE_RETRY_THRESHOLD, DEFAULT_MAX_AUTO_MERGE_RETRIES } from "../tasks/in-review-stall.js";
-import type { CliAgentSettings, GlobalSettings, McpSecretRef, McpServerDefinition, ProjectSettings, Settings } from "../types.js";
+import { CONSECUTIVE_TOOL_FAILURE_RETRY_THRESHOLD, DEFAULT_IN_REVIEW_STALL_DEADLOCK_THRESHOLD, DEFAULT_MAX_AUTO_MERGE_RETRIES } from "../tasks/in-review-stall.js";
+import type { ChatSnippet, CliAgentSettings, GlobalSettings, McpSecretRef, McpServerDefinition, ProjectSettings, Settings } from "../types.js";
+
+export const CHAT_SNIPPET_MAX_ENTRIES = 50;
+export const CHAT_SNIPPET_MAX_NAME_LENGTH = 48;
+export const CHAT_SNIPPET_MAX_PROMPT_LENGTH = 4_000;
+export const CHAT_SNIPPET_RESERVED_NAMES = Object.freeze([
+  "steer",
+  "focus",
+  "clear",
+  "new",
+  "skill",
+] as const);
+
+const CHAT_SNIPPET_NAME_PATTERN = /^[\p{L}\p{N}_-]+$/u;
+
+export function normalizeChatSnippetName(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const name = raw.normalize("NFKC").trim().toLowerCase();
+  if (
+    name.length === 0
+    || name.length > CHAT_SNIPPET_MAX_NAME_LENGTH
+    || !CHAT_SNIPPET_NAME_PATTERN.test(name)
+    || (CHAT_SNIPPET_RESERVED_NAMES as readonly string[]).includes(name)
+  ) {
+    return null;
+  }
+  return name;
+}
+
+/*
+FNXC:ChatSnippets 2026-09-03-15:56:
+Normalize global snippets at one shared browser/core boundary. The first valid canonical duplicate wins, prompts remain byte-for-byte operator text, and invalid entries are removed rather than truncated or silently repaired.
+*/
+export function normalizeChatSnippets(value: unknown): ChatSnippet[] {
+  if (!Array.isArray(value)) return [];
+  const snippets: ChatSnippet[] = [];
+  const seenNames = new Set<string>();
+  for (const candidate of value) {
+    if (snippets.length >= CHAT_SNIPPET_MAX_ENTRIES) break;
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+    const entry = candidate as Record<string, unknown>;
+    const name = normalizeChatSnippetName(entry.name);
+    if (!name || seenNames.has(name) || typeof entry.prompt !== "string") continue;
+    if (entry.prompt.trim().length === 0 || entry.prompt.length > CHAT_SNIPPET_MAX_PROMPT_LENGTH) continue;
+    seenNames.add(name);
+    snippets.push({ name, prompt: entry.prompt });
+  }
+  return snippets;
+}
+
+export function readChatSnippets(settings: { chatSnippets?: unknown }): ChatSnippet[] {
+  return normalizeChatSnippets(settings.chatSnippets);
+}
 
 export interface MergeRequestContractShadowSettingsSource {
   mergeRequestContractShadowEnabled?: boolean;
@@ -63,31 +115,7 @@ type MovedProjectSettingsKey =
   | "reviewConvergenceEscalationModelId"
   | "reviewArbitrationEnabled"
   | "reviewArbitrationProvider"
-  | "reviewArbitrationModelId"
-  | "executionProvider"
-  | "executionCredentialInstanceId"
-  | "executionModelId"
-  | "executionThinkingLevel"
-  | "executionFallbackProvider"
-  | "executionFallbackCredentialInstanceId"
-  | "executionFallbackModelId"
-  | "executionFallbackThinkingLevel"
-  | "planningProvider"
-  | "planningCredentialInstanceId"
-  | "planningModelId"
-  | "planningThinkingLevel"
-  | "planningFallbackProvider"
-  | "planningFallbackCredentialInstanceId"
-  | "planningFallbackModelId"
-  | "planningFallbackThinkingLevel"
-  | "validatorProvider"
-  | "validatorCredentialInstanceId"
-  | "validatorModelId"
-  | "validatorThinkingLevel"
-  | "validatorFallbackProvider"
-  | "validatorFallbackCredentialInstanceId"
-  | "validatorFallbackModelId"
-  | "validatorFallbackThinkingLevel";
+  | "reviewArbitrationModelId";
 
 type NonDefaultProjectSettingsKey = "ephemeralAgentTaskCreationPolicy" | "selectedWorkflowModelLanes";
 type ProjectSettingsSchema = Omit<ProjectSettings, MovedProjectSettingsKey | NonDefaultProjectSettingsKey>;
@@ -130,6 +158,12 @@ export const DEFAULT_GLOBAL_SETTINGS = {
   New users and unset installs should start on Shadcn Ember. Existing users who explicitly stored colorTheme "default", "ocean", or another valid theme must remain on that selection, so the ids stay valid and only the absence/default seed changes to "shadcn-ember".
   */
   colorTheme: "shadcn-ember",
+  /*
+  FNXC:UiStyleAxis 2026-09-15-00:20:
+  FN-399 adds the independent interface-style axis. "classic" is the seeded default so upgrading an
+  existing install changes no shape; the "clean" grammar is opt-in and never implied by a colour choice.
+  */
+  uiStyle: "classic",
   shadcnCustomColors: undefined,
   dashboardFontScalePct: 100,
   /*
@@ -148,16 +182,23 @@ export const DEFAULT_GLOBAL_SETTINGS = {
   */
   localNetworkDiscoveryEnabled: true,
   /*
-  FNXC:DashboardShortcuts 2026-07-04-00:00:
-  Global dashboard shortcuts must hydrate with documented safe defaults even when old settings files are missing the object. Space opens Quick Chat; Ctrl+` opens Terminal without colliding with common browser find/search accelerators. FN-7553 adds openFiles (Ctrl+E), openSettings (Ctrl+,), openCommandCenter (Ctrl+K), and newTask (Ctrl+Shift+N) — chosen to avoid colliding with the base two or each other. Empty strings are preserved so operators can disable an action.
+  FNXC:DashboardShortcuts 2026-09-14-10:42:
+  FN-390 makes modal visibility a generic, explicitly configured action. Its empty default prevents a dashboard modal from being chosen implicitly; the remaining documented shortcuts retain their existing defaults. Empty strings are preserved so operators can disable any action.
   */
   dashboardKeyboardShortcuts: {
-    quickChat: "Space",
+    toggleModalVisibility: "",
     terminal: "Ctrl+`",
     openFiles: "Ctrl+E",
     openSettings: "Ctrl+,",
     openCommandCenter: "Ctrl+K",
     newTask: "Ctrl+Shift+N",
+    /*
+    FNXC:DashboardShortcuts 2026-09-16-02:27:
+    FN-441: Ctrl+Shift+L opens the chat list. It avoids every binding already taken here (Ctrl+`, Ctrl+E,
+    Ctrl+, , Ctrl+K, Ctrl+Shift+N) and the browser-reserved combinations (Ctrl+Shift+C/I/J/K devtools,
+    Ctrl+Shift+N private window), so the shipped default set stays conflict-free.
+    */
+    openChatList: "Ctrl+Shift+L",
   },
   /*
   FNXC:ModalDismissal 2026-06-29-00:00:
@@ -174,11 +215,41 @@ export const DEFAULT_GLOBAL_SETTINGS = {
   Quick Add keeps its historical Enter-to-submit behavior by default; only an operator's global preference may opt into newline-first entry.
   */
   quickAddSubmitOnEnter: true,
+  /*
+  FNXC:ChatComposer 2026-09-06-01:54:
+  Le comportement automatique des trois composeurs insère une nouvelle ligne pour un pointeur tactile primaire et conserve l’envoi par Entrée avec une souris, y compris dans une fenêtre étroite. Cette préférence d’opérateur reste globale et ne s’applique qu’à Entrée sans Cmd/Ctrl ni Shift, après l’autocomplétion, Shift et la garde IME propre au Chat de tâche.
+  */
+  chatSubmitOnEnter: "auto",
+  /*
+  FNXC:OperatorLanguage 2026-09-15-07:18:
+  The operator's prose language for agent-generated text (mailbox, reports, logs, verdicts, chat
+  replies). Default "auto": mirror each incoming message's language, which leaves autonomous lanes
+  on today's English. buildOperatorLanguageDirective turns a concrete code into the prompt directive
+  injected into every operator-facing lane. Kept present-but-string (not undefined) so scope-key
+  derivation and the settings-defaults guard see a stated default matching the UI's "Automatic".
+  */
+  operatorLanguage: "auto",
+  /*
+  FNXC:ChatSnippets 2026-09-03-15:56:
+  Keep the optional global key present but undefined so scope-key derivation remains complete without sharing a mutable default array. readChatSnippets supplies a fresh effective empty list.
+  */
+  chatSnippets: undefined,
   language: undefined,
   defaultProvider: undefined,
   defaultCredentialInstanceId: undefined,
   defaultModelId: undefined,
   testMode: undefined,
+  /*
+  FNXC:VerificationResourceBound 2026-09-10-03:38:
+  Machine-wide verification resource bounds stay undefined here on purpose: the built-in defaults
+  (half-core-count quota, below-neutral weight, no memory ceiling) are derived by the engine's
+  resource-bound resolver from the actual core count, and the key must read as absent (not 0, which
+  means "operator disabled the bound") for that derivation to apply. Declared present so scope-key
+  derivation covers them.
+  */
+  verificationCpuQuotaPercent: undefined,
+  verificationCpuIoWeight: undefined,
+  verificationMemoryMaxMb: undefined,
   voiceInput: undefined,
   modelPricingOverrides: undefined,
   modelPricingFetchedAt: undefined,
@@ -308,16 +379,32 @@ export const DEFAULT_GLOBAL_SETTINGS = {
   */
   useOmpCli: undefined,
   ompCliBinaryPath: undefined,
-  // Global baseline lanes for per-role model selection
+  /*
+  FNXC:ModelResolution 2026-09-14-19:07:
+  Each global pipeline role owns a complete primary and fallback lane, including account and
+  thinking companions. The shared fallback remains the final compatibility tier only.
+  */
   executionGlobalProvider: undefined,
   executionGlobalCredentialInstanceId: undefined,
   executionGlobalModelId: undefined,
+  executionGlobalFallbackProvider: undefined,
+  executionGlobalFallbackCredentialInstanceId: undefined,
+  executionGlobalFallbackModelId: undefined,
+  executionGlobalFallbackThinkingLevel: undefined,
   planningGlobalProvider: undefined,
   planningGlobalCredentialInstanceId: undefined,
   planningGlobalModelId: undefined,
+  planningGlobalFallbackProvider: undefined,
+  planningGlobalFallbackCredentialInstanceId: undefined,
+  planningGlobalFallbackModelId: undefined,
+  planningGlobalFallbackThinkingLevel: undefined,
   validatorGlobalProvider: undefined,
   validatorGlobalCredentialInstanceId: undefined,
   validatorGlobalModelId: undefined,
+  validatorGlobalFallbackProvider: undefined,
+  validatorGlobalFallbackCredentialInstanceId: undefined,
+  validatorGlobalFallbackModelId: undefined,
+  validatorGlobalFallbackThinkingLevel: undefined,
   titleSummarizerGlobalProvider: undefined,
   titleSummarizerGlobalCredentialInstanceId: undefined,
   titleSummarizerGlobalModelId: undefined,
@@ -328,6 +415,10 @@ export const DEFAULT_GLOBAL_SETTINGS = {
   mergerGlobalProvider: undefined,
   mergerGlobalCredentialInstanceId: undefined,
   mergerGlobalModelId: undefined,
+  mergerGlobalFallbackProvider: undefined,
+  mergerGlobalFallbackCredentialInstanceId: undefined,
+  mergerGlobalFallbackModelId: undefined,
+  mergerGlobalFallbackThinkingLevel: undefined,
   /*
   FNXC:GitHubImportTranslate 2026-07-15-09:30:
   Global import-translate baseline lane. Undefined falls through to the summarization lane then defaultProvider/defaultModelId at resolve time.
@@ -482,8 +573,6 @@ export const DEFAULT_PROJECT_SETTINGS = {
   maxRecommendationsPerTask: 3,
   // FNXC:TaskRecommendations 2026-08-19-13:05: explicit recommendation evaluation is opt-in and only applies while the positive cap enables capture; relevance always outranks count.
   requireTaskRecommendations: false,
-  // FNXC:TaskRecommendations 2026-08-13-03:56: surface completed-task proposals by default; operators can suppress the notice without suppressing capture.
-  recommendationMailboxNoticeEnabled: true,
   globalPause: false,
   globalPauseReason: undefined,
   defaultWorkflowId: undefined,
@@ -501,19 +590,33 @@ export const DEFAULT_PROJECT_SETTINGS = {
   approvedCliAutonomyAdapters: undefined,
   enginePaused: false,
   engineLastActiveAt: undefined,
+  /*
+  FNXC:CapacityModel 2026-09-01-14:49:
+  Max Concurrent Tasks limits every AI-active task, including checkout-free planning. It is the
+  provider/LLM-load dimension and remains independent from execution-worktree capacity.
+  */
   maxConcurrent: 2,
   /*
   FNXC:VerificationConcurrency 2026-07-15-03:35:
   Default one verification at a time process-wide so concurrent tasks cannot each run verify:fast / full builds simultaneously and peg the host. Operators with spare cores may raise this in Scheduling settings (clamped 1–8 at runtime).
   */
   maxConcurrentVerifications: 1,
+  /*
+  FNXC:VerificationResourceBound 2026-09-10-03:38:
+  Resource bounds complement the count cap; undefined means "inherit the machine-wide global value,
+  else the resolver's built-in default". 0 is reserved for "operator disabled this bound", so the
+  default cannot be 0. See the same rationale in DEFAULT_GLOBAL_SETTINGS.
+  */
+  verificationCpuQuotaPercent: undefined,
+  verificationCpuIoWeight: undefined,
+  verificationMemoryMaxMb: undefined,
+  /* Execution-worktree holders only; planning runs read-only on the project root. */
   maxWorktrees: 4,
   /*
-  FNXC:CapacityModel 2026-07-28-11:20:
-  Worktrees ON is the default and the supported shape — everything (planning
-  included) runs in a worktree. OFF drops maxWorktrees from the dispatch gate so
-  capacity is total agents only; it is a counting statement, not permission for
-  concurrent agents to share one checkout.
+  FNXC:CapacityModel 2026-09-01-14:49:
+  Worktree limiting is ON by default and independently caps tasks that hold or are entering an
+  execution checkout. OFF removes that gate structurally; write-capable execution remains isolated
+  in task worktrees while checkout-free planning continues to count only against maxConcurrent.
   */
   worktreeLimitEnabled: true,
   pollIntervalMs: 15000,
@@ -575,17 +678,17 @@ export const DEFAULT_PROJECT_SETTINGS = {
   testCommand: undefined,
   buildCommand: undefined,
   showWorktreeGrouping: false,
-  openTasksInRightSidebar: false,
   /*
-  FNXC:MobileTaskPopups 2026-07-01-12:00:
-  Default off preserves current board-card task detail behavior. The dashboard only consults this project setting for ordinary board-card clicks without a deep tab across mobile, tablet, and desktop viewports, and reuses the existing task pop-out surface before falling back to right-dock or main-panel routing.
+  FNXC:TaskDetailDefaultTab 2026-09-16-02:53:
+  FN-442 removes `openTasksInRightSidebar` and `openMobileTasksInPopup`: opening a task from the board or the list is
+  now unconditionally the floating task window, so there is nothing left to opt into. The main panel survives only as
+  the mobile-drawer fallback. Historical stored values are unknown to the schema — neither applied nor rewritten.
   */
-  openMobileTasksInPopup: false,
   /*
-  FNXC:TaskPopupViewGating 2026-07-15-15:20:
-  FN-8016 defaults task-detail popups to their opening view on every dashboard surface. Explicit false retains globally shared popup behavior for operators who need it; hidden popups preserve snapshots and shared persisted geometry.
+  FNXC:TaskWindowIdentity 2026-09-14-17:46:
+  FN-392 removed `taskPopupsBoardListOnly`: task windows are permanently project-scoped, so the key is absent from the
+  project defaults and therefore from PROJECT_SETTINGS_KEYS. A historical stored value is ignored and never rewritten.
   */
-  taskPopupsBoardListOnly: true,
   /*
   FNXC:TaskCardCostBadge 2026-07-11-12:15:
   Default off preserves existing board-card density. When true, the dashboard may render a read-time derived cost badge only for tasks with positive token usage; unavailable pricing remains the guess-free “—” sentinel.
@@ -597,10 +700,28 @@ export const DEFAULT_PROJECT_SETTINGS = {
   */
   chatMessageLayout: "bubbles",
   /*
-  FNXC:TaskDetailActivityFirst 2026-06-30-23:59:
-  Project task-detail defaults are Activity-first unless this opt-in is true. Keeping the default false preserves explicit deep-link ids while making omitted non-done task opens land on Activity → Live.
+  FNXC:Navigation 2026-09-15-14:41:
+  FN-419 seeds the historical bottom-footer placement so upgraded projects keep their current menu position. Only an
+  explicit "sidebar" choice moves the primary menu (plus the engine control and Terminal action) into the left column,
+  and the two surfaces can never be shown at the same time.
   */
-  taskDetailChatFirst: false,
+  navigationPlacement: "footer",
+  /*
+  FNXC:RightSidebarOptional 2026-09-15-16:04:
+  FN-426 makes the right tool dock optional and default-OFF: every tool it hosted has a dedicated access elsewhere
+  (Git and Files pages, Activity and Notes header popovers, Chat footer list, Board/List header toggle, Secrets in
+  project settings, Pull Requests inside Git). Operators can still switch it back on, where it keeps only
+  Files/Chat/List/Notes.
+  */
+  rightSidebarEnabled: false,
+  /*
+  FNXC:TaskDetailDefaultTab 2026-09-16-02:53:
+  FN-442 replaces the boolean `taskDetailChatFirst` with one three-value project choice that carries BOTH the landing
+  tab of task opens with no explicit tab AND the head order of the task-detail tab bar. `activity` is the historical
+  default, so new and upgraded projects are unchanged; a legacy persisted `taskDetailChatFirst === true` is read as a
+  compatibility fallback only (see `normalizeTaskDetailDefaultTab`) and is never written back.
+  */
+  taskDetailDefaultTab: "activity",
   executorAllowSiblingBranchRename: false,
   worktrunk: {
     enabled: false,
@@ -616,10 +737,37 @@ export const DEFAULT_PROJECT_SETTINGS = {
   commitAuthorEnabled: true,
   commitAuthorName: "Fusion",
   commitAuthorEmail: "noreply@runfusion.ai",
-  // Per-phase model lanes (planning/execution/validator) MOVED to workflow
-  // settings (U4) — see MOVED_SETTINGS_KEYS. The GLOBAL baseline lanes
-  // (executionGlobalProvider etc.) stay global; project default overrides stay.
-  // Project-level default override (NOT moved — stays project-scoped)
+  /*
+  FNXC:ModelResolution 2026-09-14-19:07:
+  Project role lanes are persisted directly with the project. They may share declaration names with
+  workflow lanes, but must never be stored beneath a workflow identity because workflow publication
+  or default-workflow changes cannot be allowed to detach project model choices.
+  */
+  planningProvider: undefined,
+  planningCredentialInstanceId: undefined,
+  planningModelId: undefined,
+  planningThinkingLevel: undefined,
+  planningFallbackProvider: undefined,
+  planningFallbackCredentialInstanceId: undefined,
+  planningFallbackModelId: undefined,
+  planningFallbackThinkingLevel: undefined,
+  executionProvider: undefined,
+  executionCredentialInstanceId: undefined,
+  executionModelId: undefined,
+  executionThinkingLevel: undefined,
+  executionFallbackProvider: undefined,
+  executionFallbackCredentialInstanceId: undefined,
+  executionFallbackModelId: undefined,
+  executionFallbackThinkingLevel: undefined,
+  validatorProvider: undefined,
+  validatorCredentialInstanceId: undefined,
+  validatorModelId: undefined,
+  validatorThinkingLevel: undefined,
+  validatorFallbackProvider: undefined,
+  validatorFallbackCredentialInstanceId: undefined,
+  validatorFallbackModelId: undefined,
+  validatorFallbackThinkingLevel: undefined,
+  // Project-level default override (stays project-scoped)
   defaultProviderOverride: undefined,
   defaultCredentialInstanceIdOverride: undefined,
   defaultModelIdOverride: undefined,
@@ -728,7 +876,7 @@ export const DEFAULT_PROJECT_SETTINGS = {
   runtimeStopDrainMs: 2_000,
   engineActiveSinceMs: undefined,
   engineActivationGraceMs: 5 * 60_000,
-  inReviewStallDeadlockThreshold: 3,
+  inReviewStallDeadlockThreshold: DEFAULT_IN_REVIEW_STALL_DEADLOCK_THRESHOLD,
   stalePausedReviewThresholdMs: 24 * 60 * 60_000,
   inReviewStalledThresholdMs: 24 * 60 * 60_000,
   stalePausedTodoThresholdMs: 24 * 60 * 60_000,
@@ -761,15 +909,7 @@ export const DEFAULT_PROJECT_SETTINGS = {
   // maxPostReviewFixes MOVED to workflow settings (U4).
   // Run maintenance (including WAL checkpointing) every 5 minutes by default.
   maintenanceIntervalMs: 300_000,
-  autoArchiveDoneTasksEnabled: true,
-  autoArchiveDoneAfterMs: 48 * 60 * 60 * 1000,
-  doneAutoArchiveDays: 0,
-  // FNXC:DuplicateIntake 2026-07-07-00:00 (FN-7658): default OFF — operators
-  // decide via the near-duplicate flag/UI instead of tasks silently vanishing
-  // into `archived` during intake. Set true to restore the pre-FN-7658 behavior.
-  autoArchiveDuplicateTasksEnabled: false,
   triageDuplicateResolution: "prompt",
-  archiveAgentLogMode: "compact",
   autoUpdatePrStatus: false,
   githubCommentOnDone: false,
   githubCommentTemplate: undefined,
@@ -864,6 +1004,7 @@ export const DEFAULT_PROJECT_SETTINGS = {
   prTitlePromptInstructions: undefined,
   prDescriptionPromptInstructions: undefined,
   scripts: undefined,
+  scriptMetadata: undefined,
   setupScript: undefined,
   insightExtractionEnabled: false,
   insightExtractionSchedule: "0 2 * * *",
@@ -915,6 +1056,52 @@ export const DEFAULT_PROJECT_SETTINGS = {
   memoryAutoSummarizeSchedule: "0 3 * * *",
   memoryDreamsEnabled: false,
   memoryDreamsSchedule: "0 4 * * *",
+  // FNXC:PerTurnMemoryRecall 2026-08-18-22:35:
+  // RUFU-120 B.2 (Stále fokusovaný na to, čo sa rieši): a per-turn proactive memory recall
+  // runs before every chat/step prompt on the current topic. On by default; the core
+  // module applies a client-side score filter (Stash has no server-side score filter),
+  // top-K (default 3, Volt parity) and a session-scoped cue dedup.
+  memoryPerTurnRecallEnabled: true,
+  memoryPerTurnRecallTopK: 3,
+  // FNXC:ChatContextGuard 2026-08-19-15:05:
+  // RUFU-118: the RUFU-118 pre-overflow compaction gate is an opt-out project option,
+  // not always-on — user requirement: „ak to chceme mat len ako volitelnu featuru — to
+  // nemusi kazdy chciet". On by default: without the gate a context at the model wall
+  // degrades to 1-token replies (pi threshold compaction never fires for zero-usage
+  // providers, earendil-works/pi#8328). `false` bypasses the gate entirely per project.
+  chatPreOverflowCompactionEnabled: true,
+  // FNXC:ChatContextBudget 2026-08-20-16:20:
+  // RUFU-135 kill switch: the chat context budget (bounded memory inlining +
+  // curated chat tool allowlist, see CHAT_MEMORY_CAP_CHARS in the dashboard
+  // chat runner) is an opt-out project option, mirroring the guard toggle
+  // above. On by default: without the budget the static chat floor exceeds
+  // 64K-window models and dead-ends on 128K-window models at the context
+  // wall. `false` restores the pre-RUFU-135 behavior (unbounded memory
+  // injection into the chat prompt, full registered tool set visible to the
+  // chat session) so an operator can disable the budget at runtime without a
+  // redeploy if it ever misbehaves in production (user requirement: every LCM
+  // behavior change must be disableable as a feature).
+  chatContextBudgetEnabled: true,
+  /*
+  FNXC:ChatHandoff 2026-09-09-17:21:
+  RUFU-199: a long live chat needs an exit ramp that keeps the model's context, which in-session
+  compaction cannot do because it compresses inside one pi session file. These two keys gate the
+  cross-session handoff affordance: `chatHandoffEnabled` is the operator kill switch (same
+  opt-out-as-a-feature shape as the two toggles above, so the affordance can be turned off without
+  a redeploy), and `chatHandoffThresholdPercent` is the context-usage percentage past which the
+  header offers it. The threshold is measured against the same advisory signal the read-only header
+  meter shows (`resolveChatContextUsage().percent`), clamped to 50–95 by the dashboard reader so an
+  out-of-range stored value falls back to 75 rather than firing the button on every chat or never.
+  Deliberately unrelated to `ensureContextWithinCompactionThreshold`: this never compacts in place.
+  */
+  chatHandoffEnabled: true,
+  chatHandoffThresholdPercent: 75,
+  // FNXC:ChatContextGuard 2026-08-18-18:06:
+  // RUFU-118: the chat/CLI lane's 80%-of-context-window compaction default is
+  // applied in the engine guard (packages/engine/src/chat-context-guard.ts),
+  // not here — this value stays `undefined` so "no explicit tokenCap" means
+  // "use the engine default" for chat/CLI sessions and "no cap" for
+  // executor/agent tasks (TokenCapDetector).
   tokenCap: undefined,
   taskTokenBudget: undefined,
   // runStepsInNewSessions / maxParallelSteps MOVED to workflow settings (U4) —
@@ -930,14 +1117,22 @@ export const DEFAULT_PROJECT_SETTINGS = {
   reflectionIntervalMs: 3_600_000,
   reflectionAfterTask: true,
   // reviewHandoffPolicy MOVED to workflow settings (U4) — see MOVED_SETTINGS_KEYS.
-  quickChatButtonMode: "off",
-  mobileNavPrimaryItems: ["command-center", "tasks", "agents", "missions", "chat", "mailbox"],
   /*
-  FNXC:ChatModal 2026-06-28-00:00:
-  Quick Chat outside-click dismissal remains default-on for upgrades, but it is now a project setting so operators can disable accidental board-click closes.
+  FNXC:Navigation 2026-09-17-16:53:
+  FN-511 : cette clé unique pilote les CINQ créneaux d'accès rapide de la barre de navigation partagée PC/mobile, le
+  cinquième occupant la place tout à droite du pied de page large. `chat` y est une destination ordinaire. Aucune
+  migration : `resolveMobileNavPrimaryItems` complète au rendu toute sélection plus courte que cinq par l'ordre par
+  défaut, qui se termine par `chat`, donc une valeur persistée de quatre destinations continue de rendre le Chat en
+  cinquième position.
   */
-  quickChatCloseOnOutsideClick: true,
-  showQuickChatFAB: false,
+  mobileNavPrimaryItems: ["command-center", "tasks", "planning", "missions", "chat"],
+  /*
+  FNXC:MobileNavGesture 2026-09-17-16:53:
+  FN-511 : masque le bouton hamburger du pied de page mobile et ouvre le menu de navigation par un glissement vers le
+  haut, sous forme de tiroir de la largeur de la barre. Désactivé par défaut pour que le hamburger reste l'affordance
+  standard ; sans effet sur le pied de page large.
+  */
+  mobileNavMenuSwipeGesture: false,
   /*
   FNXC:ChatModal 2026-07-01-00:00:
   Task-scoped planner chats stay available from each task's Chat tab, but the common Chat feed hides them by default. This project-level opt-in preserves the previous populated-task-chat feed behavior only for operators who request it.

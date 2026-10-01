@@ -1,9 +1,12 @@
 import "./TaskContextMenu.css";
+import { UiMenu, UiMenuItem } from "./ui";
 import type { KeyboardEvent, PointerEvent as ReactPointerEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { TFunction } from "i18next";
-import type { ColumnId, Task, TaskDetail, WorkflowStepResult } from "@fusion/core";
-import { isReviewColumnRole } from "../utils/columnRoles";
+import type { ColumnId, Task, TaskDetail } from "@fusion/core";
+/* FNXC:TaskFollowUp 2026-09-17-18:10: FN-513's eligibility rule is a PURE core helper reachable through the barrel. */
+import { isFollowUpEligible } from "@fusion/core";
+
 
 /*
 FNXC:TaskRecoveryVocabulary 2026-08-28-00:38:
@@ -12,30 +15,18 @@ in place; Reset abandons task state; Delete removes the card.
 */
 
 /*
-FNXC:ReviewLaneBypass 2026-07-09-00:00:
-Dashboard app code only imports TYPES from @fusion/core (Vite aliases
-"@fusion/core" straight to packages/core/src/types.ts to avoid bundling the
-full core runtime into the client) — see vite.config.ts. So the bypass
-affordance's failed-pre-merge-step selection predicate is duplicated here in
-miniature rather than imported from packages/core/src/task-merge.ts's
-getLatestFailedPreMergeReviewStep. Keep this in lockstep with that function
-and self-healing.ts's latestFailedPreMergeStep (FN-7720): most-recent
-phase!=="post-merge" result with status==="failed".
+FNXC:ReviewLaneBypass 2026-09-03-13:15 (RUFU-179):
+This used to hold a miniature duplicate of core's getLatestFailedPreMergeReviewStep — dashboard app
+code imports TYPES only from @fusion/core (Vite aliases it to packages/core/src/types.ts to avoid
+bundling the core runtime into the client), so the selection function was not importable here and
+"keep this in lockstep" was the only enforcement. REMOVED: the affordance now renders from the
+server-derived `task.reviewBypass` capability, hydrated on every read path by the SAME
+`deriveReviewBypassTarget` the store's `bypassFailedPreMergeReviewStep` applies to itself. The
+duplicate drifted in both directions: its `some(failed)` rule offered the item on a paused card the
+store refuses, and stayed silent for a required gate that NEVER RAN — the stranded-card shape this
+task fixes. Server answers, UI renders; a stale payload costs at most one poll cycle, which is
+cheaper than a second selection authority that can disagree with the store.
 */
-/*
-FNXC:ReviewLaneBypass 2026-09-06-00:47:
-Dashboard imports only core types, so this predicate mirrors the core selector. An archived failed
-carrier retains history yet must stay reachable by the audited operator bypass.
-*/
-function hasFailedPreMergeReviewStep(task: Pick<Task, "workflowStepResults">): boolean {
-  return (task.workflowStepResults ?? []).some((result: WorkflowStepResult) =>
-    (result.phase || "pre-merge") === "pre-merge"
-    && (result.status === "failed" || (result.remediationArchivedAt != null
-      && (result.remediationArchivedFromStatus === "failed" || result.remediationArchivedFromStatus === "advisory_failure")
-      && !result.bypassedBy
-      && !result.supersededAt)),
-  );
-}
 
 export type TaskMenuActionTone = "default" | "danger" | "note";
 
@@ -44,8 +35,15 @@ export interface TaskMenuActionDescriptor {
   label: string;
   tone?: TaskMenuActionTone;
   disabled?: boolean;
+  testId?: string;
+  pressed?: boolean;
   onSelect?: () => void;
 }
+
+/*
+FNXC:TaskDetailFooterActions 2026-09-05-23:27:
+Task Detail contributes its relocated quick actions as one flat descriptor list. Do not turn those groups into submenus: the desktop footer menu clips horizontal overflow and the mobile menu scrolls vertically, so a lateral flyout would be clipped and difficult to use by touch.
+*/
 
 /**
  * A non-action menu parent whose children are the selectable menu items.
@@ -64,7 +62,6 @@ export type TaskMenuItemDescriptor = TaskMenuActionDescriptor | TaskMenuSubmenuD
 
 export interface TaskContextMenuColumnFlags {
   complete?: boolean;
-  archived?: boolean;
   hiddenFromBoard?: boolean;
   hold?: boolean;
   intake?: boolean;
@@ -72,6 +69,13 @@ export interface TaskContextMenuColumnFlags {
   manualIntake?: boolean;
   mergeBlocker?: boolean;
   humanReview?: boolean;
+  /*
+  FNXC:ReviewLaneBypass 2026-09-03-15:11 (RUFU-179 code-review remediation):
+  The third review role. The server always sent it (`resolveColumnFlags` emits every declared trait,
+  and `BoardWorkflowColumnFlags` declares it) but this client mirror never read it, which is how the
+  bypass belt drifted narrower than the store's lane rule — see `isReviewBypassLaneColumn`.
+  */
+  mergeOrchestration?: boolean;
   /* FNXC:WorkflowResolvedColumns 2026-07-27-15:30 (U10 / R8): surfaced so column-trait consumers
      can tell an implementation lane from a pre-implementation one without naming `in-progress`. */
   countsTowardWip?: boolean;
@@ -113,11 +117,38 @@ export interface BuildTaskActionMenuModelOptions {
   onDelete?: () => void;
   onDuplicate?: () => void;
   /*
-  FNXC:TaskContextMenu 2026-07-13-00:00:
-  Pre-execution task cards can open the same Planning Mode handoff as inline create, but only hosts that wire a planning route should expose the action so dock/plugin/detail surfaces never render a dead Plan item.
+  FNXC:HumanMergeApproval 2026-09-17-18:09:
+  FN-514 — ONE action that arms or removes the per-card delivery lock, on every shared menu host.
+  It is a single toggle rather than two entries because the card is either locked or it is not, and
+  the final authorization is the SERVER's: the entry is hidden once delivery has provably started or
+  the card is complete, and the server refuses anything the client still offers.
   */
-  onPlan?: () => void;
+  onToggleMergeApproval?: (enabled: boolean) => void;
+  /*
+  FNXC:CrossProjectHandoff 2026-09-09-05:03 (RUFU-203):
+  "Transfer to project…" copies the card into another LOCAL project with bidirectional pointers.
+  Omitted entirely unless the host injects `onTransferToProject` — the same rule as `plan` above:
+  dock/plugin/embedded hosts without the transfer route must not render a dead shell, and a
+  disabled item would promise an action the host cannot serve.
+  */
+  onTransferToProject?: () => void;
+  /*
+  FNXC:TaskContextMenu 2026-09-15-10:40:
+  FN-417 removes the `merge` review action from every TASK CONTEXT MENU because the engine drives
+  delivery automatically; the single remaining manual merge command is Task Detail's review footer
+  button. The descriptor is therefore OPT-IN: hosts that render the model as a popup menu leave this
+  flag unset and get `reviewAction === undefined` for merge-shaped verdicts, while `start-pr-review`,
+  `check-pr-status`, and the disabled `pr-automation` note are unaffected in every host.
+  */
+  includeMergeCompletionAction?: boolean;
   onOpenRefine?: () => void;
+  /*
+  FNXC:TaskFollowUp 2026-09-17-18:10:
+  FN-513 — prepare a SUCCESSOR of a task that is still planning, running, or in review, from its plan
+  and its in-flight implementation. Every host wires this the same way and the eligibility rule is
+  the shared core one, so Board, List and Task Detail cannot disagree about where it appears.
+  */
+  onOpenFollowUp?: () => void;
   onRetry?: () => void;
   onReset?: () => void;
   onTogglePause?: () => void;
@@ -155,11 +186,45 @@ review column" for every card during first paint.
 
 NOTE, flagged not fixed: the id is currently an UNCONDITIONAL disjunct, so explicit
 `{ mergeBlocker: false, humanReview: false }` on a column named `in-review` is still classified as
-review. #2664 fixed exactly that shape in `isPreExecutionHoldColumn` (traits first, id as fallback).
-Same fix belongs here, but it is a BEHAVIOR CHANGE and out of scope for a conversion batch.
+review. #2664 fixed exactly that shape elsewhere by INVERTING the read — traits first, id only as the
+degraded answer when no flags arrive. The same inversion belongs here, but it is a BEHAVIOR CHANGE
+and out of scope for a conversion batch.
+
+DELIBERATE-LITERAL: restated adjacent to the disjunct below so the census marker window covers this
+site — the debt itself is the NOTE above, not an unreviewed literal.
 */
 function isReviewColumn(column: string, flags?: TaskContextMenuColumnFlags): boolean {
   return column === "in-review" || flags?.mergeBlocker === true || flags?.humanReview === true;
+}
+
+/*
+FNXC:ReviewLaneBypass 2026-09-03-15:11 (RUFU-179 code-review remediation):
+THE BYPASS BELT MUST MATCH THE STORE'S LANE SET, NOT THE GENERIC REVIEW ROLE.
+
+`isReviewColumnRole` answers `mergeBlocker ∪ humanReview`; the store's acceptance gate
+(`resolveReviewBypassLanes` → `resolveReviewColumns`) admits `mergeOrchestration ∪ mergeBlocker ∪
+humanReview` — every lane where review happens (#2718: this guard only refuses or permits an
+operator action and moves nothing, so the broad set is right there). On a board hosting review
+orchestration on a `mergeOrchestration`-only lane, the store ACCEPTED a bypass while this belt HID
+the menu item — the "API accepts, menu silent" half of the exact dead-affordance class RUFU-179
+exists to delete, and the split its Surface Enumeration ordered this guard and the store to "keep
+agreeing".
+
+Why a bypass-local predicate instead of widening `isReviewColumnRole`: that helper has 13 other
+callers (stall copy, diff stats, PR feedback, worktree grouping, …) which ask the narrower "is this
+card in review?" question; redefining it for the bypass would silently change what a merge/PR chip
+or a stall banner thinks a lane is, and the remediation scope forbids unrelated behavior changes.
+The tri-role shape already exists once on this side of the wire — `useBlockerFanout`'s review
+predicate uses the same union — so this mirrors an established local convention, not a new taxonomy.
+
+DELIBERATE-LITERAL: flags-first with the legacy `in-review` id ONLY as the no-metadata fallback
+(first paint / stranded card), unlike `isReviewColumn` above whose id is a flagged unconditional
+disjunct — #2664's shape.
+*/
+function isReviewBypassLaneColumn(flags: TaskContextMenuColumnFlags | undefined, column: string): boolean {
+  return flags
+    ? flags.mergeOrchestration === true || flags.mergeBlocker === true || flags.humanReview === true
+    : column === "in-review";
 }
 
 /*
@@ -168,64 +233,34 @@ reasoning as `isReviewColumn` above — and the same flagged inversion: `column 
 unconditional disjunct ahead of the trait read.
 */
 function isDoneOrReview(column: string, flags?: TaskContextMenuColumnFlags): boolean {
-  return column === "done" || isReviewColumn(column, flags) || (flags?.complete === true && flags?.archived !== true);
+  return column === "done" || isReviewColumn(column, flags) || flags?.complete === true;
 }
 
 /*
 FNXC:TaskContextMenu 2026-07-30-04:10 DELIBERATE-LITERAL: the no-metadata fallback only.
 Same rule as `isReviewColumn` above: reached when no resolved flags arrive, where answering
-"mutable" for a done/archived card would offer live-work actions on a terminal one.
+"mutable" for a Done card would offer live-work actions on a terminal row.
 */
 function isMutableLiveColumn(column: string, flags?: TaskContextMenuColumnFlags): boolean {
-  if (flags) return flags.complete !== true && flags.archived !== true;
-  return column !== "done" && column !== "archived";
+  if (flags) return flags.complete !== true;
+  return column !== "done";
 }
 
-export function isPreExecutionHoldColumn(column: string, flags?: TaskContextMenuColumnFlags): boolean {
-  if (flags?.complete === true || flags?.archived === true) return false;
-  /*
-  FNXC:WorkflowResolvedColumns 2026-07-30-18:35 (Phase B — AUDITED, deliberately NOT consolidated):
-  `isPreImplementationColumnRole` in `utils/columnRoles.ts` answers a near-identical question and I
-  routed this through it — then reverted, because its DEGRADED-MODE answer is wider than this one's.
-
-  Its legacy set is {todo, triage}; this predicate's was {triage} alone. They differ for a reason:
-  that helper drives the preserve-progress prompt, where a flagless `todo` should prompt (losing
-  steps is unrecoverable), while THIS drives the Plan affordance, where a flagless `todo` must not
-  offer to re-plan a card that may already be planned. Consolidating added `plan` to flagless `todo`
-  cards — caught by "exposes Plan only for pre-execution hold columns".
-
-  Same shape, different degraded answer: the trait path is identical and the fallbacks are not
-  interchangeable. Kept separate with the difference recorded, rather than made to look shared.
-  */
-  /*
-  FNXC:WorkflowLifecycleColumns 2026-07-30-08:00 (U12 — the LAST `triage` column guard):
-  FLAGS-FIRST, id only as the degraded answer. It used to OR the legacy id with the traits
-  UNCONDITIONALLY, which is not a fallback: a resolved column that happens to be named `triage` but
-  whose traits say it is mid-flight answered true, offering Plan on a card that is already executing.
-
-  The degraded set stays {triage} ALONE — deliberately not the {todo, triage} used by
-  `isPreImplementationColumnRole`, for the reason recorded above: that helper drives the
-  preserve-progress prompt where a flagless `todo` should prompt, while this drives the Plan
-  affordance where a flagless `todo` must not offer to re-plan a possibly-planned card.
-
-  Behaviour delta is exactly the inversion. Flags absent: unchanged (`column === "triage"`). Flags
-  present and intake/hold: unchanged (true). Flags present, name `triage`, traits mid-flight: was
-  true, now false — which is the defect.
-
-  DELIBERATE-LITERAL: the surviving `triage` is the DEGRADED answer, not an unconverted guard, and it
-  is the last `triage` comparison in production source. Converting it is not available — there is no
-  trait to read when `flags` is undefined, which happens during first paint and for a card in a column
-  its workflow no longer declares. Deleting it would silently withdraw Plan from exactly the stranded
-  cards that need re-planning most.
-
-  So the census reaching zero for `triage` means "no unconverted guards remain", not "the string is
-  gone". Recorded here rather than achieved by deleting a fallback to move a number.
-  */
-  return flags ? (flags.intake === true || flags.hold === true) : column === "triage";
-}
+/*
+FNXC:TaskContextMenu 2026-09-15-10:40:
+FN-417 deleted `isPreExecutionHoldColumn` together with its only production consumer, the `plan`
+menu descriptor: the engine plans cards automatically, so a manual Plan affordance in a task context
+menu no longer corresponds to anything an operator drives. That predicate carried the LAST `triage`
+comparison recorded for this file, so its removal drops the TaskContextMenu.tsx/triage entry from the
+lifecycle-column census baseline — `scripts/lib/lifecycle-column-census-baseline.json` must be
+re-sealed, otherwise `pnpm check:lifecycle-columns` fails `stale` on the DROP (a fall diverges from
+the baseline exactly like a rise). The surviving DELIBERATE-LITERAL fallbacks above
+(`isReviewColumn`, `isDoneOrReview`, `isMutableLiveColumn`) are untouched: they are first-paint
+degraded answers, not unconverted guards.
+*/
 export function getTaskReviewAction(
   task: Task | TaskDetail,
-  options: Pick<BuildTaskActionMenuModelOptions, "t" | "currentColumnFlags" | "mergeStrategy" | "autoMergeEnabled" | "prAutomationLabel" | "isCheckingPrStatus" | "onMerge" | "onStartPrReview" | "onCheckPrStatus">,
+  options: Pick<BuildTaskActionMenuModelOptions, "t" | "currentColumnFlags" | "mergeStrategy" | "autoMergeEnabled" | "prAutomationLabel" | "isCheckingPrStatus" | "includeMergeCompletionAction" | "onMerge" | "onStartPrReview" | "onCheckPrStatus">,
 ): TaskReviewActionDescriptor | undefined {
   const currentColumnFlags = options.currentColumnFlags;
   if (!isReviewColumn(task.column, currentColumnFlags)) {
@@ -267,7 +302,17 @@ export function getTaskReviewAction(
     }
   }
 
-  return { id: "merge", label: options.t("taskDetail.pr.mergeAndClose", "Merge & Close"), onSelect: options.onMerge };
+  /*
+  FNXC:TaskContextMenu 2026-09-15-10:40:
+  FN-417: the merge-completion verdicts ("Merge & Close" and the manual-PR "Finish & Close") are the
+  only opt-in members of this descriptor union. The engine merges automatically, so a context menu
+  must not offer the command; Task Detail opts in so its review footer button is unchanged for the
+  rare projects that still merge by hand. Returning `undefined` rather than a disabled descriptor is
+  deliberate — a disabled shell is the dead affordance this task removes.
+  */
+  return options.includeMergeCompletionAction
+    ? { id: "merge", label: options.t("taskDetail.pr.mergeAndClose", "Merge & Close"), onSelect: options.onMerge }
+    : undefined;
 }
 
 export function buildTaskActionMenuModel(options: BuildTaskActionMenuModelOptions): TaskActionMenuModel {
@@ -289,14 +334,80 @@ export function buildTaskActionMenuModel(options: BuildTaskActionMenuModelOption
   }
 
   /*
-  FNXC:TaskContextMenu 2026-07-13-00:00:
-  Plan belongs only to pre-execution hold/intake cards and reuses the inline-create Planning Mode handoff. Omit it entirely unless the host injects `onPlan`, because Planning Mode creates a new task and unwired menu hosts must not show a disabled shell.
+  FNXC:HumanMergeApproval 2026-09-17-18:09:
+  FN-514 — the delivery lock may be changed on any LIVE card before delivery actually starts, which
+  includes Ideas, Planning, WIP, review, paused and failed cards. It is hidden only where the answer
+  cannot change anything: a terminal card, or one whose delivery has provably begun (a merge status,
+  a confirmed merge). Sitting in a merge queue is NOT a started delivery, so those cards keep it.
+
+  This is a presentation filter, not the authorization: the server re-checks under the task advisory
+  lock and refuses a change that races a merge owner.
   */
-  if (options.onPlan && isPreExecutionHoldColumn(task.column, currentColumnFlags)) {
-    actions.push({ id: "plan", label: t("taskDetail.plan.openPlanningBtn", "Plan"), onSelect: options.onPlan });
+  if (options.onToggleMergeApproval) {
+    const deliveryStarted = task.mergeDetails?.mergeConfirmed === true
+      || (typeof task.status === "string" && ["merging", "merging-pr", "merging-fix"].includes(task.status));
+    const isTerminal = currentColumnFlags?.complete === true || (currentColumnFlags === undefined && task.column === "done");
+    if (!deliveryStarted && !isTerminal) {
+      const locked = task.humanMergeApproval?.enabled === true;
+      actions.push({
+        id: "toggle-merge-approval",
+        label: locked
+          ? t("tasks.humanMergeApproval.menuUnlock", "Remove delivery approval")
+          : t("tasks.humanMergeApproval.menuLock", "Require my approval to deliver"),
+        onSelect: () => options.onToggleMergeApproval?.(!locked),
+      });
+    }
   }
 
-  if (isDoneOrReview(task.column, currentColumnFlags) && options.onOpenRefine) {
+  /*
+  FNXC:CrossProjectHandoff 2026-09-09-05:03 (RUFU-203):
+  Transfer sits beside Duplicate — both mint a new card — but it is handler-gated (see the option
+  doc): Board/List/Detail hosts wire it, dock/plugin card embeddings do not.
+  */
+  if (options.onTransferToProject) {
+    actions.push({ id: "transfer-to-project", label: t("taskDetail.transfer.menuItem", "Transfer to project…"), onSelect: options.onTransferToProject });
+  }
+
+  /*
+  FNXC:TaskContextMenu 2026-09-15-10:40:
+  FN-417 removed the `plan` descriptor that used to sit here for intake/hold cards. Planning is driven
+  by the engine, so no task context menu offers it on any host or breakpoint; the remaining Planning
+  Mode entry points (inline create, quick entry, task form, GitHub import) are untouched.
+  */
+
+  /*
+  FNXC:TaskFollowUp 2026-09-17-18:10:
+  FOLLOW-UP AND REFINE ARE COMPLEMENTARY, NEVER BOTH.
+
+  Refine asks for MORE WORK ON THIS CARD once it is finished. Follow-up asks for a SEPARATE successor
+  card derived from a card that is still going. A review-lane card qualifies for both questions, and
+  showing two near-identical entries there is exactly the ambiguity the operator asked to avoid — so
+  the eligible follow-up wins that lane and Refine keeps the terminal one.
+
+  The predicate is `isFollowUpEligible` from core, shared with the store mode and the HTTP route. No
+  local column reasoning: a renamed board, an explicit trait set, and the strict Planning exception
+  (a CURRENT approving plan review) all resolve there, once.
+
+  An unauthorized state renders NOTHING here — no disabled shell, no separator, no empty click
+  target. A stale menu is still possible (the source can finish while the menu is open), and that is
+  the server's 409 to answer, not a reason to leave a dead control on screen.
+  */
+  const followUpEligible = Boolean(options.onOpenFollowUp) && isFollowUpEligible({
+    column: task.column,
+    ...(currentColumnFlags ? { columnFlags: currentColumnFlags } : {}),
+    status: task.status ?? null,
+    deletedAt: task.deletedAt ?? null,
+    workflowStepResults: task.workflowStepResults ?? [],
+  });
+
+  if (followUpEligible) {
+    actions.push({
+      id: "follow-up",
+      label: t("taskDetail.followUp.btn", "Follow-up"),
+      testId: "task-action-follow-up",
+      onSelect: options.onOpenFollowUp,
+    });
+  } else if (isDoneOrReview(task.column, currentColumnFlags) && options.onOpenRefine) {
     actions.push({ id: "refine", label: t("taskDetail.refine.btn", "Refine"), onSelect: options.onOpenRefine });
   }
 
@@ -312,25 +423,62 @@ export function buildTaskActionMenuModel(options: BuildTaskActionMenuModelOption
 
   /*
   FNXC:ReviewLaneBypass 2026-07-09-00:00:
-  Policy-gated escape hatch (FN-7720) for a card stranded in `in-review`
-  solely by a failed pre-merge review step (leading real-world cause:
-  Runfusion/Fusion#1946's no-verdict dispatch defect). Shown only when the
-  task is `in-review` and carries a failed pre-merge `WorkflowStepResult`, so
-  it never renders as an empty/dead affordance for tasks blocked by other
+  Policy-gated escape hatch (FN-7720) for a card stranded in the review lane by a pre-merge gate
+  the operator can honestly clear (leading real-world cause: Runfusion/Fusion#1946's no-verdict
+  dispatch defect), so it never renders as an empty/dead affordance for tasks blocked by other
   reasons or already recovered.
+
+  FNXC:ReviewLaneBypass 2026-09-03-13:15 (RUFU-179):
+  The gate is now the server-derived capability itself. `kind: "failed"` rewrites the latest failed
+  gate's verdict; `kind: "absent"` records an audited-operator approval for a required gate that
+  never ran. Lane membership, pause state, and gate state are decided once by the store's own
+  derivation and shipped on every read path, so the item can neither appear on a card the store
+  would refuse nor hide on the unrun-gate shape. Copy branches on kind.
+
+  FNXC:ReviewLaneBypass 2026-09-03-12:58 (RUFU-179):
+  The tone must stay actionable (`"default"`, never `"note"`). `tone: "note"` is the informational
+  style (see `paused-by-agent` above): it renders a non-interactive `<span role="note">` and
+  `selectAction` returns early for it, so the bypass item shipped by FN-7720 could never fire its own
+  `onSelect` on ANY host — the affordance rendered as dead text, which is the same operator-visible
+  failure SANE-387 reported (a merge-blocked card with no reachable escape from the GUI). Model-level
+  assertions cannot catch this; only a click on the rendered item can, which is why
+  `TaskDetailModal.bypass-review.test.tsx` and the render-level case in `TaskContextMenu.test.tsx`
+  activate it.
   */
   /*
   FNXC:WorkflowResolvedColumns 2026-07-30-23:50 (batch-dashboard-app):
   REVIEW role, resolved from `currentColumnFlags` — which this function already receives and already
   uses for the archived check ~15 lines up. Keyed on the literal, the "Bypass failed review" action
-  never appeared on a renamed board, so an operator with a genuinely failed pre-merge review step had
-  no way to clear it from the menu and the card stayed merge-blocked with no affordance.
+  never appeared on a renamed board. The server capability already encodes the lane; this client
+  lane-gate stays as the belt for a payload that predates a move between the last poll and this
+  render.
   */
-  if (hasBypassReviewHandler && isReviewColumnRole(currentColumnFlags, task.column) && hasFailedPreMergeReviewStep(task)) {
+  /*
+  FNXC:WorkflowResolvedColumns 2026-07-30-23:50 (batch-dashboard-app):
+  REVIEW role, resolved from `currentColumnFlags` — which this function already receives and already
+  uses for the archived check ~15 lines up. Keyed on the literal, the "Bypass failed review" action
+  never appeared on a renamed board. The server capability already encodes the lane; this client
+  lane-gate stays as the belt for a payload that predates a move between the last poll and this
+  render.
+
+  FNXC:ReviewLaneBypass 2026-09-03-15:11 (RUFU-179 code-review remediation):
+  The belt switched from `isReviewColumnRole` (mergeBlocker ∪ humanReview) to `isReviewBypassLaneColumn`
+  (plus mergeOrchestration) so it admits EXACTLY the lanes the store's `resolveReviewBypassLanes`
+  admits. A mergeOrchestration-only review lane previously got a server-derived capability that this
+  gate hid — the store would have accepted the bypass, so hiding it re-created the unreachable-escape
+  bug SANE-387 reported, from the other side. Why the fix is local here rather than a widening of the
+  shared role helper is recorded at the predicate.
+  */
+  const bypassTarget = task.reviewBypass;
+  if (hasBypassReviewHandler && isReviewBypassLaneColumn(currentColumnFlags, task.column) && bypassTarget) {
     actions.push({
       id: "bypass-review",
-      label: t("taskDetail.bypassReview.btn", "Bypass failed review"),
-      tone: "note",
+      label:
+        bypassTarget.kind === "absent"
+          ? t("taskDetail.bypassReview.btnUnrun", "Bypass unrun review gate")
+          : t("taskDetail.bypassReview.btn", "Bypass failed review"),
+      tone: "default",
+      // FNXC:TaskDetailAlpha 2026-09-11-04:19: Bypass is an audited operator action, not explanatory note copy; keep it keyboard- and pointer-selectable in both menu implementations.
       onSelect: options.onBypassReview,
     });
   }
@@ -351,7 +499,11 @@ export function buildTaskActionMenuModel(options: BuildTaskActionMenuModelOption
     destructiveActions.push({ id: "reset", label: t("taskDetail.reset.btn", "Reset"), tone: "danger", onSelect: options.onReset });
   }
 
-  if (isMutableLiveColumn(task.column, currentColumnFlags)) {
+  /*
+  FNXC:TaskDetailHeaderActions 2026-09-11-18:16:
+  A mutable task exposes Pause or Unpause only when its host wires the matching lifecycle operation. The shared model omits unwired actions rather than producing an interactive-looking no-op in Task Detail, Board, or List menus.
+  */
+  if (options.onTogglePause && isMutableLiveColumn(task.column, currentColumnFlags)) {
     actions.push({
       id: isTaskPaused ? "unpause" : "pause",
       label: isTaskPaused ? t("taskDetail.pause.unpauseBtn", "Unpause") : t("taskDetail.pause.pauseBtn", "Pause"),
@@ -461,13 +613,13 @@ export function TaskContextMenu({
   */
   useEffect(() => {
     if (!autoFocusFirstItem) return;
-    const firstItem = menuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)");
+    const firstItem = menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled):not([aria-disabled="true"])');
     firstItem?.focus({ preventScroll: true });
   }, [actions, autoFocusFirstItem]);
 
   useEffect(() => {
     if (!openSubmenuId) return;
-    menuRef.current?.querySelector<HTMLButtonElement>(`[data-task-submenu="${openSubmenuId}"] button:not(:disabled)`)?.focus({ preventScroll: true });
+    menuRef.current?.querySelector<HTMLElement>(`[data-task-submenu="${openSubmenuId}"] [role="menuitem"]:not(:disabled):not([aria-disabled="true"])`)?.focus({ preventScroll: true });
   }, [openSubmenuId]);
 
   /*
@@ -500,7 +652,7 @@ export function TaskContextMenu({
       return;
     }
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Home" && event.key !== "End") return;
-    const items = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? []);
+    const items = Array.from(menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled):not([aria-disabled="true"])') ?? []);
     if (items.length === 0) return;
     event.preventDefault();
     const activeIndex = items.indexOf(document.activeElement as HTMLButtonElement);
@@ -515,14 +667,23 @@ export function TaskContextMenu({
     items[nextIndex]?.focus();
   };
 
+
+  /*
+  FNXC:NativeUiCollections 2026-09-15-00:20:
+  REMOVED: the duplicate in-boundary task-actions menu. With the native presentation there is ONE menu
+  implementation, and it is the richer of the two former variants — it keeps `renderAction`, the `role`
+  override, left-opening submenu placement and non-focusable note rows, while the shared `UiMenu` now
+  provides focus entry and restoration for every caller (card, detail and list) unconditionally.
+  */
   return (
-    <div ref={menuRef} className={className} role={role} onKeyDown={handleKeyDown}>
+    <UiMenu ref={menuRef} className={className} aria-label="Task actions" role={role} onKeyDown={handleKeyDown}>
       {actions.map((item) => {
         if ("items" in item) {
           const isOpen = openSubmenuId === item.id;
           return (
             <div className="task-context-menu__submenu-parent" key={item.id}>
-              <button
+              <UiMenuItem
+                id={`${item.id}-submenu`}
                 type="button"
                 className={`${itemClassName} task-context-menu__submenu-toggle`}
                 role={role === "menu" ? "menuitem" : undefined}
@@ -537,32 +698,35 @@ export function TaskContextMenu({
                 }}
               >
                 {item.label}
-              </button>
+              </UiMenuItem>
               {isOpen && (
-                <div
+                <UiMenu
                   ref={submenuRef}
                   className={`task-context-menu__submenu${submenuOpensLeft ? " task-context-menu__submenu--opens-left" : ""}`}
-                  role="menu"
+                  aria-label={item.label}
                   data-task-submenu={item.id}
                 >
                   {item.items.map((action) => {
                     const classes = [itemClassName, "task-context-menu__submenu-item"];
                     if (action.tone === "danger") classes.push(dangerItemClassName);
                     return (
-                      <button
+                      <UiMenuItem
                         key={action.id}
+                        id={action.id}
                         type="button"
                         className={classes.join(" ")}
                         role={role === "menu" ? "menuitem" : undefined}
                         disabled={action.disabled}
+                        data-testid={action.testId}
+                        aria-pressed={action.pressed}
                         onPointerUp={(event) => handleActionPointerUp(event, action)}
                         onClick={(event) => handleActionClick(event, action)}
                       >
                         {action.label}
-                      </button>
+                      </UiMenuItem>
                     );
                   })}
-                </div>
+                </UiMenu>
               )}
             </div>
           );
@@ -572,12 +736,12 @@ export function TaskContextMenu({
         if (action.tone === "danger") classes.push(dangerItemClassName);
         if (action.tone === "note") classes.push(noteItemClassName);
         const defaultNode = action.tone === "note" ? (
-          <span key={action.id} className={classes.join(" ")} role="note">{action.label}</span>
+          <span key={action.id} className={classes.join(" ")} role="note" data-testid={action.testId}>{action.label}</span>
         ) : (
-          <button key={action.id} type="button" className={classes.join(" ")} role={role === "menu" ? "menuitem" : undefined} disabled={action.disabled} onPointerUp={(event) => handleActionPointerUp(event, action)} onClick={(event) => handleActionClick(event, action)}>{action.label}</button>
+          <UiMenuItem key={action.id} id={action.id} type="button" className={classes.join(" ")} role={role === "menu" ? "menuitem" : undefined} disabled={action.disabled} data-testid={action.testId} aria-pressed={action.pressed} onPointerUp={(event) => handleActionPointerUp(event, action)} onClick={(event) => handleActionClick(event, action)}>{action.label}</UiMenuItem>
         );
         return <Fragment key={action.id}>{renderAction ? renderAction(action, defaultNode) : defaultNode}</Fragment>;
       })}
-    </div>
+    </UiMenu>
   );
 }

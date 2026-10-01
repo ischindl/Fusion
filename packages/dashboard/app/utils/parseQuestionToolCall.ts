@@ -268,3 +268,136 @@ function isChatQuestion(value: ChatQuestion | null): value is ChatQuestion {
 function isChatQuestionOption(value: ChatQuestionOption | null): value is ChatQuestionOption {
   return value !== null;
 }
+
+/*
+FNXC:ChatQuestionLiveness 2026-09-17-19:30:
+A question card must look actionable only while the turn that asked it is actually still
+waiting. The sentinel keeps the session's in-flight generation alive for the whole wait, so
+"is last row + session generating" is the liveness proof; a restart, a Stop, or an
+interrupted turn clears it and the card must fall back to a disabled record instead of an
+input that posts into a dead turn (previously every last assistant row claimed awaiting, and
+the planner claimed it for ALL assistant rows).
+*/
+export function isLiveQuestionAwaitingAnswer(options: {
+  role: string;
+  isLastMessage: boolean;
+  isStreaming: boolean;
+  isSessionGenerating: boolean;
+  interrupted?: boolean;
+}): boolean {
+  return (
+    options.role === "assistant"
+    && options.isLastMessage
+    && !options.isStreaming
+    && options.interrupted !== true
+    && options.isSessionGenerating
+  );
+}
+
+/**
+FNXC:ChatQuestionLiveness 2026-09-17-19:30:
+Planner parity. The planner keeps `composerState === "sending"` for the whole in-flight turn
+(the sentinel holds the response), so a persisted last row with no live send is a dead or
+already-resolved question and renders as a record; the composer stays a usable answer path.
+*/
+export function isPlannerQuestionAwaitingAnswer(options: {
+  role: string;
+  isLastMessage: boolean;
+  isSending: boolean;
+  interrupted?: boolean;
+}): boolean {
+  return (
+    options.role === "assistant"
+    && options.isLastMessage
+    && options.interrupted !== true
+    && options.isSending
+  );
+}
+
+/** The first user message after `index` is the answer echo a submitted question renders with. */
+export function findSubmittedQuestionAnswer<T extends { role: string; content?: string | null }>(
+  messages: T[],
+  index: number,
+): string | undefined {
+  return messages.slice(index + 1).find((message) => message.role === "user")?.content ?? undefined;
+}
+
+/*
+FNXC:ChatQuestionAnswerLink 2026-09-23-13:59:
+RUFU-258: client-side reader for the DURABLE question-answer link. `ChatManager.sendMessage` stamps
+`metadata.questionAnswer = { questionMessageId }` on the persisted user row whenever the transcript
+tail at send time was an assistant row holding an unanswered question tool call — the
+`fn_ask_question` await-input contract ("the answer arrives as the user's next chat message") makes
+that bond a server-side fact rather than a client inference, so it survives reload, a later unrelated
+message, and any pending queue.
+
+Render precedence, applied by every consumer of these helpers:
+1. a durable link (these readers) — authoritative;
+2. the live-turn await (`isLiveQuestionAwaitingAnswer` / `isPlannerQuestionAwaitingAnswer`) — the only
+   mechanism for a send still in flight, whose answer row has not reached the client list yet;
+3. the legacy positional scan (`findSubmittedQuestionAnswer`) — rows written before this feature.
+A card WITH a link is answered with the linked row's content and is never actionable, even while the
+session is generating. A card WITHOUT a link must never adopt someone else's linked answer, so the
+legacy scan stays untouched for it.
+
+The metadata key and shape mirror `packages/dashboard/src/shared/chat-question-link.ts`: the browser
+bundle cannot import that module because it pulls in server-only code, exactly as
+`QUESTION_TOOL_NAMES` mirrors `COMPACT_QUESTION_TOOL_NAMES`. `parseQuestionToolCall.test.ts` holds the
+parity assertions that keep the two copies from drifting.
+*/
+
+/** Metadata key holding the durable link on a persisted user row (mirror of the server constant). */
+export const QUESTION_ANSWER_METADATA_KEY = "questionAnswer";
+
+/** The server-stamped bond between an answer row and the question row it answers. */
+export interface QuestionAnswerLink {
+  questionMessageId: string;
+}
+
+/** Minimum row shape these readers need; satisfied by `ChatMessageInfo` and core `ChatMessage`. */
+export interface QuestionAnswerLinkRow {
+  role: string;
+  content?: string | null;
+  metadata?: Record<string, unknown> | null;
+  /** Carried through so a caller can identify the answer row; the reader itself never uses it. */
+  id?: string;
+}
+
+/**
+ * Read the durable link off any persisted row's metadata. A malformed payload (link not an object,
+ * `questionMessageId` missing or blank) is treated as no link rather than trusted: metadata is a JSON
+ * blob whose shape older or foreign writers control.
+ */
+export function readQuestionAnswerLink(metadata: unknown): string | null {
+  const link = asRecord(asRecord(metadata)?.[QUESTION_ANSWER_METADATA_KEY]);
+  const questionMessageId = link?.questionMessageId;
+  return typeof questionMessageId === "string" && questionMessageId.trim().length > 0 ? questionMessageId : null;
+}
+
+/**
+ * Index the transcript by `questionMessageId` → the chronological FIRST user row durably linked to it.
+ * Call sites memoize this once per transcript pass so a virtualized row does not re-scan the whole
+ * transcript. First-wins so a stamp anomaly can never promote a later unrelated message over the
+ * message that actually answered.
+ */
+export function indexDurableQuestionAnswers<T extends QuestionAnswerLinkRow>(messages: readonly T[]): Map<string, T> {
+  const index = new Map<string, T>();
+  for (const row of messages) {
+    if (row.role !== "user") continue;
+    const questionMessageId = readQuestionAnswerLink(row.metadata);
+    if (questionMessageId && !index.has(questionMessageId)) {
+      index.set(questionMessageId, row);
+    }
+  }
+  return index;
+}
+
+/** The user row durably linked to `questionMessageId`, or `null` when that question has no link. */
+export function findDurableQuestionAnswer<T extends QuestionAnswerLinkRow>(
+  messages: readonly T[],
+  questionMessageId: string,
+): T | null {
+  if (!questionMessageId) return null;
+  return messages.find((row) => row.role === "user" && readQuestionAnswerLink(row.metadata) === questionMessageId)
+    ?? null;
+}

@@ -1046,6 +1046,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
   setHostTaskStore(cwd, store);
   const dashboardLayer = store.getAsyncLayer();
   if (!dashboardLayer) throw new Error("Dashboard runtime requires the project PostgreSQL AsyncDataLayer");
+
   // FNXC:PhysicalDeleteSqliteClass 2026-06-26-14:05:
   // Propagate the backend mode (asyncLayer) from the resolved TaskStore so
   // AutomationStore does not construct a SQLite file under PostgreSQL. The
@@ -1210,8 +1211,8 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
         `BUILTIN_CODING_WORKFLOW_IR` is the legacy monolithic IR (`builtin:legacy-coding`);
         `resolveDefaultWorkflowIr()` is the catalog's actual default. Post-U11 they DIFFER:
 
-            default  todo, in-progress, in-review, done, archived        (planning merged into todo)
-            legacy   triage, todo, in-progress, in-review, done, archived
+            default  todo, in-progress, in-review, done        (planning merged into todo)
+            legacy   triage, todo, in-progress, in-review, done
 
         So a task with no selection row rendered a `triage` column the real default no longer
         declares — the TUI board showed a lane the board does not have.
@@ -2337,20 +2338,34 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
       "dashboard",
     );
 
-    // HybridExecutor init: keep awaited (only runs when hybridGate.enabled,
-    // which now requires multi-node — rare on local-only setups).
+    /*
+    FNXC:HybridExecutorBoot 2026-09-26-02:49:
+    RUFU-322: this awaited `initialize()` used to be the release blocker for the migration holding
+    server. Its rationale — "only runs when hybridGate.enabled, which requires multi-node, so it is
+    rare" — is false for an operator who force-enables the executor with FUSION_HYBRID_EXECUTOR=1:
+    `initialize()` walks every registered project serially and boots a scoped TaskStore per project,
+    and it sat above the `migrationHoldingServer.close()` + `app.listen()` boundary, so the holding
+    server kept the operator's port and answered every `/api/` route with 503 "Fusion is starting
+    (database migration may be in progress)" while no migration ran.
+
+    Shipped shape: construct the executor synchronously and assign it here, so `createServer` wires it
+    and the isolation-transition route can gate on readiness, then background the boot exactly like
+    `engineManager.startAll()` above. Port release no longer depends on per-project runtime boot;
+    `HybridExecutor.whenReady()` carries the one consumer that needs loaded runtimes.
+    */
     if (hybridGate.enabled) {
-      try {
-        const he = await phaseTime("engine: HybridExecutor.initialize", async () => {
-          const x = new HybridExecutor(centralCoreForEngine);
-          await x.initialize();
-          return x;
-        }, logPhase);
-        hybridExecutor = he;
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        logSink.warn(`HybridExecutor initialization failed: ${message}`, "engine");
-      }
+      hybridExecutor = new HybridExecutor(centralCoreForEngine);
+      const bootedExecutor = hybridExecutor;
+      void (async () => {
+        try {
+          await phaseTime("engine: HybridExecutor.initialize (background)", async () => {
+            await bootedExecutor.initialize();
+          }, logPhase);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          logSink.warn(`HybridExecutor initialization failed: ${message}`, "engine");
+        }
+      })();
     }
 
     // cwd engine warmup: must complete before createServer.
@@ -2416,8 +2431,8 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
 
     // FNXC:ExtensionHostStoreWarmup 2026-07-18-19:20:
     // Pre-populate setHostTaskStore for all registered projects from already-
-    // running ProjectEngine TaskStores, so extension API tools (fn_task_archive,
-    // fn_task_update, etc.) find a cached store and never fall through to
+    // running ProjectEngine TaskStores, so extension API tools (fn_task_update,
+    // fn_task_delete, etc.) find a cached store and never fall through to
     // createTaskStoreForBackend (which times out creating a second pool).
     // Reuses each engine's existing TaskStore directly — no new PG boot needed.
     void (async () => {
@@ -2446,7 +2461,19 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
 
     disposeCallbacks.push(async () => {
       if (hybridExecutor) {
-        await hybridExecutor.shutdown();
+        /*
+        FNXC:HybridExecutorBoot 2026-09-26-02:49:
+        RUFU-322: `shutdown()` self-bounds its wait for an in-flight project boot
+        (`shutdownInitWaitTimeoutMs`, default 5s) and rejects when a boot is still running after that,
+        so it can report an incomplete stop but never a hang. This callback must not forward that
+        rejection: it would skip the engine and central-core teardown queued behind it.
+        */
+        try {
+          await hybridExecutor.shutdown();
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          logSink.warn(`HybridExecutor shutdown incomplete: ${message}`, "engine");
+        }
       }
       /*
       FNXC:RemoteAccess 2026-09-01-02:54:
@@ -2473,6 +2500,17 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
       const engine = projectId ? engineManager.getEngine(projectId) : cwdEngine;
       return engine?.getCliAgentRuntime()?.bundle.hub;
     };
+    /*
+    FNXC:CliChatRecall 2026-08-19-11:08:
+    Per-session memory-recall handle for the /api/cli-agent/memory-recall route
+    (RUFU-128). Resolves to the engine runtime bundle's memoryRecall slice
+    (token validation + session existence + recall service); undefined when the
+    cli-agent executor feature is off or the recall wiring is absent.
+    */
+    const cliAgentMemoryRecallResolver = (projectId: string | undefined, _sessionId: string) => {
+      const engine = projectId ? engineManager.getEngine(projectId) : cwdEngine;
+      return engine?.getCliAgentRuntime()?.bundle.memoryRecall;
+    };
     const cwdCliAgentRuntime = cwdEngine?.getCliAgentRuntime();
     const cliSessionTransport = cwdCliAgentRuntime
       ? {
@@ -2493,6 +2531,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
       engine: cwdEngine,
       engineManager,
       cliAgentHubResolver,
+      cliAgentMemoryRecallResolver,
       cliSessionTransport,
       hybridExecutor,
       centralCore: centralCoreForEngine,

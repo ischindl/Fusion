@@ -56,6 +56,23 @@ export interface FileOperationResponse {
  */
 export const MAX_FILE_SIZE = 1024 * 1024;
 
+/*
+FNXC:FileBrowserUpload 2026-09-05-15:01:
+The Files-browser upload feature (RUFU-189) raises its own product size budget: the operator set the
+per-file upload cap at 25 MB, deliberately above the 1 MiB editor read/write cap because uploads are
+binary artifacts (images, PDFs) that the text editor could never open anyway. The shared multer
+instance keeps its 100 MB transport ceiling; this constant is the per-file PRODUCT cap enforced
+per file so one oversized selection fails alone and the rest of the batch still lands.
+*/
+export const MAX_UPLOAD_FILE_SIZE = 25 * 1024 * 1024;
+
+/*
+FNXC:FileBrowserUpload 2026-09-05-15:01:
+Operator-chosen per-request file-count bound for browser uploads: memoryStorage buffers every file,
+so the batch stays bounded (worst case 20 x 25 MB) while still covering a realistic multi-select.
+*/
+export const MAX_UPLOAD_FILES = 20;
+
 /**
  * Error class for file service operations.
  */
@@ -304,14 +321,31 @@ async function readFileForBasePath(basePath: string, filePath: string, options: 
   }
 }
 
-async function writeFileForBasePath(basePath: string, filePath: string, content: string, options: PathValidationOptions = {}): Promise<SaveFileResponse> {
+/*
+FNXC:FileBrowserUpload 2026-09-05-15:01:
+Bytes-safe core for every workspace/task file write. The pre-upload writer only accepted a
+`string` + "utf-8", so uploading a PNG or PDF through the dashboard would have UTF-8-mangled every
+non-ASCII byte. This core accepts raw bytes (no encoding argument exists to get wrong) and keeps the
+exact guard order the JSON text path had: EINVAL -> ETOOLARGE -> traversal -> EISDIR -> parent-exists
+-> write. `overwrite: false` writes with the `wx` flag so the collision refusal (EEXIST) is atomic
+against a concurrent creator instead of a stat-then-write race — that is the server half of the
+RUFU-189 policy: refuse-by-default, replace only when the UI explicitly re-sends `overwrite: true`
+after the operator confirmed.
+*/
+async function writeBytesForBasePath(
+  basePath: string,
+  filePath: string,
+  bytes: Uint8Array,
+  maxBytes: number,
+  options: PathValidationOptions = {},
+  overwrite = false,
+): Promise<SaveFileResponse> {
   if (!filePath) {
     throw new FileServiceError("File path is required", "EINVAL");
   }
 
-  const contentBytes = Buffer.byteLength(content, "utf-8");
-  if (contentBytes > MAX_FILE_SIZE) {
-    throw new FileServiceError(`Content too large: ${contentBytes} bytes (max ${MAX_FILE_SIZE})`, "ETOOLARGE");
+  if (bytes.byteLength > maxBytes) {
+    throw new FileServiceError(`Content too large: ${bytes.byteLength} bytes (max ${maxBytes})`, "ETOOLARGE");
   }
 
   const resolvedPath = validatePath(basePath, filePath, options);
@@ -343,7 +377,7 @@ async function writeFileForBasePath(basePath: string, filePath: string, content:
   }
 
   try {
-    await fsWriteFile(resolvedPath, content, "utf-8");
+    await fsWriteFile(resolvedPath, bytes, { flag: overwrite ? "w" : "wx" });
 
     const stats = await stat(resolvedPath);
     return {
@@ -356,11 +390,19 @@ async function writeFileForBasePath(basePath: string, filePath: string, content:
     if (error.code === "ENOENT") {
       throw new FileServiceError(`Parent directory does not exist: ${filePath}`, "ENOENT");
     }
+    if (error.code === "EEXIST") {
+      throw new FileServiceError(`File already exists: ${filePath}`, "EEXIST");
+    }
     if (error.code === "EACCES" || error.code === "EPERM") {
       throw new FileServiceError(`Permission denied: ${filePath}`, "EACCES");
     }
     throw err;
   }
+}
+
+async function writeFileForBasePath(basePath: string, filePath: string, content: string, options: PathValidationOptions = {}): Promise<SaveFileResponse> {
+  // Text saves (FileEditor, POST /files/{*filepath}) keep their existing replace-in-place contract.
+  return writeBytesForBasePath(basePath, filePath, Buffer.from(content, "utf-8"), MAX_FILE_SIZE, options, true);
 }
 
 /**
@@ -509,6 +551,25 @@ export async function writeWorkspaceFile(
   const workspaceBase = await getWorkspaceBasePath(store, workspace);
   const pathOptions = await getWorkspacePathValidationOptions(store);
   return writeFileForBasePath(workspaceBase, filePath, content, pathOptions);
+}
+
+/*
+FNXC:FileBrowserUpload 2026-09-05-15:01:
+Bytes-safe workspace write backing POST /api/files/upload (RUFU-189). It mirrors writeWorkspaceFile's
+base-path + traversal resolution exactly, but never re-encodes bytes and refuses an existing file
+with EEXIST unless the caller explicitly passes overwrite:true (the UI sends that only after the
+operator confirmed replacement). Size is bounded by MAX_UPLOAD_FILE_SIZE, not the 1 MiB editor cap.
+*/
+export async function writeWorkspaceFileBytes(
+  store: TaskStore,
+  workspace: WorkspaceId,
+  filePath: string,
+  bytes: Uint8Array,
+  overwrite = false,
+): Promise<SaveFileResponse> {
+  const workspaceBase = await getWorkspaceBasePath(store, workspace);
+  const pathOptions = await getWorkspacePathValidationOptions(store);
+  return writeBytesForBasePath(workspaceBase, filePath, bytes, MAX_UPLOAD_FILE_SIZE, pathOptions, overwrite);
 }
 
 // ── Workspace File Operations (Create, Copy, Move, Delete, Rename) ─────────

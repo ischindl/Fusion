@@ -1,5 +1,5 @@
 import type { Task, TaskStore, WorkflowIr, WorkflowIrResolverStore } from "@fusion/core";
-import { resolveTaskLifecycleColumns } from "@fusion/core";
+import { compareTasksByQueueOrder, resolveTaskLifecycleColumns } from "@fusion/core";
 import { createLogger, type Logger } from "../logger.js";
 
 /**
@@ -37,6 +37,15 @@ Auto-claim runnability must have one source of truth so the snapshot rebuild and
 
 FNXC:AutoClaim 2026-06-21-16:09:
 FN-6873 pins `column === "todo"` as the candidate gate after FN-6872 appeared in a heartbeat prompt while archived from a stale cache. Archived, done, triage, in-progress, in-review, soft-deleted, paused, assigned, checked-out, and dependency-blocked rows can satisfy dependencies where allowed, but must never be surfaced or claimed as auto-claim candidates.
+
+FNXC:AutoClaim 2026-09-23-21:35 (RUFU-264):
+`userPaused` joins `paused` in the exclusion conjunction. The dispatch authority
+(`FNXC:TaskDispatch 2026-07-19-14:40`, scheduler.ts) treats either flag as a
+parked row; this selector consulted only the legacy one, so an UNASSIGNED
+operator-parked card (Move-Task hard cancel serializes `userPaused: true,
+paused: undefined`) was auto-claimable. The 2026-09-22T00:55Z tick only LOOKED
+safe here because the parked cards were assigned — the empty candidate list came
+from the assigned/terminal filters, not from any userPaused gate.
 */
 /**
  * FNXC:AutoClaimResolvedColumns 2026-07-29-14:40 (U7 / R3):
@@ -48,13 +57,11 @@ FN-6873 pins `column === "todo"` as the candidate gate after FN-6872 appeared in
 export interface AutoClaimLifecycleRoles {
   hold?: string;
   complete?: string;
-  archived?: string;
 }
 
 const LEGACY_AUTO_CLAIM_ROLES: Required<AutoClaimLifecycleRoles> = {
   hold: "todo",
   complete: "done",
-  archived: "archived",
 };
 
 const rolesFor = (
@@ -65,7 +72,6 @@ const rolesFor = (
   return {
     hold: resolved?.hold ?? LEGACY_AUTO_CLAIM_ROLES.hold,
     complete: resolved?.complete ?? LEGACY_AUTO_CLAIM_ROLES.complete,
-    archived: resolved?.archived ?? LEGACY_AUTO_CLAIM_ROLES.archived,
   };
 };
 
@@ -77,8 +83,7 @@ const rolesFor = (
  *   renamed workflow's candidate set was permanently EMPTY — agents were never
  *   offered its work, with no error anywhere to say so.
  *
- *   `dependency?.column === "done" || "archived"` is dependency SATISFACTION, and it
- *   is the more dangerous half: a dependency that finished in a renamed complete
+ *   Dependency completion is the more dangerous half: a dependency that finished in a renamed Complete
  *   column was not recognised as done, so the dependent stayed blocked forever.
  *
  * Roles are resolved PER TASK, not once per pass, because a dependency may sit on a
@@ -92,6 +97,7 @@ export function isRunnableAutoClaimCandidate(
 ): boolean {
   return task.column === rolesFor(task.id, rolesByTask).hold
     && task.paused !== true
+    && task.userPaused !== true
     && !task.assignedAgentId
     && !task.checkedOutBy
     && !task.deletedAt
@@ -100,7 +106,7 @@ export function isRunnableAutoClaimCandidate(
       if (!dependency) return false;
       // The DEPENDENCY's own roles, which need not be the claimant's.
       const depRoles = rolesFor(dependencyId, rolesByTask);
-      return dependency.column === depRoles.complete || dependency.column === depRoles.archived;
+      return dependency.column === depRoles.complete;
     });
 }
 
@@ -114,7 +120,7 @@ export async function resolveAutoClaimLifecycleRoles(
   for (const task of tasks) {
     const resolved = await resolveTaskLifecycleColumns(taskStore, task.id, irCache);
     if (resolved) {
-      roles.set(task.id, { hold: resolved.hold, complete: resolved.complete, archived: resolved.archived });
+      roles.set(task.id, { hold: resolved.hold, complete: resolved.complete });
     }
   }
   return roles;
@@ -226,11 +232,10 @@ export class AutoClaimSnapshotManager {
 
     const tasks = allTasks
       .filter((candidate) => isRunnableAutoClaimCandidate(candidate, tasksById, rolesByTask))
-      .sort((a, b) => {
-        const aSortAt = a.columnMovedAt ?? a.createdAt;
-        const bSortAt = b.columnMovedAt ?? b.createdAt;
-        return aSortAt.localeCompare(bSortAt);
-      })
+      /* FNXC:TaskQueueOrder 2026-09-17-12:07: FN-509 — rank with the shared queue order BEFORE the
+         50-row bound, so a boosted card that would have sat beyond the cut is still in the snapshot.
+         Relevance scoring downstream remains a filter, not a way past an older admissible card. */
+      .sort(compareTasksByQueueOrder)
       .slice(0, 50)
       .map((candidate) => toAutoClaimCandidate(candidate, now));
 

@@ -4,3 +4,4 @@
  */
 export * from "./merge-policy.js";
 export * from "./merge-queue.js";
+export * from "./worktree-content.js";

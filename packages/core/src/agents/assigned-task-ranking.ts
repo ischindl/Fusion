@@ -24,6 +24,12 @@ export interface AssignedTaskLike {
   title?: string | null;
   description?: string | null;
   paused?: boolean | null;
+  /**
+   * Operator hard-cancel park (Move-Task contract). Declared here because the
+   * projection must be able to SEE it — see the FNXC:WakeDeltaMultiAssign block
+   * on `tierForTask` for the dispatch-invariant requirement it carries.
+   */
+  userPaused?: boolean | null;
   dependencies?: string[] | null;
   checkedOutBy?: string | null;
   columnMovedAt?: string | null;
@@ -42,6 +48,16 @@ export interface RankAssignedTasksForWakeDeltaResult {
   ranked: RankedAssignedTaskLine[];
   totalOpen: number;
   notActionableCount: number;
+  /**
+   * RUFU-264: notActionableCount alone could not tell "operator said stop"
+   * from "engine parked it", and the merged `(paused)` bucket undercounted
+   * operator holds (8 true → 2 shown). Both-flag rows count as OPERATOR-parked
+   * — the operator hold wins identity so a coordinator never mistakes a hard
+   * cancel for an engine rebound.
+   */
+  operatorPausedCount: number;
+  /** Rows `paused === true && userPaused !== true` (engine/agent park). */
+  enginePausedCount: number;
   truncated: boolean;
 }
 
@@ -101,11 +117,29 @@ export interface AssignedTaskRankRoles {
 
 const LEGACY_RANK_ROLES: AssignedTaskRankRoles = { hold: "todo", wip: "in-progress" };
 
+/*
+FNXC:WakeDeltaMultiAssign 2026-09-23-21:35 (RUFU-264):
+Either park flag is a durable operator/engine stop, exactly as the dispatch
+authority requires — see `FNXC:TaskDispatch 2026-07-19-14:40` in
+`packages/engine/src/scheduler.ts`: "`userPaused` is a durable operator stop
+even when legacy `paused` is false; candidacy caching and every dispatch
+selector must treat either flag as parked."
+
+This inventory is a coordination projection of that candidacy and had drifted:
+it consulted only the legacy `paused` flag, so a `todo` card carrying
+`userPaused: true, paused: false` (the exact serialization of a Move-Task hard
+cancel — `serialization.ts` maps false to `undefined`) was presented to every
+no-task heartbeat as actionable `[ready_todo]` work while the scheduler would
+never dispatch it. Measured 2026-09-22T00:55Z (agent-5683bf15): 7 parked cards
+were offered as ready work and the true parked count of 8 printed as
+"not actionable now: 2 (paused)". The projection is the bug; the flag itself is
+never cleared, migrated, or rewritten here.
+*/
 function tierForTask(
   task: AssignedTaskLike,
   roles: AssignedTaskRankRoles = LEGACY_RANK_ROLES,
 ): AssignedTaskRankTier | "not_actionable" {
-  if (task.paused) return "not_actionable";
+  if (task.paused === true || task.userPaused === true) return "not_actionable";
   if (task.column === roles.wip) return "in_progress";
   if (task.column === roles.hold) {
     const deps = task.dependencies ?? [];
@@ -127,7 +161,7 @@ const TIER_ORDER: Record<AssignedTaskRankTier, number> = {
 
 /**
  * Rank open assigned tasks for Wake Delta multi-assign inventory.
- * Excludes done/archived; titled lines only for actionable tiers; cap applied.
+ * Excludes workflow Complete rows; titled lines only for actionable tiers; cap applied.
  */
 export function rankAssignedTasksForWakeDelta(
   tasks: AssignedTaskLike[],
@@ -146,11 +180,16 @@ export function rankAssignedTasksForWakeDelta(
 
   const titled: RankedAssignedTaskLine[] = [];
   let notActionableCount = 0;
+  let operatorPausedCount = 0;
+  let enginePausedCount = 0;
 
   for (const task of open) {
     const tierOrNa = tierForTask(task, options.roles);
     if (tierOrNa === "not_actionable") {
       notActionableCount += 1;
+      // `tierForTask` only returns not_actionable for a park flag; operator wins on both-flag rows.
+      if (task.userPaused === true) operatorPausedCount += 1;
+      else enginePausedCount += 1;
       continue;
     }
     const labels: string[] = [];
@@ -179,6 +218,8 @@ export function rankAssignedTasksForWakeDelta(
     ranked: titled.slice(0, cap),
     totalOpen: open.length,
     notActionableCount,
+    operatorPausedCount,
+    enginePausedCount,
     truncated,
   };
 }
@@ -192,6 +233,16 @@ export function formatAssignedTasksWakeDeltaSection(
   options?: { showWhenSingleBoundOnly?: boolean; boundTaskId?: string | null },
 ): string {
   const { ranked, totalOpen, notActionableCount, truncated } = result;
+  /*
+  FNXC:WakeDeltaMultiAssign 2026-09-23-21:35 (RUFU-264):
+  The bucket splits operator-parked from engine-parked because the merged
+  "(paused)" count was the observable lie: an agent burned each no-task
+  heartbeat's single scoped action chasing `[ready_todo]` lines the scheduler
+  would never dispatch, and the one count it could trust underreported 8 as 2.
+  `?? 0` keeps hand-constructed results (older callers, tests) rendering.
+  */
+  const operatorPaused = result.operatorPausedCount ?? 0;
+  const enginePaused = result.enginePausedCount ?? 0;
   if (totalOpen === 0) return "";
 
   // Prefer omit when only the bound task is titled and nothing else is open.
@@ -231,7 +282,7 @@ export function formatAssignedTasksWakeDeltaSection(
 
   if (notActionableCount > 0) {
     lines.push(
-      `- also assigned not actionable now: ${notActionableCount} (paused)`,
+      `- also assigned not actionable now: ${notActionableCount} (operator-paused: ${operatorPaused}, engine-paused: ${enginePaused})`,
     );
   }
 

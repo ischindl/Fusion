@@ -37,22 +37,6 @@ function createStore(): TaskStore & EventEmitter {
   (emitter as any).listTasks = vi.fn();
   (emitter as any).getTask = vi.fn().mockResolvedValue({ column: "in-review" });
   (emitter as any).updateTask = vi.fn(withBranchWriteProvenance(async () => undefined));
-  (emitter as any).updateTaskAtomic = vi.fn(async (id: string, updater: (task: Task) => Partial<Task> | null) => {
-    const suffix = id.toLowerCase();
-    const current = {
-      id,
-      branch: `fusion/${suffix}`,
-      worktree: `/tmp/${suffix}`,
-      status: "failed",
-      error: undefined,
-      paused: true,
-      pausedReason: "branch-conflict-unrecoverable",
-      userPaused: undefined,
-    } as Task;
-    const patch = updater(current);
-    if (patch) await (emitter as any).updateTask(id, patch);
-    return { ...current, ...patch };
-  });
   (emitter as any).moveTask = vi.fn().mockResolvedValue(undefined);
   (emitter as any).handoffToReview = vi.fn().mockImplementation(async (taskId: string) => {
     await (emitter as any).moveTask(taskId, "in-review");
@@ -84,7 +68,7 @@ describe("self-healing reclaim paused review", () => {
     vi.restoreAllMocks();
   });
 
-  it("reclaims paused in-review branch conflict, clears paused state, and requeues to todo with audit metadata", async () => {
+  it("reclaims paused in-review branch conflict, clears paused state, and retains the card in its review lane with audit metadata", async () => {
     (store.listTasks as any)
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
@@ -103,6 +87,16 @@ describe("self-healing reclaim paused review", () => {
 
     expect(recovered).toBe(1);
     expect(store.updateTask).toHaveBeenCalledWith("FN-4485", expect.objectContaining({ paused: false, pausedReason: undefined, status: null, error: null }));
+    /*
+    FNXC:LifecycleContainment 2026-09-13 (RUFU-231 test reconciliation):
+    FN-207/FN-217 removed backward-move authority from recovery reasons: the reclaimed card is
+    retained in its CURRENT lane (only a REVISE transition moves a card backward). The pre-
+    containment `moveTask(FN-4485, "in-progress")` expectation asserted a move the lifecycle
+    contract now refuses; the re-queue signal is the cleared paused/status/error state plus the
+    retention log, and the checkout itself was destroyed by the reclaim.
+    */
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect(store.logEntry).toHaveBeenCalledWith("FN-4485", expect.stringContaining("Lifecycle recovery retained in 'in-review'"));
     expect(store.logEntry).toHaveBeenCalledWith("FN-4485", expect.stringContaining("[recovery] reclaim-paused-review"));
     expect((store as any).recordRunAuditEvent).toHaveBeenCalledWith(expect.objectContaining({
       mutationType: "branch:auto-reclaim",
@@ -155,7 +149,7 @@ describe("self-healing reclaim paused review", () => {
     const recovered = await manager.reclaimSelfOwnedBranchConflicts();
 
     expect(recovered).toBe(0);
-    expect((store as any).updateTaskAtomic).toHaveBeenCalledWith("FN-4487", expect.any(Function));
+    expect(store.moveTask).toHaveBeenCalledWith("FN-4487", "in-review");
   });
 
   it("does not reclaim userPaused tasks without branch-conflict paused reason", async () => {

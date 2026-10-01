@@ -12,6 +12,7 @@ const baseItem: TaskGitLabTrackedItem = {
   projectPath: "group/project",
   title: "Fix GitLab bug",
   state: "opened",
+  createdAt: "2026-08-01T00:00:00.000Z",
 };
 
 describe("GitLab tracking UI helpers", () => {

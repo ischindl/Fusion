@@ -21,8 +21,6 @@ import {
   connectSliceInterviewStream,
   assignTask,
   fetchAgentTasks,
-  archiveTask,
-  unarchiveTask,
   deleteTask,
   ApiRequestError,
   moveTask,
@@ -65,7 +63,6 @@ import {
   resumeProject,
   fetchFirstRunStatus,
   fetchGlobalConcurrency,
-  updateGlobalConcurrency,
   fetchPiSettings,
   updatePiSettings,
   installPiPackage,
@@ -89,11 +86,13 @@ import {
 } from "../api";
 import type { Task, TaskDetail, BatchStatusResponse, MergeResult } from "@fusion/core";
 import { clearAuthToken } from "../auth";
+import type { ChatFailureInfo } from "../api/chat/chat";
 
 const TASK_TOKEN_USAGE_FIXTURE = {
   inputTokens: 1000,
   outputTokens: 300,
   cachedTokens: 125,
+  cacheWriteTokens: 0,
   totalTokens: 1425,
   firstUsedAt: "2026-04-24T08:00:00.000Z",
   lastUsedAt: "2026-04-24T09:30:00.000Z",
@@ -871,7 +870,7 @@ describe("streamChatResponse", () => {
       thinking: string[];
       text: string[];
       done: Array<{ messageId: string }>;
-      error: string[];
+      error: Array<string | ChatFailureInfo>;
       connectionStates: string[];
     }) => void,
   ) => {
@@ -879,7 +878,7 @@ describe("streamChatResponse", () => {
       thinking: [] as string[],
       text: [] as string[],
       done: [] as Array<{ messageId: string }>,
-      error: [] as string[],
+      error: [] as Array<string | ChatFailureInfo>,
       connectionStates: [] as string[],
     };
 
@@ -1033,7 +1032,7 @@ describe("streamChatResponse", () => {
       thinking: [] as string[],
       text: [] as string[],
       done: [] as Array<{ messageId: string }>,
-      error: [] as string[],
+      error: [] as Array<string | ChatFailureInfo>,
       connectionStates: [] as string[],
     };
 
@@ -1113,7 +1112,7 @@ describe("mission interview draft api helpers", () => {
 
   it("fires onError when fetch aborts unexpectedly", async () => {
     const callbacks = {
-      error: [] as string[],
+      error: [] as Array<string | ChatFailureInfo>,
     };
 
     globalThis.fetch = vi.fn().mockRejectedValue(new DOMException("The operation was aborted", "AbortError"));
@@ -1130,7 +1129,7 @@ describe("mission interview draft api helpers", () => {
 
   it("does not fire onError when abort is initiated by close", async () => {
     const callbacks = {
-      error: [] as string[],
+      error: [] as Array<string | ChatFailureInfo>,
     };
 
     globalThis.fetch = vi.fn().mockImplementation((_, init?: RequestInit) => {

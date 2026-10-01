@@ -19,6 +19,9 @@ function makeTask(overrides: Partial<Task> & Pick<Task, "id">): Task {
     assignedAgentId: overrides.assignedAgentId,
     checkedOutBy: overrides.checkedOutBy,
     paused: overrides.paused,
+    // RUFU-264: this fixture builds an explicit field list — a field it does not
+    // forward is silently dropped, making userPaused coverage vacuous.
+    userPaused: overrides.userPaused,
     deletedAt: overrides.deletedAt,
     columnMovedAt: overrides.columnMovedAt,
   } as unknown as Task;
@@ -26,18 +29,20 @@ function makeTask(overrides: Partial<Task> & Pick<Task, "id">): Task {
 
 describe("AutoClaimSnapshotManager", () => {
   it("uses the shared predicate for unchanged runnability filter cases", () => {
-    const firstRunnable = makeTask({ id: "FN-1", dependencies: ["FN-done", "FN-archived"] });
+    const firstRunnable = makeTask({ id: "FN-1", dependencies: ["FN-done"] });
     const secondRunnable = makeTask({ id: "FN-2" });
     const tasks = [
       firstRunnable,
       makeTask({ id: "FN-paused", paused: true }),
+      // RUFU-264: Move-Task hard-cancel shape — unassigned + operator-parked.
+      // Pre-fix this row was candidate-eligible (only legacy paused was checked).
+      makeTask({ id: "FN-user-paused", userPaused: true }),
       makeTask({ id: "FN-assigned", assignedAgentId: "agent-1" }),
       makeTask({ id: "FN-checked", checkedOutBy: "agent-2" }),
       makeTask({ id: "FN-deleted", deletedAt: "2026-01-02T00:00:00.000Z" } as Partial<Task> & Pick<Task, "id">),
       makeTask({ id: "FN-blocked", dependencies: ["FN-open"] }),
       makeTask({ id: "FN-triage", column: "triage" }),
       makeTask({ id: "FN-done", column: "done" }),
-      makeTask({ id: "FN-archived", column: "archived" }),
       makeTask({ id: "FN-open", column: "in-progress" }),
       makeTask({ id: "FN-review", column: "in-review" }),
       secondRunnable,
@@ -83,6 +88,7 @@ describe("AutoClaimSnapshotManager", () => {
     const tasks = [
       makeTask({ id: "FN-1", dependencies: ["FN-done"] }),
       makeTask({ id: "FN-paused", paused: true }),
+      makeTask({ id: "FN-user-paused", userPaused: true }),
       makeTask({ id: "FN-assigned", assignedAgentId: "agent-1" }),
       makeTask({ id: "FN-checked", checkedOutBy: "agent-2" }),
       makeTask({ id: "FN-blocked", dependencies: ["FN-open"] }),
@@ -140,13 +146,13 @@ describe("AutoClaimSnapshotManager", () => {
     });
   });
 
-  it("drops archived-while-cached candidates but keeps runnable siblings with canonical fields", async () => {
+  it("drops completed-while-cached candidates but keeps runnable siblings with canonical fields", async () => {
     const initialTasks = [
-      makeTask({ id: "FN-6872", title: "Re-ratchet line-count baseline", description: "archived later", createdAt: "2026-01-01T00:00:00.000Z" }),
+      makeTask({ id: "FN-6872", title: "Re-ratchet line-count baseline", description: "completed later", createdAt: "2026-01-01T00:00:00.000Z" }),
       makeTask({ id: "FN-TODO", title: "Old sibling title", description: "old sibling desc", createdAt: "2026-01-02T00:00:00.000Z" }),
     ];
     const canonicalTasks = [
-      makeTask({ id: "FN-6872", title: "Re-ratchet line-count baseline", description: "now archived", column: "archived", createdAt: "2026-01-01T00:00:00.000Z" }),
+      makeTask({ id: "FN-6872", title: "Re-ratchet line-count baseline", description: "now completed", column: "done", createdAt: "2026-01-01T00:00:00.000Z" }),
       makeTask({ id: "FN-TODO", title: "Canonical sibling title", description: "canonical first line\nsecond", createdAt: "2026-01-02T00:00:00.000Z" }),
     ];
     const listTasks = vi.fn()
@@ -168,14 +174,14 @@ describe("AutoClaimSnapshotManager", () => {
     });
   });
 
-  it("treats archived dependencies as satisfied without making archived tasks candidates", async () => {
-    const dependent = makeTask({ id: "FN-dependent", dependencies: ["FN-archived-dependency"] });
-    const archivedDependency = makeTask({ id: "FN-archived-dependency", column: "archived" });
-    const tasks = [dependent, archivedDependency];
+  it("treats completed dependencies as satisfied without making completed tasks candidates", async () => {
+    const dependent = makeTask({ id: "FN-dependent", dependencies: ["FN-complete-dependency"] });
+    const completedDependency = makeTask({ id: "FN-complete-dependency", column: "done" });
+    const tasks = [dependent, completedDependency];
     const tasksById = new Map(tasks.map((task) => [task.id, task]));
 
     expect(isRunnableAutoClaimCandidate(dependent, tasksById)).toBe(true);
-    expect(isRunnableAutoClaimCandidate(archivedDependency, tasksById)).toBe(false);
+    expect(isRunnableAutoClaimCandidate(completedDependency, tasksById)).toBe(false);
 
     const manager = new AutoClaimSnapshotManager({ taskStore: { listTasks: vi.fn(async () => tasks) } });
     const snapshot = await manager.getSnapshot();

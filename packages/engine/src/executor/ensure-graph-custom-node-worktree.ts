@@ -9,7 +9,7 @@
  * Per-node worktree acquisition is expected graph plumbing once the task has a worktree.
  */
 import type { Settings, Task, TaskDetail, TaskStore } from "@fusion/core";
-import { type RunCommandResult, type WorkspaceConfig } from "@fusion/core";
+import { applyNonInteractiveGitEnv, type RunCommandResult, type WorkspaceConfig } from "@fusion/core";
 import { executorLog } from "../logger.js";
 import { generateSyntheticRunId, createRunAuditor, type EngineRunContext, type RunAuditor } from "../util/run-audit.js";
 import { acquireTaskWorktree, acquireWorkspaceTaskWorktrees } from "../worktree/worktree-acquisition.js";
@@ -102,7 +102,7 @@ export async function ensureGraphCustomNodeWorktree(
             }
             return result;
           }),
-        taskEnv: process.env,
+        taskEnv: applyNonInteractiveGitEnv(process.env), // FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210): autonomous worktree-acquire git lane
         addActiveWorktree: deps.addActiveWorktree,
         refreshStaleBase,
       });
@@ -142,7 +142,7 @@ export async function ensureGraphCustomNodeWorktree(
           }
           return result;
         }),
-      taskEnv: process.env,
+      taskEnv: applyNonInteractiveGitEnv(process.env), // FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210): autonomous worktree-acquire git lane
       secretsStore: deps.secretsStore,
       refreshStaleBase,
     });
@@ -155,6 +155,18 @@ export async function ensureGraphCustomNodeWorktree(
     return await deps.store.getTask(task.id);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    /*
+    FNXC:TaskBaseResolution 2026-09-16-03:05 (RUFU-245):
+    A `TASK_BASE_DIVERGED:` refusal from acquisition (`TaskBranchBaseDivergedError`) needs no local
+    classification here: this catch already logs the verbatim message to the task and rethrows, and the
+    graph executor routes it as an ordinary node `exception` failure (only `WorktreeBaseRefreshError`
+    and `WorkspacePreparationError` get typed hold values). `formatGraphFailureDiagnostic` appends the
+    `node:<id>:error` context text, so the prefixed refusal sentence — and its push/pull remedy — is
+    what reaches the terminal task error. That routing is deliberate and load-bearing:
+    `handleGraphFailure` writes no `recoveryRetryCount` and no `pausedReason`, so the divergence park
+    never consumes the RUFU-231 branch-conflict budget, and the node attempt cap (`maxRetriesPerNode`,
+    default 2) is the only budget touched because the refusal re-enters acquisition on retry.
+    */
     await deps.store.logEntry(
       task.id,
       `Workflow node '${nodeId}' failed to acquire task worktree: ${message}`,

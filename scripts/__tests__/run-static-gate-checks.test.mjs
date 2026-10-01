@@ -17,6 +17,36 @@ FN-8991, FN-8994, and FN-9096 added runtime-skill-loader-drift,
 workspace-package-graph, and cli-runtime-routing validators to the production
 chains. Those chains are authoritative; retain their exact order here so this
 mirror reports future declaration drift rather than preserving a stale list.
+
+FNXC:TestInfrastructure 2026-08-25-12:13:
+Commit 12c292ea6b added the 16th validator, check-no-comment-assertions-in-tests,
+to the production gate:static chain without updating this mirror. RUFU-148
+restores lockstep at the live position (between no-test-timeout-appeasement and
+changeset-format); the chain in package.json remains the source of truth.
+
+FNXC:SkillCatalogGenerationOwnership 2026-09-22-14:51:
+RUFU-265 appends the 17th validator, check-fusion-skill-sync, at the end of the
+chain so the contiguous validator prefix is preserved. It is the enforcement
+point for the generated skill catalog: builds no longer regenerate those tracked
+docs, so drift in the committed file must fail the blocking gate instead of
+being silently rewritten by CI's earlier build step.
+
+FNXC:LockfileDriftGate 2026-09-22-19:20:
+RUFU-266 adds the 18th validator, check-lockfile-importers, beside
+check-workspace-package-graph — both answer "does the workspace's declared
+dependency graph actually match what is committed?", one against the workspace
+globs and one against pnpm-lock.yaml. It belongs in the blocking chain because a
+drifted committed lockfile is not discoverable from a task worktree: the dependency
+auto-heal silently repairs it locally, and the resulting out-of-scope diff fails
+unrelated cards' squash merges.
+
+FNXC:RetentionCensus 2026-09-23-10:20 (RUFU-257):
+RUFU-257 appends the 19th validator, check-retention-coverage, at the end of the chain. A dashboard
+killed by its own heap looks like an infrastructure failure and costs hours of forensics, which is how
+RUFU-249's death was finally explained; the census only prevents a recurrence while the ratchet that
+forces every new module-scope cache to declare its bound stays in the BLOCKING chain. It runs there
+rather than as an extra Lint step because `pnpm test:gate` already invokes every `check-*.mjs` in this
+list through `run-static-gate-checks.mjs`, and Gate is one of the four required checks.
 */
 const EXPECTED_GATE_CHECKS = [
   check(["no-", ["no", "hup"].join("")].join("")),
@@ -29,11 +59,15 @@ const EXPECTED_GATE_CHECKS = [
   check("no-node-only-core-imports-in-dashboard"),
   check("pi-versions-pinned"),
   check("workspace-package-graph"),
+  check("lockfile-importers"),
   check("no-test-timeout-appeasement"),
+  check("no-comment-assertions-in-tests"),
   check("changeset-format"),
   check("mock-completeness"),
   check("inert-sync-lane-conversions"),
   check("runtime-skill-loader-drift"),
+  check("fusion-skill-sync"),
+  check("retention-coverage"),
 ];
 
 function createFixture() {
@@ -61,6 +95,50 @@ test("production gate inventory contains each canonical validator exactly once",
   const checks = readStaticGateChecks();
   assert.deepEqual(checks, EXPECTED_GATE_CHECKS);
   assert.equal(new Set(checks).size, checks.length);
+});
+
+/*
+FNXC:SkillCatalogGenerationOwnership 2026-09-22-14:51:
+RUFU-265: the generated skill catalog has no build-time writer anymore, so the
+drift check is the only thing standing between a stale committed catalog and
+shipping it. Pin its membership in the blocking chain explicitly — the deep-equal
+mirror above would also pass if someone dropped the entry and this list with it.
+*/
+test("blocking gate chain enforces the generated skill catalog drift check", () => {
+  const checks = readStaticGateChecks();
+  assert.ok(
+    checks.includes(check("fusion-skill-sync")),
+    "scripts/check-fusion-skill-sync.mjs must stay in the contiguous blocking validator prefix of test:gate:static",
+  );
+});
+
+/*
+FNXC:LockfileDriftGate 2026-09-22-19:20:
+RUFU-266: mirror membership alone does not prove the validator is required, so pin
+its blocking-chain membership explicitly the way RUFU-265 pinned fusion-skill-sync.
+*/
+test("blocking gate chain enforces lockfile/importer parity", () => {
+  const checks = readStaticGateChecks();
+  assert.ok(
+    checks.includes(check("lockfile-importers")),
+    "scripts/check-lockfile-importers.mjs must stay in the contiguous blocking validator prefix of test:gate:static",
+  );
+});
+
+/*
+FNXC:RetentionCensus 2026-09-23-12:15 (RUFU-257):
+Same reasoning RUFU-266 applied to lockfile parity: the mirror list above would be updated by the very
+refactor that dropped the validator, so membership in the blocking prefix is pinned on its own. This is
+the check that keeps a future chain reshuffle from quietly downgrading the retention ratchet to a
+non-blocking step, which is the failure mode that let seven heap deaths accumulate before RUFU-249 was
+explained.
+*/
+test("blocking gate chain enforces module-scope retention coverage", () => {
+  const checks = readStaticGateChecks();
+  assert.ok(
+    checks.includes(check("retention-coverage")),
+    "scripts/check-retention-coverage.mjs must stay in the contiguous blocking validator prefix of test:gate:static",
+  );
 });
 
 test("runStaticGateChecks runs clean fixture validators and waits for all", async () => {

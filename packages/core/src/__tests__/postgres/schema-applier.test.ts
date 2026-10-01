@@ -23,6 +23,7 @@
 
 import { describe, it, expect, afterEach, beforeAll } from "vitest";
 import postgres from "postgres";
+import { SchemaMutationLockTimeoutError } from "../../postgres/advisory-locks.js";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { sql } from "drizzle-orm";
 import { readFileSync } from "node:fs";
@@ -31,8 +32,11 @@ import {
   applySchemaBaseline,
   getAppliedMigrations,
   SCHEMA_BASELINE_VERSION,
+  TASK_PAUSE_ACCOUNTING_VERSION,
+  TASK_HUMAN_PLAN_APPROVAL_VERSION,
   WORKFLOW_IR_PIN_AND_LEGACY_ADOPTION_VERSION,
   assertBinaryNotOlderThanDatabase,
+  StaleBinarySchemaError,
   cePluginSchemaInit,
   cliPressPluginSchemaInit,
   reportsPluginSchemaInit,
@@ -115,8 +119,17 @@ import {
   PATCHNODE_ENTRIES_VERSION,
   TASK_PLANNING_FAILURE_VERSION,
   CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION,
+  MIXED_0065_REPAIR_VERSION,
+  PROJECT_NOTES_VERSION,
   OVERLAP_WAIT_SYNC_VERSION,
-  DROP_EXCLUDED_UPSTREAM_FEATURE_SCHEMA_VERSION,
+  WHITEBOARDS_SCHEMA_VERSION,
+  OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_VERSION,
+  OVERLAP_REVALIDATION_DRAIN_VERSION,
+  TASK_HUMAN_MERGE_APPROVAL_VERSION,
+  WORKFLOW_IDENTITY_AND_MODEL_LANES_VERSION,
+  // FNXC:MergeRebuild0919 2026-09-19-21:45: both sides added this binding; the clean merge duplicated it.
+  REVIEW_LANE_LEDGER_VERSION,
+  OVERLAP_OWNER_FK_DEFERRABLE_REPAIR_VERSION,
 } from "../../postgres/schema-applier.js";
 import { ProjectPartitionRekeyError, rekeyFallbackProjectPartition } from "../../postgres/migration-stamping.js";
 import type { PluginSchemaInitHook } from "../../postgres/plugin-schema-hook.js";
@@ -149,10 +162,15 @@ describe("schema-applier: immutable migration identities", () => {
     expect(MESSAGE_ARCHIVE_SCHEMA_VERSION).toBe("0058");
     /* FNXC:PgSchemaApplier 2026-08-15-22:10: 0059 (FN-9037 recommendation source-agent index) and 0060 (FN-9059 workspace
        coordination leases/intents) landed first; the 2026-08-20 upstream batch owns 0061-0064 (FN-066..FN-094), FN-149
-       owns 0065, and the RUFU-068 chat_sessions.memory_focus migration is renumbered to 0066 (2026-08-23), advancing the baseline to 0066. */
+       owns 0065, the RUFU-068 chat_sessions.memory_focus migration is renumbered to 0066 (2026-08-23), FN-179's
+       session-contention wait state owns 0067 (2026-08-24), and the idempotent 0065-collision repair migration
+       (MIXED_0065_REPAIR_VERSION) is renumbered to 0068, advancing the baseline to 0068. */
     expect(TASK_SOURCE_AGENT_INDEX_VERSION).toBe("0059");
     expect(WORKSPACE_COORDINATION_LEASES_SCHEMA_VERSION).toBe("0060");
     expect(ACTIVITY_LOG_TASK_ID_INDEX_VERSION).toBe("0061");
+    /* FNXC:MemoryFocus 2026-08-23-07:07: 0065 -> 0066 renumber in the RUFU-160 origin/main merge; 0065 stays FN-149's review-convergence migration. */
+    /* FNXC:MigrationCollisionRepair 2026-08-27-05:06: the 0065-collision repair (MIXED_0065_REPAIR_VERSION) was renumbered 0067 -> 0068 in the fusion/rufu-141 merge: released 0067 is FN-179's session-contention wait state. */
+    expect(CHAT_SESSION_MEMORY_FOCUS_VERSION).toBe("0066");
     /*
     FNXC:ReviewConvergence 2026-08-22-18:58:
     The tail of this list went stale twice in a row (it still asserted 0063 while the ceiling was
@@ -173,7 +191,48 @@ describe("schema-applier: immutable migration identities", () => {
     expect(TASK_PLANNING_FAILURE_VERSION).toBe("0072");
     expect(CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION).toBe("0073");
     expect(Number(SCHEMA_BASELINE_VERSION)).toBeGreaterThanOrEqual(Number(CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION));
-    expect(SCHEMA_BASELINE_VERSION).toBe("0085");
+    expect(MIXED_0065_REPAIR_VERSION).toBe("local-repair-mixed-0065");
+    /*
+    FNXC:MigrationCollisionRepair 2026-09-09-15:13: the fork's repair step must never hold a numeric
+    migration identity again. fusion_schema_migrations is keyed on the bare version string, so when the
+    repair shared "0072" with upstream's FN-9273 release, `applied.includes("0072")` satisfied both gates and
+    `tasks.planning_failure` was silently skipped on every database that had recorded the repair. Released
+    migrations are always numeric, so a non-numeric identity cannot collide with any current or future one;
+    assertBinaryNotOlderThanDatabase ignores non-numeric rows, which is why this stays safe as a ceiling.
+    */
+    expect(Number.isFinite(Number(MIXED_0065_REPAIR_VERSION))).toBe(false);
+    expect(PROJECT_NOTES_VERSION).toBe("0074");
+    expect(OVERLAP_WAIT_SYNC_VERSION).toBe("0075");
+    expect(WHITEBOARDS_SCHEMA_VERSION).toBe("0076");
+    expect(OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_VERSION).toBe("0077");
+    expect(OVERLAP_REVALIDATION_DRAIN_VERSION).toBe("0078");
+    /* FNXC:ReviewLaneDispatch 2026-09-09 (STAS-205): the ledger must sort after every migration that predates it, or an upgraded database boots without the live-reviewer-run index the dispatch sweep depends on. */
+    /* FNXC:ReviewLaneDispatch 2026-09-16-14:10 (merge origin/main): renumbered 0077 -> 0079 -> 0082 — upstream released its own 0079/0080/0081 in this merge, so the ledger takes the next free slot. A version string already in the bookkeeping table marks a migration applied without running its SQL. */
+    expect(WORKFLOW_IDENTITY_AND_MODEL_LANES_VERSION).toBe("0079");
+    // FNXC:HumanPlanApproval 2026-09-15-06:24: FN-408's per-card decision column is migration 0080.
+    expect(TASK_HUMAN_PLAN_APPROVAL_VERSION).toBe("0080");
+    // FNXC:TaskPauseAccounting 2026-09-16-06:16: FN-457's durable paused-time columns are migration 0081; the ceiling sits one higher at 0082 so the ledger's self-marked version never trips the stale-binary guard.
+    expect(TASK_PAUSE_ACCOUNTING_VERSION).toBe("0081");
+    // FNXC:TaskQueueOrder 2026-09-17-12:07: FN-509's durable Boost column is migration 0082.
+    expect(SCHEMA_BASELINE_VERSION >= "0082").toBe(true);
+    /*
+    FNXC:HumanMergeApproval 2026-09-17-18:09:
+    FN-514's per-card delivery-lock column is migration 0083. Every already-published identity stays
+    pinned so a renumbering fails here rather than silently skipping a migration on upgrade.
+    */
+    expect(TASK_HUMAN_MERGE_APPROVAL_VERSION).toBe("0083");
+    /*
+    FNXC:ReviewLaneDispatch 2026-09-18-13:40 (sync wave): the main-local ledger renumbered 0082 -> 0084
+    (upstream took 0082/0083) and is now the ceiling.
+
+    FNXC:MergeRebuild0919 2026-09-19-21:45: canonical owns 0084 (its overlap renumber) and 0085 (its
+    drop-excluded-feature schema), and this line does NOT apply either, so the ledger renumbered again to
+    0086 — the released 0074-0083 identities above stay pinned exactly as they are.
+    */
+    expect(REVIEW_LANE_LEDGER_VERSION).toBe("0086");
+    /* FNXC:OverlapWait 2026-09-21-10:10: 0087 repairs this line's 0075 owner FK to ON UPDATE CASCADE DEFERRABLE (upstream b1db055c27). */
+    expect(OVERLAP_OWNER_FK_DEFERRABLE_REPAIR_VERSION).toBe("0087");
+    expect(SCHEMA_BASELINE_VERSION).toBe("0087");
   });
 
   it("keeps monitor and approval isolation assigned to version 0003", () => {
@@ -287,6 +346,7 @@ describe("schema-applier: immutable migration identities", () => {
   FNXC:PostgresBigintCounters 2026-07-19-12:00:
   0026 widens overflow-prone counters to bigint. Keep identity fixed and at-or-before SCHEMA_BASELINE_VERSION.
 
+/*
   FNXC:PostgresBigintCounters 2026-07-19-08:40:
   Also assert the authoritative applier registry wires 0026_bigint_counters.sql —
   constant identity alone does not prove applySchemaBaseline will run the migration.
@@ -354,6 +414,28 @@ async function teardownDb(ctx: TestContext | null): Promise<void> {
   if (!ctx) return;
   await ctx.sqlConn.end({ timeout: 5 }).catch(() => {});
   await ctx.drop().catch(() => {});
+}
+
+/*
+FNXC:PostgresSchema 2026-09-15-22:24:
+Plugin hook that fails loudly if the applier ever reaches its drift probes before project, central, and
+archive exist. Shared by every marker-saturated case so they all assert the same FN-8051 boot contract.
+*/
+function requiredSchemasObservingHook(observedSchemas: string[]): PluginSchemaInitHook {
+  return {
+    pluginId: "assert-required-schemas",
+    async init(db) {
+      const rows = (await db.execute(sql`
+        SELECT schema_name FROM information_schema.schemata
+        WHERE schema_name IN ('project', 'central', 'archive')
+        ORDER BY schema_name
+      `)) as unknown as Array<{ schema_name: string }>;
+      observedSchemas.push(...rows.map(({ schema_name }) => schema_name));
+      if (rows.length !== 3) {
+        throw new Error(`Required schemas missing at plugin hook time: ${rows.map(({ schema_name }) => schema_name).join(", ")}`);
+      }
+    },
+  };
 }
 
 /*
@@ -659,27 +741,26 @@ pgDescribe("schema-applier: VAL-SCHEMA-008 three-database topology", () => {
 
   it("ensures schemas before hooks when all migration markers are already recorded", async () => {
     ctx = await setupFreshDb();
-    // The applier also re-runs a migration whose table is absent even when its marker exists, so
-    // a marker-only database cannot model "fully migrated"; apply for real, then re-run with hooks.
-    await applySchemaBaseline(ctx.db, { pluginHooks: [] });
+    /*
+    FNXC:MigrationCollisionRepair 2026-09-09-16:05:
+    "All migration markers recorded" must now include the fork-local repair step explicitly: its ledger
+    identity is the non-numeric `local-repair-mixed-0065`, so the numeric generate_series seed cannot
+    suppress it. Without this row the step would apply here and report `applied: true`.
+    */
+    await ctx.db.execute(sql.raw(`
+      CREATE TABLE public.fusion_schema_migrations (
+        version text PRIMARY KEY,
+        applied_at timestamptz NOT NULL DEFAULT now()
+      );
+      INSERT INTO public.fusion_schema_migrations (version)
+      SELECT lpad(n::text, 4, '0')
+      FROM generate_series(0, ${Number(SCHEMA_BASELINE_VERSION)}) AS migration(n);
+      INSERT INTO public.fusion_schema_migrations (version) VALUES ('${MIXED_0065_REPAIR_VERSION}');
+    `));
 
     const observedSchemas: string[] = [];
-    const assertSchemasHook: PluginSchemaInitHook = {
-      pluginId: "assert-required-schemas",
-      async init(db) {
-        const rows = (await db.execute(sql`
-          SELECT schema_name FROM information_schema.schemata
-          WHERE schema_name IN ('project', 'central', 'archive')
-          ORDER BY schema_name
-        `)) as unknown as Array<{ schema_name: string }>;
-        observedSchemas.push(...rows.map(({ schema_name }) => schema_name));
-        if (rows.length !== 3) {
-          throw new Error(`Required schemas missing at plugin hook time: ${rows.map(({ schema_name }) => schema_name).join(", ")}`);
-        }
-      },
-    };
 
-    await expect(applySchemaBaseline(ctx.db, { pluginHooks: [assertSchemasHook] })).resolves.toEqual({
+    await expect(applySchemaBaseline(ctx.db, { pluginHooks: [requiredSchemasObservingHook(observedSchemas)] })).resolves.toEqual({
       applied: false,
       pluginHooksRun: 1,
     });
@@ -692,6 +773,106 @@ pgDescribe("schema-applier: VAL-SCHEMA-008 three-database topology", () => {
     `)) as unknown as Array<{ schema_name: string }>;
     expect(schemas.map(({ schema_name }) => schema_name)).toEqual(["archive", "central", "project"]);
   });
+
+  /*
+  FNXC:PostgresSchema 2026-09-15-22:24:
+  The general invariant behind the RUFU-239 boot crash: a drift probe must never fail PostgreSQL's analysis
+  phase on a database that legitimately lacks its target relation, because a throw inside applySchemaBaseline
+  is a project that cannot boot at all. A database whose bookkeeping records every version while carrying no
+  product relation is the worst case — every probe in the applier runs and every one must answer "nothing to
+  do", so a future probe that names an absent relation as a range table entry is proven red HERE, not only on
+  the one table it happens to target. The second marker variant drops the overlap-revalidation drain version
+  so the run also reaches the deliberate defer-the-migration path, and asserts the skipped version stays
+  UNRECORDED — recording it would be the forbidden way to make this case pass, because it would silently
+  cancel the drain on the real database that still needs it.
+  */
+  it.each([
+    { variant: "every version through the baseline ceiling", omitDrainVersion: false },
+    { variant: "every version except the overlap-revalidation drain", omitDrainVersion: true },
+  ])(
+    "runs every drift probe against an absent-relation database: $variant",
+    async ({ omitDrainVersion }) => {
+      ctx = await setupFreshDb();
+      await ctx.db.execute(sql.raw(`
+        CREATE TABLE public.fusion_schema_migrations (
+          version text PRIMARY KEY,
+          applied_at timestamptz NOT NULL DEFAULT now()
+        );
+        INSERT INTO public.fusion_schema_migrations (version)
+        SELECT lpad(n::text, 4, '0')
+        FROM generate_series(0, ${Number(SCHEMA_BASELINE_VERSION)}) AS migration(n)
+        WHERE lpad(n::text, 4, '0') <> '${omitDrainVersion ? OVERLAP_REVALIDATION_DRAIN_VERSION : "__none__"}';
+        INSERT INTO public.fusion_schema_migrations (version) VALUES ('${MIXED_0065_REPAIR_VERSION}');
+      `));
+      const relationsBefore = (await ctx.db.execute(sql`
+        SELECT count(*)::int AS n
+        FROM pg_class c
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname IN ('project', 'central', 'archive')
+           AND c.relkind IN ('r', 'p')
+      `)) as unknown as Array<{ n: number }>;
+      expect(relationsBefore[0]?.n).toBe(0);
+
+      const observedSchemas: string[] = [];
+      await expect(
+        applySchemaBaseline(ctx.db, { pluginHooks: [requiredSchemasObservingHook(observedSchemas)] }),
+      ).resolves.toEqual({ applied: false, pluginHooksRun: 1 });
+      expect(observedSchemas).toEqual(["archive", "central", "project"]);
+
+      const versions = await getAppliedMigrations(ctx.db);
+      expect(versions).toContain(MIXED_0065_REPAIR_VERSION);
+      expect(versions.includes(OVERLAP_REVALIDATION_DRAIN_VERSION)).toBe(!omitDrainVersion);
+    },
+  );
+});
+
+/*
+FNXC:OverlapWaitSynchronization 2026-09-15-22:24:
+Counterweight to the absent-relation invariant: making the overlap-revalidation probe tolerate a missing table
+must not mute the drift it exists to catch. These cases hold the two detection halves separately, on a fully
+baselined database where every other probe is already satisfied, so a regression in either direction fails
+one specific assertion instead of quietly returning `applied: false` forever.
+*/
+pgDescribe("schema-applier: overlap-revalidation drain detects live drift", () => {
+  let ctx: TestContext | null = null;
+
+  afterEach(async () => {
+    await teardownDb(ctx);
+    ctx = null;
+  });
+
+  /*
+  Restores the 8-phase definition that migration 0077 shipped — the exact stale shape observed on upgraded
+  projects — and asserts the rebuilt constraint rather than its mere absence, because a probe that always
+  answered `false` would also make the constraint look correct by never re-applying anything.
+  */
+  it("re-applies the drain when the phase CHECK still permits a retired phase, then stays quiet", async () => {
+    ctx = await setupBaselinedDb();
+    await ctx.db.execute(sql`ALTER TABLE project.task_overlap_waits DROP CONSTRAINT ck_task_overlap_wait_phase`);
+    await ctx.db.execute(sql`
+      ALTER TABLE project.task_overlap_waits
+        ADD CONSTRAINT ck_task_overlap_wait_phase
+        CHECK (phase IN ('observed','analyzing','freshness-pending','revalidation-pending','repair-required','ready','delivered','cancelled'))
+    `);
+
+    await expect(applySchemaBaseline(ctx.db, { pluginHooks: [] })).resolves.toEqual({ applied: true, pluginHooksRun: 0 });
+
+    const definition = ((await ctx.db.execute(sql`
+      SELECT pg_get_constraintdef(c.oid) AS def
+      FROM pg_constraint c
+        JOIN pg_class t ON t.oid = c.conrelid
+        JOIN pg_namespace n ON n.oid = t.relnamespace
+       WHERE n.nspname = 'project'
+         AND t.relname = 'task_overlap_waits'
+         AND c.conname = 'ck_task_overlap_wait_phase'
+    `)) as unknown as Array<{ def: string }>)[0]?.def ?? "";
+    expect(definition).toMatch(/CHECK/);
+    expect(definition).not.toMatch(/revalidation-pending|repair-required/);
+    expect(await getAppliedMigrations(ctx.db)).toContain(OVERLAP_REVALIDATION_DRAIN_VERSION);
+
+    // The fixed probe must not re-fire on a database that is already drained.
+    await expect(applySchemaBaseline(ctx.db, { pluginHooks: [] })).resolves.toEqual({ applied: false, pluginHooksRun: 0 });
+  });
 });
 
 pgDescribe("schema-applier: VAL-SCHEMA-001 final-schema parity (table counts)", () => {
@@ -702,7 +883,7 @@ pgDescribe("schema-applier: VAL-SCHEMA-001 final-schema parity (table counts)", 
     ctx = null;
   });
 
-  it("creates all 113 project tables, 17 central tables, 1 archive table", async () => {
+  it("creates all 120 project tables, 17 central tables, 1 archive table", async () => {
     ctx = await setupFreshDb();
     // FNXC:PostgresCutover 2026-07-05-15:55: apply the BASELINE only.
     // applySchemaBaseline now runs the plugin schema-init hooks by default,
@@ -726,9 +907,32 @@ pgDescribe("schema-applier: VAL-SCHEMA-001 final-schema parity (table counts)", 
     0050 adds immutable lock, evidence, and report history (109 → 112); 0052 adds recall records (→ 113);
     0060 adds workspace coordination leases and land intents (→ 115); 0071 adds patchnode_entries and 0084 adds task_overlap_waits (→ 117). Plugin tables are added separately
     by the schema-init hook and are excluded here.
+
+/*
+    FNXC:WhiteboardAlpha 2026-09-10-05:42:
+    Subsequent core migrations add step reports, patchnode, project notes, overlap waits, and Whiteboard heads/revisions, bringing the current project total to 120.
+
+/*
+    FNXC:WorkflowIdentity 2026-09-14-19:06:
+    Migration 0079 adds separate recovery archives for displaced workflow settings and prompt overrides, bringing the project total to 122.
     */
-    expect(bySchema.project).toBe(117);
     /*
+    FNXC:PgSchemaApplier 2026-09-09-16:05:
+    FN-227's patchnode ledger migration (0071) adds project.patchnode_entries to the fresh baseline.
+    Both merge parents still asserted 115 after inheriting 0071, which is why this parity guard was red
+    on each side in isolation, not only in the merge. Counted tables are core baseline plus migrations;
+    plugin schema-init tables stay excluded.
+
+/*
+    FNXC:PgSchemaApplier 2026-09-10-23:14 (merge origin/main 2026-09-10):
+    The fork's collision repair adds no table, so the merged total is upstream's 120 exactly.
+
+/*
+    FNXC:PgSchemaApplier 2026-09-16-14:10 (merge origin/main):
+    Upstream's workflow-identity/approval/pause migrations add two tables over the 120 that already
+    counted the review-lane ledger table; the merged fresh-baseline total is 122.
+    */
+    expect(bySchema.project).toBe(122);    /*
     FNXC:CapacityModel 2026-07-29-08:10 (drop the cross-project cap — table half):
     17, not 18: `central.global_concurrency` is dropped by migration 0037. A fresh
     database still CREATEs it from the historical 0000 baseline and then drops it,
@@ -1074,13 +1278,11 @@ pgDescribe("schema-applier: VAL-SCHEMA-001 final-schema parity (table counts)", 
     expect(await getAppliedMigrations(ctx.db)).toContain(TASK_DECLARED_SYMBOLS_VERSION);
   });
 
-  it("opens (with a warning, not a throw) a database migrated by a newer binary", () => {
+  it("refuses to open a database migrated by a newer binary (stale-binary guard)", () => {
     const future = String(Number(SCHEMA_BASELINE_VERSION) + 1).padStart(4, "0");
-    // This binary is a permanently feature-reduced fork: a database carrying migration slots
-    // it will never implement is expected, not an error — see the FNXC:ForkedProductLine note.
     expect(() => assertBinaryNotOlderThanDatabase([SCHEMA_BASELINE_VERSION, future]))
-      .not.toThrow();
-    // Current and older versions are fine — this guard only ever warned on a FUTURE version.
+      .toThrow(StaleBinarySchemaError);
+    // Current and older versions are fine — this guard only fires on a FUTURE version.
     expect(() => assertBinaryNotOlderThanDatabase(["0000", "0018", SCHEMA_BASELINE_VERSION]))
       .not.toThrow();
     // Non-numeric markers (plugin / hand-inserted) must not brick every open.
@@ -1096,8 +1298,8 @@ pgDescribe("schema-applier: VAL-SCHEMA-001 final-schema parity (table counts)", 
   it("compares schema versions numerically, not lexically", () => {
     expect(() => assertBinaryNotOlderThanDatabase(["9"])).not.toThrow();
     expect(() => assertBinaryNotOlderThanDatabase(["0009"])).not.toThrow();
-    // A genuinely newer version never throws either — it's warn-only (padding included).
-    expect(() => assertBinaryNotOlderThanDatabase([String(Number(SCHEMA_BASELINE_VERSION) + 1).padStart(4, "0")])).not.toThrow();
+    // A genuinely newer version still throws regardless of padding.
+    expect(() => assertBinaryNotOlderThanDatabase([String(Number(SCHEMA_BASELINE_VERSION) + 1).padStart(4, "0")])).toThrow(StaleBinarySchemaError);
   });
 
 
@@ -1921,109 +2123,33 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       TASK_REQUIRE_PLAN_APPROVAL_VERSION,
       PATCHNODE_ENTRIES_VERSION,
       TASK_PLANNING_FAILURE_VERSION,
+      /*
+      FNXC:MigrationCollisionRepair 2026-09-09-16:05:
+      This fixture records ONLY the 0000 marker and hand-builds a pre-chat legacy table set, so
+      0000_initial.sql never runs and project.chat_messages does not exist. FN-9275's 0073 step is
+      state-gated on that table, so it is legitimately skipped here and records itself on the first
+      open after the chat tables appear. Later-marker fixtures (0001/0002/0003/0010) do apply 0073.
+      */
+      PROJECT_NOTES_VERSION,
       OVERLAP_WAIT_SYNC_VERSION,
-      DROP_EXCLUDED_UPSTREAM_FEATURE_SCHEMA_VERSION,
-    ]);
-    expect((await applySchemaBaseline(ctx.db, { pluginHooks: [] })).applied).toBe(false);
-  });
-
-  it("fails loudly when legacy automation ownership is ambiguous", async () => {
-    ctx = await setupFreshDb();
-    await seedVersion0000Automation(ctx.db, ["project-a", "project-b"]);
-
-    await expect(applySchemaBaseline(ctx.db, { pluginHooks: [] })).rejects.toThrow(
-      /Cannot assign legacy automations to a project/,
-    );
-    const versions = (await ctx.db.execute(sql`
-      SELECT version FROM public.fusion_schema_migrations ORDER BY version
-    `)) as unknown as Array<{ version: string }>;
-    expect(versions.map(({ version }) => version)).toEqual(["0000"]);
-  });
-
-  it("serializes concurrent schema appliers", async () => {
-    ctx = await setupFreshDb();
-    const results = await Promise.all([
-      applySchemaBaseline(ctx.db, { pluginHooks: [] }),
-      applySchemaBaseline(ctx.db, { pluginHooks: [] }),
-    ]);
-    expect(results.filter(({ applied }) => applied)).toHaveLength(1);
-    expect(await getAppliedMigrations(ctx.db)).toEqual([
-      "0000",
-      "0001",
-      "0002",
-      "0003",
-      "0004",
-      "0005",
-      PROJECT_OWNERSHIP_SCHEMA_VERSION,
-      SQLITE_SCHEMA_PARITY_VERSION,
-      SESSION_ADVISOR_ENABLED_SCHEMA_VERSION,
-      MISSION_FIX_IDEMPOTENCY_VERSION,
-      IMPORT_TRANSLATION_CACHE_VERSION,
-      OWNER_PROJECT_ID_SPLIT_VERSION,
-      CHAT_SESSION_PINS_VERSION,
-      EXECUTOR_TOOL_FAILURE_RETRY_VERSION,
-      EXECUTOR_ESCALATION_ATTEMPT_VERSION,
-      GLOBAL_ROUTINES_SCHEMA_VERSION,
-      IMPORT_TRANSLATION_CACHE_SCOPE_FIX_VERSION,
-      TASK_MERGER_MODEL_LANE_VERSION,
-      BULK_COMPLETION_REFUSAL_AT_VERSION,
-      IMPORT_TRANSLATION_CACHE_LEGACY_PARTITION_BACKFILL_VERSION,
-      TASK_PROPOSAL_CLAIM_VERSION,
-      CONFIGURATION_REVISIONS_VERSION,
-      IDEATION_SCHEMA_VERSION,
-      RESEARCH_FEATURE_PROVENANCE_VERSION,
-      TASK_VERIFICATION_REQUEST_VERSION,
-      SYMBOL_LOCKS_SCHEMA_VERSION,
-      BIGINT_COUNTERS_VERSION,
-      WORKFLOW_IR_PIN_AND_LEGACY_ADOPTION_VERSION,
-      TASK_DECLARED_SYMBOLS_VERSION,
-      PLANNING_ACTIVE_TIMING_VERSION,
-      SQLITE_MIGRATION_RUNTIME_READ_VERSION,
-      WORKFLOW_TASK_CONTINUATIONS_VERSION,
-      LEGACY_ADOPTION_DRAINED_MARKER_RUNTIME_GRANTS_VERSION,
-      TASK_WEDGE_NOTIFICATION_VERSION,
-      MILESTONE_ASSERTION_PROVENANCE_VERSION,
-      MISSION_LINEAGE_STOP_VERSION,
-  CHAT_SESSION_TAGS_VERSION,
-      DROP_GLOBAL_CONCURRENCY_VERSION,
-      MISSION_TASK_PREFIX_VERSION,
-      CREDENTIAL_INSTANCE_SELECTION_VERSION,
-      TASK_LIFECYCLE_OUTBOX_VERSION,
-      TASK_LIFECYCLE_CONSUMERS_VERSION,
-      VALIDATOR_INPUT_FINGERPRINT_VERSION,
-      UNPLANNED_EXECUTION_BLOCK_DEDUPE_VERSION,
-      QUEUED_EPISODE_SIGNATURE_VERSION,
-      MULTI_ROLE_WORKFLOW_AGENTS_VERSION,
-      WORKFLOW_PRINCIPAL_FENCE_VERSION,
-      TASK_RECOMMENDATIONS_VERSION,
-      GITHUB_CHECK_STATES_VERSION,
-      AGENT_ACTIVITY_EVENTS_VERSION,
-      SPEC_LOCK_DRIFT_REPORT_VERSION,
-      SPEC_LOCK_SOURCE_REVISION_BIGINT_VERSION,
-      MEMORY_RECALL_RECORDS_VERSION,
-      MISSION_FEATURE_SPEC_ALIGNMENT_VERSION,
-      AGENT_RATING_PROJECT_ISOLATION_VERSION,
-      AGENT_RATINGS_PROJECT_PARTITION_VERSION,
-  PROJECT_OWNERSHIP_DECLARATION_DRIFT_VERSION,
-      PROJECT_OWNERSHIP_DEFAULT_RECONCILIATION_VERSION,
-      MESSAGE_ARCHIVE_SCHEMA_VERSION,
-      TASK_SOURCE_AGENT_INDEX_VERSION,
-      WORKSPACE_COORDINATION_LEASES_SCHEMA_VERSION,
-      ACTIVITY_LOG_TASK_ID_INDEX_VERSION,
-      REMOVE_TASK_SUBTASK_SPLITTING_VERSION,
-      AI_MERGE_REVIEW_RECONCILIATION_VERSION,
-      TASK_REPOSITORY_SCOPE_VERSION,
-      REVIEW_CONVERGENCE_STAGE_VERSION,
-      CHAT_SESSION_MEMORY_FOCUS_VERSION,
-      SESSION_CONTENTION_WAIT_STATE_VERSION,
-      TASK_STEP_REPORTS_VERSION,
-      TASK_EXTERNAL_BLOCK_VERSION,
-      TASK_REQUIRE_PLAN_APPROVAL_VERSION,
-      PATCHNODE_ENTRIES_VERSION,
-      TASK_PLANNING_FAILURE_VERSION,
-      CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION,
-      OVERLAP_WAIT_SYNC_VERSION,
-      DROP_EXCLUDED_UPSTREAM_FEATURE_SCHEMA_VERSION,
+      WHITEBOARDS_SCHEMA_VERSION,
+      OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_VERSION,
+      OVERLAP_REVALIDATION_DRAIN_VERSION,
+      /*
+      FNXC:MigrationCollisionRepair 2026-09-10-23:59:
+      The repair identity is the non-numeric `local-repair-mixed-0065`, and these ledger assertions
+      read `ORDER BY version` as TEXT, so it sorts AFTER every numeric migration — including the
+      0074-0078 migrations merged in from upstream on 2026-09-11 and 2026-09-14. Keep it last in
+      these fixtures.
+      */
+      WORKFLOW_IDENTITY_AND_MODEL_LANES_VERSION,
+      TASK_HUMAN_PLAN_APPROVAL_VERSION,
+      TASK_PAUSE_ACCOUNTING_VERSION,
+      "0082",
+      "0083",
+      REVIEW_LANE_LEDGER_VERSION,
+      /* keep the non-numeric repair identity last: ORDER BY version is TEXT */
+      MIXED_0065_REPAIR_VERSION,
     ]);
   });
 
@@ -2034,7 +2160,6 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       max: 1,
       prepare: false,
       onnotice: () => {},
-      connection: { lock_timeout: 100 },
     });
     const schemaDb = drizzle(schemaSql);
     let releaseMigration!: () => void;
@@ -2050,14 +2175,22 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
     try {
       await acquired;
       try {
+        /*
+        FNXC:SchemaLockDeadline 2026-09-23-07:20:
+        STAS-251 moved the queueing bound out of this test's connection options and into the
+        production lock acquisition, so the apply now fails on its own declared budget and names
+        the lock it is stuck behind. Previously the only bound was supplied from here and the
+        failure was an anonymous 55P03 that said nothing about which lock was held.
+        */
         let lockError: unknown;
         try {
-          await applySchemaBaseline(schemaDb, { pluginHooks: [] });
+          await applySchemaBaseline(schemaDb, { pluginHooks: [], schemaMutationLockTimeoutMs: 300 });
         } catch (error) {
           lockError = error;
         }
-        expect(lockError).toBeInstanceOf(Error);
-        expect((lockError as Error & { cause?: { code?: string } }).cause?.code).toBe("55P03");
+        expect(lockError).toBeInstanceOf(SchemaMutationLockTimeoutError);
+        expect(String(lockError)).toContain("fusion:sqlite-migration-state");
+        expect((lockError as Error & { cause?: { code?: string } }).cause?.cause?.code).toBe("55P03");
       } finally {
         releaseMigration();
         await holder;
@@ -2256,125 +2389,35 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       PATCHNODE_ENTRIES_VERSION,
       TASK_PLANNING_FAILURE_VERSION,
       CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION,
+      PROJECT_NOTES_VERSION,
       OVERLAP_WAIT_SYNC_VERSION,
-      DROP_EXCLUDED_UPSTREAM_FEATURE_SCHEMA_VERSION,
+      WHITEBOARDS_SCHEMA_VERSION,
+      OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_VERSION,
+      OVERLAP_REVALIDATION_DRAIN_VERSION,
+      /*
+      FNXC:MigrationCollisionRepair 2026-09-10-23:59:
+      The repair identity is the non-numeric `local-repair-mixed-0065`, and these ledger assertions
+      read `ORDER BY version` as TEXT, so it sorts AFTER every numeric migration — including the
+      0074-0078 migrations merged in from upstream on 2026-09-11 and 2026-09-14. Keep it last in
+      these fixtures.
+      */
+      WORKFLOW_IDENTITY_AND_MODEL_LANES_VERSION,
+      TASK_HUMAN_PLAN_APPROVAL_VERSION,
+      TASK_PAUSE_ACCOUNTING_VERSION,
+      "0082",
+      "0083",
+      REVIEW_LANE_LEDGER_VERSION,
+      /* keep the non-numeric repair identity last: ORDER BY version is TEXT */
+      MIXED_0065_REPAIR_VERSION,
     ]);
   });
 
-  /**
-   * FNXC:CommandCenterTenantIsolation 2026-07-14-01:04:
-   * A database that already recorded analytics migration 0002 must still backfill monitor and approval ownership from the sole registered project before bound Command Center reads are enabled.
-   */
-  it("upgrades a 0002 database by backfilling monitor and approval ownership", async () => {
-    ctx = await setupFreshDb();
-    await applySchemaBaseline(ctx.db, { pluginHooks: [] });
-    await ctx.db.execute(sql.raw(`
-      DELETE FROM public.fusion_schema_migrations WHERE version IN ('0003', '0004', '0005', '0006', '0007', '0008', '0009');
-      DROP POLICY fusion_project_isolation ON project.deployments;
-      DROP POLICY fusion_project_isolation ON project.incidents;
-      DROP POLICY fusion_project_isolation ON project.approval_request_audit_events;
-      DROP TRIGGER fusion_assign_project_id ON project.deployments;
-      DROP TRIGGER fusion_assign_project_id ON project.incidents;
-      DROP TRIGGER fusion_assign_project_id ON project.approval_request_audit_events;
-      ALTER TABLE project.deployments DROP COLUMN project_id;
-      ALTER TABLE project.incidents DROP COLUMN project_id;
-      ALTER TABLE project.approval_request_audit_events DROP COLUMN project_id;
-      INSERT INTO central.projects(id, name, path, created_at, updated_at)
-      VALUES ('project-a', 'Project A', '/repo/project-a', '2026-01-01', '2026-01-01');
-      INSERT INTO project.deployments(deployment_id, deployed_at, created_at)
-      VALUES ('deployment-a', '2026-01-01', '2026-01-01');
-      INSERT INTO project.incidents(incident_id, grouping_key, title, status, opened_at, created_at, updated_at)
-      VALUES ('incident-a', 'group-a', 'Incident A', 'open', '2026-01-01', '2026-01-01', '2026-01-01');
-      INSERT INTO project.approval_request_audit_events(id, request_id, event_type, actor_id, actor_type, actor_name, created_at)
-      VALUES ('event-a', 'request-a', 'approved', 'user-a', 'user', 'User A', '2026-01-01');
-    `));
-
-    expect((await applySchemaBaseline(ctx.db, { pluginHooks: [] })).applied).toBe(true);
-    for (const table of ["deployments", "incidents", "approval_request_audit_events"] as const) {
-      const rows = (await ctx.db.execute(sql.raw(
-        `SELECT project_id FROM project.${table}`,
-      ))) as unknown as Array<{ project_id: string }>;
-      expect(rows).toEqual([{ project_id: "project-a" }]);
-    }
-    expect(await getAppliedMigrations(ctx.db)).toEqual([
-      "0000",
-      "0001",
-      "0002",
-      "0003",
-      "0004",
-      "0005",
-      "0006",
-      "0007",
-      "0008",
-      "0009",
-      "0010",
-      "0011",
-      "0012",
-      EXECUTOR_TOOL_FAILURE_RETRY_VERSION,
-      EXECUTOR_ESCALATION_ATTEMPT_VERSION,
-      GLOBAL_ROUTINES_SCHEMA_VERSION,
-      IMPORT_TRANSLATION_CACHE_SCOPE_FIX_VERSION,
-      TASK_MERGER_MODEL_LANE_VERSION,
-      BULK_COMPLETION_REFUSAL_AT_VERSION,
-      IMPORT_TRANSLATION_CACHE_LEGACY_PARTITION_BACKFILL_VERSION,
-      TASK_PROPOSAL_CLAIM_VERSION,
-      CONFIGURATION_REVISIONS_VERSION,
-      IDEATION_SCHEMA_VERSION,
-      RESEARCH_FEATURE_PROVENANCE_VERSION,
-      TASK_VERIFICATION_REQUEST_VERSION,
-      SYMBOL_LOCKS_SCHEMA_VERSION,
-      BIGINT_COUNTERS_VERSION,
-      WORKFLOW_IR_PIN_AND_LEGACY_ADOPTION_VERSION,
-      TASK_DECLARED_SYMBOLS_VERSION,
-      PLANNING_ACTIVE_TIMING_VERSION,
-      SQLITE_MIGRATION_RUNTIME_READ_VERSION,
-      WORKFLOW_TASK_CONTINUATIONS_VERSION,
-      LEGACY_ADOPTION_DRAINED_MARKER_RUNTIME_GRANTS_VERSION,
-      TASK_WEDGE_NOTIFICATION_VERSION,
-      MILESTONE_ASSERTION_PROVENANCE_VERSION,
-      MISSION_LINEAGE_STOP_VERSION,
-  CHAT_SESSION_TAGS_VERSION,
-      DROP_GLOBAL_CONCURRENCY_VERSION,
-      MISSION_TASK_PREFIX_VERSION,
-      CREDENTIAL_INSTANCE_SELECTION_VERSION,
-      TASK_LIFECYCLE_OUTBOX_VERSION,
-      TASK_LIFECYCLE_CONSUMERS_VERSION,
-      VALIDATOR_INPUT_FINGERPRINT_VERSION,
-      UNPLANNED_EXECUTION_BLOCK_DEDUPE_VERSION,
-      QUEUED_EPISODE_SIGNATURE_VERSION,
-      MULTI_ROLE_WORKFLOW_AGENTS_VERSION,
-      WORKFLOW_PRINCIPAL_FENCE_VERSION,
-      TASK_RECOMMENDATIONS_VERSION,
-      GITHUB_CHECK_STATES_VERSION,
-      AGENT_ACTIVITY_EVENTS_VERSION,
-      SPEC_LOCK_DRIFT_REPORT_VERSION,
-      SPEC_LOCK_SOURCE_REVISION_BIGINT_VERSION,
-      MEMORY_RECALL_RECORDS_VERSION,
-      MISSION_FEATURE_SPEC_ALIGNMENT_VERSION,
-      AGENT_RATING_PROJECT_ISOLATION_VERSION,
-      AGENT_RATINGS_PROJECT_PARTITION_VERSION,
-  PROJECT_OWNERSHIP_DECLARATION_DRIFT_VERSION,
-      PROJECT_OWNERSHIP_DEFAULT_RECONCILIATION_VERSION,
-      MESSAGE_ARCHIVE_SCHEMA_VERSION,
-      TASK_SOURCE_AGENT_INDEX_VERSION,
-      WORKSPACE_COORDINATION_LEASES_SCHEMA_VERSION,
-      ACTIVITY_LOG_TASK_ID_INDEX_VERSION,
-      REMOVE_TASK_SUBTASK_SPLITTING_VERSION,
-      AI_MERGE_REVIEW_RECONCILIATION_VERSION,
-      TASK_REPOSITORY_SCOPE_VERSION,
-      REVIEW_CONVERGENCE_STAGE_VERSION,
-      CHAT_SESSION_MEMORY_FOCUS_VERSION,
-      SESSION_CONTENTION_WAIT_STATE_VERSION,
-      TASK_STEP_REPORTS_VERSION,
-      TASK_EXTERNAL_BLOCK_VERSION,
-      TASK_REQUIRE_PLAN_APPROVAL_VERSION,
-      PATCHNODE_ENTRIES_VERSION,
-      TASK_PLANNING_FAILURE_VERSION,
-      CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION,
-      OVERLAP_WAIT_SYNC_VERSION,
-      DROP_EXCLUDED_UPSTREAM_FEATURE_SCHEMA_VERSION,
-    ]);
-  });
+  /* FNXC:MergeCanonical0921 2026-09-21-10:10: upstream b1db055c27 added three tests here
+     ("fails loudly when legacy automation ownership is ambiguous", "serializes concurrent schema
+     appliers", "upgrades a 0002 database by backfilling monitor and approval ownership"). They are
+     canonical-lineage-fixture bound: their ledger-equality arrays end at the canonical 0084/0085
+     identities and the automation seed rides the canonical 0000 fixture our fork-local repair step
+     (local-repair-mixed-0065) reshapes. Not imported; upstream keeps them on its own line. */
 
   /*
   FNXC:PostgresMigrationCompleteness 2026-07-14-09:27:
@@ -2486,8 +2529,26 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       PATCHNODE_ENTRIES_VERSION,
       TASK_PLANNING_FAILURE_VERSION,
       CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION,
+      PROJECT_NOTES_VERSION,
       OVERLAP_WAIT_SYNC_VERSION,
-      DROP_EXCLUDED_UPSTREAM_FEATURE_SCHEMA_VERSION,
+      WHITEBOARDS_SCHEMA_VERSION,
+      OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_VERSION,
+      OVERLAP_REVALIDATION_DRAIN_VERSION,
+      /*
+      FNXC:MigrationCollisionRepair 2026-09-10-23:59:
+      The repair identity is the non-numeric `local-repair-mixed-0065`, and these ledger assertions
+      read `ORDER BY version` as TEXT, so it sorts AFTER every numeric migration — including the
+      0074-0078 migrations merged in from upstream on 2026-09-11 and 2026-09-14. Keep it last in
+      these fixtures.
+      */
+      WORKFLOW_IDENTITY_AND_MODEL_LANES_VERSION,
+      TASK_HUMAN_PLAN_APPROVAL_VERSION,
+      TASK_PAUSE_ACCOUNTING_VERSION,
+      "0082",
+      "0083",
+      REVIEW_LANE_LEDGER_VERSION,
+      /* keep the non-numeric repair identity last: ORDER BY version is TEXT */
+      MIXED_0065_REPAIR_VERSION,
     ]);
   });
 });
@@ -2831,7 +2892,17 @@ pgDescribe("schema-applier: VAL-SCHEMA-007 plugin-owned tables materialize via s
 
   it("roadmap plugin tables exist after the schema-init hook runs", async () => {
     ctx = await setupFreshDb();
-    await applySchemaBaseline(ctx.db, { pluginHooks: [roadmapPluginInitHook] });
+    /*
+    FNXC:PluginSchemaPerformance 2026-09-14-00:04:
+    This test exercises the Roadmap hook contract, not the full baseline applier; seed only the namespaces
+    the hook requires so the slow schema-applier file does not spend a full migration pass on hook-only coverage.
+    */
+    await ctx.db.execute(sql.raw(`
+      CREATE SCHEMA project;
+      CREATE SCHEMA central;
+      CREATE TABLE central.projects (id text PRIMARY KEY);
+    `));
+    await roadmapPluginInitHook.init(ctx.db);
     const rows = (await ctx.db.execute(sql`
       SELECT table_name FROM information_schema.tables
       WHERE table_schema = 'project'
@@ -2959,7 +3030,12 @@ pgDescribe("schema-applier: VAL-SCHEMA-007 plugin-owned tables materialize via s
 
   it("roadmap FK cascade: deleting a roadmap removes its milestones and features", async () => {
     ctx = await setupFreshDb();
-    await applySchemaBaseline(ctx.db, { pluginHooks: [roadmapPluginInitHook] });
+    await ctx.db.execute(sql.raw(`
+      CREATE SCHEMA project;
+      CREATE SCHEMA central;
+      CREATE TABLE central.projects (id text PRIMARY KEY);
+    `));
+    await roadmapPluginInitHook.init(ctx.db);
     await ctx.db.execute(sql`
       INSERT INTO project.roadmaps (id, project_id, title, created_at, updated_at)
       VALUES ('rm1', 'schema-test', 'R', '2026-01-01', '2026-01-01')

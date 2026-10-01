@@ -49,7 +49,6 @@
   ],
   "scripts": {
     "dev": "tsx src/bin.ts",
-    "prebuild": "node ../../scripts/sync-fusion-skill-tools.mjs",
     "prepack": "node ./scripts/prepare-publish-manifest.mjs prepack",
     "postpack": "node ./scripts/prepare-publish-manifest.mjs postpack",
     "build": "tsup && node scripts/finalize-plugin-sdk-dts.mjs",

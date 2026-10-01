@@ -16,7 +16,7 @@ vi.mock("../api", () => ({
 }));
 
 vi.mock("../sse-bus", () => ({
-  subscribeSse: (...args: unknown[]) => subscribeSseMock(...args),
+  subscribeSse: (...args: unknown[]) => (subscribeSseMock as unknown as (..._a: unknown[]) => never)(...args),
 }));
 
 const DEFAULT_WORKFLOW: BoardWorkflowDefinition = {

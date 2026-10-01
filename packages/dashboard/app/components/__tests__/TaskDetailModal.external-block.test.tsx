@@ -3,14 +3,13 @@ import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import type { Task } from "@fusion/core";
 import { ExternalBlockNotice } from "../TaskCard";
-import { readAppFile } from "../../test/cssFixture";
 
 vi.mock("../ProviderIcon", () => ({ ProviderIcon: () => null }));
 vi.mock("../PrCreateModal", () => ({ PrCreateModal: () => null }));
 vi.mock("../../hooks/useTaskDiffStats", () => ({ useTaskDiffStats: () => ({ stats: null, loading: false }) }));
 vi.mock("../../hooks/useBadgeWebSocket", () => ({ useBadgeWebSocket: () => ({ badgeUpdates: new Map(), isConnected: true, subscribeToBadge: vi.fn(), unsubscribeFromBadge: vi.fn() }) }));
 vi.mock("../../hooks/useBatchBadgeFetch", () => ({ getFreshBatchData: vi.fn(() => null) }));
-vi.mock("../../hooks/useConfirm", () => ({ useConfirm: () => ({ confirm: vi.fn(), confirmWithChoice: vi.fn() }) }));
+vi.mock("../../hooks/useConfirm", () => ({ useConfirm: () => ({ confirmWithCheckbox: async (options?: { checkbox?: { defaultChecked?: boolean } }) => ({ choice: "cancel" as const, checkboxValue: options?.checkbox?.defaultChecked ?? false }), confirm: vi.fn(), confirmWithChoice: vi.fn() }) }));
 vi.mock("../../api", () => ({ fetchWorkflowSettingValues: vi.fn().mockResolvedValue({ stored: {}, effective: {}, orphaned: [] }) }));
 
 const blocked = {
@@ -28,12 +27,9 @@ describe("Task Detail external Blocked affordance", () => {
     expect(retry).toHaveBeenCalledWith("FN-209");
   });
 
-  it("mounts the shared notice before the failed-task alert so the identities cannot coexist", () => {
-    const source = readAppFile("components/TaskDetailModal.tsx");
-    const notice = source.indexOf('<ExternalBlockNotice task={task as Task} variant="detail"');
-    const failure = source.indexOf("{shouldShowTaskFailureAlert && (");
-    expect(notice).toBeGreaterThan(0);
-    expect(failure).toBeGreaterThan(notice);
-    expect(source).toContain('const shouldShowTaskFailureAlert = Boolean(task.status === "failed"');
+  it("does not render a blocked notice for an ordinary failed task", () => {
+    const failedTask = { ...blocked, status: "failed" } as Task;
+    render(<ExternalBlockNotice task={failedTask} variant="detail" onOpenChatWithPrefill={vi.fn()} onRetryTask={vi.fn()} />);
+    expect(screen.queryByTestId("external-block-detail-FN-209")).not.toBeInTheDocument();
   });
 });

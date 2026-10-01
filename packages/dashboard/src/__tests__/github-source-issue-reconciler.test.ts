@@ -187,7 +187,7 @@ describe("GitHubTrackingReconciler.backfillSourceIssueClosedAt", () => {
 
   it("returns all-skipped with one service diagnostic and no task-log writes when auth resolution fails", async () => {
     mockResolveGithubTrackingAuth.mockReturnValueOnce({ ok: false, message: "no auth" });
-    const store = createStore([{ id: "FN-9", column: "archived", sourceIssue: { provider: "github", repository: "owner/repo", issueNumber: 9 } }]);
+    const store = createStore([{ id: "FN-9", column: "done", sourceIssue: { provider: "github", repository: "owner/repo", issueNumber: 9 } }]);
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const result = await new GitHubTrackingReconciler().backfillSourceIssueClosedAt(store);
@@ -204,7 +204,7 @@ describe("GitHubTrackingReconciler.backfillSourceIssueClosedAt", () => {
     const store = createStore([
       { id: "FN-10", column: "done", sourceIssue: { provider: "github", repository: "owner/repo", issueNumber: 10 } },
       { id: "FN-11", column: "done", sourceIssue: { provider: "github", repository: "owner/repo", issueNumber: 11 } },
-      { id: "FN-12", column: "archived", sourceIssue: { provider: "github", repository: "owner/repo", issueNumber: 12 } },
+      { id: "FN-12", column: "done", sourceIssue: { provider: "github", repository: "owner/repo", issueNumber: 12 } },
     ]);
 
     const result = await new GitHubTrackingReconciler().backfillSourceIssueClosedAt(store, { offset: 1, limit: 1 });

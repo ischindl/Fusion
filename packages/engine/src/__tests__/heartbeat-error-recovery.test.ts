@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { Agent, AgentHeartbeatRun, AgentStore, TaskStore } from "@fusion/core";
+import { readHeartbeatRecoveryState, throttleBackoffMs, THROTTLE_BACKOFF_CAP_MS, THROTTLE_BACKOFF_FLOOR_MS } from "@fusion/core";
 import { createBudgetStatus } from "./heartbeat-test-helpers.js";
 
 vi.mock("../logger.js", async () => {
@@ -43,8 +44,11 @@ import {
   HeartbeatMonitor,
   HeartbeatTriggerScheduler,
   incrementHeartbeatErrorRecoveryMetadata,
+  armHeartbeatThrottleCooldown,
+  buildHeartbeatErrorRecoveryMetadataPreservingThrottle,
   isErrorRecoveryEligible,
   isHeartbeatErrorRecoverable,
+  isHeartbeatThrottleCooldownActive,
   isModelUnavailableParkRecoveryEligible,
   readHeartbeatErrorRetryCount,
   resetHeartbeatErrorRecoveryMetadata,
@@ -169,6 +173,107 @@ describe("heartbeat error-recovery primitives", () => {
     expect(reset.durableErrorRecovery).toBeUndefined();
     expect(readHeartbeatErrorRetryCount({ metadata: reset })).toBe(0);
     expect(reset[HEARTBEAT_ERROR_RECOVERY_METADATA_KEY]).toMatchObject({ consecutiveAttempts: 0 });
+  });
+
+  /*
+  FNXC:ProviderThrottleIsTransient 2026-09-30-13:30 (RUFU-286):
+  The throttle-cooldown state contract, pinned where both the writer (engine helpers) and
+  the reader (shared core leaf) meet: exponential wait bounded by the shared constants, a
+  pending re-probe that survives unrelated budget writes, and a reset that only a success does.
+  */
+  it("doubles the throttle backoff from the shared floor to the shared cap", () => {
+    expect(THROTTLE_BACKOFF_FLOOR_MS).toBe(60_000);
+    expect(THROTTLE_BACKOFF_CAP_MS).toBe(900_000);
+    expect([1, 2, 3, 4, 5, 6].map((streak) => throttleBackoffMs(streak))).toEqual([
+      60_000, 120_000, 240_000, 480_000, 900_000, 900_000,
+    ]);
+    // A missing/legacy streak must never produce a zero-length (hot-loop) cooldown.
+    expect(throttleBackoffMs(0)).toBe(THROTTLE_BACKOFF_FLOOR_MS);
+    expect(throttleBackoffMs(-3)).toBe(THROTTLE_BACKOFF_FLOOR_MS);
+  });
+
+  it("arms a throttle cooldown that raises the streak, waits the backoff, and keeps the burned budget", () => {
+    const now = Date.parse("2026-09-30T12:00:00.000Z");
+    const agent = baseAgent({
+      metadata: {
+        heartbeatTimerRepair: { repairedAt: "now" },
+        [HEARTBEAT_ERROR_RECOVERY_METADATA_KEY]: { consecutiveAttempts: 2, updatedAt: "2026-09-30T11:00:00.000Z" },
+      },
+    });
+
+    const first = armHeartbeatThrottleCooldown(agent, now);
+    expect(first.throttleStreak).toBe(1);
+    expect(first.backoffMs).toBe(THROTTLE_BACKOFF_FLOOR_MS);
+    expect(first.cooldownUntilAt).toBe(new Date(now + 60_000).toISOString());
+    // A cooldown deferral burns no budget unit: the burned attempts survive untouched.
+    expect(readHeartbeatErrorRetryCount({ metadata: first.metadata })).toBe(2);
+    expect(first.metadata.heartbeatTimerRepair).toEqual({ repairedAt: "now" });
+
+    const second = armHeartbeatThrottleCooldown({ metadata: first.metadata }, now + 60_000);
+    expect(second.throttleStreak).toBe(2);
+    expect(second.cooldownUntilAt).toBe(new Date(now + 60_000 + 120_000).toISOString());
+    expect(readHeartbeatErrorRetryCount({ metadata: second.metadata })).toBe(2);
+
+    // A legacy `durableErrorRecovery` pool burned by the self-healing sweep is not shrunk.
+    const legacyArmed = armHeartbeatThrottleCooldown(
+      { metadata: { durableErrorRecovery: { attempts: 4, exhausted: false } } },
+      now,
+    );
+    expect(readHeartbeatErrorRetryCount({ metadata: legacyArmed.metadata })).toBe(4);
+  });
+
+  it("treats a malformed or absent recovery row as no active cooldown instead of throwing", () => {
+    // Each row is a different malformation; `throttleStreak` says what the reader may trust.
+    const malformed: Array<{ case: string; agent: Parameters<typeof readHeartbeatRecoveryState>[0]; throttleStreak: number }> = [
+      { case: "absent row", agent: {}, throttleStreak: 0 },
+      { case: "null metadata", agent: { metadata: null }, throttleStreak: 0 },
+      { case: "row is a string", agent: { metadata: { heartbeatErrorRecovery: "garbage" } }, throttleStreak: 0 },
+      { case: "string-typed counts", agent: { metadata: { heartbeatErrorRecovery: { consecutiveAttempts: "3", throttleStreak: null } } }, throttleStreak: 0 },
+      { case: "unparseable horizon", agent: { metadata: { heartbeatErrorRecovery: { throttleStreak: 2, cooldownUntilAt: "not-a-date" } } }, throttleStreak: 2 },
+      { case: "non-string horizon", agent: { metadata: { heartbeatErrorRecovery: { throttleStreak: 2, cooldownUntilAt: 123 } } }, throttleStreak: 2 },
+    ];
+    for (const { case: label, agent, throttleStreak } of malformed) {
+      expect(() => readHeartbeatRecoveryState(agent)).not.toThrow();
+      const state = readHeartbeatRecoveryState(agent);
+      // An unreadable horizon is never an active cooldown, and never an invented count.
+      expect(state, label).toMatchObject({ consecutiveAttempts: 0, throttleStreak, cooldownUntilAt: null });
+      expect(state.updatedAt, label).toBeNull();
+      expect(isHeartbeatThrottleCooldownActive(agent), label).toBe(false);
+    }
+    // A well-formed but already-elapsed horizon is inactive too, without discarding the streak.
+    const elapsed = { metadata: { heartbeatErrorRecovery: { throttleStreak: 3, cooldownUntilAt: "2020-01-01T00:00:00.000Z" } } };
+    expect(isHeartbeatThrottleCooldownActive(elapsed)).toBe(false);
+    expect(readHeartbeatRecoveryState(elapsed).throttleStreak).toBe(3);
+  });
+
+  it("keeps a pending cooldown through a budget increment and drops it only on a success reset", () => {
+    const now = Date.parse("2026-09-30T12:00:00.000Z");
+    const armed = armHeartbeatThrottleCooldown(baseAgent(), now);
+
+    // The rebuild trap: a budget write from another lane mid-cooldown must not cancel the
+    // scheduled re-probe, or the cooldown silently becomes an immediate retry storm.
+    const incremented = incrementHeartbeatErrorRecoveryMetadata({ metadata: armed.metadata }, now + 30_000);
+    expect(readHeartbeatErrorRetryCount({ metadata: incremented })).toBe(1);
+    expect(readHeartbeatRecoveryState({ metadata: incremented }).throttleStreak).toBe(1);
+    expect(isHeartbeatThrottleCooldownActive({ metadata: incremented }, now + 30_000)).toBe(true);
+
+    // A restart-preserving budget write keeps the episode; an elapsed horizon drops it.
+    const preserved = buildHeartbeatErrorRecoveryMetadataPreservingThrottle({ metadata: armed.metadata }, 3, now + 30_000);
+    expect(readHeartbeatRecoveryState({ metadata: preserved })).toMatchObject({
+      consecutiveAttempts: 3,
+      throttleStreak: 1,
+      cooldownUntilAt: armed.cooldownUntilAt,
+    });
+    const afterHorizon = buildHeartbeatErrorRecoveryMetadataPreservingThrottle({ metadata: armed.metadata }, 3, now + 61_000);
+    expect(readHeartbeatRecoveryState({ metadata: afterHorizon }).cooldownUntilAt).toBeNull();
+
+    // Only a genuine success clears the episode.
+    const reset = resetHeartbeatErrorRecoveryMetadata({ metadata: armed.metadata });
+    expect(readHeartbeatRecoveryState({ metadata: reset })).toMatchObject({
+      consecutiveAttempts: 0,
+      throttleStreak: 0,
+      cooldownUntilAt: null,
+    });
   });
 
   it("only marks durable runtime-enabled under-budget transient error agents eligible", () => {

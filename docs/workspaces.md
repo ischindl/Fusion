@@ -75,7 +75,7 @@ Every fresh member worktree performs a bounded root-level dependency bootstrap. 
 
 Fusion records readiness in `<private-git-dir>/fusion-dependency-install.json`, including the chosen command and rationale, and also writes that rationale to the task log. A configured `worktreeInitCommand` is authoritative and replaces inferred rows. For `uv`, Fusion reads root `pyproject.toml` and `.python-version`: an unsatisfied `requires-python` with managed downloads disabled is `environment-incompatible`, while declared extras or non-default dependency groups are `configuration-required` rather than guessed. Configure `worktreeInitCommand` for a durable project-specific selection; a configuration-required row can otherwise clear only after an engine-observed successful command explicitly selecting extras or groups, never bare `uv sync --frozen` or a reasoned `none` decision. Unknown package-manager evidence (named manifests such as `flake.nix` and a bounded root-level lockfile/declaration shape rule) is `unrecognized`, not dependency-free. The planner receives the affected repository and evidence, then uses the planning-only `fn_install_worktree_dependencies` tool to run an engine-observed install or record a reasoned `none` decision.
 
-Before prompt Plan Review dispatches, Fusion retries deterministic rows once. Any `unresolved` or `unrecognized` member returns the ordinary Plan Review `REVISE` beginning `Dependencies are not installed.`; the existing revision budget and `planReviewReplanCap` replan the task, then park it at `awaiting-approval` with `awaitingApprovalReason: "plan-review-replan-cap"` if exhausted. A missing or unreadable probe is `not-determined`, logged, and does not block review.
+Before prompt Plan Review dispatches, Fusion retries deterministic rows once. Any `unresolved` or `unrecognized` member returns the ordinary Plan Review `REVISE` beginning `Dependencies are not installed.`; the existing revision budget and `planReviewReplanCap` replan the task, then park it at `awaiting-approval` with `awaitingApprovalReason: "plan-review-replan-cap"` if exhausted. A repeated deterministic failure against the same pre-spawn worktree-state token instead becomes `config-blocked`, preserving the command and diagnostic on the task and waiting for Retry, a changed `worktreeInitCommand`, or changed worktree contents. A missing or unreadable probe is `not-determined`, logged, and does not block review.
 
 ### Custom working branches
 
@@ -115,6 +115,14 @@ The non-atomic land loop has a partial-land window. The `task:reconcile-workspac
 
 If a member task branch is gone and Fusion has no recorded or otherwise proven `landedSha`, the sweep parks the task as failed with a manual-intervention-required error. Inspect the per-repository integration history and task logs, establish whether the missing work landed or must be recovered, then repair/retry the task only after the workspace is safe. Do not assume a partial land rolled back repositories that already landed.
 
+A card explicitly marked **No commits expected** is the exception: its plan states that delivery leaves no
+commits, so "no branch and no landedSha" is the expected delivery shape rather than lost work. For that card
+the sweep records `task:reconcile-workspace-partial-land-no-action` with reason `no-commits-expected` (once
+per candidate episode), writes no failure breadcrumb, and clears in place any such park an earlier build
+already wrote — it does not finalize the card itself, because accepting a git-invisible delivery is a door
+that judges content. The same authorization also stops that park from refusing the card at the merge door,
+the stall classifiers, or an operator's manual move to the completion lane.
+
 Additional sweeps emit `task:reconcile-orphaned-workspace-worktree` when they remove a recorded dead member worktree and `task:reclaim-phantom-workspace-land-lease` when they reclaim a leaked member landing lease. Acquisition exclusivity is decided by a renewable durable lease; owner deletion or an execution-lane exit releases its acquire claim, while `task:reclaim-phantom-workspace-acquire-lease` and `worktree:workspace-repo-acquire-reclaimed` diagnose defensive leaked-entry recovery. Search run-audit records for these event IDs and `task:reconcile-workspace-partial-land` when diagnosing recovery.
 
 ## Reverting a workspace task
@@ -129,15 +137,13 @@ Workspace Git revert is all-or-nothing across member repositories: Fusion classi
 }
 ```
 
-If one member conflicts, Fusion rolls every touched member back to its pre-call state and commits no member revert. The `granularity` field applies only to the single-repository Git path, not workspace tasks. For the complete task revert contract, see [Reverting Done/Archived tasks](./task-management.md#reverting-donearchived-tasks-git-path--ai-undo-fallback).
+If one member conflicts, Fusion rolls every touched member back to its pre-call state and commits no member revert. The `granularity` field applies only to the single-repository Git path, not workspace tasks. For the complete task revert contract, see [Reverting completed tasks](./task-management.md#reverting-completed-tasks-git-path--ai-undo-fallback).
 
 There is an important route/helper distinction when auto-merge is off. `revertWorkspaceTask` refuses the direct integration-branch path, but the task route uses `prepareWorkspaceRevertPrBranches` for a clean classification and opens one PR per repository, returning `mode: "pr"` with the member PR details. Under `auto` mode, a conflicting workspace Git revert can instead create an AI-undo task.
 
-## Archiving and cleanup
+## Completion cleanup
 
-A successful workspace merge cleans up after itself. When every acquired sub-repository lands, finalization removes each recorded member worktree under the same landing proof the single-repository lane uses, then removes the emptied workspace task directory (and emptied intermediate parents for nested repository keys), so a merged, done task leaves no orphan folder under `.fusion/worktrees/<task-id>/`. The gate is conservative in the direction that protects work: a member holding uncommitted or unverifiable content is preserved with its reason written to the task log, and a preserved member keeps the parent directory. A partial land removes nothing, because the retry still needs those checkouts. Cleanup failures are recorded and never turn a proven landing into a merge failure; the periodic sweep converges anything left behind, including tasks that completed before this behavior shipped.
-
-Archiving a workspace task synchronously removes every recorded member worktree. Fusion holds a per-repository reservation through disposal and branch cleanup. A failed removal is quarantined so a later acquisition can reconcile the orphan; successful siblings are released. `archiveTask(..., { cleanup: false })` intentionally retains worktrees, while self-healing remains a backstop. For the task lifecycle details, see [Workspace worktree cleanup on archive](./task-management.md#workspace-worktree-cleanup-on-archive).
+A successful workspace merge cleans up after itself. When every acquired sub-repository lands, finalization removes each recorded member worktree under the same landing proof the single-repository lane uses, then removes the emptied workspace task directory (and emptied intermediate parents for nested repository keys), so a merged, done task leaves no orphan folder under `.fusion/worktrees/<task-id>/`. The gate is conservative in the direction that protects work: a member holding uncommitted or unverifiable content is preserved with its reason written to the task log, and a preserved member keeps the parent directory. A partial land removes nothing, because the retry still needs those checkouts. Cleanup failures are recorded and never turn a proven landing into a merge failure; the periodic sweep converges anything left behind, including tasks that completed before this behavior shipped. Deleting a task uses the same safety-first worktree disposal rules; there is no separate archive lifecycle.
 
 ## Task Reset
 

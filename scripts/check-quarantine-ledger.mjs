@@ -14,6 +14,33 @@ import { fileURLToPath } from "node:url";
 
 import { DEFAULT_QUARANTINE_PATH, DELETION_CLOCK_DAYS } from "./test-velocity-baseline.mjs";
 
+/*
+FNXC:TestQuarantine 2026-09-08-11:02 (RUFU-197):
+The string-aware Vitest-config scanners moved to `scripts/lib/vitest-config-parse.mjs` so the merge-gate
+policy guard reads exclusions through the SAME scanner this lockstep guard already trusts. Behavior here is
+unchanged; `extractConcreteExcludes` is now imported rather than defined locally.
+*/
+import { extractConcreteExcludes, stripComments, extractBalancedArray, extractConcreteTestFiles } from "./lib/vitest-config-parse.mjs";
+
+/*
+FNXC:QuarantineLockstep 2026-09-30-10:20:
+FN-9425 quarantines a CLI test through a static `quarantinedCliTests: string[]` list in
+`packages/cli/vitest.config.ts` instead of a `test.exclude` array, so the ledger guard must read that
+literal list too or the entry reports `missing-exclude` while it is genuinely excluded. This is the
+upstream intent (their `extractStaticQuarantinedCliTests`) rebuilt on our shared scanner
+(`scripts/lib/vitest-config-parse.mjs`), which our line adopted in place of the local parser.
+*/
+function extractStaticQuarantinedCliTests(source) {
+  const commentFree = stripComments(source);
+  const declaration = /\bconst\s+quarantinedCliTests\s*:\s*string\[\]\s*=\s*/.exec(commentFree);
+  if (declaration == null) return [];
+  let index = declaration.index + declaration[0].length;
+  while (/\s/.test(commentFree[index] ?? "")) index += 1;
+  if (commentFree[index] !== "[") return [];
+  const array = extractBalancedArray(commentFree, index);
+  return array == null ? [] : extractConcreteTestFiles(array);
+}
+
 const MS_PER_DAY = 86_400_000;
 const DEFAULT_WARN_WITHIN_DAYS = 5;
 const REASON_MAX_LENGTH = 140;
@@ -60,124 +87,6 @@ function summarizeRows(rows) {
     },
     { total: 0, expired: 0, near: 0, healthy: 0, unknown: 0 },
   );
-}
-
-/*
-FNXC:QuarantineLockstep 2026-08-23-22:45:
-STRING-AWARE. The previous regex stripper treated the `/**` inside a glob literal such as
-"src/**\/*.slow.test.ts" or "node_modules/**" as the start of a block comment, so it deleted from
-there to the next "*\/" — swallowing whole array literals and the entries after them. A concrete
-quarantine exclude placed after any such glob was then invisible, and this guard reported
-`missing-exclude` for a file that WAS excluded (observed 2026-08-23 quarantining
-self-healing-pending-wedge-notification.test.ts). Scan character by character instead, tracking
-string literals, so comment markers inside strings are left alone.
-*/
-function stripComments(source) {
-  let out = "";
-  let quote = null;
-  let escaped = false;
-  for (let index = 0; index < source.length; index += 1) {
-    const character = source[index];
-    if (quote) {
-      out += character;
-      if (escaped) escaped = false;
-      else if (character === "\\") escaped = true;
-      else if (character === quote) quote = null;
-      continue;
-    }
-    if (character === '"' || character === "'" || character === "`") {
-      quote = character;
-      out += character;
-      continue;
-    }
-    if (character === "/" && source[index + 1] === "*") {
-      const end = source.indexOf("*/", index + 2);
-      index = end === -1 ? source.length : end + 1;
-      continue;
-    }
-    if (character === "/" && source[index + 1] === "/") {
-      const end = source.indexOf("\n", index);
-      if (end === -1) break;
-      index = end - 1;
-      continue;
-    }
-    out += character;
-  }
-  return out;
-}
-
-function extractBalancedArray(source, openingBracket) {
-  let depth = 0;
-  let quote = null;
-  let escaped = false;
-
-  for (let index = openingBracket; index < source.length; index += 1) {
-    const character = source[index];
-    if (quote) {
-      if (escaped) {
-        escaped = false;
-      } else if (character === "\\") {
-        escaped = true;
-      } else if (character === quote) {
-        quote = null;
-      }
-      continue;
-    }
-    if (character === "\"" || character === "'") {
-      quote = character;
-    } else if (character === "[") {
-      depth += 1;
-    } else if (character === "]") {
-      depth -= 1;
-      if (depth === 0) return source.slice(openingBracket, index + 1);
-    }
-  }
-  return null;
-}
-
-function extractStringTestPaths(array) {
-  const paths = [];
-  const strings = /"((?:\\.|[^"\\])*)"/g;
-  let stringMatch;
-  while ((stringMatch = strings.exec(array))) {
-    const value = JSON.parse(`"${stringMatch[1]}"`);
-    if (/\.test\.tsx?$/.test(value) && !/[*?{}]/.test(value)) paths.push(value);
-  }
-  return paths;
-}
-
-function extractConcreteExcludes(source) {
-  const commentFree = stripComments(source);
-  const excludes = [];
-  const excludePattern = /\bexclude\s*:/g;
-  let match;
-  while ((match = excludePattern.exec(commentFree))) {
-    let index = match.index + match[0].length;
-    while (/\s/.test(commentFree[index] ?? "")) index += 1;
-    if (commentFree[index] !== "[") continue;
-    const array = extractBalancedArray(commentFree, index);
-    if (array == null) continue;
-    excludes.push(...extractStringTestPaths(array));
-    excludePattern.lastIndex = index + array.length;
-  }
-  return excludes;
-}
-
-/*
-FNXC:QuarantineLockstep 2026-09-29-17:01:
-The CLI keeps quarantines in a static list so direct file requests can bypass normal discovery exclusion.
-Recognize that literal list without evaluating config, while preserving the same two-way ledger ownership as
-ordinary exclude arrays.
-*/
-function extractStaticQuarantinedCliTests(source) {
-  const commentFree = stripComments(source);
-  const declaration = /\bconst\s+quarantinedCliTests\s*:\s*string\[\]\s*=\s*/.exec(commentFree);
-  if (declaration == null) return [];
-  let index = declaration.index + declaration[0].length;
-  while (/\s/.test(commentFree[index] ?? "")) index += 1;
-  if (commentFree[index] !== "[") return [];
-  const array = extractBalancedArray(commentFree, index);
-  return array == null ? [] : extractStringTestPaths(array);
 }
 
 function discoverPackageConfigs(rootDir) {

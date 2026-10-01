@@ -1,4 +1,4 @@
-import { superviseSpawn } from "@fusion/core";
+import { applyNonInteractiveGitEnv, superviseSpawn } from "@fusion/core";
 
 import type {
   SandboxBackend,
@@ -150,11 +150,11 @@ export class NativeSandboxBackend implements SandboxBackend {
         cwd: options.cwd,
         shell: true,
         stdio: ["ignore", "pipe", "pipe"],
-        env: {
+        env: applyNonInteractiveGitEnv({
           ...process.env,
           COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
           ...(options.env ?? {}),
-        },
+        }),
         maxLifetimeMs: options.timeout + 6_000,
       });
       const child = supervised.child;

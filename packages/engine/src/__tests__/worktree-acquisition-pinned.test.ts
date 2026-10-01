@@ -21,6 +21,7 @@ vi.mock("../worktree/worktree-pool.js", async () => {
     isInsideWorktreesDir: vi.fn().mockReturnValue(true),
     getRegisteredWorktreeBranches: vi.fn().mockResolvedValue([]),
     canonicalizePath: (p: string) => p,
+    defensiveRemovalWouldPreserve: vi.fn().mockResolvedValue(false),
     removeWorktree: vi.fn().mockResolvedValue({ removed: true, classification: "removed" }),
   };
 });
@@ -90,7 +91,7 @@ vi.mock("node:fs", async () => {
 
 import { existsSync } from "node:fs";
 import { rename } from "node:fs/promises";
-import { classifyTaskWorktree, getRegisteredWorktreeBranches, removeWorktree } from "../worktree/worktree-pool.js";
+import { classifyTaskWorktree, defensiveRemovalWouldPreserve, getRegisteredWorktreeBranches, removeWorktree } from "../worktree/worktree-pool.js";
 
 const ROOT = "/repo";
 const PINNED = join(ROOT, ".fusion", "worktrees", "fn-7996");
@@ -278,6 +279,47 @@ describe("acquireTaskWorktree — task-pinned mode", () => {
     expect(rename).toHaveBeenCalledWith(PINNED, expect.stringContaining("/.fusion/recovery/worktrees/fn-7996-"));
     expect(createWorktree).toHaveBeenCalledWith("fusion/fn-7996", PINNED, "FN-7996", "main", false);
     expect(result.worktreePath).toBe(PINNED);
+  });
+
+  /*
+  FNXC:WorktreeCleanup 2026-09-25-19:30:
+  RUFU-278 symptom verification. A checkout whose content the preservation policy refuses to delete must be
+  moved aside while the card keeps running. The old shape had no third outcome: remove, or throw and let the
+  executor terminalize the card — which is how RUFU-260 parked with
+  "Worktree acquisition failed after 3 heartbeat attempts ...: preserving <path>: uncommitted or ignored content
+  present" while its retained checkout head-of-line blocked 14 other RunFusion cards at the file-scope gate.
+  The assertion set is the invariant, not the repro: nothing is deleted, the path is vacated by rename, the
+  pinned path is recreated, the audit row names the reason, and acquisition resolves instead of rejecting.
+  */
+  it("RUFU-278: preserves a checkout removal refuses to delete, recreates the pinned path, does not fail the card", async () => {
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(classifyTaskWorktree).mockResolvedValue({ ok: true } as any);
+    // Registered and usable, but on a foreign branch -> reclaim, so the removal strategy is chosen here.
+    vi.mocked(getRegisteredWorktreeBranches).mockResolvedValue([{ branch: "fusion/fn-0000", worktreePath: PINNED }]);
+    vi.mocked(defensiveRemovalWouldPreserve).mockResolvedValue(true);
+    const createWorktree = vi.fn(async (branch: string, path: string) => ({ path, branch }));
+    const store = makeStore();
+    const audit = { git: vi.fn().mockResolvedValue(undefined), filesystem: vi.fn() } as any;
+
+    const result = await acquireTaskWorktree({
+      task: { ...baseTask, worktree: PINNED, branch: "fusion/fn-7996" },
+      rootDir: ROOT,
+      store,
+      settings: pinnedSettings,
+      createWorktree,
+      audit,
+    });
+
+    // The refusal is predicted up front, so the destructive call is never attempted.
+    expect(removeWorktree).not.toHaveBeenCalled();
+    expect(rename).toHaveBeenCalledWith(PINNED, expect.stringContaining("/.fusion/recovery/worktrees/fn-7996-"));
+    expect(result.worktreePath).toBe(PINNED);
+    expect(result.source).toBe("fresh");
+    expect(audit.filesystem).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({ taskId: "FN-7996", classification: "content-preservation" }),
+    }));
+    const logCalls: unknown[][] = (store.logEntry as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    expect(logCalls.some(([, message]) => String(message).includes("removal refused"))).toBe(true);
   });
 
   it("acceptance #3: self-corrects a stale/foreign task.worktree pointer and emits worktree:pin-rederived", async () => {

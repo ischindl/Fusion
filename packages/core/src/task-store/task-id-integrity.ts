@@ -13,7 +13,7 @@ import { TaskStore } from "../store.js";
 import { emitBoundedRunAudit } from "../run-audit/emit-bounded-run-audit.js";
 /* FNXC:RunAudit 2026-08-20-05:49: FN-9177 bounds optional audit telemetry so synchronous store helpers remain non-blocking. */
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { ArchiveDatabase } from "../db/archive-db.js";
 import { CentralCore } from "../central/central-core.js";
 import { Database, fromJson, toJsonNullable } from "../db/db.js";
@@ -26,11 +26,11 @@ import { type TaskIdIntegrityReport, detectTaskIdIntegrityAnomalies } from "../t
 import { createBranchGroup as createBranchGroupAsync } from "./async/async-branch-groups.js";
 import { findLiveLineageChildren as findLiveLineageChildrenAsync, projectPartition } from "./async/async-lifecycle.js";
 import { recordRunAuditEvent as recordRunAuditEventAsync } from "./async/async-audit.js";
+import { recordRunAuditEventWithinTransaction } from "../postgres/data-layer.js";
 import { insertTaskRowInTransaction, isTaskIdConflictError, readTaskRow, readTaskRowInTransaction } from "./async/async-persistence.js";
-import { getLiveTaskColumn } from "./async/async-comments-attachments.js";
 import { TASK_PERSIST_SQL_COLUMNS, TASK_UPSERT_SQL_ASSIGNMENTS, type TaskRow } from "./persistence.js";
 import { purgeTaskWorkflowSelectionRowsAsyncImpl } from "./workflow-definitions.js";
-import { resolveProjectColumnsForRoles } from "../project-lane-vocabulary.js";
+
 import { ConfigRow } from "./row-types.js";
 import { ARCHIVE_AGENT_LOG_SNAPSHOT_LIMIT } from "./serialization.js";
 import { ActivityLogEntry, ArchiveAgentLogMode, ArchivedTaskEntry, BoardConfig, BranchGroup, BranchGroupCreateInput, GoalCitationInput, GoalCitationSurface, RunAuditEventInput, Settings, Task, TaskCreateInput } from "../types.js";
@@ -38,8 +38,8 @@ import { resolveAllOptionalGroupIds } from "../workflows/workflow-optional-steps
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { DependencyCycleError, TaskDeletedError, TombstonedTaskResurrectionError, coreLog, detectDependencyCycle, storeLog } from "../store.js";
-import { resolveArchivedLanes } from "../project-lane-vocabulary.js";
+import { DependencyCycleError, TaskDeletedError, TombstonedTaskResurrectionError, TombstonePurgeUnauditedError, coreLog, detectDependencyCycle, storeLog } from "../store.js";
+import { ARCHIVED_SENTINEL_LANES } from "../project-lane-vocabulary.js";
 
 export function trackDeferredTaskCreatedWorkImpl(store: TaskStore, work: () => Promise<void>): Promise<void> {
     if (store.closing) return Promise.resolve();
@@ -358,6 +358,126 @@ export async function taskIdExistsAnywhereImpl(store: TaskStore, id: string): Pr
     return isTaskIdPresentInArchivedTasksTableAsyncImpl(store, id);
 }
 
+/*
+FNXC:VanishedTaskDetection 2026-09-23-21:28:
+`taskIdExistsAnywhere` answers "is this id taken?" and therefore flattens three operationally
+different states into one boolean: a live row, a soft-delete tombstone (id reserved, work never
+removed), and an archive-table snapshot. An engine-side detector that has to explain *why* a card
+is off every board cannot recover that distinction from a boolean, and re-deriving lane semantics
+in the engine would duplicate core's read authority. This resolver is that missing branch: one
+round trip that reports the presence shape, including the tombstone's `deletedAt`.
+
+The tombstone branch is the one RUFU-225 needed. Its `task.json` mirror still read
+`column: in-review` with a passed code-review verdict while no board query resolved the id; the
+correct answer was "the row is a tombstone, its id is still reserved, only the disk mirror is
+stale" — which is only sayable if the read exposes it.
+*/
+
+/** Presence shape of one task id across every table that can hold it. */
+export interface TaskIdPresence {
+  /** Present in `tasks` (including soft-deleted) or in either archive table. */
+  rowExistsAnywhere: boolean;
+  /** A `tasks` row exists with no `deletedAt` — the row is live. */
+  liveRowExists: boolean;
+  /** The `tasks` row exists with `deletedAt` set, so the id stays reserved. */
+  tombstoned: boolean;
+  /** ISO timestamp of the tombstone, when known. */
+  tombstonedAt: string | null;
+  /** The id is held only by the warm or cold archive table. */
+  inArchive: boolean;
+}
+
+/** Normalize a `deletedAt` column value (string, Date, or epoch) to an ISO string or null. */
+function normalizeDeletedAt(value: unknown): string | null {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString();
+  if (typeof value === "number") return Number.isFinite(value) ? new Date(value).toISOString() : null;
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? value : new Date(parsed).toISOString();
+  }
+  return null;
+}
+
+/** Chunk size for the batched presence `IN` lists, well inside Postgres' parameter ceiling. */
+const TASK_ID_PRESENCE_CHUNK_SIZE = 500;
+
+/**
+ * Batched form of {@link resolveTaskIdPresenceImpl}: three chunked reads (live+soft-deleted task
+ * rows, warm archive, cold archive) instead of three reads per id. A maintenance sweep that must
+ * classify every task directory on disk would otherwise issue thousands of point queries every
+ * ~15 minutes for a result that is one hash join in the database.
+ *
+ * Ids absent from every table are simply missing from the returned map.
+ */
+export async function resolveTaskIdPresenceForIdsImpl(
+  store: TaskStore,
+  ids: string[],
+): Promise<Map<string, TaskIdPresence>> {
+  const presence = new Map<string, TaskIdPresence>();
+  if (ids.length === 0) return presence;
+  const layer = store.asyncLayer!;
+  const partition = layer.projectId;
+
+  for (let offset = 0; offset < ids.length; offset += TASK_ID_PRESENCE_CHUNK_SIZE) {
+    const chunk = ids.slice(offset, offset + TASK_ID_PRESENCE_CHUNK_SIZE);
+    const taskConds = [inArray(schema.project.tasks.id, chunk)];
+    if (partition) taskConds.push(eq(schema.project.tasks.projectId, partition));
+    const taskRows = await layer.db
+      .select({ id: schema.project.tasks.id, deletedAt: schema.project.tasks.deletedAt })
+      .from(schema.project.tasks)
+      .where(and(...taskConds));
+    for (const row of taskRows) {
+      const tombstonedAt = normalizeDeletedAt((row as { deletedAt?: unknown }).deletedAt);
+      presence.set(row.id, tombstonedAt
+        ? { rowExistsAnywhere: true, liveRowExists: false, tombstoned: true, tombstonedAt, inArchive: false }
+        : { rowExistsAnywhere: true, liveRowExists: true, tombstoned: false, tombstonedAt: null, inArchive: false });
+    }
+
+    const archivedIds = new Set<string>();
+    for (const table of [schema.project.archivedTasks, schema.archive.archivedTasks]) {
+      const archiveConds = [inArray(table.id, chunk)];
+      if (partition) archiveConds.push(eq(table.projectId, partition));
+      const rows = await layer.db.select({ id: table.id }).from(table).where(and(...archiveConds));
+      for (const row of rows) archivedIds.add(row.id);
+    }
+    for (const id of archivedIds) {
+      if (!presence.has(id)) presence.set(id, { rowExistsAnywhere: true, liveRowExists: false, tombstoned: false, tombstonedAt: null, inArchive: true });
+    }
+  }
+
+  return presence;
+}
+
+export async function resolveTaskIdPresenceImpl(store: TaskStore, id: string): Promise<TaskIdPresence> {
+  const row = await readTaskRow(store.asyncLayer!, id, { includeDeleted: true });
+  if (row) {
+    const tombstonedAt = normalizeDeletedAt((row as { deletedAt?: unknown }).deletedAt);
+    return tombstonedAt
+      ? { rowExistsAnywhere: true, liveRowExists: false, tombstoned: true, tombstonedAt, inArchive: false }
+      : { rowExistsAnywhere: true, liveRowExists: true, tombstoned: false, tombstonedAt: null, inArchive: false };
+  }
+  const inArchive = await isTaskIdPresentInArchivedTasksTableAsyncImpl(store, id);
+  return { rowExistsAnywhere: inArchive, liveRowExists: false, tombstoned: false, tombstonedAt: null, inArchive };
+}
+
+/*
+FNXC:TombstonePurgeAudit 2026-09-23-21:28:
+The resurrection purge used to be the only path in the product that physically removed a task row
+with no durable record of the removal: the audit row existed solely on the *blocked* branch, so a
+successful purge left nothing behind and a later "where did this card go?" was unanswerable. The
+`task:deleted` row cannot cover it either — a tombstone was already soft-deleted, and the
+low-level row writer used by retention paths emits no outbox event at all.
+
+The purge is now audit-and-delete in one transaction, which is what makes it fail closed: Drizzle
+rolls the whole transaction back when the audit insert fails, so an unaudited physical removal is
+not reachable by ordering. `run_audit_events.task_id` carries no foreign key, so writing the row
+before deleting its task is safe, and `idxRunAuditEventsTaskIdTimestamp` keeps it findable.
+This writer is deliberately awaited and unbounded (transactional audit, class C per
+`docs/run-audit.md`): it shares the mutation transaction, so bounding it would either lose the
+record or allow the delete it exists to gate.
+*/
+
 export async function maybeResolveTombstonedTaskIdImpl(store: TaskStore,
     id: string,
     input: Pick<TaskCreateInput, "forceResurrect">,
@@ -381,10 +501,6 @@ export async function maybeResolveTombstonedTaskIdImpl(store: TaskStore,
 
     const allowResurrection = existing.allowResurrection === true || existing.allowResurrection === 1;
     if (input.forceResurrect === true || allowResurrection) {
-      // FNXC:FixPgTestsAndCi 2026-06-26-09:35:
-      // Use the async purge variant in backend mode so workflow_steps children
-      // are deleted before the parent task row is hard-deleted.
-            await purgeTaskWorkflowSelectionRowsAsyncImpl(store, id);
       /*
       FNXC:SqliteDualPathCleanup 2026-07-26-15:00:
       Project-scope hard-delete after tombstone resurrection so another project's matching id is untouched.
@@ -392,7 +508,58 @@ export async function maybeResolveTombstonedTaskIdImpl(store: TaskStore,
       const layer = store.asyncLayer!;
       const delConds = [eq(schema.project.tasks.id, id)];
       if (layer.projectId) delConds.push(eq(schema.project.tasks.projectId, layer.projectId));
-      await layer.db.delete(schema.project.tasks).where(and(...delConds));
+      const purgedStepCount = Array.isArray((row as { workflowStepResults?: unknown }).workflowStepResults)
+        ? (row as { workflowStepResults: unknown[] }).workflowStepResults.length
+        : 0;
+      try {
+        await layer.transactionImmediate(async (tx) => {
+          await recordRunAuditEventWithinTransaction(tx, {
+            taskId: id,
+            agentId: "system",
+            runId: "unknown",
+            domain: "database",
+            mutationType: "task:row-purged-for-resurrection",
+            target: `task:${id}`,
+            metadata: {
+              taskId: id,
+              operation,
+              allowResurrection,
+              forceResurrect: input.forceResurrect === true,
+              deletedAtPresent: true,
+              purgedWorkflowStepCount: purgedStepCount,
+            },
+          });
+          await tx.delete(schema.project.tasks).where(and(...delConds));
+        });
+      } catch (error) {
+        /*
+        FNXC:TombstonePurgeAudit 2026-09-23-21:28:
+        Any failure — including an audit-insert failure — rolled the transaction back, so the
+        tombstone is intact and the id is still reserved. Surface it as a typed refusal instead of
+        leaking a raw driver error: the caller's create/duplicate/refine simply does not proceed.
+        */
+        storeLog.warn(`[tombstone-purge-refused] ${id} audit write failed, tombstone preserved: ${getErrorMessage(error)}`);
+        throw new TombstonePurgeUnauditedError(id, { cause: error });
+      }
+
+      /*
+      FNXC:TombstonePurgeAudit 2026-09-24-00:12 (RUFU-283):
+      The child purge moved to AFTER the committed audit+delete. It used to run first, which left a
+      refused purge half-done: the tombstone survived (the transaction rolled back) but its
+      `task_workflow_selection` row and materialized `workflow_steps` children were already gone, so
+      the preserved card had a selection pointing at deleted steps. Reversing the order makes the
+      refusal atomic instead — nothing is removed unless the audit row is durable — and the ordering
+      is safe here specifically because neither child table declares a foreign key to `tasks`, so
+      the parent delete cannot be blocked by them. A crash in the window between commit and child
+      purge leaves orphaned child rows, which `cleanupOrphanedMaterializedSteps` already owns;
+      orphaned children are strictly safer than an unaudited removal or a gutted tombstone.
+      Best-effort because the row it described is already gone — a failure is logged, not thrown.
+      */
+      try {
+        await purgeTaskWorkflowSelectionRowsAsyncImpl(store, id);
+      } catch (error) {
+        storeLog.warn(`[tombstone-purge-child-cleanup] ${id} selection/step children survived the purge: ${getErrorMessage(error)}`);
+      }
 
       return;
     }
@@ -420,63 +587,6 @@ export async function maybeResolveTombstonedTaskIdImpl(store: TaskStore,
     throw new TombstonedTaskResurrectionError(id, existing.deletedAt, allowResurrection);
 }
 
-export function isTaskArchivedImpl(store: TaskStore, id: string): boolean {
-    /*
-    FNXC:IncompletePgPorts 2026-07-26-20:30:
-    Sync isTaskArchived cannot query PostgreSQL. Prefer isTaskArchivedAsyncImpl
-    from async callers. In backend mode use the in-memory task cache when the
-    row is already hydrated; otherwise false (caller should have used async).
-    */
-    /*
-    FNXC:WorkflowLifecycleColumns 2026-07-31-02:45 (audited — REAL, and narrow):
-    `cached.column` is a real board lane, so a renamed archived column is not recognised and this
-    sync check answers false for a card the board shows as archived.
-
-    Narrow because of what it already concedes: the note above says this path exists only for a row
-    that happens to be hydrated in the cache, and every async caller is told to use
-    `isTaskArchivedAsyncImpl` instead. The authoritative path (below) reads `getLiveTaskColumn`, whose
-    own comparison is the one worth converting — fixing it there makes this file's sentinel check
-    correct without touching it.
-
-    Left counted so the census keeps pointing here, and deliberately NOT converted in isolation: a
-    A sync function with no store-scoped workflow read cannot resolve a lane, and converting this one
-    while `getLiveTaskColumn` still keys on the literal would leave the two disagreeing about what
-    archived means.
-    */
-        const cached = store.taskCache.get(id);
-    /* DELIBERATE-LITERAL — see the note above: sync, no store-scoped workflow read, and converting
-       this alone would disagree with `getLiveTaskColumn`, which still keys on the literal. */
-    return cached?.column === "archived";
-}
-
-/*
-FNXC:IncompletePgPorts 2026-07-26-20:30:
-Authoritative archived check for PostgreSQL: live column gate via
-getLiveTaskColumn, plus cold archive.archived_tasks presence.
-*/
-export async function isTaskArchivedAsyncImpl(store: TaskStore, id: string): Promise<boolean> {
-    
-    const layer = store.asyncLayer!;
-    const live = await getLiveTaskColumn(layer.db, id, layer.projectId, await resolveArchivedLanes(store));
-    // getLiveTaskColumn returns "archived" for archived OR soft-deleted rows.
-    /*
-    FNXC:LifecycleColumnCensus 2026-07-30-21:10 DELIBERATE-LITERAL: a SENTINEL, not a board lane.
-    
-    This compares `getLiveTaskColumn`'s RETURN VALUE. That helper normalizes: it manufactures the string
-    "archived" for an archived row AND for a soft-deleted one, and returns null for a missing task —
-    which is why the neighbouring line tests null separately. It is a protocol value, not a column id.
-    
-    STILL TRUE NOW THAT THE HELPER RESOLVES LANES. `getLiveTaskColumn` now takes the board's archived
-    lanes, which was the one genuinely-owed conversion this family pointed at (#2820). That changes which
-    rows it CLASSIFIES as archived; it does not change the SENTINEL it returns, which still collapses
-    archived and soft-deleted into one string. Converting this comparison would therefore keep passing on
-    the built-in board and start FAILING on a renamed one — a soft-deleted task would read as not-archived.
-    */
-    if (live === "archived") return true;
-    if (live !== null) return false;
-    return isTaskIdPresentInArchivedTasksTableAsyncImpl(store, id);
-}
-
 export function findLiveDependentsImpl(store: TaskStore, id: string): string[] {
     const rows = store.db
       .prepare(`SELECT id, dependencies FROM tasks WHERE dependencies LIKE ? AND id != ? AND ${TaskStore.ACTIVE_TASKS_WHERE}`)
@@ -499,10 +609,8 @@ export function findLiveDependentsImpl(store: TaskStore, id: string): string[] {
 
 export async function findLiveLineageChildrenImpl(store: TaskStore, id: string): Promise<string[]> {
         const layer = store.asyncLayer!;
-    /* FNXC:WorkflowResolvedColumns 2026-07-31-23:59: the board's archive lanes, so an archived child
-       stops counting as live. Fail-soft to undefined -> the legacy id. */
-    const archivedColumns = await resolveProjectColumnsForRoles(store, ["archived"]).catch(() => undefined);
-    return findLiveLineageChildrenAsync(layer.db, id, layer.projectId, archivedColumns);
+    /* FNXC:TaskArchiveRemoval 2026-09-04-18:25 DELIBERATE-LITERAL: historical-sentinel children are not live; archive is not a workflow role. */
+    return findLiveLineageChildrenAsync(layer.db, id, layer.projectId, ARCHIVED_SENTINEL_LANES);
 }
 
 export function recordActivityFromListenerImpl(store: TaskStore,

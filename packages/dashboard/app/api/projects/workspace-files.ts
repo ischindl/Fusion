@@ -2,8 +2,10 @@
  * FNXC:CodeOrganization 2026-07-20-10:00:
  * Workspace file browser and file operations client API peeled from legacy.ts.
  */
-import { api } from "../client/client.js";
+import { api, ApiRequestError } from "../client/client.js";
 import { withProjectId } from "../client/health.js";
+import { withTokenHeader } from "../../auth.js";
+import { FUSION_CLIENT_HEADER, FUSION_DASHBOARD_UI_CLIENT } from "@fusion/core/task-delete-attribution";
 
 // --- File Browser API ---
 
@@ -246,5 +248,106 @@ export function downloadZipUrl(workspace: string, filePath: string, projectId?: 
     query.set("projectId", projectId);
   }
   return `/api/files/${encodeURIComponent(filePath)}/download-zip?${query.toString()}`;
+}
+
+/*
+FNXC:FileBrowserUpload 2026-09-05-15:01:
+RUFU-189 browser uploads. Deliberately raw fetch, NOT the shared api() wrapper: api() stamps
+`Content-Type: application/json` when unset, and a FormData body must not carry it — only fetch
+itself may declare `multipart/form-data` with the generated boundary (an explicit JSON type would
+make the server's multipart guard reject every upload). Token and client-identity headers are
+mirrored from api() so the upload route sees the same authenticated, dashboard-labeled request
+as every other Files mutation.
+The success response is intentionally HTTP 200 with per-file outcomes ({ uploaded, failed }):
+callers branch on `failed` (e.g. code EEXIST -> ask the operator to replace) instead of catching
+a thrown error, because one bad file must not sink the batch. Whole-request refusals (transport
+size ceiling, >20 files, 501 no-multer) still throw ApiRequestError with the server message.
+*/
+
+/**
+ * Client mirror of the server's per-file upload cap (`MAX_UPLOAD_FILE_SIZE` in
+ * packages/dashboard/src/file-service.ts). The server stays authoritative; this mirror only
+ * exists so the Files browser can pre-reject oversized picks with an instant per-file line
+ * instead of streaming bytes that are guaranteed to bounce back as ETOOLARGE.
+ * workspace-files-api.test.ts asserts the two values stay equal.
+ */
+export const MAX_WORKSPACE_UPLOAD_FILE_BYTES = 25 * 1024 * 1024;
+
+/** One file the server accepted (path is workspace-relative). */
+export interface WorkspaceUploadFileResult {
+  name: string;
+  path: string;
+  size: number;
+  mtime: string;
+}
+
+/** One file the server refused; `code` is the stable machine verdict (e.g. EEXIST, ETOOLARGE). */
+export interface WorkspaceUploadFailure {
+  name: string;
+  code: string;
+  error: string;
+}
+
+/** Upload response: every sent file lands in exactly one of these arrays. */
+export interface WorkspaceUploadResponse {
+  uploaded: WorkspaceUploadFileResult[];
+  failed: WorkspaceUploadFailure[];
+}
+
+/**
+ * Upload files into a workspace directory.
+ *
+ * @param path destination directory relative to the workspace root ("." = root); the server
+ *             reduces each file's name to its basename, so uploads land beside the browsed files.
+ * @param overwrite replaces existing names; the UI sets this ONLY after the operator confirmed
+ *                  each per-file EEXIST collision (server-safe-by-default: without it the server
+ *                  refuses existing files instead of clobbering them).
+ */
+export async function uploadWorkspaceFiles(
+  workspace: string,
+  files: File[],
+  options: { path?: string; overwrite?: boolean; projectId?: string } = {},
+): Promise<WorkspaceUploadResponse> {
+  const query = new URLSearchParams({ workspace });
+  if (options.projectId) {
+    query.set("projectId", options.projectId);
+  }
+
+  const form = new FormData();
+  for (const file of files) {
+    form.append("files", file);
+  }
+  form.append("path", options.path ?? ".");
+  if (options.overwrite) {
+    form.append("overwrite", "true");
+  }
+
+  const headers = new Headers(withTokenHeader());
+  headers.set(FUSION_CLIENT_HEADER, FUSION_DASHBOARD_UI_CLIENT);
+
+  const url = `/api/files/upload?${query.toString()}`;
+  const res = await fetch(url, { method: "POST", body: form, headers });
+
+  const bodyText = await res.text();
+  let data: unknown = null;
+  try {
+    data = bodyText ? JSON.parse(bodyText) : null;
+  } catch {
+    throw new ApiRequestError(
+      `API returned invalid JSON for ${url}. (${res.status} ${res.statusText})`,
+      res.status,
+    );
+  }
+
+  if (!res.ok) {
+    const payload = data as { error?: string; details?: Record<string, unknown> } | null;
+    throw new ApiRequestError(
+      payload?.error || `Upload failed for ${url}: ${res.status} ${res.statusText}`,
+      res.status,
+      payload?.details,
+    );
+  }
+
+  return data as WorkspaceUploadResponse;
 }
 

@@ -1,10 +1,20 @@
-import { TaskStore, COLUMNS, COLUMN_LABELS, MAX_TASK_MESSAGE_LENGTH, resolveProjectColumnsForRoles, TERMINAL_ROLES, resolveReviewColumns, resolveTaskLifecycleColumns, resolveWorkflowIrForTask, resolvePreMergeGateForTask, resolveEffectiveAutoMerge, CentralCore, buildAutoPauseClearPatch, buildManualRetryResetPatch, buildManualRetryResetPatchIfCurrent, extractIntentSignature, findNearDuplicates, getTaskDuplicateLineage, isValidRepoSlug, isWorkspaceTask, reconcileDeterministicDuplicate, resolveTaskGithubTracking, runDeterministicDuplicateGuard, evaluateArchiveTaskLiveness, describeArchiveLiveness, TaskIsLiveError, type Settings, type Column, type ColumnId, type StepStatus, type AgentLogType, type AgentLogEntry, type IntentSignature, type NearDuplicateCandidate, type NearDuplicateMatch, type TaskDependencyMutation } from "@fusion/core";
-import { isFailedNoVerdictPreMergeReviewResult, isInReviewMissingWorktreeSessionStartFailure, runAiMerge, landWorkspaceTask, withWorkspaceMergeDispatchLease, installBaselineArchiveWorktreeDisposer, clearOwnedMergeStamp, reconcileUnownedStaleMergeStamp, SelfHealingManager } from "@fusion/engine";
+/*
+FNXC:BranchConflictRecoveryFence 2026-10-01-15:28 (upstream FN-9435): the union also carries `buildManualRetryResetPatchIfCurrent`, which `applyRetryReset` below calls, so every `fn task retry` write is fenced against a newer lifecycle generation.
+FNXC:MergeRebuild0919 2026-09-19-21:45:
+Import union for this line: ours adds `isFollowUpTask`, `resolveWorkflowIrForTaskWithProvenance` and
+`workflowHasColumn` (all three are called below), and ours drops the archive-liveness trio
+(`evaluateArchiveTaskLiveness`/`describeArchiveLiveness`/`TaskIsLiveError`) plus
+`installBaselineArchiveWorktreeDisposer`, whose archive call sites this line retired — canonical still imported them
+but the merged body has no call site, so keeping them would be dead references. Engine side keeps ours
+(`admitTaskToWip`/`isFirstPlanningToWipAdmission`/`planTaskWorktreePath`) and `SelfHealingManager`, which both lines need.
+*/
+import { TaskStore, COLUMNS, COLUMN_LABELS, deriveTaskLabelFromDescription, describeTaskTitleRejection, isFollowUpTask, MAX_TASK_MESSAGE_LENGTH, resolveProjectColumnsForRoles, TERMINAL_ROLES, resolveReviewColumns, resolveTaskLifecycleColumns, resolveWorkflowIrForTask, resolvePreMergeGateForTask, resolveWorkflowIrForTaskWithProvenance, workflowHasColumn, resolveEffectiveAutoMerge, CentralCore, buildAutoPauseClearPatch, buildManualRetryResetPatch, buildManualRetryResetPatchIfCurrent, extractIntentSignature, findNearDuplicates, getTaskDuplicateLineage, isValidRepoSlug, isWorkspaceTask, reconcileDeterministicDuplicate, resolveTaskGithubTracking, runDeterministicDuplicateGuard, deliverTaskCommentFromStore, describeTaskCommentDelivery, type Settings, type Column, type ColumnId, type StepStatus, type AgentLogType, type AgentLogEntry, type IntentSignature, type NearDuplicateCandidate, type NearDuplicateMatch, type TaskDependencyMutation } from "@fusion/core";
+import { isFailedNoVerdictPreMergeReviewResult, admitTaskToWip, isFirstPlanningToWipAdmission, isInReviewMissingWorktreeSessionStartFailure, planTaskWorktreePath, runAiMerge, landWorkspaceTask, withWorkspaceMergeDispatchLease, clearOwnedMergeStamp, reconcileUnownedStaleMergeStamp, SelfHealingManager } from "@fusion/engine";
 import { createInterface } from "node:readline/promises";
 import type { PlanningQuestion, PlanningSummary } from "@fusion/core";
 import { createSession, createTaskFromPlanSession, ensureDurablePlanningSessionStore, getSession as getPlanningSession, submitResponse, validateSession, RateLimitError, SessionNotFoundError, InvalidSessionStateError } from "@fusion/dashboard/planning";
 import { watchFile, unwatchFile, statSync, existsSync, readFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import * as dashboard from "@fusion/dashboard";
 import {
   getGhErrorMessage,
@@ -12,13 +22,30 @@ import {
   isGhAvailable,
   runGhJsonAsync,
 } from "@fusion/core/gh-cli";
-import { resolveProject, createLocalStore, closeProjectStore, type ProjectContext } from "../project-context.js";
-import { promptOutputStream, result as outputResult } from "../output.js";
+import {
+  resolveProject,
+  createLocalStore,
+  closeProjectStore,
+  asLocalProjectContext,
+  type ProjectContext,
+} from "../project-context.js";
+import { isQuietMode, promptOutputStream, result as outputResult } from "../output.js";
+/*
+FNXC:ProjectRoutingVisibility 2026-09-22-23:26 (RUFU-269): the card-minting commands must print where a
+card actually went. The decision itself lives in the pure `project-routing` module so the whole acceptance
+matrix is unit-testable; this file owns only the printing and the prompting.
+*/
+import {
+  cardDirectoryPath,
+  crossProjectConfirmQuestion,
+  declinedCrossProjectNotice,
+  evaluateProjectRouting,
+  unregisteredCwdProjectWarning,
+} from "../project-routing.js";
 import { findNodeByNameOrId } from "./node.js";
 import { retryOnLock, LockRetryExhaustedError } from "../lock-retry.js";
 
 const STEP_STATUSES: StepStatus[] = ["pending", "in-progress", "done", "skipped"];
-let archiveForceOverride = false;
 
 /*
 FNXC:TaskMessageLength 2026-08-29-08:02:
@@ -28,6 +55,20 @@ composers, so pasted operator instructions are admitted consistently on every ta
 
 /** #1403: display a column's label, falling back to the raw id for
  *  workflow-defined custom columns that have no legacy label. */
+/**
+ * One card label for every CLI listing, echo, and confirmation line.
+ *
+ * FNXC:TaskTitleDerivation 2026-09-26-02:43:
+ * RUFU-295: the CLI used to print `task.title || description.slice(0, 60) + "…"`, so a titleless card
+ * whose description begins with a markdown heading or PREMISA line displayed as that junk on
+ * `fn task list`/`fn task show`/create echoes. The fallback now goes through the same core derivation
+ * the dashboard and the Patchnode ledger use, and the hand-rolled ellipsis is gone — the canonical
+ * label is bounded with no suffix.
+ */
+function cliTaskLabel(task: { title?: string | null; description?: string | null }, maxLength = 60): string {
+  return task.title?.trim() || deriveTaskLabelFromDescription(task.description ?? "", maxLength);
+}
+
 function columnLabel(column: ColumnId): string {
   return (COLUMN_LABELS as Record<string, string>)[column] ?? column;
 }
@@ -86,24 +127,9 @@ function getResearchSourceContext(sourceMetadata: unknown): string | undefined {
   return typeof runId === "string" && runId.length > 0 ? runId : undefined;
 }
 
-async function formatTaskDuplicateLineage(task: Awaited<ReturnType<TaskStore["getTask"]>>, store: TaskStore): Promise<string | null> {
+function formatTaskDuplicateLineage(task: Awaited<ReturnType<TaskStore["getTask"]>>): string | null {
   const lineage = getTaskDuplicateLineage(task);
-  if (lineage.length === 0) return null;
-
-  const labels = await Promise.all(lineage.map(async (id) => {
-    try {
-      const linked = await store.getTask(id);
-      /* FNXC:WorkflowLifecycleColumns 2026-08-02-08:10 (fleet: CLI surface): the board's archived column.
-         With the literal, a renamed board's archived duplicates printed with no `(archived)` marker, so the
-         operator could not tell a live duplicate from a filed one in the lineage line. */
-      const linkedLifecycle = await resolveTaskLifecycleColumns(store, id);
-      return linked.column === (linkedLifecycle?.archived ?? "archived") ? `${id} (archived)` : id;
-    } catch {
-      return id;
-    }
-  }));
-
-  return labels.join(", ");
+  return lineage.length > 0 ? lineage.join(", ") : null;
 }
 
 function formatTaskSource(task: {
@@ -137,10 +163,23 @@ function formatTaskSource(task: {
       const context = getResearchSourceContext(task.sourceMetadata);
       return context ? `Research (${context})` : "Research";
     }
+    /*
+    FNXC:TaskFollowUp 2026-09-17-18:10:
+    FN-513's follow-up is persisted as a `task_refine` sub-type, so the CLI reads it through the same
+    shared helper the dashboard uses rather than re-deriving the marker. A malformed or absent marker
+    degrades to the historical Refinement wording.
+    */
     case "task_refine":
-      return task.sourceParentTaskId
-        ? `Refinement of ${task.sourceParentTaskId}`
-        : "Refinement";
+      if (!task.sourceParentTaskId) return "Refinement";
+      return isFollowUpTask({
+        sourceType: task.sourceType,
+        sourceParentTaskId: task.sourceParentTaskId,
+        sourceMetadata: (task.sourceMetadata && typeof task.sourceMetadata === "object" && !Array.isArray(task.sourceMetadata))
+          ? task.sourceMetadata as Record<string, unknown>
+          : undefined,
+      })
+        ? `Follow-up of ${task.sourceParentTaskId}`
+        : `Refinement of ${task.sourceParentTaskId}`;
     case "task_duplicate":
       return task.sourceParentTaskId
         ? `Duplicate of ${task.sourceParentTaskId}`
@@ -163,16 +202,15 @@ function formatTaskSource(task: {
 // `withBoardWrite`/`resolveBoardContext` below, which always resolve a full
 // `ProjectContext` and close/evict it on every exit path. Removed here
 // rather than left as an unused dead path.
-function asLocalProjectContext(store: TaskStore): ProjectContext {
-  const cwd = process.cwd();
-  return {
-    projectId: cwd,
-    projectPath: cwd,
-    projectName: basename(cwd) || "current-project",
-    isRegistered: false,
-    store,
-  };
-}
+//
+/*
+FNXC:ProjectRoutingVisibility 2026-09-23-00:04 (RUFU-269): this file used to keep a PRIVATE copy of
+`asLocalProjectContext` that built the unregistered-cwd fallback context by hand. RUFU-269 added routing
+provenance (`resolvedFrom: "cwd-fallback"` + the cwd snapshot) to the shared `project-context.ts`
+definition, which every other CLI command file (pr/backup/memory-backup/branch-group/mcp) already uses;
+a second copy here would have kept `fn task *` minting fallback contexts that the routing reporter cannot
+identify. One definition, in `project-context.ts`.
+*/
 
 /**
  * FNXC:CliBoardMutation 2026-07-09-00:00:
@@ -187,29 +225,44 @@ function asLocalProjectContext(store: TaskStore): ProjectContext {
  * fallback so `closeProjectStore` always receives a well-formed context.
  */
 async function getBoardCommandContext(projectName?: string): Promise<ProjectContext> {
+  /*
+  FNXC:TaskStoreLightBoot 2026-09-26-19:31 (RUFU-275):
+  One-shot board reads/commands boot LIGHT — the archive-reintegration and forced-patchnode
+  backlog passes belong to long-lived hosts (they also run as engine maintenance); a transient
+  `fn task` process pays them on every invocation and on saneca calibre that is the multi-second
+  open the extension lane had to bound at 30 s. All three resolution branches opt in together.
+  */
   if (projectName) {
-    const context = await resolveProject(projectName);
+    const context = await resolveProject(projectName, process.cwd(), undefined, "light");
     if (!context) {
       throw new Error(`Project ${projectName} not found`);
     }
-    installBaselineArchiveWorktreeDisposer(context.store, {rootDir: context.projectPath, getSettings: () => context.store.getSettings(), allowLiveRemoval: () => archiveForceOverride});
     return context;
   }
 
   try {
-    const context = await resolveProject(undefined);
+    const context = await resolveProject(undefined, process.cwd(), undefined, "light");
     if (!context) {
       throw new Error("No project context");
     }
-    installBaselineArchiveWorktreeDisposer(context.store, {rootDir: context.projectPath, getSettings: () => context.store.getSettings(), allowLiveRemoval: () => archiveForceOverride});
     return context;
   } catch {
     // FNXC:PostgresCutover 2026-07-05-12:00: the cwd fallback must boot through
     // the PostgreSQL startup factory (createLocalStore); a bare `new TaskStore`
     // resolves to the removed SQLite runtime, which throws on first DB access.
-    const store = await createLocalStore(process.cwd());
+    /*
+    FNXC:ProjectRoutingVisibility 2026-09-23-00:04 (RUFU-269): the fallback stays usable — turning it into an
+    error would break `fn task list`/`show`/`create` in an unregistered folder — but it is no longer silent.
+    Before this, a card minted from an unregistered folder was written under `<cwd>/.fusion/` while the output
+    named no project at all, indistinguishable from a registered target. The sentence goes to stderr so
+    `--quiet`/machine mode keeps its stdout contract, and it is printed HERE rather than left to
+    `evaluateProjectRouting` because a fallback context has nothing to compare against: its cwd IS its
+    target, so the mismatch classifier can only ever be quiet for it.
+    */
+    const cwd = process.cwd();
+    console.error(unregisteredCwdProjectWarning(cwd, cwd));
+    const store = await createLocalStore(cwd, undefined, { lightBoot: true });
     const context = asLocalProjectContext(store);
-    installBaselineArchiveWorktreeDisposer(store, {rootDir: context.projectPath, getSettings: () => store.getSettings(), allowLiveRemoval: () => archiveForceOverride});
     return context;
   }
 }
@@ -307,6 +360,31 @@ async function retryBoardCall<T>(context: ProjectContext, id: string, action: st
 async function closeBoardContextAndExit(context: ProjectContext, code: number): Promise<never> {
   await closeProjectStore(context).catch(() => {});
   process.exit(code);
+}
+
+/*
+FNXC:ProjectRoutingVisibility 2026-09-23-00:04 (RUFU-269): warn-only routing report for the card-minting
+commands that are NOT `fn task create`. `duplicate` and `refine` mint a NEW card in the resolved project
+from an id the operator typed, so a central-default target that is not the cwd project still files a card
+somewhere the operator may not expect — but they already name a specific card (which only exists in the
+project it lives in) and carry no `--yes` of their own, so per spec they announce rather than block.
+`isTty: false` here is not a claim about the terminal, it is the instruction "never wait on an answer on
+this surface". The target line is returned for the caller's success block so all three commands print one
+`Project:` format from one formatter and cannot drift.
+*/
+function reportCardRouting(context: ProjectContext): string {
+  const decision = evaluateProjectRouting({
+    projectName: context.projectName,
+    projectPath: context.projectPath,
+    resolvedFrom: context.resolvedFrom,
+    cwdProject: context.cwdProject,
+    cwd: process.cwd(),
+    isTty: false,
+  });
+  if (decision.warning) {
+    console.error(decision.warning);
+  }
+  return decision.targetLine;
 }
 
 async function resolveNodeByNameOrId(nodeNameOrId: string): Promise<{ id: string; name?: string }> {
@@ -451,8 +529,43 @@ async function runCliNearDuplicateCheck(args: {
   process.exit(0);
 }
 
-export async function runTaskCreate(descriptionArg?: string, attachFiles?: string[], depends?: string[], projectName?: string, nodeName?: string, noDedup = false, githubOpts?: { github?: boolean; githubRepo?: string }) {
+/**
+ * Ask a yes/no question on the terminal and report whether the answer was affirmative.
+ *
+ * FNXC:ProjectRoutingVisibility 2026-09-22-23:26 (RUFU-269): the prompt writes to the un-gated output
+ * stream, matching the near-duplicate confirm above, so a question stays visible even when informational
+ * stdout is suppressed. Whether asking is allowed at all (TTY, not quiet, no `--yes`) is the caller's call.
+ *
+ * @param {string} question - Question to display, including the `[y/N]` affordance
+ * @returns {Promise<boolean>} True when the answer was `y` or `yes` (case-insensitive)
+ */
+async function confirmOnTerminal(question: string): Promise<boolean> {
+  const rl = createInterface({ input: process.stdin, output: promptOutputStream() });
+  try {
+    const answer = (await rl.question(question)).trim().toLowerCase();
+    return answer === "y" || answer === "yes";
+  } finally {
+    rl.close();
+  }
+}
+
+/*
+FNXC:ProjectRoutingVisibility 2026-09-22-23:26 (RUFU-269): `yes` is the CLI `--yes` flag, threaded through
+from `parseTaskCreateArgs` in `bin.ts`. It answers an affirmative cross-project routing confirmation
+without asking, which is what lets a script target the default project deliberately. It has NO effect on
+precedence — `--project` still wins, an invalid one still throws.
+*/
+/*
+FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): `titleArg` is `fn task create --title <text>`, threaded
+through `parseTaskCreateArgs` in `bin.ts`. It is appended as the last positional because the eight
+positional parameters before it are a tested call shape (`commands/__tests__/task.test.ts` calls
+`runTaskCreate` positionally ~30 times); inserting the new label anywhere else would have rewired every
+one of those calls for no behavioural gain. An explicit title reaches `store.createTask` verbatim, so the
+board stores the name the operator chose and the shared derivation never runs for that card.
+*/
+export async function runTaskCreate(descriptionArg?: string, attachFiles?: string[], depends?: string[], projectName?: string, nodeName?: string, noDedup = false, githubOpts?: { github?: boolean; githubRepo?: string }, yes = false, titleArg?: string) {
   let description = descriptionArg;
+  const explicitTitle = titleArg?.trim() || undefined;
 
   /*
   FNXC:GithubTracking 2026-08-15-03:50:
@@ -494,6 +607,33 @@ export async function runTaskCreate(descriptionArg?: string, attachFiles?: strin
   const context = await resolveBoardContext(projectName, "create", "resolve project");
   const store = context.store;
   try {
+    /*
+    FNXC:ProjectRoutingVisibility 2026-09-22-23:26 (RUFU-269): report the routing BEFORE the write and ask
+    before an irreversible one. An explicit `--project` or a cwd-derived target is what the operator already
+    expects, so it stays silent; a DEFAULT project that is not the one the shell sits in is RUFU-242's
+    accident (10 cards filed into GEDA) and must be announced, plus confirmed on a terminal, even though
+    precedence itself does not change. The check runs after context resolution — an invalid `--project` must
+    still throw out of resolution and write nothing rather than being asked about a project that does not
+    exist — and before the duplicate guard, so a declined answer writes no card and releases no lock it
+    never took. Quiet mode counts as non-interactive: an agent lane must never block on an answer nobody
+    will type.
+    */
+    const routing = evaluateProjectRouting({
+      projectName: context.projectName,
+      projectPath: context.projectPath,
+      resolvedFrom: context.resolvedFrom,
+      cwdProject: context.cwdProject,
+      cwd: process.cwd(),
+      isTty: Boolean(process.stdin.isTTY && process.stdout.isTTY) && !isQuietMode(),
+      yes,
+    });
+    if (routing.warning) {
+      console.error(routing.warning);
+    }
+    if (routing.requiresConfirm && !(await confirmOnTerminal(crossProjectConfirmQuestion(context.projectName)))) {
+      console.error(declinedCrossProjectNotice(context.projectName));
+      return;
+    }
     const task = await retryBoardCall(context, "create", "create task", async () => {
       const guard = await runDeterministicDuplicateGuard(
         store,
@@ -578,6 +718,12 @@ export async function runTaskCreate(descriptionArg?: string, attachFiles?: strin
           const created = await store.createTask({
             description: trimmedDescription,
             dependencies: depends,
+            /*
+            FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): an explicit `--title` is written as the
+            operator's own words — the store's write guard still sanitises and bounds it, but no
+            description-derived text is substituted for a deliberate name.
+            */
+            ...(explicitTitle ? { title: explicitTitle } : {}),
             ...(originWorkflowId ? { workflowId: originWorkflowId } : {}),
             ...(githubTracking ? { githubTracking } : {}),
             source: {
@@ -591,7 +737,7 @@ export async function runTaskCreate(descriptionArg?: string, attachFiles?: strin
             fingerprint: guard.fingerprint,
           });
           createdOrLinked = reconcileResult.canonical;
-          didLinkExisting = reconcileResult.outcome === "archived";
+          didLinkExisting = reconcileResult.outcome === "removed";
         }
       } finally {
         guard.releaseLock();
@@ -620,13 +766,13 @@ export async function runTaskCreate(descriptionArg?: string, attachFiles?: strin
       }
     }
 
-    const label = resolvedTask.description.length > 60
-      ? resolvedTask.description.slice(0, 60) + "…"
-      : resolvedTask.description;
+    // RUFU-295: this echo previously ignored the stored title entirely and printed a raw description
+    // prefix; it now reads the same label the board shows.
+    const label = cliTaskLabel(resolvedTask);
 
     console.log();
     if (context.projectName) {
-      console.log(`  Project: ${context.projectName}`);
+      console.log(routing.targetLine);
     }
     if (linkedExisting) {
       outputResult(`  ✓ Linked existing ${resolvedTask.id}: ${label}\n`);
@@ -640,7 +786,7 @@ export async function runTaskCreate(descriptionArg?: string, attachFiles?: strin
     if (resolvedNode) {
       console.log(`    Node: ${resolvedNode.name || resolvedNode.id}`);
     }
-    console.log(`    Path:   .fusion/tasks/${resolvedTask.id}/`);
+    console.log(`    Path:   ${cardDirectoryPath(context.projectPath, resolvedTask.id)}`);
 
     /*
     FNXC:GithubTracking 2026-08-15-04:50:
@@ -818,12 +964,12 @@ export async function buildTaskListBoardLines(
     /* The "retires with the loop" condition above is now met: `col` can be a custom id, so the terminal
        test is a resolved-lane membership check. DELIBERATE-LITERAL only as the degraded fallback when the
        resolve failed, which is the documented unconverted-caller default. */
-    const dot = (terminalColumns ? terminalColumns.has(col) : col === "done" || col === "archived") ? "○" : "●";
+    const dot = (terminalColumns ? terminalColumns.has(col) : col === "done") ? "○" : "●";
 
     lines.push(`  ${dot} ${label} (${colTasks.length})`);
     for (const t of colTasks) {
       const deps = t.dependencies.length ? ` [deps: ${t.dependencies.join(", ")}]` : "";
-      const label = t.title || t.description.slice(0, 60) + (t.description.length > 60 ? "…" : "");
+      const label = cliTaskLabel(t);
       lines.push(`    ${t.id}  ${label}${deps}`);
     }
     lines.push("");
@@ -892,6 +1038,44 @@ export async function runTaskDeps(
       console.log(`    Blocked by: ${task.blockedBy}`);
     } else {
       console.log("    Blocked by: none");
+    }
+    console.log();
+  });
+}
+
+/*
+FNXC:TaskTitleDerivation 2026-09-26-04:45:
+RUFU-295 ships the rename path the request asked for. Before it, a card whose title came out as its
+description's first markdown line had exactly one remedy — an operator editing it in the dashboard:
+`fn task` exposed no title edit, and `deleteTask` on one's own card is refused (measured on RUFU-294),
+so the junk titles on RUFU-280/284/285/292/294 were un-fixable by the agent that created them.
+
+Validation runs HERE rather than relying on the store's `resolveTaskTitleWrite` guard: that guard is the
+last line of defence and repairs junk by substituting the derived label, which is right for a write seam
+but wrong for a caller that just typed a title — it must hear why its words were refused (AXI:
+actionable message, non-zero exit, no stack trace) instead of watching a different string on the card.
+The shape list lives in core (`describeTaskTitleRejection`) so this edge and `fn_task_update` cannot drift.
+
+Persisting through `store.updateTask` is deliberate: the update seam keeps the card's PROMPT.md heading
+in sync (`task-store/task-update.ts`), so board label and spec heading cannot disagree afterwards.
+*/
+export async function runTaskRename(id: string, title: string, projectName?: string) {
+  const rejection = describeTaskTitleRejection(title);
+  if (rejection) {
+    throw new Error(`Cannot rename ${id}: ${rejection}.`);
+  }
+  const trimmed = title.trim();
+
+  // FNXC:CliBoardMutation 2026-07-09-00:00 (FN-7734): single board write.
+  await withBoardWrite(projectName, { id, action: "rename task" }, async (context) => {
+    const current = await context.store.getTask(id);
+    if (!current) throw new Error(`Task not found: ${id}`);
+    const task = await context.store.updateTask(id, { title: trimmed });
+
+    console.log();
+    console.log(`  ✓ ${task.id}: title → ${task.title}`);
+    if (current.title?.trim()) {
+      console.log(`    was: ${current.title}`);
     }
     console.log();
   });
@@ -1233,7 +1417,7 @@ async function runTaskShowWithStore(id: string, store: TaskStore) {
   if (sourceSummary) {
     console.log(`  Source: ${sourceSummary}`);
   }
-  const duplicateLineage = await formatTaskDuplicateLineage(task, store);
+  const duplicateLineage = formatTaskDuplicateLineage(task);
   if (duplicateLineage) {
     console.log(`  Duplicate of: ${duplicateLineage}`);
   }
@@ -1277,6 +1461,9 @@ export async function runTaskReconcile(id: string, projectName?: string) {
     `SelfHealingManager.reconcileLandedReviewTask`, the single durable fence shared with the
     self-healing sweep, so the CLI and the engine can never disagree about what "landed" means.
 
+    FNXC:MergeRebuild0919 2026-09-19-21:45:
+    Both lines added this function independently; the bodies are identical apart from comment vintage and the
+    three-way `live` test, so canonical's newer (2026-09-17) wording wins here and ours contributed nothing beyond it.
     FNXC:PostMergeRecovery 2026-10-01-07:12 (FN-9442):
     A successful manual reconciliation can resume a missing required post-merge gate instead of
     completing the card. Report that recovery as success so the CLI does not misclassify it as an error.
@@ -1292,6 +1479,18 @@ export async function runTaskReconcile(id: string, projectName?: string) {
       return;
     }
     if (result.outcome === "already-complete") {
+      /*
+      FNXC:UnrunPostMergeGateRecovery 2026-09-25-15:35 (RUFU-306):
+      "already complete" is only true when nothing is outstanding. A merge-confirmed card still in
+      the review lane with an unreported required gate is NOT complete, and saying otherwise sent the
+      operator away from the real blocker — RUFU-220 had 1561 insertions on `main`, its row still
+      `in-review/failed`, and two CLI runs both reporting there was nothing to do.
+      */
+      if (result.postMergeEvidence?.pending) {
+        console.error(`${id} is NOT complete: the merge is confirmed but its required post-merge evidence gate has not reported (${result.postMergeEvidence.reason}). The card stays in review until that gate runs.`);
+        await closeBoardContextAndExit(context, 1);
+        return;
+      }
       console.log(`${id} is already complete; no reconciliation was needed.`);
       return;
     }
@@ -1535,12 +1734,6 @@ export async function runTaskUnpause(id: string, projectName?: string) {
 }
 
 export async function runTaskMove(id: string, column: string, projectName?: string) {
-  if (!COLUMNS.includes(column as Column)) {
-    console.error(`Invalid column: ${column}`);
-    console.error(`Valid columns: ${COLUMNS.join(", ")}`);
-    process.exit(1);
-  }
-
   // FNXC:CliBoardMutation 2026-07-09-00:00 (generalized by FN-7734's
   // `withBoardWrite`): same rationale as runTaskShow above — wrap project/
   // store resolution (`getBoardCommandContext`, which can itself hit
@@ -1558,7 +1751,51 @@ export async function runTaskMove(id: string, column: string, projectName?: stri
   agent session kept running (Move-Task contract violation).
   */
   await withBoardWrite(projectName, { id, action: "move task" }, async (context) => {
-    const task = await context.store.moveTask(id, column as Column, { moveSource: "user" });
+    /*
+    FNXC:PlanPremises 2026-09-13-05:28:
+    Column ids do not imply lifecycle roles: a custom workflow may assign countsTowardWip to a
+    legacy-looking id such as todo or review. Resolve the task and workflow before any raw move so
+    every first planning-to-WIP admission reaches the canonical premise gate.
+    */
+    const current = await context.store.getTask(id);
+    if (!current) throw new Error(`Task not found: ${id}`);
+    const workflowResolution = await resolveWorkflowIrForTaskWithProvenance(context.store, id);
+    /*
+    FNXC:PlanPremises 2026-09-13-05:43:
+    A named workflow that cannot be read must fail closed. Treating its default-workflow fallback as
+    authoritative can misclassify a custom WIP column as a harmless raw move and bypass premise admission.
+    A genuinely absent selection may still use the configured default workflow.
+    */
+    if (workflowResolution.source === "default" && workflowResolution.selectionAbsent !== true) {
+      throw new Error("The task workflow is temporarily unavailable. Retry this move.");
+    }
+    const ir = workflowResolution.ir;
+    if (!workflowHasColumn(ir, column)) {
+      console.error(`Invalid column: ${column}`);
+      console.error(`Valid columns: ${ir.version === "v2" ? ir.columns.map((candidate) => candidate.id).join(", ") : COLUMNS.join(", ")}`);
+      process.exit(1);
+    }
+    let task;
+    if (isFirstPlanningToWipAdmission(ir, current.column, column)) {
+      const settings = await context.store.getSettings();
+      const rootDir = context.store.getRootDir();
+      const allocateWorktree = (reservedNames: Set<string>) =>
+        current.repositoryScope?.confirmedBy === "workspace"
+          ? null
+          : planTaskWorktreePath(current, rootDir, reservedNames, settings);
+      const admission = await admitTaskToWip(
+        context.store,
+        { now: () => Date.now(), allocateWorktree: (_task, reservedNames) => allocateWorktree(reservedNames) },
+        current,
+        column,
+        ir,
+        { expectedColumn: current.column, moveSource: "user", workflowMoveSource: "cli-plan-premise-release" },
+      );
+      if (!admission.released) throw new Error(admission.detail ?? `Execution admission refused: ${admission.rejection ?? "release-gate"}`);
+      task = admission.task;
+    } else {
+      task = await context.store.moveTask(id, column as Column, { moveSource: "user" });
+    }
     console.log();
     console.log(`  ✓ Moved ${task.id} → ${columnLabel(task.column)}`);
     console.log();
@@ -1568,11 +1805,15 @@ export async function runTaskMove(id: string, column: string, projectName?: stri
 export async function runTaskDuplicate(id: string, projectName?: string) {
   // FNXC:CliBoardMutation 2026-07-09-00:00 (FN-7734): single board write.
   await withBoardWrite(projectName, { id, action: "duplicate task" }, async (context) => {
+    // Routing is evaluated and announced BEFORE the write; the warning is the only
+    // thing this changes about the command's behavior when it fires.
+    const targetLine = reportCardRouting(context);
     const newTask = await context.store.duplicateTask(id);
 
     console.log();
     console.log(`  ✓ Duplicated ${id} → ${newTask.id}`);
-    console.log(`    Path: .fusion/tasks/${newTask.id}/`);
+    console.log(targetLine);
+    console.log(`    Path: ${cardDirectoryPath(context.projectPath, newTask.id)}`);
     console.log();
   });
 }
@@ -1600,60 +1841,20 @@ export async function runTaskRefine(id: string, feedbackArg?: string, projectNam
 
   // FNXC:CliBoardMutation 2026-07-09-00:00 (FN-7734): single board write.
   await withBoardWrite(projectName, { id, action: "refine task" }, async (context) => {
+    // See `runTaskDuplicate`: announce the target project before minting the follow-up card.
+    const targetLine = reportCardRouting(context);
     const newTask = await context.store.refineTask(id, trimmedFeedback);
 
     console.log();
     console.log(`  ✓ Created refinement ${newTask.id} for ${id}`);
+    console.log(targetLine);
     console.log(`    Column: ${newTask.column}`);
     console.log(`    Dependency: ${id}`);
-    console.log(`    Path: .fusion/tasks/${newTask.id}/`);
+    console.log(`    Path: ${cardDirectoryPath(context.projectPath, newTask.id)}`);
     console.log();
   });
 }
 
-export async function runTaskArchive(id: string, projectName?: string, options: {force?: boolean} = {}) {
-  /* FNXC:CliBoardMutation 2026-08-15-06:35: force is scoped to this command's disposer lifetime; every other CLI archive stays protective by default. */
-  archiveForceOverride = options.force === true;
-  try {
-    await withBoardWrite(projectName, { id, action: "archive task" }, async (context) => {
-      // Compatibility test/store doubles may expose archiveTask without the advisory reader.
-      const current = typeof (context.store as unknown as {getTask?: unknown}).getTask === "function" ? await context.store.getTask(id) : undefined;
-      const refuseLiveArchive = async (verdict: Parameters<typeof describeArchiveLiveness>[1]) => {
-        /*
-        FNXC:CliBoardMutation 2026-08-15-07:07:
-        A CLI liveness refusal is an operator-facing safety result, not an uncaught stack trace.
-        Exit through the established board-context path so the command is non-zero while its store closes.
-        */
-        console.error(`\n  ✗ ${describeArchiveLiveness(id, verdict, {workspaceWorktreeCount: Object.keys(current?.workspaceWorktrees ?? {}).length})}\n`);
-        await closeBoardContextAndExit(context, 1);
-      };
-      if (current && !options.force) {
-        const verdict = await evaluateArchiveTaskLiveness(context.store, current);
-        if (verdict.live) await refuseLiveArchive(verdict);
-      }
-      try {
-        const task = await context.store.archiveTask(id, {liveExecutionGuard: options.force ? "off" : "refuse"});
-        console.log();
-        console.log(`  ✓ Archived ${task.id} → ${columnLabel(task.column)}`);
-        console.log();
-      } catch (error) {
-        if (error instanceof TaskIsLiveError) await refuseLiveArchive({live: true, reasons: error.reasons});
-        throw error;
-      }
-    });
-  } finally { archiveForceOverride = false; }
-}
-
-export async function runTaskUnarchive(id: string, projectName?: string) {
-  // FNXC:CliBoardMutation 2026-07-09-00:00 (FN-7734): single board write.
-  await withBoardWrite(projectName, { id, action: "unarchive task" }, async (context) => {
-    const task = await context.store.unarchiveTask(id);
-
-    console.log();
-    console.log(`  ✓ Unarchived ${task.id} → ${columnLabel(task.column)}`);
-    console.log();
-  });
-}
 
 export async function runTaskRetry(id: string, projectName?: string) {
   // FNXC:CliBoardMutation 2026-07-09-00:00 (FN-7734): MULTI-STEP mutation
@@ -1809,8 +2010,18 @@ export async function runTaskRetry(id: string, projectName?: string) {
     // FNXC:TaskWedgeNotifications 2026-08-10-20:15: a human Retry proves intervention and mints a fresh bounded terminal-failure budget.
     await context.store.resetTerminalFailureAutoRecoveryBudget(id);
 
+    /*
+    FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261):
+    All three `fn task retry` re-queues below carry `parkOnHold: false` — the explicit RELEASE
+    statement at the hold-lane park seam. On HEAD these moves derive `moveSource: "engine"`
+    (moves.ts default) and therefore already do not park, but the published CLI surface reproduced
+    the retry-parked-card failure on-board (RUFU-196); stating release intent here makes the
+    guarantee explicit and regression-proof should the source attribution ever mirror the
+    extension tool's `moveSource: "user"` (FNXC:ToolPermissionGates symmetry). `fn task move`
+    (a genuine manual gesture) deliberately keeps parking.
+    */
     if (isMissingWorktreeSessionRetry) {
-      await retryBoardCall(context, id, "move task", () => context.store.moveTask(id, retryHoldColumn as never, { preserveProgress: true }));
+      await retryBoardCall(context, id, "move task", () => context.store.moveTask(id, retryHoldColumn as never, { preserveProgress: true, parkOnHold: false }));
       await retryBoardCall(context, id, "update task", () => applyRetryReset({
         status: null,
         error: null,
@@ -1831,8 +2042,14 @@ export async function runTaskRetry(id: string, projectName?: string) {
     // In-review retry: distinguish between execution failures (incomplete steps)
     // and merge failures (all steps done).
     if (isInReviewRetry) {
+      /*
+      FNXC:CliRetryDeadlockRecovery 2026-09-25-00:05:
+      `parkOnHold: false` (RUFU-261 release intent) is kept on BOTH retry branches: an explicit
+      operator Retry that resurrects an automatic deadlock pause re-queues the card to be RUN, so
+      re-parking it in the hold lane would re-create the deadlock FN-9384 exists to clear.
+      */
       if (isExecutionFailureInReview || isDeadlockAutoPauseRecovery) {
-        await retryBoardCall(context, id, "move task", () => context.store.moveTask(id, retryHoldColumn as never, { preserveProgress: true }));
+        await retryBoardCall(context, id, "move task", () => context.store.moveTask(id, retryHoldColumn as never, { preserveProgress: true, parkOnHold: false }));
         await retryBoardCall(context, id, "update task", () => applyRetryReset({
           status: null,
           error: null,
@@ -1879,7 +2096,7 @@ export async function runTaskRetry(id: string, projectName?: string) {
     crashing. Found by review, not by me, and not by any tool: the census counts comparisons and sees
     none of these, and a same-file grep for the double-quoted form reports clean.
     */
-    await retryBoardCall(context, id, "move task", () => context.store.moveTask(id, retryHoldColumn as never));
+    await retryBoardCall(context, id, "move task", () => context.store.moveTask(id, retryHoldColumn as never, { parkOnHold: false }));
 
     // Clear failure state and stale branch refs so retry can choose a fresh base.
     await retryBoardCall(context, id, "update task", () => applyRetryReset({
@@ -2115,7 +2332,7 @@ export async function runTaskImportGitHubInteractive(
         ...(importedIssueGithubTracking ? { githubTracking: importedIssueGithubTracking } : {}),
       }));
 
-      const label = task.title || task.description.slice(0, 60) + (task.description.length > 60 ? "…" : "");
+      const label = cliTaskLabel(task);
       outputResult(`  ✓ Created ${task.id}: ${label}\n`);
       existingTasks.push(task);
       created++;
@@ -2291,7 +2508,7 @@ export async function runTaskImportFromGitHub(
         ...(importedIssueGithubTracking ? { githubTracking: importedIssueGithubTracking } : {}),
       }));
 
-      const label = task.title || task.description.slice(0, 60) + (task.description.length > 60 ? "…" : "");
+      const label = cliTaskLabel(task);
       outputResult(`  ✓ Created ${task.id}: ${label}\n`);
       existingTasks.push(task);
       created++;
@@ -2401,11 +2618,34 @@ export async function runTaskComment(id: string, message?: string, author = "use
     const task = await context.store.addTaskComment(id, trimmed, author || "user");
     const latestComment = task.comments?.[task.comments.length - 1];
 
+    /*
+    FNXC:CommentDelivery 2026-09-27-20:40 (RUFU-259 Step 4):
+    This command used to print "Comment added" and stop, which is the sentence this card exists to retire:
+    an add that reaches nobody is not a delivery. The same core seam every dashboard surface uses runs here,
+    so the answer reports the agent the body actually reached. No `onRouted`: this process has no heartbeat
+    monitor, so the CLI never wakes anyone — the durable inbox row IS the hand-off, read at the next beat.
+    A hand-off that cannot be attempted must not fail the command: the comment row is already written, so
+    `null` degrades to the honest "nobody has been told" sentence rather than a non-zero exit.
+    */
+    const delivery = await deliverTaskCommentFromStore({
+      store: context.store,
+      task,
+      comment: {
+        id: latestComment?.id ?? "",
+        text: trimmed,
+        author: author || "user",
+        createdAt: latestComment?.createdAt,
+        kind: "comment",
+      },
+      source: "cli-comment",
+    }).catch(() => null);
+
     console.log();
     console.log(`  ✓ Comment added to ${task.id}`);
     if (latestComment) {
       console.log(`    ID: ${latestComment.id}`);
     }
+    console.log(`    ${describeTaskCommentDelivery(delivery)}`);
     console.log();
   });
 }
@@ -2471,9 +2711,33 @@ export async function runTaskSteer(id: string, message?: string, projectName?: s
 
     // Show success with preview
     const preview = trimmed.length > 60 ? trimmed.slice(0, 60) + "…" : trimmed;
+
+    /*
+    FNXC:CommentDelivery 2026-09-27-20:45 (RUFU-259 Step 4):
+    `fn task steer` was the loudest instance of the defect: it is the command an operator types when they
+    believe the agent is listening, and it only appended a row. Delivery goes through the same seam as
+    every other surface (no `onRouted` — no heartbeat monitor in this process), and the answer now states
+    who received it instead of only that a row was written. `addSteeringComment` returns the TASK, so the
+    id handed to the seam is the appended row's, not the task's.
+    */
+    const latestSteering = task.steeringComments?.at(-1);
+    const delivery = await deliverTaskCommentFromStore({
+      store: context.store,
+      task,
+      comment: {
+        id: latestSteering?.id ?? "",
+        text: latestSteering?.text ?? trimmed,
+        author: "user",
+        createdAt: latestSteering?.createdAt,
+        kind: "steering",
+      },
+      source: "cli-steer",
+    }).catch(() => null);
+
     console.log();
     console.log(`  ✓ Steering comment added to ${task.id}`);
     console.log(`    "${preview}"`);
+    console.log(`    ${describeTaskCommentDelivery(delivery)}`);
     console.log();
   });
 }
@@ -2946,7 +3210,7 @@ export async function runTaskPlan(
             createTaskFromPlanSession(sessionId, store, { baseBranch: baseBranch?.trim() || undefined }));
 
           console.log();
-          outputResult(`  ${alreadyCreated ? "✓ Task already created from this plan:" : "✓ Created"} ${task.id}: ${task.title || task.description.slice(0, 60)}${task.description.length > 60 ? "…" : ""}\n`);
+          outputResult(`  ${alreadyCreated ? "✓ Task already created from this plan:" : "✓ Created"} ${task.id}: ${cliTaskLabel(task)}\n`);
           console.log(`    Column: ${task.column ?? "triage"}`);
           if (task.dependencies.length > 0) {
             console.log(`    Dependencies: ${task.dependencies.join(", ")}`);

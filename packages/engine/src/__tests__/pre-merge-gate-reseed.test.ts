@@ -5,9 +5,19 @@ const core = vi.hoisted(() => ({
   evaluatePreMergeApprovals: vi.fn(),
   resolveWorkflowIrForTask: vi.fn(),
 }));
-vi.mock("@fusion/core", () => core);
+/*
+FNXC:LifecycleContainment 2026-09-02-22:41:
+RUFU-178: the re-seed now clamps its targetColumn through the SHARED core helper, so the module
+mock keeps the real `clampReviewGateEntry` — a hand-cloned fake would let the seed and the column
+boundary drift while the suite stayed green, which is the whole failure mode the extraction removed.
+*/
+vi.mock("@fusion/core", async (importOriginal) => ({
+  ...((await importOriginal() as typeof import("@fusion/core"))),
+  ...core,
+}));
 
 import {
+  MAX_VERDICTLESS_GATE_RERUN_ATTEMPTS,
   rerouteFailedNoVerdictPreMergeGateToReview,
   rerouteUnrunPreMergeGateToReview,
 } from "../merge/pre-merge-gate-reseed.js";
@@ -21,10 +31,18 @@ const subject = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 }) as any;
 
+/*
+FNXC:NoVerdictRerunBudget 2026-09-30-14:34 (RUFU-449):
+The re-seed lanes count their durable rerun budget from task-log markers, so the shared fake must expose
+both halves of that seam: `getTask` for a card whose log was slimmed out of the projection, and `logEntry`
+for the marker written after a seed lands. Tests that care about the counter pass `log` on the task.
+*/
 function store(seeded = true) {
   return {
     listWorkflowWorkItemsForTask: vi.fn(async () => []),
     seedWorkspaceCodeReviewContinuationIfIdle: vi.fn(async () => ({ seeded })),
+    getTask: vi.fn(async () => null),
+    logEntry: vi.fn(async () => undefined),
     moveTask: vi.fn(),
   } as any;
 }
@@ -104,6 +122,49 @@ describe("unrun pre-merge gate reseed", () => {
     expect(fake.seedWorkspaceCodeReviewContinuationIfIdle).not.toHaveBeenCalled();
   });
 
+  /*
+  FNXC:LifecycleContainment 2026-09-02-22:41:
+  RUFU-178 (the RUFU-172 wedge): the gate the re-seed picks can be authored in a LATER lane the card
+  has already passed. The continuation must never name that column — the boundary enters backward
+  review-gate moves in place, so the seed names the card's current column instead.
+  */
+  it("clamps a planning-lane plan-review gate to the review lane the card stands in", async () => {
+    core.evaluatePreMergeApprovals.mockReturnValueOnce([{ workflowStepId: "plan-review", state: "missing" }]);
+    core.resolveWorkflowIrForTask.mockResolvedValueOnce({
+      name: "Coding",
+      columns: [
+        { id: "todo", name: "Ready", traits: [{ trait: "hold", config: { release: "capacity" } }] },
+        { id: "in-review", name: "Review", traits: [{ trait: "merge-blocker" }, { trait: "human-review" }] },
+      ],
+      nodes: [{ id: "plan-review", kind: "optional-group", column: "todo", config: {} }],
+    });
+    const fake = store();
+    await expect(rerouteUnrunPreMergeGateToReview(fake, subject(), { requiredPreMergeStepIds: new Set(["plan-review"]), mergeContent: singular }))
+      .resolves.toMatchObject({ rerouted: true, reason: "seeded", nodeId: "plan-review" });
+    expect(fake.seedWorkspaceCodeReviewContinuationIfIdle).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: "FN-9243", nodeId: "plan-review", state: "runnable", sourceColumn: "in-review", targetColumn: "in-review",
+    }));
+    expect(fake.moveTask).not.toHaveBeenCalled();
+  });
+
+  it("keeps the node column for a forward review-gate entry", async () => {
+    core.evaluatePreMergeApprovals.mockReturnValueOnce([{ workflowStepId: "code-review", state: "missing" }]);
+    core.resolveWorkflowIrForTask.mockResolvedValueOnce({
+      name: "Coding",
+      columns: [
+        { id: "in-progress", name: "WIP", traits: [{ trait: "wip", config: {} }] },
+        { id: "in-review", name: "Review", traits: [{ trait: "merge-blocker" }, { trait: "human-review" }] },
+      ],
+      nodes: [{ id: "code-review", kind: "step-review", column: "in-review", config: {} }],
+    });
+    const fake = store();
+    await expect(rerouteUnrunPreMergeGateToReview(fake, subject({ column: "in-progress" }), { requiredPreMergeStepIds: new Set(["code-review"]), mergeContent: singular }))
+      .resolves.toMatchObject({ rerouted: true, reason: "seeded", nodeId: "code-review" });
+    expect(fake.seedWorkspaceCodeReviewContinuationIfIdle).toHaveBeenCalledWith(expect.objectContaining({
+      nodeId: "code-review", sourceColumn: "in-progress", targetColumn: "in-review",
+    }));
+  });
+
   it("re-seeds exactly a failed no-verdict code review while retaining its finding evidence", async () => {
     const task = subject({
       steps: [{ name: "Documentation & Delivery", status: "done" }],
@@ -147,7 +208,90 @@ describe("unrun pre-merge gate reseed", () => {
     expect(fake.seedWorkspaceCodeReviewContinuationIfIdle).not.toHaveBeenCalled();
   });
 
-  it("refuses duplicate dispatch, manual hold, selection change, and non-singular content", async () => {
+  /*
+  FNXC:NoVerdictRerunBudget 2026-09-30-14:34 (RUFU-449):
+  Invariant, not repro: a required gate that dies the same way is re-run a bounded number of times, and
+  every re-run is visible on the card. The budget is shared with the unrun-gate lane on purpose, so
+  `missing`/`verdictless`/`failed-no-verdict` passes through one gate consume ONE 3-strike budget.
+  */
+  function rerunMarkers(gateId: string, count: number): Array<{ action: string }> {
+    return Array.from({ length: count }, (_unused, index) => ({
+      action: `[verdictless-gate-rerun] gate '${gateId}' verdict-less failure, re-seeded in place for a fresh run`
+        + ` (rerun ${index + 1} of 3)`,
+    }));
+  }
+
+  const failedNoVerdictResult = { workflowStepId: "code-review", phase: "pre-merge", status: "failed" };
+
+  it("logs the rerun marker on the card for each bounded re-seed of a verdict-less gate", async () => {
+    const task = subject({ workflowStepResults: [failedNoVerdictResult] });
+    const fake = store();
+
+    await expect(rerouteFailedNoVerdictPreMergeGateToReview(fake, task, {
+      requiredPreMergeStepIds: required, mergeContent: singular,
+    })).resolves.toMatchObject({ rerouted: true, reason: "seeded" });
+
+    expect(fake.logEntry).toHaveBeenCalledWith(task.id, expect.stringContaining(
+      "[verdictless-gate-rerun] gate 'code-review'",
+    ));
+    expect(fake.logEntry).toHaveBeenCalledWith(task.id, expect.stringContaining("rerun 1 of 3"));
+  });
+
+  it.each([1, 2])("re-seeds a verdict-less gate up to the cap (existing markers: %i)", async (existing) => {
+    const task = subject({ workflowStepResults: [failedNoVerdictResult], log: rerunMarkers("code-review", existing) });
+    const fake = store();
+
+    await expect(rerouteFailedNoVerdictPreMergeGateToReview(fake, task, {
+      requiredPreMergeStepIds: required, mergeContent: singular,
+    })).resolves.toMatchObject({ rerouted: true, reason: "seeded" });
+    expect(fake.logEntry).toHaveBeenCalledWith(task.id, expect.stringContaining(`rerun ${existing + 1} of 3`));
+  });
+
+  it("stops re-seeding once the shared per-gate budget is spent and says why", async () => {
+    const task = subject({
+      workflowStepResults: [failedNoVerdictResult],
+      log: rerunMarkers("code-review", MAX_VERDICTLESS_GATE_RERUN_ATTEMPTS),
+    });
+    const before = structuredClone(task);
+    const fake = store();
+
+    await expect(rerouteFailedNoVerdictPreMergeGateToReview(fake, task, {
+      requiredPreMergeStepIds: required, mergeContent: singular,
+    })).resolves.toMatchObject({
+      rerouted: false, reason: "rerun-budget-exhausted", nodeId: "code-review", workflowStepId: "code-review",
+    });
+    expect(fake.seedWorkspaceCodeReviewContinuationIfIdle).not.toHaveBeenCalled();
+    expect(fake.logEntry).not.toHaveBeenCalled();
+    expect(task).toEqual(before);
+  });
+
+  it("counts a marker written by the unrun-gate lane against the same per-gate budget", async () => {
+    // A verdict-less failed row: the class the unrun lane counts against the shared budget.
+    core.evaluatePreMergeApprovals.mockReturnValueOnce([
+      { workflowStepId: "code-review", state: "approved", verdictLessFailed: true },
+    ]);
+    const task = subject({ workflowStepResults: [], log: rerunMarkers("code-review", MAX_VERDICTLESS_GATE_RERUN_ATTEMPTS) });
+    const fake = store();
+
+    await expect(rerouteUnrunPreMergeGateToReview(fake, task, {
+      requiredPreMergeStepIds: required, mergeContent: singular,
+    })).resolves.toMatchObject({ rerouted: false, reason: "rerun-budget-exhausted" });
+    expect(fake.seedWorkspaceCodeReviewContinuationIfIdle).not.toHaveBeenCalled();
+  });
+
+  it("hydrates the rerun budget from the store when the task projection carries no log", async () => {
+    const task = subject({ workflowStepResults: [failedNoVerdictResult] }) as any;
+    delete task.log;
+    const fake = store();
+    fake.getTask = vi.fn(async () => ({ log: rerunMarkers("code-review", MAX_VERDICTLESS_GATE_RERUN_ATTEMPTS) }));
+
+    await expect(rerouteFailedNoVerdictPreMergeGateToReview(fake, task, {
+      requiredPreMergeStepIds: required, mergeContent: singular,
+    })).resolves.toMatchObject({ rerouted: false, reason: "rerun-budget-exhausted" });
+    expect(fake.getTask).toHaveBeenCalledWith(task.id);
+  });
+
+  it("refuses duplicate dispatch, manual hold, and selection change", async () => {
     const retryTask = subject({ workflowStepResults: [{ workflowStepId: "code-review", phase: "pre-merge", status: "failed" }] });
     const duplicate = store(false);
     await expect(rerouteFailedNoVerdictPreMergeGateToReview(duplicate, retryTask, {
@@ -157,7 +301,6 @@ describe("unrun pre-merge gate reseed", () => {
 
     for (const [task, content, expected] of [
       [subject({ paused: true, workflowStepResults: retryTask.workflowStepResults }), singular, "operator-held"],
-      [retryTask, { kind: "workspace" }, "not-singular"],
     ] as const) {
       const fake = store();
       await expect(rerouteFailedNoVerdictPreMergeGateToReview(fake, task, {
@@ -166,6 +309,20 @@ describe("unrun pre-merge gate reseed", () => {
       })).resolves.toMatchObject({ rerouted: false, reason: expected });
       expect(fake.seedWorkspaceCodeReviewContinuationIfIdle).not.toHaveBeenCalled();
     }
+
+    /*
+    FNXC:NoVerdictWorkspaceSeed 2026-09-28-09:15 (RUFU-391): this lane used to answer a workspace card
+    with "not-singular". The idle seed reads no merge content at all, so that guard never protected
+    anything — it only kept workspace cards from the review re-run they were owed, and on a board of
+    workspace cards that meant the verdict-less gate was never re-run. Non-singular content now seeds;
+    the unrun-gate lane keeps its own content guard untouched.
+    */
+    const workspaceFake = store();
+    await expect(rerouteFailedNoVerdictPreMergeGateToReview(workspaceFake, retryTask, {
+      requiredPreMergeStepIds: required,
+      mergeContent: { kind: "workspace" } as any,
+    })).resolves.toMatchObject({ rerouted: true, nodeId: "code-review" });
+    expect(workspaceFake.seedWorkspaceCodeReviewContinuationIfIdle).toHaveBeenCalledTimes(1);
 
     const changed = store(false);
     changed.seedWorkspaceCodeReviewContinuationIfIdle.mockResolvedValueOnce({ seeded: false, reason: "workflow-selection-changed" });

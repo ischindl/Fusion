@@ -3,8 +3,29 @@ import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { readAppFile } from "../../test/cssFixture";
+import {
+  makeTask,
+  noop,
+  noopDelete,
+  noopMerge,
+  noopOpenDetail,
+  setupTaskDetailModalHooks,
+} from "./TaskDetailModal.test-helpers";
 import { TaskResetDialog } from "../TaskResetDialog";
+import { TaskDetailModal } from "../TaskDetailModal";
 import { currentFloatingZ } from "../floatingWindowStack";
+
+setupTaskDetailModalHooks();
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
 
 function renderDialog(overrides: Partial<ComponentProps<typeof TaskResetDialog>> = {}) {
   const props = {
@@ -21,6 +42,12 @@ function renderDialog(overrides: Partial<ComponentProps<typeof TaskResetDialog>>
 }
 
 describe("TaskResetDialog", () => {
+  /*
+  FNXC:MergeRebuild0919 2026-09-19-21:45:
+  Upstream's portal/z-stack guarantee re-asserted against this line's shared UiDialog, which owns the
+  body portal and the shared floating-stack claim (FN-392). The overlay node, not the inner testid
+  div, is the portaled surface, so the query targets the overlay class.
+  */
   it("portals above a host stacking context using the shared floating stack", () => {
     const priorZ = currentFloatingZ();
     const { container } = render(
@@ -35,37 +62,21 @@ describe("TaskResetDialog", () => {
       </div>,
     );
 
-    const overlay = screen.getByTestId("task-reset-dialog");
+    const overlay = document.querySelector<HTMLElement>(".task-reset-overlay")!;
     expect(overlay.parentElement).toBe(document.body);
     expect(container).not.toContainElement(overlay);
     expect(Number(overlay.style.zIndex)).toBeGreaterThan(priorZ);
+    expect(overlay).toContainElement(screen.getByTestId("task-reset-dialog"));
   });
 
-  it("contains portaled interaction events within its React host", () => {
-    const onPointerDown = vi.fn();
-    const onClick = vi.fn();
-    const onFocus = vi.fn();
-    render(
-      <div onPointerDown={onPointerDown} onClick={onClick} onFocus={onFocus}>
-        <TaskResetDialog
-          taskId="FN-233"
-          initialDescription="Original request"
-          onReset={vi.fn().mockResolvedValue(undefined)}
-          addToast={vi.fn()}
-          onClose={vi.fn()}
-        />
-      </div>,
-    );
-
-    const textarea = screen.getByTestId("task-reset-description");
-    fireEvent.pointerDown(textarea);
-    fireEvent.click(textarea);
-    fireEvent.focus(textarea);
-
-    expect(onPointerDown).not.toHaveBeenCalled();
-    expect(onClick).not.toHaveBeenCalled();
-    expect(onFocus).not.toHaveBeenCalled();
-  });
+  /*
+  FNXC:MergeRebuild0919 2026-09-19-21:45:
+  Upstream's raw-DOM stopPropagation containment test is deliberately NOT kept: this line's dialogs
+  propagate into the managed window surface — the shared UiDialog raises the dialog from its own
+  overlay handlers and FloatingWindow guards drag targets by surface (FN-392). A component-local
+  stopPropagation list would defeat that raise, so the upstream contract is incompatible with the
+  merged source and its case was removed at the merge.
+  */
 
   it("pre-fills the textarea with the current description", () => {
     renderDialog({ initialDescription: "Build the corrected workflow" });
@@ -109,6 +120,33 @@ describe("TaskResetDialog", () => {
     expect(props.onClose).toHaveBeenCalledOnce();
   });
 
+  it("shows pending feedback immediately and synchronously rejects duplicate submissions", async () => {
+    const request = deferred<void>();
+    const onReset = vi.fn(() => request.promise);
+    const { props } = renderDialog({ onReset });
+    const submit = screen.getByTestId("task-reset-submit");
+
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+
+    expect(submit).toHaveTextContent("Resetting…");
+    expect(submit).toBeDisabled();
+    expect(screen.getByTestId("task-reset-description")).toBeDisabled();
+    expect(screen.getByTestId("task-reset-cancel")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Close" })).toBeDisabled();
+    expect(onReset).toHaveBeenCalledOnce();
+    expect(props.addToast).not.toHaveBeenCalled();
+    expect(props.onClose).not.toHaveBeenCalled();
+
+    request.resolve();
+    await waitFor(() => expect(props.onClose).toHaveBeenCalledOnce());
+    expect(props.onResetCompleted).toHaveBeenCalledOnce();
+    expect(props.addToast).toHaveBeenCalledWith(
+      "Reset FN-233 — fresh run will be allocated",
+      "success",
+    );
+  });
+
   it("uses the exact legacy call arity for an unchanged description", async () => {
     const user = userEvent.setup();
     const { props } = renderDialog();
@@ -116,41 +154,23 @@ describe("TaskResetDialog", () => {
     await user.click(screen.getByTestId("task-reset-submit"));
 
     await waitFor(() => expect(props.onReset).toHaveBeenCalledWith("FN-233"));
-    expect(props.onReset.mock.calls[0]).toEqual(["FN-233"]);
+    expect(vi.mocked(props.onReset).mock.calls[0]).toEqual(["FN-233"]);
   });
 
-  it("dismisses immediately while reset continues in the background", async () => {
-    const user = userEvent.setup();
-    let resolveReset!: () => void;
-    const onReset = vi.fn(() => new Promise<void>((resolve) => {
-      resolveReset = resolve;
-    }));
-    const { props } = renderDialog({ onReset });
-
-    await user.click(screen.getByTestId("task-reset-submit"));
-
-    expect(props.onClose).toHaveBeenCalledOnce();
-    expect(props.addToast).not.toHaveBeenCalled();
-    expect(props.onResetCompleted).not.toHaveBeenCalled();
-
-    resolveReset();
-    await waitFor(() => expect(props.addToast).toHaveBeenCalledWith(
-      "Reset FN-233 — fresh run will be allocated",
-      "success",
-    ));
-    expect(props.onResetCompleted).toHaveBeenCalledOnce();
-  });
-
-  it("keeps the dialog dismissed and reports a rejected background reset", async () => {
+  it("keeps the dialog open and reports a rejected reset", async () => {
     const user = userEvent.setup();
     const { props } = renderDialog({ onReset: vi.fn().mockRejectedValue(new Error("cleanup failed")) });
 
     await user.click(screen.getByTestId("task-reset-submit"));
 
-    expect(props.onClose).toHaveBeenCalledOnce();
     await waitFor(() => expect(props.addToast).toHaveBeenCalledWith("cleanup failed", "error"));
+    expect(screen.getByTestId("task-reset-dialog")).toBeInTheDocument();
     expect(props.addToast).not.toHaveBeenCalledWith(expect.anything(), "success");
     expect(props.onResetCompleted).not.toHaveBeenCalled();
+    expect(props.onClose).not.toHaveBeenCalled();
+
+    await user.click(screen.getByTestId("task-reset-submit"));
+    expect(props.onReset).toHaveBeenCalledTimes(2);
   });
 
   it("does not cap or truncate a long description", () => {
@@ -169,6 +189,77 @@ describe("TaskResetDialog", () => {
 
     renderDialog({ initialDescription: "Updated request" });
     expect(screen.getByTestId("task-reset-description")).toHaveValue("Updated request");
+  });
+
+  /*
+  FNXC:DialogStacking 2026-09-14-17:46:
+  FN-392: Reset is the second consumer of the shared native dialog primitive audited with Refine. Opened from its real
+  Actions-menu wiring inside a floating Task Detail window it must be body-portaled and strictly above that window,
+  on desktop and on the narrow presentation, otherwise the operator gets an invisible destructive confirmation.
+  */
+  it.each([
+    ["desktop", 1280],
+    ["mobile", 420],
+  ])("opens above its parent task window from the real header Reset action on %s", (_name, width) => {
+    const priorWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: width });
+    try {
+      render(
+        <TaskDetailModal
+          task={makeTask({ id: "FN-392", column: "todo" })}
+          initialTab="definition"
+          onClose={noop}
+          onDeleteTask={noopDelete}
+          onMergeTask={noopMerge}
+          onOpenDetail={noopOpenDetail}
+          onResetTask={vi.fn().mockResolvedValue({ id: "FN-392" } as never)}
+          addToast={noop}
+        />,
+      );
+
+      // Reset now lives in the single header overflow, so the menu is opened first.
+      fireEvent.click(screen.getByRole("button", { name: "Actions" }));
+      fireEvent.click(screen.getByTestId("task-detail-header-action-reset"));
+
+      const dialog = screen.getByTestId("task-reset-dialog");
+      const overlay = dialog.closest("[data-dashboard-window-surface]") as HTMLElement;
+      expect(overlay.parentElement).toBe(document.body);
+      expect(overlay.getAttribute("data-ui-portal")).toBe("true");
+
+      const parentWindow = screen.getByTestId("floating-window-overlay-task-detail");
+      const dialogLayer = Number.parseInt(overlay.style.zIndex, 10);
+      expect(dialogLayer).toBeGreaterThan(Number.parseInt(parentWindow.style.zIndex, 10));
+
+      const textarea = screen.getByTestId("task-reset-description");
+      fireEvent.pointerDown(textarea, { bubbles: true });
+      fireEvent.change(textarea, { target: { value: "corrected request" } });
+      expect(textarea).toHaveValue("corrected request");
+      expect(Number.parseInt(overlay.style.zIndex, 10)).toBeGreaterThan(Number.parseInt(parentWindow.style.zIndex, 10));
+    } finally {
+      Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: priorWidth });
+    }
+  });
+
+  /*
+  FNXC:TaskReset 2026-09-14-22:23:
+  FN-400 symptom: the shared `.modal-overlay` top padding pushed this "centred" confirmation below the viewport centre,
+  and the mobile fullscreen block stretched it into a sheet. No browser automation exists here, so the geometry
+  contract is pinned as CSS text; the shared cross-dialog version lives in TaskRefineDialog.test.tsx.
+  */
+  it("centres the overlay exactly in the viewport and paints nothing behind it", () => {
+    const css = readAppFile("components/TaskResetDialog.css");
+    const rule = css.match(/\.modal-overlay\.task-reset-overlay\s*\{[^}]*\}/)![0];
+
+    expect(rule).toContain("align-items: center;");
+    expect(rule).toContain("justify-content: center;");
+    expect(rule).toContain("padding-top: 0;");
+    expect(rule).toContain("--overlay-padding-top: 0;");
+    expect(rule.match(/background:[^;]*;/g)).toEqual(["background: transparent;"]);
+
+    const mobileBlock = css.slice(css.indexOf("@media (max-width: 768px)"));
+    expect(mobileBlock).toContain(".modal-overlay.task-reset-overlay");
+    expect(mobileBlock).toContain("align-items: center;");
+    expect(mobileBlock).toContain(".modal.task-reset-dialog");
   });
 
   it("keeps responsive CSS token-only apart from the canonical breakpoint", () => {

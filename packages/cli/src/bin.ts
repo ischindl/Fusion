@@ -118,7 +118,13 @@ async function loadCommandHandlers() {
   const { runServe } = await import("./commands/serve.js");
   const { runDaemon } = await import("./commands/daemon.js");
   const { runDesktop } = await import("./commands/desktop.js");
-  const { runTaskCreate, runTaskList, runTaskMove, runTaskMerge, runTaskReconcile, runTaskUpdate, runTaskDeps, runTaskLog, runTaskLogs, runTaskShow, runTaskAttach, runTaskPause, runTaskUnpause, runTaskImportFromGitHub, runTaskImportFromGitLab, runTaskDuplicate, runTaskArchive, runTaskUnarchive, runTaskRefine, runTaskPlan, runTaskDelete, runTaskRetry, runTaskComment, runTaskComments, runTaskSteer, runTaskSetNode, runTaskClearNode } = await import("./commands/task.js");
+  /*
+  FNXC:MergeRebuild0919 2026-09-19-21:45:
+  Both lines add `runTaskReconcile` here; only canonical still destructures `runTaskArchive`/`runTaskUnarchive`.
+  This line retired task archiving (only `fn goals archive` remains), and `commands/task.ts` exports neither handler,
+  so keeping canonical's names would destructure `undefined` and re-add a dead dispatch. Ours + canonical's addition.
+  */
+  const { runTaskCreate, runTaskList, runTaskMove, runTaskRename, runTaskMerge, runTaskReconcile, runTaskUpdate, runTaskDeps, runTaskLog, runTaskLogs, runTaskShow, runTaskAttach, runTaskPause, runTaskUnpause, runTaskImportFromGitHub, runTaskImportFromGitLab, runTaskDuplicate, runTaskRefine, runTaskPlan, runTaskDelete, runTaskRetry, runTaskComment, runTaskComments, runTaskSteer, runTaskSetNode, runTaskClearNode } = await import("./commands/task.js");
   const { runPrCreate, runPrShow, runPrList, runPrRespond, runPrApprove, runPrRetry, runPrMerge, runPrClose, runPrAutomerge, runPrAutomergeCleanup } = await import("./commands/pr.js");
   const { runSettingsShow, runSettingsSet } = await import("./commands/settings.js");
   const { runSettingsExport } = await import("./commands/settings-export.js");
@@ -169,6 +175,7 @@ async function loadCommandHandlers() {
     runTaskCreate,
     runTaskList,
     runTaskMove,
+    runTaskRename,
     runTaskMerge,
     runTaskReconcile,
     runTaskUpdate,
@@ -182,8 +189,6 @@ async function loadCommandHandlers() {
     runTaskImportFromGitHub,
     runTaskImportFromGitLab,
     runTaskDuplicate,
-    runTaskArchive,
-    runTaskUnarchive,
     runTaskRefine,
     runTaskPlan,
     runTaskDelete,
@@ -330,13 +335,14 @@ Usage:
   fn update [--check] [--global] [--json] [--channel <stable|beta>] [--force]
                                        Update Fusion on the selected release channel
   fn upgrade                           Alias for fn update
-  fn task create [desc] [opts]         Create a new task (goes to triage; supports --node <name>, --no-dedup)
+  fn task create [desc] [opts]         Create a new task (goes to triage; supports --title <text>, --node <name>, --no-dedup, --yes)
   fn task plan [description] [opts]    Create task via AI-guided planning (--resume <sessionId> continues a plan to create another task)
   fn task list                        List all tasks
   fn task show <id>                   Show task details, steps, log
   fn task logs <id> [--follow] [--limit <n>] [--type <type>]
                                       Show task agent execution logs
   fn task move <id> <col>             Move a task to a column
+  fn task rename <id> <title>         Rename a card's title (one line; markdown headings and multi-line text are refused)
   fn task update <id> <step> <status> Update step status (pending|in-progress|done|skipped)
   fn task deps <op> <id> ...        Add/remove/replace/set task dependencies
   fn task log <id> <message>          Add a log entry
@@ -344,8 +350,6 @@ Usage:
   fn task reconcile <id>              Reconcile a proven already-landed review task
   fn task duplicate <id>              Duplicate a task (creates copy in triage)
   fn task refine <id> [opts]          Create a refinement task from done/in-review
-  fn task archive <id> [--force]      Archive a task; --force permits live-worktree removal
-  fn task unarchive <id>              Unarchive an archived task
   fn task delete <id> [--force] [--allow-resurrection]
                                       Delete a task (use --force to skip confirmation; --allow-resurrection permits intentional ID recreation)
   fn task attach <id> <file>          Attach a file to a task
@@ -521,14 +525,14 @@ Options:
   --no-github                Disable GitHub issue tracking (overrides project default)
   --github-repo <owner/repo> Repository override for the task's tracking issue
   --feedback <text>          Refinement feedback (non-interactive mode)
-  --yes                      Skip confirmation prompts (planning mode)
+  --yes                      Skip confirmation prompts (planning mode; task create cross-project routing)
   --limit, -l <n>            Max issues to import (default: 30, max: 100)
   --labels, -L <labels>      Comma-separated label filter for import
   --interactive, -i          Interactive mode for issue selection
   --help, -h                 Show this help
   --quiet, -q                Suppress informational stdout output
 
-Columns: triage, todo, in-progress, in-review, done, archived
+Columns: triage, todo, in-progress, in-review, done
 Supported file types: png, jpg, gif, webp, txt, log, json, yaml, yml, toml, csv, xml
 `.trim();
 
@@ -619,6 +623,111 @@ function getFlagValueNumber(args: string[], flag: string): number | undefined {
 
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/**
+ * Parsed `fn task create [opts] <description>` arguments (everything after `task create`).
+ */
+export interface TaskCreateArgs {
+  /**
+   * Positional description text joined with spaces; empty when only flags were given.
+   *
+   * FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): this key is misnamed — it has always carried
+   * the *description* positional, and `runTaskCreate` receives it as `descriptionArg`. It is kept
+   * under its historical name because `parseTaskCreateArgs`'s shape is a tested contract
+   * (`project-routing.test.ts` asserts `args.title` is the joined positional). `--title` therefore
+   * gets its OWN key (`explicitTitle`) below: routing `--title` into this field would make a short
+   * title silently become the whole card description, which is the exact overload
+   * RUFU-269's FNXC note at the parser warns about.
+   */
+  title: string;
+  /**
+   * `--title <text>` — an explicit card label that never touches the description.
+   *
+   * FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): before this flag the CLI could not name a
+   * card at all; the label was whatever the shared derivation made of the first prose line, so a
+   * card that began with `## Description` was titled with the heading text.
+   */
+  explicitTitle?: string;
+  /** `--attach` values. */
+  attachFiles: string[];
+  /** `--depends` values. */
+  depends: string[];
+  /** `--node` value. */
+  nodeName?: string;
+  /** `--no-dedup` was passed. */
+  noDedup: boolean;
+  /** `--github` / `--no-github`. */
+  github?: boolean;
+  /** `--github-repo` value. */
+  githubRepo?: string;
+  /** `--yes` was passed: answer the cross-project routing confirmation affirmatively. */
+  yes: boolean;
+}
+
+/**
+ * FNXC:ProjectRoutingVisibility 2026-09-22-17:05 (RUFU-269): the create argument loop had no `--yes`
+ * branch, so the flag — advertised in help as "Skip confirmation prompts (planning mode)" and already
+ * honoured by `fn task plan` — fell through into the positional description. `fn task create "…" --yes`
+ * therefore minted a card titled with the literal flag, and that polluted text became the fingerprint
+ * every later create with the same real description was compared against. The loop is extracted as a
+ * pure function so the flag is recognised, forwarded, and unit-testable, and `--yes` gains its second
+ * meaning: answer the cross-project routing confirmation affirmatively (RUFU-242 — 10 cards lost silently).
+ *
+ * @param {string[]} createArgs - argv after `task create`
+ * @returns {TaskCreateArgs}
+ */
+export function parseTaskCreateArgs(createArgs: string[]): TaskCreateArgs {
+  const attachFiles: string[] = [];
+  const dependsIds: string[] = [];
+  const descParts: string[] = [];
+  let nodeName: string | undefined;
+  let noDedup = false;
+  let github: boolean | undefined;
+  let githubRepo: string | undefined;
+  let explicitTitle: string | undefined;
+  let yes = false;
+
+  for (let i = 0; i < createArgs.length; i++) {
+    if (createArgs[i] === "--attach" && i + 1 < createArgs.length) {
+      attachFiles.push(createArgs[i + 1]);
+      i++; // skip the value
+    } else if (createArgs[i] === "--depends" && i + 1 < createArgs.length) {
+      dependsIds.push(createArgs[i + 1]);
+      i++; // skip the value
+    } else if (createArgs[i] === "--node" && i + 1 < createArgs.length) {
+      nodeName = createArgs[i + 1];
+      i++; // skip the value
+    } else if (createArgs[i] === "--no-dedup") {
+      noDedup = true;
+    } else if (createArgs[i] === "--github") {
+      github = true;
+    } else if (createArgs[i] === "--no-github") {
+      github = false;
+    } else if (createArgs[i] === "--github-repo" && i + 1 < createArgs.length) {
+      githubRepo = createArgs[i + 1];
+      i++; // skip the value
+    } else if (createArgs[i] === "--title" && i + 1 < createArgs.length) {
+      explicitTitle = createArgs[i + 1];
+      i++; // skip the value
+    } else if (createArgs[i] === "--yes") {
+      yes = true;
+    } else {
+      descParts.push(createArgs[i]);
+    }
+  }
+
+  return {
+    title: descParts.join(" "),
+    ...(explicitTitle?.trim() ? { explicitTitle: explicitTitle.trim() } : {}),
+    attachFiles,
+    depends: dependsIds,
+    nodeName,
+    noDedup,
+    github,
+    githubRepo,
+    yes,
+  };
 }
 
 function parsePrCreateOptions(args: string[]) {
@@ -715,6 +824,7 @@ async function main() {
     runTaskCreate,
     runTaskList,
     runTaskMove,
+    runTaskRename,
     runTaskMerge,
     runTaskReconcile,
     runTaskUpdate,
@@ -728,8 +838,6 @@ async function main() {
     runTaskImportFromGitHub,
     runTaskImportFromGitLab,
     runTaskDuplicate,
-    runTaskArchive,
-    runTaskUnarchive,
     runTaskRefine,
     runTaskPlan,
     runTaskDelete,
@@ -1265,39 +1373,20 @@ async function main() {
         const subcommand = args[1];
         switch (subcommand) {
           case "create": {
-            const createArgs = args.slice(2);
-            const attachFiles: string[] = [];
-            const dependsIds: string[] = [];
-            let nodeName: string | undefined;
-            let noDedup = false;
-            let github: boolean | undefined;
-            let githubRepo: string | undefined;
-            const descParts: string[] = [];
-            for (let i = 0; i < createArgs.length; i++) {
-              if (createArgs[i] === "--attach" && i + 1 < createArgs.length) {
-                attachFiles.push(createArgs[i + 1]);
-                i++; // skip the value
-              } else if (createArgs[i] === "--depends" && i + 1 < createArgs.length) {
-                dependsIds.push(createArgs[i + 1]);
-                i++; // skip the value
-              } else if (createArgs[i] === "--node" && i + 1 < createArgs.length) {
-                nodeName = createArgs[i + 1];
-                i++; // skip the value
-              } else if (createArgs[i] === "--no-dedup") {
-                noDedup = true;
-              } else if (createArgs[i] === "--github") {
-                github = true;
-              } else if (createArgs[i] === "--no-github") {
-                github = false;
-              } else if (createArgs[i] === "--github-repo" && i + 1 < createArgs.length) {
-                githubRepo = createArgs[i + 1];
-                i++; // skip the value
-              } else {
-                descParts.push(createArgs[i]);
-              }
-            }
-            const title = descParts.join(" ");
-            await runTaskCreate(title || undefined, attachFiles.length > 0 ? attachFiles : undefined, dependsIds.length > 0 ? dependsIds : undefined, projectName, nodeName, noDedup, github !== undefined || githubRepo !== undefined ? { github, githubRepo } : undefined);
+            const create = parseTaskCreateArgs(args.slice(2));
+            await runTaskCreate(
+              create.title || undefined,
+              create.attachFiles.length > 0 ? create.attachFiles : undefined,
+              create.depends.length > 0 ? create.depends : undefined,
+              projectName,
+              create.nodeName,
+              create.noDedup,
+              create.github !== undefined || create.githubRepo !== undefined
+                ? { github: create.github, githubRepo: create.githubRepo }
+                : undefined,
+              create.yes,
+              create.explicitTitle,
+            );
             break;
           }
           case "plan": {
@@ -1426,18 +1515,6 @@ async function main() {
               ? args[feedbackIdx + 1]
               : undefined;
             await runTaskRefine(id, feedback, projectName);
-            break;
-          }
-          case "archive": {
-            const id = args[2];
-            if (!id) { console.error("Usage: fn task archive <id> [--force]"); process.exit(1); }
-            await runTaskArchive(id, projectName, {force: args.includes("--force")});
-            break;
-          }
-          case "unarchive": {
-            const id = args[2];
-            if (!id) { console.error("Usage: fn task unarchive <id>"); process.exit(1); }
-            await runTaskUnarchive(id, projectName);
             break;
           }
           case "delete": {
@@ -1584,9 +1661,19 @@ async function main() {
             }
             break;
           }
+          case "rename": {
+            const id = args[2];
+            const title = args.slice(3).join(" ");
+            if (!id || !title.trim()) {
+              console.error("Usage: fn task rename <id> \"<one-line title>\"");
+              process.exit(1);
+            }
+            await runTaskRename(id, title, projectName);
+            break;
+          }
           default:
             console.error(`Unknown subcommand: task ${subcommand || ""}`);
-            console.log("Try: fn task create | list | move | set-node | clear-node");
+            console.log("Try: fn task create | list | move | rename | set-node | clear-node");
             process.exit(1);
         }
         break;

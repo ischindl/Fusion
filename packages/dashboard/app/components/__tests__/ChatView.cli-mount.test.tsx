@@ -1,3 +1,11 @@
+/*
+FNXC:RUFU153 2026-08-23-00:21:
+Per FNXC:ChatNavigation (ChatView.tsx) the message-pane + composer region only renders once the detail
+pane is opened by a user click (closed by default, no auto-open path). The tests click the active
+session row (chat-session-<id>) before asserting the <CliChatSurface> handoff or the provider composer
+fallback.
+*/
+
 // ChatView CLI-backed mount test (CLI Agent Executor, U12 completion).
 //
 // Asserts ChatView delegates the message-pane + composer region to
@@ -8,6 +16,7 @@
 // CliChatSurface renders it under the hood.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render as rtlRender, screen } from "@testing-library/react";
+import { userEvent } from "@testing-library/user-event";
 import { ChatView } from "../ChatView";
 import * as useChatModule from "../../hooks/useChat";
 import * as useChatRoomsModule from "../../hooks/useChatRooms";
@@ -79,6 +88,15 @@ function chatState(session: ChatSessionInfo): UseChatReturn {
     streamingText: "",
     streamingThinking: "",
     streamingToolCalls: [],
+    /* Merged UseChatReturn (origin/main merge): engine phase, RUFU-199 handoff, FN-459 edit-draft rescue, and session-pagination defaults. */
+    streamingPhase: null,
+    handoffSession: vi.fn().mockResolvedValue({ session: { id: "session-handoff", agentId: "agent-001", status: "active", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" }, degraded: false }),
+    editDraftRestore: null,
+    clearEditDraftRestore: vi.fn(),
+    loadMoreSessions: vi.fn().mockResolvedValue(undefined),
+    hasMoreSessions: false,
+    hasMoreArchivedSessions: false,
+    sessionsLoadingMore: false,
     selectSession: vi.fn(),
     createSession: vi.fn(),
     archiveSession: vi.fn(),
@@ -94,7 +112,25 @@ function chatState(session: ChatSessionInfo): UseChatReturn {
     filteredSessions: [session],
     refreshSessions: vi.fn(),
     agentsMap: new Map(),
-  };
+  
+    tags: [],
+    selectedTagId: null,
+    setSelectedTagId: vi.fn(),
+    archivedSessions: [],
+    refreshArchivedSessions: vi.fn(),
+    unarchiveSession: vi.fn(),
+    renameSession: vi.fn(),
+    pinSession: vi.fn(),
+    pinnedCount: 0,
+    setSessionModel: vi.fn(),
+    setSessionThinkingLevel: vi.fn(),
+    createTag: vi.fn(),
+    renameTag: vi.fn(),
+    deleteTag: vi.fn(),
+    setSessionTags: vi.fn(),
+    editMessageAndResend: vi.fn(),
+    backfillStashSession: vi.fn(),
+};
 }
 
 const defaultRoomsState: UseChatRoomsResult = {
@@ -110,6 +146,9 @@ const defaultRoomsState: UseChatRoomsResult = {
   deleteRoom: vi.fn(),
   sendRoomMessage: vi.fn().mockResolvedValue(undefined),
   refreshRooms: vi.fn(),
+
+  updateRoomSettings: vi.fn(),
+  clearRoom: vi.fn(),
 };
 
 /*

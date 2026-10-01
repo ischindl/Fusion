@@ -23,6 +23,17 @@ import type { StreamConnectionState } from "../client/event-source.js";
 
 export interface ChatSessionListResponse {
   sessions: EnrichedChatSession[];
+  total?: number;
+  hasMore?: boolean;
+  nextCursor?: string | null;
+  /*
+  FNXC:ChatSidebarPerf 2026-09-16-02:15:
+  Effective project-level visibility of task-linked chats in the common feed, as already applied by
+  the list route. Optional on purpose: an older server behind a newer client omits it, and the client
+  must treat that absence as "visibility unknown" (task chats stay hidden until the refresh lands).
+  `lookup=resume` responses never carry it.
+  */
+  taskChatsVisibleInCommonFeed?: boolean;
 }
 
 export interface ChatSessionResponse {
@@ -73,6 +84,9 @@ export interface FetchChatSessionsOptions {
   status?: string;
   q?: string;
   titleOnly?: boolean;
+  tagId?: string;
+  limit?: number;
+  cursor?: string;
 }
 
 export function fetchChatTags(projectId?: string): Promise<ChatTagListResponse> {
@@ -100,6 +114,9 @@ export function fetchChatSessions(
   if (resolvedStatus) search.set("status", resolvedStatus);
   if (options?.q && options.q.trim()) search.set("q", options.q.trim());
   if (options?.titleOnly) search.set("titleOnly", "true");
+  if (options?.tagId) search.set("tagId", options.tagId);
+  if (options?.limit !== undefined) search.set("limit", String(options.limit));
+  if (options?.cursor) search.set("cursor", options.cursor);
   const qs = search.toString();
   return api<ChatSessionListResponse>(`/chat/sessions${qs ? `?${qs}` : ""}`);
 }
@@ -151,6 +168,35 @@ export function createChatSession(
   return api<ChatSessionResponse>(withProjectId("/chat/sessions", projectId), {
     method: "POST",
     body: JSON.stringify(input),
+  });
+}
+
+/**
+ * RUFU-199 handoff response. `degraded` is the honest-degradation flag: when the LLM
+ * briefing could not be produced the server seeded a deterministic digest instead and the
+ * caller must tell the operator rather than present the fresh chat as a full handoff.
+ */
+export interface ChatHandoffResponse {
+  session: EnrichedChatSession;
+  degraded: boolean;
+  summaryChars: number;
+  sourceSessionId: string;
+}
+
+/**
+ * FNXC:ChatHandoff 2026-09-09-19:05:
+ * RUFU-199: continue a long Direct chat in a fresh conversation. One POST asks the server to
+ * create a sibling session with the identical agent/model/thinking target, seed it with a
+ * briefing of the previous transcript (the model's context is a per-session file, so a stored
+ * row alone would reach the model as nothing), and archive the source. The continuation's
+ * target is copied from the source server-side, so this call carries NO body — a client can
+ * never retarget the handoff. 409s (disabled / mid-generation / room / CLI-backed /
+ * task-planner / already-inactive) and 404 surface as thrown ApiErrors; ChatManager dedupes a
+ * double-click and a failed-briefing retry per source, so a retry cannot pile up siblings.
+ */
+export function handoffChatSession(id: string, projectId?: string): Promise<ChatHandoffResponse> {
+  return api<ChatHandoffResponse>(withProjectId(`/chat/sessions/${encodeURIComponent(id)}/handoff`, projectId), {
+    method: "POST",
   });
 }
 
@@ -276,18 +322,54 @@ export function backfillChatSessionToStash(id: string, projectId?: string): Prom
 /** Fetch messages for a chat session */
 export function fetchChatMessages(
   sessionId: string,
-  opts?: { limit?: number; offset?: number; before?: string; order?: "asc" | "desc" },
+  opts?: { limit?: number; offset?: number; before?: string; beforeId?: string; order?: "asc" | "desc" },
   projectId?: string,
 ): Promise<ChatMessageListResponse> {
   const search = new URLSearchParams();
   if (opts?.limit !== undefined) search.set("limit", String(opts.limit));
   if (opts?.offset !== undefined) search.set("offset", String(opts.offset));
   if (opts?.before) search.set("before", opts.before);
+  if (opts?.beforeId) search.set("beforeId", opts.beforeId);
   if (opts?.order) search.set("order", opts.order);
   const qs = search.toString();
   return api<ChatMessageListResponse>(
     withProjectId(`/chat/sessions/${encodeURIComponent(sessionId)}/messages${qs ? `?${qs}` : ""}`, projectId),
   );
+}
+
+/**
+ * FNXC:ChatFeedCompaction 2026-09-17-15:38:
+ * Fetch one message with its full persisted bodies. The list feed compacts `metadata.toolCalls`
+ * to identity/status/preview; a `<details>` disclosure in the transcript uses this (via
+ * `fetchChatToolCallBody`) to lazy-load the complete args/result for exactly one message.
+ */
+export function fetchChatMessage(
+  sessionId: string,
+  messageId: string,
+  projectId?: string,
+): Promise<{ message: ChatMessage }> {
+  return api<{ message: ChatMessage }>(
+    withProjectId(`/chat/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}`, projectId),
+  );
+}
+
+/** Full body of one compacted tool call, addressed by its index in the message's toolCalls list. */
+export async function fetchChatToolCallBody(
+  sessionId: string,
+  messageId: string,
+  index: number,
+  projectId?: string,
+): Promise<{ args: unknown; result: unknown } | null> {
+  try {
+    const { message } = await fetchChatMessage(sessionId, messageId, projectId);
+    const toolCalls = message?.metadata?.toolCalls;
+    if (!Array.isArray(toolCalls)) return null;
+    const entry = toolCalls[index] as Record<string, unknown> | undefined;
+    if (!entry || typeof entry !== "object") return null;
+    return { args: entry.args, result: entry.result };
+  } catch {
+    return null;
+  }
 }
 
 /** Delete a specific message from a chat session */
@@ -568,7 +650,33 @@ export interface ChatStreamHandlers {
   onToolStart?: (data: { toolName: string; args?: Record<string, unknown> }) => void;
   onToolEnd?: (data: { toolName: string; isError: boolean; result?: unknown }) => void;
   onFallback?: (data: { primaryModel: string; fallbackModel: string; triggerPoint: "session-creation" | "prompt-time" }) => void;
+  /*
+  FNXC:ChatPhaseStatus 2026-09-05-10:23:
+  RUFU-188: an engine phase transition reported on the stream while a reply is waiting on silent
+  engine-internal background work, so the streaming placeholder can name what is running (e.g.
+  "Working (compacting…)") instead of a bare "Working…". Transient render state only — never a
+  persisted message — paired true→false so a `Last-Event-ID` replay cannot leave the label stuck on.
+  */
+  onPhase?: (data: { phase: "compacting"; active: boolean }) => void;
+  /*
+  FNXC:ChatSendDurability 2026-09-07-11:00:
+  RUFU-192: the server has stored the user turn — this is the durability signal the composer
+  commits (clears) on, because `onAccepted` fires at `res.ok`, which happens before
+  `ChatManager.sendMessage` runs and therefore never proved persistence. Advisory and
+  idempotent: a `Last-Event-ID` replay can redeliver it, and its absence (with or without a
+  later `onError`) is the non-persisted signal callers use to keep their text. Payload is the
+  persisted row id only — never prompt text.
+  */
+  onUserPersisted?: (messageId: string) => void;
   onAgentMessage?: (data: { message: ChatMessage; senderAgentId: string; senderAgentName: string }) => void;
+  /*
+  FNXC:ChatMessageEdit 2026-09-16-05:58:
+  In-band identity of the user turn the server just persisted. It carries the PERSISTED row so the
+  caller can retire its optimistic `temp-<ts>` bubble by exact temp id instead of depending on the
+  out-of-band `chat:message:added` echo, which can silently never arrive. Non-terminal: a malformed
+  payload is skipped without ending the stream.
+  */
+  onUserMessage?: (data: { message: ChatMessage }) => void;
   onDone?: (data: { messageId: string; message?: ChatMessage; interrupted?: boolean; dispatch?: "agents"; failedAgentNames?: string[] }) => void;
   onError?: (data: string | ChatFailureInfo, meta?: ChatStreamErrorMeta) => void;
   onConnectionStateChange?: (state: StreamConnectionState) => void;
@@ -657,11 +765,53 @@ export function streamChatResponse(
           // skip malformed event
         }
         break;
+      /*
+      FNXC:ChatPhaseStatus 2026-09-05-10:23:
+      RUFU-188: forward the engine phase side-channel (see ChatStreamHandlers.onPhase). It is NOT a
+      terminating event and must not touch `terminated` — only `done`/`error` end a stream, and a
+      phase arriving after the reply started must never be mistaken for one.
+      */
+      case "phase":
+        try {
+          handlers.onPhase?.(JSON.parse(rawData));
+        } catch {
+          // skip malformed event
+        }
+        break;
+      /*
+      FNXC:ChatSendDurability 2026-09-07-11:00:
+      RUFU-192: forward the durable-user-turn acknowledgement (see ChatStreamHandlers.onUserPersisted).
+      Non-terminating and never coalesced — the composer's commit point must see it the moment the
+      stream frame arrives. Malformed payloads are skipped: a lost ack keeps the composer text (safe
+      direction), it must never be guessed.
+      */
+      case "user_persisted":
+        try {
+          const parsed = JSON.parse(rawData) as { messageId?: unknown };
+          if (typeof parsed.messageId === "string") {
+            handlers.onUserPersisted?.(parsed.messageId);
+          }
+        } catch {
+          // skip malformed event
+        }
+        break;
       case "agent_message":
         try {
           const parsed = JSON.parse(rawData) as { message?: unknown; senderAgentId?: unknown; senderAgentName?: unknown };
           if (parsed.message && typeof parsed.message === "object" && typeof parsed.senderAgentId === "string" && typeof parsed.senderAgentName === "string") {
             handlers.onAgentMessage?.({ message: parsed.message as ChatMessage, senderAgentId: parsed.senderAgentId, senderAgentName: parsed.senderAgentName });
+          }
+        } catch {
+          // skip malformed event
+        }
+        break;
+      case "user_message":
+        // FNXC:ChatMessageEdit 2026-09-16-05:58: non-terminal identity event; malformed payloads are skipped.
+        try {
+          const parsed = JSON.parse(rawData) as { message?: unknown };
+          const userMessage = parsed.message as { id?: unknown } | undefined;
+          if (userMessage && typeof userMessage === "object" && typeof userMessage.id === "string" && userMessage.id.length > 0) {
+            handlers.onUserMessage?.({ message: userMessage as unknown as ChatMessage });
           }
         } catch {
           // skip malformed event
@@ -900,6 +1050,35 @@ export function attachChatStream(
           // skip malformed event
         }
         break;
+      /*
+      FNXC:ChatPhaseStatus 2026-09-05-10:23:
+      RUFU-188: the reattach (buffered-replay) half of the same side channel. The manager buffers
+      every broadcast per session, so a reconnect that lands between an `active: true` and its
+      `active: false` replays the pair and the label cannot be left stuck on by replay alone.
+      */
+      case "phase":
+        try {
+          handlers.onPhase?.(JSON.parse(rawData));
+        } catch {
+          // skip malformed event
+        }
+        break;
+      /*
+      FNXC:ChatSendDurability 2026-09-07-11:00:
+      RUFU-192: the reattach (buffered-replay) half of the durability acknowledgement. Replay can
+      redeliver it, so consumers must treat onUserPersisted as idempotent — the commit it releases
+      is a no-op when already committed.
+      */
+      case "user_persisted":
+        try {
+          const parsed = JSON.parse(rawData) as { messageId?: unknown };
+          if (typeof parsed.messageId === "string") {
+            handlers.onUserPersisted?.(parsed.messageId);
+          }
+        } catch {
+          // skip malformed event
+        }
+        break;
       case "agent_message":
         try {
           const parsed = JSON.parse(rawData) as { message?: unknown; senderAgentId?: unknown; senderAgentName?: unknown };
@@ -927,6 +1106,18 @@ export function attachChatStream(
       case "error":
         terminated = true;
         handlers.onError?.(parseChatErrorPayload(rawData));
+        break;
+      case "user_message":
+        // FNXC:ChatMessageEdit 2026-09-16-05:58: replayed identity event on reattach; same non-terminal contract.
+        try {
+          const parsed = JSON.parse(rawData) as { message?: unknown };
+          const userMessage = parsed.message as { id?: unknown } | undefined;
+          if (userMessage && typeof userMessage === "object" && typeof userMessage.id === "string" && userMessage.id.length > 0) {
+            handlers.onUserMessage?.({ message: userMessage as unknown as ChatMessage });
+          }
+        } catch {
+          // skip malformed event
+        }
         break;
     }
   };

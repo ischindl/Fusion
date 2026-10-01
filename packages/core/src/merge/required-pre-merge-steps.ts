@@ -15,6 +15,10 @@ result. Plan Review, Code Review, and Browser Verification omit `phase`, so they
 resolve to pre-merge and must be included alongside groups that ran in earlier lanes.
 Merge doors pass this resolved set while recovery scanners retain legacy result-only
 semantics so they can discover and repair resultless cards.
+FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217, AC4): "recovery scanners" here means the
+DISCOVERY side (revival row scans, FN-9243 reseed search). Disposal-side consumers that reason
+about an already-proven-blocked card — the in-review stall classifier and the store hydration
+sites — forward this set so their refusal sentence matches the door's byte-for-byte.
 */
 /** Resolves enabled optional-group ids that must have a terminal pre-merge result. */
 export function resolveRequiredPreMergeStepIds(

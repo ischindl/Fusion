@@ -3,7 +3,11 @@ import { taskHasManualOpenPullRequest } from "../tasks/task-helpers.js";
 import type { BranchGroup, Settings, Task, WorkflowStepResult } from "../types.js";
 import type { MergeContentDescriptor } from "./merge-content-descriptor.js";
 import { evaluatePreMergeApprovals } from "./pre-merge-approval.js";
+/* FNXC:HumanMergeApproval 2026-09-17-18:09: FN-514's per-card delivery lock is a merge-door predicate like every other gate. */
+import { getHumanMergeApprovalBlocker, type HumanMergeApprovalEvidence } from "./human-merge-approval.js";
 import { isArchivedRemediationCarrier } from "../workflows/workflow-step-results.js";
+/* FNXC:ZeroCommitLandingProof 2026-09-25-12:05 (RUFU-274): the durable zero-commit refusal is a merge-door gate like every other one. */
+import { getUncommittedWorkHoldBlocker, isZeroCommitWorkspaceLandPark } from "./zero-commit-landing-proof.js";
 
 export interface LandedMemberReviewAdvisory {
   taskId: string;
@@ -299,6 +303,22 @@ export function isTaskBlockedOnApproval(
   return task.status === "awaiting-approval";
 }
 
+/*
+FNXC:HumanPlanApproval 2026-09-15-06:24:
+FN-408's execution-entry fence is `isTaskBlockedOnHumanPlanApproval`, which lives in
+`planner/human-plan-approval.ts` and is deliberately NOT imported here. Two reasons:
+
+1. Semantics: `isTaskBlockedOnApproval` above also guards PLANNING continuation dispatch
+   (in-process-runtime). Folding the per-card human requirement into it would stop the planner and
+   the reviewer from ever producing the plan the operator is supposed to validate, so the card could
+   never become decidable. The two predicates must stay separate.
+2. Bundling: this module's exports are consumed by the dashboard's browser bundle, while
+   `planner/human-plan-approval.ts` transitively imports `planner/plan-approval.ts` and its
+   top-level `node:crypto`. Importing it here pulls `node:crypto` into the browser graph and breaks
+   the dashboard build — measured on 2026-09-15. The browser mirror in
+   `packages/dashboard/app/utils/reviewBudgetApproval.ts` exists for exactly this reason.
+*/
+
 export const HARD_BLOCKING_TASK_STATUSES = new Set([
   "failed",
   // ── User-attention / awaiting-handoff states ─────────────────────────
@@ -387,6 +407,111 @@ disabling stale-content recovery at every door.
 export const STALE_CONTENT_APPROVAL_BLOCKER =
   "task has a pre-merge approval recorded against different content";
 
+/*
+FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217):
+The two sentences that report "a required pre-merge gate is refused because of its row state" are
+KEYED TEXT, not freeform prose: the self-healing stall-disposal progress reset and the failed-step
+revival admission compare the generic variant verbatim, and RUFU-217's stall router parses the
+gate-named variant to identify which gate to re-seed. Building both from this single template and
+reading them back through the parser/predicate keeps a future editorial change from silently
+un-keying a dependent consumer; the exact wording is byte-stable and pinned by tests.
+The generic variant is what a caller that omits `requiredPreMergeStepIds` (recovery semantics) sees
+for any failed/not-approved pre-merge row; the gate-named variant names the first non-approved
+required gate whenever gate ids are resolved — both mean the same family of fact, so
+`isPreMergeGateFailedBlocker` accepts either. Neither sentence claims a verdict exists or was changed.
+*/
+export const PRE_MERGE_STEPS_FAILED_BLOCKER = "task has failed pre-merge workflow steps";
+const NO_CURRENT_APPROVAL_BLOCKER_PREFIX =
+  "task has enabled pre-merge workflow steps without a current approval (gate '";
+const NO_CURRENT_APPROVAL_BLOCKER_SUFFIX = "')";
+
+/** Builds the gate-named refusal. Byte-identical to the historical inline template. */
+export function buildPreMergeGateApprovalBlocker(gateId: string): string {
+  return `${NO_CURRENT_APPROVAL_BLOCKER_PREFIX}${gateId}${NO_CURRENT_APPROVAL_BLOCKER_SUFFIX}`;
+}
+
+/** Recovers the named gate id from a gate-named refusal, or undefined for any other blocker. Nullish is "no blocker". */
+export function parsePreMergeGateApprovalBlocker(blocker: string | undefined | null): string | undefined {
+  if (blocker == null) return undefined;
+  if (!blocker.startsWith(NO_CURRENT_APPROVAL_BLOCKER_PREFIX) || !blocker.endsWith(NO_CURRENT_APPROVAL_BLOCKER_SUFFIX)) {
+    return undefined;
+  }
+  const gateId = blocker.slice(
+    NO_CURRENT_APPROVAL_BLOCKER_PREFIX.length,
+    blocker.length - NO_CURRENT_APPROVAL_BLOCKER_SUFFIX.length,
+  );
+  return gateId.length > 0 && !gateId.includes("'") ? gateId : undefined;
+}
+
+/*
+FNXC:VerdictlessFailedGate 2026-09-14-14:47 (RUFU-217, Step 5):
+A terminal park re-persists the gate-named refusal INSIDE a bigger sentence: the stall-deadlock
+error embeds the unwrapped merge-blocker reason ("In-review stall deadlock: … AUTO_MERGE_RETRY_REJECTED:
+Cannot merge X: <blocker>"), so parked-card recovery must recover the named gate id from that
+container without loosening the exact-form parser above — every un-parked caller keeps its
+byte-exact contract. Scans the LAST occurrence (a container quotes the refusal once, at the end)
+and delegates the tail to the exact parser, so a container that merely starts or ends with a
+blocker-shaped fragment still has to satisfy the full exact form to resolve.
+*/
+/** Recovers the gate id from a container sentence embedding the gate-named refusal, or undefined. */
+export function parseEmbeddedPreMergeGateApprovalBlocker(text: string | undefined | null): string | undefined {
+  if (text == null || text.length === 0) return undefined;
+  const index = text.lastIndexOf(NO_CURRENT_APPROVAL_BLOCKER_PREFIX);
+  if (index === -1) return undefined;
+  return parsePreMergeGateApprovalBlocker(text.slice(index));
+}
+
+/**
+ * Whether a merge blocker reports the failed / not-approved pre-merge gate row family (generic
+ * recovery-semantics sentence or gate-named approval sentence). Content-evidence refusals
+ * (stale / unprovable) are deliberately NOT part of this family; the stale-content lane owns them.
+ * Nullish input is "no blocker", not this family — callers threading `getTaskMergeBlocker`'s
+ * optional return (e.g. the revival sweep filter) may pass it directly.
+ */
+export function isPreMergeGateFailedBlocker(blocker: string | undefined | null): boolean {
+  if (blocker == null) return false;
+  return blocker === PRE_MERGE_STEPS_FAILED_BLOCKER
+    || parsePreMergeGateApprovalBlocker(blocker) !== undefined;
+}
+
+/**
+ * Whether the card carries at least one FAILED pre-merge workflow-step row — the exact evidence the
+ * results-only scan below turns into `PRE_MERGE_STEPS_FAILED_BLOCKER`. Recovery admissions key off
+ * the gate-named refusal (which a `pending` row also produces once gate ids are forwarded) share
+ * this conjunct so a still-running gate is never admitted by blocker text alone.
+ */
+export function hasFailedPreMergeWorkflowStepRow(
+  task: Pick<Task, "workflowStepResults">,
+): boolean {
+  return task.workflowStepResults?.some((result) => {
+    const phase = result.phase || "pre-merge";
+    return phase === "pre-merge" && result.status === "failed";
+  }) ?? false;
+}
+
+/*
+FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217, AC2/AC3):
+Shared class condition for the three verdict-less re-run admission gates (self-healing re-route,
+merge-queue deferral, graph-failure sink). The gate-named refusal is ambiguous on its own — an
+authored REVISE, a live `pending` row, and a plumbing verdict-less failure all render it — so the
+condition re-resolves the named gate's approval through the SAME evaluator that produced the
+blocker (same gate ids, same merge content) and accepts only `verdictLessFailed`. The stale-content
+and unprovable sentences fail the parse and can never reach the reseed lane through this door;
+the stale lane keeps exclusive ownership of its refusals.
+*/
+/** Whether `blocker` names a gate whose latest required row is verdict-less failed. */
+export function namesVerdictLessFailedGate(
+  task: Pick<Task, "workflowStepResults" | "repositoryScope">,
+  blocker: string | undefined | null,
+  options: { requiredPreMergeStepIds?: ReadonlySet<string>; mergeContent?: MergeContentDescriptor } = {},
+): boolean {
+  const gateId = blocker == null ? undefined : parsePreMergeGateApprovalBlocker(blocker);
+  if (!gateId) return false;
+  return evaluatePreMergeApprovals(task, options).some(
+    (approval) => approval.workflowStepId === gateId && approval.verdictLessFailed === true,
+  );
+}
+
 /**
  * Thrown by merge doors when the ONLY thing standing between a card and merge is an
  * enabled pre-merge gate that has not run yet. Callers must treat it as "retry after the
@@ -408,6 +533,29 @@ export function isPreMergeStepsNotRunBlocker(blocker: string | undefined): boole
   return blocker === PRE_MERGE_STEPS_NOT_RUN_BLOCKER;
 }
 
+/*
+FNXC:PreMergeApproval 2026-09-22-21:42 (RUFU-276):
+The deferral contract only reaches the lanes that receive the ALREADY-canonical sentence. Three
+producers instead publish a refusal carrying that sentence inside a larger string:
+ - `PreMergeStepsNotRunError` (this file) → `Cannot merge <id>: <sentence>`;
+ - the bounded-merge-retry seam → `AUTO_MERGE_RETRY_REJECTED: <that error message>`;
+ - `getTaskMergeBlocker`'s blocking-status arm → `task is marked 'failed': <that park>`.
+Verbatim comparison fails on all three, so RUFU-225's park named the deferral in prose while every
+classifier downstream read it as a generic terminal failure. This predicate is the single
+wrap-aware answer to "does this refusal report a required pre-merge gate that has not run?", and
+it is deliberately substring-based: the sentence is a constant, never user- or diff-derived text.
+
+It must NOT replace `isPreMergeStepsNotRunBlocker` at the four merge doors: those are fed the
+bare sentence by `getTaskMergeBlocker`'s approval arm and the wrapped form would make a genuinely
+terminal failed card look deferrable. Consumers here are the deferral/recovery lanes that read an
+already-composed refusal: the retry seam, the self-healing repair arm, and the stall projection.
+*/
+
+/** True when a composed refusal (typed-error message, retry park, or failed-status blocker) embeds the unrun-gate sentence. */
+export function isPreMergeStepsNotRunRefusal(refusal: string | null | undefined): boolean {
+  return typeof refusal === "string" && refusal.includes(PRE_MERGE_STEPS_NOT_RUN_BLOCKER);
+}
+
 /** True when a merge door or terminal park reports an approval against superseded content. */
 export function isStaleContentApprovalBlocker(blocker: string | undefined | null): boolean {
   return typeof blocker === "string" && blocker.trim().endsWith(STALE_CONTENT_APPROVAL_BLOCKER);
@@ -421,17 +569,38 @@ export const TASK_DONE_BYPASS_BLOCKER_MESSAGE =
  * Undefined means the task is eligible to move from `in-review` to `done`.
  */
 export function getTaskMergeBlocker(
-  task: Pick<Task, "column" | "paused" | "status" | "error" | "steps" | "workflowStepResults" | "repositoryScope">,
+  task: Pick<Task, "column" | "paused" | "status" | "error" | "steps" | "workflowStepResults" | "repositoryScope" | "mergeDetails"> & Partial<Pick<Task, "humanMergeApproval" | "noCommitsExpected">>,
   options: {
     manual?: boolean;
     skipColumnIdentityCheck?: boolean;
     reviewColumns?: ReadonlySet<string>;
+    /*
+    FNXC:HumanMergeApproval 2026-09-17-18:09:
+    FN-514 — exclude ONLY this feature's own barrier. Two callers legitimately need that:
+      • `resolveHumanMergeDecisionPoint`, which is computing whether a decision is DUE and must not
+        report "you cannot decide because you have not decided";
+      • already-landed recovery (`getTaskHardMergeBlocker` / `getMergeConfirmedFinalizationBlocker`),
+        because a branch already on the target cannot be un-landed by a lock appearing in history, and
+        parking proven delivery `failed` would be a strictly worse outcome than finalizing it.
+    Every ordinary delivery door leaves it ON.
+    */
+    skipHumanMergeApproval?: boolean;
+    /** Live delivery evidence, when the caller is an owner about to deliver. */
+    humanMergeEvidence?: HumanMergeApprovalEvidence;
     /*
     FNXC:RequiredPreMergeSteps 2026-08-22-21:11:
     Merge doors receive the workflow-resolved enabled pre-merge groups so an
     unrun gate cannot be mistaken for approval. Recovery scanners deliberately
     omit this input: they must still discover resultless cards and route them
     back to their graph gate rather than hiding a recoverable wedge.
+
+    FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217, AC4) refined that boundary: the
+    DISCOVERY side (failed-step revival's row scan, FN-9243's reseed search) keeps the result-only
+    view — forwarding would answer "gate missing" and hide exactly the resultless card it hunts.
+    The DISPOSAL side (the in-review stall classifier and every store hydration site that answers
+    `inReviewStall`) now FORWARDS: RUFU-204's deadlock parked on a refusal sentence the door would
+    never have written, so a card already proven blocked must be reasoned about with the door's own
+    answer. Not-run deferrals surfacing there are suppressed in `getInReviewStallReason` itself.
     */
     requiredPreMergeStepIds?: ReadonlySet<string>;
     mergeContent?: MergeContentDescriptor;
@@ -486,16 +655,50 @@ export function getTaskMergeBlocker(
     }
   }
 
+  /*
+  FNXC:ZeroCommitLandingProof 2026-09-25-12:05 / 2026-09-27-01:01 (RUFU-274 Step 6):
+  A card refused because its branch carried zero commits while its checkout still held the work stays
+  refused from the row alone, so the hold outlives the process that wrote it and the board chip states it
+  without a re-probe. RUFU-262 is the loss: 0 ahead of `main`, worktree still dirty, card `done`.
+
+  It is placed ABOVE the generic pause arm because the shipped hold pairs its marker with the observable
+  pause pair (`paused` + `pausedReason: "manual-hold"`) so the card is visible in the lane it sits in; a
+  refusal that answered `"task is paused"` would hide the one thing an operator must act on — that files
+  survive in a worktree and a merge would drop them. It sits above the pre-merge and human-merge-approval
+  gates because it is about content automatic delivery cannot safely touch, not lane bookkeeping, and it is
+  NOT waived by `manual`: `manual` lets a human see past scheduler-transient states, not license discarding
+  content — the merge would drop the uncommitted files whoever asks for it. The remedy is on the worktree
+  (commit or discard); the refusing lane clears the hold on its next pass once the evidence changes.
+  */
+  const uncommittedWorkHold = getUncommittedWorkHoldBlocker(task);
+  if (uncommittedWorkHold) return uncommittedWorkHold;
+
   if (task.paused) {
     return "task is paused";
   }
 
   const blockingStatuses = options.manual === true ? HARD_BLOCKING_TASK_STATUSES : BLOCKING_TASK_STATUSES;
-  if (task.status && blockingStatuses.has(task.status)) {
+  if (task.status && blockingStatuses.has(task.status) && !isZeroCommitWorkspaceLandPark(task)) {
     return task.error
       ? `task is marked '${task.status}': ${task.error}`
       : `task is marked '${task.status}'`;
   }
+  /*
+  FNXC:ZeroCommitWorkspaceDelivery 2026-09-30-20:43 (RUFU-451):
+  The one blocking status this door looks past: a `failed` whose entire evidence is the workspace
+  partial-land park that the board's own sweep wrote for a card authorized to deliver zero commits.
+  The sweep judged a git-invisible delivery as lost work, but for that contract "no branch, no landedSha"
+  is the expected shape, so the park was a false terminal — and because every door and the stall
+  classifier consults this authority, that single write refused the merge, the operator's manual drag,
+  and every recovery lane at once. Measured on SANE-509: `409 code=merge-blocked` on a card whose
+  delivery was real, review-approved, and declared source-free in its own plan.
+
+  The waiver is exactly three facts wide (`isZeroCommitWorkspaceLandPark`): the card's own explicit
+  `noCommitsExpected`, `status: "failed"`, and an `error` naming one of the two sentences only that
+  sweep writes. Anything else — a later unrelated failure, a pause, a negative or unrun gate, a held
+  human merge approval — still refuses through the arms above and below, so nothing here approves content.
+  `noCommitsExpected` is read as an optional pick, so a caller that withholds it keeps today's refusal.
+  */
 
   if (task.steps.length > 0 && task.steps.some((step) => NON_TERMINAL_STEP_STATUSES.has(step.status))) {
     return "task has incomplete steps";
@@ -516,10 +719,28 @@ export function getTaskMergeBlocker(
   single fact needed to act; every other approval blocker already implies its own remedy.
   */
   if (approval?.state === "not-approved") {
-    return `task has enabled pre-merge workflow steps without a current approval (gate '${approval.workflowStepId}')`;
+    return buildPreMergeGateApprovalBlocker(approval.workflowStepId);
   }
   if (approval?.state === "stale-content") return STALE_CONTENT_APPROVAL_BLOCKER;
   if (approval?.state === "unprovable-content") return "task has no provable approval for the content being merged";
+
+  /*
+  FNXC:HumanMergeApproval 2026-09-17-18:09:
+  FN-514's per-card delivery lock, evaluated AFTER every automatic gate so the operator is only ever
+  asked about work that is genuinely finished. It is a typed human WAIT, never a failure: callers
+  classify it with `isHumanMergeApprovalBlocker` and must not park the card, burn a retry budget or
+  trigger an automatic replan. Recovery scanners that pass no evidence still see the lock rather than
+  mistaking a locked card for merge-ready.
+  */
+  if (options.skipHumanMergeApproval !== true) {
+    const humanBlocker = getHumanMergeApprovalBlocker(task, {
+      ...(options.humanMergeEvidence ?? {}),
+      ...(options.mergeContent !== undefined && options.humanMergeEvidence?.mergeContent === undefined
+        ? { mergeContent: options.mergeContent }
+        : {}),
+    });
+    if (humanBlocker) return humanBlocker;
+  }
 
   // Only pre-merge workflow step failures block merge.
   // Post-merge failures run after merge and do not block it.
@@ -540,14 +761,14 @@ export function getTaskMergeBlocker(
    * bypassed step therefore no longer matches this branch, so this function
    * stays byte-identical in logic — the bypass works upstream of the blocker,
    * not by special-casing it here (FN-7720).
+   *
+   * FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217):
+   * The scan moved into `hasFailedPreMergeWorkflowStepRow` unchanged; the recovery admissions that
+   * pair a gate-named refusal with a failed-row conjunct now read the same predicate, so the door
+   * and the sweeps can never disagree on what "has a failed pre-merge row" means.
    */
-  if (
-    task.workflowStepResults?.some((result) => {
-      const phase = result.phase || "pre-merge";
-      return phase === "pre-merge" && result.status === "failed";
-    })
-  ) {
-    return "task has failed pre-merge workflow steps";
+  if (hasFailedPreMergeWorkflowStepRow(task)) {
+    return PRE_MERGE_STEPS_FAILED_BLOCKER;
   }
 
   return undefined;
@@ -632,7 +853,7 @@ export function clearMergeConfirmedTransientStatus(status: string | undefined): 
 }
 
 export function getTaskHardMergeBlocker(
-  task: Pick<Task, "column" | "paused" | "status" | "error" | "steps" | "workflowStepResults" | "repositoryScope">,
+  task: Pick<Task, "column" | "paused" | "status" | "error" | "steps" | "workflowStepResults" | "repositoryScope" | "mergeDetails"> & Partial<Pick<Task, "humanMergeApproval" | "noCommitsExpected">>,
   options: { reviewColumns?: ReadonlySet<string>; requiredPreMergeStepIds?: ReadonlySet<string>; mergeContent?: MergeContentDescriptor; staleReviewCallbackWaiver?: NonNullable<Parameters<typeof evaluatePreMergeApprovals>[1]>["staleReviewCallbackWaiver"] } = {},
 ): string | undefined {
   return getTaskMergeBlocker({
@@ -645,6 +866,13 @@ export function getTaskHardMergeBlocker(
     reviewColumns: options.reviewColumns,
     requiredPreMergeStepIds: options.requiredPreMergeStepIds,
     mergeContent: options.mergeContent,
+    /*
+    FNXC:HumanMergeApproval 2026-09-17-18:09:
+    FN-514 — this helper answers "is this card blocked by anything OTHER than where it sits?", and
+    its callers are recovery paths for work that has ALREADY LANDED. A lock appearing in history
+    cannot un-land that work, so reporting it here would only park proven delivery as failed.
+    */
+    skipHumanMergeApproval: true,
     staleReviewCallbackWaiver: options.staleReviewCallbackWaiver,
   });
 }
@@ -750,7 +978,8 @@ export interface TaskCompletionBlockerOptions {
   /**
    * Resolves a task reference so completion gating can distinguish live blockers
    * from stale `blockedBy` markers. Missing tasks and blockers already in
-   * `done`/`archived` are treated as non-blocking.
+   * their workflow's Complete column are treated as non-blocking; historical-sentinel
+   * rows are absent from ordinary live resolution.
    */
   resolveTask?: (taskId: string) => Promise<Pick<Task, "id" | "column"> | null | undefined>;
   /*
@@ -779,7 +1008,7 @@ nothing retries — the card simply never becomes eligible, which is the failure
 program keeps finding.
 
 They are SEPARATE because the two gates genuinely differ: a hard `blockedBy` marker clears only on
-terminal (complete/archived), while a declared dependency also clears once it reaches REVIEW — the
+terminal (complete), while a declared dependency also clears once it reaches REVIEW — the
 work is done even though the merge has not landed. Collapsing them would either strand every
 dependent behind an unmerged dependency or release blocked cards too early.
 */
@@ -789,7 +1018,7 @@ function isDependencyTerminal(
 ): boolean {
   const columns = options.satisfactionColumnsByTaskId?.get(dependency.id);
   /* DELIBERATE-LITERAL — the unconverted-caller default, reviewed 2026-07-31-00:20. */
-  if (!columns) return dependency.column === "done" || dependency.column === "archived";
+  if (!columns) return dependency.column === "done";
   return columns.terminal.has(dependency.column);
 }
 
@@ -800,7 +1029,7 @@ function isDependencySatisfied(
   const columns = options.satisfactionColumnsByTaskId?.get(dependency.id);
   /* DELIBERATE-LITERAL — the same documented default, reviewed 2026-07-31-00:20. */
   if (!columns) {
-    return dependency.column === "done" || dependency.column === "in-review" || dependency.column === "archived";
+    return dependency.column === "done" || dependency.column === "in-review";
   }
   return columns.terminal.has(dependency.column) || columns.review.has(dependency.column);
 }

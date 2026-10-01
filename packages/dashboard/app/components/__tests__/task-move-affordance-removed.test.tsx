@@ -26,7 +26,7 @@ vi.mock("../../hooks/useToast", () => ({
 }));
 
 vi.mock("../../hooks/useConfirm", () => ({
-  useConfirm: () => ({ confirm: vi.fn().mockResolvedValue(true) }),
+  useConfirm: () => ({ confirmWithCheckbox: async (options?: { checkbox?: { defaultChecked?: boolean } }) => ({ choice: "cancel" as const, checkboxValue: options?.checkbox?.defaultChecked ?? false }), confirm: vi.fn().mockResolvedValue(true) }),
 }));
 
 setupTaskDetailModalHooks();
@@ -104,7 +104,7 @@ describe("FN-198 dashboard task relocation removal", () => {
         addToast={noop}
         taskMoveColumns={[
           { id: "in-progress", label: "In Progress", flags: { countsTowardWip: true } },
-          { id: "in-review", label: "In Review", flags: { review: true } },
+          { id: "in-review", label: "In Review", flags: { humanReview: true } },
         ]}
       />,
     );
@@ -131,7 +131,7 @@ describe("FN-198 dashboard task relocation removal", () => {
     await act(async () => {
       fireEvent.click(screen.getByTestId("card-start-FN-198"));
     });
-    expect(onMoveTask).toHaveBeenLastCalledWith("FN-198", "implementation");
+    expect(onMoveTask).toHaveBeenLastCalledWith("FN-198", "implementation", { expectedColumn: "ideas" });
   });
 
   it("removes List row destination choices opened by a context click", async () => {
@@ -154,9 +154,8 @@ describe("FN-198 dashboard task relocation removal", () => {
     render(
       <ListView
         tasks={[task()]}
-        onMoveTask={onMoveTask}
         onDeleteTask={async () => task()}
-        onMergeTask={async () => ({ merged: false })}
+        onMergeTask={async () => ({ merged: false, task: task(), branch: "main", worktreeRemoved: false, branchDeleted: false })}
         onOpenDetail={noop}
         addToast={noop}
         projectId="project-fn-198"
@@ -210,9 +209,8 @@ describe("FN-198 dashboard task relocation removal", () => {
       render(
         <ListView
           tasks={[task()]}
-          onMoveTask={onMoveTask}
           onDeleteTask={async () => task()}
-          onMergeTask={async () => ({ merged: false })}
+          onMergeTask={async () => ({ merged: false, task: task(), branch: "main", worktreeRemoved: false, branchDeleted: false })}
           onOpenDetail={noop}
           addToast={noop}
           projectId="project-fn-198-mobile"
@@ -235,9 +233,15 @@ describe("FN-198 dashboard task relocation removal", () => {
 
   it("keeps Task Detail Actions and review controls without a move dropdown in modal and embedded hosts", () => {
     const detailTask = makeTask({ id: "FN-198-review", column: "in-review" as Column });
+    /*
+    FNXC:TaskDetailFooter 2026-09-15-10:40:
+    The review footer renders only on the Review tab (`showTaskDetailFooter` requires it), so this
+    host must open there to observe the merge command it asserts. Pairing the assertion with the
+    Definition tab made the case fail on a contract that was never in question.
+    */
     const modal = render(
       <TaskDetailModal
-        initialTab="definition"
+        initialTab="review"
         task={detailTask}
         onClose={noop}
         onDeleteTask={noopDelete}
@@ -285,9 +289,8 @@ describe("FN-198 dashboard task relocation removal", () => {
     render(
       <ListView
         tasks={[task({ id: "FN-198-no-metadata" })]}
-        onMoveTask={onMoveTask}
         onDeleteTask={async () => task()}
-        onMergeTask={async () => ({ merged: false })}
+        onMergeTask={async () => ({ merged: false, task: task(), branch: "main", worktreeRemoved: false, branchDeleted: false })}
         onOpenDetail={noop}
         addToast={noop}
         projectId="project-fn-198-no-metadata"
@@ -329,7 +332,13 @@ describe("FN-198 dashboard task relocation removal", () => {
     expect(onMoveTask).not.toHaveBeenCalled();
   });
 
-  it("keeps the card review action while removing every in-review destination item", () => {
+  /*
+  FNXC:TaskContextMenu 2026-09-15-10:40:
+  Was "keeps the card review action while removing every in-review destination item". FN-417 removed
+  merge completion from card context menus, so the review action this case guarded no longer exists
+  there; the move-destination invariant it also guarded is unchanged and still asserted.
+  */
+  it("offers neither a merge completion item nor any in-review destination item", () => {
     const onMoveTask = moveSpy();
     render(
       <TaskCard
@@ -342,12 +351,14 @@ describe("FN-198 dashboard task relocation removal", () => {
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: "Task actions" }));
-    expect(screen.getByRole("menuitem", { name: "Merge & Close" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Merge & Close" })).toBeNull();
+    // Positive anchor: the menu is genuinely open and populated, not simply absent.
+    expect(screen.getByRole("menuitem", { name: "Delete" })).toBeInTheDocument();
     expectNoMoveItems();
     expect(onMoveTask).not.toHaveBeenCalled();
   });
 
-  it.each(["todo", "in-progress", "in-review", "done", "archived"] as const)("offers no move item on card or List rows in %s", async (column) => {
+  it.each(["todo", "in-progress", "in-review", "done"] as const)("offers no move item on card or List rows in %s", async (column) => {
     const onMoveTask = moveSpy();
     const id = `FN-198-${column}`;
     const current = task({ id, column: column as Column });
@@ -356,8 +367,6 @@ describe("FN-198 dashboard task relocation removal", () => {
         task={current}
         onMoveTask={onMoveTask}
         onDeleteTask={noopDelete}
-        onArchiveTask={async () => current}
-        onUnarchiveTask={async () => current}
         onOpenDetail={noop}
         addToast={noop}
       />,
@@ -377,7 +386,6 @@ describe("FN-198 dashboard task relocation removal", () => {
           { id: "in-progress", name: "In Progress", flags: { countsTowardWip: true } },
           { id: "in-review", name: "In Review", flags: { mergeBlocker: true } },
           { id: "done", name: "Done", flags: { complete: true } },
-          { id: "archived", name: "Archived", flags: { archived: true } },
         ],
       }],
       taskWorkflowIds: { [id]: "builtin:coding" },
@@ -386,11 +394,8 @@ describe("FN-198 dashboard task relocation removal", () => {
     render(
       <ListView
         tasks={[current]}
-        onMoveTask={onMoveTask}
         onDeleteTask={async () => current}
-        onArchiveTask={async () => current}
-        onUnarchiveTask={async () => current}
-        onMergeTask={async () => ({ merged: false })}
+        onMergeTask={async () => ({ merged: false, task: current, branch: "main", worktreeRemoved: false, branchDeleted: false })}
         onOpenDetail={noop}
         addToast={noop}
         projectId={`project-fn-198-${column}`}
@@ -417,6 +422,7 @@ describe("FN-198 dashboard task relocation removal", () => {
     const props = {
       tasks: [task()],
       maxConcurrent: 2,
+      maxWorktrees: 2,
       onMoveTask,
       onOpenDetail: noop,
       addToast: noop,
@@ -446,6 +452,7 @@ describe("FN-198 dashboard task relocation removal", () => {
         column="todo"
         columnFlags={{ hold: true }}
         maxConcurrent={2}
+        maxWorktrees={2}
         onMoveTask={onMoveTask}
         onOpenDetail={noop}
         addToast={noop}
@@ -470,6 +477,7 @@ describe("FN-198 dashboard task relocation removal", () => {
         column="todo"
         columnFlags={{ hold: true }}
         maxConcurrent={2}
+        maxWorktrees={2}
         onMoveTask={onMoveTask}
         onOpenDetail={noop}
         addToast={noop}
@@ -490,6 +498,7 @@ describe("FN-198 dashboard task relocation removal", () => {
         column="todo"
         columnFlags={{ hold: true }}
         maxConcurrent={2}
+        maxWorktrees={2}
         onMoveTask={onMoveTask}
         onOpenDetail={noop}
         addToast={addToast}

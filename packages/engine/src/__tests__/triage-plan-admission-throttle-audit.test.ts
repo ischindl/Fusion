@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Settings, Task, TaskStore } from "@fusion/core";
+import { PLAN_ADMISSION_STALL_REFRESH_FLOOR_MS } from "@fusion/core";
 import { TriageProcessor } from "../triage.js";
 
 /*
@@ -53,6 +54,25 @@ function eligibleTodoTask(id: string): Task {
 
 interface RecordedEvent { type: string; target: string; metadata?: Record<string, unknown> }
 
+/** One captured `updateTask` call, narrowed to what the planning-stall episode tests assert. */
+interface RecordedPatch { taskId: string; patch: Record<string, unknown> | undefined }
+
+/*
+FNXC:PlanningAdmissionStall 2026-09-25-18:20 (RUFU-273):
+Apply a `sourceMetadataPatch` onto the in-memory fixture the way the real store does: key-level merge,
+`null` deletes, everything else in the field survives. Without this the fake would hand back the
+UNPATCHED row on the next poll, and a "refreshes at most once per floor" assertion would be vacuous —
+it would pass for an implementation that rewrote the episode every single poll.
+*/
+function applySourceMetadataPatch(task: Task, patch: Record<string, unknown>): void {
+  const merged: Record<string, unknown> = { ...(task.sourceMetadata ?? {}) };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null) delete merged[key];
+    else merged[key] = value;
+  }
+  task.sourceMetadata = merged;
+}
+
 /*
 FNXC:CapacityModel 2026-07-29-18:40 (PR #2562 review):
 The card that CONSUMES the project's single agent slot. Previously an exhausted host
@@ -73,7 +93,32 @@ function runningTask(id: string): Task {
   } as Task;
 }
 
-function createStore(tasks: Task[], recorded: RecordedEvent[], settings: Partial<Settings> = {}): TaskStore {
+/*
+FNXC:CapacitySlotLeak 2026-09-19-04:07:
+A durable `status:"planning"` claim with NO planner session behind it — the leak this suite pins.
+`status` is a row field, so it survives a stuck-killed, crashed, or never-started planner.
+*/
+function orphanedPlanningTask(id: string): Task {
+  return {
+    id,
+    description: "planning status with no live planner",
+    column: "todo",
+    status: "planning",
+    dependencies: [],
+    steps: [],
+    currentStep: 0,
+    log: [],
+    createdAt: "2026-09-18T22:00:00.000Z",
+    updatedAt: "2026-09-18T22:00:00.000Z",
+  } as Task;
+}
+
+function createStore(
+  tasks: Task[],
+  recorded: RecordedEvent[],
+  settings: Partial<Settings> = {},
+  patches?: RecordedPatch[],
+): TaskStore {
   // The running claimant is added here so every case exhausts the one project slot.
   tasks = [runningTask("FN-RUNNING"), ...tasks];
   return {
@@ -95,7 +140,12 @@ function createStore(tasks: Task[], recorded: RecordedEvent[], settings: Partial
     recordRunAuditEvent: vi.fn().mockImplementation(async (event: { mutationType: string; target: string; metadata?: Record<string, unknown> }) => {
       recorded.push({ type: event.mutationType, target: event.target, metadata: event.metadata });
     }),
-    updateTask: vi.fn().mockResolvedValue(undefined),
+    updateTask: vi.fn().mockImplementation(async (id: string, updates: { sourceMetadataPatch?: Record<string, unknown> | null }) => {
+      if (patches) patches.push({ taskId: id, patch: updates?.sourceMetadataPatch ?? undefined });
+      const target = tasks.find((candidate) => candidate.id === id);
+      if (target && updates?.sourceMetadataPatch) applySourceMetadataPatch(target, updates.sourceMetadataPatch);
+      return target ?? null;
+    }),
     logEntry: vi.fn().mockResolvedValue(undefined),
     appendAgentLog: vi.fn().mockResolvedValue(undefined),
     moveTask: vi.fn(),
@@ -264,6 +314,145 @@ describe("plan admission throttle run-audit (FN-8600)", () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(recorded.filter((event) => event.type === "task:plan-admission-throttled")).toHaveLength(0);
+  });
+
+  /*
+  FNXC:CapacitySlotLeak 2026-09-19-04:07:
+  Original symptom (production, 2026-09-18): planning admission was withheld for HOURS while
+  `claimed=2, processing=0` — two durable planning statuses and no planner in the process — with one
+  eligible card waiting (677 "Plan throttled by running-agent cap" lines; FUSI-018 idle 32 min; the
+  20-minute `sweepStalePlanningStatuses` repair cleared two rows in the whole log and never unblocked it).
+
+  Exact reproduction: two todo cards carrying `status:"planning"` with no live planner, one eligible
+  todo card, and `maxConcurrent` equal to the orphan count. Assertion it is gone: the orphans consume
+  no capacity, so the eligible card is not throttled — and the inverse case below proves a claim whose
+  planner IS live still consumes its slot.
+  */
+  it("does not throttle planning on a stale planning status with no live planner", async () => {
+    const orphans = [orphanedPlanningTask("FN-LEAK-1"), orphanedPlanningTask("FN-LEAK-2")];
+    const store = createStore([...orphans, eligibleTodoTask("FN-LEAK-ELIGIBLE")], recorded, { maxConcurrent: 2 });
+    // Drop the seeded in-progress claimant: the ONLY claims under test are the two orphaned statuses.
+    (store.listTasks as unknown as { mockResolvedValue: (v: Task[]) => void })
+      .mockResolvedValue([...orphans, eligibleTodoTask("FN-LEAK-ELIGIBLE")]);
+    const processor = new TriageProcessor(store, "/tmp/fn-capacity-slot-leak-root", {});
+    vi.spyOn(processor, "specifyTask").mockResolvedValue(undefined);
+    (processor as unknown as { running: boolean }).running = true;
+    await (processor as unknown as { poll: () => Promise<void> }).poll();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(recorded.filter((event) => event.type === "task:plan-admission-throttled")).toHaveLength(0);
+  });
+
+  it("still counts a planning claim while its planner session is live", async () => {
+    const live = orphanedPlanningTask("FN-LEAK-LIVE");
+    const store = createStore([live, eligibleTodoTask("FN-LEAK-WAITING")], recorded, { maxConcurrent: 1 });
+    (store.listTasks as unknown as { mockResolvedValue: (v: Task[]) => void })
+      .mockResolvedValue([live, eligibleTodoTask("FN-LEAK-WAITING")]);
+    const processor = new TriageProcessor(store, "/tmp/fn-capacity-slot-leak-root", {});
+    vi.spyOn(processor, "specifyTask").mockResolvedValue(undefined);
+    /*
+    The processor's constructor registers the process-wide liveness probe, so owning the task in
+    `processing` is exactly how production proves a live planner (FN-8453 keeps planning on the same
+    maxConcurrent claim as execute/review, and this case must not regress that).
+    */
+    (processor as unknown as { processing: Set<string> }).processing.add("FN-LEAK-LIVE");
+    (processor as unknown as { running: boolean }).running = true;
+    await (processor as unknown as { poll: () => Promise<void> }).poll();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const throttle = recorded.filter((event) => event.type === "task:plan-admission-throttled");
+    expect(throttle).toHaveLength(1);
+    expect(throttle[0].metadata).toMatchObject({
+      maxConcurrent: 1,
+      claimed: 1,
+      eligibleTaskIds: ["FN-LEAK-WAITING"],
+    });
+  });
+
+  /*
+  FNXC:PlanningAdmissionStall 2026-09-25-18:20 (RUFU-273):
+  The row-side half of the same incident. FN-8600 made the withheld gate answerable by query; the
+  operator standing at the board still saw a card that said nothing. These cases pin that the SAME
+  refusal also lands on the card, that it does not land on a card that was not refused, and that a
+  sustained stall refreshes on the floor rather than every 15 s poll.
+  */
+  it("records the throttle episode on the card the cap refused", async () => {
+    const patches: RecordedPatch[] = [];
+    const store = createStore([eligibleTodoTask("FN-273-THROTTLED")], recorded, {}, patches);
+    await pollWithExhaustedProjectCapacity(store);
+
+    const written = patches.filter((p) => p.patch && "planAdmissionStall" in p.patch);
+    expect(written.map((p) => p.taskId)).toEqual(["FN-273-THROTTLED"]);
+    const episode = written[0].patch!.planAdmissionStall as Record<string, unknown>;
+    expect(episode.code).toBe("plan-admission-throttled");
+    expect(typeof episode.firstAt).toBe("string");
+    expect(typeof episode.lastAt).toBe("string");
+    expect(episode.stallCount).toBe(1);
+    /*
+    The episode carries ids, counts, and timestamps ONLY — the same metadata discipline the run-audit
+    row two lines above follows. A title/description/reason field appearing here is the regression.
+    */
+    expect(Object.keys(episode).sort()).toEqual(["ageMs", "code", "firstAt", "lastAt", "signature", "stallCount"]);
+    expect(typeof episode.ageMs).toBe("number");
+    expect(JSON.stringify(episode)).not.toContain("favorite projects");
+  });
+
+  it("never stamps a card the throttle did not refuse", async () => {
+    const patches: RecordedPatch[] = [];
+    const store = createStore([eligibleTodoTask("FN-273-ROOM")], recorded, { maxConcurrent: 3 }, patches);
+    const processor = new TriageProcessor(store, "/tmp/rufu-273-throttle-root", {});
+    vi.spyOn(processor, "specifyTask").mockResolvedValue(undefined);
+    (processor as unknown as { running: boolean }).running = true;
+    await (processor as unknown as { poll: () => Promise<void> }).poll();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(patches.filter((p) => p.patch && "planAdmissionStall" in p.patch)).toEqual([]);
+  });
+
+  it("refreshes a sustained stall at most once per refresh floor, not once per poll", async () => {
+    const patches: RecordedPatch[] = [];
+    const store = createStore([eligibleTodoTask("FN-273-SUSTAINED")], recorded, {}, patches);
+    const processor = new TriageProcessor(store, "/tmp/rufu-273-throttle-root", {});
+    (processor as unknown as { running: boolean }).running = true;
+    const poll = (processor as unknown as { poll: () => Promise<void> }).poll.bind(processor);
+
+    // Four polls of the same steady stall = the 15 s poll repeating four times.
+    for (let pass = 0; pass < 4; pass++) {
+      await poll();
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    const episodeWrites = patches.filter((p) => p.patch && "planAdmissionStall" in p.patch);
+    expect(episodeWrites).toHaveLength(1);
+    // And the one write is a real episode, not an empty patch that only satisfies the counter.
+    expect((episodeWrites[0].patch!.planAdmissionStall as Record<string, unknown>).code).toBe("plan-admission-throttled");
+
+    // Aging the stored episode PAST the floor (a stall the poll has not restamped in one floor)
+    // is what lets the next poll refresh `lastAt` instead of skipping.
+    const aged = new Date(Date.now() - PLAN_ADMISSION_STALL_REFRESH_FLOOR_MS - 1_000).toISOString();
+    (store.listTasks as unknown as { mockResolvedValue: (v: Task[]) => void }).mockResolvedValue([
+      runningTask("FN-RUNNING"),
+      {
+        ...eligibleTodoTask("FN-273-SUSTAINED"),
+        sourceMetadata: {
+          planAdmissionStall: {
+            code: "plan-admission-throttled",
+            firstAt: "2026-07-26T15:37:52.786Z",
+            lastAt: aged,
+            stallCount: 1,
+          },
+        },
+      },
+    ]);
+    await poll();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const refreshed = patches.filter((p) => p.patch && "planAdmissionStall" in p.patch);
+    expect(refreshed).toHaveLength(2);
+    const second = refreshed[1].patch!.planAdmissionStall as Record<string, unknown>;
+    // A same-code repeat preserves the origin of the episode and counts the repeat.
+    expect(second.firstAt).toBe("2026-07-26T15:37:52.786Z");
+    expect(second.stallCount).toBe(2);
   });
 
   it("carries no prompt, title, or reason prose — ids and counts only", async () => {

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { API_JSON_HEADERS } from "../test/apiRequestHeaders";
+import type { PlanningSession } from "../api/planning/planning";
 import {
   fetchTaskDetail,
   uploadAttachment,
@@ -10,12 +11,9 @@ import {
   updateTask,
   createTask,
   connectPlanningStream,
-  connectSubtaskStream,
   connectMissionInterviewStream,
   assignTask,
   fetchAgentTasks,
-  archiveTask,
-  unarchiveTask,
   revertTask,
   deleteTask,
   ApiRequestError,
@@ -59,7 +57,6 @@ import {
   resumeProject,
   fetchFirstRunStatus,
   fetchGlobalConcurrency,
-  updateGlobalConcurrency,
   fetchPiSettings,
   updatePiSettings,
   installPiPackage,
@@ -88,6 +85,7 @@ const TASK_TOKEN_USAGE_FIXTURE = {
   inputTokens: 1000,
   outputTokens: 300,
   cachedTokens: 125,
+  cacheWriteTokens: 0,
   totalTokens: 1425,
   firstUsedAt: "2026-04-24T08:00:00.000Z",
   lastUsedAt: "2026-04-24T09:30:00.000Z",
@@ -498,59 +496,7 @@ describe("Git Management API", () => {
     });
   });
 
-  describe("archiveTask", () => {
-    it("sends POST to archive endpoint", async () => {
-      const archivedTask: Task = { ...FAKE_DETAIL, column: "archived" };
-      globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(true, archivedTask));
 
-      const response = await archiveTask("FN-001");
-
-      expect(response.column).toBe("archived");
-      expect(globalThis.fetch).toHaveBeenCalledWith("/api/tasks/FN-001/archive", {
-        headers: API_JSON_HEADERS,
-        method: "POST",
-      });
-    });
-
-    it("sends removeLineageReferences=true when archive lineage unlink is requested", async () => {
-      const archivedTask: Task = { ...FAKE_DETAIL, column: "archived" };
-      globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(true, archivedTask));
-
-      await archiveTask("FN-001", undefined, { removeLineageReferences: true });
-
-      expect(globalThis.fetch).toHaveBeenCalledWith("/api/tasks/FN-001/archive?removeLineageReferences=true", {
-        headers: API_JSON_HEADERS,
-        method: "POST",
-      });
-    });
-
-    it("throws on error", async () => {
-      globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(false, { error: "Task not in done" }, 400));
-
-      await expect(archiveTask("FN-001")).rejects.toThrow("Task not in done");
-    });
-  });
-
-  describe("unarchiveTask", () => {
-    it("sends POST to unarchive endpoint", async () => {
-      const unarchivedTask: Task = { ...FAKE_DETAIL, column: "done" };
-      globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(true, unarchivedTask));
-
-      const response = await unarchiveTask("FN-001");
-
-      expect(response.column).toBe("done");
-      expect(globalThis.fetch).toHaveBeenCalledWith("/api/tasks/FN-001/unarchive", {
-        headers: API_JSON_HEADERS,
-        method: "POST",
-      });
-    });
-
-    it("throws on error", async () => {
-      globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(false, { error: "Task not in archived" }, 400));
-
-      await expect(unarchiveTask("FN-001")).rejects.toThrow("Task not in archived");
-    });
-  });
 
   /*
   FNXC:TaskRevert 2026-07-05-00:00 (FN-7525):
@@ -1030,7 +976,7 @@ describe("Planning Mode API", () => {
       const response = { sessionId: "plan-123", currentQuestion: FAKE_QUESTION, summary: null };
       globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(true, response));
 
-      const result = await respondToPlanning("plan-123", { scope: "small" });
+      const result = (await respondToPlanning("plan-123", { scope: "small" })) as PlanningSession;
 
       expect(result.sessionId).toBe("plan-123");
       expect(globalThis.fetch).toHaveBeenCalledWith("/api/planning/respond", {
@@ -1044,7 +990,7 @@ describe("Planning Mode API", () => {
       const response = { sessionId: "plan-123", currentQuestion: null, summary: FAKE_SUMMARY };
       globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(true, response));
 
-      const result = await respondToPlanning("plan-123", { final: "yes" });
+      const result = (await respondToPlanning("plan-123", { final: "yes" })) as PlanningSession;
 
       expect(result.summary).toEqual(FAKE_SUMMARY);
       expect(result.currentQuestion).toBeNull();

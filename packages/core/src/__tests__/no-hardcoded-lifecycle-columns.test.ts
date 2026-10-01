@@ -56,6 +56,11 @@ const NON_COLUMN_RECEIVERS: ReadonlySet<string> = new Set([
   "agent",
   "purpose",
   "lane",
+  // FNXC:SyncMerge0924 2026-09-24-14:20: RUFU-287's `AssignedTaskRankRoles.wip`/`hold` are ROLE SLOTS
+  // whose legacy-default ids are defined once (LEGACY_RANK_ROLES) and meant to be overridden by
+  // caller-resolved roles. A default-table property assignment is not a lifecycle guard; comparing
+  // against it happens in resolved ids, not here.
+  "wip",
 ]);
 
 /**
@@ -228,9 +233,15 @@ exists to stop: a new hardcoded guard could be added freely inside that headroom
 the TaskCard guard that hid review-lane progress from operators was one of those tolerated sites,
 and the ratchet had no way to notice it. A ceiling that sits far above the count measures nothing.
 */
+/*
+FNXC:LifecycleRatchet 2026-09-14-22:10 (merge origin/main 2026-09-14):
+`todo` rose 12 -> 13 as a UNION artifact — both lineages added one legitimate todo-column guard
+each (upstream's Alpha dismissal guard + our hold-release/merge-door guard), and each tree was
+green at its own 12. Review the union's guard list before ever accepting another bump.
+*/
 const CEILINGS: Record<string, number> = {
   triage: 11,
-  todo: 12,
+  todo: 13,
   "in-progress": 72,
   "in-review": 28,
 };

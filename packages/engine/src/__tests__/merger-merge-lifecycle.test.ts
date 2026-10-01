@@ -1058,7 +1058,17 @@ describe("aiMergeTask abort handling", () => {
 
     mockedExecSync.mockImplementation((cmd: any) => {
       const cmdStr = String(cmd);
-      if (cmdStr === "pnpm test") {
+      /*
+      FNXC:VerificationResourceBound 2026-09-10-13:09:
+      The deterministic verification spawn now carries the resource-bound wrapper
+      (`exec systemd-run --user --scope … sh -c '<cmd>'` or `exec nice/ionice … sh -c '<cmd>'`)
+      on hosts where the primitives exist, so the abort trigger must key on the configured
+      command surviving inside the wrapped string, not on an exact whole-command match.
+      All three rungs embed the original command verbatim, so `includes` matches scope,
+      priority, and bare alike; the assertion (abort during verification must reject with
+      MergeAbortedError) is unchanged.
+      */
+      if (cmdStr.includes("pnpm test")) {
         controller.abort();
         return "" as any;
       }

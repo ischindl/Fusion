@@ -22,7 +22,6 @@ import {
   type Task,
   type ColumnId,
   type InsightCategory,
-  type TaskPriority,
   type InsightStatus,
   type InsightRunStatus,
   type InsightRunTrigger,
@@ -31,7 +30,6 @@ import {
   type AgentUpdateInput,
   getTaskDuplicateLineage,
   resolveAgentProvisioningPolicy,
-  TASK_PRIORITIES,
   MAX_TASK_LIST_TEXT_CHARS,
   MAX_TASK_MESSAGE_LENGTH,
   resolveSecretAccessPolicy,
@@ -48,12 +46,12 @@ import {
   type ApprovalRequestActorSnapshot,
   type SecretScope,
   declaresAnyLifecycleTrait,
-  resolveTaskLifecycleColumns,
   resolveNodeOverrideLanes,
   resolveLifecycleColumns,
   resolveWorkflowIrForTaskWithProvenance,
   resolveWorkflowIrForTask,
   resolveReviewColumns,
+  describeHeartbeatThrottle,
 } from "@fusion/core";
 import {
   getGhErrorMessage,
@@ -73,7 +71,6 @@ import {
   type FinalizePlanOverride,
   fetchWebContent,
   assertNoSecretPlaintext,
-  installBaselineArchiveWorktreeDisposer,
   emitGoalRetrievalAudit,
   createWorkflowAuthoringTools,
   workflowListParams,
@@ -94,6 +91,7 @@ import {
   resolveGateOutcome,
   resolveFeatureRepairTargets,
   reconcileMissionState,
+  storeErrorResult,
 } from "@fusion/engine";
 import * as dashboard from "@fusion/dashboard";
 import { resolve, relative, isAbsolute, sep, basename, extname, join } from "node:path";
@@ -121,7 +119,14 @@ function truncateAgentDiagnosticText(value: string, maxChars: number): string {
   return value.length > maxChars ? `${value.slice(0, maxChars)}…` : value;
 }
 
-function formatAgentErrorRecoveryLine(metadata: Record<string, unknown> | null | undefined): string | null {
+/**
+ * RUFU-286: takes the agent record (not just `metadata`) so the throttle clause can come from the
+ * one shared reader. `describeHeartbeatThrottle` is what decides whether a re-probe is pending at
+ * all; re-deriving `cooldownUntilAt > now` here would be a second authority whose expiry could
+ * drift from the two engine lanes that read it.
+ */
+function formatAgentErrorRecoveryLine(agent: AgentDiagnosticLineInput): string | null {
+  const metadata = agent.metadata;
   const heartbeatRaw = metadata?.heartbeatErrorRecovery;
   const heartbeat = heartbeatRaw && typeof heartbeatRaw === "object" ? heartbeatRaw as Record<string, unknown> : null;
   const heartbeatAttempts = typeof heartbeat?.consecutiveAttempts === "number" && Number.isFinite(heartbeat.consecutiveAttempts)
@@ -142,6 +147,19 @@ function formatAgentErrorRecoveryLine(metadata: Record<string, unknown> | null |
   const details: string[] = [`attempts ${attempts}`];
   if (durable?.exhausted === true) details.push("exhausted");
   if (typeof durable?.nextRetryAt === "string") details.push(`next ${durable.nextRetryAt}`);
+  /*
+  FNXC:ProviderThrottleIsTransient 2026-09-30-14:17 (RUFU-286):
+  A provider throttle is transient back-off with an armed re-probe, so a reader must be able to
+  tell "waiting on the provider until <ISO>" from an exhausted park that needs a restart. The
+  streak is the pressure signal: attempts 1, throttle 4 in a row is a sustained provider limit,
+  not a blip, and that distinction is what `fn agent errors` was built to answer.
+  */
+  const throttle = describeHeartbeatThrottle(agent);
+  if (throttle?.kind === "throttle-cooldown") {
+    details.push(`throttle cooldown until ${throttle.retryingAt} (streak ${throttle.throttleStreak})`);
+  } else if (throttle?.kind === "throttle-exhausted") {
+    details.push(`throttle retries exhausted (streak ${throttle.throttleStreak})`);
+  }
   return `Error Recovery: ${details.join(", ")}`;
 }
 
@@ -158,7 +176,7 @@ function appendAgentDiagnosticLines(parts: string[], agent: AgentDiagnosticLineI
   if (agent.pauseReason) {
     parts.push(`Pause Reason: ${truncateAgentDiagnosticText(agent.pauseReason, 180)}`);
   }
-  const recoveryLine = formatAgentErrorRecoveryLine(agent.metadata);
+  const recoveryLine = formatAgentErrorRecoveryLine(agent);
   if (recoveryLine) {
     parts.push(recoveryLine);
   }
@@ -304,9 +322,24 @@ interface CachedStoreEntry {
 FNXC:ExtensionStoreRegistry 2026-07-16-15:20:
 Agent-read tools loaded through Pi's additionalExtensionPaths can be evaluated as a different ESM module instance from the CLI host that called setHostTaskStore. Keep cache, inflight, and cooldown state in one process registry so fn_list_agents and fn_agent_show reuse the host pool instead of opening a second backend that can wedge on schema/pool contention for 30 seconds.
 */
+/*
+FNXC:TaskStoreBootDeadline 2026-09-23-06:45:
+STAS-251. One boot attempt per project root, carrying when it started and whether a waiter
+already gave up on it, so the terminal outcome can be labelled and measured whichever order
+the two finish in. Node cannot cancel a store boot, so the deadline's job is to be honest:
+report the elapsed time, name the reason, and stop every later caller from re-paying the
+same budget against the same stalled attempt.
+*/
+interface StoreBootAttempt {
+  readonly promise: Promise<TaskStore>;
+  readonly startedAtMs: number;
+  /** Records the abandoned deadline, arms the shared backoff, and relabels the orphan's own outcome as late-*. */
+  reportDeadline(budgetMs: number): void;
+}
+
 interface ExtensionStoreState {
   readonly cache: Map<string, CachedStoreEntry>;
-  readonly bootInflight: Map<string, Promise<TaskStore>>;
+  readonly bootInflight: Map<string, StoreBootAttempt>;
   readonly bootFailureCooldown: Map<string, { untilMs: number; error: string }>;
   readonly knownProjectRoots: Set<string>;
 }
@@ -315,7 +348,7 @@ const extensionStoreStateKey = Symbol.for("@runfusion/fusion/extension-store-sta
 const extensionStoreGlobal = globalThis as typeof globalThis & { [key: symbol]: ExtensionStoreState | undefined };
 const extensionStoreState = extensionStoreGlobal[extensionStoreStateKey] ?? {
   cache: new Map<string, CachedStoreEntry>(),
-  bootInflight: new Map<string, Promise<TaskStore>>(),
+  bootInflight: new Map<string, StoreBootAttempt>(),
   bootFailureCooldown: new Map<string, { untilMs: number; error: string }>(),
   knownProjectRoots: new Set<string>(),
 };
@@ -333,7 +366,12 @@ const storeBootInflight = extensionStoreState.bootInflight;
 /*
 FNXC:MergeQueue 2026-07-15-11:20:
 After a hard boot failure, brief cooldown prevents stampede re-boots against a broken backend.
-Timeout alone does not set cooldown — the orphan inflight may still succeed and populate storeCache.
+
+FNXC:TaskStoreBootDeadline 2026-09-23-06:45:
+STAS-251: a reported deadline now arms this same backoff, which is what turns the boot
+ceiling into an actual deadline — later callers fail at once with the recorded reason instead
+of each re-paying the full budget against the same stalled attempt. The orphan is still not
+wasted: storeCache is read before the backoff, so a boot that lands late serves everyone.
 */
 const storeBootFailureCooldown = extensionStoreState.bootFailureCooldown;
 const BOOT_FAILURE_COOLDOWN_MS = 5_000;
@@ -536,6 +574,111 @@ When dashboard/serve/daemon injects the live engine TaskStore via setHostTaskSto
 */
 let extensionStoreBootFactory: typeof createTaskStoreForBackend = createTaskStoreForBackend;
 
+/*
+FNXC:TaskStoreBootAttribution 2026-09-28-08:55:
+RUFU-388 rewrote this comment's closing sentence. It promised a durable record: that the lines were
+written to a log the engine keeps and that a later stall gets diagnosed from them. RUFU-377 measured that
+promise and found no such rows anywhere in the sighting window, because nothing in the machine persists
+them. The function writes with `console.warn`, so the line reaches only the console of the process that
+loaded the extension, and what becomes of that console is the loader's choice: the runtime that hosts the
+extension forks it with `silent: true` and forwards IPC alone
+(`packages/engine/src/runtimes/child-process-runtime.ts`), so a forked worker's stdout/stderr are piped
+and stored nowhere, while a dashboard/serve/daemon host surfaces its own process console instead. Neither
+shape produces a run-audit row. So the line attributes a boot stall only for whoever is watching that
+process while it is live, and a stall that already happened is not recoverable from it. The durable form
+of this invariant is the "`[taskstore-boot]` is process-local console output, not telemetry" bullet of
+"Extension TaskStore boot budget" in docs/architecture.md.
+*/
+/**
+ * Emit one machine-readable line per boot outcome. Every boot used to end as either silence
+ * or a bare "timed out after 30000ms" with no elapsed time, no phase, and no reason, so a
+ * repeated stall left nothing to attribute. Live observation is the whole reach: the line is
+ * console output of the loading process and nothing downstream retains it — see the FNXC block
+ * above for what each loader keeps and what it discards.
+ */
+function reportStoreBoot(
+  projectRoot: string,
+  outcome: "ok" | "failed" | "deadline" | "late-success" | "late-failure" | "aborted",
+  durationMs: number,
+  detail?: string,
+): void {
+  console.warn(
+    `[taskstore-boot] ${JSON.stringify({ projectRoot, outcome, durationMs, ...(detail ? { detail } : {}) })}`,
+  );
+}
+
+/**
+ * Start the single boot attempt for a project root and keep it observable.
+ *
+ * Node has no structured cancel for a store boot, so the attempt outlives a reported deadline
+ * by design. What it must never do is end unrecorded: whichever of the two finishes first,
+ * the outcome and its duration are written down.
+ */
+function startStoreBoot(projectRoot: string): StoreBootAttempt {
+  const startedAtMs = Date.now();
+  /* Set when a waiter reports the deadline; the orphan then labels itself late-* instead of ok. */
+  let deadlineReported = false;
+
+  const promise = (async () => {
+    try {
+      /*
+      FNXC:TaskStoreLightBoot 2026-09-26-19:30 (RUFU-275):
+      The transient agent-tool boot runs LIGHT: no archive reintegration, no forced patchnode
+      reconcile. Measured at saneca calibre those two passes are the store-open bytes (full-row
+      archived-lane reads + whole task_json parses) that pushed the open past the 30 s budget
+      below. Nothing is lost: host stores are served from setHostTaskStore before any factory
+      boot (FN-7956 path, unchanged), the same passes run as engine maintenance and on every
+      host-path boot, and completion-time writers capture ledger entries in their own
+      transactions. Host-path boots keep the full backlog — the flags default false.
+      */
+      const boot = await extensionStoreBootFactory({
+        rootDir: projectRoot,
+        skipArchiveReintegrationOnInit: true,
+        skipPatchnodeReconcileOnInit: true,
+      });
+      storeBootFailureCooldown.delete(projectRoot);
+      // Do not overwrite a host-injected external store that landed while we were booting.
+      const raced = storeCache.get(projectRoot);
+      if (raced?.external) {
+        await boot.shutdown().catch(() => undefined);
+        reportStoreBoot(projectRoot, deadlineReported ? "late-success" : "ok", Date.now() - startedAtMs, "host-injected store served instead");
+        return raced.store;
+      }
+      /* FNXC:TaskLifecycleTools 2026-08-15-06:35: Agent tools intentionally install the protective baseline with no force path; only a human CLI invocation can override live removal. */
+      storeCache.set(projectRoot, { store: boot.taskStore, shutdown: boot.shutdown });
+      reportStoreBoot(projectRoot, deadlineReported ? "late-success" : "ok", Date.now() - startedAtMs);
+      return boot.taskStore;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      storeBootFailureCooldown.set(projectRoot, {
+        untilMs: Date.now() + BOOT_FAILURE_COOLDOWN_MS,
+        error: message,
+      });
+      reportStoreBoot(projectRoot, deadlineReported ? "late-failure" : "failed", Date.now() - startedAtMs, message);
+      throw error;
+    } finally {
+      storeBootInflight.delete(projectRoot);
+    }
+  })();
+  // Keep a handler attached so timed-out waiters cannot leave an unhandledRejection when boot fails late.
+  void promise.catch(() => undefined);
+
+  return {
+    promise,
+    startedAtMs,
+    reportDeadline(budgetMs: number): void {
+      deadlineReported = true;
+      const elapsedMs = Date.now() - startedAtMs;
+      const detail = `abandoned after ${elapsedMs}ms (budget ${budgetMs}ms); orphan boot continues and may still populate the cache`;
+      storeBootFailureCooldown.set(projectRoot, {
+        untilMs: Date.now() + BOOT_FAILURE_COOLDOWN_MS,
+        error: detail,
+      });
+      reportStoreBoot(projectRoot, "deadline", elapsedMs, detail);
+    },
+  };
+}
+
 async function getStore(
   cwd: string,
   signal?: AbortSignal,
@@ -554,67 +697,31 @@ async function getStore(
 
   const effectiveSignal = signal ?? extensionToolSignal.getStore();
 
-  let inflight = storeBootInflight.get(projectRoot);
-  if (!inflight) {
-    /*
-    FNXC:PostgresFinalCutover 2026-07-14-17:20: Agent tools cache only the
-    PostgreSQL factory result; the removed SQLite opt-out is an explicit error.
+  /*
+  FNXC:PostgresFinalCutover 2026-07-14-17:20: Agent tools cache only the
+  PostgreSQL factory result; the removed SQLite opt-out is an explicit error.
 
-    FNXC:MergeQueue 2026-07-15-11:08:
-    First extension tool call without a host-injected store boots a TaskStore (CLI path).
-    Bound that boot and coalesce concurrent callers so a wedged boot cannot park every fn_* tool forever.
-
-    FNXC:MergeQueue 2026-07-15-11:20:
-    Boot failure sets a short cooldown to avoid stampede re-boots. Tool timeout does not cancel the orphan boot; on success it still populates storeCache for later calls.
-    */
-    inflight = (async () => {
-      try {
-        const boot = await extensionStoreBootFactory({ rootDir: projectRoot });
-        storeBootFailureCooldown.delete(projectRoot);
-        // Do not overwrite a host-injected external store that landed while we were booting.
-        const raced = storeCache.get(projectRoot);
-        if (raced?.external) {
-          await boot.shutdown().catch(() => undefined);
-          return raced.store;
-        }
-        /* FNXC:TaskLifecycleTools 2026-08-15-06:35: Agent tools intentionally install the protective baseline with no force path; only a human CLI invocation can override live removal. */
-        installBaselineArchiveWorktreeDisposer(boot.taskStore, {rootDir: projectRoot, getSettings: () => boot.taskStore.getSettings()});
-        storeCache.set(projectRoot, { store: boot.taskStore, shutdown: boot.shutdown });
-        return boot.taskStore;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        storeBootFailureCooldown.set(projectRoot, {
-          untilMs: Date.now() + BOOT_FAILURE_COOLDOWN_MS,
-          error: message,
-        });
-        throw error;
-      } finally {
-        storeBootInflight.delete(projectRoot);
-      }
-    })();
-    // Keep a handler attached so timed-out waiters cannot leave an unhandledRejection when boot fails late.
-    void inflight.catch(() => undefined);
-    storeBootInflight.set(projectRoot, inflight);
-  }
+  FNXC:MergeQueue 2026-07-15-11:08:
+  First extension tool call without a host-injected store boots a TaskStore (CLI path).
+  Coalesce concurrent callers so a wedged boot cannot park every fn_* tool forever.
+  */
+  const attempt = storeBootInflight.get(projectRoot) ?? startStoreBoot(projectRoot);
+  storeBootInflight.set(projectRoot, attempt);
 
   try {
     return await raceWithTimeoutAndAbort(
-      inflight,
+      attempt.promise,
       bootTimeoutMs,
       effectiveSignal,
       "fn extension TaskStore boot",
     );
   } catch (error) {
+    /* Only an expired budget abandons the attempt; a rejected boot already recorded itself. */
     const message = error instanceof Error ? error.message : String(error);
-    if (/timed out after \d+ms/.test(message)) {
-      /*
-      FNXC:MergeQueue 2026-07-15-11:20:
-      Timeout unblocks the tool turn only — the orphan createTaskStoreForBackend continues. Log so operators do not assume the dual-store boot stopped.
-      */
-      console.warn(
-        `[fusion-extension] TaskStore boot still running after ${EXTENSION_STORE_BOOT_TIMEOUT_MS}ms ` +
-          `(projectRoot=${projectRoot}); orphan boot continues and may populate the cache later`,
-      );
+    if (isAbortError(error)) {
+      reportStoreBoot(projectRoot, "aborted", Date.now() - attempt.startedAtMs);
+    } else if (/timed out after \d+ms/.test(message)) {
+      attempt.reportDeadline(bootTimeoutMs);
     }
     throw error;
   }
@@ -627,8 +734,7 @@ async function getStore(
  */
 export function setHostTaskStore(projectRoot: string, store: TaskStore): void {
   knownProjectRoots.add(resolve(projectRoot));
-  // FNXC:WorkflowLifecycle 2026-07-16-10:00: Install before caching an injected host store because getStore returns cached stores without a construction pass; this preserves executor-less archive cleanup during host startup.
-  installBaselineArchiveWorktreeDisposer(store, {rootDir: projectRoot, getSettings: () => store.getSettings()});
+  // FNXC:TaskArchiveRemoval 2026-09-04-18:25: Host-injected stores are canonicalized before caching so every tool shares the already-initialized store and its one-time historical reintegration pass.
   const canonical = resolveProjectRoot(projectRoot);
   storeCache.set(canonical, { store, external: true });
   storeBootInflight.delete(canonical);
@@ -1129,7 +1235,36 @@ async function applyAgentPolicyGateForExtensionTool(
   const runId = typeof ctx.runId === "string" && ctx.runId ? ctx.runId : undefined;
 
   try {
-    const store = await getStore(cwd);
+    /*
+    FNXC:TaskStoreLightBoot 2026-09-26-19:30 (RUFU-275):
+    Honest denial cause. A store that cannot BOOT is not a permission-policy failure — the
+    field incident denied every fn_* call with `agent-permission-policy-unavailable` while the
+    real cause was the 30 s boot timeout, sending operators hunting the wrong settings. The
+    boot phase fails closed under its own `taskstore-boot-unavailable` cause (same deny shape,
+    carrying the concrete boot error); the outer catch below stays the home of genuine
+    policy-resolution unavailability. Operator/principal precedence is unchanged above.
+    */
+    let store: TaskStore;
+    try {
+      store = await getStore(cwd);
+    } catch (error) {
+      const bootMessage = error instanceof Error ? error.message : String(error);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `${toolName} denied: the project TaskStore could not be started (${bootMessage}). Failing closed — ask the operator to run this tool.`,
+          },
+        ],
+        isError: true as const,
+        details: {
+          deniedFor: "taskstore-boot-unavailable",
+          tool: toolName,
+          error: bootMessage,
+          ...(callerAgentId ? { agentId: callerAgentId } : {}),
+        },
+      };
+    }
     const settings = await store.getSettings();
 
     let agentRow: { name?: string; permissionPolicy?: AgentPermissionPolicy } | null = null;
@@ -1418,28 +1553,17 @@ function getTaskSourceLabel(task: Pick<Task, "sourceType" | "sourceMetadata" | "
   }
 }
 
-async function formatDuplicateLineageLine(task: Task, store: TaskStore): Promise<string | null> {
+function formatDuplicateLineageLine(task: Task): string | null {
   const lineage = getTaskDuplicateLineage(task);
-  if (lineage.length === 0) return null;
-
-  const labels = await Promise.all(lineage.map(async (id) => {
-    try {
-      const linked = await store.getTask(id);
-      /* FNXC:WorkflowLifecycleColumns 2026-08-02-12:45 (fleet): the board's archived column — the same marker
-         as the CLI command's copy of this helper, converted there in this PR. */
-      const linkedLifecycle = await resolveTaskLifecycleColumns(store, id);
-      return linked.column === (linkedLifecycle?.archived ?? "archived") ? `${id} (archived)` : id;
-    } catch {
-      return id;
-    }
-  }));
-
-  return `Duplicate of: ${labels.join(", ")}`;
+  return lineage.length > 0 ? `Duplicate of: ${lineage.join(", ")}` : null;
 }
 
 export function formatTaskLine(t: Task): string {
-  const label =
-    t.title || t.description.slice(0, 60) + (t.description.length > 60 ? "…" : "");
+  // FNXC:TaskTitleDerivation 2026-09-26-02:43: RUFU-295 — the pi-extension listing used to show a raw
+  // 60-character description prefix (plus a hand-rolled ellipsis) for a titleless card, so a
+  // spec-shaped description surfaced as `## Pôvodný popis` or `PREMISA: …`. Same derivation as the
+  // board, same no-suffix bound.
+  const label = t.title?.trim() || fusionCore.deriveTaskLabelFromDescription(t.description, 60);
   const source = getTaskSourceLabel(t);
   const sourceSuffix = source ? ` [via: ${source}]` : "";
   const deps = t.dependencies.length ? ` [deps: ${t.dependencies.join(", ")}]` : "";
@@ -1722,13 +1846,25 @@ export default function kbExtension(pi: ExtensionAPI) {
       "Create a new task on the Fusion task board. The task enters the planning column " +
       "where the AI planning agent will plan it into a full prompt with steps, " +
       "file scope, and acceptance criteria. Optionally pass workflow_id to select " +
-      "a workflow at creation time; use fn_workflow_list to discover valid IDs.",
+      "a workflow at creation time; use fn_workflow_list to discover valid IDs. " +
+      "Optionally pass title to name the card in your own words; omitted, the label is derived from " +
+      "the first sentence of the description.",
     promptSnippet: "Create a task on the Fusion AI-orchestrated task board",
     promptGuidelines: [
       "Use fn_task_create for task tracking — be descriptive so the planning agent can write a good plan.",
       "Include the problem AND desired outcome. For bugs, describe current vs expected behavior.",
     ],
     parameters: Type.Object({
+      /*
+      FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): pi's create tool gained the same optional explicit
+      title the other create surfaces have. It was the one agent-reachable create route with no way to name a
+      card, so a session that knew the right label still got a first-line-derived one.
+      */
+      title: Type.Optional(
+        Type.String({
+          description: "Short card label (e.g. 'Fix lockfile drift in plugin workspaces'). Omitted, the label is derived from the first sentence of description.",
+        }),
+      ),
       description: Type.String({ description: "What needs to be done — be descriptive" }),
       depends: Type.Optional(
         Type.Array(Type.String(), {
@@ -1740,9 +1876,8 @@ export default function kbExtension(pi: ExtensionAPI) {
           description: "Agent ID to assign this task to (e.g. 'agent-abc123')",
         }),
       ),
-      priority: Type.Optional(
-        StringEnum([...TASK_PRIORITIES], { description: "Task priority (low, normal, high, urgent)" }) as unknown as TSchema,
-      ),
+      /* FNXC:TaskQueueOrder 2026-09-17-12:07: FN-509 removed the `priority` parameter. Tasks run in
+         arrival order; an operator raises one explicitly with Boost on the card. */
       workflow_id: Type.Optional(
         Type.String({
           description:
@@ -1810,8 +1945,15 @@ export default function kbExtension(pi: ExtensionAPI) {
           const messageStore = layer
             ? new fusionCore.MessageStore(null, { asyncLayer: layer })
             : new fusionCore.MessageStore(store.getDatabase());
-          const title = params.description.split(/\r?\n/, 1)[0]?.trim().slice(0, 80) || "Follow-up task";
-          await messageStore.sendMessage({ fromId: fnCtx.agentId ?? "ephemeral-worker", fromType: "agent", toId: fusionCore.DASHBOARD_USER_ID, toType: "user", type: "agent-to-user", content: `Task proposal awaiting validation: ${title}`, metadata: { kind: "task-proposal", proposalStatus: "pending", proposalIdempotencyKey: randomUUID(), proposedTask: { title, description: params.description, priority: params.priority as TaskPriority | undefined, workflowId: params.workflow_id, dependencies: params.depends } } });
+          /*
+          FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): the proposal line the operator approves used the
+          raw first line of the description, so a markdown-first description proposed a card titled with its
+          heading. An explicit title wins, otherwise the shared derivation labels it.
+          */
+          const derivedLabel = fusionCore.deriveTaskLabelFromDescription(params.description, 80);
+          const title = params.title?.trim()
+            || (derivedLabel === fusionCore.FALLBACK_TASK_TITLE ? "Follow-up task" : derivedLabel);
+          await messageStore.sendMessage({ fromId: fnCtx.agentId ?? "ephemeral-worker", fromType: "agent", toId: fusionCore.DASHBOARD_USER_ID, toType: "user", type: "agent-to-user", content: `Task proposal awaiting validation: ${title}`, metadata: { kind: "task-proposal", proposalStatus: "pending", proposalIdempotencyKey: randomUUID(), proposedTask: { title, description: params.description, workflowId: params.workflow_id, dependencies: params.depends } } });
           return { content: [{ type: "text", text: "Task proposal submitted to the operator for validation; no task was created." }], details: { proposed: true } };
         }
       }
@@ -1873,10 +2015,11 @@ export default function kbExtension(pi: ExtensionAPI) {
           || (await store.resolveOriginWorkflowOverrideId("task-create"));
 
         const { task, wasDuplicate } = await createAgentTask(store, {
+          // FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): an explicit title is the caller's own words.
+          ...(params.title?.trim() ? { title: params.title.trim() } : {}),
           description: params.description.trim(),
           dependencies: params.depends,
           assignedAgentId: normalizedAgentId === null ? undefined : normalizedAgentId,
-          priority: params.priority as TaskPriority | undefined,
           ...(workflowId ? { workflowId } : {}),
           source: { sourceType: "api", sourceAgentId: fnCtx.agentId, sourceParentTaskId: fnCtx.taskId },
           githubTracking: resolvedTracking.enabled
@@ -1891,10 +2034,13 @@ export default function kbExtension(pi: ExtensionAPI) {
               : undefined,
         }, { rootDir: ctx.cwd, sourceAgentId: fnCtx.agentId, sourceTaskId: fnCtx.taskId });
 
-        const label =
-          task.description.length > 80
-            ? task.description.slice(0, 80) + "…"
-            : task.description;
+        /*
+        FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): the confirmation echoed a raw 80-char slice of the
+        description, so a caller that passed `title` still saw prose (and a markdown-first description echoed
+        its heading). The card's own label is what the board shows, so that is what this reports.
+        */
+        const label = task.title?.trim()
+          || fusionCore.deriveTaskLabelFromDescription(task.description, 80);
 
         /*
         FNXC:Workflows 2026-07-05-00:00:
@@ -1917,7 +2063,6 @@ export default function kbExtension(pi: ExtensionAPI) {
                 (task.assignedAgentId
                   ? `Assigned to: ${task.assignedAgentId}\n`
                   : "") +
-                `Priority: ${task.priority}\n` +
                 `Path: .fusion/tasks/${task.id}/`,
             },
           ],
@@ -1927,7 +2072,6 @@ export default function kbExtension(pi: ExtensionAPI) {
             column: task.column,
             dependencies: task.dependencies,
             assignedAgentId: task.assignedAgentId,
-            priority: task.priority,
           },
         };
       } catch (error) {
@@ -1950,11 +2094,11 @@ export default function kbExtension(pi: ExtensionAPI) {
     label: "fn: Update Task",
     description:
       "Update fields on an existing task. Supports modifying the title, " +
-      "description, dependencies, assigned agent, priority, and workflow_id after task creation. " +
+      "description, dependencies, assigned agent, and workflow_id after task creation. " +
       "Set workflow_id to a workflow ID to select it, or null to clear the workflow selection.",
     promptSnippet: "Update fields on an existing Fusion task",
     promptGuidelines: [
-      "Use fn_task_update to modify task title, description, dependencies, assigned agent, priority, or workflow_id after creation.",
+      "Use fn_task_update to modify task title, description, dependencies, assigned agent, or workflow_id after creation.",
       "Set workflow_id to null to clear a task's workflow selection and enabled workflow steps.",
       "At least one field must be provided to update.",
     ],
@@ -1980,9 +2124,8 @@ export default function kbExtension(pi: ExtensionAPI) {
           description: "Node ID override for this task, or null to clear",
         }),
       ),
-      priority: Type.Optional(
-        StringEnum([...TASK_PRIORITIES], { description: "Task priority (low, normal, high, urgent)" }) as unknown as TSchema,
-      ),
+      /* FNXC:TaskQueueOrder 2026-09-17-12:07: FN-509 removed the `priority` parameter. Tasks run in
+         arrival order; an operator raises one explicitly with Boost on the card. */
       workflow_id: Type.Optional(
         Type.Union([Type.String(), Type.Null()], {
           description:
@@ -2013,7 +2156,21 @@ export default function kbExtension(pi: ExtensionAPI) {
       const updatedFields: string[] = [];
 
       if (params.title !== undefined) {
-        updates.title = params.title.trim();
+        /*
+        FNXC:TaskTitleHygiene 2026-09-26-04:45 (RUFU-295): rename is now an agent-reachable operation on
+        every edge, so this one refuses the same junk shapes (`## heading`, a pasted multi-line body, an
+        over-budget wall of text) as `fn task rename` and the engine's `fn_task_update` instead of letting
+        the store write guard quietly substitute a derived label for the caller's words. A blank value is
+        still accepted: for this tool blank means "clear the title", which is the pre-existing contract.
+        */
+        const trimmedTitle = params.title.trim();
+        if (trimmedTitle.length > 0) {
+          const rejection = fusionCore.describeTaskTitleRejection(trimmedTitle);
+          if (rejection) {
+            return { content: [{ type: "text", text: `ERROR: title rejected (${rejection}). Nothing was persisted.` }], isError: true, details: { code: "TITLE_REJECTED" } };
+          }
+        }
+        updates.title = trimmedTitle;
         updatedFields.push("title");
       }
       if (params.description !== undefined) {
@@ -2110,10 +2267,7 @@ export default function kbExtension(pi: ExtensionAPI) {
         updates.nodeId = normalizedNodeId;
         updatedFields.push("nodeId");
       }
-      if (params.priority !== undefined) {
-        updates.priority = params.priority;
-        updatedFields.push("priority");
-      }
+      /* FNXC:TaskQueueOrder 2026-09-17-12:07: FN-509 removed the `priority` parameter here too. */
       if (params.workflow_id !== undefined) {
         if (params.workflow_id === null) {
           await store.clearTaskWorkflowSelection(task.id);
@@ -2149,11 +2303,7 @@ export default function kbExtension(pi: ExtensionAPI) {
                   },
                 };
               }
-              return {
-                content: [{ type: "text", text: `ERROR: ${message}` }],
-                isError: true,
-                details: { error: message },
-              };
+              return storeErrorResult("workflow selection", error);
             }
             updatedFields.push("workflowId");
           }
@@ -2162,7 +2312,7 @@ export default function kbExtension(pi: ExtensionAPI) {
 
       if (updatedFields.length === 0) {
         return {
-          content: [{ type: "text", text: "No fields to update. Provide at least one of: title, description, depends, agentId, nodeId, priority, workflow_id." }],
+          content: [{ type: "text", text: "No fields to update. Provide at least one of: title, description, depends, agentId, nodeId, workflow_id." }],
           isError: true,
           details: { error: "No fields provided" },
         };
@@ -2269,10 +2419,21 @@ export default function kbExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "fn_task_show",
     label: "fn: Show Task",
-    description: "Show full details for a task including steps, progress, and log entries.",
+    description: "Show full details for a task including steps, progress, and log entries. Pass commentIds to read comment or steering-comment bodies by id (e.g. the ids a wake delta named).",
     promptSnippet: "Show full details for a Fusion task",
     parameters: Type.Object({
       id: Type.String({ description: "Task ID (e.g. FN-001)" }),
+      /*
+      FNXC:CommentDelivery 2026-09-27-17:00 (RUFU-259):
+      This is the `fn_task_show` a task-execution session actually holds, so it is the surface the
+      RUFU-251 measurement proved could not return a comment body. The shared renderer lives in
+      `@fusion/core` (`tasks/task-comment-read.ts`) precisely so this registration, the engine
+      factory, and the planner lanes cannot disagree about what an advertised id returns.
+      */
+      commentIds: Type.Optional(Type.Array(Type.String(), {
+        description: "Optional comment or steering-comment ids to return bodies for. Resolved against both `comments` and `steeringComments`.",
+        maxItems: 20,
+      })),
     }),
 
     /*
@@ -2298,7 +2459,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       if (sourceLabel) {
         lines.push(`Created via: ${sourceLabel}`);
       }
-      const duplicateLineage = await formatDuplicateLineageLine(task, store);
+      const duplicateLineage = formatDuplicateLineageLine(task);
       if (duplicateLineage) {
         lines.push(duplicateLineage);
       }
@@ -2349,6 +2510,13 @@ export default function kbExtension(pi: ExtensionAPI) {
         }
       }
 
+      // Requested comment bodies (RUFU-259) — appended last so the card's own spec keeps priority.
+      const commentSection = fusionCore.renderTaskCommentSection(task, params.commentIds);
+      if (commentSection) {
+        lines.push("");
+        lines.push(commentSection);
+      }
+
       return {
         content: [{ type: "text", text: lines.join("\n").trimEnd() }],
         details: { task },
@@ -2390,6 +2558,7 @@ export default function kbExtension(pi: ExtensionAPI) {
       ]);
       return {
         content: [{ type: "text", text: buildTaskAgentLogReadText(entries, {
+          taskId: params.id,
           total,
           limit,
           offset,
@@ -2691,7 +2860,8 @@ export default function kbExtension(pi: ExtensionAPI) {
         /* FNXC:WorkflowResolvedColumns 2026-07-30-22:20: census-invisible moveTask DESTINATION — a call argument, not a comparison. This is an OPERATOR-triggered Retry: on a board that does not declare `todo` the move is REJECTED and the retry fails in the operator's face. The reply text below uses the SAME resolved value so it cannot name a lane the card did not go to. */
         const retryTarget = await fusionCore.resolveReboundTargetForTask(store, params.id);
         /* FNXC:ToolPermissionGates 2026-07-30-13:55: fn_task_retry is a user-facing lever — carry the user move source (target resolves by role). */
-        await store.moveTask(params.id, retryTarget, { preserveProgress: true, moveSource: "user" });
+        /* FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): the user source is the AUDIT trail; `parkOnHold: false` states RELEASE intent so the hold-lane park (reserved for a drag-back-to-stop) does not park the card the operator just asked to run — the collision with the AGENTS.md Move-Task contract ("Engine rebounds must not set userPaused") is gone. */
+        await store.moveTask(params.id, retryTarget, { preserveProgress: true, moveSource: "user", parkOnHold: false });
         return {
           content: [{ type: "text", text: `Retried ${params.id} → ${retryTarget} (unusable worktree session metadata cleared)` }],
           details: { taskId: params.id, newColumn: 'todo' },
@@ -2715,8 +2885,8 @@ export default function kbExtension(pi: ExtensionAPI) {
           );
           /* FNXC:WorkflowResolvedColumns 2026-07-30-22:20: census-invisible moveTask DESTINATION — same operator Retry path as above. */
           const executionRetryTarget = await fusionCore.resolveReboundTargetForTask(store, params.id);
-          /* FNXC:ToolPermissionGates 2026-07-30-13:55: fn_task_retry is a user-facing lever — carry the user move source (target resolves by role). */
-          await store.moveTask(params.id, executionRetryTarget, { preserveProgress: true, moveSource: "user" });
+          /* FNXC:ToolPermissionGates 2026-07-30-13:55: fn_task_retry is a user-facing lever — carry the user move source (target resolves by role). FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): parkOnHold:false = release intent, the user source stays as audit attribution. */
+          await store.moveTask(params.id, executionRetryTarget, { preserveProgress: true, moveSource: "user", parkOnHold: false });
           return {
             content: [{ type: "text", text: `Retried ${params.id} → ${executionRetryTarget} (execution failure, preserving step progress)` }],
             details: { taskId: params.id, newColumn: 'todo' },
@@ -2754,8 +2924,10 @@ export default function kbExtension(pi: ExtensionAPI) {
       Resolve once, then use that value everywhere the operator or a downstream tool reads it.
       */
       // FNXC:ToolPermissionGates 2026-07-26-13:55: user-facing retry move carries the user/hard-cancel source (Move-Task contract).
+      // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): parkOnHold:false states release intent —
+      // without it this generic branch self-inflicted the hold-lane park (RUFU-195 et al.) on a user-sourced move.
       const retryTarget = await fusionCore.resolveReboundTargetForTask(store, params.id);
-      await store.moveTask(params.id, retryTarget, { moveSource: "user" });
+      await store.moveTask(params.id, retryTarget, { moveSource: "user", parkOnHold: false });
 
       // Log the retry action
       await store.logEntry(params.id, "Retry requested via Fusion extension", `Task reset to ${retryTarget} for retry`);
@@ -2824,11 +2996,7 @@ export default function kbExtension(pi: ExtensionAPI) {
         };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (err: any) {
-        return {
-          content: [{ type: "text", text: `ERROR: Failed to bypass review lane for ${params.id}: ${err?.message ?? err}` }],
-          isError: true,
-          details: { taskId: params.id, error: String(err?.message ?? err) },
-        };
+        return storeErrorResult(`review-lane bypass for ${params.id}`, err);
       }
     },
   });
@@ -2885,11 +3053,7 @@ export default function kbExtension(pi: ExtensionAPI) {
         };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (err: any) {
-        return {
-          content: [{ type: "text", text: `ERROR: Failed to resume step '${params.stepId}' for ${params.id}: ${err?.message ?? err}` }],
-          isError: true,
-          details: { taskId: params.id, stepId: params.stepId, error: String(err?.message ?? err) },
-        };
+        return storeErrorResult(`step resume for ${params.id} step ${params.stepId}`, err);
       }
     },
   });
@@ -2966,86 +3130,6 @@ export default function kbExtension(pi: ExtensionAPI) {
     },
   });
 
-  // ── fn_task_archive ───────────────────────────────────────────────
-
-  pi.registerTool({
-    name: "fn_task_archive",
-    label: "fn: Archive Task",
-    description:
-      "Archive a task from any live column (move to archived). " +
-      "Archived tasks are preserved for historical reference but moved out of the main board view. " +
-      "If the task is still referenced as a lineage parent by another task, archiving is rejected unless removeLineageReferences:true is passed.",
-    promptSnippet: "Archive a Fusion task from any live column (moves to archived column)",
-    promptGuidelines: [
-      "Use to clean up tasks from any live board column when you want them hidden from active views",
-      "Already archived tasks cannot be archived again",
-      "Archived tasks can be unarchived later if needed",
-      "If archiving fails because the task is still referenced as a lineage parent by another task, retry with removeLineageReferences:true to clear that reference and unblock the archive",
-    ],
-    /*
-    FNXC:TaskLifecycleTools 2026-07-07-00:00:
-    fn_task_archive and fn_task_delete both gate on store.TaskHasLineageChildrenError, whose message tells the
-    caller to pass { removeLineageReferences: true } — but neither tool schema exposed that parameter, leaving
-    lineage-parent tasks permanently stuck (FN-7661). Expose it on both tools' Type.Object schema and forward it
-    to the store call so the recovery path the error message advertises is actually reachable by agents. Keep
-    this in sync with store.archiveTask / store.deleteTask option shapes if they change.
-    */
-    parameters: Type.Object({
-      id: Type.String({ description: "Task ID to archive from any live column (e.g. FN-001)." }),
-      removeLineageReferences: Type.Optional(Type.Boolean({ description: "When true, clear incoming lineage-parent references (child sourceParentTaskId) before archiving, so a task still referenced as a lineage parent can be archived." })),
-    }),
-
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      // FNXC:ToolPermissionGates 2026-07-26-13:55: policy-gated for agent principals; operators unaffected.
-      const gated = await applyAgentPolicyGateForExtensionTool("fn_task_archive", params as Record<string, unknown>, ctx as ExtensionCallerContext);
-      if (gated) return gated;
-      const store = await getStore(ctx.cwd);
-      try {
-        const task = await store.archiveTask(params.id, {
-          removeLineageReferences: params.removeLineageReferences === true,
-          liveExecutionGuard: "refuse",
-        });
-        return {
-          content: [{ type: "text", text: `Archived ${task.id} → ${columnLabel(task.column)}` }],
-          details: { taskId: task.id, column: task.column },
-        };
-      } catch (error) {
-        if (error instanceof fusionCore.TaskIsLiveError) {
-          const task = await store.getTask(params.id);
-          return {isError: true, content: [{type: "text", text: fusionCore.describeArchiveLiveness(params.id, {live: true, reasons: error.reasons}, {workspaceWorktreeCount: Object.keys(task?.workspaceWorktrees ?? {}).length})}], details: {taskId: params.id}};
-        }
-        throw error;
-      }
-    },
-  });
-
-  // ── fn_task_unarchive ─────────────────────────────────────────────
-
-  pi.registerTool({
-    name: "fn_task_unarchive",
-    label: "fn: Unarchive Task",
-    description:
-      "Unarchive an archived task (move from archived → its restore column). " +
-      "Restores to the pre-archive column when available, with active execution columns downgraded to todo.",
-    promptSnippet: "Unarchive a Fusion task (restores to its pre-archive column)",
-    promptGuidelines: [
-      "Use to restore an archived task back to its pre-archive column when available",
-      "Only tasks in the 'archived' column can be unarchived",
-    ],
-    parameters: Type.Object({
-      id: Type.String({ description: "Task ID to unarchive (e.g. FN-001). Must be in 'archived' column." }),
-    }),
-
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const store = await getStore(ctx.cwd);
-      const task = await store.unarchiveTask(params.id);
-
-      return {
-        content: [{ type: "text", text: `Unarchived ${task.id} → ${columnLabel(task.column)}` }],
-        details: { taskId: task.id, column: task.column },
-      };
-    },
-  });
 
   // ── fn_task_delete ─────────────────────────────────────────────────
 
@@ -3061,15 +3145,13 @@ export default function kbExtension(pi: ExtensionAPI) {
       "Use for cleaning up test tasks or tasks created in error when you want the task hidden from active board views",
       "This tool performs a soft delete: task data is preserved and the ID stays reserved",
       "Use allowResurrection:true when operators want the deleted task ID to be intentionally reusable on future createTask calls",
-      "Use fn_task_archive for completed work you want to keep referenceable in the board",
-      "True hard removal is handled by archive cleanup paths (archiveTaskAndCleanup / cleanupArchivedTasks), not fn_task_delete",
       "If deletion fails because the task is still referenced as a lineage parent by another task, retry with removeLineageReferences:true to clear that reference and unblock the delete",
       "If deletion fails because live tasks depend on it, first review the conflict, then deliberately retry with removeDependencyReferences:true to atomically remove only those incoming dependency edges and replan affected tasks",
     ],
     /*
     FNXC:TaskLifecycleTools 2026-07-07-00:00:
-    See matching comment on fn_task_archive above (FN-7661): the store's TaskHasLineageChildrenError message
-    advertises { removeLineageReferences: true } as the recovery path, so this tool must expose and forward it too.
+    The store's TaskHasLineageChildrenError advertises { removeLineageReferences: true }, so this
+    deletion tool must expose and forward the same recovery path.
 
     FNXC:DependencyIntegrity 2026-08-20-19:00:
     FN-075 exposes the store's explicit dependent-conflict recovery at the CLI bridge. The bridge
@@ -5290,7 +5372,7 @@ export default function kbExtension(pi: ExtensionAPI) {
     description:
       "Link a feature to a fn task for implementation. " +
       "Updates the feature status to 'triaged' and associates it with the task. " +
-      "If the target task is not on the active board (for example archived, deleted, or never created), " +
+      "If the target task is not on the active board (for example deleted, historical, or never created), " +
       "the tool returns a clear validation error indicating that only active tasks can be linked.",
     promptSnippet: "Link a feature to a task",
     promptGuidelines: [

@@ -29,6 +29,22 @@ export type {
   PsProbe,
 } from "./runtime-sampler.js";
 
+export {
+  createRetentionSampler,
+  RETENTION_TICK_MS,
+  DEFAULT_HEAP_PRESSURE_RATIO,
+  DEFAULT_CEILING_STREAK_THRESHOLD,
+  DEFAULT_PRESSURE_COOLDOWN_MS,
+  DEFAULT_RETENTION_OP_BUCKETS_MS,
+} from "./retention-sampler.js";
+export type {
+  RetentionSampler,
+  RetentionSamplerInit,
+  RetentionSamplerState,
+  RetentionPressureSignal,
+  RetentionPressureReason,
+} from "./retention-sampler.js";
+
 export { createDomainSampler, defaultPgStatsReader } from "./domain-sampler.js";
 export type {
   DomainSampler,

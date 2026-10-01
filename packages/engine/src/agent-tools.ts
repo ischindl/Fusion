@@ -14,9 +14,11 @@ import { tmpdir } from "node:os";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import * as fusionCore from "@fusion/core";
 import type { AgentState, AgentCapability, AgentUpdateInput, AgentLogEntry, Artifact, ArtifactCreateInput, ArtifactWithTask, Task, TaskDocument, TaskDocumentCreateInput, TaskStore, RunMutationContext, MessageStore, Message, SourceType, Settings, ResearchRun, ResearchRunStatus, TaskCreateInput, ReflectionStore, ApprovalRequestStore, ProjectSettings, ChatStore, WorkflowSettingDefinition, GoalStatus, WorkflowIrNode, IdeationCandidate, MissionWithHierarchy, DbTransaction } from "@fusion/core";
-import { listTraits, isBuiltinWorkflowId, AgentStore, validateColumnAgentBindings, ColumnAgentBindingError, stripApprovalBypassFlags, WorkflowSettingRejectionError, resolveEffectiveSettingsById, resolveWorkflowIrById, findOrphanedSettingValues, BUILTIN_WORKFLOW_SETTINGS, MAX_TASK_LIST_TEXT_CHARS, formatCurrentTaskLine, normalizeWorkflowIcon, parseWorkflowIr, WorkflowIrError, assertColumnTraitsValid, ColumnTraitValidationError } from "@fusion/core";
+import { listTraits, isBuiltinWorkflowId, isTaskNotFoundError, renderTaskCommentSection, AgentStore, validateColumnAgentBindings, ColumnAgentBindingError, stripApprovalBypassFlags, WorkflowSettingRejectionError, resolveEffectiveSettingsById, resolveWorkflowIrById, findOrphanedSettingValues, BUILTIN_WORKFLOW_SETTINGS, MAX_TASK_LIST_TEXT_CHARS, formatCurrentTaskLine, normalizeWorkflowIcon, parseWorkflowIr, WorkflowIrError, assertColumnTraitsValid, ColumnTraitValidationError } from "@fusion/core";
 import { promoteHeldTask } from "./execution/hold-release.js";
-import { computeCrossParentDiagnosticClaim, computeCrossParentDiagnosticClaimId, computeParentIntentClaimId, DASHBOARD_USER_ID, dailyMemoryPath, ensureOpenClawMemoryFiles, evaluateImplementationTaskBind, extractAgentProvisioningRequest, findSameAgentDuplicates, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, normalizeMessageParticipant, reconcileDeterministicDuplicate, resolveAgentProvisioningPolicy, resolveMemoryBackend, resolveResearchSettings, resolveTaskGithubTracking, runDeterministicDuplicateGuard, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh } from "@fusion/core";
+import { stepLifecycleNoopResult, storeErrorResult, storeWriteFailure } from "./tool-store-errors.js";
+import { computeCrossParentDiagnosticClaim, computeCrossParentDiagnosticClaimId, computeParentIntentClaimId, DASHBOARD_USER_ID, dailyMemoryPath, ensureOpenClawMemoryFiles, evaluateImplementationTaskBind, extractAgentProvisioningRequest, findSameAgentDuplicates, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, normalizeMessageParticipant, reconcileDeterministicDuplicate, resolveAgentProvisioningPolicy, resolveMemoryBackend, resolveMemorySearchTopic, resolveResearchSettings, resolveTaskGithubTracking, runDeterministicDuplicateGuard, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh } from "@fusion/core";
+import { formatLongTermMemoryAppendReport, formatMemorySize, measureLongTermMemory, type LongTermMemoryScope } from "./memory/memory-budget.js";
 import { ResearchOrchestrator } from "./research/research-orchestrator.js";
 import { ResearchProviderRegistry } from "./research/provider-registry.js";
 import { ResearchStepRunner } from "./research/research-step-runner.js";
@@ -44,7 +46,6 @@ import { reconcileMissionState } from "./missions/mission-state-reconcile.js";
 
 // ── Tool parameter schemas (canonical definitions) ────────────────────────
 
-const TASK_CREATE_PRIORITY_VALUES = ["low", "normal", "high", "urgent"] as const;
 
 /*
 FNXC:MissionAdmission 2026-09-20-05:15:
@@ -64,16 +65,23 @@ const missionLineageParams = Type.Object(
   },
 );
 
+/*
+FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295):
+Every task-creation surface takes an optional explicit `title`. Before it, an agent that knew exactly what
+a card should be called had no way to say so: the label came from the first prose line of `description`, so
+a description opening on a markdown heading titled the card with the heading text. Omitted, the shared
+sentence-first derivation still fills the label, so the parameter is additive on every surface.
+*/
 export const taskCreateParams = Type.Object({
+  title: Type.Optional(Type.String({
+    description: "Short card label (e.g. 'Fix lockfile drift in plugin workspaces'). Omitted, the label is derived from the first sentence of description.",
+  })),
   description: Type.String({ description: "What needs to be done" }),
   dependencies: Type.Optional(
     Type.Array(Type.String(), { description: "Task IDs this new task depends on (e.g. [\"KB-001\"])" }),
   ),
-  priority: Type.Optional(
-    Type.Union(TASK_CREATE_PRIORITY_VALUES.map((priority) => Type.Literal(priority)), {
-      description: "Task priority (low, normal, high, urgent)",
-    }),
-  ),
+  /* FNXC:TaskQueueOrder 2026-09-17-12:07: FN-509 removed the `priority` parameter. Tasks run in
+     arrival order; an operator raises one explicitly with Boost on the card. */
   workflow_id: Type.Optional(
     Type.String({
       description:
@@ -105,7 +113,18 @@ const agentLogDetailModeParams = Type.Union([
   description: "Tool-detail mode. Preview (default) bounds each detail row; full lifts that row preview while the whole response remains bounded.",
 });
 
+/*
+FNXC:TaskLogsRead 2026-09-09-15:19:
+RUFU-204: the task-bound registration previously exposed no target field and its execute discarded caller
+intent, so a session bound to card B that asked for card A silently received B's own log and total (the
+wrong-task read resolution that produced a false log-contamination incident and inverts fleet stall
+detection). task_id is the canonical engine spelling (matching chatTaskLogsReadParams); id is accepted as
+an alias because models that hop surfaces pass the pi/CLI field name. Omitting both preserves the
+existing bound-card default.
+*/
 export const taskLogsReadParams = Type.Object({
+  task_id: Type.Optional(Type.String({ description: "Read this card's log instead of the bound card's (e.g. FN-001). Omit to read the task bound to this session." })),
+  id: Type.Optional(Type.String({ description: "Alias for task_id (the pi/CLI spelling): read this card's log instead of the bound card's." })),
   limit: Type.Optional(Type.Number({ description: "Maximum matching entries to return (default 100)." })),
   offset: Type.Optional(Type.Number({ description: "Number of matching entries to skip from the newest entry (default 0)." })),
   type: Type.Optional(agentLogTypeParams),
@@ -124,16 +143,26 @@ export const taskListParams = Type.Object({});
 
 export const taskShowParams = Type.Object({
   id: Type.String({ description: "Task ID (e.g. FN-001)" }),
+  /*
+  FNXC:CommentDelivery 2026-09-27-16:45 (RUFU-259):
+  Optional comment/steering bodies by id. A wake delta that names a triggering comment id is now a
+  promise the body is readable from an agent lane, and this parameter is where that promise is kept
+  (`packages/engine/src/task-comment-read.ts`). Omitted, the rendered card is exactly what it was
+  before, so no existing caller pays the tokens.
+  */
+  commentIds: Type.Optional(Type.Array(Type.String(), {
+    description: "Optional comment or steering-comment ids to return bodies for (e.g. the ids a wake delta named). Resolved against both `comments` and `steeringComments`.",
+    maxItems: 20,
+  })),
 });
 
 export const taskSearchParams = Type.Object({
   query: Type.String({ minLength: 1, description: "Search query" }),
-  includeDone: Type.Optional(Type.Boolean({ description: "Include done tasks (default true)" })),
-  includeArchived: Type.Optional(Type.Boolean({ description: "Include archived tasks (default true)" })),
+  includeDone: Type.Optional(Type.Boolean({ description: "Include done tasks (default false)" })),
   limit: Type.Optional(Type.Number({ minimum: 1, maximum: 50, description: "Max results (default 20, max 50)" })),
 });
 
-export const patchnodeReadParams = Type.Object({
+export const historyReadParams = Type.Object({
   query: Type.Optional(Type.String({ description: "Search task IDs, titles, and completion summaries" })),
   from: Type.Optional(Type.String({ description: "First UTC day, YYYY-MM-DD (inclusive)" })),
   to: Type.Optional(Type.String({ description: "Last UTC day, YYYY-MM-DD (inclusive)" })),
@@ -278,19 +307,10 @@ export const taskPromoteParams = Type.Object({
   ),
 });
 
-export const taskArchiveParams = Type.Object({
-  id: Type.String({ description: "Task ID to archive from any live column (e.g. FN-001)." }),
-  removeLineageReferences: Type.Optional(Type.Boolean({ description: "When true, clear incoming lineage-parent references (child sourceParentTaskId) before archiving, so a task still referenced as a lineage parent can be archived." })),
-});
-
 export const taskDeleteParams = Type.Object({
   id: Type.String({ description: "Task ID to delete (e.g. FN-001)" }),
   allowResurrection: Type.Optional(Type.Boolean({ description: "When true, mark this tombstone as explicitly reusable for future recreation." })),
   removeLineageReferences: Type.Optional(Type.Boolean({ description: "When true, clear incoming lineage-parent references before deleting." })),
-});
-
-export const taskUnarchiveParams = Type.Object({
-  id: Type.String({ description: "Task ID to unarchive (e.g. FN-001). Must be in 'archived' column." }),
 });
 
 export const taskRetryParams = Type.Object({
@@ -327,6 +347,20 @@ export const taskUpdateParams = Type.Object({
     { description: "New status: pending, in-progress, done, or skipped. Required when step is set." },
   )),
   summary: Type.Optional(Type.String({ description: "2-4 plain-language sentences describing what THIS step actually delivered (files/behavior changed, verification run). Required when status is 'done'. Shown to the operator in the task History tab." })),
+  /*
+  FNXC:TaskTitleDerivation 2026-09-26-04:45:
+  RUFU-295: this parameter is the agent-reachable rename. Before it, a card mis-titled by its own creator
+  (`## Pôvodný popis`, a whole pasted markdown body) had exactly one remedy — an operator editing the card in
+  the dashboard — because the CLI exposed no title edit and `deleteTask` refuses a creator's own card. Junk
+  shapes are refused by core's `describeTaskTitleRejection`, shared with `fn task rename`, so the two edges
+  cannot disagree about what counts as a title.
+  */
+  title: Type.Optional(Type.String({
+    description:
+      "Optional one-line card title — the remediation path for a card whose title came out as markdown " +
+      "boilerplate or a multi-line body. Must be a single non-empty line, never a `## …` heading, and at most " +
+      "220 characters. The store keeps the card's PROMPT.md heading in sync with the new title.",
+  })),
   dependencies: Type.Optional(Type.Array(Type.String(), {
     description: "Optional task dependency array. Replaces existing dependencies. Pass ['FN-001', 'FN-002'] to set dependencies. Pass [] to clear all dependencies. Omit parameter to preserve existing dependencies.",
   })),
@@ -494,6 +528,13 @@ export const delegateTaskParams = Type.Object({
     }),
   ),
   /*
+  FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): delegation names its card like every other create
+  surface; omitted keeps the sentence-first derivation from the description.
+  */
+  title: Type.Optional(Type.String({
+    description: "Short card label for the delegated task. Omitted, the label is derived from the first sentence of description.",
+  })),
+  /*
   FNXC:MissionAdmission 2026-09-20-05:15:
   Delegation uses the same optional-lineage contract as direct creation on every surface.
   */
@@ -629,7 +670,18 @@ export const askQuestionParams = Type.Object({
 
 export const memorySearchParams = Type.Object({
   query: Type.String({ description: "Search terms for durable project memory. Use focused keywords, not a full prompt." }),
-  topic: Type.Optional(Type.String({ description: "RUFU-068: optional read-time focus/topic. When set, scopes the project recall to a working topic (a within-project read filter). 'all', empty, or '*' clears to whole-project scope. The Stash backend pushes this as a &topic= query param for SQL-enforced filtering; never post-filter in-memory." })),
+  /*
+  FNXC:MemoryFocusContract 2026-08-31-19:41:
+  RUFU-172 (fixing a promise stale since RUFU-121): the old description told every agent
+  that Stash pushes the topic as a `&topic=` param for SQL-enforced filtering. It never
+  did — Stash's search route accepts `q`+`limit` only, the param was inert, and RUFU-121
+  removed it. No backend in this repo filters by topic. What IS true: the resolved focus
+  biases the PROACTIVE per-turn recall cue via a second topic-worded search (RUFU-172
+  lane T, core `buildPerTurnMemoryRecallCue`), and topic-aware backends MAY treat the
+  tool's `topic` as a ranking hint. The description now states the real contract so
+  agents stop believing filtered results come back.
+  */
+  topic: Type.Optional(Type.String({ description: "RUFU-068: optional read-time focus/topic. 'all', empty, or '*' means whole-project scope. Honest contract: the topic reaches backends as a ranking HINT only — no backend filters results by it (Stash dropped the inert &topic= in RUFU-121), so never post-filter results in-memory either; narrow results by refining `query`. The operator's conversation focus additionally biases the proactive recall cue (RUFU-172)." })),
   limit: Type.Optional(Type.Number({ description: "Maximum snippets to return (default: 5, max: 20)" })),
 });
 
@@ -700,10 +752,18 @@ type AgentMemoryContext = {
 
 type MemoryToolOptions = {
   agentMemory?: AgentMemoryContext;
-  // FNXC:MemoryFocusEngine 2026-08-13-15:57: optional per-conversation memory
-  // focus/topic from the enclosing session (chat_sessions.memory_focus). When set,
-  // fn_memory_search scopes the project recall to this topic via
-  // resolveMemorySearchTopic → searchProjectMemory (a within-project read filter).
+  /*
+  FNXC:MemoryFocusEngine 2026-08-13-15:57: optional per-conversation memory
+  focus/topic from the enclosing session (chat_sessions.memory_focus). When set,
+  fn_memory_search carries it to searchProjectMemory as the read-time topic.
+
+  FNXC:MemoryFocusContract 2026-09-01-17:44:
+  RUFU-172 wording correction: this used to call that a "within-project read filter".
+  Nothing filters — no backend narrows its result set by topic (Stash dropped the inert
+  &topic= in RUFU-121), so the value is a read-time focus hint. The same resolved focus
+  also biases the proactive per-turn recall cue (RUFU-172 lane T). Cross-project scope
+  isolation is unaffected either way.
+  */
   focus?: string;
 };
 
@@ -1198,7 +1258,7 @@ async function resolveApprovedMissionLineage(
 type DefinedFeatureBootstrapStore = {
   claimDefinedFeatureTaskInTransaction: (tx: DbTransaction, input: { featureId: string; taskId: string; missionId: string; sliceId: string; archivedLanes: ReadonlySet<string> }) => Promise<unknown>;
   claimDefinedFeatureTask: (input: { featureId: string; taskId: string; missionId: string; sliceId: string }) => Promise<unknown>;
-  archiveDefinedFeatureBootstrapDuplicate: (input: { featureId: string; taskId: string; duplicateTaskId: string }) => Promise<void>;
+  deleteDefinedFeatureBootstrapDuplicate: (input: { featureId: string; taskId: string; duplicateTaskId: string }) => Promise<void>;
 };
 
 type AgentTaskInputWithBootstrap = TaskCreateInput & {
@@ -1212,13 +1272,15 @@ type AgentTaskInputWithBootstrap = TaskCreateInput & {
 async function definedFeatureBootstrapInput(store: TaskStore, lineage: MissionLineageReference | null, workflowId?: string): Promise<Pick<AgentTaskInputWithBootstrap, "afterTaskInsert" | "validateDuplicateCanonical" | "skipSameAgentDuplicateIntake" | "preflightSameAgentDuplicate" | "reconcileCreatedDuplicate">> {
   if (!lineage?.bootstrapDefinedFeature) return {};
   const missionStore = store.getMissionStore() as Partial<DefinedFeatureBootstrapStore>;
-  if (!missionStore.claimDefinedFeatureTaskInTransaction || !missionStore.claimDefinedFeatureTask || !missionStore.archiveDefinedFeatureBootstrapDuplicate) {
+  if (!missionStore.claimDefinedFeatureTaskInTransaction || !missionStore.claimDefinedFeatureTask || !missionStore.deleteDefinedFeatureBootstrapDuplicate) {
     throw new Error("Defined-feature bootstrap requires the PostgreSQL mission store; no task was created.");
   }
   const selectedWorkflowId = workflowId ?? (await store.getDefaultWorkflowId()) ?? "builtin:coding";
   const workflow = await resolveWorkflowIrById(store, selectedWorkflowId);
-  const archivedLanes = new Set(fusionCore.columnsWithFlag(workflow, "archived"));
-  if (archivedLanes.size === 0) archivedLanes.add("archived");
+  /* Upstream FN-9402 resolves the lane vocabulary before a pool connection is held; our side owns
+     that vocabulary as the historical-sentinel constant, so the caller passes it and never borrows
+     a second connection to ask for it. */
+  const archivedLanes = fusionCore.ARCHIVED_SENTINEL_LANES;
   const claim = (taskId: string) => ({ featureId: lineage.featureId, taskId, missionId: lineage.missionId, sliceId: lineage.sliceId });
   return {
     /*
@@ -1231,14 +1293,14 @@ async function definedFeatureBootstrapInput(store: TaskStore, lineage: MissionLi
     validateDuplicateCanonical: async (task) => { await missionStore.claimDefinedFeatureTask!(claim(task.id)); },
     /*
     FNXC:MissionAdmission 2026-07-23-20:00:
-    The ordinary same-agent intake runs after task-row commit and could archive
+    The ordinary same-agent intake runs after task-row commit and could delete
     feature.taskId. Suppress only that path; deterministic reconciliation below
-    retains the claimed task and atomically archives a late competing duplicate.
+    retains the claimed task and atomically soft-deletes a late competing duplicate.
     */
     skipSameAgentDuplicateIntake: true,
     preflightSameAgentDuplicate: true,
     reconcileCreatedDuplicate: async (duplicate, created) => {
-      await missionStore.archiveDefinedFeatureBootstrapDuplicate!({
+      await missionStore.deleteDefinedFeatureBootstrapDuplicate!({
         featureId: lineage.featureId,
         taskId: created.id,
         duplicateTaskId: duplicate.id,
@@ -1258,14 +1320,13 @@ async function findDefinedFeatureBootstrapDuplicate(
   sourceParentTaskId: string | undefined,
 ): Promise<Task | undefined> {
   if (!sourceAgentId && !sourceParentTaskId) return undefined;
-  const candidates = await store.listTasks({ slim: true, includeArchived: true, includeDeleted: true });
+  const candidates = await store.listTasks({ slim: true, includeArchived: false, includeDeleted: true });
   const byId = new Map(candidates.map((task) => [task.id, task]));
   /*
   FNXC:WorkflowResolvedColumns 2026-07-30-10:05 (batch-engine tail):
-  Resolved AHEAD of the synchronous `flatMap` below, which cannot await. NOT the query-filter class: this
-  query passes `includeArchived: true`, so the predicate inside the callback is the ONLY archived guard on
-  this path — on a renamed archive lane an archived sibling became a bootstrap canonical, and
-  `claimDefinedFeatureTask` then rejects the non-live row, so the claim fails outright.
+  Resolve terminal columns ahead of the synchronous `flatMap`, which cannot await. The query excludes
+  historical snapshots but includes soft-deleted rows so the explicit `deletedAt` guard below preserves
+  the no-resurrection boundary without treating deleted work as a canonical duplicate.
   */
   const isTerminalCandidate = await resolveTerminalColumnsForTasks(store, candidates);
   const matches = findSameAgentDuplicates({
@@ -1277,8 +1338,8 @@ async function findDefinedFeatureBootstrapDuplicate(
     /*
     FNXC:MissionAdmission 2026-07-23-21:10:
     Defined-feature retry preflight follows the normal duplicate guard's live
-    task boundary. An archived sibling cannot be a bootstrap canonical because
-    claimDefinedFeatureTask rejects non-live task rows.
+    task boundary. Completed or soft-deleted siblings cannot become bootstrap
+    canonicals because `claimDefinedFeatureTask` accepts only live work.
     */
     if (Number.isNaN(createdAt) || task.deletedAt || isTerminalCandidate(task)) return [];
     return [{
@@ -1336,12 +1397,11 @@ async function carryCanonicalTaskRouting(
 
 /*
 FNXC:WorkflowResolvedColumns 2026-07-30-23:05 (batch-engine — the agent tools listed finished cards as active):
-`fn_task_list` describes itself as "list active tasks that aren't done or archived", and `fn_task_search`
-offers `includeDone: false`. Both filtered with `task.column !== "done"`, so on a board whose complete lane
+`fn_task_list` describes itself as listing active tasks, and `fn_task_search` offers `includeDone: false`. Both filtered with `task.column !== "done"`, so on a board whose Complete lane
 is renamed a FINISHED card came back as active — to an AGENT, which then reasons and acts on it as
 outstanding work. `includeArchived: false` is handled by the query, but "done" was only ever a TS predicate.
 
-MEMBERSHIP over the complete AND archived roles, unioned with the legacy pair: `resolveWorkflowIrForTask`
+MEMBERSHIP over every Complete column, unioned with the legacy Done fallback: `resolveWorkflowIrForTask`
 returns the BUILT-IN IR for a missing or corrupt workflow rather than throwing, so without the union a
 degraded renamed board would resolve a terminal set that excludes its own terminal lane and the filter
 would go inert.
@@ -1356,14 +1416,13 @@ export async function resolveTerminalColumnsForTasks(
   const terminalByTaskId = new Map<string, ReadonlySet<string>>();
   for (const task of tasks) {
     if (terminalByTaskId.has(task.id)) continue;
-    const columns = new Set<string>(["done", "archived"]);
+    const columns = new Set<string>(["done"]);
     try {
       const ir = await fusionCore.resolveWorkflowIrForTask(store, task.id, cache);
       if (ir) {
         for (const id of fusionCore.columnsWithFlag(ir, "complete")) columns.add(id);
-        for (const id of fusionCore.columnsWithFlag(ir, "archived")) columns.add(id);
       }
-    } catch { /* degraded: legacy pair only */ }
+    } catch { /* degraded: Done only */ }
     terminalByTaskId.set(task.id, columns);
   }
   return (task: Task) => terminalByTaskId.get(task.id)?.has(task.column) === true;
@@ -1570,10 +1629,10 @@ export async function createAgentTask(
         : undefined,
     });
 
-    const wasDuplicate = proposalClaimConflict || reconcile.outcome === "archived" || reconcile.outcome === "kept-duplicate";
+    const wasDuplicate = proposalClaimConflict || reconcile.outcome === "removed" || reconcile.outcome === "kept-duplicate";
     const canonical = proposalClaimConflict
       ? await carryCanonicalTaskRouting(store, createdTask, input)
-      : reconcile.outcome === "archived"
+      : reconcile.outcome === "removed"
       ? await carryCanonicalTaskRouting(store, reconcile.canonical, input)
       : reconcile.canonical;
     /*
@@ -1618,6 +1677,8 @@ export function createTaskCreateTool(
       "or the current task should wait for the new one). " +
       "Optionally pass workflow_id to select a workflow at creation time; use " +
       "fn_workflow_list to discover valid IDs. " +
+      "Pass title to name the card in your own words; omitted, the label is derived from the first " +
+      "sentence of the description. " +
       "mission_lineage is optional on every surface; pass it only when linking to an " +
       "approved Feature → Slice → Mission.",
     parameters: taskCreateParams,
@@ -1641,11 +1702,19 @@ export function createTaskCreateTool(
               const message = "Task proposal validation is configured but the mailbox is unavailable; no task was created.";
               return { content: [{ type: "text" as const, text: `ERROR: ${message}` }], details: { error: message, rule: "ephemeral-agents-cannot-create-tasks" }, isError: true };
             }
-            const title = params.description.split(/\r?\n/, 1)[0]?.trim().slice(0, 80) || "Follow-up task";
+            /*
+            FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): this operator-facing proposal line used the
+            raw first line of the description, so a proposal raised from a markdown-first description read
+            as the heading text. An explicit agent-supplied title wins; otherwise the shared derivation
+            labels it, so the line the operator reviews matches the card title they would get on approval.
+            */
+            const derivedLabel = fusionCore.deriveTaskLabelFromDescription(params.description, 80);
+            const title = params.title?.trim()
+              || (derivedLabel === fusionCore.FALLBACK_TASK_TITLE ? "Follow-up task" : derivedLabel);
             await options.messageStore.sendMessage({
               fromId: options.sourceAgentId ?? provenance?.sourceAgentId ?? "ephemeral-worker", fromType: "agent", toId: DASHBOARD_USER_ID, toType: "user", type: "agent-to-user",
               content: `Task proposal awaiting validation: ${title}`,
-              metadata: { kind: "task-proposal", proposalStatus: "pending", proposalIdempotencyKey: randomUUID(), taskId: options.sourceTaskId, proposedTask: { title, description: params.description, priority: params.priority, workflowId: params.workflow_id, dependencies: params.dependencies } },
+              metadata: { kind: "task-proposal", proposalStatus: "pending", proposalIdempotencyKey: randomUUID(), taskId: options.sourceTaskId, proposedTask: { title, description: params.description, workflowId: params.workflow_id, dependencies: params.dependencies } },
             });
             return { content: [{ type: "text" as const, text: "Task proposal submitted to the operator for validation; no task was created." }], details: { proposed: true } };
           }
@@ -1676,9 +1745,10 @@ export function createTaskCreateTool(
         still resolves to "triage" (byte-identical prior behavior).
         */
         const { task, wasDuplicate } = await createAgentTask(store, {
+          // FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): an explicit title is the caller's own words.
+          ...(params.title?.trim() ? { title: params.title.trim() } : {}),
           description: params.description,
           dependencies: params.dependencies,
-          priority: params.priority,
           ...(workflowId ? { workflowId } : {}),
           ...(lineage ? { missionId: lineage.missionId, sliceId: lineage.sliceId } : {}),
           ...(await definedFeatureBootstrapInput(store, lineage, workflowId)),
@@ -1693,10 +1763,18 @@ export function createTaskCreateTool(
         }, options);
         const deps = task.dependencies.length ? ` (depends on: ${task.dependencies.join(", ")})` : "";
         const workflow = workflowId ? ` (workflow: ${workflowId})` : "";
+        /*
+        FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): the create confirmation echoes the card's LABEL,
+        not the raw description. Echoing the whole description meant an agent that passed `title` never saw
+        its own title land (so it could not tell a stored title from a derived one), and a caller that
+        passed no title saw a wall of prose where the board shows one line.
+        */
+        const echoedLabel = task.title?.trim()
+          || fusionCore.deriveTaskLabelFromDescription(task.description, 80);
         return {
           content: [{
             type: "text" as const,
-            text: `${wasDuplicate ? "Linked existing" : "Created"} ${task.id}: ${params.description}${deps}${workflow}`,
+            text: `${wasDuplicate ? "Linked existing" : "Created"} ${task.id}: ${echoedLabel}${deps}${workflow}`,
           }],
           details: { taskId: task.id, wasDuplicate },
         };
@@ -1774,8 +1852,17 @@ function trimSemanticToolRead(text: string, hint: string): string {
   return text.slice(0, Math.max(0, SEMANTIC_TOOL_READ_MAX_CHARS - marker.length)) + marker;
 }
 
+/*
+FNXC:TaskTitleDerivation 2026-09-26-02:43:
+RUFU-295: the one label projection for agent-facing task lines. A titleless card used to be shown as
+the raw first 80 characters of its description, so a spec-shaped card read to the agent as
+`## Pôvodný popis\n\n- bullet`. It now gets the same markdown-aware first sentence the board renders,
+so an agent reasons about the same label a human reads. A genuinely blank description keeps its
+explicit `(no description)` sentinel rather than the generic untitled label.
+*/
 function formatTaskSummaryLine(task: { id: string; column: string; title?: string | null; description: string; dependencies: string[] }): string {
-  const desc = task.title || task.description.slice(0, 80) || "(no description)";
+  const desc = task.title?.trim()
+    || (task.description.trim() ? fusionCore.deriveTaskLabelFromDescription(task.description, 80) : "(no description)");
   const deps = task.dependencies.length ? ` [deps: ${task.dependencies.join(", ")}]` : "";
   return `${task.id} (${task.column}): ${desc}${deps}`;
 }
@@ -1792,7 +1879,7 @@ export function createTaskListTool(store: TaskStore): ToolDefinition {
     name: "fn_task_list",
     label: "List Tasks",
     description:
-      "List active tasks that aren't done or archived. Returns ID, description, column, " +
+      "List active tasks that have not reached their workflow's Complete column. Returns ID, description, column, " +
       "and dependencies for each. Use to discover work and check for duplicates.",
     parameters: taskListParams,
     execute: async () => {
@@ -1814,7 +1901,7 @@ export function createTaskSearchTool(store: TaskStore): ToolDefinition {
     label: "Search Tasks",
     description:
       "Keyword search across active tasks by default. " +
-      "Done and archived history is opt-in and must not be used for duplicate detection.",
+      "Done history is opt-in and must not be used for duplicate detection.",
     parameters: taskSearchParams,
     execute: async (_id: string, params: Static<typeof taskSearchParams>) => {
       const query = params.query.trim();
@@ -1827,7 +1914,7 @@ export function createTaskSearchTool(store: TaskStore): ToolDefinition {
       const limit = Math.min(50, Math.max(1, Math.floor(params.limit ?? 20)));
       const results = await store.searchTasks(query, {
         slim: true,
-        includeArchived: params.includeArchived ?? false,
+        includeArchived: false,
         limit,
       });
       const includeDone = params.includeDone ?? false;
@@ -1848,19 +1935,19 @@ export function createTaskSearchTool(store: TaskStore): ToolDefinition {
 
 /*
 FNXC:PatchnodeChat 2026-08-28-12:16:
-Chat reads the same permanent, per-delivery ledger as the dashboard and never looks task rows up, so archived and deleted deliveries remain answerable.
+Chat reads the same permanent, per-delivery ledger as the dashboard and never looks task rows up, so later-deleted deliveries remain answerable.
 
-FNXC:PatchnoteChat 2026-08-30-06:36:
-The former Patchnote display strings now call this delivery ledger History.
-The stable `fn_patchnode_read` tool name remains unchanged for existing agent prompts.
+FNXC:HistoryChat 2026-09-04-09:35:
+FN-293 completes the agent-facing rename by exposing only `fn_history_read`, without a compatibility alias.
+The HTTP route, PostgreSQL table, view id, i18n keys, and `@fusion/core` types and methods intentionally retain their stable `patchnode` identifiers.
 */
-export function createPatchnodeReadTool(store: TaskStore): ToolDefinition {
+export function createHistoryReadTool(store: TaskStore): ToolDefinition {
   return {
-    name: "fn_patchnode_read",
+    name: "fn_history_read",
     label: "Read History",
     description: "Read the permanent daily history of completed and reverted task deliveries.",
-    parameters: patchnodeReadParams,
-    execute: async (_id: string, params: Static<typeof patchnodeReadParams>) => {
+    parameters: historyReadParams,
+    execute: async (_id: string, params: Static<typeof historyReadParams>) => {
       const limit = Math.min(50, Math.max(1, Math.floor(params.limit ?? 20)));
       const result = await store.listPatchnodeEntries({
         ...(params.query?.trim() ? { query: params.query.trim() } : {}),
@@ -1882,7 +1969,17 @@ export function createPatchnodeReadTool(store: TaskStore): ToolDefinition {
           const reverted = entry.kind === "completed" && entry.revertedAt
             ? ` (reverted ${entry.revertedAt.slice(0, 10)})`
             : "";
-          return `${cancelled}${entry.taskId} — ${entry.title}: ${entry.body}${reverted}`;
+          /*
+          FNXC:HistoryChat 2026-09-15-23:26:
+          FN-444: chat reads the same durable ledger as the History window, so it inherits the same
+          degenerate rows — an entry captured before the ledger learned the canonical task label, or one
+          whose task has since been deleted, stores its own task id as label and body. Each segment is
+          therefore emitted only when it adds information, so the identifier is never repeated on a line.
+          The `CANCELLED — ` and ` (reverted YYYY-MM-DD)` markers are unchanged.
+          */
+          const label = entry.title.trim() && entry.title.trim() !== entry.taskId ? entry.title : "";
+          const body = entry.body.trim() && entry.body.trim() !== entry.taskId && entry.body !== label ? entry.body : "";
+          return `${cancelled}${entry.taskId}${label ? ` — ${label}` : ""}${body ? `: ${body}` : ""}${reverted}`;
         }),
       ]);
       return {
@@ -1900,38 +1997,58 @@ export function createTaskShowTool(store: TaskStore): ToolDefinition {
     description: "Show full details for a task including its PROMPT.md content.",
     parameters: taskShowParams,
     execute: async (_id: string, params: Static<typeof taskShowParams>) => {
+      /*
+      FNXC:StoreErrorShape 2026-09-23-06:00:
+      STAS-251. The lookup used to share one catch with the whole render block, so during the
+      2026-09-23 boot stall a slow pool answered as `Task STAS-250 not found.` — and the agent
+      rebuilt a card that was alive the whole time. Only the store's typed not-found may name a
+      missing card; anything else the board could not answer is reported as the board being
+      unavailable, because "absent" and "unreachable" send an agent in opposite directions.
+      */
+      let task: Task;
       try {
-        const task = await store.getTask(params.id);
-        const parts = [
-          `ID: ${task.id}`,
-          task.title ? `Title: ${task.title}` : null,
-          `Column: ${task.column}`,
-          `Status: ${task.status ?? task.column}`,
-          `Description: ${task.description || "(no description)"}`,
-          task.dependencies.length ? `Dependencies: ${task.dependencies.join(", ")}` : null,
-          Array.isArray(task.steps) && task.steps.length
-            ? `Steps:\n${task.steps.map((step, index) => `  ${index}. ${step.name} — ${step.status}`).join("\n")}`
-            : null,
-          "",
-          "PROMPT.md:",
-          task.prompt || "(not yet specified)",
-        ].filter((part): part is string => typeof part === "string");
-        return {
-          content: [{
-            type: "text" as const,
-            text: trimSemanticToolRead(
-              parts.join("\n") || `Task ${params.id} has no details.`,
-              "use fn_task_document_read or a focused task query for more",
-            ),
-          }],
-          details: { taskId: task.id },
-        };
-      } catch {
+        task = await store.getTask(params.id);
+      } catch (error) {
+        if (!isTaskNotFoundError(error)) {
+          return storeErrorResult(`Task ${params.id} could not be read`, error);
+        }
         return {
           content: [{ type: "text" as const, text: `Task ${params.id} not found.` }],
           details: {},
         };
       }
+      /*
+      FNXC:CommentDelivery 2026-09-27-16:45 (RUFU-259):
+      The comment section is appended AFTER PROMPT.md so the trim budget still favours the card's own
+      spec over comment traffic, and an unmatched id is rendered as an explicit miss rather than
+      dropped — the silent drop is what let a wake advertise a body nobody could fetch.
+      */
+      const commentSection = renderTaskCommentSection(task, params.commentIds);
+      const parts = [
+        `ID: ${task.id}`,
+        task.title ? `Title: ${task.title}` : null,
+        `Column: ${task.column}`,
+        `Status: ${task.status ?? task.column}`,
+        `Description: ${task.description || "(no description)"}`,
+        task.dependencies.length ? `Dependencies: ${task.dependencies.join(", ")}` : null,
+        Array.isArray(task.steps) && task.steps.length
+          ? `Steps:\n${task.steps.map((step, index) => `  ${index}. ${step.name} — ${step.status}`).join("\n")}`
+          : null,
+        "",
+        "PROMPT.md:",
+        task.prompt || "(not yet specified)",
+        commentSection || null,
+      ].filter((part): part is string => typeof part === "string");
+      return {
+        content: [{
+          type: "text" as const,
+          text: trimSemanticToolRead(
+            parts.join("\n") || `Task ${params.id} has no details.`,
+            "use fn_task_document_read or a focused task query for more",
+          ),
+        }],
+        details: { taskId: task.id },
+      };
     },
   };
 }
@@ -1956,18 +2073,7 @@ export function createTaskLogTool(store: TaskStore, taskId: string): ToolDefinit
       "Use for significant events — not every small step.",
     parameters: taskLogParams,
     execute: async (_id: string, params: Static<typeof taskLogParams>) => {
-      try {
-        await store.logEntry(taskId, params.message, params.outcome);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      } catch (err: any) {
-        if (typeof err?.message === "string" && err.message.toLowerCase().includes("archived")) {
-          return {
-            content: [{ type: "text" as const, text: "ERROR: Cannot log to archived task — this task is read-only" }],
-            details: {},
-          };
-        }
-        throw err;
-      }
+      await store.logEntry(taskId, params.message, params.outcome);
 
       return {
         content: [{ type: "text" as const, text: `Logged: ${params.message}` }],
@@ -1994,18 +2100,7 @@ export function createTaskLogToolWithContext(store: TaskStore, taskId: string, r
       "Use for significant events — not every small step.",
     parameters: taskLogParams,
     execute: async (_id: string, params: Static<typeof taskLogParams>) => {
-      try {
-        await store.logEntry(taskId, params.message, params.outcome, runContext);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      } catch (err: any) {
-        if (typeof err?.message === "string" && err.message.toLowerCase().includes("archived")) {
-          return {
-            content: [{ type: "text" as const, text: "ERROR: Cannot log to archived task — this task is read-only" }],
-            details: {},
-          };
-        }
-        throw err;
-      }
+      await store.logEntry(taskId, params.message, params.outcome, runContext);
 
       return {
         content: [{ type: "text" as const, text: `Logged: ${params.message}` }],
@@ -2067,6 +2162,8 @@ function formatAgentLogBlock(entry: AgentLogEntry, text: string, detailPreviewMa
 export type AgentLogReadDetailMode = "preview" | "full";
 
 export interface TaskAgentLogReadTextOptions {
+  /** The task whose log this payload describes; required so no payload can be read without knowing its source card. */
+  taskId: string;
   total: number;
   limit: number;
   offset: number;
@@ -2079,16 +2176,30 @@ FNXC:TaskLogsRead 2026-08-29-05:00:
 FN-253 makes tool detail default-persisted, so all three fn_task_logs_read registrations share this
 builder. Preview mode bounds each row before the existing 12,000-character response budget; full mode
 is the explicit retrieval escape hatch while the same whole-response narrowing hint remains intact.
+
+FNXC:TaskLogsRead 2026-09-09-15:19:
+RUFU-204: the header now names the served task. The prior header carried no task identity, so a poller that
+was handed its own log while asking for another card had no visible signal to catch the misdiagnosis. This
+is the single producer of the header line across all three registrations — no per-lane copy.
 */
 export function buildTaskAgentLogReadText(entries: AgentLogEntry[], options: TaskAgentLogReadTextOptions): string {
   const filter = options.type ? `, type=${options.type}` : "";
-  const header = `Agent log: ${entries.length}/${options.total} entries (limit=${options.limit}, offset=${options.offset}${filter})`;
+  const header = `Agent log (${options.taskId}): ${entries.length}/${options.total} entries (limit=${options.limit}, offset=${options.offset}${filter})`;
   const rendered = entries.length > 0
     ? `${header}\n\n${renderAgentLogEntries(entries, options.detail === "full" ? undefined : { detailPreviewMax: AGENT_LOG_READ_DETAIL_PREVIEW_MAX })}`
     : `${header}\n\n(no matching log entries)`;
   return trimSemanticToolRead(rendered, "use a smaller limit, offset, or type filter for more");
 }
 
+/*
+FNXC:ReadFailureSurfacing 2026-09-23-17:10:
+STAS-256 is the read half of FNXC:WriteFailureSurfacing (see `taskDocumentWriteError` in this file).
+`AgentLogger.onToolEnd` records `tool_error` only when the result carries `isError`, so a read that
+asked the store and got no answer must fail at the protocol boundary too — otherwise the task log,
+the automated review, and replay all record a successful read that never produced data. Every read
+helper below therefore composes its failure through the one shared `storeErrorResult` shape, while a
+genuine typed miss or an empty result stays an informative success text.
+*/
 async function readTaskAgentLogs(
   store: TaskStore,
   taskId: string,
@@ -2102,6 +2213,7 @@ async function readTaskAgentLogs(
     ]);
     return {
       content: [{ type: "text" as const, text: buildTaskAgentLogReadText(entries, {
+        taskId,
         total,
         limit,
         offset,
@@ -2112,21 +2224,69 @@ async function readTaskAgentLogs(
     };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } catch (err: any) {
-    return { content: [{ type: "text" as const, text: `ERROR: Failed to read agent log for task ${taskId}: ${err.message}` }], details: {} };
+    return storeErrorResult(`the agent log for task ${taskId}`, err);
   }
+}
+
+/**
+ * FNXC:TaskLogsRead 2026-09-09-15:19:
+ * RUFU-204 target resolution for the task-bound registration. Precedence: an explicit `task_id` wins, then
+ * the `id` alias, then the session's bound card. When both spellings are present and DISAGREE the tool
+ * refuses with a typed error naming both values and the bound card rather than silently guessing — a wrong
+ * silent pick is the exact defect this card removes.
+ */
+function resolveTaskLogsReadTarget(
+  boundTaskId: string,
+  params: { task_id?: unknown; id?: unknown },
+): { ok: true; taskId: string } | { ok: false; refusal: string } {
+  const explicitTaskId = typeof params.task_id === "string" ? params.task_id : undefined;
+  const explicitId = typeof params.id === "string" ? params.id : undefined;
+  if (explicitTaskId !== undefined && explicitId !== undefined && explicitTaskId !== explicitId) {
+    return {
+      ok: false,
+      refusal: `ERROR: fn_task_logs_read received conflicting targets (task_id="${explicitTaskId}", id="${explicitId}"); this session is bound to ${boundTaskId}. Provide one target id, or omit both to read the bound card.`,
+    };
+  }
+  return { ok: true, taskId: explicitTaskId ?? explicitId ?? boundTaskId };
 }
 
 /**
  * FNXC:TaskLogsRead 2026-07-16-00:00:
  * Issue #2149 requires task-bound agents to read the full persisted agent log to diagnose failures. Runtime paging normalization prevents accidental unbounded reads.
+ *
+ * FNXC:TaskLogsRead 2026-09-09-15:19:
+ * RUFU-204: honor an explicit cross-task target. The operator's evidence directive falsified the original
+ * "reads append into the queried card's log" premise (the queried cards' files were untouched; the totals
+ * interpolated the poller's own growing log), so there is deliberately NO write path to fix here — the
+ * defect is read-resolution: the closure-discarded taskId handed a poller its own log and inverted the
+ * fleet's log-freshness stall heuristic. Honoring an explicit id (not a blanket refusal) is required
+ * because the standing fleet convention polls OTHER cards' logs from task-bound heartbeats, and the
+ * chat/pi surfaces already allow the same cross-task read. An unknown-but-well-formed id keeps returning
+ * an empty answer (`0/0 entries` + `(no matching log entries)`), never fabricated rows or a made-up error.
  */
 export function createTaskLogsReadTool(store: TaskStore, taskId: string): ToolDefinition {
   return {
     name: "fn_task_logs_read",
     label: "Read Agent Logs",
-    description: "Read this task's persisted agent log with pagination and optional type filtering. Tool detail is previewed per row by default; detail: full lifts the row preview while the whole response stays bounded. Default page size is 100.",
+    description: "Read a task's persisted agent log with pagination and optional type filtering. Omit task_id to read the card bound to this session; supply task_id (or its id alias) to read another card's log — conflicting or path-unsafe ids are refused, never guessed. Tool detail is previewed per row by default; detail: full lifts the row preview while the whole response stays bounded. Default page size is 100.",
     parameters: taskLogsReadParams,
-    execute: async (_id: string, params: Static<typeof taskLogsReadParams>) => readTaskAgentLogs(store, taskId, params),
+    execute: async (_id: string, params: Static<typeof taskLogsReadParams>) => {
+      const resolved = resolveTaskLogsReadTarget(taskId, params);
+      if (!resolved.ok) return { content: [{ type: "text" as const, text: resolved.refusal }], details: {} };
+      /*
+      FNXC:TaskLogsRead 2026-09-09-15:19:
+      RUFU-204: validate the caller-supplied target here, before the store seam, so a task-bound agent gets
+      the refusal as payload text and the readers are never invoked. The chat/pi lanes get the identical
+      refusal one layer down (the core store op calls the same validator), so a bad id never reaches a
+      path join on any lane.
+      */
+      try {
+        fusionCore.assertAgentLogTaskId(resolved.taskId);
+      } catch (err) {
+        return { content: [{ type: "text" as const, text: `ERROR: ${err instanceof Error ? err.message : String(err)}` }], details: {} };
+      }
+      return readTaskAgentLogs(store, resolved.taskId, params);
+    },
   };
 }
 
@@ -2155,6 +2315,15 @@ function taskDocumentWriteResult(document: TaskDocument) {
   };
 }
 
+/*
+FNXC:WriteFailureSurfacing 2026-09-23-06:50:
+STAS-251. AgentLogger.onToolEnd records a call as `tool_error` only when the result carries
+isError; without it the task log — and every automated reader of it, including review and
+replay — records a row that was never written. A mutating tool whose write did not commit
+therefore has to fail at the protocol boundary, not merely in prose. The same rule applies to
+every other failed-write branch in these tools (prompt write, file-scope add, artifact
+register, agent delete, task assign, message send).
+*/
 function taskDocumentWriteError(error: unknown, key: string, taskId?: string) {
   if (error instanceof fusionCore.TaskDocumentPreconditionFailedError) {
     return {
@@ -2163,11 +2332,7 @@ function taskDocumentWriteError(error: unknown, key: string, taskId?: string) {
       isError: true,
     };
   }
-  const message = error instanceof Error ? error.message : String(error);
-  return {
-    content: [{ type: "text" as const, text: `ERROR: Failed to save document "${key}"${taskId ? ` for task ${taskId}` : ""}: ${message}` }],
-    details: {},
-  };
+  return storeWriteFailure(`the document "${key}"${taskId ? ` for task ${taskId}` : ""}`, error);
 }
 
 /**
@@ -2452,13 +2617,7 @@ export function createTaskPromptWriteTool(
         };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (err: any) {
-        return {
-          content: [{
-            type: "text" as const,
-            text: `ERROR: Failed to update PROMPT.md for ${taskId}: ${err.message}`,
-          }],
-          details: {},
-        };
+        return storeErrorResult(`PROMPT.md plan mirror for ${taskId}`, err);
       }
     },
   };
@@ -2479,7 +2638,12 @@ export function createTaskFileScopeAddTool(store: TaskStore, taskId: string, run
       "Paths are repo-relative (no leading slash, no `..`).",
     parameters: taskFileScopeAddParams,
     execute: async (_id: string, params: Static<typeof taskFileScopeAddParams>) => {
-      const errorContent = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
+      /* Every use of this helper refuses or fails the scope write, so all of them are tool errors. */
+      const errorContent = (text: string) => ({
+        content: [{ type: "text" as const, text }],
+        details: {},
+        isError: true as const,
+      });
       try {
         const requested = params.files.map((f) => f.trim()).filter((f) => f.length > 0);
         const rejected = requested.filter((f) => !fusionCore.isValidFileScopeEntry(f));
@@ -2531,7 +2695,7 @@ export function createTaskFileScopeAddTool(store: TaskStore, taskId: string, run
         return { content: [{ type: "text" as const, text: parts.join(" ") }], details: { added: toAdd } };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (err: any) {
-        return errorContent(`ERROR: Failed to update File Scope for ${taskId}: ${err.message}`);
+        return storeErrorResult(`File Scope update for ${taskId}`, err);
       }
     },
   };
@@ -2701,6 +2865,7 @@ async function registerArtifactForAgent(
   messageStore?: MessageStore,
   options?: ArtifactRegisterToolOptions,
 ) {
+  let storeWriteAttempted = false;
   try {
     /*
     FNXC:ArtifactRegistry 2026-07-11-09:40:
@@ -2732,8 +2897,8 @@ async function registerArtifactForAgent(
       taskId: params.taskId ?? options?.defaultTaskId,
     };
 
+    storeWriteAttempted = true;
     const artifact: Artifact = await store.registerArtifact(input);
-    void notifyArtifactRegistered(messageStore, artifact, authorId);
     return {
       content: [{
         type: "text" as const,
@@ -2743,13 +2908,15 @@ async function registerArtifactForAgent(
     };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } catch (err: any) {
-    return {
-      content: [{
-        type: "text" as const,
-        text: `ERROR: Failed to register artifact "${params.title}": ${err.message}`,
-      }],
-      details: {},
-    };
+    /* A payload or eligibility refusal happens before the write, so it is a fact about the request, not an outage. */
+    if (!storeWriteAttempted) {
+      return {
+        content: [{ type: "text" as const, text: `ERROR: ${err?.message ?? err} — artifact not registered` }],
+        details: {},
+        isError: true,
+      };
+    }
+    return storeWriteFailure(`the artifact "${params.title}"`, err);
   }
 }
 
@@ -3011,35 +3178,6 @@ function hasImageSignature(data: Buffer, mimeType: string): boolean {
   return false;
 }
 
-async function notifyArtifactRegistered(messageStore: MessageStore | undefined, artifact: Artifact, authorId: string): Promise<void> {
-  if (!messageStore) return;
-
-  /*
-  FNXC:ArtifactRegistry 2026-07-12-00:00:
-  Artifact-registration mailbox notifications remain best-effort and keep their stable content string, but metadata now carries mimeType so dashboard mailbox surfaces can render document/other artifact affordances from metadata without an extra artifact fetch.
-  */
-  try {
-    await messageStore.sendMessage({
-      fromType: "system",
-      toType: "user",
-      toId: DASHBOARD_USER_ID,
-      type: "system",
-      content: `New ${artifact.type} artifact registered: ${artifact.title}`,
-      metadata: {
-        artifactId: artifact.id,
-        artifactType: artifact.type,
-        title: artifact.title,
-        mimeType: artifact.mimeType,
-        authorId,
-        taskId: artifact.taskId,
-      },
-    });
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } catch (err: any) {
-    log.warn(`Failed to send best-effort artifact registration notification for ${artifact.id}: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}
-
 async function listArtifactsForAgent(store: TaskStore, params: Static<typeof artifactListParams>) {
   try {
     const artifacts: ArtifactWithTask[] = await store.listArtifacts({
@@ -3071,13 +3209,7 @@ async function listArtifactsForAgent(store: TaskStore, params: Static<typeof art
     };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } catch (err: any) {
-    return {
-      content: [{
-        type: "text" as const,
-        text: `ERROR: Failed to list artifacts: ${err.message}`,
-      }],
-      details: {},
-    };
+    return storeErrorResult("the artifact list", err);
   }
 }
 
@@ -3115,13 +3247,7 @@ async function viewArtifactForAgent(store: TaskStore, id: string) {
     };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } catch (err: any) {
-    return {
-      content: [{
-        type: "text" as const,
-        text: `ERROR: Failed to view artifact "${id}": ${err.message}`,
-      }],
-      details: {},
-    };
+    return storeErrorResult(`the artifact "${id}"`, err);
   }
 }
 
@@ -3169,13 +3295,7 @@ async function readTaskDocuments(store: TaskStore, taskId: string, key?: string)
     };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } catch (err: any) {
-    return {
-      content: [{
-        type: "text" as const,
-        text: `ERROR: Failed to read task documents for task ${taskId}: ${err.message}`,
-      }],
-      details: {},
-    };
+    return storeErrorResult(`the task documents for task ${taskId}`, err);
   }
 }
 
@@ -3345,11 +3465,7 @@ export function createWorkflowSelectTool(store: TaskStore, currentTaskId: string
             isError: true,
           };
         }
-        return {
-          content: [{ type: "text" as const, text: `ERROR: Failed to select workflow: ${err?.message ?? err}` }],
-          details: {},
-          isError: true,
-        };
+        return storeErrorResult("workflow selection", err);
       }
     },
   };
@@ -3405,11 +3521,7 @@ export function createTaskPromoteTool(store: TaskStore, currentTaskId: string): 
         };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (err: any) {
-        return {
-          content: [{ type: "text" as const, text: `ERROR: Failed to promote task: ${err?.message ?? err}` }],
-          details: {},
-          isError: true,
-        };
+        return storeErrorResult("task promotion", err);
       }
     },
   };
@@ -3418,58 +3530,8 @@ export function createTaskPromoteTool(store: TaskStore, currentTaskId: string): 
 /*
 FNXC:ChatTaskMutationTools 2026-07-26-12:00:
 Chat permission-parity (#2376) adds these lifecycle tools so permanent-agent chat can archive/delete/retry/etc under the same task_agent_mutation gate as heartbeat/executor.
-Keep catch blocks typed as unknown (no-explicit-any) and surface err.message via instanceof — the PR lint gate fails bare `any` here even though older factories still use the disable-comment pattern.
+Keep catch blocks typed as unknown (no-explicit-any); their failure text formats through the shared store-result composer, which owns the Error-or-string decision these catches used to repeat.
 */
-function toolErrorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
-export function createTaskArchiveTool(store: TaskStore): ToolDefinition {
-  return {
-    name: "fn_task_archive",
-    label: "Archive Task",
-    description:
-      "Archive a task from any live column (move to archived). " +
-      "Archived tasks are preserved for historical reference but moved out of the main board view. " +
-      "If the task is still referenced as a lineage parent by another task, archiving is rejected unless removeLineageReferences:true is passed.",
-    parameters: taskArchiveParams,
-    execute: async (_id: string, params: Static<typeof taskArchiveParams>) => {
-      try {
-        const task = await store.archiveTask(params.id, {
-          removeLineageReferences: params.removeLineageReferences === true,
-        });
-        return {
-          content: [{ type: "text" as const, text: `Archived ${task.id} → ${task.column}` }],
-          details: { taskId: task.id, column: task.column },
-        };
-      } catch (err: unknown) {
-        return { content: [{ type: "text" as const, text: `ERROR: Failed to archive task: ${toolErrorMessage(err)}` }], details: {}, isError: true };
-      }
-    },
-  };
-}
-
-export function createTaskUnarchiveTool(store: TaskStore): ToolDefinition {
-  return {
-    name: "fn_task_unarchive",
-    label: "Unarchive Task",
-    description:
-      "Unarchive an archived task (move from archived → its restore column). " +
-      "Restores to the pre-archive column when available, with active execution columns downgraded to todo.",
-    parameters: taskUnarchiveParams,
-    execute: async (_id: string, params: Static<typeof taskUnarchiveParams>) => {
-      try {
-        const task = await store.unarchiveTask(params.id);
-        return {
-          content: [{ type: "text" as const, text: `Unarchived ${task.id} → ${task.column}` }],
-          details: { taskId: task.id, column: task.column },
-        };
-      } catch (err: unknown) {
-        return { content: [{ type: "text" as const, text: `ERROR: Failed to unarchive task: ${toolErrorMessage(err)}` }], details: {}, isError: true };
-      }
-    },
-  };
-}
 
 export function createTaskDeleteTool(store: TaskStore): ToolDefinition {
   return {
@@ -3489,7 +3551,7 @@ export function createTaskDeleteTool(store: TaskStore): ToolDefinition {
         });
         return { content: [{ type: "text" as const, text: `Deleted ${task.id}` }], details: { taskId: task.id } };
       } catch (err: unknown) {
-        return { content: [{ type: "text" as const, text: `ERROR: Failed to delete task: ${toolErrorMessage(err)}` }], details: {}, isError: true };
+        return storeErrorResult("task deletion", err);
       }
     },
   };
@@ -3624,7 +3686,7 @@ export function createTaskRetryTool(store: TaskStore, options: TaskRetryToolOpti
         await store.logEntry(params.id, "Retry requested via chat tool", `Task reset to ${retryTarget} for retry`);
         return { content: [{ type: "text" as const, text: `Retried ${params.id} → ${retryTarget}` }], details: { taskId: params.id, newColumn: retryTarget } };
       } catch (err: unknown) {
-        return { content: [{ type: "text" as const, text: `ERROR: Failed to retry task: ${toolErrorMessage(err)}` }], details: {}, isError: true };
+        return storeErrorResult("task retry", err);
       }
     },
   };
@@ -3641,7 +3703,7 @@ export function createTaskPauseTool(store: TaskStore): ToolDefinition {
         const task = await store.pauseTask(params.id, true);
         return { content: [{ type: "text" as const, text: `Paused ${task.id}` }], details: { taskId: task.id, column: task.column } };
       } catch (err: unknown) {
-        return { content: [{ type: "text" as const, text: `ERROR: Failed to pause task: ${toolErrorMessage(err)}` }], details: {}, isError: true };
+        return storeErrorResult("task pause", err);
       }
     },
   };
@@ -3658,7 +3720,7 @@ export function createTaskUnpauseTool(store: TaskStore): ToolDefinition {
         const task = await store.pauseTask(params.id, false);
         return { content: [{ type: "text" as const, text: `Unpaused ${task.id}` }], details: { taskId: task.id, column: task.column } };
       } catch (err: unknown) {
-        return { content: [{ type: "text" as const, text: `ERROR: Failed to unpause task: ${toolErrorMessage(err)}` }], details: {}, isError: true };
+        return storeErrorResult("task unpause", err);
       }
     },
   };
@@ -3675,7 +3737,7 @@ export function createTaskDuplicateTool(store: TaskStore): ToolDefinition {
         const task = await store.duplicateTask(params.id);
         return { content: [{ type: "text" as const, text: `Duplicated to ${task.id}` }], details: { taskId: task.id } };
       } catch (err: unknown) {
-        return { content: [{ type: "text" as const, text: `ERROR: Failed to duplicate task: ${toolErrorMessage(err)}` }], details: {}, isError: true };
+        return storeErrorResult("task duplication", err);
       }
     },
   };
@@ -3701,7 +3763,7 @@ export function createTaskMergeTool(store: TaskStore, _currentTaskId: string): T
         const mergedInto = result?.task?.id ?? targetId;
         return { content: [{ type: "text" as const, text: `Merged ${targetId} into ${mergedInto}` }], details: { targetId, mergedInto } };
       } catch (err: unknown) {
-        return { content: [{ type: "text" as const, text: `ERROR: Failed to merge task: ${toolErrorMessage(err)}` }], details: {}, isError: true };
+        return storeErrorResult("task merge", err);
       }
     },
   };
@@ -3710,13 +3772,39 @@ export function createTaskMergeTool(store: TaskStore, _currentTaskId: string): T
 export function createTaskUpdateTool(store: TaskStore, taskId: string): ToolDefinition {
   return {
     name: "fn_task_update",
-    label: "Update Step / Custom Fields / Dependencies",
+    label: "Update Step / Title / Custom Fields / Dependencies",
     description:
-      "Update a task step status, dependencies, or workflow custom fields without leaving chat. " +
-      "Use step+status to report progress, dependencies to rewire blockers, or custom_fields to set workflow-defined fields.",
+      "Update a task step status, title, dependencies, or workflow custom fields without leaving chat. " +
+      "Use step+status to report progress, dependencies to rewire blockers, or custom_fields to set workflow-defined fields. " +
+      "Pass `title` to rename the card — that is the remediation path when a card you created got a junk title " +
+      "(a markdown heading or a multi-line description slice) instead of a real one.",
     parameters: taskUpdateParams,
     execute: async (_id: string, params: Static<typeof taskUpdateParams>) => {
       try {
+        /*
+        FNXC:TaskTitleDerivation 2026-09-26-04:45:
+        RUFU-295: a rename is applied FIRST, so a combined call (`title` + `step/status`) reports each
+        outcome separately: the title write is durable even when a later step transition is refused by
+        lifecycle rules, and a refused title persists nothing.
+        */
+        let titleNote = "";
+        if (params.title !== undefined) {
+          const rejection = fusionCore.describeTaskTitleRejection(params.title);
+          if (rejection) {
+            return {
+              content: [{ type: "text" as const, text: `ERROR: title rejected (${rejection}). Nothing was persisted.` }],
+              details: { taskId, code: "TITLE_REJECTED" },
+              isError: true,
+            };
+          }
+          const trimmedTitle = params.title.trim();
+          try {
+            await store.updateTask(taskId, { title: trimmedTitle });
+          } catch (error) {
+            return storeErrorResult(`title rename on ${taskId}`, error);
+          }
+          titleNote = ` Title → "${trimmedTitle}".`;
+        }
         if (params.custom_fields !== undefined) {
           const res = await store.updateTaskCustomFields(taskId, params.custom_fields);
           if (!res.ok) {
@@ -3742,20 +3830,63 @@ export function createTaskUpdateTool(store: TaskStore, taskId: string): ToolDefi
           await store.updateTask(taskId, { dependencies: params.dependencies });
         }
         if (params.step !== undefined && params.status !== undefined) {
-          const task = params.summary === undefined
-            ? await store.updateStep(taskId, params.step, params.status)
-            : await store.updateStep(taskId, params.step, params.status, { summary: params.summary });
+          let stepWrite: Task;
+          try {
+            stepWrite = params.summary === undefined
+              ? await store.updateStep(taskId, params.step, params.status)
+              : await store.updateStep(taskId, params.step, params.status, { summary: params.summary });
+          } catch (error) {
+            return storeErrorResult(`step ${params.step} → ${params.status} on ${taskId}`, error);
+          }
+          /*
+          FNXC:StepClosureTruthful 2026-09-23-05:40:
+          STAS-251. `updateStep` refuses a transition its lifecycle disallows by returning the task
+          unchanged, and this copy read only `task.id`, so it announced "step 7 → done" from the
+          REQUESTED value while the board still held `pending` — the same divergence the executor
+          copy already guards against, on the surface a permanent agent reports its own progress
+          from. The status the store returned is the only thing this tool may say.
+          */
+          const persistedStep = stepWrite.steps?.[params.step];
+          if (!persistedStep) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `Step ${params.step} does not exist on ${taskId} — it has ${stepWrite.steps?.length ?? 0} step(s), 0-indexed. Nothing was persisted.`,
+              }],
+              details: { taskId, step: params.step, code: "STEP_OUT_OF_RANGE" },
+              isError: true,
+            };
+          }
+          if (persistedStep.status !== params.status) {
+            const lifecycleNoop = stepLifecycleNoopResult({
+              stepIndex: params.step,
+              stepName: persistedStep.name,
+              requested: params.status,
+              persisted: persistedStep.status,
+              progress: { done: stepWrite.steps.filter((s) => s.status === "done").length, total: stepWrite.steps.length },
+            });
+            // A rename applied earlier in this same call DID persist; the refusal has to say so,
+            // matching the executor copy so neither lane reports a half-written call as nothing.
+            if (titleNote) lifecycleNoop.content[0].text += titleNote;
+            return lifecycleNoop;
+          }
           const reminder = params.status === "done" && !params.summary?.trim()
             ? " No step summary recorded — call fn_task_update again for this step with `summary` to record what it delivered."
             : "";
-          return { content: [{ type: "text" as const, text: `Updated ${taskId}: step ${params.step} → ${params.status}.${reminder}` }], details: { taskId: task.id, step: params.step, status: params.status } };
+          return {
+            content: [{ type: "text" as const, text: `Updated ${taskId}: step ${params.step} → ${persistedStep.status}.${reminder}${titleNote}` }],
+            details: { taskId: stepWrite.id, step: params.step, status: persistedStep.status },
+          };
         }
         if (params.custom_fields !== undefined || params.dependencies !== undefined) {
-          return { content: [{ type: "text" as const, text: "Updated." }], details: {} };
+          return { content: [{ type: "text" as const, text: `Updated.${titleNote}` }], details: {} };
         }
-        return { content: [{ type: "text" as const, text: "No-op: provide step+status, dependencies, or custom_fields." }], details: {} };
+        if (titleNote) {
+          return { content: [{ type: "text" as const, text: `Renamed ${taskId}:${titleNote.trimStart()}` }], details: { taskId, title: params.title?.trim() } };
+        }
+        return { content: [{ type: "text" as const, text: "No-op: provide step+status, title, dependencies, or custom_fields." }], details: {} };
       } catch (err: unknown) {
-        return { content: [{ type: "text" as const, text: `ERROR: ${toolErrorMessage(err)}` }], details: {}, isError: true };
+        return storeErrorResult("task update", err);
       }
     },
   };
@@ -3801,7 +3932,7 @@ export function createTaskAddDepTool(store: TaskStore, taskId: string): ToolDefi
         await store.updateTask(taskId, { dependencies: [...(task.dependencies || []), depId] });
         return { content: [{ type: "text" as const, text: `Added dependency ${depId} to ${taskId}` }], details: { taskId, dependency: depId } };
       } catch (err: unknown) {
-        return { content: [{ type: "text" as const, text: `ERROR: Failed to add dependency: ${toolErrorMessage(err)}` }], details: {}, isError: true };
+        return storeErrorResult("dependency declaration", err);
       }
     },
   };
@@ -4031,11 +4162,7 @@ export function createWorkflowCreateTool(
         if (err instanceof ColumnAgentBindingError) {
           return columnAgentBindingErrorResult(err);
         }
-        return {
-          content: [{ type: "text" as const, text: `ERROR: Failed to create workflow: ${err?.message ?? err}` }],
-          details: {},
-          isError: true,
-        };
+        return storeErrorResult("workflow creation", err);
       }
     },
   };
@@ -4116,11 +4243,7 @@ export function createWorkflowUpdateTool(
             isError: true,
           };
         }
-        return {
-          content: [{ type: "text" as const, text: `ERROR: Failed to update workflow: ${err?.message ?? err}` }],
-          details: {},
-          isError: true,
-        };
+        return storeErrorResult("workflow update", err);
       }
     },
   };
@@ -4162,11 +4285,7 @@ export function createWorkflowDeleteTool(store: TaskStore): ToolDefinition {
             isError: true,
           };
         }
-        return {
-          content: [{ type: "text" as const, text: `ERROR: Failed to delete workflow: ${err?.message ?? err}` }],
-          details: {},
-          isError: true,
-        };
+        return storeErrorResult("workflow deletion", err);
       }
     },
   };
@@ -4309,11 +4428,7 @@ export function createWorkflowSettingsTool(store: TaskStore): ToolDefinition {
             isError: true,
           };
         }
-        return {
-          content: [{ type: "text" as const, text: `ERROR: Failed to write workflow settings: ${err?.message ?? err}` }],
-          details: {},
-          isError: true,
-        };
+        return storeErrorResult("workflow settings write", err);
       }
     },
   };
@@ -4404,28 +4519,14 @@ export function createWorkflowAuthoringTools(
 }
 
 /**
- * Resolve an active memory-search topic/focus to its effective value.
- *
- * RUFU-068: a conversation's focus is a within-project read filter that scopes
- * recall to a working topic. Values that mean "no filter" collapse to `undefined`
- * so the caller searches whole-project scope (project default):
- *   - undefined / null → undefined (whole scope)
- *   - empty or whitespace-only string → undefined
- *   - "all" or "*" (operator way to clear the filter) → undefined
- * Any other non-empty trimmed string is the active topic.
+ * FNXC:RUFU172FocusResolver 2026-08-31-19:41:
+ * `resolveMemorySearchTopic` moved to `@fusion/core` (`packages/core/src/memory/project-memory.ts`)
+ * in RUFU-172 so the recall core and this engine tool share one "no focus" definition
+ * (core cannot import engine). It is re-exported here so existing import sites keep
+ * resolving. See the core JSDoc for semantics: trim; empty/`all`/`*` -> `undefined`
+ * (whole-project scope); otherwise the trimmed focus.
  */
-// FNXC:MemoryFocusEngine 2026-08-13-15:57: per-conversation memory focus (RUFU-068).
-// A conversation can carry an active topic; recall (fn_memory_search) must scope to
-// it as a WITHIN-project read filter. 'all'/'*'/empty/undefined mean no filter →
-// whole-project scope (project default). The resolved topic is pushed through
-// searchProjectMemory → backend.search (Stash REST &topic= for SQL-side filtering),
-// never a client-side post-query filter.
-export function resolveMemorySearchTopic(focus: string | null | undefined): string | undefined {
-  if (focus == null) return undefined;
-  const trimmed = focus.trim();
-  if (trimmed === "" || trimmed === "all" || trimmed === "*") return undefined;
-  return trimmed;
-}
+export { resolveMemorySearchTopic };
 
 export function createMemorySearchTool(rootDir: string, settings?: MemoryToolSettings, options?: MemoryToolOptions): ToolDefinition {
   return {
@@ -4445,10 +4546,18 @@ export function createMemorySearchTool(rootDir: string, settings?: MemoryToolSet
       // FNXC:MemoryFocusEngine 2026-08-13-15:57: scope the project recall to the
       // active topic when a focus is set — either explicitly via params.topic, or
       // from the enclosing conversation's focus (options.focus). 'all'/''/'*' clears
-      // to whole-project scope. This is a WITHIN-project read filter; it never
-      // weakens cross-project scope isolation. The topic reaches searchProjectMemory
-      // → backend.search, which (for Stash) pushes it as a &topic= query param for
-      // SQL-enforced filtering — we never post-filter results in-memory.
+      // to whole-project scope. It narrows nothing — the topic reaches searchProjectMemory
+      // → backend.search as a read-time hint — and it never weakens cross-project scope
+      // isolation.
+      /*
+      FNXC:MemoryFocusContract 2026-08-31-19:41:
+      RUFU-172 contract correction: the sentence this block used to carry (“for Stash
+      this pushes a &topic= query param for SQL-enforced filtering”) was false even when
+      written — the Stash route accepts `q`+`limit` only, and RUFU-121 deleted the inert
+      param. The topic is a HINT on backend.search options (topic-aware backends may
+      rank by it; Stash ignores it). The operator focus now also biases the proactive
+      per-turn recall cue (RUFU-172 lane T). “Never post-filter in-memory” still holds.
+      */
       const activeTopic = resolveMemorySearchTopic(params.topic ?? options?.focus);
       const projectResults = await searchProjectMemory(rootDir, {
         query: params.query,
@@ -4512,6 +4621,50 @@ export function createMemoryGetTool(rootDir: string, settings?: MemoryToolSettin
   };
 }
 
+/**
+ * FNXC:MemoryBudget 2026-09-29-23:56:
+ * RUFU-279 — the append tool used to answer `Appended to long-term memory.` with no number at all,
+ * which is how a project file reached 594,273 bytes / 306 entries without anyone being told: every
+ * write looked equally free. The confirmation now reads the file back and reports measured UTF-8 bytes
+ * plus the `## ` entry count, so the author sees the cost of the write at the moment they make it.
+ *
+ * Long-term writes additionally report the code-owned budget and, when over it, what maintenance will
+ * and will not do.
+ *
+ * The `daily` layer keeps its original sentence verbatim. Daily files are dated logs with their own
+ * lifecycle, the budget is a long-term policy, and RUFU-279 was never asked to change a message that
+ * was not lying about anything — an unchanged string is the diff that cannot surprise a reader or a
+ * downstream assertion.
+ *
+ * A failed read-back never turns a successful append into an error, and it never falls back to the
+ * old number-free sentence either: it says the measurement is unavailable.
+ */
+async function memoryAppendConfirmation(params: {
+  targetPath: string;
+  scopeLabel: string;
+  scope: LongTermMemoryScope;
+  agentId?: string;
+  layer: string;
+  appendedBytes: number;
+}): Promise<string> {
+  if (params.layer !== "long-term") return `Appended to ${params.scopeLabel} memory.`;
+  try {
+    const content = await readFile(params.targetPath, "utf-8");
+    const report = measureLongTermMemory({
+      content,
+      scope: params.scope,
+      ...(params.agentId ? { agentId: params.agentId } : {}),
+    });
+    return formatLongTermMemoryAppendReport({
+      scopeLabel: params.scopeLabel,
+      appendedBytes: params.appendedBytes,
+      report,
+    });
+  } catch {
+    return `Appended to ${params.scopeLabel} memory (${formatMemorySize(params.appendedBytes)} appended; size measurement unavailable).`;
+  }
+}
+
 export function createMemoryAppendTool(rootDir: string, settings?: MemoryToolSettings, options?: MemoryToolOptions): ToolDefinition {
   return {
     name: "fn_memory_append",
@@ -4536,7 +4689,8 @@ export function createMemoryAppendTool(rootDir: string, settings?: MemoryToolSet
         const targetPath = params.layer === "long-term"
           ? agentMemoryFilePath(rootDir, agentMemory.agentId)
           : agentDailyFilePath(rootDir, agentMemory.agentId);
-        await appendFile(targetPath, `\n${content}\n`, "utf-8");
+        const written = `\n${content}\n`;
+        await appendFile(targetPath, written, "utf-8");
         if (resolveMemoryBackend(settings).type === "qmd") {
           void refreshAgentMemoryQmdIndex(rootDir, agentMemory).catch((err) => {
             log.warn(
@@ -4545,19 +4699,39 @@ export function createMemoryAppendTool(rootDir: string, settings?: MemoryToolSet
           });
         }
         return {
-          content: [{ type: "text" as const, text: `Appended to agent ${params.layer} memory.` }],
+          content: [{
+            type: "text" as const,
+            text: await memoryAppendConfirmation({
+              targetPath,
+              scopeLabel: `agent ${params.layer}`,
+              scope: "agent",
+              agentId: agentMemory.agentId,
+              layer: params.layer,
+              appendedBytes: Buffer.byteLength(written, "utf8"),
+            }),
+          }],
           details: { scope, layer: params.layer },
         };
       }
 
       await ensureOpenClawMemoryFiles(rootDir);
       const targetPath = params.layer === "long-term" ? memoryLongTermPath(rootDir) : dailyMemoryPath(rootDir);
-      await appendFile(targetPath, `\n${content}\n`, "utf-8");
+      const written = `\n${content}\n`;
+      await appendFile(targetPath, written, "utf-8");
       if (resolveMemoryBackend(settings).type === "qmd") {
         scheduleQmdProjectMemoryRefresh(rootDir);
       }
       return {
-        content: [{ type: "text" as const, text: `Appended to ${params.layer} memory.` }],
+        content: [{
+          type: "text" as const,
+          text: await memoryAppendConfirmation({
+            targetPath,
+            scopeLabel: params.layer,
+            scope: "project",
+            layer: params.layer,
+            appendedBytes: Buffer.byteLength(written, "utf8"),
+          }),
+        }],
         details: { scope, layer: params.layer },
       };
     },
@@ -5836,8 +6010,7 @@ export function createAgentDeleteTool(
       try {
         await agentStore.deleteAgent(params.agent_id, { force: params.force === true, reassignTo: params.reassign_to });
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return { content: [{ type: "text" as const, text: `ERROR: ${message}` }], details: {} };
+        return storeErrorResult("agent deletion", error);
       }
 
       await options?.runAuditor?.database({ type: "agent:delete:approved", target: target.id, metadata: { policy, autoApproved: true } });
@@ -5897,7 +6070,9 @@ export function createDelegateTaskTool(
       "selected workflow's ready lane and will be picked up by the target agent on their next heartbeat cycle. " +
       "Use fn_list_agents first to find available agents and their capabilities. " +
       "Optionally pass workflow_id to select a workflow at creation time; use " +
-      "fn_workflow_list to discover valid IDs.",
+      "fn_workflow_list to discover valid IDs. " +
+      "Pass title to name the delegated card in your own words; omitted, the label is derived from " +
+      "the first sentence of the description.",
     parameters: delegateTaskParams,
     execute: async (_id: string, params: Static<typeof delegateTaskParams>) => {
       /*
@@ -5975,6 +6150,8 @@ export function createDelegateTaskTool(
         }
         const readyColumn = await resolveDelegationReadyColumn(taskStore, workflowId);
         const { task, wasDuplicate } = await createAgentTask(taskStore, {
+          // FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): an explicit title is the caller's own words.
+          ...(params.title?.trim() ? { title: params.title.trim() } : {}),
           description: params.description,
           dependencies: params.dependencies,
           column: readyColumn,
@@ -6001,11 +6178,18 @@ export function createDelegateTaskTool(
         */
         const assignedToRequestedAgent = !wasDuplicate || task.assignedAgentId === agent.id;
         const actualOwner = task.assignedAgentId ? `agent ${task.assignedAgentId}` : "no agent";
+        /*
+        FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): the delegation confirmation named only the ID, so a
+        delegating agent could not see the label its card actually carries — an explicit `title` was invisible
+        and a derived one unverifiable. The label the board renders is now echoed alongside the ID.
+        */
+        const label = task.title?.trim()
+          || fusionCore.deriveTaskLabelFromDescription(task.description, 80);
         const action = wasDuplicate
           ? assignedToRequestedAgent
-            ? `Linked existing ${task.id} and assigned it to ${agent.name}`
-            : `Linked existing ${task.id}; it remains assigned to ${actualOwner}`
-          : `Created ${task.id}`;
+            ? `Linked existing ${task.id}: ${label} and assigned it to ${agent.name}`
+            : `Linked existing ${task.id}: ${label}; it remains assigned to ${actualOwner}`
+          : `Created ${task.id}: ${label}`;
         const pickup = assignedToRequestedAgent
           ? ` The task will be picked up by ${agent.name} on their next heartbeat cycle.`
           : "";
@@ -6055,8 +6239,19 @@ export function createTaskAssignTool(
       let task: Task;
       try {
         task = await taskStore.getTask(params.task_id);
-      } catch {
-        return { content: [{ type: "text" as const, text: `ERROR: Task ${params.task_id} not found` }], details: {} };
+      } catch (error) {
+        /*
+        FNXC:StoreErrorShape 2026-09-23-06:00:
+        STAS-251. This catch used to name every lookup failure "not found", so a board the agent
+        simply could not reach read as a card that had vanished, and the fix agents reach for is
+        to re-create it. A failed assignment against an unreachable board is an outage with a
+        retry, not a missing card.
+        */
+        if (!isTaskNotFoundError(error)) {
+          return storeErrorResult(`task ${params.task_id} could not be read before assignment`, error);
+        }
+        /* The task is unknown, so the assignment cannot happen — a failed write, not advice. */
+        return { content: [{ type: "text" as const, text: `ERROR: Task ${params.task_id} not found` }], details: {}, isError: true };
       }
 
       const verdict = evaluateImplementationTaskBind(agent, task, {
@@ -6257,12 +6452,14 @@ export function createSendMessageTool(
             return {
               content: [{ type: "text" as const, text: `ERROR: Recipient agent '${recipient.id}' could not be validated — message not sent` }],
               details: {},
+              isError: true,
             };
           }
           if (resolvedRecipient == null) {
             return {
               content: [{ type: "text" as const, text: `ERROR: Recipient agent '${recipient.id}' does not exist — message not sent` }],
               details: {},
+              isError: true,
             };
           }
         }
@@ -6297,10 +6494,7 @@ export function createSendMessageTool(
         });
 
         if (result.outcome === "parked") {
-          return {
-            content: [{ type: "text" as const, text: `ERROR: Failed to send message: ${result.error.message}` }],
-            details: {},
-          };
+          return storeWriteFailure("message delivery", result.error.message);
         }
 
         return {
@@ -6311,11 +6505,7 @@ export function createSendMessageTool(
           details: { messageId: result.value.id },
         };
       } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        return {
-          content: [{ type: "text" as const, text: `ERROR: Failed to send message: ${errorMessage}` }],
-          details: {},
-        };
+        return storeWriteFailure("message delivery", err);
       }
     },
   };
@@ -6661,11 +6851,7 @@ export function createPostRoomMessageTool(
         });
 
         if (result.outcome === "parked") {
-          return {
-            content: [{ type: "text" as const, text: `ERROR: Failed to post room message: ${result.error.message}` }],
-            details: {},
-            isError: true,
-          };
+          return storeWriteFailure("room message delivery", result.error.message);
         }
 
         return {
@@ -6673,12 +6859,7 @@ export function createPostRoomMessageTool(
           details: { messageId: result.value.id },
         };
       } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        return {
-          content: [{ type: "text" as const, text: `ERROR: Failed to post room message: ${errorMessage}` }],
-          details: {},
-          isError: true,
-        };
+        return storeWriteFailure("room message delivery", err);
       }
     },
   };
@@ -6795,11 +6976,10 @@ export function createReadMessagesTool(messageStore: MessageStore, agentId: stri
           },
         };
       } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        return {
-          content: [{ type: "text" as const, text: `ERROR: Failed to read messages: ${errorMessage}` }],
-          details: {},
-        };
+        /* FNXC:ReadFailureSurfacing 2026-09-25-05:45: STAS-259. This catch covered the inbox read and the
+        reply-context read, so a stall answered as payload text and an unreachable inbox looked empty; the flag
+        is what makes the agent log say tool_error. "No messages" stays unflagged — that half is a fact. */
+        return storeErrorResult("your inbox messages", err);
       }
     },
   };

@@ -1,7 +1,7 @@
 import type { ChatMessage } from "@fusion/core";
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import type { ChatFailureInfo, ChatStreamErrorMeta } from "../api";
-import type { ChatMessageInfo, FallbackInfo, ToolCallInfo } from "./chatTypes";
+import type { ChatMessageInfo, ChatEnginePhase, FallbackInfo, ToolCallInfo } from "./chatTypes";
 
 /**
  * Inputs for the chat streaming-handler factory.
@@ -33,6 +33,24 @@ export interface CreateChatStreamHandlersOptions {
   setStreamingText: Dispatch<SetStateAction<string>>;
   setStreamingThinking: Dispatch<SetStateAction<string>>;
   setStreamingToolCalls: Dispatch<SetStateAction<ToolCallInfo[]>>;
+  /*
+  FNXC:ChatPhaseStatus 2026-09-05-10:23:
+  RUFU-188: the live engine-phase slot the placeholder reads. Optional (unlike the text/thinking/tool-call
+  setters) because a phase is transient: a caller that owns no phase label simply omits it and the
+  side channel is ignored, exactly as a caller today ignores any optional handler. It carries the
+  paired true/false frames, not accumulated content, so unlike text/thinking there is no `initial*`
+  seed — a reattach recovers a still-running phase from the buffered `Last-Event-ID` replay.
+  */
+  setStreamingPhase?: Dispatch<SetStateAction<ChatEnginePhase | null>>;
+  /*
+  FNXC:ChatSendDurability 2026-09-07-11:00:
+  RUFU-192: forwards the server's "user row is stored" acknowledgement (see the api
+  ChatStreamHandlers.onUserPersisted note). Forwarded verbatim with NO buffering or coalescing —
+  this event releases the caller's composer text, so delaying it by a frame would widen the
+  zero-durable-owner window the whole task exists to close. Advisory and idempotent: SSE replay
+  can redeliver it; the caller's commit must be no-op-on-repeat.
+  */
+  onUserPersisted?: (messageId: string) => void;
   /**
    * Caller-side `cancelStreamingFlushes` ref slot. The factory writes its own
    * cancel function here so `stopStreaming` (in either parent hook) can call
@@ -43,6 +61,14 @@ export interface CreateChatStreamHandlersOptions {
   addToast?: (message: string, level: "error" | "warning" | "success") => void;
   /** Caller-supplied terminal handlers — bind in their own state setters. */
   onAgentMessage?: (data: { message: ChatMessage; senderAgentId: string; senderAgentName: string }) => void;
+  /*
+  FNXC:ChatMessageEdit 2026-09-16-05:58:
+  In-band identity of the user turn the server persisted for THIS stream. The factory joins the
+  stream's own `tempUserMessageId` so callers reconcile their optimistic bubble by EXACT temp id.
+  Content equality is deliberately not the join key: two identical consecutive sends would collide,
+  which is the very defect (`Message temp-… not found in session …`) this event removes.
+  */
+  onUserMessage?: (data: { message: ChatMessage; tempUserMessageId: string }) => void;
   onDone: (data: {
     messageId: string;
     message?: ChatMessage;
@@ -69,7 +95,21 @@ export interface ChatStreamHandlers {
   onToolStart: (data: { toolName: string; args?: Record<string, unknown> }) => void;
   onToolEnd: (data: { toolName: string; isError: boolean; result?: unknown }) => void;
   onFallback: (data: FallbackInfo) => void;
+  /*
+  FNXC:ChatPhaseStatus 2026-09-05-10:23:
+  RUFU-188: forwards the engine phase side-channel (see ChatStreamHandlers.onPhase in api/chat).
+  The factory turns the paired `{ phase, active }` frames into one `ChatEnginePhase | null` state
+  write: active frames set the label, the trailing inactive frame clears it.
+  */
+  onPhase: (data: { phase: ChatEnginePhase; active: boolean }) => void;
+  /*
+  FNXC:ChatSendDurability 2026-09-07-11:00:
+  RUFU-192: pass-through of the durable-user-turn acknowledgement; see the same tag on
+  CreateChatStreamHandlersOptions.onUserPersisted for the contract.
+  */
+  onUserPersisted: (messageId: string) => void;
   onAgentMessage?: (data: { message: ChatMessage; senderAgentId: string; senderAgentName: string }) => void;
+  onUserMessage?: (data: { message: ChatMessage }) => void;
   onDone: (data: { messageId: string; message?: ChatMessage; dispatch?: "agents"; failedAgentNames?: string[] }) => void;
   onError: (data: string | ChatFailureInfo, meta?: ChatStreamErrorMeta) => void;
 }
@@ -106,11 +146,14 @@ export function createChatStreamHandlers(
     setStreamingText,
     setStreamingThinking,
     setStreamingToolCalls,
+    setStreamingPhase,
+    onUserPersisted,
     cancelStreamingFlushesRef,
     addToast,
     onDone,
     onError,
     onAgentMessage,
+    onUserMessage,
     onFallbackSession,
   } = options;
 
@@ -157,6 +200,16 @@ export function createChatStreamHandlers(
       }
     },
     onText: (delta: string) => {
+      /*
+      FNXC:ChatPhaseStatus 2026-09-05-11:45:
+      RUFU-188: the first answer text replaces the waiting placeholder, so it also retires the phase label
+      (spec: cleared on done/error AND when text arrives). A lost inactive `phase` frame — e.g. a dropped
+      connection that never reattaches — could otherwise strand "(compacting…)" behind streamed content on
+      replay, where the label's own empty-text render gate cannot hide it from an attach that seeded no text.
+      */
+      if (capturedText.length === 0) {
+        setStreamingPhase?.(null);
+      }
       capturedText += delta;
       if (textRaf === null) {
         textRaf = requestAnimationFrame(flushText);
@@ -206,9 +259,26 @@ export function createChatStreamHandlers(
       onFallbackSession?.(data, sessionId);
       addToast?.(`Primary model unavailable. Switched to fallback ${data.fallbackModel}.`, "warning");
     },
+    /*
+    FNXC:ChatPhaseStatus 2026-09-05-10:23:
+    RUFU-188: map the paired phase frames onto the single label slot. An active frame arms the label
+    ("compacting"); the server always emits the matching inactive frame — from the gate's `finally`,
+    so it runs on refusal and throw too — which clears it. `onDone`/`onError` also clear defensively
+    so a lost inactive frame (e.g. a dropped connection that never reattaches) cannot strand the label.
+    */
+    onPhase: (data: { phase: ChatEnginePhase; active: boolean }) => {
+      setStreamingPhase?.(data.active ? data.phase : null);
+    },
+    onUserPersisted: (messageId: string) => {
+      onUserPersisted?.(messageId);
+    },
     onAgentMessage,
+    ...(onUserMessage
+      ? { onUserMessage: (data: { message: ChatMessage }) => onUserMessage({ message: data.message, tempUserMessageId }) }
+      : {}),
     onDone: (data: { messageId: string; message?: ChatMessage; dispatch?: "agents"; failedAgentNames?: string[] }) => {
       cancelFlushes();
+      setStreamingPhase?.(null);
       onDone({
         messageId: data.messageId,
         message: data.message,
@@ -224,6 +294,7 @@ export function createChatStreamHandlers(
     },
     onError: (data: string | ChatFailureInfo, meta?: ChatStreamErrorMeta) => {
       cancelFlushes();
+      setStreamingPhase?.(null);
       onError(data, tempUserMessageId, meta);
     },
   };

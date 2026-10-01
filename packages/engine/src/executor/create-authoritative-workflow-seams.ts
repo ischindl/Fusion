@@ -321,6 +321,26 @@ export function createAuthoritativeWorkflowSeams(
             executorLog.warn(`${mergeTask.id}: graph merge seam timed out after ${GRAPH_MERGE_TIMEOUT_MS}ms`);
             return { outcome: "failure", value: "merge-timeout" };
           }
+          /*
+          FNXC:ZeroCommitDeliveryProof 2026-09-26-09:35 (RUFU-274):
+          Same refusal-before-success ordering as the `requestMerge` primitive, for the same reason: a lane can
+          refuse a zero-diff landing while its result still carries a truthy no-op flag, so the success test
+          alone would walk the graph forward on undelivered content. Routing on `deliveryUnproven` keeps the
+          graph value a stable token instead of the operator-facing refusal sentence, and writes no task
+          status — the durable hold the guard stamped on the row is what keeps the card waiting.
+
+          The value is the graph's SUCCESS arm, matching the seam's own `manual-required` classification: a
+          `failure` here would feed `routeGraphMergeFailureToRetry`, spending `mergeRetries` on a wait and
+          terminalizing the card at `AUTO_MERGE_RETRY_REJECTED:` + `status:"failed"` — the retry-then-fail
+          shape that discarded RUFU-262's work. `manual-required` releases the card to its `manual-merge-hold`
+          handler instead, which is the shipped terminal hold for exactly this state.
+          */
+          if (result.deliveryUnproven) {
+            executorLog.warn(
+              `${mergeTask.id}: graph merge seam refused finalization — delivery unproven (${result.reason ?? "uncommitted work survives in the worktree"})`,
+            );
+            return { outcome: "success", value: "manual-required" };
+          }
           if (result.merged || result.noOp) {
             return { outcome: "success", value: result.noOp ? "merge-noop" : "merged" };
           }

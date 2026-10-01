@@ -21,7 +21,7 @@ describe("CustomModelDropdown credential instance", () => {
   it.each([undefined, {}, { openai: { instances: [] } }, { openai: { instances: [{ id: "only", isDefault: true }] } }])(
     "renders no instance control unless the selected provider has two instances",
     async (credentialInstances) => {
-      await openDropdown({ credentialInstances });
+      await openDropdown({ credentialInstances: credentialInstances as ComponentProps<typeof CustomModelDropdown>["credentialInstances"] });
       expect(screen.queryByTestId("custom-model-dropdown-credential-instance")).toBeNull();
       expect(screen.queryByTestId("custom-model-dropdown-credential-instance-badge")).toBeNull();
     },
@@ -105,6 +105,12 @@ describe("CustomModelDropdown credential instance", () => {
       />,
     );
     expect(screen.queryByTestId("custom-model-dropdown-credential-instance")).toBeNull();
+    /*
+    FNXC:NativeUiKeyboard 2026-09-15-00:20:
+    Escape is owned by the open panel rather than the document, so the nested Escape hierarchy (submenu,
+    then menu, then field) stays intact. Press it where the operator actually is: inside the open menu.
+    */
+    screen.getByPlaceholderText("Filter models…").focus();
     await user.keyboard("{Escape}");
     expect(screen.queryByTestId("model-combobox-portal")).toBeNull();
   });

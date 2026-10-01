@@ -81,7 +81,6 @@ function workflowsPayload(renamed: boolean): BoardWorkflowsPayload {
             flags: { countsTowardWip: true, mergeBlocker: true, humanReview: true },
           },
           { id: id("done"), name: "Shipped", flags: { complete: true } },
-          { id: id("archived"), name: "Filed", flags: { archived: true, hiddenFromBoard: true } },
         ],
       },
     ],
@@ -112,7 +111,6 @@ async function renderBoard(renamed: boolean): Promise<BlockerFanoutEntry | undef
     onQuickCreate: vi.fn(),
     onNewTask: vi.fn(),
     autoMerge: true,
-    onToggleAutoMerge: vi.fn(),
     showWorktreeGrouping: false,
     planAutoApproveEnabled: false,
     onTogglePlanAutoApprove: vi.fn(),
@@ -123,7 +121,7 @@ async function renderBoard(renamed: boolean): Promise<BlockerFanoutEntry | undef
      before trusting anything it handed down. */
   await waitFor(() => expect(renderedColumns).toBeGreaterThan(0));
   await waitFor(() => expect(captured).toBeDefined());
-  return captured?.get("KB-BLOCK");
+  return (captured as ReadonlyMap<string, BlockerFanoutEntry> | undefined)?.get("KB-BLOCK");
 }
 
 describe("blocker fan-out under a renamed board vocabulary", () => {

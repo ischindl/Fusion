@@ -53,7 +53,7 @@ beforeEach(() => {
     close: vi.fn(),
     addEventListener: vi.fn((event: string, handler: (event: MessageEvent) => void) => {
       (esInstance as { handlers?: Record<string, (event: MessageEvent) => void> }).handlers ??= {};
-      (esInstance as { handlers: Record<string, (event: MessageEvent) => void> }).handlers[event] = handler;
+      (esInstance as unknown as { handlers: Record<string, (event: MessageEvent) => void> }).handlers[event] = handler;
     }),
     removeEventListener: vi.fn(),
     onerror: null,

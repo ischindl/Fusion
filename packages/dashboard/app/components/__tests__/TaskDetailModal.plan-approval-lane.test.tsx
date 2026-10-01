@@ -39,7 +39,7 @@ function renderDetail(column: "todo" | "in-progress") {
         id: "FN-228",
         column,
         status: "awaiting-approval",
-        awaitingApprovalReason: null,
+        awaitingApprovalReason: undefined,
         prompt: "# Reviewed plan",
       })}
       projectId="project-1"

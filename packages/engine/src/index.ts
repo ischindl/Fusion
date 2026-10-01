@@ -1,4 +1,6 @@
 export { AgentLogger, type AgentLoggerOptions, summarizeToolArgs } from "./agents/agent-logger.js";
+export { storeErrorResult, STORE_RETRY_GUIDANCE } from "./tool-store-errors.js";
+export { clearWorktreeDependencyDeterministicStop } from "./worktree/worktree-dependency-install.js";
 export { isPlanningResetHoldClearingUpdate, PlanningResetFence, PLANNING_RESET_HOLD_MS } from "./planning-reset-fence.js";
 export { reconcileTaskResetSessionRoot, removeTaskResetWorktree, ResetWorktreeForeignSessionError } from "./worktree/remove-reset-worktree.js";
 export {
@@ -16,6 +18,12 @@ export {
   rerouteFailedNoVerdictPreMergeGateToReview,
 } from "./merge/pre-merge-gate-reseed.js";
 export { planningLivenessRegistry, registerPlanningLivenessProbe, isPlanningLive } from "./agents/planning-liveness.js";
+export {
+  getTaskPlanningOrExecutionLivenessSignal,
+  isTaskPlanningOrExecutionLive,
+  type PlanningExecutionLivenessDeps,
+  type TaskLivenessSignal,
+} from "./agents/planning-execution-liveness.js";
 export {
   classifyReportHealth,
   type ReportHealthBucket,
@@ -70,7 +78,7 @@ export {
   createTaskListTool,
   createTaskShowTool,
   createTaskSearchTool,
-  createPatchnodeReadTool,
+  createHistoryReadTool,
   createTaskReadTools,
   createListAgentsTool,
   createDelegateTaskTool,
@@ -107,8 +115,6 @@ export {
   createWorkflowDeleteTool,
   createWorkflowSettingsTool,
   createTraitListTool,
-  createTaskArchiveTool,
-  createTaskUnarchiveTool,
   createTaskDeleteTool,
   createTaskRetryTool,
   createTaskPauseTool,
@@ -202,6 +208,11 @@ export {
 } from "./project/postgres-migration-notice.js";
 export { AgentSemaphore, PRIORITY_MERGE, PRIORITY_EXECUTE, PRIORITY_SPECIFY } from "./concurrency/concurrency.js";
 export { TriageProcessor, type TriageProcessorOptions } from "./triage.js";
+/* FNXC:WorkflowRevisionBudget 2026-09-05-23:30: the dashboard retry route stamps the ledger reset, so the marker helper is part of the engine's public surface. */
+export {
+  optionalStepRevisionResetOutcome,
+  OPTIONAL_STEP_REVISION_RESET_MARKER,
+} from "./executor/optional-step-revision.js";
 export { TaskExecutor, type TaskExecutorOptions } from "./executor.js";
 export {
   WorkflowGraphExecutor,
@@ -416,6 +427,16 @@ export {
 } from "./merger.js";
 // FNXC:MergerUnification 2026-06-21-19:05: runAiMerge is the sole merge path
 // (master-plan U0); exported for the CLI callers (fn task merge + UI-only merge).
+/* FNXC:HumanMergeApproval 2026-09-17-18:09: FN-514 decision-point resolution is shared by the operator routes, the graph boundary and the detail panel. */
+export { resolveHumanMergeDecisionPoint, resolveMergeReviewEpisodeId, resolveMergeWorkflowSignature } from "./merge/human-merge-approval.js";
+export { buildHumanMergeCorrectionPublicationDeps, buildHumanMergeCreatePrHandoff, evaluateHumanMergeDeliveryBarrier, isHumanMergeDeliveryNode, publishHumanMergeCorrection, widenPromptFileScope, HUMAN_MERGE_DELIVERY_NODE_KINDS } from "./workflows/human-merge-approval-boundary.js";
+/* FNXC:HumanMergeApproval 2026-09-17-22:32: FN-514 P0 remediation — the delivery-hold release owner. */
+export { releaseHumanMergeApprovalHolds } from "./runtimes/in-process-runtime.js";
+export { buildHumanMergeCorrectionPrompt, collectHumanMergeCorrectionFiles, formatHumanMergeCorrectionAmendment, runHumanMergeCorrectionAnalysis, HumanMergeCorrectionPlanError, parseHumanMergeCorrectionPlan } from "./workflows/human-merge-feedback-planner.js";
+export type { HumanMergeCorrectionMode, HumanMergeCorrectionPlan, HumanMergeCorrectionStep } from "./workflows/human-merge-feedback-planner.js";
+export type { HumanMergeBarrierDeps, HumanMergeBarrierOutcome, HumanMergeCreatePrResult } from "./workflows/human-merge-approval-boundary.js";
+export type { HumanMergeActionCapability, HumanMergeDecisionPoint, HumanMergeDecisionPointDeps } from "./merge/human-merge-approval.js";
+export { captureMergeContentDescriptor } from "./merge/merge-content-capture.js";
 export { runAiMerge } from "./merge/merger-ai.js";
 // FNXC:Workspace 2026-06-22-14:10 (Phase D review G): canonical landed predicate now lives in its
 // own dependency-free module (self-healing ↔ merger-ai cycle dissolved). Public export preserved.
@@ -481,6 +502,19 @@ export {
   type PrepareWorkspaceRevertPrBranchesResult,
   type PrepareWorkspaceRevertPrBranchesOptions,
   type WorkspaceRepoRevertPrBranch,
+  // FN-416 restore-the-revert surface.
+  resolveTaskRevertRestoreCommits,
+  performTaskRevertRestore,
+  createAiRestoreTask,
+  buildAiRestoreTaskDescription,
+  RESTORE_OF_METADATA_KEY,
+  type TaskRevertRestoreCommitSource,
+  type ResolvedTaskRevertRestoreCommits,
+  type ResolveTaskRevertRestoreCommitsOptions,
+  type TaskRevertRestoreResult,
+  type PerformTaskRevertRestoreOptions,
+  type AiRestoreTaskResult,
+  type CreateAiRestoreTaskDeps,
 } from "./execution/task-revert.js";
 export {
   resolveBranchGroupMergeRouting,
@@ -549,6 +583,19 @@ export {
   type ExternalGitCheckoutInspection,
 } from "./execution/external-execution-checkout.js";
 export { createFnAgent, promptWithFallback, describeModel, setHostExtensionPaths, getHostExtensionPaths, wrapToolsWithActionGate, type AgentOptions, type AgentResult } from "./pi.js";
+/*
+FNXC:ChatContextGuardEscalation 2026-09-04-10:57:
+RUFU-182: the reason-preserving compaction outcome crosses the package boundary — the guard ladder
+and dashboard tests consume the union, its classifier, and the retry-legality predicate (exported
+precisely so no caller can hand-roll an illegal second `session.compact()` attempt).
+*/
+export {
+  compactSessionContext,
+  classifyCompactionFailure,
+  isRetryAfterCompactionFailureLegal,
+  type CompactionOutcome,
+  type PiCompactionReason,
+} from "./pi.js";
 export { resolveMcpServersForRuntime, resolveMcpServersForStore, type ResolvedMcpServersForRuntime } from "./mcp/mcp-resolution.js";
 export { discoverMcpServers, type DiscoverMcpServersOptions, type DiscoverMcpServersResult } from "./mcp/mcp-discovery-service.js";
 export { runtimeSupportsMcp, logMcpForwardingSkipped } from "./mcp/mcp-runtime-support.js";
@@ -973,7 +1020,30 @@ export { RoutineScheduler, type RoutineSchedulerOptions } from "./scheduling/rou
 export { StuckTaskDetector, type StuckTaskDetectorOptions, type DisposableSession } from "./healing/stuck-task-detector.js";
 export { HeartbeatMonitor, HeartbeatTriggerScheduler, type WakeContext } from "./agent-heartbeat.js";
 export { TokenCapDetector, type TokenCapCheckResult } from "./errors/token-cap-detector.js";
+/*
+FNXC:ChatContextGuard 2026-08-18-18:06:
+RUFU-118 phase 1: export the deterministic pre-overflow compaction gate for the
+chat/CLI pi-session path so the dashboard chat seams (sendMessage / sendRoomMessage)
+can enforce it before enginePromptWithFallback. tokenCap becomes an upper bound on the
+effective chat threshold here; the executor TokenCapDetector above keeps its
+undefined = disabled semantics.
+*/
+export {
+  buildAggressiveCompactionDirective,
+  ChatContextOverflowError,
+  computeCompactionThreshold,
+  ensureContextWithinCompactionThreshold,
+  estimateLoadedContextTokens,
+  estimatePendingRequestTokens,
+  type ChatContextOverflowReason,
+  type CompactionAuditContext,
+  type CompactionEscalationTier,
+  type CompactionGateOptions,
+  type CompactionGateResult,
+  type CompactionGateSession,
+} from "./chat-context-guard.js";
 export { SelfHealingManager, type SelfHealingOptions, type RebindResult, type LandedReviewReconcileResult } from "./self-healing.js";
+
 /*
 FNXC:MergeReliability 2026-07-15-21:45 (FN-8004 follow-up):
 Exported for the dashboard's manual Retry gate, which must share ONE definition of "orphaned
@@ -1076,6 +1146,9 @@ export {
 export { NodeHealthMonitor } from "./project/node-health-monitor.js";
 export {
   HybridExecutor,
+  DEFAULT_HYBRID_EXECUTOR_READY_WAIT_MS,
+  resolveHybridExecutorReadiness,
+  type HybridExecutorReadiness,
   type HybridExecutorOptions,
   type HybridExecutorEvents,
 } from "./concurrency/hybrid-executor.js";
@@ -1124,6 +1197,8 @@ export { RemoteNodeRuntime, type RemoteNodeRuntimeConfig } from "./runtimes/remo
 // Hold/release sweep + manual promote (U6/U9). Exported so the dashboard
 // promote endpoint can release a manually-held card via the same authority.
 export {
+  admitTaskToWip,
+  isFirstPlanningToWipAdmission,
   promoteHeldTask,
   evaluateTaskReleaseGate,
   evaluateUnplannedForExecution,
@@ -1133,6 +1208,8 @@ export {
   type HoldReleaseDeps,
   type HoldReleaseResult,
   type SlotReservation,
+  type WipAdmissionResult,
+  type WipAdmissionRejection,
 } from "./execution/hold-release.js";
 export {
   resumeApprovedPlanReviewHandoff,
@@ -1273,7 +1350,6 @@ export {
   genericCliAdapter,
   type CliAdapterDescriptor,
 } from "./cli-agent/adapters/index.js";
-export { installBaselineArchiveWorktreeDisposer } from "./healing/archive-worktree-disposer-install.js";
 export { MemoryConsolidationService, resolveMemoryConsolidationPorts } from "./memory/index.js";
 
 // CLI Agent Executor — task ↔ session orchestration (U7).

@@ -36,8 +36,14 @@ vi.mock("@fusion/dashboard", () => {
 });
 
 vi.mock("@fusion/engine", () => ({
-  installBaselineArchiveWorktreeDisposer: vi.fn(),
   isFailedNoVerdictPreMergeReviewResult: vi.fn(() => false),
+  // STAS-258: the lane imports this composer to format attempted-write failures, so the isolated mock must export
+  // the name too. The contract (text, code, flag) lives in packages/engine/src/tool-store-errors.ts.
+  storeErrorResult: vi.fn((what: string, error: unknown) => ({
+    content: [{ type: "text", text: `ERROR: ${what} did not reach the task store: ${String(error)}` }],
+    details: { code: "STORE_UNAVAILABLE" },
+    isError: true,
+  })),
   // FNXC:ToolPermissionGates 2026-07-26-14:55: extension.ts now imports the agent action gate; mock completeness gate requires these names.
   evaluateAgentActionGate: vi.fn(() => ({ disposition: "allow", category: "exempt", toolName: "", operation: "", summary: "", resourceType: "other", approvalDedupeKey: "", metadata: {} })),
   resolveGateOutcome: vi.fn(() => ({ outcome: "allow" })),

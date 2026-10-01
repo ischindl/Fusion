@@ -41,6 +41,8 @@ fn chat <agent-id> [message…] [--once] [--non-interactive] [--poll-ms <n>] [--
 - `metadata.skills` is an additive forced-reading list, not an allow-list: resolved forced skills are required reading before work begins while every other enabled skill remains available on demand. A forced skill that is disabled by `-` settings or cannot be discovered is diagnosed rather than silently re-enabled or named in the prompt. Heartbeats receive their waking agent's forced skills and all enabled project/plugin skills, but have no `fusion` role fallback.
 - In dashboard model-loop chat (main chat, QuickChat, and room responders), typing `/skill:{name}` ensures that skill is present for the current AI session and strips the slash token from the prompt. Slash and catalog-style names resolve to the matching discovered skill token and remain subject to project enable/disable settings; CLI-agent-backed PTY chat keeps raw terminal input semantics.
 - Dashboard chat and planning sessions with a scoped task store expose `fn_task_document_write`, `fn_task_document_read`, and `fn_task_logs_read`; because neither lane has an ambient task, each tool requires an explicit `task_id`. Document writers may pass `expected_revision` and/or `expected_content_hash` after a read for safe cross-task CAS publication; stale writes return typed conflict state and are never auto-retried. `fn_task_logs_read` previews tool detail per row by default; pass `detail: "full"` to lift that row preview while its whole response remains bounded.
+- The task-bound `fn_task_logs_read` (executor, heartbeat, and workflow-step sessions) honors an optional `task_id` — or its `id` alias, the pi/CLI spelling — to read **another** card's log; omitting both keeps the bound-card default, so a fleet heartbeat can poll a sibling's log and actually get that sibling's rows, total, and freshness. Present-but-different spellings are refused with a typed error naming both values and the bound card (never silently guessed), an id that is not a single safe path segment is refused with `invalid task id` before any directory join, and a well-formed but unknown id returns the honest empty answer rather than fabricated rows. Every payload header names the served card (`Agent log (FN-123): N/M entries …`), and log reads never append to the polled card's log, so log freshness is safe for liveness/stall judgment (see `docs/storage.md`). The pi/CLI registration honors its `id` parameter the same way.
+- Direct dashboard model-loop chat additionally exposes the read-only `fn_chat_conversation_read` and `fn_chat_conversation_search` tools. Both require an explicit `conversation_id` and refuse unknown or cross-project sessions with the same non-disclosing error. Reads return at most 100 messages, truncate each message at 1,500 characters, and cap the response at 12,000 characters; searches return at most 25 matches with 200-character excerpts from a scan of the latest 400 messages. These tools are not registered for Rooms, explicitly mentioned-agent responders, planning, or CLI-agent-backed chat.
 - Task-detail Chat alone exposes `fn_task_planner_get_pr_status`, a server-bound, read-only reader for its linked pull request. It refreshes the selected task's check rollup, named checks, review decision, mergeability, blockers, and checked head SHA from the Pull Request integration; it explicitly reports no linked PR, rate-limit/refresh failure, and stale cached metadata instead of inferring PR health from local Git. It never accepts a task, project, repository, or provider parameter and does not expose credentials, check logs, review bodies, or ambient cross-task forge data.
 - Dashboard chat and room responders share a safe coordination/productivity toolset across pi and Grok CLI runtimes: board reads, task creation, delegation, agent listing/configuration, web fetch, and goal/memory/research retrieval. Destructive agent-lifecycle tools and memory append remain excluded because chat has no action-gate context.
 - Agent workflow-routing tools follow an intent boundary: agents may select or change a task workflow only when the user explicitly requested that workflow or when the agent created the task. Executors must not call `fn_workflow_select` to reroute the task they are executing unless the task instructions or a user steering comment explicitly asks for the workflow change. Lanes without an ambient task, including dashboard chat/planning and published/pi extension calls outside a task, must pass an explicit `task_id`; task-bound executor paths may default to the current task.
@@ -295,11 +297,10 @@ These fields are managed by the engine and cannot be directly edited:
 
 ### Stale Task Link Sanitization
 
-The `taskId` field is suppressed in API responses when the linked task is in a terminal state (`done` or `archived`). This prevents stale "working on" UI indicators in the Agents dashboard for agents whose task has already completed.
+The `taskId` field is suppressed in API responses when the linked task reaches its workflow's Complete column or is soft-deleted. This prevents stale "working on" UI indicators for agents whose assignment is no longer active.
 
-**Terminal task statuses:**
-- `done` — Task completed successfully
-- `archived` — Task archived
+**Terminal task state:**
+- Any column carrying the workflow `complete` trait (`done` in the built-in fallback)
 
 **Affected API endpoints:**
 - `GET /api/agents` — `taskId` is omitted from agents with terminal linked tasks
@@ -343,6 +344,24 @@ Fallback behavior remains unchanged:
 - Missing assigned agents, or assigned agents that are ephemeral/runtime-managed, fall back to task-worker execution ownership
 
 Execution-ownership sync intentionally avoids assignment-trigger side effects (`agent:assigned` wakeups) that are intended for control-plane delegation.
+
+### Ownership transfer is atomic with the live execution session (RUFU-260)
+
+Re-assigning or un-assigning a card that already has a live execution session used to leave three surfaces inconsistent at once: the card kept running with no accountable owner, the previous owner's session kept writing to the card's worktree, and the previous owner's heartbeat kept waking with the OLD card as its goal and the OLD card's worktree as its cwd. Ownership transfer is now event-driven and teardown-gated.
+
+**The event.** `TaskStore.updateTask` is the sole emitter of the typed `task:assignee-changed` event (`{ taskId, previousOwnerId?, newOwnerId? }`, ids only). It fires after the row write, only when `assignedAgentId` actually changed, so a same-value write and a creation-time assignment stay silent. Every durable transfer surface — dashboard assign/reassign/unassign routes, `assign_agent`/`update_task` agent tools, `fusion task assign`, and `claimTask` — funnels through that one write path; surfaces must not add a second write path or re-emit the event. Listener dispatch is isolated at the emit site, so a throwing subscriber can never undo a committed write.
+
+**What the engine aborts.** The executor's lifecycle wiring (`packages/engine/src/executor/wire-executor-lifecycle.ts`) subscribes to the event and, when the card had a previous owner, disposes that owner's live surfaces through the single existing abort seam: every child process is terminated and the in-flight session work is aborted via `awaitAbortInFlightTaskWork(taskId, "assignee-transfer")`. Provenance stays `engine-abort` with `abortSource = abort-in-flight:assignee-transfer`; `userCanceled` is deliberately NOT set, because hard-cancel provenance belongs to the operator Move-Task contract. The one deferral: when the live session is staffed by a column-agent principal that IS the previous owner (`activeSessions[taskId].lastEffectiveColumnAgentId`), the column binding — not the stale assignee field — governs that session, so the abort is deferred to the column-agent watcher instead of killing bound work.
+
+**The blast-radius limit.** An ownership change is not a card-level stop, so the teardown must not kill work the previous owner never owned. When the card sits in a **review lane** and a prompt-lane (workflow-step) session is live, that session is left standing: not aborted, not disposed, not unregistered. Review gates are staffed by the reviewer lane — a different principal from the assignee — and a card cannot leave the review lane on its own, so a transfer arriving mid-review is business as usual rather than a rare race. Killing that session would silently destroy a required pre-merge gate: an interrupted review emits no structured verdict, the gate lands in "failed before producing a verdict" state, and only an operator bypass can clear it. The lane question is answered from workflow **traits** (`resolveReviewColumns`, so a renamed `in-review` still counts), never a column id, and an unresolvable lane preserves the session rather than gambling on the gate. In a WIP lane the live prompt session belongs to the previous owner's own implementation turn, so it is aborted like any other surface. `awaitAbortInFlightTaskWork` reports what it killed and what it preserved (`abortedSurfaces` / `preservedSurfaces`), and the audit row records `reviewLaneSessionPreserved`.
+
+**The ordering guarantee.** The teardown is published into `trackTaskDisposal`, which mirrors it into the per-task **disposal barrier** (`packages/engine/src/executor/task-disposal-barrier.ts`, one writer, many readers). The heartbeat wake awaits `awaitTaskDisposalBarrier(taskId)` immediately before its single `acquireTaskWorktree` call, so a wake — including the NEW owner's — cannot acquire the card's worktree until that card's tracked teardown has resolved. A barrier that grows while a wake is parked extends the wait (no lost wake-up), a rejected teardown still releases it, and there is deliberately no timeout escape hatch, sleep, or poll loop: waiting is the only behavior. Because the barrier is published from `trackTaskDisposal`, every existing and future disposal call site is barrier-visible by construction, and the heartbeat lane keeps no parallel record of in-flight teardowns.
+
+**What the previous owner's wake does.** A wake carrying an explicit task and `source === "assignment"` re-reads the card after the barrier clears. If the card is gone, or its `assignedAgentId` is no longer this agent, the wake completes with reason `assignee-changed-before-acquisition` and never acquires a worktree, never adopts that card's cwd, and never sets the agent's goal — the agent's own current task stays the goal. The heartbeat trigger scheduler likewise drops a pending assignment for a card whose ownership moved since it was enqueued, and per-(agent, goal) dedup means a goal that already has an in-flight run gets that run's identity back instead of a second concurrent session. Review-dispatch wakes (a non-assignee reviewer) are untouched: ownership drop is keyed on the assignment source, never on a blanket explicit-task guard.
+
+**No new lifecycle authority.** Heartbeat and agent lanes gained none of the move/pause/re-claim power this fix observes. There is no `moveTask` call site in the transfer path, no re-claim, no pause, and no change to `autoMerge` or user-pause semantics — the lane only declines to start work it no longer owns, and the durable column remains owned by the executor/merge lanes. Each teardown records one bounded run-audit row (`task:assignee-transfer-abort`, ids/outcomes only — see `docs/run-audit.md`), so "why did this agent's session die mid-card?" is answerable from the audit feed without any prose in metadata.
+
+**Lane-capability revalidation at wake (RUFU-272).** A heartbeat wake that arrives carrying an explicitly assigned card re-runs the *same* bind verdict that the binding primitive applies (`evaluateImplementationTaskBind`, evaluated against the card's **workflow-resolved implementation lanes**, so renamed/custom boards are first-class). If the lane is capability-ineligible for the card — e.g. an audit-only reviewer (`assignmentPolicy: "none"`) that was bound before its policy was set — the wake **declines this dispatch**: it logs the named reason, records one bounded `task:lane-capability-declined` audit row (10-minute cooldown per lane/card/policy), and falls through to inbox/auto-claim exactly as an unbound lane would. Decline is never an unbind: the wake path mutates no binding, and it absolutely skips cards that are paused/user-paused, carried by a live session or another live heartbeat run, or unreadable (the gate fails open to pre-existing behavior). The mutation owner is the self-healing sweep `reconcile-lane-capability-misbind` (registered after the agent-link mirror sweeps): it re-binds stranded cards via the `TaskStore.updateTask(..., { assignedAgentId })` assignment seam only — branch, worktree, and step progress preserved, no lifecycle column move — choosing among lanes that are auto-eligible for the card (deterministic order: idle first, then id), and when no eligible lane exists it freezes the card **once** with the named `lane-capability-mismatch` external-block decline (resumable through the ordinary external-block resume surface) instead of looping silently. See `docs/solutions/reliability/implementation-card-bound-to-audit-only-lane.md`.
 
 ### Running-state invariant for assigned durable agents (FN-4249)
 
@@ -407,6 +426,19 @@ Both paths use the same persisted retry budget, `agent.metadata.heartbeatErrorRe
 On restart attempts, the runtime triggers the normal heartbeat pipeline with `source: "automation"` and a structured `contextSnapshot.selfHealing` payload so operators can audit recovery runs in heartbeat history. The sweep flips `error → active` before calling `executeHeartbeat`, so the heartbeat run does not re-enter run-entry error recovery or double-count the same recovery.
 
 Self-healing intentionally refuses to auto-restart agents when blockers are operator-actionable or non-transient. Runtime-enabled durable agents in that terminal bucket are parked `paused` with `pauseReason="error-unrecoverable"` so operators see that credential/model/configuration repair is required; transient retry-budget exhaustion still parks with `pauseReason="error-retry-exhausted"`. Stale worktree/module-resolution suppression, active execution, runtime-disabled agents, ephemeral agents, user-paused agents, and `error-unrecoverable` parks remain excluded from both the steady-state retry path and the startup clean-slate reset; cooldown windows and exhausted-budget gates are bypassed only by the startup reset for otherwise recoverable agents.
+
+<!--
+FNXC:ProviderThrottleIsTransient 2026-10-01-03:08 (RUFU-286):
+Documented the throttle/durable split, the backoff bounds, and the exhaustion-park semantics here because
+docs/agents.md is where the durable-agent recovery contract lives: an operator reading "error-unrecoverable
+means human repair" must also learn which class LOOKS like that and is not.
+-->
+
+**A provider throttle is a wait, not an operator park (RUFU-286).** A time-boxed provider rate-limit — a `429` body carrying `rate_limit_error` / `rate_limit_exceeded`, AWS/Bedrock `Throttling` / `ThrottlingException` / `RequestLimitExceeded` / `TooManyRequestsException` / `rateLimitExceeded`, Azure `TooManyRequests`, or the SDK class `RateLimitError` — is excluded from the operator-actionable bucket by the shared throttle predicate (`isProviderThrottleEnvelopeError`), which every consumer of "is this recoverable?" consults: the heartbeat failure branch, the run-entry recovery gate, the self-healing sweep, and the startup reset. Hard usage caps are a different class and are evaluated first — `insufficient_quota`, `quota exceeded`, `billing`, plan-access, `budget has been exhausted` — because Anthropic wraps a hard 402 in a `429 rate_limit_error` envelope, and that precedence is what keeps a billing park a billing park (durable classes still park `error-unrecoverable` immediately with no re-probe, unchanged). `RESOURCE_EXHAUSTED` (Google/Vertex) is deliberately **not** classified: that one code covers both the per-minute request rate and daily/per-project quota exhaustion with nothing in the body separating them, so it falls through to the ordinary bounded budget rather than silently backing off against a dead account.
+
+While a throttle is being waited out, the agent stays in `state="error"` — never `paused` — and `metadata.heartbeatErrorRecovery` carries the episode: `throttleStreak` (which backoff rung) and `cooldownUntilAt` (the instant the re-probe is due). The heartbeat timer is the sole re-probe owner: run entry defers (a skipped run with `reason: "throttle-cooldown"`, which burns **no** budget unit), the re-probe at the horizon consumes one shared-budget attempt, and each consecutive throttle widens the wait on the existing shared `throttleBackoffMs` ladder — `min(60s × 2^(streak−1), 900s)`, so 60 → 120 → 240 → 480 → 900 s, floor and cap as code constants rather than settings. RUFU-286 adds a **wait**, not a second retry pool: the attempt budget remains `heartbeatErrorRecoveryAttempts` (default `5`), only a *failed* re-probe spends it, and the self-healing sweep stands down while a cooldown is live so no second lane races the timer.
+
+Exhaustion therefore parks `pauseReason="error-retry-exhausted"` — the ordinary recoverable park that an engine restart and `fn_agent_start` both clear — and **never** `error-unrecoverable`, precisely because that park is excluded from the FN-7884 startup reset and would re-park after every reboot while the provider window had long since cleared. The exhaustion park keeps `throttleStreak` (it is the only durable record of *what* consumed the budget) and drops `cooldownUntilAt` (a paused card promises no re-probe). An engine restart resets the budget and clears the `error` card through the same clean-slate path, so a manual start inside an armed horizon is waited out to the horizon — at most 15 minutes, costing no attempt — rather than re-probing early into the same 429. Cards mis-parked `error-unrecoverable` by a pre-fix build on a throttle envelope are a narrow startup-recovery candidate: on the next boot the reset re-runs the classifier, sees the throttle class, and recovers the card (`agent:auto-recover-error-state`, `source: "startup"`), while a genuine credential/billing park still survives restart untouched.
 
 **Manager presence does not gate this sweep (FN-7672/FN-7844):** eligibility for durable `state="error"` recovery does *not* depend on whether the agent's `reportsTo` manager is present/active. The timer path is now the fast path for heartbeat-managed error agents, while this recovery sweep remains the maintenance backstop for durable agents that are still stale in `error`; a present manager does not make the agent any less stuck. (A separate, unrelated `managerMissing` check still gates recovery of orphaned `state="running"` agents — a different failure mode where a live process's manager row was deleted.) FN-7672 root-caused a correlated 4-agent error cluster reporting to one active manager (a transient upstream auth/session blip) that could never have self-healed under the old manager-missing-only gate, even once the underlying cause resolved.
 
@@ -688,8 +720,8 @@ Prompt candidate rendering uses:
 When an identity-bearing, non-ephemeral agent wakes with no assigned task and `runtimeConfig.autoClaimRelevantTasks !== false`, the heartbeat monitor scans open todo tasks and may claim one before constructing the prompt run.
 
 Guardrails:
-- Only unpaused, unassigned, unchecked-out todo tasks with satisfied dependencies are considered
-- Claims are rejected for terminal/paused/owned/conflicting tasks
+- Only unpaused, unassigned, unchecked-out todo tasks with satisfied dependencies are considered. "Unpaused" means **neither** park flag is set: a legacy engine park (`paused: true`) and an operator hard-cancel (`userPaused: true` with `paused` unset, e.g. a Move-Task cancel) are both excluded from the candidate list and the claim path (RUFU-264; see *Manual cancel park* in `docs/task-management.md`)
+- Claims are rejected for terminal/paused/owned/conflicting tasks; an operator-parked card is refused by the claim primitive with `reason: "user_paused"`
 - Implementation-task backlog pickup is executor-only by default. Engineer-role agents may opt in through **Settings → Scheduling & Capacity → "Let engineer agents auto-claim backlog tasks"** (`settings.engineerBacklogAutoClaim`) or **Agents → Agent Detail → Settings → Heartbeat Settings → "Engineer Backlog Auto-Claim"** (`runtimeConfig.engineerBacklogAutoClaim`); the per-agent value overrides the project default in both directions. If a no-task engineer wake shows compatible backlog while this is disabled, delegate the work or create a coordination follow-up instead of treating the board as empty.
 - Explicit task routing/delegation is not affected by the backlog auto-claim opt-in gate.
 - Checkout safety is preserved (`checkout_conflict` paths are non-fatal skips)
@@ -1003,7 +1035,7 @@ Heartbeat runs are composed from multiple prompt layers so each wake has full id
 2. **Workspace tool mode**
    - Heartbeat sessions are created with coding-capable workspace tools (`read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`) inside worktree boundary guards.
    - Heartbeat behavior still stays lightweight: one concrete action per run, then `fn_heartbeat_done`.
-   - Engine-owned heartbeat tools are layered on top for both task-scoped and no-task runs. Permanent/custom agents get the safe coordination/work-discovery surface (task creation/delegation, agent config/provisioning, artifacts, memory, messaging, goals/evaluations/identity/reflection, workflow discovery, bounded research, and `fn_ask_question`), while task-only tools such as `fn_task_log`, `fn_task_logs_read`, and task documents stay limited to task-scoped runs.
+   - Engine-owned heartbeat tools are layered on top for both task-scoped and no-task runs. Permanent/custom agents get the safe coordination/work-discovery surface (task creation/delegation, agent config/provisioning, artifacts, memory, messaging, goals/evaluations/identity/reflection, workflow discovery, bounded research, and `fn_ask_question`), while task-only tools such as `fn_task_log`, `fn_task_logs_read`, and task documents stay limited to task-scoped runs (`fn_task_logs_read` is task-scoped to *register* — a no-task heartbeat gets no log reader — but once registered it may *read* a named card's log via `task_id`/`id`).
 2. **Agent identity and instructions bundle**
    - Inline instructions (`instructionsText`)
    - File-backed instructions (`instructionsPath`)
@@ -1045,6 +1077,44 @@ And engine logs emit a structured correlation line keyed by `[wake-trigger-diagn
 1. `grep "\[wake-trigger-diagnostics\]" <engine-log>`
 2. Find lines where `triggerDetail=wake-on-message` (or forced variant) and `inboxUnreadCount=0 wakeMessageStillUnread=false`.
 3. Correlate `messageId`, `from=`, and `run=` with the run's Wake Delta block; this indicates a false-positive wake where the trigger message had already been consumed by snapshot time.
+
+### Operator Comments Are Delivered, Not Counted
+
+<!-- FNXC:CommentDelivery 2026-09-27-20:18: RUFU-259 — the wake counted comments while no agent could read them. -->
+
+A comment or steering note is only worth what its recipient can read. Every operator-facing write path — the
+task-detail comment box and Activity composer, review-address, PR address-feedback, Planner Chat steering, and
+`fn task comment` / `fn task steer` — writes the body into one resolved agent's inbox before it answers.
+
+- **Recipient resolution** is one agent, in this order: task assignee → the agent bound to the card's current
+  workflow column → an agent bound to the card's selected workflow → an idle triage-class agent (planning lane)
+  → an idle executor-class agent (work lane). Ambiguity never fans out: two candidates at one rung stop the walk
+  rather than pick arbitrarily or deliver twice.
+- **Idempotent per comment.** The inbox row is keyed `task-comment:<taskId>:<commentId>`, so a re-posted comment
+  or a retried request cannot queue the same instruction twice.
+- **Wake policy is unchanged by delivery.** Only a user-authored comment stamps `metadata.wakeRecipient`, which
+  is the existing convention for overriding an agent's `messageResponseMode`. Comments authored by agents are
+  delivered but never force a run. An `on-heartbeat` agent receives the body and reads it on its next tick; an
+  `immediate` agent is also woken now, in-process, when a heartbeat monitor is reachable.
+- **A comment that reaches nobody is a reported fact**, never a silent one: it is recorded in run-audit
+  (`task:comment-delivery-unowned`), mailed to the operator's inbox, and logged on the card.
+- **Text answers state the outcome.** `fn task comment`, `fn task steer`, and Planner Chat steering print the
+  agent the body reached, or plainly say nobody was told. "Comment added" is not a delivery claim.
+
+What the woken agent can read back:
+
+- The Wake Delta header `- triggering comments: 2 of 3 readable on this card` separates the count the agent can
+  act on from the count that was advertised. Every advertised id then gets its own line — the body with its
+  author when the card holds it, or `- [unknown] (commentId: …): body is NOT on this card — do not guess its
+  content` — and the block ends with the exact `fn_task_show(id: "<taskId>", commentIds: […])` call to re-read them.
+- `fn_task_show` takes `commentIds` (up to 20) and returns matching task comments **and** steering comments with
+  author and timestamp, labelling an advertised id it cannot find rather than silently omitting it.
+- When prompt trimming elides comment blocks, the marker keeps the pointer alive: `… (older comments hidden;
+  read them with fn_task_show commentIds=["…"])`. Trimming never removes the only copy of an id.
+
+Delivery is a body hand-off and a wake only. It grants no lifecycle authority: reading comments stays read-only,
+the comment-to-replan release path is untouched, and await-input answers and `[planner-oversight]` nudges keep
+their existing channels rather than becoming comments.
 
 ### Default Procedure: Bound-Task Scope Discipline
 
@@ -1689,6 +1759,9 @@ The pi extension ships as part of `@runfusion/fusion` and provides tools + a `/f
 **Don't add tools for engine-internal operations** (move, step updates, logging, merge) — those are owned by the engine's own agents.
 
 The extension has no skills — tool descriptions give the LLM everything it needs.
+
+<!-- FNXC:SkillCatalogDrift 2026-09-22-15:34: RUFU-265 — the shipped `fusion` operator skill's tool catalog is GENERATED from these registrations, so authors must regenerate after editing them; `packages/cli` no longer has a doc-writing `prebuild`, so a build will not do it for you. -->
+**After changing tool registrations, run `pnpm sync:fusion-skill`.** The published package also ships the `fusion` operator skill, whose tool catalog (`packages/cli/skill/fusion/SKILL.md`, `references/extension-tools.md`, and the `references/fusion-capabilities.md` tool table) is generated from these registrations — never hand-edit inside those files' `BEGIN`/`END` marker blocks. Drift is measured by `pnpm sync:fusion-skill:check` and enforced by the blocking `check-fusion-skill-sync` gate validator; `pnpm build` no longer rewrites these tracked docs.
 
 Published SDK surface: `@runfusion/fusion/plugin-sdk` now ships as a public subpath export from the CLI package, exposing `definePlugin`, `validatePluginManifest`, and the plugin type surface for external plugin authors without depending on private `@fusion/*` workspace packages.
 

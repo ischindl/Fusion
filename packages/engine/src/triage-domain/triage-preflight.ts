@@ -15,7 +15,7 @@ export interface GhostBugProbeResult {
 }
 
 export interface GhostBugDecision {
-  decision: "archive" | "pass";
+  decision: "delete" | "pass";
   reason: string;
   findings: GhostBugProbeResult[];
 }
@@ -200,9 +200,9 @@ export type ProbeControlOutcome = "matched" | "unmatched" | "unavailable";
 
 /**
  * FNXC:GhostBugPreflight 2026-09-17-00:00:
- * Archiving work the engine just planned demands positive proof the probe apparatus itself works —
+ * Deleting work the engine just planned demands positive proof the probe apparatus itself works —
  * a worktree with a detached HEAD, a missing `.git`, or a `git` binary that silently no-ops would
- * otherwise make every construct look "missing" and archive perfectly valid tasks. Sample one line of
+ * otherwise make every construct look "missing" and delete perfectly valid tasks. Sample one line of
  * genuinely-tracked content and confirm the SAME probe path can re-find it before trusting an
  * all-missing verdict.
  */
@@ -238,9 +238,16 @@ export async function runProbePositiveControl(
  * FNXC:GhostBugPreflight 2026-09-17-00:00:
  * A bug-fix task whose PROMPT.md cites a specific construct that no longer exists on `main` is almost
  * certainly stale bookkeeping (the construct was already fixed/removed by other work) rather than a
- * real outstanding bug. Archive it instead of dispatching an executor at a target that isn't there —
+ * real outstanding bug. Delete it instead of dispatching an executor at a target that isn't there —
  * but only when EVERY definitive probe came back missing AND the positive control proves the probe
  * pipeline is actually working; otherwise fail open and let the task through to normal execution.
+ *
+ * FNXC:MergeRebuild0919 2026-09-19-21:45:
+ * Upstream's canonical ghost-bug probe hardening landed on top of this line's earlier argv/probe-control
+ * port, so upstream wins everywhere except the terminal outcome: this line retired the archive lane
+ * (FNXC:TaskArchiveRemoval 2026-09-04-10:36), so `GhostBugDecision.decision` is `"delete" | "pass"`
+ * and the consumer is `softDeleteAsGhostBug`, not an archive move. Upstream's `"archive"` literal is
+ * therefore not representable here and the wording above names deletion.
  */
 export async function runGhostBugPreflight(
   task: Pick<Task, "title" | "description">,
@@ -265,7 +272,7 @@ export async function runGhostBugPreflight(
   if (definitive.every((finding) => finding.matched === false)) {
     const controlOutcome = await runProbePositiveControl(opts);
     if (controlOutcome === "matched") {
-      return { decision: "archive", reason: "all_cited_constructs_missing_on_main", findings };
+      return { decision: "delete", reason: "all_cited_constructs_missing_on_main", findings };
     }
     return {
       decision: "pass",

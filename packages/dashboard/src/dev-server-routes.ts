@@ -20,6 +20,13 @@ interface DevServerRuntime {
   manager: DevServerProcessManager;
 }
 
+/*
+FNXC:RetentionCensus 2026-09-23-09:35 (RUFU-257):
+`runtimes` pairs each project root with its loaded DevServerStore and process manager for the dev-server
+routes. The manager owns live child processes, so the entry is destroyed only by the shutdown path
+(`destroyAllDevServerManagers`), never by a size policy.
+*/
+// retention-config-keyed: keyed by project root — one live store+process-manager runtime per configured root
 const runtimes = new Map<string, DevServerRuntime>();
 
 async function getRuntime(projectRoot: string): Promise<DevServerRuntime> {

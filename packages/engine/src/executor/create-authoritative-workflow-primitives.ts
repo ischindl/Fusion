@@ -462,6 +462,30 @@ export function createAuthoritativeWorkflowPrimitivesFromExecutor(
             executorLog.warn(`${mergeTask.id}: workflow merge primitive timed out after ${GRAPH_MERGE_TIMEOUT_MS}ms`);
             return { outcome: "failure", value: "merge-timeout", data: { status: "timeout" } };
           }
+          /*
+          FNXC:ZeroCommitDeliveryProof 2026-09-26-09:30 / 2026-09-27-01:01 (RUFU-274 Step 3):
+          Refusal detection runs STRICTLY BEFORE the success arm, and that ordering is load-bearing. A lane
+          that refused a zero-diff landing can still return a truthy no-op flag — `noOp` describes the land,
+          not the delivery — so testing `result.merged || result.noOp` first would read the refusal as a
+          successful no-op and finalize the card `done`, which is RUFU-262's symptom reproduced one layer up.
+          `deliveryUnproven` on the result is the lane's durable statement that content is at risk; the hold,
+          the row sentence, and the audit row were already written by the guard that set it.
+
+          The refusal takes the graph's SUCCESS arm with the `manual-required` value, and that choice is the
+          whole difference between a wait and a wedge: the failure arm routes through
+          `route-graph-merge-failure-to-retry.ts`, which burns `mergeRetries` and terminalizes at
+          `AUTO_MERGE_RETRY_REJECTED:` + `status:"failed"` — a retried refusal against an unchanged tree is
+          precisely the path that discarded RUFU-262's work. `manual-required` is already the value the graph
+          classifier derives from a `manual-required` queue record, so a refused card and an operator-held
+          card take one route: the node does not advance, no status is written, no retry is spent, and the
+          card stays in its review lane where an operator can commit or discard the surviving files.
+          */
+          if (result.deliveryUnproven) {
+            executorLog.warn(
+              `${mergeTask.id}: workflow merge primitive refused finalization — delivery unproven (${result.reason ?? "uncommitted work survives in the worktree"})`,
+            );
+            return { outcome: "success", value: "manual-required" };
+          }
           if (result.merged || result.noOp) {
             /*
             FNXC:WorkflowMerge 2026-06-29-09:24:

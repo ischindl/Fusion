@@ -8,8 +8,9 @@ import { searchProjectMemory } from "../project-memory.js";
  * RUFU-068 unit tests: the read-time focus/topic seam.
  *
  * FNXC:MemoryFocusTests 2026-08-13-16:35:
- * topic is a read-time WITHIN-project filter. These tests run WITHOUT any
- * live Stash — they mock node:http to prove (a) that a topic-scoped result
+ * topic is a read-time WITHIN-project topic hint (not a result-set filter — see the
+ * RUFU-121 and RUFU-172 notes below: no backend narrows what it returns by topic).
+ * These tests run WITHOUT any live Stash — they mock node:http to prove (a) that a topic-scoped result
  * set never reintroduces cross-project leakage, and (b) that returns are
  * mapped verbatim (no client-side in-memory re-filter that could mask the
  * project scope).
@@ -239,12 +240,17 @@ describe("memory focus/topic search seam (RUFU-068)", () => {
     it("a topic-scoped project-X search never reintroduces project-Y session leakage", async () => {
       //
       // FNXC:StashTopicNoLeak 2026-08-13-16:35:
-      // Focus is a WITHIN-project read filter; it must never weaken, bypass, or
-      // mask the Stash server-side `owner_user_id` SQL scope. When the route
-      // gains a `topic` filter it applies it within the same project's accessible
-      // scope. Here we simulate a correctly scoped topic-filtering route for
-      // project A and assert the returned topic-narrowed set never contains
-      // project B's sessions/discriminator.
+      // A topic must never weaken, bypass, or mask the Stash server-side
+      // `owner_user_id` SQL scope. Here we simulate a correctly scoped route for
+      // project A and assert a project-X topic search never contains project B's
+      // sessions/discriminator.
+      //
+      // FNXC:RUFU172WordingSweep 2026-09-01-18:20:
+      // RUFU-172 wording sweep: this comment used to call focus a "WITHIN-project read
+      // filter". It is not — no backend narrows its result set by topic (RUFU-121 removed
+      // the inert &topic=; RUFU-172 uses the focus only as a ranking input). Cross-project
+      // isolation is what this test still proves, and it is enforced by the owner_user_id
+      // scope, not by any topic filter.
       const b = backend();
       responder = () => ({
         statusCode: 200,
@@ -324,5 +330,91 @@ describe("memory focus/topic search seam (RUFU-068)", () => {
       expect(results.map((r) => r.snippet)).toEqual(["file hit"]);
       resolveSpy.mockRestore();
     });
+  });
+});
+
+/*
+FNXC:RUFU172FocusResolver 2026-08-31-19:41:
+RUFU-172: the canonical focus collapse moved from @fusion/engine into core so the recall core
+and the engine memory tool share one definition. These cases assert the OBSERVABLE mapping
+(not source text) and that both core barrels re-export the same function — a one-sided barrel
+export is otherwise silent, because `engine-core` resolves @fusion/core through index.gate.ts.
+*/
+describe("resolveMemorySearchTopic canonical focus collapse (RUFU-068 semantics, RUFU-172 home)", () => {
+  const focusStates = [undefined, null, "", "   ", "\n\t ", "all", "*", "  all  ", " * "] as const;
+
+  it("collapses every 'no focus' state to undefined (whole-project scope)", async () => {
+    const { resolveMemorySearchTopic } = await import("../../index.gate.js");
+    for (const state of focusStates) {
+      expect(resolveMemorySearchTopic(state as string | null | undefined), `state=${JSON.stringify(state)}`).toBeUndefined();
+    }
+  });
+
+  it("returns the trimmed focus string for an active focus", async () => {
+    const { resolveMemorySearchTopic } = await import("../../index.gate.js");
+    expect(resolveMemorySearchTopic("stash lcm")).toBe("stash lcm");
+    expect(resolveMemorySearchTopic("  pamäťové hladiny LCM  ")).toBe("pamäťové hladiny LCM");
+    // Diacritics survive verbatim: the resolver is not an ASCII tokenizer.
+    expect(resolveMemorySearchTopic("pamäťové")).toBe("pamäťové");
+  });
+
+  it("collapses only a WHOLE 'all'/'*' value, never a substring", async () => {
+    const { resolveMemorySearchTopic } = await import("../../index.gate.js");
+    expect(resolveMemorySearchTopic("all hands review")).toBe("all hands review");
+    expect(resolveMemorySearchTopic("*cache")).toBe("*cache");
+  });
+
+  it("exposes the identical function through the direct module and both barrels", async () => {
+    const direct = await import("../project-memory.js");
+    const gate = await import("../../index.gate.js");
+    const full = await import("../../index.js");
+    expect(gate.resolveMemorySearchTopic).toBe(direct.resolveMemorySearchTopic);
+    expect(full.resolveMemorySearchTopic).toBe(direct.resolveMemorySearchTopic);
+  });
+
+  /*
+  FNXC:RUFU172BarrelParity 2026-09-02-04:55:
+  RUFU-172 added `PER_TURN_RECALL_LANE_T_SHARE_MAX_CHARS` to the recall core. The gate barrel
+  enumerates it explicitly while `index.ts` reaches it via `export * from "./memory/recall/index.js"`,
+  so a one-sided export would be invisible to static reading yet break the normal (non-gate)
+  `@fusion/core` resolution at runtime. This assertion is the only guard against that silent trap
+  (planning note #9: there is no automated barrel-diff test); a runtime import proves the constant is
+  carried by BOTH barrels, not just the gate copy.
+  */
+  it("mirrors the lane-T recall share budget through both core barrels", async () => {
+    const direct = await import("../recall/per-turn-recall.js");
+    const gate = await import("../../index.gate.js");
+    const full = await import("../../index.js");
+    expect(typeof direct.PER_TURN_RECALL_LANE_T_SHARE_MAX_CHARS).toBe("number");
+    expect(gate.PER_TURN_RECALL_LANE_T_SHARE_MAX_CHARS).toBe(direct.PER_TURN_RECALL_LANE_T_SHARE_MAX_CHARS);
+    expect(full.PER_TURN_RECALL_LANE_T_SHARE_MAX_CHARS).toBe(direct.PER_TURN_RECALL_LANE_T_SHARE_MAX_CHARS);
+  });
+
+  it("carries the resolved focus to the backend as an option without narrowing results in-memory", async () => {
+    const { resolveMemorySearchTopic } = await import("../../index.gate.js");
+    const focus = resolveMemorySearchTopic("  merge gate flake  ");
+    const seen: MemorySearchOptions[] = [];
+    const backendModule = await import("../memory-backend.js");
+    const resolveSpy = vi.spyOn(backendModule, "resolveMemoryBackend");
+    resolveSpy.mockReturnValue({
+      type: "file",
+      name: "File",
+      capabilities: { readable: true, writable: true, supportsAtomicWrite: false, hasConflictResolution: false, persistent: true },
+      read: async () => ({ content: "", exists: false, backend: "file" }),
+      write: async () => ({ success: true, backend: "file" }),
+      search: async (_r: string, options: MemorySearchOptions) => {
+        seen.push(options);
+        return [
+          { path: "/mem.md", lineStart: 1, lineEnd: 2, snippet: "hit", score: 1, backend: "file" },
+          { path: "/other.md", lineStart: 5, lineEnd: 6, snippet: "unrelated", score: 1, backend: "file" },
+        ];
+      },
+    } as unknown as import("../memory-backend.js").MemoryBackend);
+    const results = await searchProjectMemory("/proj", { query: "merge", limit: 5 }, undefined, focus);
+    resolveSpy.mockRestore();
+    // The focus reaches the backend as a topic option...
+    expect(seen[0]?.topic).toBe("merge gate flake");
+    // ...and the result set is returned whole (no post-query in-memory narrowing).
+    expect(results.map((r) => r.snippet)).toEqual(["hit", "unrelated"]);
   });
 });

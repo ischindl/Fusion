@@ -155,7 +155,7 @@ describe("SystemStatsArea", () => {
   });
 
   it("renders the first-sample CPU state safely without NaN", async () => {
-    mockFetchSystemStats.mockResolvedValue(sampleStats({ systemStats: { cpuPercent: null } }));
+    mockFetchSystemStats.mockResolvedValue(sampleStats({ systemStats: { cpuPercent: undefined } }));
 
     render(<SystemStatsArea />);
 
@@ -170,7 +170,7 @@ describe("SystemStatsArea", () => {
     mockFetchSystemStats.mockResolvedValue(sampleStats({
       taskStats: {
         total: 0,
-        byColumn: {},
+        byColumn: { triage: 0, todo: 0, "in-progress": 0, "in-review": 0, done: 0 },
         active: 0,
         agents: { idle: 0, active: 0, running: 0, error: 0 },
       },

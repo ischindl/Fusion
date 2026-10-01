@@ -6,7 +6,7 @@
  * behavior-preserving refactor. Each function receives the TaskStore
  * instance as its first parameter and performs byte-identical work.
  */
-import {type TaskStore, storeLog} from "../store.js";
+import {type TaskStore, type TaskAssigneeChangedEvent, storeLog} from "../store.js";
 import {
   resolveDependencyReplanTarget,
   resolveLifecycleColumns,
@@ -15,6 +15,7 @@ import {
   type TaskMoveLanes,
 } from "../workflows/workflow-lifecycle-traits.js";
 import {resolveWorkflowIrForTask} from "../workflows/workflow-ir-resolver.js";
+import {applyPauseAccounting, LEGACY_WIP_COLUMN_FALLBACK} from "../tasks/task-pause-accounting.js";
 import {InvalidFileScopeError, SelfSpawnedDependencyError, detectSelfSpawnedDependency} from "./errors.js";
 import {mkdir, readFile, stat, unlink} from "node:fs/promises";
 import {join} from "node:path";
@@ -22,11 +23,11 @@ import {existsSync} from "node:fs";
 import type {Task, Column, TaskLogEntry, RunMutationContext, TaskRecommendation} from "../types.js";
 import {validateCustomFieldPatch, CustomFieldRejectionError} from "../tasks/task-fields.js";
 import "../builtin-traits.js";
-import {normalizeTaskPriority} from "../tasks/task-priority.js";
 import {validateNodeOverrideChange, resolveNodeOverrideLanes} from "../mesh/node-override-guard.js";
 import {shouldInvalidateEffectiveRoute} from "../mesh/effective-route-invalidation.js";
 import {isTaskTerminalNodeIdAsync} from "../workflows/workflow-ir-resolver.js";
 import {extractTaskIdTokens, normalizeTitleForTaskId} from "../tasks/task-title-id-drift.js";
+import {resolveTaskTitleWrite} from "../ai/ai-summarize.js";
 import {buildBootstrapPrompt} from "../mesh/mesh-task-replication.js";
 import {validateFileScopeInPromptContent} from "../task-store/file-scope.js";
 import {__setTaskActivityLogLimitsForTesting, isBootstrapPromptStub, rewriteHeadingLine} from "../task-store/comments.js";
@@ -35,6 +36,7 @@ import {normalizeTaskReviewState} from "../task-store/review-state.js";
 import {hasOwnDeclaredSymbols, normalizeDeclaredSymbols, extractDeclaredSymbolsFromPrompt, resolveTaskSymbolsForTask} from "../tasks/task-symbol-resolution.js";
 import {assertValidProviderInstanceId} from "../provider-instance.js";
 import {supersedePlanReviewResults} from "../planner/plan-approval.js";
+import {resolveHumanPlanApprovalExecutionMode} from "../planner/human-plan-approval.js";
 import {PLAN_REVIEW_GROUP_ID} from "../workflows/builtin-plan-review-group.js";
 import {BranchWriteProvenanceError, validateTaskBranchName} from "../branch/branch-assignment.js";
 import {withTaskBranchContextInSourceMetadata} from "./branch-context.js";
@@ -277,7 +279,17 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
 
       let titleNormalized = false;
       if (updates.title !== undefined) {
-        task.title = updates.title;
+        /*
+        FNXC:TaskTitleDerivation 2026-09-26-01:32:
+        RUFU-295: the persisted-title write guard runs here too, so a rename that arrives as
+        `## Symptom (…)` or as a pasted multi-line spec body is stored as the canonical derived
+        label of the effective description instead of verbatim. Blank still means "clear the title"
+        (`undefined`), which is what the existing null-normalization path below already tolerates.
+        */
+        task.title = resolveTaskTitleWrite({
+          title: updates.title,
+          description: updates.description ?? task.description,
+        });
         // FN-5077: load-time repair tolerates null normalized titles (title cleared instead of fragment persisted).
         const normalizedTitle = normalizeTitleForTaskId(task.title, id);
         if (normalizedTitle.changed) {
@@ -301,11 +313,10 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
           ...updates.sourceMetadataPatch,
         };
       }
-      if (updates.priority === null) {
-        task.priority = normalizeTaskPriority(undefined);
-      } else if (updates.priority !== undefined) {
-        task.priority = normalizeTaskPriority(updates.priority);
-      }
+      /* FNXC:TaskQueueOrder 2026-09-17-12:07: FN-509 retired the priority field. A generic update
+         can no longer set one, and it deliberately cannot set `queueBoost` either — the durable
+         rank has exactly one writer (`boostTask`), so a stale generic snapshot can neither erase a
+         fresh Boost nor resurrect one a Reset invalidated. */
       if (updates.worktree === null) {
         task.worktree = undefined;
       } else if (updates.worktree !== undefined) {
@@ -318,6 +329,18 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
         task.externalBlock = undefined;
       } else if (updates.externalBlock !== undefined) {
         task.externalBlock = updates.externalBlock;
+      }
+      /* FNXC:HumanPlanApproval 2026-09-15-06:24: FN-408 uses the explicit null sentinel to clear the per-card state; undefined omits the field. */
+      if (updates.humanPlanApproval === null) {
+        task.humanPlanApproval = undefined;
+      } else if (updates.humanPlanApproval !== undefined) {
+        task.humanPlanApproval = updates.humanPlanApproval;
+      }
+      /* FNXC:HumanMergeApproval 2026-09-17-18:09: FN-514 uses the same explicit null sentinel; `undefined` omits the field so an unrelated generic patch can never erase or forge a delivery decision. */
+      if (updates.humanMergeApproval === null) {
+        task.humanMergeApproval = undefined;
+      } else if (updates.humanMergeApproval !== undefined) {
+        task.humanMergeApproval = updates.humanMergeApproval;
       }
       if (updates.planningFailure === null) {
         task.planningFailure = undefined;
@@ -542,6 +565,14 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
             task.status = undefined;
           }
         }
+        /*
+        FNXC:TaskPauseAccounting 2026-09-16-06:16:
+        FN-457 — auto-unpause on agent unassignment clears `paused` above; without this call the
+        segment opened by the explicit pause would stay open forever and readers would subtract an
+        ever-growing interval. The wip flag only gates OPENING a segment and this branch can only
+        ever CLOSE one, so `false` is the accurate argument rather than a resolved lane.
+        */
+        applyPauseAccounting(task, false, new Date().toISOString(), false);
         task.log.push({
           timestamp: new Date().toISOString(),
           action: `Task unpaused (agent ${previousAssignedAgentId} unassigned)`,
@@ -709,7 +740,24 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
       } else if (updates.checkoutLeaseEpoch !== undefined) {
         task.checkoutLeaseEpoch = updates.checkoutLeaseEpoch;
       }
-      if (updates.paused !== undefined) task.paused = updates.paused || undefined;
+      if (updates.paused !== undefined) {
+        /*
+        FNXC:TaskPauseAccounting 2026-09-16-06:16:
+        FN-457 — `updateTask({ paused })` is the generic pause seam that every patch-producing helper
+        funnels through (`tasks/task-external-block.ts`, `tasks/manual-retry-reset.ts`,
+        `merge/task-merge.ts`), so accounting is applied once here rather than at each producer.
+        The transition is only accounted when the boolean actually CHANGES, so a repeated write of
+        the same value cannot open a second segment or re-bank a closed one.
+        */
+        const nextPaused = updates.paused === true;
+        if (nextPaused !== (task.paused === true)) {
+          const pausedLanes = await resolveTaskLifecycleColumns(store, id).catch(() => undefined);
+          /* The unresolvable-workflow default is named once in task-pause-accounting.ts. */
+          const inWipLane = task.column === (pausedLanes?.wip ?? LEGACY_WIP_COLUMN_FALLBACK);
+          applyPauseAccounting(task, nextPaused, new Date().toISOString(), inWipLane);
+        }
+        task.paused = updates.paused || undefined;
+      }
       if (updates.baseBranch === null) {
         task.baseBranch = undefined;
       } else if (updates.baseBranch !== undefined) {
@@ -1045,7 +1093,17 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
       if (updates.executionMode === null) {
         task.executionMode = undefined;
       } else if (updates.executionMode !== undefined) {
-        task.executionMode = updates.executionMode as import("../types.js").ExecutionMode;
+        /*
+        FNXC:HumanPlanApproval 2026-09-15-07:30:
+        FN-408 remediation — a later Fast toggle must not strand an armed card either. Fast skips
+        plan review and planning entirely, so an armed Fast card could never reach a decidable
+        review episode; the per-card requirement wins and Fast is neutralized. `task.humanPlanApproval`
+        already carries this update's own arming because that field is applied earlier in this pass.
+        */
+        task.executionMode = resolveHumanPlanApprovalExecutionMode(
+          task.humanPlanApproval?.enabled === true,
+          updates.executionMode,
+        ) as import("../types.js").ExecutionMode | undefined;
       }
       /*
       FNXC:PlannerOversight 2026-07-14-18:11:
@@ -1485,6 +1543,27 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
         task,
         failedTransition ? { failedTransition: true } : undefined,
       ]);
+      /*
+      FNXC:AssigneeTransferAtomicity 2026-09-21-20:36 (RUFU-260):
+      ONE typed transfer announcement, post-write, guarded by `assignmentChanged` (same-value
+      writes and creation paths stay silent). The engine tears the previous owner's in-flight
+      session down off this event; without it the old owner kept writing while the new owner's
+      heartbeat woke — the two-writers-on-one-worktree incident. A throwing listener must never
+      resurrect a committed write, so the synchronous dispatch is isolated here exactly like
+      `emitTaskLifecycleEventSafely` isolates the lifecycle trio.
+      */
+      if (assignmentChanged) {
+        const assigneeEvent: TaskAssigneeChangedEvent = {
+          taskId: task.id,
+          previousOwnerId: previousAssignedAgentId,
+          newOwnerId: task.assignedAgentId,
+        };
+        try {
+          store.emit("task:assignee-changed", assigneeEvent);
+        } catch (err) {
+          storeLog.warn(`[task-detail] task:assignee-changed listener failed for ${task.id}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
       return task;
     }
   }

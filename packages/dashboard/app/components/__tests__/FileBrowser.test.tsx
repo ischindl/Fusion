@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, cleanup, act } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { loadAllAppCss } from "../../test/cssFixture";
 import { FileBrowser } from "../FileBrowser";
 import type { FileNode } from "../../api";
@@ -40,6 +41,7 @@ const mockDownloadZipUrl = vi.fn((_workspace: string, filePath: string) =>
   `/api/files/${encodeURIComponent(filePath)}/download-zip?workspace=test-ws`,
 );
 const mockSearchFiles = vi.fn();
+const mockUploadWorkspaceFiles = vi.fn();
 
 vi.mock("../../api", () => ({
   copyFile: (...args: any[]) => mockCopyFile(...args),
@@ -51,6 +53,8 @@ vi.mock("../../api", () => ({
   downloadFileUrl: (workspace: string, filePath: string) => mockDownloadFileUrl(workspace, filePath),
   downloadZipUrl: (workspace: string, filePath: string) => mockDownloadZipUrl(workspace, filePath),
   searchFiles: (...args: any[]) => mockSearchFiles(...args),
+  uploadWorkspaceFiles: (...args: any[]) => mockUploadWorkspaceFiles(...args),
+  MAX_WORKSPACE_UPLOAD_FILE_BYTES: 25 * 1024 * 1024,
 }));
 
 // ── Test Data ───────────────────────────────────────────────────────────
@@ -88,6 +92,7 @@ type FileBrowserTestOverrides = Partial<typeof defaultProps> & {
   error?: string | null;
   onRetry?: () => void;
   showProjectFileControls?: boolean;
+  allowUpload?: boolean;
 };
 
 function renderFileBrowser(overrides: FileBrowserTestOverrides = {}) {
@@ -120,6 +125,19 @@ function getNewFileAction() {
 
 function getNewFolderAction() {
   return screen.getByRole("menuitem", { name: /New Folder/i });
+}
+
+function getRenderedEntryNames(): string[] {
+  return Array.from(document.querySelectorAll(".file-browser-list > .file-node .file-node-name"))
+    .map((node) => node.textContent ?? "");
+}
+
+function chooseSortCriterion(value: "name" | "mtime" | "size") {
+  fireEvent.change(screen.getByRole("combobox", { name: "Sort by" }), { target: { value } });
+}
+
+function reverseSortDirection() {
+  fireEvent.click(screen.getByRole("button", { name: /Sort direction:/ }));
 }
 
 async function typeProjectSearch(query: string) {
@@ -174,6 +192,78 @@ describe("FileBrowser", () => {
     expect(screen.getByText("1.2 KB")).toBeDefined();
   });
 
+  describe("directory sorting", () => {
+    const unsortedEntries: FileNode[] = [
+      { name: "file10.ts", type: "file", size: 100, mtime: "2026-01-03T00:00:00Z" },
+      { name: "Zebra", type: "directory", mtime: "invalid-date" },
+      { name: "file2.ts", type: "file", size: 200, mtime: "2026-01-01T00:00:00Z" },
+      { name: "alpha", type: "directory", mtime: "2026-01-02T00:00:00Z" },
+      { name: "unknown.txt", type: "file" },
+      { name: "same-b.txt", type: "file", size: 50, mtime: "2026-01-04T00:00:00Z" },
+      { name: "same-a.txt", type: "file", size: 50, mtime: "2026-01-04T00:00:00Z" },
+      { name: "bad-date.txt", type: "file", size: 300, mtime: "not-a-date" },
+    ];
+
+    it("defaults to case-insensitive numeric name order with directories first", () => {
+      renderFileBrowser({ entries: unsortedEntries });
+      expect(getRenderedEntryNames()).toEqual([
+        "alpha", "Zebra", "bad-date.txt", "file2.ts", "file10.ts", "same-a.txt", "same-b.txt", "unknown.txt",
+      ]);
+
+      reverseSortDirection();
+      expect(getRenderedEntryNames()).toEqual([
+        "Zebra", "alpha", "unknown.txt", "same-b.txt", "same-a.txt", "file10.ts", "file2.ts", "bad-date.txt",
+      ]);
+    });
+
+    it("sorts modification dates both ways and leaves invalid or missing dates last", () => {
+      renderFileBrowser({ entries: unsortedEntries });
+      chooseSortCriterion("mtime");
+      expect(getRenderedEntryNames()).toEqual([
+        "alpha", "Zebra", "file2.ts", "file10.ts", "same-a.txt", "same-b.txt", "bad-date.txt", "unknown.txt",
+      ]);
+
+      reverseSortDirection();
+      expect(getRenderedEntryNames()).toEqual([
+        "alpha", "Zebra", "same-a.txt", "same-b.txt", "file10.ts", "file2.ts", "bad-date.txt", "unknown.txt",
+      ]);
+    });
+
+    it("sorts file sizes both ways, breaks ties by name, and keeps folders name-ordered", () => {
+      renderFileBrowser({ entries: unsortedEntries });
+      chooseSortCriterion("size");
+      expect(getRenderedEntryNames()).toEqual([
+        "alpha", "Zebra", "same-a.txt", "same-b.txt", "file10.ts", "file2.ts", "bad-date.txt", "unknown.txt",
+      ]);
+
+      reverseSortDirection();
+      expect(getRenderedEntryNames()).toEqual([
+        "alpha", "Zebra", "bad-date.txt", "file2.ts", "file10.ts", "same-a.txt", "same-b.txt", "unknown.txt",
+      ]);
+    });
+
+    it("never mutates the entries prop while changing criteria and direction", () => {
+      const entries = unsortedEntries.map((entry) => ({ ...entry }));
+      const original = entries.map((entry) => ({ ...entry }));
+      renderFileBrowser({ entries });
+      chooseSortCriterion("size");
+      reverseSortDirection();
+      chooseSortCriterion("mtime");
+      expect(entries).toEqual(original);
+    });
+
+    it("handles a single entry and an empty directory", () => {
+      const { rerender } = renderFileBrowser({ entries: [{ name: "only.txt", type: "file" }] });
+      chooseSortCriterion("size");
+      reverseSortDirection();
+      expect(getRenderedEntryNames()).toEqual(["only.txt"]);
+
+      rerender(<FileBrowser {...defaultProps} entries={[]} />);
+      expect(screen.getByText("(empty directory)")).toBeInTheDocument();
+      expect(screen.getByRole("combobox", { name: "Sort by" })).toBeEnabled();
+    });
+  });
+
   it("shows root path label", () => {
     renderFileBrowser({ currentPath: "." });
     expect(screen.getByText("Root")).toBeDefined();
@@ -212,6 +302,8 @@ describe("FileBrowser", () => {
   it("keeps settings-style picker chrome compact unless project controls are enabled", () => {
     renderFileBrowser();
     expect(screen.getByRole("button", { name: /^New$/i })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Sort by" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sort direction: ascending" })).toBeInTheDocument();
     expect(screen.queryByRole("searchbox", { name: "Search project files" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Create new file" })).toBeNull();
   });
@@ -326,6 +418,38 @@ describe("FileBrowser", () => {
 
     fireEvent.click(screen.getAllByRole("button", { name: /config.json/i })[1]);
     expect(onSelectFile).toHaveBeenCalledWith("packages/core/config.json");
+  });
+
+  it("keeps the chosen sort state but disables it accessibly during recursive search", async () => {
+    const user = userEvent.setup();
+    mockSearchFiles.mockResolvedValue({ files: [{ name: "file10.ts", path: "nested/file10.ts" }] });
+    renderFileBrowser({
+      showProjectFileControls: true,
+      entries: [
+        { name: "file10.ts", type: "file", size: 10 },
+        { name: "file2.ts", type: "file", size: 20 },
+      ],
+    });
+
+    const criterion = screen.getByRole("combobox", { name: "Sort by" });
+    await user.selectOptions(criterion, "size");
+    const direction = screen.getByRole("button", { name: "Sort direction: ascending" });
+    direction.focus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("button", { name: "Sort direction: descending" })).toBeInTheDocument();
+    expect(getRenderedEntryNames()).toEqual(["file2.ts", "file10.ts"]);
+
+    await typeProjectSearch("file");
+    await waitFor(() => expect(screen.getByText("nested/file10.ts")).toBeInTheDocument());
+    expect(criterion).toBeDisabled();
+    expect(criterion).toHaveAccessibleDescription("Sorting applies to folder listings and is unavailable during search");
+    expect(screen.getByRole("button", { name: "Sort direction: descending" })).toBeDisabled();
+
+    await user.clear(screen.getByRole("searchbox", { name: "Search project files" }));
+    expect(criterion).toBeEnabled();
+    expect(criterion).toHaveValue("size");
+    expect(screen.getByRole("button", { name: "Sort direction: descending" })).toBeEnabled();
+    expect(getRenderedEntryNames()).toEqual(["file2.ts", "file10.ts"]);
   });
 
   it("does not search without a workspace and preserves normal browsing", async () => {
@@ -927,5 +1051,167 @@ describe("FileBrowser", () => {
     expect(screen.getByPlaceholderText("New name")).toBeDefined();
     fireEvent.keyDown(screen.getByPlaceholderText("New name"), { key: "Escape" });
     expect(screen.queryByPlaceholderText("New name")).toBeNull();
+  });
+});
+
+// ── Upload affordance (RUFU-189) ────────────────────────────────────────
+
+describe("FileBrowser upload affordance", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  function makeFile(name: string, bytes = 3): File {
+    return new File(["a".repeat(bytes)], name);
+  }
+
+  function getFileInput(container: HTMLElement): HTMLInputElement {
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]');
+    if (!input) throw new Error("Hidden file input is missing");
+    return input;
+  }
+
+  function pickFiles(container: HTMLElement, files: File[]) {
+    fireEvent.change(getFileInput(container), { target: { files } });
+  }
+
+  it("renders an Upload button and hidden multi-file input when allowUpload is set", () => {
+    const { container } = renderFileBrowser({ showProjectFileControls: true, allowUpload: true });
+    expect(screen.getByRole("button", { name: "Upload" })).toBeDefined();
+    expect(getFileInput(container).multiple).toBe(true);
+  });
+
+  it("renders no upload affordance or file-input shell without allowUpload", () => {
+    const { container } = renderFileBrowser({ showProjectFileControls: true });
+    expect(screen.queryByRole("button", { name: "Upload" })).toBeNull();
+    expect(container.querySelector('input[type="file"]')).toBeNull();
+
+    // Compact-menu surfaces (Settings pickers reuse this chrome) stay upload-free too.
+    const compact = renderFileBrowser();
+    fireEvent.click(screen.getByRole("button", { name: "New" }));
+    expect(screen.queryByRole("menuitem", { name: /Upload files/ })).toBeNull();
+    expect(compact.container.querySelector('input[type="file"]')).toBeNull();
+  });
+
+  it("offers Upload files as a menu item on compact surfaces", () => {
+    renderFileBrowser({ allowUpload: true });
+    fireEvent.click(screen.getByRole("button", { name: "New" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Upload files/ }));
+    expect(screen.getByRole("button", { name: "New" })).toBeDefined();
+  });
+
+  it("uploads picked files into the current folder and refreshes the tree", async () => {
+    const a = makeFile("a.txt");
+    const b = makeFile("b.txt");
+    mockUploadWorkspaceFiles.mockResolvedValue({
+      uploaded: [
+        { name: "a.txt", path: "a.txt", size: 3, mtime: "2026-09-05T00:00:00Z" },
+        { name: "b.txt", path: "b.txt", size: 3, mtime: "2026-09-05T00:00:00Z" },
+      ],
+      failed: [],
+    });
+    const { container } = renderFileBrowser({ showProjectFileControls: true, allowUpload: true });
+    pickFiles(container, [a, b]);
+
+    await waitFor(() => expect(mockUploadWorkspaceFiles).toHaveBeenCalledTimes(1));
+    expect(mockUploadWorkspaceFiles).toHaveBeenCalledWith(
+      "test-ws",
+      [a, b],
+      { path: ".", overwrite: false, projectId: "project-1" },
+    );
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("2 files uploaded"));
+    expect(defaultProps.onRefresh).toHaveBeenCalled();
+  });
+
+  it("prompts to replace existing files and resends only the collided picks with overwrite", async () => {
+    const a = makeFile("a.txt");
+    const b = makeFile("b.txt");
+    mockUploadWorkspaceFiles
+      .mockResolvedValueOnce({
+        uploaded: [{ name: "b.txt", path: "b.txt", size: 3, mtime: "2026-09-05T00:00:00Z" }],
+        failed: [{ name: "a.txt", code: "EEXIST", error: "File already exists: a.txt" }],
+      })
+      .mockResolvedValueOnce({
+        uploaded: [{ name: "a.txt", path: "a.txt", size: 3, mtime: "2026-09-05T00:00:00Z" }],
+        failed: [],
+      });
+    const { container } = renderFileBrowser({ showProjectFileControls: true, allowUpload: true });
+    pickFiles(container, [a, b]);
+
+    await waitFor(() => expect(screen.getByText("Replace existing files?")).toBeDefined());
+    expect(screen.getByRole("status").textContent).not.toContain("already exists");
+    fireEvent.click(screen.getByRole("button", { name: "Replace" }));
+
+    await waitFor(() => expect(mockUploadWorkspaceFiles).toHaveBeenCalledTimes(2));
+    expect(mockUploadWorkspaceFiles).toHaveBeenLastCalledWith(
+      "test-ws",
+      [a],
+      { path: ".", overwrite: true, projectId: "project-1" },
+    );
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("2 files uploaded"));
+    expect(screen.getByRole("status").textContent).not.toContain("already exists");
+  });
+
+  it("keeps existing files when the operator declines replacement", async () => {
+    const a = makeFile("a.txt");
+    mockUploadWorkspaceFiles.mockResolvedValueOnce({
+      uploaded: [],
+      failed: [{ name: "a.txt", code: "EEXIST", error: "File already exists: a.txt" }],
+    });
+    const { container } = renderFileBrowser({ showProjectFileControls: true, allowUpload: true });
+    pickFiles(container, [a]);
+
+    await waitFor(() => expect(screen.getByText("Replace existing files?")).toBeDefined());
+    fireEvent.click(screen.getByRole("button", { name: "Keep existing" }));
+
+    expect(mockUploadWorkspaceFiles).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("Kept 1 existing files"));
+  });
+
+  it("pre-rejects oversized picks with a visible per-file reason and no request", async () => {
+    const big = new File(["x"], "big.bin");
+    Object.defineProperty(big, "size", { value: 26 * 1024 * 1024 });
+    const { container } = renderFileBrowser({ showProjectFileControls: true, allowUpload: true });
+    pickFiles(container, [big]);
+
+    // A banner carrying failures announces as an alert, not a polite status region.
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("big.bin"));
+    expect(screen.getByRole("alert").textContent).toContain("Exceeds the 25 MiB upload limit");
+    expect(mockUploadWorkspaceFiles).not.toHaveBeenCalled();
+  });
+
+  it("reports per-file failures inline instead of failing the whole batch", async () => {
+    const ok = makeFile("ok.txt");
+    const bad = makeFile("bad.bin");
+    mockUploadWorkspaceFiles.mockResolvedValue({
+      uploaded: [{ name: "ok.txt", path: "ok.txt", size: 3, mtime: "2026-09-05T00:00:00Z" }],
+      failed: [{ name: "bad.bin", code: "EINVAL", error: "Invalid file name: bad.bin" }],
+    });
+    const { container } = renderFileBrowser({ showProjectFileControls: true, allowUpload: true });
+    pickFiles(container, [ok, bad]);
+
+    // Partial success still carries a failure, so the strip keeps the alert severity.
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain("bad.bin: Invalid file name: bad.bin"),
+    );
+    expect(screen.getByRole("alert").textContent).toContain("1 files uploaded");
+    expect(defaultProps.onRefresh).toHaveBeenCalled();
+  });
+
+  it("surfaces a whole-request rejection message in the status strip", async () => {
+    const a = makeFile("a.txt");
+    mockUploadWorkspaceFiles.mockRejectedValue(new Error("File exceeds the 100 MB transport ceiling"));
+    const { container } = renderFileBrowser({ showProjectFileControls: true, allowUpload: true });
+    pickFiles(container, [a]);
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain("File exceeds the 100 MB transport ceiling"),
+    );
+    expect(screen.getByRole("alert").textContent).not.toContain("files uploaded");
+    expect(defaultProps.onRefresh).not.toHaveBeenCalled();
   });
 });

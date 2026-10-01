@@ -6,7 +6,7 @@ This guide consolidates the detailed testing guidance moved from `AGENTS.md`.
 
 ## The merge gate
 
-CI blocks PRs on exactly four checks (`.github/workflows/pr-checks.yml`): **Lint, Typecheck, Build, Gate**. The Gate job runs the boot smoke (`scripts/boot-smoke.mjs`: independent CLI `--help` and real `fn init` preflights run concurrently, the latter proving a durable `.fusion/project.json` marker, then a real `fn serve` answers `GET /api/health`, all against one isolated home) and `pnpm test:gate`: 15 static policy validators, 21 curated `engine-core` files, two PostgreSQL canaries, four core unit files, then the CI-shape test.
+CI blocks PRs on exactly four checks (`.github/workflows/pr-checks.yml`): **Lint, Typecheck, Build, Gate**. The Gate job runs the boot smoke (`scripts/boot-smoke.mjs`: independent CLI `--help` and real `fn init` preflights run concurrently, the latter proving a durable `.fusion/project.json` marker, then a real `fn serve` answers `GET /api/health`, all against one isolated home) and `pnpm test:gate`: 17 static policy validators, 21 curated `engine-core` files, two PostgreSQL canaries, four core unit files, then the CI-shape test.
 
 Set `BOOT_SMOKE_TIMINGS=1` when invoking `pnpm smoke:boot` to print per-attempt help, init, health, and SIGTERM phase timings for diagnosis; the flag is off by default so normal gate output stays concise. Everything else — the 4-way shards, the engine slow tier, the dashboard inventory guard — runs NON-BLOCKING in `.github/workflows/full-suite.yml` on push to main.
 
@@ -36,7 +36,10 @@ Run `35837857934` reported nine direct stale-fixture failures after FN-9370 chan
 The default-on workflow `post-merge-verification` gate makes Full Suite evidence a blocking task-completion requirement for merge-capable built-ins without changing branch protection. The gate must refuse approval until the delivery record identifies the landed SHA, the first Full Suite push-to-main run at or after that SHA with its run ID and SHA, conclusions for Pipeline smoke and Test shards 1/4 through 4/4, and all four `test-timings-shard-1` through `test-timings-shard-4` artifacts. Full Suite conclusions are non-blocking signals: a failed lane needs an explicit evidence-backed disposition, not a fabricated successful conclusion. The `post-merge-full-suite-evidence` artifact retains the normalized per-shard failed-name set and producer conclusion for that review. A pre-landing run, an unrelated main run, partial artifacts, or local verification are not substitutes; record the verified GitHub-hosted evidence and every non-success disposition in the task delivery record before final approval.
 
 <!-- FNXC:MergeGatePerformance 2026-08-16-10:41: FN-9122 corrected the W33 composition ledger: all 15 static validators, all 21 engine-core files, every PG/unit canary, nonzero propagation, and CI-shape-after-success remain blocking; a timing win that weakens any of those contracts is not accepted. -->
-**Static-validator and lane ordering:** `test:gate:static` declares the 15 canonical, directly runnable read-only validators. `scripts/run-static-gate-checks.mjs` starts them concurrently and waits for **every** result, so zero, one, or multiple policy failures remain fail-closed and observable before tests start. It then starts `engine-core`, `test:pg-gate`, and `test:unit-gate` concurrently; the shell waits for all **three** and returns nonzero if any fail. CI-shape runs only after that successful wait.
+**Static-validator and lane ordering:** `test:gate:static` declares the canonical, directly runnable read-only validators — `scripts/run-static-gate-checks.mjs` prints the live count on success (17 as of RUFU-265; prefer it over any number quoted here, because this count grows and the sentence above it sat stale at 15 for a month). `scripts/run-static-gate-checks.mjs` starts them concurrently and waits for **every** result, so zero, one, or multiple policy failures remain fail-closed and observable before tests start. It then starts `engine-core`, `test:pg-gate`, and `test:unit-gate` concurrently; the shell waits for all **three** and returns nonzero if any fail. CI-shape runs only after that successful wait.
+
+<!-- FNXC:SkillCatalogDrift 2026-09-22-15:34: RUFU-265 moves generated skill-doc enforcement onto the gate. `packages/cli/skill/fusion/SKILL.md`, `references/extension-tools.md`, and the `fusion-capabilities.md` tool table are generator output from the canonical pi-extension registrations, and the ONLY regeneration path is `pnpm sync:fusion-skill` (== `node scripts/sync-fusion-skill-tools.mjs`). Drift is measured by `pnpm sync:fusion-skill:check` and enforced by the blocking `check-fusion-skill-sync` gate validator. `packages/cli` no longer has a `prebuild` that writes these tracked files: a build that rewrites a tracked doc both dirties the working tree and — because the Gate job builds before it checks anything — makes the drift check structurally unable to fail on committed content. Generation stays an explicit author action; the check is the enforcement point. -->
+**Generated skill docs:** edit the tool registrations, then run `pnpm sync:fusion-skill`; never hand-edit inside the `BEGIN`/`END` marker blocks. `pnpm sync:fusion-skill:check` reports per-artifact drift, and `scripts/check-fusion-skill-sync.mjs` runs that same check as a blocking gate validator, so a stale committed catalog fails CI on a clean tree before any build can overwrite it. `pnpm build` writes no tracked docs. The validator is deliberately absent from `pretest`, where the cache-gated call sites (`scripts/test-changed.mjs`, `scripts/ci-test-shard.mjs`) already run the check.
 
 <!-- FNXC:MergeGatePerformance 2026-08-16-10:41: FN-9122 confirmed engine-core retains 21 files, fork worker budgeting, parallelism, bundle rebuild, and transform caching. This is never a test-result cache: every assertion and mock boundary remains evaluated for each invocation. -->
 **FN-8783 warm result:** The paired W32 protocol recorded in task document `FN-8783/docs` measured the complete-gate median at **15.4s baseline** and **10.2s candidate** across five serialized AB/BA pairs on the same macOS arm64 host (Node 26.3.0, pnpm 10.33.0, identical lockfile). The final engine-core transform-cache profile used one priming run (6.3s), then five warm runs (**5.1, 5.2, 5.1, 5.0, 5.2s; median 5.1s**) versus the pre-cache 6.2s focused engine-core result. The residual full-gate critical path is the unchanged concurrent engine/PG/unit/CI-shape work; task evidence records commands, SHAs, preparation, raw timing order, and coverage counts.
@@ -128,7 +131,9 @@ pnpm verify:workspace  # deep opt-in verification: lint -> test:full -> build (N
 - `check-no-node-only-core-imports-in-dashboard`
 - `check-pi-versions-pinned`
 - `check-workspace-package-graph`
+- `check-lockfile-importers`
 - `check-no-test-timeout-appeasement`
+- `check-no-comment-assertions-in-tests`
 - `check-changeset-format`
 - `check-pre-json-anchor`
 - `check-routes-modular`
@@ -138,6 +143,9 @@ pnpm verify:workspace  # deep opt-in verification: lint -> test:full -> build (N
 `check-runtime-skill-loader-drift` enforces the Claude/Grok runtime skill loaders' clean rename-diff. It then bootstraps missing/stale workspace dist artifacts, runs **typecheck + build scoped to the changed packages** (reusing the same git-diff / changed-package resolution as `pnpm test`), always builds the `@runfusion/fusion` CLI package required by the source-checkout boot smoke, and runs the existing **boot smoke** once. The static phase invokes each existing validator entry point without update flags, is bounded and fail-fast, and runs **no Vitest or test lane**. It gives deterministic, flake-free signal in seconds, so it is a sound project `testCommand`/verification command when you want non-test verification. With no affected package (root/docs-only diff) it runs static checks, artifact bootstrap, the CLI prerequisite build, and boot smoke. Each step is bounded by the shared `runWithWatchdog` (class `changed`) so a hang fails fast, and it exits nonzero on the first failing step. This is purely additive: it does not change `pnpm test`, the merge gate, or CI, and the full suite stays available (`pnpm test:full`, non-blocking on push to main).
 
 `pnpm check:workspace-package-graph` verifies that every `workspace:` dependency or override in the root importer or a glob-matched workspace manifest resolves to a glob-covered workspace package, and that no package directory under `packages/` or `plugins/` falls outside `pnpm-workspace.yaml` package globs.
+
+<!-- FNXC:LockfileDriftGate 2026-09-22-20:08: RUFU-266 documented the importer-parity validator. A committed manifest declaration with no matching pnpm-lock.yaml record leaves a fresh worktree's plain `pnpm install` nothing to do but rewrite the tracked lockfile, so the card inherits a dirty `pnpm-lock.yaml` outside its File Scope, `pnpm install --frozen-lockfile` refuses main, and the squash-merge lane blocks on the File Scope guard. Workspace membership (the graph validator above) and lockfile parity are separate invariants, so the guard is a separate validator. -->
+`pnpm check:lockfile-importers` (`scripts/check-lockfile-importers.mjs`) verifies the importer half of lockfile integrity: every dependency a workspace manifest declares — root, `packages/*`, `plugins/**`, and `plugins/examples/**` — must already have a matching record in that importer's `pnpm-lock.yaml` `importers:` entry, and the lockfile must not retain an importer for a manifest that no longer exists. Workspace *membership* is checked by `check-workspace-package-graph` above; this validator checks that each member's declared ranges are actually recorded, which is the invariant `pnpm install --frozen-lockfile` enforces at install time. It runs in `pretest` (so `verify:fast` and every test entrypoint) and in the blocking `test:gate:static` chain, and a range that a `pnpm-workspace.yaml` `overrides:` entry deliberately rewrites counts as in sync when the lockfile records the override value.
 
 ### Quality file-scoped preset
 
@@ -155,6 +163,15 @@ Custom workflow reliability release signoff has a dedicated on-demand lane: `pnp
 Terminal acceptance tasks that require real mobile Safari should use [`docs/ios-acceptance.md`](./ios-acceptance.md) for the `--check` run-vs-NO-OP probe, credential wiring, and physical/cloud real-iOS evidence workflow.
 
 Agents running verification through `fn_run_verification` are bounded by default: project `verificationCommandTimeoutMs` when set, otherwise 300s for package scope and 900s for workspace scope, with an 1800s hard cap. Marathon invocations such as root `pnpm test`, `pnpm test:full`, `pnpm verify:workspace`, whole-package tests without file filters, and shell repeat loops are soft-capped unless the agent explicitly passes `allowFullSuite: true`; the escape hatch still emits progress heartbeats and respects the hard cap. **Do not pass `allowFullSuite: true` unless absolutely necessary** — it is the main way verification balloons past its budget. Default to a targeted, file-scoped command such as `pnpm --filter @fusion/<pkg> exec vitest run src/path/to/test.ts --silent=passed-only --reporter=dot`; reserve `allowFullSuite` for a genuinely full run with no targetable test set (state the reason), with the thin merge gate (`pnpm test:gate`) as the cross-cutting safety net.
+
+## Dynamic-list verification
+
+<!-- FNXC:DynamicListTesting 2026-09-07-17:16: FN-311 makes automatic pagination and bounded rendering one cross-surface contract. Tests must cover the production host, not only the primitive: stable cursor continuation, stale-response fencing, intersection and scroll fallback, variable-height remeasurement, prepend anchoring, unmount cleanup, and a bounded DOM under at least 10,000 logical rows. -->
+
+When changing a dynamic dashboard list, update `listSurfaceInventory.ts` and keep a targeted production-reachability test named by that inventory entry. Manual “Load more” controls are reserved for explicit error retry actions; ordinary continuation must be driven by an edge sentinel and a single-flight loader.
+
+<!-- FNXC:DoneKeysetPagination 2026-09-08-22:25: FN-318 makes the completion history a server-keyset collection. -->
+Done-history tests must replay only the opaque `nextCursor` returned by `/api/tasks/done`, verify exact per-column and per-workflow counts independently of loaded rows, and accumulate rendered IDs while scrolling because the virtualized DOM intentionally never contains the full history at once.
 
 ## Dashboard source-read fixtures
 
@@ -269,6 +286,139 @@ comments, marked sites) — plus that one marker cannot launder a distant guard 
 The CLI additionally exits non-zero on an empty file list, because a guard that reports success
 without checking anything is worse than no guard.
 
+
+## The review-lane dispatch invariant
+
+<!-- FNXC:ReviewLaneDispatch 2026-09-09 (STAS-205 Steps 3-8): the invariant, its buckets, and the closure signal a reviewer must assert. Read this before debugging "the reviewer never showed up": the pre-fix platform had no writer for the reviewer-run ledger at all, so "no reviewer work" was unsurveyable rather than rare. -->
+
+**The invariant:** a card entering a review-lane column acquires reviewer work within one sweep
+interval. *Reviewer work* means a `task_reviewer_runs` ledger row **and** the backing reviewer-role
+`agent_runs` activity. An activity-log line, a chat message carrying a verdict, or a ledger row with
+no session behind it satisfies none of this.
+
+**A dispatch is only real when reviewer work starts in-process (mode 2).** `ReviewDispatchSweep`
+(`packages/engine/src/scheduling/review-dispatch-sweep.ts`) begins the review by calling the engine's
+in-process launcher, `HeartbeatMonitor.executeHeartbeat()`, which inserts the backing `agent_runs`
+row in the engine's own process. Dispatch must never record an intent and wait for the reviewer
+agent's own patrol to collect it: a ledger row in a live status with no visible session after
+`DEFAULT_REVIEW_START_LATENCY_MS` (120,000 ms) is bucket **B6** — counted as a stall and healed by
+the same sweep — and a B6 re-dispatch goes through the identical immediate-start path, so
+`B6 → dispatch → B6` cannot loop; past `DEFAULT_REVIEW_MAX_ATTEMPTS` (3) the card parks loudly.
+
+**The reviewer's heartbeat silence is not the signal, and a faster patrol is not the fix.** Closure
+assertions key on the ledger row plus reviewer-role `agent_runs` work, never on `agent_heartbeats`
+rows for the reviewer — the sweep, not the reviewer's timer, is the trigger, so a reviewer that never
+self-wakes is the expected shape and proves nothing either way. The live reviewer's patrol interval
+is 21,600,000 ms (6 h) and is deliberately **unchanged**; reconfiguring that dial is out of scope.
+This also retires a contradicted intake claim: STAS-204 reported the Code Reviewer as having "ZERO
+rows in `agent_heartbeats` ever" — measured live it has 4,413 heartbeat rows with
+`heartbeatIntervalMs = 21,600,000` and `enabled = true`. The 6 h figure is a blackout window between
+patrols, not an absent timer.
+
+**Buckets, first-match order, actionable set.** Every review-lane card lands in exactly one bucket,
+first match wins: `E2 → E4 → E1 → E3 → B4 → B6 → B2 → B3 → B5 → B1`.
+
+| Bucket | Persisted state | Disposition |
+| --- | --- | --- |
+| E2 paused | `paused === true` | skip — no reviewer work is owed |
+| E4 no-reviewer | zero, or more than one, enabled reviewer | fail loud, never pick a substitute agent |
+| E1 review-level exclusion | review level None/0, or Plan-only with plan review satisfied | skip |
+| E3 nothing-reviewable | in review with no reviewable step, or a recorded nothing-reviewable outcome | fail loud, invent no review |
+| B4 running-live | open attempt **corroborated** by a live reviewer session on this exact card | skip, healthy |
+| B6 dispatched-no-work | live ledger row, no backing session, past the start-latency threshold | stall — re-dispatch on B3's budget |
+| B2 dispatched-no-verdict | a review that genuinely ran and never got a verdict (upstream Fusion#1946) | skip + log; operator hatches only, never fabricate a verdict |
+| B3 failed/crashed/stale | terminal-failed attempt, or a corroborated session that crashed/went stale | bounded re-dispatch, then park |
+| B5 unclassifiable | anything no predicate above accepts (e.g. two rows simultaneously live) | fail loud, name it — never "healthy" |
+| B1 row-absent | no ledger row for the current cycle | **dispatch** |
+
+Actionable stall set = **B1 + in-budget B3 + in-budget B6 + B5** — never "everything in review",
+which would over-count healthy B4 and under-count what a deploy actually starts. The reconciliation
+identity `review-lane total = B1+B2+B3+B4+B5+B6+E1+E2+E3+E4` (each card ID exactly once) is the
+under-count guard: a snapshot that does not reconcile is invalid, not merely incomplete. An empty
+actionable set is **not** proof of anything; record `NO LIVE CASE OBSERVED — NOT PROOF`.
+
+**Cadence and thresholds, all derived and none tunable to hide a problem:** one shared scheduler tick
+of 15,000 ms (`DEFAULT_REVIEW_TICK_MS`, equal to `pollIntervalMs`, not a competing timer); a 30,000 ms
+handoff-settle grace (two ticks, 2,880x below the 86,400,000 ms `inReviewStalledThresholdMs` gate
+`surfaceInReviewStalled` still owns with its observation-only contract intact); the 120,000 ms
+start-latency bound above; 3 attempts; and 1 dispatch per tick, because the reviewer is a
+single-session agent and `startRun` fails an existing active run before starting another. Eligibility
+is re-derived from persisted state every tick — lane, `paused`, ledger, live run — never from process
+memory, so a restart re-derives the same decisions and the `task_reviewer_runs_live_unique` partial
+index makes a concurrent second dispatch a no-op.
+
+### Running these tests
+
+```bash
+# classification + timing (20 tests; run by both engine projects, hence 40)
+pnpm --filter @runfusion/fusion exec vitest run src/__tests__/review-lane-dispatch-sweep.test.ts --silent=passed-only --reporter=dot
+# dispatch proof against a real PostgreSQL store, including entry-path attribution
+# identity via PGUSER/PGPASSWORD (both documented fallbacks to URL userinfo)
+PGUSER=postgres PGPASSWORD=<from your local test harness> \
+FUSION_PG_TEST_URL_BASE="postgresql://<host>:<port>" \
+  pnpm --filter @runfusion/fusion exec vitest run src/__tests__/review-lane-cli-entry-dispatch.pg.test.ts --silent=passed-only --reporter=dot
+pnpm --filter @fusion/core exec vitest run src/__tests__/postgres/review-lane-entry-lifecycle.pg.test.ts --silent=passed-only --reporter=dot
+```
+
+The two `.pg.test.ts` files follow the engine's Postgres convention: they skip when no server is
+reachable so the merge gate stays green headless, which means a headless `test:gate` pass is **not**
+evidence they ran. Prove the Postgres lanes executed by the reported test count (13 in
+`test:pg-gate`, 4 in each file above), never by a green check mark on a skipped file. Give
+`FUSION_PG_TEST_URL_BASE` a throwaway server with admin DDL — the machine's default `localhost:5432`
+refuses this OS user, and the engine's embedded instance is never a test database.
+
+**Three checks were already red at the deployed pin and are not this change's.** When this work
+landed, `schema-applier.test.ts` failed 7 assertions (FN-227 added migration `0071` without updating
+the test's hardcoded inventory, and its patchnode ensure step re-runs `0071`'s DDL against a fixture
+whose baseline lacks `fusion_assign_project_id()` → Postgres 42883), and both `check-lane-wiring` and
+`lifecycle-column-census --strict` reported pre-existing violation lists. Attribute before chasing:
+run them at a known pin with `git checkout --detach <sha>` and diff the output against HEAD — an
+empty diff plus a changed file-scan count means your commit added nothing.
+
+## CLI `fn task move` writes the shared store directly — by design, and covered anyway
+
+<!-- FNXC:ReviewLaneDispatch 2026-09-09 (STAS-205 Step 6): STAS-204 asked for the CLI-direct-DB path to be "routed or documented". It is documented, because routing it would be a cross-process refactor of a write that already lands in the right database. What matters is recorded here so nobody re-litigates it, and so the validator named in the ticket is not mistaken for a guard over this path. -->
+
+`fn task move` never contacts the daemon. `packages/cli/src/commands/task.ts` resolves a project
+context whose store boots through the PostgreSQL startup factory (`createLocalStore`, `task.ts:191`)
+and calls `context.store.moveTask(id, column, { moveSource: "user" })` (`task.ts:1496`). The CLI
+bundle LINKS core's `moveTaskInternalImpl` and runs it in its own process against the shared
+database, so the mutation is complete when the command exits — there is no daemon round trip to
+route through. Live evidence: STAS-201's 2026-09-08 12:06:20.317Z entry, whose
+`run_audit_events.metadata.callerStack` places every frame of the mutation inside
+`packages/cli/dist/bin.js`.
+
+**This does not violate `scripts/check-cli-runtime-routing.mjs`.** That validator polices
+*picker-provider* admission — the dashboard's `configuredProviders` census against
+`cli-provider-routing.ts` — not task-move routing. It is not violated by the CLI writing the store,
+and it was never going to detect it; the assumption that it guards this path is wrong at the
+deployed HEAD.
+
+**The consequence, and why the direct path is safe to keep.** Because the CLI and the daemon share
+one codepath, everything that makes review dispatch reliable is placed where both must pass: the
+lifecycle event is appended inside the move transaction at the store chokepoint, and reviewer
+dispatch is derived from **persisted lane state** rather than from the identity of the caller. The
+sweep reads the board, never `moveSource`, so a CLI-written move, a dashboard drag, and an
+automation move are the same candidate. Routing CLI moves through the daemon would add a network
+boundary and a privileged endpoint without making the invariant hold one bit better.
+
+**Attribution still survives the direct write, but not in the lifecycle log.** Lifecycle events
+name the `moveSource`, never the caller. The frame-level record is
+`run_audit_events.mutation_type = 'task:handoff-invariant-violation'` with
+`metadata.callerStack`, written at `packages/core/src/task-store/moves.ts:1291` when a card crosses
+into review without a recognized entry. Closure assertions must key on that row.
+
+**Proof artefact:** `packages/engine/src/__tests__/review-lane-cli-entry-dispatch.pg.test.ts`
+drives the CLI's literal call against a real PostgreSQL store and then ONE sweep tick, asserting
+(a) the violation event carries a non-empty `metadata.callerStack` naming the writing frame, and
+(b) the card acquires reviewer work on the first eligible tick — on the default vocabulary and on a
+renamed one, with a WIP-lane control and a no-reviewer (E4) control. It is a `.pg.test.ts` lane file,
+so it self-skips when no PostgreSQL is reachable and does not affect the merge gate; run it with
+`FUSION_PG_TEST_URL_BASE=<url> pnpm --filter @fusion/engine exec vitest run src/__tests__/review-lane-cli-entry-dispatch.pg.test.ts`.
+Writing it earned its keep immediately: the first real-INSERT caller exposed that
+`OpenReviewerRunInput.boardId` was typed `string | null` against a NOT NULL `board_id` column, so
+every production dispatch would have failed at the ledger write — a defect no faked-ledger unit
+test could see.
 
 ## Dashboard Availability & Supervised Mode
 
@@ -491,7 +641,7 @@ reviewable. New test ids never fail the diff.
 the FN-175/FN-177 class: merge admission before a Code Review verdict, a failed card
 whose branch has already landed, and cleanup that removes a live executor worktree.
 It drives disposable local Git repositories, a throwaway PostgreSQL store, the real
-built-in Coding (Ideas) and Coding workflow definitions, real merger admission, and
+built-in Coding (Ideas) and Coding (Auto) workflow definitions, real merger admission, and
 deterministic mock-provider scripts under `testMode: true`.
 
 Prerequisites are Git and reachable test PostgreSQL. Start the latter with
@@ -547,6 +697,9 @@ remediation drive) plus S05 extended to `builtin:coding-ideas-v2`, one of the lo
 the matrix. Five consecutive runs measured 140.1s, 143.8s, 146.7s, 147.0s and 148.4s — green against
 the old 150s ceiling, but with under 2s of headroom, which is a flake waiting to happen rather than
 a passing lane. Third precedent for the same rule: growth must be nameable, or it is a regression.
+
+FNXC:WorkflowSuccession 2026-09-06-02:15:
+FN-297 removes the retired Ideas workflow from the 19 scenario matrices because its compatibility alias resolves the same surviving graph. The workload decreases by one duplicate workflow execution per affected scenario, while 175 seconds remains a ceiling rather than a target or a reason to conceal future regressions.
 -->
 <!-- FNXC:PipelineSmoke 2026-09-16-22:32: FN-9310 requires the post-merge runner to terminate the pnpm-to-Vitest process group at its existing budget, so descendants cannot outlive a timed-out smoke invocation. -->
 <!--
@@ -930,6 +1083,49 @@ Each week, copy the `Post to #leads` block from `docs/test-velocity-baseline.md`
 
 The baseline document is generated; never hand-edit it. Attach a durable measurement verdict with `pnpm test:velocity -- --note "<text>" [--note-target <capturedAt|ISO-cycle>]`. Notes are persisted on their history entries and the report renders all annotated cycles newest first with no history window cap, so an old investigation remains visible after later weekly appends. `--note-target` must match exactly one entry; use its `capturedAt` timestamp when an ISO week would be ambiguous.
 
+## Event-driven dispatch: no clock advance in a healthy path (FN-519)
+
+Dispatch-wake regressions have one hard rule: **a healthy-path case may not advance a clock.** The
+only settling primitive is a bounded microtask drain (`for (let i = 0; i < 12; i++) await
+Promise.resolve()`), and a controlled promise or barrier is used where real ordering matters.
+
+The reason is not style. Every consumer still has a periodic backstop — triage's poll interval, the
+runtime's 2 s continuation relève, the deferral deadlines — so a case that calls
+`advanceTimersByTime` or `runAllTimers` will pass through the BACKSTOP and prove nothing about the
+event path it claims to cover. That is precisely how a 150 ms deliberate wait and a 15 s unreleased
+deferral survived a green suite. Concretely:
+
+- Do not advance a clock in a case asserting that an admissible card reaches planning, that a review
+  starts after its planner is released, or that a freed slot admits a waiting card.
+- DO advance a clock (or use a bounded failure deadline) in a case whose subject IS the backstop:
+  lost-notification recovery, reconnection catch-up, or a genuinely temporal deadline.
+- Assert a CLAIM or a session/node entry, not a spy on `poll()`/`kick()`. A wake function having
+  been called is not evidence that a card started.
+- Prove no busy loop explicitly. Removing a timed window also removes the accidental rate limit it
+  provided, so a no-progress pass must be asserted to publish no new wake.
+- Model durable persistence in store doubles. A fixture whose `listTasks` returns a frozen snapshot
+  while the code under test persists `status: "planning"` keeps the same rows eligible forever; with
+  an immediate wake that becomes an admission per turn. Modelling the write is the fixture stating
+  the intent it already had.
+
+Cross-process behaviour is proven against a REAL PostgreSQL server, because the guarantees are the
+server's: `NOTIFY` after commit, nothing on rollback, nothing for the window before `LISTEN`. Use
+`createSharedPgTaskStoreTestHarness` with an explicit bound `projectId` (the wake payload is
+project-scoped, and an unscoped store deliberately publishes nothing), and set
+`FUSION_PG_TEST_URL_BASE=postgresql://postgres:postgres@localhost:5432` so the embedded server is
+reached as the right role. A negative assertion needs a committed CONTROL wake to bound it, otherwise
+it also passes against a dead subscription.
+
+```bash
+pnpm --filter @fusion/engine exec vitest run src/__tests__/event-driven-dispatch.test.ts \
+  src/__tests__/dispatch-wake-wiring.test.ts src/__tests__/dispatch-latency.test.ts \
+  --silent=passed-only --reporter=dot
+
+FUSION_PG_TEST_URL_BASE=postgresql://postgres:postgres@localhost:5432 \
+  pnpm --filter @fusion/core exec vitest run --config vitest.pg.config.ts \
+  src/__tests__/postgres/dispatch-wake.pg.test.ts --silent=passed-only --reporter=dot
+```
+
 ## Targeted commands
 
 ```bash
@@ -1048,6 +1244,14 @@ Prefer `it.each` over copy-pasted `it()` blocks. When trimming, keep: first case
 - Integration tests exercising real SQLite, real worker pool, or spawned processes.
 - Lean core/engine unit tests with low mock burden.
 
+## Testing short-circuit guards and output handoffs
+
+<!-- FNXC:PlanReviewOutputExclusivity 2026-09-06-01:01: FN-299 showed that a passing event-driven test can exercise only an earlier short-circuit term, and that a writer-side assertion can target data the real reader intentionally ignores. -->
+
+For a disjunctive event guard, exercise each term with the earlier terms unarmed. In particular, do not emit a setup event that inserts an ID into a set if deleting that ID is the guard's first term; the later durable predicates then become unreachable even though the test passes. Cover nominal evidence directly rather than treating an exception form (such as an operator bypass) as coverage of the ordinary producer result, and include an identical-event case for any deduplication set.
+
+For an output-chain claim such as “review approval queues execution” or “revision notes reach planning,” assert all three boundaries: the durable gate, the production trigger, and its observable consumer effect. Use the real reader for transmitted data; do not assert against an audit or activity-log copy that the reader excludes. When several routes share the same top-level outcome, route assertions must use visited nodes, durable writes, and the final queue/replan effect rather than the shared outcome value.
+
 ## Test isolation for module-singleton state
 
 <!-- FNXC:ConcurrencyAdmission 2026-08-01-06:57: Module-singleton admission state can survive mocked lane starts and unstopped processors, silently consuming capacity in later tests. FN-8671 fixes that root cause without quarantine: stop tracked owners first, then clear shared state in a finally block and assert the result through read-only inspection seams. -->
@@ -1071,6 +1275,23 @@ In this pnpm workspace, one dependency version can resolve to several peer-hashe
 - Use the canonical taxonomy in **What NOT to write** and **What TO keep unconditionally** when deciding trim vs keep.
 - See `docs/test-speed-audit-FN-5048.md` for the measured baseline offender list and optimization priorities.
 
+### Plan premise contract
+
+Every implementation PROMPT.md carries a short `## Plan Premises` section. Each bullet is exactly one JSON object from this closed grammar:
+
+- `{"kind":"file-exists","path":"project/relative/path"}`
+- `{"kind":"file-absent","path":"project/relative/path"}`
+- `{"kind":"text-present","path":"project/relative/path","literal":"exact text"}`
+- `{"kind":"text-absent","path":"project/relative/path","literal":"exact text"}`
+
+Choose one to a few facts that the implementation actually assumes and that can be disproved against the card's own committed tree. Paths must be relative, normalized, non-glob paths inside the project; text literals are exact, non-empty strings. Do not use prose, commands, regular expressions, JavaScript, goals, or restated steps. Parser tests cover all four kinds plus absent/empty sections, malformed JSON, extra keys, unknown kinds, traversal, absolute paths, globs, and command-shaped lines.
+
+**Which commit the facts are measured at** (STAS-282). A premise is a claim about a repository, so it is verified against committed content and never against a working tree: the shared project checkout belongs to no card (it is routinely detached or parked on another card's branch), and an uncommitted edit is not a fact. The evaluated commit is resolved in one order — the card's own worktree HEAD once the engine proves that directory is a linked worktree owned by that card, then the card branch tip, then the declared base or resolved integration branch, and otherwise the verdict is `unavailable` (retryable, fail-closed). Existence and object type come from `git ls-tree`, content from `git show`, and attribution from `git log`/`merge-base`; a path that is a committed directory or symlink is answered as the non-regular entry it is, and a path that would have to be reached through one does not exist. The refusal detail names the evaluated identity (`Evaluated at card branch fusion/fn-123 at 1a2b3c4d.`), so a reader can tell which commit disagreed.
+
+**Two different failures.** Falsification by the card's own commit set is `premise-invalidated-by-delivery`: it is recorded once in History plus in the card's `premise-invalidated` task document, keeps the card promotable, and never enters the refusal ladder — amending the PLAN is the remedy, never deleting delivered content to make an old assumption true again. Falsification by an upstream commit the card did not make — including a landed commit that names a different card or no card — stays loudly `stale` and names that commit, because that plan really is false and the hold → replan → park rungs exist for it. A landed card whose own merged commit falsifies its premise is `premise-invalidated-by-delivery`, not `stale`: the card's branch is gone, so nothing but the commit's `Fusion-Task-Id` trailer distinguishes its own delivery from upstream, and misreading it re-implements finished work. A premise set holding both classes stays `stale` and names both, so the re-plan it triggers is told which facts already exist.
+
+`packages/engine/src/__tests__/plan-premise-card-tree.real-git.test.ts` proves the identity ladder, the attribution split, and that evaluation writes nothing (status, refs, and HEAD are unchanged) against real temporary git repositories. `hold-release-plan-premises.test.ts` and `hold-release-awaiting-planning.test.ts` exercise the same verdicts through the release authority, so their fixtures commit real history rather than editing loose files.
+
 ### Surface Enumeration checklist
 
 Copy this checklist into a bug-fix or UI-affordance add/remove task's `## Surface Enumeration` section and make the implementation tests prove the invariant across every checked surface. This checklist applies to bug-fix tasks and UI-affordance add/remove tasks that add, remove, or restructure icons, buttons, chevrons/arrows, toggles, badges, menu entries, or click targets. See `AGENTS.md` → **Standing Rule: Fix the Invariant, Not the Repro (FN-5893)** for the enforced planning/review contract.
@@ -1082,10 +1303,14 @@ Copy this checklist into a bug-fix or UI-affordance add/remove task's `## Surfac
 - [ ] For execution/merge exclusion: live executor refusal with and without approval, reciprocal executor dispatch refusal during merge, in-flight review revocation, and final ref-advance recheck
 - [ ] For worktree cleanup: active-session, successor-session after abort, raw/canonical path spellings, workspace sub-repository worktrees, and proof-gated ignored-only versus deliverable/unverifiable checkout content
 - [ ] Long-running subprocess or verification-active surfaces when the invariant involves engine liveness, stuck detection, or command execution (`fn_run_verification`, configured commands, timeout/deadline behavior)
+- [ ] For a background recovery sweep that writes per-card history or audit rows: every state/reason combination it can act on, the named seam that owns each wait (a sweep that re-queues a hold another seam immediately re-parks fires on every pass forever — RUFU-263 measured 782 identical `[recovery]` lines on one card), the once-per-condition dedupe signature, and the durable bound that survives a process restart
+- [ ] For a module-scope cache that retains per identity (task/session/client-IP/token/root key): its named ceiling, its census registration id, a bounded-retention test driven with **1 000 distinct keys** (entries ≤ ceiling, oldest-insertion evicted, a duplicate-key write does not grow it), an **expired-key-is-absent** assertion (delete on expiry — a read that merely ignores an expired entry is the RUFU-257 leak class and it passes every functional test forever), a live-entry control proving eviction/expiry never drops a still-valid entry, and the blocking `pnpm check:retention-coverage` classification for that declaration (RUFU-257)
 - [ ] Desktop + mobile breakpoints / platforms that exercise the behavior
+- [ ] Input CAPABILITY surfaces when the behavior depends on hover or pointer precision: fine-pointer hover, coarse pointer at mobile width, and coarse pointer ABOVE the mobile breakpoint (a touch tablet in landscape is reached by no `max-width: 768px` override, so a width-based guard leaves it regressive — FN-482)
 - [ ] Empty / undefined / duplicate / populated data states
 - [ ] Shared hooks / components / modules / helpers reusing the logic
 - [ ] Every component that renders the affordance (search the codebase for the icon/class/testid, not just the one the user pointed at)
+- [ ] Every HOST of a shared layout primitive when the defect is in a call-site ARGUMENT rather than the primitive: for a `ViewSidebar` rail, check which box each class lands on (`className` styles the outer `.view-sidebar`, `panelClassName` the inner `aside.view-sidebar__panel`) and scan the other rails for the same shape (FN-502 — a leftover `flex-direction: column` on the outer box removed the panel's vertical stretch and unbounded the whole scroll chain)
 - [ ] Leftover shells after removal — empty buttons, orphaned click targets, now-unused wrappers, dangling aria-labels — are explicitly checked and fixed/hidden
 
 Motivating incident: FN-6115/FN-6118/FN-6123 — a single workflow-row chevron required three tasks to fully remove because the affordance rendered across multiple components and one mobile surface kept an empty `btn-icon` button shell.
@@ -1135,6 +1360,12 @@ pnpm --filter @fusion/dashboard exec vitest run app/components/__tests__/Workspa
 ```
 
 The parity invariant is that a mono-repository task and a workspace task changing one scoped repository have identical review, completion, and landing outcomes. The acquired clean peer must be displayed as **No changes — not reviewed**, must not get a blocking verdict, and must not become a partial-land target.
+
+### Forced stuck-resume race regressions
+
+Test both deterministic FIFO orderings whenever executor ownership or stuck recovery changes. In the invalidation-first ordering, suspend the old attempt after it selects cleanup but before it enters the mutation section, reserve forced invalidation, synchronously signal abort, acquire a real successor through `TaskExecutor`, then release the old unwind; no old store writer, task move, task-keyed cleanup, Git cleanup, or lifecycle event may run. In the mutation-first ordering, suspend an asynchronous writer or destructive `StepSessionExecutor.cleanup()` after section entry and prove invalidation plus real successor acquisition remain unpublished until it settles, with no overlap between attempts. Exercise both step-session and single-session production paths, and assert that the successor's active-session registration and persisted checkout identity survive the late unwind.
+
+The symptom fixture retains completed and in-progress steps plus workflow node, branch, worktree, and current column. It must assert those values survive and that logs contain neither an unattributed WIP→Hold move nor a parent-moved abort. The `check:move-target-literals` AST ratchet also records production engine `moveTask` calls lacking explicit `moveSource`; its baseline may decrease but no new omission is accepted, while operator routes and comments remain outside that engine-only population.
 
 ### Branch-writer validation regressions
 

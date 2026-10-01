@@ -4,9 +4,9 @@
  * FN-7669 prototypes the #1 lever FN-7668 ranked: the `engine-core` merge
  * gate's dominant, precisely-quantified wall-time cost is vitest/Vite's
  * `import`-phase (SSR module-graph resolution + evaluation across the
- * ~430-file/215.8K-line production closure the 18 curated gate files reach
- * via the full `@fusion/core` barrel). Each of the 18 `pool:"forks"` OS
- * processes independently rebuilds this whole module graph from scratch with
+ * ~430-file/215.8K-line production closure the curated engine-core gate files
+ * reach via the full `@fusion/core` barrel). Each `pool:"forks"` OS
+ * process independently rebuilds this whole module graph from scratch with
  * NO cross-fork sharing. This script esbuild-bundles that closure — starting
  * from the FN-7667 gate-safe barrel copy (`packages/core/src/index.gate.ts`,
  * NOT the full `index.ts`, so this composes with FN-7667's narrowing rather
@@ -14,10 +14,15 @@
  * ~430 per-fork Vite SSR module-loader round-trips into one file load per
  * fork.
  *
+ * FNXC:MergeGatePolicy 2026-09-08-11:59: RUFU-197 removed the fork/file counts this header used to
+ * carry. They were point-in-time measurements of the lane, and the engine-core allow-list they
+ * counted is now derived from the config `include` by the gate-policy guard, so restating a count
+ * here could only rot. The bundling contract is unchanged.
+ *
  * Invalidation model: REBUILD-EVERY-RUN (the preferred, simplest, provably-
  * current design per the task spec). This script is invoked from the
- * `engine-core` vitest project's `globalSetup` before any of the 18 forks
- * spawn, so the bundle is (re)emitted fresh on every gate invocation — there
+ * `engine-core` vitest project's `globalSetup` before any fork
+ * spawns, so the bundle is (re)emitted fresh on every gate invocation — there
  * is NO drift surface, and no hand-maintained file/symbol list is ever
  * consulted (esbuild's own dependency graph, captured in a `metafile`,
  * enumerates every input file that fed the bundle; that metafile is written
@@ -123,7 +128,7 @@ export async function buildCoreGateBundle({ silent = false } = {}) {
     sourcemap: false,
     // Preserve module-level side effects (e.g. singleton registration) —
     // this bundle must behave identically to importing index.gate.ts
-    // directly for the 18 gate files' purposes, not be tree-shaken to a
+    // directly for the gate lane's purposes, not be tree-shaken to a
     // used-symbols subset (which could silently drop side-effecting
     // initialization code even if all consumed exports still resolve).
     treeShaking: false,
@@ -143,8 +148,8 @@ export async function buildCoreGateBundle({ silent = false } = {}) {
  * the project runs. This is the REBUILD-EVERY-RUN hook point: wiring this
  * same builder module directly into the `engine-core` project's
  * `globalSetup` array (packages/engine/vitest.config.ts) means the bundle is
- * (re)built exactly once per gate invocation, before any of the 18 forks
- * spawn and read the `resolve.alias` that points at its output file — so
+ * (re)built exactly once per gate invocation, before any fork
+ * spawns and reads the `resolve.alias` that points at its output file — so
  * every fork sees a bundle that is provably current for that run, with zero
  * possibility of drift between builds (there is no persisted state to go
  * stale). No `teardown()` export: the bundle output is a disposable,

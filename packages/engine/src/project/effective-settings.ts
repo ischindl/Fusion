@@ -24,7 +24,6 @@
 import {
   applyWorkflowSettingsOverlay,
   resolveEffectiveSettingsDetailed,
-  resolveProjectWorkflowModelLaneBaseline,
   type EffectiveSettingsResult,
   type Settings,
   type TaskStore,
@@ -75,9 +74,9 @@ export async function mergeEffectiveSettingsWithProvenance<T extends Partial<Set
 export async function mergeEffectiveSettings<T extends Partial<Settings>>(
   store: Pick<
     TaskStore,
-    | "getDefaultWorkflowId"
     | "getTaskWorkflowSelection"
     | "getTaskWorkflowSelectionAsync"
+    | "getDefaultWorkflowId"
     | "getWorkflowDefinition"
     | "getWorkflowSettingValues"
     | "getWorkflowSettingsProjectId"
@@ -86,27 +85,4 @@ export async function mergeEffectiveSettings<T extends Partial<Settings>>(
   base: T,
 ): Promise<T> {
   return (await mergeEffectiveSettingsWithProvenance(store, task, base)).settings;
-}
-
-/** Merge the Project Models workflow-lane baseline when no task-selected
- * workflow exists, such as scheduled AI prompts and idle heartbeats. */
-export async function mergeProjectWorkflowModelLaneBaseline<T extends Partial<Settings>>(
-  store: Pick<
-    TaskStore,
-    | "getDefaultWorkflowId"
-    | "getWorkflowDefinition"
-    | "getWorkflowSettingValues"
-    | "getWorkflowSettingsProjectId"
-  >,
-  base: T,
-): Promise<T> {
-  try {
-    const detailed = await resolveProjectWorkflowModelLaneBaseline(
-      store as Parameters<typeof resolveProjectWorkflowModelLaneBaseline>[0],
-      store.getWorkflowSettingsProjectId(),
-    );
-    return applyWorkflowSettingsOverlay(base, detailed);
-  } catch {
-    return base;
-  }
 }

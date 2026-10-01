@@ -231,8 +231,6 @@ function createMockStore(overrides: Partial<TaskStore> = {}): TaskStore {
     updateTask: vi.fn(),
     deleteTask: vi.fn(),
     mergeTask: vi.fn(),
-    archiveTask: vi.fn(),
-    unarchiveTask: vi.fn(),
     // Existing planning-route scenarios exercise the enabled checkpoint flow; explicit disabled cases override this default.
     getSettings: vi.fn().mockResolvedValue({ autoMerge: false, defaultBranch: "main", agentClarificationEnabled: true }),
     getSettingsFast: vi.fn().mockResolvedValue({ autoMerge: false, defaultBranch: "main", agentClarificationEnabled: true }),
@@ -3908,6 +3906,13 @@ describe("Saturated-slot regression: heartbeat wake routes", () => {
         vi.spyOn(AgentStore.prototype, "init").mockResolvedValue(undefined);
         vi.spyOn(AgentStore.prototype, "getAgent").mockResolvedValue(agent as never);
         vi.spyOn(AgentStore.prototype, "getActiveHeartbeatRun").mockResolvedValue(null);
+        /*
+        FNXC:CommentDelivery 2026-09-28-02:46 (RUFU-259 merge fix):
+        The wake route is now the second half of comment delivery, and delivery resolves its recipient through
+        the durable agent ladder whose assignee rung skips a `dangling-assignee`. Seed the pool the host reads
+        so this still proves the utility lane is independent of maxConcurrent=0 rather than proving nothing.
+        */
+        vi.spyOn(AgentStore.prototype, "listAgents").mockResolvedValue([agent] as never);
 
         const heartbeatMonitor = {
           executeHeartbeat: vi.fn().mockResolvedValue({ id: "run-sat-1" }),

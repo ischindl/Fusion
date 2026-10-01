@@ -11,6 +11,11 @@ import { _resetInitialViewportHeight } from "../../hooks/useMobileKeyboard";
 
 Element.prototype.scrollIntoView = vi.fn();
 
+const { mockToggleFavoriteProvider, mockToggleFavoriteModel } = vi.hoisted(() => ({
+  mockToggleFavoriteProvider: vi.fn().mockResolvedValue(undefined),
+  mockToggleFavoriteModel: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("../SessionTerminal", () => ({
   SessionTerminal: () => <div data-testid="session-terminal">terminal</div>,
 }));
@@ -35,6 +40,16 @@ vi.mock("../../hooks/useModelsCache", () => ({
     refresh: vi.fn(async () => undefined),
   }),
 }));
+vi.mock("../../hooks/useFavorites", () => ({
+  useFavorites: () => ({
+    availableModels: [{ id: "gpt-4o", provider: "openai", name: "GPT-4o" }],
+    favoriteProviders: [],
+    favoriteModels: [],
+    providerInstances: {},
+    toggleFavoriteProvider: mockToggleFavoriteProvider,
+    toggleFavoriteModel: mockToggleFavoriteModel,
+  }),
+}));
 vi.mock("../../hooks/useAgentsMapCache", () => ({
   useAgentsMapCache: () => ({
     loading: false,
@@ -50,13 +65,16 @@ vi.mock("../../hooks/useAgentsMapCache", () => ({
   }),
 }));
 vi.mock("../CustomModelDropdown", () => ({
-  CustomModelDropdown: ({ value, thinkingLevel, defaultThinkingLevel }: { value?: string; thinkingLevel?: string; defaultThinkingLevel?: string }) => (
+  CustomModelDropdown: ({ value, thinkingLevel, defaultThinkingLevel, onToggleFavorite, onToggleModelFavorite }: { value?: string; thinkingLevel?: string; defaultThinkingLevel?: string; onToggleFavorite?: (provider: string) => void; onToggleModelFavorite?: (modelId: string) => void }) => (
     <div
       data-testid="custom-model-dropdown"
       data-value={value ?? ""}
       data-thinking-value={thinkingLevel ?? ""}
       data-default-thinking={defaultThinkingLevel ?? ""}
-    />
+    >
+      {onToggleFavorite ? <button type="button" onClick={() => onToggleFavorite("openai")}>Favorite provider</button> : null}
+      {onToggleModelFavorite ? <button type="button" onClick={() => onToggleModelFavorite("openai/gpt-4o")}>Favorite model</button> : null}
+    </div>
   ),
 }));
 vi.mock("../../api", async (importOriginal) => {
@@ -107,6 +125,13 @@ function chatState(overrides: Partial<UseChatReturn> = {}): UseChatReturn {
     streamingText: "",
     streamingThinking: "",
     streamingToolCalls: [],
+    /* Merged UseChatReturn (origin/main merge): engine phase, RUFU-199 handoff, FN-459 edit-draft rescue, and session-pagination defaults. */
+    streamingPhase: null,
+    handoffSession: vi.fn().mockResolvedValue({ session: { id: "session-handoff", agentId: "agent-001", status: "active", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" }, degraded: false }),
+    loadMoreSessions: vi.fn().mockResolvedValue(undefined),
+    hasMoreSessions: false,
+    hasMoreArchivedSessions: false,
+    sessionsLoadingMore: false,
     selectSession: vi.fn(),
     createSession: vi.fn(),
     archiveSession: vi.fn(),
@@ -115,6 +140,9 @@ function chatState(overrides: Partial<UseChatReturn> = {}): UseChatReturn {
     deleteSession: vi.fn(),
     sendMessage: vi.fn(),
     editMessageAndResend: vi.fn(),
+    // FNXC:ChatMessageEdit 2026-09-16-05:58: FN-459 edit-draft rescue surface; nothing to restore here.
+    editDraftRestore: null,
+    clearEditDraftRestore: vi.fn(),
     stopStreaming: vi.fn(),
     pendingMessages: [],
     clearPendingMessage: vi.fn(),
@@ -125,6 +153,20 @@ function chatState(overrides: Partial<UseChatReturn> = {}): UseChatReturn {
     filteredSessions: sessions,
     refreshSessions: vi.fn(),
     agentsMap: new Map(),
+    tags: [],
+    selectedTagId: null,
+    setSelectedTagId: vi.fn(),
+    archivedSessions: [],
+    refreshArchivedSessions: vi.fn(),
+    unarchiveSession: vi.fn(),
+    pinSession: vi.fn(),
+    pinnedCount: 0,
+    setSessionModel: vi.fn(),
+    createTag: vi.fn(),
+    renameTag: vi.fn(),
+    deleteTag: vi.fn(),
+    setSessionTags: vi.fn(),
+    backfillStashSession: vi.fn(),
     ...overrides,
   };
 }
@@ -143,6 +185,8 @@ function roomsState(overrides: Partial<UseChatRoomsResult> = {}): UseChatRoomsRe
     deleteRoom: vi.fn(),
     sendRoomMessage: vi.fn(),
     refreshRooms: vi.fn(),
+    updateRoomSettings: vi.fn(),
+    clearRoom: vi.fn(),
     ...overrides,
   };
 }
@@ -200,6 +244,25 @@ describe("ChatView New Chat project default behavior", () => {
     vi.clearAllMocks();
     mockDesktopViewport();
     mockFetchSettings.mockResolvedValue({ defaultThinkingLevel: "medium" } as Awaited<ReturnType<typeof api.fetchSettings>>);
+  });
+
+  it.each(["desktop", "mobile"])("forwards persistent favorite actions from the %s direct-chat host", async (viewport) => {
+    if (viewport === "mobile") mockMobileViewport();
+    const activeSession = makeSession({ agentId: "__fn_agent__", modelProvider: "openai", modelId: "gpt-4o" });
+    mockUseChat.mockReturnValue(chatState({ activeSession }));
+    await renderWithAct(<ChatView projectId="project-a" addToast={vi.fn()} />);
+    await waitForSettings();
+    fireEvent.click(screen.getByTestId("chat-session-sess-1"));
+    await waitFor(() => expect(screen.getByTestId("chat-thinking-btn")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId("chat-thinking-btn"));
+    expect(screen.getByTestId("chat-thinking-popover").parentElement).toBe(document.body);
+    expect(document.querySelector(".chat-input-area")?.contains(screen.getByTestId("chat-thinking-popover"))).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Favorite provider" }));
+    fireEvent.click(screen.getByRole("button", { name: "Favorite model" }));
+
+    expect(mockToggleFavoriteProvider).toHaveBeenCalledWith("openai");
+    expect(mockToggleFavoriteModel).toHaveBeenCalledWith("openai/gpt-4o");
   });
 
   it("creates immediately from the configured model default without rendering the removed dialog", async () => {
@@ -261,7 +324,13 @@ describe("ChatView New Chat project default behavior", () => {
     expect(document.querySelector(".chat-view")).toHaveClass("chat-view--detail");
     expect(screen.getByTestId("chat-back-btn")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByTestId("chat-new-btn"), modifier);
+    /*
+    FNXC:ChatNavigation 2026-09-17-10:37:
+    FN-506 : en état détail, la création vit désormais dans le menu « … » de l'en-tête ; le geste Ctrl/Cmd est
+    conservé sur cette entrée. En état liste, le bouton « + » reste le déclencheur.
+    */
+    fireEvent.click(screen.getByTestId("chat-header-actions-btn"));
+    fireEvent.click(screen.getByTestId("chat-context-new-chat"), modifier);
 
     await waitFor(() => expect(createSession).toHaveBeenCalledWith(
       { agentId: "__fn_agent__", modelProvider: "openai", modelId: "gpt-4o" },

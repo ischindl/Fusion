@@ -1,8 +1,19 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { BUILTIN_WORKFLOW_ROLE_AGENT_DEFAULT_LIST, type Agent, type AgentRating, type AgentRatingSummary, type AgentStore } from "@fusion/core";
+import {
+  BUILTIN_WORKFLOW_ROLE_AGENT_DEFAULT_LIST,
+  MEMORY_PRE_STEERING_MARKER,
+  registerMemoryBackend,
+  __resetPerTurnRecallDedupForTests,
+  type Agent,
+  type AgentRating,
+  type AgentRatingSummary,
+  type AgentStore,
+  type MemorySearchResult,
+  type Settings,
+} from "@fusion/core";
 import {
   resolveAgentInstructions,
   resolveAgentInstructionsWithRatings,
@@ -636,6 +647,180 @@ describe("buildAgentChatPrompt", () => {
     expect(prompt).toContain("The team values short progress updates.");
     expect(prompt).toContain("## Project Memory\n\nProject preference: avoid force pushes.");
   });
+
+  /*
+  FNXC:OperatorLanguage 2026-09-15-07:18:
+  Chat turns only mirror the operator's language by accident of the model; the explicit global
+  operatorLanguage setting must produce a directive in the rebuilt system prompt, and — the
+  byte-identical-promise regression guard — produce NOTHING when unset/auto.
+  */
+  it("injects the operator-language directive when the setting names a language", async () => {
+    const agent = makeAgent({ name: "Avery", role: "reviewer" });
+    const prompt = await buildAgentChatPrompt({
+      agent,
+      rootDir: testDir,
+      basePrompt: "You are a chat assistant.",
+      settings: { operatorLanguage: "sk" },
+    });
+    expect(prompt).toContain("## Operator Language");
+    expect(prompt).toContain("Slovak (slovenčina)");
+  });
+
+  it("omits the operator-language directive for auto/unset settings", async () => {
+    const agent = makeAgent({ name: "Avery", role: "reviewer" });
+    const base = await buildAgentChatPrompt({ agent, rootDir: testDir, basePrompt: "You are a chat assistant." });
+    const auto = await buildAgentChatPrompt({
+      agent,
+      rootDir: testDir,
+      basePrompt: "You are a chat assistant.",
+      settings: { operatorLanguage: "auto" },
+    });
+    expect(base).not.toContain("## Operator Language");
+    expect(auto).toBe(base);
+  });
+
+  /*
+  FNXC:ChatContextBudget 2026-08-20-11:56:
+  memoryCapChars bounds the memory sections of the chat system prompt (user
+  requirement: agent chat must work on 64K-context models). Oversized sources
+  are inlined as bounded heading indexes; the full content stays reachable via
+  fn_memory_search / fn_memory_get. Without a cap (engine lanes) the legacy
+  full injection is preserved — these tests pin both sides of that contract.
+  */
+  it("demotes oversized project memory to a bounded heading index when memoryCapChars is set", async () => {
+    await mkdir(join(testDir, ".fusion", "memory"), { recursive: true });
+    const body = "SECRET-PROJECT-BODY-CONTENT ".repeat(3000); // ~44K chars
+    await writeFile(
+      join(testDir, ".fusion", "memory", "MEMORY.md"),
+      `# Project Memory\n\n## Architecture\n\n${body}\n\n## Conventions\n\n${body}`,
+      "utf-8",
+    );
+
+    const prompt = await buildAgentChatPrompt({
+      agent: makeAgent({ name: "Avery" }),
+      rootDir: testDir,
+      basePrompt: "You are a chat assistant.",
+      includeProjectMemory: true,
+      memoryCapChars: 4000,
+    });
+
+    expect(prompt).toContain("## Project Memory Index (use fn_memory_search / fn_memory_get to read)");
+    expect(prompt).toContain('"Architecture"');
+    expect(prompt).toContain('"Conventions"');
+    expect(prompt).not.toContain("SECRET-PROJECT-BODY-CONTENT");
+    // The whole project-memory block (index + note) must stay near the cap.
+    const blockStart = prompt.indexOf("## Project Memory");
+    const blockEnd = prompt.indexOf("_Project memory exceeds");
+    expect(blockStart).toBeGreaterThan(-1);
+    expect(blockEnd).toBeGreaterThan(blockStart);
+    expect(blockEnd - blockStart).toBeLessThan(8000);
+  });
+
+  it("keeps small project memory fully inlined when memoryCapChars is set", async () => {
+    await mkdir(join(testDir, ".fusion", "memory"), { recursive: true });
+    await writeFile(
+      join(testDir, ".fusion", "memory", "MEMORY.md"),
+      "Project preference: avoid force pushes.",
+      "utf-8",
+    );
+
+    const prompt = await buildAgentChatPrompt({
+      agent: makeAgent({ name: "Avery" }),
+      rootDir: testDir,
+      basePrompt: "You are a chat assistant.",
+      includeProjectMemory: true,
+      memoryCapChars: 8000,
+    });
+
+    expect(prompt).toContain("## Project Memory\n\nProject preference: avoid force pushes.");
+    expect(prompt).not.toContain("Project Memory Index");
+  });
+
+  it("keeps full project memory injection when no cap is set (engine lanes)", async () => {
+    await mkdir(join(testDir, ".fusion", "memory"), { recursive: true });
+    const body = "SECRET-PROJECT-BODY-CONTENT ".repeat(3000);
+    await writeFile(
+      join(testDir, ".fusion", "memory", "MEMORY.md"),
+      `# Project Memory\n\n## Architecture\n\n${body}`,
+      "utf-8",
+    );
+
+    const prompt = await buildAgentChatPrompt({
+      agent: makeAgent({ name: "Avery" }),
+      rootDir: testDir,
+      basePrompt: "You are a chat assistant.",
+      includeProjectMemory: true,
+    });
+
+    expect(prompt).toContain("SECRET-PROJECT-BODY-CONTENT");
+    expect(prompt).not.toContain("Project Memory Index");
+  });
+
+  it("demotes oversized agent workspace memory to a bounded index when memoryCapChars is set", async () => {
+    await mkdir(join(testDir, ".fusion", "agent-memory", "agent-test"), { recursive: true });
+    const body = "SECRET-AGENT-BODY-CONTENT ".repeat(3000); // ~40K chars
+    await writeFile(
+      join(testDir, ".fusion", "agent-memory", "agent-test", "MEMORY.md"),
+      `# Agent Memory\n\n## Habits\n\n${body}\n\n## Preferences\n\n${body}`,
+      "utf-8",
+    );
+
+    const prompt = await buildAgentChatPrompt({
+      agent: makeAgent({ name: "Avery" }),
+      rootDir: testDir,
+      basePrompt: "You are a chat assistant.",
+      memoryCapChars: 4000,
+    });
+
+    expect(prompt).toContain("exceeds this session's 4000-char context budget");
+    expect(prompt).toContain("## Agent Memory Index (use fn_memory_search / fn_memory_get to read)");
+    expect(prompt).toContain('"Habits"');
+    expect(prompt).not.toContain("SECRET-AGENT-BODY-CONTENT");
+  });
+
+  /*
+  FNXC:ChatContextBudget 2026-09-16-12:40:
+  Review finding: the inline-memory demote branch compared bytes but sliced code units. A
+  multibyte inline memory must be clamped BY BYTES (shared clampUtf8) — the old slice kept 3x
+  the intended bytes for CJK content.
+  */
+  it("clamps multibyte inline agent memory by bytes in the demote branch", async () => {
+    const prompt = await buildAgentChatPrompt({
+      agent: makeAgent({ name: "Avery", memory: "記".repeat(4000) }), // 12000 bytes, 4000 chars
+      rootDir: testDir,
+      basePrompt: "You are a chat assistant.",
+      memoryCapChars: 1000,
+    });
+    expect(prompt).toContain("…");
+    expect(prompt).not.toContain("記".repeat(2000));
+    const match = prompt.match(/記+/);
+    const clamped = match ? match[0] : "";
+    expect(clamped.length).toBeGreaterThan(0);
+    expect(Buffer.byteLength(clamped, "utf8")).toBeLessThanOrEqual(1000);
+    expect(clamped).not.toContain("\uFFFD"); // no split multi-byte characters
+  });
+  it("keeps agent memory fully inlined when the combined size fits the cap", async () => {
+    await mkdir(join(testDir, ".fusion", "agent-memory", "agent-test"), { recursive: true });
+    await writeFile(
+      join(testDir, ".fusion", "agent-memory", "agent-test", "MEMORY.md"),
+      "Workspace habit: run the gate before merge.",
+      "utf-8",
+    );
+
+    const prompt = await buildAgentChatPrompt({
+      agent: makeAgent({
+        name: "Avery",
+        memory: "Inline preference: prefer small diffs.",
+      }),
+      rootDir: testDir,
+      basePrompt: "You are a chat assistant.",
+      memoryCapChars: 8000,
+    });
+
+    expect(prompt).toContain("Inline preference: prefer small diffs.");
+    expect(prompt).toContain("Workspace habit: run the gate before merge.");
+    expect(prompt).not.toContain("context budget");
+  });
 });
 
 describe("buildSystemPromptWithInstructions", () => {
@@ -912,5 +1097,257 @@ describe("heartbeat procedure path compatibility", () => {
 
     const invalid = await ensureDefaultHeartbeatProcedureFile(testDir, "../outside.md", "Default");
     expect(invalid).toBeNull();
+  });
+});
+
+/*
+FNXC:PerTurnMemoryRecall 2026-08-19-01:05:
+RUFU-120 (B.2 LCM phase 2) symptom verification for the CHAT prompt seam (buildAgentChatPrompt):
+the dashboard chat manager rebuilds this prompt before EVERY turn's LLM call, so the first
+prompt of a chat whose topic matches memory content MUST carry a deduped recall cue (marker +
+top-K hit paths), a second call in the same session MUST NOT re-inject it, and every silent
+skip (feature off, memory off, no topic, search reject) must leave the prompt unchanged
+without throwing. Fake backends use UNIQUE type names (perturn-chat-fake, perturn-chat-fake-reject)
+to avoid cross-file registry pollution; no real Stash/qmd process is spawned.
+*/
+describe("buildAgentChatPrompt per-turn memory recall (RUFU-120 B.2)", () => {
+  let testDir: string;
+  let fakeHits: MemorySearchResult[];
+  let searchCalls: Array<{ query: string; limit?: number }>;
+  // RUFU-172: per-query routing so a focus can be answered differently from the project query.
+  let fakeSearch: ((query: string, limit?: number) => MemorySearchResult[]) | null = null;
+
+  beforeAll(() => {
+    const baseCapabilities = {
+      readable: true,
+      writable: false,
+      supportsAtomicWrite: false,
+      hasConflictResolution: false,
+      persistent: false,
+    };
+    const read: NonNullable<Parameters<typeof registerMemoryBackend>[0]["read"]> = async () => ({
+      content: "",
+      exists: false,
+      backend: "perturn-chat-fake",
+    });
+    const write = async (): Promise<never> => {
+      throw new Error("read-only fake");
+    };
+
+    registerMemoryBackend({
+      type: "perturn-chat-fake",
+      name: "Per-turn chat recall fake backend",
+      capabilities: baseCapabilities,
+      read,
+      write,
+      search: async (_rootDir, opts) => {
+        searchCalls.push(opts);
+        if (fakeSearch) return fakeSearch(opts.query, opts.limit);
+        return fakeHits;
+      },
+    });
+    registerMemoryBackend({
+      type: "perturn-chat-fake-reject",
+      name: "Per-turn chat recall fake backend (rejecting search)",
+      capabilities: baseCapabilities,
+      read,
+      write,
+      search: async (): Promise<never> => {
+        throw new Error("backend search exploded");
+      },
+    });
+  });
+
+  beforeEach(async () => {
+    testDir = await mkdtemp(join(tmpdir(), "agent-chat-recall-"));
+    fakeHits = [
+      { path: ".fusion/memory/MEMORY.md", lineStart: 10, lineEnd: 14, snippet: "B.1 compaction gate landed; B.2 per-turn recall is next.", score: 7, backend: "perturn-chat-fake" },
+      { path: ".fusion/memory/2026-08-18.md", lineStart: 3, lineEnd: 6, snippet: "Discussed LCM B.2 priority: per-turn recall with topK=3.", score: 5, backend: "perturn-chat-fake" },
+      { path: "notes/lcm.md", lineStart: 1, lineEnd: 3, snippet: "LCM B.1 and B.2 phases from volt-lcm-analysis.md.", score: 3, backend: "perturn-chat-fake" },
+      { path: ".fusion/memory/2026-08-15.md", lineStart: 20, lineEnd: 22, snippet: "Merge gate flake quarantine entry.", score: 0, backend: "perturn-chat-fake" },
+    ];
+    searchCalls = [];
+    fakeSearch = null;
+    __resetPerTurnRecallDedupForTests();
+  });
+
+  afterEach(async () => {
+    await rm(testDir, { recursive: true, force: true });
+  });
+
+  function makeRecallSettings(overrides: Partial<Settings> = {}): Partial<Settings> {
+    return {
+      memoryEnabled: true,
+      memoryBackendType: "perturn-chat-fake",
+      memoryPerTurnRecallEnabled: true,
+      memoryPerTurnRecallTopK: 3,
+      ...overrides,
+    };
+  }
+
+  it("(a) first-turn prompt contains the deduped recall cue (marker + top-K hit paths) for the topic", async () => {
+    const prompt = await buildAgentChatPrompt({
+      agent: makeAgent({ id: "agent-recall-a", name: "Recall", role: "engineer" }),
+      rootDir: testDir,
+      basePrompt: "You are a chat assistant.",
+      topic: "merge gate flake",
+      sessionId: "s1",
+      settings: makeRecallSettings(),
+    });
+
+    // The cue reuses the pre-steering marker so the model recognizes it.
+    expect(prompt).toContain("## Memory Recall");
+    expect(prompt).toContain(MEMORY_PRE_STEERING_MARKER);
+    // Top-K (3) positive-score hits, ranked by score descending.
+    expect(prompt).toContain(".fusion/memory/MEMORY.md");
+    expect(prompt).toContain(".fusion/memory/2026-08-18.md");
+    expect(prompt).toContain("notes/lcm.md");
+    // Zero-score hit is filtered out (client-side score filter).
+    expect(prompt).not.toContain(".fusion/memory/2026-08-15.md");
+    expect(searchCalls.length).toBe(1);
+    expect(searchCalls[0].query).toContain("merge");
+  });
+
+  it("(b) second call with the same sessionId + topic does NOT re-inject the cue (dedup)", async () => {
+    const agent = makeAgent({ id: "agent-recall-b", name: "Recall", role: "engineer" });
+    const opts = {
+      rootDir: testDir,
+      basePrompt: "You are a chat assistant.",
+      topic: "merge gate flake",
+      sessionId: "s1",
+      settings: makeRecallSettings(),
+    };
+
+    const first = await buildAgentChatPrompt({ agent, ...opts });
+    expect(first).toContain("## Memory Recall");
+
+    const second = await buildAgentChatPrompt({ agent, ...opts });
+    expect(second).not.toContain("## Memory Recall");
+    // The base prompt and identity still build fine without the cue.
+    expect(second).toContain("You are a chat assistant.");
+  });
+
+  it("(c) a fresh sessionId re-injects the cue (dedup is session-scoped)", async () => {
+    const agent = makeAgent({ id: "agent-recall-c", name: "Recall", role: "engineer" });
+    const opts = {
+      rootDir: testDir,
+      basePrompt: "You are a chat assistant.",
+      topic: "merge gate flake",
+      settings: makeRecallSettings(),
+    };
+
+    const first = await buildAgentChatPrompt({ agent, ...opts, sessionId: "s1" });
+    expect(first).toContain("## Memory Recall");
+
+    const other = await buildAgentChatPrompt({ agent, ...opts, sessionId: "s2" });
+    expect(other).toContain("## Memory Recall");
+  });
+
+  it("(d) no topic → no cue AND the backend search is not called", async () => {
+    const prompt = await buildAgentChatPrompt({
+      agent: makeAgent({ id: "agent-recall-d", name: "Recall", role: "engineer" }),
+      rootDir: testDir,
+      basePrompt: "You are a chat assistant.",
+      settings: makeRecallSettings(),
+    });
+
+    expect(prompt).not.toContain("## Memory Recall");
+    expect(searchCalls.length).toBe(0);
+  });
+
+  it("(e) memoryPerTurnRecallEnabled: false → no cue", async () => {
+    const prompt = await buildAgentChatPrompt({
+      agent: makeAgent({ id: "agent-recall-e", name: "Recall", role: "engineer" }),
+      rootDir: testDir,
+      basePrompt: "You are a chat assistant.",
+      topic: "merge gate flake",
+      sessionId: "s1",
+      settings: makeRecallSettings({ memoryPerTurnRecallEnabled: false }),
+    });
+
+    expect(prompt).not.toContain("## Memory Recall");
+  });
+
+  it("(f) inclusionMode: 'off' → no cue despite a topic", async () => {
+    const prompt = await buildAgentChatPrompt({
+      agent: makeAgent({ id: "agent-recall-f", name: "Recall", role: "engineer" }),
+      rootDir: testDir,
+      basePrompt: "You are a chat assistant.",
+      topic: "merge gate flake",
+      sessionId: "s1",
+      inclusionMode: "off",
+      settings: makeRecallSettings(),
+    });
+
+    expect(prompt).not.toContain("## Memory Recall");
+  });
+
+  it("(g) fake search rejects → prompt still builds, no throw", async () => {
+    const prompt = await buildAgentChatPrompt({
+      agent: makeAgent({ id: "agent-recall-g", name: "Recall", role: "engineer" }),
+      rootDir: testDir,
+      basePrompt: "You are a chat assistant.",
+      topic: "merge gate flake",
+      sessionId: "s1",
+      settings: makeRecallSettings({ memoryBackendType: "perturn-chat-fake-reject" }),
+    });
+
+    expect(prompt).toContain("You are a chat assistant.");
+    expect(prompt).toContain("## Identity");
+    expect(prompt).not.toContain("## Memory Recall");
+  });
+
+  /*
+  FNXC:RUFU172ChatFocusLane 2026-08-31-19:41:
+  RUFU-172 chat-lane threading: buildAgentChatPrompt forwards a focus to the core two-lane
+  recall. With a focus the core issues a SECOND (lane T) search and leads the cue with it;
+  with no focus it stays on the single whole-project search. This proves the focus reaches
+  the PROACTIVE cue, not just the fn_memory_search tool schema.
+
+  FNXC:MemoryFocusRecall 2026-09-03-00:21:
+  RUFU-173 — lane T's query is the focus's content terms OR-joined (three focus words here
+  reach the backend as "merge-gate OR remediation OR ledger"), not the raw focus phrase.
+  */
+  it("(h) forwards a focus: a second lane-T search with the OR-joined focus terms leads the cue", async () => {
+    fakeSearch = (query) =>
+      query === "merge-gate OR remediation OR ledger"
+        ? [{ path: "notes/focus-ledger.md", lineStart: 2, lineEnd: 5, snippet: "Focus ledger merge-gate remediation.", score: 9, backend: "perturn-chat-fake" }]
+        : fakeHits;
+    const prompt = await buildAgentChatPrompt({
+      agent: makeAgent({ id: "agent-recall-h", name: "Recall", role: "engineer" }),
+      rootDir: testDir,
+      basePrompt: "You are a chat assistant.",
+      topic: "merge gate flake",
+      sessionId: "s-h",
+      settings: makeRecallSettings(),
+      focus: "merge-gate remediation ledger",
+    });
+
+    // Two searches: lane P (keywords) then lane T (OR-joined focus terms).
+    expect(searchCalls.length).toBe(2);
+    expect(searchCalls[0].query).toContain("merge");
+    expect(searchCalls[1].query).toBe("merge-gate OR remediation OR ledger");
+    // Focus hit leads the cue (topic-first ordering) alongside the project cue.
+    expect(prompt).toContain("## Memory Recall");
+    expect(prompt).toContain("notes/focus-ledger.md");
+  });
+
+  it("(i) no focus → exactly one whole-project search, no lane-T query is ever issued", async () => {
+    fakeSearch = (query) => (query === "some focus" ? [{ path: "t.md", lineStart: 1, lineEnd: 2, snippet: "topic", score: 9, backend: "perturn-chat-fake" }] : fakeHits);
+    const prompt = await buildAgentChatPrompt({
+      agent: makeAgent({ id: "agent-recall-i", name: "Recall", role: "engineer" }),
+      rootDir: testDir,
+      basePrompt: "You are a chat assistant.",
+      topic: "merge gate flake",
+      sessionId: "s-i",
+      settings: makeRecallSettings(),
+      // focus omitted entirely
+    });
+
+    // One search only; the cue is the whole-project form and never references the focus hit.
+    expect(searchCalls.length).toBe(1);
+    expect(prompt).toContain("## Memory Recall");
+    expect(prompt).not.toContain("notes/focus-ledger.md");
+    expect(prompt).not.toContain("t.md");
   });
 });

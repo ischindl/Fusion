@@ -215,9 +215,9 @@ describe("ProviderIcon", () => {
 
   it("renders llama.cpp aliases as the intentional non-Lucide-Cpu mark", () => {
     const { rerender } = render(<ProviderIcon provider="llama-cpp" />);
-    expect(isNonCpuMark(screen.getByTestId("llama-cpp-icon"))).toBe(true);
+    expect(isNonCpuMark(screen.getByTestId("llama-cpp-icon") as unknown as SVGElement)).toBe(true);
     rerender(<ProviderIcon provider="llama-server" />);
-    expect(isNonCpuMark(screen.getByTestId("llama-cpp-icon"))).toBe(true);
+    expect(isNonCpuMark(screen.getByTestId("llama-cpp-icon") as unknown as SVGElement)).toBe(true);
   });
 
   it("ratchets every catalog-derived and enumerated first-class ID to an accessible non-Cpu mark", () => {
@@ -252,7 +252,7 @@ describe("ProviderIcon", () => {
              element?.parentElement?.getAttribute("data-provider") === "unknown";
     });
     expect(icon).toBeInTheDocument();
-    expect(hasLucideCpuSignature(icon as SVGElement)).toBe(true);
+    expect(hasLucideCpuSignature(icon as unknown as SVGElement)).toBe(true);
   });
 
   it("renders Cpu icon as fallback for empty provider", () => {
@@ -429,7 +429,7 @@ describe("ProviderIcon", () => {
     ["XIAOMI", "xiaomi"],
   ])("renders an accessible tokenized Xiaomi mark for %s", (provider, expectedDataProvider) => {
     render(<ProviderIcon provider={provider} size="md" />);
-    const svg = screen.getByTestId("xiaomi-icon");
+    const svg = screen.getByTestId("xiaomi-icon") as unknown as SVGElement;
     const wrapper = svg.parentElement;
 
     expect(svg).toHaveAccessibleName("Xiaomi");
@@ -595,7 +595,7 @@ describe("ProviderIcon", () => {
 
   it.each(["xiaomi/MiMo-V2-Flash", "MiMo-V2-Flash"])('infers Xiaomi icon from the boundary-safe MiMo model label %s', (provider) => {
     render(<ProviderIcon provider={provider} />);
-    const svg = screen.getByTestId("xiaomi-icon");
+    const svg = screen.getByTestId("xiaomi-icon") as unknown as SVGElement;
 
     expect(svg).toHaveAccessibleName("Xiaomi");
     expect(isNonCpuMark(svg)).toBe(true);

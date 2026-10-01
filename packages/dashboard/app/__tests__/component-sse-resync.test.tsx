@@ -310,7 +310,18 @@ Coverage ratchet for `components/`. The hook-level ratchet in sse-resync-on-reop
 component that calls subscribeSse must declare `onReconnect` or the reviewed `replaySafe` opt-out
 documented on SseSubscription.
 Test files are excluded: they mock the bus rather than subscribe to it.
+
+FNXC:DashboardSSE 2026-09-06 (merge v0.78.0-beta.3):
+Comments are stripped before scanning, mirroring the hooks ratchet: prose that names `subscribeSse(`
+(AgentActionLogPanel's single-event-source note) is not a call site, and an `onReconnect` mention in
+prose alone must not whitelist a file.
 */
+function stripComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+}
+
 describe("sse-bus subscriber resync contract (components)", () => {
   it("every subscribing component declares onReconnect or an explicit replaySafe opt-out", () => {
     const roots = [join(__dirname, "..", "components"), join(__dirname, "..")];
@@ -325,7 +336,7 @@ describe("sse-bus subscriber resync contract (components)", () => {
         }
         if (!entry.name.endsWith(".ts") && !entry.name.endsWith(".tsx")) continue;
         if (entry.name.includes(".test.")) continue;
-        const source = readFileSync(join(dir, entry.name), "utf8");
+        const source = stripComments(readFileSync(join(dir, entry.name), "utf8"));
         if (!source.includes("subscribeSse(")) continue;
         if (source.includes("onReconnect") || source.includes("replaySafe")) continue;
         offenders.push(entry.name);

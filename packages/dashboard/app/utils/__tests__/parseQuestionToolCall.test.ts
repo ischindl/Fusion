@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
 import type { ToolCallInfo } from "../../hooks/chatTypes";
-import { formatQuestionAnswer, isQuestionToolName, parseQuestionToolCall } from "../parseQuestionToolCall";
+import {
+  findDurableQuestionAnswer,
+  findSubmittedQuestionAnswer,
+  formatQuestionAnswer,
+  indexDurableQuestionAnswers,
+  isPlannerQuestionAwaitingAnswer,
+  isLiveQuestionAwaitingAnswer,
+  isQuestionToolName,
+  parseQuestionToolCall,
+  QUESTION_ANSWER_METADATA_KEY,
+  readQuestionAnswerLink,
+} from "../parseQuestionToolCall";
 
 function toolCall(toolName: string, args?: Record<string, unknown>): ToolCallInfo {
   return { toolName, args, isError: false, status: "completed" };
@@ -139,5 +150,99 @@ describe("parseQuestionToolCall", () => {
     expect(formatQuestionAnswer(parsed!.questions, { one: "a", many: ["x", "y"], text: "Because", ok: false })).toBe(
       "> Q: Pick one\nAlpha\n\n> Q: Pick many\nX, Y\n\n> Q: Explain\nBecause\n\n> Q: Proceed?\nNo",
     );
+  });
+});
+
+/*
+FNXC:ChatQuestionLiveness 2026-09-17-19:30:
+Question cards may only look actionable while the asking turn is provably still waiting;
+a dead or interrupted last row must render as a disabled record on both surfaces.
+*/
+describe("isLiveQuestionAwaitingAnswer", () => {
+  const live = { role: "assistant", isLastMessage: true, isStreaming: false, isSessionGenerating: true };
+
+  it("opens only for a live, generating, non-interrupted last assistant row", () => {
+    expect(isLiveQuestionAwaitingAnswer(live)).toBe(true);
+    expect(isLiveQuestionAwaitingAnswer({ ...live, isSessionGenerating: false })).toBe(false);
+    expect(isLiveQuestionAwaitingAnswer({ ...live, interrupted: true })).toBe(false);
+    expect(isLiveQuestionAwaitingAnswer({ ...live, isStreaming: true })).toBe(false);
+    expect(isLiveQuestionAwaitingAnswer({ ...live, isLastMessage: false })).toBe(false);
+    expect(isLiveQuestionAwaitingAnswer({ ...live, role: "user" })).toBe(false);
+  });
+});
+
+describe("isPlannerQuestionAwaitingAnswer", () => {
+  const live = { role: "assistant", isLastMessage: true, isSending: true };
+
+  it("opens only for a sending, non-interrupted last assistant row", () => {
+    expect(isPlannerQuestionAwaitingAnswer(live)).toBe(true);
+    expect(isPlannerQuestionAwaitingAnswer({ ...live, isSending: false })).toBe(false);
+    expect(isPlannerQuestionAwaitingAnswer({ ...live, interrupted: true })).toBe(false);
+    expect(isPlannerQuestionAwaitingAnswer({ ...live, isLastMessage: false })).toBe(false);
+  });
+});
+
+describe("findSubmittedQuestionAnswer", () => {
+  it("returns the first following user message content", () => {
+    const messages = [
+      { role: "assistant", content: "question" },
+      { role: "assistant", content: "noise" },
+      { role: "user", content: "answer" },
+    ];
+    expect(findSubmittedQuestionAnswer(messages, 0)).toBe("answer");
+    expect(findSubmittedQuestionAnswer(messages, 2)).toBeUndefined();
+  });
+});
+
+/*
+FNXC:ChatQuestionAnswerLink 2026-09-23-13:59:
+RUFU-258: the durable link is the authoritative answered-state source, so its readers are tested
+against server-persisted row shapes (metadata as stored JSON, local rows that carry none).
+*/
+describe("durable question-answer link readers", () => {
+  const link = (questionMessageId: unknown) => ({ [QUESTION_ANSWER_METADATA_KEY]: { questionMessageId } });
+
+  it("reads a well-formed durable link", () => {
+    expect(readQuestionAnswerLink(link("msg-q1"))).toBe("msg-q1");
+  });
+
+  it("treats every malformed payload as no link", () => {
+    expect(readQuestionAnswerLink(undefined)).toBeNull();
+    expect(readQuestionAnswerLink(null)).toBeNull();
+    expect(readQuestionAnswerLink("nope")).toBeNull();
+    expect(readQuestionAnswerLink({ [QUESTION_ANSWER_METADATA_KEY]: null })).toBeNull();
+    expect(readQuestionAnswerLink({ [QUESTION_ANSWER_METADATA_KEY]: "msg-q1" })).toBeNull();
+    expect(readQuestionAnswerLink({ [QUESTION_ANSWER_METADATA_KEY]: ["msg-q1"] })).toBeNull();
+    expect(readQuestionAnswerLink({ [QUESTION_ANSWER_METADATA_KEY]: {} })).toBeNull();
+    expect(readQuestionAnswerLink({ [QUESTION_ANSWER_METADATA_KEY]: { questionMessageId: 42 } })).toBeNull();
+    expect(readQuestionAnswerLink({ [QUESTION_ANSWER_METADATA_KEY]: { questionMessageId: "   " } })).toBeNull();
+  });
+
+  it("indexes the transcript by question id, chronological first answer winning", () => {
+    const rows = [
+      { id: "a-q1", role: "assistant", content: "Q1?", metadata: null },
+      { id: "u-first", role: "user", content: "the real answer", metadata: link("a-q1") },
+      { id: "a-mid", role: "assistant", content: "noted", metadata: null },
+      // A stamp anomaly: a second row claims the same question. The oldest claim wins.
+      { id: "u-again", role: "user", content: "a later claim", metadata: link("a-q1") },
+      { id: "u-plain", role: "user", content: "unrelated new request", metadata: { mentions: [] } },
+    ];
+
+    const index = indexDurableQuestionAnswers(rows);
+    expect([...index.keys()]).toEqual(["a-q1"]);
+    expect(index.get("a-q1")?.id).toBe("u-first");
+
+    expect(findDurableQuestionAnswer(rows, "a-q1")?.id).toBe("u-first");
+    expect(findDurableQuestionAnswer(rows, "a-unlinked")).toBeNull();
+    expect(findDurableQuestionAnswer(rows, "")).toBeNull();
+  });
+
+  it("never resolves an answer from a non-user row even when it carries the link", () => {
+    const rows = [
+      { id: "a-echo", role: "assistant", content: "echo", metadata: link("a-q1") },
+      { id: "u-real", role: "user", content: "answer", metadata: null },
+    ];
+    expect(findDurableQuestionAnswer(rows, "a-q1")).toBeNull();
+    expect(indexDurableQuestionAnswers(rows).size).toBe(0);
   });
 });

@@ -17,14 +17,47 @@ import { getTrailingPath } from "../utils/pathDisplay";
 import { getProjectStatusConfig, isInitializingStatus } from "../utils/projectStatusConfig";
 import { useProjectBookmarks } from "../hooks/useProjectBookmarks";
 
+/*
+FNXC:CrossProjectHandoff 2026-09-10-00:05 (RUFU-211):
+Stable fallback for the optional `recentProjectIds` prop. An inline `= []` default is a BRAND-NEW
+array on every render, so it churns the `recentProjects`/`displayProjects` memos, and those feed the
+auto-highlight effect whose `[isOpen, searchQuery, displayProjects]` deps then re-run its
+`setHighlightedIndex(-1)` reset branch on a render that only meant to move the keyboard highlight
+(RUFU-211's ArrowDown-survives-Escape-claim test caught this). A hoisted frozen constant keeps the
+memo inputs referentially stable so the highlight a host's re-render must NOT touch, survives.
+*/
+const NO_RECENT_IDS = Object.freeze<string[]>([]) as string[];
+
 export interface ProjectSelectorProps {
   projects: ProjectInfo[];
   currentProject: ProjectInfo | null;
   onSelect?: (project: ProjectInfo) => void;
-  onViewAll: () => void;
+  /** Optional in picker hosts (transfer modal) that have no project overview to navigate to. */
+  onViewAll?: () => void;
   recentProjectIds?: string[];
   allowSingleProject?: boolean;
   viewAllLabel?: string;
+  /*
+  FNXC:CrossProjectHandoff 2026-09-09-05:03 (RUFU-203):
+  Transfer-modal picker options. All optional so the existing header switcher is byte-for-byte
+  unchanged: `triggerLabel` replaces the current-project trigger text with a picker prompt, and
+  `getDisabledReason` marks entries the host cannot accept (cross-node remote projects for a
+  transfer) — they render disabled with the reason visible, never silently hidden, so the operator
+  sees the target exists but learns WHY it cannot receive a copy. Omitting `onViewAll` drops the
+  "View All Projects" footer row from a picker that has no overview to navigate to.
+  */
+  triggerLabel?: string;
+  getDisabledReason?: (project: ProjectInfo) => string | undefined;
+  /*
+  FNXC:CrossProjectHandoff 2026-09-10-19:19 (RUFU-211):
+  Reports dropdown open/close so a HOST can yield Escape to this innermost layer. A host cannot win
+  this keystroke by listener ordering: both it and this component claim on `document` in the capture
+  phase, and same-node/same-phase listeners run in registration order — the host registers first
+  because it must be open before its dropdown can open. The host therefore reads this signal and
+  stands down, while this component's capture claim (`stopPropagation`) keeps the keystroke from
+  reaching the overlays stacked BENEATH the host, which all listen in the bubble phase.
+  */
+  onOpenChange?: (open: boolean) => void;
 }
 
 /**
@@ -78,9 +111,12 @@ export function ProjectSelector({
   currentProject,
   onSelect,
   onViewAll,
-  recentProjectIds = [],
+  recentProjectIds = NO_RECENT_IDS,
   allowSingleProject = false,
   viewAllLabel,
+  triggerLabel,
+  getDisabledReason,
+  onOpenChange,
 }: ProjectSelectorProps) {
   const { t } = useTranslation("app");
   /*
@@ -117,21 +153,48 @@ export function ProjectSelector({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [isOpen]);
 
-  // Close on escape key
+  /*
+  FNXC:CrossProjectHandoff 2026-09-10-19:19 (RUFU-211):
+  While the dropdown is open, Escape is CLAIMED here so one press closes exactly one layer. The
+  listener is CAPTURE-phase on `document`: every surface that can host this picker (task detail,
+  board card, list view, the app-wide Escape arbiter) listens on `document` in the BUBBLE phase, and a
+  capture listener always runs before every bubble listener, so `stopPropagation()` means none of them
+  dismisses its own layer behind the operator's back. `preventDefault()` marks the keystroke consumed
+  for hosts that defer on `event.defaultPrevented` (the RUFU-205 idiom). Escape-only: every other key
+  still reaches the dropdown's own handlers byte-identical. This claim cannot preempt a host that also
+  claims at document capture — hence the `onOpenChange` yield protocol above; neither mechanism alone
+  is sufficient.
+  */
   useEffect(() => {
     if (!isOpen) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setIsOpen(false);
-        setSearchQuery("");
-        triggerRef.current?.focus();
-      }
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      setIsOpen(false);
+      setSearchQuery("");
+      triggerRef.current?.focus();
     };
 
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
+    document.addEventListener("keydown", handleKeyDown, true);
+    // Capture-flag symmetry: `removeEventListener` matches on the exact capture flag, so a capture
+    // listener removed without `true` is never removed and keeps dismissing layers forever.
+    return () => document.removeEventListener("keydown", handleKeyDown, true);
   }, [isOpen]);
+
+  /*
+  FNXC:CrossProjectHandoff 2026-09-10-19:19 (RUFU-211):
+  Publishes open/close to the host's yield flag. The cleanup reports `false` on every transition and
+  on unmount, because a flag stuck at `true` would leave the host unable to close with Escape at all —
+  the prohibited un-closable sheet.
+  */
+  useEffect(() => {
+    onOpenChange?.(isOpen);
+    return () => {
+      onOpenChange?.(false);
+    };
+  }, [isOpen, onOpenChange]);
 
   // Focus search input when dropdown opens (always visible for autocomplete)
   useEffect(() => {
@@ -144,9 +207,9 @@ export function ProjectSelector({
   const recentProjects = useMemo(() => {
     return recentProjectIds
       .map((id) => projects.find((p) => p.id === id))
-      .filter((p): p is ProjectInfo => p !== undefined && p.id !== currentProject?.id)
+      .filter((p): p is ProjectInfo => p !== undefined && p.id !== currentProject?.id && !getDisabledReason?.(p))
       .slice(0, 3);
-  }, [recentProjectIds, projects, currentProject]);
+  }, [recentProjectIds, projects, currentProject, getDisabledReason]);
 
   // Filter projects based on search
   const filteredProjects = useMemo(() => {
@@ -165,7 +228,7 @@ export function ProjectSelector({
     const query = searchQuery.toLowerCase();
     // Exclude current project — it's not shown in the dropdown
     const candidates = filteredProjects.filter(
-      (p) => p.id !== currentProject?.id
+      (p) => p.id !== currentProject?.id && !getDisabledReason?.(p)
     );
     const nameMatches = candidates.filter(
       (p) => p.name.toLowerCase() === query
@@ -180,14 +243,16 @@ export function ProjectSelector({
     const currentId = currentProject?.id;
     const hasSearch = Boolean(searchQuery.trim());
 
-    // Bookmarked projects (excluding current)
+    // Bookmarked projects (excluding current). Disabled-by-host entries are legacy/local
+    // affordances, so a host-marked-disabled project never belongs in these sections.
     const bookmarked = hasSearch
       ? []
       : filteredProjects.filter(
           (p) =>
             p.id !== currentId &&
             bookmarkedIds.has(p.id) &&
-            !recentIds.has(p.id)
+            !recentIds.has(p.id) &&
+            !getDisabledReason?.(p)
         );
 
     // Exclude current, bookmarked, and recent from "others" only when those
@@ -207,18 +272,41 @@ export function ProjectSelector({
     };
   }, [filteredProjects, recentProjects, currentProject, searchQuery, bookmarkedIds]);
 
+  /*
+  FNXC:CrossProjectHandoff 2026-09-10-19:05 (RUFU-211):
+  An empty panel must never read as a broken load. The old empty branch was gated on `searchQuery`, so
+  a picker with nothing selectable — a one-project install, or a transfer host whose entire candidate
+  set is the card's own project — rendered a blank panel with a focused search box, visually identical
+  to a request that has not answered. The emptiness signal counts EVERY rendered group
+  (bookmarked/recent/others), not just `others`, because those groups can hold the only visible rows.
+  */
+  const hasSelectableRows =
+    displayProjects.bookmarked.length + displayProjects.recent.length + displayProjects.others.length > 0;
+
   // Calculate total items for keyboard navigation
   const totalItems = useMemo(() => {
     const bookmarkedCount = displayProjects.bookmarked.length;
     const recentCount = displayProjects.recent.length;
     const othersCount = displayProjects.others.length;
-    const viewAllCount = 1;
+    /* A picker host without onViewAll has no footer row, so no fourth keyboard slot. */
+    const viewAllCount = onViewAll ? 1 : 0;
     return bookmarkedCount + recentCount + othersCount + viewAllCount;
-  }, [displayProjects]);
+  }, [displayProjects, onViewAll]);
 
   // Handle keyboard navigation within dropdown
   const handleDropdownKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      /*
+      FNXC:CrossProjectHandoff 2026-09-11-00:40 (RUFU-211):
+      Nothing to walk means nothing to walk. With an empty candidate set (a one-project install, or the
+      transfer host whose only candidate is the card's own project) `totalItems` is 0 and every branch
+      below resolves against a slot that does not exist: ArrowDown wrapped -1 onto index 0, so a
+      following Enter entered the `highlightedIndex >= 0` branch, matched no row, and still ran its
+      `setIsOpen(false)` — closing the panel from a keystroke that selected nothing and leaving focus
+      on the just-unmounted search input. Escape stays owned by the document-capture claim above, which
+      does restore focus to the trigger; this handler is inert until a row exists.
+      */
+      if (totalItems === 0) return;
       switch (e.key) {
         case "ArrowDown":
           e.preventDefault();
@@ -238,18 +326,19 @@ export function ProjectSelector({
             const bookmarkedCount = displayProjects.bookmarked.length;
             const recentCount = displayProjects.recent.length;
             const othersCount = displayProjects.others.length;
-
-            if (highlightedIndex < bookmarkedCount) {
-              // Select bookmarked project
-              onSelect?.(displayProjects.bookmarked[highlightedIndex]);
-            } else if (highlightedIndex < bookmarkedCount + recentCount) {
-              // Select recent project
-              onSelect?.(displayProjects.recent[highlightedIndex - bookmarkedCount]);
-            } else if (highlightedIndex < bookmarkedCount + recentCount + othersCount) {
-              // Select other project
-              onSelect?.(displayProjects.others[highlightedIndex - bookmarkedCount - recentCount]);
-            } else {
-              // View All
+            const highlightedProject: ProjectInfo | null =
+              highlightedIndex < bookmarkedCount
+                ? displayProjects.bookmarked[highlightedIndex]
+                : highlightedIndex < bookmarkedCount + recentCount
+                  ? displayProjects.recent[highlightedIndex - bookmarkedCount]
+                  : highlightedIndex < bookmarkedCount + recentCount + othersCount
+                    ? displayProjects.others[highlightedIndex - bookmarkedCount - recentCount]
+                    : null;
+            if (highlightedProject) {
+              /* A disabled entry (cross-node transfer target) is a no-op that keeps the dropdown open. */
+              if (getDisabledReason?.(highlightedProject)) break;
+              onSelect?.(highlightedProject);
+            } else if (onViewAll) {
               onViewAll();
             }
             setIsOpen(false);
@@ -271,7 +360,7 @@ export function ProjectSelector({
           break;
       }
     },
-    [highlightedIndex, totalItems, displayProjects, onSelect, onViewAll, exactMatch]
+    [highlightedIndex, totalItems, displayProjects, onSelect, onViewAll, exactMatch, getDisabledReason]
   );
 
   // Auto-highlight first result when filtering (type-ahead behavior)
@@ -310,16 +399,18 @@ export function ProjectSelector({
   // Handle project selection
   const handleSelectProject = useCallback(
     (project: ProjectInfo) => {
+      /* Disabled entries (e.g. cross-node transfer targets) never fire a selection. */
+      if (getDisabledReason?.(project)) return;
       onSelect?.(project);
       setIsOpen(false);
       setSearchQuery("");
     },
-    [onSelect]
+    [onSelect, getDisabledReason]
   );
 
   // Handle view all
   const handleViewAll = useCallback(() => {
-    onViewAll();
+    onViewAll?.();
     setIsOpen(false);
     setSearchQuery("");
   }, [onViewAll]);
@@ -399,7 +490,7 @@ export function ProjectSelector({
       >
         <Folder size={16} className="project-selector__trigger-icon" />
         <span className="project-selector__trigger-text">
-          {currentProject?.name || projectsLabel}
+          {triggerLabel ?? (currentProject?.name || projectsLabel)}
         </span>
         <ChevronDown
           size={14}
@@ -527,17 +618,31 @@ export function ProjectSelector({
               </div>
             )}
 
-            {displayProjects.others.length === 0 && searchQuery ? (
+            {!hasSelectableRows && searchQuery ? (
               <div className="project-selector__no-results" data-testid="project-selector-no-results">
                 <Search size={14} className="project-selector__no-results-icon" />
                 <span>
                   {t("projectSelector.noResults", "No projects match \"{{query}}\"", { query: searchQuery })}
                 </span>
               </div>
+            ) : !hasSelectableRows ? (
+              /*
+              FNXC:CrossProjectHandoff 2026-09-10-19:05 (RUFU-211):
+              Reuses the no-results row's class rather than forking a parallel empty-state style, so the
+              two states stay visually identical siblings. The sentence names the REASON (nothing else
+              exists on this install) instead of leaving a blank panel that looks like a failed load.
+              */
+              <div className="project-selector__no-results" role="status" data-testid="project-selector-empty">
+                <Folder size={14} className="project-selector__no-results-icon" />
+                <span>{t("projectSelector.noProjects", "No other projects on this machine")}</span>
+              </div>
             ) : (
               displayProjects.others.map((project, index) => {
                 const actualIndex = displayProjects.bookmarked.length + displayProjects.recent.length + index;
                 const isExactMatch = exactMatch?.id === project.id;
+                /* Host-marked entries (cross-node transfer targets) render disabled WITH the reason
+                   so the operator learns why the visible target cannot receive the copy. */
+                const disabledReason = getDisabledReason?.(project);
                 return (
                   <button
                     key={project.id}
@@ -547,9 +652,11 @@ export function ProjectSelector({
                     }}
                     className={`project-selector__item ${
                       highlightedIndex === actualIndex ? "highlighted" : ""
-                    } ${isExactMatch ? "exact-match" : ""}`}
+                    } ${isExactMatch ? "exact-match" : ""} ${disabledReason ? "project-selector__item--disabled" : ""}`}
                     onClick={() => handleSelectProject(project)}
                     role="option"
+                    disabled={Boolean(disabledReason)}
+                    aria-disabled={Boolean(disabledReason)}
                     aria-selected={currentProject?.id === project.id}
                     data-testid={`project-selector-item-${project.id}`}
                   >
@@ -572,6 +679,11 @@ export function ProjectSelector({
                         {t("projectSelector.exact", "Exact")}
                       </span>
                     )}
+                    {disabledReason && (
+                      <span className="project-selector__item-disabled-reason" title={disabledReason}>
+                        {disabledReason}
+                      </span>
+                    )}
                     {renderBookmarkToggle(project.id)}
                     {currentProject?.id === project.id && (
                       <Check size={14} className="project-selector__item-check" />
@@ -582,7 +694,8 @@ export function ProjectSelector({
             )}
           </div>
 
-          {/* View All option */}
+          {/* View All option — omitted in picker hosts that pass no onViewAll. */}
+          {onViewAll && (
           <div className="project-selector__footer">
             <button
               ref={(el) => {
@@ -600,6 +713,7 @@ export function ProjectSelector({
               <span>{viewAllLabel ?? t("projectSelector.viewAll", "View All Projects")}</span>
             </button>
           </div>
+          )}
         </div>
       )}
     </div>

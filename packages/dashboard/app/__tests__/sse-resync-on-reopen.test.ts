@@ -206,7 +206,7 @@ describe("sse-bus subscribers resync after a hidden-tab suspend", () => {
     fetchChatSessionsMock.mockResolvedValue({ sessions: [] });
 
     const { result } = renderHook(() =>
-      useChatUnreadBadge("p-chat", { taskView: "board", quickChatOpen: false }),
+      useChatUnreadBadge("p-chat", { primaryHostActive: false }),
     );
     await flush();
     expect(result.current.chatHasUnreadResponse).toBe(false);
@@ -270,6 +270,20 @@ const REQUIRED_SCAN_WITNESSES = [
 
 type ScanResult = { offenders: string[]; subscribers: string[] };
 
+/*
+FNXC:DashboardSSE 2026-09-06 (merge v0.78.0-beta.3):
+The walker matches `subscribeSse(` literally, so FNXC prose that merely names the function
+(AgentActionLogPanel's single-event-source note) reads as a call site and the ratchet flags files
+that never subscribe. The contract governs real call sites, so comments are stripped first —
+precedent: legacy-tombstones.test.ts strips comments before searching. Stripping also tightens the
+safety side: an `onReconnect` mention in prose alone can no longer whitelist a file.
+*/
+function stripComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+}
+
 function scanSubscribers(): ScanResult {
   const appDir = join(__dirname, "..");
   const offenders: string[] = [];
@@ -286,7 +300,7 @@ function scanSubscribers(): ScanResult {
       }
       if (!entry.name.endsWith(".ts") && !entry.name.endsWith(".tsx")) continue;
       if (entry.name.includes(".test.")) continue;
-      const source = readFileSync(join(dir, entry.name), "utf8");
+      const source = stripComments(readFileSync(join(dir, entry.name), "utf8"));
       if (!source.includes("subscribeSse(")) continue;
       subscribers.push(relativePath);
       if (source.includes("onReconnect") || source.includes("replaySafe")) continue;

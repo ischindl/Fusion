@@ -28,7 +28,7 @@ vi.mock("../../hooks/useViewportMode", () => ({
 }));
 
 vi.mock("../../sse-bus", () => ({
-  subscribeSse: (...args: unknown[]) => mockSubscribeSse(...args),
+  subscribeSse: (...args: unknown[]) => (mockSubscribeSse as unknown as (..._a: unknown[]) => never)(...args),
 }));
 
 vi.mock("../MissionInterviewModal", () => ({

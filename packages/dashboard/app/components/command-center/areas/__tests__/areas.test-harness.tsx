@@ -142,6 +142,7 @@ export function agentNode(id: string, name: string, children: OrgTreeNode[] = []
       name,
       title,
       role: "executor",
+      roles: [],
       state: "idle",
       createdAt: "2026-06-19T00:00:00.000Z",
       updatedAt: "2026-06-19T00:00:00.000Z",

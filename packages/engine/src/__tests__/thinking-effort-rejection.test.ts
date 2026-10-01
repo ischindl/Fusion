@@ -21,6 +21,12 @@ describe("isReasoningEffortRejectionError", () => {
     // FNXC:ThinkingEffortFallback 2026-08-26-22:05 (Devin ANALYSIS-0001).
     expect(isReasoningEffortRejectionError("Console): Upstream request failed: [1210] Invalid API parameter, please check the documentation.")).toBe(true);
     expect(isReasoningEffortRejectionError("[1210] Invalid API parameter")).toBe(true);
+    /* FNXC:ThinkingEffortFallback 2026-09-21-15:34: LiteLLM proxy parameter-level rejection, the
+       production envelope for mission-loop validation on model group deepseek-v4 (dsai1 gateway).
+       FNXC:ThinkingEffortMatcher0921 verified via unit test; exceeds the unsupported-value window. */
+    expect(isReasoningEffortRejectionError("400: {\"message\":\"litellm.UnsupportedParamsError: openai does not support parameters: ['reasoning_effort'], for model=deepseek-v4. To drop these, set `litellm.drop_params=True`\",\"code\":400}")).toBe(true);
+    // A different dropped parameter must not join the effort family.
+    expect(isReasoningEffortRejectionError("litellm.UnsupportedParamsError: openai does not support parameters: ['tools'] for model=x")).toBe(false);
     // Non-1210 / non-envelope messages stay out of the effort family.
     expect(isReasoningEffortRejectionError("Model is unavailable")).toBe(false);
     expect(isReasoningEffortRejectionError("")).toBe(false);

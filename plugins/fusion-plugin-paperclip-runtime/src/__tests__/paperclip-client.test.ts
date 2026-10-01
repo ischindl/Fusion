@@ -702,3 +702,89 @@ describe("probePaperclipViaCli", () => {
     );
   });
 });
+
+/*
+FNXC:NonInteractiveGit 2026-09-12-12:58 (RUFU-216):
+Both Paperclip CLI spawn seams used to pass no `env`, so the `paperclipai` child inherited the host's
+interactive git setup and a turn that shells out to git could block forever on an editor, a pager, or a
+credential prompt (RUFU-210's measured immortal-orphan incident). These cases drive the real production
+seams through the existing `withFakeSpawn` harness — `mintAgentApiKeyViaCli` directly and
+`spawnPaperclipCliJson` via its public caller `createIssueViaCli` — with hostile ambient values installed,
+because `packages/core/src/__test-utils__/vitest-setup.ts` nullish-assigns safe GIT_* defaults that would
+otherwise mask the symptom. The probe class (`probePaperclipViaCli`) is deliberately hardened too: it
+shares the same seam, so its spawn is asserted as well.
+*/
+describe("non-interactive git floor on Paperclip CLI spawns", () => {
+  const HOSTILE_ENV = {
+    GIT_EDITOR: "vi",
+    GIT_SEQUENCE_EDITOR: "humpty",
+    GIT_PAGER: "less",
+    GIT_TERMINAL_PROMPT: "1",
+    GIT_MERGE_AUTOEDIT: "yes",
+  };
+  const origEnv = { ...process.env };
+
+  beforeEach(() => {
+    Object.assign(process.env, HOSTILE_ENV);
+  });
+
+  afterEach(() => {
+    process.env = { ...origEnv };
+  });
+
+  /** The five floor keys must win over the hostile ambient fixture, value by value. */
+  const assertFloored = (env: NodeJS.ProcessEnv | undefined) => {
+    expect(env).toBeTruthy();
+    expect(env!.GIT_EDITOR).toBe("true");
+    expect(env!.GIT_SEQUENCE_EDITOR).toBe("true");
+    expect(env!.GIT_PAGER).toBe("cat");
+    expect(env!.GIT_TERMINAL_PROMPT).toBe("0");
+    expect(env!.GIT_MERGE_AUTOEDIT).toBe("no");
+    // The floor is additive — replacing env wholesale would drop PATH and break binary lookup.
+    expect(env!.PATH).toBe(origEnv.PATH);
+  };
+
+  it("floors the mintAgentApiKeyViaCli spawn instead of inheriting vi/less", async () => {
+    await withFakeSpawn(
+      {
+        stdoutChunks: [JSON.stringify({ apiKey: "sk-test", apiBase: "http://localhost:3100", agentId: "AG-1" })],
+        stderrChunks: [],
+        exitCode: 0,
+      },
+      async (spawnMock) => {
+        await mintAgentApiKeyViaCli({ agentRef: "my-agent", companyId: "CO-1" });
+        const options = spawnMock.mock.calls[0]![2] as { env?: NodeJS.ProcessEnv };
+        assertFloored(options.env);
+        // Design decision 1: scoped per spawn, never ambient — the operator terminal keeps its editor.
+        expect(process.env.GIT_EDITOR).toBe("vi");
+        expect(process.env.GIT_PAGER).toBe("less");
+      },
+    );
+  });
+
+  it("floors the shared spawnPaperclipCliJson seam (via createIssueViaCli)", async () => {
+    await withFakeSpawn(
+      { stdoutChunks: [JSON.stringify({ id: "ISS-1", status: "todo" })], stderrChunks: [], exitCode: 0 },
+      async (spawnMock) => {
+        await createIssueViaCli({
+          companyId: "CO-1",
+          body: { title: "Hello", description: "Body", status: "todo", assigneeAgentId: "AG-1" },
+        });
+        const options = spawnMock.mock.calls[0]![2] as { env?: NodeJS.ProcessEnv };
+        assertFloored(options.env);
+        expect(process.env.GIT_EDITOR).toBe("vi");
+      },
+    );
+  });
+
+  it("also floors the probe-class spawn that shares the same seam", async () => {
+    await withFakeSpawn(
+      { stdoutChunks: ["[]"], stderrChunks: [], exitCode: 0 },
+      async (spawnMock) => {
+        await probePaperclipViaCli({});
+        const options = spawnMock.mock.calls[0]![2] as { env?: NodeJS.ProcessEnv };
+        assertFloored(options.env);
+      },
+    );
+  });
+});

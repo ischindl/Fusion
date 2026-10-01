@@ -8,6 +8,14 @@ Archived, soft-deleted, and absent tasks are read-only for task-log and task-mut
 
 This guide covers task creation, lifecycle behavior, task metadata, and operational workflows.
 
+## Legacy completed-history reintegration
+
+Fusion drains legacy `archived` carrier rows and cold archive snapshots into each task workflow's `complete` column during store open and self-healing maintenance. Work is processed in bounded pages with an event-loop yield between pages, but one cycle continues until every currently reachable page has been inspected; a history larger than 200 tasks is therefore not truncated.
+
+A live task row remains authoritative. Cold evidence may recreate an absent row or fill only missing fields on a soft-deleted row, but it never overwrites a present live value. User-paused tasks and failed candidates remain in their durable carrier with a fixed retained/failure reason so later maintenance can retry without blocking subsequent pages.
+
+For an operator audit or repair, build core and run `node scripts/reconcile-archived-task-history.mjs --project-root <exact-project-root>`. The default is a non-mutating task-history dry-run. Add `--apply` only after reviewing its deterministic JSON report. The tool requires an exact project identity, uses TaskStore's project-scoped transactional primitives, reports Done totals before/after, and lists historical fields for which no durable proof remains.
+
 ## Task Creation Options
 
 ### 1) Quick Entry (dashboard)
@@ -20,7 +28,7 @@ Use the inline input on board/list view:
 
 ### Duplicate-task detection at creation time (Quick Entry)
 
-Dashboard `POST /tasks` now performs a pre-create duplicate gate using token-overlap similarity against recent non-done tasks (default threshold `0.45`, excluding `done`/`archived`).
+Dashboard `POST /tasks` performs a pre-create duplicate gate using token-overlap similarity against recent active tasks (default threshold `0.45`, excluding Complete columns).
 
 - `POST /api/tasks/duplicate-check` accepts `{ title?, description, limit?, threshold? }` and returns `{ matches }` for UI preflight warnings.
 - `POST /api/tasks` accepts optional `acknowledgedDuplicates?: string[]` and `bypassDuplicateCheck?: boolean`.
@@ -45,10 +53,10 @@ Fusion applies a deterministic guard for exact normalized content matches (title
 Behavior is consistent across these surfaces:
 
 - If an existing same-fingerprint task is found in-window, create returns/behaves as a link-to-existing result (`duplicate_candidates` for API, `Linked existing ...` for CLI/tool responses).
-- If two creates race across processes and both reach persistence, post-create reconciliation keeps the older canonical task and auto-archives the newer sibling.
+- If two creates race across processes and both reach persistence, post-create reconciliation keeps the older canonical task and soft-deletes the newer sibling without permitting ID resurrection.
 - New rows stamp `task.source.sourceMetadata.contentFingerprint` for deterministic matching.
-- Reconciled losers stamp `task.source.sourceMetadata.deterministicDuplicateOf = <canonicalTaskId>` and are archived (not deleted).
-- Reconciliation archives record activity event `task:auto-archived-deterministic-duplicate`.
+- Reconciled losers stamp `task.source.sourceMetadata.deterministicDuplicateOf = <canonicalTaskId>` before deletion.
+- Reconciliation uses the ordinary soft-delete audit/activity path. Previously persisted `task:auto-archived-deterministic-duplicate` entries remain readable only for historical compatibility.
 
 Bypass controls:
 
@@ -92,7 +100,7 @@ Layer 1 persists `source.sourceMetadata.intentSignature` on created tasks so lat
 
 CLI `fn task create` now runs the same near-duplicate intent guard after the FN-4918 deterministic fingerprint guard, using shared `extractIntentSignature` / `findNearDuplicates` helpers from `@fusion/core`. Thresholds and the 7-day comparison window match the dashboard layer exactly. `--no-dedup` remains the single bypass across both duplicate layers: it skips the comparison but still stamps `source.sourceMetadata.intentSignature` when high-signal tokens were extracted. When a near-duplicate is detected, interactive TTY runs prompt `Create anyway? [y/N]`; non-interactive runs refuse creation with exit code 1 and instruct the caller to re-run with `--no-dedup`. The guard is still fail-open: extraction/list/query errors log a warning and continue. `fn task import` (GitHub import) and `fn task plan` intentionally continue to skip both duplicate guards per the FN-5060 same-content-sibling contract.
 
-Layer 2 runs in triage `finalizeApprovedTask` after `PROMPT.md` is written and parses `## File Scope` as an additional backstop. If the new spec overlaps an older active task on concrete File Scope / intent tokens and still clears the title threshold, the newer task is flagged for user confirmation instead of being silently auto-archived.
+Layer 2 runs in triage `finalizeApprovedTask` after `PROMPT.md` is written and parses `## File Scope` as an additional backstop. If the new spec overlaps an older active task on concrete File Scope / intent tokens and still clears the title threshold, the newer task is flagged for user confirmation rather than being removed automatically.
 
 Near-duplicate flagging now keeps the task in its normal flow column (`todo` / approval flow) and records metadata for UI warnings:
 
@@ -102,18 +110,14 @@ Near-duplicate flagging now keeps the task in its normal flow column (`todo` / a
 - optional `source.sourceMetadata.nearDuplicateDismissed = true` after the operator clears the duplicate flag
 - activity event `task:near-duplicate-flagged`
 
-A near-duplicate flag is only actionable while the canonical task is active. The triage backstop does not persist `nearDuplicateOf` for archived, soft-deleted, done, or missing canonicals; when a canonical later becomes inactive through archive, soft-delete, or move-to-done, the store clears `nearDuplicateOf`, `nearDuplicateScore`, `nearDuplicateSharedTokens`, and `nearDuplicateDismissed` from active referrers and records an informational log entry without pausing or failing those tasks.
+A near-duplicate flag is only actionable while the canonical task is active. The triage backstop does not persist `nearDuplicateOf` for soft-deleted, completed, or missing canonicals; when a canonical later becomes inactive through deletion or completion, the store clears `nearDuplicateOf`, `nearDuplicateScore`, `nearDuplicateSharedTokens`, and `nearDuplicateDismissed` from active referrers and records an informational log entry without pausing or failing those tasks.
 
 Dashboard surfaces this as a yellow Duplicate chip plus modal actions only while the canonical exists and is active:
 
-- **Archive** (user-initiated archive path)
-- **Clear the duplicate flag** (dismisses the warning by setting `nearDuplicateDismissed: true`)
+- **Delete** (soft-deletes the duplicate after confirmation)
+- **Keep** (dismisses the warning by setting `nearDuplicateDismissed: true`)
 
 This layer complements, rather than replaces, FN-4829 similarity detection, FN-4918 deterministic deduplication, and FN-4892 same-agent intake heuristics.
-
-### Workspace worktree cleanup on archive
-
-Archiving a workspace (multi-repository) task now synchronously removes every recorded per-sub-repository worktree, including archives initiated by `fn_task_archive` and CLI paths that do not construct an executor. Each path is protected by a per-repository cross-process reservation until backend removal and its `fusion/<task-id>` branch cleanup finish. If one removal fails, its reservation is quarantined and the next acquisition reconciles that orphan; successful sibling repositories are still released. On unarchive, Fusion reconciles the retained live-row metadata: it drops each per-repository entry whose exact worktree path is gone (including its `landedSha`) and clears a stale singular worktree path. A fully disposed workspace task consequently returns as a non-workspace card that must be re-executed rather than re-landed. `archiveTask(..., { cleanup: false })` intentionally retains worktrees, and the self-healing workspace sweep remains an idempotent backstop. See [Workspaces](./workspaces.md#archiving-and-cleanup) for the workspace operator lifecycle.
 
 ### Explicit duplicate-marker guard (FN-5220)
 
@@ -143,51 +147,64 @@ Layer behavior:
 - **Triage planning loop** — after triage reads the generated `PROMPT.md`, an exact redirect marker short-circuits directly into `finalizeApprovedTask()`. Normal plans run deterministic spec hygiene checks in triage, then the selected workflow's optional Plan Review gate owns AI plan review before execution.
 - **Self-healing sweep** — maintenance Batch 2 runs `resolveExplicitDuplicateMarkerTasks()` across `triage`/`todo` tasks to clean up older stuck marker tasks. The sweep is best-effort, capped at 50 marker tasks per cycle, and can be disabled with the internal setting `resolveExplicitDuplicateMarkerEnabled: false` (default `true`).
 
-An operator's decision is durable for a task and its active canonical pair. **Clearing the duplicate flag** records the acknowledgement, retires the marker source, clears the triage decision hold, and lets planning continue; triage and self-healing will not ask again if that same marker is reprocessed. A marker for a different active canonical remains a new decision. **Delete** for an explicit-marker decision soft-deletes the duplicate, while **Archive** for an ordinary near-duplicate leaves it terminal in Archived; neither outcome is reopened as a duplicate decision.
+An operator's decision is durable for a task and its active canonical pair. **Keep** records the acknowledgement, retires the marker source, clears the triage decision hold, and lets planning continue; triage and self-healing will not ask again if that same marker is reprocessed. A marker for a different active canonical remains a new decision. **Delete** soft-deletes the duplicate; deleted rows are never reopened as duplicate decisions.
 
 All three layers fail open: parse errors, task lookup failures, file-read failures, activity-recording errors, or other unexpected exceptions log a warning and continue normal intake/triage/self-healing flow instead of blocking task creation or recovery.
 
-Activity uses the existing `task:auto-archived-duplicate` event with `metadata.source` disambiguators:
-
-- `explicit-marker` — triage short-circuit / duplicate finalize path
-- `explicit-marker-sweep` — self-healing maintenance sweep
-- `explicit-marker-intake` — dashboard intake rejection breadcrumb
+Explicit-marker cleanup uses the ordinary soft-delete path; dashboard intake rejection remains a non-mutating duplicate warning. Previously persisted `task:auto-archived-duplicate` events and their `metadata.source` values remain readable for historical compatibility only.
 
 The duplicate-close task log line remains `Duplicate of <canonicalTaskId> — closed` for triage/sweep paths.
 
-### Intake auto-archive (ghost-bug preflight + same-agent duplicate)
+### Intake cleanup (ghost-bug preflight + same-agent duplicate)
 
-Fusion applies two conservative intake heuristics that may auto-archive newly filed tasks before execution starts:
+Fusion applies two conservative intake heuristics before execution starts:
 
-- **Ghost-bug preflight** (triage finalize path): for bug-fix-shaped specs that cite concrete constructs/commands, Fusion probes current `main`. If all definitive probes show the cited bug does not reproduce, the task is archived as `auto-resolved-ghost-bug`.
-- **Same-agent duplicate intake** (all task-create backends): if the same `source.sourceAgentId` (or `source.sourceParentTaskId`) filed a highly similar task within 24h (threshold `0.75`), Fusion still detects the near-duplicate — but what happens next depends on the `autoArchiveDuplicateTasksEnabled` project/global setting (default **`false`**, FN-7658/FN-8401):
-  - **Default (`false`)**: the later task is left in place and flagged via the same near-duplicate marker used elsewhere (`sourceMetadata.nearDuplicateOf` / `nearDuplicateScore`), so the dashboard's yellow "Duplicate" chip with a clear-the-flag control and Archive action surfaces it for a human decision. Neither the new task nor its live siblings are moved to `archived` or deleted automatically.
-  - **`true`** (legacy behavior, opt-in): only the later/new task is archived as `auto-resolved-duplicate`; its live siblings remain intact.
+- **Ghost-bug preflight** (triage finalize path): for bug-fix-shaped specs that cite concrete constructs, Fusion probes the project checkout repository-wide using shell-free `git` argument vectors. Cited text is passed only as an argument value; matches come from process exit codes, while failures and ambiguous results are inconclusive. Command-kind citations are never executed. Fusion soft-deletes without permitting ID resurrection only when every definitive probe is missing and a positive control sampled from `git ls-files` successfully proves the probe apparatus works.
+- **Same-agent duplicate intake** (all task-create backends): if the same `source.sourceAgentId` or `source.sourceParentTaskId` filed a highly similar task within 24 hours (threshold `0.75`), Fusion leaves the later task in place and records `sourceMetadata.nearDuplicateOf` / `nearDuplicateScore`. The dashboard exposes the duplicate for a Keep/Delete decision; there is no archive setting or automatic archive outcome.
 
-Ghost-bug preflight is unaffected by `autoArchiveDuplicateTasksEnabled` — it is a distinct heuristic and always auto-archives on a definitive non-repro.
+Both heuristics are **fail-open**: probe or detection errors, timeouts, and inconclusive signals do not block normal intake. Tombstone-resurrection blocking remains fail-closed and always throws `TombstonedTaskResurrectionError` when a forbidden resurrection is detected.
 
-Both heuristics are **fail-open**: probe/detection errors, timeouts, or inconclusive signals do not block normal intake — the task continues in the regular flow.
+Historical activity event names retain `task:auto-archived-ghost-bug` and `task:auto-archived-duplicate` for stored-log compatibility only. Ghost-bug cleanup now emits `task:auto-deleted-ghost-bug` with IDs, counts, and fixed outcomes, while duplicate flagging uses `task:near-duplicate-flagged`.
 
-Tombstone-resurrection blocking (including a same-agent near-duplicate of a soft-deleted task within the sticky window) is shared by every task-create backend and is **not** gated by `autoArchiveDuplicateTasksEnabled` — it always throws `TombstonedTaskResurrectionError` regardless of the setting.
-
-Activity + run-audit event types:
-
-- `task:auto-archived-ghost-bug`
-- `task:auto-archived-duplicate` — emitted for both outcomes of the same-agent duplicate heuristic; the flag-only (default) path sets `metadata.source: "same-agent-flagged"` to distinguish it from the legacy auto-archive outcome.
-
-These appear in task activity history; run-audit entries are emitted where run context exists (triage/engine paths). Store-only intake paths record activity without synthetic run context.
-
-Recovery is reversible: restore archived tasks via dashboard **Unarchive** or `fn_task_unarchive`.
+Ghost-bug deletes also send a best-effort dashboard inbox notification identifying the removed task, reason, and cited constructs. These appear in task activity history; run-audit entries are emitted where run context exists (triage/engine paths). Store-only intake paths record activity without synthetic run context.
 
 #### Revert/Undo affordance (FN-7525)
 
-Done and Archived task cards (board card inline row + context menu, the detail view, and the list context menu) expose a **Revert** action alongside Archive/Unarchive when the task has a landed commit to revert. Clicking it calls `POST /tasks/:id/revert` in `"auto"` mode:
+Done task cards (board card inline row + context menu, the detail view, and the list context menu) expose a **Revert** action when the task has a landed commit to revert. Clicking it calls `POST /tasks/:id/revert` in `"auto"` mode:
 
 - A clean git revert shows a success toast naming the created revert commit sha.
 - A conflicting/unsupported git result opens a confirm dialog offering to create an AI-undo task; confirming re-calls the route in `"ai"` mode and surfaces the created task id (or that an undo task is already open).
 - A `needsHuman` result (e.g. auto-merge is off) is surfaced as an informational/error toast, never silently forked into an AI task.
 
 The source task's column/lifecycle is never mutated as a side effect of a revert; the Revert affordance is absent when the task has no landed commit or when the hosting surface does not support it.
+
+### Cross-project transfer ("Transfer to project…")
+
+<!--
+FNXC:CrossProjectHandoff 2026-09-09-11:37:
+RUFU-203 documents transfer as a creation surface because that is exactly what it is: the target
+project's ordinary createTask path mints the card. The migration decision — pointers in the
+already-persisted sourceMetadata JSONB instead of a new `tasks` column — is deliberate: both sides
+are pure read-mostly provenance, and a schema change for a JSON-carriable pointer would cost a
+migration for zero query benefit (no index is ever taken on the pointer). Idempotency reuses the
+existing proposal-claim uniqueness machinery rather than adding a second guard.
+-->
+`POST /api/tasks/:id/transfer` (dashboard, project-scoped auth) copies title, description, and attachments into a NEW card in another locally-registered project. It is a copy with bidirectional cross-references, never a row move: `project.tasks` is partitioned by project id and the visible card id comes from the target project's own `taskPrefix`, so a card cannot leave its project and stay itself.
+
+- **Target ownership:** the card is created through the target project's ordinary `createTask` path, mints its own id under the target prefix, and enters that project's normal intake/planner admission. The source id is never forged or carried over as an id.
+- **Pointers (no new columns):** the source card's `source.sourceMetadata.transferredTo` gains a pointer `{ projectId, projectName, taskId, transferredAt }` per target project; the target card carries `handoffFrom` (one pointer) plus `sourceType: "cross_project_handoff"`. Both live in the already-persisted `sourceMetadata` JSONB — no schema migration.
+- **Idempotency:** one (source task, target project) pair yields at most one target card. The create carries a deterministic proposal claim id backed by the existing partial-unique index on `(project_id, proposal_claim_id)`; a double-click or post-failure retry returns the existing target (audit `outcome: "deduplicated"`) instead of piling up copies.
+- **Cross-node honesty:** a target project that this install cannot resolve is refused with `409` and `details.reason: "target-unresolvable"`; the picker shows such projects disabled with a named reason, and no success toast is ever claimed for work that did not happen.
+- **Disposition:** default `keep-transferred` stamps the source `transferredTo` pointer (the visible "Transferred →" chip); `keep-unchanged` copies without touching the source card.
+- **Audit:** `task:cross-project-handoff` / `task:cross-project-handoff-failed` bounded events (see [run-audit](./run-audit.md#cross-project-handoff)); ids/counts/fixed outcomes only.
+
+#### Restore-the-revert affordance (FN-416)
+
+A reverted card shows only its **Reverted** label — it no longer renders Delete/Revise resolution buttons. The same surfaces (board/right-dock card context menu, list row context menu, task detail actions) instead expose **Restore revert**, which calls `POST /tasks/:id/revert/restore` in `"auto"` mode and replaces the **Revert** entry on an already-reverted task:
+
+- A clean restore reverts the revert commit(s) and stamps an additive `sourceMetadata.restoredAt` marker, which clears the **Reverted** label everywhere. `revertedAt` is never deleted, so Patchnode revert history stays readable.
+- A conflicting or unsupported result creates a dedicated AI restore task (marker `sourceMetadata.restoreOf`, idempotent while one is open) delivered by the AI merge pipeline / Merger agent.
+- A `needsHuman` result (auto-merge off) is surfaced as a toast and never force-written or silently AI-forked.
 
 ### 2) Plan Mode (AI interview)
 
@@ -246,11 +263,75 @@ From the standalone **Research** view, each finding supports two task actions:
 
 Research actions persist detailed output in task documents (and optional attachments), not in long task descriptions.
 
+## Per-task delivery lock (human merge approval)
+
+A task can carry an explicit **delivery lock**: the card plans, executes, verifies and passes every
+configured review exactly as usual, then **stops before the final delivery** and waits for one
+operator command. It is armed with a single boolean at creation (`humanMergeApproval: true` on the
+create payload, the lock button in the New Task dialog, Quick Entry and the inline card) and can be
+added or removed later from the task's context menu.
+
+The lock is deliberately **not** `autoMerge: false`, not a pause, and not a fabricated review
+verdict. Those remain independent protections with their own meaning:
+
+| Control | Scope | What it stops |
+| --- | --- | --- |
+| Project/task `autoMerge` | Automatic lanes | Automatic merge admission (`requestInterpreterMerge`) |
+| Delivery lock | One card | The final delivery, until a human commands it |
+| Pause | One card | All automation on the card |
+
+A card with no lock behaves exactly as it always did. Arming a lock never re-enables auto-merge for
+the automatic lanes, and disarming it never merges anything by itself.
+
+### The three operator commands
+
+When the work and every configured pre-merge gate are genuinely satisfied, the task's Review banner
+offers one shared text field and exactly three direct buttons, in this order:
+
+1. **Créer PR / Create PR** — opens (or reuses) a pull request for the candidate's repository, head
+   and base, keeps the task in review, and publishes the link through the existing manual-PR
+   handoff. It performs **no merge**, no `pr-merge`, and never arms GitHub's native auto-merge. A
+   later merge still requires a fresh explicit command on the current candidate.
+2. **Merger / Merge** — commands the already-authorized human merge door with the effective policy
+   (direct or via PR). It is a human command, not a settings change.
+3. **Refuser / Reject** — requires instructions and starts a correction cycle on the same task.
+
+The two positive commands accept an **optional** note; the rejection **requires** a non-empty
+instruction after trimming. Notes are kept in the task history; a note never requests changes — that
+must go through Reject.
+
+### What an approval authorizes
+
+A positive decision authorizes exactly one presented candidate and one destination. The candidate
+identity binds the lock generation, the effective workflow selection, the review episode, the merge
+content (a singular diff fingerprint, a proven-empty diff, or per-repository workspace
+fingerprints), the workspace repository-scope revision, and the server-resolved delivery target.
+
+Changing any of those — new commits, a fresh review, a reset, a different base branch, a new
+workflow selection — invalidates the accord and asks again. Adding a note or updating a dispatch
+receipt does not. A `create-pr` authorization is never accepted by a merge door.
+
+### Rejections, reset and duplication
+
+An accepted rejection is a correction obligation. Removing the lock while its analysis or correction
+is running removes the *next* approval requirement but never erases the instruction or the
+corrections already accepted, and re-arming never revives an old accord.
+
+- **Reset** keeps the lock intent, bumps its generation (invalidating every prior accord, pending
+  destination and stale candidate) and cancels stale processing.
+- **Duplication** keeps the lock intent only: the copy inherits no accord, no pending destination
+  and no correction request.
+- A new independent task or a follow-up never inherits a decision.
+
+The durable state lives in the task row's `human_merge_approval` JSONB column (migration `0083`),
+separate from `human_plan_approval` and from `auto_merge` so no historical value can arm or disarm
+it. Rows that predate the column read as "no per-card requirement".
+
 ## Task Lifecycle
 
 Fusion task columns:
 
-Fusion task columns use persisted enum values as the API/filter contract. Callers use enum values such as `triage`, `todo`, `in-progress`, `in-review`, `done`, and `archived`; UI labels are presentation only. In particular, `triage` is displayed as **Planning**, but `Planning` is not a valid persisted column value. Dashboard task-list API requests such as `GET /api/tasks?column=triage` return only rows whose persisted `task.column` is exactly `triage`, and invalid column values are rejected.
+Fusion task columns use persisted values as the API/filter contract. The visible built-in board uses `triage`, `todo`, `in-progress`, `in-review`, and `done`; custom workflows may rename those roles. UI labels are presentation only. In particular, `triage` is displayed as **Planning**, but `Planning` is not a valid persisted column value. Dashboard task-list API requests such as `GET /api/tasks?column=triage` return only rows whose persisted `task.column` is exactly `triage`, and invalid column values are rejected.
 
 1. **triage** (displayed as **Planning**) — idea intake; AI writes a full plan
 2. **todo** — ready for scheduling
@@ -281,11 +362,16 @@ This is a forward-safety guard for stranded completed tasks. See FN-4055/FN-4079
 
 Fusion now derives `task.inReviewStall` for non-paused `in-review` tasks when a known stuck-state shape is detected. This signal is state-based (not log-heuristic) and is computed server-side on task hydration.
 
-`InReviewStallCode` values:
+`InReviewStallCode` values (the union in `packages/core/src/tasks/in-review-stall.ts` — consumers branch on `code`, never on the rewordable `reason` text):
+- `awaiting-review-revision` — the newest result on a required pre-merge review gate is an authored `REVISE` verdict carrying durable review input, and the card still has a pending remediation step. It is the one code whose only job is to keep the deadlock ladder from parking a card that is applying review corrections (RUFU-280): the signal fires and the observation log still records it, but the terminal park is withheld while both clauses hold. It never outranks a gate that never ran, and it is not claimed at all while automatic processing is withheld (`autoMerge: false` with no per-task `autoMerge: true` opt-in, or a manual open PR): such a card keeps its `merge-blocker` / `held-human-review` report, because a wait the operator switched automation off from is not the engine working.
 - `transient-merge-status-no-owner` — task is still in `merging`/`merging-pr`/`merging-fix` after the stale-merging age threshold, but no active merger owns it. `recoverStaleMergingStatus()` clears this stamp and re-enqueues auto-merge-eligible, non-workspace, non-`mergeConfirmed` **unpaused** tasks. Manual merge doors now clear a stamp owned by their interrupted `fn task merge` process on Ctrl-C, SIGTERM, or terminal-close SIGHUP, and reconcile only age-proven residue before claiming. This follows three distinct authorizations: the merge body's abort fence (A), its proven in-process writer (B), or age evidence without owner proof (C). The five-minute engine sweep remains the backstop for hard kills and power loss. Paused tasks never re-enqueue; the sole clear-only exception is the engine-owned `merge-deadlock-detected` hold, whose status-preserving park can otherwise retain an orphan stamp indefinitely. Explicit human, approval, and unknown pauses remain intentionally suppressed. The signal itself remains diagnostic-only.
 - `merge-retries-exhausted` — `mergeRetries` reached the auto-merge retry cap without `mergeDetails.mergeConfirmed === true`.
 - `no-worktree-no-merge-confirmed` — task has no worktree path and merge is not confirmed (excluding explicit no-op merges).
 - `merge-blocker` — `getTaskMergeBlocker()` reports a merge/finalization blocker.
+- `completed-review-status-none` — every step is done or skipped, the task carries no status, error, or merge retries, and it has sat in the review lane unowned past the stale-merging age threshold: the work finished and nobody picked it up.
+- `non-retryable-provider-error` — the failed-task merge blocker's error text classifies as a terminal provider error (credentials, billing, model access), so retrying the lane cannot help; only a non-retryable classification reaches this code.
+
+The last two entries were missing from this list until RUFU-280 audited it against the union; a list that under-counts the union is how a new code reads as the only gap.
 
 Invariant: `inReviewStall` is **diagnostic-only**. It must never be used as an auto-completion trigger.
 
@@ -296,6 +382,79 @@ These entries are rate-limited per `(task, code)` over `taskStuckTimeoutMs`, so 
 
 **Dashboard surface:** In-review, non-paused tasks with `inReviewStall` set show a `Stall` badge on `TaskCard` and a code-specific diagnostic row in `TaskDetailModal` above the PR section. The diagnostic row includes headline/description/action copy, raw reason text, observed timestamp, and a `View activity log` deep-link that switches to Logs → Activity and highlights the most recent matching `In-review stall surfaced [<code>]: <reason>` entry. This UI is diagnostic only: neither the badge nor the jump button mutates task state.
 
+#### Canonical stall reason signal
+
+Fusion derives `task.stallReason` — the canonical answer to "why is this card standing still" — for any card in any column, on task READS. Unlike the sibling badges (`inReviewStall`, `stalePausedReview`, `ageStaleness`) it is not another detector: it merges the authorities the engine already consults — the task's resolved workflow columns (terminal/review lanes), `getTaskMergeBlocker()`, `allowsAutoMergeProcessing()`, and dependency-edge resolution — into one presentable reason, and it is absent when nothing actually holds the card. For a card standing in its own workflow's planning lane the answer additionally reads the diagnostic episode keys the engine leaves on the row (`planAdmissionStall`, RUFU-246's `planPremiseRejection`, and `nextRecoveryAt`), because that lane has no merge blocker to ask — which is exactly why an aged planning card used to report nothing at all (RUFU-273).
+
+`TaskStallReasonCode` values (the union in `packages/core/src/tasks/task-stall-reason.ts` — consumers branch on `code`, never on the rewordable `reason` text):
+
+- `merge-blocker` — a delivery lane refuses: `getTaskMergeBlocker()` reports a blocker (pre-merge approval, finalization, a blocking status, …). A paused card lands here and reuses the merge blocker's pause sentence; there is no separate pause code.
+- `pre-merge-gate-pending` — required pre-merge steps have not run, or their approvals are stale against the current head.
+- `held-human-review` — the card sits in a review lane waiting on a human because automatic merge processing is withheld (`allowsAutoMergeProcessing()` refuses: board auto-merge off unless the task opts back in, or a live human-authored open PR). The sibling badges suppress in that state, so this is the only visible answer.
+- `awaiting-review-revision` — the card is applying review corrections: the newest result row on a required pre-merge gate is an authored `REVISE` carrying durable review input, and the card still has a pending remediation step (RUFU-280). It is one of the three ordinary waits beside `pre-merge-gate-pending` and `held-human-review`, and it is the answer to a false report: a genuine `REVISE` with a long remediation wave refused merge for the same reason a frozen card does, so its repeated stall observations could reach the deadlock threshold and park a card that was working. The signal still fires — naming the wait is what tells an operator nothing is broken — but the terminal park is withheld while both clauses hold, and finishing (or exhausting) the remediation steps returns the card to the pre-existing threshold. It never outranks `pre-merge-gate-pending`: a gate that has never run is the more urgent sentence even when an older round asked for changes. Consent outranks it too: with automatic processing withheld the code is not claimed and the card keeps the pre-existing blocker report, so the read side never promises corrections the engine has been told not to run — the same rule the engine's own stall ladder already applied.
+- `dependency-blocker` — a live `blockedBy`/`dependencies` edge keeps the card from being treated as complete, named by `getTaskCompletionBlocker()`.
+
+A 2026-09-25 correction (RUFU-273): this list previously documented `paused`, `blocked-by`, `dependency-blocked`, `suppressed`, and `terminal-conflict`. The derivation never emitted any of them — RUFU-174 named them in its changeset and docs while the shipped union never carried them. Suppression and the terminal lane return `undefined` (there is nothing to say), and a pause is reported through `merge-blocker`. Consumers that branched on those five names were therefore dead branches.
+
+Planning-lane codes (RUFU-273) — every one of them derived from evidence the engine itself wrote on the row, never from a guess:
+
+- `plan-admission-throttled` — planning admission is withheld while other eligible cards are waiting: triage hit its running-agent cap and recorded the binding gate on the row. The card is behind real work, not lost.
+- `plan-lane-ineligible` — the card sits in a lane that will never plan it: the column declares no planning node, is manual-intake, or is a fast lane. It needs a person or a different column, not a planner.
+- `plan-premise-held` — RUFU-246's premise episode is on the row: the planner refused the card's premise and waits on a human. This outranks any admission code on the same card. A premise the card's own delivery consumed never sets this code: it is recorded as `premise-invalidated-by-delivery` evidence in History and in the card's `premise-invalidated` document, and the card stays promotable (STAS-282).
+- `plan-spec-unreadable` — the card's `PROMPT.md` exists but cannot be read. A *missing* spec is deliberately not named here: no spec yet means "awaiting planning", not a fault.
+- `plan-recovery-backoff` — an earlier planning attempt failed and the row carries a future `nextRecoveryAt`; the card sits in a recovery wait. That is a wait, so the wording never presents it as a new fault.
+- `plan-no-admission` — the honest residual: aged past its lane's threshold, not paused, not being dispatched, no live dependency edge, and nothing else on the row explains the silence. It states that nothing admitted the card and no gate owns a reason; it never speculates why.
+- `recoverable-work` — the card claims a branch whose worktree is not mounted while that branch carries commits the default branch does not have. The work is real and at risk; the card is stuck *before* planning, not after it.
+
+Contract:
+- Shape is `{ code, reason, observedAt }`; `reason` is display-safe prose rendered verbatim.
+- `undefined` means "moving, or not derivable" — never "healthy".
+- The determination order is pinned: suppressed > terminal > review lane > dependencies > planning lane. Suppression beats a merge blocker because an enqueued merge means in-flight, not stuck, and the planning branch sits last because every earlier answer is more specific and more actionable than "a planner has not picked this up". Two dependency outcomes still fall through to the planning branch — no dependency marker at all, and a probe that PROVED every reference is terminal or deleted — because a genuinely unblocked card is exactly the card whose planning silence matters; a probe that threw still ends the derivation, since an unproven dependency question outranks any planning answer.
+- Determination never throws: workflow and dependency probe failures fall back to literal lanes/legacy literals with a bounded `storeLog` warning (`task-stall`). A broken workflow definition must not turn a routine list read into an error.
+- Dependency probes never call `getTask` (that would re-enter stall hydration for every dependency of every list row); they use the lock-free `readTaskRow`/`getArchivedTask`. An archived dependency counts as satisfied; a missing `blockedBy` target is treated as non-blocking; a missing `dependencies` target blocks.
+- **Read-site parity is an invariant**: `getTask`, `listTasks` (slim and full), `listTasksModifiedSince`, and `searchTasks` must report the same `code`/`reason` for the same card, pinned by `packages/core/src/__tests__/postgres/store-task-stall-reason.pg.test.ts`.
+- Diagnostic-only: it must never serve as an auto-completion signal and must never gate a merge — the merge authority keeps being asked directly.
+
+Planning-lane contract (RUFU-273):
+
+- Membership comes from the card's own workflow IR: the union of its `intake` and `hold` columns, passed to the derivation as `planningColumns`. Resolution has THREE outcomes — a resolved set, an empty set, and "this IR cannot answer the placement question" — and the third keeps the branch silent: an IR that cannot answer must neither name nor retract a stall, and naming additionally requires positive membership of `task.column`.
+- `sourceMetadata.planAdmissionStall` is the episode the read path reads: diagnostic-only, nullable, and written ONLY through a key-level `sourceMetadataPatch`. A whole-object `sourceMetadata` write from either producer would erase RUFU-246's premise episode and every other lane's provenance key. Producers are triage's admission throttle and the self-healing sweep `reconcile-planning-admission-stall`; a shared refresh floor stops them from re-stamping a card that was named moments ago.
+- Retraction is part of the feature, not a follow-up: the sweep writes `null` for that one key when a card leaves the planning lane, stops being aged, or otherwise stops being a candidate, and the manual Retry reset clears the planning episodes together with RUFU-246's so an operator's retry is never shadowed by a stale badge. A card with nothing stored costs no write.
+- Aging defaults to 48 h and is taken per column from `recovery.stalenessMs` when the planning lane declares its own. Age is measured from the most recent touch, and an unparseable clock refuses to invent an age rather than naming a card on bad evidence.
+- The sweep is report-only. It writes the episode key plus one run-audit row per examined card (`task:planning-admission-stalled`, with the deduped `-no-action` companion carrying the `already-named`, skip-reason, and retraction outcomes) and mutates no lifecycle column, status, pause, branch, or worktree field. Its work is bounded before the cap by the project's `intake`/`hold` column vocabulary — cards outside it (including merged ones whose `status` was cleared back to nothing) are not examined at all, so they cannot consume the scan budget — and its git work is bounded three ways: the shared worktree-churn cadence gate, 12 branch probes per pass, and a 200-candidate scan cap. A branch probe covers a card whose worktree is not recorded either: a stale `branch` claim with no worktree is the shape a cleaned-up executor checkout leaves behind, and it is the branch, not the checkout, that has to answer whether work survives.
+- Planning codes are never alertable delivery wedges: the stall-notification authority maps all seven to no wedge action, because "a planner has not picked this up" is not "delivery is wedged". They also stay out of the fleet/agent-health vocabulary, where a stall code would say something about an agent rather than about a queue.
+
+**Dashboard surface:** the client-side suppression that blanks `inReviewStall` also blanks `stallReason` while `agent:log` events stream for the card. Server-side fresh-activity suppression is review-lane gated, while the client blank is not, so a dependency-blocked card off the review lane can re-show its reason between refetches. Rendering now ships: a server-present `stallReason` outranks every client-side inference and keeps its code identity on the rendered elements, so the card chip, the list row, the detail banner, and the agent health pill all name the same cause from the same field (the client classifier remains only as the fallback when the server stays silent). The card face names faults — a genuine merge refusal or blocked completion shows a chip — while the two ordinary review-lane resting states (`pre-merge-gate-pending`, `held-human-review`) are explained by the detail banner instead, per the 2026-07-26 ruling that pre-merge blockers must not mark routine review cards abnormal. Server free-text rides as description-only copy for the merge codes; `held-human-review` always reads as waiting on a person, never as a refusal; and the copy set is localized in all seven locale catalogs. The seven planning codes are the deliberate exception to that resting-state ruling: they name a planning-lane hold the operator has to see at a glance, so all seven render on the card face, the list row, and the detail banner — each with its own per-code localized headline and description rather than server free-text, so the affordance stays translatable and the seven never collapse into one sentence. `recoverable-work` is the only one whose content is legitimately about commits off the default branch, and it still does not borrow merge or blocker vocabulary. The capability sibling `reviewBypass` (next section) is deliberately exempt from this blank: it reports a store-accepted operation, not a diagnosis.
+
+#### Review bypass capability signal
+
+Fusion derives `task.reviewBypass` — the operator's escape hatch on a wedged review card — on all four task READ paths (`getTask`, the slim board list, the modified-since prelude, and search) as `{ kind, workflowStepId, workflowStepName }`. It is a capability, not a diagnostic: it mirrors exactly what `TaskStore.bypassFailedPreMergeReviewStep` accepts today — the same pure derivation (`deriveReviewBypassTarget`), the same resolved lane rule (`resolveReviewBypassLanes`, not the diagnostic lane union), and the same required-gate set — so "the menu offered it" and "the API accepted it" are one fact and a dead affordance is structurally impossible rather than merely tested against.
+
+`ReviewBypassTarget` kinds:
+- `failed` — the latest pre-merge step result came back failed (a code-review rejection, or a harness error before a verdict). The bypass rewrites that result to `skipped`.
+- `absent` — an enabled required pre-merge gate produced no result entry at all (a no-verdict dispatch defect, or an engine restart losing a run in flight). The same state reads `pre-merge-gate-pending` in `stallReason` and is refused by the merge gate: the diagnostic tells the operator why the card is stuck, the capability gives them the only lever that clears it. A `pending` result counts as present — a gate mid-flight is not a gate that never ran.
+- `undefined` — a bypass would be refused: an operator-held card (`paused` **and** `userPaused`), a column outside the workflow's resolved review lanes, a clean pass, or a workflow with no required pre-merge gates.
+
+<!--
+FNXC:ReviewLaneBypass 2026-09-11-00:18:
+RUFU-218: this section said "a paused card" refuses, and the surface bullet credited `TaskCard`'s `⋯`
+menu with rendering the item. Both were wrong in the same direction and RUFU-204 paid for it: an
+engine-originated park (`paused: true` with `userPaused` left unset) is the most common state of a
+wedged review card, and gating on bare `paused` hid the one lever that clears it while the card's own
+stall diagnostic told the operator to use it. The pause states are distinguished by `userPaused`, the
+field `AGENTS.md`'s Move-Task contract forbids an engine rebound from setting — the same discriminant
+`manual-retry-reset.ts` and the provider-health monitor already use. The surface claim was corrected to
+the hosts that actually wire the handler, verified by grep, because a doc that implies a board card
+offers this escape hatch sends the next reader to fix the wrong component.
+-->
+
+Invariants:
+- **An engine park keeps it; only an operator hold refuses.** `paused` alone is not a refusal. The pauses that freeze automation without the operator's hand on them — a graph-failure park, a stall-deadlock park, a mission-autopilot hold, an outside-worktree `external-block` freeze — all write `paused: true` with `userPaused` unset, and each still offers the hatch: the park stopped the engine, not the operator's lever. Refusal needs the pair only `pauseTask` writes (`paused` AND `userPaused`), and it refuses on both sides at once — no capability on any read path plus the store's `task is paused` throw. `pausedReason` is deliberately never consulted, because those sinks park without writing one. A bypass run on a parked card mutates only the gate's step-result row: the card stays parked, unmoved, and unmerged. The outside-worktree `external-block` freeze is listed here because it is the park class most likely to be mistaken for a hold: it also stamps `status: "blocked"`, but that status is not a `BLOCKING_TASK_STATUSES` member, so the freeze holds the merge door through the same `paused` condition every other engine park uses — and that condition, plus the `externalBlock` record the operator must clear, both survive a bypass.
+- **Never activity-suppressed.** Unlike every sibling stall signal — whose client blank fires while `agent:log` events stream (see above) — the capability is never cleared by agent activity or merge-queue membership: a reviewer streaming logs does not make an unrun gate run, and the escape hatch must stay reachable on exactly the wedged card it exists for.
+- **Failed wins over absent**: a card with both a failed result and an unrun gate offers one bypass for the failed step; the second gate surfaces after the first bypass lands and the board refetches.
+- **Self-invalidating**: a successful bypass rewrites the gate's step result, so the next read recomputes the field and the affordance disappears without any client-side bookkeeping. Mutation responses are raw store rows carrying no derived fields, so the menu item drops out until the next board refetch re-derives it.
+- Surface: the item renders in the task-detail `Actions` menu, on each of the three hosts that wire the handler — `TaskDetailModal` in the modal overlay (`AppModals`), `TaskDetailContent` inside App's popped-out floating task windows, and `TaskDetailContent` in the right dock (`useRightDockController`) — and only when the field is present, branching copy on `kind` — `absent` copy never claims a failure or a pass, because skipping an unrun gate records an operator decision, not a review approval. Board and list card `⋯` menus never offer it: those hosts deliberately omit the handler, keeping this policy-gated escape hatch on one canonical surface rather than a second one to keep honest. Tool surfaces: `fn_task_bypass_review` (operator-only) and `POST /tasks/:id/bypass-review`; gate semantics live in `docs/workflow-steps.md`.
+
 #### Stale paused review signal
 
 Fusion now derives `task.stalePausedReview` for paused `in-review` tasks whose review-column age is at/over `stalePausedReviewThresholdMs` (age source: `columnMovedAt ?? updatedAt`) while merge is still unconfirmed (`mergeDetails.mergeConfirmed !== true`).
@@ -303,10 +462,10 @@ Fusion now derives `task.stalePausedReview` for paused `in-review` tasks whose r
 `StalePausedReviewCode` values:
 - `stale-paused-review`
 
-Invariant: `stalePausedReview` is **diagnostic-only**. It never auto-unpauses, retries, archives, or moves tasks.
+Invariant: `stalePausedReview` is **diagnostic-only**. It never auto-unpauses, retries, deletes, or moves tasks.
 
 Self-healing surfaces this diagnosis via task log entries in the form:
-- `Stale paused review surfaced [<code>]: paused <duration>; disposition options — unpause, retry, archive, or create follow-up task. pausedReason=<reason|none>`
+- `Stale paused review surfaced [<code>]: paused <duration>; disposition options — unpause, retry, delete, or create follow-up task. pausedReason=<reason|none>`
 
 These entries are rate-limited per `(task, code)` over `stalePausedReviewThresholdMs` so unchanged paused-review debt is visible without log spam.
 
@@ -315,7 +474,7 @@ These entries are rate-limited per `(task, code)` over `stalePausedReviewThresho
 Disposition options:
 - Unpause
 - Retry
-- Archive
+- Delete
 - Create follow-up task
 
 #### Task age staleness signal
@@ -348,16 +507,26 @@ Auto-completion/finalization remains owned by existing recovery passes:
 - `finalizeNoOpReviewTasks`
 - `recoverMergeableReviewTasks`
 - `recoverAlreadyMergedReviewTasks`
-5. **done** — merged/finalized
-6. **archived** — preserved history, optionally cleaned from filesystem
-
-### Archive worktree cleanup
-
-Archiving a single-repository task synchronously removes its task-ID-pinned git worktree before branch and task-metadata cleanup. CLI and extension archive requests fence live execution under the per-task advisory transaction lock: a WIP-lane or active-merge refusal performs no archive write and suppresses all cleanup (worktrees, branches, and task directory). Native worktrees always derive from the lowercased task ID; Worktrunk retains its backend-owned layout. A host-scoped filesystem reservation serializes a successor's deterministic-path acquisition with archival disposal; if removal fails, the reservation is quarantined so the next acquisition can reconcile the orphan instead of colliding with it. `archive({ cleanup: false })` intentionally retains the worktree. Workspace tasks' per-repository `workspaceWorktrees` are not removed by this lifecycle yet.
+5. **done** — merged/finalized. Done retains task history and is loaded in deterministic server-paginated pages of 50 while the board shows the exact total independently of the currently loaded cards.
 
 Board ordering behavior:
-- `todo` mirrors scheduler dispatch order: priority first (`urgent` → `low`), then oldest `createdAt` within a priority tier, then task ID as deterministic tie-break.
-- `triage`, `in-progress`, and `in-review` remain priority-first with task-ID tie-breaks (`in-review` still pins merge-active statuses above non-merging tasks).
+FN-509 removed task priority levels and the per-column sort menu. Every column now uses one shared, non-configurable order:
+
+- **Manual-intake lanes** (an `intake` column with `autoTriage: false`, such as Coding (Ideas)'s "Ideas") show the newest card at the top, so the list reads top-down as "what did I just think of".
+- **Processing lanes** (planning holds, WIP, review/merge) show genuinely ACTIVE cards first, then everything still waiting in the shared queue order: an effective **Boost** first, then oldest `createdAt` first, then the task-id tie-break. This is exactly the order the engine will try candidates in. Active cards are ordered among themselves by arrival and a Boost never moves a waiting card ahead of one already in flight.
+- **Complete lanes** keep arrival order, newest first (`columnMovedAt`, then `updatedAt`, then `createdAt`). Done is deliberately not re-sorted by creation date.
+
+### Boost
+
+**Boost** moves one waiting card to the head of its queue. It is the only way to change the order, and it is deliberately narrow:
+
+- **It is a move-to-head, not a level.** There are no tiers, no visible counter, no persistent "boosted mode" to select, and no un-boost button. Clicking Boost on another card takes the head; clicking the first card again reclaims it.
+- **It never starts anything.** Boost performs no column move, retries no error, lifts no pause, and clears no gate. A boosted card that is blocked by capacity, an overlapping file scope, an unmet dependency, a pending approval, a pause, or a retry cooldown keeps its place in the queue while admission moves on to the next admissible candidate. The visible order is the order of ATTEMPT, not permission to start.
+- **It never preempts.** A selection or reservation that has already been accepted is never taken back to serve a Boost that arrived afterwards.
+- **It lasts for one stay in one column.** A Boost belongs to the card's current stay in its current column of its current workflow, so it survives the different phases of that stay (planning, then waiting for capacity, in the same Planning column). It expires when the card moves, when the workflow changes, and on Reset; it does not become a standing priority in the next column. A successful reservation keeps its winner through the hold → WIP handoff. Duplicates, refinements, reverts, and restored snapshots never inherit a Boost.
+- **It is durable and shared.** The rank lives on the task, not in one browser, so every client and a restarted engine see the same order.
+
+The **Boost** button appears on a live, non-active card in a lane whose remaining processing is automatic. It is absent on manual intake, on Complete lanes, on history, on deleted cards, on work already in flight, in a column with no automatic processing, and on a review lane that is a purely human wait after auto-merge is disabled — unless an automatic review still has to run there, in which case the queue is real and Boost remains available.
 - The `done` column is recency-ordered by completion time (newest first), using `columnMovedAt` as primary and falling back to `updatedAt` then `createdAt` for legacy tasks.
 - The dashboard **list view default ordering matches these same per-column semantics** until a user clicks a sortable header (manual list sorting still overrides defaults).
 
@@ -369,7 +538,7 @@ Tasks cannot be relocated manually from Board, List, or Task Detail. The workflo
 
 ### Plan approval hold
 
-After planning, the card remains at `status: "awaiting-approval"` in the workflow's planning lane, which may be an intake or hold column, and shows **Need Your Review**. **Approve** releases the reviewed plan. **Reject Plan** remains available in Task Detail; it discards the plan and regenerates in place when the card is already in its workflow's planning column. Cards outside planning retain the workflow intake rehome.
+After planning, the card remains at `status: "awaiting-approval"` in the workflow's planning lane, which may be an intake or hold column, and its status badge reads **Needs you** in blinking amber instead of **Queued** or **Ready**. The card is never covered by an overlay, so its title and metadata stay readable; open it to reach Task Detail, where the decision is taken. List rows show the same badge plus an inline notice whose **Approve** releases the reviewed plan without opening the task. **Reject Plan** remains available in Task Detail; it discards the plan and regenerates in place when the card is already in its workflow's planning column. Cards outside planning retain the workflow intake rehome.
 
 <!-- FNXC:BoardNavigationDocs 2026-08-28-13:29: FN-229 makes the pointing hand identify clickable task tiles without changing card activation or Board pan eligibility; disabled controls and editing keep native cursors. -->
 On desktop and tablet Boards, a task tile shows the pointing hand on hover. Dragging a task card's noninteractive body or text pans the Board viewport without moving the task, and the closed grabbing hand remains visible across the whole Board until the drag ends. Disabled controls and editing retain their native state and form cursors at rest.
@@ -379,8 +548,7 @@ On desktop and tablet Boards, a task tile shows the pointing hand on hover. Drag
 ```bash
 fn task move FN-001 todo
 fn task merge FN-001
-fn task archive FN-001
-fn task unarchive FN-001
+fn task delete FN-001
 ```
 
 ### Lifecycle invariants
@@ -388,6 +556,12 @@ fn task unarchive FN-001
 **Paused-state normalization on reopen:** When a task is moved from `in-progress`, `in-review`, or `done` back to `todo` or `triage` (retry/requeue), Fusion clears `task.paused` and `task.pausedByAgentId` to prevent contradictory `todo + paused` or `in-progress + paused` states. A paused task in `todo` is excluded from scheduler dispatch.
 
 **Manual cancel park (`userPaused`):** A user-initiated move from `in-progress` to `todo` (`moveSource: "user"`) sets `task.userPaused = true` and hard-cancels active executor work. Scheduler treats `userPaused` tasks as intentionally parked and will not auto-dispatch them until `userPaused` is cleared — either by explicitly unpausing the task from the dashboard or by moving it back to `in-progress`. Engine/internal requeues (`moveSource: "engine"`) do not set this flag.
+
+<!-- FNXC:TaskDispatch 2026-09-23-22:44: RUFU-264 — heartbeat candidacy projections had drifted from this scheduler rule: they read only legacy `paused`, so operator-parked cards (serialized `userPaused: true, paused` unset) were titled as actionable Wake Delta work and stayed auto-claimable. -->
+**Either park flag is parked everywhere work is offered.** The scheduler rule above extends to every heartbeat coordination surface: the Wake Delta assigned inventory (`rankAssignedTasksForWakeDelta`) and the no-task auto-claim scan (`isRunnableAutoClaimCandidate` + the `claimTaskForAgent` gate, which refuses with `reason: "user_paused"`) treat `paused: true` OR `userPaused: true` as non-actionable — a row a card could be presented for is never a row the scheduler would refuse to dispatch. The Wake Delta count line splits the parked pile by authority (`operator-paused: N, engine-paused: M`, operator wins when both flags are set) so an operator hold never reads as engine churn. Pinned cross-surface by `packages/engine/src/__tests__/wake-delta-user-paused-agreement.test.ts`.
+
+<!-- FNXC:TaskRetrySurfaceSeparation 2026-09-22-10:14: RUFU-261 — the park predicate and the Retry rebound used to be the same code path, so every operator Retry parked the card it was asking the machine to run again. -->
+**Park intent vs release intent:** `moveTask` distinguishes the two gestures through `parkOnHold`. Dragging a card back to the queue by hand is a **park** and is the default (`parkOnHold` absent): the operator took the card away from the machine, so it stays put until they release it. **Retry** is a **release** and states it explicitly with `parkOnHold: false` — the card keeps its user attribution in the audit trail, but the hold-lane park is suppressed and a stale park from an earlier release is cleared, so the row is dispatchable the moment it lands. `parkOnHold` never *sets* a pause (like `preservePause`, which keeps precedence over the release), and FN-457 pause-segment banking still runs on a released move. The dashboard Retry button releases without the flag because it restarts the stage in place and lowers its pause fence (`pauseTask(id, false)`) instead of moving the card. Pinned both directions by `packages/core/src/__tests__/retry-release-vs-drag-park.test.ts` so the two gestures can never collapse back into one.
 
 **Paused-state normalization on explicit completion:** When an agent calls `fn_task_done` on a paused task, Fusion clears `task.paused` and `task.pausedByAgentId` regardless of the task's column (`in-progress` or `todo`). `task.paused` prevents new work from starting, but does not block an agent from completing in-flight work and transitioning the task to `done`. The scheduler respects `globalPause` independently.
 
@@ -416,11 +590,7 @@ Recovery flow:
 
 Task cards on the board only surface branch metadata when it is non-default/user-meaningful: they hide the conventional auto-generated working branch (`fusion/<task-id>` and suffixed variants) and hide the default merge target (`main`), while still showing custom working branches and non-default merge targets.
 
-The board header search panel now includes two **board-only** branch filters:
-- **Working branch** filters by `task.branch`
-- **Target branch** filters by `task.baseBranch`
-
-These filters apply only to board rendering (not list view). Each filter supports concrete branch values plus a **No branch** option that matches tasks where `branch` or `baseBranch` is unset. Persisted filter state remains intentionally deferred to follow-up task FN-3426.
+The shared Board/List header search always searches all live tasks in the current project without restricting results by working or base branch. Entering only a task number displays matching IDs from every prefix, and choosing a suggestion applies that exact ID while leaving task branch metadata unchanged.
 
 Task branch fields are intentionally distinct:
 
@@ -443,9 +613,9 @@ Use supported TaskStore/API paths to reconcile safely:
 - Add a single comment/log entry explaining why the dependency changed
 - Keep downstream blockers coherent (only tasks that still truly depend on unfinished work should remain blocked)
 
-The PostgreSQL TaskStore/API boundary performs this validation and recovery. Do not use direct SQL or task JSON edits to remove dangling dependency references. Completion gating treats dependencies as resolved only when the dependency task is in `done`, `in-review`, or `archived`.
+The PostgreSQL TaskStore/API boundary performs this validation and recovery. Do not use direct SQL or task JSON edits to remove dangling dependency references. Completion gating resolves dependency state through each task's workflow roles; Complete and the applicable review handoff satisfy the gate.
 
-Auto-merge recovery follow-up creation is deduplicated: Fusion creates at most one active (`not done/archived`) recovery task per unresolved parent failure, and merge-conflict recovery also deduplicates by active branch ownership to prevent parallel duplicate follow-ups on the same conflict branch.
+Auto-merge recovery follow-up creation is deduplicated: Fusion creates at most one active (not Complete or soft-deleted) recovery task per unresolved parent failure, and merge-conflict recovery also deduplicates by active branch ownership to prevent parallel duplicate follow-ups on the same conflict branch.
 
 ### Landed-task state reconciliation (maintenance)
 
@@ -658,6 +828,7 @@ Behavior:
 - The selected workflow and refinement seed prompt are persisted with the child so normal planning and approval processing can continue from the returned column.
 - Refinement tasks inherit the source task's GitHub tracking state (unlinked sources opt out; linked sources inherit `enabled` and optional `repoOverride`, but never copy the source issue link).
 
+## Historical archive reintegration
 ## Archive and Restore
 
 ### Archive behavior
@@ -685,55 +856,41 @@ The default action preserves lineage references. The opt-in `removeLineageRefere
 
 ### Cleanup behavior
 
-- Archived entries are persisted as compact snapshots in PostgreSQL cold-storage tables; legacy `archive.db`, in-main-DB `archivedTasks`, and older `.fusion/archive.jsonl` data remain migration inputs only.
-- Task directory (`task.json`, `PROMPT.md`, `agent.log`, attachments) can be removed
+Task archiving is no longer an operator lifecycle. Fusion has no Archived board column, archive/unarchive task routes, tools, CLI commands, or automatic archival settings. Completed history stays in the workflow column carrying the `complete` trait (with `done` as the degraded fallback).
 
-### Compact archive entry format
+On store open, Fusion performs a bounded, project-scoped reintegration of legacy archive snapshots and live rows left on the historical `archived` sentinel:
 
-Archive entries preserve key metadata needed for restoration, including:
+- each non-deleted historical task is restored into its selected workflow's Complete column;
+- `done` is used only when workflow metadata cannot provide a Complete column;
+- genuinely soft-deleted rows are never restored;
+- cold-storage snapshots and the `archived` literal remain migration/forensic inputs, not live board states;
+- corrupted historical snapshots fail soft so later pages can still be reconciled.
 
-- `id`, `title`, `description`, `priority`, `column`, `preArchiveColumn`
-- `dependencies`, `steps`, `currentStep`
-- `size`, `reviewLevel`, `prInfo` (primary mirror), `prInfos` (canonical linked PR list), `issueInfo`
-- `attachments` metadata
-- task `log`
-- timestamps (`createdAt`, `updatedAt`, `columnMovedAt`, `archivedAt`)
-- model override fields (`modelProvider`, `modelId`, `validatorModel*`, `planningModel*`)
-
-`agent.log` content is intentionally not preserved in compact archive entries.
-
-### Restore behavior
-
-`fn task unarchive <id>`:
-
-- Restores archive entry if directory is missing
-- Rebuilds `PROMPT.md`
-- Moves task back to its recorded `preArchiveColumn` when available, falling back to the archived snapshot's prior `column`, then to `done` for legacy archive entries.
-- Logs “Task restored from archive” when recovering from compact archive entry
+Done history is available through the normal board and list surfaces. The dashboard fetches 50 completed tasks initially, loads additional server pages explicitly, and displays an exact total that does not depend on how many cards are currently loaded.
 
 ### Task-ID collision safety and operator recovery
 
-- Ordinary task creation, duplicate, and refine flows now fail safely if the chosen task ID already exists in active storage or archive storage. Existing task rows/files always win; the new create attempt must retry with a fresh reservation instead of overwriting data.
+- Ordinary task creation, duplicate, and refine flows fail safely if the chosen task ID already exists in active storage, soft-delete storage, or historical cold storage. Existing task rows/files always win; the new create attempt must retry with a fresh reservation instead of overwriting data.
 - A failed create may burn a distributed reservation. Gaps in `FN-*` numbering are expected and are safer than reissuing a possibly-colliding ID.
-- `config.nextId` is legacy/read-only. The live allocator state is `distributed_task_id_state.nextSequence`, reconciled on store open against live tasks, archived task snapshots, and reservation history.
+- `config.nextId` is legacy/read-only. The live allocator state is `distributed_task_id_state.nextSequence`, reconciled on store open against live tasks, historical snapshots, and reservation history.
 
 If you suspect **historical overwrites from pre-FN-4044 builds**, inspect surviving evidence in this order:
 
-1. PostgreSQL archived-task snapshots for the missing ID (then legacy `archive.db` only when auditing unmigrated data)
+1. PostgreSQL historical task snapshots for the missing ID (then legacy `archive.db` only when auditing unmigrated data)
 2. `.fusion/tasks/<id>/task.json.bak`, `PROMPT.md`, attachments, and any surviving worktree branch named for the task
 3. agent run logs / task documents / activity log entries that still mention the original ID
 4. git commits whose subject/body references the original task ID but no longer matches the current task metadata
 
 Recovery/backfill guidance:
 
-- If the original task row still exists in archive storage, unarchive or manually recreate the task from that snapshot.
+- If the original task row still exists only in historical storage, use the automatic store-open reintegration first; otherwise manually recreate the task from that snapshot under a new ID.
 - If only prompt/worktree/git evidence survives, create a replacement task with a new ID and copy over the recovered description, prompt, documents, and attachments manually.
-- If both the active row and archive snapshot were overwritten, Fusion cannot reconstruct lost attachments/comments automatically; recreate them from git history, branch/worktree contents, screenshots, or external issue trackers.
+- If both the active row and historical snapshot were overwritten, Fusion cannot reconstruct lost attachments/comments automatically; recreate them from git history, branch/worktree contents, screenshots, or external issue trackers.
 - Record the incident in the replacement task so future audits understand why the task ID and commit history diverge.
 
-## Reverting Done/Archived tasks (git path + AI-undo fallback)
+## Reverting completed tasks (git path + AI-undo fallback)
 
-- `POST /api/tasks/:id/revert` (FN-7523) reverts a **Done** or **Archived** task's landed work via git. Only `done`/`archived` tasks are revertable; the source task's column/status is never mutated as a side effect.
+- `POST /api/tasks/:id/revert` (FN-7523) reverts a completed task's landed work via git. Eligibility is resolved from the task's workflow Complete column; the source task's column/status is never mutated as a side effect.
 - The engine resolves the task's attributable commit(s) (squash single-commit, rebase/cherry-pick trailer-filtered subset, or lineage-snapshot fallback), performs a non-committing dry-run to classify the outcome, and only writes a real commit when the dry-run is clean.
 - The route accepts an optional request body `{ mode?: "git" | "ai" | "auto" }` (default `"auto"`; unknown values reject with 400):
   - `"git"` — the FN-7523 git-only behavior. The result (including a conflicting/unsupported result) is returned as-is and never creates a follow-up task.
@@ -741,11 +898,11 @@ Recovery/backfill guidance:
   - `"auto"` — try git first. A clean/alreadyReverted/needsHuman result is returned unchanged. A conflicting or unsupported result falls back to creating the AI-undo task.
 - Also accepts an optional `{ granularity?: "squash" | "per-sha" }` field (FN-7548) that selects the git-path commit granularity: `"squash"` (default, unchanged) accumulates all attributable commits into one revert commit; `"per-sha"` creates one attributed revert commit per original sha (each with its own `Fusion-Task-Id` trailer and audit line), skipping no-op shas without empty commits. A mid-batch conflict in either mode rolls back the whole batch — no partially-landed per-sha commits. This field only affects the single-repo git path and is ignored when `mode` resolves to `"ai"` or the task is a workspace task.
 - Git-path response contract (additive only): `{ mode: "git", clean, revertCommitSha?, revertCommitShas?, conflicts?, alreadyReverted?, unsupported?, needsHuman?, reason? }`. A clean revert lands a `revert(FN-xxxx): ...` commit carrying a `Fusion-Task-Id` trailer on the resolved base branch; `revertCommitShas` reports every commit created (all of them for `per-sha`, the single one for `squash`) alongside the existing `revertCommitSha`.
-- AI-undo response contract: `{ mode: "ai", createdTaskId: "FN-YYYY", alreadyOpen?: true }`. The created task is an ordinary `triage`-column board task (via the normal `store.createTask` path) that references the source task's id, mission, and landed files, and instructs undoing the source task's behavior while preserving unrelated later changes to the same files, using a `revert(FN-xxxx): ...` commit convention. It carries NO dependency on the (already done/archived) source task. A `sourceMetadata.revertOf` marker makes repeated fallback calls idempotent — while an AI-undo task for that source is still open, a further call returns the same `createdTaskId` with `alreadyOpen: true` instead of creating a duplicate; a prior undo task that itself reached `done`/`archived` does not suppress a fresh one.
+- AI-undo response contract: `{ mode: "ai", createdTaskId: "FN-YYYY", alreadyOpen?: true }`. The created task is an ordinary `triage`-column board task (via the normal `store.createTask` path) that references the source task's id, mission, and landed files, and instructs undoing the source task's behavior while preserving unrelated later changes to the same files, using a `revert(FN-xxxx): ...` commit convention. It carries NO dependency on the already-completed source task. A `sourceMetadata.revertOf` marker makes repeated fallback calls idempotent — while an AI-undo task for that source is still open, a further call returns the same `createdTaskId` with `alreadyOpen: true` instead of creating a duplicate; a prior undo task that itself reached a workflow Complete column does not suppress a fresh one.
 - **Workspace (multi-repo) tasks (FN-7547):** tasks with `workspaceWorktrees` populated (`isWorkspaceTask`) are revertable too — the route dispatches to a dedicated workspace path that reasons about every sub-repo's integration branch as ONE all-or-nothing unit. It resolves each sub-repo's attributable commit(s), dry-run classifies every sub-repo first, and only commits a `revert(FN-xxxx): ...` commit on EACH sub-repo when every sub-repo classifies clean/already-reverted; if any sub-repo conflicts, no sub-repo is committed and every touched sub-repo worktree is rolled back to its pre-call state. Response contract for workspace tasks: `{ mode: "git", clean, workspace: { repos: [{ repo, classification, revertCommitSha?, conflicts?, alreadyReverted? }] }, conflicts?: {repo, file, ...}[] }`. A conflicting workspace result still falls back to the AI-undo task under `"auto"` mode, same as a single-repo conflicting result. See [Workspaces](./workspaces.md#reverting-a-workspace-task) for the operator lifecycle.
 - **`autoMerge:false` PR-based revert (FN-7554):** for a single-repo task whose git revert classifies **clean**, `autoMerge:false` no longer dead-ends at `needsHuman`. The route prepares a dedicated `fusion/revert-<id>` branch off the resolved base branch (via the engine's `prepareRevertPrBranch`, which NEVER writes to the base branch itself), pushes it, and opens a GitHub PR through the same owner/repo resolution, `githubRateLimiter` gate, `findPrForBranch` idempotency, and `manual: true` handoff as `POST /tasks/:id/pr/create`. Response: `{ mode: "pr", clean: true, prUrl, prNumber, revertBranch, existingPr? }` — a second call while the PR is still open links the existing PR (`existingPr: true`) instead of re-pushing. GitHub unconfigured or rate-limited still degrades gracefully to `{ mode: "git", needsHuman: true, reason }`, and a conflicting/unsupported/already-reverted classification is unaffected (no PR is opened; `"auto"` mode still falls back to the AI-undo task on conflict/unsupported).
 - **`autoMerge:false` PR-based revert extended to workspace tasks (FN-7577):** a workspace task whose git revert classifies **clean across every sub-repo** also opens PRs instead of dead-ending at `needsHuman` under `autoMerge:false`. The engine's `prepareWorkspaceRevertPrBranches` mirrors the workspace all-or-nothing classify-all contract: it dry-run classifies EVERY sub-repo first, and only prepares one `fusion/revert-<id>` branch per sub-repo (never writing any sub-repo's integration branch) when every sub-repo classifies clean/already-reverted — a single conflicting sub-repo aborts the WHOLE preparation with no branch created anywhere. The route then resolves owner/repo and checks the rate limiter for EVERY sub-repo before pushing/creating any PR (so a GitHub-unconfigured or rate-limited sub-repo degrades the whole task to `needsHuman` rather than opening a partial subset), then opens one PR per sub-repo reusing FN-7554's per-sub-repo `findPrForBranch` idempotency and `manual: true` handoff. Response: `{ mode: "pr", clean: true, workspace: { repos: [{ repo, revertBranch, prUrl, prNumber, existingPr? }] } }`. Existing `{ mode: "git" | "ai" | "pr" }` shapes, the `autoMerge:true` workspace path, and FN-7554's single-repo path are unchanged.
-- **Dashboard auto-linking (FN-7555):** the AI-undo task's card shows an "Undo of FN-xxxx" chip and its detail view shows a clickable "Created to undo FN-xxxx" link back to the source task. The source task's detail view shows an "Undo task: FN-YYYY" link whenever an OPEN undo task referencing it exists in the loaded tasks (matching `TaskStore.findOpenRevertTaskForSource`'s open-only semantics — a `done`/`archived`/soft-deleted undo task is never surfaced as active). Both directions are derived client-side from `sourceMetadata.revertOf`; no new API. A dedicated Done/Archived card revert-trigger action is still a separate follow-up (see FN-7525).
+- **Dashboard auto-linking (FN-7555):** the AI-undo task's card shows an "Undo of FN-xxxx" chip and its detail view shows a clickable "Created to undo FN-xxxx" link back to the source task. The source task's detail view shows an "Undo task: FN-YYYY" link whenever an OPEN undo task referencing it exists in the loaded tasks (matching `TaskStore.findOpenRevertTaskForSource`'s open-only semantics — a completed or soft-deleted undo task is never surfaced as active). Both directions are derived client-side from `sourceMetadata.revertOf`; no new API. A dedicated completed-task card revert-trigger action is still a separate follow-up (see FN-7525).
 - **Configurable AI-undo workflow default (FN-7556, UI: FN-7578):** the project setting `aiUndoTaskWorkflowId` (default `builtin:review-heavy`) selects the workflow applied to every AI-undo task created above (`mode:"ai"` and the `auto`/workspace conflict fallbacks all share one creation seam, so all three inherit this default) — a stricter review posture is warranted because these tasks reverse already-shipped code. A blank/unset value means the created task inherits the project default workflow (pre-FN-7556 behavior); the route falls back to inherit (with a logged warning) if the configured id is blank or does not resolve to a real workflow, so a misconfigured id never breaks AI-undo task creation. Editable from **Settings → General → AI-undo task workflow** (choose "Inherit project default workflow" to store the blank/inherit sentinel). See [Settings Reference → Project Settings](./settings-reference.md#project-settings).
 
 
@@ -755,7 +912,7 @@ GitLab enablement, instance/API URL, and access-token configuration are availabl
 
 GitLab imports are HTTP API only and do not require or invoke `glab`. They require effective `gitlabEnabled !== false`; when GitLab is disabled, dashboard/API/CLI/pi import fetches fail clearly before making GitLab network calls, while saved URL/token settings and existing linked GitLab metadata remain visible for re-enable. Operators can import project issues, group issues, and project merge requests from the Import Tasks surface, CLI, or pi extension tools. Imported tasks are created in `triage`, include the GitLab body (or `(no description)`) plus `Source: <web_url>`, and persist `source.sourceType: "gitlab_import"`, `source.sourceMetadata.provider: "gitlab"`, `resourceType` (`project_issue`, `group_issue`, or `merge_request`), instance/API URL, project/group identity, IID, and web URL. Group issue imports preserve the originating project identity from GitLab so duplicate detection is project-aware instead of group-path-only. Merge request imports use MR IID as the visible number and a namespaced external ID so they do not collide with issue imports.
 
-Duplicate detection checks existing non-archived task provenance and source URLs before creating another GitLab-imported task. GitLab lifecycle side effects (completion comments, close/reopen, close-on-delete, source closed-at backfill, and tracking refreshes) also require GitLab to be enabled; when disabled they skip network work with task-log diagnostics instead of clearing source metadata. GitLab linked tracking display, comments/notes, auto-close/reopen, Command Center signals/analytics, research/search support, and any GitLab-star prompt remain out of scope until the later GitLab parity tasks mapped in [GitLab Parity Inventory](./gitlab-parity-inventory.md).
+Duplicate detection checks existing live task provenance and source URLs before creating another GitLab-imported task. GitLab lifecycle side effects (completion comments, close/reopen, close-on-delete, source closed-at backfill, and tracking refreshes) also require GitLab to be enabled; when disabled they skip network work with task-log diagnostics instead of clearing source metadata. GitLab linked tracking display, comments/notes, auto-close/reopen, Command Center signals/analytics, research/search support, and any GitLab-star prompt remain out of scope until the later GitLab parity tasks mapped in [GitLab Parity Inventory](./gitlab-parity-inventory.md).
 
 Linear issue import is available through the bundled **Linear Import** plugin, not the core GitHub/GitLab Import Tasks implementation. Operators enable the plugin from Plugin Manager, configure the plugin-owned Linear API key, then use the plugin dashboard view or plugin tools to browse and import issues. Imported Linear tasks are created in `triage`, include the Linear body (or `(no description)`) plus `Source: <url>`, and persist `sourceIssue.provider: "linear"` plus `source.sourceMetadata.provider: "linear"` with stable issue id, identifier, URL, team, state, assignee, and timestamps where available. Duplicate detection checks existing non-archived Linear provenance by issue id, identifier, and source URL before task creation and reports the existing task id when a duplicate is found.
 
@@ -946,11 +1103,35 @@ Project settings support reusable model presets:
 
 Users can apply presets at task creation; manual model selection can override them.
 
-## AI Title Summarization
+## Title, description, and definition
 
-`autoSummarizeTitles` is a project-scoped boolean (default `false`) that controls automatic title attempts for every non-empty task description created without a title. When enabled, dashboard/API, direct store, agent, scheduled, signal, and CLI-backed creates use the configured title model regardless of description length. When disabled or unavailable, triage supplies a deterministic title derived from the first meaningful description line (with shared Markdown normalization and a 60-character safety cap), and the planner's normal `# Task: ID - title` heading is written back to project-scoped metadata.
+Fusion distinguishes three separate things:
 
-Explicit titles always win. `summarize:true`, Task Detail **Summarize**, and the explicit summarization endpoint remain available even when automatic mode is disabled. The setting is read as a snapshot for each create: changing it does not rename existing tasks or cancel an already-started attempt. GitHub tracking uses its configured summarizer for any non-empty titleless task and falls back to deterministic description-derived title generation when summarization is unavailable.
+- **Description** — what you actually type in New Task or quick entry. It is the authoritative statement of the work.
+- **Title** — the short label rendered on cards, list rows, search results and pickers.
+- **Definition** — what Task Detail shows: progress, the description, and the plan's product outcome. See the dashboard guide.
+
+Creation surfaces submit a **description only**; they never send an implicit title. API, import, duplication, refinement and integration writers may still supply an explicit title, and an explicit title is never replaced.
+
+### When a title is stored
+
+`autoSummarizeTitles` is a project-scoped boolean (default `false`) and is the **only** writer of a generated title. When enabled, every non-empty untitled create (dashboard/API, direct store, agent, scheduled, signal, CLI-backed) asks the configured title model for a short title, regardless of description length — a five-word description and a 400-character description are both summarized. The AI-authored task language selected directly above the toggle (English / task input language / interface language) is snapshotted before the deferred call and decides the generated title's language.
+
+When the setting is disabled, or generation returns nothing, fails, or is superseded by a title written meanwhile, **no title is stored**. That is the intended resting state, not a defect: an untitled row is rendered from its description by the display fallback below.
+
+Planning never writes a title. Triage does not copy the `# Task: ID - title` heading of `PROMPT.md` onto the task row, and a terminal planning failure no longer backfills a deterministic title — a stored guess is indistinguishable from an operator's explicit title and would permanently shadow the create-time policy. The deterministic first-line helper still supplies the planner with prompt context only.
+
+### How a title is displayed
+
+Every card, list row, search result and task picker resolves its label the same way:
+
+1. a non-blank stored title, rendered in full;
+2. otherwise the **first 220 characters of the description, exactly** — no ellipsis and no added suffix (components may still clamp visually with CSS);
+3. otherwise the task ID.
+
+This projection is display-only and is never persisted. It is also **not retroactive**: titles already stored keep their value and are never cleared or recomputed, because a stored title's provenance (explicit vs. automatic) is not durably distinguishable.
+
+The setting is read as a snapshot for each create: changing it does not rename existing tasks or cancel an already-started attempt. `summarize:true` and the explicit summarization endpoint remain available as integration contracts even when automatic mode is disabled. GitHub tracking uses its configured summarizer for any non-empty titleless task and falls back to deterministic description-derived title generation when summarization is unavailable.
 
 If a configured title summarizer model is stale after a pi upgrade, Fusion logs a warning naming that provider/model and retries once with automatic model resolution before falling back to deterministic title generation. Genuine AI-service failures are not masked by this retry.
 
@@ -993,7 +1174,8 @@ In **Settings → Models → Project**, choose whether AI-authored task plans, t
 
 **Blocked** means infrastructure outside the task worktree requires operator action, such as exhausted disk, unavailable credentials, a provider outage, or a terminal network failure. The card preserves completed steps and committed work. Fusion sends one dashboard mailbox explanation for each unresolved external-block episode with what was verified, why work stopped, what was not implemented, and the precise unblock condition; it does not expose raw prompts, logs, stack traces, or credentials.
 
-Read that mailbox explanation before acting. After the stated unblock condition is met, use **Retry**. Retry resumes the recorded interrupted workflow node; it does not reset steps, delete `PROMPT.md`, replan, or replace the task worktree and branch. Repeated Retry requests are refused while the resume continuation is already pending.
+Read that mailbox explanation before acting. Use the robot action to open Chat with that exact error prefilled. After repairing the external obstacle and meeting the stated unblock condition, use **Retry**. Retry resumes the recorded interrupted workflow node; it does not reset steps, delete `PROMPT.md`, replan, or replace the task worktree and branch. Repeated Retry requests are refused while the resume continuation is already pending.
+- `absent-branch-landed-reconciliation` — an in-review task whose branch was cleaned up can be completed only when an ownership-anchored commit exists on its base branch and the task is not paused, executing, or holding a fresh checkout lease. `fn task reconcile <id>` uses the same liveness and compare-and-set fence; it never fabricates review approval.
 
 ## Reconciling review tasks with a cleaned-up branch
 

@@ -158,6 +158,7 @@ DDL microbenchmarks of the pre-fix pristine shape measured `CREATE DATABASE` 44.
 
 ### 7. Mission store PostgreSQL teardown hook
 
+- **Status:** Closed 2026-08-23 — file-level quarantine (second sighting of a different test in the same file); quarantine RESCUED and lifted 2026-09-02 by `9b29c6beab` (PR #3549); RETIRED 2026-09-06 by `82c635384d` (deletion ratchet — file, ledger row, and the core exclude key removed together, so vitest defaults apply). Measured conflict left for follow-up: the 2026-09-02 lift deleted the ledger row, no non-merge commit in `9b29c6beab..82c635384d^` re-added it, yet the row was present at `82c635384d^` — a merge reintroduced it, so the ratchet fired against a quarantine this record already recorded as rescued. The file is gone for good as far as this record is concerned; the retirement is not evidence that the rescue was wrong.
 - **Status:** Closed 2026-08-23 — file-level quarantine (second sighting of a different test in the same file); quarantine RESCUED and lifted 2026-09-02 by `9b29c6beab` (PR #3549).
 
 - **File:** `packages/core/src/__tests__/postgres/mission-store.pg.test.ts`
@@ -265,6 +266,50 @@ reads, and selection writes by their task, workflow, and project request instead
 
 The failure occurred while validating FN-9334's unrelated resume-eligibility cases. The test's per-case resolved mock was consumed out of order only in the file run, while the isolated test passed; no timeout, retry, assertion, or product behavior was changed. A second sighting requires normal quarantine escalation.
 
+### 15. Notification-service whole-file invocation memory exhaustion
+
+- **Status:** Closed 2026-09-04 by the RUFU-186 fix-landed close (AGENTS.md record-authority; see Closure below). The whole-file invocation is safe — the suite is network-dead with a permanent connect-tripwire guard; no quarantine was ever created and none is owed.
+- **File:** `packages/engine/src/notification/__tests__/notification-service.test.ts`
+- **Exact identity:** a whole-file invocation pathology — `vitest run src/notification/__tests__/notification-service.test.ts` with no `-t` filter, i.e. the three describes `NotificationService deferred failure notifications`, `NotificationService manual dispatch dedupe`, and `NotificationService workflow transition notifications` in one file run. Not a single-case flake, but deterministic: every whole-file run dies at the START of describe 3's `NotificationService workflow transition notifications > does not add a manual-hold workflow notification when the failed status already represents the task update`. Count correction: the file collects **31 cases** (20 / 2 / 9); the "77 `it(` cases" figure circulating from the RUFU-180 evidence trail is a substring-grep artifact (`it(` also matches `emit(` etc.).
+- **Observed tree/SHA:** `8803ecff6a` (RUFU-181 branch tip); base repro `dfc1f5ff05` with the three production files checked out to base dies identically; RUFU-180 observations on `fusion/rufu-180`.
+- **Observed frequency:** 13 review-lane OOM-killed verification dispatches on 2026-09-03 01:33Z–19:27Z (RUFU-180), plus this card's three whole-file repros and one `-t`-filtered repro — all deterministic kills, no green whole-file run observed at any tree tried.
+
+| run | result |
+|---|---|
+| per-describe `-t` (all three commands below) | **green** — 20 / 2 / 9 passing, each in seconds |
+| whole file, unbounded | kernel journal `Out of memory: Killed process … (node-MainThread) … anon-rss:62094756kB` (RUFU-180); RUFU-181 diagnostic-run orphans killed at `anon-rss:68476596kB`, `64535016kB`, `63674596kB`, `68467460kB` |
+| whole file, bounded (`systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0` + `NODE_OPTIONS=--max-old-space-size=4096`, wall bound 600 s) | `Memory cgroup out of memory: Killed process … anon-rss:6177920kB` ~17 s in; a 1 Hz RSS probe shows a flat ~553 MB plateau through every preceding test, then the probe never ticks again after the death case STARTS — event-loop starvation with ~350 MB/s growth |
+| `-t` filtered describe 2 → describe 3 only | **reproduces** the same cgroup kill at the same case |
+| `-t` filtered describe 1 + 3, describe 1 + 2, each describe alone, describe 2 + death case alone | green |
+
+**[Superseded 2026-09-04 — the root cause WAS named and fixed by RUFU-186; see Closure below. The text below is preserved as the pre-fix record.]**
+
+Localized, root cause NOT named. The wedge re-arm floor (`armPendingWedgeTimer`'s `Math.max(1, min(delayMs, wedgeNotificationSettleMs))` on `held`/`rearmed`) is exonerated at describe 3's default `wedgeNotificationSettleMs = 300_000`, and a small-heap-capped run GC-thrashes rather than producing a V8 heap OOM — the runaway allocation is transient garbage too fast for the event loop to service timers, not a single big object. The ordering dependency is real and currently irreducible below "describe 2 runs before describe 3": D1+D3 is green even though it contains every test D2+D3 runs inside describe 3, and D2 + the death case alone is green. A small-heap `--cpu-prof` capture showed only the launcher's module-load profile (test workers never flushed), so no allocation-site evidence exists yet.
+
+**Second-sighting escalation:** a second sighting moves this to `scripts/lib/test-quarantine.json` + the one-line `"src/notification/__tests__/notification-service.test.ts"` exclude in the `engine-default` project of `packages/engine/vitest.config.ts` in one lockstep commit (AGENTS.md, no discretion). Note quarantine also removes the `-t` workaround below (no CLI flag lifts a configured exclude), which is why recording is the first-sighting path.
+
+**Interim remedy — the review lane must use these bounded commands** while this is unfixed (each is the review-lane verification for this file's subject and produces a verdict). **[Superseded 2026-09-04:** the whole-file invocation is the normal invocation again; commands retained as the historical remedy.**]**
+
+```
+pnpm --filter @fusion/engine exec vitest run src/notification/__tests__/notification-service.test.ts -t "NotificationService deferred failure notifications"
+pnpm --filter @fusion/engine exec vitest run src/notification/__tests__/notification-service.test.ts -t "NotificationService manual dispatch dedupe"
+pnpm --filter @fusion/engine exec vitest run src/notification/__tests__/notification-service.test.ts -t "NotificationService workflow transition notifications"
+```
+
+Never run the whole file unbounded on a shared host. The host-safe bounded repro is: `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 --quiet env NODE_OPTIONS=--max-old-space-size=4096 timeout 600 pnpm --filter @fusion/engine exec vitest run src/notification/__tests__/notification-service.test.ts`.
+
+**The `pnpm test` trap:** while unfixed, a card whose diff touches this test file with NO non-test source change in the engine module graph (docs-only, or test-comment-only) does NOT trip the wide-fan-out guard in `scripts/test-changed.mjs` — `changedSourceFilesAffectingPackage` filters every path through `isTestFilePath` — so `pnpm test` runs `vitest run --changed <base>`, collects this file whole-file, and reproduces the kill inside the bounded lane (heap-capped at `ENGINE_SCOPED_AFFECTED_HEAP_MB = 6144`, so it dies as a heap-OOM/red lane, never 62 GB RSS). Substitute: `pnpm test:gate` for cross-cutting coverage plus the three `-t` runs above for subject coverage. `pnpm test` becomes safe again only once this file is fixed or quarantined. The file is NOT in the curated `engine-core` merge-gate allow-list and stays out (gate criteria: fast/deterministic/curated). **[Superseded 2026-09-04:** the fix removes the whole-file hazard, so `pnpm test` is safe again for this file and the substitute guidance no longer applies; the file stays out of the curated gate allow-list.**]**
+
+#### Closure 2026-09-04 (RUFU-186 — fix landed, no quarantine owed)
+
+**Named root cause (supersedes the pre-fix localization above).** The pathology was a test-isolation defect, not in-file state: the harness's in-memory settings default `{ ntfyEnabled: true, ntfyTopic: "topic" }` with no `ntfyBaseUrl`, so `NotificationService` constructs a real production `NtfyNotificationProvider` whose base URL defaults to `https://ntfy.sh`. The file never stubbed `fetch`, so dispatches performed real HTTPS requests from the vitest worker; on Node 26.7.0 undici's fetch negotiates HTTP/2 over TLS, and Node's native `Http2Session::SendPendingData → CopyDataIntoOutgoing` enters a geometric-doubling `operator new[]` loop (interposer capture: 51.5 GB requested across 35 events ≥ 4 MB), ~350 MB/s RSS growth, event-loop starvation (the 1 Hz probe stops ticking), kernel/cgroup kill. Attribution evidence: task documents `allocation-site-evidence(-2)` (native site) and `g18-js-caller-attribution` (JS caller; the earlier AWS-SDK/`NodeHttp2Handler` hypothesis was falsified by direct stack evidence — the h2 client is Node's own fetch). The "describe 2 before describe 3" ordering trigger was reinterpreted: what accumulates across describes is the real-egress attempt count, not cross-describe residue (E1–E4 eliminations confirmed; no product-code defect — CI had meanwhile been receiving real pushes to a public topic named `topic`, which the fix also eliminates).
+
+**Fix (commit `66f3c00af`, test-only).** `packages/engine/src/notification/__tests__/notification-service.test.ts` is now network-dead: `vi.stubGlobal("fetch", recordingFetch)` (sibling convention: `chat-recall-provisioner.test.ts`, `__tests__/mock-provider.test.ts`) plus a case asserting the real dispatch path reaches `https://ntfy.sh/topic` through the fake (a stronger assertion than the old accidental live call). Permanent regression guard: a module-top connect tripwire on `node:net`/`tls`/`http2` (via `createRequire`) records and synchronously refuses any non-loopback socket attempt — a refused connect cannot feed the native storm — and `afterAll` fails the run naming every attempt. Guard demonstrated red-before (stub line disabled → tripwire names 13 `tls->ntfy.sh:443` attempts, exit 1 in 7.4 s, bounded, no storm) and green-after.
+
+**Symptom-gate evidence (host-bounded: `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0` + `NODE_OPTIONS=--max-old-space-size=4096` + `timeout`).** Bounded whole-file runs 32/32 green ×3 consecutively, cgroup peaks 548/557/549 MB (the pre-fix shape climbs ~350 MB/s from the same ~550 MB plateau to a kill at ~15 s; A/B on the identical pair command: unfixed 5,503 MB/6 MB-heap kill vs fixed flat ≤300 MB green in 5.8 s). The three `-t` per-describe commands stay green (20 / 3 / 9); the scoped `src/notification/__tests__` suite is 113/113 green; the file now collects **32** cases (the new guard case joined describe 2). **Lockstep:** register intro 5→4 active, `scripts/__tests__/observed-flake-register.test.mjs` drops entry 15 from its pinned `deepEqual` list in this same commit, `scripts/lib/test-quarantine.json` is untouched (lockstep count 0 → 0) — the fix-landed branch retires the record without the quarantine that a second sighting would otherwise have forced. Profiling method and the safe bounded-run recipe are durable in [`vitest-worker-allocation-storm-profiling.md`](vitest-worker-allocation-storm-profiling.md).
+
+
+
 ### 18. Triage rate-limit retry log warning timer ordering
 
 - **Status:** Active first sighting — recorded 2026-09-24, unattributed.
@@ -316,7 +361,7 @@ FN-8928 evicted the file from the blocking gate under the AGENTS.md gate rule; d
 
 Quarantine is file-level, while the first-sighting exception preserves coverage in files retaining 6 / 75 / 80 passing tests. Under that exception, recording preserves valuable coverage. A **second sighting** of a registered test is an on-sight quarantine: add it to `scripts/lib/test-quarantine.json` and the matching Vitest `exclude` in one lockstep commit; this register entry is then evidence for the ledger `reason`.
 
-Merge-gate eviction records follow a separate branch: the gate can no longer be reddened by that file, while the non-blocking suite retains coverage. A further failure there is an ordinary on-sight quarantine. For PostgreSQL files, the gate-policy assertion forbidding a core-config quarantine exclude makes that an owner decision escalated as its own task rather than an inline edit.
+Merge-gate eviction records follow a separate branch: the gate can no longer be reddened by that file, while the non-blocking suite retains coverage. A further failure there is an ordinary on-sight quarantine. For PostgreSQL files, quarantine is legitimate only once the file is also gone from the blocking `test:pg-gate` script, because a ledger row naming a file the blocking lane still runs is itself a gate-policy violation; that lane decision is what makes it an owner decision escalated as its own task rather than an inline edit. Records dated before 2026-09-08 phrase the same rule as "`quarantinedCoreTests` remains empty" — that named core-config array was removed by the 2026-09-06 deletion ratchet (`82c635384d`), so read those passages as the rule above, not a live identifier.
 
 Capture **full runner output** before recording or quarantining a failure—for example, tee it to a file. Never pipe a dot reporter through `tail`: the summary survives while the `FAIL` identity lines needed for a quarantine entry are exactly what gets truncated.
 
@@ -360,7 +405,7 @@ FN-9423 rebuilt the CLI and ran the exact file through the built `bin.mjs` entry
 
 ### 17. Terminal graph-gate activity outbox contract
 
-- **Status:** Closed — quarantined 2026-09-29 after the second sighting triggered the deletion ratchet; deletion deadline 2026-10-13.
+- **Status:** Closed — quarantined 2026-09-29 by FN-9419 after the second sighting triggered the deletion ratchet; deletion deadline 2026-10-13.
 - **File:** `packages/engine/src/__tests__/agent-activity-writers.test.ts`
 - **Exact test:** `engine agent activity durable writer > persists a terminal graph gate through the production TaskStore outbox facade`
 - **Observed tree/SHA:** `c76cb158f4` (FN-9388).
@@ -384,7 +429,7 @@ The strict production TaskStore outbox path remains untouched: `events.length ==
 
 ### 16. Native updater setup mock lifecycle
 
-- **Status:** Closed — quarantined 2026-09-24 after three artifact-backed second sightings; deletion deadline 2026-10-08.
+- **Status:** Closed — quarantined 2026-09-24 by FN-9383 after three artifact-backed second sightings; deletion deadline 2026-10-08.
 - **File:** `packages/desktop/src/__tests__/native.test.ts`
 - **Exact tests:** `native integrations > setupAutoUpdater > registers updater listeners and checks for updates`; `native integrations > setupAutoUpdater > sets updater download and install flags`.
 - **First-sighting tree/SHA:** GitHub Actions Full Suite push run [35920595803](https://github.com/Runfusion/Fusion/actions/runs/35920595803), `2ed9b65c116cf85e19f2428832a335fc56b0fa09`.
@@ -649,6 +694,7 @@ This resolves the previously unclassified “unrelated satellite-store ordering 
 
 ## Entry: `self-healing-pending-wedge-notification` marker-selection count (first sighting)
 
+- **Status:** Closed 2026-08-23 — file-level quarantine (second sighting); quarantine RESCUED and lifted 2026-09-02 by `9b29c6beab` (PR #3549); RETIRED 2026-09-06 by `82c635384d` (deletion ratchet — file, ledger row, and engine exclude line removed together), on the same resurrected-row basis recorded under record 7 above.
 - **Status:** Closed 2026-08-23 — file-level quarantine (second sighting); quarantine RESCUED and lifted 2026-09-02 by `9b29c6beab` (PR #3549).
 - **File:** `packages/engine/src/__tests__/self-healing-pending-wedge-notification.test.ts`
 - **Exact test:** `reconcile pending wedge notifications > selects elapsed markers and audits the completion outcome verbatim`
@@ -824,5 +870,89 @@ AssertionError: expected 0 to be greater than or equal to 2
 The assertion counts `createFnAgent` calls after a resume and observed ZERO, so the resume path never
 reached agent creation at all — reads as module-mock ownership racing across files that share the
 `@fusion/core` agent-factory mock, not a wait that needs lengthening. No timeout was widened, no retry
+added, and no assertion relaxed. A SECOND sighting is an ordinary on-sight quarantine with no further
+discretion, per the standing rule in AGENTS.md.
+
+### 15. `packages/cli/src/__tests__/package-config.test.ts` > `shipped agent skills` > `keeps computer-use in the published skill tree`
+
+- **File:** `packages/cli/src/__tests__/package-config.test.ts`
+- **Exact test:** `shipped agent skills > keeps computer-use in the published skill tree`
+- **Owner:** unowned — first sighting, recorded rather than quarantined because the file's remaining 41 tests are substantial coverage and quarantine is file-level.
+- **Observed tree/SHA:** deterministic (not a flake-shape): reproduced on pure `origin/main 2adc171f2c` (fresh probe worktree) and on the v0.78.0-beta.1 merge tree — 1 failed / 41 passed both ways.
+- **Root cause:** host `npm` is 12.0.2, whose `npm pack --dry-run --json` emits a keyed object (`{"<name>": {...}}`) while the test parses npm 10/11 array shape (`packed[0].files`) → `TypeError: Cannot read properties of undefined (reading 'files')` at `package-config.test.ts:565`. Upstream CI (older npm) stays green.
+
+---
+
+## Entry: `MissionManager.reconcile` pre-commit switch window (first sighting)
+
+- **File:** `packages/dashboard/app/components/__tests__/MissionManager.reconcile.test.tsx`
+- **Exact tests:** `MissionManager reconcile control > silently discards preview resolution and rejection in the pre-commit switch window` and `MissionManager reconcile control > refuses a same-batch retained-panel apply click so no write reaches the abandoned mission`
+- **Owner:** unowned — first sighting, recorded rather than quarantined because the file's remaining 20 tests are substantial coverage and quarantine is file-level.
+- **Observed tree/SHA:** `0dc3ef5eb` (FN-402). Both cases sit at file lines 179 and 190, i.e. BEFORE the single FN-402 edit in this file at line 263, so the change cannot have run ahead of them.
+- **Observed frequency:** once, and only when the file ran in the same vitest command as 31 other `MissionManager.*` / `MissionInterviewModal.*` / `PlanningModeModal.*` files. Passes deterministically alone and on an immediate rerun of the identical multi-file command.
+
+Verbatim observed failure:
+
+```
+FAIL  src/__tests__/package-config.test.ts > shipped agent skills > keeps computer-use in the published skill tree
+TypeError: Cannot read properties of undefined (reading 'files')
+ ❯ src/__tests__/package-config.test.ts:565:46
+```
+
+A proper fix normalizes both npm-JSON shapes test-side (upstream-owned); no assertion was relaxed locally. A SECOND sighting on npm<12 hosts, or any evidence the packlist semantics itself regressed, is an ordinary on-sight quarantine with no further discretion, per the standing rule in AGENTS.md.
+
+### 16. `prepare-graph-node-execution` FN-282 tests vs FN-288 invariant change (deterministic upstream-main failures)
+
+- **Files/tests:** `packages/engine/src/__tests__/planning-before-worktree.test.ts` > `prepareGraphNodeExecution skips read-only acquisition (workspace=false|true)`; `packages/engine/src/__tests__/workspace-file-overlap-parity.test.ts` > `workspace implementation base-refresh enablement > forwards refresh from write-capable code and skips read-only graph preparation`
+- **Owner:** upstream. FN-282 (d18d8c7b99) authored both tests and the prepare-graph-node-execution skip contract; FN-288 (8803ecff6a) then rewrote `prepare-graph-node-execution.ts` so `requiresWorktree:true` proceeds through `store.getTask` before any read-only short-circuit, and did NOT update these two tests. The tests encode the pre-FN-288 contract, so they fail deterministically at `origin/main 8803ecff6a` itself (verified by file-identity: post-merge code+tests are byte-identical to upstream, and the assertion contradicts line 46 of the merged source).
+- **Why upstream main stays green:** these files are outside the thin merge-gate allow-list; `full-suite.yml` is push-to-main non-blocking.
+- **Observed tree/SHA:** reproduced on the v0.78.0-beta.2 merge tree and by identity argument on pure `8803ecff6a`; failures: `expected "vi.fn()" to not be called at all, but actually been called 1 times` (getTask / ensureGraphCustomNodeWorktree).
+- No assertion was relaxed locally. The fix is upstream-owned: re-express the two tests against the FN-288 invariant (read-only nodes never arrive with `requiresWorktree:true`, or move the plan short-circuit above the `getTask` line in the implementation if that is the intent).
+
+### 17. `pg-backup-migration-bookkeeping.pg.test.ts` FN-9255 restores on a host where PATH pg client tools (18.6) are newer than the embedded server (15.18) (environment-dependent, deterministic here)
+
+- **File/tests:** `packages/core/src/__tests__/postgres/pg-backup-migration-bookkeeping.pg.test.ts` > `restores the exact migration version set captured with project data`; `reports unavailable and leaves bookkeeping untouched for a legacy pair`; `leaves bookkeeping untouched for a central-only restore`
+- **Owner:** environment (this host) with an upstream hardening gap. This machine runs the Fusion **embedded** PostgreSQL (native `15.18.0-beta.17` under `~/.fusion/pg-test-server`, clusters on ports 25432/54329/5433) plus docker PG15/16 clusters; `pg_dump`/`pg_restore` from PATH are **18.6**. Verified: `pg_dump` 18.6 writing against a 15.18 source embeds `SET transaction_timeout = 0;` (a PG17+ GUC) in the dump preamble, and `pg_restore` replaying that dump into the 15.18 server fails with `could not execute query: ERROR: unrecognized configuration parameter "transaction_timeout"`. CI stays green because it pairs client tools of the same major as the server.
+- **Observed tree/SHA:** reproduced on the v0.78.0-beta.2 merge tree with `FUSION_PG_TEST_URL_BASE=postgresql://localhost:25432`; error: `pg_restore failed: Command failed: /usr/bin/pg_restore --format=custom ... --single-transaction .../fusion-pg-*.dump`.
+- **Production implication (this host):** production is the same embedded 15.18 server and `pg-backup.ts` resolves `pg_dump`/`pg_restore` from PATH (upstream deliberately does not bundle them), so dashboard-created backups here carry the PG17+ SET and FN-9255 restores would fail the same way until either PATH tools match the server major or upstream resolves the embedded-native `bin/` binaries first. Operator workaround: put the embedded-native client bin first on PATH (`~/.fusion/pg-test-server/native/15.18.0-beta.17-linux-x64/bin`).
+- **Action:** do NOT appease. On a version-matched host this becomes an ordinary on-sight quarantine; the durable fix is upstream-owned (pin/embedded-native tools or a client-major guard in `pg-backup.ts`).
+
+### 18. `AgentDetailView.core.test.tsx` skill-badge state under full-suite load (first sighting)
+
+- **File:** `packages/dashboard/app/components/__tests__/AgentDetailView.core.test.tsx`
+- **Exact test:** `AgentDetailView — core > renders assigned skills as readable badges with full id tooltip`
+- **Owner:** unowned — first sighting, recorded rather than quarantined because the file's remaining 53 tests are substantial coverage and quarantine is file-level.
+- **Observed tree/SHA:** v0.78.0-beta.3 merge tree (pre-merge HEAD `26e41764c0` + staged merge of `dd808ed2c6`), full `npx vitest run` in `packages/dashboard` (log `/tmp/dash-test2.log`). The identical tree passed this file in the FIRST full merged run (`/tmp/dash-test.log`) and the file passes deterministically in isolation (53/53), so the shape is suite-only load/timing nondeterminism, not a code regression. Test also exists on `origin/main` untouched.
+- **Symptom:** badge renders `data-skill-state="unknown"` instead of `"auto-available"` at `AgentDetailView.core.test.tsx:482` — reads as the async skill-catalog lookup losing the render race under suite load, not an assertion needing widening.
+
+Verbatim observed failure:
+
+```
+FAIL  |dashboard-app-quality-backfill| app/components/__tests__/AgentDetailView.core.test.tsx > AgentDetailView — core > renders assigned skills as readable badges with full id tooltip
+Error: expect(element).toHaveAttribute("data-skill-state", "auto-available") // element.getAttribute("data-skill-state") === "auto-available"
+Expected the element to have attribute:
+  data-skill-state="auto-available"
+Received:
+  data-skill-state="unknown"
+ ❯ app/components/__tests__/AgentDetailView.core.test.tsx:482:23
+```
+
+No timeout was widened, no retry added, no assertion relaxed. A SECOND sighting is an ordinary on-sight quarantine with no further discretion, per the standing rule in AGENTS.md.
+
+**Second sighting (2026-09-07) → quarantined.** Reproduced identically (`data-skill-state="unknown"` at `:482`) in a `npx vitest run app/components/__tests__/` subset run on the v0.78.0-beta.4 merge tree (this session, 2026-09-07 ~09:22 UTC; the run failed 4 files, this test among them, while a same-day 2-file run passed it). The file now carries a `quarantinedDashboardTests` exclusion and a `scripts/lib/test-quarantine.json` row (`quarantinedAt: 2026-09-07`); deletion clock runs to 2026-09-21 unless rescued with a root-cause fix.
+
+FAIL dashboard-app-quality-backfill app/components/__tests__/MissionManager.reconcile.test.tsx > MissionManager reconcile control > silently discards preview resolution and rejection in the pre-commit switch window
+AssertionError: expected "vi.fn()" to be called 2 times, but got 1 times
+ ❯ app/components/__tests__/MissionManager.reconcile.test.tsx:179:112
+```
+
+| run | result |
+|---|---|
+| 32 files in one command (all `MissionManager.*`, `MissionInterviewModal.*`, `PlanningModeModal.*`) | **failed** — 2 failed / 317 passed |
+| `MissionManager.reconcile.test.tsx` alone, same tree | **passed** (22/22) |
+| the same 32-file command rerun, same tree | **passed** (319/319) |
+
+Both assertions depend on real-timer `waitFor` windows around deferred preview/apply promises, so a
+loaded worker reads as scheduling pressure rather than a product race. No timeout was widened, no retry
 added, and no assertion relaxed. A SECOND sighting is an ordinary on-sight quarantine with no further
 discretion, per the standing rule in AGENTS.md.

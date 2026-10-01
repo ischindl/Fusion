@@ -22,6 +22,7 @@ import {
   __resetStashFolderCacheForTests,
   __resetVectorCapabilityCacheForTests,
   normalizeStashSearchQuery,
+  stashRelevanceScore,
   queryStashEvents,
   deleteStashChatSession,
   deleteStashChatSessions,
@@ -335,6 +336,19 @@ describe("normalizeStashSearchQuery (RUFU-121 Step 2)", () => {
     expect(normalizeStashSearchQuery("Or postgres")).toBe("Or");
   });
 
+  /*
+  FNXC:MemoryFocusRecall 2026-09-03-00:21:
+  RUFU-173 — the lane T OR-joined query AS OBSERVED by this normalizer. The non-ASCII strip
+  runs BEFORE whitespace collapse and token split, so the pure-ASCII "OR" joiner is never
+  eaten: the OR-preserving branch fires and BOTH word terms survive as separate terms. The
+  diacritic term itself arrives character-stripped (`pamäťové` → `pamov`) — this literal is
+  RUFU-173's residual limitation written as a test; true diacritic keyword matching is the
+  deferred Stash-side follow-up (docs/memory-backend-integration.md §5), not core-fixable.
+  */
+  it("keeps both OR-joined word terms while stripping the diacritic term itself (RUFU-173 observed)", () => {
+    expect(normalizeStashSearchQuery("pamäťové OR hladiny")).toBe("pamov OR hladiny");
+  });
+
   it("drops pure-punctuation tokens and tokens that clean to empty", () => {
     expect(normalizeStashSearchQuery("??? OR hello ???")).toBe("OR hello");
     expect(normalizeStashSearchQuery("??? hello")).toBe("hello");
@@ -599,6 +613,186 @@ describe("StashMemoryBackend vector-first search (RUFU-126 Step 5)", () => {
     expect(results).toEqual([]);
     expect(semanticCalls()).toHaveLength(1);
     expect(keywordCalls()).toHaveLength(1);
+  });
+});
+
+// FNXC:RUFU133StashScore 2026-08-25-20:17:
+// RUFU-133: keyword-path relevance scoring contract (D5 companion to
+// RUFU-126; docs/memory-plugin-contract.md §3.3.2). Invariants pinned here:
+// three-tier comparable 0..1 mapping (server score → raw rank normalized by
+// the result-set max rank → positional 2/1 fallback), [0,1] clamps, the
+// maxRank == 0 guard (no divide-by-zero), per-item tier precedence, and the
+// RUFU-121 URL contract byte-identical under the new scoring. Vector flag
+// defaults false → the keyword path is deterministic in every case below.
+describe("StashMemoryBackend.search relevance score (RUFU-133)", () => {
+  const KEYWORD_PREFIX = "/api/v1/me/sessions/events/search";
+
+  /** Reject exactly like the real transport seam for a non-2xx response. */
+  function stashStatus(code: number): () => never {
+    return () => {
+      throw new Error(`Stash returned ${code}: body`);
+    };
+  }
+
+  function keywordFake(impl: (path: string) => unknown = () => ({ results: [] })) {
+    const fake = makeFakeHttp((path) => {
+      if (path.startsWith(KEYWORD_PREFIX)) return impl(path);
+      return null;
+    });
+    const backend = new StashMemoryBackend({ baseUrl: "http://stash.test", httpClient: fake.client });
+    const searchPath = () => fake.calls.filter((c) => c.path.startsWith(KEYWORD_PREFIX)).pop()?.path;
+    return { fake, backend, searchPath };
+  }
+
+  /** RUFU-121 URL-contract shape for query "postgres" (single word, default limit 5). */
+  const POSTGRES_URL = "/api/v1/me/sessions/events/search?q=postgres&limit=5";
+
+  it("1. server score present (numeric) → used verbatim", async () => {
+    const { backend, searchPath } = keywordFake(() => ({
+      results: [
+        { id: "a", content: "alpha hit", score: 0.42 },
+        { id: "b", content: "beta hit", score: 0.17 },
+      ],
+    }));
+    const results = await backend.search("/proj/demo", { query: "postgres" });
+    expect(results.map((r) => r.score)).toEqual([0.42, 0.17]);
+    expect(searchPath()).toBe(POSTGRES_URL);
+  });
+
+  it("2. score out of range → clamped into [0,1] (1.7 → 1; -0.3 → 0)", async () => {
+    const { backend, searchPath } = keywordFake(() => ({
+      results: [
+        { id: "a", content: "alpha hit", score: 1.7 },
+        { id: "b", content: "beta hit", score: -0.3 },
+      ],
+    }));
+    const results = await backend.search("/proj/demo", { query: "postgres" });
+    expect(results.map((r) => r.score)).toEqual([1, 0]);
+    expect(searchPath()).toBe(POSTGRES_URL);
+  });
+
+  it("3. rank only → normalized by the result-set max rank ([0.1, 0.05] → [1.0, 0.5])", async () => {
+    const { backend, searchPath } = keywordFake(() => ({
+      results: [
+        { id: "a", content: "alpha hit", rank: 0.1 },
+        { id: "b", content: "beta hit", rank: 0.05 },
+      ],
+    }));
+    const results = await backend.search("/proj/demo", { query: "postgres" });
+    expect(results.map((r) => r.score)).toEqual([1.0, 0.5]);
+    expect(searchPath()).toBe(POSTGRES_URL);
+  });
+
+  it("4. all ranks zero → maxRank 0 → positional [2.0, 1.0], no divide-by-zero", async () => {
+    const { backend, searchPath } = keywordFake(() => ({
+      results: [
+        { id: "a", content: "alpha hit", rank: 0 },
+        { id: "b", content: "beta hit", rank: 0 },
+      ],
+    }));
+    const results = await backend.search("/proj/demo", { query: "postgres" });
+    expect(results.map((r) => r.score)).toEqual([2.0, 1.0]);
+    expect(searchPath()).toBe(POSTGRES_URL);
+  });
+
+  it("5. single zero rank among positives → 0.0 and finite ([0.1, 0] → [1.0, 0])", async () => {
+    const { backend, searchPath } = keywordFake(() => ({
+      results: [
+        { id: "a", content: "alpha hit", rank: 0.1 },
+        { id: "b", content: "beta hit", rank: 0 },
+      ],
+    }));
+    const results = await backend.search("/proj/demo", { query: "postgres" });
+    const scores = results.map((r) => r.score);
+    expect(scores).toEqual([1.0, 0]);
+    for (const s of scores) expect(Number.isFinite(s)).toBe(true);
+    expect(searchPath()).toBe(POSTGRES_URL);
+  });
+
+  it("6. no rank/score (undeployed server shape) → positional [2.0, 1.0, 1.0, 1.0] byte-identical", async () => {
+    const { backend, searchPath } = keywordFake(() => ({
+      results: [
+        { id: "a", content: "alpha hit" },
+        { id: "b", content: "beta hit" },
+        { id: "c", content: "gamma hit" },
+        { id: "d", content: "delta hit" },
+      ],
+    }));
+    const results = await backend.search("/proj/demo", { query: "postgres" });
+    expect(results.map((r) => r.score)).toEqual([2.0, 1.0, 1.0, 1.0]);
+    expect(searchPath()).toBe(POSTGRES_URL);
+  });
+
+  it("7. mixed tiers → per-item precedence (A score 0.8 → 0.8; B rank 0.05 → 1.0; maxRank over ALL items)", async () => {
+    const { backend, searchPath } = keywordFake(() => ({
+      results: [
+        { id: "a", content: "alpha hit", score: 0.8 },
+        { id: "b", content: "beta hit", rank: 0.05 },
+      ],
+    }));
+    const results = await backend.search("/proj/demo", { query: "postgres" });
+    expect(results.map((r) => r.score)).toEqual([0.8, 1.0]);
+    expect(searchPath()).toBe(POSTGRES_URL);
+  });
+
+  it("8. response under the results key vs the events key → identical mapping", async () => {
+    const items = [
+      { id: "a", content: "alpha hit", rank: 0.1 },
+      { id: "b", content: "beta hit", rank: 0.05 },
+    ];
+    const underResults = keywordFake(() => ({ results: items }));
+    const underEvents = keywordFake(() => ({ events: items }));
+    const ra = await underResults.backend.search("/proj/demo", { query: "postgres" });
+    const rb = await underEvents.backend.search("/proj/demo", { query: "postgres" });
+    expect(ra).toEqual(rb);
+    expect(ra.map((r) => r.score)).toEqual([1.0, 0.5]);
+    expect(underResults.searchPath()).toBe(POSTGRES_URL);
+    expect(underEvents.searchPath()).toBe(POSTGRES_URL);
+  });
+
+  it("9. empty results → []", async () => {
+    const { backend, searchPath } = keywordFake(() => ({ results: [] }));
+    const results = await backend.search("/proj/demo", { query: "postgres" });
+    expect(results).toEqual([]);
+    expect(searchPath()).toBe(POSTGRES_URL);
+  });
+
+  it("10. transport failure (rejects like the real seam) → [] (fail-closed, never throws)", async () => {
+    const fake = makeFakeHttp(stashStatus(500));
+    const backend = new StashMemoryBackend({ baseUrl: "http://stash.test", httpClient: fake.client });
+    const results = await backend.search("/proj/demo", { query: "postgres" });
+    expect(results).toEqual([]);
+    expect(fake.calls.map((c) => c.path)).toEqual([POSTGRES_URL]);
+  });
+
+  describe("stashRelevanceScore helper (direct unit cases, no HTTP)", () => {
+    it.each([
+      ["tier 1: numeric score used verbatim", { score: 0.42 }, 0, 1, 0.42],
+      ["tier precedence: score beats rank when both present", { score: 0.3, rank: 0.1 }, 0, 0.1, 0.3],
+      ["clamp upper: score 1.7 → 1", { score: 1.7 }, 0, 1, 1],
+      ["clamp lower: score -0.3 → 0", { score: -0.3 }, 0, 1, 0],
+      ["clamp edge: score exactly 0 stays tier 1 → 0", { score: 0 }, 0, 1, 0],
+      ["clamp edge: score exactly 1 → 1", { score: 1 }, 0, 1, 1],
+      ["tier 2: rank === maxRank → exactly 1.0", { rank: 0.5 }, 0, 0.5, 1.0],
+      ["tier 2: rank normalized by max", { rank: 0.05 }, 1, 0.1, 0.5],
+      ["tier 2: negative rank clamped to 0", { rank: -0.1 }, 0, 0.2, 0],
+      ["maxRank 0 → positional first hit 2.0", { rank: 0 }, 0, 0, 2.0],
+      ["maxRank 0 → positional rest 1.0", { rank: 0 }, 1, 0, 1.0],
+      ["maxRank 0 → positional at idx 3 → 1.0", { rank: 0 }, 3, 0, 1.0],
+      ["string-numeric score parsed like the vector path", { score: "0.42" }, 0, 1, 0.42],
+      ["string-numeric rank parsed like the vector path", { rank: "0.1" }, 0, 0.2, 0.5],
+      ["NaN score → absent, falls through to tier 2", { score: NaN, rank: 0.1 }, 0, 0.1, 1.0],
+      ["NaN score + NaN rank → positional", { score: NaN, rank: NaN }, 0, 0, 2.0],
+      ["null score → absent, falls through to tier 2", { score: null, rank: 0.5 }, 1, 0.5, 1.0],
+      ["null score + null rank → positional", { score: null, rank: null }, 2, 1, 1.0],
+      ["undefined rank/score → positional first hit", {}, 0, 1, 2.0],
+      ["non-numeric string score → absent, falls through to tier 2", { score: "abc", rank: 0.1 }, 0, 0.1, 1.0],
+      ["empty string score → absent, falls through to tier 2", { score: "", rank: 0.1 }, 0, 0.1, 1.0],
+      ["object score → absent, falls through to positional", { score: { v: 1 } }, 0, 0, 2.0],
+      ["Infinity score → not finite → absent → positional", { score: Infinity }, 0, 1, 2.0],
+    ])("%s", (_label, item, idx, maxRank, expected) => {
+      expect(stashRelevanceScore(item as { rank?: unknown; score?: unknown }, idx, maxRank)).toBe(expected);
+    });
   });
 });
 

@@ -8,6 +8,28 @@
 import { buildConsumerId, createTaskStoreForBackend, type AsyncDataLayer, type RegisteredProject, type TaskStore, CentralCore, GlobalSettingsStore, hasProjectIdentity, isValidSqliteDatabaseFile } from "@fusion/core";
 import { resolve, dirname, basename } from "node:path";
 
+/*
+FNXC:ProjectRoutingVisibility 2026-09-22-16:37:
+The card-minting CLI commands filed work into the central DEFAULT project while the operator stood in a
+different project's checkout (GEDA-1057/1058 landed in the gedapp project from cwd=git/Fusion) and no
+output said so. Resolution PRECEDENCE is the documented contract in docs/multi-project.md — explicit
+`--project` > `defaultProjectId` > cwd discovery — and stays exactly as it was; what the context must
+additionally carry is the PROVENANCE of the choice so the caller can report it and warn when the
+operator's folder disagreed. Both fields are optional so hand-built test/plugin contexts and the
+plugin-context clone keep today's behavior instead of crashing on a missing field.
+*/
+
+/** How a target project was chosen: CLI flag, central default, cwd discovery, or local-store fallback. */
+export type ProjectResolutionSource = "flag" | "default" | "cwd" | "cwd-fallback";
+
+/** Identity of the project seen in the invocation's working directory (id "" = unregistered directory). */
+export interface CwdProjectSnapshot {
+  /** Registry id; empty string for an unregistered project directory. */
+  id: string;
+  name: string;
+  path: string;
+}
+
 /** Project context for CLI operations */
 export interface ProjectContext {
   /** Project ID */
@@ -20,6 +42,13 @@ export interface ProjectContext {
   isRegistered: boolean;
   /** TaskStore instance for this project */
   store: TaskStore;
+  /** How this target was resolved; undefined means the context was hand-built, not resolved. */
+  resolvedFrom?: ProjectResolutionSource;
+  /**
+   * Project detected from the invocation cwd, recorded whatever resolution finally chose.
+   * Equal to `projectPath` when the operator is standing inside the target project.
+   */
+  cwdProject?: CwdProjectSnapshot;
 }
 
 /** Cache of TaskStore instances by project ID to avoid re-initialization */
@@ -89,6 +118,15 @@ export async function resolveProject(
   projectNameFlag?: string,
   cwd: string = process.cwd(),
   globalDir?: string,
+  /*
+  FNXC:TaskStoreLightBoot 2026-09-26-19:31 (RUFU-275):
+  "light" boots the CLI process's own TaskStore without the store-open backlog (archive
+  reintegration + forced patchnode reconcile). One-shot board reads (`fn task …`) use it: on a
+  saneca-scale board those passes are the bytes that blew the transient-boot budget, and the
+  same passes run as engine maintenance plus on every long-lived host boot. Default "full" —
+  every other CLI command keeps the current boot shape.
+  */
+  storeBoot: "full" | "light" = "full",
 ): Promise<ProjectContext> {
   const central = new CentralCore(globalDir);
   await central.init();
@@ -96,6 +134,15 @@ export async function resolveProject(
 
   try {
     let project: RegisteredProject | undefined;
+
+    /*
+    FNXC:ProjectRoutingVisibility 2026-09-22-16:37:
+    cwd discovery is hoisted so it runs exactly ONCE per invocation and is attached to every returned
+    context. It used to live only in branch 3, so the flag and central-default branches never looked at
+    the operator's folder and a cross-project target left no trace anywhere. Provenance is advisory:
+    a detection failure collapses to `undefined` and must never fail resolution.
+    */
+    const cwdProject = await detectCwdProjectSnapshot(cwd, central);
 
     // 1. Explicit --project flag
     if (projectNameFlag) {
@@ -121,7 +168,7 @@ export async function resolveProject(
 
     // 3. Auto-detect from CWD
     if (!project) {
-      const detected = await detectProjectFromCwd(cwd, central);
+      const detected = cwdProject;
       if (!detected) {
         throw new Error(
           `No fusion project found in current directory. Use --project or run from a project directory.`
@@ -129,9 +176,10 @@ export async function resolveProject(
       }
 
       const isRegistered = Boolean(detected.id);
+      const lightBoot = storeBoot === "light";
       const store = isRegistered
-        ? await getStoreForProject(detected.id, detected.path, globalDir)
-        : await createLocalStore(detected.path, globalDir);
+        ? await getStoreForProject(detected.id, detected.path, globalDir, lightBoot)
+        : await createLocalStore(detected.path, globalDir, { lightBoot });
 
       // For unregistered projects, use the path as the project ID
       const projectId = isRegistered ? detected.id : detected.path;
@@ -148,10 +196,12 @@ export async function resolveProject(
         projectName: detected.name,
         isRegistered,
         store,
+        resolvedFrom: "cwd",
+        cwdProject,
       };
     }
 
-    const store = await getStoreForProject(project.id, project.path, globalDir);
+    const store = await getStoreForProject(project.id, project.path, globalDir, storeBoot === "light");
     const owner = storeOwners.get(store);
     if (owner && !owner.central) {
       owner.central = central;
@@ -164,9 +214,36 @@ export async function resolveProject(
       projectName: project.name,
       isRegistered: true,
       store,
+      /*
+      FNXC:ProjectRoutingVisibility 2026-09-22-16:37: the flag and central-default branches share this
+      return, so provenance is taken from whether an explicit flag actually resolved the target — the
+      precedence order is unchanged, only its reporting is added.
+      */
+      resolvedFrom: projectNameFlag ? "flag" : "default",
+      cwdProject,
     };
   } finally {
     if (!centralRetained) await central.close();
+  }
+}
+
+/**
+ * Detect the project owning `cwd` and reduce it to the routing-evidence shape.
+ *
+ * FNXC:ProjectRoutingVisibility 2026-09-22-16:37: routing provenance must never be the reason a
+ * command fails, so any detection error is swallowed into `undefined` (no evidence) rather than
+ * replacing the resolution error the caller would already have produced.
+ */
+async function detectCwdProjectSnapshot(
+  cwd: string,
+  central: CentralCore,
+): Promise<CwdProjectSnapshot | undefined> {
+  try {
+    const detected = await detectProjectFromCwd(cwd, central);
+    if (!detected) return undefined;
+    return { id: detected.id ?? "", name: detected.name, path: detected.path };
+  } catch {
+    return undefined;
   }
 }
 
@@ -306,10 +383,12 @@ async function findProjectByNameOrId(
  * @param projectPath - Absolute path to project directory
  * @returns Initialized TaskStore
  */
+/** Light-boot variant forwarded to createLocalStore (RUFU-275; default false = today's boot). */
 export async function getStoreForProject(
   projectId: string,
   projectPath: string,
   globalSettingsDir?: string,
+  lightBoot = false,
 ): Promise<TaskStore> {
   // Check cache first
   const cached = storeCache.get(projectId);
@@ -322,7 +401,7 @@ export async function getStoreForProject(
   // by default, external via DATABASE_URL) instead of a legacy SQLite TaskStore
   // whose runtime was removed under VAL-REMOVAL-005. Caching the resulting store
   // keeps a single connection pool per project for the CLI process lifetime.
-  const store = await createLocalStore(projectPath, globalSettingsDir);
+  const store = await createLocalStore(projectPath, globalSettingsDir, { lightBoot });
 
   // Cache it
   storeCache.set(projectId, store);
@@ -343,6 +422,8 @@ export async function clearStoreCache(): Promise<void> {
 export async function createLocalStore(
   projectPath: string,
   globalSettingsDir?: string,
+  /** RUFU-275 light boot: skip the store-open backlog (default false = today's full boot). */
+  options?: { lightBoot?: boolean },
 ): Promise<TaskStore> {
   // FNXC:PostgresCutover 2026-07-04: route through createTaskStoreForBackend so
   // standalone CLI commands (and resolveProject().store) boot PostgreSQL instead
@@ -354,6 +435,9 @@ export async function createLocalStore(
   const boot = await createTaskStoreForBackend({
     rootDir: projectPath,
     globalSettingsDir,
+    ...(options?.lightBoot
+      ? { skipArchiveReintegrationOnInit: true, skipPatchnodeReconcileOnInit: true }
+      : {}),
     /* FNXC:CrossProcessDeleteObservation 2026-08-01-11:39: CLI owns its factory-created store, so role-only identity is restart-stable. */
     consumerId: buildConsumerId("cli"),
   });
@@ -477,11 +561,21 @@ export async function resolveProjectPathOnly(
  */
 export function asLocalProjectContext(store: TaskStore): ProjectContext {
   const cwd = process.cwd();
+  const projectName = basename(cwd) || "current-project";
+  /*
+  FNXC:ProjectRoutingVisibility 2026-09-22-16:37: a store-backed context built from the invocation cwd
+  is the local-store fallback — an UNREGISTERED project — and stamps itself as such so card-minting
+  commands report the fallback instead of presenting it as an ordinary resolved project. The cwd
+  evidence is the cwd itself, so the cross-project mismatch warning stays silent and the
+  `cwd-fallback` message owns the announcement.
+  */
   return {
     projectId: cwd,
     projectPath: cwd,
-    projectName: basename(cwd) || "current-project",
+    projectName,
     isRegistered: false,
     store,
+    resolvedFrom: "cwd-fallback",
+    cwdProject: { id: "", name: projectName, path: cwd },
   };
 }

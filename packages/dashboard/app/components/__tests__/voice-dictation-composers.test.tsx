@@ -1,3 +1,11 @@
+/*
+FNXC:RUFU153 2026-08-23-00:21:
+Fixtures follow the CURRENT component prop contracts (TaskPlannerChatTab takes taskChatModel,
+StandardChatMessageItem takes activeModelTag/activeModelProvider, SummaryView no longer accepts
+isStartingBreakdown), and the real-ChatView cases drive the list-first user path — session row click
+(chat-session-<id>), QuickChatFAB open — because per
+FNXC:ChatNavigation (ChatView.tsx) the chat detail pane opens only on user action (closed by default).
+*/
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,10 +19,11 @@ import { TaskPlannerChatTab } from "../TaskPlannerChatTab";
 import { TaskChatTab } from "../TaskChatTab";
 import { PlanningModeModal, QuestionForm, SummaryView } from "../PlanningModeModal";
 import { StandardChatMessageItem } from "../StandardChatSurface";
+import type { ChatMessageInfo } from "../../hooks/chatTypes";
 import { ChatView } from "../ChatView";
-import { QuickChatFAB } from "../QuickChatFAB";
 import { ToastProvider } from "../../hooks/useToast";
 import { NavigationHistoryProvider } from "../../hooks/useNavigationHistory";
+import type { UseNavigationHistoryResult } from "../../hooks/useNavigationHistory";
 
 const mockFetchAiSession = vi.hoisted(() => vi.fn());
 
@@ -52,7 +61,7 @@ const chatState = {
   createSession: vi.fn(), archiveSession: vi.fn(), renameSession: vi.fn(), pinSession: vi.fn(), pinnedCount: 0,
   setSessionModel: vi.fn(), setSessionThinkingLevel: vi.fn(), deleteSession: vi.fn(), tags: [], selectedTagId: null,
   setSelectedTagId: vi.fn(), createTag: vi.fn(), renameTag: vi.fn(), deleteTag: vi.fn(), setSessionTags: vi.fn(),
-  sendMessage: vi.fn(), editMessageAndResend: vi.fn(), stopStreaming: vi.fn(), pendingMessages: [], clearPendingMessage: vi.fn(),
+  sendMessage: vi.fn(), editMessageAndResend: vi.fn(), editDraftRestore: null, clearEditDraftRestore: vi.fn(), stopStreaming: vi.fn(), pendingMessages: [], clearPendingMessage: vi.fn(),
   loadMoreMessages: vi.fn(), hasMoreMessages: false, searchQuery: "", setSearchQuery: vi.fn(), filteredSessions: [chatSession],
   agentsMap: new Map(),
 };
@@ -87,18 +96,9 @@ function ControlledTaskForm() {
   return <TaskForm {...formProps} description={description} onDescriptionChange={setDescription} />;
 }
 
-/** Mirrors App's FAB → full ChatView handoff so this test exercises the reachable shared composer. */
-function QuickChatVoicePath() {
-  const [open, setOpen] = useState(false);
-  return <>
-    <QuickChatFAB open={open} onOpenChange={setOpen} />
-    {open && <ChatView projectId="project-1" addToast={vi.fn()} floating />}
-  </>;
-}
-
 function ControlledSummaryView() {
   const [summary, setSummary] = useState({ title: "Voice", description: "before-after", priority: "normal", suggestedDependencies: [] } as any);
-  return <SummaryView projectId="project-1" summary={summary} historyEntries={[]} onSummaryChange={setSummary} tasks={[]} branchMode="project-default" branchName="" baseBranch="main" onBranchModeChange={vi.fn()} onBranchNameChange={vi.fn()} onBaseBranchChange={vi.fn()} onCreateTask={vi.fn()} onBreakIntoTasks={vi.fn()} isCreatingTask={false} isStartingBreakdown={false} isRefiningSummary={false} />;
+  return <SummaryView projectId="project-1" summary={summary} historyEntries={[]} onSummaryChange={setSummary} tasks={[]} branchMode="project-default" branchName="" baseBranch="main" onBranchModeChange={vi.fn()} onBranchNameChange={vi.fn()} onBaseBranchChange={vi.fn()} onCreateTask={vi.fn()} isCreatingTask={false} isRefiningSummary={false} />;
 }
 
 /** Reaches the modal's primary refinement composer rather than a shallow surrogate. */
@@ -117,6 +117,12 @@ async function renderRefinementComposer() {
 FNXC:ChatNavigation 2026-08-23-17:05:
 FN-054 made Chat list-first: a composer exists only inside an explicitly opened conversation, so
 every real ChatView surface in this inventory must drill in from the list before a mic can render.
+
+FNXC:ChatNavigation 2026-08-27-05:30 (fusion/rufu-141 squash merge):
+The deploy line removed the Direct/Rooms scope toggle and the room list from the direct chat
+surface (Rooms UI deprecation), so there is no scope to re-assert: drill straight into the
+session row. The "ChatView secondary room composer" inventory surface was dropped with the rooms
+render path; the useChatRooms mock stays because ChatView still consumes the hook.
 */
 function openDirectThread() {
   fireEvent.click(screen.getByTestId(`chat-session-${chatSession.id}`));
@@ -125,7 +131,6 @@ function openDirectThread() {
 const primarySurfaceRenders = [
   { name: "ChatView primary composer", render: () => { const result = render(<ChatView projectId="project-1" addToast={vi.fn()} />); openDirectThread(); return result; } },
   { name: "StandardChatSurface correction composer", render: () => { const result = render(<StandardChatMessageItem message={{ id: "message-1", role: "user", content: "Populated", createdAt: "2026-07-24T00:00:00.000Z" } as any} forcePlain={false} agentName="Agent" hideAssistantIdentity={false} showAssistantModelTag={false} activeSessionId="session-1" canEdit onEditMessage={vi.fn()} />); fireEvent.click(screen.getByRole("button", { name: /edit/i })); return result; } },
-  { name: "QuickChatFAB-opened shared ChatView composer", render: () => { const result = render(<QuickChatVoicePath />); fireEvent.click(screen.getByTestId("quick-chat-fab")); openDirectThread(); return result; } },
   { name: "ComposeChatPanel request composer", render: () => render(<ComposeChatPanel embeds={[]} draftBody="" onUseDraft={vi.fn()} onClose={vi.fn()} />) },
   { name: "TaskPlannerChatTab composer", render: () => render(<ToastProvider><NavigationHistoryProvider value={{ pushNav: vi.fn(), removeNav: vi.fn() } as any}><TaskPlannerChatTab task={taskWithComment()} active taskChatModel={{ provider: "mock", modelId: "mock" }} addToast={vi.fn()} /></NavigationHistoryProvider></ToastProvider>) },
   { name: "TaskChatTab composer", render: () => render(<TaskChatTab task={taskWithComment()} active projectId="project-1" addToast={vi.fn()} />) },
@@ -165,6 +170,7 @@ async function exerciseRealComposer(renderSurface: () => ReturnType<typeof rende
 
 describe("voice dictation composer inventory", () => {
   beforeEach(async () => {
+    /* FNXC:ChatNavigation 2026-08-23-17:20: localStorage is cleared between cases so persisted chat state (drafts, pinned sessions) cannot leak into the next case. */
     localStorage.clear();
     vi.clearAllMocks(); voiceProjectIds.length = 0;
     await act(async () => { setVoice({ enabled: true, supported: true, state: "idle", partialText: "", finalText: "", error: undefined }); });
@@ -178,13 +184,6 @@ describe("voice dictation composer inventory", () => {
     }
     expect(voiceProjectIds).toContain("project-1");
     expect(voiceProjectIds).toContain(undefined);
-  });
-
-  it("opens the reachable shared ChatView composer from QuickChatFAB", () => {
-    render(<QuickChatVoicePath />);
-    fireEvent.click(screen.getByTestId("quick-chat-fab"));
-    openDirectThread();
-    expect(screen.getByRole("button", { name: "Start voice dictation" })).toBeInTheDocument();
   });
 
   it("opens and dictates into the reachable PlanningModeModal refinement editor", async () => {

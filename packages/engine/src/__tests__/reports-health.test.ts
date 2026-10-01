@@ -64,6 +64,44 @@ describe("classifyReportHealth", () => {
     expect(classifyReportHealth({ ...baseInput, pauseReason })).toEqual({ bucket: "healthy", cellText: "healthy" });
   });
 
+  /*
+  FNXC:ProviderThrottleIsTransient 2026-09-30-14:17 (RUFU-286):
+  A throttled agent stays `state: "error"` while the heartbeat timer holds a bounded re-probe, so
+  reporting that cell as `**needs operator repair**` sent operators to fix credentials that were
+  never the problem. The cooldown deadline is the derived value from the shared core reader; the
+  state column stays `error` because the agent genuinely is not running.
+  */
+  it("reports a live throttle cooldown as rate-limited, not operator repair", () => {
+    const result = classifyReportHealth({
+      ...baseInput,
+      state: "error",
+      throttleCooldownUntilAt: "2026-09-30T12:01:00.000Z",
+    });
+
+    expect(result.bucket).toBe("rate-limited");
+    expect(result.cellText).toContain("rate limited — auto-retry scheduled");
+    expect(result.cellText).toContain("2026-09-30T12:01:00.000Z");
+    expect(result.cellText).not.toContain("needs operator repair");
+  });
+
+  it("keeps a pause marker ranking above a throttle cooldown", () => {
+    // A paused card has no timer re-probe to promise, so the pause classification wins.
+    expect(classifyReportHealth({
+      ...baseInput,
+      state: "paused",
+      pauseReason: "error-retry-exhausted",
+      throttleCooldownUntilAt: "2026-09-30T12:01:00.000Z",
+    }).bucket).toBe("operator-actionable");
+  });
+
+  it("reports an unthrottled error state as operator repair and ignores non-error cooldowns", () => {
+    expect(classifyReportHealth({ ...baseInput, state: "error" }).bucket).toBe("operator-actionable");
+    expect(classifyReportHealth({ ...baseInput, state: "error", throttleCooldownUntilAt: null }).bucket)
+      .toBe("operator-actionable");
+    expect(classifyReportHealth({ ...baseInput, state: "active", throttleCooldownUntilAt: "2026-09-30T12:01:00.000Z" })
+      .bucket).toBe("healthy");
+  });
+
   it("does not accept lastError as a classification input", () => {
     const withResidualError = { ...baseInput, lastError: "long residual diagnostic text" };
     const withoutResidualError = { ...baseInput };

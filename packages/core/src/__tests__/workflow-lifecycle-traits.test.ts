@@ -8,7 +8,7 @@ byte-identical on the default workflow. The custom cases prove KTD-10 fallback.
 import { describe, expect, it } from "vitest";
 import "../builtin-traits.js"; // register built-in traits
 import { BUILTIN_CODING_WORKFLOW_IR } from "../workflows/builtin-coding-workflow-ir.js";
-import { columnsWithFlag, columnHasFlag, resolveReboundTarget, resolveCompleteColumn, resolveMergeOrchestrationColumn, resolveLifecycleColumns, resolveTaskLifecycleColumns, resolveReviewColumns, resolveTerminalColumns} from "../workflows/workflow-lifecycle-traits.js";
+import { columnsWithFlag, columnHasFlag, resolveReboundTarget, resolveCompleteColumn, resolveMergeOrchestrationColumn, resolveLifecycleColumns, resolveTaskLifecycleColumns, resolveReviewColumns, resolveTerminalColumns, implementationColumns, resolveTaskImplementationColumns, LIFECYCLE_FALLBACK_IMPLEMENTATION_COLUMNS} from "../workflows/workflow-lifecycle-traits.js";
 import { BUILTIN_CODING_IDEAS_WORKFLOW_IR } from "../workflows/builtin-coding-ideas-workflow-ir.js";
 import type { WorkflowIr } from "../workflows/workflow-ir-types.js";
 import { getTraitRegistry } from "../workflows/trait-registry.js";
@@ -21,7 +21,6 @@ describe("columnsWithFlag — builtin:coding trait→columnIds (R8)", () => {
     expect(columnsWithFlag(ir, "intake")).toEqual(["triage"]);
     expect(columnsWithFlag(ir, "mergeOrchestration")).toEqual(["in-review"]);
     expect(columnsWithFlag(ir, "complete")).toEqual(["done"]);
-    expect(columnsWithFlag(ir, "archived")).toEqual(["archived"]);
   });
 
   it("columnHasFlag agrees with the literal columns", () => {
@@ -142,7 +141,6 @@ describe("resolveLifecycleColumns — U1 trait→role resolution", () => {
       wip: "in-progress",
       review: "in-review",
       complete: "done",
-      archived: "archived",
     });
   });
 
@@ -164,7 +162,6 @@ describe("resolveLifecycleColumns — U1 trait→role resolution", () => {
         { id: "writing", name: "Writing", traits: [{ trait: "wip" }] },
         { id: "editorial-review", name: "Editorial review", traits: [{ trait: "merge" }] },
         { id: "published", name: "Published", traits: [{ trait: "complete" }] },
-        { id: "shelved", name: "Shelved", traits: [{ trait: "archived" }] },
       ],
       nodes: [{ id: "start", kind: "start", column: "backlog" }],
       edges: [],
@@ -175,7 +172,6 @@ describe("resolveLifecycleColumns — U1 trait→role resolution", () => {
       wip: "writing",
       review: "editorial-review",
       complete: "published",
-      archived: "shelved",
     });
   });
 
@@ -196,7 +192,7 @@ describe("resolveLifecycleColumns — U1 trait→role resolution", () => {
     // The nearby columns are still resolved — absence is per-role, not per-workflow.
     expect(columns?.intake).toBe("inbox");
     expect(columns?.wip).toBe("doing");
-    expect(columns?.archived).toBeUndefined();
+    expect(columns?.complete).toBe("shipped");
   });
 
   it("returns undefined (not a struct of undefineds) for a v1 / column-less IR", () => {
@@ -242,7 +238,7 @@ describe("resolveTaskLifecycleColumns — U1 store-aware form", () => {
     const { store } = makeStore();
     await expect(resolveTaskLifecycleColumns(store, "T-1")).resolves.toEqual({
       intake: "triage", hold: "todo", wip: "in-progress",
-      review: "in-review", complete: "done", archived: "archived",
+      review: "in-review", complete: "done",
     });
   });
 
@@ -299,7 +295,7 @@ describe("LifecycleColumns arity — one id per role, even when several qualify"
   `multiple-intake-columns`, so that workflow shape is REJECTED by the product. The test would have
   stayed green while documenting something that cannot exist, which is worse than not testing it.
 
-  `complete` genuinely repeats: there is no uniqueness rule for it, nor for `archived`, `hold`,
+  `complete` genuinely repeats: there is no uniqueness rule for it, nor for `hold`,
   `countsTowardWip`, `mergeBlocker` or `humanReview`. Only `intake` is validated unique. That is the
   real boundary, and it means `intake` comparisons are safe by equality while every other role's are
   not — which narrows the call sites at risk rather than widening them.
@@ -450,7 +446,7 @@ describe("a v1-upgraded IR resolves to NO roles — the other meaning of empty",
   const v1Upgraded = {
     version: "v2",
     name: "upgraded",
-    columns: ["todo", "in-progress", "in-review", "done", "archived"].map((id) => ({ id, name: id, traits: [] })),
+    columns: ["todo", "in-progress", "in-review", "done"].map((id) => ({ id, name: id, traits: [] })),
     nodes: [],
     edges: [],
   } as never;
@@ -467,9 +463,105 @@ describe("a v1-upgraded IR resolves to NO roles — the other meaning of empty",
     expect(columnsWithFlag(v1Upgraded, "countsTowardWip")).toEqual([]);
   });
 
-  it("STILL yields the legacy terminal pair, because that resolver keeps its own fallback", () => {
-    /* The contrast that makes the hazard concrete: same IR, and this one is unaffected purely because
-       it never adopted the empty-means-absent reading. */
-    expect(resolveTerminalColumns(v1Upgraded)).toEqual(["done", "archived"]);
+  it("still yields the legacy completion lane because that resolver keeps its own fallback", () => {
+    expect(resolveTerminalColumns(v1Upgraded)).toEqual(["done"]);
+  });
+});
+
+/*
+FNXC:LaneCapabilityVocabulary 2026-09-26-18:46 (RUFU-272):
+The implementation-class lane set the role-routing predicate consumes. The builtin:coding case is the
+R8-style evidence: resolved membership equals the legacy four exactly, so threading the resolved set
+through admission cannot change the default board's classification. The renamed and v1-upgrade cases
+pin the two directions the union-with-legacy consumer depends on: a renamed board ADDS its own lanes,
+a trait-less upgrade ADDS NOTHING (the legacy floor keeps admission where it was).
+*/
+describe("implementationColumns / resolveTaskImplementationColumns (RUFU-272)", () => {
+  it("builtin:coding resolves to exactly the legacy four (default board is byte-identical)", () => {
+    expect(new Set(implementationColumns(BUILTIN_CODING_WORKFLOW_IR))).toEqual(
+      new Set(["triage", "todo", "in-progress", "in-review"]),
+    );
+  });
+
+  it("unions every work-class trait and EXCLUDES complete lanes, including a second wip lane", () => {
+    const ir = {
+      version: "v2",
+      name: "multi",
+      columns: [
+        { id: "backlog", name: "Backlog", traits: [{ trait: "intake" }, { trait: "hold", config: { release: "capacity" } }] },
+        { id: "building", name: "Building", traits: [{ trait: "wip", config: { limitSetting: "maxConcurrent" } }] },
+        { id: "reviewing", name: "Reviewing", traits: [{ trait: "human-review" }] },
+        { id: "merge-gate", name: "Merge Gate", traits: [{ trait: "merge" }] },
+        { id: "shipped", name: "Shipped", traits: [{ trait: "complete" }] },
+      ],
+      nodes: [],
+      edges: [],
+    } as never;
+    // `merge` flags mergeOrchestration + mergeBlocker; `human-review` flags humanReview; complete excluded.
+    expect(new Set(implementationColumns(ir))).toEqual(
+      new Set(["backlog", "building", "reviewing", "merge-gate"]),
+    );
+  });
+
+  function resolverStore(ir: unknown) {
+    return {
+      getTaskWorkflowSelection: () => ({ workflowId: "wf-x", stepIds: [] }),
+      getWorkflowDefinition: async () => ({ ir }),
+    } as never;
+  }
+
+  it("store-aware form returns the renamed board's lanes", async () => {
+    const renamed = {
+      version: "v2",
+      name: "renamed",
+      columns: [
+        { id: "backlog", name: "Hold", traits: [{ trait: "intake" }, { trait: "hold", config: { release: "capacity" } }] },
+        { id: "building", name: "Wip", traits: [{ trait: "wip", config: { limitSetting: "maxConcurrent" } }] },
+        { id: "shipped", name: "Complete", traits: [{ trait: "complete" }] },
+      ],
+      nodes: [],
+      edges: [],
+    } as never;
+    expect(await resolveTaskImplementationColumns(resolverStore(renamed), "FN-1")).toEqual(
+      new Set(["backlog", "building"]),
+    );
+  });
+
+  it("store-aware form keeps the LEGACY floor for a trait-less v1-upgraded IR", async () => {
+    const v1Upgraded = {
+      version: "v2",
+      name: "upgraded",
+      columns: ["todo", "in-progress", "in-review", "done"].map((id) => ({ id, name: id, traits: [] })),
+      nodes: [],
+      edges: [],
+    } as never;
+    expect(await resolveTaskImplementationColumns(resolverStore(v1Upgraded), "FN-1")).toEqual(
+      new Set(["triage", "todo", "in-progress", "in-review"]),
+    );
+  });
+
+
+
+  it("store-aware form NEVER WIDENS beyond legacy for a no-selection task (default-fallback containment)", async () => {
+    /*
+    A store reporting no selection, a selection read that throws, or a definition read that throws
+    makes the resolver fall back to the DEFAULT workflow IR — measured, NOT the legacy floor (the
+    resolver swallows hostile reads internally). That fallback is not today's legacy-only
+    classification either, so the outcome is pinned by PROPERTY, not by the fallback IR's shape:
+    whatever the default names, the returned set stays inside the legacy four and the consumer's
+    union-with-legacy keeps admission scope exactly where it is today.
+    */
+    const noSelection = { getTaskWorkflowSelection: () => undefined, getWorkflowDefinition: async () => undefined } as never;
+    const selectionThrows = { getTaskWorkflowSelection: () => { throw new Error("selection read failed"); } } as never;
+    const definitionThrows = {
+      getTaskWorkflowSelection: () => ({ workflowId: "wf-x", stepIds: [] }),
+      getWorkflowDefinition: async () => { throw new Error("definition read failed"); },
+    } as never;
+    const legacy = new Set(LIFECYCLE_FALLBACK_IMPLEMENTATION_COLUMNS);
+    for (const store of [noSelection, selectionThrows, definitionThrows] as never[]) {
+      for (const column of await resolveTaskImplementationColumns(store, "FN-1")) {
+        expect(legacy.has(column), `default-fallback named a lane legacy never treated as implementation-class: ${column}`).toBe(true);
+      }
+    }
   });
 });

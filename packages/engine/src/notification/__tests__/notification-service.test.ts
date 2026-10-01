@@ -1,8 +1,121 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+/*
+FNXC:NotificationTestHarness 2026-09-04-16:15:
+This suite is network-dead by construction — keep it that way. The harness default settings below
+(`ntfyEnabled: true, ntfyTopic: "topic"`) instantiate the REAL production NtfyNotificationProvider, whose
+base URL defaults to `https://ntfy.sh` and whose transport is the global `fetch`. Before RUFU-186 this file
+never stubbed `fetch`, so dispatches performed live HTTPS pushes; on Node 26.7.0 undici negotiated TLS +
+HTTP/2 and Node's native `Http2Session::SendPendingData` → `CopyDataIntoOutgoing` entered a geometric-
+doubling allocation loop (256 MB→16 GB per request, ~350 MB/s RSS, kernel OOM kill) — the whole-file
+cross-describe OOM pathology recorded as register entry 15
+(docs/solutions/test-failures/suite-only-flakes-observed-register.md). Two layers now prevent recurrence:
+(1) the global `fetch` stub below records every URL instead of touching a socket (the sibling convention:
+`packages/engine/src/__tests__/webhook-provider.test.ts` and
+`packages/engine/src/cli-agent/__tests__/chat-recall-provisioner.test.ts` stub fetch the same way); (2) a connect tripwire on `node:net`/`node:tls`/
+`node:http2` records + refuses any real socket attempt from this file and fails the run in `afterAll`, so
+non-fetch egress regressions surface as a named test failure instead of a host OOM (the native storm needs
+TLS to start, and a refused connect produces none). Do not remove either layer to "see the real path" —
+profile it as a separate bounded probe outside the suite. With the stub in place the whole-file invocation
+is safe and bounded-memory again.
+*/
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createRequire } from "node:module";
 import type { NotificationPayload, NotificationProvider, Settings, Task } from "@fusion/core";
 import { NotificationService } from "../notification-service.js";
 import { schedulerLog } from "../../logger.js";
 import { flushAsyncHandlers } from "../../__tests__/_flush-async-handlers.js";
+
+/*
+FNXC:NotificationTestHarness 2026-09-04-16:15 (RUFU-186 network-dead harness + regression tripwire):
+The `fetch` stub is the fix; the connect tripwire is the guard that must turn RED if the fix (or any future
+non-fetch egress) reintroduces real network from this file. Tripwire semantics: TLS/HTTP/2 or non-loopback
+TCP attempts are recorded with the caller stack and REFUSED synchronously — undici's connector turns the
+throw into a rejected `fetch`, which the best-effort ntfy send swallows — so the unfixed shape fails fast
+with a named assertion instead of OOM-killing the worker before any assertion can report. Loopback attempts
+are recorded but not refused: register evidence F-186-14 observed unattributed 127.0.0.1:4040-4044 connects
+(a separate isolation defect) and refusing them could mask unrelated behavior. See profile-evidence /
+engineer-handoff task documents for the attribution chain.
+*/
+const requireBuiltin = createRequire(import.meta.url);
+const netModule = requireBuiltin("node:net") as { connect: (...args: unknown[]) => unknown };
+const tlsModule = requireBuiltin("node:tls") as { connect: (...args: unknown[]) => unknown };
+const http2Module = requireBuiltin("node:http2") as { connect: (...args: unknown[]) => unknown };
+const originalNetConnect = netModule.connect;
+const originalTlsConnect = tlsModule.connect;
+const originalHttp2Connect = http2Module.connect;
+
+type ConnectAttempt = { transport: string; target: string; stack: string };
+const externalEgressAttempts: ConnectAttempt[] = [];
+const loopbackEgressAttempts: ConnectAttempt[] = [];
+const fetchEgressUrls: string[] = [];
+
+function describeConnectTarget(transport: string, args: unknown[]): { target: string; loopback: boolean } {
+  let host = "";
+  let port: number | undefined;
+  const first = args[0];
+  if (transport === "http2") {
+    // http2.connect(authority[, options][, listener]) — authority is a URL string like https://ntfy.sh/
+    try {
+      const url = new URL(String(first));
+      host = url.hostname;
+      port = Number(url.port) || undefined;
+    } catch {
+      host = String(first);
+    }
+  } else if (typeof first === "number") {
+    // connect(port[, host]) — host defaults to localhost in net/tls semantics
+    port = first;
+    host = typeof args[1] === "string" ? args[1] : "localhost";
+  } else if (typeof first === "string") {
+    // connect(path) — unix/pipe socket, not network egress
+    host = first;
+  } else if (first && typeof first === "object") {
+    const options = first as Record<string, unknown>;
+    host = String(options.host ?? options.hostname ?? "");
+    port = typeof options.port === "number" ? options.port : undefined;
+  }
+  const loopback = host === "127.0.0.1" || host === "localhost" || host === "::1" || host.startsWith("/");
+  return { target: `${host || "?"}${port ? `:${port}` : ""}`, loopback };
+}
+
+function guardConnect(transport: string, original: (...args: unknown[]) => unknown) {
+  return function (this: unknown, ...args: unknown[]): unknown {
+    const { target, loopback } = describeConnectTarget(transport, args);
+    const stack = new Error(`connect-trace ${transport} ${target}`).stack ?? "";
+    const attempt: ConnectAttempt = { transport, target, stack };
+    if (loopback) loopbackEgressAttempts.push(attempt);
+    else externalEgressAttempts.push(attempt);
+    if (!loopback) {
+      throw new Error(
+        `RUFU-186 network-dead harness: refused ${transport} connect to ${target}. ` +
+          `Unit-test notification paths must never open real sockets (see the FNXC header of this file). Caller: ` +
+          stack.split("\n").slice(1, 6).join(" | "),
+      );
+    }
+    return original.apply(this, args);
+  };
+}
+
+netModule.connect = guardConnect("net", originalNetConnect);
+tlsModule.connect = guardConnect("tls", originalTlsConnect);
+http2Module.connect = guardConnect("http2", originalHttp2Connect);
+
+const recordingFetch = vi.fn(async (input: RequestInfo | URL) => {
+  fetchEgressUrls.push(typeof input === "string" ? input : input instanceof URL ? input.toString() : String(input.url));
+  return new Response("", { status: 200, statusText: "OK" });
+});
+vi.stubGlobal("fetch", recordingFetch);
+
+afterAll(() => {
+  netModule.connect = originalNetConnect;
+  tlsModule.connect = originalTlsConnect;
+  http2Module.connect = originalHttp2Connect;
+  vi.unstubAllGlobals();
+  expect(
+    externalEgressAttempts,
+    `network-dead harness violated: ${externalEgressAttempts.length} real external socket attempt(s) from this suite: ` +
+      externalEgressAttempts.slice(0, 3).map((a) => `${a.transport}->${a.target}`).join(", "),
+  ).toEqual([]);
+});
 
 vi.mock("../../logger.js", () => ({
   /*
@@ -48,6 +161,7 @@ function createStore(settings: Partial<Settings> = {}) {
     },
     getSettings: vi.fn(async () => currentSettings),
     getTask: vi.fn(async (id: string) => tasks.get(id)),
+    getArtifacts: vi.fn(async () => []),
     setTask(task: Task) {
       tasks.set(task.id, task);
     },
@@ -73,6 +187,87 @@ function task(overrides: Partial<Task> = {}): Task {
     ...overrides,
   } as Task;
 }
+
+describe("NotificationService task completion mailbox", () => {
+  it("uses every task-scoped terminal lane, image-only metadata, and snapshot idempotency", async () => {
+    const store = createStore({ ntfyEnabled: false });
+    const sendMessageOnce = vi.fn(async (input, key) => ({ message: { ...input, id: key }, inserted: true }));
+    store.getArtifacts.mockResolvedValue([
+      { id: "img-1", type: "image" },
+      { id: "doc-1", type: "document" },
+      { id: "img-2", type: "image" },
+    ] as any);
+    const service = new NotificationService(store as any, { messageStore: { on: () => undefined, sendMessageOnce } as any });
+    await service.start();
+    const completed = task({
+      id: "FN-complete",
+      summary: "Delivered the requested behavior.",
+      columnMovedAt: "2026-09-09T20:00:00.000Z",
+      recommendations: [{ id: "rec-1", title: "Follow up", description: "Later", category: "improvement" }],
+    });
+    const lanes = { terminal: ["shipped", "released"] };
+
+    store.emit("task:moved", { task: completed, from: "coding", to: "released", lanes });
+    store.emit("task:moved", { task: completed, from: "coding", to: "released", lanes });
+    store.emit("task:moved", { task: completed, from: "shipped", to: "released", lanes });
+    await flushAsyncHandlers();
+
+    expect(sendMessageOnce).toHaveBeenCalledTimes(2);
+    expect(sendMessageOnce.mock.calls[0][0]).toMatchObject({
+      content: expect.stringContaining("Delivered the requested behavior."),
+      metadata: {
+        kind: "task-completion-notice",
+        taskId: "FN-complete",
+        imageArtifactIds: ["img-1", "img-2"],
+        recommendationIds: ["rec-1"],
+      },
+    });
+    expect(sendMessageOnce.mock.calls[0][1]).toBe("task-completion-notice:FN-complete:released:2026-09-09T20:00:00.000Z");
+    expect(sendMessageOnce.mock.calls[1][1]).toBe(sendMessageOnce.mock.calls[0][1]);
+    expect(sendMessageOnce.mock.calls.every(([input]) => input.metadata?.kind !== "task-recommendation-notice")).toBe(true);
+
+    completed.columnMovedAt = "2026-09-09T21:00:00.000Z";
+    store.emit("task:moved", { task: completed, from: "coding", to: "shipped", lanes });
+    await flushAsyncHandlers();
+    expect(sendMessageOnce.mock.calls[2][1]).toBe("task-completion-notice:FN-complete:shipped:2026-09-09T21:00:00.000Z");
+    await service.stop();
+  });
+
+  it("falls back only to done when move lanes and workflow resolution are unavailable", async () => {
+    const store = createStore({ ntfyEnabled: false });
+    const sendMessageOnce = vi.fn(async (input, key) => ({ message: { ...input, id: key }, inserted: true }));
+    const service = new NotificationService(store as any, { messageStore: { on: () => undefined, sendMessageOnce } as any });
+    await service.start();
+    const completed = task({ columnMovedAt: "2026-09-09T20:00:00.000Z" });
+
+    store.emit("task:moved", { task: completed, from: "todo", to: "released" });
+    store.emit("task:moved", { task: completed, from: "todo", to: "done" });
+    await flushAsyncHandlers();
+
+    expect(sendMessageOnce).toHaveBeenCalledTimes(1);
+    expect(sendMessageOnce.mock.calls[0][0].content).toContain("Task completed without a summary.");
+    await service.stop();
+  });
+
+  it("absorbs unavailable and rejecting mailbox stores without suppressing external notifications", async () => {
+    const store = createStore();
+    const sendNotification = vi.fn(async () => ({ success: true, providerId: "mock" }));
+    const service = new NotificationService(store as any, {
+      messageStore: { on: () => undefined, sendMessageOnce: vi.fn(async () => { throw new Error("offline"); }) } as any,
+    });
+    service.registerProvider({ getProviderId: () => "mock", isEventSupported: () => true, sendNotification });
+    await service.start();
+    store.emit("task:moved", {
+      task: task({ branch: "fusion/fn", mergeDetails: { mergeConfirmed: true } as any, columnMovedAt: "2026-09-09T20:00:00.000Z" }),
+      from: "in-review",
+      to: "done",
+      lanes: { terminal: ["done"] },
+    });
+    await flushAsyncHandlers();
+    expect(sendNotification).toHaveBeenCalledTimes(1);
+    await service.stop();
+  });
+});
 
 describe("NotificationService deferred failure notifications", () => {
   it("does not dispatch a stale source-tagged terminal escalation after the live budget advances", async () => {
@@ -625,6 +820,34 @@ describe("NotificationService manual dispatch dedupe", () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(sendNotification).not.toHaveBeenCalled();
+    await service.stop();
+  });
+
+  /*
+  FNXC:NotificationTestHarness 2026-09-04-16:15 (RUFU-186):
+  Before the fix the ntfy leg of this same default-settings dispatch was an incidental REAL network call —
+  it happened to "work" by pushing to the public ntfy.sh topic and, combined with describe 3, fed the Node
+  HTTP/2 allocation storm. This case keeps the dispatch path genuinely exercised (stronger than the old
+  accidental live call) while the harness stays network-dead: the transport fake must receive the exact
+  ntfy URL, no real socket attempt may be recorded, and loopback stays clean in the process (F-186-14).
+  */
+  it("routes the default-settings ntfy leg through the stubbed transport without touching a socket", async () => {
+    const { service, sendNotification } = await setup();
+
+    await service.dispatch("cli-agent-awaiting-input", {
+      taskId: "FN-7109",
+      event: "cli-agent-awaiting-input",
+      metadata: { notificationDedupeKey: "cli-agent:rufu-186" },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(sendNotification).toHaveBeenCalledTimes(1);
+    // The real NtfyNotificationProvider (baseUrl defaults to https://ntfy.sh) must have reached the fake
+    // transport at the topic URL — proving the production dispatch path still runs end to end.
+    expect(fetchEgressUrls.some((url) => url.startsWith("https://ntfy.sh/topic"))).toBe(true);
+    // Network-dead invariant: the stub short-circuits before any net/TLS/HTTP/2 connect.
+    expect(externalEgressAttempts).toEqual([]);
+    expect(loopbackEgressAttempts).toEqual([]);
     await service.stop();
   });
 });

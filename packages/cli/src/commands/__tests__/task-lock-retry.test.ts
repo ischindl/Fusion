@@ -144,6 +144,20 @@ describe("runTaskShow / runTaskMove — mocked-store lock exhaustion, not-found,
       resolveProject,
       closeProjectStore,
       createLocalStore: vi.fn(async () => storeHolder as never),
+      /*
+      FNXC:ProjectRoutingVisibility 2026-09-23-00:12 (RUFU-269): `commands/task.ts` dropped its private
+      copy of `asLocalProjectContext` and now reuses the shared `project-context.ts` definition, so a
+      project-context double that omits it makes the cwd-fallback branch call `undefined`. Shape mirrors
+      the real builder (and the other CLI mocks) including the new `cwd-fallback` provenance tag.
+      */
+      asLocalProjectContext: (store: unknown) => ({
+        projectId: process.cwd(),
+        projectPath: process.cwd(),
+        projectName: "current-project",
+        isRegistered: false,
+        resolvedFrom: "cwd-fallback",
+        store,
+      }),
     }));
     // Real timers only: the task.js graph pulls engine + dashboard and must
     // not share the fake-timer clock used for lock backoff below.
@@ -207,7 +221,8 @@ describe("runTaskShow / runTaskMove — mocked-store lock exhaustion, not-found,
   it("runTaskMove: bounded exhaustion across many fast lock retries fails clearly and closes the store", async () => {
     process.env.FUSION_CLI_LOCK_RETRY_MS = "500";
     const moveTask = vi.fn().mockRejectedValue(new Error("SQLITE_BUSY: database is locked"));
-    assignStore({ moveTask });
+    const getTask = vi.fn().mockResolvedValue({ id: "FN-10", column: "todo" });
+    assignStore({ getTask, getTaskWorkflowSelection: vi.fn(() => undefined), moveTask });
 
     vi.useFakeTimers();
     const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
@@ -244,8 +259,9 @@ describe("runTaskShow / runTaskMove — mocked-store lock exhaustion, not-found,
   });
 
   it("runTaskMove: a move-to-same-column no-op succeeds on the first attempt and closes the store", async () => {
-    const moveTask = vi.fn().mockResolvedValue({ id: "FN-5", column: "todo" });
-    assignStore({ moveTask });
+    const current = { id: "FN-5", column: "todo" };
+    const moveTask = vi.fn().mockResolvedValue(current);
+    assignStore({ getTask: vi.fn().mockResolvedValue(current), getTaskWorkflowSelection: vi.fn(() => undefined), moveTask });
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
     await mod.runTaskMove("FN-5", "todo");
@@ -512,6 +528,16 @@ describe("FN-7734: generalized retry+teardown across representative fn task subc
       vi.doMock("../../project-context.js", () => ({
         resolveProject,
         closeProjectStore,
+        // FNXC:ProjectRoutingVisibility 2026-09-23-00:12 (RUFU-269): required by task.ts's cwd-fallback
+        // branch, which now wraps its store with the shared `asLocalProjectContext`.
+        asLocalProjectContext: (store: unknown) => ({
+          projectId: process.cwd(),
+          projectPath: process.cwd(),
+          projectName: "current-project",
+          isRegistered: false,
+          resolvedFrom: "cwd-fallback",
+          store,
+        }),
         // FNXC:PostgresCutover 2026-07-10: the branch's cwd fallback boots via
         // createLocalStore; hand back the same proxied mock store.
         createLocalStore: vi.fn(async () => {

@@ -77,6 +77,16 @@ describe("reliability interactions: paused scope decay", () => {
     const count = await manager.autoReboundPausedScopeDecay();
     expect(count).toBe(1);
     /*
+    FNXC:LifecycleContainment 2026-09-13-00:24 (RUFU-231 stale-seam reconciliation):
+    Pre-FN-217 this sweep moved the stale paused holder backward to `todo`. The rebound now
+    runs through `moveTaskToContainedBackwardTarget`, and "self-healing-stranded-recovery" is
+    not a revision reason, so the move is RETAINED IN PLACE: no `moveTask` fires at all, the
+    card stays in `in-progress`, and the recovery log/audit rows still record the pass. The
+    preserved-progress invariants below are exactly what retention guarantees.
+    */
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect((store.logEntry as any).mock.calls.some((call: unknown[]) => String(call[1]).includes("retained"))).toBe(true);
+/*
     FNXC:LifecycleContainment 2026-09-22-03:57:
     Automatic scope-decay recovery has no revision authority, so it records its audit and keeps
     the paused holder in its live lane rather than moving work backward to `todo`. The fixture
@@ -173,7 +183,18 @@ describe("reliability interactions: paused scope decay", () => {
 
     // Approval holds are excluded; the control reaches recovery but remains in place without revision authority.
     expect(count).toBe(1);
+    /*
+    FNXC:LifecycleContainment 2026-09-13-00:24 (RUFU-231 stale-seam reconciliation):
+    The control/approval distinction is the point of this symptom test, and it survives
+    FN-217 containment: the approval-held card never reaches the rebound call at all, while
+    the control card IS processed — its contained rebound retains it in place (no `moveTask`),
+    which is still a decision. Distinguish the two through the per-task recovery log, not the
+    retired lane move.
+    */
     expect(store.moveTask).not.toHaveBeenCalled();
+    expect(store.logEntry).toHaveBeenCalledWith("FN-CONTROL", expect.stringContaining("Auto-rebounded (FN-4890)"));
+    expect(store.logEntry).not.toHaveBeenCalledWith("FN-APPROVAL", expect.stringContaining("Auto-rebounded (FN-4890)"));
+expect(store.moveTask).not.toHaveBeenCalled();
     expect(byId.get("FN-APPROVAL")?.column).toBe("in-progress");
     expect(byId.get("FN-APPROVAL")?.paused).toBe(true);
     expect(byId.get("FN-APPROVAL")?.pausedReason).toBe("awaiting-approval");

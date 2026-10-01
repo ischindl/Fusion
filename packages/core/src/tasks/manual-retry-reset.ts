@@ -1,4 +1,4 @@
-import type { Task } from "../types.js";
+import { PLAN_ADMISSION_STALL_METADATA_KEY, PLAN_PREMISE_REJECTION_METADATA_KEY, type Task } from "../types.js";
 import type { TaskStore } from "../store.js";
 
 export const IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON = "in-review-stall-deadlock";
@@ -70,8 +70,33 @@ export function buildManualRetryResetPatchIfCurrent(
   };
 }
 
-export function buildManualRetryResetPatch(options?: { resetMergeRetries?: boolean }): Partial<Task> {
-  const patch: Partial<Task> = {
+/**
+ * The manual-retry patch shape: a `Partial<Task>` plus the key-preserving `sourceMetadataPatch`
+ * writer that `store.updateTask`/`updateTaskAtomic` accept (see RUFU-246 note in the builder).
+ */
+export type ManualRetryResetPatch = Partial<Task> & { sourceMetadataPatch?: Record<string, unknown> | null };
+
+export function buildManualRetryResetPatch(options?: { resetMergeRetries?: boolean }): ManualRetryResetPatch {
+  const patch: ManualRetryResetPatch = {
+    /*
+    FNXC:PlanPremises 2026-09-16-04:08:
+    RUFU-246 — operator Retry is the sanctioned un-park for a card terminally parked on an exhausted
+    plan-premise contract, and it lifts the park by clearing the refusal episode. The clear is
+    KEY-level (`planPremiseRejection: null` via sourceMetadataPatch), so unrelated sourceMetadata
+    provenance keys (duplicate-of, handoff-from) survive a Retry untouched. Without this clear the
+    episode's sticky-park signature would re-park the card on its very next release attempt, making
+    the Retry a no-op. Every Retry surface (dashboard route branches, column-stage restart) spreads
+    this builder, so the lift lives in exactly one place.
+    */
+    /*
+    FNXC:PlanningAdmissionStall 2026-09-25-17:48 (RUFU-273):
+    The same key-level clear applies to the planning-admission episode. An operator Retry IS the
+    operator's answer to "this card is stuck waiting for planning", and leaving the episode behind
+    would keep the chip asserting a gate the operator has just overruled — the card would re-show
+    "waiting for a planner slot" after the run had already been restarted. Cleared in the same patch
+    so both episodes lift together and unrelated provenance keys still survive.
+    */
+    sourceMetadataPatch: { [PLAN_PREMISE_REJECTION_METADATA_KEY]: null, [PLAN_ADMISSION_STALL_METADATA_KEY]: null },
     nextRecoveryAt: null as unknown as Task["nextRecoveryAt"],
     sessionContentionWaitReason: null as unknown as Task["sessionContentionWaitReason"],
     executorEscalationAttempted: false,

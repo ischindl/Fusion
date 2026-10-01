@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { JSX } from "react";
-import { getAgentHealthStatus, getAgentHealthColorVar } from "../agentHealth";
+import {
+  getAgentHealthStatus,
+  getAgentHealthColorVar,
+  AGENT_HEALTH_LABEL_AWAITING_APPROVAL,
+  AGENT_HEALTH_LABEL_RATE_LIMITED,
+} from "../agentHealth";
+import { PAUSE_REASON_LABELS } from "../stallReason";
 import type { Agent } from "../../api";
 
 // Mock Date.now to get deterministic elapsed time calculations
@@ -8,7 +14,17 @@ const FIXED_NOW = new Date("2026-04-10T12:00:00.000Z").getTime();
 
 type AgentHealthInput = Pick<
   Agent,
-  "state" | "lastHeartbeatAt" | "lastError" | "pauseReason" | "runtimeConfig" | "metadata" | "name" | "role" | "taskId"
+  | "state"
+  | "lastHeartbeatAt"
+  | "lastError"
+  | "pauseReason"
+  | "runtimeConfig"
+  | "metadata"
+  | "name"
+  | "role"
+  | "taskId"
+  // RUFU-177: the approval count is a pill input now (it mirrors the module's own input Pick).
+  | "pendingApprovalCount"
 >;
 
 function makeAgent(overrides: Partial<AgentHealthInput> = {}): AgentHealthInput {
@@ -22,6 +38,7 @@ function makeAgent(overrides: Partial<AgentHealthInput> = {}): AgentHealthInput 
     lastError: undefined,
     pauseReason: undefined,
     runtimeConfig: undefined,
+    pendingApprovalCount: undefined,
     ...overrides,
   };
 }
@@ -63,6 +80,80 @@ describe("getAgentHealthStatus", () => {
     });
   });
 
+  /*
+  FNXC:ProviderThrottleIsTransient 2026-09-30-14:58 (RUFU-286):
+  The reported incident, on the surface that actually misled the operator. The pill printed the raw
+  upstream wrapper body, whose tail says `unknown model, no fallback configured` — text that reads as
+  "a model name is broken, go fix configuration" — while the real cause was a 429 account rate limit
+  the engine was already waiting out. These cases pin the whole distinction: the cooldown outranks the
+  body, the body survives as tooltip evidence, and BOTH controls prove the gate is the live cooldown
+  rather than `lastError` never being allowed to render at all.
+  */
+  describe("provider throttle cooldown", () => {
+    const THROTTLE_ENVELOPE = 'Unable to select a usable model after 1 attempt (primary unknown model, no fallback configured, trigger: prompt-time): 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."},"request_id":"req_011Cf3ZXBTF3bymyoFWRQy3t"}';
+    const cooldownMetadata = (untilAt: string) => ({
+      heartbeatErrorRecovery: {
+        consecutiveAttempts: 1,
+        updatedAt: new Date(FIXED_NOW).toISOString(),
+        throttleStreak: 2,
+        cooldownUntilAt: untilAt,
+      },
+    });
+    const retryingAt = new Date(FIXED_NOW + 120_000).toISOString();
+
+    it('labels a cooled-down throttled agent "Rate limited" instead of printing the provider body', () => {
+      const status = getAgentHealthStatus(makeAgent({
+        state: "error",
+        lastError: THROTTLE_ENVELOPE,
+        metadata: cooldownMetadata(retryingAt),
+      }));
+
+      expect(status.label).toBe(AGENT_HEALTH_LABEL_RATE_LIMITED);
+      // The misdiagnosis text must never reach the headline again.
+      expect(status.label).not.toContain("unknown model");
+      expect(status.label).not.toContain("429");
+      // The raw body is demoted to evidence, not deleted.
+      expect(status.reason).toContain("429");
+      expect(status.reason).toContain(retryingAt);
+    });
+
+    it("keeps printing the provider body once the cooldown has elapsed", () => {
+      // Control for the case above: the gate is a LIVE cooldown, not a blanket ban on lastError.
+      const elapsed = new Date(FIXED_NOW - 1).toISOString();
+      const status = getAgentHealthStatus(makeAgent({
+        state: "error",
+        lastError: THROTTLE_ENVELOPE,
+        metadata: cooldownMetadata(elapsed),
+      }));
+
+      expect(status.label).toBe(THROTTLE_ENVELOPE);
+    });
+
+    it("does not pre-empt a pending approval the operator can act on", () => {
+      // The cooldown keeps running underneath either way; the actionable wait is what gets named.
+      const status = getAgentHealthStatus(makeAgent({
+        state: "error",
+        lastError: THROTTLE_ENVELOPE,
+        pendingApprovalCount: 1,
+        metadata: cooldownMetadata(retryingAt),
+      }));
+
+      expect(status.label).toBe(AGENT_HEALTH_LABEL_AWAITING_APPROVAL);
+    });
+
+    it("does not promise a retry to a paused agent whose throttle budget ran out", () => {
+      const status = getAgentHealthStatus(makeAgent({
+        state: "paused",
+        pauseReason: "error-retry-exhausted",
+        lastError: THROTTLE_ENVELOPE,
+        metadata: cooldownMetadata(retryingAt),
+      }));
+
+      expect(status.label).toBe(PAUSE_REASON_LABELS["error-retry-exhausted"]);
+      expect(status.reason ?? "").not.toContain(retryingAt);
+    });
+  });
+
   describe("paused state", () => {
     it('returns "Paused" for paused agents without pauseReason', () => {
       const agent = makeAgent({ state: "paused" });
@@ -79,6 +170,23 @@ describe("getAgentHealthStatus", () => {
       expect(status.stateDerived).toBe(false);
     });
 
+    /*
+    FNXC:StallReason 2026-09-01-18:47 (RUFU-175):
+    The health pill must speak the same words as every other stall surface for a pause reason the
+    shared code table knows, instead of leaking the raw engine code. A code the table does NOT know
+    yet keeps the verbatim `Paused: <raw>` fallback so a future reason is never hidden.
+    */
+    it("maps a known pause reason through the shared code table instead of the raw code", () => {
+      const status = getAgentHealthStatus(makeAgent({ state: "paused", pauseReason: "error-retry-exhausted" }));
+      expect(status.label).toBe("Automatic retries exhausted");
+      expect(status.label).not.toContain("error-retry-exhausted");
+    });
+
+    it("keeps an unrecognized pause reason verbatim as the Paused:<code> fallback", () => {
+      const status = getAgentHealthStatus(makeAgent({ state: "paused", pauseReason: "future-reason-code" }));
+      expect(status.label).toBe("Paused: future-reason-code");
+    });
+
     it("ignores heartbeat data for paused agents", () => {
       const agent = makeAgent({
         state: "paused",
@@ -87,6 +195,77 @@ describe("getAgentHealthStatus", () => {
       const status = getAgentHealthStatus(agent);
       expect(status.label).toBe("Paused");
       expect(status.stateDerived).toBe(true);
+    });
+  });
+
+  /*
+  FNXC:AgentHealthPill 2026-09-02-22:39 (RUFU-177):
+  Pins the pill's precedence ladder for a pending approval: Error > named non-approval pause >
+  AWAITING APPROVAL > heartbeat verdicts > Running/Healthy. The approval state deliberately OUTRANKS the
+  heartbeat-unresponsive branches (spec Step 4): an agent parked at the gate stops heartbeating, so a
+  stale beat beside a pending approval is the SYMPTOM of the wait, not a competing diagnosis --
+  reporting "Unresponsive" there told operators to kill a process that was merely waiting for a click.
+  The label is the catalog's `agents.stallReason.awaiting-approval` wording ("Waiting for approval"),
+  what the Fleet/Agents stall column already says -- not the stall resolver's chip wording.
+  */
+  describe("approval-parked agent", () => {
+    const freshBeat = () => new Date(FIXED_NOW - 30_000).toISOString();
+
+    it('names the wait for an agent blocked on the gate while still reporting "running"', () => {
+      const status = getAgentHealthStatus(makeAgent({ state: "running", pendingApprovalCount: 2 }));
+      expect(status.label).toBe("Waiting for approval");
+      expect(status.stateDerived).toBe(false);
+    });
+
+    it('reads "Waiting for approval" for an engine approval PARK, byte-identically to the count branch', () => {
+      // Completion criterion: the parked and the counted paths cannot disagree on the pill.
+      const parked = getAgentHealthStatus(
+        makeAgent({ state: "paused", pauseReason: "awaiting-approval", pendingApprovalCount: 2 }),
+      );
+      const counted = getAgentHealthStatus(makeAgent({ state: "running", pendingApprovalCount: 2 }));
+      expect(parked.label).toBe("Waiting for approval");
+      expect(parked.label).toBe(counted.label);
+      expect(parked.color).toBe(counted.color);
+    });
+
+    it('names the wait instead of "Healthy" for a live agent that is simply sitting idle', () => {
+      const status = getAgentHealthStatus(
+        makeAgent({ state: "idle", lastHeartbeatAt: freshBeat(), pendingApprovalCount: 1 }),
+      );
+      expect(status.label).toBe("Waiting for approval");
+    });
+
+    it("outranks the heartbeat-unresponsive verdict -- the spec's core symptom (waiting != dead)", () => {
+      // An agent parked at the gate stops heartbeating; this used to read "Unresponsive" and send
+      // operators to restart a process that was merely waiting for a click.
+      const status = getAgentHealthStatus(
+        makeAgent({ state: "idle", lastHeartbeatAt: new Date(FIXED_NOW - 5 * 3_600_000).toISOString(), pendingApprovalCount: 2 }),
+      );
+      expect(status.label).toBe("Waiting for approval");
+    });
+
+    it("outranks heartbeat-disabled and never-beaten labels for the same reason", () => {
+      expect(
+        getAgentHealthStatus(makeAgent({ state: "active", runtimeConfig: { enabled: false }, pendingApprovalCount: 2 })).label,
+      ).toBe("Waiting for approval");
+      expect(getAgentHealthStatus(makeAgent({ state: "active", pendingApprovalCount: 2 })).label).toBe("Waiting for approval");
+    });
+
+    it('keeps "Running" when there is nothing to approve', () => {
+      expect(getAgentHealthStatus(makeAgent({ state: "running", pendingApprovalCount: 0 })).label).toBe("Running");
+      expect(getAgentHealthStatus(makeAgent({ state: "running" })).label).toBe("Running");
+    });
+
+    it("lets a real failure or a differently-named pause outrank the count", () => {
+      expect(
+        getAgentHealthStatus(makeAgent({ state: "error", lastError: "Agent crashed", pendingApprovalCount: 3 })).label,
+      ).toBe("Agent crashed");
+      // The paused branch prints its own pause reason; the count adds no better information than that.
+      expect(
+        getAgentHealthStatus(
+          makeAgent({ state: "paused", pauseReason: "budget-exhausted", pendingApprovalCount: 3 }),
+        ).label,
+      ).toBe("Output budget exhausted");
     });
   });
 

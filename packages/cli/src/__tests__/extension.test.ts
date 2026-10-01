@@ -130,6 +130,38 @@ describe("fn_task_logs_read extension payload bounds", () => {
     expect(text).toContain("Detail preview truncated:");
     expect(text).toContain("smaller limit, offset, or type filter");
   });
+
+  it("names the requested id in the payload and details when one store serves two cards", async () => {
+    // FNXC:TaskLogsRead 2026-09-09-15:19:
+    // RUFU-204: the pi surface already keys reads by params.id; this locks the header+details identity to
+    // the ASKED card so a single store cannot be mistaken for a card-identity source. Distinguishing two
+    // cards through ONE store is the check: the served id must appear in both the header and details.
+    const cwd = "/fn-204-extension-log-reader";
+    const logs: Record<string, { taskId: string; timestamp: string; text: string; type: "text"; agent: string }[]> = {
+      "FN-A": [{ taskId: "FN-A", timestamp: "2026-09-01T00:00:00.000Z", text: "row for A", type: "text", agent: "executor" }],
+      "FN-B": [{ taskId: "FN-B", timestamp: "2026-09-02T00:00:00.000Z", text: "row for B", type: "text", agent: "executor" }],
+    };
+    const getAgentLogs = vi.fn(async (id: string) => logs[id] ?? []);
+    const getAgentLogCount = vi.fn(async (id: string) => (logs[id] ?? []).length);
+    __setCachedStoreForTesting(cwd, { getAgentLogs, getAgentLogCount } as unknown as TaskStore);
+
+    const api = createMockApi();
+    registerExtension(api);
+    const tool = requireTool(api, "fn_task_logs_read");
+
+    const resultA = await tool.execute("call", { id: "FN-A" }, undefined, undefined, makeCtx(cwd));
+    expect(getAgentLogs).toHaveBeenCalledWith("FN-A", expect.any(Object));
+    expect(resultA.content[0]?.text).toContain("Agent log (FN-A):");
+    expect(resultA.content[0]?.text).toContain("row for A");
+    expect((resultA.details as { taskId?: string }).taskId).toBe("FN-A");
+
+    const resultB = await tool.execute("call", { id: "FN-B" }, undefined, undefined, makeCtx(cwd));
+    expect(getAgentLogs).toHaveBeenCalledWith("FN-B", expect.any(Object));
+    expect(resultB.content[0]?.text).toContain("Agent log (FN-B):");
+    expect(resultB.content[0]?.text).toContain("row for B");
+    expect(resultB.content[0]?.text).not.toContain("row for A");
+    expect((resultB.details as { taskId?: string }).taskId).toBe("FN-B");
+  });
 });
 
 interface ToolMeta {
@@ -328,8 +360,6 @@ legacyDescribe("fn pi extension (legacy exhaustive suite)", () => {
         "fn_task_import_gitlab_group_issues",
         "fn_task_browse_gitlab_merge_requests",
         "fn_task_import_gitlab_merge_requests",
-        "fn_task_archive",
-        "fn_task_unarchive",
         "fn_task_delete",
         "fn_task_plan",
         "fn_insight_list",
@@ -378,6 +408,8 @@ legacyDescribe("fn pi extension (legacy exhaustive suite)", () => {
       expect(api.tools.has("fn_task_update_step")).toBe(false);
       expect(api.tools.has("fn_task_log")).toBe(false);
       expect(api.tools.has("fn_task_merge")).toBe(false);
+      expect(api.tools.has("fn_task_archive")).toBe(false);
+      expect(api.tools.has("fn_task_unarchive")).toBe(false);
     });
 
     it("registers the /fn command", () => {
@@ -1179,20 +1211,18 @@ legacyDescribe("fn pi extension (legacy exhaustive suite)", () => {
       expect(dashboardResult.content[0].text).toContain("Created via: Dashboard");
     });
 
-    it("shows duplicate lineage with archived annotation", async () => {
+    it("shows duplicate lineage", async () => {
       const store = h.store();
 
-      const archivedSource = await store.createTask({ description: "Archived source" });
-      await store.moveTask(archivedSource.id, "done");
-      await store.archiveTask(archivedSource.id);
+      const source = await store.createTask({ description: "Duplicate source" });
       await store.createTask({
         description: "Dup task",
-        source: { sourceType: "chat_session", sourceMetadata: { duplicateOfTaskIds: [archivedSource.id, "FN-404"] } },
+        source: { sourceType: "chat_session", sourceMetadata: { duplicateOfTaskIds: [source.id, "FN-404"] } },
       });
 
       const showTool = api.tools.get("fn_task_show")!;
       const result = await showTool.execute("call-4", { id: "FN-002" }, undefined, undefined, makeCtx(tmpDir));
-      expect(result.content[0].text).toContain(`Duplicate of: ${archivedSource.id} (archived), FN-404`);
+      expect(result.content[0].text).toContain(`Duplicate of: ${source.id}, FN-404`);
     });
   });
 
@@ -1977,55 +2007,6 @@ legacyDescribe("fn pi extension (legacy exhaustive suite)", () => {
       expect(result.content[0].text).toContain("Task FN-999 not found");
     });
 
-    it("returns clear error when task is archived/non-active", async () => {
-      const missionTool = api.tools.get("fn_mission_create")!;
-      const milestoneTool = api.tools.get("fn_milestone_add")!;
-      const sliceTool = api.tools.get("fn_slice_add")!;
-      const featureTool = api.tools.get("fn_feature_add")!;
-      const linkTool = api.tools.get("fn_feature_link_task")!;
-
-      const store = h.store();
-      const archivedTask = await store.createTask({ description: "Archived task" });
-      await store.moveTask(archivedTask.id, "done");
-      await store.archiveTask(archivedTask.id);
-
-      const mission = await missionTool.execute("m1", { title: "Mission" }, undefined, undefined, makeCtx(tmpDir));
-      const milestone = await milestoneTool.execute(
-        "ms1",
-        { missionId: mission.details.missionId, title: "Milestone" },
-        undefined,
-        undefined,
-        makeCtx(tmpDir),
-      );
-      const slice = await sliceTool.execute(
-        "sl1",
-        { milestoneId: milestone.details.milestoneId, title: "Slice" },
-        undefined,
-        undefined,
-        makeCtx(tmpDir),
-      );
-      const feature = await featureTool.execute(
-        "f1",
-        { sliceId: slice.details.sliceId, title: "Feature" },
-        undefined,
-        undefined,
-        makeCtx(tmpDir),
-      );
-
-      const result = await linkTool.execute(
-        "l0b",
-        { featureId: feature.details.featureId, taskId: archivedTask.id },
-        undefined,
-        undefined,
-        makeCtx(tmpDir),
-      );
-
-      expect(result.isError).toBe(true);
-      expect(result.content[0].text).toContain("task is not on the active board");
-      expect(result.content[0].text).toContain(`Cannot link feature ${feature.details.featureId} to task ${archivedTask.id}`);
-      expect(result.details.error).toContain("Only active tasks can be linked to features");
-    });
-
     it("links feature to task", async () => {
       const missionTool = api.tools.get("fn_mission_create")!;
       const milestoneTool = api.tools.get("fn_milestone_add")!;
@@ -2608,7 +2589,7 @@ legacyDescribe("fn pi extension (legacy exhaustive suite)", () => {
       );
 
       const store = h.store();
-      const tasks = await store.listTasks({ includeArchived: true });
+      const tasks = await store.listTasks({ includeArchived: false });
       expect(tasks).toHaveLength(2);
       const issueOneTask = tasks.find((task) => task.sourceIssue?.issueNumber === 1);
       expect(issueOneTask?.githubTracking?.enabled).toBeUndefined();
@@ -2642,7 +2623,7 @@ legacyDescribe("fn pi extension (legacy exhaustive suite)", () => {
       await tool.execute("gh-tracked-bulk", { ownerRepo: "acme/demo" }, undefined, undefined, makeCtx(tmpDir));
 
       const verifyStore = h.store();
-      const tasks = await verifyStore.listTasks({ includeArchived: true });
+      const tasks = await verifyStore.listTasks({ includeArchived: false });
       const imported = tasks.find((task) => task.sourceIssue?.issueNumber === 7);
       expect(imported?.githubTracking?.enabled).toBe(true);
       expect(imported?.sourceIssue).toEqual(expect.objectContaining({
@@ -2672,7 +2653,7 @@ legacyDescribe("fn pi extension (legacy exhaustive suite)", () => {
       await tool.execute("gh-import-linked-bulk", { ownerRepo: "acme/demo" }, undefined, undefined, makeCtx(tmpDir));
 
       const verifyStore = h.store();
-      const tasks = await verifyStore.listTasks({ includeArchived: true });
+      const tasks = await verifyStore.listTasks({ includeArchived: false });
       const imported = tasks.find((task) => task.sourceIssue?.issueNumber === 9);
       expect(imported?.description).toContain("(no description)");
       expect(imported?.githubTracking?.enabled).toBe(true);
@@ -2994,19 +2975,19 @@ pgTest("fn pi extension (runnable structured-output regression slice)", () => {
   The pi registration must drive the real cached PostgreSQL store, not merely expose a schema.
   This preserves the archived-link repair guarantee through the CLI adapter.
   */
-  it("clears an archived linked feature through the real validation repair tool", async () => {
+  it("clears a soft-deleted linked feature through the real validation repair tool", async () => {
     __setCachedStoreForTesting(tmpDir, h.store());
     const missionStore = h.store().getMissionStore();
     const mission = await missionStore.createMission({ title: "CLI repair" });
     const milestone = await missionStore.addMilestone(mission.id, { title: "Milestone" });
     const slice = await missionStore.addSlice(milestone.id, { title: "Slice" });
     const feature = await missionStore.addFeature(slice.id, { title: "Feature" });
-    const task = await h.store().createTask({ description: "Archived CLI delivery", column: "done" });
-    await h.store().archiveTask(task.id, { cleanup: false });
+    const task = await h.store().createTask({ description: "Deleted CLI delivery", column: "done" });
+    await h.store().deleteTask(task.id);
     await missionStore.updateFeature(feature.id, { taskId: task.id, status: "blocked", loopState: "blocked" });
 
     const result = await api.tools.get("fn_feature_repair_validation")!.execute(
-      "repair-archived", { id: feature.id, action: "clear" }, undefined, undefined, makeCtx(tmpDir),
+      "repair-deleted", { id: feature.id, action: "clear" }, undefined, undefined, makeCtx(tmpDir),
     );
     expect(result.isError).not.toBe(true);
     expect(await missionStore.getFeature(feature.id)).toMatchObject({ status: "defined", loopState: "idle" });
@@ -3933,6 +3914,10 @@ pgTest("fn pi extension (runnable structured-output regression slice)", () => {
       expect(updated?.worktree).toBeFalsy();
       expect(updated?.branch).toBeFalsy();
       expect(updated?.sessionFile).toBeFalsy();
+      // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): the retried card must be DISPATCHABLE.
+      // On HEAD this user-sourced reopen to the hold lane set userPaused=true (durable scheduler refusal);
+      // without parkOnHold:false the park returns and this assertion fails.
+      expect(updated?.userPaused).toBeUndefined();
       expect(updated?.steps[0].status).toBe("done");
       expectRetryCountersReset(updated);
       expect(updated?.mergeRetries).toBe(0);
@@ -3994,6 +3979,8 @@ pgTest("fn pi extension (runnable structured-output regression slice)", () => {
       expect(updated?.error).toBeFalsy();
       expect(updated?.paused).toBeUndefined();
       expect(updated?.pausedReason).toBeUndefined();
+      // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): release intent must survive the retry — no self-inflicted park.
+      expect(updated?.userPaused).toBeUndefined();
       expect(updated?.steps[1].status).toBe("in-progress");
       expectRetryCountersReset(updated);
       expect(updated?.mergeRetries).toBe(0);
@@ -4034,6 +4021,8 @@ pgTest("fn pi extension (runnable structured-output regression slice)", () => {
       expect(updated?.column).toBe("todo");
       expect(updated?.status).toBeFalsy();
       expect(updated?.error).toBeFalsy();
+      // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): release intent must survive the retry — no self-inflicted park.
+      expect(updated?.userPaused).toBeUndefined();
       expect(updated?.steps[1].status).toBe("in-progress");
       expectRetryCountersReset(updated);
       expect(updated?.mergeRetries).toBe(9);
@@ -4063,6 +4052,8 @@ pgTest("fn pi extension (runnable structured-output regression slice)", () => {
       expect(updated?.column).toBe("todo");
       expect(updated?.status).toBeFalsy();
       expect(updated?.error).toBeFalsy();
+      // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): release intent must survive the retry — no self-inflicted park.
+      expect(updated?.userPaused).toBeUndefined();
       expect(updated?.steps).toEqual([]);
       expect(updated?.mergeRetries).toBe(0);
     });
@@ -4249,6 +4240,8 @@ pgTest("fn pi extension (runnable structured-output regression slice)", () => {
       expect(updated?.column).toBe("todo");
       expect(updated?.status).toBeFalsy();
       expect(updated?.error).toBeFalsy();
+      // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): release intent must survive the retry — no self-inflicted park.
+      expect(updated?.userPaused).toBeUndefined();
       expect(updated?.steps[1].status).toBe("in-progress");
       expect(updated?.mergeRetries).toBe(5);
     });
@@ -4277,6 +4270,8 @@ pgTest("fn pi extension (runnable structured-output regression slice)", () => {
       expect(updated?.column).toBe("todo");
       expect(updated?.status).toBeFalsy();
       expect(updated?.error).toBeFalsy();
+      // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): release intent must survive the retry — no self-inflicted park.
+      expect(updated?.userPaused).toBeUndefined();
       expect(updated?.steps).toEqual([]);
       expect(updated?.mergeRetries).toBe(0);
     });
@@ -4451,6 +4446,9 @@ pgTest("fn pi extension (runnable structured-output regression slice)", () => {
       expect(updated?.column).toBe("todo");
       expect(updated?.status).toBeFalsy();
       expect(updated?.error).toBeFalsy();
+      // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): the GENERIC fallthrough carried
+      // { moveSource: "user" } with no preserveProgress — the RUFU-195-class self-park. Release intent pinned on the row.
+      expect(updated?.userPaused).toBeUndefined();
       expectRetryCountersReset(updated);
       expect(updated?.mergeRetries).toBe(0);
     });
@@ -4542,6 +4540,63 @@ pgTest("fn pi extension (runnable structured-output regression slice)", () => {
       const healthyBlock = text.split("Name: healthy-agent")[1]?.split("\n\n")[0] ?? "";
       expect(healthyBlock).not.toContain("Last Error:");
       expect(healthyBlock).not.toContain("Pause Reason:");
+    });
+
+    it("labels a live throttle cooldown as an armed re-probe, not an exhausted park", async () => {
+      /*
+      FNXC:ProviderThrottleIsTransient 2026-09-30-14:17 (RUFU-286):
+      A provider throttle leaves the agent in `state: "error"` while the heartbeat timer holds a
+      bounded re-probe, so an operator reading `Error Recovery: attempts 1` could not tell a
+      provider telling us to come back later from an exhausted park that needs a restart. The
+      wording comes from the single shared core reader, so the CLI cannot drift from the
+      lifecycle's own horizon. The exhausted sibling is asserted in the same pass because the
+      pair of readings is the whole deliverable.
+      */
+      const agentStore = new AgentStore({ rootDir: join(tmpDir, ".fusion"), asyncLayer: h.store().getAsyncLayer() });
+      await agentStore.init();
+      const throttledAgent = await agentStore.createAgent({ name: "throttled-agent", role: "executor", metadata: {} });
+      const exhaustedAgent = await agentStore.createAgent({ name: "exhausted-agent", role: "executor", metadata: {} });
+      const retryingAt = new Date(Date.now() + 120_000).toISOString();
+
+      await agentStore.updateAgentState(throttledAgent.id, "error");
+      await agentStore.updateAgent(throttledAgent.id, {
+        lastError: "429 rate_limit_error",
+        metadata: {
+          // Persisted shape exactly as `armHeartbeatThrottleCooldown` writes it: the canonical
+          // horizon key is `cooldownUntilAt`, and the row carries no separate backoff field.
+          heartbeatErrorRecovery: {
+            consecutiveAttempts: 1,
+            updatedAt: new Date().toISOString(),
+            throttleStreak: 2,
+            cooldownUntilAt: retryingAt,
+          },
+        },
+      });
+
+      await agentStore.updateAgentState(exhaustedAgent.id, "paused");
+      await agentStore.updateAgent(exhaustedAgent.id, {
+        pauseReason: "error-retry-exhausted",
+        metadata: {
+          heartbeatErrorRecovery: {
+            consecutiveAttempts: 3,
+            lastAttemptAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            throttleStreak: 3,
+          },
+        },
+      });
+
+      const tool = api.tools.get("fn_list_agents")!;
+      const result = await tool.execute("la-throttle", {}, undefined, undefined, makeCtx(tmpDir));
+      const text = result.content[0].text;
+
+      const throttledBlock = text.split("Name: throttled-agent")[1]?.split("\n\n")[0] ?? "";
+      expect(throttledBlock).toContain(`throttle cooldown until ${retryingAt} (streak 2)`);
+      expect(throttledBlock).not.toContain("exhausted");
+
+      const exhaustedBlock = text.split("Name: exhausted-agent")[1]?.split("\n\n")[0] ?? "";
+      expect(exhaustedBlock).toContain("throttle retries exhausted (streak 3)");
+      expect(exhaustedBlock).not.toContain("throttle cooldown until");
     });
 
     it("shows current task column context for parked, active, terminal, and missing links", async () => {

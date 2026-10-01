@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MessageComposer, resolveDroppedNativeStructureRef } from "../MessageComposer";
 import * as apiModule from "../../api";
 import type { Agent } from "../../api";
+import type { NativeStructureRef } from "@fusion/core";
 import { isNativeStructureDragEnabled, NATIVE_STRUCTURE_DRAG_MIME } from "../../utils/nativeStructureDrag";
 
 const composeChatProps = vi.fn();
@@ -42,6 +43,7 @@ const mockAgents: Agent[] = [
     id: "agent-001",
     name: "Test Agent",
     role: "executor",
+    roles: ["executor"],
     state: "idle",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -69,6 +71,7 @@ describe("MessageComposer", () => {
       content: "Test message",
       type: "user-to-agent",
       read: false,
+      archived: false,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
@@ -82,9 +85,15 @@ describe("MessageComposer", () => {
     });
   });
 
-  it("renders the composer with header", () => {
+  /*
+  FNXC:StandardizedMailboxLayout 2026-09-14-10:24:
+  FN-379 remediation: the composer is hosted form content. Its identity title moved to the owning Mailbox header, so the
+  composer itself renders only its form body and footer commands.
+  */
+  it("renders the composer form body without its own identity title", () => {
     render(<MessageComposer {...defaultProps} />);
-    expect(screen.getByText("New Message")).toBeDefined();
+    expect(screen.getByTestId("message-composer-content")).toBeDefined();
+    expect(screen.queryByText("New Message")).toBeNull();
   });
 
   it("shows agent dropdown when agents are provided", () => {
@@ -248,7 +257,13 @@ describe("MessageComposer", () => {
   it("preserves a long structure label when attaching from the shared picker", () => {
     const longLabel = "A deliberately long structure label that must remain available without changing attachment metadata";
     render(<MessageComposer {...defaultProps} nativeStructureCandidates={[
-      { ref: { kind: "mission-with-a-deliberately-long-kind", id: "M-long" }, label: longLabel },
+      /*
+      FNXC:RUFU-140 2026-08-21-04:55:
+      The long, non-canonical kind string is deliberate — this test proves the picker passes an
+      arbitrary kind through to the option label verbatim. The ref type constrains kind to the
+      canonical union, so the runtime value is kept through a localized cast.
+      */
+      { ref: { kind: "mission-with-a-deliberately-long-kind" as unknown as NativeStructureRef["kind"], id: "M-long" }, label: longLabel },
     ]} />);
 
     const picker = screen.getByTestId("message-composer-attach-structure");
@@ -331,10 +346,16 @@ describe("MessageComposer", () => {
     expect(screen.getByTestId("message-composer-error").textContent).toContain("Network error");
   });
 
-  it("calls onCancel when clicking cancel button", () => {
-    render(<MessageComposer {...defaultProps} />);
-    fireEvent.click(screen.getByTestId("message-composer-cancel"));
-    expect(defaultProps.onCancel).toHaveBeenCalledOnce();
+  /*
+  FNXC:StandardizedMailboxLayout 2026-09-14-10:24:
+  FN-379 remediation deleted the composer's local header row and its X exit; the owning Mailbox header now carries the
+  composer identity and abandon action, so that case lives in the Mailbox host suites instead of here.
+  */
+  it("renders no local header row and no local close control", () => {
+    const { container } = render(<MessageComposer {...defaultProps} />);
+    expect(container.querySelector(".message-composer-header")).toBeNull();
+    expect(screen.queryByTestId("message-composer-cancel")).toBeNull();
+    expect(screen.queryByText("New Message")).toBeNull();
   });
 
   it("calls onCancel when clicking cancel footer button", () => {
@@ -355,7 +376,58 @@ describe("MessageComposer", () => {
     expect(document.activeElement).toBe(screen.getByTestId("message-composer-content"));
   });
 
-  it("scrolls textarea into view on visualViewport resize for a new compose", () => {
+  /*
+  FNXC:MobileKeyboardViewport 2026-09-17-14:23:
+  FN-512 changed what "reveal the composer" means, so these assertions changed with it. They used to
+  require `scrollIntoView({ block: "center" })`, which scrolls every scrollable ancestor up to the
+  document — a composer in one surface could move the whole page, and a document scroll during a
+  WebKit keyboard raise can abort the raise.
+
+  The contract is now: scroll the composer's OWN scroller by the minimum amount, and never the
+  document. The assertions below therefore check the scroller position and the ABSENCE of
+  `scrollIntoView`, which is the behaviour a user can observe.
+  */
+  function mountComposerInScroller(node: React.ReactElement) {
+    const view = render(node);
+    const textarea = screen.getByTestId("message-composer-content");
+    const scroller = textarea.closest("div")!.parentElement as HTMLElement;
+    Object.defineProperties(scroller, {
+      scrollHeight: { value: 2000, configurable: true },
+      clientHeight: { value: 400, configurable: true },
+    });
+    scroller.style.overflowY = "auto";
+    let scrollTop = 0;
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      get: () => scrollTop,
+      set: (next: number) => { scrollTop = next; },
+    });
+    scroller.getBoundingClientRect = () => ({
+      top: 0, bottom: 400, height: 400, left: 0, right: 390, width: 390, x: 0, y: 0, toJSON: () => ({}),
+    }) as DOMRect;
+    // The composer starts 60px below the scroller's visible bottom edge, and its rectangle follows
+    // the scroller like a real one would — so a repeated reveal converges instead of accumulating.
+    textarea.getBoundingClientRect = () => {
+      const top = 420 - scrollTop;
+      return ({
+        top, bottom: top + 40, height: 40, left: 0, right: 390, width: 390, x: 0, y: top, toJSON: () => ({}),
+      }) as DOMRect;
+    };
+    return { view, textarea, scroller, readScrollTop: () => scroller.scrollTop };
+  }
+
+  function spyOnScrollIntoView() {
+    if (!("scrollIntoView" in HTMLElement.prototype)) {
+      Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+        configurable: true,
+        value: () => undefined,
+        writable: true,
+      });
+    }
+    return vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(() => undefined);
+  }
+
+  it("reveals the textarea inside its own scroller on visualViewport resize for a new compose", () => {
     const addEventListener = vi.fn();
     const removeEventListener = vi.fn();
     let resizeHandler: (() => void) | undefined;
@@ -375,54 +447,35 @@ describe("MessageComposer", () => {
       writable: true,
     });
 
-    if (!("scrollIntoView" in HTMLElement.prototype)) {
-      Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
-        configurable: true,
-        value: () => undefined,
-        writable: true,
-      });
-    }
-    const scrollIntoViewSpy = vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(() => undefined);
-
-    render(<MessageComposer {...defaultProps} agents={mockAgents} />);
+    const scrollIntoViewSpy = spyOnScrollIntoView();
+    const { textarea, readScrollTop } = mountComposerInScroller(
+      <MessageComposer {...defaultProps} agents={mockAgents} />,
+    );
+    textarea.focus();
 
     expect(addEventListener).toHaveBeenCalledWith("resize", expect.any(Function));
     resizeHandler?.();
-    expect(scrollIntoViewSpy).toHaveBeenCalledWith({ block: "center", behavior: "auto" });
+
+    expect(readScrollTop()).toBe(60);
+    expect(scrollIntoViewSpy).not.toHaveBeenCalled();
 
     scrollIntoViewSpy.mockRestore();
   });
 
-  it("scrolls textarea into view on visualViewport resize when replying", () => {
+  it("does not move any surface on viewport resize while another field holds focus", () => {
     const addEventListener = vi.fn();
-    const removeEventListener = vi.fn();
     let resizeHandler: (() => void) | undefined;
-
     addEventListener.mockImplementation((event: string, handler: () => void) => {
-      if (event === "resize") {
-        resizeHandler = handler;
-      }
+      if (event === "resize") resizeHandler = handler;
     });
-
     Object.defineProperty(window, "visualViewport", {
       configurable: true,
-      value: {
-        addEventListener,
-        removeEventListener,
-      },
+      value: { addEventListener, removeEventListener: vi.fn() },
       writable: true,
     });
 
-    if (!("scrollIntoView" in HTMLElement.prototype)) {
-      Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
-        configurable: true,
-        value: () => undefined,
-        writable: true,
-      });
-    }
-    const scrollIntoViewSpy = vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(() => undefined);
-
-    render(
+    const scrollIntoViewSpy = spyOnScrollIntoView();
+    const { readScrollTop } = mountComposerInScroller(
       <MessageComposer
         {...defaultProps}
         recipient={{ id: "agent-001", type: "agent" }}
@@ -430,28 +483,34 @@ describe("MessageComposer", () => {
       />,
     );
 
-    expect(addEventListener).toHaveBeenCalledWith("resize", expect.any(Function));
-    resizeHandler?.();
-    expect(scrollIntoViewSpy).toHaveBeenCalledWith({ block: "center", behavior: "auto" });
+    // The user has moved on to an unrelated field; the composer's callback must decline.
+    const elsewhere = document.createElement("input");
+    document.body.append(elsewhere);
+    elsewhere.focus();
 
+    resizeHandler?.();
+
+    expect(readScrollTop()).toBe(0);
+    expect(scrollIntoViewSpy).not.toHaveBeenCalled();
+    elsewhere.remove();
     scrollIntoViewSpy.mockRestore();
   });
 
-  it("scrolls textarea into view on focus", () => {
-    if (!("scrollIntoView" in HTMLElement.prototype)) {
-      Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
-        configurable: true,
-        value: () => undefined,
-        writable: true,
-      });
-    }
-    const scrollIntoViewSpy = vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(() => undefined);
+  it("reveals the textarea inside its own scroller on focus without scrolling the document", () => {
+    const scrollIntoViewSpy = spyOnScrollIntoView();
+    const windowScrollTo = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    const { textarea, readScrollTop } = mountComposerInScroller(
+      <MessageComposer {...defaultProps} agents={mockAgents} />,
+    );
 
-    render(<MessageComposer {...defaultProps} agents={mockAgents} />);
+    textarea.focus();
+    fireEvent.focus(textarea);
 
-    fireEvent.focus(screen.getByTestId("message-composer-content"));
-    expect(scrollIntoViewSpy).toHaveBeenCalledWith({ block: "center", behavior: "auto" });
+    expect(readScrollTop()).toBe(60);
+    expect(scrollIntoViewSpy).not.toHaveBeenCalled();
+    expect(windowScrollTo).not.toHaveBeenCalled();
 
+    windowScrollTo.mockRestore();
     scrollIntoViewSpy.mockRestore();
   });
 

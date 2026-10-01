@@ -11,6 +11,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { applyNonInteractiveGitEnv } from "@fusion/core";
 import type {
   CliConfig,
   GatewayCallbacks,
@@ -227,8 +228,27 @@ export async function promptCli(
   return new Promise<void>((resolve, reject) => {
     let settled = false;
 
+    /*
+    FNXC:NonInteractiveGit 2026-09-12-13:04 (RUFU-216):
+    This prompt-turn spawn carried NO env field, so the `openclaw` child inherited `process.env` verbatim —
+    including whatever editor/pager/credential-prompt settings the host happens to have. An OpenClaw agent
+    turn that shells out to git through its own tools is then exactly the hang class RUFU-210 measured on
+    the engine lanes: `git commit -e` resolves an editor (the recorded incident resolved to `vi`), the
+    session has no TTY, and the child blocks on input forever — orphaned under PID 1 for 1d13h in a
+    worktree that had already been deleted underneath it.
+
+    Scoped per spawn, never the parent environment: nothing here mutates `process.env`, so an operator's
+    own dashboard terminal keeps a real editor. The helper returns a NEW object with its fixed keys applied
+    LAST, so neither an ambient value nor an injected one can clear the floor, and the whole child process
+    tree inherits it — one wrap covers the runtime's own shell/tool children.
+
+    Deliberate exclusions: `configureOpenClawMcpServer` (an `mcp set` config write) and `src/probe.ts`
+    (version/binary-resolution probes) stay unhardened — config/probe class runs a read-only CLI call,
+    not an autonomous task turn.
+    */
     const child = spawn(config.binaryPath, args, {
       stdio: ["ignore", "pipe", "pipe"],
+      env: applyNonInteractiveGitEnv(process.env),
     });
 
     const hardKill = setTimeout(() => {

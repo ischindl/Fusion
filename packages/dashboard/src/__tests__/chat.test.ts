@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { resolveFileReferences } from "../chat.js";
+import { resolveFileReferences, chatToolAllowlist } from "../chat.js";
 
 // Use vi.hoisted for proper hoisting with ES modules
 const { mockReadFile, mockStat } = vi.hoisted(() => ({
@@ -59,9 +59,32 @@ FNXC:DashboardChatTests 2026-07-15-16:15:
 chat.ts now has 25 named runtime imports plus `import * as engineModule` from @fusion/engine. Keep this isolated mock complete as chat gains tool factories so the Gate's mock-completeness invariant does not regress.
 */
 vi.mock("@fusion/engine", () => ({
+  // STAS-258: the lane imports this composer to format attempted-write failures, so the isolated mock must export
+  // the name too. The contract (text, code, flag) lives in packages/engine/src/tool-store-errors.ts.
+  storeErrorResult: vi.fn((what: string, error: unknown) => ({
+    content: [{ type: "text", text: `ERROR: ${what} did not reach the task store: ${String(error)}` }],
+    details: { code: "STORE_UNAVAILABLE" },
+    isError: true,
+  })),
   createFnAgent: vi.fn(),
   createResolvedAgentSession: vi.fn(),
   promptWithFallback: vi.fn(),
+  /*
+  FNXC:DashboardChatTests 2026-08-18-18:06 (RUFU-118):
+  The pre-overflow compaction gate (chat.ts named imports from the engine barrel) needs a
+  resolvable export in this static factory or the whole file fails module load.
+  Default no-op: pass through without compacting, so existing sendMessage cases keep
+  their promptWithFallback expectations.
+  */
+  ChatContextOverflowError: class ChatContextOverflowError extends Error {},
+  ensureContextWithinCompactionThreshold: vi.fn(async () => ({ compacted: false, contextTokens: null, threshold: null })),
+  /*
+  FNXC:DashboardChatTests 2026-09-16-14:20 (#3620 review round 2):
+  The whole-request pricing path named-imports `estimatePendingRequestTokens` from the engine
+  barrel, so the static factory must resolve it. Mock returns 0: these cases pin message
+  behavior, not token math, and a zero pending term keeps their existing prompt expectations.
+  */
+  estimatePendingRequestTokens: vi.fn(() => 0),
   extractRuntimeHint: vi.fn(() => undefined),
   extractRuntimeModel: vi.fn(() => undefined),
   buildSessionSkillContextSync: vi.fn(() => ({ skillSelectionContext: undefined, resolvedSkillNames: [], skillSource: "none" as const })),
@@ -76,7 +99,7 @@ vi.mock("@fusion/engine", () => ({
   createTaskListTool: vi.fn(),
   createTaskShowTool: vi.fn(),
   createTaskSearchTool: vi.fn(),
-  createPatchnodeReadTool: vi.fn(),
+  createHistoryReadTool: vi.fn(),
   createListAgentsTool: vi.fn(),
   createDelegateTaskTool: vi.fn(),
   createTaskAssignTool: vi.fn(),
@@ -101,7 +124,7 @@ vi.mock("@fusion/engine", () => ({
   createTaskListTool: vi.fn(() => ({})),
   createTaskShowTool: vi.fn(() => ({})),
   createTaskSearchTool: vi.fn(() => ({})),
-  createPatchnodeReadTool: vi.fn(() => ({})),
+  createHistoryReadTool: vi.fn(() => ({})),
   createListAgentsTool: vi.fn(() => ({})),
   createDelegateTaskTool: vi.fn(() => ({})),
   createTaskAssignTool: vi.fn(() => ({})),
@@ -128,6 +151,30 @@ vi.mock("@fusion/engine", () => ({
   createReadEvaluationsTool: vi.fn(() => ({})),
   createUpdateIdentityTool: vi.fn(() => ({})),
 }));
+
+describe("chatToolAllowlist", () => {
+  /*
+  FNXC:ChatContextBudget 2026-08-20-12:43 (RUFU-135 follow-up regression):
+  The engine's toolsAllowlist is a GLOBAL allowlist — pi.ts filters caller-supplied
+  customTools by it too — so passing only the builtin coding names dropped the entire
+  curated chat toolset from chat sessions (observed live: the LLM request carried only
+  the 7 builtin tools; fn_memory_search / fn_task_show / workflow tools were gone).
+  The allowlist handed to createResolvedAgentSession must therefore always include the
+  curated custom tool names in addition to the builtin coding tools.
+  */
+  it("combines the builtin coding tools with the curated chat toolset names", () => {
+    const allowlist = chatToolAllowlist(["fn_memory_search", "fn_task_show"]);
+    for (const name of ["read", "bash", "edit", "write", "grep", "find", "ls"]) {
+      expect(allowlist).toContain(name);
+    }
+    expect(allowlist).toContain("fn_memory_search");
+    expect(allowlist).toContain("fn_task_show");
+  });
+
+  it("yields exactly the builtin coding tools for an empty custom toolset", () => {
+    expect(chatToolAllowlist([])).toEqual(["read", "bash", "edit", "write", "grep", "find", "ls"]);
+  });
+});
 
 describe("resolveFileReferences", () => {
   beforeEach(() => {

@@ -21,6 +21,9 @@ import {
   ACTIVE_WORKFLOW_WORK_ITEM_STATES,
   computePlanApprovalFingerprint,
   isPlanReviewSatisfied,
+  /* FNXC:HumanPlanApproval 2026-09-15-06:24: FN-408 publishes its per-card decision hold with the satisfied review result. */
+  HUMAN_PLAN_APPROVAL_REASON,
+  isHumanPlanApprovalEnabled,
   isUnavailablePlanLockError,
   PLAN_LOCK_UNAVAILABLE_DIAGNOSTIC,
   PLAN_REVIEW_GROUP_ID,
@@ -41,6 +44,15 @@ import { resolveWorkflowGateActivityClaim } from "./workflow-gate-activity.js";
 import type { ImplementationExit } from "./implementation-exit.js";
 import type { WorkflowGraphTaskRunResult } from "../workflows/workflow-graph-task-runner.js";
 import { WorkflowGraphTaskRunner } from "../workflows/workflow-graph-task-runner.js";
+/* FNXC:HumanMergeApproval 2026-09-17-18:09: FN-514's per-card delivery barrier and its create-only PR handoff. */
+/* FNXC:HumanMergeApproval 2026-09-17-22:32: FN-514 P0 remediation — the graph is also the rejection-processing owner. */
+import {
+  buildHumanMergeCorrectionPublicationDeps,
+  buildHumanMergeCreatePrHandoff,
+  evaluateHumanMergeDeliveryBarrier,
+  publishHumanMergeCorrection,
+} from "../workflows/human-merge-approval-boundary.js";
+import { captureMergeContentDescriptor } from "../merge/merge-content-capture.js";
 import { WorkflowCustomNodeExecutionService } from "../workflows/workflow-custom-node-execution.js";
 import {
   requiredArtifactReadFailedValue,
@@ -130,11 +142,24 @@ export type ExecuteWorkflowGraphDeps = {
   readTaskArtifact: AnyFn;
   recoverMissingRequiredArtifacts: AnyFn;
   requestPreMergeOptionalStepFix: AnyFn;
+  /*
+  FNXC:HumanMergeApproval 2026-09-17-22:32:
+  FN-514 P0 remediation — the EXISTING review → WIP remediation bounce. An accepted human rejection
+  resumes implementation through exactly this contained move, never through a move to Planning.
+  */
+  scheduleWorkflowRerun: (
+    taskId: string,
+    worktreePath: string,
+    message: string,
+    preserveResumeState?: boolean,
+    persistWorktreePath?: boolean,
+  ) => void;
   /** FNXC:PlanReviewNoOp 2026-08-09-22:10: CLOSE_NO_OP accepted terminalization (FN-8841). */
   completePlanReviewNoOp: AnyFn;
   /** FNXC:PlanReviewNoOp 2026-08-09-22:10: hold failed/invalid close evidence on the continuation. */
   holdPlanReviewNoOpContinuation: AnyFn;
   runGraphCustomNode: AnyFn;
+  executeWorkflowStep: AnyFn;
   terminateAllChildren: AnyFn;
 };
 
@@ -272,7 +297,11 @@ type WorkflowStepResultPatch = Pick<
   | "approvedPlanFingerprint"
   | "reviewConvergenceStage"
   | "reviewConvergenceEscalationCount"
->;
+> & {
+  /* FNXC:HumanPlanApproval 2026-09-15-06:24: FN-408 publishes its decision hold in the SAME write as the satisfied Plan Review result. */
+  status?: Task["status"];
+  awaitingApprovalReason?: Task["awaitingApprovalReason"] | null;
+};
 
 type FencedWorkflowStepResultOutcome =
   | { applied: true; task: Task }
@@ -323,11 +352,29 @@ function buildWorkflowStepResultPatch(
     revisionKey: resultToPersist.workflowStepId,
     workflowStepId: resultToPersist.workflowStepId,
   }) ?? sameGate;
+  /*
+  FNXC:HumanPlanApproval 2026-09-15-06:24:
+  FN-408 — for a card carrying the per-card human requirement, the moment Plan Review becomes
+  satisfied is exactly the moment the operator decision becomes possible. Publishing the
+  `awaiting-approval` hold in the SAME durable write as the review result removes the window in
+  which the review is satisfied but nothing yet says a human must decide. The hold is stamped with
+  its own reason so notifications and controls never mislabel it as the revision-cap park.
+
+  This is presentation/routing state only — the authoritative gate is the durable decision itself
+  (isHumanPlanApprovalPending), which every release surface consults independently of status.
+  */
+  const publishesHumanApprovalHold = isPlanReviewResult
+    && isPlanReviewSatisfied(resultToPersist)
+    && isHumanPlanApprovalEnabled(current)
+    && current.status !== "awaiting-approval";
   return {
     resultToPersist,
     results,
     patch: {
       workflowStepResults: results,
+      ...(publishesHumanApprovalHold
+        ? { status: "awaiting-approval" as const, awaitingApprovalReason: HUMAN_PLAN_APPROVAL_REASON }
+        : {}),
       ...reviewConvergenceResetPatch(
         current.workflowStepResults?.find((entry) => entry.workflowStepId === resultToPersist.workflowStepId),
         resultToPersist,
@@ -860,8 +907,8 @@ export async function executeWorkflowGraph(
         Custom prompt and review nodes can yield before their session begins. Bind the graph-start
         resolution here so a later task-description or settings edit cannot retarget their output.
         */
-        execute: (node, nodeTask, nodeSettings, columnBinding, context) =>
-          deps.runGraphCustomNode(node, nodeTask, nodeSettings, columnBinding, context, outputLanguage),
+        execute: (node, nodeTask, nodeSettings, columnBinding, context, signal) =>
+          deps.runGraphCustomNode(node, nodeTask, nodeSettings, columnBinding, context, outputLanguage, signal),
         resolveColumnBinding: resolveBindingForNode,
       });
       /*
@@ -892,6 +939,41 @@ export async function executeWorkflowGraph(
         seams: deps.createAuthoritativeWorkflowSeams(settings, outputLanguage),
         prepareNodeExecution: (node, nodeTask, requirement) =>
           deps.prepareGraphNodeExecution(node, nodeTask, settings, requirement),
+        /*
+        FNXC:HumanMergeApproval 2026-09-17-18:09:
+        FN-514 — the per-card delivery barrier. It consults only delivery-effecting nodes, so
+        planning, execution, verification, review and a PR workflow's preparatory `pr-create` run
+        untouched. Content and target evidence come from the SAME capture the merge doors use, so an
+        approval recorded against superseded content cannot deliver new work.
+        */
+        humanMergeDeliveryBarrier: (node, nodeTask) => evaluateHumanMergeDeliveryBarrier(node, nodeTask, {
+          store: deps.store,
+          createPullRequest: buildHumanMergeCreatePrHandoff(deps.options.prNodes, deps.store),
+          resolveEvidence: async (liveTask) => ({
+            mergeContent: await captureMergeContentDescriptor(liveTask, {
+              workspaceRootDir: deps.store.getRootDir(),
+              settings: settings as unknown as Record<string, unknown>,
+            }).catch(() => undefined),
+          }),
+          /*
+          FNXC:HumanMergeApproval 2026-09-17-22:32:
+          FN-514 P0 remediation — THE production caller for rejection processing. Without it an
+          accepted refusal stayed `pending` forever: every door blocked, unlocking released nothing,
+          and no further command was accepted. The graph owns the work, so the dispatch lives here
+          rather than in a detached HTTP timer, and the barrier still HOLDS afterwards — processing a
+          refusal is never a delivery.
+          */
+          publishCorrection: (taskId) => publishHumanMergeCorrection(
+            taskId,
+            buildHumanMergeCorrectionPublicationDeps({
+              store: deps.store,
+              settings,
+              pluginRunner: deps.options.pluginRunner,
+              scheduleWorkflowRerun: (id, worktreePath, message, preserveResumeState, persistWorktreePath) =>
+                deps.scheduleWorkflowRerun(id, worktreePath, message, preserveResumeState, persistWorktreePath),
+            }),
+          ),
+        }),
         beforeNodeExecution: async (node, nodeTask, context) => {
           const principalAdmission = await admitWorkflowPrincipalBeforeNode(
             {
@@ -946,7 +1028,7 @@ export async function executeWorkflowGraph(
             || (node.config?.template as { nodes?: Array<{ config?: Record<string, unknown> }> } | undefined)
               ?.nodes?.every((inner) => inner.config?.workflowAction === "deterministic-verification") === true;
           const writeCapable = !deterministicVerification
-            && (workflowNodeRequiresWorktree(node, { reviewerInlineFixes: settings.reviewerInlineFixes === false ? false : undefined }) || node.kind === "code");
+            && (workflowNodeRequiresWorktree(node) || node.kind === "code");
           const hasCurrentCodeReviewApproval = live.workflowStepResults?.some((result) =>
             result.reviewKind === "code"
             && result.status === "passed"

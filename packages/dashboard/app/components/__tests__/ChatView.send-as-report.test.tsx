@@ -1,3 +1,9 @@
+/*
+FNXC:RUFU153 2026-08-23-00:21:
+Per FNXC:ChatNavigation (ChatView.tsx) the composer and send affordances live in the gated main pane,
+which is closed by default and opens only on a user row click. The tests click the active session row
+(chat-session-<id>) before asserting the send-as-report DOM.
+*/
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -52,6 +58,7 @@ describe("ChatView send as report", () => {
   });
 
   it("wires completed messages in both streaming branches but never the unfinished streaming item", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
     setupAssistantChat();
     const { rerender } = await renderWithAct(<ChatView projectId="project-1" addToast={vi.fn()} onSendAsReport={vi.fn()} />);
     openDirectDetail();
@@ -68,6 +75,7 @@ describe("ChatView send as report", () => {
   });
 
   it("renders for mobile and CLI transcript hosts but not blank, user, or handler-less messages", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
     const mobile = mockViewportMode("mobile");
     setupAssistantChat();
     const { rerender } = await renderWithAct(<ChatView projectId="project-1" addToast={vi.fn()} onSendAsReport={vi.fn()} />);

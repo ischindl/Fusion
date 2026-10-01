@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { builtinModules } from "node:module";
@@ -622,15 +622,68 @@ describe("shipped agent skills", () => {
        * multi-megabyte built CLI and dashboard bundles. Source presence is still proven by cpSync. */
       writeFileSync(join(packFixture, "package.json"), JSON.stringify(cli));
       cpSync(join(packageDir, "skill"), join(packFixture, "skill"), { recursive: true });
-      const packed = JSON.parse(execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+      const packedJson = JSON.parse(execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
         cwd: packFixture,
         encoding: "utf8",
-      })) as Array<{ files: Array<{ path: string }> }>;
-      const packedPaths = new Set(packed[0]!.files.map((file) => file.path));
+      })) as unknown;
+      /*
+      FNXC:NpmPacklistShape 2026-09-22-14:51:
+      npm changed `pack --dry-run --json` from a top-level ARRAY of entries to an OBJECT keyed by
+      package name (observed on npm 12; the repo pins pnpm and Node >=22.4.0 but not npm, so the
+      version tracks the host's Node distribution and both shapes occur). Read either shape so the
+      pack-list assertion tests the shipped file list rather than npm's serialization format.
+      */
+      const packedEntries = (Array.isArray(packedJson) ? packedJson : Object.values(packedJson as object)) as Array<{
+        files?: Array<{ path: string }>;
+      }>;
+      const packedPaths = new Set(packedEntries.flatMap((entry) => (entry.files ?? []).map((file) => file.path)));
+      expect(packedPaths.size, "npm pack --dry-run --json yielded no file list for either known npm shape").toBeGreaterThan(0);
       expect(packedPaths).toContain("skill/fusion/SKILL.md");
       expect(packedPaths).toContain("skill/computer-use/SKILL.md");
     } finally {
       rmSync(packFixture, { recursive: true, force: true });
     }
+  });
+
+  /*
+  FNXC:SkillCatalogGenerationOwnership 2026-09-22-14:51:
+  RUFU-265: `@runfusion/fusion` used to run the skill-doc generator as `prebuild`, so every build
+  silently REWROTE tracked files under `skill/`. That dirtied the working tree and — because CI's
+  Gate job builds before it runs any check — made the drift check structurally unable to fail on
+  committed content, which is how `fusion-capabilities.md` stayed stale at main tip while every
+  `pnpm test` inherited a red baseline. The decision recorded here: generation is explicit
+  authorship (`pnpm sync:fusion-skill`), and the drift check
+  (`pnpm sync:fusion-skill:check` / `scripts/check-fusion-skill-sync.mjs` in the static gate) is
+  the enforcement point. This guard pins the observable invariant that no build lifecycle script
+  can write the tracked generated docs again; a `--check` invocation stays legal because it only
+  measures. Published content is unaffected: `files` ships `skill/**` verbatim from the tree and
+  `prepack` only transforms the manifest.
+  */
+  it("never regenerates the tracked skill catalog from a build lifecycle script", () => {
+    const lifecycleScripts = ["prebuild", "build", "prepack"] as const;
+    const manifests: Array<{ label: string; scripts: Record<string, string> }> = [
+      { label: "root package.json", scripts: loadRootPackageJson().scripts ?? {} },
+      ...readdirSync(join(workspaceRoot, "packages"), { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .filter((entry) => existsSync(join(workspaceRoot, "packages", entry.name, "package.json")))
+        .map((entry) => ({ label: `packages/${entry.name}/package.json`, scripts: loadPackageJson(entry.name).scripts ?? {} })),
+    ];
+
+    expect(manifests.length).toBeGreaterThan(1);
+    for (const { label, scripts } of manifests) {
+      for (const scriptName of lifecycleScripts) {
+        const value = scripts[scriptName];
+        if (!value || !value.includes("sync-fusion-skill-tools.mjs")) continue;
+        expect(
+          value,
+          `${label}: "${scriptName}" must not regenerate tracked skill docs as a build side effect. Run \`pnpm sync:fusion-skill\` explicitly; the gate validator enforces freshness.`,
+        ).toContain("--check");
+      }
+    }
+
+    // The published package must still be buildable — the fix removes a writer, not the build.
+    const cli = loadPackageJson("cli");
+    expect(cli.scripts.build, "@runfusion/fusion must keep its build script").toBeTruthy();
+    expect(cli.scripts.prebuild, "@runfusion/fusion must not regenerate skill docs on prebuild").toBeUndefined();
   });
 });

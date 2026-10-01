@@ -1,6 +1,7 @@
 import React from "react";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Mock } from "vitest";
 import type { Task, TaskDetail, Column, MergeResult } from "@fusion/core";
 import { clearAuthToken } from "../../auth";
 import { loadAllAppCss } from "../../test/cssFixture";
@@ -50,7 +51,7 @@ const mockConfirm = vi.fn();
 const mockConfirmWithChoice = vi.fn();
 
 vi.mock("../../hooks/useConfirm", () => ({
-  useConfirm: () => ({ confirm: mockConfirm, confirmWithChoice: mockConfirmWithChoice }),
+  useConfirm: () => ({ confirmWithCheckbox: async (options?: { checkbox?: { defaultChecked?: boolean } }) => ({ choice: "cancel" as const, checkboxValue: options?.checkbox?.defaultChecked ?? false }), confirm: mockConfirm, confirmWithChoice: mockConfirmWithChoice }),
 }));
 
 import { TaskDetailModal } from "../TaskDetailModal";
@@ -88,7 +89,7 @@ function jsonResponse(body: unknown, init?: ResponseInit): Response {
 
 describe("TaskDetailModal Review-tab Create PR e2e flow", () => {
   let styleEl: HTMLStyleElement;
-  let fetchSpy: ReturnType<typeof vi.spyOn<typeof globalThis, "fetch">>;
+  let fetchSpy: Mock<typeof globalThis["fetch"]>;
 
   beforeAll(() => {
     styleEl = document.createElement("style");

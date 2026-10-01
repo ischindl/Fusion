@@ -15,6 +15,7 @@ vi.mock("../../api", () => ({
   fetchAgent: vi.fn(),
   fetchAgents: vi.fn().mockResolvedValue([]),
   rebuildTaskSpec: vi.fn(),
+  fetchHandoffStatus: vi.fn(async () => ({ handoffs: [] })),
 }));
 vi.mock("../../hooks/useBadgeWebSocket", () => ({
   useBadgeWebSocket: () => ({ badgeUpdates: new Map(), isConnected: false, subscribeToBadge: vi.fn(), unsubscribeFromBadge: vi.fn() }),
@@ -136,5 +137,38 @@ describe("TaskCard agent provenance chip (FN-8930)", () => {
     expect(mobileCss).toMatch(/\.card-agent-created-badge--provenance\s*\{[^}]*border-style:\s*dashed/);
     expect(mobileCss).not.toMatch(/\.card-agent-created-badge[^}]*\{[^}]*display:\s*none/);
     expect(mobileCss).not.toMatch(/\.card-agent-created-badge--provenance\s*\{[^}]*background:\s*color-mix\(in srgb, var\(--text-muted\) 18%/);
+  });
+});
+
+/*
+FNXC:CrossProjectHandoff 2026-09-09-09:02:
+RUFU-203: board cards (TaskCard footer cluster) carry the same source-side transferred chip as
+the list row, including multi-pointer cards; pointerless cards render no chip and fetch nothing.
+*/
+describe("TaskCard transferred-to chip", () => {
+  const pointer = (projectId: string, projectName: string, taskId: string) => ({
+    projectId,
+    projectName,
+    taskId,
+    transferredAt: "2026-09-01T10:00:00.000Z",
+  });
+
+  it("renders one chip per transferredTo pointer", () => {
+    const { getByTestId } = renderCard(makeTask({ sourceMetadata: { transferredTo: [pointer("proj-stash", "STASH", "STAS-042")] } }));
+    const chip = getByTestId("transferred-badge-STAS-042");
+    expect(chip.textContent).toContain("Transferred");
+  });
+
+  it("renders every chip for multi-target cards", () => {
+    const { getByTestId } = renderCard(makeTask({
+      sourceMetadata: { transferredTo: [pointer("proj-stash", "STASH", "STAS-042"), pointer("proj-keel", "KEEL", "KEE-007")] },
+    }));
+    expect(getByTestId("transferred-badge-STAS-042")).toBeTruthy();
+    expect(getByTestId("transferred-badge-KEE-007")).toBeTruthy();
+  });
+
+  it("renders no chip without a pointer", () => {
+    const { queryByTestId } = renderCard(makeTask());
+    expect(queryByTestId(/transferred-badge-/)).toBeNull();
   });
 });

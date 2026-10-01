@@ -4,9 +4,9 @@ import { ProjectNodeSelector } from "../ProjectNodeSelector";
 import type { NodeInfo } from "../../api";
 
 const nodes: NodeInfo[] = [
-  { id: "node-1", name: "Alpha", type: "remote", status: "online" },
-  { id: "node-2", name: "Beta", type: "remote", status: "offline" },
-  { id: "node-3", name: "Gamma", type: "local", status: "error" },
+  { id: "node-1", name: "Alpha", type: "remote", status: "online", maxConcurrent: 2, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
+  { id: "node-2", name: "Beta", type: "remote", status: "offline", maxConcurrent: 2, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
+  { id: "node-3", name: "Gamma", type: "local", status: "error", maxConcurrent: 2, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
 ];
 
 describe("ProjectNodeSelector", () => {

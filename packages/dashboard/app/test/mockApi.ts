@@ -26,12 +26,12 @@ function getFallback(name: string): AnyFn {
 
 export const dashboardApiMocks: Record<string, AnyFn> = {
   fetchTasks: vi.fn(async () => []),
-  // FNXC:ArchivePagination 2026-07-08-00:00: FN-7659 paged archived-tasks read.
-  fetchArchivedTasks: vi.fn(async () => ({ tasks: [], total: 0, hasMore: false })),
+  fetchCompletedTasks: vi.fn(async () => ({ tasks: [], total: 0, hasMore: false })),
   fetchSettings: vi.fn(async () => ({})),
   fetchTaskEffectiveSettings: vi.fn().mockRejectedValue(new Error("fetchTaskEffectiveSettings: use fetchSettings mock")),
   updateSettings: vi.fn(async () => ({})),
   fetchGlobalSettings: vi.fn(async () => ({})),
+  updateGlobalSettings: vi.fn(async () => ({})),
   fetchAuthStatus: vi.fn(async () => ({ providers: [] })),
   fetchModels: vi.fn(async () => ({ models: [], favoriteProviders: [], favoriteModels: [] })),
   fetchTaskDetail: vi.fn(),
@@ -39,9 +39,18 @@ export const dashboardApiMocks: Record<string, AnyFn> = {
   fetchUnreadCount: vi.fn(async () => ({ unreadCount: 0 })),
 };
 
+/*
+FNXC:RUFU-140 2026-08-20-19:42:
+The overrides parameter is deliberately wider than AnyFn (= Mock): test suites
+pass typed passthrough wrappers (e.g. `fetchSettings: (...args: unknown[]) =>
+mockFetchSettings(...args)`) that are not vitest Mocks, and forcing them to be
+Mock caused the 381 TS2322 errors in the 2026-08-20 test-check census. Only the
+overrides parameter is widened; dashboardApiMocks/fallbackFns/getFallback keep
+AnyFn = Mock because they call .mockReset() in resetDashboardApiMockState.
+*/
 export async function createDashboardApiMock(
   importActual: () => Promise<AnyModule>,
-  overrides: Record<string, AnyFn> = {},
+  overrides: Record<string, AnyFn | ((...args: never[]) => unknown)> = {},
 ): Promise<AnyModule> {
   const actual = await importActual();
   const mocked: AnyModule = { ...actual, ...dashboardApiMocks, ...overrides };
@@ -68,11 +77,12 @@ export async function createDashboardApiMock(
 export function resetDashboardApiMockState(): void {
   Object.values(dashboardApiMocks).forEach((fn) => fn.mockReset());
   dashboardApiMocks.fetchTasks.mockResolvedValue([]);
-  dashboardApiMocks.fetchArchivedTasks.mockResolvedValue({ tasks: [], total: 0, hasMore: false });
+  dashboardApiMocks.fetchCompletedTasks.mockResolvedValue({ tasks: [], total: 0, hasMore: false });
   dashboardApiMocks.fetchSettings.mockResolvedValue({});
   dashboardApiMocks.fetchTaskEffectiveSettings.mockRejectedValue(new Error("fetchTaskEffectiveSettings: use fetchSettings mock"));
   dashboardApiMocks.updateSettings.mockResolvedValue({});
   dashboardApiMocks.fetchGlobalSettings.mockResolvedValue({});
+  dashboardApiMocks.updateGlobalSettings.mockResolvedValue({});
   dashboardApiMocks.fetchAuthStatus.mockResolvedValue({ providers: [] });
   dashboardApiMocks.fetchModels.mockResolvedValue({ models: [], favoriteProviders: [], favoriteModels: [] });
   dashboardApiMocks.fetchUnreadCount.mockResolvedValue({ unreadCount: 0 });

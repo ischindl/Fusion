@@ -103,6 +103,19 @@ export function isReasoningEffortRejectionError(errorMessage: string): boolean {
   if (/unsupported[\s\S]{0,60}(?:value|effort)/i.test(errorMessage) && /reasoning_effort/i.test(errorMessage)) {
     return true;
   }
+  /*
+  FNXC:ThinkingEffortFallback 2026-09-21-15:34: LiteLLM proxy parameter-level rejection envelope
+  (`litellm.UnsupportedParamsError: ... does not support parameters: ['reasoning_effort']`, observed
+  for model group deepseek-v4 on the dsai1 gateway inside mission-loop feature validation). The
+  message names the PARAMETER, not a bad VALUE, and exceeds the 60-char unsupported-value window,
+  so the ladder above never fired and the validation lane retried the same model+effort every tick.
+  Degradation still terminates the loop: the ladder walks to `off`, where pi stops emitting the
+  parameter entirely. Treat it as effort-family recoverable like the 1210 envelope — a false
+  positive on another dropped parameter costs one bounded degradation, a false negative is a loop.
+  */
+  if (/does not support parameters/i.test(errorMessage) && /reasoning_effort/i.test(errorMessage)) {
+    return true;
+  }
   // Codex `[1210] Invalid API parameter` — the OBSERVED production envelope
   // for out-of-range effort is bare ("...[1210] Invalid API parameter, please
   // check the documentation." — see PR description), so requiring an

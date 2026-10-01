@@ -45,6 +45,8 @@ import {
   assertNotWorkspaceTaskMerge,
   buildTaskLineageTrailer,
   evaluateNoCommitsNoOpFinalize,
+  type DeliveryUnprovenMarker,
+  type NoCommitsNoOpFinalizeEvaluation,
   evaluatePreMergeApprovals,
   getPlannerInterventionTimeline,
   getPrimaryPrInfo,
@@ -87,6 +89,21 @@ import { recordWorkspaceBaseBranchDecision, resolveWorkspaceRepoBaseBranch } fro
 import { captureWorkspaceReviewEvidence } from "../worktree/workspace-review-evidence.js";
 import { advanceIntegrationBranchRef } from "./merger-ref-update-advance.js";
 import { enforceAiMergeSquashGates } from "./merger-ai-squash-gates.js";
+/*
+FNXC:ZeroCommitDeliveryProof 2026-09-26-08:40 (RUFU-274):
+Both zero-commit finalizers in this lane — the branch-missing no-commits route and the AI empty-merge route —
+now pass the shared landing-proof door. RUFU-262's symptom arrived through the empty-merge route specifically:
+the land produced zero commits, the step ledger reported nothing incomplete, and the card finalized `done`
+while its deliverable sat uncommitted in a worktree. A lane-local step ledger can no longer reach a finalize
+on its own.
+*/
+import {
+  collectZeroCommitFinalizeEvidence,
+  enforceZeroCommitLandingProof,
+  resolveNoOpFinalizeGateIds,
+  zeroCommitDeliveryUnprovenMarker,
+  type ZeroCommitGuardSource,
+} from "./zero-commit-finalization-guard.js";
 import {
   assertMergeGenerationOwned,
   createMergeWriteFence,
@@ -108,6 +125,7 @@ import { createLogger } from "../logger.js";
 import {
   buildAutostashLabel,
   captureSingleCommitLandedMetadata,
+  captureSingleCommitLandedPaths,
   isNonFastForwardPushError,
   isRebaseInProgress,
   parsePushRemoteTarget,
@@ -165,17 +183,61 @@ const aiMergeLog = createLogger("merger-ai");
  * executable while retaining the fire-and-forget audit contract for ordinary sync failures.
  */
 /*
- * FNXC:ReviewGatedRemediation 2026-08-23-05:23:
- * The AI empty-merge path must carry the selected workflow's required gates into the shared
- * zero-diff guard; otherwise a review-gated card can finalize before deterministic verification.
- */
-async function resolveNoOpFinalizeGateIds(store: TaskStore, task: Task): Promise<ReadonlySet<string> | undefined> {
-  const selection = store.getTaskWorkflowSelectionAsync
-    ? await store.getTaskWorkflowSelectionAsync(task.id)
-    : store.getTaskWorkflowSelection?.(task.id);
-  if (!selection) return undefined;
-  const ir = await resolveWorkflowIrForTask(store, task.id).catch(() => undefined);
-  return ir ? resolveRequiredPreMergeStepIds(ir, task.enabledWorkflowSteps) : undefined;
+FNXC:ZeroCommitDeliveryProof 2026-09-26-08:45 (RUFU-274):
+The AI-merge lane's shared no-commits finalize check: the historical step-ledger guard PLUS the landing-proof
+door, both answered from ONE git observation, with the lane's write fence handed to the door so a superseded
+merge generation cannot stamp a hold onto a card its successor now owns.
+
+A content refusal is deliberately NOT routed through the incomplete-steps branch beneath it: that branch
+writes `error`/`status: "failed"` and rebinds the card, which is right for unfinished work and wrong here —
+the work exists and is sitting uncommitted in a tree. A refusal keeps the card where it is with a durable
+hold, spends no retry budget, and never deletes the tree it is protecting (hence no cleanup on this path).
+*/
+async function evaluateNoCommitsFinalizeWithLandingProof(input: {
+  store: TaskStore;
+  task: Task;
+  rootDir: string;
+  integrationBranch: string;
+  source: ZeroCommitGuardSource;
+  fence?: MergeWriteFence;
+}): Promise<{
+  evaluation: NoCommitsNoOpFinalizeEvaluation;
+  /** Present ONLY for the `held` disposition: durable hold written, refusal sentence, result marker. */
+  held?: { refusal: string; marker: DeliveryUnprovenMarker };
+}> {
+  const { store, task, rootDir, integrationBranch, source, fence } = input;
+  const requiredVerificationStepIds = await resolveNoOpFinalizeGateIds(store, task);
+  const collected = await collectZeroCommitFinalizeEvidence({
+    store,
+    task,
+    repoDir: rootDir,
+    integrationBranch,
+    requiredVerificationStepIds,
+  });
+  const evaluation = evaluateNoCommitsNoOpFinalize(task, collected);
+  if (!evaluation.blocked || !evaluation.deliveryUnproven) return { evaluation };
+
+  const outcome = await enforceZeroCommitLandingProof({
+    store,
+    task,
+    repoDir: rootDir,
+    integrationBranch,
+    source,
+    preCollected: collected,
+    fence,
+  });
+  /*
+  FNXC:ZeroCommitDeliveryProof 2026-09-26-07:55 / 2026-09-27-01:01 (RUFU-274 Step 4/6):
+  Only the `held` disposition earns the new lane behaviour. `retry` (an unobservable checkout) and `allow`
+  (proved landing, clean tree, or a gate/step that still owns the card) both return no `held` payload, so the
+  caller falls through to its EXISTING handling — which for this lane means its ordinary unproven-empty
+  error and rebind, not a manual hold. The refusal is what a HUMAN must resolve; a probe that merely could
+  not run yet resolves itself on the next pass, and holding it would convert a transient into a wedge — the
+  exact opposite of the invariant this card exists to protect.
+  */
+  const marker = zeroCommitDeliveryUnprovenMarker(outcome);
+  if (outcome.disposition !== "held" || !marker) return { evaluation };
+  return { evaluation, held: { refusal: outcome.refusal, marker } };
 }
 
 export function recordBranchGroupPrSyncFailureAudit(
@@ -1363,15 +1425,12 @@ export async function landOneRepo(
 /*
 FNXC:WorkflowLifecycleColumns 2026-07-27-23:50 (Phase B / U5):
 Legacy ids for the roles this module decides by: the builtin coding workflow's
-`complete`/`archived` terminal pair and its `hold` rebound column. Used only
+Complete terminal role and its Hold rebound column. Used only
 when the task's workflow resolves to no column vocabulary, where preserving
 today's behavior exactly beats guessing.
 */
 const LEGACY_COMPLETE_COLUMN = "done";
-const LEGACY_ARCHIVED_COLUMN = "archived";
-/* The pair, for the no-vocabulary-at-all case. Derived from the per-role ids so
-   the set and the individual fallbacks cannot drift apart. */
-const LEGACY_TERMINAL_COLUMNS: readonly string[] = [LEGACY_COMPLETE_COLUMN, LEGACY_ARCHIVED_COLUMN];
+const LEGACY_TERMINAL_COLUMNS: readonly string[] = [LEGACY_COMPLETE_COLUMN];
 const LEGACY_REBOUND_COLUMN = "todo";
 
 /*
@@ -1709,7 +1768,53 @@ export async function runAiMerge(
      * the domain-folder move / dep-sync restructure.
      */
     if (wasExecuted && !alreadyMerged && task.noCommitsExpected === true) {
-      const noCommitsFinalize = evaluateNoCommitsNoOpFinalize(task);
+      const finalizeCheck = await evaluateNoCommitsFinalizeWithLandingProof({
+        store,
+        task,
+        rootDir: projectRootDir,
+        integrationBranch,
+        source: "merge-ai-branch-missing",
+        fence,
+      });
+      const noCommitsFinalize = finalizeCheck.evaluation;
+      if (finalizeCheck.held) {
+        const refusal = finalizeCheck.held.refusal;
+        const marker = finalizeCheck.held.marker;
+        /*
+        FNXC:ZeroCommitDeliveryProof 2026-09-26-08:50 (RUFU-274):
+        The branch ref is gone but a checkout this task owns still holds the work as uncommitted files.
+        That is the second RUFU-262 shape, and the finalize below would have called it delivered. Keep the
+        card where it is with the durable hold the guard already wrote: no `error`, no `status`, no rebind,
+        no retry spend, and above all no cleanup — deleting the worktree here would destroy the only copy of
+        the deliverable the hold exists to protect. The guard emitted the bounded audit row, so the lane adds
+        only the task-log entry an operator reads on the card.
+        */
+        await fence.write("log", () => store.logEntry(
+          taskId,
+          `Finalize refused (delivery unproven): ${refusal}`,
+          JSON.stringify({
+            lane: "no-commits-branch-missing",
+            branch,
+            integrationBranch,
+            deliveryUnproven: marker,
+          }, null, 2),
+        ));
+        if (fence.isOrphaned()) return {
+          task, branch, merged: false, noOp: false, ok: true, reason: refusal,
+          worktreeRemoved: false, branchDeleted: false,
+        };
+        return {
+          task,
+          branch,
+          merged: false,
+          noOp: false,
+          ok: true,
+          reason: refusal,
+          worktreeRemoved: false,
+          branchDeleted: false,
+          deliveryUnproven: marker,
+        };
+      }
       if (noCommitsFinalize.blocked) {
         const reason = noCommitsFinalize.reason ?? "no-commits task has incomplete work with no branch changes";
         /*
@@ -1895,9 +2000,52 @@ export async function runAiMerge(
   });
 
   if (landResult.outcome === "empty") {
-    const noCommitsFinalize = evaluateNoCommitsNoOpFinalize(task, {
-      requiredVerificationStepIds: await resolveNoOpFinalizeGateIds(store, task),
+    const finalizeCheck = await evaluateNoCommitsFinalizeWithLandingProof({
+      store,
+      task,
+      rootDir: projectRootDir,
+      integrationBranch,
+      source: "merge-ai-empty-lane",
+      fence,
     });
+    const noCommitsFinalize = finalizeCheck.evaluation;
+    if (finalizeCheck.held) {
+      const refusal = finalizeCheck.held.refusal;
+      const marker = finalizeCheck.held.marker;
+      /*
+      FNXC:ZeroCommitDeliveryProof 2026-09-26-08:55 (RUFU-274):
+      This is the lane RUFU-262 actually died in: the land produced zero commits, the step ledger reported
+      nothing incomplete, and the next statement down was `finalizeTask(...)` with a no-op result — a `done`
+      card whose deliverable was never committed. A refusal replaces that finalize entirely: the durable hold
+      the guard wrote is what every later door now reads, the retry budget stays untouched, no `status` is
+      written, and the worktree survives because deleting it would destroy the deliverable.
+      */
+      await fence.write("log", () => store.logEntry(
+        taskId,
+        `Finalize refused (delivery unproven): ${refusal}`,
+        JSON.stringify({
+          lane: "ai-empty-merge",
+          branch,
+          integrationBranch,
+          deliveryUnproven: marker,
+        }, null, 2),
+      ));
+      if (fence.isOrphaned()) return {
+        task, branch, merged: false, noOp: false, ok: true, reason: refusal,
+        worktreeRemoved: false, branchDeleted: false,
+      };
+      return {
+        task,
+        branch,
+        merged: false,
+        noOp: false,
+        ok: true,
+        reason: refusal,
+        worktreeRemoved: false,
+        branchDeleted: false,
+        deliveryUnproven: marker,
+      };
+    }
     if (noCommitsFinalize.blocked) {
       const reason = noCommitsFinalize.reason ?? "no-commits task has incomplete work with no net branch changes";
       /*
@@ -3328,6 +3476,29 @@ async function finalizeWorkspaceTask(
   const landed = repos.filter((r) => r.status === "landed" && r.landedSha);
   const workspaceLandedShas: Record<string, string> = {};
   for (const r of landed) workspaceLandedShas[r.repo] = r.landedSha!;
+  /*
+  FNXC:OverlapWaitSynchronization 2026-09-10-01:28:
+  Workspace finalization captures each repository's concrete paths before terminal cleanup. Waiting
+  tasks must not depend on the predecessor row or its already-disposed checkout to reconstruct delivery.
+  */
+  const workspaceLandedFiles: Record<string, string[]> = {};
+  const overlapDeliveries = [];
+  for (const repo of repos) {
+    workspaceLandedFiles[repo.repo] = repo.status === "landed" && repo.landedSha
+      ? (await captureSingleCommitLandedMetadata(repo.repoRootDir, repo.landedSha)).landedFiles ?? []
+      : [];
+    overlapDeliveries.push({
+      blockerTaskId: taskId,
+      blockerLineageId: task.lineageId,
+      repository: repo.repo,
+      target: repo.integrationBranch,
+      landedSha: repo.landedSha,
+      paths: repo.status === "landed" && repo.landedSha ? await captureSingleCommitLandedPaths(repo.repoRootDir, repo.landedSha, repo.repo) : [],
+      noOp: repo.status !== "landed",
+      evidence: "workspace-landing" as const,
+      summary: task.summary,
+    });
+  }
   const representative = landed.length > 0 ? landed[0].landedSha : undefined;
   const anyLanded = landed.length > 0;
 
@@ -3350,10 +3521,14 @@ async function finalizeWorkspaceTask(
     ...baseMergeDetails,
     ...(representative ? { commitSha: representative } : {}),
     ...(anyLanded ? { workspaceLandedShas } : {}),
+    workspaceLandedFiles,
     mergeConfirmed: anyLanded,
   };
   fence?.assertOwned("finalization");
   await store.updateTask(taskId, { mergeDetails });
+  if (typeof (store as Partial<TaskStore>).publishTaskOverlapDeliveries === "function") {
+    await store.publishTaskOverlapDeliveries(taskId, overlapDeliveries);
+  }
   task.mergeDetails = mergeDetails;
 
   let worktreeRemoved = false;
@@ -3847,7 +4022,7 @@ export async function pushAfterMergeToRemote(input: {
   }
 }
 
-async function finalizeMerged(
+export async function finalizeMerged(
   store: TaskStore,
   projectRootDir: string,
   taskId: string,
@@ -3902,6 +4077,19 @@ async function finalizeMerged(
     modifiedFiles = landedFiles.length > 0 ? landedFiles : undefined;
     fence?.assertOwned("finalization");
     await store.updateTask(taskId, { mergeDetails, modifiedFiles });
+    if (typeof (store as Partial<TaskStore>).publishTaskOverlapDeliveries === "function") {
+      await store.publishTaskOverlapDeliveries(taskId, [{
+        blockerTaskId: taskId,
+        blockerLineageId: task.lineageId,
+        repository: ".",
+        target: mergeDetails.mergeTargetBranch,
+        landedSha,
+        paths: await captureSingleCommitLandedPaths(projectRootDir, landedSha),
+        noOp: false,
+        evidence: "merge-details",
+        summary: task.summary,
+      }]);
+    }
     task.mergeDetails = mergeDetails;
     task.modifiedFiles = modifiedFiles;
     if (task.lineageId && typeof (store as Partial<TaskStore>).upsertTaskCommitAssociation === "function") {
@@ -3923,6 +4111,24 @@ async function finalizeMerged(
     fence?.assertOwned("finalization");
     await store.updateTask(taskId, { mergeDetails });
     task.mergeDetails = mergeDetails;
+  }
+  if (opts.empty && typeof (store as Partial<TaskStore>).publishTaskOverlapDeliveries === "function") {
+    /*
+    FNXC:OverlapWaitSynchronization 2026-09-10-03:18:
+    A verified no-op is delivery evidence, not missing evidence. Publish its empty snapshot before
+    terminal finalization so dependants remain resumable after the blocker row or worktree is gone.
+    */
+    fence?.assertOwned("finalization");
+    await store.publishTaskOverlapDeliveries(taskId, [{
+      blockerTaskId: taskId,
+      blockerLineageId: task.lineageId,
+      repository: ".",
+      target: mergeTarget?.branch ?? task.mergeDetails?.mergeTargetBranch,
+      paths: [],
+      noOp: true,
+      evidence: "merge-details",
+      summary: task.summary,
+    }]);
   }
   let branchDeleted = false;
   const deleteBranchNormally = async (): Promise<void> => {
@@ -3951,6 +4157,8 @@ async function finalizeMerged(
     worktreePath: task.worktree,
     rootDir: projectRootDir,
     landedSha,
+    // RUFU-274 Step 5: the row is passed so cleanup can see a durable delivery-unproven hold.
+    task,
     source: "ai-merge-finalize",
     audit,
     log,

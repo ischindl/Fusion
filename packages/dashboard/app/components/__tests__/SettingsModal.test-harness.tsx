@@ -1,5 +1,6 @@
 import { vi, beforeEach, afterEach, expect } from "vitest";
 import type { ComponentProps } from "react";
+import type { Settings } from "@fusion/core";
 import { act, render, screen, waitFor, cleanup, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import fs from "fs";
@@ -7,6 +8,7 @@ import path from "path";
 import { SettingsModal, SETTINGS_AUTOSAVE_DEBOUNCE_MS } from "../SettingsModal";
 import { SETTINGS_SECTION_METADATA } from "../../../src/shared/settings-sections";
 import { __test_clearCache as clearPluginUiSlotsCache } from "../../hooks/usePluginUiSlots";
+import { ViewLayoutProvider } from "../../context/ViewLayoutContext";
 
 /*
 FNXC:DashboardTests 2026-06-25-10:05:
@@ -24,8 +26,8 @@ all assertions while avoiding inactive-section setup and real-timer polling in t
 
 export const settingsModalCss = fs.readFileSync(path.resolve(__dirname, "../SettingsModal.css"), "utf8");
 
-export const mockFetchSettings = vi.fn();
-export const mockFetchSettingsByScope = vi.fn();
+export const mockFetchSettings = vi.fn((..._args: unknown[]): Promise<unknown> => Promise.resolve(undefined));
+export const mockFetchSettingsByScope = vi.fn((..._args: unknown[]): Promise<unknown> => Promise.resolve(undefined));
 export const mockExportSettings = vi.fn();
 export const mockUpdateSettings = vi.fn();
 export const mockUpdateGlobalSettings = vi.fn();
@@ -93,7 +95,7 @@ export const mockUseMobileKeyboard = vi.fn();
 
 export const noop = () => {};
 
-export const defaultSettings = {
+export const defaultSettings: Settings = {
   maxConcurrent: 2,
   maxWorktrees: 4,
   pollIntervalMs: 15000,
@@ -131,12 +133,14 @@ export const defaultSettings = {
 
 export function renderModal(props: Partial<ComponentProps<typeof SettingsModal>> = {}) {
   return render(
-    <SettingsModal
-      onClose={noop}
-      addToast={noop}
-      initialSection="authentication"
-      {...props}
-    />
+    <ViewLayoutProvider projectId={props.projectId}>
+      <SettingsModal
+        onClose={noop}
+        addToast={noop}
+        initialSection="authentication"
+        {...props}
+      />
+    </ViewLayoutProvider>,
   );
 }
 

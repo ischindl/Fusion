@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Task, TraitFlags } from "@fusion/core";
+import type { Task, TaskDetail, TraitFlags } from "@fusion/core";
 import { GraphTaskNode } from "./GraphTaskNode.js";
 import { GraphToolbar } from "./GraphToolbar.js";
 import { GraphEdges } from "./edges.js";
@@ -26,11 +26,9 @@ export interface DependencyGraphProps {
   addToast?: (message: string, type?: "success" | "error" | "info" | "warning") => void;
   globalPaused?: boolean;
   onUpdateTask?: (id: string, updates: { title?: string; description?: string; dependencies?: string[] }) => Promise<Task>;
-  onArchiveTask?: (id: string) => Promise<Task>;
-  onUnarchiveTask?: (id: string) => Promise<Task>;
   onDeleteTask?: (id: string, options?: { removeDependencyReferences?: boolean }) => Promise<Task>;
   onRetryTask?: (id: string) => Promise<Task>;
-  onOpenDetailWithTab?: (task: Task, initialTab: "changes") => void;
+  onOpenDetailWithTab?: (task: Task | TaskDetail, initialTab: "workflow" | "retries" | "changes") => void;
   onOpenMission?: (missionId: string) => void;
   onMoveTask?: (id: string, column: Task["column"], optionsOrPosition?: { preserveProgress?: boolean } | number) => Promise<Task>;
   lastFetchTimeMs?: number;
@@ -47,8 +45,6 @@ export function DependencyGraph({
   addToast,
   globalPaused,
   onUpdateTask,
-  onArchiveTask,
-  onUnarchiveTask,
   onDeleteTask,
   onRetryTask,
   onOpenDetailWithTab,
@@ -493,8 +489,6 @@ export function DependencyGraph({
                     addToast={addToast ?? (() => {})}
                     globalPaused={globalPaused}
                     onUpdateTask={onUpdateTask}
-                    onArchiveTask={onArchiveTask}
-                    onUnarchiveTask={onUnarchiveTask}
                     onDeleteTask={onDeleteTask}
                     onRetryTask={onRetryTask}
                     onOpenDetailWithTab={onOpenDetailWithTab}

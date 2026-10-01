@@ -33,6 +33,7 @@ function createMockTaskStore(overrides: Partial<TaskStore> = {}): TaskStore {
     findRecentTasksByContentFingerprint: vi.fn().mockResolvedValue([]),
     updateTask: vi.fn(),
     moveTask: vi.fn(),
+    deleteTask: vi.fn().mockImplementation(async (id: string) => ({ id, deletedAt: new Date().toISOString() })),
     createTask: vi.fn().mockResolvedValue({
       id: "FN-001",
       description: "",
@@ -546,6 +547,130 @@ describe("createDelegateTaskTool", () => {
   });
 
   /*
+  FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295):
+  `fn_task_create` and `fn_delegate_task` are the surfaces an agent uses to name its own card. Before the
+  optional `title` parameter existed, the label was whatever the description's first line looked like, so a
+  description opening on `## What This Delivers` produced that heading as the card title, and the tool
+  response echoed the raw description back — the agent could not even see the label it had landed with.
+  */
+  it("persists an explicit title and echoes it back on the create surface", async () => {
+    const taskStore = createMockTaskStore();
+    vi.mocked(taskStore.createTask).mockResolvedValue({
+      id: "FN-201",
+      title: "Fix lockfile drift in plugin workspaces",
+      description: "## What This Delivers\n\nThe plugin workspaces install cleanly from a frozen lockfile.",
+      dependencies: [],
+      column: "triage" as const,
+      steps: [],
+      currentStep: 0,
+      log: [],
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    } as Task);
+    const tool = createTaskCreateTool(taskStore, undefined, { sourceTaskId: "FN-PARENT" });
+
+    const result = await tool.execute(
+      "call-1",
+      { title: "Fix lockfile drift in plugin workspaces", description: "## What This Delivers\n\nThe plugin workspaces install cleanly from a frozen lockfile." },
+      undefined as any,
+      undefined as any,
+      undefined as any,
+    );
+
+    expect(result).not.toMatchObject({ isError: true });
+    expect(taskStore.createTask).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Fix lockfile drift in plugin workspaces" }),
+      expect.anything(),
+    );
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text;
+    expect(text).toContain("FN-201: Fix lockfile drift in plugin workspaces");
+    // The heading that used to be the whole response label must not reappear as the echoed label.
+    expect(text).not.toContain("## What This Delivers");
+  });
+
+  it("sends no title key when the create caller does not name the card", async () => {
+    const taskStore = createMockTaskStore();
+    const tool = createTaskCreateTool(taskStore, undefined, { sourceTaskId: "FN-PARENT" });
+
+    await tool.execute(
+      "call-1",
+      { description: "Rebuild the frozen lockfile so plugin workspaces install." },
+      undefined as any,
+      undefined as any,
+      undefined as any,
+    );
+
+    // Omitting the key is what keeps the store's own title ownership rules intact: a blank/explicit-free
+    // create stays eligible for the deferred summarizer path instead of being pre-filled here.
+    const createInput = vi.mocked(taskStore.createTask).mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(createInput.title).toBeUndefined();
+  });
+
+  it("echoes a derived label rather than the raw description when no title is stored", async () => {
+    const taskStore = createMockTaskStore();
+    vi.mocked(taskStore.createTask).mockResolvedValue({
+      id: "FN-202",
+      description: "## What This Delivers\n\nPlugin workspaces install cleanly.\n\n## Steps\n\nRun install.",
+      dependencies: [],
+      column: "triage" as const,
+      steps: [],
+      currentStep: 0,
+      log: [],
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    } as Task);
+    const tool = createTaskCreateTool(taskStore, undefined, { sourceTaskId: "FN-PARENT" });
+
+    const result = await tool.execute(
+      "call-1",
+      { description: "## What This Delivers\n\nPlugin workspaces install cleanly.\n\n## Steps\n\nRun install." },
+      undefined as any,
+      undefined as any,
+      undefined as any,
+    );
+
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text;
+    expect(text).toContain("Plugin workspaces install cleanly");
+    expect(text).not.toContain("## What This Delivers");
+    expect(text).not.toContain("## Steps");
+  });
+
+  it("persists an explicit title and echoes it back on the delegation surface", async () => {
+    const agentStore = createMockAgentStore();
+    vi.mocked(agentStore.getAgent).mockResolvedValue(createAgent({ id: "agent-001", name: "Bob" }));
+    const taskStore = createMockTaskStore();
+    vi.mocked(taskStore.createTask).mockResolvedValue({
+      id: "FN-203",
+      title: "Quarantine the flaky patchnode ledger test",
+      description: "## Symptom\n\nThe pg lane fails without a code change.",
+      dependencies: [],
+      column: "todo" as const,
+      assignedAgentId: "agent-001",
+      steps: [],
+      currentStep: 0,
+      log: [],
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    } as Task);
+    const tool = createDelegateTaskTool(agentStore, taskStore);
+
+    const result = await tool.execute(
+      "call-1",
+      { agent_id: "agent-001", title: "Quarantine the flaky patchnode ledger test", description: "## Symptom\n\nThe pg lane fails without a code change." },
+      undefined as any,
+      undefined as any,
+      undefined as any,
+    );
+
+    expect(result).not.toMatchObject({ isError: true });
+    const createInput = vi.mocked(taskStore.createTask).mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(createInput.title).toBe("Quarantine the flaky patchnode ledger test");
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text;
+    expect(text).toContain("FN-203: Quarantine the flaky patchnode ledger test");
+    expect(text).not.toContain("## Symptom");
+  });
+
+  /*
   FNXC:EngineTests 2026-09-20-05:15:
   Missing mission lineage is valid ordinary intake even when a source task has no lineage to inherit. Explicit lineage validation is covered separately by the bootstrap and approval cases below.
   */
@@ -573,17 +698,22 @@ describe("createDelegateTaskTool", () => {
 
     const result = await tool.execute(
       "call-1",
-      { description: "Create a red button", priority: "high" },
+      { description: "Create a red button" },
       undefined as any,
       undefined as any,
       undefined as any,
     );
 
     expect(result).not.toMatchObject({ isError: true });
+    /*
+    FNXC:TaskQueueOrder 2026-09-26-02:28 (RUFU-295): this expectation still demanded `priority: "high"` after
+    FN-509 removed the `priority` parameter from every create surface, so it asserted a deleted contract and
+    was red on `main` independent of any label work. The intent this test actually guards — freeform intake
+    with no mission lineage creates a plain task carrying its provenance — is asserted below.
+    */
     expect(taskStore.createTask).toHaveBeenCalledWith(
       expect.objectContaining({
         description: "Create a red button",
-        priority: "high",
         source: expect.objectContaining({ sourceType: "api" }),
       }),
       expect.anything(),
@@ -632,7 +762,7 @@ describe("createDelegateTaskTool", () => {
       getMission: vi.fn().mockResolvedValue({ id: "M-001", status: "active" }),
       claimDefinedFeatureTaskInTransaction: vi.fn().mockResolvedValue({ id: "F-001", taskId: "FN-001", status: "triaged" }),
       claimDefinedFeatureTask: vi.fn().mockResolvedValue({ id: "F-001", taskId: "FN-001", status: "triaged" }),
-      archiveDefinedFeatureBootstrapDuplicate: vi.fn().mockResolvedValue(undefined),
+      deleteDefinedFeatureBootstrapDuplicate: vi.fn().mockResolvedValue(undefined),
     };
     const store = createMockTaskStore({
       getMissionStore: vi.fn().mockReturnValue(missionStore),
@@ -663,7 +793,7 @@ describe("createDelegateTaskTool", () => {
       getMission: vi.fn().mockResolvedValue({ id: "M-001", status: "active" }),
       claimDefinedFeatureTaskInTransaction: vi.fn().mockResolvedValue({ id: "F-001", taskId: "FN-new", status: "triaged" }),
       claimDefinedFeatureTask: vi.fn(),
-      archiveDefinedFeatureBootstrapDuplicate: vi.fn().mockResolvedValue(undefined),
+      deleteDefinedFeatureBootstrapDuplicate: vi.fn().mockResolvedValue(undefined),
     };
     const created = { id: "FN-new", description: "Bootstrap feature", dependencies: [], column: "triage" as const, steps: [], currentStep: 0, log: [], createdAt: "2026-01-02T00:00:00.000Z", updatedAt: "2026-01-02T00:00:00.000Z" } as Task;
     const older = { ...created, id: "FN-old", createdAt: "2026-01-01T00:00:00.000Z" };
@@ -684,9 +814,9 @@ describe("createDelegateTaskTool", () => {
     expect(result).not.toMatchObject({ isError: true });
     expect((result.details as { taskId: string }).taskId).toBe("FN-new");
     expect(missionStore.claimDefinedFeatureTaskInTransaction).toHaveBeenCalledOnce();
-    /* FNXC:MissionAdmission 2026-07-23-19:00: a task that atomically claimed feature.taskId must never be archived by post-create duplicate reconciliation. */
+    /* FNXC:MissionAdmission 2026-07-23-19:00: a task that atomically claimed feature.taskId must never be deleted by post-create duplicate reconciliation. */
     expect(store.findRecentTasksByContentFingerprint).toHaveBeenCalledTimes(2);
-    expect(missionStore.archiveDefinedFeatureBootstrapDuplicate).toHaveBeenCalledWith({
+    expect(missionStore.deleteDefinedFeatureBootstrapDuplicate).toHaveBeenCalledWith({
       featureId: "F-001", taskId: "FN-new", duplicateTaskId: "FN-old",
     });
     expect(store.moveTask).not.toHaveBeenCalledWith("FN-new", "archived");
@@ -700,7 +830,7 @@ describe("createDelegateTaskTool", () => {
       getMission: vi.fn().mockResolvedValue({ id: "M-001", status: "active" }),
       claimDefinedFeatureTaskInTransaction: vi.fn().mockRejectedValue(new Error("Feature F-001 is already linked to task FN-OTHER")),
       claimDefinedFeatureTask: vi.fn(),
-      archiveDefinedFeatureBootstrapDuplicate: vi.fn().mockResolvedValue(undefined),
+      deleteDefinedFeatureBootstrapDuplicate: vi.fn().mockResolvedValue(undefined),
     };
     const store = createMockTaskStore({
       getMissionStore: vi.fn().mockReturnValue(missionStore),
@@ -739,60 +869,6 @@ describe("createDelegateTaskTool", () => {
     expect(validate).toHaveBeenCalledWith(canonical);
     expect(store.createTask).not.toHaveBeenCalled();
   });
-
-  /*
-  FNXC:WorkflowResolvedColumns 2026-07-30-10:35 (batch-engine tail):
-  DIFFERENTIAL over the archive lane's id. The invariant below was asserted only against the legacy
-  `archived` id, so it passed for a guard comparing `task.column === "archived"`.
-
-  NOT the query-filter class, which is why this one is load-bearing: the preflight's own query passes
-  `includeArchived: true`, so this predicate is the ONLY archived guard on the path. On a renamed archive
-  lane the archived sibling became the bootstrap canonical and `claimDefinedFeatureTask` then rejects the
-  non-live row — so a valid first task fails to be created at all.
-
-  The renamed IR is built HERE rather than in `_workflow-vocabulary-fixture.ts`: that shared fixture
-  declares no `archived`-trait column, and widening it would change the subject of every suite already
-  built on it.
-
-  REVERT CHECK, measured: with `task.column === "archived"` restored, the RENAMED case fails — `validate`
-  is called with the archived sibling and `createTask` is never called. The DEFAULT case passes both ways.
-  */
-  for (const [label, archivedColumn] of [["DEFAULT", "archived"], ["RENAMED", "boxed"]] as const) {
-    it(`does not select an archived same-agent task as a defined-feature bootstrap canonical (${label} archive lane: ${archivedColumn})`, async () => {
-      const archived = {
-        id: "FN-archived", title: "Bootstrap feature", description: "Bootstrap the hand-authored feature",
-        sourceAgentId: "agent-001", dependencies: [], column: archivedColumn, steps: [], currentStep: 0,
-        log: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-      } as Task;
-      const base = lifecycleIr(RENAMED_VOCAB, "agent-tools-archive");
-      const ir = { ...base, columns: [...base.columns, { id: "boxed", name: "Boxed", traits: [{ trait: "archived" as const }] }] };
-      const store = createMockTaskStore({
-        listTasks: vi.fn().mockResolvedValue([archived]),
-        ...(label === "RENAMED"
-          ? {
-              getTaskWorkflowSelectionAsync: (async () => ({ workflowId: "agent-tools-archive", stepIds: [] })) as never,
-              getTaskWorkflowSelection: (() => ({ workflowId: "agent-tools-archive", stepIds: [] })) as never,
-              getWorkflowDefinition: (async (id: string) => (id === "agent-tools-archive" ? { ir } : undefined)) as never,
-            }
-          : {}),
-      });
-      const validate = vi.fn().mockResolvedValue(undefined);
-
-      const result = await createAgentTask(store, {
-        title: "Bootstrap feature",
-        description: "Bootstrap the hand-authored feature",
-        source: { sourceType: "api", sourceAgentId: "agent-001" },
-        preflightSameAgentDuplicate: true,
-        validateDuplicateCanonical: validate,
-      } as TaskCreateInput & { preflightSameAgentDuplicate: boolean; validateDuplicateCanonical: (task: Task) => Promise<void> });
-
-      /* FNXC:MissionAdmission 2026-07-23-21:10: archived tasks are not live bootstrap canonicals and must not block a valid first task. */
-      expect(result.wasDuplicate).toBe(false);
-      expect(validate).not.toHaveBeenCalled();
-      expect(store.createTask).toHaveBeenCalledOnce();
-    });
-  }
-
   for (const [label, completeColumn] of [["DEFAULT", "done"], ["RENAMED", RENAMED_VOCAB.complete]] as const) {
     it(`does not select a completed same-agent task as a defined-feature bootstrap canonical (${label} complete lane: ${completeColumn})`, async () => {
       const completed = {
@@ -919,7 +995,7 @@ describe("createDelegateTaskTool", () => {
     expect(result.task).toBe(moved);
     expect(taskStore.updateTask).toHaveBeenCalledWith("FN-old", { assignedAgentId: "agent-002" });
     expect(taskStore.moveTask).toHaveBeenCalledWith("FN-old", "todo");
-    /* FNXC:MissionAdmission 2026-07-23-17:20: post-create archival reconciliation must validate its returned canonical before duplicate success. */
+    /* FNXC:MissionAdmission 2026-07-23-17:20: post-create duplicate reconciliation must validate its returned canonical before duplicate success. */
     expect(validateDuplicateCanonical).toHaveBeenCalledWith(moved);
   });
 

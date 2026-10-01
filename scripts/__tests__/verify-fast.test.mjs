@@ -76,7 +76,24 @@ const PRETEST_CHECKS = [
   "scripts/check-no-node-only-core-imports-in-dashboard.mjs",
   "scripts/check-pi-versions-pinned.mjs",
   "scripts/check-workspace-package-graph.mjs",
+  /*
+  FNXC:LockfileDriftGate 2026-09-22-19:20:
+  RUFU-266 added check-lockfile-importers to the canonical pretest chain beside
+  check-workspace-package-graph. Merge 2c09516986 had shipped manifests whose
+  declared dependencies were absent from pnpm-lock.yaml, and nothing in any
+  blocking chain could see it — the dependency auto-heal hides that drift by
+  repairing the lockfile locally, so only a static validator catches it.
+  */
+  "scripts/check-lockfile-importers.mjs",
   "scripts/check-no-test-timeout-appeasement.mjs",
+  /*
+  FNXC:TestInfrastructure 2026-08-25-12:13:
+  Commit 12c292ea6b added check-no-comment-assertions-in-tests to the canonical
+  pretest chain on 2026-08-23 but touched no pinned mirror; this scanner mirror
+  lagged. RUFU-148 restores lockstep at the live chain position so the
+  order-sensitive deepEqual drift guard stays meaningful.
+  */
+  "scripts/check-no-comment-assertions-in-tests.mjs",
   "scripts/check-changeset-format.mjs",
   /*
   FNXC:TestInfrastructure 2026-08-19-12:04:

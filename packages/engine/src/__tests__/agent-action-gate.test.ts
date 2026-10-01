@@ -8,7 +8,8 @@ import {
   reloadExemptTools,
   resolveGateOutcome,
 } from "../agents/agent-action-gate.js";
-import type { AgentPermissionPolicy } from "@fusion/core";
+import { AGENT_VALID_TRANSITIONS } from "@fusion/core";
+import type { AgentPermissionPolicy, AgentState } from "@fusion/core";
 
 const FN_3548_COORDINATION_TOOLS = [
   "fn_heartbeat_done",
@@ -798,5 +799,145 @@ describe("agent-action-gate", () => {
       operation: "write",
     });
     expect(key).toBe("agent-1|FN-1|write|file_write_delete|file|a.ts|write");
+  });
+});
+
+/*
+FNXC:AgentGating 2026-09-07-12:31:
+Approval-loop regression. Approving a gated action resumes the agent, and the NEXT gated action in
+the resumed session has to park normally: mint its own approval request and hand the model the
+gate's rejection. Before the fix it THREW instead, and the throw escaped an unguarded
+`pauseForApproval` call, so a gated task could never finish however many approvals the operator
+granted. The dead end was a state machine one: `resumeAfterDecision` resumed the agent to `idle`,
+`AGENT_VALID_TRANSITIONS.idle` was `["active"]` only, and every gate parks by moving the agent to
+`paused`, which `AgentStore.updateAgentState` refused with "Invalid state transition: idle ->
+paused". Both halves are covered: parking a RESUMED agent, and parking an `idle` agent (the state
+chat, triage and the heartbeat monitor can also meet a gate in). Approvals are bound to the exact
+command by `resourceId`, so each distinct command parks for its own approval; that is why the
+second and third calls below use different commands.
+
+The store is a fake, but the rule under test is the REAL exported AGENT_VALID_TRANSITIONS table and
+the validation mirrors AgentStore.updateAgentState exactly (same-state is a no-op, anything outside
+the table throws), so reverting the table entry turns this test red.
+*/
+describe("approval gate resume loop", () => {
+  interface FakeApproval { id: string; status: "pending" | "approved" | "denied" | "completed" }
+
+  function buildResumeHarness() {
+    let agentState: AgentState = "active";
+    const transitions: AgentState[] = [];
+    const setAgentState = (next: AgentState) => {
+      if (agentState === next) return;
+      const valid = AGENT_VALID_TRANSITIONS[agentState];
+      if (!valid.includes(next)) {
+        throw new Error(`Invalid state transition: ${agentState} -> ${next}. Valid transitions: ${valid.join(", ")}`);
+      }
+      agentState = next;
+      transitions.push(next);
+    };
+
+    const requests = new Map<string, FakeApproval>();
+    let nextId = 1;
+    const createApprovalRequest = vi.fn(async (decision: { approvalDedupeKey: string }) => {
+      const request: FakeApproval = { id: `apr-${nextId++}`, status: "pending" };
+      requests.set(decision.approvalDedupeKey, request);
+      return request;
+    });
+
+    return {
+      requests,
+      createApprovalRequest,
+      transitions,
+      state: () => agentState,
+      resume: () => setAgentState("active"),
+      goIdle: () => setAgentState("idle"),
+      context: {
+        agentId: "agent-resume",
+        agentName: "Resume agent",
+        isEphemeral: false,
+        taskId: "FN-RESUME",
+        permissionPolicy: approvalPolicy,
+        createApprovalRequest,
+        findApprovalByDedupeKey: vi.fn(async (key: string) => requests.get(key) ?? null),
+        // Mirrors executor.ts buildActionGateContext: agent state is moved LAST, after the task is
+        // paused and the session suspended, which is why a throw here left the task parked forever.
+        pauseForApproval: vi.fn(async () => { setAgentState("paused"); }),
+        markApprovalCompleted: vi.fn(async () => {}),
+      },
+    };
+  }
+
+  const bashTool = (execute: ReturnType<typeof vi.fn>) => ({
+    name: "bash",
+    label: "Run a shell command",
+    description: "",
+    parameters: {},
+    execute,
+  });
+
+  it("parks the next gated action after an approval resume instead of throwing", async () => {
+    const { wrapToolsWithActionGate } = await import("../pi.js");
+    const execute = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "ran" }] });
+    const harness = buildResumeHarness();
+    const wrapped = wrapToolsWithActionGate([bashTool(execute) as any], harness.context as any);
+
+    const first = await (wrapped[0] as any).execute("call-1", { command: "echo one" });
+    expect(first.isError).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    expect(harness.state()).toBe("paused");
+    expect(harness.createApprovalRequest).toHaveBeenCalledTimes(1);
+
+    // The operator approves; the decision route unpauses the task and resumes the agent.
+    for (const [key, request] of harness.requests) harness.requests.set(key, { ...request, status: "approved" });
+    harness.resume();
+    expect(harness.state()).toBe("active");
+
+    const second = await (wrapped[0] as any).execute("call-2", { command: "echo two" });
+    expect(second.isError).toBe(true);
+    expect(second.error).toMatch(/requires approval/i);
+    expect(harness.createApprovalRequest).toHaveBeenCalledTimes(2);
+    expect(harness.state()).toBe("paused");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("parks a gated action while the agent is idle instead of throwing", async () => {
+    const { wrapToolsWithActionGate } = await import("../pi.js");
+    const execute = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "ran" }] });
+    const harness = buildResumeHarness();
+    harness.goIdle();
+    expect(harness.state()).toBe("idle");
+
+    const wrapped = wrapToolsWithActionGate([bashTool(execute) as any], harness.context as any);
+    const result = await (wrapped[0] as any).execute("call-idle", { command: "echo idle" });
+
+    expect(result.isError).toBe(true);
+    expect(result.error).toMatch(/requires approval/i);
+    expect(harness.state()).toBe("paused");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  /*
+  FNXC:AgentGating 2026-09-07-12:31:
+  Defense in depth for the same loop, mirroring the permanent-agent gate's existing guard: whatever
+  goes wrong while parking, the model must still receive the gate's own rejection with its
+  "do not attempt alternatives" instruction (FN-7608), never a raw tool error. The action stays
+  refused either way; only the message the model reads differs.
+  */
+  it("still returns the gate rejection when parking fails", async () => {
+    const { wrapToolsWithActionGate } = await import("../pi.js");
+    const execute = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "ran" }] });
+    const harness = buildResumeHarness();
+    const context = {
+      ...harness.context,
+      pauseForApproval: vi.fn(async () => { throw new Error("Invalid state transition: idle -> paused"); }),
+    };
+    const wrapped = wrapToolsWithActionGate([bashTool(execute) as any], context as any);
+
+    const result = await (wrapped[0] as any).execute("call-throw", { command: "echo boom" });
+
+    expect(result.isError).toBe(true);
+    expect(result.error).toMatch(/do not attempt alternatives/i);
+    expect(result.error).not.toMatch(/Invalid state transition/);
+    expect(execute).not.toHaveBeenCalled();
   });
 });

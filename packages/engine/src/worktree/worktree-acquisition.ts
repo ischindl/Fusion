@@ -6,6 +6,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { promisify } from "node:util";
 import { acquireWorktreePathReservation, assertWorkspaceRepoRelPath, canonicalizeWorktreePath, classifyTaskBranchOrigin, isLegacyWorkspaceWorktreeLayout, resolveEngineIncarnationId, resolveEngineNodeId, resolveWorkspaceRepoWorktreePath, resolveWorkspaceTaskWorktreeDir, workspaceWorktreeGroupSegment, WORKSPACE_GROUP_MARKER_FILENAME, type RunMutationContext, type Settings, type Task, type TaskStore, type SecretsStore, type WorkspaceConfig, type WorkspaceLeaseHandle, type WorkspaceWorktreeContext } from "@fusion/core";
 import { resolveTaskWorkingBranchWithOrigin } from "./worktree-names.js";
+import { findWorktreeHoldingBranch, resolveWorkspaceRootMembership } from "./workspace-root-member.js";
 import { resolveTaskWorktreePathForBackend, resolveWorktreesDir, WORKTREE_RECOVERY_DIRNAME } from "./worktree-paths.js";
 import { hydrateWorktreeDb } from "./worktree-db-hydrate.js";
 import { formatError } from "../logger.js";
@@ -14,6 +15,7 @@ import {
   canonicalizePath,
   classifyTaskWorktree,
   getRegisteredWorktreeBranches,
+  defensiveRemovalWouldPreserve,
   isInsideWorktreesDir,
   isRepoRootPath,
   removeWorktree,
@@ -47,11 +49,23 @@ import { installTaskWorktreeIdentityGuard } from "./worktree-hooks.js";
 import { copyConfiguredWorktreeFiles, type WorktreeCopyFileResult } from "./worktree-copy-files.js";
 import { resolveCapturedBaseCommitSha } from "../execution/base-commit-capture.js";
 import { resolveIntegrationBranch } from "../merge/integration-branch.js";
-import { recordWorkspaceBaseBranchDecision, resolveWorkspaceRepoBaseBranch } from "./workspace-base-branch.js";
+import {
+  recordWorkspaceBaseBranchDecision,
+  recordTaskBaseResolution,
+  resolveWorkspaceRepoBaseBranch,
+} from "./workspace-base-branch.js";
+import {
+  isTaskBranchBaseDivergedError,
+  resolveTaskBranchBase,
+  TaskBranchBaseDivergedError,
+  type TaskBranchBaseResolution,
+} from "./task-base-resolution.js";
 import { acquireActiveSessionPath, activeSessionRegistry, executingTaskLock, type ActiveSessionRegistry } from "../agents/active-session-registry.js";
 import { refreshReusedWorktreeBase, type WorktreeBaseRefreshResult } from "../worktree-base-refresh.js";
 import { refreshWorkspaceRepoWorktreeBases } from "./workspace-base-refresh.js";
 import { normalizeWorkspaceTaskRouting } from "../executor/workspace-config-resolver.js";
+import { synchronizeOverlapWaitBeforeExecution } from "../executor/overlap-resume-gate.js";
+import { readOverlapResumeContextDelivery, type OverlapResumeContextDelivery } from "../execution/overlap-resume-context.js";
 import {
   ensureWorktreeDependencies,
   type DependencyCommandRunner,
@@ -121,6 +135,10 @@ export interface AcquireTaskWorktreeResult {
     strandedCommitCount?: number;
   };
   baseRefresh?: WorktreeBaseRefreshResult;
+  /** Durable context from a released overlap wait; prompt builders deliver it without consuming the episode. */
+  overlapResumeContext?: string;
+  /** Exact ready generations represented by overlapResumeContext, used for post-transport acknowledgement. */
+  overlapResumeDelivery?: OverlapResumeContextDelivery;
 }
 
 /** A typed refresh refusal: callers must park before creating a coding session. */
@@ -443,6 +461,19 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
     }
     return refresh;
   };
+  const synchronizePreparedWorktree = async (path: string): Promise<OverlapResumeContextDelivery> => {
+    await synchronizeOverlapWaitBeforeExecution({
+      task,
+      store,
+      worktreePath: path,
+      owner: runContext?.runId ?? `worktree-acquire:${process.pid}:${task.id}`,
+      checkoutEpoch: task.checkoutLeaseEpoch == null ? undefined : String(task.checkoutLeaseEpoch),
+      repository: workspaceContext?.repoRelPath ?? ".",
+      refresh: async () => refreshReusedWorktreeBase({ task, rootDir, worktreePath: path, store, settings, audit, logger }),
+    });
+    return readOverlapResumeContextDelivery(store, task.id);
+  };
+
   const notifyFallback = async (op: WorktrunkOpName, stderr?: string) => {
     await store.logEntry(task.id, `Worktrunk ${op} failed; continuing with native worktree backend (${stderr ?? "no stderr"})`, undefined, runContext);
   };
@@ -507,6 +538,50 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
    * Fresh task worktrees must never inherit the project root checkout's ambient HEAD. The root checkout can temporarily point at a sibling task branch/commit during merge or recovery work, so an omitted `git worktree add -b ... <startPoint>` contaminates new task branches with unrelated task commits. Use the task's explicit executionStartBranch when present; otherwise pin creation to the resolved integration branch.
    */
   const freshStartPoint = baseBranch ?? await resolveIntegrationBranch(rootDir, settings, { logger: logger ?? console });
+
+  /*
+   * FNXC:TaskBaseResolution 2026-09-16-02:35 (RUFU-245):
+   * A fresh task branch is cut from the LOCAL integration ref. When that ref and its remote-tracking
+   * counterpart have proven-diverged neither is a safe base — choosing push vs. pull is an operator
+   * decision the engine must not guess — so every fresh-create choke point refuses BEFORE a branch,
+   * worktree, or path reservation exists. The check lives in `assertFreshBaseNotDiverged`, called at
+   * the top of `createWorktreeImpl`, which is the single funnel for all fresh creates (the injected
+   * delegate, the native path, and the reservation path; every `createWorktreeImpl` call site is a
+   * fresh create, including the workspace per-repo re-entry below). The verdict is cached per
+   * acquisition so a retry inside one acquisition does not re-probe, and the workspace per-repo call
+   * re-enters this function with `rootDir` = that sub-repository, so each repo proves its OWN
+   * divergence and the refusal names the offending `repoRelPath`. Reuse of an already-created
+   * worktree never reaches this gate, and the resolver itself never fetches.
+   */
+  let freshBaseResolution: TaskBranchBaseResolution | undefined;
+  const assertFreshBaseNotDiverged = async (): Promise<void> => {
+    const repoRelPath = workspaceContext?.repoRelPath;
+    freshBaseResolution ??= await resolveTaskBranchBase({ rootDir, settings, taskId: task.id, logger });
+    const resolution = freshBaseResolution;
+    if (!resolution.refusal) {
+      await recordTaskBaseResolution({
+        audit,
+        task,
+        rootDir,
+        repoRelPath,
+        outcome: resolution.outcome,
+        fallbackReason: resolution.fallbackReason,
+      });
+      return;
+    }
+    const refusal = new TaskBranchBaseDivergedError({
+      localRef: resolution.integrationBranch,
+      remoteRef: resolution.remoteRef ?? "",
+      aheadCount: resolution.aheadCount ?? 0,
+      behindCount: resolution.behindCount ?? 0,
+      repoRelPath,
+    });
+    await recordTaskBaseResolution({ audit, task, rootDir, repoRelPath, outcome: "refused-diverged" });
+    // The operator-visible record: refs, both counts, and the remedy ride the task log (run-audit is ids/outcomes only).
+    await store.logEntry(task.id, refusal.message, undefined, runContext);
+    logger?.log(`${task.id}: ${refusal.message}`);
+    throw refusal;
+  };
 
   let worktreePath: string = task.worktree || await resolveTaskWorktreePathForBackend(
     rootDir,
@@ -630,6 +705,14 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
     reservationHeld = false,
     branchOrigin?: "engine-canonical" | "group-derived" | "operator-supplied",
   ): Promise<{ path: string; branch: string; backendKind: WorktreeBackend["kind"] }> => {
+    /*
+     * FNXC:TaskBaseResolution 2026-09-16-02:35 (RUFU-245):
+     * Divergence refusal is checked here, before the injected delegate or the native create can make
+     * a branch, a worktree, or a path reservation. `createWorktreeImpl` is the only funnel to fresh
+     * creation, so this one call site gates the injected-delegate path, the native path, the
+     * return-guard fresh create, the pinned-path create, and the workspace per-repo create alike.
+     */
+    await assertFreshBaseNotDiverged();
     if (createWorktree) {
       const created = await createWorktree(createBranch, createPath, createTaskId, startPoint, allowRename);
       return { ...created, backendKind: opts.createWorktreeBackendKind ?? backend.kind };
@@ -793,10 +876,75 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
       await store.logEntry(task.id, `Worktree created at ${worktreePath}`, undefined, runContext);
     }
 
+    /*
+    FNXC:BranchBaseIdentity 2026-09-13-00:15:
+    RUFU-231 (Mission defect 1): a default-based card previously persisted NONE of
+    `baseBranch` / `executionStartBranch` / `baseCommitSha`, and the singular path recorded
+    no post-rebase identity at all, so after `rebaseNewWorktreeOntoRemote` moved the branch
+    onto `<remote>/<integrationBranch>` the row stayed blank while the branch tip became a
+    foreign lineage's landed commit (the RUFU-217 wedge — the intended base was un-auditable
+    and every zero-loss proof fell back to a mis-trusted local identity). Record the identity
+    the branch actually sits on at create time: the resolved fork SHA (measured with the
+    descendant-aware fork-point rule) plus the identity ref name. `executionStartBranch` is
+    taken from the LIVE row so FN-2165's clear-on-unresolvable-ref inside createWorktree is
+    never resurrected — a cleared base falls back to the integration name, which is exactly
+    what the branch then starts from on retry. Non-fatal: an identity-capture failure must
+    never fail an otherwise-successful acquisition.
+    */
+    if (!workspaceContext && !opts.suppressSingularWorktreePersist) {
+      try {
+        /*
+        FNXC:WorktreeAcquisition 2026-09-13-01:10:
+        Best-effort LIVE read (production TaskStore always provides getTask; injected
+        minimal fakes may not). `?.` short-circuits the whole chain when the method is
+        absent, so a reduced store degrades to the acquisition-snapshot fallback instead
+        of failing the identity record.
+        */
+        const live = await store.getTask?.(task.id).catch(() => undefined);
+        const liveRecordedBase = live ? live.executionStartBranch ?? null : task.executionStartBranch ?? null;
+        /*
+        FNXC:WorktreeAcquisition 2026-09-13-01:30:
+        FN-2165 resurrection guard: when a REQUESTED base was cleared as unresolvable
+        during createWorktree, the vanished ref must not be written back — the branch
+        actually sits on the integration branch, so resolve that identity now. Otherwise
+        reuse `freshStartPoint` (requested base, or the integration name already resolved
+        for the start point) to avoid re-resolving and re-warning.
+        */
+        let identityRef = liveRecordedBase;
+        if (!identityRef) {
+          identityRef = live && baseBranch
+            ? await resolveIntegrationBranch(rootDir, settings, { logger: logger ?? console })
+            : freshStartPoint;
+        }
+        // Measurement keeps the existing captureBaseCommitSha semantics: measure against
+        // the integration branch (default "main") for requested-base cards; for default-
+        // base cards the cut identity IS the integration branch name.
+        const measuredBaseSha = await resolveCapturedBaseCommitSha(created.path, {
+          warn: (msg) => logger?.warn(`${task.id}: base-identity capture: ${msg}`),
+        }, baseBranch ? undefined : freshStartPoint);
+        await persistWorktreeAssignment({
+          ...(measuredBaseSha ? { baseCommitSha: measuredBaseSha } : {}),
+          baseBranch: identityRef,
+          executionStartBranch: identityRef,
+        });
+        await store.logEntry(
+          task.id,
+          `[acquire] recorded base identity ref=${identityRef} sha=${measuredBaseSha?.slice(0, 12) ?? "unresolved"}`,
+          undefined,
+          runContext,
+        );
+      } catch (identityErr: unknown) {
+        const message = identityErr instanceof Error ? identityErr.message : String(identityErr);
+        logger?.warn(`${task.id}: base identity record failed (non-fatal): ${message}`);
+      }
+    }
+
     // FNXC:WorktreeBaseRefresh 2026-08-09-03:30: Execution can recreate an existing task branch after its
     // dependency branch was merged and deleted. Refresh fresh acquisitions too so that branch cannot resume
     // from its stale pre-dependency tip.
     const baseRefresh = await refreshExistingWorktree(worktreePath, created.backendKind);
+    const overlapResumeDelivery = await synchronizePreparedWorktree(worktreePath);
+    const overlapResumeContext = overlapResumeDelivery.context;
 
     const cleanup = await removeDesktopBuildArtifacts(worktreePath, logger);
     if (cleanup.removed.length > 0) {
@@ -868,7 +1016,7 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
     } catch (err) {
       logger?.warn?.(`${task.id}: secrets-env write failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
     }
-    return { worktreePath, branch, source, hydrated, isResume: false, baseRefresh };
+    return { worktreePath, branch, source, hydrated, isResume: false, baseRefresh, overlapResumeContext, overlapResumeDelivery };
   };
 
   const createFreshWorktreeFromReturnGuard = async (guardedPath: string, source: string): Promise<AcquireTaskWorktreeResult> => {
@@ -902,11 +1050,6 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
   const reuseWarmWorktree = async (path: string, resumedBranch: string, source: "existing"): Promise<AcquireTaskWorktreeResult> => {
     // FNXC:EngineDiagnostics 2026-08-03-05:54: warm reuse is the common healthy path; Worktree created stays info.
     if (logger?.debug) logger.debug(`Reusing existing worktree: ${path}`);
-    const cleanup = await removeDesktopBuildArtifacts(path, logger);
-    if (cleanup.removed.length > 0) {
-      await store.logEntry(task.id, `Removed desktop build artifacts from worktree: ${cleanup.removed.join(", ")}`, undefined, runContext);
-    }
-    const hydrated = await hydrate(path);
     await verifyResumeBranchNotMisbound({
       worktreePath: path,
       branchName: resumedBranch,
@@ -918,7 +1061,14 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
       runContext,
     });
     const baseRefresh = await refreshExistingWorktree(path, await resolveExistingWorktreeBackendKind(path));
-    return guardAcquisitionReturn({ worktreePath: path, branch: resumedBranch, source, hydrated, isResume: true, baseRefresh });
+    const overlapResumeDelivery = await synchronizePreparedWorktree(path);
+    const overlapResumeContext = overlapResumeDelivery.context;
+    const cleanup = await removeDesktopBuildArtifacts(path, logger);
+    if (cleanup.removed.length > 0) {
+      await store.logEntry(task.id, `Removed desktop build artifacts from worktree: ${cleanup.removed.join(", ")}`, undefined, runContext);
+    }
+    const hydrated = await hydrate(path);
+    return guardAcquisitionReturn({ worktreePath: path, branch: resumedBranch, source, hydrated, isResume: true, baseRefresh, overlapResumeContext, overlapResumeDelivery });
   };
 
   /*
@@ -1026,7 +1176,25 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
           const preserveAsOrphanDirectory = !classification.ok
             && (classification.classification === "incomplete" || classification.classification === "unregistered")
             && !activeSessionRegistry.isPathActive(pinnedPath);
-          if (preserveAsOrphanDirectory) {
+          /*
+           * FNXC:WorktreeCleanup 2026-09-25-19:30:
+           * RUFU-278: the reclaim used to have exactly two outcomes — remove the stale checkout, or throw and
+           * terminalize the card. When the content-preservation policy refused the removal, throwing was the only
+           * remaining action, so a policy no-op decided the card's life: RUFU-260 parked with
+           * "preserving <path>: uncommitted or ignored content present" over two generated directories and its
+           * retained checkout head-of-line blocked 14 RunFusion cards at the file-scope dispatch gate. The pinned
+           * path must still be vacated (recreation happens at the SAME path and `git worktree add` rejects an
+           * occupied one after sessionFile is cleared), so the third outcome is the orphan preserve this branch
+           * already implements: move the checkout aside under the recovery root, delete nothing, keep the card.
+           * The liveness recheck stays inside the preserve routine, so a newly registered owner still fails closed.
+           */
+          const preserveForContentPolicy = !preserveAsOrphanDirectory
+            && (await defensiveRemovalWouldPreserve(rootDir, pinnedPath))
+            && !activeSessionRegistry.isPathActive(pinnedPath);
+          if (preserveForContentPolicy) {
+            logger?.warn(`${task.id}: pinned worktree ${pinnedPath} holds content the preservation policy will not delete; preserving it aside to reclaim the path`);
+          }
+          if (preserveAsOrphanDirectory || preserveForContentPolicy) {
             const canonicalRoot = await realpath(rootDir);
             /*
              * FNXC:TaskPinnedWorktrees 2026-08-10-01:12:
@@ -1066,7 +1234,14 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
                 target: preservedPath,
                 metadata: {
                   taskId: task.id,
-                  classification: classification.classification,
+                  // "not-applicable" is unreachable: the orphan branch requires !classification.ok and the
+                  // content-policy branch sets "content-preservation". It exists because widening the guard
+                  // above removed TypeScript's aliased-condition narrowing on the discriminated union.
+                  classification: preserveForContentPolicy
+                    ? "content-preservation"
+                    : classification.ok
+                      ? "not-applicable"
+                      : classification.classification,
                   reason: "task-pinned-orphan-preserved",
                   sourcePath: pinnedPath,
                 },
@@ -1077,7 +1252,11 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
             try {
               await store.logEntry(
                 task.id,
-                `Preserved orphaned task-pinned directory ${pinnedPath} before recreation`,
+                `Preserved orphaned task-pinned directory ${pinnedPath} before recreation${
+                  preserveForContentPolicy
+                    ? " — removal refused: the checkout holds content the preservation policy will not delete"
+                    : ""
+                }`,
                 preservedPath,
                 runContext,
               );
@@ -1149,11 +1328,6 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
   if (task.worktree && isResume) {
     // FNXC:EngineDiagnostics 2026-08-03-05:54: resume reuses the pinned path — expected, not a default-visible event.
     if (logger?.debug) logger.debug(`Reusing existing worktree: ${worktreePath}`);
-    const cleanup = await removeDesktopBuildArtifacts(worktreePath, logger);
-    if (cleanup.removed.length > 0) {
-      await store.logEntry(task.id, `Removed desktop build artifacts from worktree: ${cleanup.removed.join(", ")}`, undefined, runContext);
-    }
-    const hydrated = await hydrate(worktreePath);
     const resumedBranch = task.branch ?? branchName;
     await verifyResumeBranchNotMisbound({
       worktreePath,
@@ -1167,7 +1341,14 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
     });
     // FN-4912: resume path reuses the prior on-disk .env (and its fingerprint sidecar). Rewrite is owned by the next fresh acquisition.
     const baseRefresh = await refreshExistingWorktree(worktreePath, await resolveExistingWorktreeBackendKind(worktreePath));
-    return guardAcquisitionReturn({ worktreePath, branch: resumedBranch, source: "existing", hydrated, isResume: true, baseRefresh });
+    const overlapResumeDelivery = await synchronizePreparedWorktree(worktreePath);
+    const overlapResumeContext = overlapResumeDelivery.context;
+    const cleanup = await removeDesktopBuildArtifacts(worktreePath, logger);
+    if (cleanup.removed.length > 0) {
+      await store.logEntry(task.id, `Removed desktop build artifacts from worktree: ${cleanup.removed.join(", ")}`, undefined, runContext);
+    }
+    const hydrated = await hydrate(worktreePath);
+    return guardAcquisitionReturn({ worktreePath, branch: resumedBranch, source: "existing", hydrated, isResume: true, baseRefresh, overlapResumeContext, overlapResumeDelivery });
   }
 
   // Fresh native acquisition always creates the task-ID-derived path; removal is backend-mediated.
@@ -1573,6 +1754,59 @@ export async function acquireWorkspaceRepoWorktree(
     const deferredTaskMutations: Array<() => Promise<unknown>> = [];
     let mergeError: unknown;
     try {
+      /*
+      FNXC:WorkspaceRootMember 2026-09-28-08:41 (RUFU-390):
+      A member that resolves to the WORKSPACE ROOT repository is not a sub-repository: git walked up
+      from `<root>/<member>` to `<root>`, so creating this member's worktree would ask the root
+      repository for a SECOND worktree on `fusion/<id>` — the branch the task already occupies. Git
+      refuses that (`Branch fusion/<id> is already checked out at <path>`) and every workspace lane
+      then fails identically: 42 saneca cards carry `Workspace repository preparation failed for
+      saneca during acquire`, 26 sit `in-review` with a verdict-less Code Review row plus an
+      `in-review-stall-deadlock` park, and the board moved once per 40 minutes.
+
+      One branch can live in exactly one worktree, so the member entry is repointed at the registered
+      worktree that already holds the branch — an idempotent reuse with no `git worktree add`, which is
+      also what landing already expected: root-repo work has always landed from the task's own
+      root-repository worktree (measured: `workspaceWorktrees.saneca.landedSha` on landed cards).
+      When NOTHING holds the branch the ordinary creation path below runs untouched, and every member
+      that is its own repository takes neither branch — byte-identical to today.
+      */
+      if ((await resolveWorkspaceRootMembership(repoAbsPath, workspaceRootDir)).kind === "workspace-root-repository") {
+        const workingBranch = resolveTaskWorkingBranchWithOrigin(task).branch;
+        const holderPath = await findWorktreeHoldingBranch(workspaceRootDir, workingBranch);
+        if (holderPath) {
+          await store.mergeWorkspaceWorktreeEntry(task.id, repoRelPath, {
+            worktreePath: holderPath,
+            branch: workingBranch,
+          });
+          await safeObserve(async () => {
+            await store.logEntry(
+              task.id,
+              `Workspace member ${repoRelPath} is the workspace root repository, not a sub-repository: reusing the registered worktree that already holds ${workingBranch} (${holderPath}) instead of creating a second worktree of the same branch`,
+              undefined,
+              runContext,
+            );
+            await emitBoundedRunAudit(store, {
+              taskId: task.id,
+              agentId: runContext?.agentId ?? "workspace-acquire",
+              runId: runContext?.runId ?? generateSyntheticRunId("workspace-acquire", task.id),
+              domain: "git",
+              mutationType: "worktree:workspace-root-member-reused",
+              target: repoRelPath,
+              metadata: { taskId: task.id, repoRelPath, outcome: "reused-registered-worktree" },
+            });
+          });
+          logger?.warn(
+            `${task.id}: workspace member ${repoRelPath} resolves to the workspace root repository; reusing ${holderPath} (${workingBranch})`,
+          );
+          return {
+            worktreePath: holderPath,
+            branch: workingBranch,
+            baseCommitSha: existing?.baseCommitSha,
+            alreadyAcquired: true,
+          };
+        }
+      }
       await store.mergeWorkspaceWorktreeEntry(
         task.id,
         repoRelPath,
@@ -1787,11 +2021,18 @@ export async function acquireWorkspaceRepoWorktree(
           worktreePath: result.worktreePath,
           branch: result.branch,
           baseCommitSha,
-          ...(resolvedBase.requested
-            ? {
-                baseBranch: resolvedBase.branch,
-                ...(resolvedBase.fallbackReason ? { baseBranchFallbackFrom: resolvedBase.requested } : {}),
-              }
+          /*
+          FNXC:BranchBaseIdentity 2026-09-13-00:20:
+          RUFU-231 (Mission defect 1): the per-repository entry previously recorded
+          `baseBranch` only when a base was explicitly REQUESTED, leaving default-based
+          workspace cards without any recorded base identity — the same un-auditable wedge
+          state that made the RUFU-217 zero-own-commit card undiagnosable. Record the
+          RESOLVED per-repo base ref on every acquisition; `baseBranchFallbackFrom` keeps
+          the parity field that names the original requested ref when the resolver fell back.
+          */
+          baseBranch: resolvedBase.branch,
+          ...(resolvedBase.fallbackReason && resolvedBase.requested
+            ? { baseBranchFallbackFrom: resolvedBase.requested }
             : {}),
         };
         },
@@ -1889,6 +2130,15 @@ export async function acquireWorkspaceRepoWorktree(
       });
     }
     if (err instanceof WorkspaceRepoAcquireBusyError || err instanceof WorkspacePreparationError) throw err;
+    /*
+    FNXC:TaskBaseResolution 2026-09-16-02:35 (RUFU-245):
+    A diverged-base refusal is an operator decision, not a broken sub-repo. It must reach the
+    executor/heartbeat classifiers as its own type (they key the no-budget-refusal branch on it), so it
+    passes through unwrapped; the generic `WorkspacePreparationError` wrap below would leave only its
+    message text for callers to pattern-match. The repo is already named in the message, the log entry
+    above, and the audit row's `repoRelPath`.
+    */
+    if (isTaskBranchBaseDivergedError(err)) throw err;
     throw new WorkspacePreparationError(
       repoRelPath,
       "acquire",

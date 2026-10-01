@@ -1,9 +1,12 @@
 // @vitest-environment node
 
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { existsSync } from "node:fs";
+import type { IncomingMessage } from "node:http";
 import express from "express";
+import multer from "multer";
 import type { TaskStore } from "@fusion/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../api-error.js";
@@ -25,6 +28,16 @@ function makeApp(store: Partial<TaskStore>) {
   registerFileWorkspaceRoutes({
     router,
     store: store as TaskStore,
+    /*
+    FNXC:FileBrowserUpload 2026-09-05-15:01:
+    The upload route receives multer through the same injected seam production mounts with
+    ({ ...routeContext, workspaceUpload: upload }), and the harness mirrors production limits
+    (100 MB transport) so the 25 MB per-file PRODUCT cap under test is the one being exercised.
+    */
+    workspaceUpload: multer({
+      storage: multer.memoryStorage(),
+      limits: { fileSize: 100 * 1024 * 1024 },
+    }),
     runtimeLogger: {} as never,
     planningLogger: {} as never,
     chatLogger: {} as never,
@@ -44,6 +57,9 @@ function makeApp(store: Partial<TaskStore>) {
       throw error instanceof Error ? error : new Error(fallbackMessage ?? String(error));
     },
   } as ApiRoutesContext);
+  // Production parses JSON before the router; the wildcard text-save (and its pass-through from
+  // POST /files/upload for non-multipart requests) needs that same parser here.
+  app.use(express.json());
   app.use("/api", router);
   const errorHandler: express.ErrorRequestHandler = (error, _req, res, _next) => {
     res.status(error instanceof ApiError ? error.statusCode : 500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -204,5 +220,172 @@ describe("file workspace download-zip route", () => {
     const res = await REQUEST(app, "GET", `/api/files/${encodeURIComponent(filePath)}/download-zip?workspace=project`);
 
     expect(res.status).toBe(expectedStatus);
+  });
+});
+
+/*
+FNXC:FileBrowserUpload 2026-09-05-15:01:
+RUFU-189 upload contract: binary bytes land untouched, destination = form `path` field, collision
+defaults to a per-file EEXIST refusal (replacement only with an explicit overwrite=true, which the
+UI sends only after operator confirmation), one bad file never sinks the batch, and non-multipart
+POST /api/files/upload still reaches the generic wildcard write route (a root file named "upload"
+remains savable). Byte identity is asserted against the real filesystem here — mocked-fs unit
+tests can only prove argument pass-through.
+*/
+describe("POST /api/files/upload (browser uploads)", () => {
+  type Part = { field: string; filename?: string; contentType?: string; value: Buffer };
+
+  function buildMultipartBody(parts: Part[]): { body: Buffer; contentType: string } {
+    const boundary = "----fusion-upload-test";
+    const chunks: Buffer[] = [];
+    for (const part of parts) {
+      let disposition = `Content-Disposition: form-data; name="${part.field}"`;
+      if (part.filename !== undefined) {
+        disposition += `; filename="${part.filename}"`;
+      }
+      chunks.push(Buffer.from(`--${boundary}\r\n${disposition}\r\n${part.contentType ? `Content-Type: ${part.contentType}\r\n` : ""}\r\n`));
+      chunks.push(part.value);
+      chunks.push(Buffer.from("\r\n"));
+    }
+    chunks.push(Buffer.from(`--${boundary}--\r\n`));
+    return { body: Buffer.concat(chunks), contentType: `multipart/form-data; boundary=${boundary}` };
+  }
+
+  async function uploadRequest(root: string, parts: Part[], query = "?workspace=project", onBodyDelivered?: (req: IncomingMessage) => Promise<void>) {
+    const app = makeApp({ getRootDir: vi.fn(() => root) });
+    const { body, contentType } = buildMultipartBody(parts);
+    return await REQUEST(app, "POST", `/api/files/upload${query}`, body, { "content-type": contentType }, undefined, onBodyDelivered);
+  }
+
+  it("writes binary bytes byte-for-byte into the requested destination directory", async () => {
+    const root = await makeRoot();
+    await mkdir(join(root, "assets"));
+    const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe, 0x00, 0x80]);
+
+    const res = await uploadRequest(root, [
+      { field: "path", value: Buffer.from("assets") },
+      { field: "files", filename: "logo.png", contentType: "image/png", value: pngBytes },
+    ]);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ uploaded: [{ name: "logo.png", path: "assets/logo.png", size: pngBytes.length }] });
+    const written = await readFile(join(root, "assets/logo.png"));
+    expect(written.equals(pngBytes)).toBe(true);
+  });
+
+  it("refuses an existing file with a per-file EEXIST verdict by default", async () => {
+    const root = await makeRoot();
+
+    const first = await uploadRequest(root, [{ field: "files", filename: "a.txt", value: Buffer.from("one") }]);
+    expect(first.status).toBe(200);
+    expect(first.body).toMatchObject({ uploaded: [{ name: "a.txt", path: "a.txt" }] });
+
+    const second = await uploadRequest(root, [{ field: "files", filename: "a.txt", value: Buffer.from("two") }]);
+    expect(second.status).toBe(200);
+    expect(second.body).toMatchObject({ uploaded: [], failed: [{ name: "a.txt", code: "EEXIST" }] });
+    expect(await readFile(join(root, "a.txt"), "utf-8")).toBe("one");
+  });
+
+  it("replaces an existing file only when the request explicitly sends overwrite=true", async () => {
+    const root = await makeRoot();
+    await uploadRequest(root, [{ field: "files", filename: "a.txt", value: Buffer.from("one") }]);
+
+    const res = await uploadRequest(root, [
+      { field: "files", filename: "a.txt", value: Buffer.from("two") },
+      { field: "overwrite", value: Buffer.from("true") },
+    ]);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ uploaded: [{ name: "a.txt" }], failed: [] });
+    expect(await readFile(join(root, "a.txt"), "utf-8")).toBe("two");
+  });
+
+  it("fails one oversized file alone while the rest of the batch lands", async () => {
+    const root = await makeRoot();
+    const overCap = Buffer.alloc(25 * 1024 * 1024 + 1, 0x61);
+
+    const res = await uploadRequest(root, [
+      { field: "files", filename: "ok.txt", value: Buffer.from("small") },
+      { field: "files", filename: "big.bin", value: overCap },
+    ]);
+
+    expect(res.status).toBe(200);
+    const body = res.body as { uploaded: Array<{ name: string }>; failed: Array<{ name: string; code: string }> };
+    expect(body.uploaded.map((f) => f.name)).toEqual(["ok.txt"]);
+    expect(body.failed).toMatchObject([{ name: "big.bin", code: "ETOOLARGE" }]);
+    expect(await readFile(join(root, "ok.txt"), "utf-8")).toBe("small");
+    expect(existsSync(join(root, "big.bin"))).toBe(false);
+  });
+
+  it("refuses more than 20 files per request outright", async () => {
+    const root = await makeRoot();
+    const parts: Part[] = Array.from({ length: 21 }, (_, i) => ({
+      field: "files",
+      filename: `f${i}.txt`,
+      value: Buffer.from(`file ${i}`),
+    }));
+
+    /*
+    FNXC:FileBrowserUpload 2026-09-05-15:01:
+    multer aborts the over-limit upload but (drain-before-respond) defers its response until the
+    request 'end' arrives AFTER its abort registers the end listener — with 20 files still
+    buffering, that registration lands ticks after the harness's synchronous data+end, so the
+    response would never come (a real client is still mid-upload when the cap fires). Quiesce the
+    in-memory pipeline (bounded tick window, ~50x the settling cost of 21 tiny parts) before
+    finishing the stream so the deferred response can complete.
+    */
+    const res = await uploadRequest(root, parts, undefined, async () => {
+      for (let i = 0; i < 5000; i++) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    });
+
+    expect(res.status).toBe(400);
+    expect(existsSync(join(root, "f0.txt"))).toBe(false);
+  });
+
+  it("rejects uploads whose files arrive under a foreign field name", async () => {
+    const root = await makeRoot();
+
+    const res = await uploadRequest(root, [{ field: "file", filename: "x.txt", value: Buffer.from("x") }]);
+
+    expect(res.status).toBe(400);
+  });
+
+  it("strips client-supplied path separators out of upload names so files land in the browsed directory", async () => {
+    const root = await makeRoot();
+
+    const res = await uploadRequest(root, [
+      { field: "files", filename: "evil/../../escape.png", value: Buffer.from([0xff, 0x00]) },
+    ]);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ uploaded: [{ name: "escape.png", path: "escape.png" }] });
+    expect(existsSync(join(root, "escape.png"))).toBe(true);
+    // Nothing may appear one level above the workspace root (the traversal target of "../../").
+    expect(existsSync(join(dirname(root), "escape.png"))).toBe(false);
+  });
+
+  it("reports a per-file failure when the destination directory does not exist", async () => {
+    const root = await makeRoot();
+
+    const res = await uploadRequest(root, [
+      { field: "path", value: Buffer.from("missing-dir") },
+      { field: "files", filename: "x.txt", value: Buffer.from("x") },
+    ]);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ uploaded: [], failed: [{ name: "x.txt", code: "ENOENT" }] });
+  });
+
+  it("still routes non-multipart POST /api/files/upload to the generic wildcard text-save", async () => {
+    const root = await makeRoot();
+    const app = makeApp({ getRootDir: vi.fn(() => root) });
+
+    const res = await REQUEST(app, "POST", "/api/files/upload?workspace=project", JSON.stringify({ content: "root-file" }), { "content-type": "application/json" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ success: true });
+    expect(await readFile(join(root, "upload"), "utf-8")).toBe("root-file");
   });
 });

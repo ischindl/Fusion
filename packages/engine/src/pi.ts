@@ -30,6 +30,7 @@ import {
   DefaultResourceLoader,
   DefaultPackageManager,
   discoverAndLoadExtensions,
+  estimateTokens,
   ModelRegistry,
   ModelRuntime,
   SessionManager,
@@ -59,6 +60,7 @@ import {
   resolvePiExtensionProjectRoot,
   resolveToolOutputBudget,
   matchStepHeadings,
+  applyNonInteractiveGitEnv,
 } from "@fusion/core";
 import type {
   AgentPermissionPolicyActionCategory,
@@ -516,13 +518,20 @@ export async function promptWithFallback(session: AgentSession, prompt: string, 
 
     piLog.warn("promptWithFallback: context limit error — attempting auto-compaction");
     await flushMemoryBeforeSessionCompaction(session);
-    const compactResult = await compactSessionContext(session);
-    if (!compactResult) {
-      piLog.error("promptWithFallback: compaction unavailable — propagating original error");
+    const compactOutcome = await compactSessionContext(session);
+    if (compactOutcome.reason !== "compacted") {
+      /*
+      FNXC:CompactionNoProgress 2026-09-04-16:35:
+      A `no-progress` outcome takes the SAME lane as any other compaction failure: retrying the
+      prompt into a context that provably did not shrink would just fail the same way with a worse
+      error, so the original context-limit error is propagated. `describeCompactionUnavailable`
+      keeps the log honest about WHAT happened instead of implying a retryable refusal.
+      */
+      piLog.error(`promptWithFallback: ${describeCompactionUnavailable(compactOutcome)} — propagating original error`);
       throw err;
     }
 
-    piLog.log(`promptWithFallback: compaction succeeded (${compactResult.tokensBefore} tokens) — retrying prompt`);
+    piLog.log(`promptWithFallback: compaction succeeded (${compactOutcome.tokensBefore} tokens) — retrying prompt`);
     try {
       await promptSessionAndCheck(session, prompt, options);
       piLog.log("promptWithFallback: prompt completed after auto-compaction");
@@ -968,42 +977,309 @@ async function flushMemoryBeforeSessionCompaction(session: AgentSession): Promis
   }
 }
 
+/*
+FNXC:ChatContextGuardEscalation 2026-09-04-10:57:
+RUFU-182 (LCM ladder tiers 1-2): `compactSessionContext` collapsed every refusal into `null`,
+erasing pi's real reason. The saneca chat-b6a74d40 "Already compacted" refusal surfaced as a false
+static-floor diagnosis ("the static context itself exceeds the window budget"), instructing the
+operator to shrink tools and memory that were not the problem. The return value is now a
+discriminated `CompactionOutcome` preserving pi's reason, pi's message, and — decisively — whether
+pi's branch moved, because the guard's escalation tier may only retry where the engine still honours
+a second call.
+
+Verified against installed @earendil-works/pi-coding-agent@0.84.4 (`dist/core/agent-session.js`,
+`dist/core/compaction/compaction.js`; `pi-compaction-contract.test.ts` is the drift tripwire):
+- `compact(customInstructions?)` throws "Already compacted" when the last branch entry is a
+  compaction entry, and `prepareCompaction` IGNORES the instructions argument on that refusal —
+  no directive can unlock a second pass, so `already-compacted` is terminal at tier 1.
+- It throws "Nothing to compact (session too small)" when the branch is below the compaction floor.
+- On success it APPENDS the compaction entry and rebuilds the message list before resolving, so a
+  throw means nothing landed (a retry is mechanically possible) while any resolution means the
+  branch moved (a second call can only be refused). `branchMutated` encodes exactly that, and
+  `isRetryAfterCompactionFailureLegal` is true only for the `error` arm.
+- pi's `CompactionResult` DOES carry `estimatedTokensAfter`; the guard must not use it for
+  send/no-send because it counts messages only (no system prompt, no tool definitions) while the
+  guard's budget is a whole-request estimate. It does gate strict-reduction acceptance (`reduced`).
+
+Tier escalation lives in `chat-context-guard.ts`, never here: this helper performs exactly one
+engine call per invocation and classifies its result. Callers must branch on `reason`, not on the
+absence of a result.
+
+FNXC:CompactionNoProgress 2026-09-04-16:35:
+RUFU-187 adds `no-progress` as a SIBLING kind of the landed taxonomy (never a boolean bolt-on, so
+every consumer's exhaustive `reason` switch is compiler-flagged). Operator-visible invariant: a
+compaction whose tokens-after is >= its tokens-before must not masquerade as progress, because the
+executor's compact-and-resume recovery otherwise logs "freed N tokens", burns its one-shot attempt
+ceiling, and re-enters the same doomed recovery (the RUFU-124 lineage — pi's second `compact()` can
+only answer "Already compacted", so the retry cannot help).
+Pi internals that make the classification sound (@earendil-works/pi-coding-agent 0.84.4,
+`dist/core/agent-session.js`): `session.compact()` sets `estimatedTokensAfter` from
+`estimateMessagesTokens` of the POST-compaction message list, while `tokensBefore` is a
+preparation-time figure, so the two are a mixed basis. That bias runs ONE way only — it pushes
+marginal (<~15%) reductions toward `no-progress`, i.e. toward honesty; it can never hide a real
+cut. When `estimatedTokensAfter` is absent the helper compares pi's own per-message
+`estimateTokens` (chars/4) over the session's messages before vs after the call — deliberately the
+same estimator on both sides, and never `getContextUsage()` provider usage (the RUFU-118
+blind-estimator lesson: restored provider usage describes the turn that RECORDED it).
+By the time `no-progress` is reported pi has ALREADY appended the CompactionEntry and rebuilt the
+message list — the branch mutation is pi's and is not undone here. Refusing a lane's recovery is
+about what OUR logs and audit rows may claim, not about rolling back the session.
+*/
+
+/** pi's compaction verdict, preserved from 0.84.4's refusal literals. */
+export type PiCompactionReason =
+  | "compacted"
+  | "already-compacted"
+  | "nothing-to-compact"
+  | "unsupported"
+  | "error";
+
+/**
+ * Reason-preserving result of one `session.compact()` attempt.
+ *
+ * Every arm carries `branchMutated` (true exactly when pi appended a compaction entry before
+ * resolving) so no caller can infer escalation legality from the absence of a summary.
+ */
+export type CompactionOutcome =
+  | {
+      reason: "compacted";
+      branchMutated: true;
+      /** pi's LLM summary; may be empty — the guard's acceptance rule owns that judgement. */
+      summary: string;
+      tokensBefore: number;
+      /** pi's message-only post-compaction estimate; null when pi reported no usable number. */
+      estimatedTokensAfter: number | null;
+      /** Strict reduction measured from pi's own before/after fields. */
+      reduced: boolean;
+    }
+  | {
+      reason: "already-compacted";
+      branchMutated: false;
+      /** pi's refusal text for the absolute guard refusal. */
+      engineMessage: string | null;
+    }
+  | {
+      reason: "nothing-to-compact";
+      branchMutated: false;
+      /** pi's refusal text for the absolute guard refusal. */
+      engineMessage: string | null;
+    }
+  | {
+      /**
+       * RUFU-187: pi appended a CompactionEntry (so `branchMutated` is true and a second
+       * `compact()` is NOT legally retryable), but the deterministic before/after comparison
+       * proves the context did not shrink. Both token counts share the basis named by `basis`:
+       * `pi-reported` keeps pi's own pair, `pure-estimate` keeps the helper's per-message
+       * `estimateTokens` pair (pi's `tokensBefore` is preparation-time provider-derived and is
+       * not comparable with a chars/4 message estimate).
+       */
+      reason: "no-progress";
+      branchMutated: true;
+      tokensBefore: number;
+      estimatedTokensAfter: number;
+      basis: "pi-reported" | "pure-estimate";
+    }
+  | {
+      reason: "error";
+      branchMutated: false;
+      /** pi's error text; synthetic text for an impossible falsy resolve. */
+      engineMessage: string | null;
+    }
+  | { reason: "unsupported"; branchMutated: false; engineMessage: null };
+
+/**
+ * Classify a thrown (or impossible falsy-resolve) compaction failure into the refusal arm it
+ * evidences. Keys on pi 0.84.4's refusal literals case-insensitively; `error` is the honest
+ * fallback for anything else. `pi-compaction-contract.test.ts` alarms when the dependency's
+ * literals drift from what this classifier recognizes.
+ */
+export function classifyCompactionFailure(err: unknown): CompactionOutcome {
+  const engineMessage =
+    err instanceof Error ? err.message : err === undefined || err === null ? null : String(err);
+  const lower = (engineMessage ?? "").toLowerCase();
+  if (lower.includes("already compacted")) {
+    return { reason: "already-compacted", branchMutated: false, engineMessage };
+  }
+  if (lower.includes("nothing to compact")) {
+    return { reason: "nothing-to-compact", branchMutated: false, engineMessage };
+  }
+  return { reason: "error", branchMutated: false, engineMessage };
+}
+
+/**
+ * True only for the `error` arm — the sole outcome where pi threw without appending, so a second
+ * `compact()` is mechanically honoured. Exported so no caller can invent an illegal retry: a
+ * `compacted` pass (even one the acceptance rule declined), `no-progress`, `already-compacted`,
+ * `nothing-to-compact`, and `unsupported` are all terminal at tier 1.
+ *
+ * FNXC:ChatContextGuardEscalation 2026-09-04-10:57:
+ * Typed as a type predicate so the guard's escalation block narrows to the error arm at
+ * compile time while keeping this predicate the SINGLE legality authority. This requires
+ * `CompactionOutcome` to keep ONE LITERAL PER UNION MEMBER — a member whose `reason` is
+ * itself a literal union (e.g. merging error back into the refusal arms) is invisible to
+ * discriminant narrowing and to `Extract<..., {reason:"error"}>`, which would resolve to
+ * `never`.
+ */
+export function isRetryAfterCompactionFailureLegal(
+  outcome: CompactionOutcome,
+): outcome is Extract<CompactionOutcome, { reason: "error" }> {
+  return outcome.reason === "error";
+}
+
+/**
+ * RUFU-187 fallback measurement for {@link compactSessionContext}: the sum of pi's own
+ * per-message `estimateTokens` (chars/4) over the session's loaded messages, or `null` when the
+ * session exposes no message array to measure. Used ONLY to compare the same quantity before and
+ * after `session.compact()` when pi reported no `estimatedTokensAfter` — a difference in absolute
+ * scale between the two sides is meaningless, a difference between the two sides is not.
+ */
+function estimateLoadedMessageTokens(session: AgentSession): number | null {
+  const state = (session as unknown as { agent?: { state?: { messages?: unknown } }; state?: { messages?: unknown } });
+  const messages = state.agent?.state?.messages ?? state.state?.messages;
+  if (!Array.isArray(messages)) {
+    return null;
+  }
+  let total = 0;
+  for (const message of messages) {
+    try {
+      total += estimateTokens(message as Parameters<typeof estimateTokens>[0]);
+    } catch {
+      // A malformed message shape counts as 0: the comparison stays best-effort and must never
+      // break a compaction that already succeeded.
+    }
+  }
+  return total;
+}
+
+/**
+ * RUFU-187: the ONE lane-facing sentence for any non-`compacted` compaction outcome, shared by
+ * both `promptWithFallback` sites so a retry-onto-provably-unchanged-context can never be logged
+ * as success. `no-progress` names the before/after counts and its measurement basis rather than
+ * the generic "unavailable" wording, because the honest statement differs: the engine DID run a
+ * compaction, it just freed nothing.
+ *
+ * FNXC:CompactionNoProgress 2026-09-04-16:35
+ */
+function describeCompactionUnavailable(outcome: CompactionOutcome): string {
+  switch (outcome.reason) {
+    case "compacted":
+      // Defensive: the two callers only reach this helper for refusal/non-reduction arms, and a
+      // `compacted` outcome is not a failure to describe. Kept total so the switch narrows every
+      // other arm and `engineMessage` is only ever touched where it actually exists.
+      return "compaction produced a summary";
+    case "no-progress":
+      return `compaction reduced nothing (before=${outcome.tokensBefore} after=${outcome.estimatedTokensAfter} tokens, basis=${outcome.basis})`;
+    default:
+      // already-compacted | nothing-to-compact | unsupported | error all carry `engineMessage`.
+      return `compaction unavailable (${outcome.reason}${outcome.engineMessage ? ` (${outcome.engineMessage})` : ""})`;
+  }
+}
+
 /**
  * Compact an agent session's context to free up the context window.
  *
  * Uses the SDK's native `session.compact()` method when available (the
  * preferred path — it produces structured, LLM-generated summaries).
+ * Never throws: pi's refusals, a missing capability, and transient failures are
+ * returned as the matching {@link CompactionOutcome} arm with `branchMutated`
+ * telling the caller whether a retry is mechanically possible.
  *
  * @param session — The agent session to compact
  * @param customInstructions — Optional instructions for the compaction summary.
- *   When not provided, uses COMPACTION_FALLBACK_INSTRUCTIONS.
- * @returns The compaction result with summary and token metrics, or null if
- *   compaction was not available or failed.
+ *   When not provided, uses COMPACTION_FALLBACK_INSTRUCTIONS (the ladder's tier-1
+ *   "normal" call shape, unchanged since RUFU-118).
  */
 export async function compactSessionContext(
   session: AgentSession,
   customInstructions?: string,
-): Promise<{ summary: string; tokensBefore: number } | null> {
+): Promise<CompactionOutcome> {
   const instructions = customInstructions ?? COMPACTION_FALLBACK_INSTRUCTIONS;
 
-  // Check if session.compact is available (runtime capability detection)
+  // Runtime capability detection: a session without the native method can never compact.
   if (typeof (session as any).compact !== "function") {
-    return null;
+    return { reason: "unsupported", branchMutated: false, engineMessage: null };
   }
 
   try {
+    /*
+    FNXC:CompactionNoProgress 2026-09-04-16:35:
+    Snapshot the pure estimate BEFORE the call so the `estimatedTokensAfter`-absent fallback
+    compares like with like. Cheap (chars/4 over already-loaded messages) and always taken: the
+    cost of one wasted estimate is trivial next to misclassifying a real reduction.
+    */
+    const messageTokensBefore = estimateLoadedMessageTokens(session);
     const result = await (session as any).compact(instructions);
     if (result && typeof result === "object") {
+      const summary = typeof result.summary === "string" ? result.summary : "";
+      const tokensBefore =
+        typeof result.tokensBefore === "number" && Number.isFinite(result.tokensBefore)
+          ? result.tokensBefore
+          : 0;
+      const estimatedTokensAfter =
+        typeof result.estimatedTokensAfter === "number" && Number.isFinite(result.estimatedTokensAfter)
+          ? result.estimatedTokensAfter
+          : null;
+      /*
+      FNXC:CompactionNoProgress 2026-09-04-16:35:
+      Mechanical success is not progress. Gate on a non-empty summary first so an empty-summary
+      pass keeps RUFU-182's `compacted` + `reduced` reporting (the chat guard's `empty-summary`
+      reason owns that judgement and its landed tests must not move). Then, only when pi gave a
+      usable after-count, a >= comparison is `no-progress` on the `pi-reported` basis; when pi gave
+      nothing usable, compare the helper's own before/after message estimates (`pure-estimate`).
+      An unavailable measurement on EITHER side leaves the `compacted` arm alone — unknown is not
+      evidence of a non-reduction.
+      */
+      if (summary.trim().length > 0 && estimatedTokensAfter !== null && estimatedTokensAfter >= tokensBefore) {
+        return {
+          reason: "no-progress",
+          branchMutated: true,
+          tokensBefore,
+          estimatedTokensAfter,
+          basis: "pi-reported",
+        };
+      }
+      /*
+      FNXC:CompactionNoProgress 2026-09-04-16:35:
+      Fallback basis, gated on a POSITIVE pre-estimate. An empty (0) or absent message list is NOT
+      evidence of a non-reduction — the message array is only one contributor to pi's full-context
+      `tokensBefore` (prompt/tools/recorded usage live outside it), so `after >= 0` would fire on any
+      non-empty summary and fabricate progress loss where the real context may well have shrunk.
+      That is the RUFU-118 blind-estimator lesson inverted: unknown, or measured on the wrong basis,
+      must never be laundered into a refusal. Only a substantive (>0) message baseline makes the
+      like-for-like before/after comparison meaningful.
+      */
+      if (
+        summary.trim().length > 0 &&
+        estimatedTokensAfter === null &&
+        messageTokensBefore !== null &&
+        messageTokensBefore > 0
+      ) {
+        const messageTokensAfter = estimateLoadedMessageTokens(session);
+        if (messageTokensAfter !== null && messageTokensAfter >= messageTokensBefore) {
+          return {
+            reason: "no-progress",
+            branchMutated: true,
+            tokensBefore: messageTokensBefore,
+            estimatedTokensAfter: messageTokensAfter,
+            basis: "pure-estimate",
+          };
+        }
+      }
       return {
-        summary: result.summary ?? "",
-        tokensBefore: result.tokensBefore ?? 0,
+        reason: "compacted",
+        branchMutated: true,
+        summary,
+        tokensBefore,
+        estimatedTokensAfter,
+        reduced: estimatedTokensAfter !== null && estimatedTokensAfter < tokensBefore,
       };
     }
-    return null;
+    // pi appends the compaction entry before compact() resolves, so a falsy resolve contradicts
+    // the 0.84.4 contract. Treat it as an error arm (nothing proven appended) rather than
+    // laundering it into a refusal reason.
+    return classifyCompactionFailure(new Error("session.compact() produced no compaction result"));
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    piLog.warn(`Context compaction failed (will fall through to kill/requeue): ${msg}`);
-    return null;
+    return classifyCompactionFailure(err);
   }
 }
 
@@ -1134,6 +1410,16 @@ export interface AgentOptions {
    */
   allowMcpToolsInReadonly?: boolean;
   /**
+   * Let THIS session's connected MCP tools pass the toolsAllowlist without naming them in it.
+   * Chat surfaces set this: the allowlist exists to hide the host-executor toolset from chat,
+   * and chat's own configured integrations (e.g. the built-in fusion-memory server) connect
+   * after the allowlist is built, so their names cannot be in it. Callers WITHOUT it — notably
+   * automation steps, which pass both `allowedTools` and resolved MCP servers — keep the
+   * allowlist absolute: an automation step must not receive MCP tools its allowlist excludes
+   * (#3620 review, coderabbit).
+   */
+  allowMcpToolsThroughAllowlist?: boolean;
+  /**
    * Configured MCP server names a read-only session may use. This only narrows an explicit
    * `allowMcpToolsInReadonly` opt-in; omit it to preserve the reviewed planning-lane behavior.
    */
@@ -1226,6 +1512,44 @@ function resolveConfiguredModel(
     + "If this model comes from a custom provider, verify Settings → Custom Providers (stored in ~/.fusion/settings.json) includes this provider/model, "
     + "or choose an available model from /api/models.",
   );
+}
+
+/*
+FNXC:CustomProviderHttpTimeout 2026-08-24-15:10:
+The custom-provider registry builder attaches `timeoutMs` (ms) to the built model objects as
+an engine-owned marker. pi-ai's `Model<TApi>` interface does NOT declare that field (the
+`timeoutMs` in pi-ai's types belongs to stream/provider options, not the model), and upstream
+pi does not read it from the model either — it only survives composition because pi's
+`applyExtension` spreads the registered model definition into the composed object. Read it
+through this structural helper so pi.ts never has to name the pi-ai Model type or cast it
+in place; `undefined` means "no per-model timeout" (the 300s default applies).
+*/
+export function readCustomProviderModelTimeoutMs(model: unknown): number | undefined {
+  return (model as { timeoutMs?: number } | null | undefined)?.timeoutMs;
+}
+
+/*
+FNXC:CustomProviderHttpTimeout 2026-08-24-13:54:
+Layer 1 of the per-model HTTP timeout — per-session retry settings for the in-memory pi
+SettingsManager. When the resolved model carries a per-model `timeoutMs` (custom-provider
+`timeoutSeconds`, already converted: 0 -> 2147483647 "disabled"), it becomes
+`retry.provider.timeoutMs`; pi's streamFn then resolves the OpenAI SDK per-request timeout as
+`options?.timeoutMs ?? settingsManager.getProviderRetrySettings().timeoutMs ?? getHttpIdleTimeoutMs()`
+(300s default), so the SDK's first-byte abort timer honors the per-model value. The SDK timer
+is cleared when response headers arrive — a first-byte/idle bound, not a total-generation cap.
+The undici body/headers idle layer is the process-global per-origin dispatcher (http-idle-timeouts.ts).
+A model without a timeout keeps the previous settings shape exactly (no `provider` key).
+*/
+export function buildSessionRetrySettings(modelTimeoutMs: number | undefined): {
+  enabled: boolean;
+  maxRetries: number;
+  provider?: { timeoutMs: number };
+} {
+  return {
+    enabled: true,
+    maxRetries: 3,
+    ...(modelTimeoutMs !== undefined ? { provider: { timeoutMs: modelTimeoutMs } } : {}),
+  };
 }
 
 export function isRetryableModelSelectionError(message: string): boolean {
@@ -1968,6 +2292,7 @@ export function wrapToolsWithBoundary(
   projectRoot: string | null,
   readOnlyExtraRoots: readonly string[] = [],
   readOnlyBoundary = false,
+  writableAllowlist: readonly string[] = [],
 ): ToolDefinition[] {
   if (!worktreePath || !projectRoot) {
     return tools; // Not a worktree session, no wrapping needed
@@ -1984,6 +2309,21 @@ export function wrapToolsWithBoundary(
     join(homedir(), ".agents", "skills"),
     ...readOnlyExtraRoots,
   ]);
+  const boundaryProjectRoot = resolve(projectRoot);
+  const canonicalBoundaryProjectRoot = normalizePathThroughExistingAncestor(boundaryProjectRoot);
+  const normalizedWritableAllowlist = writableAllowlist.flatMap((root) => {
+    const lexicalRoot = resolve(root);
+    if (!isSameOrInsidePath(boundaryProjectRoot, lexicalRoot)) return [];
+    const canonicalRoot = normalizePathThroughExistingAncestor(lexicalRoot);
+    return isSameOrInsidePath(canonicalBoundaryProjectRoot, canonicalRoot) ? [canonicalRoot] : [];
+  });
+  const isAllowlistedWritePath = (requestedPath: string): boolean => {
+    const requestedResolved = isAbsolute(requestedPath)
+      ? resolve(requestedPath)
+      : resolve(worktreePath, requestedPath);
+    const requestedCanonical = normalizePathThroughExistingAncestor(requestedResolved);
+    return normalizedWritableAllowlist.some((root) => isSameOrInsidePath(root, requestedCanonical));
+  };
 
   return tools.map((tool) => {
     // Only wrap tools that access the filesystem
@@ -2004,12 +2344,29 @@ export function wrapToolsWithBoundary(
         const params = args[1] as Record<string, unknown>;
         const _signal = args[2] as AbortSignal | undefined;
 
-        if (readOnlyBoundary && new Set(["write", "edit", "bash"]).has(tool.name)) {
-          return boundaryRejection("This session has a read-only workspace boundary and cannot modify files or run shell commands.");
-        }
-
         // Check path argument for file operations
         const pathArg = params.path as string | undefined;
+        if (readOnlyBoundary && (tool.name === "bash" || tool.name === "fn_run_verification")) {
+          return boundaryRejection("This session has a read-only workspace boundary and cannot run shell or verification commands.");
+        }
+        if (
+          readOnlyBoundary
+          && (tool.name === "write" || tool.name === "edit")
+          && (!pathArg || !isAllowlistedWritePath(pathArg))
+        ) {
+          /*
+          FNXC:PlanningBoundary 2026-09-01-14:49:
+          Checkout-free planning reads the dependency-installed project root but may write only inside
+          `.fusion/`. Canonical ancestor containment closes symlink escapes for both existing and new
+          targets; durable plan and document writers remain the supported publication surfaces.
+          */
+          return boundaryRejection(
+            "This planning session may write only inside its declared .fusion allowlist. "
+            + "Use fn_task_prompt_write for PROMPT.md and fn_task_document_write for durable task documents.",
+          );
+        }
+
+
         if (pathArg && !isWorktreeAllowedPath(worktreePath, projectRoot, pathArg, tool.name, normalizedReadOnlyExtraRoots)) {
           const relToProject = relative(projectRoot, pathArg);
           return boundaryRejection(
@@ -2356,7 +2713,21 @@ export function wrapToolsWithActionGate(
           approvalRequestId = created?.id;
         }
         if (approvalRequestId) {
-          await gateContext.pauseForApproval?.({ approvalRequestId, decision });
+          /*
+          FNXC:AgentGating 2026-09-06-23:35:
+          Mirror the permanent-agent path above: a failure to park must never replace
+          the gate's own rejection. pauseForApproval pauses the task, logs, mails the
+          operator and suspends the session BEFORE it touches agent state, so a throw
+          from the last step used to surface to the model as a raw tool error and lose
+          the "do not attempt alternatives" instruction the executor prompt relies on
+          (FN-7608). The action is still refused either way; only the message differs.
+          */
+          try {
+            await gateContext.pauseForApproval?.({ approvalRequestId, decision });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            piLog.warn(`[action-gate] pauseForApproval failed: ${message}`);
+          }
         }
 
         return buildGateRejection(
@@ -2660,21 +3031,28 @@ export async function createPiAgentSessionRaw(options: AgentOptions): Promise<Ag
     ? resolveSandboxBackend({ backendId: options.sandboxBackendId })
     : undefined;
   if (sessionSandbox && options.sandboxPolicy) await sessionSandbox.prepare(options.sandboxPolicy);
-  const bashToolOptions = (options.taskEnv || sessionSandbox)
-    ? {
-        spawnHook: ({ command, cwd, env }: { command: string; cwd: string; env: NodeJS.ProcessEnv }) => {
-          const wrapped = sessionSandbox?.wrapCommand?.(command, { cwd, env });
-          return {
-            command: wrapped ? shellEscapeCommand(wrapped.command, wrapped.args) : command,
-            cwd,
-            env: {
-              ...env,
-              ...options.taskEnv,
-            },
-          };
-        },
-      }
-    : undefined;
+  /*
+  FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210):
+  `bashToolOptions` is now UNCONDITIONAL. It used to be built only when `options.taskEnv ||
+  sessionSandbox` was set, so durable heartbeat / agent-prompt-turn sessions — which carry
+  neither — got an unhardened bash tool and could still block on `git commit -e` → editor.
+  The non-interactive git floor is applied LAST inside the hook, so neither ambient env nor
+  task env can clear it. Guarded incident: a task-session `git rebase --continue` orphaned in
+  `vi` for 1d13h inside an already-deleted worktree (measured on a production host, 2026-09-09).
+  */
+  const bashToolOptions = {
+    spawnHook: ({ command, cwd, env }: { command: string; cwd: string; env: NodeJS.ProcessEnv }) => {
+      const wrapped = sessionSandbox?.wrapCommand?.(command, { cwd, env });
+      return {
+        command: wrapped ? shellEscapeCommand(wrapped.command, wrapped.args) : command,
+        cwd,
+        env: applyNonInteractiveGitEnv({
+          ...env,
+          ...options.taskEnv,
+        }),
+      };
+    },
+  };
 
   const isReadonly = options.tools === "readonly";
   const normalizedToolsAllowlist = options.toolsAllowlist === undefined
@@ -2705,19 +3083,14 @@ export async function createPiAgentSessionRaw(options: AgentOptions): Promise<Ag
   // resolvedProjectRoot was computed above (before registerExtensionProviders)
   // and is reused here for resource loader and skill discovery.
 
-  // Compaction is explicitly enabled to prevent context-window overflow during
-  // long-running agent conversations (triage, execution, review, merge).
-  // When the context fills up, pi auto-compacts the conversation history to
-  // keep the session alive without manual intervention. This must remain enabled
-  // as a reliability safeguard — disabling it would cause overflow failures.
-  const settingsManager = SettingsManager.inMemory({
-    compaction: { enabled: true },
-    retry: { enabled: true, maxRetries: 3 },
-  });
-
   // Resolve explicit model selection if provider and model ID are specified.
   // If the primary configured model cannot be resolved but a fallback model is
   // configured, prefer the fallback as the initial model selection.
+  //
+  // FNXC:CustomProviderHttpTimeout 2026-08-24-13:54:
+  // Resolved BEFORE the per-session SettingsManager below so the model's per-model HTTP
+  // idle/first-byte timeout (custom-provider `timeoutSeconds` -> pi Model.timeoutMs) can be
+  // injected into `retry.provider.timeoutMs` (layer 1 of the two-layer per-model timeout).
   let selectedModel;
   let fallbackModel;
   try {
@@ -2748,6 +3121,33 @@ export async function createPiAgentSessionRaw(options: AgentOptions): Promise<Ag
       options.fallbackModelId,
     );
   }
+
+  // Compaction is explicitly enabled to prevent context-window overflow during
+  // long-running agent conversations (triage, execution, review, merge).
+  // When the context fills up, pi auto-compacts the conversation history to
+  // keep the session alive without manual intervention. This must remain enabled
+  // as a reliability safeguard — disabling it would cause overflow failures.
+  /*
+  FNXC:CustomProviderHttpTimeout 2026-08-24-13:54:
+  Layer 1 of the per-model HTTP timeout: the OpenAI SDK per-request TTFB timer. pi's streamFn
+  resolves the SDK `timeout` as
+  `options?.timeoutMs ?? settingsManager.getProviderRetrySettings().timeoutMs ?? settingsManager.getHttpIdleTimeoutMs()`
+  (300s default). pi-ai's Model interface has no timeoutMs field and upstream pi never reads a
+  model-level timeout, so the engine writes the resolved model's engine-owned timeoutMs marker
+  (see readCustomProviderModelTimeoutMs) into this per-session in-memory SettingsManager: the
+  SDK's fetchWithTimeout abort timer (cleared when response headers arrive — a first-byte
+  bound, NOT a total-generation cap) now honors the per-model value. `0` (off) arrives as
+  2147483647 because the SDK aborts immediately on a literal 0. The undici body/headers idle
+  layer is applied per origin by the global dispatcher (http-idle-timeouts.ts). The primary
+  selected model's value is applied; a fallback-model swap on a retryable model-selection error
+  keeps the primary's timeout — an acceptable edge, since the fallback is a user-configured
+  backup for the same lane and its origin is typically the same.
+  */
+  const modelHttpTimeoutMs = readCustomProviderModelTimeoutMs(selectedModel);
+  const settingsManager = SettingsManager.inMemory({
+    compaction: { enabled: true },
+    retry: buildSessionRetrySettings(modelHttpTimeoutMs),
+  });
 
   // Resolve skill selection: explicit skillSelection wins over convenience `skills`
   let effectiveSkillSelection: SkillSelectionContext | undefined = options.skillSelection;
@@ -2947,7 +3347,25 @@ export async function createPiAgentSessionRaw(options: AgentOptions): Promise<Ag
       : { allowed: candidateCustomTools, denied: [] };
     const allowlistFilteredCustomTools = {
       ...readonlyFilteredCustomTools,
-      allowed: readonlyFilteredCustomTools.allowed.filter((tool) => isAllowedByToolAllowlist(tool.name)),
+      /*
+      FNXC:ChatContextBudget 2026-09-16-12:40:
+      MCP tools the operator configured for THIS session connect after the allowlist is built, so
+      their names cannot be in it — filtering them against the list silently dropped every MCP tool
+      from allowlisted chat surfaces, including the built-in `fusion-memory` server, while its
+      server was still booted. The allowlist exists to hide the host-extension executor toolset
+      from chat, not to veto the session's own configured integrations, so session MCP tools pass
+      and everything else stays name-gated.
+
+      FNXC:ChatContextBudget 2026-09-16-15:45 (#3620 review, coderabbit):
+      The pass-through is opt-in per caller via `allowMcpToolsThroughAllowlist`. Automation steps
+      pass both `allowedTools` and store-resolved MCP servers, so an unconditional pass would
+      hand them MCP tools their own allowlist excludes; only chat surfaces opt in.
+      */
+      allowed: readonlyFilteredCustomTools.allowed.filter(
+        (tool) =>
+          isAllowedByToolAllowlist(tool.name)
+          || (options.allowMcpToolsThroughAllowlist === true && mcpToolset?.tools.includes(tool) === true),
+      ),
     };
     if (isReadonly && readonlyFilteredCustomTools.denied.length > 0) {
       piLog.warn(
@@ -2985,6 +3403,7 @@ export async function createPiAgentSessionRaw(options: AgentOptions): Promise<Ag
       boundaryContext.worktreeProjectRoot,
       normalizedAdditionalSkillPaths,
       options.sessionBoundary?.kind === "read-only-root",
+      options.sessionBoundary?.writableAllowlist ?? [],
     );
     // FNXC:ToolOutputBudget 2026-08-03-16:00:
     // Keep this outermost so policy-gate and boundary rejection text is bounded too;
@@ -3116,6 +3535,28 @@ export async function createPiAgentSessionRaw(options: AgentOptions): Promise<Ag
     && fallbackModel
     && (configuredFallbackDiffers || selectedModel.provider !== fallbackModel.provider || selectedModel.id !== fallbackModel.id),
   );
+  /*
+  FNXC:ProviderThrottleIsTransient 2026-09-30-14:17 (RUFU-286):
+  The live session is the only record of which model actually served a request when
+  Fusion resolved no model of its own (runtime built-in default). It is held in a
+  nullable holder declared BEFORE `makeFallbackExhaustedError` because the sole
+  session-creation exhaustion call site runs before `activeSession` exists, and a
+  direct closure reference there would read a block-scoped binding still in its
+  temporal dead zone. Refreshed on every session swap so a prompt-time exhaustion
+  names the model that was in use at failure time, not the one first created.
+  */
+  let modelDiagnosticSession: AgentSession | null = null;
+  /**
+   * RUFU-286: the wrapper's `unknown model` text was a formatting artifact that the
+   * operator-actionable classifier mistook for a provider verdict (a live 429 wrapped
+   * in it was parked `error-unrecoverable`). Name the concrete model whenever a session
+   * carried the request; the literal stays reserved for a genuine no-session preflight.
+   */
+  const primaryModelDescription = (): string => {
+    if (selectedModel) return modelDescription(selectedModel);
+    return modelDiagnosticSession ? describeModel(modelDiagnosticSession) : "unknown model";
+  };
+
   const makeFallbackExhaustedError = (
     triggerPoint: "session-creation" | "prompt-time",
     attempts: number,
@@ -3123,7 +3564,7 @@ export async function createPiAgentSessionRaw(options: AgentOptions): Promise<Ag
   ): ModelFallbackExhaustedError => {
     const underlyingReason = underlying instanceof Error ? underlying.message : String(underlying);
     return new ModelFallbackExhaustedError({
-      primaryModel: modelDescription(selectedModel),
+      primaryModel: primaryModelDescription(),
       fallbackModel: hasDistinctFallback ? modelDescription(fallbackModel) : undefined,
       triggerPoint,
       attempts,
@@ -3204,6 +3645,7 @@ export async function createPiAgentSessionRaw(options: AgentOptions): Promise<Ag
   installMessageContentGuard(activeSession as AgentToolHookSession, sessionManager as unknown as SessionManagerLike);
   (activeSession as any).__fusionMemoryAppendAvailable = options.customTools?.some((tool) => tool.name === FN_MEMORY_APPEND_TOOL_NAME) === true;
   const promptableSession = activeSession as PromptableSession;
+  modelDiagnosticSession = activeSession;
 
   let thinkingCompatibilityDisabled = false;
   // FNXC:ThinkingEffortFallback 2026-08-25-00:00: ensure the single-step-down
@@ -3379,6 +3821,7 @@ export async function createPiAgentSessionRaw(options: AgentOptions): Promise<Ag
     Object.assign(promptableSession, next);
     promptableSession.promptWithFallback = next.promptWithFallback ?? promptableSession.promptWithFallback;
     activeSession = next;
+    modelDiagnosticSession = next;
     return next;
   };
 
@@ -3429,20 +3872,21 @@ export async function createPiAgentSessionRaw(options: AgentOptions): Promise<Ag
 
         piLog.warn("promptWithFallback: context limit error — attempting auto-compaction");
         await flushMemoryBeforeSessionCompaction(activeSession);
-        const compactResult = await compactSessionContext(activeSession);
-        if (compactResult) {
-          piLog.log(`promptWithFallback: compaction succeeded (${compactResult.tokensBefore} tokens) — retrying prompt`);
-          try {
-            await promptSessionAndCheck(activeSession, prompt, effectivePromptOptions);
-            return;
-          } catch (retryErr: any) {
-            const retryErrorMessage = retryErr?.message || "";
-            piLog.error(`promptWithFallback: retry after auto-compaction failed: ${retryErrorMessage}`);
-            // Throw original error to preserve original context
-            throw err;
-          }
-        } else {
-          piLog.error("promptWithFallback: compaction unavailable — propagating original error");
+        const compactOutcome = await compactSessionContext(activeSession);
+        if (compactOutcome.reason !== "compacted") {
+          // RUFU-187: `no-progress` propagates the original error like every other failure — see
+          // the standalone promptWithFallback site for the shared lane sentence.
+          piLog.error(`promptWithFallback: ${describeCompactionUnavailable(compactOutcome)} — propagating original error`);
+          throw err;
+        }
+        piLog.log(`promptWithFallback: compaction succeeded (${compactOutcome.tokensBefore} tokens) — retrying prompt`);
+        try {
+          await promptSessionAndCheck(activeSession, prompt, effectivePromptOptions);
+          return;
+        } catch (retryErr: any) {
+          const retryErrorMessage = retryErr?.message || "";
+          piLog.error(`promptWithFallback: retry after auto-compaction failed: ${retryErrorMessage}`);
+          // Throw original error to preserve original context
           throw err;
         }
       }

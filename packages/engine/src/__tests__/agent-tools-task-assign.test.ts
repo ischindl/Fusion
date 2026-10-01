@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Agent, AgentStore, Task, TaskStore } from "@fusion/core";
+import { TaskNotFoundError, type Agent, type AgentStore, Task, TaskStore } from "@fusion/core";
 import { createTaskAssignTool } from "../agent-tools.js";
 
 function agent(overrides: Partial<Agent> = {}): Agent {
@@ -46,7 +46,9 @@ describe("createTaskAssignTool", () => {
     expect((result.content[0] as { text: string }).text).toContain("Agent agent-missing not found");
 
     vi.mocked(agentStore.getAgent).mockResolvedValue(agent());
-    vi.mocked(taskStore.getTask).mockRejectedValue(new Error("missing"));
+    /* The store signals an absent card with its typed not-found; anything else means the board
+       could not answer, and the tool must not call that a missing task (STAS-251). */
+    vi.mocked(taskStore.getTask).mockRejectedValue(new TaskNotFoundError("FN-missing"));
     result = await tool.execute("run", { task_id: "FN-missing", agent_id: "agent-001" }, undefined as never, undefined as never, undefined as never);
     expect((result.content[0] as { text: string }).text).toContain("Task FN-missing not found");
   });

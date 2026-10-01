@@ -77,9 +77,10 @@ function findDroppedProps(): Orphan[] {
         }
       }
 
-      const fnName = ts.isFunctionDeclaration(node) && node.name ? node.name.text : undefined;
-      if (fnName && node.parameters.length > 0) {
-        const first = node.parameters[0];
+      const fnDecl = ts.isFunctionDeclaration(node) ? node : undefined;
+      const fnName = fnDecl && fnDecl.name ? fnDecl.name.text : undefined;
+      if (fnDecl && fnName && fnDecl.parameters.length > 0) {
+        const first = fnDecl.parameters[0];
         const taken = new Set<string>();
         if (first && ts.isObjectBindingPattern(first.name)) {
           for (const element of first.name.elements) {

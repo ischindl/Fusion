@@ -397,6 +397,8 @@ describe("useInsights", () => {
             createdAt: "2024-01-01T00:00:00Z",
             startedAt: "2024-01-01T00:00:05Z",
             completedAt: null,
+          cancelledAt: null,
+          lifecycle: {},
           },
           {
             id: "RUN-1",
@@ -412,6 +414,8 @@ describe("useInsights", () => {
             createdAt: "2024-01-01T00:00:00Z",
             startedAt: "2024-01-01T00:00:01Z",
             completedAt: "2024-01-01T00:00:10Z",
+          cancelledAt: null,
+          lifecycle: {},
           },
         ],
       });
@@ -441,6 +445,8 @@ describe("useInsights", () => {
         createdAt: "2024-01-01T00:00:00Z",
         startedAt: "2024-01-01T00:00:10Z",
         completedAt: "2024-01-01T00:01:00Z",
+      cancelledAt: null,
+      lifecycle: {},
       };
 
       mockFetchInsights.mockResolvedValue({ insights: [], count: 0 });
@@ -479,6 +485,8 @@ describe("useInsights", () => {
         createdAt: "2024-01-01T00:00:00Z",
         startedAt: "2024-01-01T00:00:10Z",
         completedAt: null,
+      cancelledAt: null,
+      lifecycle: {},
       };
 
       mockFetchInsights.mockResolvedValue({ insights: [], count: 0 });
@@ -513,6 +521,8 @@ describe("useInsights", () => {
         createdAt: "2024-01-01T00:00:00Z",
         startedAt: "2024-01-01T00:00:10Z",
         completedAt: "2024-01-01T00:01:00Z",
+      cancelledAt: null,
+      lifecycle: {},
       };
 
       mockFetchInsights.mockResolvedValue({ insights: [], count: 0 });
@@ -552,6 +562,8 @@ describe("useInsights", () => {
         createdAt: "2024-01-01T00:00:00Z",
         startedAt: "2024-01-01T00:00:01Z",
         completedAt: null,
+      cancelledAt: null,
+      lifecycle: {},
       });
       mockTriggerInsightRun.mockRejectedValue(
         new ApiRequestError("backend raw conflict", 409, {
@@ -596,6 +608,8 @@ describe("useInsights", () => {
           createdAt: "2024-01-01T00:00:00Z",
           startedAt: "2024-01-01T00:00:01Z",
           completedAt: "2024-01-01T00:00:10Z",
+        cancelledAt: null,
+        lifecycle: {},
         });
 
       const { result } = renderHook(() => useInsights("project-1"));

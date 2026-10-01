@@ -13,7 +13,7 @@ function response(ok: boolean, body: unknown, status = ok ? 200 : 500): Response
     headers: { get: () => "application/json" },
     json: async () => body,
     text: async () => JSON.stringify(body),
-  } as Response;
+  } as unknown as Response;
 }
 
 afterEach(() => {

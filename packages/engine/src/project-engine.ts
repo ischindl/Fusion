@@ -28,7 +28,7 @@ import {
   resolveEffectiveAutoMerge,
   isOpenWorkflowReviewFinding,
   hasSharedBranchMemberAutoMergeHold,
-  compareTasksByPriorityThenAgeAndId,
+  compareTasksByQueueOrder,
   emitOverseerConfirmation,
   emitOverseerEscalation,
   emitOverseerObservation,
@@ -40,6 +40,7 @@ import {
   PreMergeStepsNotRunError,
   PRE_MERGE_STEPS_NOT_RUN_BLOCKER,
   isStaleContentApprovalBlocker,
+  namesVerdictLessFailedGate,
   classifyMergeSweepAdmission,
   classifyWorkflowNodeMergeRegion,
   isActiveMergeStatus,
@@ -56,7 +57,7 @@ import {
   resolveMaxAutoMergeRetries,
   resolveTaskLifecycleColumns,
   resolveTaskSessionAdvisorEnabled,
-  sortTasksByPriorityThenAgeAndId,
+  sortTasksByQueueOrder,
   resolveWipTargetForTask,
   clearMergeConfirmedTransientStatus,
   classifyGhError,
@@ -65,6 +66,7 @@ import {
   resolveEngineNodeId,
   type WorkspaceLeaseHandle,
   getTaskMergeBlocker,
+  isUncommittedWorkHold,
   resolvePreMergeGateForTask,
   buildManualRetryResetPatch,
 } from "@fusion/core";
@@ -125,7 +127,7 @@ import {
   formatAdmissionCapacityQueuedReason,
   persistedTopLevelAgentTaskIdsFromStore,
   projectAdmissionCoordinator,
-  resolveActiveTaskCapacityLimit,
+  resolveAgentCapacityLimit,
 } from "./concurrency/concurrency.js";
 import { canStartNextMergeBody } from "./merge/merge-reclaim-policy.js";
 import { clearOwnedMergeStamp } from "./merge/clear-orphaned-merge-stamp.js";
@@ -133,6 +135,19 @@ import {
   registerProjectVerificationLimit,
   unregisterProjectVerificationLimit,
 } from "./concurrency/verification-concurrency.js";
+/*
+FNXC:VerificationResourceBound 2026-09-10-12:13:
+The CPU/IO/memory envelope for verification children is the resource twin of the count cap, so
+it registers/unregisters at the SAME lifecycle points (engine start, settings update, engine stop)
+and shares the same cross-project min-composition registry — both shared limits cannot drift.
+*/
+import {
+  getHostCoreCount,
+  registerProjectVerificationResourceProfile,
+  unregisterProjectVerificationResourceProfile,
+  verificationResourceProfileFromMergedSettings,
+  type VerificationResourceBoundConfig,
+} from "./execution/verification-resource-bound.js";
 import { runtimeLog } from "./logger.js";
 import { emitBoundedRunAudit, type RunAuditSinkHost } from "./util/emit-bounded-run-audit.js";
 
@@ -486,6 +501,22 @@ type MergeResolver = {
   reject: (err: Error) => void;
   graphOwnedPostMergeTraversal?: boolean;
 };
+
+/**
+ * Map merged engine settings onto the resource-bound config keys.
+ *
+ * FNXC:VerificationResourceBound 2026-09-10-12:13:
+ * Single mapping point so the start registration and the settings:updated re-registration
+ * cannot extract the three dual-scope keys differently; `undefined` stays `undefined` (inherit),
+ * the resolver owns defaults/clamping.
+ */
+function verificationResourceBoundFromSettings(settings: Settings): VerificationResourceBoundConfig {
+  return {
+    cpuQuotaPercent: settings.verificationCpuQuotaPercent,
+    cpuIoWeight: settings.verificationCpuIoWeight,
+    memoryMaxMb: settings.verificationMemoryMaxMb,
+  };
+}
 
 export class ProjectEngine {
   private readonly staleContentRerouteAuditKeys = new Set<string>();
@@ -967,7 +998,12 @@ export class ProjectEngine {
             taskId: task.id,
             projectId,
             lane: "review",
+            consumesWorktree: false,
             createdAt: task.createdAt,
+            // FNXC:TaskQueueOrder 2026-09-17-12:07: Boost scope travels with the candidate.
+            column: task.column,
+            ...(task.columnMovedAt ? { columnMovedAt: task.columnMovedAt } : {}),
+            ...(task.queueBoost ? { queueBoost: task.queueBoost } : {}),
             start: async () => {
               // Do not run merge work in the coordinator; hand the exact queued
               // id back to the single-flight pump, which will consume this marker.
@@ -1267,7 +1303,7 @@ export class ProjectEngine {
     store.on("task:moved", this.specDriftTaskMutationHandler);
     /*
     FNXC:SpecDrift 2026-08-23-06:25:
-    Startup replay is live-task-only. Archived cards cannot act on drift, and
+    Startup replay is live-task-only. Deleted/historical cards cannot act on drift, and
     replaying them consumes planning-lock sessions during restart; unarchive emits
     task:updated, so a returning card still enters through the subscriptions above.
     */
@@ -1529,6 +1565,17 @@ export class ProjectEngine {
     Register per-project so multi-engine hosts take the MIN of all caps (most restrictive wins).
     */
     registerProjectVerificationLimit(this.config.projectId, settings.maxConcurrentVerifications ?? 1);
+    /*
+    FNXC:VerificationResourceBound 2026-09-10-12:13:
+    Register this project's resource-bound profile beside the count cap so a shared host resolves
+    the most conservative bound across all in-process projects, and a project that DISABLES its
+    bound never unbinds a sibling project that asked for one (a bound only holds while every
+    concurrent heavy spawn is bound).
+    */
+    registerProjectVerificationResourceProfile(
+      this.config.projectId,
+      verificationResourceProfileFromMergedSettings(verificationResourceBoundFromSettings(settings), getHostCoreCount()),
+    );
 
     // 6. Wire auto-merge on task:moved and task:updated pause interruptions
     this.wireAutoMerge(store, cwd);
@@ -1750,6 +1797,8 @@ export class ProjectEngine {
 
     // FNXC:VerificationConcurrency 2026-07-15-09:05: Drop this project's cap so it no longer pins process min.
     unregisterProjectVerificationLimit(this.config.projectId);
+    // FNXC:VerificationResourceBound 2026-09-10-12:13: Drop this project's resource profile so it no longer constrains sibling projects.
+    unregisterProjectVerificationResourceProfile(this.config.projectId);
     this.unregisterMergeAdmissionProvider?.();
     this.unregisterMergeAdmissionProvider = undefined;
     // Stop merge retry timer
@@ -2368,24 +2417,56 @@ export class ProjectEngine {
         // Live surface cleared — allow a fresh skip log if work goes live again later.
         this.plannerLiveRetrySkipLogDedup.delete(`${task.id}::${decision.watchedStage ?? "executor"}`);
         /* FNXC:WorkflowResolvedColumns 2026-07-30-22:20: census-invisible moveTask DESTINATION — a call argument, not a comparison. */
-        const recovery = await moveTaskToContainedBackwardTarget(store, task.id, "self-healing-stranded-recovery", {
+        const contained = await moveTaskToContainedBackwardTarget(store, task.id, "self-healing-stranded-recovery", {
           preserveProgress: true,
           moveSource: "engine",
         }, task.column);
-        if (!recovery.moved) {
-          if (!("reason" in recovery) || recovery.reason !== "in-place-recovery"
-            || task.status !== "failed"
-            || (await this.resolveTaskColumnFlags(store, task, new Map()))?.countsTowardWip !== true) return false;
-          let resumed = false;
-          await store.updateTaskAtomic(task.id, (current) => {
-            if (current.column !== task.column || current.status !== "failed"
-              || current.error !== task.error || current.updatedAt !== task.updatedAt
-              || current.paused || current.userPaused || current.deletedAt
-              || executor?.isTaskLiveForOverseerRetry?.(task.id) === true) return null;
-            resumed = true;
-            return { status: "queued", error: null, sessionFile: null };
-          });
-          if (!resumed) return false;
+        if (!contained.moved) {
+          const stage = (decision.watchedStage ?? "executor") as string;
+          /*
+          FNXC:PlannerOversight 2026-09-15-19:20:
+          FN-429. This callback used to discard the containment result and `return true` unconditionally, so a
+          refusal — `in-place-recovery` (this reason has no backward-move authority), `no-contained-target`, or a
+          capacity deferral — was reported to PlannerRecoveryController as a successful retry. On FN-428 that
+          produced a "retry" claim roughly every 45 seconds while `lifecycle-move` logged the same refusal and
+          nothing moved. A refusal now returns false (the attempt is not consumed as progress) and writes one
+          durable diagnostic per (taskId, stage, reason), reusing the dedup set the existing
+          `clearPlannerLiveRetrySkipLogDedup` helper clears. No backward-move authority is added anywhere.
+          */
+          const outcome = "reason" in contained ? contained.reason : `deferred-${contained.deferred}`;
+          /*
+          FNXC:PlannerOversight 2026-09-21 (FN-9359 upstream ∪ FN-429 ours):
+          A `failed` card whose containment stayed in place may still be resumed IN PLACE
+          (queued, error cleared) under an atomic fence — upstream's teardown-watchdog
+          recovery. Every other refusal reason keeps FN-429 semantics: log one durable
+          diagnostic per (taskId, stage, reason) and return false without consuming the
+          attempt. A successful in-place resume falls through to the attempt-count emit.
+          */
+          let resumedInPlace = false;
+          if ("reason" in contained && contained.reason === "in-place-recovery"
+            && task.status === "failed"
+            && (await this.resolveTaskColumnFlags(store, task, new Map()))?.countsTowardWip === true) {
+            await store.updateTaskAtomic(task.id, (current) => {
+              if (current.column !== task.column || current.status !== "failed"
+                || current.error !== task.error || current.updatedAt !== task.updatedAt
+                || current.paused || current.userPaused || current.deletedAt
+                || executor?.isTaskLiveForOverseerRetry?.(task.id) === true) return null;
+              resumedInPlace = true;
+              return { status: "queued", error: null, sessionFile: null };
+            });
+          }
+          if (!resumedInPlace) {
+            const refusalKey = `${task.id}::${stage}::${outcome}`;
+            if (!this.plannerLiveRetrySkipLogDedup.has(refusalKey)) {
+              this.plannerLiveRetrySkipLogDedup.add(refusalKey);
+              runtimeLog.log(`[planner-oversight] retry_step not dispatched for ${task.id} — lifecycle recovery stayed in place (${outcome})`);
+              await store.logEntry(
+                task.id,
+                `[planner] stage=${stage} signal=retry-not-dispatched: lifecycle recovery contained in place (${outcome})`,
+              ).catch(() => undefined);
+            }
+            return false;
+          }
         }
         // FN-7551: the attempt just dispatched — record it as attemptCount + 1
         // (decision.attemptCount is the count BEFORE this dispatch).
@@ -3031,20 +3112,35 @@ export class ProjectEngine {
         receipts,
       },
     });
-    if (mergeContent.kind === "singular" && !await this.isMergePending(task.id)) {
-      // Use the same in-memory admission fence as every other no-verdict recovery owner.
-      const reroute = await this.rerouteFailedNoVerdictPreMergeReview(task);
-      if (reroute === "rerouted") {
-        await store.logEntry(task.id, "[pre-merge] The workflow graph was re-seeded at a failed no-verdict pre-merge review gate.");
-      }
-    }
-    if (blocker === PRE_MERGE_STEPS_NOT_RUN_BLOCKER && mergeContent.kind === "singular") {
+    /*
+    FNXC:SyncMerge0924 2026-09-24-06:55 (merge origin/main 67c7d80531 → main):
+    FN-9373 also added a queue-admission no-verdict re-seed here. Dropped: this line owns verdict-less
+    gate re-seeding through the RUFU-217 sink lane (persisted three-strike budget + fixed-marker
+    counting) and the deferral arm below; an unbudgeted queue seed would restart a crashed gate forever.
+    The human-initiated routes (dashboard Retry → rerouteFailedNoVerdictPreMergeReview) stay: an
+    operator click intentionally outranks the automatic budget.
+    */
+    /*
+    FNXC:VerdictlessFailedGate 2026-09-14-13:32 (RUFU-217, AC2):
+    The queue's in-place re-seed deferral widens from the literal not-run sentence to
+    `not-run ∪ namesVerdictLessFailedGate`, read from the SAME blocker/gate/content resolution the
+    queue already performed — one resolution per card, no second opinion. Without this arm a
+    verdict-less gate refusal made the queue reject the card three times before self-healing noticed;
+    now the queue itself keeps re-seeding until the rerun budget is spent. The stale-content and
+    unprovable refusals fail the gate-name parse inside `namesVerdictLessFailedGate`, so the
+    stale-lane branch below stays unreachable from this condition and keeps its exclusive routing.
+    */
+    if ((blocker === PRE_MERGE_STEPS_NOT_RUN_BLOCKER
+      || namesVerdictLessFailedGate(task, blocker, { requiredPreMergeStepIds: mergeGate.requiredPreMergeStepIds, mergeContent }))
+      && mergeContent.kind === "singular") {
       const reroute = await rerouteUnrunPreMergeGateToReview(store, task, {
         requiredPreMergeStepIds: mergeGate.requiredPreMergeStepIds,
         mergeContent,
       }).catch(() => ({ rerouted: false, reason: "no-unrun-gate" as const, nodeId: undefined, workflowStepId: undefined }));
       if (reroute.rerouted) {
-        await store.logEntry(task.id, "[pre-merge] The workflow graph was re-seeded at an enabled pre-merge gate that never ran.");
+        await store.logEntry(task.id, reroute.reason === "verdictless-seeded"
+          ? "[pre-merge] The workflow graph was re-seeded at a required pre-merge gate whose last run died without a verdict."
+          : "[pre-merge] The workflow graph was re-seeded at an enabled pre-merge gate that never ran.");
       }
       await emitBoundedRunAudit(store, {
         taskId: task.id, agentId: "merge-gate", runId: `${task.id}:merge-gate`, domain: "database",
@@ -3129,7 +3225,7 @@ export class ProjectEngine {
 
     entries.sort((a, b) => {
       if (a.manual !== b.manual) return a.manual ? -1 : 1;
-      if (a.task && b.task) return compareTasksByPriorityThenAgeAndId(a.task, b.task);
+      if (a.task && b.task) return compareTasksByQueueOrder(a.task, b.task);
       if (a.task) return -1;
       if (b.task) return 1;
       return a.order - b.order;
@@ -3395,7 +3491,7 @@ export class ProjectEngine {
     for (const heldTaskId of [...this.mergeSweepHoldReasons.keys()]) {
       if (!candidateIds.has(heldTaskId)) this.mergeSweepHoldReasons.delete(heldTaskId);
     }
-    const eligible = sortTasksByPriorityThenAgeAndId(
+    const eligible = sortTasksByQueueOrder(
       candidates.filter((t, i) => {
         if (!allowFlags[i]) return false;
         const admission = admissions[i]!;
@@ -3684,6 +3780,16 @@ export class ProjectEngine {
 
       /* One IR cache for the whole sweep: (distinct workflows) resolutions, not (cards). */
       const overseerIrCache = new Map<string, WorkflowIr>();
+      /*
+      FNXC:PlannerOversight 2026-09-18-02:03:
+      Hand the observation the SAME liveness predicate the retry handler below already gates on
+      (`isTaskLiveForOverseerRetry`, FN-8471), resolved once per sweep. Without it a card whose
+      executor session died reports `progressing` ("actively executing") until the FN-7743 proxy
+      fires 2h after column entry, so autonomous recovery never engages. A missing runtime/executor
+      wiring leaves this `undefined`, which preserves the previous behaviour exactly.
+      */
+      const executorLiveness = this.runtime.getExecutor?.();
+      const probeTaskLive = executorLiveness?.isTaskLiveForOverseerRetry?.bind(executorLiveness);
       for (const task of inFlight) {
         try {
           const workflowEffective = await resolveEffectiveSettings(store, { id: task.id }).catch(() => ({}) as Record<string, unknown>);
@@ -3718,7 +3824,7 @@ export class ProjectEngine {
              the legacy ids and every card on a renamed board classifies as null — see
              `resolveTaskColumnFlags`. The cache is per-poll so a workflow edit is picked up next tick. */
           const columnFlags = await this.resolveTaskColumnFlags(store, task, overseerIrCache);
-          await overseer.observeTask(task, level, { executorStuckAfterMs, columnFlags });
+          await overseer.observeTask(task, level, { executorStuckAfterMs, columnFlags, isTaskLive: probeTaskLive });
 
           // FN-7512: one guarded, autonomous-only bounded recovery tick at the
           // same passive seam FN-7511 uses for observation. Inert for every
@@ -3765,7 +3871,7 @@ export class ProjectEngine {
       }
 
       // Drop retained observations for tasks that have left the in-flight set
-      // (moved to done/archived/failed/etc.) so the ring buffers don't leak.
+      // (moved to Complete/failed/etc.) so the ring buffers don't leak.
       for (const taskId of overseer.getObservedTaskIds()) {
         if (!inFlightIds.has(taskId)) {
           overseer.clear(taskId);
@@ -4401,6 +4507,9 @@ export class ProjectEngine {
                 auditAgentId: "merger",
                 auditPhase: "auto-merge-fast-path-finalize",
                 source: "merge-confirmed-fast-path",
+                // RUFU-370: this is the fast path that produced the production deferral loop; hand the
+                // unreachable gate to the operator instead of re-warning on every pass.
+                messageStore: this.getMessageStore(),
                 log: (message) => runtimeLog.warn(message),
               });
               if (finalization.outcome === "blocked") {
@@ -4630,10 +4739,8 @@ export class ProjectEngine {
             */
             await projectAdmissionCoordinator.admitNext({
               projectId: cwd,
-              maxConcurrent: resolveActiveTaskCapacityLimit({
+              maxConcurrent: resolveAgentCapacityLimit({
                 maxConcurrent: admissionSettings.maxConcurrent,
-                maxWorktrees: admissionSettings.maxWorktrees,
-                worktreeLimitEnabled: admissionSettings.worktreeLimitEnabled,
               }),
               claimed: async () => (await getMergeClaimSnapshot()).count,
               claimedTaskIds: async () => (await getMergeClaimSnapshot()).ids,
@@ -4641,7 +4748,12 @@ export class ProjectEngine {
                 taskId,
                 projectId: cwd,
                 lane: "review",
+                consumesWorktree: false,
                 createdAt: mergeCandidate?.createdAt,
+                // FNXC:TaskQueueOrder 2026-09-17-12:07: Boost scope travels with the candidate.
+                ...(mergeCandidate?.column !== undefined ? { column: mergeCandidate.column } : {}),
+                ...(mergeCandidate?.columnMovedAt ? { columnMovedAt: mergeCandidate.columnMovedAt } : {}),
+                ...(mergeCandidate?.queueBoost ? { queueBoost: mergeCandidate.queueBoost } : {}),
                 start: async () => {
                   selected = true;
                   return true;
@@ -4650,10 +4762,8 @@ export class ProjectEngine {
             });
             if (!selected) {
               const snapshot = await getMergeClaimSnapshot();
-              const limit = resolveActiveTaskCapacityLimit({
+              const limit = resolveAgentCapacityLimit({
                 maxConcurrent: admissionSettings.maxConcurrent,
-                maxWorktrees: admissionSettings.maxWorktrees,
-                worktreeLimitEnabled: admissionSettings.worktreeLimitEnabled,
               });
               if (snapshot.count >= limit) {
                 /*
@@ -4663,9 +4773,8 @@ export class ProjectEngine {
                 snapshot proves exhaustion rather than a higher-priority candidate winning.
                 */
                 const reason = formatAdmissionCapacityQueuedReason({
-                  maxConcurrent: admissionSettings.maxConcurrent,
-                  maxWorktrees: admissionSettings.maxWorktrees,
-                  worktreeLimitEnabled: admissionSettings.worktreeLimitEnabled,
+                  gate: "maxConcurrent",
+                  limit,
                   claimed: snapshot.count,
                   holderTaskIds: snapshot.ids,
                 });
@@ -4947,6 +5056,28 @@ export class ProjectEngine {
             }
 
             this.activeMergeSession = null;
+
+            /*
+            FNXC:ZeroCommitDeliveryProof 2026-09-26-08:20 (RUFU-274):
+            A delivery-unproven refusal is a WAIT, not a merge and not a merge failure. The merge body came
+            back without landing anything because the work exists only as uncommitted files in a tree, and it
+            left a durable `mergeDetails.uncommittedWorkHold` marker plus a `manual-required` queue record
+            behind. This arm exists so the pump cannot treat that shape as an ordinary result: the "merged"
+            log line would be a lie, and `attemptBranchGroupPromotion` below would promote a shared branch
+            group whose member never delivered. Retry budget stays untouched — nothing about the refusal is
+            fixed by trying the same branch again — and no `status`/`error` is written, because a `failed`
+            card invites Retry/Bypass while the actual remedy is a human looking at the worktree. The next
+            drain pass never reaches here at all: `resolveMergeGateBlocker` now refuses any row carrying the
+            hold, which is the durable de-admission.
+            */
+            if (!result.merged && !result.noOp && (result.deliveryUnproven || isUncommittedWorkHold((await store.getTask(taskId).catch(() => null))?.mergeDetails))) {
+              runtimeLog.log(
+                `${hasManualResolver ? "Manual" : "Auto"}-merge held for ${taskId}: ${result.reason ?? "delivery unproven"} — durable manual hold in place, merge retries untouched`,
+              );
+              if (hasManualResolver) this.resolveMergeResolvers(taskId, result);
+              continue;
+            }
+
             runtimeLog.log(`${hasManualResolver ? "Manual" : "Auto"}-merge merged: ${taskId}`);
 
             if (hasManualResolver) {
@@ -6354,6 +6485,26 @@ export class ProjectEngine {
   always unioned so a board mid-rename still finds rows stored under the old ones. Deduped by id
   because one column can carry two roles.
   */
+  /*
+  FNXC:ListTasksDeriveOptOut 2026-09-08-23:08 (RUFU-201 — lane-role board reads):
+  Per-consumer audit of the rows this helper returns, since four engine lanes share them:
+  `emitLegacyAutoMergeStampAdvisory` reads id, autoMerge, autoMergeProvenance;
+  `pollPlannerOverseer` reads id, column, status, prInfo, reviewState, paused, pausedReason,
+  workflowTransitionNotification, updatedAt, columnMovedAt, plannerOversightLevel (its
+  `resolveTaskColumnFlags` is typed `Pick<Task, "id" | "column">` and `OverseerTaskRef` is a Pick of
+  persisted fields); `clearStaleMergingStatuses` reads id and status; the merge-enqueue feeds go
+  through `enqueueEligibleInReviewTasks`, which reads id, paused, column, status, error, steps,
+  workflowStepResults, enabledWorkflowSteps, mergeRetries, mergeDetails, updatedAt, repositoryScope,
+  branchContext, autoMerge, autoMergeProvenance and log. Review/WIP lanes are always resolved by id
+  through `resolveTaskLifecycleColumns`, never taken off a row field, and greps for the derived badge
+  fields over this file return nothing — so `derive: false` cannot lose a signal here.
+
+  Stays NON-SLIM deliberately: `enqueueEligibleInReviewTasks` → `canMergeTask` →
+  `hasAutoHealableVerificationBufferFailure` inspects `task.log` (:2783), and the slim projection sets
+  `log: []`, which would silently stop auto-healing retry-exhausted verification failures. slim also
+  re-syncs `steps` from PROMPT.md, and a card with empty persisted steps would gain parsed steps and
+  could newly trip the "task has incomplete steps" merge blocker.
+  */
   private async listTasksInLaneRoles(
     store: TaskStore,
     roles: Parameters<typeof resolveProjectColumnsForRoles>[1],
@@ -6361,7 +6512,7 @@ export class ProjectEngine {
     const columns = await resolveProjectColumnsForRoles(store, roles);
     const byId = new Map<string, Task>();
     for (const column of columns) {
-      for (const task of await store.listTasks({ column })) byId.set(task.id, task as Task);
+      for (const task of await store.listTasks({ column, derive: false })) byId.set(task.id, task as Task);
     }
     return [...byId.values()];
   }
@@ -6706,6 +6857,35 @@ export class ProjectEngine {
     };
     store.on("settings:updated", onVerificationConcurrencyChange);
     this.settingsHandlers.push(onVerificationConcurrencyChange);
+
+    /*
+    FNXC:VerificationResourceBound 2026-09-10-12:13:
+    Resource-bound settings are dual-scope, so the merged values in `s` already reflect the
+    project-over-global resolution the resolver expects. Re-register on any of the three keys
+    changing; the same lifecycle as the count cap keeps both limits coherent.
+    */
+    const onVerificationResourceBoundChange = ({
+      settings: s,
+      previous: prev,
+    }: {
+      settings: Settings;
+      previous: Settings;
+    }) => {
+      if (
+        s.verificationCpuQuotaPercent === prev.verificationCpuQuotaPercent
+        && s.verificationCpuIoWeight === prev.verificationCpuIoWeight
+        && s.verificationMemoryMaxMb === prev.verificationMemoryMaxMb
+      ) return;
+      registerProjectVerificationResourceProfile(
+        this.config.projectId,
+        verificationResourceProfileFromMergedSettings(verificationResourceBoundFromSettings(s), getHostCoreCount()),
+      );
+      runtimeLog.log(
+        `verification resource bound updated for ${this.config.projectId} (quota=${s.verificationCpuQuotaPercent ?? "auto"}%, weight=${s.verificationCpuIoWeight ?? "auto"}, mem=${s.verificationMemoryMaxMb ?? "off"}MB)`,
+      );
+    };
+    store.on("settings:updated", onVerificationResourceBoundChange);
+    this.settingsHandlers.push(onVerificationResourceBoundChange);
 
     // 8. Memory maintenance settings change — sync automations
     const onInsightSettingsChange = async ({

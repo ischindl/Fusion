@@ -8,6 +8,7 @@ function makeAgent(overrides: Partial<Agent>): Agent {
     id: "agent-default",
     name: "Default Agent",
     role: "executor",
+    roles: ["executor"],
     state: "idle",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),

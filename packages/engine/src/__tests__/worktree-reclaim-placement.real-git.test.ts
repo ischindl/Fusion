@@ -94,25 +94,32 @@ describe("reclaimable worktree placement", () => {
     expect(git(rootDir, ["worktree", "list", "--porcelain"])).toContain(`worktree ${realpathSync(sourcePath)}`);
   });
 
-  it("chooses a task-scoped target when the legacy basename is occupied", async () => {
+  /*
+  FNXC:WorktreeLocationUnification 2026-09-13-01:35 (RUFU-231 stale-seam reconciliation):
+  This test expected the pre-FN-268 contract: an occupied legacy basename made relocate
+  disambiguate to a `-<taskId>` suffixed fallback. FN-268 unified worktree locations and made
+  relocation REFUSE any occupied target instead — never relocate through an occupied path that
+  could clobber its unrelated occupant. Reconciled (pre-existing failure, verified identical at
+  8edbb5133f) to assert the refusal plus the preservation guarantees the old test cared about:
+  the occupant's files and the source worktree both survive untouched.
+  */
+  it("refuses to relocate into an occupied target path, leaving occupant and source untouched", async () => {
     const { rootDir, sourcePath, targetPath } = createRepositoryFixture();
     mkdirSync(targetPath, { recursive: true });
     writeFileSync(join(targetPath, "owner.txt"), "unrelated path\n");
-    const disambiguatedPath = `${targetPath}-fn-8400`;
 
-    const result = await relocateReclaimableWorktreeIntoRoot({
+    await expect(relocateReclaimableWorktreeIntoRoot({
       rootDir,
       sourcePath,
       targetPath,
       taskId: "FN-8400",
-      settings: { worktreeNaming: "random" },
+      settings: { worktreeNaming: "random" } as any,
       isPathActive: async () => false,
-    });
+    })).rejects.toThrow(/Refusing to relocate FN-8400 worktree into its occupied task-ID path/);
 
-    expect(result).toEqual({ kind: "ready", path: disambiguatedPath, relocated: true });
     expect(readFileSync(join(targetPath, "owner.txt"), "utf8")).toBe("unrelated path\n");
-    expect(readFileSync(join(disambiguatedPath, "preserved.txt"), "utf8")).toBe("uncommitted task work\n");
-    expect(git(rootDir, ["worktree", "list", "--porcelain"])).toContain(`worktree ${realpathSync(disambiguatedPath)}`);
+    expect(readFileSync(join(sourcePath, "preserved.txt"), "utf8")).toBe("uncommitted task work\n");
+    expect(git(rootDir, ["worktree", "list", "--porcelain"])).toContain(`worktree ${realpathSync(sourcePath)}`);
   });
 
   it("rejects a relocation target outside the configured root before touching the source", async () => {

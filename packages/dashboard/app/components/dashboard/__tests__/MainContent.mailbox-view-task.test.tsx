@@ -60,6 +60,7 @@ function mainContentProps(overrides: Partial<MainContentProps> = {}): MainConten
     taskView: "mailbox",
     modalManager: {} as MainContentProps["modalManager"],
     handleChangeTaskView: vi.fn(),
+    openHistory: vi.fn(),
     refreshAppSettings: vi.fn(async () => undefined),
     addToast: vi.fn(),
     currentProject: { id: "project-1", name: "Project 1" } as MainContentProps["currentProject"],
@@ -115,7 +116,15 @@ describe("MainContent mailbox artifact View task routing", () => {
   it("opens the exact planning session and navigates to Planning", () => {
     const openPlanningWithSession = vi.fn();
     const handleChangeTaskView = vi.fn();
-    render(<MainContent {...mainContentProps({ modalManager: { openPlanningWithSession }, handleChangeTaskView })} />);
+    render(
+      <MainContent
+        {...mainContentProps({
+          // Intentionally partial modal manager — this test exercises only
+          // onOpenPlanningSession; escalate the cast per the RUFU-140 convention.
+          modalManager: { openPlanningWithSession } as unknown as MainContentProps["modalManager"],
+          handleChangeTaskView,
+        })}
+      />);
 
     screen.getByText("Open mailbox planning session").click();
     expect(openPlanningWithSession).toHaveBeenCalledWith("planning-8428");

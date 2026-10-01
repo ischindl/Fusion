@@ -311,7 +311,7 @@ describe("the hidden -> visible edge is staggered, not a synchronized stampede",
     return renderHook(() => {
       // Hook order is stable because the array length is fixed for the lifetime of each test.
       ticks.forEach((tick, index) => {
-        useVisibilityAwarePoll(tick, INTERVAL_MS, { priority: priorityOf(index) });
+        useVisibilityAwarePoll(tick as () => void, INTERVAL_MS, { priority: priorityOf(index) });
       });
     });
   }

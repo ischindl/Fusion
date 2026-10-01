@@ -26,6 +26,8 @@ import {
   resolveWorkflowIrForTask,
   columnsWithFlag,
   resolveEffectiveConcurrency,
+  deliverTaskCommentFromStore,
+  type TaskCommentDeliveryResult,
 } from "@fusion/core";
 import type { ServerOptions } from "./server.js";
 import { SESSION_CLEANUP_DEFAULT_MAX_AGE_MS, type AiSessionType } from "./ai-session-store.js";
@@ -44,7 +46,7 @@ import {
 import { createPluginRouter } from "./plugin-routes.js";
 import { createApiRoutesContext } from "./routes/context.js";
 import { createRegistrarMounter } from "./routes/create-api-routes-mount-sequence.js";
-import { registerTaskWorkflowRoutes } from "./routes/register-task-workflow-routes.js";
+import { registerTaskWorkflowRoutes, type CommentWakeInput } from "./routes/register-task-workflow-routes.js";
 import { registerWorkflowRoutes } from "./routes/register-workflow-routes.js";
 import { registerPlanningSubtaskRoutes } from "./routes/register-planning-subtask-routes.js";
 import { registerChatRoutes } from "./routes/register-chat-routes.js";
@@ -93,6 +95,7 @@ import { registerVoiceRoutes } from "./routes/register-voice-routes.js";
 import { registerDiagnosticsRoutes } from "./routes/register-diagnostics-routes.js";
 import { registerSystemRoutes } from "./routes/register-system-routes.js";
 import { registerCliAgentHooksRoute } from "./routes/cli-agent-hooks.js";
+import { registerCliAgentMemoryRecallRoute } from "./routes/cli-agent-memory-recall.js";
 import { registerCliAgentSettingsRoutes } from "./routes/cli-agent-settings.js";
 import { registerIntegratedRouters, registerIntegratedDevServerRouter } from "./routes/register-integrated-routers.js";
 import { registerApprovalRoutes } from "./routes/register-approval-routes.js";
@@ -1021,7 +1024,7 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
   registrarMounter.mount("registerGitGitHubRoutes", () => registerGitGitHubRoutes(routeContext));
   registrarMounter.mount("registerGitLabRoutes", () => registerGitLabRoutes(routeContext));
   registrarMounter.mount("registerJiraRoutes", () => registerJiraRoutes(routeContext));
-  registrarMounter.mount("registerFilesTerminalWorkspaceRoutes", () => registerFilesTerminalWorkspaceRoutes(routeContext));
+  registrarMounter.mount("registerFilesTerminalWorkspaceRoutes", () => registerFilesTerminalWorkspaceRoutes({ ...routeContext, workspaceUpload: upload }));
   registrarMounter.mount("registerAgentsProjectsNodesRoutes", () => registerAgentsProjectsNodesRoutes(routeContext));
   registrarMounter.mount("registerPluginsAutomationRoutes", () => registerPluginsAutomationRoutes(routeContext, { parseLastEventId, replayBufferedSSE, getCreateFnAgent: () => createFnAgentForRefine }));
   registrarMounter.mount("registerApprovalRoutes", () => registerApprovalRoutes(routeContext));
@@ -1110,30 +1113,77 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
   }
 
   /**
-   * Trigger a heartbeat wake for an assigned agent based on a comment event.
+   * Hand a freshly written operator comment to the agent that owns the card, then wake it if that is
+   * the agent's configured mode.
    *
    * UTILITY PATH: This function is on the heartbeat control-plane lane and is
    * independent of task-lane saturation. It must NOT be gated on maxConcurrent,
    * semaphore state, or queue depth.
    *
-   * Skip reasons (these are normal operation, not saturation gates):
+   * FNXC:CommentDelivery 2026-09-27-18:24 (RUFU-259):
+   * This function used to be wake-only, and its FIRST skip was `responseMode !== "immediate"` — so for
+   * an `on-heartbeat` agent the comment body was written to the card and handed to nobody, while the
+   * route answered 200 and the dashboard said "Comment added." That skip is gone from delivery: the
+   * body is now written durably into the recipient's inbox for every responseMode, and `responseMode`
+   * only decides whether we ALSO run an immediate heartbeat. `responseMode` is a statement about wake
+   * latency, never about whether an operator's instructions are read.
+   *
+   * Delivery skips: none. Unrouted comments are reported (operator mailbox + run-audit) rather than
+   * dropped, so a card nobody owns shows up as a visible problem instead of a silent one.
+   *
+   * Wake skip reasons (normal operation, not saturation gates):
    * - No HeartbeatMonitor available (heartbeat executor not configured)
-   * - No agent assigned to the task
    * - HeartbeatMonitor is bound to a different project
-   * - Agent's responseMode is not "immediate" (non-immediate mode skips on-demand wakes)
+   * - No recipient resolved (nothing to wake)
+   * - The body already landed durably and the agent's responseMode is not "immediate" (only a
+   *   user-authored comment carries `wakeRecipient`, which is what overrides that setting)
    * - Agent already has an active heartbeat run (prevents duplicate runs)
    */
   const triggerCommentWakeForAssignedAgent = async (
     scopedStore: TaskStore,
     task: Task,
-    wake: {
-      triggeringCommentType: "steering" | "task" | "pr";
-      triggeringCommentIds?: string[];
-      triggerDetail: string;
-    },
-  ): Promise<void> => {
+    wake: CommentWakeInput,
+  ): Promise<TaskCommentDeliveryResult | undefined> => {
+    const delivery = await deliverTaskCommentFromStore({
+      store: scopedStore,
+      task,
+      comment: wake.comment,
+      source: wake.source,
+      /*
+      FNXC:CommentDelivery 2026-09-27-21:40 (RUFU-259 Step 4):
+      The two halves have different gates on purpose. Delivery is unconditional (an unrouted comment is
+      reported, never dropped); the immediate run is skipped when the calling route already owns it — a
+      review-lane re-engagement moves the card and re-dispatches it, so waking here would run the same
+      comment twice. This is why `wakeEligible: false` still returns the delivery result: the caller needs
+      to know the body landed even when it arranged the run itself.
+      */
+      onRouted: (recipientAgentId, result) =>
+        wake.wakeEligible === false
+          ? undefined
+          : wakeAgentForDeliveredComment(scopedStore, task, wake, recipientAgentId, result),
+    });
+    return delivery;
+  };
+
+  /** The wake half of comment delivery: immediate-mode agents (or a failed durable write) get a run. */
+  async function wakeAgentForDeliveredComment(
+    scopedStore: TaskStore,
+    task: Task,
+    wake: CommentWakeInput,
+    recipientAgentId: string,
+    result: TaskCommentDeliveryResult,
+  ): Promise<void> {
+    /*
+    FNXC:CommentDelivery 2026-09-27-20:00 (RUFU-259 Step 4):
+    Who may FORCE a run is decided by the `metadata.wakeRecipient` convention the seam writes (only a
+    user-authored comment sets it) and by `deliverMessageToAgent`, which requires `fromType === "user"`
+    before it overrides an agent's `messageResponseMode`. This call path is the FALLBACK for hosts where
+    the message hook is not wired, so it mirrors that rule instead of inventing a stricter one: an agent
+    that configured "immediate" is still entitled to be woken by mail addressed to it, and refusing here
+    would silently break that configuration for comments only.
+    */
     // Skip: no HeartbeatMonitor available
-    if (!hasHeartbeatExecutor || !heartbeatMonitor || !task.assignedAgentId) {
+    if (!hasHeartbeatExecutor || !heartbeatMonitor) {
       return;
     }
 
@@ -1152,20 +1202,22 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
     const agentStore = new AgentStore({ rootDir: scopedStore.getFusionDir(), asyncLayer: scopedStore.getAsyncLayer() ?? undefined });
     await agentStore.init();
 
-    const assignedAgent = await agentStore.getAgent(task.assignedAgentId);
+    const recipient = await agentStore.getAgent(recipientAgentId);
     // Skip: agent not found
-    if (!assignedAgent) {
+    if (!recipient) {
       return;
     }
 
-    // Skip: agent's responseMode is not "immediate" (non-immediate mode skips on-demand wakes)
-    const responseMode = (assignedAgent.runtimeConfig as { messageResponseMode?: string } | undefined)?.messageResponseMode;
-    if (responseMode !== "immediate") {
+    // Skip: the body is already durable in this agent's inbox and it is not an immediate-wake agent.
+    // A durable write that FAILED is the opposite case — then the wake hint is the only carrier left.
+    const responseMode = (recipient.runtimeConfig as { messageResponseMode?: string } | undefined)?.messageResponseMode;
+    const carried = result.outcome === "delivered" || result.outcome === "already-delivered";
+    if (carried && responseMode !== "immediate") {
       return;
     }
 
     // Skip: agent already has an active heartbeat run (prevents duplicate runs)
-    const activeRun = await agentStore.getActiveHeartbeatRun(assignedAgent.id);
+    const activeRun = await agentStore.getActiveHeartbeatRun(recipient.id);
     if (activeRun) {
       return;
     }
@@ -1180,7 +1232,7 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
     };
 
     await resolvedMonitor.executeHeartbeat({
-      agentId: assignedAgent.id,
+      agentId: recipient.id,
       source: "on_demand",
       triggerDetail: wake.triggerDetail,
       taskId: task.id,
@@ -1188,7 +1240,7 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
       triggeringCommentType: wake.triggeringCommentType,
       contextSnapshot,
     });
-  };
+  }
 
   registrarMounter.mount("registerConfigMcpPiSettingsRoutes", () => registerConfigMcpPiSettingsRoutes(routeContext));
 
@@ -1244,8 +1296,8 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
         globalPause: settings.globalPause ?? false,
         enginePaused: settings.enginePaused ?? false,
         maxConcurrent: capacity.maxConcurrent,
-        effectiveMaxConcurrent: capacity.effectiveLimit,
-        concurrencyBindingKnob: capacity.bindingKnob,
+        maxWorktrees: capacity.worktreeLimit ?? settings.maxWorktrees,
+        worktreeLimitEnabled: settings.worktreeLimitEnabled !== false,
         lastActivityAt,
       });
     } catch (err: unknown) {
@@ -1301,6 +1353,16 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
   // CLI Agent Executor hook ingestion (U17) — per-session token auth, exempt from
   // the daemon bearer-token middleware (hook scripts only hold the session token).
   registrarMounter.mount("registerCliAgentHooksRoute", () => registerCliAgentHooksRoute(routeContext));
+
+  /*
+  FNXC:CliChatRecall 2026-08-19-11:08:
+  Per-turn memory-recall ingestion for spawned CLI agents (RUFU-128) — same
+  per-session token auth as the hook route, exempt from the daemon
+  bearer-token middleware (the agent only holds the session token). The cue is
+  returned to the CLI's native hook/extension channel, never injected into the
+  PTY/composer.
+  */
+  registrarMounter.mount("registerCliAgentMemoryRecallRoute", () => registerCliAgentMemoryRecallRoute(routeContext));
 
   // CLI Agent Executor adapter settings + autonomy approval (U15) — daemon-token
   // authed like the rest of /api (the approving principal is the token holder).
@@ -1367,11 +1429,12 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
   card kept its agent's "working on" indicator lit — the agent list showed work that had already
   shipped, which is exactly the stale indicator this sanitizer exists to prevent.
   */
-  const TERMINAL_TASK_STATUSES = new Set(["done", "archived"]);
+  /* FNXC:TaskArchiveRemoval 2026-09-04-14:51: Complete is the only live terminal role; the fallback must never classify the historical soft-delete sentinel as a board lane. */
+  const TERMINAL_TASK_STATUSES = new Set(["done"]);
   const UNRESOLVED_AGENT_TASK_COLUMN = "unresolved";
 
   /**
-   * Check if a task status is terminal (done or archived).
+   * Check if a task status is terminal (complete, with Done as the degraded fallback).
    */
   function isTerminalTaskStatus(status: string | undefined, resolvedTerminal?: ReadonlySet<string>): boolean {
     if (status === undefined) return false;
@@ -1380,7 +1443,7 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
 
   /**
    * Sanitize agent responses to omit taskId when the linked task is in a terminal state.
-   * This prevents stale "working on" UI indicators for completed/archived tasks.
+   * This prevents stale "working on" UI indicators for completed tasks.
    *
    * @param agents - Array of agents to sanitize
    * @param scopedStore - Task store for looking up linked task status
@@ -1404,7 +1467,7 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
     /*
     FNXC:WorkflowLifecycleColumns 2026-07-31-07:00 (dashboard-server feed):
     Each linked task's OWN terminal lanes, resolved once per unique id with a shared IR cache. A task
-    whose workflow will not resolve is left out of the map and falls back to the literal pair above,
+    whose workflow will not resolve is left out of the map and falls back to Done above,
     which is the pre-existing behaviour rather than a guess.
     */
     const terminalIrCache = new Map<string, never>();
@@ -1412,14 +1475,14 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
     for (const taskId of taskIds) {
       /*
       FNXC:WorkflowLifecycleColumns 2026-07-31-09:30 (#2787 review — greptile P1):
-      MEMBERSHIP, not first-per-role — a workflow may declare more than one complete or archived
-      column, and `resolveLifecycleColumns` returns only the FIRST of each. A linked task in the
-      second terminal lane kept its `taskId` and the agent stayed displayed as working on finished
+      MEMBERSHIP, not first-per-role — a workflow may declare more than one Complete column, and
+      `resolveLifecycleColumns` returns only the FIRST. A linked task in the second terminal lane
+      kept its `taskId` and the agent stayed displayed as working on finished
       work, which is the exact symptom this sanitizer exists to remove.
       */
       const ir = await resolveWorkflowIrForTask(scopedStore, taskId, terminalIrCache as never).catch(() => undefined);
       if (!ir) continue;
-      const terminal = [...columnsWithFlag(ir, "complete"), ...columnsWithFlag(ir, "archived")];
+      const terminal = columnsWithFlag(ir, "complete");
       if (terminal.length > 0) terminalByTaskId.set(taskId, new Set(terminal));
     }
 

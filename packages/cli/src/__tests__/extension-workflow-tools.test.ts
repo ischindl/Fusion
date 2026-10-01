@@ -146,7 +146,8 @@ pgTest("pi extension workflow authoring tools", () => {
       makeCtx(h.rootDir()),
     );
     expect(malformed.isError).toBe(true);
-    expect(malformed.content[0]?.text).toMatch(/ERROR: Failed to create workflow/i);
+    // STAS-258: the store's reason survives verbatim, and the result carries the error flag.
+    expect(malformed.content[0]?.text).toMatch(/ERROR: workflow creation .*exactly one start and one end node/);
 
     const updateTool = requireTool(api, "fn_workflow_update");
     const builtinEdit = await updateTool.execute(

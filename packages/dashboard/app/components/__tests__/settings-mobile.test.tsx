@@ -409,7 +409,13 @@ describe("SettingsModal mobile adaptations", () => {
   });
 
   it("omits the version button when appVersion is unavailable without removing the footer rail", async () => {
-    vi.mocked(fetchDashboardHealth).mockResolvedValueOnce({ status: "ok", version: "", uptime: 120 });
+    vi.mocked(fetchDashboardHealth).mockResolvedValueOnce({
+      status: "ok",
+      version: "",
+      uptime: 120,
+      database: { healthy: true, corruptionDetected: false, corruptionErrors: [], lastCheckedAt: null, isRunning: false },
+      taskIdIntegrity: { status: "ok", checkedAt: "2026-05-12T00:00:00.000Z", anomalies: [], recommendedAction: null },
+    });
     mockSettingsViewport(true);
     const { container, queryByRole } = render(<SettingsModal onClose={vi.fn()} addToast={vi.fn()} />);
     await waitFor(() => expect(fetchSettings).toHaveBeenCalled());

@@ -42,6 +42,15 @@ export const DELIVERY_PIPELINE_RUN_AUDIT_EVENTS_LITERALS = [
   "task:post-finalize-verification-no-op",
   "task:no-commits-finalize-blocked-incomplete-steps",
   "task:empty-merge-finalize-blocked-no-landed-proof",
+  /*
+  FNXC:ZeroCommitLandingProof 2026-09-25-12:20 (RUFU-274):
+  The shared durable landing-proof guard's three events. RUFU-262 finalized `done` on a zero-commit branch
+  and the work survived only as uncommitted files with no audit row naming the shape; these three are the
+  forensic trail every lane now writes.
+  */
+  "task:zero-commit-landing-proof-refused",
+  "task:zero-commit-landing-proof-deferred",
+  "task:zero-commit-landing-proof-cleared",
   "task:finalize-unproven-blocked",
   "task:merge-boundary-unproven-parked",
   "task:merge-boundary-evidence-recovered",
@@ -65,6 +74,7 @@ export const DELIVERY_PIPELINE_RUN_AUDIT_EVENTS_LITERALS = [
   "task:stale-review-callback-waived",
   "task:reconcile-unproven-review-approval",
   "task:reconcile-stale-duplicate-decision",
+  "task:reconcile-orphaned-non-convergence-hold",
   "task:reconcile-stale-agent-assignment",
   "task:reconcile-engine-downtime-active-timing",
   "task:reconcile-engine-downtime-active-timing-no-action",
@@ -72,6 +82,7 @@ export const DELIVERY_PIPELINE_RUN_AUDIT_EVENTS_LITERALS = [
   "task:reconcile-wedged-active-merge",
   "task:reconcile-stranded-completed-no-action",
   "task:reconcile-legacy-adoption",
+  "task:reconcile-archived-into-done",
 
   /* ── 3. Durable-agent error-state ──────────────────────────────────────── */
   "agent:auto-recover-error-state",
@@ -120,6 +131,12 @@ export const DELIVERY_PIPELINE_RUN_AUDIT_EVENT_NOTES: Readonly<Record<DeliveryPi
     "Finalize is blocked for a zero-commit task with incomplete workflow steps (FN-6461 lane).",
   "task:empty-merge-finalize-blocked-no-landed-proof":
     "The AI empty-merge lane vetoes a zero-diff no-op finalize with no landed proof (FN-8141).",
+  "task:zero-commit-landing-proof-refused":
+    "A finalization lane refused to finalize a zero-commit card whose checkout still held work, or could not be classified (RUFU-274). Metadata is ids/counts/fixed enums only — never paths or content.",
+  "task:zero-commit-landing-proof-deferred":
+    "A finalization lane deferred on a zero-commit card because zero-ness or checkout content could not be proven, instead of finalizing on a guess (RUFU-274). Metadata is ids/counts/fixed enums only.",
+  "task:zero-commit-landing-proof-cleared":
+    "A re-probe proved the cause of a durable uncommitted-work hold is gone and the hold was cleared (RUFU-274). Metadata is the task ID, lane and prior reason code only.",
   "task:finalize-unproven-blocked":
     "Finalize is blocked because finalization has not been proven against the landing truth.",
   "task:merge-boundary-unproven-parked":
@@ -141,7 +158,7 @@ export const DELIVERY_PIPELINE_RUN_AUDIT_EVENT_NOTES: Readonly<Record<DeliveryPi
   "task:auto-rebound-paused-scope-decay":
     "Self-healing rebounds a task whose paused scope decayed past its floor, unblocking followers.",
   "task:auto-archive-failure-budget-exhausted":
-    "Self-healing abandons a repeatedly failing stale-task archive and surfaces it for operator action.",
+    "Historical compatibility event for a retired stale-task archive sweep.",
 
   "task:reclaim-phantom-executor-binding":
     "Self-healing proves an in-memory executor-active binding is stale and requeues the task.",
@@ -151,6 +168,8 @@ export const DELIVERY_PIPELINE_RUN_AUDIT_EVENT_NOTES: Readonly<Record<DeliveryPi
     "Self-healing records a receipt-backed waiver for an eligible stale code-review callback.",
   "task:reconcile-unproven-review-approval":
     "Self-healing rewrites singular content-review approvals without input proof to recoverable failed results.",
+  "task:reconcile-orphaned-non-convergence-hold":
+    "Self-healing clears a code-review-non-convergence approval hold whose failed-review evidence no longer exists, in place and without a lifecycle move.",
   "task:reconcile-stale-duplicate-decision":
     "Self-healing clears a recurring duplicate-decision pause with no canonical target.",
   "task:reconcile-stale-agent-assignment":
@@ -167,6 +186,8 @@ export const DELIVERY_PIPELINE_RUN_AUDIT_EVENT_NOTES: Readonly<Record<DeliveryPi
     "A stranded-completed promoter withholds promotion of an all-steps-done/skipped task with a failure park provenance (no-action).",
   "task:reconcile-legacy-adoption":
     "Self-healing startup adopts a pre-cutover legacy task row through the KTD-8 adoption table.",
+  "task:reconcile-archived-into-done":
+    "Self-healing moves or restores one historical archived task into its workflow completion lane.",
 
   /* ── 3. Durable-agent error-state ──────────────────────────────────────── */
   "agent:auto-recover-error-state":

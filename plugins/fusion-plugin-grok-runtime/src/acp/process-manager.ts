@@ -14,7 +14,7 @@
 // to the agent.
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { redactSecrets } from "@fusion/core";
+import { applyNonInteractiveGitEnv, redactSecrets } from "@fusion/core";
 
 function debugLog(message: string): void {
   if (process.env.PI_ACP_DEBUG !== "1" && process.env.FUSION_GROK_ACP_DEBUG !== "1") return;
@@ -134,7 +134,15 @@ export function buildSpawnEnv(allowList: string[], options: BuildSpawnEnvOptions
   if (missing.length > 0) {
     throw new MissingAcpEnvError(missing);
   }
-  return env;
+  /*
+  FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210):
+  The allow-list (KTD6b) stays byte-identical — the non-interactive git floor is added at the
+  RETURN SITE, not inside the loop, so it can never widen what the untrusted bridge may receive
+  and never inherits a value from an excluded key. Without it, a `git commit -e`/`rebase
+  --continue` inside the agent session blocks on an editor (measured orphan: 1d13h on a
+  production host, 2026-09-09). RUFU-216's droid/paperclip/openclaw lanes consume the same export.
+  */
+  return applyNonInteractiveGitEnv(env);
 }
 
 export interface SpawnAgentOptions {

@@ -33,6 +33,7 @@ function renderModal(props: Partial<ComponentProps<typeof TaskDetailModal>> = {}
       onMergeTask={noopMerge}
       onOpenDetail={noopOpenDetail}
       {...props}
+      addToast={noop}
     />,
   );
 }
@@ -160,6 +161,7 @@ describe("Feed on a log-stripped snapshot", () => {
         onDeleteTask={noopDelete}
         onMergeTask={noopMerge}
         onOpenDetail={noopOpenDetail}
+        addToast={noop}
         initialTab="logs"
       />,
     );
@@ -329,6 +331,7 @@ describe("Feed on a log-stripped snapshot", () => {
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
           onOpenDetail={noopOpenDetail}
+          addToast={noop}
           initialTab="logs"
         />,
       );

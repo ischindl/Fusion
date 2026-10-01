@@ -1,4 +1,5 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { createSharedPgTaskStoreTestHarness, pgDescribe, type SharedPgTaskStoreHarness } from "../../__test-utils__/pg-test-harness.js";
@@ -6,7 +7,6 @@ import { buildPatchnodeEntryId, toPatchnodeOccurrenceKey } from "../../board/pat
 import { applySchemaBaseline } from "../../postgres/schema-applier.js";
 import * as schema from "../../postgres/schema/index.js";
 import { PATCHNODE_RECONCILE_TTL_MS } from "../../store.js";
-import { findArchivedTaskEntry } from "../../task-store/async/async-archive-lineage.js";
 
 pgDescribe("Patchnode ledger (PostgreSQL)", () => {
   const h: SharedPgTaskStoreHarness = createSharedPgTaskStoreTestHarness({ prefix: "fusion_patchnode", projectId: "patchnode-test" });
@@ -47,8 +47,29 @@ pgDescribe("Patchnode ledger (PostgreSQL)", () => {
   });
   afterAll(h.afterAll);
 
+  /*
+  FNXC:PatchnodeLedger 2026-09-18-02:48:
+  FN-526 moves the ledger body from the Completion Summary to the plan's product summary, so these
+  fixtures write a real `PROMPT.md`. The product text is deliberately DISTINCT from `summary`
+  (`Livrable : <summary>`), so every body assertion below proves provenance: a regression back to
+  `task.summary` would drop the `Livrable : ` prefix and fail.
+  */
+  const planFor = (delivers: string) => `# Task: FN-X - Fixture\n\n## What This Delivers\n\n- Livrable : ${delivers}\n\n## Mission\n\nBrief technique.\n`;
+  const productBody = (delivers: string) => `Livrable : ${delivers}`;
+
+  const writePlan = async (taskId: string, delivers: string) => {
+    const dir = h.store().taskDir(taskId);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "PROMPT.md"), planFor(delivers), "utf-8");
+  };
+
+  const removePlan = async (taskId: string) => {
+    await rm(join(h.store().taskDir(taskId), "PROMPT.md"), { force: true });
+  };
+
   const createWithSummary = async (input: { title?: string; description: string; summary: string }) => {
     const task = await h.store().createTask({ title: input.title, description: input.description });
+    await writePlan(task.id, input.summary);
     return h.store().updateTask(task.id, { summary: input.summary });
   };
 
@@ -67,13 +88,6 @@ pgDescribe("Patchnode ledger (PostgreSQL)", () => {
     ));
   };
 
-  const deleteLedgerRows = async (id: string) => {
-    await h.adminDb().delete(schema.project.patchnodeEntries).where(and(
-      eq(schema.project.patchnodeEntries.projectId, h.layer().projectId!),
-      eq(schema.project.patchnodeEntries.taskId, id),
-    ));
-  };
-
   it("registers the project-scoped table and RLS policy", async () => {
     const rows = await h.adminDb().execute(sql`SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE oid='project.patchnode_entries'::regclass`) as unknown as Array<{ relrowsecurity: boolean; relforcerowsecurity: boolean }>;
     expect(rows[0]).toEqual({ relrowsecurity: true, relforcerowsecurity: true });
@@ -87,9 +101,11 @@ pgDescribe("Patchnode ledger (PostgreSQL)", () => {
     expect(feed.entries[0]).toMatchObject({
       taskId: task.id,
       kind: "completed",
-      body: "Delivered summary",
+      body: productBody("Delivered summary"),
       occurrenceKey: toPatchnodeOccurrenceKey(done.columnMovedAt!),
     });
+    // FN-526 symptom: the Completion Summary must never be the persisted description.
+    expect(feed.entries[0]!.body).not.toBe("Delivered summary");
   });
 
   it("moveToDone records one completion", async () => {
@@ -112,12 +128,13 @@ pgDescribe("Patchnode ledger (PostgreSQL)", () => {
       eq(schema.project.tasks.id, task.id),
     ));
     await store.updateTask(task.id, { title: "Second title", summary: "second" });
+    await writePlan(task.id, "second");
     await new Promise((resolve) => setTimeout(resolve, 2));
     await store.moveTask(task.id, "in-review", { moveSource: "user", allowDirectInReviewMove: true });
     await store.moveTask(task.id, "done", { moveSource: "engine", skipMergeBlocker: true });
     const entries = (await store.listPatchnodeEntries({ query: task.id })).entries;
     expect(entries).toHaveLength(2);
-    expect(entries.map((entry) => entry.body)).toEqual(["second", "first"]);
+    expect(entries.map((entry) => entry.body)).toEqual([productBody("second"), productBody("first")]);
     expect(new Set(entries.map((entry) => entry.occurrenceKey)).size).toBe(2);
     expect(new Set(entries.map((entry) => entry.entryId)).size).toBe(2);
   });
@@ -208,6 +225,7 @@ pgDescribe("Patchnode ledger (PostgreSQL)", () => {
     vi.setSystemTime(new Date("2026-08-29T09:00:00.000Z"));
     await seedTaskColumn(task.id, "in-progress", "2026-08-29T08:30:00.000Z");
     await store.updateTask(task.id, { summary: "second delivery" });
+    await writePlan(task.id, "second delivery");
     await store.moveTask(task.id, "in-review", { moveSource: "user", allowDirectInReviewMove: true });
     await store.moveTask(task.id, "done", { moveSource: "engine", skipMergeBlocker: true });
 
@@ -231,8 +249,8 @@ pgDescribe("Patchnode ledger (PostgreSQL)", () => {
     });
     const cancelled = completions.find((entry) => entry.entryId === reversions[0]!.revertsEntryId)!;
     const stillInEffect = completions.find((entry) => entry.entryId !== reversions[0]!.revertsEntryId)!;
-    expect(cancelled).toMatchObject({ body: "first delivery", revertedAt: firstRevertedAt, revertedCommitSha: "first-revert" });
-    expect(stillInEffect).toMatchObject({ body: "second delivery", revertedAt: null });
+    expect(cancelled).toMatchObject({ body: productBody("first delivery"), revertedAt: firstRevertedAt, revertedCommitSha: "first-revert" });
+    expect(stillInEffect).toMatchObject({ body: productBody("second delivery"), revertedAt: null });
     expect(Date.parse(stillInEffect.occurredAt)).toBeGreaterThan(Date.parse(firstRevertedAt));
   });
 
@@ -250,6 +268,7 @@ pgDescribe("Patchnode ledger (PostgreSQL)", () => {
     vi.setSystemTime(new Date("2026-08-21T11:00:00.000Z"));
     await store.moveTask(task.id, "todo", { moveSource: "user" });
     await store.updateTask(task.id, { summary: "later delivery" });
+    await writePlan(task.id, "later delivery");
     await deliver(task.id);
 
     await store.reconcilePatchnodeLedger({ force: true });
@@ -258,7 +277,7 @@ pgDescribe("Patchnode ledger (PostgreSQL)", () => {
     const completion = entries.find((entry) => entry.kind === "completed")!;
     const reverted = entries.find((entry) => entry.kind === "reverted")!;
     expect(entries).toHaveLength(2);
-    expect(completion).toMatchObject({ body: "later delivery", revertedAt: null });
+    expect(completion).toMatchObject({ body: productBody("later delivery"), revertedAt: null });
     expect(Date.parse(completion.occurredAt)).toBeGreaterThan(Date.parse(legacyRevertedAt));
     expect(reverted).toMatchObject({
       entryId: buildPatchnodeEntryId("reverted", task.id, "none"),
@@ -297,7 +316,8 @@ pgDescribe("Patchnode ledger (PostgreSQL)", () => {
     await store.reconcilePatchnodeLedger({ force: true });
     const entries = (await store.listPatchnodeEntries({ query: task.id })).entries;
     expect(entries).toHaveLength(1);
-    expect(entries[0]).toMatchObject({ body: "legacy body", entryId: buildPatchnodeEntryId("completed", task.id, toPatchnodeOccurrenceKey(movedAt)) });
+    // FN-526: the live-completion reconciliation pass inserts the PLAN's product summary, never an empty body.
+    expect(entries[0]).toMatchObject({ body: productBody("legacy body"), entryId: buildPatchnodeEntryId("completed", task.id, toPatchnodeOccurrenceKey(movedAt)) });
   });
 
   it("normalizes the async move writer while direct completion remains bound-only", async () => {
@@ -432,100 +452,6 @@ pgDescribe("Patchnode ledger (PostgreSQL)", () => {
     expect(await ledgerRows(task.id)).toHaveLength(1);
   });
 
-  it("captures a legacy delivery inside archive and ignores summaries outside completion lanes", async () => {
-    const store = h.store();
-    const legacy = await createWithSummary({ title: "Legacy delivery", description: "Legacy delivery", summary: "legacy archive body" });
-    const movedAt = "2026-08-20T09:30:00.000Z";
-    await seedTaskColumn(legacy.id, "done", movedAt);
-
-    await store.archiveTask(legacy.id, { cleanup: false });
-    expect(await ledgerRows(legacy.id)).toMatchObject([{
-      entryId: buildPatchnodeEntryId("completed", legacy.id, toPatchnodeOccurrenceKey(movedAt)),
-      body: "legacy archive body",
-      day: "2026-08-20",
-    }]);
-
-    const control = await createWithSummary({ description: "Review summary only", summary: "not delivered" });
-    await seedTaskColumn(control.id, "in-review", "2026-08-20T10:00:00.000Z");
-    await store.archiveTask(control.id, { cleanup: false });
-    expect(await ledgerRows(control.id)).toEqual([]);
-  });
-
-  it("rolls back archive when legacy delivery capture fails", async () => {
-    const store = h.store();
-    const task = await createWithSummary({ description: "Deferred legacy archive", summary: "preserve me" });
-    await seedTaskColumn(task.id, "done", "2026-08-21T09:30:00.000Z");
-    await installLedgerFailureTrigger(task.id);
-
-    await expect(store.archiveTask(task.id, { cleanup: false })).rejects.toThrow();
-
-    const rows = await h.adminDb().select({ column: schema.project.tasks.column, deletedAt: schema.project.tasks.deletedAt })
-      .from(schema.project.tasks)
-      .where(and(eq(schema.project.tasks.projectId, h.layer().projectId!), eq(schema.project.tasks.id, task.id)));
-    expect(rows).toEqual([{ column: "done", deletedAt: null }]);
-    expect(await findArchivedTaskEntry(h.layer().db, task.id, h.layer().projectId)).toBeUndefined();
-    expect(await ledgerRows(task.id)).toEqual([]);
-  });
-
-  it("captures a legacy archived delivery before cleanup hard-deletes its task row", async () => {
-    const store = h.store();
-    const task = await createWithSummary({ description: "Cleanup backlog", summary: "last surviving summary" });
-    const movedAt = "2026-08-22T08:00:00.000Z";
-    await seedTaskColumn(task.id, "done", movedAt);
-    await store.archiveTask(task.id, { cleanup: false });
-    await deleteLedgerRows(task.id);
-
-    expect(await store.cleanupArchivedTasks()).toContain(task.id);
-    expect(await ledgerRows(task.id)).toMatchObject([{
-      entryId: buildPatchnodeEntryId("completed", task.id, toPatchnodeOccurrenceKey(movedAt)),
-      body: "last surviving summary",
-    }]);
-    expect(await h.adminDb().select().from(schema.project.tasks).where(eq(schema.project.tasks.id, task.id))).toEqual([]);
-    expect(await store.cleanupArchivedTasks()).not.toContain(task.id);
-  });
-
-  it("skips only the archived row whose cleanup capture fails", async () => {
-    const store = h.store();
-    const blocked = await createWithSummary({ description: "Blocked cleanup", summary: "retry later" });
-    const unaffected = await createWithSummary({ description: "Unaffected cleanup", summary: "clean now" });
-    await seedTaskColumn(blocked.id, "done", "2026-08-23T08:00:00.000Z");
-    await seedTaskColumn(unaffected.id, "done", "2026-08-23T09:00:00.000Z");
-    await store.archiveTask(blocked.id, { cleanup: false });
-    await store.archiveTask(unaffected.id, { cleanup: false });
-    await deleteLedgerRows(blocked.id);
-    await deleteLedgerRows(unaffected.id);
-    await installLedgerFailureTrigger(blocked.id);
-
-    const cleaned = await store.cleanupArchivedTasks();
-
-    expect(cleaned).not.toContain(blocked.id);
-    expect(cleaned).toContain(unaffected.id);
-    expect(await h.adminDb().select({ id: schema.project.tasks.id }).from(schema.project.tasks).where(eq(schema.project.tasks.id, blocked.id))).toEqual([{ id: blocked.id }]);
-    expect(await h.adminDb().select({ id: schema.project.tasks.id }).from(schema.project.tasks).where(eq(schema.project.tasks.id, unaffected.id))).toEqual([]);
-    expect(await ledgerRows(blocked.id)).toEqual([]);
-    expect(await ledgerRows(unaffected.id)).toHaveLength(1);
-  });
-
-  it("backfills an archived legacy delivery idempotently", async () => {
-    const store = h.store();
-    const task = await createWithSummary({ description: "Archived backlog", summary: "backfilled body" });
-    const movedAt = "2026-08-24T08:00:00.000Z";
-    await seedTaskColumn(task.id, "done", movedAt);
-    await store.archiveTask(task.id, { cleanup: false });
-    await deleteLedgerRows(task.id);
-
-    const first = await store.reconcilePatchnodeLedger({ force: true });
-    const second = await store.reconcilePatchnodeLedger({ force: true });
-
-    expect(first.archivedBackfilled).toBe(1);
-    expect(second.archivedBackfilled).toBe(0);
-    expect(await ledgerRows(task.id)).toMatchObject([{
-      entryId: buildPatchnodeEntryId("completed", task.id, toPatchnodeOccurrenceKey(movedAt)),
-      body: "backfilled body",
-      day: "2026-08-24",
-    }]);
-  });
-
   it("re-arms feed reconciliation after its TTL", async () => {
     const store = h.store();
     expect((await store.listPatchnodeEntries()).entries).toEqual([]);
@@ -553,12 +479,11 @@ pgDescribe("Patchnode ledger (PostgreSQL)", () => {
       day: original.day,
       occurrenceKey: original.occurrenceKey,
       title: "Original title",
-      body: "original body",
+      body: productBody("original body"),
     }]);
 
-    await store.archiveTask(task.id, { cleanup: false });
-    await store.cleanupArchivedTasks();
-    expect(await ledgerRows(task.id)).toMatchObject([{ entryId: original.entryId, title: "Original title", body: "original body" }]);
+    await store.deleteTask(task.id);
+    expect(await ledgerRows(task.id)).toMatchObject([{ entryId: original.entryId, title: "Original title", body: productBody("original body") }]);
   });
 
   it("keeps each completion body as a point-in-time snapshot", async () => {
@@ -568,8 +493,9 @@ pgDescribe("Patchnode ledger (PostgreSQL)", () => {
     const task = await createWithSummary({ description: "Snapshot", summary: "first" });
     await deliver(task.id);
     await store.updateTask(task.id, { summary: "second" });
+    await writePlan(task.id, "second");
     await store.reconcilePatchnodeLedger({ force: true });
-    expect(await ledgerRows(task.id)).toMatchObject([{ body: "first", day: "2026-08-26" }]);
+    expect(await ledgerRows(task.id)).toMatchObject([{ body: productBody("first"), day: "2026-08-26" }]);
 
     vi.setSystemTime(new Date("2026-08-27T08:00:00.000Z"));
     await store.moveTask(task.id, "todo", { moveSource: "user" });
@@ -577,32 +503,300 @@ pgDescribe("Patchnode ledger (PostgreSQL)", () => {
 
     const rows = await ledgerRows(task.id);
     expect(rows).toHaveLength(2);
-    expect(rows.map((row) => `${row.day}:${row.body}`).sort()).toEqual(["2026-08-26:first", "2026-08-27:second"]);
+    expect(rows.map((row) => `${row.day}:${row.body}`).sort()).toEqual([`2026-08-26:${productBody("first")}`, `2026-08-27:${productBody("second")}`]);
   });
 
-  it("does not treat unarchive into the completion lane as a new delivery", async () => {
-    const store = h.store();
-    const task = await createWithSummary({ description: "Restore", summary: "one delivery" });
-    await deliver(task.id);
-    const originalEntryId = (await ledgerRows(task.id))[0]!.entryId;
-    await store.archiveTask(task.id, { cleanup: false });
-
-    const restored = await store.unarchiveTask(task.id);
-
-    expect(restored.column).toBe("done");
-    expect(await ledgerRows(task.id)).toMatchObject([{ entryId: originalEntryId }]);
-  });
-
-  it("survives archive soft-delete and cleanup hard-delete", async () => {
+  it("survives task soft deletion", async () => {
     const store = h.store();
     const task = await createWithSummary({ title: "Permanent", description: "Permanent", summary: "survives" });
     await deliver(task.id);
-    await store.archiveTask(task.id);
-    expect((await store.listPatchnodeEntries({ query: task.id })).entries[0]).toMatchObject({ title: "Permanent", body: "survives" });
-    await store.cleanupArchivedTasks();
+    await store.deleteTask(task.id);
+    expect((await store.listPatchnodeEntries({ query: task.id })).entries[0]).toMatchObject({ title: "Permanent", body: productBody("survives") });
     const taskRows = await h.adminDb().select({ id: schema.project.tasks.id }).from(schema.project.tasks).where(eq(schema.project.tasks.id, task.id));
-    expect(taskRows).toEqual([]);
-    expect((await store.listPatchnodeEntries({ query: task.id })).entries).toHaveLength(1);
+    expect(taskRows).toEqual([{ id: task.id }]);
+  });
+
+  /*
+  FNXC:PatchnodeLedger 2026-09-15-23:26:
+  FN-444 symptom reproduction at the durable layer: an ordinary Fusion task stores no title, so the
+  persisted delivery label used to be the task id itself and History showed the identifier twice.
+  */
+  it("persists the description label for a delivered task with no stored title", async () => {
+    const store = h.store();
+    const task = await createWithSummary({ description: "Corriger le rendu de l'historique", summary: "Libelle repare" });
+    await deliver(task.id);
+    expect(await ledgerRows(task.id)).toMatchObject([{ title: "Corriger le rendu de l'historique", body: productBody("Libelle repare") }]);
+  });
+
+  /*
+  FNXC:TaskTitleDerivation 2026-09-26-02:43:
+  The insert-path half of the ledger convergence: before RUFU-295 a spec-shaped description was sliced
+  raw, so this exact delivery froze the section heading into a permanent History row. The write guard
+  keeps such a heading out of `tasks.title`, and the ledger now derives its fallback from the same
+  rule, so neither branch of the precedence can reproduce the reported junk.
+  */
+  it("persists a derived label (never a heading) for a delivered card whose description starts with a heading", async () => {
+    const store = h.store();
+    const task = await store.createTask({ description: "## Pôvodný popis\n\nUvítali by sme možnosť premenovať kartu." });
+    await deliver(task.id);
+
+    const row = (await ledgerRows(task.id))[0]!;
+    expect(row.title).toBe("Uvítali by sme možnosť premenovať kartu");
+    expect(row.title).not.toMatch(/^\s{0,3}#/);
+    expect(row.title).not.toContain("\n");
+  });
+
+  it("bounds a very long description label to exactly 220 characters with no suffix", async () => {
+    const store = h.store();
+    const description = "z".repeat(400);
+    const task = await store.createTask({ description });
+    await deliver(task.id);
+    const row = (await ledgerRows(task.id))[0]!;
+    expect(row.title).toBe(description.slice(0, 220));
+    expect(row.title).toHaveLength(220);
+  });
+
+  it("backfills an archived titleless completion with its description label", async () => {
+    const store = h.store();
+    const task = await store.createTask({ description: "Archived titleless delivery" });
+    await seedTaskColumn(task.id, "archived", "2026-08-25T08:00:00.000Z");
+    await h.adminDb().update(schema.project.tasks).set({ deletedAt: "2026-08-25T09:00:00.000Z" }).where(and(
+      eq(schema.project.tasks.projectId, h.layer().projectId!),
+      eq(schema.project.tasks.id, task.id),
+    ));
+    await h.adminDb().insert(schema.archive.archivedTasks).values({
+      projectId: h.layer().projectId!,
+      id: task.id,
+      taskJson: JSON.stringify({ preArchiveColumn: "done" }),
+      archivedAt: "2026-08-25T09:00:00.000Z",
+      description: "Archived titleless delivery",
+      createdAt: "2026-08-25T08:00:00.000Z",
+      updatedAt: "2026-08-25T09:00:00.000Z",
+    } as never);
+
+    const result = await store.reconcilePatchnodeLedger({ force: true });
+    expect(result.archivedBackfilled).toBe(1);
+    expect(await ledgerRows(task.id)).toMatchObject([{ title: "Archived titleless delivery" }]);
+  });
+
+  it("repairs a legacy entry whose label is its own task id, idempotently and only once", async () => {
+    const store = h.store();
+    const task = await createWithSummary({ description: "Corriger le rendu", summary: "Shipped search" });
+    await deliver(task.id);
+    // Rewrite the row into the pre-FN-444 degenerate shape.
+    await h.adminDb().update(schema.project.patchnodeEntries).set({ title: task.id, body: task.id }).where(and(
+      eq(schema.project.patchnodeEntries.projectId, h.layer().projectId!),
+      eq(schema.project.patchnodeEntries.taskId, task.id),
+    ));
+
+    const first = await store.reconcilePatchnodeLedger({ force: true });
+    expect(first.labelsRepaired).toBe(1);
+    expect(await ledgerRows(task.id)).toMatchObject([{ title: "Corriger le rendu", body: "" }]);
+
+    const second = await store.reconcilePatchnodeLedger({ force: true });
+    expect(second.labelsRepaired).toBe(0);
+    expect(await ledgerRows(task.id)).toMatchObject([{ title: "Corriger le rendu", body: "" }]);
+  });
+
+  /*
+  FNXC:TaskTitleDerivation 2026-09-26-02:43:
+  RUFU-295 widened the durable label repair beyond `label === taskId`. An entry written before the
+  derivation existed can carry the description's RAW first line — a heading marker (`## Pôvodný popis`)
+  or, for a multi-line description, a label containing a line break. Those labels are junk on every
+  surface, so reconcile now re-derives them from the live task and the SQL candidate predicate mirrors
+  the same shape classes. A clean label is still point-in-time history and must never be rewritten.
+  */
+  it("repairs a durable heading-shaped label once and leaves it stable", async () => {
+    const store = h.store();
+    const description = "## Pôvodný popis\n\nUvítali by sme možnosť premenovať kartu.";
+    const task = await createWithSummary({ description, summary: "Shipped rename rule" });
+    await deliver(task.id);
+    // Rewrite the row into the pre-derivation shape: the description's raw first line.
+    await h.adminDb().update(schema.project.patchnodeEntries).set({ title: "## Pôvodný popis" }).where(and(
+      eq(schema.project.patchnodeEntries.projectId, h.layer().projectId!),
+      eq(schema.project.patchnodeEntries.taskId, task.id),
+    ));
+
+    const first = await store.reconcilePatchnodeLedger({ force: true });
+    expect(first.labelsRepaired).toBe(1);
+    expect(await ledgerRows(task.id)).toMatchObject([{ title: "Uvítali by sme možnosť premenovať kartu" }]);
+
+    const second = await store.reconcilePatchnodeLedger({ force: true });
+    expect(second.labelsRepaired).toBe(0);
+    expect(await ledgerRows(task.id)).toMatchObject([{ title: "Uvítali by sme možnosť premenovať kartu" }]);
+  });
+
+  it("repairs a durable label that froze a multi-line description slice", async () => {
+    const store = h.store();
+    const task = await createWithSummary({ description: "First line\nSecond line", summary: "Shipped lines" });
+    await deliver(task.id);
+    await h.adminDb().update(schema.project.patchnodeEntries).set({ title: "First line\nSecond line" }).where(and(
+      eq(schema.project.patchnodeEntries.projectId, h.layer().projectId!),
+      eq(schema.project.patchnodeEntries.taskId, task.id),
+    ));
+
+    expect((await store.reconcilePatchnodeLedger({ force: true })).labelsRepaired).toBe(1);
+    const repaired = (await ledgerRows(task.id))[0]!;
+    expect(repaired.title).toBe("First line");
+    expect(repaired.title).not.toContain("\n");
+  });
+
+  it("never rewrites a clean durable label that merely differs from today's derivation", async () => {
+    const store = h.store();
+    const task = await createWithSummary({ description: "Current description sentence", summary: "Shipped thing" });
+    await deliver(task.id);
+    await h.adminDb().update(schema.project.patchnodeEntries).set({ title: "Label frozen in August" }).where(and(
+      eq(schema.project.patchnodeEntries.projectId, h.layer().projectId!),
+      eq(schema.project.patchnodeEntries.taskId, task.id),
+    ));
+
+    expect((await store.reconcilePatchnodeLedger({ force: true })).labelsRepaired).toBe(0);
+    expect(await ledgerRows(task.id)).toMatchObject([{ title: "Label frozen in August" }]);
+  });
+
+  it("never rewrites a real point-in-time summary while repairing a legacy label", async () => {
+    const store = h.store();
+    const task = await createWithSummary({ description: "Corriger le rendu", summary: "Shipped search" });
+    await deliver(task.id);
+    await h.adminDb().update(schema.project.patchnodeEntries).set({ title: task.id }).where(and(
+      eq(schema.project.patchnodeEntries.projectId, h.layer().projectId!),
+      eq(schema.project.patchnodeEntries.taskId, task.id),
+    ));
+    await store.updateTask(task.id, { summary: "Later summary" });
+
+    expect((await store.reconcilePatchnodeLedger({ force: true })).labelsRepaired).toBe(1);
+    expect(await ledgerRows(task.id)).toMatchObject([{ title: "Corriger le rendu", body: productBody("Shipped search") }]);
+  });
+
+  it("leaves a legacy entry untouched when its task is gone", async () => {
+    const store = h.store();
+    const task = await createWithSummary({ description: "Corriger le rendu", summary: "Shipped search" });
+    await deliver(task.id);
+    await h.adminDb().update(schema.project.patchnodeEntries).set({ title: task.id, body: task.id }).where(and(
+      eq(schema.project.patchnodeEntries.projectId, h.layer().projectId!),
+      eq(schema.project.patchnodeEntries.taskId, task.id),
+    ));
+    await store.deleteTask(task.id);
+
+    expect((await store.reconcilePatchnodeLedger({ force: true })).labelsRepaired).toBe(0);
+    expect(await ledgerRows(task.id)).toMatchObject([{ title: task.id, body: task.id }]);
+  });
+
+  it("finds an entry by its label when the body is empty", async () => {
+    const store = h.store();
+    const task = await store.createTask({ description: "Rendre l'historique lisible" });
+    await deliver(task.id);
+    const found = await store.listPatchnodeEntries({ query: "historique lisible" });
+    expect(found.entries).toMatchObject([{ taskId: task.id, title: "Rendre l'historique lisible", body: "" }]);
+  });
+
+  /*
+  FNXC:PatchnodeLedger 2026-09-18-02:48:
+  FN-526 symptom verification at the durable layer. The three INSERTION passes of
+  `reconcilePatchnodeFromLiveTasks` build their entries from a raw task row, so without an injected
+  plan source they would write empty bodies that the repair pass can never fix (its provenance
+  marker requires `entries.body = tasks.summary`, unsatisfiable by an empty body).
+  */
+  it("inserts the plan's product summary through the revert reconciliation pass", async () => {
+    const store = h.store();
+    const task = await createWithSummary({ description: "Revert pass plan source", summary: "annulation" });
+    await deliver(task.id);
+    await store.updateTask(task.id, { sourceMetadataPatch: { revertedAt: "2026-08-29T12:00:00.000Z", revertedCommitSha: "rev" } });
+
+    await store.reconcilePatchnodeLedger({ force: true });
+    const reverted = (await ledgerRows(task.id)).find((row) => row.kind === "reverted")!;
+    expect(reverted.body).toBe(productBody("annulation"));
+    expect(reverted.body).not.toBe("");
+    expect(reverted.body).not.toBe("annulation");
+  });
+
+  it("backfills an archived delivery with the plan's product summary, and with an empty body when the plan is gone", async () => {
+    const store = h.store();
+    const archive = async (id: string) => {
+      await seedTaskColumn(id, "archived", "2026-08-25T08:00:00.000Z");
+      await h.adminDb().update(schema.project.tasks).set({ deletedAt: "2026-08-25T09:00:00.000Z" }).where(and(
+        eq(schema.project.tasks.projectId, h.layer().projectId!),
+        eq(schema.project.tasks.id, id),
+      ));
+      await h.adminDb().insert(schema.archive.archivedTasks).values({
+        projectId: h.layer().projectId!,
+        id,
+        taskJson: JSON.stringify({ preArchiveColumn: "done" }),
+        archivedAt: "2026-08-25T09:00:00.000Z",
+        description: "Archived delivery",
+        createdAt: "2026-08-25T08:00:00.000Z",
+        updatedAt: "2026-08-25T09:00:00.000Z",
+      } as never);
+    };
+
+    const withPlan = await createWithSummary({ description: "Archived with plan", summary: "archive" });
+    const withoutPlan = await createWithSummary({ description: "Archived without plan", summary: "no plan" });
+    await removePlan(withoutPlan.id);
+    await archive(withPlan.id);
+    await archive(withoutPlan.id);
+
+    const result = await store.reconcilePatchnodeLedger({ force: true });
+    expect(result.archivedBackfilled).toBe(2);
+    expect((await ledgerRows(withPlan.id))[0]!.body).toBe(productBody("archive"));
+    expect((await ledgerRows(withoutPlan.id))[0]!.body).toBe("");
+  });
+
+  it("repairs a legacy body that is provably the old completion summary, exactly once", async () => {
+    const store = h.store();
+    const task = await createWithSummary({ description: "Corriger le rendu", summary: "Shipped search" });
+    await deliver(task.id);
+    // Rewrite the row into the pre-FN-526 shape: body === task.summary.
+    await h.adminDb().update(schema.project.patchnodeEntries).set({ body: "Shipped search" }).where(and(
+      eq(schema.project.patchnodeEntries.projectId, h.layer().projectId!),
+      eq(schema.project.patchnodeEntries.taskId, task.id),
+    ));
+
+    const first = await store.reconcilePatchnodeLedger({ force: true });
+    expect(first.productSummariesRepaired).toBe(1);
+    expect((await ledgerRows(task.id))[0]!.body).toBe(productBody("Shipped search"));
+
+    const second = await store.reconcilePatchnodeLedger({ force: true });
+    expect(second.productSummariesRepaired).toBe(0);
+    expect(second.completedInserted).toBe(0);
+    expect((await ledgerRows(task.id))[0]!.body).toBe(productBody("Shipped search"));
+  });
+
+  it("clears a legacy completion-summary body when the plan exposes no product section", async () => {
+    const store = h.store();
+    const task = await createWithSummary({ description: "Sans section produit", summary: "Shipped search" });
+    await deliver(task.id);
+    await writeFile(join(store.taskDir(task.id), "PROMPT.md"), "# Task\n\n## Mission\n\nBrief technique.\n", "utf-8");
+    await h.adminDb().update(schema.project.patchnodeEntries).set({ body: "Shipped search" }).where(and(
+      eq(schema.project.patchnodeEntries.projectId, h.layer().projectId!),
+      eq(schema.project.patchnodeEntries.taskId, task.id),
+    ));
+
+    expect((await store.reconcilePatchnodeLedger({ force: true })).productSummariesRepaired).toBe(1);
+    expect((await ledgerRows(task.id))[0]!.body).toBe("");
+  });
+
+  it("never repairs a body that does not match the live completion summary", async () => {
+    const store = h.store();
+    const task = await createWithSummary({ description: "Corps deja produit", summary: "Shipped search" });
+    await deliver(task.id);
+    await store.updateTask(task.id, { summary: "Later summary" });
+
+    expect((await store.reconcilePatchnodeLedger({ force: true })).productSummariesRepaired).toBe(0);
+    expect((await ledgerRows(task.id))[0]!.body).toBe(productBody("Shipped search"));
+  });
+
+  it("never repairs an entry whose task is soft-deleted", async () => {
+    const store = h.store();
+    const task = await createWithSummary({ description: "Tache supprimee", summary: "Shipped search" });
+    await deliver(task.id);
+    await h.adminDb().update(schema.project.patchnodeEntries).set({ body: "Shipped search" }).where(and(
+      eq(schema.project.patchnodeEntries.projectId, h.layer().projectId!),
+      eq(schema.project.patchnodeEntries.taskId, task.id),
+    ));
+    await store.deleteTask(task.id);
+
+    expect((await store.reconcilePatchnodeLedger({ force: true })).productSummariesRepaired).toBe(0);
+    expect((await ledgerRows(task.id))[0]!.body).toBe("Shipped search");
   });
 
   it("has no expiry or size-limiting implementation", async () => {

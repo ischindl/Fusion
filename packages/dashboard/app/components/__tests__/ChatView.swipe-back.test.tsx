@@ -80,6 +80,8 @@ function mockRoomsIdle() {
     deleteRoom: vi.fn(),
     sendRoomMessage: vi.fn(),
     refreshRooms: vi.fn(),
+    updateRoomSettings: vi.fn(),
+    clearRoom: vi.fn(),
   });
 }
 
@@ -100,6 +102,15 @@ function StatefulChatView() {
     streamingText: "",
     streamingThinking: "",
     streamingToolCalls: [],
+    /* Merged UseChatReturn (origin/main merge): engine phase, RUFU-199 handoff, FN-459 edit-draft rescue, and session-pagination defaults. */
+    streamingPhase: null,
+    handoffSession: vi.fn().mockResolvedValue({ session: { id: "session-handoff", agentId: "agent-001", status: "active", createdAt: "2026-04-08T00:00:00.000Z", updatedAt: "2026-04-08T00:00:00.000Z" }, degraded: false }),
+    editDraftRestore: null,
+    clearEditDraftRestore: vi.fn(),
+    loadMoreSessions: vi.fn().mockResolvedValue(undefined),
+    hasMoreSessions: false,
+    hasMoreArchivedSessions: false,
+    sessionsLoadingMore: false,
     selectSession: handleSelectSession,
     createSession: vi.fn(),
     archiveSession: vi.fn(),
@@ -115,6 +126,23 @@ function StatefulChatView() {
     filteredSessions: [session],
     refreshSessions: vi.fn(),
     agentsMap: new Map(),
+    tags: [],
+    selectedTagId: null,
+    setSelectedTagId: vi.fn(),
+    archivedSessions: [],
+    refreshArchivedSessions: vi.fn(),
+    unarchiveSession: vi.fn(),
+    renameSession: vi.fn(),
+    pinSession: vi.fn(),
+    pinnedCount: 0,
+    setSessionModel: vi.fn(),
+    setSessionThinkingLevel: vi.fn(),
+    createTag: vi.fn(),
+    renameTag: vi.fn(),
+    deleteTag: vi.fn(),
+    setSessionTags: vi.fn(),
+    editMessageAndResend: vi.fn(),
+    backfillStashSession: vi.fn(),
   }));
 
   mockRoomsIdle();
@@ -148,6 +176,23 @@ function RestoredActiveSessionChatView() {
     filteredSessions: [session],
     refreshSessions: vi.fn(),
     agentsMap: new Map(),
+    tags: [],
+    selectedTagId: null,
+    setSelectedTagId: vi.fn(),
+    archivedSessions: [],
+    refreshArchivedSessions: vi.fn(),
+    unarchiveSession: vi.fn(),
+    renameSession: vi.fn(),
+    pinSession: vi.fn(),
+    pinnedCount: 0,
+    setSessionModel: vi.fn(),
+    setSessionThinkingLevel: vi.fn(),
+    createTag: vi.fn(),
+    renameTag: vi.fn(),
+    deleteTag: vi.fn(),
+    setSessionTags: vi.fn(),
+    editMessageAndResend: vi.fn(),
+    backfillStashSession: vi.fn(),
   });
   mockRoomsIdle();
 

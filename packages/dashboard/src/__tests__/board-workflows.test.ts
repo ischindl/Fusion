@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { BUILTIN_CODING_WORKFLOW_IR, getBuiltinWorkflow, type WorkflowIr } from "@fusion/core";
+import { getTaskWorkflowSelectionAsyncImpl } from "../../../core/src/task-store/workflow-definitions.js";
 import { buildBoardWorkflowsPayload } from "../routes/board-workflows.js";
 
 const CUSTOM_WORKFLOW_ID = "WF-DESCRIPTIONS";
@@ -103,6 +104,46 @@ describe("buildBoardWorkflowsPayload disabled built-ins", () => {
   });
 });
 
+describe("buildBoardWorkflowsPayload stable workflow identity", () => {
+  it("projects migrated selections into one Ideas lane", async () => {
+    const persisted = new Map([
+      ["FN-OLD", { workflowId: "builtin:coding-ideas", stepIds: ["plan-review"] }],
+      ["FN-NEW", { workflowId: "builtin:coding-ideas", stepIds: ["code-review"] }],
+    ]);
+    const getTaskWorkflowSelectionAsync = vi.fn(async (taskId: string) => {
+      const row = persisted.get(taskId);
+      const db = {
+        select: () => ({
+          from: () => ({
+            where: () => ({ limit: async () => row ? [row] : [] }),
+          }),
+        }),
+      };
+      return getTaskWorkflowSelectionAsyncImpl({
+        asyncLayer: { projectId: "board-canonical", db },
+      } as never, taskId);
+    });
+    const store = {
+      getSettings: vi.fn(async () => ({ defaultWorkflowId: "builtin:coding" })),
+      getTaskWorkflowSelection: vi.fn(() => undefined),
+      getTaskWorkflowSelectionAsync,
+      getWorkflowDefinition: vi.fn(async () => undefined),
+      listWorkflowDefinitions: vi.fn(async () => []),
+    };
+
+    const payload = await buildBoardWorkflowsPayload(store as never, ["FN-OLD", "FN-NEW"]);
+    const ideas = payload.workflows.filter((workflow) => workflow.id === "builtin:coding-ideas");
+
+    expect(ideas).toHaveLength(1);
+    expect(ideas[0]?.name).toBe("Coding (Ideas)");
+    expect(payload.workflows.filter((workflow) => workflow.name === "Coding (Ideas)")).toHaveLength(1);
+    expect(payload.taskWorkflowIds).toMatchObject({
+      "FN-OLD": "builtin:coding-ideas",
+      "FN-NEW": "builtin:coding-ideas",
+    });
+  });
+});
+
 describe("buildBoardWorkflowsPayload built-in column labels", () => {
   function builtinStore(workflowId: string) {
     return {
@@ -149,9 +190,77 @@ describe("buildBoardWorkflowsPayload built-in column labels", () => {
       "in-progress": "In Progress",
       "in-review": "In Review",
       done: "Done",
-      archived: "Archived",
     });
     // And the merged column is gone, so nothing should be canonicalising a `triage` label any more.
     expect(named).not.toHaveProperty("triage");
+  });
+});
+
+/*
+FNXC:BoardLoad 2026-09-11-21:12:
+One batched selection read resolves every card's workflow; the per-task fan-out
+this replaces cost 12-25s on a 65-card board (measured on the deployed
+0.78.0-beta.4 dashboard) while the sibling list reads answered in <1s, which is
+what made the board look unable to load. The invariant is the CALL SHAPE: one
+batch carrying every id, zero singular reads, per-card values still resolved.
+Asserting the shape rather than a query count also keeps a store that only
+exposes the singular reader (older/partial stores) on its working path.
+*/
+describe("buildBoardWorkflowsPayload batched workflow-selection read", () => {
+  function batchedStore(options: {
+    selections?: Map<string, { workflowId: string; stepIds: string[] }>;
+    batchFails?: boolean;
+    singularSelection?: { workflowId: string; stepIds: string[] };
+  } = {}) {
+    const getTaskWorkflowSelectionsAsync = options.batchFails
+      ? vi.fn(async () => { throw new Error("selection batch read failed"); })
+      : vi.fn(async () => options.selections ?? new Map());
+    const getTaskWorkflowSelectionAsync = vi.fn(async () => options.singularSelection);
+    const getTaskWorkflowSelection = vi.fn(() => undefined);
+    return {
+      getTaskWorkflowSelectionsAsync,
+      getTaskWorkflowSelectionAsync,
+      getTaskWorkflowSelection,
+      store: {
+        getSettings: vi.fn(async () => ({ defaultWorkflowId: "builtin:coding" })),
+        getTaskWorkflowSelectionsAsync,
+        getTaskWorkflowSelectionAsync,
+        getTaskWorkflowSelection,
+        getWorkflowDefinition: vi.fn(async () => undefined),
+        listWorkflowDefinitions: vi.fn(async () => []),
+      },
+    };
+  }
+
+  it("reads every card's selection in one batch instead of one query per card", async () => {
+    const taskIds = Array.from({ length: 60 }, (_, index) => `FN-${index}`);
+    const harness = batchedStore({
+      selections: new Map([["FN-7", { workflowId: CUSTOM_WORKFLOW_ID, stepIds: [] }]]),
+    });
+
+    const payload = await buildBoardWorkflowsPayload(harness.store as never, taskIds);
+
+    expect(harness.getTaskWorkflowSelectionsAsync).toHaveBeenCalledTimes(1);
+    expect(harness.getTaskWorkflowSelectionsAsync).toHaveBeenCalledWith(taskIds);
+    expect(harness.getTaskWorkflowSelectionAsync).not.toHaveBeenCalled();
+    expect(harness.getTaskWorkflowSelection).not.toHaveBeenCalled();
+    expect(payload.taskWorkflowIds["FN-7"]).toBe(CUSTOM_WORKFLOW_ID);
+    expect(payload.taskWorkflowIds["FN-8"]).toBe("builtin:coding");
+  });
+
+  it("falls back to per-task reads when the batched read fails, so the board still loads", async () => {
+    const harness = batchedStore({
+      batchFails: true,
+      singularSelection: { workflowId: CUSTOM_WORKFLOW_ID, stepIds: [] },
+    });
+
+    const payload = await buildBoardWorkflowsPayload(harness.store as never, ["FN-1", "FN-2"]);
+
+    expect(harness.getTaskWorkflowSelectionsAsync).toHaveBeenCalledTimes(1);
+    expect(harness.getTaskWorkflowSelectionAsync).toHaveBeenCalledTimes(2);
+    expect(payload.taskWorkflowIds).toMatchObject({
+      "FN-1": CUSTOM_WORKFLOW_ID,
+      "FN-2": CUSTOM_WORKFLOW_ID,
+    });
   });
 });

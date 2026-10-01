@@ -9,6 +9,24 @@ import { useTasks } from "../../hooks/useTasks";
 import { clearCache, SWR_CACHE_KEYS } from "../../utils/swrCache";
 import * as taskApi from "../../api";
 import { NavigationHistoryProvider, useNavigationHistory } from "../../hooks/useNavigationHistory";
+import type { Task } from "@fusion/core";
+
+/** RUFU-140: minimal complete Task literal for fixture sites that only need id/title. */
+function makeMinimalTask(id: string, title: string): Task {
+  return {
+    id,
+    title,
+    description: "",
+    column: "triage",
+    status: "planning",
+    currentStep: 0,
+    dependencies: [],
+    steps: [],
+    log: [],
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  };
+}
 import type { ModalManager } from "../../hooks/useModalManager";
 import type { Toast } from "../../hooks/useToast";
 
@@ -174,7 +192,7 @@ function render(ui: ReactElement, options?: Omit<RenderOptions, "wrapper">) {
 }
 
 const integrationNoop = vi.fn();
-const integrationAsyncNoop = vi.fn(async () => ({}));
+const integrationAsyncNoop = vi.fn(async (..._args: unknown[]) => ({}) as never);
 
 function ensureMatchMedia() {
   if (!window.matchMedia) {
@@ -227,9 +245,7 @@ function PlanningStatusConvergenceHarness({ detailTask, modalManager, settings }
       <ListView
         tasks={tasks}
         projectId="project-a"
-        onMoveTask={integrationAsyncNoop}
         onDeleteTask={integrationAsyncNoop}
-        onArchiveTask={integrationAsyncNoop}
         onMergeTask={integrationAsyncNoop}
         onOpenDetail={integrationNoop}
         addToast={integrationNoop}
@@ -245,7 +261,7 @@ function PlanningStatusConvergenceHarness({ detailTask, modalManager, settings }
         modalManager={modalManager}
         projectActions={{ handleAddProject: integrationNoop, handleSetupComplete: integrationNoop, handleModelOnboardingComplete: integrationNoop }}
         taskHandlers={{ handleModalCreate: integrationAsyncNoop, handlePlanningTaskCreated: integrationNoop, handlePlanningTasksCreated: integrationNoop, handleGitHubImport: integrationNoop }}
-        taskOperations={{ moveTask: integrationAsyncNoop, deleteTask: integrationAsyncNoop, mergeTask: integrationAsyncNoop, retryTask: integrationAsyncNoop, duplicateTask: integrationAsyncNoop }}
+        taskOperations={{ moveTask: integrationAsyncNoop, deleteTask: integrationAsyncNoop, mergeTask: integrationAsyncNoop, pauseTask: integrationAsyncNoop, unpauseTask: integrationAsyncNoop, resetTask: integrationAsyncNoop, retryTask: integrationAsyncNoop, duplicateTask: integrationAsyncNoop }}
         deepLink={{ handleDetailClose: integrationNoop }}
         settings={settings as any}
       />
@@ -259,6 +275,13 @@ describe("AppModals", () => {
     // State
     detailTask: null,
     detailTaskInitialTab: "chat",
+    detailTaskOrigin: null,
+    groupModalGroupId: null,
+    newTaskInitialDescription: null,
+    newTaskInitialWorkflowId: undefined,
+    planningSourceIssue: undefined,
+    planningWorkflowId: undefined,
+    planningEntryGeneration: 0,
     settingsOpen: false,
     settingsInitialSection: undefined,
     githubImportOpen: false,
@@ -277,6 +300,7 @@ describe("AppModals", () => {
     schedulesOpen: false,
     newTaskModalOpen: false,
     activityLogOpen: false,
+    historyOpen: false,
     gitManagerOpen: false,
     agentsOpen: false,
     setupWizardOpen: false,
@@ -288,6 +312,10 @@ describe("AppModals", () => {
     updateDetailTask: vi.fn(),
     closeDetailTask: vi.fn(),
     openSettings: vi.fn(),
+    setSettingsSection: vi.fn(),
+    clearPlanningInitialPlan: vi.fn(),
+    openGroupModal: vi.fn(),
+    closeGroupModal: vi.fn(),
     closeSettings: vi.fn(),
     openGitHubImport: vi.fn(),
     closeGitHubImport: vi.fn(),
@@ -309,9 +337,14 @@ describe("AppModals", () => {
     openSchedules: vi.fn(),
     closeSchedules: vi.fn(),
     openNewTask: vi.fn(),
+    openNewTaskWithDescription: vi.fn(),
     closeNewTask: vi.fn(),
     openActivityLog: vi.fn(),
     closeActivityLog: vi.fn(),
+    openHistory: vi.fn(),
+    closeHistory: vi.fn(),
+    setWorkflowViewParams: vi.fn(),
+    clearWorkflowViewParams: vi.fn(),
     openGitManager: vi.fn(),
     closeGitManager: vi.fn(),
     openAgents: vi.fn(),
@@ -328,15 +361,35 @@ describe("AppModals", () => {
   const mockToasts: Toast[] = [];
   const mockSettings = {
     prAuthAvailable: false,
+    autoMerge: false,
+    showCostBadgeOnCards: false,
+    taskDetailDefaultTab: "definition" as const,
+    chatMessageLayout: "bubbles" as const,
+    navigationPlacement: "footer" as const,
+    rightSidebarEnabled: false,
     themeMode: "dark" as const,
     colorTheme: "default" as const,
+    uiStyle: "classic" as const,
+    setUiStyle: vi.fn(),
+    dashboardFontScalePct: 100,
+    shadcnCustomColors: {},
+    resolvedThemeMode: "dark" as const,
     setThemeMode: vi.fn(),
     setColorTheme: vi.fn(),
+    setDashboardFontScalePct: vi.fn(),
+    setShadcnCustomColors: vi.fn(),
+    setChatMessageLayoutImmediate: vi.fn(),
+    setNavigationPlacementImmediate: vi.fn(),
+    setRightSidebarEnabledImmediate: vi.fn(),
+    setShowCostBadgeOnCardsImmediate: vi.fn(),
+    setTaskDetailDefaultTabImmediate: vi.fn(),
+    setMobileNavPrimaryItemsImmediate: vi.fn(),
   };
 
   beforeEach(() => {
     vi.clearAllMocks();
     sseSubscriptions.length = 0;
+    vi.spyOn(taskApi, "fetchCompletedTasks").mockResolvedValue({ tasks: [], total: 0, hasMore: false });
     clearCache(`${SWR_CACHE_KEYS.TASKS_PREFIX}project-a`);
     mockTaskDetailModalProps.mockClear();
     mockScheduledTasksModalProps.mockClear();
@@ -361,7 +414,7 @@ describe("AppModals", () => {
         modalManager={{ ...mockModalManager, newTaskModalOpen: true }}
         projectActions={{ handleAddProject: vi.fn(), handleSetupComplete: vi.fn(), handleModelOnboardingComplete: vi.fn() }}
         taskHandlers={{ handleModalCreate: vi.fn(), handlePlanningTaskCreated: vi.fn(), handlePlanningTasksCreated: vi.fn(), handleGitHubImport: vi.fn() }}
-        taskOperations={{ moveTask, deleteTask: vi.fn(), mergeTask: vi.fn(), retryTask: vi.fn(), duplicateTask: vi.fn() }}
+        taskOperations={{ moveTask, deleteTask: vi.fn(), mergeTask: vi.fn(), pauseTask: vi.fn(), unpauseTask: vi.fn(), resetTask: vi.fn(), retryTask: vi.fn(), duplicateTask: vi.fn() }}
         deepLink={{ handleDetailClose: vi.fn() }}
         settings={mockSettings}
       />,
@@ -386,7 +439,7 @@ describe("AppModals", () => {
         modalManager={mockModalManager}
         projectActions={{ handleAddProject: vi.fn(), handleSetupComplete: vi.fn(), handleModelOnboardingComplete: vi.fn() }}
         taskHandlers={{ handleModalCreate: vi.fn(), handlePlanningTaskCreated: vi.fn(), handlePlanningTasksCreated: vi.fn(), handleGitHubImport: vi.fn() }}
-        taskOperations={{ moveTask: vi.fn(), deleteTask: vi.fn(), mergeTask: vi.fn(), retryTask: vi.fn(), duplicateTask: vi.fn() }}
+        taskOperations={{ moveTask: vi.fn(), deleteTask: vi.fn(), mergeTask: vi.fn(), pauseTask: vi.fn(), unpauseTask: vi.fn(), resetTask: vi.fn(), retryTask: vi.fn(), duplicateTask: vi.fn() }}
         deepLink={{ handleDetailClose: vi.fn() }}
         settings={mockSettings}
       />
@@ -411,7 +464,7 @@ describe("AppModals", () => {
       modalManager: mockModalManager,
       projectActions: { handleAddProject: vi.fn(), handleSetupComplete: vi.fn(), handleModelOnboardingComplete: vi.fn() },
       taskHandlers: { handleModalCreate: vi.fn(), handlePlanningTaskCreated: vi.fn(), handlePlanningTasksCreated: vi.fn(), handleGitHubImport: vi.fn() },
-      taskOperations: { moveTask: vi.fn(), deleteTask: vi.fn(), mergeTask: vi.fn(), retryTask: vi.fn(), duplicateTask: vi.fn() },
+      taskOperations: { moveTask: vi.fn(), deleteTask: vi.fn(), mergeTask: vi.fn(), pauseTask: vi.fn(), unpauseTask: vi.fn(), resetTask: vi.fn(), retryTask: vi.fn(), duplicateTask: vi.fn() },
       deepLink: { handleDetailClose: vi.fn() },
       settings: mockSettings,
     });
@@ -478,7 +531,7 @@ describe("AppModals", () => {
         modalManager={manager}
         projectActions={{ handleAddProject: vi.fn(), handleSetupComplete: vi.fn(), handleModelOnboardingComplete: vi.fn() }}
         taskHandlers={{ handleModalCreate: vi.fn(), handlePlanningTaskCreated: vi.fn(), handlePlanningTasksCreated: vi.fn(), handleGitHubImport: vi.fn() }}
-        taskOperations={{ moveTask: vi.fn(), deleteTask: vi.fn(), mergeTask: vi.fn(), retryTask: vi.fn(), duplicateTask: vi.fn() }}
+        taskOperations={{ moveTask: vi.fn(), deleteTask: vi.fn(), mergeTask: vi.fn(), pauseTask: vi.fn(), unpauseTask: vi.fn(), resetTask: vi.fn(), retryTask: vi.fn(), duplicateTask: vi.fn() }}
         deepLink={{ handleDetailClose: vi.fn() }}
         settings={mockSettings}
       />,
@@ -509,12 +562,13 @@ describe("AppModals", () => {
   AppModals reconciles its retained detail snapshot with the live board by lifecycle freshness.
   */
   it("does not roll an open queued detail back when a stale scheduler board row arrives", async () => {
-    const detail = {
+    const detail: Task = {
       id: "FN-QUEUED",
       title: "Blocked task",
       description: "",
       column: "todo",
       status: "queued",
+      currentStep: 0,
       overlapBlockedBy: "FN-UPSTREAM",
       dependencies: ["FN-UPSTREAM"],
       steps: [],
@@ -524,7 +578,7 @@ describe("AppModals", () => {
       updatedAt: "2026-08-05T10:02:00.000Z",
       columnMovedAt: "2026-08-05T10:02:00.000Z",
     };
-    const staleSchedulerTodo = {
+    const staleSchedulerTodo: Task = {
       ...detail,
       status: undefined,
       prompt: undefined,
@@ -546,7 +600,7 @@ describe("AppModals", () => {
         modalManager={manager}
         projectActions={{ handleAddProject: vi.fn(), handleSetupComplete: vi.fn(), handleModelOnboardingComplete: vi.fn() }}
         taskHandlers={{ handleModalCreate: vi.fn(), handlePlanningTaskCreated: vi.fn(), handlePlanningTasksCreated: vi.fn(), handleGitHubImport: vi.fn() }}
-        taskOperations={{ moveTask: vi.fn(), deleteTask: vi.fn(), mergeTask: vi.fn(), retryTask: vi.fn(), duplicateTask: vi.fn() }}
+        taskOperations={{ moveTask: vi.fn(), deleteTask: vi.fn(), mergeTask: vi.fn(), pauseTask: vi.fn(), unpauseTask: vi.fn(), resetTask: vi.fn(), retryTask: vi.fn(), duplicateTask: vi.fn() }}
         deepLink={{ handleDetailClose: vi.fn() }}
         settings={mockSettings}
       />
@@ -562,12 +616,13 @@ describe("AppModals", () => {
   });
 
   it("keeps an open planning detail authoritative while the board has only live planner evidence", async () => {
-    const detail = {
+    const detail: Task = {
       id: "FN-8798",
       title: "Revision task",
       description: "",
       column: "triage" as const,
       status: "planning",
+      currentStep: 0,
       dependencies: [],
       steps: [],
       log: [],
@@ -575,7 +630,7 @@ describe("AppModals", () => {
       createdAt: "2026-08-05T10:00:00.000Z",
       updatedAt: "2026-08-05T10:01:00.000Z",
     };
-    const boardRow = {
+    const boardRow: Task = {
       ...detail,
       status: "needs-replan",
       prompt: undefined,
@@ -596,7 +651,7 @@ describe("AppModals", () => {
         modalManager={manager}
         projectActions={{ handleAddProject: vi.fn(), handleSetupComplete: vi.fn(), handleModelOnboardingComplete: vi.fn() }}
         taskHandlers={{ handleModalCreate: vi.fn(), handlePlanningTaskCreated: vi.fn(), handlePlanningTasksCreated: vi.fn(), handleGitHubImport: vi.fn() }}
-        taskOperations={{ moveTask: vi.fn(), deleteTask: vi.fn(), mergeTask: vi.fn(), retryTask: vi.fn(), duplicateTask: vi.fn() }}
+        taskOperations={{ moveTask: vi.fn(), deleteTask: vi.fn(), mergeTask: vi.fn(), pauseTask: vi.fn(), unpauseTask: vi.fn(), resetTask: vi.fn(), retryTask: vi.fn(), duplicateTask: vi.fn() }}
         deepLink={{ handleDetailClose: vi.fn() }}
         settings={mockSettings}
       />,
@@ -612,7 +667,7 @@ describe("AppModals", () => {
   });
 
   it("drives SSE planner activity and its authoritative status update through board, the desktop list row, and the real detail host", async () => {
-    vi.spyOn(taskApi, "fetchTasks").mockReset();
+    vi.spyOn(taskApi, "fetchTaskPage").mockReset();
     vi.spyOn(taskApi, "fetchBoardWorkflows").mockReset();
     window.localStorage.setItem("kb:project-a:kb-dashboard-list-columns", JSON.stringify(["title", "status"]));
     const parkedTask = {
@@ -631,7 +686,7 @@ describe("AppModals", () => {
       columnMovedAt: "2026-08-05T10:00:00.000Z",
     };
     const manager = { ...mockModalManager, detailTask: parkedTask };
-    vi.spyOn(taskApi, "fetchTasks").mockResolvedValueOnce([parkedTask] as any);
+    vi.spyOn(taskApi, "fetchTaskPage").mockResolvedValueOnce({ tasks: [parkedTask], total: 1, hasMore: false } as any);
     vi.spyOn(taskApi, "fetchBoardWorkflows").mockResolvedValue({
       flagEnabled: true,
       defaultWorkflowId: "builtin:coding",
@@ -688,13 +743,13 @@ describe("AppModals", () => {
       expect(screen.getByTestId("task-detail-status-badge")).toHaveTextContent("Planning");
     });
 
-    vi.mocked(taskApi.fetchTasks).mockResolvedValueOnce([{
+    vi.mocked(taskApi.fetchTaskPage).mockResolvedValueOnce({ tasks: [{
       ...inProgressTask,
       status: null,
-    }] as any);
+    }], total: 1, hasMore: false } as any);
     act(() => window.dispatchEvent(new Event("focus")));
 
-    await waitFor(() => expect(taskApi.fetchTasks).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(taskApi.fetchTaskPage).toHaveBeenCalledTimes(2));
     /*
     FNXC:TaskStatusBadge 2026-08-09-08:24:
     FN-8826's empty-status WIP lifecycle fallback and FN-8764/FN-8798's stale-planning
@@ -712,7 +767,10 @@ describe("AppModals", () => {
       expect(cardBadge?.className).not.toMatch(/queued-to-plan|planning/i);
       expect(desktopListBadge).toHaveTextContent(/in progress/i);
       expect(desktopListBadge).not.toHaveTextContent(/planning/i);
-      expect(document.querySelector("#task-detail-modal-title")).toHaveTextContent("FN-8798");
+      const detailHeader = document.querySelector(".task-detail-content > .modal-header");
+      expect(detailHeader).toHaveTextContent("FN-8798");
+      expect(detailHeader).not.toHaveTextContent("Revision task");
+      expect(detailHeader?.querySelector("h1, h2, h3, h4, h5, h6")).toBeNull();
       expect(screen.queryByTestId("task-detail-status-badge")).not.toBeInTheDocument();
     });
   });
@@ -724,7 +782,7 @@ describe("AppModals", () => {
   so this cross-surface guard explicitly mounts and proves the mobile renderer.
   */
   it("drives SSE planner activity and its authoritative status update through board, the mobile list card, and the real detail host", async () => {
-    vi.spyOn(taskApi, "fetchTasks").mockReset();
+    vi.spyOn(taskApi, "fetchTaskPage").mockReset();
     vi.spyOn(taskApi, "fetchBoardWorkflows").mockReset();
     const viewportSpy = mockMobileViewport();
     try {
@@ -745,7 +803,7 @@ describe("AppModals", () => {
         columnMovedAt: "2026-08-05T10:00:00.000Z",
       };
       const manager = { ...mockModalManager, detailTask: parkedTask };
-      vi.spyOn(taskApi, "fetchTasks").mockResolvedValueOnce([parkedTask] as any);
+      vi.spyOn(taskApi, "fetchTaskPage").mockResolvedValueOnce({ tasks: [parkedTask], total: 1, hasMore: false } as any);
       vi.spyOn(taskApi, "fetchBoardWorkflows").mockResolvedValue({
         flagEnabled: true,
         defaultWorkflowId: "builtin:coding",
@@ -778,9 +836,9 @@ describe("AppModals", () => {
         expect(screen.getByTestId("task-detail-status-badge")).toHaveTextContent("Planning");
       });
 
-      vi.mocked(taskApi.fetchTasks).mockResolvedValueOnce([{ ...inProgressTask, status: null }] as any);
+      vi.mocked(taskApi.fetchTaskPage).mockResolvedValueOnce({ tasks: [{ ...inProgressTask, status: null }], total: 1, hasMore: false } as any);
       act(() => window.dispatchEvent(new Event("focus")));
-      await waitFor(() => expect(taskApi.fetchTasks).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(taskApi.fetchTaskPage).toHaveBeenCalledTimes(2));
       await waitFor(() => {
         const card = document.querySelector('.card[data-id="FN-8798"]');
         const cardBadge = card?.querySelector(".card-status-badge");
@@ -791,7 +849,10 @@ describe("AppModals", () => {
         expect(cardBadge?.className).not.toMatch(/queued-to-plan|planning/i);
         expect(mobileListBadge).toHaveTextContent(/in progress/i);
         expect(mobileListBadge).not.toHaveTextContent(/planning/i);
-        expect(document.querySelector("#task-detail-modal-title")).toHaveTextContent("FN-8798");
+        const detailHeader = document.querySelector(".task-detail-content > .modal-header");
+        expect(detailHeader).toHaveTextContent("FN-8798");
+        expect(detailHeader).not.toHaveTextContent("Revision task");
+        expect(detailHeader?.querySelector("h1, h2, h3, h4, h5, h6")).toBeNull();
         expect(screen.queryByTestId("task-detail-status-badge")).not.toBeInTheDocument();
       });
     } finally {
@@ -822,7 +883,7 @@ describe("AppModals", () => {
           modalManager={manager}
           projectActions={{ handleAddProject, handleSetupComplete: vi.fn(), handleModelOnboardingComplete: vi.fn() }}
           taskHandlers={{ handleModalCreate: vi.fn(), handlePlanningTaskCreated: vi.fn(), handlePlanningTasksCreated: vi.fn(), handleGitHubImport: vi.fn() }}
-          taskOperations={{ moveTask: vi.fn(), deleteTask: vi.fn(), mergeTask: vi.fn(), retryTask: vi.fn(), duplicateTask: vi.fn() }}
+          taskOperations={{ moveTask: vi.fn(), deleteTask: vi.fn(), mergeTask: vi.fn(), pauseTask: vi.fn(), unpauseTask: vi.fn(), resetTask: vi.fn(), retryTask: vi.fn(), duplicateTask: vi.fn() }}
           deepLink={{ handleDetailClose: vi.fn() }}
           settings={mockSettings}
         />,
@@ -849,7 +910,7 @@ describe("AppModals", () => {
           modalManager={manager}
           projectActions={{ handleAddProject: vi.fn(), handleSetupComplete: vi.fn(), handleModelOnboardingComplete: vi.fn() }}
           taskHandlers={{ handleModalCreate: vi.fn(), handlePlanningTaskCreated: vi.fn(), handlePlanningTasksCreated: vi.fn(), handleGitHubImport: vi.fn() }}
-          taskOperations={{ moveTask: vi.fn(), deleteTask: vi.fn(), mergeTask: vi.fn(), retryTask: vi.fn(), duplicateTask: vi.fn() }}
+          taskOperations={{ moveTask: vi.fn(), deleteTask: vi.fn(), mergeTask: vi.fn(), pauseTask: vi.fn(), unpauseTask: vi.fn(), resetTask: vi.fn(), retryTask: vi.fn(), duplicateTask: vi.fn() }}
           deepLink={{ handleDetailClose: vi.fn() }}
           settings={mockSettings}
         />,
@@ -877,7 +938,7 @@ describe("AppModals", () => {
           modalManager={manager}
           projectActions={{ handleAddProject: vi.fn(), handleSetupComplete: vi.fn(), handleModelOnboardingComplete: vi.fn() }}
           taskHandlers={{ handleModalCreate: vi.fn(), handlePlanningTaskCreated: vi.fn(), handlePlanningTasksCreated: vi.fn(), handleGitHubImport: vi.fn() }}
-          taskOperations={{ moveTask: vi.fn(), deleteTask: vi.fn(), mergeTask: vi.fn(), retryTask: vi.fn(), duplicateTask: vi.fn() }}
+          taskOperations={{ moveTask: vi.fn(), deleteTask: vi.fn(), mergeTask: vi.fn(), pauseTask: vi.fn(), unpauseTask: vi.fn(), resetTask: vi.fn(), retryTask: vi.fn(), duplicateTask: vi.fn() }}
           deepLink={{ handleDetailClose: vi.fn() }}
           settings={mockSettings}
         />,
@@ -904,7 +965,7 @@ describe("AppModals", () => {
           modalManager={manager}
           projectActions={{ handleAddProject: vi.fn(), handleSetupComplete: vi.fn(), handleModelOnboardingComplete: vi.fn() }}
           taskHandlers={{ handleModalCreate: vi.fn(), handlePlanningTaskCreated: vi.fn(), handlePlanningTasksCreated: vi.fn(), handleGitHubImport: vi.fn() }}
-          taskOperations={{ moveTask: vi.fn(), deleteTask: vi.fn(), mergeTask: vi.fn(), retryTask: vi.fn(), duplicateTask: vi.fn() }}
+          taskOperations={{ moveTask: vi.fn(), deleteTask: vi.fn(), mergeTask: vi.fn(), pauseTask: vi.fn(), unpauseTask: vi.fn(), resetTask: vi.fn(), retryTask: vi.fn(), duplicateTask: vi.fn() }}
           deepLink={{ handleDetailClose: vi.fn() }}
           settings={mockSettings}
         />,
@@ -930,7 +991,7 @@ describe("AppModals", () => {
           modalManager={{ ...mockModalManager, settingsOpen: true, settingsInitialSection: "memory" }}
           projectActions={{ handleAddProject: vi.fn(), handleSetupComplete: vi.fn(), handleModelOnboardingComplete: vi.fn() }}
           taskHandlers={{ handleModalCreate: vi.fn(), handlePlanningTaskCreated: vi.fn(), handlePlanningTasksCreated: vi.fn(), handleGitHubImport: vi.fn() }}
-          taskOperations={{ moveTask: vi.fn(), deleteTask: vi.fn(), mergeTask: vi.fn(), retryTask: vi.fn(), duplicateTask: vi.fn() }}
+          taskOperations={{ moveTask: vi.fn(), deleteTask: vi.fn(), mergeTask: vi.fn(), pauseTask: vi.fn(), unpauseTask: vi.fn(), resetTask: vi.fn(), retryTask: vi.fn(), duplicateTask: vi.fn() }}
           deepLink={{ handleDetailClose: vi.fn() }}
           settings={mockSettings}
         />,
@@ -953,7 +1014,7 @@ describe("AppModals", () => {
       removeToast: vi.fn(),
       projectActions: { handleAddProject: vi.fn(), handleSetupComplete: vi.fn(), handleModelOnboardingComplete: vi.fn() },
       taskHandlers: { handleModalCreate: vi.fn(), handlePlanningTaskCreated: vi.fn(), handlePlanningTasksCreated: vi.fn(), handleGitHubImport: vi.fn() },
-      taskOperations: { moveTask: vi.fn(), deleteTask: vi.fn(), mergeTask: vi.fn(), retryTask: vi.fn(), duplicateTask: vi.fn() },
+      taskOperations: { moveTask: vi.fn(), deleteTask: vi.fn(), mergeTask: vi.fn(), pauseTask: vi.fn(), unpauseTask: vi.fn(), resetTask: vi.fn(), retryTask: vi.fn(), duplicateTask: vi.fn() },
       deepLink: { handleDetailClose: vi.fn() },
       settings: mockSettings,
     };
@@ -991,7 +1052,7 @@ describe("AppModals", () => {
   describe("task detail history wiring", () => {
     const commonProps = {
       projectId: "proj-1",
-      tasks: [{ id: "FN-1", title: "Task one" }],
+      tasks: [makeMinimalTask("FN-1", "Task one")],
       projects: [],
       currentProject: null,
       addToast: vi.fn(),
@@ -999,7 +1060,7 @@ describe("AppModals", () => {
       removeToast: vi.fn(),
       projectActions: { handleAddProject: vi.fn(), handleSetupComplete: vi.fn(), handleModelOnboardingComplete: vi.fn() },
       taskHandlers: { handleModalCreate: vi.fn(), handlePlanningTaskCreated: vi.fn(), handlePlanningTasksCreated: vi.fn(), handleGitHubImport: vi.fn() },
-      taskOperations: { moveTask: vi.fn(), deleteTask: vi.fn(), mergeTask: vi.fn(), retryTask: vi.fn(), duplicateTask: vi.fn() },
+      taskOperations: { moveTask: vi.fn(), deleteTask: vi.fn(), mergeTask: vi.fn(), pauseTask: vi.fn(), unpauseTask: vi.fn(), resetTask: vi.fn(), retryTask: vi.fn(), duplicateTask: vi.fn() },
       deepLink: { handleDetailClose: vi.fn() },
       settings: mockSettings,
     };
@@ -1046,7 +1107,7 @@ describe("AppModals", () => {
       render(
         <AppModals
           {...commonProps}
-          modalManager={{ ...mockModalManager, detailTask: { id: "FN-1", title: "Task one" } }}
+          modalManager={{ ...mockModalManager, detailTask: makeMinimalTask("FN-1", "Task one") }}
         />,
       );
 

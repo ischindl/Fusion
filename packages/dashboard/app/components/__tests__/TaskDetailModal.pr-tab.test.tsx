@@ -60,13 +60,17 @@ describe("TaskDetailModal Pull Request tab", () => {
   });
 
   it("renders PrPanel and in-review stall badge in Pull Request tab, not Definition tab", () => {
+    /*
+    FNXC:TaskDetailStall 2026-08-22-03:12:
+    The fixture must use a VISIBLE stall code: `merge-blocker` is in BADGE_SUPPRESSED_CODES (the
+    badge is deliberately hidden for it), and the legacy `merge-failed` code plus signal-level
+    retry counters were removed from InReviewStallSignal. `merge-retries-exhausted` is the valid
+    visible code matching this fixture's "merge failed" story.
+    */
     const inReviewStall = {
-      code: "merge-failed" as const,
+      code: "merge-retries-exhausted" as const,
       reason: "merge failed",
       observedAt: "2026-01-01T00:00:00Z",
-      consecutiveFailures: 2,
-      mergeRetries: 2,
-      maxAutoMergeRetries: 3,
     };
 
     const { container } = render(

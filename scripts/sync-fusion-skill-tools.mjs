@@ -10,8 +10,14 @@
  *     → packages/cli/skill/fusion/references/fusion-capabilities.md (tool table)
  *
  * Usage:
- *   node scripts/sync-fusion-skill-tools.mjs
- *   node scripts/sync-fusion-skill-tools.mjs --check
+ *   node scripts/sync-fusion-skill-tools.mjs              # regenerate (explicit authorship only)
+ *   node scripts/sync-fusion-skill-tools.mjs --check      # drift gate (the enforcement point)
+ *   node scripts/sync-fusion-skill-tools.mjs --check --root <dir>   # same, against a fixture root
+ *
+ * Generation is NOT a build step: `packages/cli` no longer runs this as `prebuild`, because a build
+ * that rewrites tracked `skill/**` files both dirties the tree and hides drift from the check that
+ * exists to catch it. Run `pnpm sync:fusion-skill` after editing tool registrations; freshness is
+ * enforced by `scripts/check-fusion-skill-sync.mjs` in `pnpm test:gate:static`.
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -25,17 +31,43 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
-const extensionPath = resolve(repoRoot, "packages/cli/src/extension.ts");
-const engineAgentToolsPath = resolve(repoRoot, "packages/engine/src/agent-tools.ts");
-const skillPath = resolve(repoRoot, "packages/cli/skill/fusion/SKILL.md");
-const extensionToolsPath = resolve(
-  repoRoot,
-  "packages/cli/skill/fusion/references/extension-tools.md",
-);
-const capabilitiesPath = resolve(
-  repoRoot,
-  "packages/cli/skill/fusion/references/fusion-capabilities.md",
-);
+
+/** Repo-relative locations of every file this generator reads or writes. */
+const SKILL_SYNC_RELPATHS = {
+  extension: "packages/cli/src/extension.ts",
+  engineAgentTools: "packages/engine/src/agent-tools.ts",
+  skill: "packages/cli/skill/fusion/SKILL.md",
+  extensionTools: "packages/cli/skill/fusion/references/extension-tools.md",
+  capabilities: "packages/cli/skill/fusion/references/fusion-capabilities.md",
+};
+
+/*
+FNXC:SkillCatalogGenerationOwnership 2026-09-22-14:51:
+RUFU-265: every generator path now resolves from ONE root so `--root <dir>` can point the whole
+read/generate/check cycle at a throwaway fixture. That is the only reason the flag exists — the
+fixture is what proves `--check` still DETECTS drift, now that the check (not the build) is the
+enforcement point. The passing-cache root must follow the same resolved root, otherwise a fixture
+run would record a passing entry against the real repository. Default behaviour is unchanged.
+*/
+/**
+ * Resolve every generator input/output path under a single root.
+ *
+ * @param {string} [rootDir] Repository root; defaults to this checkout.
+ * @returns {Record<keyof typeof SKILL_SYNC_RELPATHS, string>}
+ */
+export function resolveSkillSyncPaths(rootDir = repoRoot) {
+  return Object.fromEntries(
+    Object.entries(SKILL_SYNC_RELPATHS).map(([key, rel]) => [key, resolve(rootDir, rel)]),
+  );
+}
+
+const {
+  extensionPath,
+  engineAgentToolsPath,
+  skillPath,
+  extensionToolsPath,
+  capabilitiesPath,
+} = resolveSkillSyncPaths();
 
 // ---------------------------------------------------------------------------
 // U3: skip-the-spawn cache for the --check path.
@@ -544,7 +576,7 @@ function extractWorkflowExtensionSpecTools(source, engineSource) {
   return tools;
 }
 
-function extractTools(source, engineSource = "") {
+function extractTools(source, engineSource = "", sourceLabel = extensionPath) {
   const tools = extractWorkflowExtensionSpecTools(source, engineSource);
   const seen = new Set(tools.map((tool) => tool.name));
   const registerToken = "pi.registerTool(";
@@ -574,7 +606,7 @@ function extractTools(source, engineSource = "") {
   }
 
   if (tools.length === 0) {
-    throw new Error(`No fn_* tool registrations found in ${extensionPath}.`);
+    throw new Error(`No fn_* tool registrations found in ${sourceLabel}.`);
   }
 
   return tools;
@@ -700,31 +732,45 @@ function replaceBlock(content, beginMarker, endMarker, newBlock, filePath) {
   return content.slice(0, beginIdx) + newBlock + content.slice(endLineEnd);
 }
 
+/** Parse `--root <dir>` (default: this checkout) so a fixture can be checked/generated in place. */
+function parseRoot(argv) {
+  const index = argv.indexOf("--root");
+  if (index === -1) return repoRoot;
+  const value = argv[index + 1];
+  if (!value || value.startsWith("--")) {
+    console.error("[sync-fusion-skill-tools] --root requires a directory argument.");
+    process.exit(2);
+  }
+  return resolve(value);
+}
+
 function main() {
   const checkOnly = process.argv.includes("--check");
+  const root = parseRoot(process.argv);
+  const paths = resolveSkillSyncPaths(root);
 
-  const extensionSource = readFileSync(extensionPath, "utf-8");
-  const engineSource = readFileSync(engineAgentToolsPath, "utf-8");
-  const tools = extractTools(extensionSource, engineSource);
+  const extensionSource = readFileSync(paths.extension, "utf-8");
+  const engineSource = readFileSync(paths.engineAgentTools, "utf-8");
+  const tools = extractTools(extensionSource, engineSource, paths.extension);
   const withheldTools = extractWithheldToolNames(extensionSource);
 
   const files = [
     {
-      path: skillPath,
+      path: paths.skill,
       begin: SKILL_BEGIN,
       end: SKILL_END,
       block: buildSkillCategoriesBlock(tools, withheldTools),
       label: "SKILL.md tool-categories",
     },
     {
-      path: extensionToolsPath,
+      path: paths.extensionTools,
       begin: EXT_TOOLS_BEGIN,
       end: EXT_TOOLS_END,
       block: buildExtensionToolsBlock(tools, withheldTools),
       label: "extension-tools.md",
     },
     {
-      path: capabilitiesPath,
+      path: paths.capabilities,
       begin: CAP_TABLE_BEGIN,
       end: CAP_TABLE_END,
       block: buildCapabilitiesTableBlock(tools, withheldTools),
@@ -757,7 +803,8 @@ function main() {
       process.exit(1);
     }
     // U3: cache the passing result so the inner loop can skip the next spawn.
-    recordSkillSyncCheckPass(repoRoot);
+    // Root-scoped: a fixture --check pass must never be recorded against the real repo root.
+    recordSkillSyncCheckPass(root);
     return;
   }
 

@@ -10,7 +10,7 @@ import { rm } from "node:fs/promises";
 import type { Settings } from "@fusion/core";
 import { installTaskWorktreeIdentityGuard } from "../worktree/worktree-hooks.js";
 import { isInsideWorktreesDir } from "../worktree/worktree-pool.js";
-import { inspectBranchConflict } from "../execution/branch-conflicts.js";
+import { inspectBranchConflict, taskWorktreeCheckoutIsClean } from "../execution/branch-conflicts.js";
 import { resolveIntegrationBranch } from "../merge/integration-branch.js";
 import { executorLog } from "../logger.js";
 import { extractWorktreeConflictInfo } from "./worktree-conflict-info.js";
@@ -389,6 +389,28 @@ export async function handleWorktreeConflict(
     return { path: livePath, branch };
   }
 
+  /*
+  FNXC:BranchBaseIdentity 2026-09-13-03:25:
+  RUFU-231 (never release an unproven checkout): a tip proven landed ONLY against the
+  remote-tracking identity is new reachability — the pre-existing force-cleanup below predates
+  it and assumed local-ancestor landings. A still-dirty checkout on the remote-landed variant
+  is held here; the requesting task falls back to its existing non-destructive paths
+  (sibling rename / generic conflict error), and the owning card's conflict handler performs
+  the patch-preserving release instead.
+  */
+  const unprovenRemoteRelease = inspection.kind === "tip-already-merged"
+    && inspection.landedVia === "remote-tracking"
+    && !!inspection.livePath
+    && existsSync(inspection.livePath)
+    && !await taskWorktreeCheckoutIsClean(inspection.livePath);
+  if (unprovenRemoteRelease && inspection.kind === "tip-already-merged") {
+    await deps.store.logEntry(
+      taskId,
+      `[recovery] ${taskId} tip-landed-on-trusted-remote held: checkout dirty and unproven (landed on ${inspection.integrationRef})`,
+      inspection.tipSha,
+    );
+  }
+
   if (inspection.kind === "fully-subsumed") {
     const livePath = isInsideWorktreesDir(deps.rootDir, inspection.livePath, settings)
       ? inspection.livePath
@@ -402,7 +424,7 @@ export async function handleWorktreeConflict(
   }
 
   if (shouldGenerateNewName) {
-    if (inspection.kind === "stale" || inspection.kind === "stale-resolved" || inspection.kind === "tip-already-merged") {
+    if ((inspection.kind === "stale" || inspection.kind === "stale-resolved" || inspection.kind === "tip-already-merged") && !unprovenRemoteRelease) {
       const cleanupSuccess = await deps.cleanupConflictingWorktree(conflictPath, branch, taskId);
       if (cleanupSuccess) {
         await deps.store.logEntry(taskId, `Cleaned up conflicting worktree, retrying`, path);
@@ -435,7 +457,9 @@ export async function handleWorktreeConflict(
     return tryFreshFallback();
   }
 
-  const cleanupSuccess = await deps.cleanupConflictingWorktree(conflictPath, branch, taskId);
+  const cleanupSuccess = unprovenRemoteRelease
+    ? false
+    : await deps.cleanupConflictingWorktree(conflictPath, branch, taskId);
   if (cleanupSuccess) {
     await deps.store.logEntry(taskId, `Cleaned up conflicting worktree, retrying`, path);
     return deps.tryCreateWorktree(branch, path, taskId, startPoint, attemptNumber, 0, allowSiblingBranchRename, settings);

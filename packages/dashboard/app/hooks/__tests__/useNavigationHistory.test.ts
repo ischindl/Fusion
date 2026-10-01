@@ -1,5 +1,6 @@
 import { createElement, type ReactNode } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import type { Mock } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import {
   NavigationHistoryProvider,
@@ -13,15 +14,15 @@ describe("useNavigationHistory", () => {
   const originalReplaceState = window.history.replaceState;
   const originalBack = window.history.back;
 
-  let pushStateSpy: ReturnType<typeof vi.fn>;
-  let replaceStateSpy: ReturnType<typeof vi.fn>;
-  let backSpy: ReturnType<typeof vi.fn>;
+  let pushStateSpy: Mock<(data: any, unused: string, url?: string | URL | null) => void>;
+  let replaceStateSpy: Mock<(data: any, unused: string, url?: string | URL | null) => void>;
+  let backSpy: Mock<() => void>;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    pushStateSpy = vi.fn();
-    replaceStateSpy = vi.fn();
-    backSpy = vi.fn();
+    pushStateSpy = vi.fn<(data: any, unused: string, url?: string | URL | null) => void>();
+    replaceStateSpy = vi.fn<(data: any, unused: string, url?: string | URL | null) => void>();
+    backSpy = vi.fn<() => void>();
     // Use real replaceState for setup so history.state is actually set,
     // then install spies for assertions.
     window.history.replaceState = originalReplaceState;
@@ -455,11 +456,39 @@ describe("useNavigationHistory", () => {
     expect(revert).toHaveBeenCalledTimes(1);
   });
 
+  /*
+  FNXC:Navigation 2026-09-14-19:51:
+  This result is App's NavigationHistoryProvider value. An unstable identity re-ran every consumer's
+  context-dependent effects on each App render, which is what replayed MobileNavBar's opening focus and
+  reset the mobile navigation popover's scroll position mid-tap.
+  */
+  it("returns a referentially stable result across re-renders and keeps every method functional", () => {
+    const { result, rerender } = renderHookWithHistory();
+    const first = result.current;
+
+    rerender({ enabled: true });
+    rerender({ enabled: true });
+
+    expect(result.current).toBe(first);
+    expect(Object.keys(result.current).sort()).toEqual(["promoteNav", "pushNav", "removeNav", "replaceCurrent"]);
+
+    const close = vi.fn();
+    act(() => {
+      result.current.pushNav({ type: "modal", close });
+    });
+
+    expect(pushStateSpy).toHaveBeenCalledWith({ navIndex: 1 }, "");
+
+    dispatchPopState({ navIndex: 0 });
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
   it("useNavigationHistoryContext returns the provided value", () => {
     const value: UseNavigationHistoryResult = {
       pushNav: vi.fn(),
       replaceCurrent: vi.fn(),
       removeNav: vi.fn(),
+      promoteNav: vi.fn(),
     };
 
     const wrapper = ({ children }: { children: ReactNode }) =>
