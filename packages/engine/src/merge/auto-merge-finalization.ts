@@ -14,7 +14,7 @@ import {
  } from "@fusion/core";
 import {
   isTerminalPostMergeReseedRefusal,
-  reseedUnrunPostMergeGate,
+  resumeMissingPostMergeGate,
   type PostMergeGateReseedReason,
 } from "./post-merge-gate-reseed.js";
 import { resolvePostMergeEvidenceContract } from "./post-merge-evidence-contract.js";
@@ -33,6 +33,7 @@ a confirmed no-op claim while its deliverable sat uncommitted in the worktree. T
 therefore asked separately, and before any cleanup, because a cleanup would destroy the evidence it reads.
 */
 import { enforceZeroCommitLandingProof } from "./zero-commit-finalization-guard.js";
+import { resumeMissingPostMergeGate } from "./post-merge-gate-reseed.js";
 
 /*
 FNXC:WorkflowMergeFinalization 2026-07-19-07:20 (U7 / R2/R3/KTD-1):
@@ -395,43 +396,35 @@ export async function finalizeProvenAutoMergeTask({
 
   const evidenceBlocker = await getRequiredPostMergeEvidenceBlocker(store, latest, evidenceContract);
   if (evidenceBlocker) {
-
-  /*
-  FNXC:PostMergeEvidence 2026-09-30-09:57:
-  Whether the active graph traversal can still produce the required post-merge gate result is a STRUCTURED
-  fact (`state === "missing"`), not a property of the blocker sentence. The flag used to be derived by
-  matching "has not reported" in prose, so any wording change upstream silently converted a claimable
-  deferral into a fatal block at `merger-ai`'s `!deferredPostMergeEvidence` throw. FN-9422 makes the merge
-  proof durable before the deferral, so every absent-gate deferral below — including the terminal-reseed-
-  refusal handoff — is a deferral with proof, and a pending/non-approval stays fatal.
-  */
-  const postMergeIr = await resolveWorkflowIrForTask(store, latest.id).catch(() => null);
-  const deferredPostMergeEvidence = postMergeIr
-    ? getPostMergeEvidenceGateStatuses(latest, postMergeIr, evidenceContract).some((status) => status.state === "missing") || undefined
-    : evidenceBlocker.includes("has not reported") || undefined;
     /*
-    FNXC:UnrunPostMergeGateRecovery 2026-09-25-15:35 (RUFU-306):
-    This is the loop production showed all day: `Auto-merge finalization deferred for DGXS-313 /
-    ROZV-290: required post-merge evidence gate 'post-merge-verification' has not reported`, retried
-    forever, deferring forever, because nothing ever put the card back in front of that node. The
-    deferral now tries the seed itself, so the next finalize pass can find real evidence instead of
-    the same absence. A refused seed is reported by reason (budget, active continuation, operator
-    hold) rather than as an unexplained deferral, and the blocker still stands — seeding is not a
-    verdict, and this path never completes a card on its own authority.
+    FNXC:PostMergeEvidence 2026-09-30-09:57:
+    Whether the active graph traversal can still produce the required post-merge gate result is a STRUCTURED
+    fact (`state === "missing"`), not a property of the blocker sentence. The flag used to be derived by
+    matching "has not reported" in prose, so any wording change upstream silently converted a claimable
+    deferral into a fatal block at `merger-ai`'s `!deferredPostMergeEvidence` throw. FN-9422 makes the merge
+    proof durable before the deferral, so every absent-gate deferral below is a deferral with proof, and a
+    pending / non-approval stays fatal.
     */
-    const reseed = await reseedUnrunPostMergeGate(store, latest, { source: "auto-merge" });
+    const postMergeIr = await resolveWorkflowIrForTask(store, latest.id).catch(() => null);
+    const deferredPostMergeEvidence = postMergeIr
+      ? getPostMergeEvidenceGateStatuses(latest, postMergeIr, evidenceContract).some((status) => status.state === "missing") || undefined
+      : evidenceBlocker.includes("has not reported") || undefined;
     /*
-    FNXC:UnrunPostMergeGateRecovery 2026-09-28-07:34 (RUFU-370):
-    A terminal reseed refusal is not a transient deferral, and treating it as one is what made the pair
-    dominate production warn output: SANE-452 (`reseed: workspace`, refused by this seam by construction)
-    and STAS-288 (`reseed: active-continuation`) were re-announced seconds apart forever, with no
-    operator-visible artifact and no named terminal state. For a refusal that cannot ever produce
-    evidence, finalization now (a) hands the card to the operator once through the idempotent mailbox
-    upsert, (b) writes one bounded audit row per (task, gate, refusal), and (c) returns a reason the
-    merge-retry router can classify instead of a sentence it will re-log. Lifecycle stays untouched —
-    no backward move, no verdict, and the card keeps the column it stands in.
+    FNXC:PostMergeRecovery 2026-10-01-09:01 (upstream FN-9442 adopted; RUFU-306 / RUFU-370 kept on top):
+    Upstream hands an absent gate back to the graph through the idle continuation fence, and the fence write
+    is the part our seam lacked: a resume that races the finalize fence is the race FN-9442 was written
+    against. Two things are layered onto their call rather than kept as a second implementation. The prose
+    trigger is replaced by the structured flag above, so a PENDING or non-approved result never seeds a
+    second run over a result that already exists. And the refusal is classified: a refusal that can never
+    produce evidence goes to the operator once instead of deferring forever (SANE-452 and STAS-288 were
+    re-announced seconds apart indefinitely), while every other refusal keeps the transient-defer shape.
+    Seeding is not a verdict — the blocker still stands and this path never completes a card itself.
     */
-    if (!reseed.seeded && isTerminalPostMergeReseedRefusal(reseed.reason)) {
+    const resume = () => resumeMissingPostMergeGate(store, latest, { source: "auto-merge", contract: evidenceContract });
+    const reseed = (fence ? await fence.write("finalization", resume) : await resume())
+      // A fenced write that was suppressed means this lane no longer owns the card: nothing was seeded.
+      ?? { outcome: "not-seeded" as const, reason: "finalize-blocked" as const };
+    if (reseed.outcome !== "seeded" && isTerminalPostMergeReseedRefusal(reseed.reason)) {
       const notice = await notifyUnreachablePostMergeGate({
         store,
         messageStore,
@@ -460,20 +453,16 @@ export async function finalizeProvenAutoMergeTask({
       auditPhase,
     });
     await log?.(`Auto-merge finalization deferred for ${taskId}: ${evidenceBlocker}`
-      + ` [post-merge gate reseed: ${reseed.seeded ? `seeded '${reseed.workflowStepId}'` : reseed.reason}]`);
+      + ` [post-merge gate reseed: ${reseed.outcome === "seeded" ? `seeded '${reseed.workflowStepId}'` : reseed.reason}]`);
     return {
       outcome: "blocked",
       task: latest,
       previousColumn: latest.column,
       reason: evidenceBlocker,
-      /*
-      FNXC:PostMergeEvidenceOrdering 2026-09-25-20:05:
-      Only an absent result can be claimed by the active graph traversal. A pending or terminal
-      non-approval is durable evidence that must remain a blocker, not a retry signal.
-      */
       deferredPostMergeEvidence,
     };
   }
+
 
   const validationMergeDetails = buildFinalizationMergeDetails(latest, result);
   const cleanupLandedWorktree = async (task: Task, mergeDetails: NonNullable<Task["mergeDetails"]>): Promise<void> => {

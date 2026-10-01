@@ -4496,7 +4496,9 @@ export class ProjectEngine {
                 );
                 await store.logEntry(
                   taskId,
-                  `Merge confirmed finalization blocked — ${finalization.reason ?? "unknown"}. Task parked for manual completion.`,
+                  finalization.deferredPostMergeEvidence
+                    ? `Merge confirmed; awaiting graph-owned post-merge verification — ${finalization.reason}.`
+                    : `Merge confirmed finalization blocked — ${finalization.reason ?? "unknown"}.`,
                 );
                 continue;
               }

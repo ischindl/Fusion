@@ -1600,7 +1600,7 @@ export {
   resolveUnprovenReviewApproval,
   COLLATERAL_ARCHIVED_REVIEW_GATE_DIAGNOSTIC,
 } from "./merge/pre-merge-approval.js";
-export { getPostMergeFinalizeBlocker, getRequiredPostMergeEvidenceBlocker, getPostMergeEvidenceGateStatuses, resolveRequiredPostMergeGateIds, planConfirmedMergeChecklistReconciliation } from "./merge/confirmed-merge-reconciliation.js";
+export { getPostMergeFinalizeBlocker, getRequiredPostMergeEvidenceBlocker, getRequiredPostMergeEvidenceDecision, getPostMergeEvidenceGateStatuses, resolveRequiredPostMergeGateIds, planConfirmedMergeChecklistReconciliation } from "./merge/confirmed-merge-reconciliation.js";
 export type { ConfirmedMergeChecklistReconciliation, PostMergeEvidenceGateState, PostMergeEvidenceGateStatus, PostMergeEvidenceNotApplicableReason } from "./merge/confirmed-merge-reconciliation.js";
 /*
 FNXC:PostMergeEvidenceContract 2026-09-30-22:29 (RUFU-430):
