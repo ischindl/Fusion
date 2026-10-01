@@ -6,11 +6,24 @@ be remembered (otherwise one transient git failure silently relaxes — or keeps
 life of the process). The audit row is checked for the absence of the remote URL, because a remote can
 carry credentials.
 */
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  countGitHubWorkflowFiles,
   resetPostMergeEvidenceContractCacheForTest,
   resolvePostMergeEvidenceContract,
 } from "../merge/post-merge-evidence-contract.js";
+
+/** A throwaway `git init` checkout: the shape a no-remote board actually has on disk. */
+function realGitRepo(): string {
+  const dir = mkdtempSync(join(tmpdir(), "pmec-repo-"));
+  execFileSync("git", ["init", "-q", "-b", "main", dir], { stdio: "ignore" });
+  return dir;
+}
 
 const ROOT = "/repo/saneca";
 
@@ -53,7 +66,19 @@ describe("resolvePostMergeEvidenceContract", () => {
     // The finalize loop asks this on every retry; the observation must be read once.
     expect(readRemoteUrl).toHaveBeenCalledTimes(1);
     expect(recorded).toHaveLength(1);
-    expect(recorded[0]).toMatchObject({ mutationType: "merge:post-merge-evidence-contract" });
+    /*
+    FNXC:RunAudit 2026-10-01-00:12 (RUFU-430): these fields are the row's ticket into
+    `project.run_audit_events`, whose `target` and `project_id` are NOT NULL and whose domain set is fixed.
+    The first shipped emit carried `domain:"merge"` and no target; the bounded seam swallowed the rejection
+    and production kept zero rows, so the decision stayed unanswerable — the one thing this event exists to
+    prevent. Asserting the shape is the regression guard.
+    */
+    expect(recorded[0]).toMatchObject({
+      mutationType: "merge:post-merge-evidence-contract",
+      agentId: "merger",
+      domain: "git",
+      target: "post-merge-evidence",
+    });
     expect((recorded[0] as { metadata: Record<string, unknown> }).metadata).toEqual({
       provider: "none", source: "derived", reason: "non-github-remote",
     });
@@ -124,5 +149,49 @@ describe("resolvePostMergeEvidenceContract", () => {
       countGitHubWorkflowFiles: async () => 4,
     })).resolves.toBeUndefined();
     await expect(resolvePostMergeEvidenceContract(null, {})).resolves.toBeUndefined();
+  });
+});
+
+/*
+FNXC:PostMergeEvidenceContract 2026-10-01-00:00 (RUFU-430):
+The first shipped version was inert on exactly the boards it was written for. Against a real no-remote
+checkout, `git remote get-url origin` exits 2 with `No such remote 'origin'`; the resolver read that throw
+as "facts unreadable" and failed closed, so VLLM-083 stayed parked `in-review` / `failed` with
+`required post-merge evidence gate 'post-merge-verification' has not reported` minutes after the deploy.
+These cases run the DEFAULT readers against real throwaway repositories, because an injected fake could
+never have caught a misread exit code.
+*/
+describe("post-merge evidence contract against real repositories", () => {
+  it("reads an absent origin as the fact that there is no reporter", async () => {
+    const dir = realGitRepo();
+    const store = { getRootDir: () => dir, readRawProjectSettings: async () => ({}) } as never;
+    await expect(resolvePostMergeEvidenceContract(store)).resolves.toMatchObject({
+      provider: "none",
+      reason: "no-remote",
+    });
+    // A repository with no `.github/workflows` answers "zero", not "unreadable".
+    expect(await countGitHubWorkflowFiles(dir)).toBe(0);
+  });
+
+  it("CONTROL: a directory that is not a readable repository still demands the evidence", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "not-a-repo-"));
+    const store = { getRootDir: () => dir, readRawProjectSettings: async () => ({}) } as never;
+    await expect(resolvePostMergeEvidenceContract(store)).resolves.toMatchObject({
+      provider: "github-actions",
+      reason: "repo-facts-unreadable",
+    });
+  });
+
+  it("CONTROL: a GitHub repository with workflow files keeps the Full Suite contract", async () => {
+    const dir = realGitRepo();
+    execFileSync("git", ["remote", "add", "origin", "https://github.com/org/repo.git"], { cwd: dir });
+    mkdirSync(join(dir, ".github", "workflows"), { recursive: true });
+    writeFileSync(join(dir, ".github", "workflows", "ci.yml"), "on: push\n");
+    const store = { getRootDir: () => dir, readRawProjectSettings: async () => ({}) } as never;
+    await expect(resolvePostMergeEvidenceContract(store)).resolves.toMatchObject({
+      provider: "github-actions",
+      reason: "github-remote-with-workflows",
+    });
+    expect(await countGitHubWorkflowFiles(dir)).toBe(1);
   });
 });

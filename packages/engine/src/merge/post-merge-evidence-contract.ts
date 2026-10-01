@@ -54,14 +54,47 @@ export interface PostMergeContractResolverDeps {
   log?: RunAuditLogger;
 }
 
-async function readRemoteUrl(repoDir: string): Promise<string | null> {
-  const { stdout } = await execAsync("git remote get-url origin", { cwd: repoDir, timeout: 5_000 });
-  const url = stdout.trim();
-  return url ? url : null;
+/*
+FNXC:PostMergeEvidenceContract 2026-10-01-00:05 (RUFU-430):
+These two readers decide whether a completion gate may be relaxed, so they must tell apart "the repository
+says it has no origin" from "we could not ask the repository". The first version ran only
+`git remote get-url origin`, and on every no-remote board that command exits 2 with `No such remote 'origin'`
+— measured on `/home/schindler/ai/vllm-rocm` right after this shipped, where VLLM-083 stayed blocked with
+`required post-merge evidence gate 'post-merge-verification' has not reported` because the throw was read as
+"facts unreadable" and failed closed. A probe now establishes that the directory IS a readable repository;
+having one, a missing origin is a FACT (no reporter) rather than a failure, and only an unprobed repo or a
+git error that is not "no such remote" keeps demanding evidence. Same discipline for `.github/workflows`:
+ENOENT/ENOTDIR is "no workflow files", never a swallowed permission error.
+*/
+const NO_SUCH_REMOTE = /no such remote|no remote named|error: no remote/i;
+
+/** Throws when `repoDir` is not a readable git repository — the fail-closed precondition. */
+async function assertGitRepository(repoDir: string): Promise<void> {
+  await execAsync("git rev-parse --is-inside-work-tree", { cwd: repoDir, timeout: 5_000 });
 }
 
-async function countGitHubWorkflowFiles(repoDir: string): Promise<number> {
-  const entries = await readdir(join(repoDir, ".github", "workflows"));
+export async function readOriginRemoteUrl(repoDir: string): Promise<string | null> {
+  await assertGitRepository(repoDir);
+  try {
+    const { stdout } = await execAsync("git remote get-url origin", { cwd: repoDir, timeout: 5_000 });
+    const url = stdout.trim();
+    return url ? url : null;
+  } catch (error) {
+    // A repository that names no origin answers the question; any other git failure does not.
+    if (NO_SUCH_REMOTE.test(String((error as { message?: string })?.message ?? error))) return null;
+    throw error;
+  }
+}
+
+export async function countGitHubWorkflowFiles(repoDir: string): Promise<number> {
+  let entries: string[];
+  try {
+    entries = await readdir(join(repoDir, ".github", "workflows"));
+  } catch (error) {
+    const code = (error as { code?: string })?.code;
+    if (code === "ENOENT" || code === "ENOTDIR") return 0;
+    throw error;
+  }
   return entries.filter((entry) => /\.(yml|yaml)$/i.test(entry)).length;
 }
 
@@ -86,7 +119,7 @@ export async function resolvePostMergeEvidenceContract(
   const cached = contractCache.get(rootDir);
   if (cached) return cached;
 
-  const readRemote = deps.readRemoteUrl ?? readRemoteUrl;
+  const readRemote = deps.readRemoteUrl ?? readOriginRemoteUrl;
   const countWorkflows = deps.countGitHubWorkflowFiles ?? countGitHubWorkflowFiles;
 
   let remoteUrl: string | null = null;
@@ -121,7 +154,15 @@ export async function resolvePostMergeEvidenceContract(
 
 /*
 FNXC:RunAudit 2026-09-30-22:29 (RUFU-430): one row per (project root, reason) through the bounded seam,
-with provider/source/reason only. The remote URL is deliberately NEVER recorded — a remote can carry
+with provider/source/reason only.
+
+FNXC:RunAudit 2026-10-01-00:12 (RUFU-430): the first shipped row NEVER LANDED. The bounded seam swallowed
+`[run-audit] failed to record merge:post-merge-evidence-contract` twice on 2026-09-30 because the event
+carried `domain:"merge"` and no `target`, while `project.run_audit_events` declares NOT NULL `target` /
+`project_id` and `RunAuditDomain = "database" | "git" | "filesystem" | "sandbox"`. Telemetry that is
+silently dropped is the exact failure this seam is designed to make invisible, so the merge lane uses the
+same shape every other merge event uses — `domain:"git"`, `agentId:"merger"`, constant `target` — and the
+engine test asserts those fields, not just the absence of the remote URL. The remote URL is deliberately NEVER recorded — a remote can carry
 credentials — and the project path is not recorded either, so the row stays ids/counts/fixed-enums-only.
 */
 async function emitOnce(
@@ -136,9 +177,10 @@ async function emitOnce(
     deps.auditHost ?? null,
     {
       mutationType: "merge:post-merge-evidence-contract",
-      agentId: "merge",
+      agentId: "merger",
       runId: `post-merge-evidence-contract:${contract.provider}:${contract.reason}`,
-      domain: "merge",
+      target: "post-merge-evidence",
+      domain: "git",
       metadata: {
         provider: contract.provider,
         source: contract.source,

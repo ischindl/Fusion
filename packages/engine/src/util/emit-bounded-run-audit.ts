@@ -1,4 +1,4 @@
-import type { RunAuditEventInput } from "@fusion/core";
+import type { RunAuditDomain, RunAuditEventInput } from "@fusion/core";
 import * as logger from "../logger.js";
 
 export const RUN_AUDIT_EMIT_TIMEOUT_MS = 2_000;
@@ -17,10 +17,28 @@ export type BoundedRunAuditResult =
   | { outcome: "failed"; error: unknown }
   | { outcome: "timed-out" };
 
-type RunAuditEvent = RunAuditEventInput | {
+/*
+FNXC:RunAudit 2026-10-01-00:16 (RUFU-430): the loose arm exists so test doubles can hand the seam a partial
+event. It used to accept ANY key, including a `domain` outside `RunAuditDomain` — and RUFU-430 shipped
+`domain: "merge"` on that arm, which the store rejected at write time while this very seam swallowed the
+rejection, so production recorded zero rows for a decision the event exists to make answerable. The arm now
+pins `domain` to the real enum: an out-of-enum domain is a compile error instead of silent telemetry loss.
+*/
+export type RunAuditEvent = RunAuditEventInput | {
   mutationType: string;
+  domain?: RunAuditDomain;
   [key: string]: unknown;
 };
+
+/*
+FNXC:RunAudit 2026-10-01-00:16 (RUFU-430): compile-time half of the guard, in a COMPILED file because
+packages/engine/tsconfig.json excludes its test directory — an assertion placed in a test file would
+never be type-checked. If the loose arm widens back to accepting any `domain`, the directive below stops erroring and
+`pnpm typecheck` fails on the unused directive.
+*/
+// @ts-expect-error "merge" is not a RunAuditDomain; it is the value that made every RUFU-430 row vanish.
+const _runAuditDomainIsClosedSet: RunAuditEvent = { mutationType: "guard", domain: "merge" };
+void _runAuditDomainIsClosedSet;
 
 /**
  * FNXC:RunAudit 2026-08-20-04:15:
