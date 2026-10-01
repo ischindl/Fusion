@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+# C931 self-funded head fold: promote the consolidated RSS law into section 4,
+# fund it with three measured compressions, copy demoted originals down verbatim.
+import io, os, shutil
+
+MEM = '.fusion/agent-memory/agent-ce645ede/MEMORY.md'
+MARK = '## Durable operating lessons'
+INVARIANT = 49900
+
+shutil.copyfile(MEM, MEM + '.bak-C931')            # rule 1
+S0 = io.open(MEM, encoding='utf-8').read()
+lines = S0.split('\n')
+midx = [i for i, l in enumerate(lines) if l.startswith(MARK)][0]
+end_before = len('\n'.join(lines[:midx])) + 1
+print(f'[gate0] marker_line={midx+1} head_end_before={end_before} total_lines={len(lines)}')
+
+def hf(sub):
+    h = [i for i in range(midx) if sub in lines[i]]
+    assert len(h) == 1, f'RULE6 FAIL {sub!r} -> {h}'
+    return h[0]
+
+i_del, i_ask, i_cored = hf('PLANNER-OWNED THE INSTANT'), hf('ANSWER DELIVERED INTO A CARD-OWNED'), hf('COREDUMP NEEDLE')
+i_c908, i_rel = hf('FN_* COLLAPSE'), hf('RELIEF DISCHARGE IS ASK-CLASS-SPECIFIC')
+
+below = '\n'.join(lines[midx:])
+assert 'SCREEN A DELEGATED CARD BODY' in below, 'RULE12 FAIL: delegated-card verbatim not below clamp'
+c908_below_before = 'FN_* COLLAPSE' in below
+print(f'[rule12] delegated carrier below-clamp=OK  c908_below_clamp_before={c908_below_before} (False => copy DOWN same write)')
+
+O_DEL, O_ASK, O_908 = lines[i_del], lines[i_ask], lines[i_c908]
+
+PROMOTE = ("- **RSS IS A GC MOMENT, NOT A LEVEL, AND AN 8-9 MIN POST-BOOT SLOPE IS THE BOOT RAMP, NOT THE LEAK "
+  "(C927+C929, both fired on me):** a live holder swung 5.95 -> 4.46 GiB in 62 s, so a trigger worded \"RSS climbs "
+  "past X\" is unfalsifiable - arm it as a MAX or MIN over N named samples in a stated window, never one sample as a "
+  "trend; a slope measured 8-9 min after a boot over-predicted death TWICE on one method, so NEVER write a pending "
+  "death clock: the holder-pid change is the SOLE death arbiter and `no death yet` != `healed`. Verbatim below clamp: "
+  "grep 'BOOT RAMP, NOT THE LEAK' / 'A GC MOMENT'.")
+
+C_DEL = ("- **A DELEGATED CARD IS PLANNER-OWNED THE INSTANT ITS CREATE RETURNS (C857):** a post-creation description "
+  "rewrite competes with the planner for the card's lock and can die outright - corrections belong in a comment or a "
+  "refine, NEVER a description overwrite; then run a Unicode-SCRIPT census on the LANDED card, because a codepoint "
+  "allowlist can score a spliced Han token plus degraded Slovak words as clean. Full text verbatim: grep "
+  "'SCREEN A DELEGATED CARD BODY'.")
+
+E_ASK = (" A CARD-OWNED ASK ANSWERED BY THE OPERATOR IS NOT ENGINE STATE: it lands in the transcript, not the task "
+  "row, so a STOP/UNDECIDED answer needs discharge into an engine-visible disposition or an armed watch, proved by "
+  "the ANSWER CONTENT and never by a tool-result row (worked RUFU-360 below clamp).")
+
+C_908 = ("- **FN_* COLLAPSE (C908): a `fn_*` call can resolve to the LAST-USED CODING TOOL with a stale `path` arg, "
+  "and under collapse its result is a FAILED OBSERVATION - assert nothing from it, never retry a 3rd time. Reachable "
+  "escapes: bash, the CLI, appends to my own agent memory (the CLI has NO assign surface - dispose a needed re-bind "
+  "as a card-log row plus the write handed to the BOUND OWNER). Full text copied down by the C931 fold: grep "
+  "'FN_* COLLAPSE'.")
+
+f_del, f_ask, f_908 = len(O_DEL) - len(C_DEL), len(O_ASK) - len(E_ASK), len(O_908) - len(C_908)
+gross, cost = f_del + f_ask + f_908, len(PROMOTE) + 1
+net = cost - gross
+print(f'[rule9] gross_freed={gross} (deleg {f_del} / ask-essence {f_ask} / c908 {f_908})  promotion_cost={cost}  net={net}')
+
+new = list(lines)
+new[i_rel] = new[i_rel] + E_ASK
+new[i_del], new[i_c908] = C_DEL, C_908
+new[i_ask] = None
+new.insert(i_cored + 1, PROMOTE)
+new = [l for l in new if l is not None]
+
+ARCHIVE = ['',
+ '## ARCHIVE 2026-10-01-C931 (verbatim head text demoted by the C931 fold; the head carriers name these fragments)',
+ '',
+ 'Demoted originals, EXTRACTED verbatim from the head lines they occupied (rule 10 - extracted, never retyped):',
+ '', O_DEL, '', O_ASK, '', O_908, '',
+ 'Promoted by this fold into section 4: the consolidated RSS law (C927 boot-ramp over-prediction + C929 GC-moment '
+ 'unfalsifiability). Full verbatim law sentences remain in tick records C927 and C929 below the clamp (greps: '
+ "'BOOT RAMP, NOT THE LEAK' and 'A GC MOMENT'). Funding was three compressions, which confirms the measured law "
+ 'that the head has no fat and one pass funds about one promoted law.', '']
+
+REC = ['',
+ "## Tick record 2026-10-01 08:2xZ C931 (timer; ONE ACTION = THE FOLD PASS C930 DESIGNATED, LANDED: RSS LAW PROMOTED "
+ "INTO SECTION 4, SELF-FUNDED BY 3 MEASURED COMPRESSIONS; AND THE 08:15:03Z BOOT RE-CLASSED AS A REDEPLOY, NOT A 15th "
+ "DEATH; 445 COUNT 28; 0 MUTATIONS 0 CONTACTS)",
+ '',
+ "- PRE-FLIGHT one call: `date -u` 08:21:15Z (epoch 1790842875); agent MEMORY.md 16,107 lines / 7,168,052 CHARS / "
+ "7,227,614 BYTES (bytes are not chars, C431); `stat` mtime FACT 1790842442 = 08:14:02Z; today-scoped `2026-10-01T` "
+ "needle 13 rows; wide-class blockquote census stops at line 15,328 (`00:27Z`) because records carry `## Tick record` "
+ "headers - corroborated by the substr-bounded header map (newest C930 at line 16,094), never read as silence. Head "
+ f"END measured in-pass, char-aware and line-anchored FROM THE FILE = **{end_before}** against the 50,000 clamp = 3 "
+ "chars of slack, which is the proof the fold was owed. `fn_read_messages` = none, agrees Wake Delta, no ack owed. "
+ "Twin-window read from the mtime FACT (08:14:02 -> 08:21:15 = 7.2 min, nominally inside): separate block anyway and "
+ "lawfully per the C927 precedent - C930 is closed with its own ledger and its NEXT TICK OWES designates values its "
+ "record does not carry, and no ack or closeout is owed.",
+ "- **THE 08:15:03Z BOOT IS A REDEPLOY, NOT A DEATH - THE DEATH COUNT STANDS AT 14.** TRIPLE, one call, re-derived "
+ "from the C930-frozen lineage (1790840123 / 1405835), never reused: :4040 holder **1755856** <-> health `uptime` 372 "
+ "<-> `etimes` 371 (exact) => boot epoch **1790842504 = 08:15:04Z** => holder change. But the served tree "
+ "(`/proc/<holder>/cwd` = `/home/schindler/git/kb-worktrees/prod-deploy`, never my cwd, C649) carries a "
+ "`packages/*/dist` MAX of **1790842463 = 08:14:23Z - 41 s BEFORE the boot**, past the 1790814213 that had stood since "
+ "C923 => section 4's dist-MAX-just-before-boot shape is **DEPLOY, not DEATH** => **no 15th death**, and C846 fires: "
+ "park fields get re-read by ask-class before any contact stays open. `git log c70d9dab44..main` names the redeploy: "
+ "`b741d6ea23` FN-9445 restore deferred workflow completion hops, `56029b2272` FN-9433 keep failed post-merge gates "
+ "out of Done, `d631c0e8d1` FN-9432, `93457b7e25` FN-9440, `9d894ace53` FN-9424 gate direct merge completion on "
+ "evidence, plus a docs baseline. Honest ceiling: the initiating hand (operator or launch script) is unobserved; "
+ "parent 1755656 is ppid 1 and 1 s older than the holder = whole-tree restart. Environ re-read per the C930 owe "
+ "BEFORE wording the death class: `NODE_OPTIONS=--max-old-space-size=16384` still live, cmdline still carries "
+ "`--heapsnapshot-near-heap-limit=2`.",
+ "- **THE PROMOTED LAW WAS APPLIED THE MOMENT IT WAS PROMOTED (first use is this record):** holder RSS 3,365,696 KiB "
+ "= 3.21 GiB at etime 598 s is logged as a **GC moment, not a level**, and **no predicted-death clock is written** - a "
+ "death is discovered by a holder-pid change, never scheduled.",
+ "- C846 PARK RE-READ BY ASK-CLASS, the deploy changed nothing operative: **301 (#15)** still `in-review` / `failed` / "
+ "errlen 209 / `paused:true` with `userPaused` ABSENT = engine-set park (section-6 inverse shape), `updatedAt` "
+ "08:16:13Z = boot + 69 s = boot-window store touch (C664), not relief; no waiver-class field moved, so the armed "
+ "verdict IS the current read, watch only. **#32** stands: RUFU-460 is OPEN (`todo` / status None / `agent-5683bf15` / "
+ "errlen 0 / `main..fusion/rufu-460` = 0 ahead), so the OOM root cause is NOT what the redeploy carried - the six "
+ "commits are merge-door and model-catalog work. **#18 / #20 / #23** carry no deploy-sensitive field. 0 contacts on "
+ "every channel.",
+ "- **ONE ACTION = THE FOLD**, under the single invariant `head_end_after <= 49,900`, protocol rules 1-12 honoured. "
+ f"THREE-NUMBER ACCOUNTING: gross_freed **{gross}** (three compressions - delegated-card law {len(O_DEL)}->{len(C_DEL)}"
+ f" = {f_del}, card-owned-ask bullet {len(O_ASK)}->{len(E_ASK)} essence folded INTO the RELIEF bullet = {f_ask}, C908 "
+ f"tool-collapse {len(O_908)}->{len(C_908)} = {f_908}), promotion_cost **{cost}** (one consolidated section-4 bullet "
+ f"carrying the C927 boot-ramp law + the C929 GC-moment law), net **{net}**; head END {end_before} -> "
+ f"**{{END_AFTER}}**, slack 3 -> **{{SLACK}}**. Rule 1 backup `.bak-C931`; rule 6 uniqueness asserted HEAD-SCOPED on "
+ "all five anchors; rule 12 grepped carriers BELOW the clamp first - `SCREEN A DELEGATED CARD BODY` was already "
+ "carried at line 15,165, but `FN_* COLLAPSE` had **ZERO** copies below the clamp, i.e. the head line was its sole "
+ "carrier, so its verbose original was COPIED DOWN IN THIS SAME WRITE instead of dropped; rule 7 head END recomputed "
+ "on the assembled text, not inherited; rule 2 content-compare-abort against a fresh re-read immediately before "
+ "`os.replace`. **The measured law that one pass funds about ONE law held exactly:** the 4-tick debt was three laws, "
+ "the head yielded "
+ f"**{gross}** chars, so the C929 `grep -w` port-needle law rides below the clamp as an explicit REMAINING DEBT "
+ "rather than a fake promotion.",
+ "- BINDING CENSUS (standing) CLEAN: 428 mirrors; MAX-ID **462** with NOTHING above => create-path mis-bind class not "
+ "recursing post-462. Audit-lane non-terminal = 25 rows, EVERY one carrying a pause flag (22 with `userPaused:true` = "
+ "operator hand-parks; 413 / 328 / 332 with `paused:true` + `userPaused` ABSENT = engine parks), plus the standing "
+ "ghost set {222,277,311} screened => **zero unparked mis-binds**; class (2) parks = DO NOTHING. Roll todo 174 / done "
+ "241 / hold 7 / in-review 4 / in-progress 2 = identical to C930.",
+ "- 445 ARBITER PAIR count **28, NOT DISCHARGED**, measured fresh in the post-deploy tree: tip moved again to "
+ "`b741d6ea23`, yet `packages/engine/src/executor/worktree-git-refs.ts:74` still reads `\"git merge-base HEAD "
+ "origin/main 2>/dev/null || git merge-base HEAD main\"` and the card's own `worktree-diff-base-ordering` test = **0** "
+ "tracked files on main. Second worked proof in two ticks of my own law: **a moving tip plus a real redeploy is "
+ "still not a discharge.** Card face unchanged (`todo` / None / `agent-bfca6568` / errlen 0 / upd 01:59:06Z) = "
+ "admission alive, session undispersed ~6.4 h.",
+ "- 460 / 462 ARBITERS (log growth + commits, never `updatedAt` or worktree presence): **462** log 30,092 -> "
+ "**45,666 B**, mtime seconds old, `planning`, 0 ahead => the C929 re-bind is being consumed by a live plan session. "
+ "**460** log 131,866 -> **133,079 B**, `todo` / status None, 0 ahead - per-row `agent` attribution NOT measured this "
+ "pass, so 'still plan-lane' is an inference from size growth plus zero commits, explicitly not an attribution "
+ "reading.",
+ "- REPORTS HEALTH: prompt table only (Audit Executor active, last heartbeat 24 min) against the declared 1 h "
+ "`heartbeatIntervalMs` bound recorded by C927 => documented cadence artifact, NO chase, NO tune, NO reassign; no "
+ "config re-read this pass, that bound is the honest ceiling. yb-loop / disk rider unchanged, not re-screened, armed "
+ "trigger <10 GB free far from tripping.",
+ "- LEDGER: **0** task creates/delegations/assigns/retries/pauses/bypasses/step-resumes/deletes, 0 missions, 0 git "
+ "writes/pushes, 0 project-memory writes, 0 outbound messages/asks/room posts. **1 memory fold** (3 compressions + 1 "
+ "promotion + 1 archive block, atomic in-place write, backup `.bak-C931`). Reads: pre-flight census, messages, TRIPLE "
+ "+ `/api/health`, environ/cmdline/ps on the holder, dist MAX, 2 git reads + 1 log range, 1 python mirror sweep, 2 "
+ "log-size stats.",
+ "- **NEXT OWNER: Engineer `agent-5683bf15`** (462 planning live, 460 open, 286/457 in-progress), Reviewer/Merger "
+ "lanes (452/281 `in-review` errlen 0 - the redeploy's FN-9424/9433/9445 all touch the merge door, so a completion-"
+ "gate rebound there is EXPECTED bookkeeping, not an incident), Executor-lane scheduler (445 admission ~6.4 h), "
+ "OPERATOR (#32 answer pending, re-worded post-deploy: a redeploy landed 08:15:03Z WITHOUT the 460 root cause, so "
+ "holder changes after THIS boot are evidence about the retained-set leak under `NODE_OPTIONS=16384`, not about a "
+ "default ceiling; unchanged #15/301, #18, #20, #23; DELETE-only ledger; 390 close; yb-loop + disk 96 % = "
+ "next-contact rider).",
+ "- **NEXT TICK OWES:** (1) TRIPLE re-derive from **1790842504 / 1755856**; a holder change is now the POST-DEPLOY "
+ "class - fold on arrival under C921, but re-read the environ AND the dist MAX first, because after this boot a death "
+ "is evidence about the leak, not the ceiling; dist MAX past **1790842463** = the next DEPLOY => C846 re-read again. "
+ "(2) 445 arbiter pair fresh, count 29 - tip movement and redeploys are not discharge. (3) 435 stays CLOSED. "
+ "(4) 301 = #15 watch only. (5) 460: measure per-row `agent` counts, do not inherit my inference. (6) **REMAINING "
+ "PROMOTION DEBT:** the C929 `grep -w` port-needle law (line ~16,089) plus the C927/C929 full RSS verbatims ride "
+ "below the clamp; the next fold funds ONE of them at measured capacity ~300-450 chars/pass - do not re-plan a "
+ "three-law fold, this pass proves the head yields about one law per pass.", '']
+
+assembled = '\n'.join(new + ARCHIVE + REC)
+end_after = len('\n'.join(assembled.split('\n')[:[i for i, l in enumerate(assembled.split('\n')) if l.startswith(MARK)][0]])) + 1
+slack = 50000 - end_after
+assert end_after <= INVARIANT, f'RULE6 FAIL projected head END {end_after} > {INVARIANT} - ABORT, no write'
+assert 'SCREEN A DELEGATED CARD BODY' in '\n'.join(assembled.split('\n')[[i for i, l in enumerate(assembled.split('\n')) if l.startswith(MARK)][0]:]), 'RULE12 FAIL post-assembly'
+REC[6] = REC[6].replace('{END_AFTER}', str(end_after)).replace('{SLACK}', str(slack))
+REC[8] = REC[8].replace('{END_AFTER}', str(end_after)).replace('{SLACK}', str(slack))
+full = '\n'.join(new + ARCHIVE + REC)
+as2 = full.split('\n')
+m2 = [i for i, l in enumerate(as2) if l.startswith(MARK)][0]
+ea = len('\n'.join(as2[:m2])) + 1
+assert ea == end_after, f'RULE7 FAIL recompute drift {ea} vs {end_after}'
+assert PROMOTE in '\n'.join(as2[:m2]), 'promotion not in head'
+assert O_DEL not in '\n'.join(as2[:m2]) and O_908 not in '\n'.join(as2[:m2]) and O_ASK not in '\n'.join(as2[:m2]), 'demoted original still in head'
+assert O_DEL in '\n'.join(as2[m2:]) and O_ASK in '\n'.join(as2[m2:]) and O_908 in '\n'.join(as2[m2:]), 'RULE10 demoted original missing below clamp'
+print(f'[gate-projected] head_end_after={ea} slack={50000-ea} invariant={INVARIANT} OK')
+
+chk = io.open(MEM, encoding='utf-8').read()                    # rule 2 content-compare-abort
+assert chk == S0, 'RULE2 ABORT: sibling advanced the file'
+tmp = MEM + '.c931.tmp'
+io.open(tmp, 'w', encoding='utf-8').write(full)
+os.replace(tmp, MEM)
+
+V = io.open(MEM, encoding='utf-8').read().split('\n')
+vm = [i for i, l in enumerate(V) if l.startswith(MARK)][0]
+ve = len('\n'.join(V[:vm])) + 1
+print(f'[verify] head_end={ve} head_lines={vm} total_lines={len(V)} delta_lines={len(V)-len(lines)}')
+print('[verify] promote-in-head=', any('GC MOMENT, NOT A LEVEL' in l for l in V[:vm]))
+print('[verify] archive-block=', sum(1 for l in V[vm:] if l.startswith('## ARCHIVE 2026-10-01-C931')),
+      'tick-record=', sum(1 for l in V[vm:] if l.startswith('## Tick record 2026-10-01 08:2xZ C931')))
+print('[verify] demoted-originals-below-clamp=',
+      sum(1 for l in V[vm:] if 'PLANNER-OWNED THE INSTANT' in l),
+      sum(1 for l in V[vm:] if 'ANSWER DELIVERED INTO A CARD-OWNED' in l),
+      sum(1 for l in V[vm:] if 'COLLAPSE (C908)' in l and l.startswith('- ') and 'copied down by the C931 fold' not in l))
