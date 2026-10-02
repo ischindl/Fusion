@@ -591,7 +591,10 @@ export function UsageIndicator({ isOpen, onClose, projectId, anchorRect, present
   const { t } = useTranslation("app");
   const isEmbedded = presentation === "embedded";
   const { providers, loading, error, lastUpdated, hasFetched, refresh } = useUsageData({
-    autoRefresh: isOpen, // Only poll when modal is open
+    // FNXC:UsageFetchGating 2026-10-02-11:05 (RUFU-493): `autoRefresh` alone never stopped the boot fetch — the view
+    // is mounted closed. Both the first read and the poll are gated on the view actually being open.
+    autoRefresh: isOpen,
+    enabled: isOpen,
   });
 
   const [isRefreshing, setIsRefreshing] = useState(false);

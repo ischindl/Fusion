@@ -130,3 +130,54 @@ describe("useUsageData", () => {
     expect(typeof result.current.refresh).toBe("function");
   });
 });
+
+/*
+FNXC:UsageFetchGating 2026-10-02-11:06 (RUFU-493):
+`UsageIndicator` is mounted with `isOpen={false}` on every dashboard boot, and `autoRefresh` gated only the
+poll — so `GET /api/usage` still fired at mount and ran 61-82s on the production board, taking two of the
+four client read slots away from the cards the operator came to read. These cases pin that a closed view
+reads nothing, that opening it does read, and that closing it stops the read already running.
+*/
+describe("useUsageData fetch gating", () => {
+  const mockFetch = vi.spyOn(api, "fetchUsageData");
+
+  beforeEach(() => {
+    mockFetch.mockReset();
+  });
+
+  it("reads nothing while the view is closed, and reads as soon as it opens", async () => {
+    mockFetch.mockResolvedValue({ providers: [] });
+    const { result, rerender } = renderHook(
+      ({ open }: { open: boolean }) => useUsageData({ enabled: open }),
+      { initialProps: { open: false } },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mockFetch).not.toHaveBeenCalled();
+    // A closed view reports "not loading", not a spinner for a request that will never happen.
+    expect(result.current.loading).toBe(false);
+
+    rerender({ open: true });
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(result.current.hasFetched).toBe(true));
+  });
+
+  it("aborts the request still in flight when the view closes", async () => {
+    let signal: AbortSignal | undefined;
+    // Never settles — the shape of a 60-80s usage read the operator walked away from.
+    mockFetch.mockImplementation(((sig?: AbortSignal) => {
+      signal = sig;
+      return new Promise(() => {});
+    }) as unknown as typeof api.fetchUsageData);
+
+    const { rerender } = renderHook(({ open }: { open: boolean }) => useUsageData({ enabled: open }), {
+      initialProps: { open: true },
+    });
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+    expect(signal).toBeDefined();
+    expect(signal!.aborted).toBe(false);
+
+    rerender({ open: false });
+    await waitFor(() => expect(signal!.aborted).toBe(true));
+  });
+});

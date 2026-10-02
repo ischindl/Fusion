@@ -100,8 +100,12 @@ export interface ProviderUsage {
   windows: UsageWindow[];
 }
 
-/** Fetch usage data from all configured AI providers */
-export function fetchUsageData(): Promise<{ providers: ProviderUsage[] }> {
-  return api<{ providers: ProviderUsage[] }>("/usage");
+/*
+FNXC:UsageFetchGating 2026-10-02-11:06 (RUFU-493):
+Takes an optional signal because `useUsageData` keeps an AbortController that previously had nothing to
+abort — the request kept running for its full 61-82s after the view closed, holding a read slot.
+*/
+export function fetchUsageData(signal?: AbortSignal): Promise<{ providers: ProviderUsage[] }> {
+  return api<{ providers: ProviderUsage[] }>("/usage", { signal });
 }
 
