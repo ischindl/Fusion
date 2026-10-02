@@ -13,6 +13,7 @@ import {
 } from "../client/client.js";
 import { withProjectId } from "../client/health.js";
 import { withTokenHeader } from "../../auth";
+import { readPriorityClass, scheduleRead } from "../client/read-scheduler.js";
 
 // ── AI Sessions ────────────────────────────────────────────────────────────
 
@@ -98,9 +99,10 @@ export async function fetchAiSessions(
   if (options?.includeArchived) search.set("includeArchived", "1");
   if (options?.type) search.set("type", options.type);
   const qs = search.toString();
-  const res = await fetch(buildApiUrl(`/ai-sessions${qs ? `?${qs}` : ""}`), {
-    headers: withTokenHeader(),
-  });
+  const path = `/ai-sessions${qs ? `?${qs}` : ""}`;
+  const res = await scheduleRead(readPriorityClass(path), () =>
+    fetch(buildApiUrl(path), { headers: withTokenHeader() }),
+  );
   if (!res.ok) return [];
   const data = await res.json();
   return data.sessions ?? [];
@@ -120,9 +122,10 @@ export async function unarchiveAiSession(id: string): Promise<void> {
 
 /** Soft-fail companion to fetchAiSessions — see FNXC:AiSessions above. */
 export async function fetchAiSession(id: string): Promise<AiSessionDetail | null> {
-  const res = await fetch(buildApiUrl(`/ai-sessions/${encodeURIComponent(id)}`), {
-    headers: withTokenHeader(),
-  });
+  const path = `/ai-sessions/${encodeURIComponent(id)}`;
+  const res = await scheduleRead(readPriorityClass(path), () =>
+    fetch(buildApiUrl(path), { headers: withTokenHeader() }),
+  );
   if (!res.ok) return null;
   return res.json();
 }

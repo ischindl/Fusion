@@ -20,6 +20,17 @@ by JSON/row materialization (~30% of CPU samples: `parse`, `fromJson`, `pgRowToT
 letting more reads overlap does not add throughput, it only lengthens every tail.
 */
 
+/*
+FNXC:ReadQueueCoverage 2026-10-02-09:46 (RUFU-479 follow-up):
+A bound only holds over the traffic that actually passes through it. When this queue shipped, the only
+routed path was `api()`, and five GET call sites kept fetching directly — so a cold board mount measured
+`activeReadCount()` 10 against the ceiling below, and those five joined the same burst the board-gating
+endpoints are supposed to win. The rule this file now carries: a new read path is queued, either through
+`api()` or explicitly with `scheduleRead`, and the one deliberate exception is a long-lived stream (the
+chat event stream), which must stay outside because it would turn a concurrency bound into a cap on open
+streams. Both halves are pinned by `__tests__/read-queue-call-site-coverage.test.ts`.
+*/
+
 /** Concurrent GETs allowed in flight from one dashboard tab. */
 export const MAX_CONCURRENT_READS = 4;
 
