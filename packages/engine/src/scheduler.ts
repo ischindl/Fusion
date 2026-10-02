@@ -34,7 +34,7 @@ import {
   type AgentSemaphore,
 } from "./concurrency/concurrency.js";
 import { planTaskWorktreePath, resolveTaskWorkingBranch } from "./worktree/worktree-names.js";
-import { proveDormantCheckoutEmptiness } from "./worktree/checkout-emptiness.js";
+import { invalidateEmptinessProofsForTask, proveDormantCheckoutEmptiness } from "./worktree/checkout-emptiness.js";
 import { schedulerLog } from "./logger.js";
 import { emitBoundedRunAudit } from "./util/emit-bounded-run-audit.js";
 import { createRepeatSuppressedLog } from "./util/repeat-suppressed-log.js";
@@ -1197,6 +1197,14 @@ export class Scheduler {
       is observed on that poll's OWN fresh cache.
       */
       const movedSelectionCache = new Map<string, { workflowId: string; stepIds: string[] } | undefined>();
+      /*
+      FNXC:CheckoutEmptinessInvalidation 2026-10-02-05:47 (RUFU-487 step 1):
+      A move is the lifecycle moment a checkout changes hands — execution starts or ends, a card lands,
+      a worktree is released — so the verdicts for THIS task's checkouts are dropped here rather than left
+      to expire. Invalidation is event-driven on purpose; the 10s TTL stays only as the backstop it was
+      never meant to be alone.
+      */
+      invalidateEmptinessProofsForTask(this.store.getRootDir(), task);
       this.lastAutoClaimFingerprint.set(task.id, computeAutoClaimFingerprint(task));
       /*
       FNXC:WorkflowResolvedColumns 2026-08-01-05:01:
@@ -1576,6 +1584,8 @@ export class Scheduler {
     this.store.on("task:deleted", (task) => {
       this.lastAutoClaimFingerprint.delete(task.id);
       this.options.snapshotManager?.invalidate("task:deleted");
+      // RUFU-487 step 1: the deleted card's checkouts are gone or freed; no verdict may outlive them.
+      invalidateEmptinessProofsForTask(this.store.getRootDir(), task);
       this.pausedTaskIds.delete(task.id);
       // FNXC:CodingIdeasWorkflow 2026-07-25-13:10: drop planning tracking with the other per-task
       // sets so a deleted-mid-planning id cannot leak or fire a stale wake if the id is reused.
