@@ -35,6 +35,12 @@ concurrent attempt a no-op.
 
 const log = createLogger("ReviewDispatchSweep");
 
+/**
+ * FNXC:ReviewDispatch 2026-10-02-16:40: how often one project's reviewer-configuration gap may repeat. Five
+ * minutes keeps a genuine gap visible (~60 lines/day/project) without drowning the per-card outcome lines.
+ */
+const DEFAULT_E4_LOG_COOLDOWN_MS = 5 * 60_000;
+
 /** Matches the scheduler's own poll cadence; one shared tick, not a competing timer. */
 export const DEFAULT_REVIEW_TICK_MS = 15_000;
 
@@ -119,6 +125,20 @@ export interface ReviewDispatchSweepOptions {
   agentStore: AgentStore;
   heartbeatMonitor: HeartbeatMonitor;
   tickMs?: number;
+  /*
+  FNXC:ReviewDispatch 2026-10-02-16:40 (RUFU-479 follow-up on RUFU-478):
+  The sweep runs once per project runtime, but its log line carried no project, so a production log with 68
+  `E4: no enabled reviewer agent exists` lines could not be read as either "the review lane is dead" or "half
+  the projects are unconfigured" — and it was filed as the former. Measured: 12 of 24 projects on this host
+  have no enabled reviewer agent at all, so E4 is true for them and irrelevant for the other 12. Attribution
+  is the whole difference, so the sweep now names its project on every line.
+  */
+  /** Project identity for log attribution; defaults to the store's own project. */
+  projectId?: string;
+  /** Injectable clock, so the E4 rate limit is testable without waiting out a cooldown. */
+  now?: () => number;
+  /** How often a reviewer-configuration gap may repeat in the log. Default 5 minutes. */
+  e4LogCooldownMs?: number;
   graceMs?: number;
   startLatencyMs?: number;
   maxAttempts?: number;
@@ -277,18 +297,46 @@ export class ReviewDispatchSweep {
   private running = false;
   /** Suppresses repeat lines when a card sits in the same state across ticks (15 s cadence). */
   private lastLoggedBucket = new Map<string, ReviewDispatchClass>();
+  /** Prefix naming the owning project on every line; empty only when the store has no project id. */
+  private readonly projectTag: string;
+  private readonly now: () => number;
+  private readonly e4LogCooldownMs: number;
+  private lastE4LogAt = 0;
+  private e4Suppressed = 0;
 
-  public constructor(private readonly options: ReviewDispatchSweepOptions) {}
+  public constructor(private readonly options: ReviewDispatchSweepOptions) {
+    const projectId = options.projectId ?? options.store.getProjectId?.() ?? null;
+    this.projectTag = projectId ? `[${projectId}] ` : "";
+    this.now = options.now ?? Date.now;
+    this.e4LogCooldownMs = options.e4LogCooldownMs ?? DEFAULT_E4_LOG_COOLDOWN_MS;
+  }
+
+  /**
+   * A reviewer-configuration gap is steady state, not an event: at a 15 s cadence it wrote 68 identical lines
+   * while the four lines that actually described cards were buried under them. The first occurrence is always
+   * written; later ones repeat only after the cooldown and report how many were suppressed in between.
+   */
+  private logReviewerConfigurationGap(message: string): void {
+    const at = this.now();
+    if (this.lastE4LogAt !== 0 && at - this.lastE4LogAt < this.e4LogCooldownMs) {
+      this.e4Suppressed += 1;
+      return;
+    }
+    const suffix = this.e4Suppressed > 0 ? ` (${this.e4Suppressed} repeats suppressed since the last line)` : "";
+    this.lastE4LogAt = at;
+    this.e4Suppressed = 0;
+    log.warn(`${this.projectTag}${message}${suffix}`);
+  }
 
   public start(): void {
     const tickMs = this.options.tickMs ?? DEFAULT_REVIEW_TICK_MS;
     this.timer = setInterval(() => {
       void this.tick().catch((error: unknown) => {
-        log.error(`Review dispatch tick failed: ${error instanceof Error ? error.message : String(error)}`);
+      log.error(`${this.projectTag}Review dispatch tick failed: ${error instanceof Error ? error.message : String(error)}`);
       });
     }, tickMs);
     this.timer.unref?.();
-    log.log(`Review dispatch sweep started (tick ${tickMs}ms)`);
+    log.log(`${this.projectTag}Review dispatch sweep started (tick ${tickMs}ms)`);
   }
 
   public stop(): void {
@@ -408,7 +456,7 @@ export class ReviewDispatchSweep {
       (agent) => !isEphemeralAgent(agent) && agent.runtimeConfig?.enabled !== false && agent.roles.includes("reviewer"),
     );
     if (reviewers.length === 1) return reviewers[0]!;
-    log.warn(
+    this.logReviewerConfigurationGap(
       reviewers.length === 0
         ? "E4: no enabled reviewer agent exists; review-lane cards stay undispatched by design."
         : `E4: ${reviewers.length} enabled reviewer agents cover the review lane; refusing to pick one.`,
@@ -490,7 +538,7 @@ export class ReviewDispatchSweep {
       log.debug(`Review run ${runId} for ${taskId} had already settled — late close skipped (${reason})`);
       return;
     }
-    log.warn(`Closed review run ${runId} for ${taskId} as failed (${reason}, reviewer ${reviewerAgentId})`);
+    log.warn(`${this.projectTag}Closed review run ${runId} for ${taskId} as failed (${reason}, reviewer ${reviewerAgentId})`);
   }
 
   /** Every classification is actionable or surfaced exactly once, never once per 15 s tick. */
@@ -503,10 +551,10 @@ export class ReviewDispatchSweep {
     this.lastLoggedBucket.set(taskId, bucket);
     const detail = `attempts=${rows.length}`;
     if (bucket === "never-dispatched" || bucket === "stalled-attempt") {
-      log.log(`${bucket}: ${taskId} (${detail})`);
+      log.log(`${this.projectTag}${bucket}: ${taskId} (${detail})`);
       return;
     }
-    log.warn(`${bucket}: ${taskId} (${detail}) — no reviewer work dispatched`);
+    log.warn(`${this.projectTag}${bucket}: ${taskId} (${detail}) — no reviewer work dispatched`);
   }
 }
 
