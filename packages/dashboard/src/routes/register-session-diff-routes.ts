@@ -131,7 +131,22 @@ The accepted trade is bounded staleness — a worktree re-pointed to another bra
 TASK_DIFF_STATS_CACHE_TTL_MS of stale badge counts, and only on the stats lane. The unparameterized
 full-detail /diff response is untouched by this cache and keeps its verified behaviour.
 */
-const TASK_DIFF_STATS_CACHE_TTL_MS = 10_000;
+/*
+FNXC:TaskDiffStats 2026-10-02-12:19 (RUFU-479 follow-up):
+The TTL has to outlast the client's poll period or the cache is decoration. `TaskCard` polls the active
+columns every 30 s (`pollIntervalMs: isActiveColumn ? 30_000 : undefined`), so a 10 s window meant every
+single poll recomputed the git lane — the comment claiming this cache "absorbs the remaining poll traffic"
+was not true of the traffic actually being sent. An idle profile of the production process (one dashboard
+tab open, nothing else happening) attributed 32% of all subprocess-spawn CPU to this lane
+(`computeWorktreeDetailedFiles` 3057 samples, `resolveDiffBase` 1222 of 13472), and `/api/health` answered
+in 1.3 s at idle because of it.
+
+60 s is two poll cycles: one computation serves two polls. The cost is bounded and display-only — the
+`+N ~M` badge can lag a real change by up to the TTL on the stats lane, which is the same trade the note
+above already made at 10 s, only two polls deep. Pinned by `diff-stats-ttl-outlasts-poll.test.ts`, because
+the failure mode is silent: the cache keeps existing, keeps returning misses, and nothing fails.
+*/
+const TASK_DIFF_STATS_CACHE_TTL_MS = 60_000;
 const TASK_DIFF_STATS_CACHE_MAX = 500;
 
 /*
