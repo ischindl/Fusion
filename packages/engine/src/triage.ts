@@ -114,6 +114,17 @@ function getPlanningSpecLockUnavailableFailure(task: Task): PlanningSpecLockUnav
     : null;
 }
 
+/*
+FNXC:PlanningFenceRecovery 2026-10-02-01:20 (RUFU-288):
+A third planning-infrastructure marker sits beside these two: `planningFailure.principalFence`, the
+persisted proof that an attempt was refused by the workflow-principal fence rather than by the
+planner. The spec-lock and lifecycle-lock getters above persist an unavailable `PROMPT.md` lock and a
+broken lock transport; the fence class persisted nothing, so an exhausted fence park left no evidence
+of which availability requirement refused and no selector for a later re-probe. Its shape,
+validation, and park predicate live in `planning-handoff-recovery.ts` so triage, the wedge
+classifier, and the self-healing sweep cannot drift apart on what a fence marker means.
+*/
+
 type PlanningLifecycleLockTransportFailure = NonNullable<NonNullable<Task["planningFailure"]>["lifecycleLockTransport"]>;
 
 function getPlanningLifecycleLockTransportFailure(task: Task): PlanningLifecycleLockTransportFailure | null {
@@ -180,8 +191,12 @@ import { ModelFallbackExhaustedError, describeModel, formatModelMarkerDetails, p
 import { hasAdvancedPastPlanning, isTaskStillInPlanningStage, resolvePlannerLanesForTaskAsync } from "./execution/replan-target.js";
 import {
   classifyPersistedPlanHandoff,
+  classifyWorkflowPrincipalFenceFailure,
+  describeWorkflowPrincipalFenceRequirement,
+  getPlanningPrincipalFenceFailure,
   isPlanningLifecycleLockTransportError,
   LEGACY_NULL_PLAN_HANDOFF_STALE_MS,
+  PLANNING_FENCE_PARK_ERROR_PREFIX,
 } from "./planning-handoff-recovery.js";
 import {
   createResolvedAgentSession,
@@ -4324,6 +4339,15 @@ export class TriageProcessor {
     } catch (err: unknown) {
       const { message: errorMessage, detail: errorDetail, stack: errorStack } = formatError(err);
       /*
+      FNXC:PlanningFenceRecovery 2026-10-02-01:20 (RUFU-288):
+      Classify the fence refusal once, up front, from BOTH the message and the cause chain. RUFU-287
+      is the motivating loss: the same 5 s planning-lifecycle-lock grant timeout that the plan-capture
+      seam classifies and retries with backoff was re-wrapped by the fence as
+      `workflow-principal-fence-unavailable:triage`, matched no classifier, and burned all three
+      authoring attempts into `PLANNING_FAILED_EXHAUSTED` — an authoring verdict on infrastructure.
+      */
+      const planningFenceFailure = classifyWorkflowPrincipalFenceFailure(err, errorMessage);
+      /*
       FNXC:PlanningContinuationDispatch 2026-09-06-02:28:
       Recovery writes belong only to a planner that acquired the durable task-status claim. If the
       dispatch-claim read fails first, triage must fail closed and leave the dispatcher's running row
@@ -4522,6 +4546,76 @@ export class TriageProcessor {
           });
           if (!persisted) return;
           return;
+        } else if (planningFenceFailure) {
+          /*
+          FNXC:PlanningFenceRecovery 2026-10-02-01:20 (RUFU-288):
+          A refusal from the durable planning-lane fence is planning infrastructure: it says nothing
+          about whether this spec is writable, so it must not consume the authoring budget that triage
+          otherwise parks terminally as `PLANNING_FAILED_EXHAUSTED` with the planner's reasoning
+          attached. The card keeps a bounded retry with backoff on the shared `recoveryRetryCount` /
+          `nextRecoveryAt` pair, `error` stays null so a retry hold never reads as a spec-authoring
+          failure, and the fence marker persists which availability requirement refused plus the
+          episode start. On exhaustion the park is named (`PLANNING_FENCE_UNAVAILABLE:`) and keeps its
+          evidence: the same contract as the lifecycle-lock branch above, plus a durable selector the
+          `reconcile-planning-fence-park` sweep can use once the fence recovers.
+          */
+          const fenceRequirementText = describeWorkflowPrincipalFenceRequirement(planningFenceFailure);
+          const fenceFailureMessage = `${PLANNING_FENCE_PARK_ERROR_PREFIX} durable planning handoff refused by the workflow-principal fence (role=${planningFenceFailure.role}) — ${fenceRequirementText}`;
+          const fenceDecision = computeRecoveryDecision({
+            recoveryRetryCount: task.recoveryRetryCount,
+            nextRecoveryAt: task.nextRecoveryAt,
+          });
+          const persistFenceEvidence = (live: Task) => {
+            const prior = getPlanningPrincipalFenceFailure(live);
+            const nowIso = new Date().toISOString();
+            return {
+              planningFailure: {
+                ...(live.planningFailure ?? {}),
+                principalFence: {
+                  role: planningFenceFailure.role,
+                  requirement: planningFenceFailure.requirement,
+                  detail: planningFenceFailure.detail,
+                  firstAt: prior?.firstAt ?? nowIso,
+                  at: nowIso,
+                  attempt: fenceDecision.nextState.recoveryRetryCount ?? null,
+                  // The sweep owns this counter; a triage-side retry or park must not erase the
+                  // evidence of how many automatic re-queues this episode already consumed.
+                  requeueCount: prior?.requeueCount ?? null,
+                },
+              },
+            };
+          };
+          if (fenceDecision.shouldRetry) {
+            const retryMessage = `${fenceFailureMessage} — retry ${fenceDecision.nextState.recoveryRetryCount}/${MAX_RECOVERY_RETRIES} in ${formatDelay(fenceDecision.delayMs)}. Planning infrastructure, not spec authoring.`;
+            planLog.warn(`⛓ ${task.id} ${retryMessage}`);
+            await this.store.logEntry(task.id, retryMessage).catch((_err: unknown) => { /* best-effort visibility */ });
+            const retryHoldStatus = await this.resolvePlanningRetryHoldStatus(task);
+            await this.updatePlanningStateIfStillCurrent(task, (live) => ({
+              ...persistFenceEvidence(live),
+              status: retryHoldStatus,
+              error: null,
+              recoveryRetryCount: fenceDecision.nextState.recoveryRetryCount,
+              nextRecoveryAt: fenceDecision.nextState.nextRecoveryAt,
+            })).catch(async (writeError: unknown) => {
+              await this.parkPlanningRecoveryWriteFailure(task, fenceFailureMessage, writeError);
+            });
+            return;
+          }
+          const fenceExhaustedMessage = `${fenceFailureMessage} — ${MAX_RECOVERY_RETRIES} attempts exhausted. Self-healing re-probes this card (reconcile-planning-fence-park); retry forces one now.`;
+          planLog.error(`✗ ${task.id} ${fenceExhaustedMessage}`);
+          await this.store.logEntry(task.id, fenceExhaustedMessage).catch((_err: unknown) => { /* best-effort visibility */ });
+          const persistedFencePark = await this.updatePlanningStateIfStillCurrent(task, (live) => ({
+            ...persistFenceEvidence(live),
+            status: "failed",
+            error: fenceExhaustedMessage,
+            recoveryRetryCount: null,
+            nextRecoveryAt: null,
+          })).catch(async (writeError: unknown) => {
+            await this.parkPlanningRecoveryWriteFailure(task, fenceFailureMessage, writeError);
+            return false;
+          });
+          if (!persistedFencePark) return;
+          return;
         } else if (isTransientError(errorMessage)) {
           // Transient network/infrastructure error — use bounded recovery policy
           const decision = computeRecoveryDecision({
@@ -4647,6 +4741,16 @@ export class TriageProcessor {
           error: exhaustedMessage,
           recoveryRetryCount: null,
           nextRecoveryAt: null,
+          /*
+          FNXC:PlanningFenceRecovery 2026-10-02-01:20 (RUFU-288):
+          An exhausted UNCLASSIFIED failure is an authoring terminal park, so any earlier
+          infrastructure marker must leave with the transient fields. A surviving fence marker would
+          show an operator an infrastructure badge on a card whose real problem was the spec, and
+          would keep the episode evidence for a refusal this card is no longer waiting on. Every
+          other planning park that clears its transient fields clears this field with them; this
+          branch was the one that did not.
+          */
+          planningFailure: null,
         }).catch((restoreErr: unknown) => {
           const msg = restoreErr instanceof Error ? restoreErr.message : String(restoreErr);
           planLog.warn(`${task.id}: failed to park task after planning retries exhausted: ${msg}`);

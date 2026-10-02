@@ -229,8 +229,11 @@ import {
 import { isTaskStillInPlanningStage } from "./execution/replan-target.js";
 import {
   classifyPersistedPlanHandoff,
+  classifyWorkflowPrincipalFenceFailure,
+  getPlanningFencePark,
   isPlanningLifecycleLockTransportError,
   LEGACY_NULL_PLAN_HANDOFF_STALE_MS,
+  WORKFLOW_PRINCIPAL_FENCE_UNAVAILABLE_PREFIX,
 } from "./planning-handoff-recovery.js";
 import { getPromptPath } from "./execution/spec-staleness.js";
 import { evaluateStrandedHoldContinuation, seedPreReleasePlanReviewContinuation } from "./plan-review-continuation.js";
@@ -1233,6 +1236,14 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
    */
   private strandedHoldContinuationNoActionAudited = new Set<string>();
   private principalHeldPlanningNoActionAudited = new Set<string>();
+  /*
+  FNXC:PlanningFenceRecovery 2026-10-02-01:20 (RUFU-288):
+  Bounds the `reconcile-planning-fence-park` no-action findings per (taskId, outcome, requirement).
+  A sustained fence outage makes every pass a candidate again, and an unbounded row per 30-minute
+  pass is the audit equivalent of a retry storm; a requirement that CHANGES is new information and
+  gets its own row.
+  */
+  private planningFenceNoActionAudited = new Set<string>();
   /*
   FNXC:StrandedContinuationReclaim 2026-09-22-14:21 (RUFU-263):
   Two memos bound the stranded-reclaim noise per (taskId, nodeId, state, blockedReason) CONDITION, keyed
@@ -2357,6 +2368,10 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       // FNXC:PrincipalHeldPlanning 2026-08-10-08:20: a planning hold from principal routing has no other
       // retry owner, so it must be re-queued before the steps below classify the card as simply idle.
       { name: "reconcile-principal-held-planning", fn: () => this.reconcilePrincipalHeldPlanningContinuations().then(() => undefined) },
+      // FNXC:PlanningFenceRecovery 2026-10-02-01:20 (RUFU-288): a fence-refused planning park has no other
+      // retry owner — triage discovery excludes `status:"failed"` — and a restart is exactly when a store
+      // availability refusal has most often cleared.
+      { name: "reconcile-planning-fence-park", fn: () => this.reconcilePlanningFenceParks().then(() => undefined) },
       /*
       FNXC:StrandedContinuationReclaim 2026-08-11-09:12:
       Runs AFTER the two narrow continuation sweeps above and before any step that classifies a card as
@@ -3603,6 +3618,10 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           // no benefit.
           { name: "reconcile-stranded-hold-continuations", fn: () => this.reconcileStrandedHoldContinuations() },
           { name: "reconcile-principal-held-planning", fn: () => this.reconcilePrincipalHeldPlanningContinuations() },
+          // FNXC:PlanningFenceRecovery 2026-10-02-01:20 (RUFU-288): steady-state half of the startup sweep —
+          // a fence can recover without a restart, and the grace window plus the live re-probe keep the
+          // repair to cards the fence itself admits are reachable again.
+          { name: "reconcile-planning-fence-park", fn: () => this.reconcilePlanningFenceParks() },
           // FNXC:StrandedContinuationReclaim 2026-08-11-09:12: steady-state half of the startup sweep —
           // a session can die mid-run without a restart, and the grace window keeps live work untouched.
           { name: "reconcile-stranded-workflow-continuations", fn: () => this.reconcileStrandedWorkflowContinuations() },
@@ -10147,6 +10166,220 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       return repaired;
     } catch (error) {
       log.warn(`reconcilePrincipalHeldPlanningContinuations failed: ${error instanceof Error ? error.message : String(error)}`);
+      return 0;
+    }
+  }
+
+  /*
+  FNXC:PlanningFenceRecovery 2026-10-02-01:20 (RUFU-288):
+  A planning card terminalized by workflow-principal fence refusal is stranded in a shape no other
+  sweep owns. `reconcile-principal-held-planning` selects `status:"needs-replan"` plus a lone held
+  triage continuation, and triage's own discovery excludes `status:"failed"` outright, so a card parked
+  by `PLANNING_FENCE_UNAVAILABLE:` stays parked for a human who has nothing to repair: the refusal is
+  store availability, not the spec. RUFU-287 sat failed for over two hours on a 5 s advisory-lock
+  grant timeout that had self-cleared within the attempt.
+
+  The repair re-probes the fence instead of trusting elapsed time — it takes the SAME planning lifecycle
+  lock the handoff takes. A successful grant proves the fence is reachable again, so the card is
+  re-queued on a fresh budget; a refusal classifies as `fence-still-unavailable` and performs no
+  lifecycle write and no counter burn, so a sustained outage costs one bounded audit row per
+  (taskId, outcome, requirement) rather than a retry storm. Age is measured from the marker's
+  `firstAt`, never `task.updatedAt`: this sweep's own write bumps the shared row clock, so an
+  updatedAt-derived age would strip the card's eligibility on the pass right after naming it — the
+  RUFU-350 rule. Re-queueing writes `needs-replan`, the one status triage re-admits in BOTH planning
+  lanes regardless of whether a `PROMPT.md` draft exists yet.
+  */
+  async reconcilePlanningFenceParks(): Promise<number> {
+    try {
+      // Long enough that a just-parked card is left to the operator-visible retry it already advertises.
+      const graceMs = 5 * 60_000;
+      const settings = await this.store.getSettings();
+      if (settings.globalPause === true || settings.enginePaused === true) return 0;
+      const live = (taskId: string) => isTaskPlanningOrExecutionLive(taskId, {
+        isTaskActive: this.options.isTaskActive,
+        getPlanningTaskIds: this.options.getPlanningTaskIds,
+      });
+      let offset = 0;
+      let repaired = 0;
+      for (;;) {
+        const tasks = await this.store.listTasks({ slim: false, includeArchived: false, includeDeleted: false, limit: 500, offset });
+        for (const snapshot of tasks) {
+          try {
+            const snapshotPark = getPlanningFencePark(snapshot);
+            if (!snapshotPark) continue;
+            // Age comes from the marker's own `firstAt`. The one shape with no marker is a park an
+            // older build wrote, and for it the row clock is the only evidence of when the episode
+            // began; the self-bump hazard RUFU-350 names cannot strand a park here, because this
+            // sweep's write ends candidacy outright (the status stops being `failed`).
+            const ageBase = Date.parse(snapshotPark.firstAt ?? snapshot.updatedAt);
+            if (!Number.isFinite(ageBase)) continue;
+            const stalenessMs = Math.max(0, Date.now() - ageBase);
+            if (stalenessMs < graceMs) continue;
+
+            const task = await this.store.getTask(snapshot.id);
+            const park = task ? getPlanningFencePark(task) : null;
+            if (!task || !park) continue;
+            /*
+            The fixed no-action vocabulary, so a reason is always greppable and never becomes prose:
+            `live-session` (planning or execution owns the card), `operator-held` (pause outranks an
+            automatic re-queue), `auto-merge-off` (human-review terminal contract),
+            `workflow-unresolvable` / `lane-vocabulary-unreadable` (the planning lane cannot be
+            determined, so re-seeding `needs-replan` could strand the card in a lane that never
+            re-plans), `left-planning-lane`, `requeue-budget-exhausted` (`MAX_RECOVERY_RETRIES`
+            re-probes spent), and `fence-still-unavailable` / `raced`.
+            */
+            type PlanningFenceReconcileOutcome =
+              | "requeued"
+              | "live-session"
+              | "operator-held"
+              | "auto-merge-off"
+              | "workflow-unresolvable"
+              | "lane-vocabulary-unreadable"
+              | "left-planning-lane"
+              | "requeue-budget-exhausted"
+              | "fence-still-unavailable"
+              | "raced";
+            const audit = async (outcome: PlanningFenceReconcileOutcome) => {
+              const key = `${task.id}:${outcome}:${park.requirement}:${park.requeueCount}`;
+              if (outcome !== "requeued") {
+                if (this.planningFenceNoActionAudited.has(key)) return;
+                this.planningFenceNoActionAudited.add(key);
+              }
+              await emitBoundedRunAudit(this.store, {
+                taskId: task.id,
+                agentId: "self-healing",
+                runId: generateSyntheticRunId("reconcile-planning-fence-park", task.id),
+                domain: "database",
+                mutationType: (outcome === "requeued" ? "task:reconcile-planning-fence-park" : "task:reconcile-planning-fence-park-no-action") as DatabaseMutationType,
+                target: task.id,
+                metadata: {
+                  taskId: task.id,
+                  column: task.column,
+                  stalenessMs,
+                  requeueCount: park.requeueCount,
+                  requirement: park.requirement,
+                  outcome,
+                },
+              }, { log });
+            };
+
+            if (live(task.id)) { await audit("live-session"); continue; }
+            // An operator pause outranks an automatic planning re-queue, same rule as every other
+            // park sweep; a held card is waiting for a human decision, not for the fence.
+            if (task.userPaused === true || task.paused === true) { await audit("operator-held"); continue; }
+            // Planning re-admission is triage work, so it defers to the same human-review terminal
+            // contract `reconcile-principal-held-planning` honors.
+            if (!allowsAutoMergeProcessing(task, { autoMerge: resolveEffectiveAutoMerge(task, settings) })) {
+              await audit("auto-merge-off");
+              continue;
+            }
+            // The re-queue only means anything while the card still sits in a lane whose role owns
+            // planning. A card that has since moved is left to its lane's own sweeps.
+            /*
+            `needs-replan` is a PLANNING-LANE signal, so re-queueing is only meaningful while the card
+            still sits in a lane whose role owns planning — the same hold/intake authority
+            `reconcile-principal-held-planning` and the admission-stall sweep resolve. A graph that
+            declares no column model cannot PROVE the lane, and the safe direction for a write that
+            changes lane state is to leave the card alone rather than guess it.
+            */
+            const laneIr = await resolveWorkflowIrForTask(this.store, task.id).catch(() => undefined);
+            if (!laneIr) { await audit("workflow-unresolvable"); continue; }
+            const planningLanes = resolvePlanningLanes(laneIr);
+            if (!planningLanes) { await audit("lane-vocabulary-unreadable"); continue; }
+            if (!planningLanes.has(task.column)) { await audit("left-planning-lane"); continue; }
+            // The automatic budget. Triage's own retry cap is spent inside one dispatch; this is the
+            // cap across dispatches, so a permanently broken fence cannot loop a card back into
+            // planning forever. Exhaustion stops re-queues, it does not stop the operator's Retry.
+            if (park.requeueCount >= MAX_RECOVERY_RETRIES) {
+              await audit("requeue-budget-exhausted");
+              log.warn(`reconcilePlanningFenceParks: ${task.id} left parked — ${park.requeueCount} automatic re-queues exhausted (${park.requirement})`);
+              continue;
+            }
+
+            const repairUnderLifecycleLock = async (): Promise<boolean> => {
+              const fresh = await this.store.getTask(task.id);
+              const freshPark = fresh ? getPlanningFencePark(fresh) : null;
+              if (!fresh || !freshPark || fresh.userPaused === true || fresh.paused === true) {
+                await audit("raced");
+                return false;
+              }
+              const wrote = await this.store.updateTaskAtomic(task.id, (live) => {
+                // The park must still be the live truth at write time, not merely at scan time: a
+                // forced retry or an operator pause in this window owns the card instead.
+                const livePark = getPlanningFencePark(live);
+                if (!livePark || live.paused === true || live.userPaused === true) return null;
+                return {
+                  status: "needs-replan",
+                  error: null,
+                  recoveryRetryCount: null,
+                  nextRecoveryAt: null,
+                  planningFailure: {
+                    ...(live.planningFailure ?? {}),
+                    principalFence: {
+                      role: livePark.role,
+                      requirement: livePark.requirement,
+                      detail: livePark.detail,
+                      firstAt: livePark.firstAt ?? live.updatedAt,
+                      at: new Date().toISOString(),
+                      // The budget is handed back freshly with the re-queue, so triage's next refusal
+                      // starts from attempt 1 again; the episode's own `firstAt` keeps its age.
+                      attempt: null,
+                      requeueCount: livePark.requeueCount + 1,
+                    },
+                  },
+                };
+              });
+              // An aborted updater returns the unchanged row, so a still-parked result is the race.
+              if (getPlanningFencePark(wrote)) {
+                await audit("raced");
+                return false;
+              }
+              await this.store.logEntry(
+                task.id,
+                `[recovery] planning re-queued — workflow-principal fence re-probe succeeded after ${Math.round(stalenessMs / 60_000)} min parked (${freshPark.requirement}; automatic re-queue ${freshPark.requeueCount + 1}/${MAX_RECOVERY_RETRIES})`,
+              );
+              await audit("requeued");
+              return true;
+            };
+            const lifecycleLock = (this.store as Partial<TaskStore>).withPlanningLifecycleLock;
+            let didRepair = false;
+            try {
+              didRepair = lifecycleLock
+                ? await lifecycleLock.call(this.store, task.id, repairUnderLifecycleLock) as unknown as boolean
+                : await repairUnderLifecycleLock();
+            } catch (probeError) {
+              const probeMessage = probeError instanceof Error ? probeError.message : String(probeError);
+              const refusal = classifyWorkflowPrincipalFenceFailure(
+                probeError,
+                `${WORKFLOW_PRINCIPAL_FENCE_UNAVAILABLE_PREFIX}:self-healing (${probeMessage})`,
+              );
+              if (!refusal) throw probeError;
+              await audit("fence-still-unavailable");
+              log.warn(`reconcilePlanningFenceParks: ${task.id} fence re-probe refused (${refusal.requirement}) — park left untouched`);
+              continue;
+            }
+            if (!didRepair) continue;
+            /*
+            A successful repair drops EVERY no-action memo for this card, not just the one this pass
+            wrote. A later episode must be able to report a fresh `fence-still-unavailable` or
+            `live-session` even if the earlier pass recorded a different outcome, and the memo is a
+            per-episode silence guard, not a permanent record — the audit store already holds history.
+            */
+            for (const memoKey of this.planningFenceNoActionAudited) {
+              if (memoKey.startsWith(`${task.id}:`)) this.planningFenceNoActionAudited.delete(memoKey);
+            }
+            repaired += 1;
+          } catch (error) {
+            log.warn(`reconcilePlanningFenceParks: failed for ${snapshot.id}: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+        if (tasks.length < 500) break;
+        offset += tasks.length;
+      }
+      if (repaired > 0) log.log(`Re-queued planning for ${repaired} task(s) stranded on a workflow-principal fence park`);
+      return repaired;
+    } catch (error) {
+      log.warn(`reconcilePlanningFenceParks failed: ${error instanceof Error ? error.message : String(error)}`);
       return 0;
     }
   }

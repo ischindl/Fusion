@@ -99,10 +99,52 @@ export type {
   HumanMergeRejectionState,
 } from "../../merge/human-merge-approval.js";
 
+/**
+ * Which availability requirement the durable planning-lane fence refused to satisfy.
+ *
+ * FNXC:PlanningFenceRecovery 2026-10-02-01:20 (RUFU-288):
+ * The fence (`installPlanningContinuationUnlessDispatchClaimed` -> `withPlanningLifecycleLock`) can
+ * refuse for three distinguishable reasons, and an operator reading the card must be able to tell
+ * them apart without a database shell. `lock-transport` names the per-task planning lifecycle lock
+ * requirement (dedicated session, identity check, or `pg_advisory_lock` grant) that timed out;
+ * `store-unavailable` means the fence carried some other store-side rejection (e.g. a continuation
+ * write failure); `cause-unknown` is the shape a card carries when the rewrap reached this build
+ * without a cause at all — the RUFU-287 incident predates the cause-carrying rewrap, so its rows
+ * can only be attributed to the fence itself, never to a named requirement. All three are
+ * infrastructure: none of them says anything about whether the spec is writable.
+ */
+export type TaskPlanningFenceRequirement = "lock-transport" | "store-unavailable" | "cause-unknown";
+
 /** Engine-owned planning retry evidence. */
 export type TaskPlanningFailureState = {
   specLockUnavailable?: { sourceHash: string; reason: string; sections: string[]; at: string; attempt: number | null };
   lifecycleLockTransport?: { message: string; at: string; attempt: number | null };
+  /**
+   * FNXC:PlanningFenceRecovery 2026-10-02-01:20 (RUFU-288):
+   * Durable evidence that a planning attempt was refused by the workflow-principal fence rather
+   * than by the planner. `firstAt` anchors the episode so age is derived from the marker itself
+   * (the RUFU-350 rule: a recovery write bumps `updatedAt`, so the row clock cannot name an
+   * episode), and `at` is the most recent refusal. A park keeps this marker — clearing it is what
+   * made the exhausted fence park indistinguishable from an authoring failure and left
+   * `reconcile-principal-held-planning` (which requires `status: "needs-replan"`) unable to see it.
+   *
+   * FNXC:PlanningFenceRecovery 2026-10-02-02:05 (RUFU-288):
+   * `requeueCount` is how many times self-healing has re-queued this episode. It lives in the marker
+   * rather than in `recoveryRetryCount` because the two budgets mean different things: the shared
+   * counter is triage's authoring/transport retry state (and the wedge descriptor reads it to decide
+   * whether a human is still waiting), while this one bounds only sweep-driven re-queues, so a
+   * permanently misconfigured fence cannot loop a card planning-forever. Triage preserves it across a
+   * retry hold and the terminal park; the sweep is the only writer that increments it.
+   */
+  principalFence?: {
+    role: string;
+    requirement: TaskPlanningFenceRequirement;
+    detail: string | null;
+    firstAt: string;
+    at: string;
+    attempt: number | null;
+    requeueCount?: number | null;
+  };
 };
 
 export interface MergeDetails {

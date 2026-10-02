@@ -10,6 +10,7 @@ import {
 } from "@fusion/core";
 import { hasTransientMergeRecoveryOwner } from "../errors/transient-merge-error-classifier.js";
 import { NO_PROGRESS_REQUEUE_BUDGET_EXHAUSTED_PREFIX } from "../healing/no-progress-requeue-budget.js";
+import { describeWorkflowPrincipalFenceRequirement, getPlanningFencePark } from "../planning-handoff-recovery.js";
 
 /** A bounded, operator-safe description of a task that cannot make progress. */
 export interface TaskWedgeDescriptor {
@@ -206,6 +207,7 @@ export function describeTaskWedge(task: Task): TaskWedgeDescriptor | null {
     };
   }
   const error = task.error ?? "";
+  const fencePark = getPlanningFencePark(task);
   const hasPauseProof = task.paused === true || task.status === "paused";
   if (hasPauseProof && task.pausedReason === "completed-blocked") {
     return { reasonKey: "completion-blocked", reason: "Completed work is blocked from advancing to review.", action: "Clear the blocker or reset the task to todo." };
@@ -243,6 +245,36 @@ export function describeTaskWedge(task: Task): TaskWedgeDescriptor | null {
   */
   if (error.startsWith(NO_PROGRESS_REQUEUE_BUDGET_EXHAUSTED_PREFIX)) {
     return { reasonKey: "no-progress-requeue-budget-exhausted", reason: "Self-healing exhausted its no-progress requeue budget.", action: "Repair the environment or task, then retry the task." };
+  }
+  /*
+  FNXC:PlanningFenceRecovery 2026-10-02-01:20 (RUFU-288):
+  A planning card exhausted by workflow-principal fence refusal used to fall through every matcher here
+  into the generic `terminal-failed` descriptor, which cost the same two things RUFU-276 measured for the
+  not-run class: the operator read "terminal failed, inspect the error" for a condition that is not about
+  the spec at all, and — because `classifyTerminalFailureAutoRecoveryForTask` derives
+  `isGenericTerminalFailure` from exactly this reason key — automatic recovery claimed a card it can never
+  advance, so `shouldWithholdWedgeAlertForAutoRecovery` withheld an alert for a recovery that never came.
+  RUFU-287 sat in that shape for over two hours while the infrastructure refusal had already self-cleared.
+
+  The key is deliberately its own (`planning-fence-unavailable`, not `stall:`-prefixed): this is a terminal
+  planning park, not a stall-code chip, and the stall ladder has no planning-fence code. The
+  recovery-owner veto is preserved from the generic fallback so a card still holding live retry counters
+  stays silent — an exhausted park nulls both fields precisely so this alert can fire.
+  */
+  if (fencePark) {
+    if (describeTaskRecoveryOwner(task)) return null;
+    return {
+      reasonKey: "planning-fence-unavailable",
+      // The requirement phrase is the operator's answer to "what was unavailable?" — a named park keeps
+      // it in its marker, a legacy park derives it from the carried last-error text, so the sentence
+      // stays readable for both populations instead of degrading to "inspect the error".
+      reason: `Planning could not reach the durable planning-lane fence (${describeWorkflowPrincipalFenceRequirement({
+        role: fencePark.role,
+        requirement: fencePark.requirement,
+        detail: fencePark.detail,
+      })}), so the spec was never written.`,
+      action: "Restore database availability for this project; self-healing re-probes the fence (reconcile-planning-fence-park) and retry forces one now.",
+    };
   }
   /*
   FNXC:TaskWedgeNotifications 2026-09-22-23:05 (RUFU-276, AC4):

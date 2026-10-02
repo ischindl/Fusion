@@ -760,6 +760,24 @@ export type DatabaseMutationType =
   */
   | "task:reconcile-orphaned-non-convergence-hold"
   /*
+  FNXC:PlanningFenceRecovery 2026-10-02-02:27 (RUFU-288):
+  `reconcile-planning-fence-park` owns the planning-lane card that the durable principal fence refused
+  into a terminal park. The mutation row fires once per automatic re-queue (the card goes
+  `needs-replan` and re-enters planning); the `-no-action` row fires once per examined park that was
+  deliberately left alone, so the ratio between the two is the operator's read on whether a fence
+  outage is still degrading planning rather than a pile of unexplained silence. Metadata is identical
+  for both rows: { taskId, column, stalenessMs, requeueCount, requirement, outcome } — ids, the lane,
+  one duration, one counter, a fixed requirement enum (`lock-transport` | `store-unavailable` |
+  `cause-unknown`), and a fixed outcome enum (`requeued` | `fence-still-unavailable` | `live-session`
+  | `operator-held` | `auto-merge-off` | `workflow-unresolvable` | `lane-vocabulary-unreadable` |
+  `left-planning-lane` | `requeue-budget-exhausted` | `raced`). The refusal sentence, the carried cause
+  text, the branch tip, and any error message are deliberately absent: the requirement enum exists so
+  the cause is queryable without the cause string being stored.
+  */
+  | "task:reconcile-planning-fence-park"
+  /** Deduped companion row for a fence park this pass examined and deliberately left alone. Same metadata. */
+  | "task:reconcile-planning-fence-park-no-action"
+  /*
   FNXC:LegacyAdoption 2026-07-19-04:30 (U9b / R10 / KTD-8):
   Startup legacy-row adoption through the KTD-8 adoption table. Metadata is
   ids/counts/outcomes-only: { taskId, action, priorStatus, column, backfilledStepCount,
