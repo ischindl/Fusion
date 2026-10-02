@@ -848,16 +848,33 @@ layout. Shared notice paint uses semantic tokens; mobile only changes flow and t
   color: var(--text-primary);
 }
 
+/*
+FNXC:ExternalBlockUx 2026-10-02-10:57 (RUFU-492):
+Measured on the live board (project `stash`, card STAS-285): the notice was `position: absolute; inset: 0`
+inside a `position: relative` card, so it covered a card that was **432 px tall** — the height of content the
+operator could not see (an expanded 10-step list, boost row, lifecycle dates, agent badge rows). That is why
+the red panel read as "not a card": it was a full-content card with a red film over it. Clamping the prose
+fixed the spill but not the shape.
+
+So the notice is now the card's content rather than a film over it: in normal flow, and everything else the
+overlay used to hide stops occupying layout. The card's height becomes the notice's height, which also means
+the virtualized row measurement can no longer disagree with what is painted.
+*/
 .external-block-notice--card {
-  position: absolute;
-  inset: 0;
-  z-index: 4;
+  position: static;
+  flex: 1 1 auto;
   flex-direction: column;
   justify-content: center;
+  gap: var(--space-xs);
   border: 0;
   border-radius: inherit;
   box-shadow: var(--shadow-md);
   background: color-mix(in srgb, var(--color-error) 14%, var(--card));
+  overflow: hidden;
+}
+
+.card.external-blocked > :not(.external-block-notice) {
+  display: none; /* a blocked card shows the block, not the work it cannot do */
 }
 
 .external-block-notice__title {
@@ -865,19 +882,37 @@ layout. Shared notice paint uses semantic tokens; mobile only changes flow and t
   font-size: var(--font-size-md);
 }
 
+/*
+FNXC:ExternalBlockUx 2026-10-02-10:51 (RUFU-492):
+The obstacle reason is agent-authored prose of arbitrary length (measured live: ~70 rendered lines) and on
+the card face it sits inside the absolutely-positioned `--card` overlay. Unclamped it grew past the card,
+and because the card lives in `column-virtual-row` — whose height was measured before the overlay grew — the
+virtual list painted the NEXT card inside this one, so text overlapped text. Every sibling face-visible
+long-text box already clamps (`.card-stall-reason`, 2 lines); this one clamps to three and keeps the full
+sentence reachable through `title`. `min-height: 0` is required: a flex child otherwise refuses to shrink
+below its content and the clamp never binds.
+*/
 .external-block-notice__reason {
   max-width: 100%;
+  min-height: 0;
   color: var(--text-primary);
   font-family: var(--font-mono);
   font-size: var(--font-size-xs);
   line-height: var(--line-height-normal);
   overflow-wrap: anywhere;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
 }
 
 .external-block-notice__actions {
   display: inline-flex;
   align-items: center;
   gap: var(--space-sm);
+  /* the clamp must never push Explain/Retry out of the clipped overlay */
+  flex: 0 0 auto;
 }
 
 .external-block-notice__actions .btn {

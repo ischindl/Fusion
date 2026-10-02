@@ -686,7 +686,7 @@ export function ExternalBlockNotice({ task, variant, onOpenChatWithPrefill, onRe
   return (
     <div className={`external-block-notice external-block-notice--${variant}`} role="alert" data-testid={`external-block-${variant}-${task.id}`}>
       <strong className="external-block-notice__title">{t("tasks.externalBlock.title", "Blocked")}</strong>
-      <span className="external-block-notice__reason">{error}</span>
+      <span className="external-block-notice__reason" title={error}>{error}</span>
       {(onOpenChatWithPrefill || onRetryTask) && (
         <span className="external-block-notice__actions">
           {onOpenChatWithPrefill && (
