@@ -50,7 +50,7 @@ export function useUnmappedWorkflowRefetch(params: {
   boardWorkflows: BoardWorkflowsPayload | null;
   tasks: readonly Task[];
   workflowMode: boolean;
-  refreshBoardWorkflows: (options?: { forceFresh?: boolean; taskIds?: readonly string[] }) => void | Promise<void>;
+  refreshBoardWorkflows: (options?: { forceFresh?: boolean; taskIds?: readonly string[]; partial?: boolean }) => void | Promise<void>;
   /*
   FNXC:WorkflowBoard 2026-07-29-00:00 (PR #2530 review — greptile):
   The project this repair belongs to. A repair pending across a PROJECT SWITCH would
@@ -154,7 +154,15 @@ export function useUnmappedWorkflowRefetch(params: {
       for both outcomes; a non-promise return degrades to the old immediate re-arm.
       */
       repairInFlightRef.current = true;
-      const settled = refreshBoardWorkflows({ forceFresh: true, taskIds: stillUnmappedTaskIds });
+      /*
+      FNXC:BoardWorkflows 2026-10-01-21:51:
+      This repair names the exact cards it needs mapped, so it now asks for exactly those
+      (`partial=1`) instead of paying a whole current-task scan for an answer it only reads for these ids
+      — measured 14.2 s to return 241 mappings when 1 was requested, repeated per attempt of a bounded
+      budget. `forceFresh` is dropped with it: the named-id route is never served from cache, and the
+      partial answer must NOT clear the cached lane set it merges into (see `mergePartialBoardWorkflows`).
+      */
+      const settled = refreshBoardWorkflows({ taskIds: stillUnmappedTaskIds, partial: true });
       if (settled && typeof (settled as Promise<void>).finally === "function") {
         void (settled as Promise<void>).finally(() => {
           repairInFlightRef.current = false;
