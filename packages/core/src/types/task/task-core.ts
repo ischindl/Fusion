@@ -305,6 +305,28 @@ export interface MergeDetails {
   delivered blocker is only ever gone by deletion.
   */
   workspaceLandedFiles?: Record<string, string[]>;
+  /*
+  FNXC:WorkspaceMergeFinalization 2026-10-02-21:52 (RUFU-504):
+  Why a workspace card can be `mergeConfirmed` with no `commitSha` and no `workspaceLandedShas`. A card
+  whose every declared repository was already integrated delivers work and produces zero commits, and the
+  lane previously had no vocabulary for that: the shared finalizer's `hasDurableMergeProof` saw no proof and
+  refused with the generic `missing-merge-confirmation`, whose stale `failed` row then blocked the retry.
+
+  `workspaceCommitFreeBasis` records the per-repository git observation that licenses the delivery
+  (`zero-ahead` = branch tip is an ancestor of that repository's integration branch; `unproven` = branch
+  gone or ahead-but-net-zero, which is NEVER a delivery). `workspaceCommitFreeBranchTipShas` keeps the tips
+  that were seen, as corroboration of the basis. These are deliberately separate from `landedSha` /
+  `workspaceLandedShas`: a tip SHA is evidence about a branch, not a claim that this card authored a commit,
+  so no reader may treat them as a landing.
+
+  The literals mirror `WorkspaceCommitFreeBasis` in
+  `packages/engine/src/merge/workspace-commit-free-delivery.ts`. `@fusion/core` cannot import
+  `@fusion/engine`, so the union is declared on both sides and matched structurally; the engine test
+  `workspace-commit-free-delivery.test.ts` assigns the engine result into this field, which is what keeps
+  the two from drifting.
+  */
+  workspaceCommitFreeBasis?: Record<string, "zero-ahead" | "unproven">;
+  workspaceCommitFreeBranchTipShas?: Record<string, string>;
 }
 
 /**

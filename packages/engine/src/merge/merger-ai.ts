@@ -150,6 +150,14 @@ import cycle (merger-ai-worktree imports `MIN_TEMP_WORKTREE_REAP_AGE_MS` from se
 */
 import { isRepoLanded, findProvenLandedCommit, FUSION_TASK_ID_TRAILER_KEY } from "./workspace-land-predicate.js";
 import { resolveWorkspaceMergeReadiness } from "./workspace-merge-readiness.js";
+import {
+  createTipAncestryProbe,
+  decideWorkspaceDelivery,
+  probeWorkspaceCommitFree,
+  summarizeCommitFreeEvidence,
+  type WorkspaceCommitFreeRepoEvidence,
+  type WorkspaceTipAncestryProbe,
+} from "./workspace-commit-free-delivery.js";
 import { persistWorkspaceRepoLandFailure } from "./workspace-land-failure.js";
 import { ensureTenancyFenceRef, mergeDispatchFenceRef, publishWorkspaceIntegrationRef, WorkspaceFenceRefError, workspaceLandFenceRef } from "./workspace-fence-ref.js";
 import { isPushAfterMergeEnabled } from "./push-after-merge-policy.js";
@@ -3308,18 +3316,19 @@ export async function landWorkspaceTask(
      * to todo instead of laundering it into `done`. noCommitsExpected tasks keep their existing path.
      */
     const landedCount = repos.filter((r) => r.status === "landed" && r.landedSha).length;
-    let hasRevertedEmptyRepo = false;
-    if (task.noCommitsExpected !== true && repos.length > 0 && landedCount === 0) {
-      for (const r of repos) {
-        const tip = await git(["rev-parse", "--verify", `refs/heads/${r.branch}`], r.repoRootDir).catch(() => "");
-        // Branch gone with nothing landed → treat as lost. Ahead-but-empty (tip not an ancestor of the
-        // integration branch) → reverted/lost shape. Zero-ahead / already-integrated → safe no-op.
-        if (!tip || !(await gitOk(["merge-base", "--is-ancestor", tip, r.integrationBranch], r.repoRootDir))) {
-          hasRevertedEmptyRepo = true;
-          break;
-        }
-      }
-    }
+    /*
+    FNXC:WorkspaceMergeFinalization 2026-10-02-21:52 (RUFU-504):
+    The ancestry observation is taken ONCE per pass, through the same helper that decides whether a
+    zero-commit workspace is a delivery. The guard keeps its own BLOCKING rule — a `noCommitsExpected`
+    card is never blocked by the reverted-shape test — while the evidence is collected whenever nothing
+    landed, because the delivery decision needs it whatever the marker says (the marker is optional; the
+    probe is the evidence). One pass must not contain two reads of the same refs that can disagree.
+    */
+    const commitFreeEvidence = repos.length > 0 && landedCount === 0
+      ? await probeWorkspaceCommitFree(repos, probeWorkspaceTipAncestry)
+      : [];
+    const hasRevertedEmptyRepo = task.noCommitsExpected !== true
+      && commitFreeEvidence.some((repo) => repo.basis === "unproven");
     if (hasRevertedEmptyRepo) {
       const reason =
         "branch had no net changes vs main — work may have been reverted or lost; operator review required";
@@ -3347,7 +3356,7 @@ export async function landWorkspaceTask(
     callback: its already-pushed commits remain recoverable through landedSha/intent evidence, but
     this stale generation must not write the task outcome. Renewal only improves liveness.
     */
-    const finalize = () => finalizeWorkspaceTask(store, taskId, task, repos, workspaceRootDir, fence);
+    const finalize = () => finalizeWorkspaceTask(store, taskId, task, repos, workspaceRootDir, commitFreeEvidence, fence);
     const withValidDispatchLease = (store as Partial<TaskStore>).withValidWorkspaceLease;
     if (options.workspaceDispatchFence && typeof withValidDispatchLease === "function") {
       try {
@@ -3457,12 +3466,40 @@ export function formatRepositoryMergeLog(repoRelPath: string, message: string): 
   return `[${repoRelPath}] ${message}`;
 }
 
-export function formatWorkspaceLandingSummary(repos: WorkspaceRepoLandResult[]): string {
-  const aggregate = repos.some((repo) => repo.status === "failed") ? "partial-failed" : "all-landed";
+/*
+FNXC:WorkspaceMergeFinalization 2026-10-02-21:52 (RUFU-504):
+The one git read that establishes "this repository's task branch is already inside its integration branch".
+Module-scoped and injected into `probeWorkspaceCommitFree` so the empty-merge guard and the delivery decision
+share a single authority, and so the ancestry expression itself lives in the decision module (where a real
+repository can test it) rather than in this file's shellout.
+*/
+const probeWorkspaceTipAncestry: WorkspaceTipAncestryProbe = createTipAncestryProbe(
+  async (args, cwd) => git(args, cwd),
+);
+
+export function formatWorkspaceLandingSummary(
+  repos: WorkspaceRepoLandResult[],
+  commitFreeEvidence: WorkspaceCommitFreeRepoEvidence[] = [],
+): string {
+  const landedCount = repos.filter((repo) => repo.status === "landed" && repo.landedSha).length;
+  /*
+  FNXC:WorkspaceMergeFinalization 2026-10-02-21:52 (RUFU-504):
+  `aggregate=all-landed` used to mean only "nothing failed", which read as a landing on a card that
+  delivered no commit at all. The kind is now stated, and the per-repo basis rides along so the card's own
+  log explains a zero-commit done without re-probing git.
+  */
+  const aggregate = repos.some((repo) => repo.status === "failed")
+    ? "partial-failed"
+    : landedCount > 0
+      ? "all-landed"
+      : commitFreeEvidence.length > 0 && commitFreeEvidence.every((repo) => repo.basis === "zero-ahead")
+        ? "commit-free-delivery"
+        : "undelivered";
   const repositoryResults = repos
     .map((repo) => `${repo.repo} {status=${repo.status}; sha=${repo.landedSha ?? "none"}; dependency-sync=${repo.dependencySyncDecision ?? "not-recorded"}}`)
     .join("; ");
-  return `AI merge (workspace): aggregate=${aggregate}; task → done; ${repositoryResults}`;
+  const basis = commitFreeEvidence.length > 0 ? `; commitFree=${summarizeCommitFreeEvidence(commitFreeEvidence)}` : "";
+  return `AI merge (workspace): aggregate=${aggregate}; task → done; ${repositoryResults}${basis}`;
 }
 
 async function finalizeWorkspaceTask(
@@ -3471,6 +3508,7 @@ async function finalizeWorkspaceTask(
   task: Task,
   repos: WorkspaceRepoLandResult[],
   workspaceRootDir: string,
+  commitFreeEvidence: WorkspaceCommitFreeRepoEvidence[],
   fence?: MergeWriteFence,
 ): Promise<boolean> {
   const landed = repos.filter((r) => r.status === "landed" && r.landedSha);
@@ -3501,6 +3539,23 @@ async function finalizeWorkspaceTask(
   }
   const representative = landed.length > 0 ? landed[0].landedSha : undefined;
   const anyLanded = landed.length > 0;
+  /*
+  FNXC:WorkspaceMergeFinalization 2026-10-02-21:52 (RUFU-504):
+  The terminal judgement for a workspace that produced no commit. `mergeConfirmed` is what
+  `hasDurableMergeProof` reads, so this line is the difference between a card going done and a card being
+  refused with the generic `missing-merge-confirmation` — a refusal whose own stale `failed` row then
+  blocks the retry, which is how the saneca review lane sat at 15 parked siblings on one sentence.
+  `representative`/`commitSha` deliberately stay undefined here: the branch tip equals the merge-base, so
+  recording it as a landing sha would assert that this card authored a commit it did not author.
+  */
+  const delivery = decideWorkspaceDelivery({
+    repoCount: repos.length,
+    landedCount: landed.length,
+    evidence: commitFreeEvidence,
+  });
+  let deliveryReason: string | undefined = "no-net-changes";
+  if (anyLanded) deliveryReason = undefined;
+  else if (delivery.kind === "commit-free-delivery") deliveryReason = delivery.noOpReason;
 
   /*
   FNXC:Workspace 2026-06-22-04:10 (Phase C review A5 — fresh-read + no-swallow finalize):
@@ -3522,7 +3577,17 @@ async function finalizeWorkspaceTask(
     ...(representative ? { commitSha: representative } : {}),
     ...(anyLanded ? { workspaceLandedShas } : {}),
     workspaceLandedFiles,
-    mergeConfirmed: anyLanded,
+    mergeConfirmed: delivery.mergeConfirmed,
+    ...(delivery.kind === "commit-free-delivery"
+      ? {
+          noOpMerge: true,
+          noOpReason: delivery.noOpReason,
+          workspaceCommitFreeBasis: delivery.commitFreeBasis,
+          ...(delivery.commitFreeBranchTipShas
+            ? { workspaceCommitFreeBranchTipShas: delivery.commitFreeBranchTipShas }
+            : {}),
+        }
+      : {}),
   };
   fence?.assertOwned("finalization");
   await store.updateTask(taskId, { mergeDetails });
@@ -3571,16 +3636,16 @@ async function finalizeWorkspaceTask(
     merged: anyLanded,
     noOp: !anyLanded,
     ok: true,
-    reason: anyLanded ? undefined : "no-net-changes",
+    reason: deliveryReason,
     commitSha: representative,
-    mergeConfirmed: anyLanded,
+    mergeConfirmed: delivery.mergeConfirmed,
     worktreeRemoved,
     branchDeleted: false,
   };
   if (fence) {
-    await fence.write("log", () => store.logEntry(taskId, formatWorkspaceLandingSummary(repos), "AiMerge").catch(() => undefined));
+    await fence.write("log", () => store.logEntry(taskId, formatWorkspaceLandingSummary(repos, commitFreeEvidence), "AiMerge").catch(() => undefined));
   } else {
-    await store.logEntry(taskId, formatWorkspaceLandingSummary(repos), "AiMerge").catch(() => undefined);
+    await store.logEntry(taskId, formatWorkspaceLandingSummary(repos, commitFreeEvidence), "AiMerge").catch(() => undefined);
   }
   fence?.assertOwned("finalization");
   await finalizeTask(store, taskId, result, undefined, undefined, undefined, fence);
