@@ -873,8 +873,15 @@ the virtualized row measurement can no longer disagree with what is painted.
   overflow: hidden;
 }
 
-.card.external-blocked > :not(.external-block-notice) {
-  display: none; /* a blocked card shows the block, not the work it cannot do */
+/*
+FNXC:ExternalBlockUx 2026-10-02-11:30 (RUFU-492 follow-up):
+The first version hid EVERY non-notice child, which hid the header (task id) and the title with it, and the
+operator could no longer tell which card was blocked — "neviem, o ktoru task ide". Identity stays visible:
+only the body the notice was already covering (progress, steps toggle/list, lifecycle dates, boost row,
+footer, agent rows) leaves the layout.
+*/
+.card.external-blocked > :not(.external-block-notice):not(.card-header):not(.card-title) {
+  display: none; /* a blocked card shows who it is and why it is stuck, not the work it cannot do */
 }
 
 .external-block-notice__title {
@@ -892,6 +899,14 @@ long-text box already clamps (`.card-stall-reason`, 2 lines); this one clamps to
 sentence reachable through `title`. `min-height: 0` is required: a flex child otherwise refuses to shrink
 below its content and the clamp never binds.
 */
+/* the id is the identity of the panel, so it reads as part of the title line */
+.external-block-notice__task-id {
+  margin-inline-start: var(--space-xs);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-weight: var(--font-weight-semibold);
+}
+
 .external-block-notice__reason {
   max-width: 100%;
   min-height: 0;

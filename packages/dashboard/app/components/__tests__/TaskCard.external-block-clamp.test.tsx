@@ -76,8 +76,10 @@ describe("external-block notice stays inside its card", () => {
     expect(overlay).toMatch(/position:\s*static/);
     expect(overlay).not.toMatch(/position:\s*absolute/);
     expect(ruleBody(css(), ".external-block-notice__actions")).toMatch(/flex:\s*0 0 auto/);
-    // Hidden siblings must leave the layout, or the card stays tall around the notice.
-    expect(ruleBody(css(), ".card.external-blocked > :not(.external-block-notice)")).toMatch(/display:\s*none/);
+    // Hidden siblings must leave the layout, or the card stays tall around the notice — but the header
+    // (task id) and the title must survive it: hiding them made the blocked card unidentifiable.
+    const hidden = ruleBody(css(), ".card.external-blocked > :not(.external-block-notice):not(.card-header):not(.card-title)");
+    expect(hidden).toMatch(/display:\s*none/);
   });
 
   it("keeps the whole obstacle text available even though it renders clamped", () => {
@@ -93,5 +95,13 @@ describe("external-block notice stays inside its card", () => {
     expect(reason!.textContent!.length).toBeGreaterThan(3000);
     fireEvent.click(screen.getByRole("button", { name: "Explain this error" }));
     expect(explain).toHaveBeenCalledWith(expect.stringContaining("REPAIR ladder evidence"));
+  });
+
+  it("keeps the blocked card identifiable while its body is hidden", () => {
+    render(
+      <ExternalBlockNotice task={blocked} variant="card" onOpenChatWithPrefill={vi.fn()} onRetryTask={vi.fn()} />,
+    );
+    // The notice names the card it belongs to, so the identity survives even where the header is not rendered.
+    expect(screen.getByTestId("external-block-card-STAS-285").textContent).toContain("STAS-285");
   });
 });

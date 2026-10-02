@@ -685,7 +685,17 @@ export function ExternalBlockNotice({ task, variant, onOpenChatWithPrefill, onRe
   };
   return (
     <div className={`external-block-notice external-block-notice--${variant}`} role="alert" data-testid={`external-block-${variant}-${task.id}`}>
-      <strong className="external-block-notice__title">{t("tasks.externalBlock.title", "Blocked")}</strong>
+      {/*
+      FNXC:ExternalBlockUx 2026-10-02-11:31 (RUFU-492):
+      The notice said only "Blocked" plus the obstacle code, so on the board face an operator could not tell
+      which card was stuck — several blocked cards read as the same panel, and with the card body hidden the
+      notice was the only identity left. The task id travels with the notice in every variant. The id is not
+      translatable content, so it is a sibling node rather than a new locale key.
+      */}
+      <strong className="external-block-notice__title">
+        {t("tasks.externalBlock.title", "Blocked")}
+        <span className="external-block-notice__task-id">· {task.id}</span>
+      </strong>
       <span className="external-block-notice__reason" title={error}>{error}</span>
       {(onOpenChatWithPrefill || onRetryTask) && (
         <span className="external-block-notice__actions">
