@@ -7,6 +7,7 @@
  * instance as its first parameter and performs byte-identical work.
  */
 import {TaskStore, storeLog} from "../store.js";
+import { shouldWarnPromptParseFailure } from "./task-artifacts-ops.js";
 import {readFile} from "node:fs/promises";
 import {join} from "node:path";
 import {existsSync, statSync} from "node:fs";
@@ -562,7 +563,11 @@ export async function getTaskImpl(store: TaskStore, id: string, options?: { acti
         try {
           task.steps = await store.parseStepsFromPrompt(id);
         } catch (err) {
-          storeLog.warn(`[task-detail] failed to sync steps from PROMPT.md for ${id}: ${err instanceof Error ? err.message : String(err)}`);
+          // FNXC:ListReadPromptParseCache 2026-10-02-11:59 (RUFU-495): a malformed PROMPT.md stays malformed, so this
+          // warning used to repeat on every read of the same card (~1.7 lines/s on the production board). Same
+          // signal, once per card.
+          const detail = `failed to sync steps from PROMPT.md for ${id}: ${err instanceof Error ? err.message : String(err)}`;
+          if (shouldWarnPromptParseFailure(store, id, detail)) storeLog.warn(`[task-detail] ${detail}`);
         }
       }
       let prompt = "";
@@ -760,7 +765,11 @@ async function finalizeSlimListTask(store: TaskStore, task: Task, slim: boolean)
     const steps = await store.parseStepsFromPrompt(task.id);
     return steps.length > 0 ? { ...task, steps } : task;
   } catch (err) {
-    storeLog.warn(`[task-detail] failed to sync steps from PROMPT.md for ${task.id} during listTasks: ${err instanceof Error ? err.message : String(err)}`);
+    // FNXC:ListReadPromptParseCache 2026-10-02-11:59 (RUFU-495): a malformed PROMPT.md stays malformed, so this
+    // warning used to repeat on every read of the same card (~1.7 lines/s on the production board). Same
+    // signal, once per card.
+    const detail = `failed to sync steps from PROMPT.md for ${task.id} during listTasks: ${err instanceof Error ? err.message : String(err)}`;
+    if (shouldWarnPromptParseFailure(store, task.id, detail)) storeLog.warn(`[task-detail] ${detail}`);
     return task;
   }
 }
@@ -1792,7 +1801,11 @@ await prefetchWorkflowIrs(store, pgRows.map((row) => String(row.id)), searchPass
     const steps = await store.parseStepsFromPrompt(task.id);
     return steps.length > 0 ? { ...task, steps } : task;
   } catch (err) {
-    storeLog.warn(`[task-detail] failed to sync steps from PROMPT.md for ${task.id} during searchTasks: ${err instanceof Error ? err.message : String(err)}`);
+    // FNXC:ListReadPromptParseCache 2026-10-02-11:59 (RUFU-495): a malformed PROMPT.md stays malformed, so this
+    // warning used to repeat on every read of the same card (~1.7 lines/s on the production board). Same
+    // signal, once per card.
+    const detail = `failed to sync steps from PROMPT.md for ${task.id} during searchTasks: ${err instanceof Error ? err.message : String(err)}`;
+    if (shouldWarnPromptParseFailure(store, task.id, detail)) storeLog.warn(`[task-detail] ${detail}`);
     return task;
   }
 }));
@@ -1938,7 +1951,11 @@ export async function searchTasksImpl(store: TaskStore, query: string, options?:
         const steps = await store.parseStepsFromPrompt(task.id);
         return steps.length > 0 ? { ...task, steps } : task;
       } catch (err) {
-        storeLog.warn(`[task-detail] failed to sync steps from PROMPT.md for ${task.id} during searchTasks: ${err instanceof Error ? err.message : String(err)}`);
+        // FNXC:ListReadPromptParseCache 2026-10-02-11:59 (RUFU-495): a malformed PROMPT.md stays malformed, so this
+        // warning used to repeat on every read of the same card (~1.7 lines/s on the production board). Same
+        // signal, once per card.
+        const detail = `failed to sync steps from PROMPT.md for ${task.id} during searchTasks: ${err instanceof Error ? err.message : String(err)}`;
+        if (shouldWarnPromptParseFailure(store, task.id, detail)) storeLog.warn(`[task-detail] ${detail}`);
         return task;
       }
     }));

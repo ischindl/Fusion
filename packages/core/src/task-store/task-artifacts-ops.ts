@@ -37,7 +37,7 @@ import { ArtifactRow, WorkflowWorkItemRow } from "./row-types.js";
 import { AgentLogEntry, Artifact, ArtifactCreateInput, Column, CompletionHandoffMarker, MergeQueueEnqueueOptions, MergeQueueEntry, PluginActivation, PluginActivationInput, RunMutationContext, Task, TaskDocument, TaskDocumentRevision, WorkflowWorkItem, WorkflowWorkItemKind } from "../types.js";
 import type { UsageEventInput } from "../tasks/usage-events.js";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { storeLog } from "../store.js";
 import { ARCHIVED_SENTINEL_LANES } from "../project-lane-vocabulary.js";
@@ -161,11 +161,65 @@ export async function peekMergeQueueHeadImpl(store: TaskStore): Promise<{ taskId
     return head ? { ...head, column: head.column as Column | null } : null;
 }
 
-export async function parseStepsFromPromptImpl(store: TaskStore, id: string): Promise<import("../types.js").TaskStep[]> {
-    const dir = store.taskDir(id);
-    const promptPath = join(dir, "PROMPT.md");
-    if (!existsSync(promptPath)) return [];
+/*
+FNXC:ListReadPromptParseCache 2026-10-02-11:57 (RUFU-495):
+`parseStepsFromPrompt` is called from four read paths, and the list path calls it for EVERY task whose
+persisted `steps` is empty — `finalizeSlimListTask` in reads.ts, which this file's own comment had already
+described as "not memoised (one `existsSync` + one `readFile` per such task per call)". On the production
+board that measured 572 `failed to sync steps from PROMPT.md ... during listTasks` warnings in 331 s from
+only 9 cards: the same 9 files re-read, re-parsed and re-thrown ~1.7 times a second, forever. `/api/health`
+in the same window answered in 2.9-5.6 s, so the cost was landing on the event loop, not on a queue.
 
+The cache is per store instance (a `WeakMap`, so test stores and multi-project stores cannot leak into each
+other) and is validated by `mtimeNs` + `size`, never by time-based TTL: a rewrite is seen on the next read,
+a deletion invalidates (a stale `steps` entry must not survive `PROMPT.md` removal), and a parse failure is
+remembered so a permanently malformed file costs one stat per read instead of a read + parse + captured
+stack trace. In-flight reads are coalesced so two overlapping list passes parse a cold card once.
+*/
+type PromptStepsCacheEntry =
+  | { kind: "steps"; stamp: string; steps: import("../types.js").TaskStep[] }
+  | { kind: "failed"; stamp: string; message: string }
+  | { kind: "absent" };
+
+const promptStepsCache = new WeakMap<TaskStore, Map<string, PromptStepsCacheEntry>>();
+const promptStepsInFlight = new WeakMap<TaskStore, Map<string, Promise<import("../types.js").TaskStep[]>>>();
+/** Bounded so a long-lived store cannot grow one entry per card ever seen. */
+const PROMPT_STEPS_CACHE_MAX = 4096;
+
+function promptStampKey(st: { mtimeNs?: bigint | number; mtimeMs: number; size: number }): string {
+  // mtimeNs where the platform provides it (nanosecond resolution, so a same-millisecond rewrite is still
+  // a different stamp); mtimeMs as the fallback. Never TTL, always a property of the file itself.
+  return `${String(st.mtimeNs ?? st.mtimeMs)}:${st.size}`;
+}
+
+/**
+ * A malformed `PROMPT.md` stays malformed; call sites warn on every read. They ask this first so the
+ * warning is one line per card, not ~1.7 per second — the spam itself was part of the RUFU-495 cost.
+ */
+export function shouldWarnPromptParseFailure(store: TaskStore, id: string, message: string): boolean {
+    const seen = promptWarnedForStore(store);
+    const key = `${id}\u0000${message}`;
+    if (seen.has(key)) return false;
+    if (seen.size >= PROMPT_STEPS_CACHE_MAX) seen.clear();
+    seen.add(key);
+    return true;
+}
+
+const promptWarnedKeys = new WeakMap<TaskStore, Set<string>>();
+function promptWarnedForStore(store: TaskStore): Set<string> {
+    let seen = promptWarnedKeys.get(store);
+    if (!seen) {
+        seen = new Set<string>();
+        promptWarnedKeys.set(store, seen);
+    }
+    return seen;
+}
+
+async function readAndParsePromptSteps(
+    store: TaskStore,
+    id: string,
+): Promise<import("../types.js").TaskStep[]> {
+    const promptPath = join(store.taskDir(id), "PROMPT.md");
     const content = await readFile(promptPath, "utf-8");
     // Step-inversion U12 (KTD-12): delegate to the registry's `step-headings`
     // parser (resolved by id, not a direct import) so the registry path is
@@ -180,6 +234,59 @@ export async function parseStepsFromPromptImpl(store: TaskStore, id: string): Pr
         ? { name: s.name, status: "pending" as const, dependsOn: s.dependsOn }
         : { name: s.name, status: "pending" as const },
     );
+}
+
+export async function parseStepsFromPromptImpl(store: TaskStore, id: string): Promise<import("../types.js").TaskStep[]> {
+    const promptPath = join(store.taskDir(id), "PROMPT.md");
+    let cache = promptStepsCache.get(store);
+    if (!cache) {
+        cache = new Map<string, PromptStepsCacheEntry>();
+        promptStepsCache.set(store, cache);
+    }
+
+    let stamp: string;
+    try {
+        stamp = promptStampKey(await stat(promptPath));
+    } catch {
+        // Missing or unreadable file: drop any remembered steps so a deletion can never serve stale steps.
+        cache.delete(id);
+        return [];
+    }
+
+    const cached = cache.get(id);
+    if (cached && cached.kind !== "absent" && cached.stamp === stamp) {
+        if (cached.kind === "failed") throw new Error(cached.message);
+        return cached.steps;
+    }
+
+    // Coalesce concurrent reads of the same cold card into one parse.
+    let pendingMap = promptStepsInFlight.get(store);
+    if (!pendingMap) {
+        pendingMap = new Map<string, Promise<import("../types.js").TaskStep[]>>();
+        promptStepsInFlight.set(store, pendingMap);
+    }
+    const running = pendingMap.get(id);
+    if (running) return running;
+
+    const job = (async (): Promise<import("../types.js").TaskStep[]> => {
+        try {
+            const steps = await readAndParsePromptSteps(store, id);
+            if (cache!.size >= PROMPT_STEPS_CACHE_MAX) {
+                const oldest = cache!.keys().next().value;
+                if (oldest !== undefined) cache!.delete(oldest);
+            }
+            cache!.set(id, { kind: "steps", stamp, steps });
+            return steps;
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            cache!.set(id, { kind: "failed", stamp, message });
+            throw err;
+        } finally {
+            pendingMap!.delete(id);
+        }
+    })();
+    pendingMap.set(id, job);
+    return job;
 }
 
 export async function parseDependenciesFromPromptImpl(store: TaskStore, id: string): Promise<string[]> {
