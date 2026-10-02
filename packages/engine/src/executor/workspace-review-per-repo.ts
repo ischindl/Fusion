@@ -159,8 +159,52 @@ export async function reviewWorkspacePerRepo(
     })
     .sort();
   if (repoKeys.length === 0) {
+    /*
+    FNXC:WorkspaceCommitFreeReview 2026-10-02-22:40 (RUFU-504):
+    Which of the two empty shapes this is has to be asked BEFORE refusing. A workspace that acquired every
+    declared member and changed nothing is a delivered commit-free task; a workspace that acquired nothing
+    unproven is not. `captureWorkspaceReviewEvidence` already gives the per-repository observation
+    (`ahead === false` plus zero files), so the same classifier that completion verification uses can settle
+    it here instead of the review inventing a failure the merge door then cannot clear.
+    */
+    const netZeroAtBaseRepositories = new Set((evidence?.repositories ?? [])
+      .filter((repository) => repository.ahead === false && repository.files.length === 0)
+      .map((repository) => repository.repository));
+    const zeroAcquire = classifyWorkspaceZeroAcquire(task, {
+      workspaceMode: options.workspaceMode ?? true,
+      noOpCompletion: options.noOpCompletion,
+      noOpCompletionReason: options.noOpCompletionReason,
+      netZeroAtBaseRepositories,
+    });
     const cleanScopedRepos = [...repositoryScope].filter((repoRel) => declaredRepos?.has(repoRel) !== false);
     if (cleanScopedRepos.length > 0 && Object.keys(workspaceWorktrees).length > 0) {
+      if (zeroAcquire.kind === "commit-free-eligible") {
+        /*
+        FNXC:WorkspaceCommitFreeReview 2026-10-02-22:40 (RUFU-504):
+        The per-repository record stays `NOT_REVIEWED`, because that is the truth: no reviewer inspected a
+        tree with no diff. What changes is the aggregate, which stops claiming an unavailable verdict for a
+        task the pipeline declared and the probe confirmed as commit-free. `WorkflowRepositoryReviewOutcome.status`
+        is deliberately not widened, and no fingerprint is invented - a zero-diff repository has none, and
+        `evaluatePreMergeApprovals` only cross-compares repositories that carry modified content, so an
+        approving aggregate with zero modified in-scope repositories is the shape the merge door already accepts.
+        */
+        const notReviewedAt = new Date().toISOString();
+        return {
+          verdict: "APPROVE",
+          review: `No scoped repository has diff evidence and every declared repository was acquired and proven to sit on its merge-base with zero changed files. Nothing was reviewed because this workspace task is commit-free eligible (${zeroAcquire.reason}).`,
+          summary: `APPROVE: nothing to review — no changes in ${cleanScopedRepos.join(", ")} (${zeroAcquire.reason})`,
+          repositoryModifiedFiles: modifiedFiles,
+          repositoryReviewOutcomes: cleanScopedRepos.map((repository) => ({
+            repository,
+            status: "NOT_REVIEWED" as const,
+            output: "No changes — nothing to review; the acquired branch is proven at its merge-base and the task is commit-free.",
+            episodeId: notReviewedAt,
+            scopeRevision: repositoryScopeRevision,
+            reviewedAt: notReviewedAt,
+          })),
+          repositoryScopeRevision,
+        };
+      }
       return {
         verdict: "UNAVAILABLE",
         retryable: false,
@@ -184,12 +228,11 @@ export async function reviewWorkspacePerRepo(
     commit-free task has no diff to inspect and may approve honestly; an unproven
     empty map remains unavailable, but re-invoking cannot acquire a repo, so it is
     explicitly non-retryable rather than burning the review retry budget.
+
+    FNXC:WorkspaceCommitFreeReview 2026-10-02-22:40 (RUFU-504):
+    The same decision computed above is reused rather than recomputed, so the two empty-workspace arms can
+    never disagree about what the task's own declaration plus the probe evidence mean.
     */
-    const zeroAcquire = classifyWorkspaceZeroAcquire(task, {
-      workspaceMode: options.workspaceMode ?? true,
-      noOpCompletion: options.noOpCompletion,
-      noOpCompletionReason: options.noOpCompletionReason,
-    });
     if (zeroAcquire.kind === "commit-free-eligible") {
       return {
         verdict: "APPROVE",
