@@ -1,4 +1,5 @@
 import type { ReportActionType, ReportTarget } from "@fusion/core";
+import { readPriorityClass, scheduleRead } from "../client/read-scheduler.js";
 
 async function post<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -33,7 +34,10 @@ export async function reportAttachment(screenshot: Blob): Promise<{ artifactId: 
 
 export interface DiscussionCategoryOption { id: string; name: string; slug: string; }
 export async function listDiscussionCategories(): Promise<{ categories: DiscussionCategoryOption[]; reason?: string }> {
-  const response = await fetch("/api/report/discussion-categories");
+  // The queue is keyed by API path; the `/api` prefix is what `buildApiUrl` adds elsewhere.
+  const response = await scheduleRead(readPriorityClass("/report/discussion-categories"), () =>
+    fetch("/api/report/discussion-categories"),
+  );
   if (!response.ok) throw new Error((await response.json().catch(() => ({ error: response.statusText }))).error ?? response.statusText);
   return response.json();
 }

@@ -20,6 +20,7 @@ import type {
 import { appendTokenQuery, withTokenHeader } from "../../auth";
 import { api, buildApiUrl } from "../client/client.js";
 import { withProjectId } from "../client/health.js";
+import { readPriorityClass, scheduleRead } from "../client/read-scheduler.js";
 
 /**
  * FNXC:TaskVerificationStatus 2026-07-30-00:00:
@@ -83,9 +84,9 @@ export async function fetchAgentLogsWithMeta(
   const suffix = params.toString() ? `?${params.toString()}` : "";
   const url = withProjectId(`/tasks/${taskId}/logs${suffix}`, projectId);
 
-  const response = await fetch(buildApiUrl(url), {
-    headers: withTokenHeader(),
-  });
+  const response = await scheduleRead(readPriorityClass(url), () =>
+    fetch(buildApiUrl(url), { headers: withTokenHeader() }),
+  );
 
   if (!response.ok) {
     const data = await response.json().catch(() => ({ error: "Failed to fetch agent logs" }));

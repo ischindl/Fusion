@@ -20,6 +20,7 @@ import type {
 import { withTokenHeader } from "../../auth";
 import { api, ApiRequestError, buildApiUrl, proxyApi } from "../client/client.js";
 import { withProjectId } from "../client/health.js";
+import { readPriorityClass, scheduleRead } from "../client/read-scheduler.js";
 
 /** Options that shape the soft-delete request payload/query, not hard-delete behavior. */
 export interface DeleteTaskOptions {
@@ -206,9 +207,10 @@ export async function fetchTaskDetail(id: string, projectId?: string): Promise<T
   const maxAttempts = 2; // 1 initial + 1 retry
   const url = buildApiUrl(withProjectId(`/tasks/${id}`, projectId));
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const res = await fetch(url, {
-      headers: withTokenHeader({ "Content-Type": "application/json" }),
-    });
+    // Each attempt is its own queued read: queueing once around the loop would hold a slot across the retry gap.
+    const res = await scheduleRead(readPriorityClass(withProjectId(`/tasks/${id}`, projectId)), () =>
+      fetch(url, { headers: withTokenHeader({ "Content-Type": "application/json" }) }),
+    );
     const data = await res.json();
     if (res.ok) return data as TaskDetail;
     if (attempt === maxAttempts) {
