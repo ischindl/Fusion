@@ -601,9 +601,24 @@ export function describeEngineStallParkBlocker(
     (row) => !requiredPreMergeStepIds?.size || requiredPreMergeStepIds.has(row.workflowStepId),
   );
   const offender = scoped.filter((row) => row.status === "failed" || row.status === "pending").pop();
-  if (!offender) return null;
-  const verdict = offender.verdict ? `verdict ${offender.verdict}` : "no authored verdict";
-  return `required pre-merge step '${offender.workflowStepId}' is '${offender.status}' with ${verdict}`;
+  if (offender) {
+    const verdict = offender.verdict ? `verdict ${offender.verdict}` : "no authored verdict";
+    return `required pre-merge step '${offender.workflowStepId}' is '${offender.status}' with ${verdict}`;
+  }
+  /*
+  FNXC:PauseBlockerAttribution 2026-10-02-17:42 (RUFU-505):
+  The case my own first cut went silent on. Once a required gate is bypassed (RUFU-504's canary: an
+  operator-authorized waiver of a zero-diff `failed` row), the row is `skipped`, so a `failed`/`pending`
+  scan finds nothing and the sentence fell back to the plain tautology I was filed to remove — on the exact
+  card that had just been waived. A waived gate with no merge owner is its own readable state, so name it.
+  Limited to rows carrying `bypassedBy`: an ordinary workflow skip (no-op finalize, disabled step) is not a
+  hold worth reporting, and inventing "bypassed" for it would be worse than silence.
+  */
+  const waived = scoped.filter((row) => row.status === "skipped" && row.bypassedBy).pop();
+  if (waived) {
+    return `required pre-merge step '${waived.workflowStepId}' was bypassed and no merge owner has run`;
+  }
+  return null;
 }
 
 export function getTaskMergeBlocker(

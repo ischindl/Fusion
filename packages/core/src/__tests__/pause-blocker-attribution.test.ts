@@ -17,6 +17,7 @@ type Row = {
   workflowStepId: string;
   status: string;
   verdict?: string;
+  bypassedBy?: string;
 };
 
 const base = {
@@ -107,5 +108,39 @@ describe("pause blocker attribution (RUFU-504)", () => {
     expect(describeEngineStallParkBlocker(otherGateFailed as never, gateIds)).toBeNull();
     // With no required-gate set the caller has no scope to offer, so any pre-merge failure is reportable.
     expect(describeEngineStallParkBlocker(otherGateFailed as never)).toContain("browser-review");
+  });
+
+  it("names a bypassed gate instead of going silent on the card that was just waived", () => {
+    // RUFU-504's canary shape: the zero-diff `failed` row was bypassed under an audited waiver, so the
+    // latest row is `skipped`. Reporting nothing here is how the tautology came back on SANE-463.
+    const waived = parked([
+      { phase: "pre-merge", workflowStepId: "plan-review", status: "passed", verdict: "APPROVE" },
+      { phase: "pre-merge", workflowStepId: "code-review", status: "skipped", bypassedBy: "dashboard-operator" },
+    ]);
+
+    const blocker = getTaskMergeBlocker(waived as never, { requiredPreMergeStepIds: gateIds });
+    expect(blocker).toContain("code-review");
+    expect(blocker).toContain("was bypassed and no merge owner has run");
+    expect(blocker).not.toContain("no authored verdict");
+    // Still a refusal, not a waiver written into the door.
+    expect(blocker).toBeTruthy();
+  });
+
+  it("does not call an ordinary workflow skip a bypass", () => {
+    const plainSkip = parked([{ phase: "pre-merge", workflowStepId: "code-review", status: "skipped" }]);
+    expect(describeEngineStallParkBlocker(plainSkip as never, gateIds)).toBeNull();
+    expect(getTaskMergeBlocker(plainSkip as never, { requiredPreMergeStepIds: gateIds })).toBe("task is paused");
+  });
+
+  it("prefers a live refusal over an older waiver", () => {
+    const both = parked([
+      { phase: "pre-merge", workflowStepId: "code-review", status: "skipped", bypassedBy: "dashboard-operator" },
+      { phase: "pre-merge", workflowStepId: "browser-review", status: "failed" },
+    ]);
+    // browser-review is outside the required scope, so the required gate reads as the waived row; widened,
+    // the live `failed` refusal is what gets named.
+    expect(describeEngineStallParkBlocker(both as never, gateIds)).toContain("was bypassed");
+    expect(describeEngineStallParkBlocker(both as never, new Set(["code-review", "browser-review"])))
+      .toContain("'failed'");
   });
 });
