@@ -23,11 +23,17 @@ export {
   WorktrunkOperationError,
   WorktrunkWorktreeBackend,
   defensiveRemovalWouldPreserve,
+  probeWorktreeRemovalContent,
   removeWorktree,
   resolveWorktreeBackend,
 } from "./worktree-backend.js";
 export type { WorktreeBackend, WorktreeBackendKind } from "./worktree-backend.js";
+export type { DefensiveRemovalContentProbe, WorktreeRemovalContentClassification } from "./worktree-backend.js";
 export { RemovalReason } from "./worktree-backend.js";
+// FNXC:WorktreeCleanup 2026-10-02-15:56: RUFU-298 re-exports the prune seam (the binding already imported above,
+// so the module specifier stays single) so pinned acquisition shares the pool's module boundary — one mock
+// surface for classification + prune in the acquisition tests.
+export { pruneWorktreeAdminEntries };
 
 // Re-export worktrunk installer types for convenience.
 export {
