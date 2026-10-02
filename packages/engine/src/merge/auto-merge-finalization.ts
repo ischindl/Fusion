@@ -95,6 +95,8 @@ export interface AutoMergeFinalizationResult {
   reason?: string;
   /** True only for the graph-owned post-merge gate that must run before retrying finalization. */
   deferredPostMergeEvidence?: boolean;
+  /** True when this invocation installed the missing graph-owned post-merge continuation. */
+  resumedPostMergeEvidence?: boolean;
 }
 
 export interface FinalizeProvenAutoMergeTaskOptions {
@@ -460,6 +462,17 @@ export async function finalizeProvenAutoMergeTask({
       previousColumn: latest.column,
       reason: evidenceBlocker,
       deferredPostMergeEvidence,
+      /*
+      FNXC:PostMergeRecovery 2026-10-02-20:31 (upstream FN-9442 field kept on our seam):
+      `resumedPostMergeEvidence` is upstream's signal that THIS pass claimed the missing post-merge gate, so
+      the confirmed-merge recovery in `project-engine.ts` / `self-healing.ts` can tell a pass that advanced
+      the card from a pass that only re-stated the blocker. Our seam answers in the reseed vocabulary it owns
+      (`PostMergeGateReseedResult.outcome` is `seeded | not-seeded`), so `seeded` is the exact translation of
+      upstream's `resumed`: a new idle continuation was installed. It must not be true when the reseed
+      returned `not-seeded` for `active-continuation`, because `confirmed-merge-must-finalize.test.ts` asserts
+      the flag fires on the FIRST poll only - repeated finalization polls must not look like progress.
+      */
+      resumedPostMergeEvidence: reseed.outcome === "seeded" || undefined,
     };
   }
 

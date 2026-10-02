@@ -2285,6 +2285,29 @@ describe("TaskDetailModal", () => {
 
 
   describe("agent assignment", () => {
+    const currentAgent = {
+      id: "agent-002",
+      name: "Pipeline Helper",
+      role: "executor",
+      state: "active",
+      metadata: {},
+      heartbeatHistory: [],
+      completedRuns: [],
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    const replacementAgent = {
+      id: "agent-003",
+      name: "Release Helper",
+      role: "executor",
+      state: "active",
+      metadata: {},
+      heartbeatHistory: [],
+      completedRuns: [],
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+
     it("shows Assign Agent button when task has no assigned agent", () => {
       render(
         <TaskDetailModal
@@ -2299,26 +2322,17 @@ describe("TaskDetailModal", () => {
       );
 
       expect(screen.getByRole("button", { name: "Assign Agent" })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Change assignee" })).toBeNull();
     });
 
-    it("shows assigned agent chip and clear button when task has assignedAgentId", async () => {
+    it("keeps an assigned chip and unassign action while exposing direct replacement", async () => {
       const { fetchAgent } = await import("../../api");
-      vi.mocked(fetchAgent).mockResolvedValue({
-        id: "agent-002",
-        name: "Pipeline Helper",
-        role: "executor",
-        state: "active",
-        metadata: {},
-        heartbeatHistory: [],
-        completedRuns: [],
-        createdAt: "2026-01-01T00:00:00.000Z",
-        updatedAt: "2026-01-01T00:00:00.000Z",
-      } as any);
+      vi.mocked(fetchAgent).mockResolvedValue(currentAgent as any);
 
       render(
         <TaskDetailModal
           initialTab="details"
-          task={makeTask({ assignedAgentId: "agent-002" })}
+          task={makeTask({ assignedAgentId: currentAgent.id })}
           onClose={noop}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
@@ -2328,31 +2342,96 @@ describe("TaskDetailModal", () => {
       );
 
       await waitFor(() => {
-        expect(screen.getByText("Pipeline Helper")).toBeInTheDocument();
+        expect(screen.getByText(currentAgent.name)).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Change assignee" })).toBeInTheDocument();
         expect(screen.getByRole("button", { name: "Unassign agent" })).toBeInTheDocument();
       });
     });
 
-    it("assigns selected agent via assignTask", async () => {
-      const { fetchAgents, assignTask } = await import("../../api");
-      vi.mocked(fetchAgents).mockResolvedValue([
-        {
-          id: "agent-001",
-          name: "Task Runner",
-          role: "executor",
-          state: "active",
-          metadata: {},
-          createdAt: "2026-01-01T00:00:00.000Z",
-          updatedAt: "2026-01-01T00:00:00.000Z",
-        },
-      ] as any);
-      vi.mocked(assignTask).mockResolvedValue(makeTask({ assignedAgentId: "agent-001" }) as any);
+    it("replaces an assigned agent through the scoped picker and closes it after success", async () => {
+      const { fetchAgent, fetchAgents, assignTask } = await import("../../api");
+      const user = userEvent.setup();
+      const addToast = vi.fn();
+      const onTaskUpdated = vi.fn();
+      const updatedTask = makeTask({ assignedAgentId: replacementAgent.id });
+      vi.mocked(fetchAgent).mockResolvedValue(currentAgent as any);
+      vi.mocked(fetchAgents).mockResolvedValue([currentAgent, replacementAgent] as any);
+      vi.mocked(assignTask).mockResolvedValue(updatedTask as any);
 
       render(
         <TaskDetailModal
           initialTab="details"
-          task={makeTask({ assignedAgentId: undefined })}
+          task={makeTask({ assignedAgentId: currentAgent.id })}
+          projectId="project-alpha"
           onClose={noop}
+          onDeleteTask={noopDelete}
+          onMergeTask={noopMerge}
+          onOpenDetail={noopOpenDetail}
+          onTaskUpdated={onTaskUpdated}
+          addToast={addToast}
+        />,
+      );
+
+      await screen.findByText(currentAgent.name);
+      await user.click(screen.getByRole("button", { name: "Change assignee" }));
+      await screen.findByRole("button", { name: new RegExp(currentAgent.name) });
+      expect(screen.getByRole("button", { name: new RegExp(currentAgent.name) })).toHaveClass("selected");
+      await user.click(screen.getByRole("button", { name: new RegExp(replacementAgent.name) }));
+
+      await waitFor(() => {
+        expect(fetchAgents).toHaveBeenCalledWith(undefined, "project-alpha");
+        expect(assignTask).toHaveBeenCalledWith("FN-099", replacementAgent.id, "project-alpha");
+        expect(onTaskUpdated).toHaveBeenCalledWith(updatedTask);
+        expect(addToast).toHaveBeenCalledWith("Assigned agent updated", "success");
+        expect(screen.queryByText(currentAgent.name)).toBeNull();
+        expect(screen.getByText(replacementAgent.name)).toBeInTheDocument();
+        expect(document.querySelector(".agent-picker-dropdown")).toBeNull();
+      });
+    });
+
+    it("keeps the current assignment and picker available when replacement is rejected", async () => {
+      const { fetchAgent, fetchAgents, assignTask } = await import("../../api");
+      const user = userEvent.setup();
+      const addToast = vi.fn();
+      vi.mocked(fetchAgent).mockResolvedValue(currentAgent as any);
+      vi.mocked(fetchAgents).mockResolvedValue([currentAgent, replacementAgent] as any);
+      vi.mocked(assignTask).mockRejectedValueOnce(new Error("Assignment policy rejected this agent"));
+
+      render(
+        <TaskDetailModal
+          initialTab="details"
+          task={makeTask({ assignedAgentId: currentAgent.id })}
+          onClose={noop}
+          onDeleteTask={noopDelete}
+          onMergeTask={noopMerge}
+          onOpenDetail={noopOpenDetail}
+          addToast={addToast}
+        />,
+      );
+
+      await screen.findByText(currentAgent.name);
+      await user.click(screen.getByRole("button", { name: "Change assignee" }));
+      await user.click(await screen.findByRole("button", { name: new RegExp(replacementAgent.name) }));
+
+      await waitFor(() => {
+        expect(addToast).toHaveBeenCalledWith("Failed to assign agent: Assignment policy rejected this agent", "error");
+        expect(document.querySelector(".detail-agent-chip")).toHaveTextContent(currentAgent.name);
+        expect(screen.getByRole("button", { name: new RegExp(replacementAgent.name) })).toBeInTheDocument();
+      });
+    });
+
+    it("keeps assignment controls reachable in embedded detail and explains an empty roster", async () => {
+      const { fetchAgent, fetchAgents } = await import("../../api");
+      const user = userEvent.setup();
+      vi.mocked(fetchAgent).mockResolvedValue(currentAgent as any);
+      vi.mocked(fetchAgents).mockResolvedValue([]);
+
+      const { container } = render(
+        <TaskDetailContent
+          embedded
+          mobileHeaderMode="back"
+          initialTab="details"
+          task={makeTask({ assignedAgentId: currentAgent.id })}
           onDeleteTask={noopDelete}
           onMergeTask={noopMerge}
           onOpenDetail={noopOpenDetail}
@@ -2360,12 +2439,13 @@ describe("TaskDetailModal", () => {
         />,
       );
 
-      await userEvent.click(screen.getByRole("button", { name: "Assign Agent" }));
-      await userEvent.click(screen.getByRole("button", { name: /Task Runner/i }));
+      await screen.findByText(currentAgent.name);
+      expect(container.querySelector(".task-detail-content--embedded")).toBeTruthy();
+      expect(screen.getAllByRole("button", { name: "Change assignee" })).toHaveLength(1);
+      expect(screen.getByRole("button", { name: "Unassign agent" })).toBeInTheDocument();
 
-      await waitFor(() => {
-        expect(assignTask).toHaveBeenCalledWith("FN-099", "agent-001", undefined);
-      });
+      await user.click(screen.getByRole("button", { name: "Change assignee" }));
+      expect(await screen.findByText("No agents available")).toBeInTheDocument();
     });
 
     it("clears assigned agent via assignTask(null)", async () => {
@@ -2407,6 +2487,7 @@ describe("TaskDetailModal", () => {
     beforeEach(async () => {
       const { fetchTaskDetail } = await import("../../api");
       vi.mocked(fetchTaskDetail).mockReset();
+      vi.mocked(fetchTaskDetail).mockResolvedValue(makeTask());
     });
 
     it("renders immediately when opened with a Task prop (no prompt)", async () => {
@@ -2672,10 +2753,19 @@ describe("TaskDetailModal", () => {
       expect(screen.getByText("Runtime status")).toBeInTheDocument();
       expect(screen.getAllByText("Fast").length).toBeGreaterThan(0);
       expectSingleStatsRuntimeStatus("executing");
-      expect(screen.getAllByText((1200).toLocaleString()).length).toBeGreaterThan(0);
-      expect(screen.getAllByText((450).toLocaleString()).length).toBeGreaterThan(0);
-      expect(screen.getAllByText((210).toLocaleString()).length).toBeGreaterThan(0);
-      expect(screen.getAllByText((1860).toLocaleString()).length).toBeGreaterThan(0);
+      /*
+      FNXC:TaskDetailTokenTotals 2026-10-02-20:31 (upstream FN-9459 test scoping adopted over our relaxation):
+      Our side relaxed these four assertions to `getAllByText(...).length > 0` because the numbers started
+      matching in more than one place. Upstream fixes the same ambiguity properly by scoping to the
+      `Task token totals` list landmark (`TaskTokenStatsPanel.tsx:352`, `role="list"` + aria-label), which
+      keeps the assertion strict inside the region that must show the totals. Strict beats "at least one
+      match anywhere", so their form wins and our relaxation is dropped.
+      */
+      const tokenTotals = screen.getByRole("list", { name: "Task token totals" });
+      expect(within(tokenTotals).getByText((1200).toLocaleString())).toBeInTheDocument();
+      expect(within(tokenTotals).getByText((450).toLocaleString())).toBeInTheDocument();
+      expect(within(tokenTotals).getByText((210).toLocaleString())).toBeInTheDocument();
+      expect(within(tokenTotals).getByText((1860).toLocaleString())).toBeInTheDocument();
       const firstUsed = document.querySelector('time[datetime="2026-04-24T09:00:00.000Z"]');
       const lastUsed = document.querySelector('time[datetime="2026-04-24T10:15:00.000Z"]');
       expect(firstUsed).toBeTruthy();
