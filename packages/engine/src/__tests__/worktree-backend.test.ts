@@ -2,9 +2,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   ActiveSessionWorktreeRemovalError,
   classifyWorktreeRemovalContent,
+  defensiveRemovalWouldPreserve,
   isRegenerableScratchDirectory,
   InvalidPostLandingProofUsageError,
   NativeWorktreeBackend,
+  probeWorktreeRemovalContent,
   WorktrunkOperationError,
   WorktrunkWorktreeBackend,
   removeWorktree,
@@ -108,6 +110,124 @@ describe("classifyWorktreeRemovalContent", () => {
     { name: "does not let proven scratch mask an untracked file", porcelain: "!! .fusion/\n?? wip.txt\n", options: { provenScratchRootEntries: new Set([".fusion"]) }, expected: "deliverable" },
   ])("$name", ({ porcelain, options, expected }) => {
     expect(classifyWorktreeRemovalContent(porcelain, options)).toBe(expected);
+  });
+});
+
+/*
+FNXC:WorktreeCleanup 2026-10-02-15:56 (RUFU-298 — the acquisition side decides from the class, not a boolean):
+`probeWorktreeRemovalContent` is RUFU-274's shipped content probe: the FN-9233 classification lifted out of
+`assertCleanForDefensiveRemoval` so a caller that can vacate a checkout (pinned worktree reclaim) picks a
+modality — remove / preserve aside / fail closed — from the concrete class. Its contract differs from the
+assertion in exactly one way: a `deliverable` tree is RETURNED, not thrown. Unreadable state is likewise
+RETURNED as `status: "probe-failed"` with an `ignored-only` classification, because a probe that guesses is
+worse than one that reports; every consumer that DECIDES must read `status`, and only
+`assertCleanForDefensiveRemoval` (i.e. `removeWorktree`/`defensiveRemovalWouldPreserve`) turns a failed probe
+back into a throw. The paired expectations below pin that division so the two can never drift.
+*/
+describe("probeWorktreeRemovalContent", () => {
+  beforeEach(() => {
+    // The probe only shells out when the directory exists, so the classified rows need a present checkout.
+    execFileMock.mockResolvedValue({ stdout: "", stderr: "" });
+    existsSyncMock.mockReset();
+    existsSyncMock.mockReturnValue(true);
+  });
+
+  it.each([
+    { name: "reports a clean checkout", stdout: "", expected: "clean", entryCount: 0, uncommittedPaths: [] as string[] },
+    { name: "reports allowlisted ignored output as regenerable", stdout: "!! dist/\n", expected: "regenerable-ignored", entryCount: 1, uncommittedPaths: [] as string[] },
+    { name: "reports non-allowlisted ignored output as ignored-only", stdout: "!! .env\n", expected: "ignored-only", entryCount: 1, uncommittedPaths: [] as string[] },
+    { name: "reports an untracked file as deliverable without throwing", stdout: "?? wip.txt\n", expected: "deliverable", entryCount: 1, uncommittedPaths: ["wip.txt"] },
+  ])("$name", async ({ stdout, expected, entryCount, uncommittedPaths }) => {
+    execFileMock.mockResolvedValueOnce({ stdout, stderr: "" });
+
+    await expect(probeWorktreeRemovalContent("/repo/.worktrees/fn-298")).resolves.toEqual({
+      classification: expected,
+      entryCount,
+      uncommittedPaths,
+      modifiedCount: 0,
+      untrackedCount: uncommittedPaths.length,
+      status: "classified",
+    });
+    expect(execFileMock).toHaveBeenCalledWith(
+      "git",
+      ["status", "--porcelain=v1", "--ignored=matching", "--untracked-files=normal"],
+      expect.objectContaining({ cwd: "/repo/.worktrees/fn-298" }),
+    );
+  });
+
+  it("reports proven Fusion scratch as regenerable from the child probe", async () => {
+    execFileMock.mockResolvedValueOnce({ stdout: "!! .fusion/\n", stderr: "" });
+    readdirMock.mockResolvedValueOnce(["cache"]);
+
+    await expect(probeWorktreeRemovalContent("/repo/.worktrees/fn-298")).resolves.toMatchObject({
+      classification: "regenerable-ignored",
+      status: "classified",
+    });
+  });
+
+  it("reports an unreadable tree as probe-failed rather than guessing a class", async () => {
+    execFileMock.mockRejectedValueOnce(new Error("not a git repository"));
+
+    await expect(probeWorktreeRemovalContent("/repo/.worktrees/fn-298")).resolves.toMatchObject({
+      // The classification is the conservative label only; `status` is what a deciding caller must read.
+      classification: "ignored-only",
+      entryCount: 0,
+      status: "probe-failed",
+      probeError: expect.stringContaining("not a git repository"),
+    });
+  });
+
+  it("treats a missing directory as clean so stale registrations prune normally", async () => {
+    existsSyncMock.mockReturnValue(false);
+
+    await expect(probeWorktreeRemovalContent("/repo/.worktrees/fn-298")).resolves.toEqual({
+      classification: "clean",
+      entryCount: 0,
+      uncommittedPaths: [],
+      modifiedCount: 0,
+      untrackedCount: 0,
+      status: "path-absent",
+    });
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
+
+  /*
+  FNXC:WorktreeCleanup 2026-10-02-15:56 (RUFU-298): the root-checkout and unreadable-tree refusals live on the
+  ASSERTION side of the seam, so they are asserted where the assertion is reachable — through the boolean
+  predicate and `removeWorktree` — never by poking the probe, which cannot see the root at all.
+  */
+  it("keeps the removal-side refusals that the probe deliberately does not make", async () => {
+    // Root checkout: refused even though a plain probe of it would classify cleanly.
+    execFileMock.mockResolvedValue({ stdout: "", stderr: "" });
+    await expect(defensiveRemovalWouldPreserve("/repo", "/repo")).resolves.toBe(false);
+
+    // Unreadable tree: the predicate reports "would not preserve", so only the throwing guard can fail closed.
+    execFileMock.mockRejectedValueOnce(new Error("not a git repository"));
+    await expect(defensiveRemovalWouldPreserve("/repo", "/repo/.worktrees/fn-298")).resolves.toBe(false);
+    execFileMock.mockRejectedValueOnce(new Error("not a git repository"));
+    await expect(removeWorktree({
+      worktreePath: "/repo/.worktrees/fn-298",
+      rootDir: "/repo",
+      settings: {},
+      reason: RemovalReason.PoolPrune,
+    })).rejects.toThrow(/status probe failed/);
+  });
+
+  it("keeps the boolean predicate in lockstep with the probe's classes", async () => {
+    execFileMock.mockResolvedValueOnce({ stdout: "\n", stderr: "" });
+    await expect(defensiveRemovalWouldPreserve("/repo", "/repo/.worktrees/fn-298")).resolves.toBe(false);
+
+    execFileMock.mockResolvedValueOnce({ stdout: "!! dist/\n", stderr: "" });
+    await expect(defensiveRemovalWouldPreserve("/repo", "/repo/.worktrees/fn-298")).resolves.toBe(false);
+
+    execFileMock.mockResolvedValueOnce({ stdout: "!! .env\n", stderr: "" });
+    await expect(defensiveRemovalWouldPreserve("/repo", "/repo/.worktrees/fn-298")).resolves.toBe(true);
+
+    execFileMock.mockResolvedValueOnce({ stdout: "?? wip.txt\n", stderr: "" });
+    await expect(defensiveRemovalWouldPreserve("/repo", "/repo/.worktrees/fn-298")).resolves.toBe(true);
+
+    execFileMock.mockRejectedValueOnce(new Error("status probe blew up"));
+    await expect(defensiveRemovalWouldPreserve("/repo", "/repo/.worktrees/fn-298")).resolves.toBe(false);
   });
 });
 

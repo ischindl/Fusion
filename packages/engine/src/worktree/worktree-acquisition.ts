@@ -15,7 +15,9 @@ import {
   canonicalizePath,
   classifyTaskWorktree,
   getRegisteredWorktreeBranches,
-  defensiveRemovalWouldPreserve,
+  probeWorktreeRemovalContent,
+  pruneWorktreeAdminEntries,
+  type DefensiveRemovalContentProbe,
   isInsideWorktreesDir,
   isRepoRootPath,
   removeWorktree,
@@ -1188,11 +1190,47 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
            * already implements: move the checkout aside under the recovery root, delete nothing, keep the card.
            * The liveness recheck stays inside the preserve routine, so a newly registered owner still fails closed.
            */
+          /*
+           * FNXC:WorktreeCleanup 2026-10-02-15:56:
+           * RUFU-298: the preserve-vs-remove choice now DECIDES from the FN-9233 classification instead of
+           * asking a boolean whether removal would refuse. `clean`/`regenerable-ignored` take the ordinary
+           * PoolPrune removal — same call site, same `audit: undefined` suppression of the removal-side
+           * FN-9233 rows as before this change; `ignored-only`/`deliverable` take the preserve-rename aside (RUFU-278's
+           * non-terminal third outcome, now reached by every surface through the shared probe rather than only
+           * where a `WorktreeContentPreservationError` happened to surface).
+           * RUFU-274's shipped probe is non-throwing and reports a failed `git status` as
+           * `status: "probe-failed"` with an `ignored-only` classification, so `unverifiable` is recognised here by
+           * STATUS plus the root-checkout guard rather than by a rejection: an unreadable tree (or the project
+           * root itself) nulls the result, the reclaim preserves NOTHING and falls through to `removeWorktree`,
+           * whose own `assertCleanForDefensiveRemoval` re-probe raises the same fail-closed sentence, keeping that
+           * path byte-identical. A failed probe is deliberately not coerced to `deliverable` or trusted as
+           * `ignored-only`: preserving aside would move a checkout whose contents nobody can enumerate.
+           * After the rename the old registration still points at the vacated path; `git worktree add` refuses
+           * a "missing but already registered" path and the collision ladder's plain attach only survives
+           * because it happens to prune incidentally. The reclaim prunes its own bookkeeping explicitly —
+           * determinism, and an audit row naming the recreation — rather than depending on a sibling
+           * module's side effect.
+           */
+          let removalContent: DefensiveRemovalContentProbe | null = null;
+          if (!preserveAsOrphanDirectory && !isRepoRootPath(rootDir, pinnedPath)) {
+            removalContent = await probeWorktreeRemovalContent(pinnedPath).catch((probeError: unknown) => {
+              // FNXC:WorktreeCleanup 2026-09-26-02:10: RUFU-298 — an `unverifiable` probe preserves NOTHING and moves
+              // NOTHING; nulling routes the reclaim to `removeWorktree`, whose re-probe raises the same fail-closed
+              // sentence. The warning exists because a swallowed reason would otherwise disappear: without it an
+              // operator sees only the downstream refusal, never why it was expected.
+              logger?.warn(`${task.id}: pinned worktree ${pinnedPath} content probe failed (${formatError(probeError).message}); deferring to the removal guard's re-probe`);
+              return null;
+            });
+            if (removalContent?.status === "probe-failed") {
+              logger?.warn(`${task.id}: pinned worktree ${pinnedPath} content probe was unreadable (${removalContent.probeError}); deferring to the removal guard's re-probe`);
+              removalContent = null;
+            }
+          }
           const preserveForContentPolicy = !preserveAsOrphanDirectory
-            && (await defensiveRemovalWouldPreserve(rootDir, pinnedPath))
+            && (removalContent?.classification === "ignored-only" || removalContent?.classification === "deliverable")
             && !activeSessionRegistry.isPathActive(pinnedPath);
           if (preserveForContentPolicy) {
-            logger?.warn(`${task.id}: pinned worktree ${pinnedPath} holds content the preservation policy will not delete; preserving it aside to reclaim the path`);
+            logger?.warn(`${task.id}: pinned worktree ${pinnedPath} holds ${removalContent?.classification} content the preservation policy will not delete; preserving it aside to reclaim the path`);
           }
           if (preserveAsOrphanDirectory || preserveForContentPolicy) {
             const canonicalRoot = await realpath(rootDir);
@@ -1224,6 +1262,17 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
               preservedPath = join(localRecoveryWorktrees, `${task.id.toLowerCase()}-${randomUUID()}`);
               await renameWorktreeDirectory(pinnedPath, preservedPath);
             }
+            // FNXC:WorktreeCleanup 2026-09-26-01:29: RUFU-298 — the preserve rename vacated the path but left
+            // the admin registration; prune it explicitly so the recreation's `git worktree add` is never
+            // hostage to the collision ladder's incidental prune. `pruneWorktreeAdminEntries` never throws and
+            // records its own success/failure audit row.
+            await pruneWorktreeAdminEntries({
+              rootDir,
+              auditor: audit,
+              reason: "task-pinned-preserving-reclaim",
+              target: pinnedPath,
+              logger,
+            });
             /*
              * FNXC:TaskPinnedWorktrees 2026-08-10-01:12:
              * Once rename has preserved the orphan, audit, task-log, and retention work are independent best-effort observability/housekeeping. Their failures must not strand the pinned path or block recreation, and warnings must retain the concrete formatted failure message.
@@ -1234,15 +1283,16 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
                 target: preservedPath,
                 metadata: {
                   taskId: task.id,
-                  // "not-applicable" is unreachable: the orphan branch requires !classification.ok and the
-                  // content-policy branch sets "content-preservation". It exists because widening the guard
-                  // above removed TypeScript's aliased-condition narrowing on the discriminated union.
+                  // RUFU-298: the content-policy branch now carries the concrete FN-9233 class that preserved
+                  // the checkout (`ignored-only`/`deliverable`); the "content-preservation" fallback is
+                  // unreachable because preserveForContentPolicy requires a non-null probe. "not-applicable"
+                  // likewise: the orphan branch requires !classification.ok.
                   classification: preserveForContentPolicy
-                    ? "content-preservation"
+                    ? removalContent?.classification ?? "content-preservation"
                     : classification.ok
                       ? "not-applicable"
                       : classification.classification,
-                  reason: "task-pinned-orphan-preserved",
+                  reason: preserveForContentPolicy ? "task-pinned-content-preserved" : "task-pinned-orphan-preserved",
                   sourcePath: pinnedPath,
                 },
               });
@@ -1254,7 +1304,7 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
                 task.id,
                 `Preserved orphaned task-pinned directory ${pinnedPath} before recreation${
                   preserveForContentPolicy
-                    ? " — removal refused: the checkout holds content the preservation policy will not delete"
+                    ? ` — the checkout holds ${removalContent?.classification} content the removal policy will not delete; moved aside, not deleted`
                     : ""
                 }`,
                 preservedPath,
