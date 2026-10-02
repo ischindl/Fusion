@@ -427,6 +427,38 @@ export function checkoutEmptinessProverFor(
   return created;
 }
 
+/*
+FNXC:CheckoutEmptinessInvalidation 2026-10-02-05:47 (RUFU-487 step 1):
+Until now `invalidatePath`/`invalidateAll` had NO production caller: the only freshness mechanism was
+`CHECKOUT_EMPTINESS_PROOF_TTL_MS = 10_000`, so a card whose checkout had just been dirtied or released
+kept answering from a verdict up to ten seconds stale, and any attempt to lengthen that TTL (the obvious
+fix for the proof lane being the largest remaining git consumer — 1421 `spawn` samples, 6.1% of idle
+dashboard CPU, measured 2026-10-02) would have widened that staleness instead of closing it.
+
+This is the step that must come FIRST: attribute a lifecycle mutation to the checkouts it can dirty and
+drop exactly those verdicts. Path selection reuses `checkoutEmptinessEntries`, the same enumeration the
+prover itself proves, so a workspace card invalidates every member repository rather than only the
+singular `worktree`. A mutation carrying no path at all invalidates everything: the safe direction for
+an unattributable touch is a fresh proof, never a stale verdict — `checkoutEmptiness` is a downgrade-only
+input, so a missing verdict keeps a blocker blocking while a wrong "empty" can release live work.
+*/
+export function invalidateEmptinessProofsForTask(
+  rootDir: string,
+  task: CheckoutEmptinessTaskShape,
+): void {
+  const prover = checkoutEmptinessProverFor(rootDir);
+  const paths = new Set(
+    checkoutEmptinessEntries(task)
+      .map((entry) => entry.path)
+      .filter((path) => path.length > 0),
+  );
+  if (paths.size === 0) {
+    prover.invalidateAll();
+    return;
+  }
+  for (const path of paths) prover.invalidatePath(path);
+}
+
 export function resetCheckoutEmptinessProversForTesting(): void {
   for (const prover of proverByRootDir.values()) prover.invalidateAll();
   proverByRootDir.clear();
