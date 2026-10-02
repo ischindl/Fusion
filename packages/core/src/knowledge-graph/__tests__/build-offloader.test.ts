@@ -116,3 +116,38 @@ describe("runKnowledgeGraphBuild", () => {
     expect(sourcePath.endsWith("build-worker.ts")).toBe(true);
   });
 });
+
+/*
+FNXC:KnowledgeGraph 2026-10-02-15:20 (RUFU-500):
+The shipped CLI is `packages/cli/bin.mjs` importing `dist/bin.js`, so the module directory that
+`import.meta.url` reports inside the bundle is not guaranteed to be `dist`. With one candidate the worker was
+declared unusable and the build went back in-process without a word.
+*/
+describe("findKnowledgeGraphWorkerPath", () => {
+  it("finds the worker when the module url is the launcher rather than the dist bundle", async () => {
+    const { findKnowledgeGraphWorkerPath } = await import("../build-offloader.js");
+    const existing = new Set([
+      "/pkg/packages/cli/dist/knowledge-graph-worker.js",
+      "/cwd-noise/packages/cli/dist/knowledge-graph-worker.js",
+    ]);
+    const found = findKnowledgeGraphWorkerPath("file:///pkg/packages/cli/bin.mjs", (path) => existing.has(path));
+    expect(found).toBe("/pkg/packages/cli/dist/knowledge-graph-worker.js");
+  });
+
+  it("prefers the true sibling over the launcher-relative fallbacks", async () => {
+    const { findKnowledgeGraphWorkerPath } = await import("../build-offloader.js");
+    const sibling = "/pkg/packages/cli/dist/knowledge-graph-worker.js";
+    const found = findKnowledgeGraphWorkerPath("file:///pkg/packages/cli/dist/bin.js", (path) => path === sibling);
+    expect(found).toBe(sibling);
+  });
+
+  it("reports no path when no candidate exists, so the caller refuses rather than forking a ghost", async () => {
+    const { findKnowledgeGraphWorkerPath, resolveKnowledgeGraphWorkerPath } = await import("../build-offloader.js");
+    expect(findKnowledgeGraphWorkerPath("file:///pkg/packages/cli/dist/bin.js", () => false)).toBeUndefined();
+    // The plain resolver still names the conventional sibling, which is what the refusal message prints.
+    expect(resolveKnowledgeGraphWorkerPath("file:///pkg/packages/cli/dist/bin.js")).toBe(siblingOfBin());
+    function siblingOfBin() {
+      return "/pkg/packages/cli/dist/knowledge-graph-worker.js";
+    }
+  });
+});

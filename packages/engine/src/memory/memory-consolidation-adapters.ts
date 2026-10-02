@@ -50,7 +50,7 @@ export async function resolveMemoryConsolidationPorts(deps: Deps): Promise<Memor
       `graph-unavailable` instead of reasoning over a graph that may predate this build.
       */
       const request = { projectRoot: deps.rootDir, graphDir, force: false };
-      const built = await runKnowledgeGraphBuild(request).catch((error: unknown) => {
+      const built = await runKnowledgeGraphBuild({ ...request, log: (message) => console.warn(message) }).catch((error: unknown) => {
         if (error instanceof KnowledgeGraphBuildOffloadUnavailableError) return runKnowledgeGraphBuildInProcess(request);
         throw error;
       });

@@ -60,9 +60,43 @@ export const KNOWLEDGE_GRAPH_BUILD_CHILD_HEAP_MB = 4096;
  * builds look for the `.ts` next to this file. Only the `.js` is ever spawned — see the fallback note below.
  */
 export function resolveKnowledgeGraphWorkerPath(moduleUrl = import.meta.url): string {
+  return findKnowledgeGraphWorkerPath(moduleUrl) ?? legacyWorkerCandidate(moduleUrl);
+}
+
+/**
+ * Every plausible location for the compiled worker; first existing match wins.
+ *
+ * FNXC:KnowledgeGraph 2026-10-02-15:20 (RUFU-500):
+ * One candidate path was not enough, and the reason is the shape of the shipped CLI: `bin.mjs` is a launcher
+ * that imports `dist/bin.js`, so a module inlined into that bundle can attribute `import.meta.url` either to
+ * the package directory or to `dist`. A single `join(dirname(import.meta.url), "knowledge-graph-worker.js")`
+ * missed, the offloader reported the worker "unusable", and the caller silently rebuilt in-process — the exact
+ * 84.8%-of-the-dashboard condition this module exists to remove, with no error anywhere. The sibling case
+ * still wins when it is correct.
+ */
+export function findKnowledgeGraphWorkerPath(
+  moduleUrl = import.meta.url,
+  probe: (path: string) => boolean = existsSync,
+): string | undefined {
+  if (moduleUrl.endsWith(".ts")) {
+    // Source checkout: the `.ts` sibling is never spawned (fork has no transpiler), so report the shape and
+    // let the caller take the in-process path.
+    return join(dirname(fileURLToPath(moduleUrl)), "build-worker.ts");
+  }
   const dir = dirname(fileURLToPath(moduleUrl));
-  const isCompiled = !moduleUrl.endsWith(".ts");
-  return join(dir, isCompiled ? "knowledge-graph-worker.js" : "build-worker.ts");
+  const candidates = [
+    join(dir, "knowledge-graph-worker.js"),
+    // `packages/cli/bin.mjs` importing `dist/bin.js`: the worker sits one level below the module directory.
+    join(dir, "dist", "knowledge-graph-worker.js"),
+    // Run-from-package-root (`node packages/cli/bin.mjs dashboard ...`), where the module dir can be the cwd.
+    join(process.cwd(), "packages/cli/dist", "knowledge-graph-worker.js"),
+  ];
+  return candidates.find((candidate) => candidate.endsWith(".js") && probe(candidate));
+}
+
+function legacyWorkerCandidate(moduleUrl: string): string {
+  const dir = dirname(fileURLToPath(moduleUrl));
+  return join(dir, moduleUrl.endsWith(".ts") ? "build-worker.ts" : "knowledge-graph-worker.js");
 }
 
 export type RunKnowledgeGraphBuildOptions = KnowledgeGraphBuildRequest & {
@@ -105,8 +139,16 @@ export async function runKnowledgeGraphBuild(
   const workerPath = options.workerPath ?? resolveKnowledgeGraphWorkerPath();
   const canUseWorker = options.canUseWorker ?? ((path: string) => path.endsWith(".js") && existsSync(path));
   if (!canUseWorker(workerPath)) {
+    /*
+    FNXC:KnowledgeGraph 2026-10-02-15:20 (RUFU-500):
+    A refusal to spawn must be audible. On the deployed server the build kept running in-process while this
+    module declared the worker unusable, and nothing said so — the only evidence was an absent child process,
+    which looked like a broken probe. Naming the path turns an hour of investigation into one log line.
+    */
+    options.log?.(`[knowledge-graph] offload refused, building in-process (worker unusable at ${workerPath})`);
     throw new KnowledgeGraphBuildOffloadUnavailableError(`worker not usable at ${workerPath}`);
   }
+  options.log?.(`[knowledge-graph] offloading graph build to child ${workerPath}`);
 
   const spawn = options.spawnFn ?? fork;
   const timeoutMs = options.timeoutMs ?? KNOWLEDGE_GRAPH_BUILD_TIMEOUT_MS;

@@ -158,7 +158,14 @@ export async function rebuildProjectKnowledgeGraph(store: TaskStore, options: { 
     spawn). A genuine build failure still propagates — swallowing it would report a graph that was never
     written. `buildKnowledgeGraph` stays imported for the type behind `RebuildKnowledgeGraphResult`.
     */
-    const built = await runKnowledgeGraphBuild({ projectRoot: store.getRootDir(), graphDir, force: options.force }).catch(
+    const built = await runKnowledgeGraphBuild({
+      projectRoot: store.getRootDir(),
+      graphDir,
+      force: options.force,
+      // The decision line lands in the server log: an offload that silently declines is the failure mode this
+      // whole change exists to remove, and it is invisible in every other signal.
+      log: (message) => console.warn(message),
+    }).catch(
       (error: unknown) => {
         if (error instanceof KnowledgeGraphBuildOffloadUnavailableError) {
           return runKnowledgeGraphBuildInProcess({ projectRoot: store.getRootDir(), graphDir, force: options.force });
