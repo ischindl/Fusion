@@ -68,32 +68,29 @@ vi.mock("../api", () => ({
   updateGlobalSettings: vi.fn().mockResolvedValue({}),
 }));
 
-vi.mock("lucide-react", () => ({
-  Link: () => null,
-  Paperclip: () => null,
-  Brain: () => null,
-  Lightbulb: () => null,
-  ListTree: () => null,
-  Sparkles: () => null,
-  ShieldCheck: () => null,
-  Save: () => null,
-  X: () => null,
-  ChevronDown: () => null,
-  ChevronUp: () => null,
-  ChevronRight: () => null,
-  Bot: () => null,
-  Server: () => null,
-  ArrowDown: () => null,
-  ArrowUp: () => null,
-  Flag: () => null,
-  TriangleAlert: () => null,
-  Zap: () => null,
-  Maximize2: () => null,
-  Minimize2: () => null,
-  // FNXC:DashboardTests 2026-07-15-11:55: session-advisor toggle icons on QuickEntryBox.
-  Eye: () => null,
-  EyeOff: () => null,
-}));
+/*
+FNXC:LucideMockFragility 2026-10-02-09:54:
+This mock used to enumerate every icon the component imports, so the day the shared action row gained a
+`UserCheck` icon the file went RED with "No \"UserCheck\" export is defined on the mock" — four tests failed
+over an icon no test cares about. Any stub that must track production's import list is a standing
+rebreakage: the next icon does the same thing. Resolve any requested export as a null component instead;
+these tests assert layout and DOM structure, never icon identity.
+*/
+/*
+FNXC:LucideMockFragility 2026-10-02-09:54:
+This mock used to enumerate every icon the component imports, so the day the shared action row gained a
+`UserCheck` icon the file went RED with `No "UserCheck" export is defined on the mock` — four tests failed
+over an icon no test in this file observes. A stub that must be kept in step with production's import list
+is a standing rebreakage: the next icon repeats it. Derive the stub from the module's own export names
+instead, so a new icon needs no test edit. A `Proxy` was tried first and vitest rejects it (a mock must be a
+plain object). These tests assert layout and DOM structure, never icon identity.
+*/
+vi.mock("lucide-react", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("lucide-react")>();
+  const stub: Record<string, () => null> = {};
+  for (const name of Object.keys(actual)) stub[name] = () => null;
+  return stub;
+});
 
 vi.mock("../components/ModelSelectionModal", () => ({
   ModelSelectionModal: () => null,
@@ -381,7 +378,6 @@ describe("quick-entry-actions fixed-height parity, not just a min-height floor (
     const saveButton = screen.getByTestId("quick-entry-save");
     const attachButton = screen.getByTestId("quick-entry-attach");
     const githubToggle = screen.getByTestId("quick-entry-github-toggle");
-    const priorityButton = screen.getByTestId("quick-entry-priority-button");
     const fastToggle = screen.getByTestId("quick-entry-fast-toggle");
     const workflowTrigger = screen.getByTestId("quick-entry-workflow-trigger");
 
@@ -389,7 +385,13 @@ describe("quick-entry-actions fixed-height parity, not just a min-height floor (
     expect(actionsRow).not.toBeNull();
     expect(actionsRow?.contains(attachButton)).toBe(true);
     expect(actionsRow?.contains(githubToggle)).toBe(true);
-    expect(actionsRow?.contains(priorityButton)).toBe(true);
+    /*
+    FNXC:TaskQueueOrder 2026-10-02-09:54 (FN-509 follow-through):
+    This row used to also assert it contained `quick-entry-priority-button`. FN-509 deleted Quick Entry's
+    priority picker along with the task priority field, so the element no longer exists; the parity contract
+    here is that the remaining controls stay in `.quick-entry-actions` at a fixed row height, and that
+    assertion is untouched. Do not re-add a priority control to satisfy this test.
+    */
     expect(actionsRow?.contains(fastToggle)).toBe(true);
     expect(actionsRow?.contains(workflowTrigger)).toBe(true);
   });

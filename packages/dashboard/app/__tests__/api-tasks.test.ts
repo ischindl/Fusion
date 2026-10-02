@@ -711,18 +711,15 @@ describe("createTask", () => {
     expect(body.source).toEqual({ sourceType: "dashboard_ui" });
   });
 
-  it("serializes priority in createTask payload when provided", async () => {
-    globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(true, { ...FAKE_CREATED_TASK, priority: "urgent" }));
-
-    await createTask({
-      description: "Priority task",
-      priority: "urgent",
-    });
-
-    const call = vi.mocked(globalThis.fetch).mock.calls[0];
-    const body = JSON.parse((call[1] as RequestInit).body as string);
-    expect(body.priority).toBe("urgent");
-  });
+  /*
+  FNXC:TaskQueueOrder 2026-10-02-09:54 (FN-509 follow-through):
+  A `serializes priority in createTask payload` test used to sit here and was RED on main. It asserted a
+  contract the product deliberately deleted: FN-509 removed the task priority field and every control for it
+  (`NewTaskModal`, Quick Entry's priority picker), `createTask`'s explicit create whitelist omits `priority`,
+  and the server refuses it outright — `PATCH /tasks/:id` throws "priority is no longer supported: tasks run
+  in arrival order". Restoring the assertion would mean re-adding a removed product contract, so the test is
+  deleted rather than weakened. Do not re-add it: arrival order plus Board raises is the contract.
+  */
 
   it("serializes branch and baseBranch in create payload", async () => {
     globalThis.fetch = vi.fn().mockReturnValue(mockFetchResponse(true, {

@@ -360,7 +360,7 @@ describe("GET /tasks", () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toHaveLength(1);
-    expect(store.listTasks).toHaveBeenCalledWith({ limit: 10, offset: 5, slim: true, includeArchived: false });
+    expect(store.listTasks).toHaveBeenCalledWith({ limit: 10, offset: 5, slim: true, compactBoardFeed: true, includeArchived: false });
   });
 
   it.each(["triage", "todo", "in-progress"] as const)(
@@ -385,6 +385,7 @@ describe("GET /tasks", () => {
         limit: 20,
         offset: undefined,
         slim: true,
+        compactBoardFeed: true,
         includeArchived: false,
         column,
       });
@@ -1393,51 +1394,17 @@ describe("POST /tasks", () => {
     expect(store.createTask).not.toHaveBeenCalled();
   });
 
-  it("forwards priority when provided", async () => {
-    const createdTask = {
-      ...FAKE_TASK_DETAIL,
-      column: "triage",
-      priority: "high" as const,
-    };
-    (store.createTask as ReturnType<typeof vi.fn>).mockResolvedValue(createdTask);
+  /*
+  FNXC:TaskQueueOrder 2026-10-02-09:54 (FN-509 follow-through):
+  Two tests used to sit here — "forwards priority when provided" (expected 201) and "returns 400 for invalid
+  priority value" (expected the error to read "priority must be one of"). Both asserted a contract FN-509
+  deleted: tasks run in arrival order and are raised by Board, `POST /tasks` now answers any priority field
+  with "priority is no longer supported: tasks run in arrival order", and no route in the package produces
+  the old "must be one of" wording any more. The first was RED (400 vs 201) and the second only passed
+  against a message nobody emits. Re-adding them would mean re-adding the removed field, so they are deleted
+  rather than weakened. The refusal itself is covered by `task-priority-retirement.test.ts`.
+  */
 
-    const res = await REQUEST(
-      buildApp(),
-      "POST",
-      "/api/tasks",
-      JSON.stringify({
-        description: "Priority task",
-        priority: "high",
-      }),
-      { "Content-Type": "application/json" },
-    );
-
-    expect(res.status).toBe(201);
-    expect(store.createTask).toHaveBeenCalledWith(
-      expect.objectContaining({
-        description: "Priority task",
-        priority: "high",
-      }),
-      expect.any(Object),
-    );
-  });
-
-  it("returns 400 for invalid priority value", async () => {
-    const res = await REQUEST(
-      buildApp(),
-      "POST",
-      "/api/tasks",
-      JSON.stringify({
-        description: "Bad priority",
-        priority: "medium",
-      }),
-      { "Content-Type": "application/json" },
-    );
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toContain("priority must be one of");
-    expect(store.createTask).not.toHaveBeenCalled();
-  });
 
   it("forwards executionMode when provided with 'fast'", async () => {
     const createdTask = {
