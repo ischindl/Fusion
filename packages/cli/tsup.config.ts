@@ -418,6 +418,16 @@ const cliBuildConfig = {
     "skills-get-bin": "src/skills-get-bin.ts",
     extension: "src/extension.ts",
     "child-process-worker": "../engine/src/runtimes/child-process-worker.ts",
+    /*
+    FNXC:KnowledgeGraph 2026-10-02-14:05:
+    The knowledge-graph build worker is emitted the same way and for the same reason as the runtime worker
+    above: `resolveKnowledgeGraphWorkerPath()` resolves it as a sibling of the running compiled module, which
+    in a published install is `dist/knowledge-graph-worker.js` beside `dist/bin.js`. If this entry is dropped,
+    graph builds silently fall back to running inside the dashboard process — the exact condition that was
+    measured at 84.8% of its CPU, and it fails no test because the fallback is intentional. That is why
+    `cli-worker-entries.test.ts` asserts this entry by name.
+    */
+    "knowledge-graph-worker": "../core/src/knowledge-graph/build-worker.ts",
   },
   format: ["esm"],
   platform: "node",
