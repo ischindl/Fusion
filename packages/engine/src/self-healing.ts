@@ -146,7 +146,8 @@ the age of a claim. It arrives through the root barrel (as every other core symb
 browser-safe types-only leaf. The engine would resolve that subpath only after a new vitest alias,
 because Vite's string aliases match by prefix and `@fusion/core` already names a FILE here.
 */
-import { finalizePlanningSegment, isLegacyWorkspaceWorktreeLayout, resolveWorkspaceTaskWorktreeDir, chatInFlightReferenceMs } from "@fusion/core";
+/* FNXC:StaleReviewCallbackWaiver 2026-10-01-15:20 (upstream FN-9429): the pending-code-review sweep derives the waiver attempt id through core's single resolver, so the audit row and the receipt share one identity. */
+import { deriveStaleReviewCallbackAttemptId, finalizePlanningSegment, isLegacyWorkspaceWorktreeLayout, resolveWorkspaceTaskWorktreeDir, chatInFlightReferenceMs } from "@fusion/core";
 /* RUFU-200: holder-side checkout-emptiness proof for dormant file-scope lease classification. */
 import { taskHoldsUnmergedCheckout, type CheckoutEmptinessProofMap } from "@fusion/core";
 import { proveDormantCheckoutEmptiness } from "./worktree/checkout-emptiness.js";
@@ -4736,7 +4737,37 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           if (isFusionDeletableBranch(task, task.branch)) {
             await execAsync(`git branch -D ${JSON.stringify(task.branch)}`, { cwd: this.options.rootDir, timeout: 120_000, maxBuffer: 10 * 1024 * 1024 });
           }
-          await this.store.updateTask(task.id, { worktree: null, branch: null, branchWriteOrigin: "engine" as const, paused: false, pausedReason: undefined, status: null, error: null });
+          /*
+          FNXC:BranchConflictRecoveryFence 2026-10-01-07:20:
+          A PR-conflict reclaim removes a checkout before its durable clear. Revalidate the
+          inspected generation under the project-scoped atomic writer so a scheduler checkout,
+          retry, or explicit user pause that arrives during cleanup cannot be overwritten.
+          */
+          let recoveryClearApplied = false;
+          await this.store.updateTaskAtomic(task.id, (live) => {
+            const stillOwnsRecovery = live.branch === task.branch
+              && live.worktree === task.worktree
+              && live.paused === task.paused
+              && live.pausedReason === task.pausedReason
+              && live.status === task.status
+              && live.error === task.error
+              && live.userPaused !== true;
+            if (!stillOwnsRecovery) return null;
+            recoveryClearApplied = true;
+            return {
+              worktree: null,
+              branch: null,
+              branchWriteOrigin: "engine" as const,
+              paused: false,
+              pausedReason: undefined,
+              status: null,
+              error: null,
+            };
+          });
+          if (!recoveryClearApplied) {
+            await this.store.logEntry(task.id, "Auto-recovery retained a newer task lifecycle update after reclaiming a stale checkout");
+            return withPerPr({ outcome: "skipped", reason: "superseded" });
+          }
           await auditor.database({ type: "task:pr-conflict-reclaim", target: task.id, metadata: { outcome: "reclaimed", mode: "fully-subsumed", recoveredFromPaused: wasPausedBranchConflict } });
           return withPerPr({ outcome: "reclaimed" });
         }
@@ -4889,15 +4920,39 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         return withPerPr({ outcome: "paused-unrecoverable", reason: "branch-conflict-recovery-exhausted" });
       }
       if (decision.action === "pause") {
-        await this.store.updateTask(task.id, {
-          status: "failed",
-          error: `Task branch conflict: ${task.branch} is not safely reclaimable (${message})`,
-          paused: true,
-          pausedReason: "branch-conflict-unrecoverable",
-          ...branchConflictRecoveryCounterPatch(recoveryPass),
+        /*
+        FNXC:BranchConflictRecoveryFence 2026-10-01-08:15:
+        The dispatcher can finish after an operator Retry has reset this failure. Persist its
+        pause only while the inspected recovery generation remains live; otherwise the old sweep
+        would restore branch-conflict-unrecoverable after the successful retry.
+
+        FNXC:BranchConflictRecovery 2026-10-01-15:22 (FN-9434 merge):
+        FN-9434's recovery counter rides the SAME guarded write. A pause the fence refuses must not
+        burn recovery budget the sweep never spent, so the counter spread stays inside the reducer.
+        */
+        let pauseApplied = false;
+        await this.store.updateTaskAtomic(task.id, (live) => {
+          const stillOwnsFailure = live.branch === task.branch
+            && live.worktree === task.worktree
+            && live.status === task.status
+            && live.error === task.error
+            && live.paused === task.paused
+            && live.pausedReason === task.pausedReason
+            && live.userPaused !== true;
+          if (!stillOwnsFailure) return null;
+          pauseApplied = true;
+          return {
+            status: "failed",
+            error: `Task branch conflict: ${task.branch} is not safely reclaimable (${message})`,
+            paused: true,
+            pausedReason: "branch-conflict-unrecoverable",
+            ...branchConflictRecoveryCounterPatch(recoveryPass),
+          };
         });
-        await this.handoffTaskToReview(task.id, "branch-conflict-unrecoverable-repromote");
-        await this.store.logEntry(task.id, `Auto-recovery failed: branch conflict unrecoverable — ${message}`);
+        if (pauseApplied) {
+          await this.handoffTaskToReview(task.id, "branch-conflict-unrecoverable-repromote");
+          await this.store.logEntry(task.id, `Auto-recovery failed: branch conflict unrecoverable — ${message}`);
+        }
       } else if (recoveryPass.counted) {
         await this.store.updateTask(task.id, branchConflictRecoveryCounterPatch(recoveryPass));
       }
@@ -5562,14 +5617,38 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
                   });
                 }
 
-                await this.store.updateTask(task.id, {
-                  worktree: null,
-                  branch: null, branchWriteOrigin: "engine" as const,
-                  paused: false,
-                  pausedReason: undefined,
-                  status: null,
-                  error: null,
+                /*
+                FNXC:BranchConflictRecoveryFence 2026-10-01-05:33:
+                FN-9434 requires the destructive checkout cleanup to clear its stale pause
+                only if this sweep still owns the row it inspected. A retry, unpause, or
+                scheduler checkout replacement that wins first must remain authoritative.
+                */
+                let recoveryClearApplied = false;
+                await this.store.updateTaskAtomic(task.id, (live) => {
+                  const stillOwnsRecovery =
+                    live.branch === task.branch
+                    && live.worktree === task.worktree
+                    && live.paused === task.paused
+                    && live.pausedReason === task.pausedReason
+                    && live.status === task.status
+                    && live.error === task.error
+                    && live.userPaused !== true;
+                  if (!stillOwnsRecovery) return null;
+                  recoveryClearApplied = true;
+                  return {
+                    worktree: null,
+                    branch: null,
+                    branchWriteOrigin: "engine" as const,
+                    paused: false,
+                    pausedReason: undefined,
+                    status: null,
+                    error: null,
+                  };
                 });
+                if (!recoveryClearApplied) {
+                  await this.store.logEntry(task.id, "Auto-recovery retained a newer task lifecycle update after reclaiming a stale checkout");
+                  continue;
+                }
                 await this.store.logEntry(
                   task.id,
                   `[recovery] reclaim-live-zero-commits ${task.id} branch=${task.branch} worktree=${inspection.livePath} tip=${inspection.tipSha.slice(0, 12)} reason=zero-unique-commits-vs-main`,
@@ -5895,15 +5974,39 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             continue;
           }
           if (decision.action === "pause") {
-            await this.store.updateTask(task.id, {
-              status: "failed",
-              error: `Task branch conflict: ${task.branch} is not safely reclaimable (${message})`,
-              paused: true,
-              pausedReason: "branch-conflict-unrecoverable",
-              ...branchConflictRecoveryCounterPatch(recoveryPass),
+            /*
+            FNXC:BranchConflictRecoveryFence 2026-10-01-08:15:
+            The dispatcher can finish after an operator Retry has reset this failure. Persist its
+            pause only while the inspected recovery generation remains live; otherwise the old sweep
+            would restore branch-conflict-unrecoverable after the successful retry.
+
+            FNXC:BranchConflictRecovery 2026-10-01-15:22 (FN-9434 merge):
+            FN-9434's recovery counter rides the SAME guarded write — a pause the fence refuses must
+            not burn budget the sweep never spent.
+            */
+            let pauseApplied = false;
+            await this.store.updateTaskAtomic(task.id, (live) => {
+              const stillOwnsFailure = live.branch === task.branch
+                && live.worktree === task.worktree
+                && live.status === task.status
+                && live.error === task.error
+                && live.paused === task.paused
+                && live.pausedReason === task.pausedReason
+                && live.userPaused !== true;
+              if (!stillOwnsFailure) return null;
+              pauseApplied = true;
+              return {
+                status: "failed",
+                error: `Task branch conflict: ${task.branch} is not safely reclaimable (${message})`,
+                paused: true,
+                pausedReason: "branch-conflict-unrecoverable",
+                ...branchConflictRecoveryCounterPatch(recoveryPass),
+              };
             });
-            await this.handoffTaskToReview(task.id, "branch-conflict-unrecoverable-repromote");
-            await this.store.logEntry(task.id, `Auto-recovery failed: branch conflict unrecoverable — ${message}`);
+            if (pauseApplied) {
+              await this.handoffTaskToReview(task.id, "branch-conflict-unrecoverable-repromote");
+              await this.store.logEntry(task.id, `Auto-recovery failed: branch conflict unrecoverable — ${message}`);
+            }
           } else if (recoveryPass.counted) {
             await this.store.updateTask(task.id, branchConflictRecoveryCounterPatch(recoveryPass));
           }
@@ -10809,7 +10912,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           the one thing its own header says it must never do.
           */
           if (orphanedPendingWipColumns.has(task.column)) continue;
-          if (!task.workflowStepResults?.some((result) => result.status === "pending")) continue;
+          if (!task.workflowStepResults?.some((result) => result.status === "pending" || (result.status === "failed" && result.verdict === undefined && result.reviewKind === "code"))) continue;
           if (isSessionLive(task.id)) continue;
 
           // Re-read the live row before mutating: the page snapshot can be stale against
@@ -10857,6 +10960,85 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
               localNodeLeaseIdentity,
             ).kind === "adopt";
           };
+          /*
+          FNXC:StaleReviewCallbackWaiver 2026-10-01-04:05:
+          A singular, required declared code-review callback can be waived only after the same
+          liveness and lease checks used by orphan repair. Receipt issuance re-runs this synchronous
+          predicate under the task advisory transaction; excluded rows retain the historic failed
+          rewrite and are never silently approved.
+          */
+          const issueWaiver = (this.store as TaskStore & { issueStaleReviewCallbackWaiver?: TaskStore["issueStaleReviewCallbackWaiver"] }).issueStaleReviewCallbackWaiver;
+          if (issueWaiver && settings && !fresh.paused && !fresh.userPaused && !orphanedPendingWipColumns.has(fresh.column)) {
+            const pendingCodeReview = fresh.workflowStepResults?.find((result) => (result.status === "pending" || (result.status === "failed" && result.verdict === undefined))
+              && result.reviewKind === "code" && (result.phase ?? "pre-merge") === "pre-merge"
+              && !result.findings?.some((finding) => finding.resolution === undefined || finding.resolution === "open"));
+            const pendingStartedAt = Date.parse(pendingCodeReview?.startedAt ?? "");
+            const staleForWaiver = Number.isFinite(pendingStartedAt)
+              && Date.now() - pendingStartedAt >= PLAN_REVIEW_LEASE_STALENESS_MS;
+            if (pendingCodeReview && staleForWaiver && !isSessionLive(fresh.id) && !hasLiveReviewLease(pendingCodeReview)
+              && allowsAutoMergeProcessing(fresh, settings) && resolveEffectiveAutoMerge(fresh, settings) === true
+              && fresh.workspaceWorktrees === undefined) {
+              const gate = await resolvePreMergeGateForTask(this.store, fresh.id, fresh.enabledWorkflowSteps, fresh).catch(() => undefined);
+              const selection = await this.store.getTaskWorkflowSelectionAsync(fresh.id).catch(() => undefined);
+              const content = await captureMergeContentDescriptor(fresh, { workspaceRootDir: this.options.rootDir, settings }).catch(() => undefined);
+              if (gate?.reviewColumns.has(fresh.column)
+                && gate.requiredPreMergeStepIds.has(pendingCodeReview.workflowStepId)
+                && selection && content?.kind === "singular") {
+                const attemptId = deriveStaleReviewCallbackAttemptId(pendingCodeReview);
+                if (!attemptId) continue;
+                const outcome = await issueWaiver.call(this.store, fresh.id, {
+                  workflowStepId: pendingCodeReview.workflowStepId,
+                  attemptId,
+                  expectedStatus: pendingCodeReview.status as "pending" | "failed",
+                  expectedStartedAt: pendingCodeReview.startedAt,
+                  expectedCompletedAt: pendingCodeReview.completedAt,
+                  expectedWorkflowSelection: selection,
+                  /*
+                  FNXC:StaleReviewCallbackWaiver 2026-10-01-04:24:
+                  This closure runs after the advisory-locked reread. Revalidate every mutable
+                  candidate fact, especially the review lease, so a callback renewed between the
+                  sweep read and receipt transaction remains owned and untouched.
+                  */
+                  canIssue: (current) => {
+                    const currentCandidate = [...(current.workflowStepResults ?? [])].reverse().find(
+                      (result) => result.workflowStepId === pendingCodeReview.workflowStepId,
+                    );
+                    const currentStartedAt = Date.parse(currentCandidate?.startedAt ?? "");
+                    return current.column === fresh.column
+                      && gate.reviewColumns.has(current.column)
+                      && JSON.stringify(current.enabledWorkflowSteps ?? []) === JSON.stringify(fresh.enabledWorkflowSteps ?? [])
+                      && JSON.stringify(current.repositoryScope ?? null) === JSON.stringify(fresh.repositoryScope ?? null)
+                      && currentCandidate?.status === pendingCodeReview.status
+                      && currentCandidate.startedAt === pendingCodeReview.startedAt
+                      && currentCandidate.completedAt === pendingCodeReview.completedAt
+                      && currentCandidate.reviewKind === "code"
+                      && (currentCandidate.phase ?? "pre-merge") === "pre-merge"
+                      && !current.workflowStepResults?.some((result) => result.findings?.some(
+                        (finding) => finding.resolution === undefined || finding.resolution === "open",
+                      ))
+                      && Number.isFinite(currentStartedAt)
+                      && Date.now() - currentStartedAt >= PLAN_REVIEW_LEASE_STALENESS_MS
+                      && !hasLiveReviewLease(currentCandidate)
+                      && !current.paused
+                      && !current.userPaused
+                      && current.workspaceWorktrees === undefined
+                      && allowsAutoMergeProcessing(current, settings)
+                      && resolveEffectiveAutoMerge(current, settings) === true
+                      && !isSessionLive(current.id);
+                  },
+                });
+                if (outcome.applied) {
+                  recovered += 1;
+                  void emitBoundedRunAudit(this.store, {
+                    mutationType: "task:stale-review-callback-waived" as const,
+                    target: fresh.id,
+                    metadata: { taskId: fresh.id, workflowStepId: pendingCodeReview.workflowStepId, receiptIssued: true, actor: "system:stale-review-callback-waiver", reason: "proven-stale-code-review-callback", priorStatus: pendingCodeReview.status, threshold: "15-minutes" },
+                  });
+                  continue;
+                }
+              }
+            }
+          }
           /*
           FNXC:OrphanedPendingSteps 2026-09-07-05:09:
           FN-9270 proved a persistence failure can leave a pending row without any restart. This
@@ -17462,14 +17644,15 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             rather than re-emitting the historical rev-parse warning every maintenance cycle.
             */
             const result = await this.reconcileLandedReviewTask(task.id, { source: "self-healing", requireAutoMergeEligible: true });
-            if (result.outcome === "reconciled") recovered++;
             /*
             FNXC:UnrunPostMergeGateRecovery 2026-09-25-15:35 (RUFU-306): a re-seeded post-merge gate is
             an ACTION taken on the card, not an unproven refusal, and it already carries its own audit
             event. Classifying it as `reconcile-absent-branch-unproven` would make the sweep look like
-            it is failing on cards it actually repaired.
+            it is failing on cards it actually repaired. Upstream FN-9442 counts that same action in the
+            sweep's recovered tally, so the tally and the audit exclusion travel together.
             */
-            else if (result.outcome !== "already-complete" && result.outcome !== "resumed") {
+            if (result.outcome === "reconciled" || result.outcome === "resumed") recovered++;
+            else if (result.outcome !== "already-complete") {
               const reason = result.outcome === "not-landed" ? "not-landed" : result.reason;
               const key = `${task.id}:${reason}`;
               if (!this.absentBranchUnprovenAuditKeys.has(key)) {

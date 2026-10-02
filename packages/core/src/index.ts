@@ -648,6 +648,9 @@ export {
   parseStepHeadings,
   matchStepHeadings,
   parseJsonSteps,
+  /* FNXC:StepDependencyValidation 2026-10-01-15:36 (upstream FN-9435): the engine validates parsed steps through the barrel, so the guard and its error type must be exported from the root barrel, not only from index.gate. */
+  validateStepDependencies,
+  StepDependencyValidationError,
   resolveAuthoredStepHeadingOffset,
   __resetStepParserRegistryForTests,
 } from "./tasks/step-parsers.js";
@@ -1424,6 +1427,7 @@ export {
   MANUAL_RETRY_RESET_COUNTER_KEYS,
   buildAutoPauseClearPatch,
   buildManualRetryResetPatch,
+  buildManualRetryResetPatchIfCurrent,
 } from "./tasks/manual-retry-reset.js";
 export {
   RESTART_STAGE_FENCE_REASON,
@@ -3385,6 +3389,8 @@ export {
   classifyReviewLease,
   makeReviewLeaseRecord,
   isTerminalStepResult,
+  /* FNXC:StaleReviewCallbackWaiver 2026-10-01-15:36 (upstream FN-9429): the attempt identity behind a waiver receipt is derived in ONE place, shared by the store writer and self-healing. */
+  deriveStaleReviewCallbackAttemptId,
   type ReviewLeaseDisposition,
   type RemediationAttemptClaimDisposition,
   type ArbitrationFailureFence,

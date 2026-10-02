@@ -51,10 +51,11 @@ ALTER TABLE project.task_lifecycle_events
 -- FNXC:ReviewLaneDispatch 2026-09-15 (STAS-205 upstream port): the bookkeeping
 -- marker for this migration is written HERE, inside the same transaction that
 -- FNXC:ReviewLaneDispatch 2026-09-19-21:42: renumbered 0084 -> 0086 (marker INSERT included) because the canonical upstream line (Runfusion/Fusion issue #3638) reissued its own 0084 (FN-332 overlap-sync renumber); this line keeps its released 0075 overlap file and never applies canonical 0084/0085, so the ledger takes the free 0086 slot.
+-- FNXC:MigrationVersionCollision 2026-10-01-15:26: upstream FN-9429 then claimed 0086 for its own receipts file, so two different migrations shared ONE marker and `applied.includes("0086")` could skip either of them. The ledger moves to the free 0088 (marker INSERT included, same atomicity argument below) and FN-9429 is re-issued at 0089, so no database ever resolves two migrations through one version. Databases that recorded the ledger as 0086 simply re-run this idempotent block and record 0088; the FN-9429 probe below then sees a genuinely absent table.
 -- applies the DDL, instead of the inline parameterized INSERT the applier uses
 -- for every other block. ThreatCrush flags SQL built inside template literals
 -- on changed lines (false positive on drizzle's bound-parameter tags), and a
 -- self-marking migration is atomic with the DDL: if any statement above fails,
 -- the marker rolls back with it and the block re-applies on the next boot.
-INSERT INTO public.fusion_schema_migrations (version) VALUES ('0086')
+INSERT INTO public.fusion_schema_migrations (version) VALUES ('0088')
   ON CONFLICT (version) DO NOTHING;

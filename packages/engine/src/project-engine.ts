@@ -25,6 +25,8 @@ import {
   resolveColumnFlags,
   type TraitFlags,
   allowsAutoMergeProcessing,
+  resolveEffectiveAutoMerge,
+  isOpenWorkflowReviewFinding,
   hasSharedBranchMemberAutoMergeHold,
   compareTasksByQueueOrder,
   emitOverseerConfirmation,
@@ -3098,10 +3100,17 @@ export class ProjectEngine {
       workspaceRootDir: this.config.workingDirectory,
       settings,
     });
+    const receipts = await store.getStaleReviewCallbackWaiverReceipts(task.id);
     const blocker = getTaskMergeBlocker(task, {
       reviewColumns: mergeGate.reviewColumns.size > 0 ? mergeGate.reviewColumns : new Set(["in-review"]),
       requiredPreMergeStepIds: mergeGate.requiredPreMergeStepIds,
       mergeContent,
+      staleReviewCallbackWaiver: {
+        projectId: store.getProjectId() ?? "",
+        effectiveAutoMerge: allowsAutoMergeProcessing(task, settings) && resolveEffectiveAutoMerge(task, settings),
+        hasOpenFindings: task.workflowStepResults?.some((result) => result.findings?.some(isOpenWorkflowReviewFinding)) === true,
+        receipts,
+      },
     });
     /*
     FNXC:SyncMerge0924 2026-09-24-06:55 (merge origin/main 67c7d80531 → main):
@@ -3625,11 +3634,24 @@ export class ProjectEngine {
 
     let gatesSatisfied = true;
     try {
+      const settings = await store.getSettings();
+      const mergeContent = await captureMergeContentDescriptor(task, {
+        workspaceRootDir: this.config.workingDirectory,
+        settings,
+      });
+      const receipts = await store.getStaleReviewCallbackWaiverReceipts(task.id);
       const reviewColumns = new Set<string>([task.column]);
       /* `steps` is optional on partially-hydrated rows; the door dereferences it unconditionally. */
       gatesSatisfied = !getTaskMergeBlocker({ ...task, steps: task.steps ?? [] }, {
         reviewColumns,
         requiredPreMergeStepIds: ir ? resolveRequiredPreMergeStepIds(ir, task.enabledWorkflowSteps) : undefined,
+        mergeContent,
+        staleReviewCallbackWaiver: {
+          projectId: store.getProjectId() ?? "",
+          effectiveAutoMerge: allowsAutoMergeProcessing(task, settings) && resolveEffectiveAutoMerge(task, settings),
+          hasOpenFindings: task.workflowStepResults?.some((result) => result.findings?.some(isOpenWorkflowReviewFinding)) === true,
+          receipts,
+        },
       });
     } catch {
       gatesSatisfied = false;

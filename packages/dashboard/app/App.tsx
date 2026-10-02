@@ -262,7 +262,11 @@ export function useMobileBarKeyboardState({
   overlayOpen: boolean;
 }) {
   const keyboardMetrics = useMobileKeyboard({ enabled: isMobile, allowNonMobileViewport: isMobile });
-  const keyboardFocusPending = useKeyboardFocusPending(isMobile) || false;
+  /*
+  FNXC:ViewportChrome 2026-10-01-15:15:
+  Upstream FN-9444 hands the measured keyboard-open verdict to the focus-pending flag so iOS focus retained after dismissal cannot keep chrome hidden. FN-512's richer return value stays the single keyboard source, so the verdict is read off `keyboardMetrics` rather than a second destructure.
+  */
+  const keyboardFocusPending = useKeyboardFocusPending(isMobile, keyboardMetrics.keyboardOpen) || false;
   const navigationViewport = keyboardMetrics.navigationViewport ?? {
     active: keyboardMetrics.keyboardOpen,
     keyboardOverlap: keyboardMetrics.keyboardOverlap,

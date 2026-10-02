@@ -58,8 +58,12 @@ export function computeMobileBarKeyboardFlags({
   footerHidden to the unsettled nav trigger so both bars release space together; this line keeps the
   footer on the immediate focus signal because a rendered footer must not inherit the visual-viewport
   dismissal tail (see formulas below). */
+  /*
+  FNXC:MobilePillKeyboard 2026-10-01-15:15:
+  The footer must release its space on the SAME immediate focus signal as its reservation, so `footerHidden` keeps `keyboardFocusPending` and deliberately excludes `navigationViewportActive`: a rendered footer must not inherit the visual-viewport dismissal tail. FN-374 narrowed `footerHidden` to `keyboardOpen` alone, which left the footer and its reserved padding visible through the whole focus transition while `footerKeyboardOpen` already claimed the space — the red `collapses the footer as soon as mobile keyboard focus is pending` case. Upstream FN-9444 makes that pending flag expire after one focus transition, so honouring it can no longer keep chrome hidden on a stale focus sample.
+  */
   const boardLayoutSuppressed = anyModalOpen || overlayOpen;
-  const footerHidden = isMobile && keyboardOpen && !boardLayoutSuppressed;
+  const footerHidden = isMobile && (keyboardOpen || keyboardFocusPending) && !boardLayoutSuppressed;
   const navKeyboardOpen = isMobile && (keyboardOpen || keyboardFocusPending || navigationViewportActive);
   const footerKeyboardOpen = isMobile && (keyboardOpen || keyboardFocusPending);
 

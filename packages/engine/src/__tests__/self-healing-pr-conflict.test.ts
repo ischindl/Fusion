@@ -5,6 +5,7 @@ import { SelfHealingManager } from "../self-healing.js";
 import { AutoRecoveryDispatcher } from "../healing/auto-recovery.js";
 import * as branchConflicts from "../execution/branch-conflicts.js";
 import * as worktreePool from "../worktree/worktree-pool.js";
+import * as gitEvidence from "../self-healing-git-evidence.js";
 import { activeSessionRegistry } from "../agents/active-session-registry.js";
 import { withBranchWriteProvenance } from "./branch-write-provenance-store-stub.js";
 
@@ -52,6 +53,19 @@ function makeStore(
       return [];
     }),
     updateTask: vi.fn(withBranchWriteProvenance(async (_id: string, updates: Partial<Task>) => (task ? Object.assign(task, updates) : null))),
+    /*
+    FNXC:BranchConflictRecoveryFence 2026-10-01-08:15 (upstream FN-9423/FN-9437 port):
+    The branch-conflict pause and the fully-subsumed clear now write through the atomic fence, so the
+    harness must model the store's real contract: the updater re-sees the LIVE row and a returned
+    `null` writes nothing. Handing the same object back is the honest baseline (nothing overtook the
+    sweep); a case that needs a divergent live row overrides this mock.
+    */
+    updateTaskAtomic: vi.fn(async (_id: string, updater: (live: Task) => Partial<Task> | null) => {
+      if (!task) return null;
+      const patch = updater(task);
+      if (patch) Object.assign(task, patch);
+      return task;
+    }),
     moveTask: vi.fn(async (_id: string, column: Task["column"]) => {
       if (!task) return null;
       task.column = column;
@@ -163,6 +177,32 @@ describe("SelfHealingManager.reclaimPrConflictForTask", () => {
   });
 
   /*
+  FNXC:BranchConflictRecoveryFence 2026-10-01-08:15 (upstream FN-9423 port):
+  A reclaim removes the checkout first, so the durable clear can land on a row a scheduler update
+  already moved. The fence must then write NOTHING and say so on the card, rather than restoring the
+  generation the sweep inspected — the newer checkout pointer and pause state belong to that writer.
+  */
+  it("does not clear a newer scheduler checkout after fully-subsumed cleanup", async () => {
+    const task = makeTask({ branch: "fusion/fn-4763", paused: true, pausedReason: "branch-conflict-unrecoverable" as any, status: "failed" as any });
+    const store = makeStore(task);
+    vi.spyOn(branchConflicts, "inspectBranchConflict").mockResolvedValue({ kind: "fully-subsumed", livePath: task.worktree, tipSha: "abc123", taskAttributedCommitCount: 0, strandedCommits: [] } as any);
+    (store as any).updateTaskAtomic.mockImplementationOnce(async (_id: string, updater: (live: Task) => Partial<Task> | null) => {
+      const patch = await updater({ ...task, worktree: "/tmp/newer-checkout", paused: false, pausedReason: undefined, status: undefined });
+      expect(patch).toBeNull();
+      return task;
+    });
+    vi.spyOn(worktreePool, "removeWorktree").mockResolvedValue(undefined as never);
+    // The reclaim runs `git worktree prune` + `git branch -D` between the removal and the fenced
+    // durable clear; stub the shell so the case reaches the fence instead of the git-failure defer.
+    vi.spyOn(gitEvidence, "execAsync").mockResolvedValue({ stdout: "", stderr: "" } as any);
+    const manager = new SelfHealingManager(store as any, { rootDir: "/tmp/test" } as any);
+
+    expect(await manager.reclaimPrConflictForTask(task.id)).toEqual({ outcome: "skipped", reason: "superseded" });
+    expect(task.worktree).toBe("/tmp/test/.worktrees/fn-4763");
+    expect(store.logEntry).toHaveBeenCalledWith(task.id, expect.stringContaining("retained a newer task lifecycle update"));
+  });
+
+  /*
   FNXC:WorkflowResolvedColumns 2026-07-31-23:20:
   `prConflictWipColumns` builds the worktree-owner index behind `ownedByOtherInProgressTask` — the
   guard that stops this sweep DELETING a worktree another live task is executing in. Keyed on the id
@@ -248,7 +288,15 @@ describe("SelfHealingManager.reclaimPrConflictForTask", () => {
     const manager = new SelfHealingManager(store as any, { rootDir: "/tmp/test" } as any);
     const result = await manager.reclaimPrConflictForTask(task.id);
     expect(result.outcome).toBe("paused-unrecoverable");
-    expect((store.updateTask as any).mock.calls.some((c: any[]) => c[1]?.pausedReason === "branch-conflict-unrecoverable")).toBe(true);
+    /*
+    FNXC:BranchConflictRecoveryFence 2026-10-01-08:15 (upstream FN-9423 port):
+    The pause is no longer written through `updateTask`; it is authored inside the atomic fence, so
+    the old call-site assertion pinned a writer that no longer exists. The durable outcome is the
+    contract: the card ends paused with the branch-conflict reason, and the fence is what wrote it.
+    */
+    expect(task.paused).toBe(true);
+    expect(task.pausedReason).toBe("branch-conflict-unrecoverable");
+    expect((store as any).updateTaskAtomic).toHaveBeenCalled();
   });
 
   it("skips worktrunk operation failed paused tasks", async () => {

@@ -147,7 +147,7 @@ import { addTaskCommentImpl, applyBuiltInPromptOverridesAsyncImpl, applyBuiltInP
 import { getTaskSelectClauseImpl2, createTaskPersistSerializationContextImpl, getTaskPersistValuesImpl, getTaskPatchDescriptorsImpl, normalizeTaskFromDiskImpl, writeTaskJsonFileImpl, rowToPrEntityImpl, generatePrEntityIdImpl, readTaskForMoveImpl, rowToMergeQueueEntryImpl, rowToMergeRequestRecordImpl, rowToCompletionHandoffMarkerImpl, rowToWorkflowWorkItemImpl, rowToRunAuditEventImpl } from "./task-store/task-row-mappers.js";
 /* FNXC:HumanMergeApproval 2026-09-17-18:09: FN-514 delivery-lock mutations live in their own advisory-locked module. */
 import { recordHumanMergeDecisionImpl, setHumanMergeApprovalLockImpl, updateHumanMergeDecisionReceiptImpl, updateHumanMergeRejectionStateImpl } from "./task-store/human-merge-approval-ops.js";
-import { getTaskSelectClauseWithActivityLogLimitImpl, getChangedTaskColumnsImpl, getSoftDeletedWriteConflictImpl, readTaskJsonImpl, writeConfigImpl, _resolveSameAgentDuplicateIntakeBackendImpl, updateBranchGroupImpl, updatePrEntityImpl, listTasksForGithubTrackingReconcileImpl, listTasksForGitlabTrackingReconcileImpl, renewCheckoutLeaseImpl, updateTaskAtomicImpl, applyInReviewStallObservationFencedImpl, updateWorkflowStepResultsFencedImpl, updateWorkflowStepResultsWithLogFencedImpl, publishReviewRemediationFencedImpl, linkTaskRecommendationImpl, normalizeWorkspaceTaskWorktreeMetadataImpl, mergeWorkspaceWorktreeEntryImpl, updateTaskRepositoryScopeImpl, updateWorkspaceReviewStateImpl, publishWorkspaceCodeReviewEvidenceImpl, resolveTaskWedgeNotificationEpisodeImpl, getWorkflowPromptOverridesImpl, updateWorkflowSettingValuesImpl, rollbackConfigurationImpl, cancelActiveWorkflowWorkItemsForTaskImpl, setCompletionHandoffAcceptedMarkerImpl, reconcileLegacyAutoMergeStampsImpl, recoverExpiredMergeQueueLeasesImpl, rewriteDependentsForRemovalImpl, cleanupBranchForTaskImpl, addAttachmentImpl, deleteAttachmentImpl, registerArtifactImpl, updatePrInfoImpl, unlinkGithubIssueImpl, generatePromptFromArchiveEntryImpl, listWorkflowOccupantTaskIdsImpl, listApprovedCliAutonomyAdaptersImpl, closeImpl, getActivityLogImpl } from "./task-store/task-mutation-ops.js";
+import { getTaskSelectClauseWithActivityLogLimitImpl, getChangedTaskColumnsImpl, getSoftDeletedWriteConflictImpl, readTaskJsonImpl, writeConfigImpl, _resolveSameAgentDuplicateIntakeBackendImpl, updateBranchGroupImpl, updatePrEntityImpl, listTasksForGithubTrackingReconcileImpl, listTasksForGitlabTrackingReconcileImpl, renewCheckoutLeaseImpl, updateTaskAtomicImpl, applyInReviewStallObservationFencedImpl, updateWorkflowStepResultsFencedImpl, updateWorkflowStepResultsWithLogFencedImpl, issueStaleReviewCallbackWaiverImpl, publishReviewRemediationFencedImpl, linkTaskRecommendationImpl, normalizeWorkspaceTaskWorktreeMetadataImpl, mergeWorkspaceWorktreeEntryImpl, updateTaskRepositoryScopeImpl, updateWorkspaceReviewStateImpl, publishWorkspaceCodeReviewEvidenceImpl, resolveTaskWedgeNotificationEpisodeImpl, getWorkflowPromptOverridesImpl, updateWorkflowSettingValuesImpl, rollbackConfigurationImpl, cancelActiveWorkflowWorkItemsForTaskImpl, setCompletionHandoffAcceptedMarkerImpl, reconcileLegacyAutoMergeStampsImpl, recoverExpiredMergeQueueLeasesImpl, rewriteDependentsForRemovalImpl, cleanupBranchForTaskImpl, addAttachmentImpl, deleteAttachmentImpl, registerArtifactImpl, updatePrInfoImpl, unlinkGithubIssueImpl, generatePromptFromArchiveEntryImpl, listWorkflowOccupantTaskIdsImpl, listApprovedCliAutonomyAdaptersImpl, closeImpl, getActivityLogImpl } from "./task-store/task-mutation-ops.js";
 import { getOrCreateForProjectImpl, listGoalCitationsImpl, atomicWriteTaskJsonWithAuditImpl, type PlanningDependencyInvalidation, type TaskAtomicPersistFence, duplicateTaskImpl, listStrandedRefinementsImpl, tryClaimCheckoutImpl, evaluateWorkflowMovePoliciesImpl, recordRunAuditEventImpl, getRunAuditEventsImpl, dequeueMergeQueueOnColumnExitImpl, updateIssueInfoImpl, listWorkflowStepsImpl, getWorkflowStepImpl, createWorkflowDefinitionImpl, countActiveInCapacitySlotSyncImpl, countActiveInCapacitySlotAsyncImpl, generateSpecifiedPromptImpl, recordActivityImpl, getEvalStoreImpl } from "./task-store/project-store-ops.js";
 import { markLegacyAutoMergeStampsOnceImpl, appendAgentLogImpl, importLegacyAgentLogsImpl, cleanupNoOpTaskMovedActivityRowsOnceImpl, backfillCommitAssociationDiffStatsImpl } from "./task-store/workflow-integrity.js";
 import { saveWorkflowRunBranchImpl, clearNearDuplicateReferencesToImpl, selectNextTaskForAgentImpl, pauseTaskImpl, clearLinkedAgentTaskIdsImpl, listArtifactsImpl, rehomeOccupantImpl, type RehomeOccupantResult } from "./task-store/branch-group-ops.js";
@@ -2586,6 +2586,28 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   ): Promise<import("./task-store/task-mutation-ops.js").WorkflowStepResultsFencedUpdateResult> {
     return updateWorkflowStepResultsWithLogFencedImpl(this, id, compute);
   }
+  /*
+  FNXC:StaleReviewCallbackWaiver 2026-10-01-15:34 (upstream FN-9429):
+  The receipt is the STORE's attestation, not the caller's claim — a waiver that only lived in the
+  step-result row could be replayed by any writer, so reading and issuing it stay behind the store
+  seam and this store's project partition.
+  */
+  /** Reads only receipt rows in this store's project partition for one task. */
+  async getStaleReviewCallbackWaiverReceipts(id: string): Promise<import("./merge/pre-merge-approval.js").StaleReviewCallbackWaiverReceipt[]> {
+    if (!this.asyncLayer) return [];
+    const rows = await this.asyncLayer.db.select().from(schema.project.staleReviewCallbackWaiverReceipts).where(and(
+      projectScopeFor(schema.project.staleReviewCallbackWaiverReceipts.projectId, this.asyncLayer.projectId),
+      eq(schema.project.staleReviewCallbackWaiverReceipts.taskId, id),
+    ));
+    return rows.map((row) => ({ id: row.id, projectId: row.projectId, taskId: row.taskId, workflowStepId: row.workflowStepId, attemptId: row.attemptId, policyVersion: row.policyVersion as "fn-9429-v1", actor: row.actor as "system:stale-review-callback-waiver", reason: row.reason as "proven-stale-code-review-callback", issuedAt: row.issuedAt, state: row.state as "issued" | "revoked" }));
+  }
+  /** Issues a store-attested stale-callback waiver and replaces only its exact current attempt. */
+  async issueStaleReviewCallbackWaiver(
+    id: string,
+    issue: import("./task-store/task-mutation-ops.js").StaleReviewCallbackWaiverIssue,
+  ): Promise<import("./task-store/task-mutation-ops.js").StaleReviewCallbackWaiverIssueResult> {
+    return issueStaleReviewCallbackWaiverImpl(this, id, issue);
+  }
   /** Dismisses one active AI merge finding with an operator-provided audit reason. */
   async dismissAiMergeReviewFinding(taskId: string, findingId: string, reason: string, actor = "operator"): Promise<Task> {
     const trimmed = reason.trim();
@@ -2738,7 +2760,14 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   public async updateTaskUnlocked( id: string, updates: Parameters<TaskStore["updateTask"]>[1], runContext?: RunMutationContext, shouldPersist?: () => boolean, persistFence?: TaskAtomicPersistFence, ): Promise<Task> {
     return updateTaskUnlockedImpl(this, id, updates, runContext, shouldPersist, persistFence);
   }
-  async pauseTask( id: string, paused: boolean, runContext?: RunMutationContext, agentOptions?: { pausedByAgentId?: string; pausedReason?: string; userPaused?: boolean }, ): Promise<Task> {
+  /*
+   * FNXC:BranchConflictRecoveryFence 2026-10-01-08:15 (upstream):
+   * `expectedUpdatedAt` is the unpause fence — see pauseTaskImpl. It stays on this signature so
+   * every surface reaching unpause through the barrel (dashboard route, CLI, extension tool) can
+   * hand over the snapshot it displayed; a dropped option here would silently disable the fence
+   * for callers the impl cannot see.
+   */
+  async pauseTask( id: string, paused: boolean, runContext?: RunMutationContext, agentOptions?: { pausedByAgentId?: string; pausedReason?: string; userPaused?: boolean; expectedUpdatedAt?: string }, ): Promise<Task> {
     return pauseTaskImpl(this, id, paused, runContext, agentOptions);
   }
 

@@ -570,6 +570,8 @@ export {
   parseStepHeadings,
   matchStepHeadings,
   parseJsonSteps,
+  validateStepDependencies,
+  StepDependencyValidationError,
   resolveAuthoredStepHeadingOffset,
   __resetStepParserRegistryForTests,
 } from "./tasks/step-parsers.js";
@@ -579,6 +581,8 @@ export type {
   StepParseResult,
   ParsedStep,
   StepParserRegistrationReason,
+  StepDependencyCoordinate,
+  StepDependencyValidationReason,
 } from "./tasks/step-parsers.js";
 export {
   registerDefaultWorkflowHooks,
@@ -2813,6 +2817,7 @@ Keep this gate-safe barrel's workflow-step-results re-exports in SYNC with the m
 export {
   WORKFLOW_STEP_NOT_RUN_REASONS,
   isWorkflowStepNotRun,
+  deriveStaleReviewCallbackAttemptId,
   type WorkflowStepNotRunReason,
   upsertWorkflowStepResult,
   normalizeWorkflowReviewFindings,

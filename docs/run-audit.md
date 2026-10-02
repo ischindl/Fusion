@@ -62,6 +62,7 @@ Reconciliation-scoped auto-recover/reclaim events the self-healing sweep surface
 | `task:auto-archive-failure-budget-exhausted` | Historical event retained for reading pre-removal logs; current self-healing does not archive tasks. |
 | `task:reclaim-phantom-executor-binding` | Self-healing proves an in-memory executor-active binding is stale and requeues the task. |
 | `task:reconcile-orphaned-pending-step-results` | Self-healing rewrites orphaned `pending` workflow-step results (no live session) to `failed`. |
+| `task:stale-review-callback-waived` | Self-healing records a receipt-backed waiver for an eligible stale code-review callback. Metadata is ids, receipt presence, fixed actor/reason, prior status, and threshold category only; reviewer output, findings, lease owners, paths, and errors never enter run-audit, and an absent, throwing, or hanging sink cannot change the durable waiver. |
 | `task:reconcile-unproven-review-approval` | Self-healing rewrites singular content-review approvals without input proof to recoverable `failed` results. |
 | `task:reconcile-stale-duplicate-decision` | Self-healing clears a recurring duplicate-decision pause with no canonical target. |
 | `task:reconcile-orphaned-non-convergence-hold` | Self-healing clears a drifted `code-review-non-convergence` approval hold whose failed-review evidence no longer exists, in place and without a lifecycle move. |

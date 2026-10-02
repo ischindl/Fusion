@@ -112,29 +112,107 @@ counterparts (`<remote>/<branch>`), discovered from `git remote show`.
 */
 
 /**
+ * How long a resolved trusted-ref set may be reused. A merge/review sweep spends seconds re-deriving the
+ * same answer; a remote topology change is an operator event, so the trade is "at most this stale", which
+ * is also the only bound that survives a `git remote` edit with no invalidation hook to hang on.
+ */
+export const TRUSTED_INTEGRATION_REFS_TTL_MS = 15_000;
+const TRUSTED_INTEGRATION_REFS_MAX = 64;
+
+/* Keys are (repoDir, integrationRef) pairs — one entry per repository and base branch in play. */
+// retention-allowlist: bounded by TRUSTED_INTEGRATION_REFS_MAX with a TRUSTED_INTEGRATION_REFS_TTL_MS expiry;
+// the value is a short ref-name array, never task content.
+const trustedIntegrationRefsMemo = new Map<string, { refs: string[]; expiresAt: number }>();
+let trustedIntegrationRefsGitCalls = 0;
+
+async function trustedRefsGit(repoDir: string, command: string): Promise<string> {
+  trustedIntegrationRefsGitCalls++;
+  return runGit(repoDir, command);
+}
+
+function trustedRefsKey(repoDir: string, integrationRef: string): string {
+  return `${repoDir}\u0000${integrationRef}`;
+}
+
+/* Test-only seam: counts the GIT SUBPROCESSES this resolution spent, so both halves of the fix are
+assertable — one listing per cold resolution (not one `rev-parse` per remote) and zero on a warm memo. */
+export function __trustedIntegrationRefsGitCalls(): number {
+  return trustedIntegrationRefsGitCalls;
+}
+
+export function __resetTrustedIntegrationRefsForTests(): void {
+  trustedIntegrationRefsMemo.clear();
+  trustedIntegrationRefsGitCalls = 0;
+}
+
+/*
+FNXC:BranchBaseIdentity 2026-10-01-23:50 (RUFU-481):
+This function was the largest git generator in the running dashboard: 13% of all process CPU in a CPU
+profile taken while a single 100-card board page was loading. Each call ran `git remote` and then ONE
+`git rev-parse` subprocess per configured remote — six remotes in the production checkout, so ~7
+subprocesses per call — and it has six production call sites, one of them inside the CheckoutEmptinessProver
+sweep that runs per entry. On a single event loop that also serves the UI, a 0.11 s SQL read was waiting
+behind this and took ~11 s.
+
+Two changes, both invisible to the verdicts:
+  - ONE `git for-each-ref refs/remotes` subprocess replaces the per-remote `rev-parse` loop. Existence of
+    `<remote>/<integrationRef>` IS what a remote-tracking ref's presence means, so the loop was asking git
+    N times for one listing. (Batching `rev-parse --verify --quiet refA refB` is NOT that: git prints
+    nothing when any argument is invalid, which would silently drop every trusted ref after the first miss.)
+  - The result is memoised for TRUSTED_INTEGRATION_REFS_TTL_MS per (repoDir, integrationRef), so the rest of
+    a sweep pays zero subprocesses.
+
+The configured-remote intersection is deliberately kept rather than trusting every listing entry:
+RUFU-231 was a wedge caused by a MIS-trusted integration identity, so this function may only ever trust an
+identity that is both a configured remote and present locally. Local-first ordering is unchanged, so
+existing landed verdicts stay byte-identical.
+*/
+async function probeTrustedIntegrationRefs(repoDir: string, integrationRef: string): Promise<string[]> {
+  const refs = [integrationRef];
+  let remotes: string[] = [];
+  let listing: string[] = [];
+  try {
+    remotes = (await trustedRefsGit(repoDir, "git remote")).split("\n").map((line) => line.trim()).filter(Boolean);
+    listing = (await trustedRefsGit(repoDir, "git for-each-ref --format='%(refname:strip=2)' refs/remotes"))
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+  } catch {
+    return refs;
+  }
+  const remoteNames = new Set(remotes);
+  for (const name of listing) {
+    // `<remote>/<integrationRef>`: the remote is the FIRST path segment, the rest must match exactly.
+    // A plain endsWith(`/${integrationRef}`) would also trust `fork/layer/main` as a counterpart of `main`.
+    const separator = name.indexOf("/");
+    if (separator === -1) continue;
+    if (!remoteNames.has(name.slice(0, separator))) continue;
+    if (name.slice(separator + 1) !== integrationRef) continue;
+    if (!refs.includes(name)) refs.push(name);
+  }
+  return refs;
+}
+
+/**
  * Resolve the ordered set of integration identities a task branch's landed state may be proven
  * against: the local integration branch first, then each `<remote>/<integrationBranch>` that
  * exists locally. Local-first keeps existing verdicts byte-identical; the remote-tracking
  * entries are the additional trusted identity for a branch that was rebased onto it.
  */
 export async function resolveTrustedIntegrationRefs(repoDir: string, integrationRef: string): Promise<string[]> {
-  const refs = [integrationRef];
-  let remotes: string[] = [];
-  try {
-    const output = await runGit(repoDir, "git remote");
-    remotes = output.split("\n").map((line) => line.trim()).filter(Boolean);
-  } catch {
-    return refs;
+  const key = trustedRefsKey(repoDir, integrationRef);
+  const now = Date.now();
+  const cached = trustedIntegrationRefsMemo.get(key);
+  if (cached) {
+    if (cached.expiresAt > now) return cached.refs;
+    trustedIntegrationRefsMemo.delete(key);
   }
-  for (const remote of remotes) {
-    const remoteRef = `${remote}/${integrationRef}`;
-    try {
-      await revParse(repoDir, remoteRef);
-    } catch {
-      continue;
-    }
-    if (!refs.includes(remoteRef)) refs.push(remoteRef);
+  const refs = await probeTrustedIntegrationRefs(repoDir, integrationRef);
+  if (trustedIntegrationRefsMemo.size >= TRUSTED_INTEGRATION_REFS_MAX) {
+    const oldest = trustedIntegrationRefsMemo.keys().next().value;
+    if (oldest !== undefined) trustedIntegrationRefsMemo.delete(oldest);
   }
+  trustedIntegrationRefsMemo.set(key, { refs, expiresAt: now + TRUSTED_INTEGRATION_REFS_TTL_MS });
   return refs;
 }
 
@@ -1151,8 +1229,6 @@ async function isZeroUniqueCommitBranchViaPatchIdFallback(
 export async function inspectBareBranchCollision(
   input: InspectBranchConflictInput,
 ): Promise<BareBranchCollisionInspectionResult> {
-  const startPoint = input.startPoint ?? "HEAD";
-
   try {
     await runGit(input.repoDir, "git worktree prune");
   } catch {
@@ -1178,9 +1254,13 @@ export async function inspectBareBranchCollision(
   }
 
   const tipSha = await revParse(input.repoDir, input.branchName);
-  const uniqueCommitResult = await listUniqueBranchCommits(input.repoDir, startPoint, input.branchName);
   const requestedIntegrationRef = input.integrationRef ?? await resolveIntegrationBranch(input.repoDir, undefined);
   const integrationRef = await resolveBranchComparisonRef(input.repoDir, requestedIntegrationRef, input.branchName);
+  // FNXC:BranchConflictReachability 2026-10-01-05:33:
+  // FN-9434 requires destructive recovery to compare against the live integration
+  // branch. A task's recorded start point can predate commits already incorporated
+  // upstream and must never make those inherited commits appear stranded.
+  const uniqueCommitResult = await listUniqueBranchCommits(input.repoDir, integrationRef, input.branchName);
 
   if (livePath && existsSync(livePath)) {
     return {
@@ -1218,7 +1298,7 @@ export async function inspectBareBranchCollision(
   const zeroUnique = uniqueCommitResult.commits.length === 0 && (
     !uniqueCommitResult.degraded || await isZeroUniqueCommitBranchViaPatchIdFallback(
       input.repoDir,
-      startPoint,
+      integrationRef,
       input.branchName,
       uniqueCommitResult.mainRef,
       trustedRefs,
@@ -1293,7 +1373,6 @@ export async function taskWorktreeCheckoutIsClean(worktreePath: string): Promise
 export async function inspectBranchConflict(
   input: InspectBranchConflictInput,
 ): Promise<BranchConflictInspectionResult> {
-  const startPoint = input.startPoint ?? "HEAD";
   if (!existsSync(input.conflictingWorktreePath)) {
     return { kind: "stale" };
   }
@@ -1353,10 +1432,14 @@ export async function inspectBranchConflict(
     }
   }
 
-  const uniqueCommitResult = await listUniqueBranchCommits(input.repoDir, startPoint, input.branchName);
+  // FNXC:BranchConflictReachability 2026-10-01-05:33:
+  // Branch ownership and stranded diagnostics must use the same current-base range.
+  // Mixing a persisted task base with live reachability could label inherited work as
+  // task-owned and permit the wrong destructive recovery decision.
+  const uniqueCommitResult = await listUniqueBranchCommits(input.repoDir, integrationRef, input.branchName);
   const attribution = await summarizeTaskAttributedCommits(
     input.repoDir,
-    `${startPoint}..${input.branchName}`,
+    `${integrationRef}..${input.branchName}`,
     input.requestingTaskId,
   );
   const taskAttributedCommitCount = attribution.ownCount;
@@ -1372,7 +1455,7 @@ export async function inspectBranchConflict(
   if (uniqueCommitResult.degraded && uniqueCommitResult.commits.length === 0) {
     const isZeroUnique = await isZeroUniqueCommitBranchViaPatchIdFallback(
       input.repoDir,
-      startPoint,
+      integrationRef,
       input.branchName,
       uniqueCommitResult.mainRef,
       trustedRefs,

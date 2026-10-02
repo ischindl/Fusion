@@ -63,6 +63,7 @@ import {
   runDeterministicDuplicateGuard,
   buildAutoPauseClearPatch,
   buildManualRetryResetPatch,
+  buildManualRetryResetPatchIfCurrent,
   reconcileDeterministicDuplicate,
   extractIntentSignature,
   findNearDuplicates,
@@ -1672,25 +1673,51 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       // literal `true`. `buildBoardWorkflowsPayload` still emits `flagEnabled: true`
       // for shipped clients that branch on it.
       const settings = await scopedStore.getSettingsFast();
-      // Mirror the board's bounded data shape: all current work plus only the newest Done page.
-      let completeColumns: string[];
-      try {
-        completeColumns = [...await resolveProjectColumnsForRoles(scopedStore, ["complete"])];
-      } catch {
-        completeColumns = ["done"];
-      }
       const requestedTaskIds = typeof req.query.taskIds === "string"
         ? req.query.taskIds.split(",").map((id) => id.trim()).filter(Boolean).slice(0, 2_000)
         : [];
-      const [currentTasks, completedPage] = await Promise.all([
-        scopedStore.listTasks({ slim: true, includeArchived: false, excludeColumns: completeColumns }),
-        scopedStore.listCompletedTasks({ limit: 50, slim: true }),
-      ]);
-      const taskIds = [...new Set([
-        ...currentTasks.map((task) => task.id),
-        ...completedPage.tasks.map((task) => task.id),
-        ...requestedTaskIds,
-      ])];
+
+      /*
+      FNXC:BoardWorkflows 2026-10-01-21:51:
+      A caller that NAMES the ids it wants is asking for a partial answer, and until now the route gave
+      that answer only after materialising the whole current-task table plus the newest Done page — the
+      same ~9 s one board page costs. Measured on the deployed node: the unparameterized call is 18.6 s,
+      and `?taskIds=` was just as slow, because named ids were UNIONED onto the enumeration instead of
+      replacing it. That is why visible-first loading was unaffordable: the lazy "map these visible cards"
+      refetch paid the unbounded price, so the board kept asking for everything.
+
+      `partial=1` makes a named-id request mean what it says — resolve the mapping for exactly those ids,
+      zero whole-table reads.
+
+      Opt-in on purpose, not a default: `workflows` is documented as the definitions "referenced by the
+      provided tasks", so answering a named-id request without the enumeration SHRINKS the lane set seen
+      by any caller that REPLACES its cached payload with the response. The only existing named-id caller
+      does replace (`useUnmappedWorkflowRefetch` → `refreshBoardWorkflows({ taskIds })`), so it keeps the
+      unbounded path unchanged until the client merges a partial answer instead of replacing. Flipping
+      that caller to partial scope is then a client-side change, not a server-semantics change.
+      */
+      const partialScope = requestedTaskIds.length > 0 && req.query.partial === "1";
+      let taskIds: string[];
+      if (partialScope) {
+        taskIds = [...new Set(requestedTaskIds)];
+      } else {
+        // Mirror the board's bounded data shape: all current work plus only the newest Done page.
+        let completeColumns: string[];
+        try {
+          completeColumns = [...await resolveProjectColumnsForRoles(scopedStore, ["complete"])];
+        } catch {
+          completeColumns = ["done"];
+        }
+        const [currentTasks, completedPage] = await Promise.all([
+          scopedStore.listTasks({ slim: true, includeArchived: false, excludeColumns: completeColumns }),
+          scopedStore.listCompletedTasks({ limit: 50, slim: true }),
+        ]);
+        taskIds = [...new Set([
+          ...currentTasks.map((task) => task.id),
+          ...completedPage.tasks.map((task) => task.id),
+          ...requestedTaskIds,
+        ])];
+      }
       const payload = await buildBoardWorkflowsPayload(scopedStore, taskIds, settings);
       res.json(payload);
     } catch (err: unknown) {
@@ -3963,6 +3990,16 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       const autoPauseClearPatch = buildAutoPauseClearPatch(task);
       const clearedDeadlockAutoPause = Object.keys(autoPauseClearPatch).length > 0;
       const retryLogSuffix = clearedDeadlockAutoPause ? ", cleared deadlock auto-pause" : "";
+      const applyRetryReset = async (patch: Parameters<typeof scopedStore.updateTask>[1]) => {
+        let applied = false;
+        const updated = await scopedStore.updateTaskAtomic(req.params.id, (live) => {
+          const guardedPatch = buildManualRetryResetPatchIfCurrent(live, task, patch);
+          if (guardedPatch) applied = true;
+          return guardedPatch;
+        });
+        if (!applied) throw new Error("Retry was superseded by a newer task lifecycle update");
+        return updated;
+      };
       // FNXC:TaskWedgeNotifications 2026-08-10-20:15: dashboard Retry is explicit operator intervention, so it clears the spent generic-terminal budget.
       await scopedStore.resetTerminalFailureAutoRecoveryBudget(req.params.id);
 
@@ -3974,7 +4011,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         */
         const reboundColumn = await resolveReboundColumnForTask(scopedStore, req.params.id);
         await clearRebuiltSpecWorkflowPins(scopedStore, req.params.id);
-        await scopedStore.updateTask(req.params.id, {
+        await applyRetryReset({
           status: null,
           error: null,
           worktree: null,
@@ -4005,7 +4042,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
           */
           const reboundColumn = await resolveReboundColumnForTask(scopedStore, req.params.id);
           await clearRebuiltSpecWorkflowPins(scopedStore, req.params.id);
-          await scopedStore.updateTask(req.params.id, {
+          await applyRetryReset({
             status: null,
             error: null,
             ...autoPauseClearPatch,
@@ -4022,7 +4059,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
           return;
         }
 
-        await scopedStore.updateTask(req.params.id, {
+        await applyRetryReset({
           status: null,
           error: null,
           ...autoPauseClearPatch,
@@ -4061,7 +4098,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         return;
       }
 
-      await scopedStore.updateTask(req.params.id, {
+      await applyRetryReset({
         status: retrySpecification ? "needs-replan" : null,
         error: null,
         worktree: null,
@@ -5532,8 +5569,10 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
   router.post("/tasks/:id/unpause", async (req, res) => {
     try {
       const { store: scopedStore } = await getProjectContext(req);
-      await scopedStore.getTask(req.params.id);
-      const updated = await scopedStore.pauseTask(req.params.id, false);
+      const snapshot = await scopedStore.getTask(req.params.id);
+      const updated = await scopedStore.pauseTask(req.params.id, false, undefined, {
+        expectedUpdatedAt: snapshot.updatedAt,
+      });
       res.json(updated);
     } catch (err: unknown) {
       if (err instanceof ApiError) {

@@ -3,6 +3,21 @@ import { EventEmitter } from "node:events";
 import type { Settings, Task, TaskStore, WorkflowStepResult } from "@fusion/core";
 
 /*
+FNXC:StaleReviewCallbackWaiver 2026-10-01-06:20 (upstream FN-9429 port):
+The waiver branch of this sweep reads the merge-content descriptor before it may issue a receipt,
+so the module is mocked for the whole file. Every pre-existing FN-8492 case here lacks a review-lane
+gate, an eligible selection, or an auto-merge resolution, so it still falls through to the
+rewrite-to-failed path — the mock cannot turn a historic case into a waiver.
+*/
+const { captureMergeContentDescriptorMock } = vi.hoisted(() => ({
+  captureMergeContentDescriptorMock: vi.fn(async () => ({ kind: "singular", diff: { state: "empty" } })),
+}));
+
+vi.mock("../merge/merge-content-capture.js", () => ({
+  captureMergeContentDescriptor: captureMergeContentDescriptorMock,
+}));
+
+/*
 FNXC:OrphanedPendingSteps 2026-08-22-14:19 (RUFU-151):
 Audit assertions target the CURRENT emit path (createRunAuditor → emitBoundedRunAudit →
 store `recordRunAuditEvent`, FN-9175) instead of a module mock. The previous top-level
@@ -128,6 +143,129 @@ describe("FN-8492: reconcile orphaned pending step results", () => {
       target: "FN-1",
       domain: "database",
       metadata: expect.objectContaining({ taskId: "FN-1", orphanedCount: 1, resultCount: 2 }),
+    }));
+  });
+
+  /*
+  FNXC:StaleReviewCallbackWaiver 2026-10-01-06:20 (upstream FN-9429 port):
+  A receipt-backed waiver is only ever issued inside the resolved review lane. Outside it, the
+  candidate keeps the historic FN-8492 failed rewrite, because silently waiving a callback the merge
+  door never required would approve work no gate asked for.
+  */
+  it("does not issue a stale-callback waiver outside the resolved custom review lane", async () => {
+    const outsideReviewLane = task("FN-OUTSIDE-REVIEW", {
+      column: "custom-hold",
+      autoMerge: true,
+      workflowStepResults: [stepResult({
+        workflowStepId: "code-review",
+        workflowStepName: "Code Review",
+        status: "pending",
+        reviewKind: "code",
+        startedAt: new Date(Date.now() - 16 * 60_000).toISOString(),
+      })],
+    });
+    const store = storeFor([outsideReviewLane]);
+    const issueStaleReviewCallbackWaiver = vi.fn();
+    Object.assign(store, {
+      getTaskWorkflowSelectionAsync: vi.fn(async () => ({ workflowId: "builtin:coding", stepIds: ["code-review"] })),
+      issueStaleReviewCallbackWaiver,
+    });
+    const manager = new SelfHealingManager(store, { rootDir: "/repo" });
+
+    await manager.reconcileOrphanedPendingStepResults();
+
+    expect(captureMergeContentDescriptorMock).toHaveBeenCalled();
+    expect(issueStaleReviewCallbackWaiver).not.toHaveBeenCalled();
+    expect((await store.getTask("FN-OUTSIDE-REVIEW"))?.workflowStepResults?.[0]?.status).toBe("failed");
+  });
+
+  /*
+  FNXC:StaleReviewCallbackWaiver 2026-10-01-06:20 (upstream FN-9429 port):
+  PostgreSQL receipt coverage proves transaction durability; these manager-path assertions prove the
+  production sweep selects the exact stale attempt and delegates it — instead of failing the row and
+  then reseeding it — for both stale shapes (`pending` and a verdict-less `failed` callback).
+  */
+  it.each(["pending", "failed"] as const)("routes an eligible stale %s code-review callback to one receipt issuance instead of failing or reseeding it", async (status) => {
+    const startedAt = new Date(Date.now() - 16 * 60_000).toISOString();
+    const candidate = task(`FN-WAIVE-${status}`, {
+      autoMerge: true,
+      enabledWorkflowSteps: ["code-review"],
+      workflowStepResults: [stepResult({
+        workflowStepId: "code-review",
+        workflowStepName: "Code Review",
+        phase: "pre-merge",
+        reviewKind: "code",
+        status,
+        startedAt,
+      })],
+    });
+    const store = storeFor([candidate]);
+    const issueStaleReviewCallbackWaiver = vi.fn(async (id: string, issue: { workflowStepId: string; attemptId: string }) => {
+      const current = await store.getTask(id);
+      const prior = current!.workflowStepResults![0]!;
+      const issuedAt = new Date().toISOString();
+      const receipt = {
+        id: `receipt-${status}`,
+        projectId: "test-project",
+        taskId: id,
+        workflowStepId: issue.workflowStepId,
+        attemptId: issue.attemptId,
+        policyVersion: "fn-9429-v1" as const,
+        actor: "system:stale-review-callback-waiver" as const,
+        reason: "proven-stale-code-review-callback" as const,
+        issuedAt,
+        state: "issued" as const,
+      };
+      await store.updateTask(id, {
+        workflowStepResults: [{
+          ...prior,
+          status: "skipped",
+          completedAt: issuedAt,
+          priorAttempts: [prior],
+          automatedStaleCallbackWaiver: {
+            receiptId: receipt.id,
+            policyVersion: receipt.policyVersion,
+            actor: receipt.actor,
+            reason: receipt.reason,
+            issuedAt,
+            priorStatus: status,
+            attemptId: issue.attemptId,
+          },
+        }],
+      });
+      return { applied: true as const, task: (await store.getTask(id))!, receipt };
+    });
+    Object.assign(store, {
+      getSettings: vi.fn(async () => ({ globalPause: false, enginePaused: false, autoMerge: true } as Settings)),
+      getTaskWorkflowSelectionAsync: vi.fn(async () => ({ workflowId: "builtin:coding", stepIds: ["code-review"] })),
+      issueStaleReviewCallbackWaiver,
+    });
+    const manager = new SelfHealingManager(store, { rootDir: "/repo" });
+
+    expect(await manager.reconcileOrphanedPendingStepResults()).toBe(1);
+    expect(issueStaleReviewCallbackWaiver).toHaveBeenCalledTimes(1);
+    expect(issueStaleReviewCallbackWaiver).toHaveBeenCalledWith(candidate.id, expect.objectContaining({
+      workflowStepId: "code-review",
+      expectedStatus: status,
+      expectedStartedAt: startedAt,
+    }));
+    // The row is waived (skipped + receipt marker), not rewritten to failed, and the sweep's own
+    // rewrite event is not emitted; the only audit row is the waiver receipt event.
+    const waived = await store.getTask(candidate.id);
+    expect(waived?.workflowStepResults?.[0]?.status).toBe("skipped");
+    expect(waived?.workflowStepResults?.[0]?.automatedStaleCallbackWaiver?.receiptId).toBe(`receipt-${status}`);
+    const audit = auditSink(store);
+    expect(audit).toHaveBeenCalledTimes(1);
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+      mutationType: "task:stale-review-callback-waived",
+      target: candidate.id,
+      metadata: expect.objectContaining({
+        taskId: candidate.id,
+        workflowStepId: "code-review",
+        receiptIssued: true,
+        priorStatus: status,
+        threshold: "15-minutes",
+      }),
     }));
   });
 
