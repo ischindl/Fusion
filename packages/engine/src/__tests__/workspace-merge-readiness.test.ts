@@ -43,4 +43,67 @@ describe("workspace merge readiness", () => {
     expect(resolveWorkspaceMergeReadiness({ ...task, noCommitsExpected: true, workspaceWorktrees: {} }, new Set(), new Set())).toMatchObject({ kind: "blocked" });
     expect(resolveWorkspaceMergeReadiness({ ...task, noCommitsExpected: true, repositoryScope: { state: "confirmed", repositories: [] }, workspaceWorktrees: {} }, new Set(), new Set())).toMatchObject({ kind: "no-op" });
   });
+
+  /*
+  FNXC:WorkspaceFinalization 2026-10-02-19:51 (RUFU-504):
+  The reported shape. A commit-free workspace whose member branches sit exactly on their merge-base has
+  zero files (so no fresh obligation), zero commits ahead (so `netZero` is false, because
+  `workspace-review-evidence.ts` computes `ahead` as a boolean), and no `landedSha`. Readiness used to
+  refuse it as unexplained emptiness, and the card repeated one blocker sentence until the stall
+  classifier parked it. Reproduce the original failure: the same fixture must no longer reach the
+  "no evidenced landing obligations" sentence.
+  */
+  describe("commit-free workspace with acquired repositories", () => {
+    const zeroDiffTask = {
+      id: "SANE-463",
+      noCommitsExpected: true,
+      repositoryScope: { state: "confirmed" as const, repositories: ["lager-manager", "lager-2026"] },
+      workspaceWorktrees: {
+        "lager-manager": { worktreePath: "/saneca/.fusion/worktrees/sane-463/lager-manager", branch: "fusion/sane-463", baseCommitSha: "b".repeat(40) },
+        "lager-2026": { worktreePath: "/saneca/.fusion/worktrees/sane-463/lager-2026", branch: "fusion/sane-463", baseCommitSha: "b".repeat(40) },
+      },
+      modifiedFiles: [] as string[],
+    };
+
+    it("lands each acquired repository as an obligation instead of refusing the whole workspace", () => {
+      const result = resolveWorkspaceMergeReadiness(zeroDiffTask, new Set(), new Set());
+      expect(result).toEqual({
+        kind: "ready",
+        repositories: ["lager-2026", "lager-manager"],
+        preservedFiles: [],
+      });
+      expect(result.kind === "blocked" ? result.reason : "").not.toContain("no evidenced landing obligations");
+    });
+
+    it("refuses a commit-free workspace that declared two repositories and acquired only one", () => {
+      const partial = {
+        ...zeroDiffTask,
+        workspaceWorktrees: { "lager-manager": zeroDiffTask.workspaceWorktrees["lager-manager"] },
+      };
+      const result = resolveWorkspaceMergeReadiness(partial, new Set(), new Set());
+      /*
+      The invariant a partial acquisition must hold is that it is never admitted as a delivery, not which
+      refusal sentence names it: with one of two declared repositories present, `knownEntries` is non-empty,
+      so the generic landing-obligation refusal is the honest owner. Pinning the sentence would make this
+      test a copy of the message rather than a guard on the door.
+      */
+      expect(result.kind).not.toBe("ready");
+      expect(result).toMatchObject({ kind: "blocked", reason: expect.stringContaining("SANE-463") });
+    });
+
+    it("keeps refusing an unexplained empty workspace that never declared a commit-free contract", () => {
+      const { noCommitsExpected: _omitted, ...undeclared } = zeroDiffTask;
+      expect(resolveWorkspaceMergeReadiness(undeclared, new Set(), new Set())).toMatchObject({
+        kind: "blocked",
+        reason: expect.stringContaining("no evidenced landing obligations"),
+      });
+    });
+
+    it("leaves a fresh-diff obligation on the ready path it already had", () => {
+      expect(resolveWorkspaceMergeReadiness(zeroDiffTask, new Set(["lager-manager"]), new Set())).toMatchObject({
+        kind: "ready",
+        repositories: ["lager-manager"],
+      });
+    });
+  });
 });

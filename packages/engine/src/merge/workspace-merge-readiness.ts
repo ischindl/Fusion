@@ -50,6 +50,41 @@ export function resolveWorkspaceMergeReadiness(
     return { kind: "no-op", repositories: [], preservedFiles: [] };
   }
 
+  /*
+  FNXC:WorkspaceFinalization 2026-10-02-19:51 (RUFU-504):
+  A commit-free workspace that DECLARED and ACQUIRED its repositories owes a landing obligation per
+  repository, and until now it matched none of the three disjuncts above. `freshModifiedRepositories`
+  needs a file, `netZeroBranchRepositories` needs commits whose content cancels out
+  (`workspace-review-evidence.ts:96` computes `ahead` as a BOOLEAN, so a branch sitting exactly on its
+  merge-base is `ahead: false`), and `landedSha` needs a prior land. The declared-commit-free case fell
+  through to the same operator-repair refusal as unexplained emptiness, because the no-op arm above only
+  covers the degenerate workspace with zero declared repositories.
+
+  Measured on the saneca workspace 2026-10-02: 16 of 17 parked review-lane cards already carried
+  `no_commits_expected = 1` with `repositoryScope.state = confirmed` and acquired member entries, so the
+  pipeline HAD declared the contract; only readiness disagreed with it. Each of those cards then repeated
+  one blocker sentence until the stall classifier parked it (`in-review-stall-deadlock`), which is how a
+  delivered zero-diff card becomes indistinguishable from a frozen one.
+
+  Returning `ready` rather than a new terminal kind is deliberate: `landOneRepo` already short-circuits a
+  confidently-zero branch to `outcome: "empty"` with a durable `merge:ai-empty` row
+  (`merger-ai.ts:1164`), so per-repository delivery proof is written by code that already handles this
+  shape. No new probe primitive and no fabricated sha.
+
+  Two conditions keep the vacuous-truth fence this function exists for:
+  1. `noCommitsExpected` must be the pipeline's own declaration, so an acquisition that silently produced
+     nothing stays unexplained emptiness and keeps its refusal.
+  2. EVERY declared repository must have an acquired entry. A workspace that declared two members and
+     acquired one is a partial acquisition, not a commit-free delivery, and must still reach the
+     no-acquired-repositories refusal below.
+  */
+  if (task.noCommitsExpected === true && declaredRepositories.length > 0) {
+    const acquired = declaredRepositories.filter((repo) => entries[repo] !== undefined);
+    if (acquired.length === declaredRepositories.length) {
+      return { kind: "ready", repositories: acquired.sort(), preservedFiles };
+    }
+  }
+
   const declared = [...declaredRepositories].sort();
   const knownEntries = declared.filter((repo) => entries[repo] !== undefined);
   if (knownEntries.length === 0) {
