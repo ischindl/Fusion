@@ -568,8 +568,46 @@ export const TASK_DONE_BYPASS_BLOCKER_MESSAGE =
  * Returns a human-readable reason when a task in review is not safe to finalize.
  * Undefined means the task is eligible to move from `in-review` to `done`.
  */
+/**
+ * The pause reason the review-stall classifier writes. Repeated as a literal rather than imported from
+ * `../tasks/manual-retry-reset.js`, which pulls `../store.js` and the core index barrel as VALUE imports:
+ * `store.ts` already reaches this module through the merge-blocker chain, so importing a constant here
+ * would close a runtime cycle that typecheck cannot see. Drift is pinned by pause-blocker-attribution.test.ts
+ * against the real constant, so the two spellings cannot disagree silently.
+ */
+const IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON = "in-review-stall-deadlock";
+
+/**
+ * Names the pre-merge gate behind an engine-authored review-stall park, or `null` when nothing
+ * gate-shaped explains it.
+ *
+ * FNXC:PauseBlockerAttribution 2026-10-02-18:05 (RUFU-504): deliberately returns `null` rather than a
+ * guess. A park with no failed/pending pre-merge row keeps the plain `task is paused` sentence, because
+ * inventing a cause would be worse than a tautology — it would send the operator to a gate that is fine.
+ * Read-only over the row shape: it decides nothing and waives nothing.
+ */
+export function describeEngineStallParkBlocker(
+  task: Pick<Task, "workflowStepResults"> & Partial<Pick<Task, "pausedReason">>,
+  requiredPreMergeStepIds?: ReadonlySet<string>,
+): string | null {
+  if (task.pausedReason !== IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON) return null;
+  const rows: WorkflowStepResult[] = task.workflowStepResults ?? [];
+  const preMerge = rows.filter((row) => row.phase === "pre-merge");
+  // Per step, the LATEST row is the one that counts: a `failed` row superseded by a later passed row is
+  // not the blocker, and naming it would blame a gate that has since approved.
+  const latestByStep = new Map<string, WorkflowStepResult>();
+  for (const row of preMerge) latestByStep.set(row.workflowStepId, row);
+  const scoped = [...latestByStep.values()].filter(
+    (row) => !requiredPreMergeStepIds?.size || requiredPreMergeStepIds.has(row.workflowStepId),
+  );
+  const offender = scoped.filter((row) => row.status === "failed" || row.status === "pending").pop();
+  if (!offender) return null;
+  const verdict = offender.verdict ? `verdict ${offender.verdict}` : "no authored verdict";
+  return `required pre-merge step '${offender.workflowStepId}' is '${offender.status}' with ${verdict}`;
+}
+
 export function getTaskMergeBlocker(
-  task: Pick<Task, "column" | "paused" | "status" | "error" | "steps" | "workflowStepResults" | "repositoryScope" | "mergeDetails"> & Partial<Pick<Task, "humanMergeApproval" | "noCommitsExpected">>,
+  task: Pick<Task, "column" | "paused" | "status" | "error" | "steps" | "workflowStepResults" | "repositoryScope" | "mergeDetails"> & Partial<Pick<Task, "humanMergeApproval" | "noCommitsExpected">> & Partial<Pick<Task, "pausedReason">>,
   options: {
     manual?: boolean;
     skipColumnIdentityCheck?: boolean;
@@ -674,6 +712,27 @@ export function getTaskMergeBlocker(
   if (uncommittedWorkHold) return uncommittedWorkHold;
 
   if (task.paused) {
+    /*
+    FNXC:PauseBlockerAttribution 2026-10-02-18:05 (RUFU-504):
+    `task is paused` is a TAUTOLOGY when the pause is the engine's own review-stall park: the park is the
+    symptom of the refusal, so the sentence names the symptom and never the gate that caused it. Measured
+    2026-10-02 on saneca: 15 review-lane cards each answered `stallReason {code:"merge-blocker", reason:
+    "task is paused"}` while the actual blocker was a `code-review` row left `failed` with NO authored
+    verdict by a per-repo review that had declared itself "not a blocking reviewer verdict". The operator
+    could not tell a stalled review from a hand-held card, and neither could any lane that reads this
+    authority. Precedent for looking past a park the engine wrote itself: `isZeroCommitWorkspaceLandPark`
+    below, and the RUFU-274 note above this arm, which already refuses to let `"task is paused"` hide the
+    one thing an operator must act on.
+
+    This ENRICHES the sentence and waives nothing: the arm still returns a blocker string, so the merge
+    door, the stall classifier, the wedge notification and `getTaskHardMergeBlocker` (which passes
+    `paused: false` anyway) keep refusing exactly as before — only the cause becomes readable. Keyed on the
+    engine-authored park reason on purpose: a hand pause answers verbatim as it always has, which is also
+    what the existing `"task is paused"` assertions in task-merge.test.ts and task-stall-reason.test.ts
+    continue to get.
+    */
+    const parkedGate = describeEngineStallParkBlocker(task, options.requiredPreMergeStepIds);
+    if (parkedGate) return `task is paused (${IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON}): ${parkedGate}`;
     return "task is paused";
   }
 
