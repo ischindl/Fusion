@@ -191,6 +191,81 @@ registerRetentionSource({
   },
 });
 
+/*
+FNXC:TaskDiffStats 2026-10-01-19:40:
+THE STATS POLL MUST NOT FORK ITS OWN GIT LANE.
+
+`?stats=1` exists so a board with many visible cards can paint badges without paying the full-detail
+diff. The cache made repeats cheap but did nothing about CONCURRENCY: every card badge, every open tab
+and every SWR revalidation that missed the 10 s TTL started its own git lane. Measured on the deployed
+node for one done card whose worktree is gone: `?stats=1` took 19.96 s and 28.35 s back to back, and the
+board fires these requests for each visible card at once. The poll meant to remove a git herd was
+recreating one, and the whole single-process dashboard stalled behind it.
+
+So an in-flight key is a rendezvous, not a bug: the first request owns the computation, later identical
+requests await the SAME promise and answer from the value that also lands in the cache. Two waiters can
+therefore never disagree, and neither can serve a number the cache does not hold. Failures reject the
+promise so the outer handler reports them exactly as it reports an owned failure — a waiter never
+receives a fabricated triple.
+*/
+type TaskDiffStatsFlight = {
+  promise: Promise<DiffStatsTriple>;
+  resolve: (stats: DiffStatsTriple) => void;
+  reject: (error: unknown) => void;
+};
+
+const taskDiffStatsInFlight = new Map<string, TaskDiffStatsFlight>();
+
+function joinTaskDiffStatsInFlight(key: string): Promise<DiffStatsTriple> | undefined {
+  return taskDiffStatsInFlight.get(key)?.promise;
+}
+
+function beginTaskDiffStatsInFlight(key: string): void {
+  // A defensive ceiling only: every owner settles in its own finally, so this map is normally empty.
+  if (taskDiffStatsInFlight.size >= TASK_DIFF_STATS_CACHE_MAX) taskDiffStatsInFlight.clear();
+  let resolve!: (stats: DiffStatsTriple) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<DiffStatsTriple>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  // A flight whose owner dies and nobody awaits must not surface as an unhandled rejection.
+  promise.catch(() => {});
+  taskDiffStatsInFlight.set(key, { promise, resolve, reject });
+}
+
+function settleTaskDiffStatsInFlight(key: string, stats: DiffStatsTriple | undefined, error?: unknown): void {
+  const flight = taskDiffStatsInFlight.get(key);
+  if (!flight) return;
+  taskDiffStatsInFlight.delete(key);
+  if (error !== undefined) flight.reject(error);
+  else flight.resolve(stats!);
+}
+
+/*
+FNXC:RetentionCensus 2026-10-01-19:40:
+The rendezvous table above is module-scope and holds a promise per key, so RUFU-257's ratchet is right to
+ask how it stops growing. It stops three ways: every owner settles its key in its own `finally`, an owner
+that throws settles it too, and the ceiling above clears the table if anything ever leaves a flight
+behind. It is registered rather than allow-listed because a stuck promise is exactly the heap question
+`/metrics` should answer, and `keys: "load"` is honest about its shape — it grows with the number of keys
+being computed RIGHT NOW, not with distinct keys accumulating over time.
+*/
+registerRetentionSource({
+  id: "task_diff_stats_in_flight",
+  kind: "cache",
+  keys: "load",
+  ceiling: TASK_DIFF_STATS_CACHE_MAX,
+  ceilingConstant: "TASK_DIFF_STATS_CACHE_MAX",
+  probe: () => {
+    let approxBytes = 0;
+    for (const key of taskDiffStatsInFlight.keys()) {
+      approxBytes += MAP_ENTRY_OVERHEAD_BYTES + approxStringBytes(key);
+    }
+    return { entries: taskDiffStatsInFlight.size, approxBytes, expiredEntries: 0 };
+  },
+});
+
 function writeTaskDiffStatsCache(key: string, stats: DiffStatsTriple): void {
   const startedAt = startRetentionOp();
   if (taskDiffStatsCache.size >= TASK_DIFF_STATS_CACHE_MAX) {
@@ -207,7 +282,16 @@ __resetDoneRangeAttributionForTests so a TTL miss is assertable without a real t
 */
 export function __resetTaskDiffStatsCacheForTests(now?: () => number): void {
   taskDiffStatsCache.clear();
+  taskDiffStatsInFlight.clear();
   if (now) taskDiffStatsNow = now;
+}
+
+/**
+ * Test-only probe (FNXC:TaskDiffStats 2026-10-01): lets a suite assert that concurrent identical
+ * `?stats=1` polls share ONE computation instead of one git lane each.
+ */
+export function __taskDiffStatsInFlightCount(): number {
+  return taskDiffStatsInFlight.size;
 }
 
 function taskDiffStatsCacheKey(
@@ -1230,6 +1314,8 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
   });
 
   router.get("/tasks/:id/diff", async (req, res) => {
+    // Declared outside the try so the finally can release a flight the owner never settled (error path).
+    let statsOwnerKey: string | undefined;
     try {
       const { store: scopedStore } = await getProjectContext(req);
       const task = await scopedStore.getTask(req.params.id);
@@ -1255,9 +1341,22 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
           res.json({ stats: cachedStats });
           return;
         }
+        /*
+        FNXC:TaskDiffStats 2026-10-01-19:40:
+        Same key already computing? Join it. The badge lane must run ONE git lane per key, not one per
+        card per tab, or the poll that exists to spare git becomes the herd that stalls the dashboard.
+        */
+        const running = joinTaskDiffStatsInFlight(statsCacheKey);
+        if (running) {
+          res.json({ stats: await running });
+          return;
+        }
+        beginTaskDiffStatsInFlight(statsCacheKey);
+        statsOwnerKey = statsCacheKey;
       }
       const respondDiff = (files: unknown[], stats: DiffStatsTriple): void => {
         if (statsCacheKey) writeTaskDiffStatsCache(statsCacheKey, stats);
+        if (statsOwnerKey) settleTaskDiffStatsInFlight(statsOwnerKey, stats);
         res.json(statsOnly ? { stats } : { files, stats });
       };
 
@@ -1477,6 +1576,9 @@ export function registerSessionDiffRoutes(router: Router, deps: SessionDiffRoute
         throw err;
       }
       rethrowTaskApiError(err, req.params.id);
+    } finally {
+      // An owner that died mid-lane must not leave joiners hanging; the flight clears on any exit.
+      if (statsOwnerKey) settleTaskDiffStatsInFlight(statsOwnerKey, undefined, new Error("diff stats computation failed"));
     }
   });
 
