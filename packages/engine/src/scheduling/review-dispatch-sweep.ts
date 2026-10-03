@@ -65,12 +65,17 @@ export const DEFAULT_REVIEW_START_LATENCY_MS = 120_000;
 /** Bounded re-dispatch attempts per card before the sweep parks it and stops retrying. */
 export const DEFAULT_REVIEW_MAX_ATTEMPTS = 3;
 
-/**
- * One dispatch per tick: the reviewer runs a single session at a time, and `startRun` fails an
- * existing active run before starting a new one, so a second dispatch in the same tick would
- * interrupt the review the first one just started.
- */
-export const DEFAULT_MAX_DISPATCHES_PER_TICK = 1;
+/*
+FNXC:ReviewLanePool 2026-10-03-21:23 (RUFU-530):
+This was 1, which combined with `resolveReviewerPool`'s old "exactly one reviewer" rule made the review lane's
+host-wide concurrency exactly one. Measured on the saneca board: 18 cards sat in review behind a single enabled
+reviewer (`Tester`), draining at 6 reviews/hour while `moves/30m` fell to 1. The real bound is not this number —
+it is the pool of enabled reviewers, because a reviewer runs one session at a time (`startRun` fails the active
+run before starting a new one). So this is now only a ceiling ABOVE the pool: a project with one reviewer still
+dispatches at most one card per tick, a project with three gets three. Raising it changes nothing for the 12
+projects that have one enabled reviewer and unblocks any project that configures more.
+*/
+export const DEFAULT_MAX_DISPATCHES_PER_TICK = 4;
 
 export type ReviewDispatchClass =
   /** B1 — no ledger row at all: reviewer work never began. */
@@ -89,7 +94,7 @@ export type ReviewDispatchClass =
   | "excluded-paused"
   /** E3 — the reviewer itself recorded that there was nothing to review. */
   | "nothing-reviewable"
-  /** E4 — no single enabled reviewer exists to route to. */
+  /** E4 — no enabled reviewer exists to route to (zero pool; several is now supported). */
   | "no-reviewer"
   /** The reviewer is mid-session on a different card; a second start would kill it. */
   | "reviewer-busy"
@@ -292,6 +297,31 @@ function hasRecordedCodeReviewVerdict(task: Task): boolean {
   );
 }
 
+/**
+ * Which reviewer slot a card gets, and which run the classifier must see.
+ *
+ * FNXC:ReviewLanePool 2026-10-03-21:23 (RUFU-530):
+ * Pulled out of the tick loop so the pool's routing rules are assertable without a store, a heartbeat, or a
+ * Postgres fixture. The rules are the whole contract of the pool:
+ * 1. a reviewer already running THIS card keeps it (its run is handed over, so classification is `review-in-flight`);
+ * 2. otherwise the first unallocated reviewer with no run takes the card, and is told `activeRun: null` — that
+ *    null is what authorises a dispatch, so passing a busy run here would serialise the pool back to one;
+ * 3. when every reviewer is busy elsewhere, a busy run is handed over so the card is counted as `reviewer-busy`
+ *    rather than vanishing from the sweep's accounting.
+ */
+export function resolveReviewSlot(input: {
+  pool: Agent[];
+  busyRunByReviewer: Map<string, AgentHeartbeatRun | null>;
+  allocatedThisTick: Set<string>;
+  taskId: string;
+}): { chosen: Agent | null; free: Agent | null; activeRun: AgentHeartbeatRun | null } {
+  const onThisCard = input.pool.find((agent) => input.busyRunByReviewer.get(agent.id)?.taskId === input.taskId) ?? null;
+  const free = input.pool.find((agent) => !input.allocatedThisTick.has(agent.id) && !input.busyRunByReviewer.get(agent.id)) ?? null;
+  const chosen = onThisCard ?? free ?? input.pool.find((agent) => input.busyRunByReviewer.get(agent.id)) ?? null;
+  const busyRun = chosen ? input.busyRunByReviewer.get(chosen.id) ?? null : null;
+  return { chosen, free, activeRun: free && !onThisCard ? null : busyRun };
+}
+
 export class ReviewDispatchSweep {
   private timer?: NodeJS.Timeout;
   private running = false;
@@ -316,7 +346,7 @@ export class ReviewDispatchSweep {
    * while the four lines that actually described cards were buried under them. The first occurrence is always
    * written; later ones repeat only after the cooldown and report how many were suppressed in between.
    */
-  private logReviewerConfigurationGap(message: string): void {
+  private logReviewerConfigurationGap(message: string, level: "warn" | "log" = "warn"): void {
     const at = this.now();
     if (this.lastE4LogAt !== 0 && at - this.lastE4LogAt < this.e4LogCooldownMs) {
       this.e4Suppressed += 1;
@@ -325,7 +355,9 @@ export class ReviewDispatchSweep {
     const suffix = this.e4Suppressed > 0 ? ` (${this.e4Suppressed} repeats suppressed since the last line)` : "";
     this.lastE4LogAt = at;
     this.e4Suppressed = 0;
-    log.warn(`${this.projectTag}${message}${suffix}`);
+    const line = `${this.projectTag}${message}${suffix}`;
+    if (level === "log") log.log(line);
+    else log.warn(line);
   }
 
   public start(): void {
@@ -379,18 +411,47 @@ export class ReviewDispatchSweep {
     const candidates = await this.findReviewLaneCandidates();
     if (candidates.length === 0) return { dispatched, classes };
 
-    const reviewer = await this.resolveReviewer();
-    const activeRun = reviewer ? await this.options.agentStore.getActiveHeartbeatRun(reviewer.id) : null;
+    /*
+    FNXC:ReviewLanePool 2026-10-03-21:23 (RUFU-530):
+    Every enabled reviewer is a slot, so a card is routed to whichever slot is free instead of the whole lane
+    switching itself off because two reviewers exist. Attribution is not weakened by the pool: the ledger row
+    written by `openReviewerRunForTask` carries `reviewerAgentId`, and the dispatch line names the reviewer id,
+    so "which session produced this verdict" is answered from durable state, not from log ordering — which is
+    what the old single-reviewer rule was really protecting.
+    */
+    const pool = await this.resolveReviewerPool();
+    const busyRunByReviewer = new Map<string, AgentHeartbeatRun | null>();
+    for (const reviewer of pool) {
+      busyRunByReviewer.set(reviewer.id, await this.options.agentStore.getActiveHeartbeatRun(reviewer.id));
+    }
+    /*
+     * A reviewer given work during this tick is busy for the remainder of it: the snapshot above was taken
+     * before `executeHeartbeat` ran, and a second start on the same agent would fail the session just begun.
+     */
+    const allocatedThisTick = new Set<string>();
 
     let dispatches = 0;
     const maxDispatches = this.options.maxDispatchesPerTick ?? DEFAULT_MAX_DISPATCHES_PER_TICK;
     for (const candidate of candidates) {
       const rows = await listReviewerRunsForTask(this.options.store, candidate.task.id);
+      /*
+       * Three routing cases, in this order, chosen so `classifyReviewCard` keeps its exact meaning:
+       * 1. a reviewer already working on THIS card → hand it its own run (bucket `review-in-flight`);
+       * 2. a reviewer with no run at all → hand it `null`, which is what authorises a dispatch;
+       * 3. every reviewer busy on other cards → hand over a busy run (bucket `reviewer-busy`), which keeps
+       *    the wait countable in the sweep's accounting instead of dropping the card from it.
+       */
+      const { free, activeRun } = resolveReviewSlot({
+        pool,
+        busyRunByReviewer,
+        allocatedThisTick,
+        taskId: candidate.task.id,
+      });
       const decision = classifyReviewCard({
         task: candidate.task,
         rows,
-        activeRun: activeRun && activeRun.agentId === reviewer?.id ? activeRun : null,
-        reviewerFound: reviewer !== null,
+        activeRun,
+        reviewerFound: pool.length > 0,
         now: now.getTime(),
         reviewEnteredAt: candidate.enteredReviewAt === null ? null : Date.parse(candidate.enteredReviewAt),
         graceMs: this.options.graceMs ?? DEFAULT_REVIEW_GRACE_MS,
@@ -400,9 +461,11 @@ export class ReviewDispatchSweep {
       classes[decision.bucket] += 1;
       this.logBucketChange(candidate.task.id, decision.bucket, rows);
 
-      if (!decision.dispatch || dispatches >= maxDispatches || !reviewer) continue;
+      // A dispatch needs a reviewer that is genuinely free — never the one already holding a run.
+      if (!decision.dispatch || dispatches >= maxDispatches || !free) continue;
       dispatches += 1;
-      if (await this.dispatch(candidate, reviewer, decision, now)) dispatched.push(candidate.task.id);
+      allocatedThisTick.add(free.id);
+      if (await this.dispatch(candidate, free, decision, now)) dispatched.push(candidate.task.id);
     }
     return { dispatched, classes };
   }
@@ -444,24 +507,39 @@ export class ReviewDispatchSweep {
     );
   }
 
-  /**
-   * Nothing in the store records which agent owns a given card's review, so this refuses to
-   * invent one: exactly one enabled non-ephemeral reviewer dispatches. Zero reviewers or several
-   * is a configuration gap (bucket E4) — surfaced and left undispatched rather than routed to a
-   * worse-suited agent, because a silently-chosen reviewer would be a new privilege, not a fix.
+
+/**
+ * The lane's reviewer pool: every enabled, non-ephemeral agent carrying the `reviewer` role.
+   *
+   * FNXC:ReviewLanePool 2026-10-03-21:23 (RUFU-530):
+   * This used to require EXACTLY one such agent and returned `null` for two or more, so enabling a second
+   * reviewer turned the review lane off entirely (`E4 … refusing to pick one`) — the configuration an operator
+   * would write to speed reviews up was the configuration that stopped them. Pool semantics are honest about
+   * the thing the old rule could not see anyway: nothing in the store names which agent owns a given card's
+   * review, so routing is first-free-wins and the durable ledger row (`reviewerAgentId`) is what records who
+   * actually did the work. Zero enabled reviewers remains bucket E4 — a real configuration gap, surfaced and
+   * left undispatched.
    */
-  private async resolveReviewer(): Promise<Agent | null> {
+  private async resolveReviewerPool(): Promise<Agent[]> {
     const agents = await this.options.agentStore.listAgents();
     const reviewers = agents.filter(
       (agent) => !isEphemeralAgent(agent) && agent.runtimeConfig?.enabled !== false && agent.roles.includes("reviewer"),
     );
-    if (reviewers.length === 1) return reviewers[0]!;
-    this.logReviewerConfigurationGap(
-      reviewers.length === 0
-        ? "E4: no enabled reviewer agent exists; review-lane cards stay undispatched by design."
-        : `E4: ${reviewers.length} enabled reviewer agents cover the review lane; refusing to pick one.`,
-    );
-    return null;
+    if (reviewers.length === 0) {
+      this.logReviewerConfigurationGap(
+        "E4: no enabled reviewer agent exists; review-lane cards stay undispatched by design.",
+      );
+      return reviewers;
+    }
+    if (reviewers.length > 1) {
+      // Steady state, not an event: rate-limited, and it names the ceiling so a reader can tell the
+      // configured concurrency from the observed one.
+      this.logReviewerConfigurationGap(
+        `Review lane pool: ${reviewers.length} enabled reviewers, so up to ${reviewers.length} concurrent reviews (one session per reviewer).`,
+        "log",
+      );
+    }
+    return reviewers;
   }
 
   private async dispatch(

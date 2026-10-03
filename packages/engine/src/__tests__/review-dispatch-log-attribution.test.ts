@@ -22,9 +22,13 @@ function makeSweep(options: { projectId?: string; now: () => number }) {
   });
 }
 
-/** Reach the reviewer-resolution path directly; the card-facing candidate scan is not what is under test. */
+/**
+ * Reach the reviewer-resolution path directly; the card-facing candidate scan is not what is under test.
+ * FNXC:ReviewLanePool 2026-10-03-21:23 (RUFU-530): resolution returns a pool now, so the zero-reviewer gap is
+ * asserted as an empty pool rather than `null`.
+ */
 async function resolveReviewer(sweep: ReviewDispatchSweep): Promise<unknown> {
-  return await (sweep as unknown as { resolveReviewer: () => Promise<unknown> }).resolveReviewer();
+  return await (sweep as unknown as { resolveReviewerPool: () => Promise<unknown> }).resolveReviewerPool();
 }
 
 describe("ReviewDispatchSweep log attribution", () => {
@@ -41,7 +45,7 @@ describe("ReviewDispatchSweep log attribution", () => {
 
   it("names the project on the reviewer-configuration warning", async () => {
     const sweep = makeSweep({ projectId: "proj_attribute_check", now: () => clock });
-    await expect(resolveReviewer(sweep)).resolves.toBeNull();
+    await expect(resolveReviewer(sweep)).resolves.toHaveLength(0);
 
     const written = lines();
     expect(written).toHaveLength(1);
