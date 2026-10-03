@@ -2,21 +2,6 @@
   "$comment": "Flaky-test quarantine ledger (deletion ratchet — see AGENTS.md 'Flaky tests: quarantine on sight' and docs/testing.md 'Quarantine ledger and the deletion ratchet'). A test observed failing without a corresponding real bug is quarantined ON SIGHT: add an entry here AND a matching one-line `exclude` entry in that package's vitest config, in the same commit. Every entry needs a non-empty `reason` (link the failing run) and a `quarantinedAt` date — the entry expires 14 days later, at which point the test file is DELETED unless someone rescues it with evidence it catches real regressions plus a root-cause fix (never appeasement). scripts/check-quarantine-ledger.mjs mechanically verifies this ledger and concrete `exclude:` array entries stay in lockstep.",
   "entries": [
     {
-      "file": "packages/dashboard/app/components/__tests__/AgentDetailView.core.test.tsx",
-      "reason": "SECOND on-sight observation of the skill-badge suite-only flake (register entry 18): fails `data-skill-state=\"unknown\"` vs `auto-available` under suite/subset load, passes isolated (53/53). No appeasement; quarantined under the deletion ratchet.",
-      "quarantinedAt": "2026-09-07"
-    },
-    {
-      "file": "packages/dashboard/app/components/__tests__/TaskPlannerChatTab.virtualization.test.tsx",
-      "reason": "First on-sight quarantine: upstream FN-304 test captured no IntersectionObserver callback under components-dir load (assertion at :164 `expected undefined to be type of 'function'`), passes isolated 5/5. Coverage is 5 load-sensitive tests, so the register's substantial-coverage exception does not apply.",
-      "quarantinedAt": "2026-09-07"
-    },
-    {
-      "file": "packages/desktop/src/__tests__/native.test.ts",
-      "reason": "Second sightings: https://github.com/Runfusion/Fusion/actions/runs/35959852349, https://github.com/Runfusion/Fusion/actions/runs/35965109937, https://github.com/Runfusion/Fusion/actions/runs/35965648898; doubled vi.fn() timeout and STACK_TRACE_ERROR.",
-      "quarantinedAt": "2026-09-24"
-    },
-    {
       "file": "packages/engine/src/__tests__/agent-activity-writers.test.ts",
       "reason": "Second sightings: https://github.com/Runfusion/Fusion/actions/runs/36034454035 and https://github.com/Runfusion/Fusion/actions/runs/36533908544; repeated terminal graph-gate assertion.",
       "quarantinedAt": "2026-09-29"
@@ -25,6 +10,16 @@
       "file": "packages/cli/src/commands/__tests__/skills-get.test.ts",
       "reason": "Second sightings: https://github.com/Runfusion/Fusion/actions/runs/36562243319 and https://github.com/Runfusion/Fusion/actions/runs/36580840868; repeated default-timeout-shaped built guide request failure.",
       "quarantinedAt": "2026-09-29"
+    },
+    {
+      "file": "packages/dashboard/app/components/__tests__/AgentDetailView.core.test.tsx",
+      "reason": "SECOND on-sight observation of the skill-badge suite-only flake (register entry 18): fails `data-skill-state=\"unknown\"` vs `auto-available` under suite/subset load, passes isolated (53/53). No appeasement; quarantined under the deletion ratchet.",
+      "quarantinedAt": "2026-09-07"
+    },
+    {
+      "file": "packages/dashboard/app/components/__tests__/TaskPlannerChatTab.virtualization.test.tsx",
+      "reason": "First on-sight quarantine: upstream FN-304 test captured no IntersectionObserver callback under components-dir load (assertion at :164 `expected undefined to be type of 'function'`), passes isolated 5/5. Coverage is 5 load-sensitive tests, so the register's substantial-coverage exception does not apply.",
+      "quarantinedAt": "2026-09-07"
     }
   ]
 }
