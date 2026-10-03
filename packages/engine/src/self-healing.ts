@@ -170,7 +170,23 @@ import {
   buildDuplicateReplanExhaustedError,
 } from "./duplicate-marker-clear.js";
 import { mergeEffectiveSettings } from "./project/effective-settings.js";
-import { RemovalReason, canonicalizePath, classifyTaskWorktree, getRegisteredWorktreeBranchMap, getRegisteredWorktreePaths, isUsableTaskWorktree, relocateReclaimableWorktreeIntoRoot, removeWorktree, resolveWorktreeBackend, scanIdleWorktrees, scanOrphanedBranches } from "./worktree/worktree-pool.js";
+import { RemovalReason, canonicalizePath, classifyTaskWorktree, describeRegisteredWorktrees, getRegisteredWorktreeBranchMap, getRegisteredWorktreePaths, isUsableTaskWorktree, relocateReclaimableWorktreeIntoRoot, removeWorktree, resolveWorktreeBackend, scanIdleWorktrees, scanOrphanedBranches } from "./worktree/worktree-pool.js";
+import { pruneWorktreeAdminEntries } from "./worktree/worktree-prune.js";
+/*
+FNXC:TempWorktreeSweep 2026-10-02-16:05 (RUFU-290):
+Registration-driven discovery + deepest-first removal for worktrees nested INSIDE a scratch clean-room
+directory. The directory enumeration below can only see a scratch root's direct children, so a relative
+`git worktree add` run with the clean-room as cwd (`<scratch>/.fusion/worktrees/.ai-merge/probe-main`)
+was never enumerated and outlived its parent as a phantom `git worktree list` entry.
+ */
+import {
+  classifyTempSweepRegistrations,
+  isNestedBelowScratchRoot,
+  owningScratchEntry,
+  removeDescendantRegistrations,
+  type TempSweepAuthority,
+  type TempSweepRegistration,
+} from "./worktree/worktree-nested-registrations.js";
 import {
   isMissingWorktreeSessionStartFailure,
   isMergeActiveMissingWorktreeSessionStartFailure,
@@ -20687,11 +20703,154 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
   }
 
   /**
+   * Reap-age floor for one temp-merge scratch entry, shared by both halves of the sweep.
+   *
+   * FNXC:TempWorktreeSweep 2026-10-02-16:05 (RUFU-290): a nested registration must be judged by the
+   * SAME clock as the clean-room directory containing it, or one pass deletes content the other is
+   * still protecting.
+   */
+  private tempMergeReapAgeMs(earlyRelease: boolean): number {
+    return Math.max(
+      earlyRelease ? DONE_TASK_TEMP_WORKTREE_GRACE_MS : STALE_TEMP_MERGE_WORKTREE_MS,
+      MIN_TEMP_WORKTREE_REAP_AGE_MS,
+    );
+  }
+
+  /**
+   * True when the task a scratch entry is named after no longer needs its clean-room (finished lane,
+   * or the card is gone entirely) — the condition that shortens the age gate to the early-release floor.
+   */
+  private async isTempMergeEntryReleased(entry: string, terminalColumns: ReadonlySet<string>): Promise<boolean> {
+    const taskId = extractTaskIdFromTempMergeDir(entry);
+    if (!taskId) return false;
+    try {
+      const task = await this.store.getTask(taskId);
+      return !!task && terminalColumns.has(task.column);
+    } catch (err: unknown) {
+      // A deleted card releases its clean-room on the early floor, matching the enumeration loop.
+      return isTaskNotFoundError(err);
+    }
+  }
+
+  /**
+   * Registration-driven half of the temp-merge sweep: removes worktree registrations nested INSIDE a
+   * scratch clean-room directory and reports scratch-shaped registrations that sit outside every
+   * authority, so "found, not authorized" is never mistaken for "cleaned".
+   *
+   * Runs BEFORE the directory enumeration so a parent clean-room tree is never recursively deleted
+   * while a registration still points into it. Returns the paths whose directory is already gone —
+   * only `git worktree prune` clears those, and the caller prunes after its own removals.
+   *
+   * FNXC:CapacityModel 2026-10-02-18:28 (RUFU-290):
+   * This pass is hygiene, NOT slot recovery, and nothing here may be written as if it freed capacity.
+   * Worktree capacity derives from persisted task rows (`isWorktreeCapacityHolder` reads
+   * `task.worktree`/`task.workspaceWorktrees`/liveness; the scheduler's
+   * `persistedWorktreeHolderTaskIdsFromStore` call sites are its only capacity consumers) plus the
+   * in-memory holder registry `reapLeakedConcurrencySlots` cross-checks. Neither surface reads
+   * `git worktree list`, so a phantom registration has no row to be counted from and consumes no
+   * `maxWorktrees` unit — unlike the 2026-07-31 incident above, whose slot pressure came from real
+   * holders with retained checkout paths (FN-6756/RUFU-198 class). Measured 2026-10-02 on the operator
+   * host: 82 registrations, of which every nested-looking path was a live task worktree under
+   * `.fusion/worktrees/` whose registered ancestor is the main checkout — which is why containment is
+   * tested against Fusion scratch authorities only, never against "any registered ancestor". See
+   * `docs/architecture.md` → "Worktree and naming helpers".
+   */
+  private async sweepNestedTempRegistrations(input: {
+    tmpRoot: string;
+    scratchRoots: ReadonlySet<string>;
+    terminalColumns: ReadonlySet<string>;
+    auditRunId: string;
+    auditor: RunAuditor;
+  }): Promise<{ residue: string[]; removed: number }> {
+    const inventory = await describeRegisteredWorktrees(this.options.rootDir);
+    const classification = classifyTempSweepRegistrations({
+      registered: inventory.canonicalized,
+      cleanRoomRoots: [...input.scratchRoots].filter((root) => root !== input.tmpRoot),
+      tmpRoot: input.tmpRoot,
+      pathExists: (path) => existsSync(path),
+    });
+
+    for (const outside of classification.filter((entry) => entry.kind === "outside-authority")) {
+      // Reported, never touched: the registration inventory is repo-global and this sweep's authority
+      // ends at Fusion's scratch roots.
+      await input.auditor.git({
+        type: "worktree:tempdir-sweep",
+        target: outside.path,
+        metadata: { path: outside.path, success: false, reason: "outside-containment" },
+      });
+    }
+
+    const nested = classification.filter(
+      (entry): entry is Extract<TempSweepRegistration, { kind: "candidate" }> =>
+        entry.kind === "candidate" && isNestedBelowScratchRoot(entry.path, input.scratchRoots),
+    );
+    const residue: string[] = [];
+    if (nested.length === 0) return { residue, removed: 0 };
+
+    // One pass per owning scratch entry, so the aggregate row names the authority that admitted it.
+    const byEntry = new Map<string, { authority: TempSweepAuthority; paths: string[] }>();
+    for (const candidate of nested) {
+      const owner = owningScratchEntry(candidate.path, input.scratchRoots);
+      if (!owner) continue;
+      const group = byEntry.get(owner) ?? {
+        authority: (dirname(owner) === input.tmpRoot ? "tmpdir" : "clean-room-root") as TempSweepAuthority,
+        paths: [],
+      };
+      group.paths.push(candidate.path);
+      byEntry.set(owner, group);
+    }
+
+    let removed = 0;
+    for (const [owner, group] of byEntry) {
+      const result = await removeDescendantRegistrations({
+        rootDir: this.options.rootDir,
+        authority: group.authority,
+        containerPath: owner,
+        descendants: group.paths,
+        isPathActive: (path) => activeSessionRegistry.isPathActive(path) || activeSessionRegistry.isPathActive(canonicalizePath(path)),
+        isResumeReserved: (path) => this.isWorktreeResumeReserved(path),
+        ageGateMs: async (entry) => this.tempMergeReapAgeMs(await this.isTempMergeEntryReleased(entry, input.terminalColumns)),
+        auditHost: this.store,
+        auditRunId: input.auditRunId,
+        onDecision: async (decision) => {
+          if (decision.outcome === "residue") {
+            residue.push(decision.path);
+            return;
+          }
+          await input.auditor.git({
+            type: "worktree:tempdir-sweep",
+            target: decision.path,
+            metadata: {
+              path: decision.path,
+              success: decision.outcome === "removed",
+              reason:
+                decision.outcome === "removed" ? "nested-registration"
+                : decision.outcome === "deferred" ? decision.deferredReason
+                : "git-remove-failed",
+              ...(decision.outcome === "failed" ? { error: decision.error } : {}),
+            },
+          });
+        },
+      });
+      removed += result.removed;
+      if (result.removed > 0 || result.failed > 0) {
+        log.log(`[self-healing] temp-dir sweep: nested registrations under ${owner}: removed=${result.removed} failed=${result.failed} deferred=${result.deferred}`);
+      }
+    }
+    return { residue, removed };
+  }
+
+  /**
    * Sweep stale AI merge clean-room worktrees from the configured worktrees-dir
    * clean-room root plus legacy `.fusion/ai-merge/` and `tmpdir()` locations
    * used by older engine versions.
    *
    * Safety is bounded by age gates plus active-session checks.
+   *
+   * FNXC:TempWorktreeSweep 2026-10-02-16:05 (RUFU-290): two halves, one budget. The registration-driven
+   * pass (`sweepNestedTempRegistrations`) handles everything the directory walk cannot see — nested
+   * registrations and registration-only residue — deepest-first, so what remains for the enumeration
+   * loop is at worst an empty parent record that its own `git worktree prune` then clears.
    */
   private async cleanupStaleTempMergeWorktrees(): Promise<number> {
     /* FNXC:WorkflowLifecycleColumns 2026-07-31-22:30 (self-healing cluster): a temp merge worktree whose owning task has finished. Keyed on the literal this sweep answered "no" for every card on a renamed board. */
@@ -20706,13 +20865,24 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
         ...resolveAiMergeSearchRoots(this.options.rootDir, settings),
         tmpdir(),
       ]));
+      const sweepRunId = generateSyntheticRunId("self-heal", "tempdir-sweep");
       const auditor = createRunAuditor(this.store, {
-        runId: generateSyntheticRunId("self-heal", "tempdir-sweep"),
+        runId: sweepRunId,
         agentId: "self-healing",
         phase: "tempdir-sweep",
       });
       const now = Date.now();
       let cleaned = 0;
+
+      const tmpRoot = canonicalizePath(tmpdir());
+      const scratchRoots = new Set(roots.map((root) => canonicalizePath(root)));
+      const nestedPass = await this.sweepNestedTempRegistrations({
+        tmpRoot,
+        scratchRoots,
+        terminalColumns: mergeTempTerminalColumns,
+        auditRunId: sweepRunId,
+        auditor,
+      });
 
       for (const tempRoot of roots) {
         let entries: string[];
@@ -20750,19 +20920,25 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
               continue;
             }
             const ageMs = now - stat.mtimeMs;
-            let ageGateMs = STALE_TEMP_MERGE_WORKTREE_MS;
             cleanupReason = "stale";
+            /*
+            FNXC:TempWorktreeSweep 2026-10-02-16:05 (RUFU-290):
+            The floor itself now resolves through `tempMergeReapAgeMs`, the same selector the nested
+            registration pass uses, so the two halves of one sweep cannot drift apart on how long a
+            clean-room is protected. Only the release *reason* is decided here.
+             */
+            let earlyRelease = false;
             const taskId = extractTaskIdFromTempMergeDir(entry);
             if (taskId) {
               try {
                 const task = await this.store.getTask(taskId);
                 if (mergeTempTerminalColumns.has(task.column)) {
-                  ageGateMs = DONE_TASK_TEMP_WORKTREE_GRACE_MS;
+                  earlyRelease = true;
                   cleanupReason = "done-task-stale";
                 }
               } catch (err: unknown) {
                 if (isTaskNotFoundError(err)) {
-                  ageGateMs = MIN_TEMP_WORKTREE_REAP_AGE_MS;
+                  earlyRelease = true;
                   cleanupReason = "deleted-task";
                 } else {
                   const errorMessage = getErrorMessage(err);
@@ -20771,7 +20947,7 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
                 }
               }
             }
-            ageGateMs = Math.max(ageGateMs, MIN_TEMP_WORKTREE_REAP_AGE_MS);
+            const ageGateMs = this.tempMergeReapAgeMs(earlyRelease);
             if (ageMs < ageGateMs) continue;
             try {
               canonicalPath = realpathSync(path);
@@ -20834,6 +21010,34 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
               }
             }
           }
+        }
+      }
+
+      /*
+      FNXC:TempWorktreeSweep 2026-10-02-16:05 (RUFU-290):
+      Registration-only residue — a nested record whose directory is already gone — cannot be cleared
+      by any filesystem removal, and running the prune earlier would be pointless because the
+      enumeration loop above creates new residue by deleting parent trees. So it runs last, and the
+      audit row names each path it actually cleared rather than claiming success for the whole call.
+       */
+      const unresolvedResidue = nestedPass.residue.filter((path) => !existsSync(path));
+      if (unresolvedResidue.length > 0) {
+        await pruneWorktreeAdminEntries({
+          rootDir: this.options.rootDir,
+          auditor,
+          reason: "stale-temp-merge-registration-residue",
+          target: "stale-temp-merge-worktree",
+          logger: { log: (message) => log.log(`[self-healing] temp-dir sweep: ${message}`) },
+        });
+        const stillRegistered = new Set((await describeRegisteredWorktrees(this.options.rootDir)).canonicalized);
+        for (const path of unresolvedResidue) {
+          const cleared = !stillRegistered.has(path);
+          await auditor.git({
+            type: "worktree:tempdir-sweep",
+            target: path,
+            metadata: { path, success: cleared, reason: "registration-residue-pruned", ...(cleared ? {} : { error: "registration remained after prune" }) },
+          });
+          if (cleared) cleaned++;
         }
       }
 

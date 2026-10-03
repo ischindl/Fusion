@@ -18,6 +18,11 @@ import {
 import type { MergeWriteFence } from "./merge-write-fence.js";
 import { activeSessionRegistry } from "../agents/active-session-registry.js";
 import { canonicalizePath } from "../worktree/worktree-pool.js";
+import {
+  cleanupRegistrationsUnderRemovedWorktree,
+  type ContainedRegistrationCleanup,
+  type RegistrationLister,
+} from "../worktree/worktree-nested-registrations.js";
 
 export type LandedWorktreeCleanupOutcome =
   | "removed"
@@ -43,6 +48,11 @@ export interface CleanupLandedTaskWorktreeInput {
    * `mergeDetails.uncommittedWorkHold` is read — the durable anti-proof that makes a cleanup refuse.
    */
   task?: Pick<Task, "mergeDetails">;
+  /**
+   * RUFU-290 seams for the nested-registration leg: injection points so a mocked lane needs neither git
+   * nor the filesystem. Production leaves them unset and the helper shells out to real git.
+   */
+  nestedRegistrationSeams?: LandedNestedRegistrationSeams;
 }
 
 /*
@@ -73,6 +83,53 @@ export interface CleanupLandedTaskWorktreeResult {
   outcome: LandedWorktreeCleanupOutcome;
   removed: boolean;
   preservedReason?: string;
+  /** Present only when the pass actually saw a registration under the removed worktree (RUFU-290). */
+  nestedRegistrations?: LandedNestedRegistrations;
+}
+
+/** Injection seams for the nested-registration leg, so a mocked landing needs neither git nor disk. */
+export interface LandedNestedRegistrationSeams {
+  listRegistrations?: RegistrationLister;
+  pathExists?: (path: string) => boolean;
+  mtimeMs?: (path: string) => number | null;
+  removeRegistration?: (path: string) => Promise<void>;
+  /**
+   * Directory sweep for a child whose registration removal succeeded but whose tree is still on disk.
+   * Injectable because this file's lane mocks `node:fs` down to the two calls it already used, and the
+   * default goes through `rmSync`.
+   */
+  removeDirectory?: (path: string) => Promise<boolean>;
+  pruneAdminEntries?: () => Promise<void>;
+}
+
+/** What the nested leg found and did, reported on the cleanup result (RUFU-290). */
+export interface LandedNestedRegistrations {
+  found: number;
+  removed: number;
+  residuePruned: number;
+  remaining: number;
+}
+
+function nestedSummary(cleanup: ContainedRegistrationCleanup): LandedNestedRegistrations {
+  return {
+    found: cleanup.found,
+    removed: cleanup.removed,
+    residuePruned: cleanup.residuePruned,
+    remaining: cleanup.remaining,
+  };
+}
+
+function combineNestedRegistrations(passes: readonly LandedNestedRegistrations[]): LandedNestedRegistrations | undefined {
+  if (passes.length === 0) return undefined;
+  return passes.reduce(
+    (totals, pass) => ({
+      found: totals.found + pass.found,
+      removed: totals.removed + pass.removed,
+      residuePruned: totals.residuePruned + pass.residuePruned,
+      remaining: totals.remaining + pass.remaining,
+    }),
+    { found: 0, removed: 0, residuePruned: 0, remaining: 0 },
+  );
 }
 
 function preservedOutcomeFor(error: unknown): Pick<CleanupLandedTaskWorktreeResult, "outcome" | "preservedReason"> {
@@ -206,7 +263,118 @@ export async function cleanupLandedTaskWorktree(
   if (!await clearWorktreePointer(input, worktreePath)) {
     return { outcome: "nothing-to-remove", removed: false };
   }
-  return { outcome: "removed", removed: true };
+  const nested = await reapNestedRegistrationsAfterRemoval(input, worktreePath);
+  return nested ? { outcome: "removed", removed: true, nestedRegistrations: nested } : { outcome: "removed", removed: true };
+}
+
+/*
+FNXC:WorktreeCleanup 2026-10-02-19:20 (RUFU-290):
+A task worktree could be removed by a proven landing while a registration nested inside it survived,
+because the shared backend's forced parent removal (measured against real git) deletes the parent tree
+recursively WITHOUT deregistering a child worktree below it, and the scratch sweep's containment is
+clean-room roots plus `os.tmpdir()` prefixes — a task worktree path is neither, so nothing enumerated
+the child. This leg closes the same leak on the landing door: containment is the removed path itself and
+only registrations strictly below it are eligible. It runs AFTER the parent removal and the pointer clear,
+so a worktree kept by any existing gate (deliverable, unverifiable, active session) is never touched, and
+the nested live-session veto stays for a child a session is still driving.
+
+A failure here must never reopen a landing that already succeeded: the commits are on the default branch,
+so a child that cannot be reaped is recorded for the next pass rather than turned into a merge failure or
+a backward card move.
+*/
+async function reapNestedRegistrationsAfterRemoval(
+  input: Pick<CleanupLandedTaskWorktreeInput, "store" | "taskId" | "rootDir" | "audit" | "log" | "nestedRegistrationSeams">,
+  worktreePath: string,
+): Promise<LandedNestedRegistrations | undefined> {
+  if (!input.rootDir) return undefined;
+  const seams = input.nestedRegistrationSeams ?? {};
+  try {
+    const cleanup = await cleanupRegistrationsUnderRemovedWorktree({
+      rootDir: input.rootDir,
+      removedWorktreePath: worktreePath,
+      isPathActive: (path) => activeSessionRegistry.isPathActive(path) || activeSessionRegistry.isPathActive(canonicalizePath(path)),
+      listRegistrations: seams.listRegistrations,
+      /*
+      FNXC:WorktreeCleanup 2026-10-02-20:20 (RUFU-290):
+      The lane states its own existence probe. This function decides a path is already gone with
+      `existsSync` (see the `nothing-to-remove` branch above), so the nested leg must answer the same
+      question with the same primitive: a second, `statSync`-based probe can disagree about a path the
+      lane just acted on — and a child the lane believes present but the probe calls missing is
+      reclassified as registration-only residue, which skips the age and live-session vetoes entirely.
+      */
+      pathExists: seams.pathExists ?? existsSync,
+      mtimeMs: seams.mtimeMs,
+      removeRegistration: seams.removeRegistration,
+      removeDirectory: seams.removeDirectory,
+      pruneAdminEntries: seams.pruneAdminEntries,
+    });
+
+    if (cleanup.found === 0) return undefined;
+
+    const deferredDecision = cleanup.decisions.find(
+      (decision): decision is Extract<ContainedRegistrationCleanup["decisions"][number], { outcome: "deferred" }> =>
+        decision.outcome === "deferred",
+    );
+    /*
+    FNXC:RunAudit 2026-10-02-19:35 (RUFU-290): the landing lane reports through the lane's own
+    `RunAuditor` (which is already sink-failure-swallowing per FN-9175) rather than handing the helper a
+    second `emitBoundedRunAudit` host. One row per landing pass carries the full tally, and the cleanup
+    `store` type is deliberately narrower than a run-audit sink host — widening it to satisfy a
+    redundant emit would claim a capability the cleanup entry points never required.
+    */
+    await input.audit?.git({
+      type: "worktree:post-landing-nested-registration",
+      target: `task:${input.taskId}`,
+      metadata: {
+        foundCount: cleanup.found,
+        removedCount: cleanup.removed,
+        residuePrunedCount: cleanup.residuePruned,
+        residueRemainingCount: cleanup.remaining,
+        failedCount: cleanup.failed,
+        deferredCount: cleanup.deferred,
+        ...(deferredDecision ? { deferredReason: deferredDecision.deferredReason } : {}),
+        /*
+        FNXC:RunAudit 2026-10-02-20:30 (RUFU-290):
+        Precedence is failure > deferral > residue, and the deferral test has to come before the residue
+        test: a child a live session is still driving is ALSO counted in `residueRemainingCount`, so a
+        `remaining > 0` first would report every deliberate wait as `partial` and an operator querying
+        `outcome="deferred"` would find nothing. `partial` then means exactly what an operator must act
+        on — a removal this pass attempted and could not complete.
+        */
+        outcome: cleanup.failed > 0
+          ? "partial"
+          : cleanup.deferred > 0
+            ? "deferred"
+            : cleanup.remaining > 0
+              ? "partial"
+              : "cleared",
+      },
+    });
+    await recordNestedCleanupNote(
+      input,
+      `nested registrations under ${worktreePath}: found ${cleanup.found}, removed ${cleanup.removed}, pruned ${cleanup.residuePruned}, remaining ${cleanup.remaining}`,
+    );
+    return nestedSummary(cleanup);
+  } catch (error) {
+    await recordNestedCleanupNote(input, `nested registration cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+    return undefined;
+  }
+}
+
+/** Observability only: a log line that itself fails must not change the landing outcome. */
+async function recordNestedCleanupNote(
+  input: Pick<CleanupLandedTaskWorktreeInput, "store" | "taskId" | "log">,
+  message: string,
+): Promise<void> {
+  try {
+    if (input.log) {
+      await input.log(message);
+      return;
+    }
+    await input.store.logEntry(input.taskId, "Post-landing nested registration cleanup", message);
+  } catch {
+    // Cleanup observability must not turn a durable landing into a failed merge.
+  }
 }
 
 export interface CleanupLandedWorkspaceTaskWorktreesInput {
@@ -218,6 +386,8 @@ export interface CleanupLandedWorkspaceTaskWorktreesInput {
   audit?: RunAuditor;
   log?: (message: string) => void | Promise<void>;
   fence?: Pick<MergeWriteFence, "assertOwned">;
+  /** RUFU-290 seams for the nested-registration leg, applied per removed member repository. */
+  nestedRegistrationSeams?: LandedNestedRegistrationSeams;
 }
 
 export interface WorkspaceLandedWorktreePreservation {
@@ -232,6 +402,8 @@ export interface CleanupLandedWorkspaceTaskWorktreesResult {
   preserved: WorkspaceLandedWorktreePreservation[];
   taskDirectoryRemoved: boolean;
   removed: boolean;
+  /** Totals across every removed member repository (RUFU-290); absent when nothing was found. */
+  nestedRegistrations?: LandedNestedRegistrations;
 }
 
 type WorkspacePathOutcome =
@@ -291,10 +463,13 @@ export async function cleanupLandedWorkspaceTaskWorktrees(
   }
 
   const outcomes = new Map<string, WorkspacePathOutcome>();
+  const nestedPasses: LandedNestedRegistrations[] = [];
   for (const [, entry] of entries) {
     const worktreePath = entry.worktreePath;
     const key = canonicalizePath(worktreePath);
     if (outcomes.has(key)) continue;
+    // One member's canonical path can be shared by two entries; the first entry owns its repository root.
+    const ownerRepoRel = entries.find(([, candidate]) => canonicalizePath(candidate.worktreePath) === key)?.[0] ?? "";
 
     if (!existsSync(worktreePath)) {
       outcomes.set(key, { kind: "settled", removed: false });
@@ -309,19 +484,34 @@ export async function cleanupLandedWorkspaceTaskWorktrees(
 
     try {
       input.fence?.assertOwned("finalization");
+      const memberRootDir = join(input.workspaceRootDir, ownerRepoRel);
       const removal = await removeWorktree({
-        rootDir: join(input.workspaceRootDir, entries.find(([, candidate]) => canonicalizePath(candidate.worktreePath) === key)?.[0] ?? ""),
+        rootDir: memberRootDir,
         worktreePath,
         settings,
         taskId: input.task.id,
         audit: input.audit,
         reason: RemovalReason.CompletionLandedCleanup,
         postLandingProof: {
-          landedSha: input.landedShas?.[entries.find(([, candidate]) => canonicalizePath(candidate.worktreePath) === key)?.[0] ?? ""],
+          landedSha: input.landedShas?.[ownerRepoRel],
           source: input.source,
         },
       });
       outcomes.set(key, { kind: "settled", removed: removal.removed });
+      if (removal.removed) {
+        const nested = await reapNestedRegistrationsAfterRemoval(
+          {
+            store: input.store,
+            taskId: input.task.id,
+            rootDir: memberRootDir,
+            audit: input.audit,
+            log: input.log,
+            nestedRegistrationSeams: input.nestedRegistrationSeams,
+          },
+          worktreePath,
+        );
+        if (nested) nestedPasses.push(nested);
+      }
     } catch (error) {
       const preserved = preservedOutcomeFor(error);
       const preservation: WorkspacePathOutcome = {
@@ -345,6 +535,16 @@ export async function cleanupLandedWorkspaceTaskWorktrees(
     }
   }
   result.removed = result.removedRepoRels.length > 0;
+
+  /*
+  FNXC:WorktreeCleanup 2026-10-02-20:40 (RUFU-290):
+  The nested tally is reported BEFORE the task-directory retirement branches. A workspace delivers as one
+  unit, so one preserved repository stops the whole retirement — but a sibling repository WAS removed
+  above, and any registration its forced removal left behind is a leak the caller still has to see.
+  Reporting only on the fully-settled path would hide exactly the partial landing an operator inspects.
+  */
+  const nestedTotals = combineNestedRegistrations(nestedPasses);
+  if (nestedTotals) result.nestedRegistrations = nestedTotals;
 
   const taskDir = resolveWorkspaceTaskWorktreeDir(input.workspaceRootDir, settings, input.task.id);
   if (!everyEntrySettled || isLegacyWorkspaceWorktreeLayout(input.task, taskDir)) return result;

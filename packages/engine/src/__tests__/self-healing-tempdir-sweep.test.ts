@@ -373,6 +373,44 @@ describe("SelfHealingManager temp-dir AI merge worktree sweep", () => {
     expect(existsSync(other)).toBe(true);
   });
 
+  it("reports a non-empty inventory whose registrations sit outside every scratch authority without removing anything", async () => {
+    /*
+    FNXC:TempWorktreeSweep 2026-10-02-18:40 (RUFU-290):
+    Reading the registration inventory makes the sweep repo-global, so "the listing was not empty" can
+    never be read as "cleanup happened". A scratch-SHAPED registration that lives outside every Fusion
+    scratch root — here a `fusion-ai-merge-*` directory at the project root, which is neither a tmpdir
+    child nor under a clean-room root — must be reported and left exactly where it is: the sibling
+    real-git test proves the same boundary against a live pool worktree, this case pins that the sweep
+    issues no removal of any kind for it.
+     */
+    const stray = join(projectRoot, "fusion-ai-merge-fn-1-stray");
+    mkdirSync(stray, { recursive: true });
+    makeStale(stray);
+    childState.execStdout = [
+      `worktree ${projectRoot}`,
+      "HEAD abc123",
+      "branch refs/heads/main",
+      "",
+      `worktree ${stray}`,
+      "HEAD def456",
+      "branch refs/heads/fusion/stray",
+      "",
+    ].join("\n");
+    const { manager, audits } = makeManager();
+
+    await expect(sweep(manager)).resolves.toBe(0);
+
+    expect(existsSync(stray)).toBe(true);
+    expect(childState.execCalls.some((command) => command.startsWith("git worktree remove"))).toBe(false);
+    expect(fsState.rmCalls).toEqual([]);
+    expect(sweepAudits(audits)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        mutationType: "worktree:tempdir-sweep",
+        metadata: expect.objectContaining({ path: realpathSync(stray), success: false, reason: "outside-containment" }),
+      }),
+    ]));
+  });
+
   it("attempts git worktree removal before filesystem removal", async () => {
     const stale = tempMergeDir();
     makeStale(stale);
@@ -381,7 +419,16 @@ describe("SelfHealingManager temp-dir AI merge worktree sweep", () => {
 
     await expect(sweep(manager)).resolves.toBe(1);
 
-    expect(childState.execCalls[0]).toContain(`git worktree remove --force '${canonical.replace(/'/g, `'"'"'`)}'`);
+    /*
+    FNXC:TempWorktreeSweep 2026-10-02-16:05 (RUFU-290):
+    This used to assert `execCalls[0]`, but the sweep now reads the registration inventory
+    (`git worktree list --porcelain`) before it touches anything, so index 0 is a read-only call. The
+    invariant this test owns is unchanged: Git is asked to release the worktree BEFORE the filesystem
+    removal is attempted, so a real registration is never orphaned by an `rm -rf`.
+     */
+    const gitRemoveIndex = childState.execCalls.findIndex((command) => command.startsWith("git worktree remove --force"));
+    expect(gitRemoveIndex).toBeGreaterThanOrEqual(0);
+    expect(childState.execCalls[gitRemoveIndex]).toContain(`git worktree remove --force '${canonical.replace(/'/g, `'"'"'`)}'`);
     expect(fsState.rmCalls[0]).toBe(canonical);
   });
 

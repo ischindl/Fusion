@@ -244,12 +244,65 @@ export type GitMutationType =
    * {
    *   path: string;
    *   success: boolean;
-   *   reason?: "stale" | "active-session" | "git-remove-failed" | "fs-rm-failed" | "not-directory" | "stat-failed";
+   *   reason?: "stale" | "active-session" | "git-remove-failed" | "fs-rm-failed" | "not-directory" | "stat-failed"
+   *     // RUFU-290 registration-driven leg (see worktree-nested-registrations.ts):
+   *     | "nested-registration"          // reaped a registration nested inside a clean-room tree
+   *     | "outside-containment"          // registration found under `.ai-merge` but outside every scratch authority
+   *     | "registration-residue-pruned"  // directory already gone; `git worktree prune` cleared the record
    *   error?: string;
    * }
    * ```
    */
   | "worktree:tempdir-sweep"
+  /**
+   * RUFU-290: aggregate counters for the registration-driven nested pass. Metadata shape:
+   * ```ts
+   * {
+   *   authority: "clean-room-root" | "tmpdir" | "task-worktree";
+   *   foundCount: number;
+   *   removedCount: number;
+   *   failedCount: number;
+   * }
+   * ```
+   * Emitted through the bounded best-effort seam, so an absent, throwing, or hanging sink cannot
+   * change what was reaped. Paths live only on the per-path `worktree:tempdir-sweep` rows.
+   */
+  | "worktree:merge-temp-nested-removed"
+  /**
+   * RUFU-290: a nested scratch registration was found but deliberately left in place. Metadata shape:
+   * ```ts
+   * {
+   *   authority: "clean-room-root" | "tmpdir" | "task-worktree";
+   *   deferredCount: number;
+   *   deferredReason: "active-session" | "resume-reserved";
+   * }
+   * ```
+   * Sub-age entries are counted, not announced: one row per pass per fresh worktree would be noise,
+   * and the enumeration sweep stays silent for the same class.
+   */
+  | "worktree:merge-temp-nested-deferred"
+  /**
+   * RUFU-290: one pass over the worktree registrations left behind by a landing that removed its task
+   * worktree. A forced parent removal deletes the parent tree recursively without deregistering a nested
+   * child, so this is the only row that can show a landed card still leaking registrations. Metadata shape:
+   * ```ts
+   * {
+   *   foundCount: number;
+   *   removedCount: number;
+   *   residuePrunedCount: number;
+   *   residueRemainingCount: number;
+   *   failedCount: number;
+   *   deferredCount: number;
+   *   deferredReason?: "active-session";
+   *   outcome: "cleared" | "partial" | "deferred";
+   * }
+   * ```
+   * `residuePrunedCount` counts records whose directory already vanished with the parent and that prune
+   * then cleared, and `residueRemainingCount` is what the re-read still finds. Nested cleanup never
+   * changes the merge outcome, so a non-`cleared` outcome means a leak an operator can act on, not a
+   * failed landing. Paths, branch names, and error text are never recorded.
+   */
+  | "worktree:post-landing-nested-registration"
   | "merge:reuse-handoff-acquired"
   | "merge:reuse-handoff-refused"
   | "merge:reuse-handoff-released"

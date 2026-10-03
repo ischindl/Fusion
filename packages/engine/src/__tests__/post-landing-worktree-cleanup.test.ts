@@ -4,6 +4,7 @@ const {
   existsSyncMock,
   rmdirSyncMock,
   removeWorktreeMock,
+  describeRegisteredWorktreesMock,
   ActiveSessionWorktreeRemovalErrorMock,
 } = vi.hoisted(() => {
   class ActiveSessionWorktreeRemovalErrorMock extends Error {
@@ -16,6 +17,7 @@ const {
     existsSyncMock: vi.fn(),
     rmdirSyncMock: vi.fn(),
     removeWorktreeMock: vi.fn(),
+    describeRegisteredWorktreesMock: vi.fn(),
     ActiveSessionWorktreeRemovalErrorMock,
   };
 });
@@ -26,9 +28,29 @@ vi.mock("../worktree/worktree-backend.js", () => ({
   RemovalReason: { CompletionLandedCleanup: "completion-landed-cleanup" },
   removeWorktree: removeWorktreeMock,
 }));
+/*
+FNXC:TempWorktreeSweep 2026-10-02-19:55 (RUFU-290):
+RUFU-290 added a descendant-registration leg to this lane, and that leg reads `git worktree list
+--porcelain` through `describeRegisteredWorktrees`. Only that one export is replaced, so the real
+containment, deepest-first ordering, and veto logic under test still run while no git process is
+spawned against this file's fixture cwd (`/repo`, which does not exist). Every other export — notably
+`canonicalizePath`, which the lane uses for its own path identity — stays the real implementation.
+*/
+vi.mock("../worktree/worktree-pool.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../worktree/worktree-pool.js")>()),
+  describeRegisteredWorktrees: describeRegisteredWorktreesMock,
+}));
 
 import { finalizeProvenAutoMergeTask } from "../merge/auto-merge-finalization.js";
 import { cleanupLandedTaskWorktree, cleanupLandedWorkspaceTaskWorktrees } from "../merge/post-landing-worktree-cleanup.js";
+import { activeSessionRegistry } from "../agents/active-session-registry.js";
+
+/** Reset the shared registration inventory and session registry to a clean, empty baseline. */
+function resetRegistrationBaseline() {
+  describeRegisteredWorktreesMock.mockReset();
+  describeRegisteredWorktreesMock.mockResolvedValue({ rawOutput: "", canonicalized: [] });
+  activeSessionRegistry.clear();
+}
 
 function createFinalizationStore(options: { column?: string; worktree?: string | null } = {}) {
   const task: any = {
@@ -140,6 +162,7 @@ describe("cleanupLandedTaskWorktree", () => {
     rmdirSyncMock.mockReset();
     removeWorktreeMock.mockReset();
     removeWorktreeMock.mockResolvedValue({ removed: true, classification: "removed" });
+    resetRegistrationBaseline();
   });
 
   it.each([
@@ -483,6 +506,191 @@ describe("cleanupLandedTaskWorktree", () => {
   });
 });
 
+/*
+FNXC:TempWorktreeSweep 2026-10-02-19:55 (RUFU-290):
+Measured against real git, a forced parent removal (`git worktree remove --force <parent>`) deletes the
+parent tree recursively but leaves a worktree registered INSIDE it as a phantom entry in
+`git worktree list --porcelain` — the child keeps a path that no longer exists, and nothing else in the
+repo can enumerate it: the temp-merge sweep's containment is clean-room roots plus `os.tmpdir()`
+prefixes, and a task worktree path is neither. These cases pin the landing lane's share of the fix: the
+descendant pass runs only AFTER the parent removal and pointer clear, its containment is exactly the
+removed path, and a leak it cannot clear is reported rather than turning a durable landing into a failed
+merge.
+*/
+describe("cleanupLandedTaskWorktree — nested registration leg (RUFU-290)", () => {
+  const LANDED = "/repo/.fusion/worktrees/fn-251";
+  const NESTED = `${LANDED}/.fusion/worktrees/.ai-merge/probe-main`;
+  const UNRELATED = "/repo/.fusion/worktrees/fn-999";
+
+  /** The live inventory the mocked `git worktree list` answers with; each seam mutates it as it acts. */
+  let registered: string[];
+
+  beforeEach(() => {
+    existsSyncMock.mockReset();
+    existsSyncMock.mockReturnValue(true);
+    rmdirSyncMock.mockReset();
+    removeWorktreeMock.mockReset();
+    removeWorktreeMock.mockResolvedValue({ removed: true, classification: "removed" });
+    resetRegistrationBaseline();
+    registered = ["/repo", LANDED, NESTED];
+    describeRegisteredWorktreesMock.mockImplementation(async () => ({
+      rawOutput: registered.map((path) => `worktree ${path}`).join("\n"),
+      canonicalized: [...registered],
+    }));
+  });
+
+  function createLane() {
+    const { store, updateTask, logEntry } = createStore();
+    const auditGit = vi.fn().mockResolvedValue(undefined);
+    const deregister = (path: string) => { registered = registered.filter((candidate) => candidate !== path); };
+    return {
+      store,
+      updateTask,
+      logEntry,
+      auditGit,
+      removeRegistration: vi.fn(async (path: string) => { deregister(path); }),
+      removeDirectory: vi.fn(async () => true),
+      pruneAdminEntries: vi.fn(async () => { deregister(NESTED); }),
+    };
+  }
+
+  /** Every nested case needs an audit lane and the filesystem-free seams, so share that shape. */
+  function cleanupWithLane(lane: ReturnType<typeof createLane>, seams: Record<string, unknown> = {}) {
+    return cleanupLandedTaskWorktree({
+      store: lane.store as never,
+      taskId: "FN-251",
+      worktreePath: LANDED,
+      rootDir: "/repo",
+      source: "test",
+      audit: { git: lane.auditGit } as never,
+      nestedRegistrationSeams: {
+        removeRegistration: lane.removeRegistration,
+        removeDirectory: lane.removeDirectory,
+        pruneAdminEntries: lane.pruneAdminEntries,
+        ...seams,
+      },
+    });
+  }
+
+  it("clears the registration a forced parent removal left behind, without a git removal for a phantom path", async () => {
+    const lane = createLane();
+
+    await expect(cleanupWithLane(lane, {
+      // The measured real-git shape: the forced parent removal deleted the child tree with the parent,
+      // so only its registration survives and only `git worktree prune` can clear that record.
+      pathExists: (path: string) => path !== NESTED,
+    })).resolves.toEqual({
+      outcome: "removed",
+      removed: true,
+      nestedRegistrations: { found: 1, removed: 0, residuePruned: 1, remaining: 0 },
+    });
+
+    expect(describeRegisteredWorktreesMock).toHaveBeenCalledWith("/repo");
+    expect(lane.removeRegistration).not.toHaveBeenCalled();
+    expect(lane.removeDirectory).not.toHaveBeenCalled();
+    expect(lane.pruneAdminEntries).toHaveBeenCalledOnce();
+    expect(lane.updateTask).toHaveBeenCalledWith("FN-251", { worktree: null });
+
+    expect(lane.auditGit).toHaveBeenCalledWith(expect.objectContaining({
+      type: "worktree:post-landing-nested-registration",
+      target: "task:FN-251",
+      metadata: expect.objectContaining({
+        foundCount: 1,
+        removedCount: 0,
+        residuePrunedCount: 1,
+        residueRemainingCount: 0,
+        outcome: "cleared",
+      }),
+    }));
+    // Audit metadata stays ids/counts-only: the surviving path belongs on the card log, never in the row.
+    expect(JSON.stringify(lane.auditGit.mock.calls[0][0])).not.toContain("probe-main");
+  });
+
+  it("deregisters and sweeps a nested registration whose directory is still on disk", async () => {
+    const lane = createLane();
+
+    await expect(cleanupWithLane(lane)).resolves.toEqual({
+      outcome: "removed",
+      removed: true,
+      nestedRegistrations: { found: 1, removed: 1, residuePruned: 0, remaining: 0 },
+    });
+
+    expect(lane.removeRegistration).toHaveBeenCalledWith(NESTED);
+    expect(lane.removeDirectory).toHaveBeenCalledWith(NESTED);
+    expect(lane.pruneAdminEntries).not.toHaveBeenCalled();
+    expect(lane.auditGit).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({ removedCount: 1, outcome: "cleared" }),
+    }));
+  });
+
+  it("leaves a nested registration a live session is still driving, and still reports the landing as removed", async () => {
+    const lane = createLane();
+    activeSessionRegistry.registerPath(NESTED, { taskId: "FN-251", kind: "workflow-step", ownerKey: "FN-251#step" });
+
+    // The landing already succeeded; a child this lane may not touch defers, and must not rename the outcome.
+    await expect(cleanupWithLane(lane)).resolves.toEqual({
+      outcome: "removed",
+      removed: true,
+      nestedRegistrations: { found: 1, removed: 0, residuePruned: 0, remaining: 1 },
+    });
+
+    expect(lane.removeRegistration).not.toHaveBeenCalled();
+    expect(lane.removeDirectory).not.toHaveBeenCalled();
+    expect(registered).toContain(NESTED);
+    expect(lane.auditGit).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({
+        foundCount: 1,
+        deferredCount: 1,
+        deferredReason: "active-session",
+        outcome: "deferred",
+      }),
+    }));
+  });
+
+  it("does no nested work at all when a gate preserved the landed worktree", async () => {
+    const lane = createLane();
+    removeWorktreeMock.mockRejectedValueOnce(new ActiveSessionWorktreeRemovalErrorMock());
+
+    await expect(cleanupWithLane(lane)).resolves.toMatchObject({ outcome: "preserved-active-session", removed: false });
+
+    // The descendant leg runs only after a proven removal: a preserved tree still owns everything inside it.
+    expect(describeRegisteredWorktreesMock).not.toHaveBeenCalled();
+    expect(lane.removeRegistration).not.toHaveBeenCalled();
+    expect(lane.pruneAdminEntries).not.toHaveBeenCalled();
+    expect(lane.auditGit).not.toHaveBeenCalled();
+  });
+
+  it("leaves a registration outside the removed worktree path untouched", async () => {
+    const lane = createLane();
+    registered = ["/repo", LANDED, UNRELATED];
+
+    // Nothing contained: the result carries no nested summary at all, so a clean landing stays quiet.
+    await expect(cleanupWithLane(lane)).resolves.toEqual({ outcome: "removed", removed: true });
+
+    expect(registered).toContain(UNRELATED);
+    expect(lane.removeRegistration).not.toHaveBeenCalled();
+    expect(lane.removeDirectory).not.toHaveBeenCalled();
+    expect(lane.pruneAdminEntries).not.toHaveBeenCalled();
+    expect(lane.auditGit).not.toHaveBeenCalled();
+  });
+
+  it("reports a leak it could not clear as a partial pass instead of failing the landing", async () => {
+    const lane = createLane();
+    lane.pruneAdminEntries.mockRejectedValue(new Error("prune refused by a locked admin directory"));
+
+    await expect(cleanupWithLane(lane, { pathExists: (path: string) => path !== NESTED })).resolves.toEqual({
+      outcome: "removed",
+      removed: true,
+      nestedRegistrations: { found: 1, removed: 0, residuePruned: 0, remaining: 1 },
+    });
+
+    // The commits are already on the default branch: the leak is recorded for an operator, not a merge failure.
+    expect(lane.auditGit).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({ foundCount: 1, residuePrunedCount: 0, residueRemainingCount: 1, outcome: "partial" }),
+    }));
+  });
+});
+
 describe("cleanupLandedWorkspaceTaskWorktrees", () => {
   beforeEach(() => {
     existsSyncMock.mockReset();
@@ -490,6 +698,7 @@ describe("cleanupLandedWorkspaceTaskWorktrees", () => {
     rmdirSyncMock.mockReset();
     removeWorktreeMock.mockReset();
     removeWorktreeMock.mockResolvedValue({ removed: true, classification: "removed" });
+    resetRegistrationBaseline();
   });
 
   function workspaceTask(workspaceWorktrees: Record<string, { worktreePath: string; branch: string }>) {
@@ -551,6 +760,49 @@ describe("cleanupLandedWorkspaceTaskWorktrees", () => {
     ]));
     expect(rmdirSyncMock).not.toHaveBeenCalled();
     expect(logEntry).toHaveBeenCalledWith("FN-268", "Post-landing worktree cleanup preserved", expect.stringContaining("deliverable"));
+  });
+
+  /*
+  FNXC:TempWorktreeSweep 2026-10-02-20:50 (RUFU-290):
+  A workspace delivers as one unit, so one preserved member stops the task-directory retirement — but a
+  sibling member WAS removed, and a registration its forced removal left behind is a leak the caller still
+  has to see. This case pins that the nested tally rides out on the partial-landing result too.
+  */
+  it("reports a removed member's nested leak even when a sibling member was preserved", async () => {
+    const { store } = createStore();
+    const apiPath = "/workspace/.fusion/worktrees/fn-268/api";
+    const nested = `${apiPath}/.fusion/worktrees/.ai-merge/probe`;
+    let registered = ["/workspace", apiPath, nested];
+    describeRegisteredWorktreesMock.mockImplementation(async () => ({
+      rawOutput: registered.map((path) => `worktree ${path}`).join("\n"),
+      canonicalized: [...registered],
+    }));
+    removeWorktreeMock.mockImplementation(async (opts: { rootDir: string }) => {
+      if (opts.rootDir === "/workspace/web") throw new ActiveSessionWorktreeRemovalErrorMock();
+      return { removed: true, classification: "removed" };
+    });
+    const task = workspaceTask({
+      api: { worktreePath: apiPath, branch: "fusion/fn-268" },
+      web: { worktreePath: "/workspace/.fusion/worktrees/fn-268/web", branch: "fusion/fn-268" },
+    });
+
+    const result = await cleanupLandedWorkspaceTaskWorktrees({
+      store: store as never,
+      task,
+      workspaceRootDir: "/workspace",
+      source: "workspace-finalize",
+      nestedRegistrationSeams: {
+        removeRegistration: async (path: string) => { registered = registered.filter((candidate) => candidate !== path); },
+        removeDirectory: async () => true,
+        pruneAdminEntries: async () => {},
+      },
+    });
+
+    expect(result.removedRepoRels).toEqual(["api"]);
+    // The retirement branch never runs, yet the removed member's leak is still on the result.
+    expect(result.taskDirectoryRemoved).toBe(false);
+    expect(result.nestedRegistrations).toEqual({ found: 1, removed: 1, residuePruned: 0, remaining: 0 });
+    expect(registered).not.toContain(nested);
   });
 
   it("settles absent paths and removes a duplicate recorded path only once", async () => {
