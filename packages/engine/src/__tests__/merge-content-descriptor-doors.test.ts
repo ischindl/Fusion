@@ -75,7 +75,16 @@ describe("FN-180 merge content descriptor doors", () => {
       new URL("../merge/merge-content-capture.ts", import.meta.url), "utf8",
     );
     expect(source).toContain("captureWorkspaceReviewEvidence");
-    expect(source).toContain('state: "unavailable", reason: "workspace-evidence-capture-failed"');
+    /*
+    FNXC:TestAssertions 2026-10-03-01:12 (RUFU-519): this used to pin the whole statement
+    `state: "unavailable", reason: "workspace-evidence-capture-failed"`, so any change to that line's
+    SHAPE failed the test even when behavior was identical. RUFU-519 adds a second, named reason for a
+    member whose worktree is gone, which necessarily reflows the statement. The construct worth guarding
+    is that an unavailable workspace capture always carries a reason constant; the actual reason values
+    and their behavior are asserted in `workspace-member-evidence.test.ts` against real git fixtures.
+    */
+    expect(source).toContain("workspace-evidence-capture-failed");
+    expect(source).toContain("WorkspaceMemberEvidenceError");
     expect(source).not.toContain("reviewInputFingerprint");
   });
 });

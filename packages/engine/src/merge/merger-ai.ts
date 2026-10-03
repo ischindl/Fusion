@@ -86,7 +86,7 @@ import { probeReviewDiffFingerprint } from "../worktree/review-diff-fingerprint.
 import { isMergeActiveStatus, shouldClearOrphanedMergeStamp } from "./merge-active-status.js";
 
 import { recordWorkspaceBaseBranchDecision, resolveWorkspaceRepoBaseBranch } from "../worktree/workspace-base-branch.js";
-import { captureWorkspaceReviewEvidence } from "../worktree/workspace-review-evidence.js";
+import { captureWorkspaceReviewEvidence, WorkspaceMemberEvidenceError } from "../worktree/workspace-review-evidence.js";
 import { advanceIntegrationBranchRef } from "./merger-ref-update-advance.js";
 import { enforceAiMergeSquashGates } from "./merger-ai-squash-gates.js";
 /*
@@ -2708,7 +2708,14 @@ export async function landWorkspaceTask(
   try {
     mergeEvidence = await captureWorkspaceReviewEvidence({ task: mergeBoundaryTask, workspaceRootDir, settings });
   } catch (error) {
-    throw new Error(`Cannot capture fresh merge evidence for workspace task ${taskId}: ${getErrorMessage(error)}`);
+    /*
+    FNXC:WorkspaceReviewEvidence 2026-10-03-01:14 (RUFU-519): a raw git message reached the operator as
+    `Cannot capture fresh merge evidence ...: fatal: Needed a single revision`, which names no
+    repository and no condition. A known member failure now reports which repository and why.
+    */
+    throw new Error(`Cannot capture fresh merge evidence for workspace task ${taskId}: ${
+      error instanceof WorkspaceMemberEvidenceError ? `${error.classification} - ${error.message}` : getErrorMessage(error)
+    }`);
   }
   if (mergeEvidence.outOfScopeRepositories.size > 0) {
     throw new Error(`Workspace repositories modified outside confirmed scope for ${taskId}: ${[...mergeEvidence.outOfScopeRepositories].sort().join(", ")}`);

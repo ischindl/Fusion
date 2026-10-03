@@ -2,7 +2,10 @@ import type { MergeContentDescriptor, Task } from "@fusion/core";
 import { describeMergeContentShape } from "@fusion/core";
 import { resolveDiffBaseRef } from "../executor/worktree-git-refs.js";
 import { probeReviewDiffFingerprint } from "../worktree/review-diff-fingerprint.js";
-import { captureWorkspaceReviewEvidence } from "../worktree/workspace-review-evidence.js";
+import {
+  captureWorkspaceReviewEvidence,
+  WorkspaceMemberEvidenceError,
+} from "../worktree/workspace-review-evidence.js";
 
 export type MergeContentCaptureDeps = {
   workspaceRootDir: string;
@@ -36,8 +39,22 @@ export async function captureMergeContentDescriptor(
           inScopeModified: [...evidence.modifiedRepositories].sort(),
         },
       };
-    } catch {
-      return { kind: "workspace", repositories: { state: "unavailable", reason: "workspace-evidence-capture-failed" } };
+    } catch (error) {
+      /*
+      FNXC:WorkspaceReviewEvidence 2026-10-03-00:57 (RUFU-519): the reason is the only thing that survives
+      into `getTaskMergeBlocker` and the sweep's `gatesSatisfied`, so a swallowed git error made a card
+      that could never be merge look like a card that was merely not ready yet. Keep the generic bucket
+      for unknown failures, name the known one.
+      */
+      return {
+        kind: "workspace",
+        repositories: {
+          state: "unavailable",
+          reason: error instanceof WorkspaceMemberEvidenceError
+            ? error.classification
+            : "workspace-evidence-capture-failed",
+        },
+      };
     }
   }
 
