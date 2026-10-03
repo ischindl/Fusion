@@ -19,6 +19,7 @@ import { IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON, type Task, type TaskStore } from
 
 import {
   MAX_POST_MERGE_GATE_RESEED_ATTEMPTS,
+  isTerminalPostMergeReseedRefusal,
   postMergeGateReseedLogMarker,
   resumeMissingPostMergeGate,
 } from "../merge/post-merge-gate-reseed.js";
@@ -232,16 +233,19 @@ describe("resumeMissingPostMergeGate", () => {
   });
 
   /*
-  FNXC:PostMergeReseedBudget 2026-10-03-07:12 (RUFU-502):
-  An unreadable durable row must not read as a fresh budget — that is the exact false evidence this
-  counter exists to bound, so the rejection propagates and nothing is seeded.
+  FNXC:PostMergeReseedBudget 2026-10-03-08:13 (RUFU-502 review, finding F2):
+  An unreadable durable row must not read as a fresh budget AND must not throw past the caller's batch
+  loop: the seam answers with the named refusal, seeds nothing, and lets the next card in the pass run.
+  It is deliberately NOT terminal — a later pass can read the row fine.
   */
-  it("seeds nothing when the durable read fails, instead of reading a fresh budget", async () => {
+  it("names an unreadable durable read instead of reading a fresh budget or cancelling the pass", async () => {
     const { store, calls } = fakeStore({ durableReadFails: true });
 
-    await expect(
-      resumeMissingPostMergeGate(store, task(), { source: "self-healing", contract: undefined }),
-    ).rejects.toThrow("durable read unavailable");
+    const result = await resumeMissingPostMergeGate(store, task(), { source: "self-healing", contract: undefined });
+
+    expect(result.outcome).toBe("not-seeded");
+    expect(result.reason).toBe("durable-read-unavailable");
+    expect(isTerminalPostMergeReseedRefusal(result.reason)).toBe(false);
     expect(calls.seed).toHaveLength(0);
     expect(calls.logged).toHaveLength(0);
   });

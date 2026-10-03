@@ -65,7 +65,8 @@ export type PostMergeGateReseedReason =
   | "rerun-budget-exhausted"
   | "active-continuation"
   | "task-state-changed"
-  | "unsupported-store";
+  | "unsupported-store"
+  | "durable-read-unavailable";
 
 export interface PostMergeGateReseedResult {
   /** `seeded` means a new idle continuation was installed; nothing else claims a verdict. */
@@ -89,6 +90,33 @@ const TERMINAL_POST_MERGE_RESEED_REFUSALS = new Set<PostMergeGateReseedReason>([
 export function isTerminalPostMergeReseedRefusal(reason: PostMergeGateReseedReason): boolean {
   return TERMINAL_POST_MERGE_RESEED_REFUSALS.has(reason);
 }
+
+/*
+FNXC:PostMergeReseedBudget 2026-10-03-08:13 (RUFU-502 review, finding F2):
+The durable budget read fails closed on purpose, but a thrown read must not cancel a recovery BATCH. Four
+of the five callers awaited this seam bare: the two self-healing passes were guarded only by a try around
+their whole for-loop whose catch logs and returns 0, so ONE card whose durable row throws (`TaskNotFoundError`
+is the real missing-row shape that loop itself expects) cancelled every later card in the batch and reported
+a result indistinguishable from "nothing to recover", with no card row and no run-audit.
+
+The seam therefore never throws: an unreadable budget becomes the NAMED refusal `durable-read-unavailable`
+and the pass moves on to the next card. The fail-closed decision is unchanged — no proof of the budget means
+no seed — only its delivery is. This is also why the reason is not swallowed into a boolean: callers own
+reporting it, and `isTerminalPostMergeReseedRefusal` plus the lane log lines are where an operator sees it.
+*/
+export async function resumeMissingPostMergeGate(
+  store: TaskStore,
+  task: Task,
+  options: Parameters<typeof runPostMergeGateResume>[2],
+): Promise<PostMergeGateReseedResult> {
+  try {
+    return await runPostMergeGateResume(store, task, options);
+  } catch {
+    return { outcome: "not-seeded", reason: "durable-read-unavailable" };
+  }
+}
+
+/** Counts persisted resume markers for one gate, hydrating the log when the row came slimmed. */
 
 /*
 FNXC:UnrunPostMergeGateRecovery 2026-10-01-09:01:
@@ -169,7 +197,7 @@ function hasFreshCheckoutLease(
  * REVISE) stay authoritative, and no verdict is fabricated. `contract` is required — see the core seam —
  * because a derived demand must be read with the same fact the finalizer used to decide it is missing.
  */
-export async function resumeMissingPostMergeGate(
+async function runPostMergeGateResume(
   store: TaskStore,
   task: Task,
   options: {
