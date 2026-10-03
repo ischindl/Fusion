@@ -108,9 +108,36 @@ export function postMergeGateReseedLogMarker(gateId: string): string {
 /** Our pre-sync sentence, still counted so a card seeded by the earlier build does not get a fresh budget. */
 const LEGACY_RESEED_LOG_MARKER = "[post-merge-gate-reseed] gate";
 
-/** Counts persisted resume markers for one gate, hydrating the log when the row came slimmed. */
+/*
+FNXC:PostMergeReseedBudget 2026-10-03-07:12 (RUFU-502):
+The budget counts from the DURABLE row, never from the `task` projection the caller handed us. An empty
+log is a PROJECTION, not an absence: `listTasks({ slim: true })`, the modified-since prelude and search
+all answer `log: []` for a card whose durable log still holds every marker, so the original
+`Array.isArray(task.log) ? task.log : hydrate` arm was dead code — the array test passed, the store arm
+never ran, and the counter read zero attempts forever. Measured provenance of the two lanes that feed
+slim rows: `self-healing.ts:3827` (card from `stuckById`, built by `listTasks({ slim: true })`) and
+`self-healing.ts:3968` (card straight from `listTasks({ slim: true })`). The three hydrated callers
+(`auto-merge-finalization.ts:423`, `self-healing.ts:4256`, `self-healing.ts:17488`) already worked, which
+is why the bound looked live from the finalize lane while the recovery lanes deferred without limit.
+Same defect, same shape as RUFU-452's fix on the pre-merge counter.
+
+A REJECTED read is fail-closed: the error propagates instead of being swallowed to zero attempts, so an
+unreadable durable row seeds nothing — a lane whose whole failure mode is re-seeding on false evidence of
+a fresh budget must not treat a flaky read as a fresh budget. A `null` row (fake/legacy store shape)
+remains decision-neutral and counts zero, exactly like the pre-fix `?.log ?? []` arm; the real store's
+missing-row shape is a `TaskNotFoundError` throw and takes the rejection path.
+
+The bound is the retained window, stated rather than assumed: the activity log keeps only its most recent
+1,000 entries (`logEntryImpl` splices the front on append), so a card churning past that after its
+markers can earn one further re-seed. That is bounded degradation of a ceiling, not the unbounded loop
+this read replaces. `store.getTask` is safe off-lock here: it takes the non-reentrant per-task advisory
+lock and no stack that reaches this seam holds it — `withTaskLock` call sites are triage, agent-tools and
+`moves.ts`, none of which call `resumeMissingPostMergeGate`.
+*/
 async function countReseedAttempts(store: TaskStore, task: Task, gateId: string): Promise<number> {
-  const log = Array.isArray(task.log) ? task.log : ((await store.getTask(task.id))?.log ?? []);
+  // No `.catch`: a rejected read must not be mistaken for "no attempts" — see the FNXC note above.
+  const live = await store.getTask(task.id);
+  const log = Array.isArray(live?.log) ? live.log : [];
   const quoted = `'${gateId}'`;
   return log.filter((entry) => {
     const action = typeof entry.action === "string" ? entry.action : "";

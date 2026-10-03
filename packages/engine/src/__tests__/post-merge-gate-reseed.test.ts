@@ -78,6 +78,19 @@ function task(overrides: Partial<Task> = {}): Task {
 interface FakeOptions {
   seedResult?: { seeded: boolean; reason?: string };
   selectionReads?: boolean;
+  /**
+   * The DURABLE log, i.e. what `store.getTask` returns. Kept deliberately separate from the `task`
+   * projection the caller hands the seam: the re-seed budget reads the former and a test that seeds
+   * only the projection asserts the pre-RUFU-502 behavior.
+   */
+  durableLog?: Array<{ action: string }>;
+  /**
+   * Model the real append path: every marker the seam writes becomes visible to the NEXT durable read.
+   * Without this, a growth test would have to hand-write each pass's log by hand.
+   */
+  accumulatesLog?: boolean;
+  /** A hostile sink: the durable read itself fails, which must not read as "no attempts yet". */
+  durableReadFails?: boolean;
 }
 
 function fakeStore(options: FakeOptions = {}) {
@@ -104,7 +117,16 @@ function fakeStore(options: FakeOptions = {}) {
     },
     logEntry: async (_id: string, action: string) => { calls.logged.push(action); },
     recordRunAuditEvent: async (event: Record<string, unknown>) => { calls.audits.push(event); },
-    getTask: async () => null,
+    /*
+    FNXC:PostMergeReseedBudget 2026-10-03-07:12 (RUFU-502): the durable read, not the projection. The
+    default `null` is the fake-store shape the counter treats as zero attempts; `accumulatesLog` makes
+    the seam's own `logEntry` writes visible to the next read, the way production's append does.
+    */
+    getTask: async () => {
+      if (options.durableReadFails) throw new Error("durable read unavailable");
+      if (options.accumulatesLog) return { log: calls.logged.map((action) => ({ action })) };
+      return options.durableLog ? { log: options.durableLog } : null;
+    },
   };
   return { store: store as unknown as TaskStore, calls };
 }
@@ -144,20 +166,84 @@ describe("resumeMissingPostMergeGate", () => {
     expect(calls.logged).toHaveLength(0);
   });
 
+  /*
+  FNXC:PostMergeReseedBudget 2026-10-03-07:12 (RUFU-502): the markers live in the DURABLE log. Before the
+  fix this test passed markers through the `task` projection, which is exactly the shape production hands
+  this lane (`listTasks({ slim: true })` answers `log: []`), so it was pinning the dead arm.
+  */
   it("stops after the durable per-gate budget, because finalize retries forever", async () => {
     const marker = postMergeGateReseedLogMarker(GATE_ID);
-    const spent = task({
-      log: Array.from({ length: MAX_POST_MERGE_GATE_RESEED_ATTEMPTS }, (_, index) => ({
+    const spent = task();
+    const { store, calls } = fakeStore({
+      durableLog: Array.from({ length: MAX_POST_MERGE_GATE_RESEED_ATTEMPTS }, (_, index) => ({
         action: `${marker} attempt ${index}`,
       })),
-    } as never);
-    const { store, calls } = fakeStore();
+    });
 
     const result = await resumeMissingPostMergeGate(store, spent, { source: "self-healing", contract: undefined });
 
     expect(result.reason).toBe("rerun-budget-exhausted");
     expect(result.priorAttemptCount).toBe(MAX_POST_MERGE_GATE_RESEED_ATTEMPTS);
     expect(calls.seed).toHaveLength(0);
+  });
+
+  /*
+  FNXC:PostMergeReseedBudget 2026-10-03-07:12 (RUFU-502), Requirement 3:
+  The card stands where a board read hands `log: []` while the durable log accumulates every marker the
+  seam writes. The assertion is the GROWING counter, not an early refusal: with a ceiling of 3 the first
+  three passes run (from durable states 0, 1, 2) and only the fourth is refused. Pre-fix every pass read
+  zero, so all four seeded and each marker claimed `reseed 1 of 3`.
+  */
+  it("counts its own markers across passes when the board read hands an empty projection", async () => {
+    const { store, calls } = fakeStore({ accumulatesLog: true });
+    const slimCard = task({ log: [] } as never);
+
+    const passes: Array<number | undefined> = [];
+    for (let pass = 0; pass < MAX_POST_MERGE_GATE_RESEED_ATTEMPTS + 1; pass += 1) {
+      const result = await resumeMissingPostMergeGate(store, slimCard, { source: "self-healing", contract: undefined });
+      passes.push(result.priorAttemptCount);
+      if (result.outcome !== "seeded") expect(result.reason).toBe("rerun-budget-exhausted");
+    }
+
+    expect(passes).toEqual([0, 1, 2, 3]);
+    // Three seeds, then the fourth pass is refused: the ceiling is enforced, and enforced late enough
+    // that a single flaky gate still gets its three real runs.
+    expect(calls.seed).toHaveLength(MAX_POST_MERGE_GATE_RESEED_ATTEMPTS);
+    // Requirement 2: the marker names the attempt it actually is, so the durable log cannot lie.
+    expect(calls.logged.map((line) => line.match(/reseed (\d+) of (\d+)/)?.[0]))
+      .toEqual(["reseed 1 of 3", "reseed 2 of 3", "reseed 3 of 3"]);
+  });
+
+  it("does not let another gate's durable markers spend this gate's budget", async () => {
+    const otherGate = "post-merge-other-check";
+    const { store, calls } = fakeStore({
+      durableLog: [
+        { action: `${postMergeGateReseedLogMarker(otherGate)}; (reseed 1 of 3)` },
+        { action: `[post-merge-gate-reseed] gate '${otherGate}'` },
+        { action: `[post-merge-gate-reseed] gate '${otherGate}' attempt 2` },
+      ],
+    });
+
+    const result = await resumeMissingPostMergeGate(store, task(), { source: "self-healing", contract: undefined });
+
+    expect(result.outcome).toBe("seeded");
+    expect(result.priorAttemptCount).toBe(0);
+    expect(calls.seed).toHaveLength(1);
+  });
+
+  /*
+  FNXC:PostMergeReseedBudget 2026-10-03-07:12 (RUFU-502):
+  An unreadable durable row must not read as a fresh budget — that is the exact false evidence this
+  counter exists to bound, so the rejection propagates and nothing is seeded.
+  */
+  it("seeds nothing when the durable read fails, instead of reading a fresh budget", async () => {
+    const { store, calls } = fakeStore({ durableReadFails: true });
+
+    await expect(
+      resumeMissingPostMergeGate(store, task(), { source: "self-healing", contract: undefined }),
+    ).rejects.toThrow("durable read unavailable");
+    expect(calls.seed).toHaveLength(0);
+    expect(calls.logged).toHaveLength(0);
   });
 
   it("treats every operator hold as absolute, and admits only the stall park it is undoing", async () => {
