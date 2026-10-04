@@ -45,12 +45,33 @@ A planning-only card owns neither checkout form and therefore owns no file-scope
 serializes planning. A hold-lane card retaining a real checkout after execution still owns unmerged work
 and deliberately keeps its dormant lease. Checkout evidence, not a column exception, decides the outcome.
 */
+/*
+FNXC:OverlapScheduling 2026-10-04-15:40 (upstream merge 59524b0457):
+Kept at this fork's shape. Upstream added a `task.mergeDetails?.mergeConfirmed === true` early return here,
+but that guard belongs to the post-merge-recovery refactor this merge deliberately declines, and no declined
+caller exists to set it. A guard whose producer is absent is a silent lease drop, so it is NOT ported.
+*/
 export function taskHoldsUnmergedCheckout(
-      task: Pick<Task, "worktree" | "workspaceWorktrees" | "mergeDetails">,
-      checkoutEmptiness?: CheckoutEmptinessProofMap,
+  task: Pick<Task, "worktree" | "workspaceWorktrees">,
+  checkoutEmptiness?: CheckoutEmptinessProofMap,
 ): boolean {
-      task: Pick<Task, "worktree" | "workspaceWorktrees" | "mergeDetails">,
-      checkoutEmptiness?: CheckoutEmptinessProofMap,
+  const retainedKeys: string[] = [];
+  if (typeof task.worktree === "string" && task.worktree.trim()) retainedKeys.push("");
+  for (const [repoKey, entry] of Object.entries(task.workspaceWorktrees ?? {})) {
+    if (typeof entry?.worktreePath === "string" && entry.worktreePath.trim().length > 0) {
+      retainedKeys.push(repoKey);
+    }
+  }
+  if (retainedKeys.length === 0) return false;
+  if (!checkoutEmptiness) return true;
+
+  /*
+  FNXC:WorkspaceFileOverlap 2026-09-08-19:50 (RUFU-200):
+  The emptiness test is per repository, never all-or-nothing: a workspace card whose `packages/cli`
+  checkout is clean-and-behind but whose `packages/engine` checkout is one commit ahead still owns
+  unmerged work and keeps its lease. Downgrade requires EVERY retained entry to be proven `empty`.
+  */
+  return retainedKeys.some((key) => checkoutEmptiness.get(key) !== "empty");
 }
 
 function normalizeWorkspaceScopePath(value: string): string {

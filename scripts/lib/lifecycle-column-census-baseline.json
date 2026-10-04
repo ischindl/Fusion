@@ -1,14 +1,18 @@
 {
   "generatedFrom": "node scripts/lifecycle-column-census.mjs --strict --update-baseline",
   "byFile": {
-    "packages/engine/src/execution/hold-release.ts": 3
+    "packages/engine/src/execution/hold-release.ts": 3,
+    "packages/core/src/task-store/human-merge-approval-ops.ts": 1,
+    "packages/core/src/task-store/moves.ts": 1,
+    "packages/core/src/tasks/task-comment-delivery.ts": 1,
+    "packages/dashboard/app/components/TaskContextMenu.tsx": 1
   },
   "deliberateByFile": {
     "packages/core/src/task-store/async/async-comments-attachments.ts\u0000archived": 6,
     "packages/core/src/task-store/archive-reintegration.ts\u0000archived": 4,
     "packages/engine/src/scheduler.ts\u0000in-progress": 4,
+    "packages/engine/src/scheduler.ts\u0000in-review": 4,
     "packages/engine/src/scheduler.ts\u0000done": 3,
-    "packages/engine/src/scheduler.ts\u0000in-review": 3,
     "packages/engine/src/self-healing.ts\u0000done": 3,
     "packages/engine/src/self-healing.ts\u0000in-review": 3,
     "packages/core/src/agents/live-agent-count.ts\u0000in-review": 2,
