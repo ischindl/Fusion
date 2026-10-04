@@ -130,6 +130,7 @@ import {
   // FNXC:MergeRebuild0919 2026-09-19-21:45: both sides added this binding; the clean merge duplicated it.
   REVIEW_LANE_LEDGER_VERSION,
   OVERLAP_OWNER_FK_DEFERRABLE_REPAIR_VERSION,
+  STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_VERSION,
 } from "../../postgres/schema-applier.js";
 import { ProjectPartitionRekeyError, rekeyFallbackProjectPartition } from "../../postgres/migration-stamping.js";
 import type { PluginSchemaInitHook } from "../../postgres/plugin-schema-hook.js";
@@ -229,10 +230,23 @@ describe("schema-applier: immutable migration identities", () => {
     drop-excluded-feature schema), and this line does NOT apply either, so the ledger renumbered again to
     0086 — the released 0074-0083 identities above stay pinned exactly as they are.
     */
-    expect(REVIEW_LANE_LEDGER_VERSION).toBe("0086");
+    /*
+    FNXC:MigrationIdentity 2026-10-04-11:59: merge `19814793f4` (layer origin/main 007ec83a9d) landed upstream
+    filenames 0088/0089 and renumbered this fork's review-lane ledger 0086 -> 0088 in `schema-applier.ts`, but
+    left this assertion on the old identity. The constant is what `fusion_schema_migrations` gates on, so the
+    test was pinning an identity the shipped code no longer uses.
+    */
+    expect(REVIEW_LANE_LEDGER_VERSION).toBe("0088");
     /* FNXC:OverlapWait 2026-09-21-10:10: 0087 repairs this line's 0075 owner FK to ON UPDATE CASCADE DEFERRABLE (upstream b1db055c27). */
     expect(OVERLAP_OWNER_FK_DEFERRABLE_REPAIR_VERSION).toBe("0087");
-    expect(SCHEMA_BASELINE_VERSION).toBe("0087");
+    /*
+    FNXC:MigrationIdentity 2026-10-04-11:59: upstream's stale-receipt-rekey repair is identity 0089 and is now
+    the schema baseline. Both 0088 and 0089 are written entirely with `IF NOT EXISTS`, so a database that
+    stamped an earlier identity for the ledger re-runs them harmlessly instead of silently skipping a schema
+    change — which is what makes renumbering a published identity survivable here.
+    */
+    expect(STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_VERSION).toBe("0089");
+    expect(SCHEMA_BASELINE_VERSION).toBe("0089");
   });
 
   it("keeps monitor and approval isolation assigned to version 0003", () => {
@@ -883,7 +897,7 @@ pgDescribe("schema-applier: VAL-SCHEMA-001 final-schema parity (table counts)", 
     ctx = null;
   });
 
-  it("creates all 120 project tables, 17 central tables, 1 archive table", async () => {
+  it("creates all 123 project tables, 17 central tables, 1 archive table", async () => {
     ctx = await setupFreshDb();
     // FNXC:PostgresCutover 2026-07-05-15:55: apply the BASELINE only.
     // applySchemaBaseline now runs the plugin schema-init hooks by default,
@@ -931,8 +945,11 @@ pgDescribe("schema-applier: VAL-SCHEMA-001 final-schema parity (table counts)", 
     FNXC:PgSchemaApplier 2026-09-16-14:10 (merge origin/main):
     Upstream's workflow-identity/approval/pause migrations add two tables over the 120 that already
     counted the review-lane ledger table; the merged fresh-baseline total is 122.
+
+    FNXC:MigrationIdentity 2026-10-04-11:59: upstream's `0089_fn_9429` receipt table adds one more, so the
+    fresh-baseline project count is 123.
     */
-    expect(bySchema.project).toBe(122);    /*
+    expect(bySchema.project).toBe(123);    /*
     FNXC:CapacityModel 2026-07-29-08:10 (drop the cross-project cap — table half):
     17, not 18: `central.global_concurrency` is dropped by migration 0037. A fresh
     database still CREATEs it from the historical 0000 baseline and then drops it,
@@ -1170,6 +1187,38 @@ pgDescribe("schema-applier: VAL-SCHEMA-001 final-schema parity (table counts)", 
     `)) as unknown as Array<{ column_name: string }>;
     expect(columns).toEqual([{ column_name: "require_plan_approval" }]);
     expect(await getAppliedMigrations(ctx.db)).toContain(TASK_REQUIRE_PLAN_APPROVAL_VERSION);
+  });
+
+  /*
+  FNXC:StaleReviewCallbackWaiver 2026-10-04-12:15:
+  Regression for the shape production actually carries. Merge `19814793f4` re-issued FN-9429 as 0089 from an
+  earlier copy of upstream's migration and dropped `ON UPDATE CASCADE` from the composite task FK, so the
+  fallback-partition rekey refused with `unsafe-fk-update-graph:
+  project.stale_review_callback_waiver_receipts -> project.tasks`. That database already stamped 0089, so the
+  migration file never re-runs — the FK's update action is therefore part of the receipt drift probe.
+  Asserted on the exact reported shape: marker present, FK without ON UPDATE CASCADE, one applier pass.
+  */
+  it("repairs a recorded 0089 receipt FK that does not cascade on update", async () => {
+    ctx = await setupFreshDb();
+    await applySchemaBaseline(ctx.db, { pluginHooks: [] });
+    await ctx.db.execute(sql.raw(`
+      ALTER TABLE project.stale_review_callback_waiver_receipts
+        DROP CONSTRAINT stale_review_callback_waiver_receipts_task_fk;
+      ALTER TABLE project.stale_review_callback_waiver_receipts
+        ADD CONSTRAINT stale_review_callback_waiver_receipts_task_fk
+        FOREIGN KEY (project_id, task_id) REFERENCES project.tasks(project_id, id)
+        ON DELETE CASCADE;
+    `));
+
+    expect((await applySchemaBaseline(ctx.db, { pluginHooks: [] })).applied).toBe(true);
+    const actions = (await ctx.db.execute(sql`
+      SELECT confupdtype::text AS update_action, confdeltype::text AS delete_action
+      FROM pg_constraint
+      WHERE conname = 'stale_review_callback_waiver_receipts_task_fk'
+    `)) as unknown as Array<{ update_action: string; delete_action: string }>;
+    expect(actions).toEqual([{ update_action: "c", delete_action: "c" }]);
+    // Idempotence: the repaired database must not be re-changed on the next boot.
+    expect((await applySchemaBaseline(ctx.db, { pluginHooks: [] })).applied).toBe(false);
   });
 
   /*
@@ -2147,7 +2196,9 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       TASK_PAUSE_ACCOUNTING_VERSION,
       "0082",
       "0083",
+      OVERLAP_OWNER_FK_DEFERRABLE_REPAIR_VERSION,
       REVIEW_LANE_LEDGER_VERSION,
+      STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_VERSION,
       /* keep the non-numeric repair identity last: ORDER BY version is TEXT */
       MIXED_0065_REPAIR_VERSION,
     ]);
@@ -2406,7 +2457,9 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       TASK_PAUSE_ACCOUNTING_VERSION,
       "0082",
       "0083",
+      OVERLAP_OWNER_FK_DEFERRABLE_REPAIR_VERSION,
       REVIEW_LANE_LEDGER_VERSION,
+      STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_VERSION,
       /* keep the non-numeric repair identity last: ORDER BY version is TEXT */
       MIXED_0065_REPAIR_VERSION,
     ]);
@@ -2546,7 +2599,9 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       TASK_PAUSE_ACCOUNTING_VERSION,
       "0082",
       "0083",
+      OVERLAP_OWNER_FK_DEFERRABLE_REPAIR_VERSION,
       REVIEW_LANE_LEDGER_VERSION,
+      STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_VERSION,
       /* keep the non-numeric repair identity last: ORDER BY version is TEXT */
       MIXED_0065_REPAIR_VERSION,
     ]);

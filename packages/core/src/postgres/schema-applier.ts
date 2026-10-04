@@ -1923,13 +1923,43 @@ export async function applySchemaBaseline(
       await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${MIXED_0065_REPAIR_VERSION}) ON CONFLICT (version) DO NOTHING`);
       schemaChanged = true;
     }
+    /*
+    FNXC:MigrationProbeAbsentRelation 2026-10-04-12:10:
+    The previous shape selected FROM pg_class, so on a database that records the marker but carries no
+    product relation the query returned ZERO rows and `?? true` reported the table as missing. The applier
+    then read the migration and executed it, and its FK to `project.tasks` raised
+    `relation "project.tasks" does not exist` inside applySchemaBaseline's transaction — a project that
+    cannot boot at all, the RUFU-239 class this file's absent-relation invariant test exists to catch.
+    The probe now selects without a FROM so it always yields exactly one row, and "missing" means only:
+    (a) the receipt table is gone while its anchor `project.tasks` exists, or (b) the table exists but lost
+    RLS/FORCE ROW SECURITY. A database with no product relations answers "nothing to do", which is what the
+    baseline path needs; a genuinely dropped table is still recreated.
+
+    FNXC:MigrationProbeAbsentRelation 2026-10-04-12:15: merge `19814793f4` took an earlier copy of the
+    FN-9429 migration and lost `ON UPDATE CASCADE` on the composite task FK. Upstream later amended the
+    same migration with a DROP/ADD CONSTRAINT for exactly that (its StaleReviewCallbackWaiver note), because
+    the fallback-partition rekey refuses a non-cascading satellite FK. Databases that already stamped 0089
+    will never re-run the file, so the FK's update action is part of the drift signal: the widened probe
+    re-applies the now-idempotent migration once and the rekey stops being refused.
+    */
     const staleReviewCallbackWaiverReceiptsMissing = ((await tx.execute(sql`
-      SELECT COALESCE((
-        SELECT NOT (c.relrowsecurity AND c.relforcerowsecurity)
-        FROM pg_class c
-        WHERE c.oid = to_regclass('project.stale_review_callback_waiver_receipts')
-      ), true) AS missing
-    `)) as unknown as Array<{ missing: boolean }>)[0]?.missing ?? true;
+      SELECT (
+        (
+          to_regclass('project.stale_review_callback_waiver_receipts') IS NULL
+          AND to_regclass('project.tasks') IS NOT NULL
+        )
+        OR EXISTS (
+          SELECT 1 FROM pg_class c
+           WHERE c.oid = to_regclass('project.stale_review_callback_waiver_receipts')
+             AND NOT (c.relrowsecurity AND c.relforcerowsecurity)
+        )
+        OR EXISTS (
+          SELECT 1 FROM pg_constraint c
+           WHERE c.conname = 'stale_review_callback_waiver_receipts_task_fk'
+             AND c.confupdtype <> 'c'
+        )
+      ) AS missing
+    `)) as unknown as Array<{ missing: boolean }>)[0]?.missing ?? false;
     if (!staleReviewCallbackWaiverReceiptsAlreadyApplied || staleReviewCallbackWaiverReceiptsMissing) {
       const migrationSql = await readFile(STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_MIGRATION_PATH, "utf8");
       await tx.execute(sql.raw(migrationSql));
