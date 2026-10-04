@@ -2021,7 +2021,11 @@ export async function runTaskRetry(id: string, projectName?: string) {
     (a genuine manual gesture) deliberately keeps parking.
     */
     if (isMissingWorktreeSessionRetry) {
-      await retryBoardCall(context, id, "move task", () => context.store.moveTask(id, retryHoldColumn as never, { preserveProgress: true, parkOnHold: false }));
+      /*
+      FNXC:CliRetryFence 2026-10-04-08:01:
+      The atomic reset fences the snapshot captured before retry. Clear stale session metadata before
+      moving columns, otherwise the move changes `columnMovedAt` and correctly rejects the reset as stale.
+      */
       await retryBoardCall(context, id, "update task", () => applyRetryReset({
         status: null,
         error: null,
@@ -2031,6 +2035,7 @@ export async function runTaskRetry(id: string, projectName?: string) {
         ...autoPauseClearPatch,
         ...buildManualRetryResetPatch({ resetMergeRetries: true }),
       }));
+      await retryBoardCall(context, id, "move task", () => context.store.moveTask(id, retryHoldColumn as never, { preserveProgress: true }));
       await retryBoardCall(context, id, "log entry", () => context.store.logEntry(id, `Retry requested from CLI (unusable worktree session-start recovery → todo, preserving progress${retryLogSuffix})`));
 
       console.log();

@@ -9,6 +9,7 @@
 
 import type { NativeStructureRef } from "../../types.js";
 import type { DashboardInboxCategory } from "../../messaging/inbox-categories.js";
+import type { RecommendationSnapshotEntry } from "../../tasks/recommendation-validation.js";
 
 export type ParticipantType = "agent" | "user" | "system";
 
@@ -96,6 +97,11 @@ export interface MessageMetadata extends Record<string, unknown> {
   kind?: string;
   /** Related task for mailbox messages that require an operator response. */
   taskId?: string;
+  /** Immutable bounded display fallback for task-recommendation notices; never authorizes task creation. */
+  recommendationSnapshot?: RecommendationSnapshotEntry[];
+  recommendationCount?: number;
+  recommendationIds?: string[];
+  categories?: RecommendationSnapshotEntry["category"][];
   /** Persisted Planning Mode session for a planning-clarification message. */
   sessionId?: string;
   /** Planning question that produced a planning-clarification message. */

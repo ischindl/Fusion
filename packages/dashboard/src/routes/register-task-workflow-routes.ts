@@ -2543,6 +2543,13 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
          sources; task archiving is retired on this line (FN-9187), so the gate stays completed-lane only. */
       if (!completeColumns.has(parent.column)) {
         throw conflict("recommendations are available only on completed tasks");
+  /*
+  FNXC:MailboxRecommendationCreation 2026-10-04-14:05:
+  Upstream (59524b0457) widened this gate with forensic soft-deleted proof for cold archive snapshots.
+  This line retired task archiving (FN-9187), so the widened form has no archive to resolve; keeping it would
+  advertise a lane this product never writes. Deliberate divergence, recorded so the next merge re-adds it on
+  purpose rather than by accident.
+  */
       }
       const recommendation = parent.recommendations?.find((item) => item.id === req.params.recommendationId);
       if (!recommendation) throw notFound("Recommendation not found");

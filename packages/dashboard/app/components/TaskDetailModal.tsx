@@ -4298,7 +4298,8 @@ export function TaskDetailContent({
     onTaskUpdated?.(updatedTask);
   }, [onTaskUpdated]);
 
-  const assignedAgentLabel = assignedAgent?.name ?? task.assignedAgentId ?? null;
+  const assignedAgentId = assignedAgent?.id ?? task.assignedAgentId;
+  const assignedAgentLabel = assignedAgent?.name ?? assignedAgentId ?? null;
   const detailProviders = useMemo(() => {
     const providers: string[] = [];
     if (workingTask.modelProvider) providers.push(workingTask.modelProvider);
@@ -6878,7 +6879,7 @@ export function TaskDetailContent({
                     {!agentsLoading && agents.map((a) => (
                       <UiButton
                         key={a.id}
-                        className={`agent-picker-item${task.assignedAgentId === a.id ? " selected" : ""}`}
+                        className={`agent-picker-item${assignedAgentId === a.id ? " selected" : ""}`}
                         onClick={() => void handleAssignAgent(a.id)}
                       >
                         <Bot size={14} />

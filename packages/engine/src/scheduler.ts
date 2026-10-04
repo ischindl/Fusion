@@ -634,7 +634,7 @@ export function classifyFileScopeLease(
   // FNXC:WorkflowLifecycle 2026-08-30-07:27: DELIBERATE-LITERAL — callers without resolved workflow roles require the legacy terminal fallback.
   const isTerminalColumn = options?.isTerminalColumn ?? task.column === "done";
 
-  if (isTerminalColumn || task.deletedAt) {
+  if (isTerminalColumn || task.deletedAt || task.mergeDetails?.mergeConfirmed === true) {
     return { kind: "none", waivedForTaskIds: [] };
   }
 
@@ -1300,16 +1300,47 @@ export class Scheduler {
       const resolvedParked = mergeParkedColumns(await resolveTaskParkedColumns(this.store, task.id, movedSelectionCache), lanes);
 
       // FN-3895/FN-3924: complement periodic stale-blockedBy self-healing with immediate
-      // blocker reconciliation when a potential blocker reaches a terminal completion column.
+      // blocker reconciliation when a potential blocker reaches a dependency-satisfying column.
       // Invariant: blockedBy must reference a *current* unresolved blocker, else be null.
-      if (resolvedParked.terminal.has(to)) {
+      const movedDependencySatisfactionColumns = await resolveDependencySatisfactionColumns(
+        this.store,
+        [task],
+        new Map<string, WorkflowIr>(),
+      );
+      /*
+      FNXC:DependencyWakeup 2026-10-04-08:59:
+      DELIBERATE-LITERAL — workflow-derived review membership is authoritative whenever resolution
+      succeeds. An omitted map entry means the moved task has no readable workflow, so this legacy
+      fallback preserves the prior fail-soft wake-up; deleting it would make unresolved workflows
+      permanently unable to wake their blocked dependents when they reach `in-review`.
+      */
+      const reachedDependencySatisfyingReview = movedDependencySatisfactionColumns.get(task.id)?.review.has(to)
+        ?? to === "in-review";
+      if (resolvedParked.terminal.has(to) || reachedDependencySatisfyingReview) {
         try {
           const settings = await this.store.getSettings();
           if (!settings.globalPause && !settings.enginePaused) {
-            const todoTasks = await this.store.listTasks({ column: resolvedParked.hold, slim: true });
+            /*
+            FNXC:DependencyWakeup 2026-10-04-02:46:
+            Dependency-blocked WIP cards intentionally stay silent on their own task updates to avoid
+            recursive resume dispatch. A blocker move into a terminal or dependency-satisfying review
+            lane is their single event-driven wake-up: reconcile both hold and WIP lanes, then let the
+            durable update enter the executor's single-flight resume fence. Reading project WIP roles
+            preserves this path on custom boards.
+            */
+            const dependencyWipColumns = await resolveProjectColumnsForRoles(this.store, ["countsTowardWip"]);
+            const dependentsById = new Map<string, Task>();
+            for (const dependent of await this.store.listTasks({ column: resolvedParked.hold, slim: true })) {
+              dependentsById.set(dependent.id, dependent);
+            }
+            for (const column of dependencyWipColumns) {
+              for (const dependent of await this.store.listTasks({ column, slim: true })) {
+                dependentsById.set(dependent.id, dependent);
+              }
+            }
             /* One IR cache for the whole reconciliation, per the caller-owned-cache contract. */
             const dependencySatisfactionIrCache = new Map<string, WorkflowIr>();
-            for (const dependent of todoTasks) {
+            for (const dependent of dependentsById.values()) {
               const mentionsCompletedTask = dependent.dependencies.includes(task.id);
               const currentlyBlockedByCompletedTask = dependent.blockedBy === task.id;
               if (!mentionsCompletedTask && !currentlyBlockedByCompletedTask) continue;
@@ -2191,7 +2222,7 @@ export class Scheduler {
     // Check explicit dependencies for review-lane tasks with worktrees
     for (const depId of task.dependencies) {
       const dep = allTasks.find((t) => t.id === depId);
-      if (dep && isReviewColumn(dep) && dep.worktree) {
+      if (dep && isReviewColumn(dep) && dep.worktree && taskHoldsUnmergedCheckout(dep)) {
         return resolveTaskWorkingBranch(dep);
       }
     }
@@ -2199,7 +2230,7 @@ export class Scheduler {
     // Check implicit blockedBy for a review-lane task with worktree
     if (task.blockedBy) {
       const blocker = allTasks.find((t) => t.id === task.blockedBy);
-      if (blocker && isReviewColumn(blocker) && blocker.worktree) {
+      if (blocker && isReviewColumn(blocker) && blocker.worktree && taskHoldsUnmergedCheckout(blocker)) {
         return resolveTaskWorkingBranch(blocker);
       }
     }

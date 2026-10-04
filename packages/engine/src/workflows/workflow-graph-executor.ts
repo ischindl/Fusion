@@ -166,6 +166,7 @@ export const WORKFLOW_INTERRUPTED_NODE_ABORT_KIND_CONTEXT_KEY = "workflow:interr
 export const WORKFLOW_OPTIONAL_GROUP_CONTEXT_KEY = "workflow:optionalGroupActive";
 /** Failure value consumed as a graph suspension before the Plan Review replan edge. */
 export const WORKFLOW_DEPENDENCY_CONFIGURATION_BLOCK_VALUE = "dependency-configuration-blocked";
+export const WORKFLOW_OPTIONAL_GROUP_PHASE_CONTEXT_KEY = "workflow:optionalGroupPhase";
 /** Explicit parent marker for template execution; never inferred from template labels or output. */
 export const WORKFLOW_REVIEW_KIND_CONTEXT_KEY = "workflow:reviewKind";
 export const WORKFLOW_BLOCKING_SEVERITY_CONTEXT_KEY = "workflow:blockingSeverity";
@@ -1251,6 +1252,7 @@ export class WorkflowGraphExecutor {
               const optionalGroupContext = {
                 ...(contextOverride ?? context),
                 [WORKFLOW_OPTIONAL_GROUP_CONTEXT_KEY]: node.id,
+                [WORKFLOW_OPTIONAL_GROUP_PHASE_CONTEXT_KEY]: stepPhase,
                 ...(this.workflowReviewKind(node) ? { [WORKFLOW_REVIEW_KIND_CONTEXT_KEY]: this.workflowReviewKind(node) } : {}),
                 ...(this.workflowBlockingSeverity(node) ? { [WORKFLOW_BLOCKING_SEVERITY_CONTEXT_KEY]: this.workflowBlockingSeverity(node) } : {}),
                 ...(authoredEvidenceKind ? { [WORKFLOW_POST_MERGE_EVIDENCE_KIND_CONTEXT_KEY]: authoredEvidenceKind } : {}),

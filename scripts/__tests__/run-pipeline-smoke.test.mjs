@@ -15,6 +15,28 @@ test("runPipelineSmoke writes a strict multi-workflow invocation report", async 
   const summary = await runPipelineSmoke({ spawn: healthyPrerequisite, watchdog: successfulWatchdog(), now: (() => { const values = [0, 1, 30]; return () => values.shift(); })(), options: { reportPath }, write: () => undefined });
   assert.equal(summary.passed, true); assert.equal(summary.scenarioIds.length, expectedScenarioIds().length); assert.deepEqual(summary.invocationKeys, expectedInvocationKeys()); assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), summary);
 }));
+/*
+FNXC:PipelineSmoke 2026-10-04-08:32:
+The watchdog failure stopped before the post-merge restart boundary and later scenarios. A passing
+report must retain every unique S17–S21 invocation inside the fixed budget; accepting an early
+success would make the historical timeout look healthy while skipping production coverage.
+*/
+test("runPipelineSmoke retains the complete S17 through S21 invocation boundary", async () => withReports(async ({ reportPath }) => {
+  const summary = await runPipelineSmoke({
+    spawn: healthyPrerequisite,
+    watchdog: successfulWatchdog(),
+    now: (() => { const values = [0, 1, PIPELINE_SMOKE_DURATION_BUDGET_MS - 1]; return () => values.shift(); })(),
+    options: { reportPath },
+    write: () => undefined,
+  });
+  const postMergeScenarioIds = new Set(["S17", "S18", "S19", "S20", "S21"]);
+  const boundary = summary.invocationKeys.filter((key) => postMergeScenarioIds.has(key.slice(0, 3)));
+  const expectedBoundary = expectedInvocationKeys().filter((key) => postMergeScenarioIds.has(key.slice(0, 3)));
+  assert.deepEqual(boundary, expectedBoundary);
+  assert.equal(new Set(boundary).size, boundary.length);
+  assert.ok(summary.durationMs < PIPELINE_SMOKE_DURATION_BUDGET_MS);
+  assert.equal(summary.passed, true);
+}));
 test("runPipelineSmoke overrides inherited Vitest worker fan-out for the real smoke child", async () => withReports(async ({ reportPath }) => {
   const watchdog = async ({ args, env }) => {
     assert.equal(env.VITEST_MAX_WORKERS, String(PIPELINE_SMOKE_MAX_WORKERS));
@@ -31,10 +53,18 @@ test("runPipelineSmoke overrides inherited Vitest worker fan-out for the real sm
   });
   assert.equal(summary.passed, true);
 }));
-test("timeout replaces stale success with bounded partial S17 attribution and still fails closed", async () => withReports(async ({ reportPath }) => {
-  writeFileSync(reportPath, JSON.stringify({ passed: true })); const complete = records().filter((record) => record.scenarioId !== "S17"); const partial = { scenarioId: "S17", workflowId: "builtin:coding-ideas-v2", variant: "post-merge" };
-  await assert.rejects(runPipelineSmoke({ spawn: healthyPrerequisite, watchdog: async ({ env }) => { writeFileSync(env.FUSION_PIPELINE_SMOKE_REPORT, `${complete.map(JSON.stringify).join("\n")}\n${JSON.stringify(partial).slice(0, -3)}`); return { code: 124, signal: null, timedOut: true }; }, now: (() => { const values = [100, 100 + PIPELINE_SMOKE_DURATION_BUDGET_MS]; return () => values.shift(); })(), options: { reportPath }, write: () => undefined }), /pipeline smoke timed out; watchdog terminated the Vitest process group/);
-  const report = JSON.parse(readFileSync(reportPath, "utf8")); assert.equal(report.passed, false); assert.equal(report.failure.watchdog.timedOut, true); assert.equal(report.failure.lastComplete.scenarioId, "S21"); assert.equal(report.failure.truncatedFinalRecord.line > 0, true); assert.ok(report.failure.missingInvocationKeys.includes(invocationKey(partial))); assert.equal(existsSync(reportPath), true);
+test("timeout replaces stale success with the hosted 23-record S05 shape and still fails closed", async () => withReports(async ({ reportPath }) => {
+  const hostedMissingKeys = new Set([
+    "S06\u0000builtin:coding\u0000", "S07\u0000builtin:coding-ideas\u0000", "S07\u0000builtin:coding-ideas-v2\u0000", "S08\u0000builtin:coding\u0000", "S13\u0000builtin:coding-ideas\u0000", "S14\u0000builtin:coding-ideas\u0000", "S15\u0000builtin:coding-ideas\u0000", "S16\u0000builtin:coding\u0000", "S17\u0000builtin:coding\u0000execution", "S17\u0000builtin:coding\u0000merge-in-flight", "S17\u0000builtin:coding\u0000planning", "S17\u0000builtin:coding\u0000post-merge", "S17\u0000builtin:coding\u0000review", "S17\u0000builtin:coding-ideas-v2\u0000execution", "S17\u0000builtin:coding-ideas-v2\u0000merge-in-flight", "S17\u0000builtin:coding-ideas-v2\u0000planning", "S17\u0000builtin:coding-ideas-v2\u0000post-merge", "S17\u0000builtin:coding-ideas-v2\u0000review",
+  ]);
+  const partial = records().filter((record) => !hostedMissingKeys.has(invocationKey(record)));
+  const s05 = partial.find((record) => record.scenarioId === "S05" && record.workflowId === "builtin:coding");
+  assert.ok(s05);
+  const hostedOrder = [...partial.filter((record) => record !== s05), s05];
+  assert.equal(hostedOrder.length, 23);
+  writeFileSync(reportPath, JSON.stringify({ passed: true }));
+  await assert.rejects(runPipelineSmoke({ spawn: healthyPrerequisite, watchdog: async ({ env }) => { writeFileSync(env.FUSION_PIPELINE_SMOKE_REPORT, `${hostedOrder.map(JSON.stringify).join("\n")}\n`); return { code: 124, signal: null, timedOut: true }; }, now: (() => { const values = [100, 100 + PIPELINE_SMOKE_DURATION_BUDGET_MS]; return () => values.shift(); })(), options: { reportPath }, write: () => undefined }), /pipeline smoke timed out; watchdog terminated the Vitest process group/);
+  const report = JSON.parse(readFileSync(reportPath, "utf8")); assert.equal(report.passed, false); assert.equal(report.durationBudgetMs, PIPELINE_SMOKE_DURATION_BUDGET_MS); assert.equal(report.failure.watchdog.timedOut, true); assert.equal(report.failure.vitestReportAvailable, false); assert.equal(report.failure.scenarioReportAvailable, true); assert.equal(report.failure.completedRecordCount, 23); assert.deepEqual(report.failure.lastComplete, { scenarioId: "S05", workflowId: "builtin:coding", variant: "revise-twice" }); assert.deepEqual(report.failure.missingInvocationKeys, [...hostedMissingKeys].sort()); assert.equal(report.failure.truncatedFinalRecord, null); assert.throws(() => validatePipelineSmokeSummary(report), /incomplete invocation census/); assert.equal(existsSync(reportPath), true);
 }));
 test("strict success rejects duplicate, malformed, missing, unexpected, and failing invocation records", async () => withReports(async ({ reportPath }) => {
   const all = records();

@@ -52,14 +52,17 @@ describeIfReady("pipeline smoke: resilience scenarios", () => {
   afterAll(pg.afterAll);
 
   /*
-  FNXC:PipelineSmoke 2026-09-20-16:04:
-  S17's three workflow records for one restart boundary are independent durable tasks. Run them
-  through one PostgreSQL fixture lifecycle so the smoke lane stops repaying engine/database setup
-  ten extra times, while preserving every workflow × recorded-stage execution and its JSONL record.
+  FNXC:PipelineSmoke 2026-10-04-09:22:
+  S17 workflow × restart-stage records are independent durable tasks, but one adapter serially
+  executing all fifteen records exceeded the fixed hosted watchdog under full-suite contention.
+  Keep this fixture-local Coding Ideas partition intact and schedule the other two workflow
+  partitions in their own isolated adapters, so the unchanged three-worker envelope can execute
+  them concurrently without reducing the production restart coverage.
   */
-  it.each(scenario("S17").variants ?? [])("S17 runs every workflow at %s", async (variant) => {
+  it("S17 runs every Coding Ideas restart stage through one fixture lifecycle", async () => {
     const selected = scenario("S17");
-    for (const workflowId of selected.workflows) {
+    const workflowId = "builtin:coding-ideas" as const;
+    for (const variant of selected.variants ?? []) {
       const context = { harness, workflowId, variant };
       await recordPipelineScenario({
         scenarioId: selected.id,

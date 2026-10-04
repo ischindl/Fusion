@@ -148,7 +148,44 @@ describe("fn_task_done recommendation validation", () => {
 
   it("persists recommendations without producing an early completion notice", async () => {
     const { store, task, tool } = createProductionTaskDoneTool();
-    await expect(tool.execute("call-no-early-notice", { recommendations: [recommendation] })).resolves.toMatchObject({ details: {} });
+    const messages: Array<{ input: any; key: string }> = [];
+    registerTaskRecommendationNoticeMailbox(store as any, {
+      sendMessageOnce: async (input, key) => { messages.push({ input, key }); },
+    });
+
+    await expect(tool.execute("call-notice", { recommendations: [recommendation, { ...recommendation, id: "rec-docs", title: "Document exports" }] })).resolves.toMatchObject({ details: {} });
+    await __flushPendingRecommendationNotices();
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].input).toMatchObject({
+      toId: "dashboard",
+      type: "system",
+      metadata: { kind: "task-recommendation-notice", taskId: task.id, recommendationCount: 2 },
+    });
+    expect(messages[0].input.content).toContain("Export completed tasks");
+    expect(messages[0].input.content).toContain("Document exports");
+    expect(messages[0].input.metadata.recommendationSnapshot).toEqual([
+      recommendation,
+      {
+        id: "rec-docs",
+        title: "Document exports",
+        description: recommendation.description,
+        category: "feature",
+      },
+    ]);
+    expect(JSON.stringify(messages[0].input.metadata.recommendationSnapshot)).not.toContain("createdTaskId");
+
+    await tool.execute("call-notice-retry", { recommendations: [recommendation, { ...recommendation, id: "rec-docs", title: "Document exports" }] });
+    await __flushPendingRecommendationNotices();
+    expect(messages[1].key).toBe(messages[0].key);
+  });
+
+  it("persists recommendations but suppresses notices when the project setting is off", async () => {
+    const { store, task, tool } = createProductionTaskDoneTool(3, false);
+    let messages = 0;
+    registerTaskRecommendationNoticeMailbox(store as any, { sendMessageOnce: async () => { messages += 1; } });
+    await tool.execute("call-notice-off", { recommendations: [recommendation] });
+    await __flushPendingRecommendationNotices();
     expect((await store.getTask(task.id)).recommendations).toEqual([recommendation]);
     expect(store.emit).not.toHaveBeenCalledWith("message:sent", expect.anything());
   });

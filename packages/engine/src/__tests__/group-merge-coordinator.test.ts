@@ -1208,7 +1208,7 @@ function createPostReviewStore(task: Record<string, any>, branchGroup: Record<st
     directMergeCommitStrategy: "auto",
   };
 
-  return {
+  const store = {
     getTask: vi.fn(async () => task),
     listTasks: vi.fn(async () => [task]),
     getSettings: vi.fn(async () => settings),
@@ -1244,9 +1244,12 @@ function createPostReviewStore(task: Record<string, any>, branchGroup: Record<st
     logEntry: vi.fn(async () => undefined),
     appendAgentLog: vi.fn(async () => undefined),
     recordRunAuditEvent: vi.fn(async () => undefined),
+    getStaleReviewCallbackWaiverReceipts: vi.fn().mockResolvedValue([]),
+    getProjectId: vi.fn().mockReturnValue("test-project"),
     getActiveMergingTask: vi.fn(async () => null),
     emit: vi.fn(),
   } as any;
+  return store;
 }
 
 function createInterpreterMergeEngine(repo: string, store: any): any {

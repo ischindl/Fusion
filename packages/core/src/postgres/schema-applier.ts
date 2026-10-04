@@ -1956,7 +1956,8 @@ export async function applySchemaBaseline(
         OR EXISTS (
           SELECT 1 FROM pg_constraint c
            WHERE c.conname = 'stale_review_callback_waiver_receipts_task_fk'
-             AND c.confupdtype <> 'c'
+             AND c.contype = 'f'
+             AND (c.confupdtype <> 'c' OR c.confdeltype <> 'c')
         )
       ) AS missing
     `)) as unknown as Array<{ missing: boolean }>)[0]?.missing ?? false;

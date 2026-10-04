@@ -79,6 +79,7 @@ export async function blockOuterDispatchWhenFileScopeLeaseHeld(
   deps: FileScopeLeaseDispatchGateDeps,
   task: Task,
 ): Promise<boolean> {
+  if (task.mergeDetails?.mergeConfirmed === true) return false;
   const settings = await deps.store.getSettings();
   /*
   FNXC:OverlapScheduling 2026-09-08-21:20 (RUFU-200):

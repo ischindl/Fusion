@@ -186,6 +186,13 @@ describe("workspace implementation base-refresh enablement", () => {
       { id: "review", kind: "prompt" } as WorkflowIrNode,
       live,
       settings,
+      { requiresWorktree: true },
+    );
+    await prepareGraphNodeExecution(
+      deps,
+      { id: "summary", kind: "prompt" } as WorkflowIrNode,
+      live,
+      settings,
       { requiresWorktree: false },
     );
 

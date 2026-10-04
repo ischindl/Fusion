@@ -46,26 +46,11 @@ serializes planning. A hold-lane card retaining a real checkout after execution 
 and deliberately keeps its dormant lease. Checkout evidence, not a column exception, decides the outcome.
 */
 export function taskHoldsUnmergedCheckout(
-  task: Pick<Task, "worktree" | "workspaceWorktrees">,
-  checkoutEmptiness?: CheckoutEmptinessProofMap,
+      task: Pick<Task, "worktree" | "workspaceWorktrees" | "mergeDetails">,
+      checkoutEmptiness?: CheckoutEmptinessProofMap,
 ): boolean {
-  const retainedKeys: string[] = [];
-  if (typeof task.worktree === "string" && task.worktree.trim()) retainedKeys.push("");
-  for (const [repoKey, entry] of Object.entries(task.workspaceWorktrees ?? {})) {
-    if (typeof entry?.worktreePath === "string" && entry.worktreePath.trim().length > 0) {
-      retainedKeys.push(repoKey);
-    }
-  }
-  if (retainedKeys.length === 0) return false;
-  if (!checkoutEmptiness) return true;
-
-  /*
-  FNXC:WorkspaceFileOverlap 2026-09-08-19:50 (RUFU-200):
-  The emptiness test is per repository, never all-or-nothing: a workspace card whose `packages/cli`
-  checkout is clean-and-behind but whose `packages/engine` checkout is one commit ahead still owns
-  unmerged work and keeps its lease. Downgrade requires EVERY retained entry to be proven `empty`.
-  */
-  return retainedKeys.some((key) => checkoutEmptiness.get(key) !== "empty");
+      task: Pick<Task, "worktree" | "workspaceWorktrees" | "mergeDetails">,
+      checkoutEmptiness?: CheckoutEmptinessProofMap,
 }
 
 function normalizeWorkspaceScopePath(value: string): string {
