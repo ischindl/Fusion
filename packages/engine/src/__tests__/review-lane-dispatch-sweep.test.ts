@@ -181,6 +181,32 @@ describe("review-lane dispatch sweep classification", () => {
     expect(decision.dispatch).toBe(false);
   });
 
+  /*
+  FNXC:ReviewDispatch 2026-10-04-17:30 (RUFU-343):
+  The invariant is stated across BOTH sides of the line, not as one reproduction. A code-review row counts as a
+  recorded verdict only when it carries authored evidence; an evidence-free `failed` row (verdict null, no bypass,
+  zero completed reviewer runs) is the wedge this sweep exists to rescue and must not hide the card from dispatch
+  while the merge gate refuses it for the same reason.
+  */
+  it("does not call an evidence-free failed code-review row a recorded verdict", () => {
+    const evidenceFreeFailure = reviewResult("failed");
+    const decision = decide([finished("failed"), finished("failed")], { workflowStepResults: [evidenceFreeFailure] });
+    expect(decision.bucket).not.toBe("verdict-recorded");
+  });
+
+  it("leaves an authored failing verdict to the remediation authority instead of re-dispatching", () => {
+    const authored = { ...reviewResult("failed"), verdict: "REVISE" as const };
+    const decision = decide([finished("failed")], { workflowStepResults: [authored] });
+    expect(decision.bucket).toBe("verdict-recorded");
+    expect(decision.dispatch).toBe(false);
+  });
+
+  it("leaves an operator-bypassed code-review row recorded rather than fresh", () => {
+    const bypassed = { ...reviewResult("failed"), bypassedBy: "operator-1" as const };
+    const decision = decide([finished("failed")], { workflowStepResults: [bypassed] });
+    expect(decision.bucket).toBe("verdict-recorded");
+  });
+
   it("counts an approve row as a verdict rather than a fresh dispatch", () => {
     const decision = decide([finished("approve")]);
     expect(decision.bucket).toBe("verdict-recorded");
@@ -242,11 +268,19 @@ describe("review-lane dispatch sweep classification", () => {
     expect(decide([], { workflowStepResults: [bypassed] }).bucket).toBe("verdict-recorded");
   });
 
+  /*
+  FNXC:ReviewDispatch 2026-10-04-17:32 (RUFU-343):
+  The fixture for this test never carried the thing its title claims ("an authored failed review"): it built a
+  bare `failed` row with no verdict and no bypass. RUFU-343 made that shape count as un-recorded, because on
+  production it is the wedge this sweep exists to rescue (SANE-406/468/504/531: `failed`, verdict null, zero
+  completed reviewer runs). The test's intent is unchanged, so the fixture now states it: an authored failure
+  carries its verdict, and remediation still owns the re-run.
+  */
   it("counts an authored failed review as recorded — remediation, not a second dispatch, owns it", () => {
-    expect(decide([], { workflowStepResults: [reviewResult("failed")] }).bucket).toBe("verdict-recorded");
-    expect(
-      decide([], { workflowStepResults: [reviewResult("advisory_failure")] }).bucket,
-    ).toBe("verdict-recorded");
+    const authoredFailure: WorkflowStepResult = { ...reviewResult("failed"), verdict: "REVISE" };
+    const authoredAdvisory: WorkflowStepResult = { ...reviewResult("advisory_failure"), verdict: "UNAVAILABLE" };
+    expect(decide([], { workflowStepResults: [authoredFailure] }).bucket).toBe("verdict-recorded");
+    expect(decide([], { workflowStepResults: [authoredAdvisory] }).bucket).toBe("verdict-recorded");
   });
 
   /*

@@ -291,10 +291,27 @@ function hasRecordedCodeReviewVerdict(task: Task): boolean {
       result.workflowStepId === CODE_REVIEW_GROUP_ID &&
       result.supersededAt == null &&
       (result.status === "passed" ||
-        result.status === "failed" ||
-        result.status === "advisory_failure" ||
+        ((result.status === "failed" || result.status === "advisory_failure") &&
+          carriesAuthoredReviewOutcome(result)) ||
         (result.status === "skipped" && result.bypassedBy != null)),
   );
+}
+
+/*
+FNXC:ReviewDispatch 2026-10-04-17:25 (RUFU-343):
+The `failed` / `advisory_failure` arm above used to count ANY row with that status, on the premise that such a
+row is an authored reviewer outcome. Measured on production it is not always one: SANE-406/468/504/531 carry
+`code-review -> {status: "failed", verdict: null, bypassedBy: null}` with ZERO completed reviewer runs
+(`task_reviewer_runs`: 3 rows, 0 completed, 2 invalidated), while their `plan-review` row on the same card does
+carry a real verdict. An evidence-free failure row is the exact shape this sweep exists to rescue, and counting
+it as a verdict made the card invisible to BOTH authorities at once: dispatch said `verdict-recorded` while the
+merge gate refused the same reason.
+The authority split stays: a failure that carries its verdict (REVISE/RETHINK/UNAVAILABLE) or an operator bypass
+is still authored work, owned by failed-pre-merge-step recovery and FN-7720, and must not be re-dispatched here.
+Only the row with no authored evidence at all stops counting.
+*/
+function carriesAuthoredReviewOutcome(result: { verdict?: unknown; bypassedBy?: unknown }): boolean {
+  return result.verdict != null || result.bypassedBy != null;
 }
 
 /**

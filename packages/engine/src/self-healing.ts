@@ -1013,7 +1013,7 @@ verdict holds inside the atomic clear transaction below.
 /** Which terminal-park producer wrote a verdict-less gate park. */
 type VerdictlessGateParkShape = "stall-deadlock" | "retry-rejected";
 
-function classifyVerdictlessGatePark(
+export function classifyVerdictlessGatePark(
   task: Pick<Task, "userPaused" | "deletedAt" | "error" | "pausedReason" | "workflowStepResults"> & { paused?: boolean },
 ): { shape: VerdictlessGateParkShape; gateId: string } | undefined {
   if (task.userPaused === true || task.deletedAt) return undefined;
@@ -1026,9 +1026,35 @@ function classifyVerdictlessGatePark(
         ? "retry-rejected"
         : undefined;
   if (!shape || error === undefined) return undefined;
-  const gateId = parseEmbeddedPreMergeGateApprovalBlocker(error);
-  if (!gateId) return undefined;
-  return findVerdictLessFailedRequiredGates(task, { requiredPreMergeStepIds: new Set([gateId]) }).length > 0
+  const namedGateId = parseEmbeddedPreMergeGateApprovalBlocker(error);
+  if (namedGateId) {
+    return findVerdictLessFailedRequiredGates(task, { requiredPreMergeStepIds: new Set([namedGateId]) }).length > 0
+      ? { shape, gateId: namedGateId }
+      : undefined;
+  }
+
+  /*
+  FNXC:ReviewDispatch 2026-10-04-17:26 (RUFU-343):
+  A stall-deadlock sentence names its stall code and `signal.reason`, never a gate id, so requiring the error to
+  name one made this whole class structurally invisible to every recovery lane: SANE-406/468/504/531 and
+  VLLM-095/098 were parked by `reconcile-review-stall-notification` and nothing could lift them. Discovery
+  replaces the parse for that shape ONLY, and it stays as narrow as the parse was: the gate must be a
+  verdict-less FAILED pre-merge review gate on this very row, and EXACTLY one such gate may exist. Zero keeps the
+  card operator-owned (there is nothing to re-seed); two or more keeps it operator-owned too, because guessing
+  which gate a park referred to is how a park gets lifted against the wrong authority. `retry-rejected` parks
+  still require the named gate, and the row is re-proved inside the atomic clear below.
+  */
+  if (shape !== "stall-deadlock") return undefined;
+  const verdictlessFailed = (task.workflowStepResults ?? []).filter(
+    (result) =>
+      result.supersededAt == null &&
+      result.status === "failed" &&
+      result.verdict == null &&
+      result.bypassedBy == null,
+  );
+  if (verdictlessFailed.length !== 1) return undefined;
+  const gateId = verdictlessFailed[0].workflowStepId;
+  return findVerdictLessFailedRequiredGates(task, { requiredPreMergeStepIds: new Set([gateId]) }).length === 1
     ? { shape, gateId }
     : undefined;
 }
