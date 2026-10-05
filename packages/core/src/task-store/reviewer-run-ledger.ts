@@ -16,6 +16,21 @@ export type ReviewerRunStatus = "running" | "approve" | "revise" | "skipped" | "
 
 export const TERMINAL_REVIEWER_RUN_STATUSES = ["approve", "revise", "skipped", "failed"] as const;
 
+/*
+FNXC:ReviewLaneDispatch 2026-10-05-00:25 (RUFU-559):
+Closed by reconciliation, not by judgement. Owned here (the ledger is the table's only writer) rather than as a
+string literal in each consumer, because the recovery write and the budget read live in different packages and a
+drift between the two is exactly how a reconciliation stops unblocking anything: recovery writes this prefix, and
+`unfinishedAttempts` exempts exactly this prefix. Distinct from the dispatch sweep's own `dispatch-failed:` prefix
+so a refusal to even start a session never reads as engine loss.
+*/
+export const REVIEWER_RUN_ENGINE_LOSS_REASON_PREFIX = "engine-lost:";
+
+/** Whether a closed attempt was orphaned by the process rather than judged by a reviewer. */
+export function isEngineLossReviewerRun(row: { failureReasons?: string[] | null }): boolean {
+  return (row.failureReasons ?? []).some((reason) => reason.startsWith(REVIEWER_RUN_ENGINE_LOSS_REASON_PREFIX));
+}
+
 export interface ReviewerRunRow {
   id: string;
   taskId: string;
@@ -30,6 +45,16 @@ export interface ReviewerRunRow {
    * must not be mistaken for the live attempt (#3619 review round 3).
    */
   invalidatedAt: string | null;
+  /**
+   * Why a terminal attempt ended, when it recorded one. Optional and `undefined` (not `[]`) when the row
+   * carries none, so the row shape stays comparable against fixtures written before this field existed.
+   *
+   * FNXC:ReviewLaneDispatch 2026-10-05-00:25 (RUFU-559): the dispatch sweep's anti-loop budget counts
+   * unfinished attempts, and an attempt the engine itself orphaned was never an attempted review. Without
+   * this field the sweep cannot tell "the reviewer judged and failed" from "the reviewer died with the
+   * process", and reconciling a zombie would burn the card's budget instead of unblocking it.
+   */
+  failureReasons?: string[];
 }
 
 export interface OpenReviewerRunInput {
@@ -222,7 +247,7 @@ export async function findLiveReviewerRun(
   input: { projectId: string; taskId: string },
 ): Promise<ReviewerRunRow | null> {
   const rows = await tx.execute(sql`
-    SELECT id, task_id, reviewer_agent_id, status, rework_round, started_at, completed_at, invalidated_at
+    SELECT id, task_id, reviewer_agent_id, status, rework_round, started_at, completed_at, invalidated_at, failure_reasons
       FROM project.task_reviewer_runs
      WHERE project_id = ${input.projectId} AND task_id = ${input.taskId}
        AND invalidated_at IS NULL AND completed_at IS NULL
@@ -242,10 +267,60 @@ export async function listReviewerRuns(
   input: { projectId: string; taskId: string },
 ): Promise<ReviewerRunRow[]> {
   const rows = await tx.execute(sql`
-    SELECT id, task_id, reviewer_agent_id, status, rework_round, started_at, completed_at, invalidated_at
+    SELECT id, task_id, reviewer_agent_id, status, rework_round, started_at, completed_at, invalidated_at, failure_reasons
       FROM project.task_reviewer_runs
      WHERE project_id = ${input.projectId} AND task_id = ${input.taskId}
      ORDER BY started_at, id
+  `) as unknown as Array<Record<string, unknown>>;
+  return rows.map(reviewerRunRow).filter((row): row is ReviewerRunRow => row !== null);
+}
+
+/*
+FNXC:ReviewLaneDispatch 2026-10-05-00:20 (RUFU-559):
+The ledger could ask two questions only: "is THIS card's attempt open?" and "what history does THIS card
+have?". Both are keyed `WHERE task_id = ?`, so nothing in the repo could enumerate the fleet's unfinished
+attempts — which is how 275 rows sat `status='running'` with no live session behind them (oldest 19 days),
+holding 20 in-review cards. Measured 2026-10-04: not a single reviewer run in the system was actually live.
+The row is never closed when its session dies with the engine, so every deploy converts live reviews into
+stranded ones, and the dispatch sweep then reads the zombie as an unfinished attempt.
+
+This is the missing scan, deliberately bounded and floor-gated: a reviewer session legitimately runs for
+many minutes, so "old" is not yet "dead". 30 minutes is the code-owned floor below which a still-`running`
+row is treated as a candidate for proof-of-death (the proof itself is the caller's liveness triple; this
+query never asserts death). It returns candidates, never closes anything.
+*/
+export const REVIEWER_RUN_LIVENESS_FLOOR_MS = 30 * 60 * 1000;
+
+/**
+ * Attempts that are still occupying a card's live slot after the liveness floor has passed.
+ * `started_at` is TEXT ISO-8601, so the cutoff is compared as text like every other time window here.
+ */
+export async function listStrandedLiveReviewerRuns(
+  store: TaskStore,
+  input: { floorMs?: number; limit: number },
+): Promise<ReviewerRunRow[]> {
+  const { layer, projectId } = requireProjectId(store, "listStrandedLiveReviewerRuns", "*");
+  const cutoff = new Date(Date.now() - (input.floorMs ?? REVIEWER_RUN_LIVENESS_FLOOR_MS)).toISOString();
+  return layer.transactionImmediate((tx: DbTransaction) =>
+    listStrandedLiveReviewerRunsInTransaction(tx, { projectId, cutoff, limit: input.limit }),
+  );
+}
+
+/** Transaction-level scan behind {@link listStrandedLiveReviewerRuns}. */
+export async function listStrandedLiveReviewerRunsInTransaction(
+  tx: DbTransaction,
+  input: { projectId: string; cutoff: string; limit: number },
+): Promise<ReviewerRunRow[]> {
+  const rows = await tx.execute(sql`
+    SELECT id, task_id, reviewer_agent_id, status, rework_round, started_at, completed_at, invalidated_at, failure_reasons
+      FROM project.task_reviewer_runs
+     WHERE project_id = ${input.projectId}
+       AND status = 'running'
+       AND invalidated_at IS NULL
+       AND completed_at IS NULL
+       AND started_at < ${input.cutoff}
+     ORDER BY started_at, id
+     LIMIT ${input.limit}
   `) as unknown as Array<Record<string, unknown>>;
   return rows.map(reviewerRunRow).filter((row): row is ReviewerRunRow => row !== null);
 }
@@ -261,5 +336,18 @@ function reviewerRunRow(row: Record<string, unknown> | undefined): ReviewerRunRo
     startedAt: String(row.started_at),
     completedAt: row.completed_at == null ? null : String(row.completed_at),
     invalidatedAt: row.invalidated_at == null ? null : String(row.invalidated_at),
+    failureReasons: parseFailureReasons(row.failure_reasons),
   };
+}
+
+/** TEXT column holding a JSON string array; anything unreadable reads as "no recorded reason". */
+function parseFailureReasons(value: unknown): string[] | undefined {
+  if (value == null) return undefined;
+  if (Array.isArray(value)) return value.map(String);
+  try {
+    const parsed: unknown = JSON.parse(String(value));
+    return Array.isArray(parsed) ? parsed.map(String) : undefined;
+  } catch {
+    return undefined;
+  }
 }

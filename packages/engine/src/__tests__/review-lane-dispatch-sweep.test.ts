@@ -167,6 +167,33 @@ describe("review-lane dispatch sweep classification", () => {
     expect(decision.nextRound).toBe(2);
   });
 
+  /*
+  FNXC:ReviewLaneDispatch 2026-10-05-00:30 (RUFU-559):
+  An attempt the engine orphaned is not a review that was tried and failed, so it must not spend the budget. This
+  is the counterpart that makes the reconcile safe to ship: without it, closing the zombie would move the card
+  from "stranded, cannot dispatch" to "attempts exhausted, parked forever". The dispatch sweep's own
+  `dispatch-failed:` refusals stay counted (asserted below) — those reached the point of failing.
+  */
+  it("does not spend the attempt budget on runs the engine orphaned", () => {
+    const engineLost = [
+      { ...finished("failed"), failureReasons: ["engine-lost: no live session behind the attempt at reconcile"] },
+      { ...finished("failed"), failureReasons: ["engine-lost: no live session behind the attempt at reconcile"] },
+      { ...finished("failed"), failureReasons: ["engine-lost: no live session behind the attempt at reconcile"] },
+    ];
+    const decision = decide(engineLost as never);
+    expect(decision.bucket).not.toBe("parked");
+  });
+
+  it("still counts a dispatch-failed refusal against the attempt budget", () => {
+    const refused = [
+      { ...finished("failed"), failureReasons: ["dispatch-failed: reviewer agent unavailable"] },
+      { ...finished("failed"), failureReasons: ["dispatch-failed: reviewer agent unavailable"] },
+      { ...finished("failed"), failureReasons: ["dispatch-failed: reviewer agent unavailable"] },
+    ];
+    const decision = decide(refused as never);
+    expect(decision.bucket).toBe("parked");
+  });
+
   it("parks instead of retrying once the attempt budget is spent, including the live zombie", () => {
     const startedLongAgo = new Date(NOW - DEFAULT_REVIEW_START_LATENCY_MS - 60_000).toISOString();
     const spent = [finished("failed"), finished("failed"), attempt({ startedAt: startedLongAgo })];

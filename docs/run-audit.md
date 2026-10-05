@@ -193,6 +193,26 @@ claim is never suppressed. It is never awaited before a claim or a handoff: the 
 measures dispatch latency must not be able to create any. Hostile-sink behaviour at the owning call
 site is covered by `packages/engine/src/__tests__/dispatch-latency.test.ts`.
 
+### The reviewer attempt that outlived its session (RUFU-559)
+
+`task:reconcile-stranded-reviewer-runs` records one pass over reviewer attempts that are still occupying a
+card's live slot after the liveness floor. A reviewer run row used to have no liveness reconcile at all, so an
+attempt whose session died with the engine stayed `status='running'` indefinitely — measured on production: 275
+such rows, not one of them live, the oldest 19 days old, with 20 in-review cards held by one. Because the review
+dispatch sweep derives its anti-loop budget from those committed rows, a zombie reads as an unfinished attempt
+and the stall classifier disposes the card as `completed-review-status-none`; every guard in the chain was
+behaving correctly while the whole review lane sat still.
+
+Age only selects a candidate. Death is proved with the canonical liveness triple (active session registry paths
+for the task, the executing-task lock, `isTaskActive`), and the row is never deleted: it takes a terminal status
+through the ledger's one-way completion, so a verdict that lands during the pass wins and the pass reports
+`already-settled`. The close reason carries the shared `engine-lost:` prefix, which is also the prefix exempted
+from the dispatch attempt budget — an attempt the engine orphaned was never an attempted review, and counting it
+would turn "stranded" into "attempts exhausted, parked forever". Metadata is ids/counts/fixed enums only:
+`taskId`, `reviewerRunId`, `reworkRound`, `stalenessMs`, `outcome` (`closed` / `already-settled` /
+`live-session` / `unparseable-start`), `source`. The registered sweep runs at startup and in maintenance batch 2,
+alongside `reconcile-orphaned-pending-step-results`, whose FN-8492 rules it deliberately mirrors.
+
 ## Maintenance contract
 
 Adding a new catalogued run-audit event requires updating **both** the typed catalogue module (`packages/engine/src/run-audit/run-audit-catalogue.ts`) **and** this doc together — the parity test (`packages/engine/src/__tests__/run-audit-catalogue.test.ts`) fails if the documented event set and the catalogue module's set ever diverge, keeping the observability surface truthful as the real `DatabaseMutationType` union evolves. Removing an event likewise requires updating both in the same change.

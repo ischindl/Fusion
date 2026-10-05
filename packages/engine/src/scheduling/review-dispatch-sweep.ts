@@ -9,6 +9,7 @@ import {
   openReviewerRunForTask,
   resolveLifecycleColumns,
   resolveWorkflowIrForTaskWithProvenance,
+  isEngineLossReviewerRun,
 } from "@fusion/core";
 import type {
   Agent,
@@ -154,9 +155,18 @@ export interface ReviewDispatchSweepOptions {
  * A finished attempt that left no verdict — a crash, a refused start, or a superseded zombie —
  * is what the retry budget counts. Approve/revise/skipped attempts achieved their purpose, so
  * counting them would let a long-lived card exhaust its budget on healthy reviews.
+ *
+ * FNXC:ReviewLaneDispatch 2026-10-05-00:24 (RUFU-559):
+ * An attempt the engine orphaned was never an attempted review, so it must not spend the card's anti-loop
+ * budget. Without this exemption the RUFU-559 reconcile would be worse than leaving the zombie: closing the row
+ * turns "stranded, cannot dispatch" into "attempts spent, parked forever". The exemption is keyed on the shared
+ * `engine-lost:` reason prefix that sweep writes, not on status or age, and deliberately does NOT exempt the
+ * dispatch sweep's own `dispatch-failed:` refusals, which were attempts that reached the point of failing.
  */
 function unfinishedAttempts(rows: ReviewerRunRow[]): number {
-  return rows.filter((row) => !isVerdictRecorded(row) && row.status !== "skipped").length;
+  return rows.filter(
+    (row) => !isVerdictRecorded(row) && row.status !== "skipped" && !isEngineLossReviewerRun(row),
+  ).length;
 }
 
 function isVerdictRecorded(row: ReviewerRunRow): boolean {

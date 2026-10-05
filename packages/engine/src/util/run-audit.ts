@@ -851,7 +851,19 @@ export type DatabaseMutationType =
   recovery owns the re-run. Metadata ids/counts-only:
   { taskId, column, orphanedCount, resultCount }.
   */
-  | "task:reconcile-orphaned-pending-step-results"
+  /*
+  FNXC:ReviewLaneDispatch 2026-10-05-00:24 (RUFU-559):
+  `reconcile-stranded-reviewer-runs` owns the reviewer attempt that outlived its session. Before it, a row could
+  sit `status='running'` forever (measured: 275 rows, none live, oldest 19 days) and the card behind it was
+  un-dispatchable while every guard was individually correct. The row fires once per examined candidate, so the
+  `-no-action` cases are outcomes of the same pass, not a second sweep: `closed` (session provably gone, attempt
+  terminalized), `already-settled` (a verdict landed first and the one-way guard kept it), `live-session` (the
+  liveness triple vetoed the write), `unparseable-start` (no provable age, so no action). Metadata is
+  ids/counts/fixed enums only: { taskId, reviewerRunId, reworkRound, stalenessMs, outcome, source }. The reason
+  sentence, the reviewer's output, and any error text never enter run-audit.
+  */
+  | "task:reconcile-stranded-reviewer-runs"
+    | "task:reconcile-orphaned-pending-step-results"
   /** Receipt-backed automatic waiver of an orphaned required singular code-review callback. */
   | "task:stale-review-callback-waived"
   /**

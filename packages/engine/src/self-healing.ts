@@ -152,7 +152,11 @@ import { deriveStaleReviewCallbackAttemptId, finalizePlanningSegment, isLegacyWo
 import { taskHoldsUnmergedCheckout, type CheckoutEmptinessProofMap } from "@fusion/core";
 import { proveDormantCheckoutEmptiness } from "./worktree/checkout-emptiness.js";
 import type { WorkspaceLandIntent } from "@fusion/core";
-import { prefetchWorkflowSelections, type WorkflowSelectionCache } from "@fusion/core";
+import { prefetchWorkflowSelections, type WorkflowSelectionCache,
+  completeReviewerRunForTask,
+  listStrandedLiveReviewerRuns,
+  type ReviewerRunRow,
+} from "@fusion/core";
 import { AUTO_MERGE_RETRY_REJECTED_PREFIX, classifyStaleContentPark } from "./merge/stale-content-park.js";
 import type { MeshLeaseManager } from "./project/mesh-lease-manager.js";
 import { createLogger, schedulerLog } from "./logger.js";
@@ -2374,6 +2378,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       // flight" to all of them (the merge gate included), which is the two-hour
       // stall-deadlock ride this sweep exists to prevent.
       { name: "reconcile-orphaned-pending-step-results", fn: () => this.reconcileOrphanedPendingStepResults().then(() => undefined) },
+      { name: "reconcile-stranded-reviewer-runs", fn: () => this.reconcileStrandedReviewerRuns().then(() => undefined) },
       { name: "reconcile-unproven-review-approvals", fn: () => this.reconcileUnprovenReviewApprovals().then(() => undefined) },
       { name: "reconcile-merge-boundary-evidence-gaps", fn: () => this.reconcileMergeBoundaryEvidenceGaps().then(() => undefined) },
       /*
@@ -3628,6 +3633,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           Keep them adjacent and in this order.
           */
           { name: "reconcile-orphaned-pending-step-results", fn: () => this.reconcileOrphanedPendingStepResults() },
+          { name: "reconcile-stranded-reviewer-runs", fn: () => this.reconcileStrandedReviewerRuns() },
           { name: "reconcile-unproven-review-approvals", fn: () => this.reconcileUnprovenReviewApprovals() },
           { name: "reconcile-collateral-archived-review-gates", fn: () => this.reconcileCollateralArchivedReviewGates() },
           { name: "reconcile-merge-boundary-evidence-gaps", fn: () => this.reconcileMergeBoundaryEvidenceGaps() },
@@ -11149,6 +11155,106 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       return recovered;
     } catch (error) {
       log.error(`reconcileOrphanedPendingStepResults failed: ${error instanceof Error ? error.message : String(error)}`);
+      return 0;
+    }
+  }
+
+  /*
+  FNXC:ReviewLaneDispatch 2026-10-05-00:24 (RUFU-559):
+  `task_reviewer_runs` had no liveness reconcile, so an attempt whose session died stayed `status='running'`
+  forever. Measured on production: 275 rows running, NONE live, oldest 19 days; 20 in-review cards were held by
+  one, and each engine restart manufactures more, because the reviewer session dies with the process and nothing
+  closes its row. The dispatch sweep then reads the zombie as an unfinished attempt and the stall classifier
+  disposes the card as `completed-review-status-none` — which is how a whole review lane stops moving while every
+  individual guard is behaving correctly.
+
+  Modelled on FN-8492 (`reconcileOrphanedPendingStepResults`), keeping its two hard rules:
+  - never act on age alone. The ledger's floor selects a CANDIDATE; death is PROVEN with the canonical liveness
+    triple (active session registry paths for the task, the executing-task lock, `options.isTaskActive`) — the
+    same triple FN-8492 uses. A reviewer session legitimately runs for minutes.
+  - never delete or rewrite history. The row takes a terminal status through `completeReviewerRunForTask`, whose
+    one-way guard (still-running, still-live) is the race protection: a verdict landing between this read and
+    this write wins, and this pass records `already-settled`.
+
+  The close reason carries `engine-lost:`, the shared prefix `isEngineLossReviewerRun` exempts from the dispatch
+  budget. Without that exemption this sweep would be worse than doing nothing: it would convert "stranded" into
+  "3 attempts spent, parked forever", because an attempt the engine orphaned was never an attempted review.
+  Never touches a `userPaused` card, a card whose row disappeared, or a row whose clock is unparseable, and
+  performs no lifecycle move — unblocking the card is the graph's job, not this sweep's.
+  */
+  async reconcileStrandedReviewerRuns(): Promise<number> {
+    let closed = 0;
+    try {
+      const settings = await this.store.getSettings().catch(() => undefined);
+      if (settings?.globalPause || settings?.enginePaused) return 0;
+
+      const isSessionLive = (taskId: string): boolean => {
+        const livePaths = activeSessionRegistry.pathsForTask(taskId);
+        return livePaths.some((p) => activeSessionRegistry.isPathActive(p))
+          || executingTaskLock.has(taskId)
+          || this.options.isTaskActive?.(taskId) === true;
+      };
+
+      let rows: ReviewerRunRow[] = [];
+      try {
+        rows = await listStrandedLiveReviewerRuns(this.store, { limit: 200 });
+      } catch (error) {
+        log.warn(`reconcileStrandedReviewerRuns: candidate scan failed: ${error instanceof Error ? error.message : String(error)}`);
+        return 0;
+      }
+
+      for (const run of rows) {
+        const task = await this.store.getTask(run.taskId).catch(() => null);
+        if (!task || task.deletedAt || task.userPaused === true) continue;
+
+        const startedAt = Date.parse(run.startedAt);
+        const stalenessMs = Number.isFinite(startedAt) ? Date.now() - startedAt : Number.NaN;
+        let outcome = "closed";
+        let transitioned = false;
+
+        if (!Number.isFinite(stalenessMs) || stalenessMs <= 0) {
+          outcome = "unparseable-start";
+        } else if (isSessionLive(task.id)) {
+          outcome = "live-session";
+        } else {
+          try {
+            transitioned = await completeReviewerRunForTask(this.store, {
+              taskId: run.taskId,
+              id: run.id,
+              status: "failed",
+              at: new Date().toISOString(),
+              failureReasons: ["engine-lost: no live session behind the attempt at reconcile"],
+            });
+            if (!transitioned) outcome = "already-settled";
+          } catch (error) {
+            log.warn(`reconcileStrandedReviewerRuns: closing ${run.id} failed: ${error instanceof Error ? error.message : String(error)}`);
+            continue;
+          }
+        }
+
+        await emitBoundedRunAudit(this.store, {
+          taskId: task.id,
+          agentId: "self-healing",
+          runId: generateSyntheticRunId("reconcile-stranded-reviewer-runs", task.id),
+          domain: "database",
+          mutationType: "task:reconcile-stranded-reviewer-runs",
+          target: task.id,
+          metadata: {
+            taskId: task.id,
+            reviewerRunId: run.id,
+            reworkRound: run.reworkRound,
+            stalenessMs: Number.isFinite(stalenessMs) ? stalenessMs : null,
+            outcome,
+            source: "self-healing",
+          },
+        }).catch(() => undefined);
+
+        if (transitioned) closed++;
+      }
+      if (closed > 0) log.log(`Closed ${closed} stranded reviewer run(s) whose session was provably gone`);
+      return closed;
+    } catch (error) {
+      log.error(`reconcileStrandedReviewerRuns failed: ${error instanceof Error ? error.message : String(error)}`);
       return 0;
     }
   }

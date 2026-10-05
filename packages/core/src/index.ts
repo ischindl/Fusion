@@ -3470,6 +3470,10 @@ export {
   findLiveReviewerRunForTask,
   listReviewerRunsForTask,
   invalidateReviewerRunsForTask,
+  listStrandedLiveReviewerRuns,
+  isEngineLossReviewerRun,
+  REVIEWER_RUN_ENGINE_LOSS_REASON_PREFIX,
+  REVIEWER_RUN_LIVENESS_FLOOR_MS,
 } from "./task-store/reviewer-run-ledger.js";
 export type { ReviewerRunRow, ReviewerRunStatus } from "./task-store/reviewer-run-ledger.js";
 
