@@ -60,11 +60,14 @@ pgDescribe("TaskStore PostgreSQL safe-default removal", () => {
     await store.deleteTask(task.id);
 
         /*
-    FNXC:ForkedProductLine 2026-10-05-11:29 (merge origin/main): this fork retired task archiving
-    (FN-9187) and its refusal sentences now read "is deleted or historical — ... read-only", so the
-    upstream `archived.*read-only` pattern cannot match a source line that no longer uses the word.
-    The alternation keeps asserting the real invariant (the write is refused as read-only) without
-    resurrecting retired vocabulary; the `logEntry` assertion below already used this shape.
+    FNXC:ForkedProductLine 2026-10-05-11:29 (merge origin/main), corrected 2026-10-05-12:37:
+    This line's lane vocabulary has no archived role, so the refusal sentence reads
+    "is deleted or historical - ... read-only" and upstream's `archived.*read-only` pattern cannot
+    match a source line that does not use the word. The alternation keeps asserting the real invariant
+    (the write is refused as read-only) without pinning wording this line may restore: the missing role
+    is a fork decision made in a misunderstanding, not an upstream removal - upstream maintains
+    archiving behind the `autoArchive` setting and hardened it in FN-9187. If the role returns, prefer
+    restoring the sentence over widening this pattern.
     */
     await expect(store.logEntry(task.id, "must reject")).rejects.toThrow(/(?:archived|historical).*read-only/);
     await expect(store.moveTask(task.id, "todo")).rejects.toThrow(/archived|soft-deleted|not found/);

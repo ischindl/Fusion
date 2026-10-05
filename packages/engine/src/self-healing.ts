@@ -21117,11 +21117,14 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
     /*
     FNXC:WorktreeCleanup 2026-10-05-09:43 (merge origin/main, upstream temp-registration sweep):
     Upstream treats a worktree as terminal when it sits in a complete lane OR an archived lane. This
-    fork retired task archiving (FN-9187), so `LifecycleColumns` exposes no `archived` role and
-    `resolveProjectColumnsForRoles(store, ["archived"])` does not typecheck here — the archived half of
-    that union is dropped rather than adopted, same as in
-    `packages/engine/src/missions/mission-execution-loop.ts`. Complete lanes alone are the terminal set;
-    when archiving is ever restored, add its role back to this single definition.
+    line currently has no `archived` lifecycle role in its lane vocabulary, so
+    `resolveProjectColumnsForRoles(store, ["archived"])` does not typecheck and the archived half of
+    that union is dropped rather than adopted, same as in mission-execution-loop.ts.
+    FNXC:ForkedProductLine 2026-10-05-12:37 correction: this vocabulary gap is a FORK decision made in
+    a misunderstanding - archiving was never removed upstream, which keeps it as a maintained feature
+    behind the `autoArchive` setting and hardened it in FN-9187 ("Bound auto-archive failure retries",
+    which even honours renamed archive lanes). Re-adoption is tracked separately; when the archived
+    role returns, add its lane back to this single terminal-column definition.
     */
     const mergeTempTerminalColumns = await resolveProjectColumnsForRoles(this.store, ["complete"]);
     try {
