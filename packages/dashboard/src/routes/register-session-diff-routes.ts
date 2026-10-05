@@ -146,7 +146,10 @@ in 1.3 s at idle because of it.
 above already made at 10 s, only two polls deep. Pinned by `diff-stats-ttl-outlasts-poll.test.ts`, because
 the failure mode is silent: the cache keeps existing, keeps returning misses, and nothing fails.
 */
-const TASK_DIFF_STATS_CACHE_TTL_MS = 60_000;
+// Exported so the cache tests derive their time jumps from this value instead of restating it: when
+// RUFU-479 raised the TTL past 10s, the route test kept asserting the old expiry and went red on
+// main. A test that restates a constant is a latent stale assertion.
+export const TASK_DIFF_STATS_CACHE_TTL_MS = 60_000;
 const TASK_DIFF_STATS_CACHE_MAX = 500;
 
 /*
