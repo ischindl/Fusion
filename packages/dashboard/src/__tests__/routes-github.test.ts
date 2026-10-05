@@ -3312,6 +3312,115 @@ describe("GET /tasks/:id/diff", () => {
         rmSync(root, { recursive: true, force: true });
       }
     });
+
+    /*
+    FNXC:TaskDiffAttribution 2026-09-09-23:05:
+    RUFU-207 Step 4: route-level subprocess economy on the real HTTP surface. Attribution spawns are
+    identified by their unique arg shapes (enumeration = the `%H%x00` format arg; batch = `--no-walk`
+    + `--name-only`; per-sha fallback = leading `diff-tree`), so the routes' unrelated git calls
+    (rev-parse, name-status -M, per-file patches) never pollute the count. mockExecFile is never
+    cleared in this file, hence the call-count baselines. The fresh concurrent pair case is only
+    deterministic at the module seam (its coalescing test lives in attribute-done-range-files.test.ts);
+    over HTTP, cache warmth may order the two attributions, so the pair test asserts the spec's
+    "reuse of primed result" branch: after one /diff primed attribution, a concurrent pair may
+    re-enumerate at most twice and must NEVER re-resolve names (batch/diff-tree count 0).
+    */
+    function gitSpawnArgsSince(baseline: number): string[][] {
+      return mockExecFile.mock.calls
+        .slice(baseline)
+        .map((c) => c as unknown[])
+        .filter((c) => c[0] === "git" && Array.isArray(c[1]))
+        .map((c) => c[1] as string[]);
+    }
+
+    function countAttributionSpawns(calls: string[][]): { enumerated: number; batched: number; perSha: number } {
+      return {
+        enumerated: calls.filter((a) => a.some((x) => typeof x === "string" && x.includes("%H%x00"))).length,
+        batched: calls.filter((a) => a.includes("--no-walk") && a.includes("--name-only")).length,
+        perSha: calls.filter((a) => a[0] === "diff-tree").length,
+      };
+    }
+
+    async function makeAttributedDoneApp(taskId: string, ownCommitCount: number): Promise<{ app: express.Express; root: string }> {
+      const root = mkdtempSync(join(tmpdir(), "kb-dashboard-attribution-economy-"));
+      const git = (...args: string[]): string => execFileSync("git", ["-C", root, ...args], { stdio: "pipe" }).toString().trim();
+      git("init", "--initial-branch=main");
+      git("config", "user.email", "kb-tests@example.com");
+      git("config", "user.name", "KB Tests");
+      writeFileSync(join(root, "base.ts"), "export const base = true;\n");
+      git("add", "base.ts");
+      git("commit", "-qm", "base");
+      const rebaseBaseSha = git("rev-parse", "HEAD");
+      writeFileSync(join(root, "foreign.ts"), "export const remote = true;\n");
+      git("add", "foreign.ts");
+      git("commit", "-qm", "remote work");
+      for (let i = 1; i <= ownCommitCount; i++) {
+        writeFileSync(join(root, `own${i}.ts`), `export const own${i} = ${i};\n`);
+        git("add", `own${i}.ts`);
+        git("commit", "-qm", `feat(${taskId}): own change ${i}`);
+      }
+      const commitSha = git("rev-parse", "HEAD");
+
+      const localStore = createMockStore({ getRootDir: vi.fn().mockReturnValue(root) });
+      (localStore.getTask as ReturnType<typeof vi.fn>).mockResolvedValue({
+        ...FAKE_TASK_DETAIL,
+        id: taskId,
+        column: "done",
+        modifiedFiles: [],
+        mergeDetails: { commitSha, rebaseBaseSha, filesChanged: 2 },
+      });
+      const app = express();
+      app.use(express.json());
+      app.use("/api", createApiRoutes(localStore));
+      return { app, root };
+    }
+
+    it("attributes a 6-commit done card in exactly two attribution spawns", async () => {
+      const { app, root } = await makeAttributedDoneApp("FN-2071", 6);
+      try {
+        const callsBefore = mockExecFile.mock.calls.length;
+        const res = await GET(app, "/api/tasks/FN-2071/diff");
+        const spawns = countAttributionSpawns(gitSpawnArgsSince(callsBefore));
+
+        expect(res.status).toBe(200);
+        expect(res.body.files.map((f: { path: string }) => f.path)).toEqual(
+          Array.from({ length: 6 }, (_, i) => `own${i + 1}.ts`),
+        );
+        expect(res.body.files.map((f: { path: string }) => f.path)).not.toContain("foreign.ts");
+        expect(spawns).toEqual({ enumerated: 1, batched: 1, perSha: 0 });
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("reuses primed attribution for a concurrent diff + file-diffs pair", async () => {
+      const { app, root } = await makeAttributedDoneApp("FN-2072", 4);
+      try {
+        // Prime: the first /diff pays the full attribution cost — one enumeration + one batch.
+        const primeBefore = mockExecFile.mock.calls.length;
+        await GET(app, "/api/tasks/FN-2072/diff");
+        expect(countAttributionSpawns(gitSpawnArgsSince(primeBefore))).toEqual({ enumerated: 1, batched: 1, perSha: 0 });
+
+        // Pair: worst case without payload caching is each route re-enumerating once; the value
+        // cache guarantees the pair NEVER re-resolves file names, so total spawns stay <= 2.
+        const pairBefore = mockExecFile.mock.calls.length;
+        const [diffRes, fileDiffsRes] = await Promise.all([
+          GET(app, "/api/tasks/FN-2072/diff"),
+          GET(app, "/api/tasks/FN-2072/file-diffs"),
+        ]);
+        const pairSpawns = countAttributionSpawns(gitSpawnArgsSince(pairBefore));
+
+        expect(diffRes.status).toBe(200);
+        expect(fileDiffsRes.status).toBe(200);
+        expect(fileDiffsRes.body.map((f: { path: string }) => f.path)).toEqual([
+          "own1.ts", "own2.ts", "own3.ts", "own4.ts",
+        ]);
+        expect(pairSpawns.batched + pairSpawns.perSha).toBe(0);
+        expect(pairSpawns.enumerated + pairSpawns.batched + pairSpawns.perSha).toBeLessThanOrEqual(2);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
   });
 
   it("resolves missing done-task commitSha from run-audit commit events", async () => {
