@@ -59,15 +59,15 @@ pgDescribe("TaskStore PostgreSQL safe-default removal", () => {
     });
     await store.deleteTask(task.id);
 
-    await expect(store.logEntry(task.id, "must reject")).rejects.toThrow(/deleted or historical.*read-only/);
-    await expect(store.moveTask(task.id, "todo")).rejects.toThrow(/deleted|historical|soft-deleted|not found/);
-    await expect(store.updateTask(task.id, { priority: "high" })).rejects.toThrow(/deleted|historical|soft-deleted|not found/);
-    await expect(store.addComment(task.id, "must reject", "user")).rejects.toThrow(/deleted or historical.*read-only/);
-    await expect(store.updateTaskComment(task.id, commentId!, "must reject")).rejects.toThrow(/deleted or historical.*read-only/);
-    await expect(store.deleteTaskComment(task.id, commentId!)).rejects.toThrow(/deleted or historical.*read-only/);
-    await expect(store.upsertTaskDocument(task.id, { key: "spec", content: "must reject" })).rejects.toThrow(/deleted or historical.*read-only/);
-    await expect(store.deleteTaskDocument(task.id, "spec")).rejects.toThrow(/deleted or historical.*read-only/);
-    await expect(store.updateArtifact(artifact.id, { title: "must reject" })).rejects.toThrow(/deleted or historical.*read-only/);
+    await expect(store.logEntry(task.id, "must reject")).rejects.toThrow(/(?:archived|historical).*read-only/);
+    await expect(store.moveTask(task.id, "todo")).rejects.toThrow(/archived|soft-deleted|not found/);
+    await expect(store.updateTask(task.id, { priority: "high" })).rejects.toThrow(/archived|soft-deleted|not found/);
+    await expect(store.addComment(task.id, "must reject", "user")).rejects.toThrow(/archived.*read-only/);
+    await expect(store.updateTaskComment(task.id, commentId!, "must reject")).rejects.toThrow(/archived.*read-only/);
+    await expect(store.deleteTaskComment(task.id, commentId!)).rejects.toThrow(/archived.*read-only/);
+    await expect(store.upsertTaskDocument(task.id, { key: "spec", content: "must reject" })).rejects.toThrow(/archived.*read-only/);
+    await expect(store.deleteTaskDocument(task.id, "spec")).rejects.toThrow(/archived.*read-only/);
+    await expect(store.updateArtifact(artifact.id, { title: "must reject" })).rejects.toThrow(/archived.*read-only/);
     await expect(store.registerArtifact({
       type: "document",
       title: "must reject",

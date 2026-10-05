@@ -139,9 +139,14 @@ pgDescribe("a renamed board gets the same reopen effects as the default lineage"
     return { store, taskId: task.id };
   }
 
-  it("clears the stale review result when the renamed review lane bounces to renamed WIP", async () => {
+  it("clears the stale review result when the renamed review lane bounces to the renamed wip lane", async () => {
     const { store, taskId } = await seedCardInCheck();
 
+    /*
+    FNXC:WorkflowLifecycleContainment 2026-10-04-12:07:
+    Code-review remediation may move review back one role into WIP, never past it
+    into hold. The renamed workflow must preserve the same role-based reopen cleanup.
+    */
     const moved = await store.moveTask(taskId, "building", {
       moveSource: "engine",
       lifecycleReason: "code-review-revise-remediation",
@@ -150,7 +155,11 @@ pgDescribe("a renamed board gets the same reopen effects as the default lineage"
     expect(moved.column).toBe("building");
     // The safety assertion: a surviving `passed` result satisfies getTaskMergeBlocker.
     expect(moved.workflowStepResults ?? []).toHaveLength(0);
+    // FNXC:WorkflowLifecycleContainment 2026-10-04-12:07: Review remediation returns to WIP on the existing branch; only a user hold cancels checkout ownership.
     expect(moved.branch).toBe("fusion/renamed");
+    expect(moved.summary).toBe("a summary from the failed attempt");
+    expect(moved.status).toBe("failed");
+    expect(moved.error).toBe("review rejected");
   });
 
   it("parks a user-source bounce into the renamed hold lane", async () => {

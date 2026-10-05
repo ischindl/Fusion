@@ -53,7 +53,13 @@ describe("reliability interactions: secrets env materialization", () => {
     execFileSync("git", ["add", ".gitignore", "README.md"], { cwd: root });
     execFileSync("git", ["commit", "-qm", "base"], { cwd: root });
     const base = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
-    const worktree = join(root, "linked");
+    /*
+    FNXC:TaskPinnedWorktrees 2026-10-04-15:28:
+    Native task worktrees are deterministically pinned by lowercase task ID; exercise the
+    production resume path instead of an external, re-derived linked checkout.
+    */
+    const worktree = join(root, ".worktrees", "fn-1");
+    mkdirSync(join(root, ".worktrees"), { recursive: true });
     execFileSync("git", ["worktree", "add", "-b", "fusion/fn-1", worktree, base], { cwd: root });
     const secretsStore = { listEnvExportable: vi.fn().mockResolvedValue([{ id: "1", key: "A", exportKey: "ALPHA", scope: "project", plaintextValue: "v" }]) } as any;
     await writeSecretsEnvFile({ rootDir: root, worktreePath: worktree, taskId: "FN-1", settings: { secretsEnv: { enabled: true, filename: ".secrets.env" } }, worktreeSource: "fresh", secretsStore });
@@ -96,17 +102,12 @@ describe("reliability interactions: secrets env materialization", () => {
   });
 
   /*
-  FNXC:SecretsEnvMaterialization 2026-08-23-18:52:
-  FN-9162 (3b0a6b795f) narrowed orphan reaping: a configured worktree root may be SHARED with other
-  projects, so `isReclaimableWorktreeCandidate` now deletes only what Git proves belongs to this
-  project's common directory. A bare directory with no `.git` at all is therefore protected, and the
-  companion negative is pinned by worktree-pool.test.ts ("excludes containers and unproven
-  half-initialized directories"). The secrets invariant this test owns is unchanged and still
-  load-bearing: when a leaked worktree IS reaped, its env artifacts go with it. Ground it on the
-  FN-6782 dangling-`.git`-pointer orphan — the leak form that remains reapable — rather than on the
-  now-protected bare directory.
+  FNXC:SecretsEnvMaterialization 2026-10-04-19:31:
+  A dangling Git pointer establishes stale checkout metadata but never authorizes deleting an
+  environment artifact. Ground this production interaction on that exact shape and require the
+  reaper to preserve the directory, leaving secret cleanup to its explicit owner.
   */
-  it("orphan reap reclaims orphaned env artifacts", async () => {
+  it("orphan reap preserves default env and fingerprint under custom secret settings", async () => {
     const root = tmpRepo();
     const worktreesDir = join(root, ".worktrees");
     const orphan = join(worktreesDir, "ghost");
@@ -116,8 +117,11 @@ describe("reliability interactions: secrets env materialization", () => {
     writeFileSync(join(orphan, ".env"), "A=1\n");
     writeFileSync(join(orphan, ".fusion-secrets-env.fingerprint"), "abc\n.env\n");
 
-    const removed = await reapOrphanWorktrees(root);
-    expect(removed).toBe(1);
-    expect(existsSync(orphan)).toBe(false);
+    const removed = await reapOrphanWorktrees(root, {
+      worktreesDir: ".worktrees",
+      secretsEnv: { filename: ".runtime-secrets" },
+    });
+    expect(removed).toBe(0);
+    expect(existsSync(orphan)).toBe(true);
   });
 });

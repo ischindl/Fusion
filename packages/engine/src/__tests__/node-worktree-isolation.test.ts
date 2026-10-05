@@ -70,8 +70,8 @@ describe("every workflow node runs in the task worktree, never the shared checko
     store.getTask.mockResolvedValue(live as any);
     await (executor as any).runGraphCustomNode(CODE_REVIEW_NODE, live, {}, undefined);
 
-    expect(acquireSpy).toHaveBeenCalledOnce();
-    expect(acquireSpy).toHaveBeenCalledWith(expect.objectContaining({ id: live.id }), expect.anything(), CODE_REVIEW_NODE.id);
+    expect(captured.worktreePath).not.toBe(ROOT);
+    expect(captured.worktreePath).toContain(`${ROOT}/.fusion/worktrees/`);
   });
 
   it("reuses an existing usable worktree instead of acquiring another", async () => {

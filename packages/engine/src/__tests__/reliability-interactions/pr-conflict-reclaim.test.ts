@@ -90,6 +90,10 @@ describe("reliability interaction: pr conflict reclaim", () => {
     lane: the contained rebound retains it in `in-review` and resumability is carried by the
     preserved step progress, not by the lane. The reclaim itself (branch re-pin below) is
     unchanged.
+
+    FNXC:LifecycleContainment 2026-10-04-15:20:
+    origin/main independently converged on the same contained outcome — PR-conflict recovery
+    repairs its checkout in the review role; it does not auto-move a review card backward.
     */
     expect(t.column).toBe("in-review");
     expect(s.updateTask).toHaveBeenCalledWith(t.id, expect.objectContaining({

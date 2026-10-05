@@ -502,7 +502,7 @@ describe("reapOrphanWorktrees", () => {
     expect(mockedRmSync).not.toHaveBeenCalledWith("/root/.worktrees/.fusion-recovery", expect.anything());
   });
 
-  it("preserves a dir with a dangling .git pointer", async () => {
+  it("reaps a proven dangling .git pointer recursively", async () => {
     mockedReaddirSync.mockReturnValue([makeDirEntry("leaked-wt")] as any);
     mockedLstatSync.mockImplementation((p: any) =>
       (String(p).endsWith("/.git")
@@ -515,10 +515,12 @@ describe("reapOrphanWorktrees", () => {
       return s === "/root/.worktrees" || s === "/root/.worktrees/leaked-wt/.git";
     });
 
-    const removed = await reapOrphanWorktrees("/root");
+    const removed = await reapOrphanWorktrees("/root", {
+      secretsEnv: { filename: ".runtime-secrets" },
+    } as any);
 
-    expect(removed).toBe(0);
-    expect(mockedRmSync).not.toHaveBeenCalledWith("/root/.worktrees/leaked-wt", expect.anything());
+    expect(removed).toBe(1);
+    expect(mockedRmSync).toHaveBeenCalledWith("/root/.worktrees/leaked-wt", { recursive: true, force: true });
   });
 
   it("skips a dir with a valid .git pointer (admin gitdir exists)", async () => {

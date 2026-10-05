@@ -55,9 +55,14 @@ import {
 } from "../types.js";
 import type { CentralClaimStore, CheckoutClaimContext, RunMutationContext } from "../types.js";
 import type { TaskStore } from "../store.js";
-import {resolveTaskLifecycleColumns} from "../workflows/workflow-lifecycle-traits.js";
+import {columnsWithFlag, resolveTaskLifecycleColumns} from "../workflows/workflow-lifecycle-traits.js";
+import { classifyWorkflowAgentNode } from "../workflows/workflow-ir-types.js";
+import { findWorkflowNodeInstance } from "../workflows/workflow-node-instance.js";
+import { resolveWorkflowIrForTask } from "../workflows/workflow-ir-resolver.js";
+import { withTaskWorkflowSerialization } from "../task-store/async/async-workflow-workitems.js";
+import { ACTIVE_WORKFLOW_WORK_ITEM_STATES } from "../types.js";
 import { computeAccessState, normalizePermissions } from "./agent-permissions.js";
-import { assertImplementationTaskBindAllowed, evaluateImplementationTaskBind } from "./agent-role-policy.js";
+import { assertImplementationTaskBindAllowed, evaluateImplementationTaskBind, isWorkflowPrincipalEligible } from "./agent-role-policy.js";
 import { normalizeAgentPermissionPolicy } from "./agent-permission-policy.js";
 import { normalizeAgentRoles } from "../types/agents/agents.js";
 import { Database } from "../db/db.js";
@@ -65,7 +70,9 @@ import type { AsyncDataLayer } from "../postgres/data-layer.js";
 import { appendAgentActivityEvent } from "../task-store/async/async-agent-activity.js";
 import { resolveAgentActivityAttribution } from "../task-store/agent-activity-outbox.js";
 import * as postgresSchema from "../postgres/schema/index.js";
-import { and, eq, gt, lte, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, lte, sql } from "drizzle-orm";
+import { acquireTaskAdvisoryXactLock } from "../task-store/task-advisory-lock.js";
+
 /*
  * FNXC:SqliteFinalRemoval 2026-06-25-23:30:
  * Async Drizzle helpers for backend-mode (PostgreSQL) AgentStore operations.
@@ -74,6 +81,7 @@ import { and, eq, gt, lte, sql } from "drizzle-orm";
  */
 import type { QueryHandle } from "../async-stores/async-mission-store-queries.js";
 import {
+  mergeAgentRow,
   writeAgent as writeAgentAsync,
   readAgent as readAgentAsync,
   listAgentRows as listAgentRowsAsync,
@@ -1623,6 +1631,184 @@ export class AgentStore extends EventEmitter {
    * agent's active execution linkage (agent.taskId). Task linkage is only updated
    * after ownership + checkout checks pass.
    */
+  /**
+   * Release a durable heartbeat owner's queued task to the normal executor pool.
+   *
+   * The task-row atomic update is the ownership fence: losing a concurrent
+   * reassignment, checkout, or lifecycle move is a harmless no-op. Assignment
+   * update semantics then synchronize the former agent's task link.
+   */
+  async handoffTaskToWorkflowExecutor(
+    agentId: string,
+    taskId: string,
+    runContext?: RunMutationContext,
+    options: { allowAgentOwnedPause?: boolean; allowIdleWipPrincipalHold?: boolean; requireUnavailableOwner?: boolean } = {},
+  ): Promise<{ ok: true; task: Task } | { ok: false; reason: string; task?: Task }> {
+    if (!this.taskStore) {
+      throw new Error("TaskStore not configured for task-handoff operations");
+    }
+
+    // Resolve workflow lanes before taking the non-reentrant task-row lock.
+    const lanes = await resolveTaskLifecycleColumns(this.taskStore, taskId).catch(() => undefined);
+    const handoffIr = options.allowIdleWipPrincipalHold
+      ? await resolveWorkflowIrForTask(this.taskStore, taskId).catch(() => undefined)
+      : undefined;
+    const wipColumns = new Set(handoffIr ? columnsWithFlag(handoffIr, "countsTowardWip") : []);
+    const layer = this.asyncLayer;
+    if (!layer) {
+      throw new Error("TaskStore handoff requires PostgreSQL persistence");
+    }
+
+    const outcome = await this.taskStore.withTaskLock(taskId, async () => await layer.transactionImmediate(async (tx) => {
+      await acquireTaskAdvisoryXactLock(tx, layer.projectId, taskId);
+      return withTaskWorkflowSerialization(tx, layer.projectId, taskId, async () => {
+      const rows = await tx.select().from(postgresSchema.project.tasks).where(and(
+        eq(postgresSchema.project.tasks.id, taskId),
+        eq(postgresSchema.project.tasks.projectId, this.backendProjectId),
+        isNull(postgresSchema.project.tasks.deletedAt),
+      )).for("update");
+      const row = rows[0];
+      if (!row) return { ok: false as const, reason: "deleted" };
+      const current = this.taskStore!.rowToTask(this.taskStore!.pgRowToTaskRow(row));
+      if (current.assignedAgentId !== agentId) {
+        return { ok: false as const, reason: current.assignedAgentId ? "assigned_to_other" : "already_released", task: current };
+      }
+      const canReleaseAgentPause = options.allowAgentOwnedPause
+        && current.paused === true
+        && current.pausedByAgentId === agentId
+        && !current.userPaused;
+      if (current.userPaused || (current.paused && !canReleaseAgentPause)) {
+        return { ok: false as const, reason: "paused", task: current };
+      }
+      if (current.checkedOutBy) return { ok: false as const, reason: "checkout_held", task: current };
+      const idleWipHandoff = options.allowIdleWipPrincipalHold === true && wipColumns.has(current.column);
+      let heldItemId: string | undefined;
+      if (idleWipHandoff || options.requireUnavailableOwner) {
+        const [owner] = await tx.select().from(postgresSchema.project.agents).where(and(
+          eq(postgresSchema.project.agents.id, agentId),
+          eq(postgresSchema.project.agents.projectId, this.backendProjectId),
+        )).for("update");
+        if (owner && isWorkflowPrincipalEligible(mergeAgentRow(owner as Parameters<typeof mergeAgentRow>[0]))) {
+          return { ok: false as const, reason: "owner_available", task: current };
+        }
+      }
+      if (idleWipHandoff) {
+        if (current.paused || current.userPaused) return { ok: false as const, reason: "paused", task: current };
+        const items = await tx.select().from(postgresSchema.project.workflowWorkItems).where(and(
+          eq(postgresSchema.project.workflowWorkItems.taskId, taskId),
+          eq(postgresSchema.project.workflowWorkItems.projectId, this.backendProjectId),
+        ));
+        const active = items.filter(item => ACTIVE_WORKFLOW_WORK_ITEM_STATES.includes(item.state as import("../types.js").WorkflowWorkItemState));
+        const held = active.length === 1 ? active[0] : undefined;
+        const pinnedNode = handoffIr?.nodes.find(node => node.id === current.workflowIrPinNodeId);
+        const instanceId = held?.nodeInstanceId;
+        const directExecutor = pinnedNode != null && held?.nodeId === pinnedNode.id
+          && (instanceId == null || instanceId === pinnedNode.id)
+          && classifyWorkflowAgentNode(pinnedNode) === "executor";
+        const nestedUnderPin = instanceId != null && pinnedNode != null && (
+          (pinnedNode.kind === "foreach" && instanceId.startsWith(`${pinnedNode.id}#${current.currentStep}:`))
+          || (pinnedNode.kind === "optional-group" && instanceId.startsWith(`${pinnedNode.id}::`))
+        );
+        const nestedNode = nestedUnderPin ? findWorkflowNodeInstance(handoffIr, instanceId) : undefined;
+        const nestedExecutor = nestedNode != null && nestedNode.id === held?.nodeId
+          && classifyWorkflowAgentNode(nestedNode) === "executor";
+        if (!held || held.kind !== "task" || held.state !== "held"
+          || (!directExecutor && !nestedExecutor)
+          || held.blockedReason !== "workflow-principal-named-principal-unavailable:executor"
+          || (held.workflowRole != null && held.workflowRole !== "executor")
+          || (held.authorityKind != null && held.authorityKind !== "task-assignee")
+          || (held.principalAgentId != null && held.principalAgentId !== agentId)
+          || held.leaseOwner != null) {
+          return { ok: false as const, reason: "not_idle_executor_hold", task: current };
+        }
+        heldItemId = held.id;
+      } else if (current.column !== (lanes?.hold ?? "todo")) {
+        return { ok: false as const, reason: "not_queued", task: current };
+      }
+
+      /*
+      FNXC:DurableAgentHandoff 2026-10-04-16:26:
+      The task advisory transaction is the cross-process ownership fence. It
+      reads the current owner, clears that exact assignment, and removes the
+      former agent link before commit, so an operator reassignment or executor
+      claim cannot be erased by a stale heartbeat from another daemon.
+      */
+      const handoffUpdatedAt = new Date().toISOString();
+      const [updatedRow] = await tx.update(postgresSchema.project.tasks).set({
+        assignedAgentId: null,
+        ...(canReleaseAgentPause ? { paused: 0, pausedByAgentId: null } : {}),
+        updatedAt: handoffUpdatedAt,
+      }).where(and(
+        eq(postgresSchema.project.tasks.id, taskId),
+        eq(postgresSchema.project.tasks.projectId, this.backendProjectId),
+        eq(postgresSchema.project.tasks.assignedAgentId, agentId),
+        isNull(postgresSchema.project.tasks.deletedAt),
+      )).returning();
+      if (!updatedRow) return { ok: false as const, reason: "fence_lost", task: current };
+      await tx.update(postgresSchema.project.agents).set({ taskId: null, updatedAt: new Date().toISOString() }).where(and(
+        eq(postgresSchema.project.agents.id, agentId),
+        eq(postgresSchema.project.agents.projectId, this.backendProjectId),
+        eq(postgresSchema.project.agents.taskId, taskId),
+      ));
+
+      if (heldItemId) {
+        const resumed = await this.taskStore!.transitionWorkflowWorkItem(heldItemId, "runnable", {
+          expectedState: "held", blockedReason: null, lastError: null, retryAfter: null,
+          leaseOwner: null, leaseExpiresAt: null,
+          principalAgentId: null, workflowRole: null, authorityKind: null,
+        }, tx);
+        if (resumed.state !== "runnable") throw new Error("Workflow executor handoff lost its held continuation");
+      }
+
+      const releasedTask = this.taskStore!.rowToTask(this.taskStore!.pgRowToTaskRow(updatedRow));
+      /*
+      FNXC:DurableAgentHandoff 2026-10-04-17:19:
+      Publish the released task.json while the ownership-row transaction still
+      holds PostgreSQL's row lock. An ordinary assignment cannot commit between
+      this mirror write and the handoff commit, so its later publication always
+      wins rather than a stale heartbeat restoring an unassigned projection.
+      */
+      await this.taskStore!.writeTaskJsonFile(this.taskStore!.taskDir(taskId), releasedTask);
+      return { ok: true as const, task: releasedTask };
+      });
+    }));
+
+    if (!outcome.ok) return outcome;
+
+    // Read once before publication so a stale post-commit observation is never
+    // used as a cache/event payload without the fenced revalidation below.
+    await this.taskStore.getTask(taskId);
+    // Test-only seam: lets a second store commit after this refresh read.
+    await (this.taskStore as unknown as {
+      __afterHandoffPublicationReadForTest?: () => void | Promise<void>;
+    }).__afterHandoffPublicationReadForTest?.();
+
+    await this.taskStore.withTaskLock(taskId, async () => await layer.transactionImmediate(async (tx) => {
+      await acquireTaskAdvisoryXactLock(tx, layer.projectId, taskId);
+      const rows = await tx.select().from(postgresSchema.project.tasks).where(and(
+        eq(postgresSchema.project.tasks.id, taskId),
+        eq(postgresSchema.project.tasks.projectId, this.backendProjectId),
+        isNull(postgresSchema.project.tasks.deletedAt),
+      )).for("update");
+      const row = rows[0];
+      if (!row) return;
+      const publishedTask = this.taskStore!.rowToTask(this.taskStore!.pgRowToTaskRow(row));
+      /*
+      FNXC:DurableAgentHandoff 2026-10-04-20:44:
+      Refresh cache and lifecycle observers from a row re-read under the same
+      ownership fence as the handoff. The row lock makes ordinary assignment
+      writers either win before this revalidation or wait until this committed
+      publication completes; a stale released snapshot is never re-published.
+      This revalidated safe publisher belongs in the exact task-update producer
+      inventory, so the census cannot silently omit this handoff path.
+      */
+      if (this.taskStore!.isWatching) this.taskStore!.taskCache.set(taskId, { ...publishedTask });
+      this.taskStore!.emitTaskLifecycleEventSafely("task:updated", [publishedTask]);
+    }));
+    await this.taskStore.logEntry(taskId, `Durable agent ${agentId} handed task to Workflow Executor`, undefined, runContext);
+    return outcome;
+  }
+
   async claimTaskForAgent(agentId: string, taskId: string, runContext?: RunMutationContext): Promise<{ ok: true; task: Task } | { ok: false; reason: string; task?: Task }> {
     if (!this.taskStore) {
       throw new Error("TaskStore not configured for task-claim operations");

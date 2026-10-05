@@ -138,7 +138,8 @@ import { moveTaskImpl, moveTaskIfImpl, handoffToReviewImpl, moveTaskInternalImpl
 import { resetTaskPublicationImpl } from "./task-store/reset-lifecycle.js";
 import { recordGoalCitationsImpl, insertTaskWithFtsRecoveryImpl2, assertTaskIdAvailableImpl, atomicWriteTaskJsonImpl2, createTaskWithDistributedReservationImpl, toStoredWorkflowStepImpl, ensureWorkflowStepForTemplateImpl, resolveEnabledWorkflowStepsImpl, setTaskBranchGroupImpl, getTaskColumnsImpl, prepareWorkflowMovePolicyPreflightImpl, updateTaskCustomFieldsImpl, listWorkflowPromptOverridesForProjectImpl, listWorkflowWorkItemsForTaskImpl, listWorkflowWorkItemsForTasksImpl, listDueWorkflowWorkItemsImpl, rewriteBlockedByResidueDependentsForRemovalImpl, getAllDocumentsImpl, deleteWorkflowStepImpl, toWorkflowDefinitionImpl, materializeDefaultWorkflowStepsImpl, reconcileTaskCustomFieldsForSchemaImpl, getTaskMovedCountsByDayImpl, getGoalStoreImpl, getNoteStoreImpl, getWhiteboardStoreImpl, upsertTaskCommitAssociationImpl } from "./task-store/workflow-task-create-ops.js";
 import { applyLegacyWorkflowStepOverridesImpl, assertNoDependencyCycleImpl, atomicCreateTaskJsonImpl, buildActiveTaskDependencyLookupImpl, buildArchivedAgentLogFieldsImpl, buildTaskIdIntegrityFallbackReportImpl, createBranchGroupImpl, dbImpl, detectAndCacheTaskIdIntegrityReportImpl, findLiveDependentsImpl, findLiveLineageChildrenImpl, getLegacyWorkflowStepSnapshotImpl, getMalformedTaskMetadataReasonImpl, getMergeQueuedTaskIdsAsyncImpl, insertRunAuditEventRowImpl, insertTaskImpl, invokeTaskCreatedHookImpl, isTaskIdPresentInArchivedTasksTableAsyncImpl, isTaskIdPresentInArchivedTasksTableImpl, logTaskCreateConflictImpl, maybeResolveTombstonedTaskIdImpl, mergeTaskIdIntegrityReportsImpl, optionalGroupIdSetImpl, patchTaskRowInTransactionImpl, readConfigFastImpl, readConfigImpl, readPromptForArchiveImpl, readTaskFromDbImpl, reconcileDistributedTaskIdStateOnOpenImpl, recordActivityFromListenerImpl, recordDependencyCycleRejectedAuditImpl, refreshTaskIdIntegrityReportImpl, resolveLocalNodeIdForTaskAllocationImpl, runTaskFtsWriteWithRecoveryImpl, scanAndRecordCitationsImpl, resolveTaskIdPresenceForIdsImpl, resolveTaskIdPresenceImpl, taskIdExistsAnywhereImpl, type TaskIdPresence, throwSoftDeletedWriteBlockedImpl, toBuiltInWorkflowStepImpl, trackDeferredTaskCreatedWorkImpl, upsertTaskImpl, withConfigLockImpl, withTaskLockImpl, withWorktreeAllocationLockImpl } from "./task-store/task-id-integrity.js";
-import { claimNextToolFailureRetryImpl, createTaskVerificationRequestImpl, claimTaskVerificationRequestImpl, finishTaskVerificationRequestImpl, clearNearDuplicateReferencesToFailSoftImpl, clearWorkflowRunStepInstancesAsyncImpl, clearWorkflowRunStepInstancesImpl, computeMovedSettingsTargetWorkflowIdsImpl, ensureBranchGroupForSourceImpl, ensurePrEntityForSourceImpl, findRecentTasksByContentFingerprintImpl, getActiveMergingTaskImpl, getActivePrEntityBySourceImpl, getBranchGroupByBranchNameImpl, getBranchGroupBySourceImpl, getBranchGroupImpl, getBranchProgressByTaskImpl, getMutationsForRunImpl, getPrEntityByNumberImpl, getPrEntityImpl, getPrThreadStateImpl, getTasksByAssignedAgentImpl, getWorkflowPromptOverridesAsyncImpl, getWorkflowSettingValuesAsyncImpl, getWorkflowSettingValuesImpl, getWorkflowSettingsProjectIdImpl, getWorkflowWorkItemImpl, insertCompletionHandoffWorkflowWorkAuditImpl, listActivePrEntitiesImpl, listBranchGroupsImpl, listPrThreadStatesImpl, listTasksByBranchGroupImpl, listWorkflowSettingValuesForProjectImpl, loadWorkflowRunBranchesImpl, hasWorkflowRunStepInstancesForTaskImpl, loadWorkflowRunStepInstancesAsyncImpl, loadWorkflowRunStepInstancesImpl, markToolFailureRetryExhaustedAuditImpl, mergeCustomFieldPatchImpl, normalizeMergeRequestStateImpl, normalizeWorkflowWorkItemKindImpl, normalizeWorkflowWorkItemStateImpl, parseWorkflowPromptOverrideJsonImpl, recordPrThreadOutcomeImpl, resetAllStepsToPendingImpl, resetPromptCheckboxesImpl, resolveWorkflowMoveActorImpl, resolveWorkflowSettingDeclarationsImpl, saveWorkflowRunStepInstanceAsyncImpl, saveWorkflowRunStepInstanceImpl, transitionMergeRequestStateImpl, transitionWorkflowWorkItemSyncImpl, updateTaskImpl, updateWorkflowPromptOverridesImpl, upsertMergeRequestRecordImpl, workflowStateForMergeRequestStateImpl } from "./task-store/branch-and-pr-entities.js";
+/* FNXC:PullRequestReadiness 2026-10-05-08:52 (merge origin/main): upstream FN-9439 adds these three PR-readiness impls. The archive impls sharing this import block stay dropped — task archiving was retired by FN-9187, so re-importing them would resurrect a deleted surface. */
+import { updatePrReadinessImpl, updatePrReadinessAndAwaitChecksIfBlockedImpl, releaseAwaitingPrChecksIfCurrentHeadImpl, claimNextToolFailureRetryImpl, createTaskVerificationRequestImpl, claimTaskVerificationRequestImpl, finishTaskVerificationRequestImpl, clearNearDuplicateReferencesToFailSoftImpl, clearWorkflowRunStepInstancesAsyncImpl, clearWorkflowRunStepInstancesImpl, computeMovedSettingsTargetWorkflowIdsImpl, ensureBranchGroupForSourceImpl, ensurePrEntityForSourceImpl, findRecentTasksByContentFingerprintImpl, getActiveMergingTaskImpl, getActivePrEntityBySourceImpl, getBranchGroupByBranchNameImpl, getBranchGroupBySourceImpl, getBranchGroupImpl, getBranchProgressByTaskImpl, getMutationsForRunImpl, getPrEntityByNumberImpl, getPrEntityImpl, getPrThreadStateImpl, getTasksByAssignedAgentImpl, getWorkflowPromptOverridesAsyncImpl, getWorkflowSettingValuesAsyncImpl, getWorkflowSettingValuesImpl, getWorkflowSettingsProjectIdImpl, getWorkflowWorkItemImpl, insertCompletionHandoffWorkflowWorkAuditImpl, listActivePrEntitiesImpl, listBranchGroupsImpl, listPrThreadStatesImpl, listTasksByBranchGroupImpl, listWorkflowSettingValuesForProjectImpl, loadWorkflowRunBranchesImpl, hasWorkflowRunStepInstancesForTaskImpl, loadWorkflowRunStepInstancesAsyncImpl, loadWorkflowRunStepInstancesImpl, markToolFailureRetryExhaustedAuditImpl, mergeCustomFieldPatchImpl, normalizeMergeRequestStateImpl, normalizeWorkflowWorkItemKindImpl, normalizeWorkflowWorkItemStateImpl, parseWorkflowPromptOverrideJsonImpl, recordPrThreadOutcomeImpl, resetAllStepsToPendingImpl, resetPromptCheckboxesImpl, resolveWorkflowMoveActorImpl, resolveWorkflowSettingDeclarationsImpl, saveWorkflowRunStepInstanceAsyncImpl, saveWorkflowRunStepInstanceImpl, transitionMergeRequestStateImpl, transitionWorkflowWorkItemSyncImpl, updateTaskImpl, updateWorkflowPromptOverridesImpl, upsertMergeRequestRecordImpl, workflowStateForMergeRequestStateImpl } from "./task-store/branch-and-pr-entities.js";
 import { addPrInfoImpl, addSteeringCommentImpl, cleanupStaleMergeQueueRowsImpl, clearCompletionHandoffAcceptedMarkerImpl, clearDoneTransientFieldsImpl, clearStaleExecutionStartBranchReferencesImpl, deleteTaskCommentImpl, deleteTaskDocumentImpl, emitUsageEventImpl, enqueueMergeQueueImpl, getAgentLogCountImpl, getAgentLogsImpl, getArtifactImpl, getArtifactsImpl, getAttachmentImpl, getCompletionHandoffAcceptedMarkerImpl, getTaskDocumentImpl, getTaskDocumentRevisionsImpl, getTaskDocumentsImpl, insertArtifactRowImpl, linkGithubIssueImpl, listWorkflowWorkItemsForTaskSyncImpl, moveToDoneImpl, parseDependenciesFromPromptImpl, parseFileScopeFromPromptImpl, parseStepsFromPromptImpl, peekMergeQueueHeadImpl, peekMergeQueueImpl, recordPluginActivationImpl, recordRunAuditEventBackendImpl, removePrInfoByNumberImpl, resolvePrimaryPrInfoImpl, rewriteLineageChildrenForRemovalImpl, runGitCommandImpl, stopWatchingImpl, syncAgentTaskLinkOnReassignmentImpl, updateArtifactImpl, updateGithubTrackingImpl, updatePrInfoByNumberImpl, updateTaskCommentImpl, upsertPrInfoByNumberImpl, writeArtifactDataImpl } from "./task-store/task-artifacts-ops.js";
 import { approveCliAutonomyImpl, approveWorkflowCliCommandImpl, cleanupOrphanedMaterializedStepsImpl, consumePluginGateVerdictsImpl, getAgentLogsByTimeRangeImpl, getDatabaseHealthImpl, getDistributedTaskIdAllocatorImpl, getExperimentSessionStoreImpl, getInReviewDurationEventsImpl, getMissionStoreImpl, getIdeationStoreImpl, getPluginStoreImpl, getSecretsStoreImpl, getSettingsSyncImpl, getTaskMergedTaskIdsImpl, getTaskWorkflowSelectionImpl, getImportTranslationImpl, recordImportTranslationImpl, pruneImportTranslationsImpl, type ImportTranslationCacheKey, type ImportTranslationCacheEntry, getVerificationCacheHitImpl, getWorkflowDefinitionImpl, healthCheckImpl, importLegacyAgentLogsOnceImpl, insertWorkflowDefinitionSyncImpl, isCliAutonomyApprovedImpl, isPluginInstalledImpl, isWorkflowCliCommandApprovedImpl, listWorkflowDefinitionsImpl, materializeExplicitWorkflowStepsImpl, materializeWorkflowStepsImpl, nextWorkflowDefinitionIdImpl, occupantsByColumnForWorkflowImpl, parseWorkflowLayoutImpl, pruneAgentLogFilesImpl, purgeTaskWorkflowSelectionRowsImpl, readAllWorkflowDefinitionsImpl, readRawProjectSettingsImpl, recordPluginGateVerdictImpl, recordVerificationCachePassImpl, removeMaterializedSelectionImpl, resolvePluginWorkflowStepImpl, resolveTaskWorkflowIrSyncImpl, revokeCliAutonomyImpl, selectTaskWorkflowAndReconcileImpl, writeTaskWorkflowSelectionImpl, getTaskWorkflowSelectionAsyncImpl, getTaskWorkflowSelectionsAsyncImpl,  } from "./task-store/workflow-definitions.js";
 import { getTaskCommitAssociationsByLineageIdImpl, replaceLegacyTaskCommitAssociationsImpl } from "./task-store/task-commit-associations.js";
@@ -1921,6 +1922,29 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   }
   async updatePrEntity(id: string, patch: PrEntityUpdate): Promise<PrEntity> {
     return updatePrEntityImpl(this, id, patch);
+  }
+
+  /* FNXC:UnavailableTaskOwner 2026-10-05-08:52 (merge origin/main, upstream FN-9439): these three public TaskStore methods are the
+  surface the durable-write classification guard derives from (`deriveDurableWriterSurface` reads the class,
+  not the *Impl helpers). A first pass grafted only the Impl imports and left the class without them, so
+  `merge-orphan-durable-write-inventory-drift.test.ts` derived a writer surface missing both PR-readiness
+  writers. Restored verbatim from upstream at upstream's own position in the class. */
+  async updatePrReadiness(
+    id: string,
+    expectedStoredHeadOid: string | undefined,
+    provider: string,
+    snapshot: import("./types.js").PrReadinessSnapshot,
+    options?: { deferMergedTerminalState?: boolean },
+  ): Promise<PrEntity | null> {
+    return updatePrReadinessImpl(this, id, expectedStoredHeadOid, provider, snapshot, options?.deferMergedTerminalState);
+  }
+
+  async updatePrReadinessAndAwaitChecksIfBlocked(id: string, expectedStoredHeadOid: string | undefined, provider: string, snapshot: import("./types.js").PrReadinessSnapshot): Promise<PrEntity | null> {
+    return updatePrReadinessAndAwaitChecksIfBlockedImpl(this, id, expectedStoredHeadOid, provider, snapshot);
+  }
+
+  async releaseAwaitingPrChecksIfCurrentHead(taskId: string, prEntityId: string, expectedHeadOid: string): Promise<boolean> {
+    return releaseAwaitingPrChecksIfCurrentHeadImpl(this, taskId, prEntityId, expectedHeadOid);
   }
   async listActivePrEntities(): Promise<PrEntity[]> {
     return listActivePrEntitiesImpl(this);
@@ -4113,7 +4137,12 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   }
 
 /** Update or clear Issue information for a task. */
-  async applyPrMergedTransition( taskId: string, ctx?: { agentId?: string; runId?: string }, ): Promise<{ moved: boolean; skipped?: "already-done" | "not-merged" | "wrong-column" | "paused" | "no-complete-column" }> {
+  /* FNXC:ExternalMergeCloseout 2026-10-05-09:43 (merge origin/main): the public ctx must mirror
+  applyPrMergedTransitionImpl's ctx. `externallyLanded` and `lifecycleLockHeld` arrived with upstream's
+  external-landing closeout, but taking ours for this file's region narrowed the public signature back to
+  agentId/runId, so the new project-engine call site failed as "Object literal may only specify known
+  properties" - a merge error surfacing two packages away from the conflict. */
+  async applyPrMergedTransition( taskId: string, ctx?: { agentId?: string; runId?: string; externallyLanded?: boolean; lifecycleLockHeld?: boolean }, ): Promise<{ moved: boolean; skipped?: "already-done" | "not-merged" | "wrong-column" | "paused" | "no-complete-column" }> {
     return applyPrMergedTransitionImpl(this, taskId, ctx);
   }
   async updateIssueInfo( id: string, issueInfo: import("./types.js").IssueInfo | null, ): Promise<Task> {
@@ -4410,8 +4439,13 @@ Issue #2149 requires read-only type filtering to occur in the file-store before 
   public async getTaskWorkflowSelectionsAsync(taskIds: string[]): Promise<Map<string, { workflowId: string; stepIds: string[] }>> {
     return getTaskWorkflowSelectionsAsyncImpl(this, taskIds);
   }
-  public async writeTaskWorkflowSelection(taskId: string, workflowId: string, stepIds: string[]): Promise<void> {
-    return writeTaskWorkflowSelectionImpl(this, taskId, workflowId, stepIds);
+  /* FNXC:ReservedTaskTimestamps 2026-10-05-09:43 (merge origin/main): the `options.taskUpdatedAt`
+  pass-through is a fork requirement - reserved-ID creation imports durable history, and its selection
+  write must not bump the task revision (task-creation.ts calls this with 4 arguments). Upstream's
+  3-argument public signature won in a non-conflicted region while the Impl kept the 5-argument form,
+  which typechecked as "Expected 3 arguments, but got 4". */
+  public async writeTaskWorkflowSelection(taskId: string, workflowId: string, stepIds: string[], options?: { taskUpdatedAt?: string }): Promise<void> {
+    return writeTaskWorkflowSelectionImpl(this, taskId, workflowId, stepIds, options);
   }
 
   /** Delete the WorkflowStep rows previously materialized for a task's selection

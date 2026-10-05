@@ -2,6 +2,18 @@ import type { ThinkingLevel } from "../types/board/board.js";
 import { ANTHROPIC_SUBSCRIPTION_PROVIDER_ID } from "../provider-instance.js";
 
 export const ANTHROPIC_PROVIDER_ID = "anthropic";
+/*
+FNXC:ModelCatalog 2026-10-05-09:43 (merge origin/main, upstream FN-9450):
+Upstream FN-9450 DELETES this supplemental registration on the assumption that the installed Pi
+catalog supplies Claude Opus 5.5 and Sonnet 5.5. This fork added it on 2026-10-01 because the
+bundled Pi 0.86.1 Anthropic catalog omits both rows - the deletion is therefore not adoptable
+here, and dropping it would remove selectable model rows that live durable agents already name.
+Kept ours, and the fork's two supplemental-anthropic test files were restored to match (a kept
+behaviour must keep its tests). The sibling openai-codex / zai / grok supplemental registrations and
+their tests WERE accepted as deleted: their source no longer exports SUPPLEMENTAL_*, so those tests
+assert a contract this merge removed. Re-verify against the bundled catalog before adopting upstream's
+direction here, and delete this block in the same change that proves the catalog supplies both rows.
+*/
 export const ANTHROPIC_API_KEY_PROVIDER_ID = "anthropic-api-key";
 export const CLAUDE_OPUS_5_5_MODEL_ID = "claude-opus-5-5";
 export const CLAUDE_SONNET_5_5_MODEL_ID = "claude-sonnet-5-5";

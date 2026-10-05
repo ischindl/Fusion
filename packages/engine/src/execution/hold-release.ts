@@ -98,6 +98,8 @@ const strandedHoldWarningMemo = new Set<string>();
  *  sweep calls `release()` if the subsequent move rejects on capacity. */
 export interface SlotReservation {
   release(): void;
+  /** Revalidate external admission facts under the task move lock after reserving capacity. */
+  validateAdmission?: (task: Task) => boolean | Promise<boolean>;
 }
 
 /*
@@ -1582,6 +1584,7 @@ async function issueRelease(
           || (targetIsProcessing && isTaskBlockedOnApproval(live))) {
           return false;
         }
+        if (reservation?.validateAdmission && !await reservation.validateAdmission(live)) return false;
         // RUFU-209: the verdict stays live — it runs against the row held by the move lock, so a
         // replan (`status=needs-replan`), newly pending Plan Review, or approval hold that landed
         // mid-pass still refuses the move. Only the STABLE INPUT FACTS (PROMPT.md contents, work

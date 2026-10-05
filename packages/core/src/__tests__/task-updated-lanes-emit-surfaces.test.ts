@@ -18,8 +18,10 @@ source scan for only `emit("task:updated")` leaves a producer unexercised and ca
 Each registered route below is driven warm and cold through its real TaskStore delivery method.
 */
 const PRODUCERS = {
+  "packages/core/src/agents/agent-store.ts": ["safe"],
   "packages/core/src/store.ts": ["emit"],
   "packages/core/src/task-store/audit-ops.ts": ["emit", "safe"],
+  "packages/core/src/task-store/branch-and-pr-entities.ts": ["safe"],
   "packages/core/src/task-store/branch-group-ops.ts": ["emit"],
   "packages/core/src/task-store/comments-ops.ts": ["emit"],
   "packages/core/src/task-store/merge-queue-ops.ts": ["emit"],
@@ -89,6 +91,10 @@ describe("core task:updated emit surface", () => {
     }
 
     expect([...routesByModule.keys()].sort()).toEqual([...EMIT_SURFACES].sort());
+    expect(
+      [...(routesByModule.get("packages/core/src/agents/agent-store.ts") ?? [])].sort(),
+      "AgentStore's fenced handoff must remain a safe task:updated producer",
+    ).toEqual(["safe"]);
     for (const [file, routes] of routesByModule) {
       const expectedRoutes = PRODUCERS[file as keyof typeof PRODUCERS];
       expect([...routes].sort(), `${file} must register every delivery route`).toEqual([...expectedRoutes].sort());

@@ -8,6 +8,7 @@ import {
   type WorkflowNodeHandler,
 } from "../workflows/workflow-graph-executor.js";
 import { workflowStepVerdictNoNotesNotice } from "../executor/workflow-step-verdict.js";
+import { DEPENDENCY_BOOTSTRAP_CONFIGURATION_REQUIRED_VALUE } from "../errors/transient-error-detector.js";
 
 /*
 FNXC:WorkflowOptionalGroup 2026-06-21-14:05:
@@ -399,7 +400,12 @@ describe("WorkflowGraphExecutor optional-group", () => {
     }));
   });
 
-  it("falls through unchanged when the pre-merge fix seam is absent or declines", async () => {
+  /*
+   * FNXC:WorkflowOptionalGroup 2026-10-04-14:56:
+   * A pre-merge REVISE remains a blocking graph failure when no remediation owner accepts it.
+   * Falling through to the success edge would execute or merge work after an unresolved review.
+   */
+  it("blocks forward traversal when the pre-merge fix seam is absent or declines", async () => {
     for (const requestFix of [undefined, vi.fn(async () => false)] as const) {
       const calls: string[] = [];
       const executor = new WorkflowGraphExecutor({
@@ -415,7 +421,8 @@ describe("WorkflowGraphExecutor optional-group", () => {
 
       const result = await executor.run(taskWith(["group"]), settingsOn(), reviseGroupIr());
 
-      expect(calls).toContain("after");
+      expect(calls).not.toContain("after");
+      expect(result.outcome).toBe("failure");
       expect(result.context["node:group:fixScheduled"]).toBeUndefined();
       if (requestFix) expect(requestFix).toHaveBeenCalledOnce();
     }
@@ -627,6 +634,29 @@ describe("WorkflowGraphExecutor optional-group", () => {
         output: expect.stringContaining("Unable to select a usable model"),
       }),
     ]));
+  });
+
+  it("preserves deterministic dependency bootstrap configuration evidence instead of converting it to a provider retry", async () => {
+    const requestFix = vi.fn(async () => true);
+    const executor = new WorkflowGraphExecutor({
+      handlers: {
+        prompt: async (node) => node.id === "plan-review-step"
+          ? {
+              outcome: "failure",
+              value: DEPENDENCY_BOOTSTRAP_CONFIGURATION_REQUIRED_VALUE,
+              contextPatch: { output: "Dependency bootstrap requires project configuration." },
+            }
+          : { outcome: "success" },
+      },
+      requestPreMergeOptionalStepFix: requestFix,
+    });
+
+    const result = await executor.run(taskWith(["plan-review"]), settingsOn(), BUILTIN_CODING_WORKFLOW_IR);
+
+    expect(requestFix).not.toHaveBeenCalled();
+    expect(result.outcome).toBe("failure");
+    expect(result.context["node:plan-review:value"]).toBe(DEPENDENCY_BOOTSTRAP_CONFIGURATION_REQUIRED_VALUE);
+    expect(result.visitedNodeIds).not.toContain("plan-replan");
   });
 
   it("keeps Plan Review task-storage read failures in place without sending the task to planning", async () => {
@@ -945,7 +975,11 @@ describe("WorkflowGraphExecutor optional-group", () => {
         },
       },
       logTaskEntry: (summary) => { logs.push(summary); },
-      recordWorkflowStepResult: async (_taskId, result) => { records.push(result); },
+      // FNXC:AuthoritativeGateResult 2026-10-04-14:56: Required-gate recovery needs the durable receipt returned by production.
+      recordWorkflowStepResult: async (_taskId, result) => {
+        records.push(result);
+        return { scopeCurrent: true, persisted: true, disposition: "applied" as const, persistedResult: result };
+      },
     });
 
     const result = await executor.run({
@@ -975,7 +1009,7 @@ describe("WorkflowGraphExecutor optional-group", () => {
     expect(logs).toContain("[pre-merge] Workflow step already passed: Plan Review");
   });
 
-  it("cycles REVISE findings across graph runs until APPROVE, and falls through only after the budget seam declines", async () => {
+  it("cycles REVISE findings across graph runs until APPROVE, and blocks when the budget seam declines", async () => {
     const verdicts = ["REVISE", "REVISE", "APPROVE"];
     const requestFix = vi.fn(async () => true);
 
@@ -1034,7 +1068,8 @@ describe("WorkflowGraphExecutor optional-group", () => {
         expect(calls).not.toContain("after");
         expect(result.context["node:group:fixScheduled"]).toBe(true);
       } else {
-        expect(calls).toContain("after");
+        expect(calls).not.toContain("after");
+        expect(result.outcome).toBe("failure");
         expect(result.context["node:group:fixScheduled"]).toBeUndefined();
       }
     }

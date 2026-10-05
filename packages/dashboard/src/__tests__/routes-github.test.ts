@@ -2810,11 +2810,37 @@ describe("POST /tasks/:id/approve-plan", () => {
       expect(items).toContainEqual(expect.objectContaining({ state: "held", waitReason: "capacity", sourceColumn: "todo" }));
       await expect(isUnplannedForExecution(integrationStore, task, ir)).resolves.toBe(false);
 
-      const scheduler = new Scheduler(integrationStore, { onSchedule: scheduled });
+      const scheduler = new Scheduler(integrationStore, {
+        onSchedule: scheduled,
+        agentStore: {
+          getAgent: vi.fn(async (id: string) => id === "executor-1" ? { id, state: "active" } : undefined),
+        } as unknown as import("@fusion/core").AgentStore,
+      });
       (scheduler as unknown as { running: boolean }).running = true;
       await scheduler.schedule();
+      expect(scheduled).toHaveBeenCalledTimes(1);
       expect(scheduled).toHaveBeenCalledWith(expect.objectContaining({ id: task.id, column: "in-progress" }));
       expect(logs).not.toContain("Execution dispatch refused — task is still unplanned");
+
+      /*
+      FNXC:PlanApprovalScheduling 2026-10-05-07:32:
+      A real approved-plan handoff may dispatch only when its assigned durable owner is eligible.
+      Re-run the scheduler with a missing owner to retain the admission fence beside the route-to-capacity path.
+      */
+      task.column = "todo";
+      const unavailableScheduled = vi.fn();
+      const unavailableScheduler = new Scheduler(integrationStore, {
+        onSchedule: unavailableScheduled,
+        agentStore: {
+          getAgent: vi.fn(async () => undefined),
+          getActiveHeartbeatRun: vi.fn(async () => undefined),
+          handoffTaskToWorkflowExecutor: vi.fn(async () => undefined),
+        } as unknown as import("@fusion/core").AgentStore,
+      });
+      (unavailableScheduler as unknown as { running: boolean }).running = true;
+      await unavailableScheduler.schedule();
+      expect(task.column).toBe("todo");
+      expect(unavailableScheduled).not.toHaveBeenCalled();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -4463,7 +4489,7 @@ describe("PR conflict refresh + reclaim routes", () => {
     expect(store.updatePrInfoByNumber).toHaveBeenCalledWith(task.id, task.prInfo.number, expect.objectContaining({
       status: "merged", mergeCommitSha: "external-sha", mergedAt: "2026-09-29T05:00:00.000Z",
     }));
-    expect(store.applyPrMergedTransition).toHaveBeenCalledWith(task.id, expect.objectContaining({ agentId: "dashboard" }));
+    expect(store.applyPrMergedTransition).not.toHaveBeenCalled();
     expect(store.moveTask).not.toHaveBeenCalled();
   });
 
@@ -4523,7 +4549,7 @@ describe("PR conflict refresh + reclaim routes", () => {
 
     const res = await responsePromise;
     expect(res.status).toBe(200);
-    expect(store.applyPrMergedTransition).toHaveBeenCalledWith(task.id, expect.objectContaining({ agentId: "dashboard" }));
+    expect(store.applyPrMergedTransition).not.toHaveBeenCalled();
     expect(store.moveTask).not.toHaveBeenCalled();
   });
 
@@ -4887,7 +4913,7 @@ describe("PR conflict refresh + reclaim routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.prInfo.status).toBe("merged");
-    expect(store.applyPrMergedTransition).toHaveBeenCalledTimes(1);
+    expect(store.applyPrMergedTransition).not.toHaveBeenCalled();
     expect(store.updatePrInfo).toHaveBeenCalledWith(task.id, expect.objectContaining({ status: "merged", lastMergeError: undefined }));
     expect(mergePrSpy).toHaveBeenCalledTimes(1);
     expect(getPrMergeStatusSpy).toHaveBeenCalledTimes(2);

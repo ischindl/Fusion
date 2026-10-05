@@ -5,6 +5,14 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { applyNonInteractiveGitEnv } from "@fusion/core";
 import type { Settings } from "@fusion/core";
+import {
+  formatDependencyBootstrapDiagnostic,
+  getConfiguredWorktreeInitCommand,
+  resolveDependencyBootstrapDecision,
+  type DependencyBootstrapDecision,
+} from "../worktree/dependency-bootstrap-inference.js";
+
+export { getConfiguredWorktreeInitCommand } from "../worktree/dependency-bootstrap-inference.js";
 
 const execAsync = promisify(exec);
 
@@ -35,6 +43,16 @@ export interface WorktreeDependencySyncResult {
   healed: boolean;
   healedCommand?: string;
   durationMs: number;
+}
+
+export class DependencyBootstrapConfigurationError extends Error {
+  readonly decision: DependencyBootstrapDecision;
+
+  constructor(decision: DependencyBootstrapDecision) {
+    super(formatDependencyBootstrapDiagnostic(decision));
+    this.name = "DependencyBootstrapConfigurationError";
+    this.decision = decision;
+  }
 }
 
 export interface InstallWorktreeDependenciesOptions {
@@ -69,21 +87,18 @@ export function describeDependencySyncDecision(result: WorktreeDependencySyncRes
   return `${code}; source=${source}; command=${command}; duration=${result.durationMs}ms`;
 }
 
-export function getConfiguredWorktreeInitCommand(settings?: Pick<Settings, "worktreeInitCommand"> | null): string | null {
-  const trimmed = settings?.worktreeInitCommand?.trim();
-  return trimmed ? trimmed : null;
+export function getDependencySyncDecision(
+  rootDir: string,
+  settings?: Pick<Settings, "worktreeInitCommand"> | null,
+  env: NodeJS.ProcessEnv = process.env,
+): DependencyBootstrapDecision {
+  return resolveDependencyBootstrapDecision(rootDir, settings, env);
 }
 
+/** Compatibility accessor for callers that only need a runnable bootstrap command. */
 export function getDependencySyncCommand(rootDir: string, settings?: Pick<Settings, "worktreeInitCommand"> | null): string | null {
-  const configuredCommand = getConfiguredWorktreeInitCommand(settings);
-  if (configuredCommand) return configuredCommand;
-  if (existsSync(join(rootDir, "pnpm-lock.yaml"))) return "pnpm install --frozen-lockfile";
-  if (existsSync(join(rootDir, "package-lock.json"))) return "npm install";
-  if (existsSync(join(rootDir, "yarn.lock"))) return "yarn install --frozen-lockfile";
-  if (existsSync(join(rootDir, "bun.lock")) || existsSync(join(rootDir, "bun.lockb"))) {
-    return "bun install --frozen-lockfile";
-  }
-  return null;
+  const decision = getDependencySyncDecision(rootDir, settings);
+  return decision.kind === "run" ? decision.command : null;
 }
 
 export function computeLockfileHash(rootDir: string): string | null {
@@ -163,9 +178,17 @@ export function buildNonFrozenRetryCommand(installCommand: string): string | nul
 export async function installWorktreeDependencies(options: InstallWorktreeDependenciesOptions): Promise<WorktreeDependencySyncResult> {
   const { cwd, settings, taskId, signal, log, logger, context = "merge worktree dependency sync" } = options;
   const startedAt = Date.now();
+  const decision = getDependencySyncDecision(cwd, settings);
   const configuredCommand = getConfiguredWorktreeInitCommand(settings);
-  const installCommand = getDependencySyncCommand(cwd, settings);
+  const installCommand = decision.kind === "run" ? decision.command : null;
   const configured = configuredCommand !== null;
+
+  if (decision.refusal) {
+    const diagnostic = formatDependencyBootstrapDiagnostic(decision);
+    logger?.log?.(`${taskId}: dependency bootstrap requires project configuration`);
+    await log?.(`Dependency bootstrap configuration required: ${diagnostic}`);
+    throw new DependencyBootstrapConfigurationError(decision);
+  }
 
   if (!installCommand) {
     return { installCommand: null, configured: false, skipped: true, skipReason: "no-command", healed: false, durationMs: Date.now() - startedAt };

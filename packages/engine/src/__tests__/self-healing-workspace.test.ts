@@ -221,6 +221,109 @@ function workspaceTask(workspaceWorktrees: Task["workspaceWorktrees"], extra: Pa
   } as unknown as Task;
 }
 
+/*
+FNXC:WorkspaceArchiveRestore 2026-08-15-05:55:
+The archive-to-unarchive regression below uses the real PostgreSQL restore transaction and the
+store-scoped archive disposal seam. Booting Executor would add unrelated session lifecycle work;
+the seam is the production boundary that owns removing each sub-repo worktree and branch.
+*/
+const pgDescribeIfGit = hasGit ? pgDescribe : describe.skip;
+
+pgDescribeIfGit("FN-9048 workspace archive restore reaches self-healing cleanly", () => {
+  const h: SharedPgTaskStoreHarness = createSharedPgTaskStoreTestHarness({
+    prefix: "fusion_workspace_archive_restore_e2e",
+  });
+  let fx: WorkspaceFixture;
+
+  beforeAll(h.beforeAll);
+  beforeEach(async () => {
+    await h.beforeEach();
+    fx = await createWorkspaceFixture(["repo-a", "repo-b"]);
+  });
+  afterEach(async () => {
+    fx?.cleanup();
+    await h.afterEach();
+  });
+  afterAll(h.afterAll);
+
+  it("archives, disposes, restores, then skips FORK-A after its stale map is reconciled", async () => {
+    const store = h.store();
+    const id = "FN-9048-RESTORE-E2E";
+    const branch = `fusion/${id.toLowerCase()}`;
+    const workspaceWorktrees: NonNullable<Task["workspaceWorktrees"]> = {};
+    for (const repoRel of fx.repos) {
+      const worktreePath = path.join(fx.rootDir, ".worktrees", repoRel);
+      mkdirSync(path.dirname(worktreePath), { recursive: true });
+      fx.git(repoRel, `git worktree add -b ${branch} ${worktreePath} HEAD`);
+      workspaceWorktrees[repoRel] = { worktreePath, branch };
+    }
+    const task = await store.createTaskWithReservedId(
+      { description: "archive workspace restore regression", column: "in-review" },
+      { taskId: id, applyDefaultWorkflowSteps: false },
+    );
+    /* FNXC:RepositoryScope 2026-08-23-23:59: partial-land recovery admits only CONFIRMED repository
+       intent plus qualified modified evidence (see makeWorkspaceTask above). This card is built
+       through the real store, so it must state the same contract or the sweep never considers it. */
+    await store.updateTask(id, {
+      workspaceWorktrees,
+      branch: undefined,
+      repositoryScope: { repositories: [...fx.repos].sort(), state: "confirmed", revision: 1 },
+      /* Recovery is another merge door: default task creation seeds pending implementation steps and
+         `getTaskMergeBlocker` refuses them, so this post-implementation fixture states them done. */
+      steps: [{ name: "Implementation", status: "done" }],
+      modifiedFiles: [...fx.repos].sort().map((repo) => `${repo}/feature.txt`),
+    } as never);
+    /* FNXC:WorkspaceArchiveRestore 2026-10-04-15:21: Archive mutates the backing store after this
+       point. Preserve the pre-archive review snapshot so the stale-map reconciler exercises its
+       FORK-A path rather than a physically archived row. Generic task updates do not author
+       repository scope, so this direct stale-fixture snapshot supplies the confirmed workspace intent. */
+    const stalePreArchive = {
+      ...structuredClone((await store.getTask(id))!),
+      repositoryScope: { repositories: [...fx.repos].sort(), state: "confirmed", revision: 1 },
+    };
+    const unregister = registerArchiveWorkspaceWorktreeDisposer(store, async (_task, plan) => {
+      for (const entry of plan) {
+        fx.git(entry.repoRel, `git worktree remove --force ${entry.worktreePath}`);
+        fx.git(entry.repoRel, `git branch -D ${entry.branch}`);
+      }
+      return { removed: plan.map((entry) => entry.repoRel), failed: [] };
+    });
+
+    try {
+      await store.archiveTask(id);
+      for (const repoRel of fx.repos) {
+        expect(existsSync(workspaceWorktrees[repoRel]!.worktreePath)).toBe(false);
+        expect(fx.git(repoRel, `git show-ref --verify --quiet refs/heads/${branch}; echo $?`)).toBe("1");
+      }
+
+      /*
+      FNXC:WorkspaceArchiveRestore 2026-08-15-05:55:
+      This captures the exact pre-fix resurrection shape: archive removed both branches, but the
+      soft-deleted row still has the old map and FORK-A proves it is unrecoverable.
+      */
+      const staleStore = createStore([stalePreArchive]);
+      const staleManager = makeManager(staleStore, fx.rootDir);
+      await staleManager.reconcileWorkspacePartialLands();
+      expect(staleStore.updateTask).toHaveBeenCalledWith(id, expect.objectContaining({ status: "failed" }));
+
+      const restored = await store.unarchiveTask(id);
+      expect(restored.workspaceWorktrees).toBeUndefined();
+      const updateTask = vi.spyOn(store, "updateTask");
+      const recordRunAuditEvent = vi.spyOn(store, "recordRunAuditEvent");
+      const manager = makeManager(store, fx.rootDir);
+
+      expect(await manager.reconcileWorkspacePartialLands()).toBe(0);
+      expect(updateTask).not.toHaveBeenCalledWith(id, expect.objectContaining({ status: "failed" }));
+      expect(recordRunAuditEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+        mutationType: "task:reconcile-workspace-partial-land",
+        metadata: expect.objectContaining({ action: "park-failed" }),
+      }));
+    } finally {
+      unregister();
+    }
+  });
+});
+
 describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
   let fx: WorkspaceFixture;
   beforeEach(() => {

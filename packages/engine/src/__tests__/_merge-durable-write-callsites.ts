@@ -293,6 +293,20 @@ const STORE_METHOD_CLASSIFICATION: Record<string, Omit<SurfaceClassification, "m
   updateHumanMergeRejectionState: { kind: "writer", reason: "persists the rejection state transition of a human merge decision" },
   updateIssueInfo: { kind: "writer", reason: "persists or mutates TaskStore state" },
   updatePrEntity: { kind: "writer", reason: "persists or mutates TaskStore state" },
+  /*
+  FNXC:MergeDurableWriteInventory 2026-10-05-01:35:
+  Readiness snapshots persist project-scoped pull-request state under an expected-head CAS and
+  terminal-state fence, so the public writer remains classified even without a merge-body closure edge.
+  */
+  updatePrReadiness: { kind: "writer", reason: "persists project-scoped readiness through expected-head CAS and terminal-state fence" },
+  /*
+  FNXC:MergeDurableWriteInventory 2026-10-05-03:34:
+  FN-9439 makes readiness observation and the awaiting-pr-checks hold one transactional operation,
+  while the paired release clears that hold only for the current ready head and emits its lifecycle event.
+  Both public methods therefore persist fenced task or pull-request state even without a merge-body call edge.
+  */
+  updatePrReadinessAndAwaitChecksIfBlocked: { kind: "writer", reason: "persists readiness and the transactional awaiting-pr-checks task hold" },
+  releaseAwaitingPrChecksIfCurrentHead: { kind: "writer", reason: "persists a current-head-gated task-status release and lifecycle event" },
   updatePrInfo: { kind: "writer", reason: "persists or mutates TaskStore state" },
   updatePrInfoByNumber: { kind: "writer", reason: "persists or mutates TaskStore state" },
   updateSettings: { kind: "writer", reason: "persists or mutates TaskStore state" },

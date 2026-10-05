@@ -130,6 +130,7 @@ import {
   REVIEW_LANE_LEDGER_VERSION,
   OVERLAP_OWNER_FK_DEFERRABLE_REPAIR_VERSION,
   STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_VERSION,
+  PULL_REQUEST_READINESS_VERSION,
 } from "../../postgres/schema-applier.js";
 import { ProjectPartitionRekeyError, rekeyFallbackProjectPartition } from "../../postgres/migration-stamping.js";
 import type { PluginSchemaInitHook } from "../../postgres/plugin-schema-hook.js";
@@ -245,7 +246,23 @@ describe("schema-applier: immutable migration identities", () => {
     change — which is what makes renumbering a published identity survivable here.
     */
     expect(STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_VERSION).toBe("0089");
-    expect(SCHEMA_BASELINE_VERSION).toBe("0089");
+    expect(SCHEMA_BASELINE_VERSION).toBe("0090");
+
+      /*
+      FNXC:MigrationVersionCollision 2026-10-05-09:43 (merge origin/main, upstream FN-9439):
+      Upstream ships pull-request readiness as migration 0087. This fork already owns 0087 for
+      OVERLAP_OWNER_FK_DEFERRABLE_REPAIR_VERSION and 0088 for REVIEW_LANE_LEDGER_VERSION, and every
+      production database has recorded 0087/0088/0089 against THOSE meanings, so the incoming slot is
+      renumbered to 0090 (file 0090_fn_9439_pull_request_readiness.sql) - the same convention that
+      renumbered upstream's 0086_fn_9429 onto 0089. The ordering invariants are asserted as `>=` /
+      `>` rather than a second exact equality on SCHEMA_BASELINE_VERSION: a constant may carry exactly
+      one ceiling equality, or the two sides of a merge silently contradict each other and only a
+      PostgreSQL run can see it (schema-applier.test.ts is PG-only).
+      */
+
+      expect(PULL_REQUEST_READINESS_VERSION).toBe("0090");
+      expect(Number(PULL_REQUEST_READINESS_VERSION)).toBeGreaterThan(Number(STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_VERSION));
+      expect(Number(SCHEMA_BASELINE_VERSION)).toBeGreaterThanOrEqual(Number(PULL_REQUEST_READINESS_VERSION));
   });
 
   it("keeps monitor and approval isolation assigned to version 0003", () => {
@@ -2061,6 +2078,41 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
         updated_at text NOT NULL
       );
       CREATE INDEX "idxAutomationsScope" ON project.automations(scope);
+      /*
+      FNXC:PgSchemaApplier 2026-10-05-01:35:
+      The 0000 upgrade fixture must retain the real pull_requests relation so migration 0087
+      exercises its ALTER TABLE contract rather than passing through a synthetic missing-table escape hatch.
+      */
+      CREATE TABLE project.pull_requests (
+        id text PRIMARY KEY,
+        source_type text NOT NULL,
+        source_id text NOT NULL,
+        repo text NOT NULL,
+        head_branch text NOT NULL,
+        base_branch text,
+        state text NOT NULL DEFAULT 'creating',
+        pr_number integer,
+        pr_url text,
+        head_oid text,
+        mergeable text,
+        checks_rollup jsonb,
+        review_decision text,
+        auto_merge integer NOT NULL DEFAULT 0,
+        unverified integer NOT NULL DEFAULT 0,
+        failure_reason text,
+        response_rounds integer NOT NULL DEFAULT 0,
+        created_at bigint NOT NULL,
+        updated_at bigint NOT NULL,
+        closed_at bigint,
+        CONSTRAINT pull_requests_source_type_check CHECK (source_type IN ('task','branch-group')),
+        CONSTRAINT pull_requests_state_check CHECK (state IN ('creating','open','responding','merged','closed','failed'))
+      );
+      CREATE UNIQUE INDEX "idxPullRequestsOpenSource" ON project.pull_requests(source_type, source_id)
+        WHERE state NOT IN ('merged','closed','failed');
+      CREATE UNIQUE INDEX "idxPullRequestsOpenBranch" ON project.pull_requests(repo, head_branch)
+        WHERE state NOT IN ('merged','closed','failed');
+      CREATE UNIQUE INDEX "idxPullRequestsNumber" ON project.pull_requests(repo, pr_number)
+        WHERE pr_number IS NOT NULL;
       CREATE TABLE public.fusion_schema_migrations (
         version text PRIMARY KEY,
         applied_at timestamptz NOT NULL DEFAULT now()
@@ -2096,6 +2148,18 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       SELECT project_id, id, name FROM project.automations
     `)) as unknown as Array<{ project_id: string; id: string; name: string }>;
     expect(rows).toEqual([{ project_id: "project-a", id: "legacy-automation", name: "Legacy" }]);
+    const readinessColumns = (await ctx.db.execute(sql`
+      SELECT column_name, data_type
+      FROM information_schema.columns
+      WHERE table_schema = 'project'
+        AND table_name = 'pull_requests'
+        AND column_name IN ('readiness', 'readiness_provider')
+      ORDER BY column_name
+    `)) as unknown as Array<{ column_name: string; data_type: string }>;
+    expect(readinessColumns).toEqual([
+      { column_name: "readiness", data_type: "jsonb" },
+      { column_name: "readiness_provider", data_type: "text" },
+    ]);
     const versions = (await ctx.db.execute(sql`
       SELECT version FROM public.fusion_schema_migrations ORDER BY version
     `)) as unknown as Array<{ version: string }>;
@@ -2182,6 +2246,8 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       */
       PROJECT_NOTES_VERSION,
       OVERLAP_WAIT_SYNC_VERSION,
+      DROP_EXCLUDED_UPSTREAM_FEATURE_SCHEMA_VERSION,
+      STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_VERSION,
       WHITEBOARDS_SCHEMA_VERSION,
       OVERLAP_WAIT_REPAIR_REQUIRED_PHASE_VERSION,
       OVERLAP_REVALIDATION_DRAIN_VERSION,
@@ -2199,7 +2265,122 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       "0083",
       OVERLAP_OWNER_FK_DEFERRABLE_REPAIR_VERSION,
       REVIEW_LANE_LEDGER_VERSION,
+      PULL_REQUEST_READINESS_VERSION,
+    ]);
+    const readinessMarkerCount = (await ctx.db.execute(sql`
+      SELECT count(*)::int AS count
+      FROM public.fusion_schema_migrations
+      WHERE version = ${PULL_REQUEST_READINESS_VERSION}
+    `)) as unknown as Array<{ count: number }>;
+    expect(readinessMarkerCount).toEqual([{ count: 1 }]);
+    expect((await applySchemaBaseline(ctx.db, { pluginHooks: [] })).applied).toBe(false);
+    const rerunMarkerCount = (await ctx.db.execute(sql`
+      SELECT count(*)::int AS count
+      FROM public.fusion_schema_migrations
+      WHERE version = ${PULL_REQUEST_READINESS_VERSION}
+    `)) as unknown as Array<{ count: number }>;
+    expect(rerunMarkerCount).toEqual([{ count: 1 }]);
+  });
+
+  it("fails loudly when legacy automation ownership is ambiguous", async () => {
+    ctx = await setupFreshDb();
+    await seedVersion0000Automation(ctx.db, ["project-a", "project-b"]);
+
+    await expect(applySchemaBaseline(ctx.db, { pluginHooks: [] })).rejects.toThrow(
+      /Cannot assign legacy automations to a project/,
+    );
+    const versions = (await ctx.db.execute(sql`
+      SELECT version FROM public.fusion_schema_migrations ORDER BY version
+    `)) as unknown as Array<{ version: string }>;
+    expect(versions.map(({ version }) => version)).toEqual(["0000"]);
+  });
+
+  it("serializes concurrent schema appliers", async () => {
+    ctx = await setupFreshDb();
+    const results = await Promise.all([
+      applySchemaBaseline(ctx.db, { pluginHooks: [] }),
+      applySchemaBaseline(ctx.db, { pluginHooks: [] }),
+    ]);
+    expect(results.filter(({ applied }) => applied)).toHaveLength(1);
+    expect(await getAppliedMigrations(ctx.db)).toEqual([
+      "0000",
+      "0001",
+      "0002",
+      "0003",
+      "0004",
+      "0005",
+      PROJECT_OWNERSHIP_SCHEMA_VERSION,
+      SQLITE_SCHEMA_PARITY_VERSION,
+      SESSION_ADVISOR_ENABLED_SCHEMA_VERSION,
+      MISSION_FIX_IDEMPOTENCY_VERSION,
+      IMPORT_TRANSLATION_CACHE_VERSION,
+      OWNER_PROJECT_ID_SPLIT_VERSION,
+      CHAT_SESSION_PINS_VERSION,
+      EXECUTOR_TOOL_FAILURE_RETRY_VERSION,
+      EXECUTOR_ESCALATION_ATTEMPT_VERSION,
+      GLOBAL_ROUTINES_SCHEMA_VERSION,
+      IMPORT_TRANSLATION_CACHE_SCOPE_FIX_VERSION,
+      TASK_MERGER_MODEL_LANE_VERSION,
+      BULK_COMPLETION_REFUSAL_AT_VERSION,
+      IMPORT_TRANSLATION_CACHE_LEGACY_PARTITION_BACKFILL_VERSION,
+      TASK_PROPOSAL_CLAIM_VERSION,
+      CONFIGURATION_REVISIONS_VERSION,
+      IDEATION_SCHEMA_VERSION,
+      RESEARCH_FEATURE_PROVENANCE_VERSION,
+      TASK_VERIFICATION_REQUEST_VERSION,
+      SYMBOL_LOCKS_SCHEMA_VERSION,
+      BIGINT_COUNTERS_VERSION,
+      WORKFLOW_IR_PIN_AND_LEGACY_ADOPTION_VERSION,
+      TASK_DECLARED_SYMBOLS_VERSION,
+      PLANNING_ACTIVE_TIMING_VERSION,
+      SQLITE_MIGRATION_RUNTIME_READ_VERSION,
+      WORKFLOW_TASK_CONTINUATIONS_VERSION,
+      LEGACY_ADOPTION_DRAINED_MARKER_RUNTIME_GRANTS_VERSION,
+      TASK_WEDGE_NOTIFICATION_VERSION,
+      MILESTONE_ASSERTION_PROVENANCE_VERSION,
+      MISSION_LINEAGE_STOP_VERSION,
+  CHAT_SESSION_TAGS_VERSION,
+      DROP_GLOBAL_CONCURRENCY_VERSION,
+      MISSION_TASK_PREFIX_VERSION,
+      CREDENTIAL_INSTANCE_SELECTION_VERSION,
+      TASK_LIFECYCLE_OUTBOX_VERSION,
+      TASK_LIFECYCLE_CONSUMERS_VERSION,
+      VALIDATOR_INPUT_FINGERPRINT_VERSION,
+      UNPLANNED_EXECUTION_BLOCK_DEDUPE_VERSION,
+      QUEUED_EPISODE_SIGNATURE_VERSION,
+      MULTI_ROLE_WORKFLOW_AGENTS_VERSION,
+      WORKFLOW_PRINCIPAL_FENCE_VERSION,
+      TASK_RECOMMENDATIONS_VERSION,
+      GITHUB_CHECK_STATES_VERSION,
+      AGENT_ACTIVITY_EVENTS_VERSION,
+      SPEC_LOCK_DRIFT_REPORT_VERSION,
+      SPEC_LOCK_SOURCE_REVISION_BIGINT_VERSION,
+      MEMORY_RECALL_RECORDS_VERSION,
+      MISSION_FEATURE_SPEC_ALIGNMENT_VERSION,
+      AGENT_RATING_PROJECT_ISOLATION_VERSION,
+      AGENT_RATINGS_PROJECT_PARTITION_VERSION,
+  PROJECT_OWNERSHIP_DECLARATION_DRIFT_VERSION,
+      PROJECT_OWNERSHIP_DEFAULT_RECONCILIATION_VERSION,
+      MESSAGE_ARCHIVE_SCHEMA_VERSION,
+      TASK_SOURCE_AGENT_INDEX_VERSION,
+      WORKSPACE_COORDINATION_LEASES_SCHEMA_VERSION,
+      ACTIVITY_LOG_TASK_ID_INDEX_VERSION,
+      REMOVE_TASK_SUBTASK_SPLITTING_VERSION,
+      AI_MERGE_REVIEW_RECONCILIATION_VERSION,
+      TASK_REPOSITORY_SCOPE_VERSION,
+      REVIEW_CONVERGENCE_STAGE_VERSION,
+      CHAT_SESSION_MEMORY_FOCUS_VERSION,
+      SESSION_CONTENTION_WAIT_STATE_VERSION,
+      TASK_STEP_REPORTS_VERSION,
+      TASK_EXTERNAL_BLOCK_VERSION,
+      TASK_REQUIRE_PLAN_APPROVAL_VERSION,
+      PATCHNODE_ENTRIES_VERSION,
+      TASK_PLANNING_FAILURE_VERSION,
+      CHAT_MESSAGES_SESSION_RECENCY_INDEX_VERSION,
+      OVERLAP_WAIT_SYNC_VERSION,
+      DROP_EXCLUDED_UPSTREAM_FEATURE_SCHEMA_VERSION,
       STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_VERSION,
+      PULL_REQUEST_READINESS_VERSION,
       /* keep the non-numeric repair identity last: ORDER BY version is TEXT */
       MIXED_0065_REPAIR_VERSION,
     ]);
@@ -2461,6 +2642,7 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       OVERLAP_OWNER_FK_DEFERRABLE_REPAIR_VERSION,
       REVIEW_LANE_LEDGER_VERSION,
       STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_VERSION,
+      PULL_REQUEST_READINESS_VERSION,
       /* keep the non-numeric repair identity last: ORDER BY version is TEXT */
       MIXED_0065_REPAIR_VERSION,
     ]);
@@ -2603,6 +2785,7 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       OVERLAP_OWNER_FK_DEFERRABLE_REPAIR_VERSION,
       REVIEW_LANE_LEDGER_VERSION,
       STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_VERSION,
+      PULL_REQUEST_READINESS_VERSION,
       /* keep the non-numeric repair identity last: ORDER BY version is TEXT */
       MIXED_0065_REPAIR_VERSION,
     ]);

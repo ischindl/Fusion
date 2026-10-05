@@ -63,6 +63,12 @@ non-blocking branch protection, but this gate must refuse final task completion 
 push-to-main run at or after the landed SHA has recorded every shard conclusion and timing artifact.
 */
 /*
+FNXC:PostMergeEvidenceRequirement 2026-10-05-08:52 (merge origin/main):
+Upstream's disposition sentence (a linked follow-up with an accountable owner satisfies the requirement) is kept: it loosens
+exactly the pressure RUFU-430 removed, so it belongs beside the no-CI-reporter wording rather than in the
+CI-reporter block. What stays out is any demand for a CI run, shard, or artifact.
+*/
+/*
 FNXC:PostMergeEvidenceRequirement 2026-09-30-22:51 (RUFU-430):
 The evidence a post-merge gate may demand is now a property of the WORKFLOW NODE, not a constant welded to
 the built-in. Before this, `builtin:coding` was the default workflow on every board in the fleet and it
@@ -184,6 +190,10 @@ This project declares no CI evidence reporter, so no CI run, job, shard, or buil
 1. The landed SHA on the trunk branch, with merge proof or already-on-main proof.
 2. That the merged result matches the task's stated deliverable — checked by reading the landed content, not the summary alone.
 3. The result of the project's own configured verification command run at or after the landed SHA, or an explicit statement that no such command applies to this delivery and why.
+
+Judge failures against this task's landed changes. For evidence-backed unrelated failures, a linked follow-up with an accountable owner satisfies the disposition requirement; that follow-up may still be filed after approval.
+
+Pre-landing, unrelated-main, or partial evidence does not satisfy this contract. If the required run is still running or required evidence is unavailable, return REVISE and state that final completion remains blocked pending the post-landing evidence.
 
 Evidence from before the landing, or from unrelated content on the trunk, does not satisfy this contract. If the landed content cannot be located or does not match the deliverable, return REVISE and name what is missing. Record verified evidence in the task delivery record before approving.`;
 

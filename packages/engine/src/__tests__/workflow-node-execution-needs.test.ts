@@ -18,19 +18,21 @@ describe("workflowNodeRequiresWorktree", () => {
   });
 
   it.each([
-    ["explicit review checkout config", node({ config: { reviewCanFixInline: true } }), undefined],
-    ["code-review-kind node", node({ config: { reviewKind: "code" } }), undefined],
+    ["explicit inline fix config", node({ config: { reviewCanFixInline: true } }), undefined],
+    ["structured code review", node({ id: "review", config: { reviewKind: "code" } }), undefined],
+    ["structured browser verification", node({ id: "verify", config: { reviewKind: "code" } }), "browser-verification"],
     ["code review optional group", node(), "code-review"],
     ["browser verification optional group", node(), "browser-verification"],
   ])("requires a worktree for %s without an inline-fix option", (_name, workflowNode, optionalGroupId) => {
     expect(workflowNodeRequiresWorktree(workflowNode, { optionalGroupId })).toBe(true);
   });
 
-  it.each([
-    node({ id: "review", config: { name: "Code Review" } }),
-    node({ id: "verify", config: { name: "Browser Verification" } }),
-  ])("does not derive checkout requirements from display names", (workflowNode) => {
-    expect(workflowNodeRequiresWorktree(workflowNode)).toBe(false);
+  it("keeps inline-fix reviews read-only when disabled", () => {
+    expect(workflowNodeRequiresWorktree(node({ config: { reviewKind: "code" } }), { reviewerInlineFixes: false })).toBe(false);
+    expect(workflowNodeRequiresWorktree(node(), {
+      optionalGroupId: "code-review",
+      reviewerInlineFixes: false,
+    })).toBe(false);
   });
 
   it.each([

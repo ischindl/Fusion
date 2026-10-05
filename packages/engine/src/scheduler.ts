@@ -1,5 +1,7 @@
+import { activeSessionRegistry, executingTaskLock } from "./agents/active-session-registry.js";
 import {
   getCurrentRepo,
+  isWorkflowPrincipalEligible,
   computeBlockerFanoutMap,
   compareTasksByQueueOrder,
   fileScopeLeaseBlocksCandidate,
@@ -328,21 +330,24 @@ function isMarkerDependencySatisfied(
  * Build the per-dependency column vocabulary for {@link getUnmetSchedulingDependencies}.
  *
  * `cache` is caller-owned for the reason documented on `resolveTaskLifecycleColumns`: a sweep over
- * many dependents spanning three workflows must read three IRs, not one per dependency. A
- * dependency whose workflow cannot be resolved is simply OMITTED from the map, which lands that
- * dependency on the literal fallback rather than on an empty set (an empty set would read as
+ * many dependents spanning three workflows must read three IRs, not one per dependency. The optional
+ * `selectionCache` is likewise event-owned, coalescing a task selection read with other lane work in
+ * that same event without retaining it beyond the event. A dependency whose workflow cannot be
+ * resolved is simply OMITTED from the map, which lands that dependency on the literal fallback rather
+ * than on an empty set (an empty set would read as
  * "never satisfied" and block the dependent forever — the expensive direction to be wrong in).
  */
 export async function resolveDependencySatisfactionColumns(
   store: Parameters<typeof resolveWorkflowIrForTask>[0],
   dependencies: readonly Task[],
   cache?: Map<string, WorkflowIr>,
+  selectionCache?: WorkflowSelectionCache,
 ): Promise<Map<string, DependencySatisfactionColumns>> {
   const resolved = new Map<string, DependencySatisfactionColumns>();
   const irCache = cache ?? new Map<string, WorkflowIr>();
   for (const dep of dependencies) {
     try {
-      const ir = await resolveWorkflowIrForTask(store, dep.id, irCache);
+      const ir = await resolveWorkflowIrForTask(store, dep.id, irCache, selectionCache);
       if (!ir) continue;
       const terminal = new Set(columnsWithFlag(ir, "complete"));
       const review = new Set([...columnsWithFlag(ir, "mergeBlocker"), ...columnsWithFlag(ir, "humanReview")]);
@@ -605,7 +610,11 @@ export interface FileScopeLeaseOptions {
 /*
 FNXC:OverlapScheduling 2026-08-29-05:49:
 File-scope ownership is a lifetime contract: a task keeps its claim until its work has landed, is
-deleted, or a non-WIP lane has released its checkout. Paused, failed, and external-blocked cards therefore retain their claim while their unmerged singular or per-repository checkout exists; deleting or clearing those checkouts is the explicit escape hatch for a dead holder.
+deleted, or a non-WIP lane has released its checkout. Paused, failed, and external-blocked
+cards therefore retain their claim while their unmerged singular or per-repository checkout exists.
+Dormant claims yield while scheduling dependencies are unmet, retaining every checkout and resuming
+priority contention once those dependencies are satisfied; active claims retain their existing policy.
+Deleting or clearing those checkouts remains the explicit escape hatch for a dead holder.
 
 Check every checkout form before granting a non-WIP card an active lease. A workspace task deliberately
 has no singular `task.worktree`, so review and dormant classification must recognize its repository
@@ -658,13 +667,17 @@ export function classifyFileScopeLease(
     return { kind: taskHoldsUnmergedCheckout(task) ? "active" : "none", waivedForTaskIds: [] };
   }
 
+  // A dormant checkout preserves work, but cannot win admission while its owner is
+  if (getUnmetSchedulingDependencies(task, tasks, options?.schedulingDependencyOptions).length > 0) {
+    return { kind: "none", waivedForTaskIds: [] };
+  }
+
   /*
   FNXC:OverlapScheduling 2026-09-08-20:55 (RUFU-200):
   This is the ONLY branch that consults the checkout-emptiness proof, and it is a downgrade-only input:
   an `empty` proof releases the dormant lease, while `occupied`, `unknown`, or no proof at all keeps it.
   A retained checkout in a planning/hold lane with zero commits and a clean tree is not work to preserve
   — it is the phantom that deadlocked RUFU-198's peer RUFU-199 forever.
-
   The review branch above deliberately does NOT consult it. A review-lane checkout is still the merge's
   source: the merger reads it, and `autoMerge:false` leaves `in-review` terminal-until-merged by a human,
   so releasing that lease on an `empty` verdict would free overlapping files while a human still owns
@@ -1302,10 +1315,17 @@ export class Scheduler {
       // FN-3895/FN-3924: complement periodic stale-blockedBy self-healing with immediate
       // blocker reconciliation when a potential blocker reaches a dependency-satisfying column.
       // Invariant: blockedBy must reference a *current* unresolved blocker, else be null.
+      /*
+      FNXC:WorkflowScheduling 2026-10-04-15:00:
+      A moved task is both resolved for its parked lanes and checked as a dependency wake source.
+      Share the event-owned selection cache across those two reads so one move cannot issue duplicate
+      workflow-selection queries for the same task; later events retain a fresh cache and see changes.
+      */
       const movedDependencySatisfactionColumns = await resolveDependencySatisfactionColumns(
         this.store,
         [task],
         new Map<string, WorkflowIr>(),
+        movedSelectionCache,
       );
       /*
       FNXC:DependencyWakeup 2026-10-04-08:59:
@@ -1721,6 +1741,17 @@ export class Scheduler {
         schedulerLog.error(`Failed event-driven soft-delete blocker reconciliation for ${task.id}`, error);
       });
     });
+  }
+
+  private async isTaskAssigneeAvailable(task: Task): Promise<boolean> {
+    if (!task.assignedAgentId) return true;
+    if (!this.options.agentStore) return false;
+    try {
+      const owner = await this.options.agentStore.getAgent(task.assignedAgentId);
+      return owner != null && isWorkflowPrincipalEligible(owner);
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -3124,6 +3155,20 @@ export class Scheduler {
           }
           let observedOverlapBlockedBy = freshTask.overlapBlockedBy ?? null;
 
+          const reservedAssigneeId = freshTask.assignedAgentId ?? null;
+          if (!await this.isTaskAssigneeAvailable(freshTask)) {
+            const ownerId = freshTask.assignedAgentId!;
+            const agents = this.options.agentStore;
+            if (agents && !freshTask.checkedOutBy && !executingTaskLock.has(task.id)
+              && activeSessionRegistry.pathsForTask(task.id).length === 0
+              && this.options.hasActiveAgentExecution?.(ownerId) !== true
+              && !await agents.getActiveHeartbeatRun(ownerId)) {
+              await agents.handoffTaskToWorkflowExecutor(ownerId, task.id, undefined, { requireUnavailableOwner: true });
+            }
+            // The handoff emits task:updated. Admit only a fresh pass, never the stale assigned snapshot.
+            return null;
+          }
+
           if (freshTask.checkedOutBy && this.options.leaseManager) {
             const recovered = await this.options.leaseManager.recoverAbandonedLease(
               freshTask.id,
@@ -3582,6 +3627,8 @@ export class Scheduler {
             reservedConcurrentSlots += 1;
             let released = false;
             return {
+              validateAdmission: async (live) => (live.assignedAgentId ?? null) === reservedAssigneeId
+                && await this.isTaskAssigneeAvailable(live),
               release: () => {
                 if (released) return;
                 released = true;

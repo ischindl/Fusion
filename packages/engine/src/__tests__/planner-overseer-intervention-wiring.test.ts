@@ -160,8 +160,13 @@ pgDescribe("FN-7551 — overseer decision points populate the intervention timel
   move is refused in place. Claiming a retry anyway is what produced FN-428's ~45s "retry" loop with nothing
   moving, so the handler now records ONE durable diagnostic and emits no retry intervention. The retry-emission
   branch itself is covered in `planner-retry-step-contained-recovery.test.ts` with the lifecycle seam moved.
+
+  FNXC:PlannerOversight 2026-10-04-15:00:
+  origin/main converged on the same contract from the opposite side (the base assertion failed there with
+  `expected undefined to be truthy`, recorded in FN-9475): a refused retry dispatch is not an admitted
+  recovery, so this case also pins that the refusal burned no attempt budget.
   */
-  it("failed executor with no error source records a contained-recovery diagnostic instead of a retry entry", async () => {
+  it("failed executor with no error source records a contained-recovery diagnostic instead of a retry entry and burns no attempt", async () => {
     const task = await seedTask("in-progress");
     const { controllerWithSnapshot } = wireRealEngineOverseer(store);
     const controller = controllerWithSnapshot(observation({ taskId: task.id, stage: "executor", signal: "failed", sources: [] }));
@@ -173,6 +178,7 @@ pgDescribe("FN-7551 — overseer decision points populate the intervention timel
     expect(timeline.find((e) => e.action === "retry")).toBeUndefined();
     const log = (await store.getTask(task.id)).log ?? [];
     expect(log.filter((entry) => entry.action?.includes("retry-not-dispatched"))).toHaveLength(1);
+    expect(controller.getAttemptCount(task.id, "executor")).toBe(0);
   });
 
   /*

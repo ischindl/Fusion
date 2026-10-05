@@ -31,8 +31,8 @@
  *      the documented stall mode) and the repo backs off; the poller survives.
  */
 
-import type { PrEntity, PrConflictState, PrChecksRollup, PrReviewDecision } from "@fusion/core";
-import { isPrEntityActive } from "@fusion/core";
+import type { PrEntity, PrConflictState, PrChecksRollup, PrReadinessSnapshot, PrReviewDecision } from "@fusion/core";
+import { isCurrentHeadReadinessReady, isPrEntityActive } from "@fusion/core";
 import { prReconcileLog } from "../logger.js";
 import { emitBoundedRunAudit } from "../util/emit-bounded-run-audit.js";
 import { releaseHeldTaskByEvent } from "../execution/hold-release.js";
@@ -54,6 +54,9 @@ export interface PrReconcileFetchResult {
   mergeable?: PrConflictState;
   checksRollup?: PrChecksRollup;
   reviewDecision?: PrReviewDecision;
+  /** Canonical provider-neutral evidence for the observed head. */
+  readiness?: PrReadinessSnapshot;
+  readinessProvider?: string;
 }
 
 /**
@@ -80,6 +83,14 @@ export interface PrReconcileStore {
   listActivePrEntities(): Promise<PrEntity[]>;
   getPrEntity(id: string): Promise<PrEntity | null>;
   updatePrEntity(id: string, patch: import("@fusion/core").PrEntityUpdate): Promise<PrEntity>;
+  /** SHA-fenced writer; a null result means a newer observation won the race. */
+  updatePrReadiness?(
+    id: string,
+    expectedStoredHeadOid: string | undefined,
+    provider: string,
+    snapshot: PrReadinessSnapshot,
+    options?: { deferMergedTerminalState?: boolean },
+  ): Promise<PrEntity | null>;
   recordRunAuditEvent?: (input: import("@fusion/core").RunAuditEventInput) => unknown | Promise<unknown>;
 }
 
@@ -107,6 +118,13 @@ export interface PrReconcilerOptions {
   releaseByEvent?: PrReleaseByEventFn;
   /** Branch-group → representative task resolver (v1: omitted ⇒ skip groups). */
   resolveGroupReleaseTask?: ResolveGroupReleaseTaskFn;
+  /** Releases a legacy PR wait only after its current-head evidence is ready. */
+  releaseAwaitingChecks?: (taskId: string, prEntityId: string, expectedHeadOid: string) => Promise<void>;
+  /**
+   * Receives a fresh, provider-corroborated external landing before generic
+   * hold releases or any recovery path can select stale pre-merge work.
+   */
+  onMergedCurrentHead?: (entity: PrEntity, result: PrReconcileFetchResult) => Promise<boolean>;
   /** Override cadence/backoff knobs (tests use tiny intervals). */
   intervals?: Partial<PrReconcileIntervals>;
   /** Injected clock for the next-tick scheduler (defaults to setTimeout). */
@@ -145,7 +163,8 @@ export interface PrReconcileTransition {
     | "changes-requested"
     | "approved"
     | "conflict"
-    | "conflict-cleared";
+    | "conflict-cleared"
+    | "ready";
   /** The hold-release event tag: `github:pr-<event>`. */
   tag: string;
   /** Whether this transition makes the entity terminal (drop from poll). */
@@ -179,6 +198,17 @@ export function deriveTransitions(prev: PrEntity, next: PrReconcileFetchResult):
     } else if (next.reviewDecision === "APPROVED") {
       out.push({ event: "approved", tag: tag("approved"), terminal: false });
     }
+  }
+
+  // A current-head readiness success is a distinct external event. It is not
+  // inferred from legacy rollups: unsupported, denied, stale, or partial
+  // provider evidence remains held and actionable rather than waking a merge.
+  const previouslyReady = isCurrentHeadReadinessReady(prev.readiness, prev.headOid);
+  const newlyReady = next.readiness !== undefined
+    && next.headOid === next.readiness.observedHeadOid
+    && isCurrentHeadReadinessReady(next.readiness, next.headOid);
+  if (!previouslyReady && newlyReady) {
+    out.push({ event: "ready", tag: tag("ready"), terminal: false });
   }
 
   // Mergeability transitions. "conflicting" is the only conflict signal that
@@ -216,6 +246,8 @@ export class PrReconciler {
   private readonly ops: PrReconcileGithubOps;
   private readonly releaseByEvent: PrReleaseByEventFn;
   private readonly resolveGroupReleaseTask?: ResolveGroupReleaseTaskFn;
+  private readonly releaseAwaitingChecks?: (taskId: string, prEntityId: string, expectedHeadOid: string) => Promise<void>;
+  private readonly onMergedCurrentHead?: (entity: PrEntity, result: PrReconcileFetchResult) => Promise<boolean>;
   private readonly intervals: PrReconcileIntervals;
   private readonly setTimer: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
   private readonly clearTimer: (handle: ReturnType<typeof setTimeout>) => void;
@@ -231,6 +263,8 @@ export class PrReconciler {
       ((taskId, eventTag) =>
         releaseHeldTaskByEvent(this.store as unknown as import("@fusion/core").TaskStore, taskId, eventTag));
     this.resolveGroupReleaseTask = options.resolveGroupReleaseTask;
+    this.releaseAwaitingChecks = options.releaseAwaitingChecks;
+    this.onMergedCurrentHead = options.onMergedCurrentHead;
     this.intervals = { ...DEFAULT_INTERVALS, ...(options.intervals ?? {}) };
     this.setTimer = options.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
     this.clearTimer = options.clearTimer ?? ((h) => clearTimeout(h));
@@ -277,6 +311,14 @@ export class PrReconciler {
   async reconcileRepoOnce(repo: string): Promise<PrReconcileTransition[]> {
     const tracker = this.repos.get(repo) ?? this.ensureTracker(repo);
     return this.tickRepo(tracker);
+  }
+
+  /** Refresh every active provider-backed repository before a recovery pass selects work. */
+  async reconcileAllOnce(): Promise<PrReconcileTransition[]> {
+    const repos = [...(await this.groupActiveByRepo()).keys()];
+    const transitions: PrReconcileTransition[] = [];
+    for (const repo of repos) transitions.push(...await this.reconcileRepoOnce(repo));
+    return transitions;
   }
 
   // ── Internals ────────────────────────────────────────────────────────────────
@@ -419,7 +461,11 @@ export class PrReconciler {
     // 1. ETag-cheap probe. 304 ⇒ unchanged ⇒ no deep-fetch / no writes.
     const probe = await this.ops.probe(entity.repo, entity.prNumber, tracker.etags.get(entity.id));
     if (probe.etag) tracker.etags.set(entity.id, probe.etag);
-    if (!probe.changed) return [];
+    // A provider-confirmed landing can be deferred by a pause or live owner.
+    // Keep refreshing that active entity even on 304 so closeout is retried once
+    // the fence is available rather than being lost behind the cached ETag.
+    const retryDeferredExternalLanding = entity.readiness?.state === "merged";
+    if (!probe.changed && !retryDeferredExternalLanding) return [];
 
     // 2. Deep-fetch the mirror state (may throw → caller records + backs off).
     const fetched = await this.ops.fetchPrState(entity.repo, entity.prNumber);
@@ -439,24 +485,90 @@ export class PrReconciler {
     // 4. Derive transitions BEFORE persisting (compare against the prior mirror).
     const transitions = deriveTransitions(entity, fetched);
 
-    // 5. Persist the corroborated mirror; clear `unverified` on first success.
-    const nextState =
-      fetched.prState === "merged" ? "merged" : fetched.prState === "closed" ? "closed" : entity.state;
-    void this.store.updatePrEntity(entity.id, {
-      state: nextState,
-      prNumber: fetched.prNumber ?? entity.prNumber,
-      prUrl: fetched.prUrl ?? null,
-      headOid: fetched.headOid ?? null,
-      mergeable: fetched.mergeable ?? null,
-      checksRollup: fetched.checksRollup ?? null,
-      reviewDecision: fetched.reviewDecision,
-      unverified: false,
-    });
+    const provenCurrentHeadLanding = fetched.prState === "merged"
+      && fetched.headOid === entity.headOid
+      && fetched.readiness?.state === "merged"
+      && fetched.readiness.observedHeadOid === entity.headOid
+      && Boolean(fetched.readiness.mergeCommitSha)
+      && fetched.readiness.mergeCommitIncludesHead === true;
+    const deferredExternalLanding = provenCurrentHeadLanding && Boolean(this.onMergedCurrentHead);
 
-    // 6. Fire the generic external-event releases. The unverified gate (R19) is
-    //    already cleared above only AFTER a real PR was corroborated, so a
-    //    just-cleared entity may legitimately advance on this same pass.
+    // 5. Persist the corroborated mirror; clear `unverified` on first success.
+    // A stale provider response must not release a hold after a newer head has won.
+    //
+    // FNXC:ExternalPrCloseout 2026-10-05-04:23:
+    // A proven landing remains an active poll target until the task-fenced
+    // closeout handoff succeeds. Marking it terminal before that handoff would
+    // hide a paused or live-owned task from restart recovery and let stale work
+    // resume through a generic merged-event release.
+    if (fetched.readiness && this.store.updatePrReadiness) {
+      const fenced = await this.store.updatePrReadiness(
+        entity.id,
+        entity.headOid,
+        fetched.readinessProvider ?? "github",
+        fetched.readiness,
+        { deferMergedTerminalState: deferredExternalLanding },
+      );
+      // Do not follow a successful CAS with an unfenced mirror write: another
+      // poll can persist a new head between those two operations.
+      if (!fenced) return "changed";
+    } else {
+      const nextState = deferredExternalLanding
+        ? entity.state
+        : fetched.prState === "merged" ? "merged" : fetched.prState === "closed" ? "closed" : entity.state;
+      await this.store.updatePrEntity(entity.id, {
+        state: nextState,
+        prNumber: fetched.prNumber ?? entity.prNumber,
+        prUrl: fetched.prUrl ?? null,
+        headOid: fetched.headOid ?? null,
+        mergeable: fetched.mergeable ?? null,
+        checksRollup: fetched.checksRollup ?? null,
+        reviewDecision: fetched.reviewDecision,
+        unverified: false,
+      });
+    }
+
+    /*
+    FNXC:ExternalCheckWait 2026-10-05-00:37:
+    A reconciled current-head readiness transition releases the durable legacy
+    wait through the engine, never through a model session. Pending polls leave
+    the task untouched, so CI latency cannot spend execution or merge retries.
+    */
+    const readyTransition = transitions.find((transition) => transition.event === "ready");
+    const readyTaskId = readyTransition ? this.resolveReleaseTaskId(entity) : null;
+    if (readyTaskId && fetched.readiness?.observedHeadOid && this.releaseAwaitingChecks) {
+      await this.releaseAwaitingChecks(readyTaskId, entity.id, fetched.readiness.observedHeadOid);
+    }
+
+    /*
+    FNXC:ExternalPrCloseout 2026-10-05-02:58:
+    Fresh current-head merge proof must reach lifecycle reconciliation before a
+    generic release can select retries. A closed or mismatched observation never
+    reaches this callback, and callback failure leaves the durable task untouched.
+    */
+    let externalMergeAccepted = false;
+    if (provenCurrentHeadLanding && this.onMergedCurrentHead) {
+      try {
+        externalMergeAccepted = await this.onMergedCurrentHead(entity, fetched);
+        if (externalMergeAccepted) {
+          await this.store.updatePrEntity(entity.id, { state: "merged" });
+        }
+      } catch (err) {
+        this.recordError(entity, err, "external-merge-closeout");
+        externalMergeAccepted = false;
+      }
+    }
+
+    // 6. A deferred proven landing has its own closeout owner. Never release a
+    // stale pre-merge hold while that owner is paused or live; it stays active
+    // and the next fresh/restart pass retries the fenced handoff.
+    // The unverified gate (R19) is already cleared above only AFTER a real PR
+    // was corroborated, so a just-cleared non-landing entity may advance here.
     for (const transition of transitions) {
+      if (deferredExternalLanding && transition.event === "merged") {
+        if (externalMergeAccepted && transition.terminal) tracker.etags.delete(entity.id);
+        continue;
+      }
       const taskId = this.resolveReleaseTaskId(entity);
       if (taskId) {
         try {

@@ -346,6 +346,7 @@ const EXPECTATIONS: BuiltinExpectation[] = [
       ["triage", "todo", "graph"],
       ["todo", "in-progress", "scheduler"],
       ["in-progress", "in-review", "graph"],
+      // Completion summary and Code Review run within the same sealed review episode.
       ["in-review", "done", "graph"],
     ],
     finalColumn: "done",

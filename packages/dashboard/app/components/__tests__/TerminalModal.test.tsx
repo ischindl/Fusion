@@ -1627,7 +1627,7 @@ describe("TerminalModal", () => {
       fireEvent.pointerMove(resizeHandle, { pointerId: 51, pointerType: "touch", clientX: 120, clientY: 180 });
       fireEvent.pointerUp(resizeHandle, { pointerId: 51, pointerType: "touch" });
       await waitFor(() => {
-        expect(Number.parseFloat(panel.style.width)).toBeLessThan(widthBeforeResize);
+        expect(JSON.parse(window.localStorage.getItem(`fusion:terminal-float-geometry-${projectId}`) ?? "{}").size).toEqual({ width: 624, height: 540 });
       });
 
       const leftBeforeMove = Number.parseFloat(panel.style.left);
@@ -1641,7 +1641,7 @@ describe("TerminalModal", () => {
       fireEvent.pointerMove(header, { pointerId: 52, pointerType: "touch", clientX: 180, clientY: 140 });
       fireEvent.pointerUp(header, { pointerId: 52, pointerType: "touch" });
       await waitFor(() => {
-        expect(Number.parseFloat(panel.style.left)).toBeGreaterThan(leftBeforeMove);
+        expect(JSON.parse(window.localStorage.getItem(`fusion:terminal-float-geometry-${projectId}`) ?? "{}").position.x).toBe(112);
       });
     } finally {
       styleEl.remove();
@@ -1709,7 +1709,7 @@ describe("TerminalModal", () => {
         expect(panel.setPointerCapture).toHaveBeenCalledWith(63);
         expect(panel.style.left).not.toBe(initialLeft);
         expect(panel.style.top).not.toBe(initialTop);
-        // FN-394 retired durable floating geometry; the rendered rectangle is the only geometry contract left.
+        expect(JSON.parse(window.localStorage.getItem(`fusion:terminal-float-geometry-${projectId}`) ?? "{}").position).toEqual({ x: 32, y: 80 });
       });
 
       fireEvent.pointerDown(screen.getAllByRole("tab")[1], { pointerId: 64, pointerType: "touch" });

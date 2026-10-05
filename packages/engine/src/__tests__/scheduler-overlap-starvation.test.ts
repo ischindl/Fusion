@@ -993,6 +993,84 @@ describe("scheduler overlap starvation regression (FN-057)", () => {
     expect(store.moveTask).toHaveBeenCalledWith("FN-B", "in-progress", expect.anything());
   });
 
+  it.each(["prerequisite", "unrelated"])("schedules a ready %s while a dormant overlap holder waits for dependencies", async (kind) => {
+    const candidate = makeTask({ id: "FN-READY", createdAt: "2026-01-02T00:00:00Z" });
+    const dependency = kind === "prerequisite" ? candidate : makeTask({ id: "FN-DEP", column: "triage" });
+    const holder = makeTask({ id: "FN-HOLDER", worktree: "/wt/holder", dependencies: [dependency.id], blockedBy: dependency.id });
+    const tasks = [holder, candidate, ...(dependency === candidate ? [] : [dependency])];
+    const store = createStore(tasks, { [holder.id]: ["src/shared.ts"], [candidate.id]: ["src/shared.ts"] });
+    const scheduler = new Scheduler(store);
+    (scheduler as any).running = true;
+    await scheduler.schedule();
+    expect(store.moveTask).toHaveBeenCalledWith(candidate.id, "in-progress", expect.anything());
+    expect(holder.worktree).toBe("/wt/holder");
+    expect(holder.column).toBe("todo");
+  });
+
+  it.each(["priority-bridge", "transitive"])("breaks a three-card dormant %s dependency cycle without deleting work", async (mode) => {
+    const prerequisite = makeTask({ id: "FN-9439", createdAt: "2026-01-03T00:00:00Z" });
+    const middle = makeTask({ id: "FN-9438", worktree: "/wt/middle", createdAt: "2026-01-02T00:00:00Z",
+      dependencies: mode === "transitive" ? [prerequisite.id] : [] });
+    const holder = makeTask({ id: "FN-9436", worktree: "/wt/holder", dependencies: [mode === "transitive" ? middle.id : prerequisite.id] });
+    const tasks = [holder, middle, prerequisite];
+    const store = createStore(tasks, Object.fromEntries(tasks.map(task => [task.id, ["src/shared.ts"]])));
+    const scheduler = new Scheduler(store);
+    (scheduler as any).running = true;
+    await scheduler.schedule();
+    expect(store.moveTask).toHaveBeenCalledWith(mode === "transitive" ? prerequisite.id : middle.id, "in-progress", expect.anything());
+    if (mode === "priority-bridge") {
+      middle.column = "done";
+      await scheduler.schedule();
+      expect(store.moveTask).toHaveBeenCalledWith(prerequisite.id, "in-progress", expect.anything());
+    }
+    expect(holder.worktree).toBe("/wt/holder");
+    expect(middle.worktree).toBe("/wt/middle");
+  });
+
+  it.each(["paused", "error", "missing", "disabled"])("hands off an unavailable %s assignee before WIP admission", async (state) => {
+    const task = makeTask({ id: "FN-OWNED", assignedAgentId: "owner" });
+    const store = createStore([task], {});
+    const handoff = vi.fn(async () => { task.assignedAgentId = undefined; return { ok: true, task }; });
+    const agentStore = { getAgent: vi.fn(async () => state === "missing" ? null : { id: "owner", state: state === "disabled" ? "active" : state, runtimeConfig: { enabled: state !== "disabled" } }),
+      getActiveHeartbeatRun: vi.fn(async () => null), handoffTaskToWorkflowExecutor: handoff,
+      listAgents: vi.fn(async () => []),
+    } as unknown as AgentStore;
+    const scheduler = new Scheduler(store, { agentStore });
+    (scheduler as any).running = true;
+    await scheduler.schedule();
+    expect(handoff).toHaveBeenCalledWith("owner", task.id, undefined, { requireUnavailableOwner: true });
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect(task.column).toBe("todo");
+    await scheduler.schedule();
+    expect(store.moveTask).toHaveBeenCalledWith(task.id, "in-progress", expect.anything());
+    expect(task.assignedAgentId).toBeUndefined();
+  });
+
+  it.each(["active", "paused-task", "live-worker", "pause-after-reservation", "reassigned-after-reservation"])("preserves named ownership during scheduler admission: %s", async (scenario) => {
+    const task = makeTask({ id: "FN-OWNED", assignedAgentId: "owner", userPaused: scenario === "paused-task" });
+    let ownerState = scenario === "live-worker" || scenario === "paused-task" ? "paused" : "active";
+    const store = createStore([task], {});
+    const handoff = vi.fn();
+    const agentStore = { getAgent: vi.fn(async () => ({ id: "owner", state: ownerState })),
+      getActiveHeartbeatRun: vi.fn(async () => null), handoffTaskToWorkflowExecutor: handoff, listAgents: vi.fn(async () => []),
+    } as unknown as AgentStore;
+    if (scenario === "pause-after-reservation" || scenario === "reassigned-after-reservation") {
+      const original = vi.mocked(store.moveTaskIf).getMockImplementation()!;
+      vi.mocked(store.moveTaskIf).mockImplementation(async (...args) => {
+        if (scenario === "pause-after-reservation") ownerState = "paused";
+        else task.assignedAgentId = "replacement";
+        return original(...args);
+      });
+    }
+    const scheduler = new Scheduler(store, { agentStore, hasActiveAgentExecution: () => scenario === "live-worker" });
+    (scheduler as any).running = true;
+    await scheduler.schedule();
+    expect(handoff).not.toHaveBeenCalled();
+    expect(task.assignedAgentId).toBe(scenario === "reassigned-after-reservation" ? "replacement" : "owner");
+    if (scenario === "active") expect(store.moveTask).toHaveBeenCalledWith(task.id, "in-progress", expect.anything());
+    else expect(store.moveTask).not.toHaveBeenCalled();
+  });
+
   it("does not let a lower-priority dormant holder delay a higher-priority candidate", async () => {
     const tasks = [
       makeTask({ id: "FN-A", column: "triage", worktree: "/wt/a", priority: "low" }),

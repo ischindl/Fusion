@@ -729,20 +729,20 @@ describe("Navigation history integration", () => {
     fireEvent.click(screen.getByTestId("open-task-FN-1"));
 
     await waitFor(() => {
-      expect(screen.getByTestId("task-detail-popup-content")).toBeTruthy();
+      expect(screen.getByTestId("task-detail-main-panel-content")).toBeTruthy();
+      expect(screen.getByTestId("board-view")).not.toBeVisible();
     });
-    expect(screen.queryByTestId("task-detail-main-panel-content")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Back to board" })).toBeNull();
+    const pushCallsAfterOpen = (window.history.pushState as any).mock.calls.length;
+    expect(pushCallsAfterOpen).toBeGreaterThan(pushCallsBefore);
 
-    // FNXC:BoardNavigation 2026-09-16-02:53: the board stays mounted behind the task window, and closing the window still returns cleanly without breaking history.
-    fireEvent.keyDown(document, { key: "Escape" });
+    fireEvent.click(screen.getByRole("button", { name: "Back to board" }));
     dispatchPopState({ navIndex: 0 });
 
     await waitFor(() => {
-      expect(screen.queryByTestId("task-detail-popup-content")).toBeNull();
-      expect(screen.getByTestId("board-view")).toBeTruthy();
+      expect(screen.queryByTestId("task-detail-main-panel-content")).toBeNull();
+      expect(screen.getByTestId("board-view")).toBeVisible();
     });
-    expect((window.history.pushState as any).mock.calls.length).toBeGreaterThanOrEqual(pushCallsBefore);
+    expect((window.history.pushState as any).mock.calls.length).toBe(pushCallsAfterOpen);
   });
 
   it("restores horizontal mobile Board scroll but starts its columns at the top after Back", async () => {

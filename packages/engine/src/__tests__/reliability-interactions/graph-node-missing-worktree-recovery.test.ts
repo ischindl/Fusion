@@ -5,6 +5,7 @@ import {
   PLAN_REVIEW_PROVIDER_FAILURE_HOLD_VALUE,
   WORKSPACE_PREPARATION_FAILURE_HOLD_VALUE,
 } from "../../workflows/workflow-graph-executor.js";
+import { DEPENDENCY_BOOTSTRAP_CONFIGURATION_REQUIRED_VALUE } from "../../errors/transient-error-detector.js";
 // graphFailureValue was peeled off TaskExecutor into executor/graph-failure-pure.ts (wave 18); use the re-exported free function.
 import { TaskExecutor, graphFailureValue } from "../../executor.js";
 import { activeSessionRegistry } from "../../agents/active-session-registry.js";
@@ -23,8 +24,9 @@ FN-7996 regression coverage. A session-start unusable-worktree refusal thrown in
 workflow-graph NODE (Plan Review ran with stale task.worktree metadata pointing at a recycled
 worktree) fell through every graph-failure router into the terminal park, erasing the error
 signature and looping dispatch→park all day. The invariant: any graph-node failure carrying the
-assertValidWorktreeSession refusal routes into the bounded worktree-session recovery (clear
-stale metadata, requeue todo) and only an exhausted budget may terminal-park; additionally
+assertValidWorktreeSession refusal routes into the bounded worktree-session recovery and clears
+stale metadata in place; only an exhausted budget may terminal-park. This preserves the task's
+current lifecycle role under FN-207 containment; additionally
 graphFailureValue must resolve optional-group materialized ids (`group::template`) so group
 routing values (e.g. FN-7977's provider-failure hold) are never invisible.
 */
@@ -74,6 +76,11 @@ function trackingStore(initial: TaskDetail) {
   store.moveTask.mockImplementation(async (_id: string, column: string) => {
     live = { ...live, column } as TaskDetail;
   });
+  store.updateTaskAtomic.mockImplementation(async (_id: string, reducer: (current: TaskDetail) => unknown) => {
+    const patch = await reducer(live);
+    if (patch && typeof patch === "object") live = { ...live, ...patch } as TaskDetail;
+    return live as any;
+  });
   return { store, getLive: () => live };
 }
 
@@ -111,6 +118,34 @@ describe("graphFailureValue optional-group materialized ids", () => {
   });
 });
 
+describe("dependency bootstrap configuration graph hold (FN-9438)", () => {
+  beforeEach(() => {
+    resetExecutorMocks();
+    mockedExecSync.mockReturnValue("" as any);
+  });
+
+  it("does not dispatch a retry or consume the provider retry budget", async () => {
+    const initial = makeTask();
+    const { store, getLive } = trackingStore(initial);
+    const executor = new TaskExecutor(store, "/tmp/test");
+    const execute = vi.spyOn(executor as any, "execute").mockResolvedValue(undefined);
+
+    await (executor as any).handleGraphFailure(initial, planReviewGraphFailure({
+      "node:plan-review:value": DEPENDENCY_BOOTSTRAP_CONFIGURATION_REQUIRED_VALUE,
+      "node:plan-review:error": "Dependency bootstrap requires project configuration.",
+    }));
+
+    expect(getLive().graphResumeRetryCount).toBeUndefined();
+    expect(execute).not.toHaveBeenCalled();
+    expect(store.logEntry).toHaveBeenCalledWith(
+      initial.id,
+      expect.stringContaining("requires project configuration"),
+      undefined,
+      undefined,
+    );
+  });
+});
+
 describe("workspace preparation graph failure recovery (FN-120)", () => {
   beforeEach(() => {
     resetExecutorMocks();
@@ -144,7 +179,7 @@ describe("graph-node unusable-worktree failure recovery (FN-7996)", () => {
     mockedExecSync.mockReturnValue("" as any);
   });
 
-  it("clears worktree metadata in the current lane instead of terminal-parking", async () => {
+  it("clears worktree metadata in its current lifecycle role instead of terminal-parking", async () => {
     const initial = makeTask();
     const { store, getLive } = trackingStore(initial);
     const executor = new TaskExecutor(store, "/tmp/test");
@@ -329,7 +364,8 @@ describe("Plan Review missing-worktree repo-root fallback (FN-7996)", () => {
   it("keeps Plan Review on the declared read-only root when its recorded worktree is gone", async () => {
     const store = createMockStore();
     const executor = new TaskExecutor(store, "/tmp/test");
-    mockedExistsSync.mockImplementation((path: unknown) => path !== "/tmp/stale-wt");
+    mockedExistsSync.mockReturnValue(false);
+    vi.spyOn(executor as any, "createWorktree").mockImplementation(async (branch: string, path: string) => ({ path, branch }));
 
     const captured: { worktreePath?: string } = {};
     vi.spyOn(executor as any, "executeWorkflowStep").mockImplementation(async (...args: any[]) => {
@@ -348,7 +384,14 @@ describe("Plan Review missing-worktree repo-root fallback (FN-7996)", () => {
 
     expect(result.outcome).toBe("success");
     expect(captured.worktreePath).not.toBe("/tmp/stale-wt");
-    expect(captured.worktreePath).toBe("/tmp/test");
+    expect(captured.worktreePath).not.toBe("/tmp/test");
+    expect(captured.worktreePath).toContain("/tmp/test/.fusion/worktrees/");
+    expect(store.logEntry).toHaveBeenCalledWith(
+      live.id,
+      expect.stringContaining("requires a task worktree — acquiring worktree before node execution"),
+      undefined,
+      undefined,
+    );
   });
 
   it("releases the repo-root session lease after the fallback reviewer completes", async () => {

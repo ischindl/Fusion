@@ -2369,12 +2369,39 @@ export function resolvePrMergeMethod(
   }
 }
 
+async function reconcileDashboardMergedPr(
+  engine: import("@fusion/engine").ProjectEngine | undefined,
+  client: GitHubClient,
+  repo: { owner: string; repo: string },
+  task: Task,
+  prNumber: number,
+  requiredCheckNames: string[],
+): Promise<boolean> {
+  if (!engine?.reconcileDashboardMergedPr) return false;
+  try {
+    const readiness = await client.getPrReadiness(repo.owner, repo.repo, prNumber, { requiredCheckNames });
+    if (readiness.snapshot.state !== "merged") return false;
+    return engine.reconcileDashboardMergedPr(task.id, {
+      exists: true,
+      prState: "merged",
+      prNumber,
+      headOid: readiness.prInfo.headOid,
+      readiness: readiness.snapshot,
+      readinessProvider: "github",
+    });
+  } catch {
+    // The fresh proof read is fail-closed; a badge refresh remains best-effort.
+    return false;
+  }
+}
+
 export async function mergeTaskPr(
   scopedStore: TaskStore,
   task: Task,
   token: string | undefined,
   explicitMethod?: "merge" | "squash" | "rebase",
-  runIdPrefix = "pr-merge",
+  _runIdPrefix = "pr-merge",
+  reconcileMerged?: () => Promise<boolean>,
 ): Promise<PrInfo> {
   if (!task.prInfo?.number) {
     throw badRequest("Task has no associated PR number");
@@ -2419,10 +2446,7 @@ export async function mergeTaskPr(
       lastMergeErrorAt: undefined,
     } satisfies PrInfo;
     await scopedStore.updatePrInfo(task.id, refreshed);
-    await scopedStore.applyPrMergedTransition(task.id, {
-      agentId: "dashboard",
-      runId: `${runIdPrefix}-${task.id}-${Date.now()}`,
-    });
+    await reconcileMerged?.();
     return refreshed;
   }
   if (!nativeAutoMerge && !mergeStatus.mergeReady) {
@@ -2453,10 +2477,7 @@ export async function mergeTaskPr(
     await scopedStore.updatePrInfo(task.id, updated);
     // GitHub-native auto-merge is deferred; only a later refresh that observes merged may transition the task.
     if (updated.status === "merged") {
-      await scopedStore.applyPrMergedTransition(task.id, {
-        agentId: "dashboard",
-        runId: `${runIdPrefix}-${task.id}-${Date.now()}`,
-      });
+      await reconcileMerged?.();
     }
     return updated;
   } catch (error) {
@@ -2483,10 +2504,7 @@ export async function mergeTaskPr(
         lastMergeError: undefined,
         lastMergeErrorAt: undefined,
       });
-      await scopedStore.applyPrMergedTransition(task.id, {
-        agentId: "dashboard",
-        runId: `${runIdPrefix}-${task.id}-${Date.now()}`,
-      });
+      await reconcileMerged?.();
       return refreshed;
     }
 
@@ -2527,6 +2545,7 @@ export async function refreshPrInBackground(
     onConflictDetected?: (taskId: string) => Promise<void>;
     repoRoot?: string;
     directMergeCommitStrategy?: DirectMergeCommitStrategy;
+    reconcileMerged?: (task: Task, prNumber: number, repo: { owner: string; repo: string }, client: GitHubClient, requiredCheckNames: string[]) => Promise<boolean>;
   },
 ): Promise<void> {
   try {
@@ -2615,10 +2634,7 @@ export async function refreshPrInBackground(
       }
 
       if (prInfo.status === "merged" && currentPrInfo.number === primaryPrNumber) {
-        await store.applyPrMergedTransition(taskId, {
-          agentId: "dashboard",
-          runId: `pr-refresh-${taskId}-${Date.now()}`,
-        });
+        await options?.reconcileMerged?.(task, currentPrInfo.number, { owner, repo }, client, resolveRequiredCheckNames(settings));
         continue;
       }
 
@@ -5973,7 +5989,7 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
    */
   router.get("/tasks/:id/pr/status", async (req, res) => {
     try {
-      const { store: scopedStore } = await getProjectContext(req);
+      const { store: scopedStore, engine } = await getProjectContext(req);
       const task = await scopedStore.getTask(req.params.id);
 
       const prList = getTaskPrList(task);
@@ -6003,6 +6019,8 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
         refreshPrInBackground(scopedStore, task.id, prList, githubToken, {
           repoRoot: scopedStore.getRootDir(),
           directMergeCommitStrategy: settings.directMergeCommitStrategy,
+          reconcileMerged: (liveTask, prNumber, repo, client, requiredCheckNames) =>
+            reconcileDashboardMergedPr(engine, client, repo, liveTask, prNumber, requiredCheckNames),
         });
       }
     } catch (err: unknown) {
@@ -6147,18 +6165,15 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
         : undefined;
       if (mergedPrimary) {
         /*
-        FNXC:ExternalPrReconciliation 2026-09-29-06:40:
-        Fetching multiple PRs concurrently must not let a secondary changes-requested result rebound the task before the owned primary's merged state is applied.
-        The remote primary is reconciled first; nonterminal review outcomes re-read the live task and become no-ops after completion.
+        FNXC:ExternalPrReconciliation 2026-10-05-04:10:
+        A direct dashboard refresh delegates fresh current-head proof to the
+        ProjectEngine owner, preventing this route from bypassing graph closeout.
         */
-        await scopedStore.applyPrMergedTransition(task.id, {
-          agentId: "dashboard",
-          runId: `pr-refresh-${task.id}-${Date.now()}`,
-        });
+        await reconcileDashboardMergedPr(engine, client, { owner, repo }, task, mergedPrimary.prInfo.number, checkGateOptions.requiredCheckNames);
       }
 
       for (const entry of refreshedEntries) {
-        if (entry.prInfo.status !== "merged") {
+        if (!mergedPrimary && entry.prInfo.status !== "merged") {
           await applyChangesRequestedTransition(scopedStore, task, entry.reviewSnapshot, entry.prInfo);
         }
       }
@@ -6266,7 +6281,7 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
       if (method && !["merge", "squash", "rebase"].includes(method)) {
         throw badRequest("Invalid merge method");
       }
-      const { store: scopedStore } = await getProjectContext(req);
+      const { store: scopedStore, engine } = await getProjectContext(req);
       const task = await scopedStore.getTask(req.params.id);
       const prList = getTaskPrList(task);
       const requestedPr = Number.parseInt(String(req.query.pr ?? ""), 10);
@@ -6276,15 +6291,16 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
       if (!targetPr?.number) {
         throw notFound("Task has no associated PR");
       }
+      const taskForPr = task.prInfo?.number === targetPr.number ? task : { ...task, prInfo: targetPr };
+      const repo = parseBadgeUrl(targetPr.url) ?? getCurrentRepo(scopedStore.getRootDir());
+      const reconcileMerged = repo
+        ? () => reconcileDashboardMergedPr(engine, new GitHubClient(githubToken), repo, taskForPr, targetPr.number, [])
+        : undefined;
       if (targetPr.status === "merged") {
-        await scopedStore.applyPrMergedTransition(task.id, {
-          agentId: "dashboard",
-          runId: `pr-merge-${task.id}-${Date.now()}`,
-        });
+        await reconcileMerged?.();
         return res.json({ prInfo: targetPr, alreadyMerged: true });
       }
-      const taskForPr = task.prInfo?.number === targetPr.number ? task : { ...task, prInfo: targetPr };
-      const prInfo = await mergeTaskPr(scopedStore, taskForPr, githubToken, method);
+      const prInfo = await mergeTaskPr(scopedStore, taskForPr, githubToken, method, "pr-merge", reconcileMerged);
       res.json({ prInfo });
     } catch (err: unknown) {
       if (err instanceof ApiError) {

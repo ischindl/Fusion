@@ -12,8 +12,12 @@ import type {
   WorkflowStepNotRunReason,
   PostMergeEvidenceKind,
 } from "@fusion/core";
-import { BUILTIN_CODING_WORKFLOW_IR, FAST_LANE_SKIP_VALUE, FAST_MODE_BYPASS_ACTOR, PLAN_REVIEW_GROUP_ID, WORKFLOW_STEP_NOT_RUN_REASONS, WorkflowIrError, computeWorkflowIrPin, getWorkflowExtensionRegistry, instanceNodeId, resolveFastLaneRoute, resolveMaxReworkCycles, isExperimentalFeatureEnabled, GRAPH_NATIVE_POST_MERGE_FLAG, isCompletionSummaryNode, classifyReviewLease, isWorkflowOptionalGroupEnabled, isPlanReviewSatisfied, parseNoOpCompletionMarker, requiresContentReviewProof, resolveRequiredPreMergeStepIds, authoredPostMergeEvidenceKindOf } from "@fusion/core";
-import { isNonPlanDefectPlanReviewFailure } from "../errors/transient-error-detector.js";
+import { BUILTIN_CODING_WORKFLOW_IR, FAST_LANE_SKIP_VALUE, FAST_MODE_BYPASS_ACTOR, GRAPH_NATIVE_POST_MERGE_FLAG, PLAN_REVIEW_GROUP_ID, WORKFLOW_STEP_NOT_RUN_REASONS, WorkflowIrError, authoredPostMergeEvidenceKindOf, classifyReviewLease, computeWorkflowIrPin, getWorkflowExtensionRegistry, instanceNodeId, isCompletionSummaryNode, isExperimentalFeatureEnabled, isPlanReviewSatisfied, isWorkflowOptionalGroupEnabled, parseNoOpCompletionMarker, requiresContentReviewProof, resolveFastLaneRoute, resolveMaxReworkCycles, resolveRequiredPreMergeStepIds } from "@fusion/core";
+import {
+  DEPENDENCY_BOOTSTRAP_CONFIGURATION_REQUIRED_VALUE,
+  isDependencyBootstrapConfigurationBlock,
+  isNonPlanDefectPlanReviewFailure,
+} from "../errors/transient-error-detector.js";
 import { isSessionContentionError } from "../errors/transient-error-patterns.js";
 import { isRequiredArtifactReadFailedValue, parseRequiredArtifactMissingValue } from "../execution/required-workflow-artifacts.js";
 import { workflowStepMissingVerdictNotice } from "../executor/workflow-step-verdict.js";
@@ -1608,15 +1612,19 @@ export class WorkflowGraphExecutor {
             ));
           if (nonPlanDefectPlanReviewFailure) {
             /*
-             * FNXC:PlanReviewReplan 2026-07-15-16:35:
-             * FN-7977: a classified provider/model/transport failure is a retryable
-             * hold, not a Plan Review REVISE. Do not traverse the built-in failure
-             * edge to plan-replan without remediation context; the executor retries
-             * this explicit hold in place and preserves advanced execution state.
+             * FNXC:DependencyBootstrap 2026-10-01-03:05:
+             * FN-9438 configuration evidence is not a provider outage. Preserve its distinct value so
+             * the graph-failure owner can hold for an operator command without consuming retry budget.
              */
+            const holdValue = isDependencyBootstrapConfigurationBlock({
+              failureValue: verdictRaw,
+              errorMessage: stepOutput ?? stepNotes,
+            })
+              ? DEPENDENCY_BOOTSTRAP_CONFIGURATION_REQUIRED_VALUE
+              : PLAN_REVIEW_PROVIDER_FAILURE_HOLD_VALUE;
             context[`node:${node.id}:outcome`] = "failure";
-            context[`node:${node.id}:value`] = PLAN_REVIEW_PROVIDER_FAILURE_HOLD_VALUE;
-            return { outcome: "failure", value: PLAN_REVIEW_PROVIDER_FAILURE_HOLD_VALUE };
+            context[`node:${node.id}:value`] = holdValue;
+            return { outcome: "failure", value: holdValue };
           }
           if (shouldRequestPreMergeFix) {
             const feedback = stepOutput?.trim()

@@ -733,12 +733,13 @@ pgDescribe("live lifecycle E2E: real graph + real PostgreSQL store", () => {
     });
   });
   /*
-  FNXC:LifecycleContainment 2026-09-04-18:25:
-  A bare graph-review REVISE does not authorize a backward Review-to-WIP move. The graph remains in
-  Review until a named remediation path publishes actionable work; this is identical on renamed
-  and merged boards.
+  FNXC:ReviewRemediation 2026-10-04-15:18:
+  A pre-merge REVISE without a remediation owner is a blocking failure. It must not traverse the
+  review failure edge into execution: that would run or merge work after an unresolved review.
+  Exercise renamed and merged boards because their role layouts differ, while both must preserve
+  the review-column hold under the same no-remediation condition.
   */
-  describe("scenario 6 — a bare REVISE remains contained in Review", () => {
+  describe("scenario 6 — a REVISE without remediation remains blocked in review", () => {
     async function driveRevise(taskId: string, v: Vocabulary, key: string, merged: boolean) {
       const { workflowId } = await seedWorkflow(v, key, merged, true);
       await seedTask(taskId, v, workflowId);
@@ -758,19 +759,21 @@ pgDescribe("live lifecycle E2E: real graph + real PostgreSQL store", () => {
       return { afterRelease, afterRevise: await persistedColumn(taskId), calls: log.calls, leg3 };
     }
 
-    it("keeps a renamed-board REVISE in Review without redispatching execution", async () => {
+    it("keeps a REVISE in review instead of executing or merging (renamed board)", async () => {
       const r = await driveRevise("FN-E2E-REV", RENAMED_VOCAB, "revise-renamed", false);
 
       expect(r.afterRelease).toBe(RENAMED_VOCAB.wip);
       expect(r.calls).toEqual(["planning", "execute", "review"]);
+      expect(r.leg3.outcome).toBe("failure");
       expect(r.afterRevise).toBe(RENAMED_VOCAB.review);
     });
 
-    it("does the same on a merged board without bouncing to its dual-role planning column", async () => {
+    it("keeps the same blocking review hold on a MERGED board", async () => {
       const r = await driveRevise("FN-E2E-REV-M", MERGED_VOCAB, "revise-merged", true);
 
       expect(r.afterRelease).toBe(MERGED_VOCAB.wip);
       expect(r.calls).toEqual(["planning", "execute", "review"]);
+      expect(r.leg3.outcome).toBe("failure");
       expect(r.afterRevise).toBe(MERGED_VOCAB.review);
     });
   });

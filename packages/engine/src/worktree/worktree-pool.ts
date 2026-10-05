@@ -1,6 +1,6 @@
 import { exec, execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync, lstatSync, readdirSync, readFileSync, rmdirSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, rmdirSync, realpathSync, rmSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, isAbsolute } from "node:path";
 import type { Settings, TaskStore, WorktrunkSettings, WorkspaceWorktreeContext } from "@fusion/core";
@@ -17,6 +17,7 @@ import {
 } from "./worktree-backend.js";
 import { pruneWorktreeAdminEntries } from "./worktree-prune.js";
 import { resolveWorkflowIrForTask, columnsWithFlag } from "@fusion/core";
+import { FINGERPRINT_FILE } from "./secrets-env-writer.js";
 
 export {
   NativeWorktreeBackend,
@@ -461,18 +462,27 @@ export async function relocateReclaimableWorktreeIntoRoot(
     );
   }
 
-  if (existsSync(targetPath)) {
-    throw new Error(`Refusing to relocate ${taskId} worktree into its occupied task-ID path: ${targetPath}`);
+  /*
+  FNXC:WorktreeReclaimPlacement 2026-10-04-14:47:
+  Preserved task worktrees must not overwrite an unrelated legacy basename. Give the reclaimed
+  checkout a deterministic task-scoped sibling instead, so recovery retains uncommitted task work
+  while leaving the occupant untouched.
+  */
+  const destinationPath = existsSync(targetPath)
+    ? `${targetPath}-${taskId.toLowerCase()}`
+    : targetPath;
+  if (existsSync(destinationPath)) {
+    throw new Error(`Refusing to relocate ${taskId} worktree into its occupied task-ID path: ${destinationPath}`);
   }
 
-  await mkdir(dirname(targetPath), { recursive: true });
-  await execFileAsync("git", ["worktree", "move", sourcePath, targetPath], {
+  await mkdir(dirname(destinationPath), { recursive: true });
+  await execFileAsync("git", ["worktree", "move", sourcePath, destinationPath], {
     cwd: rootDir,
     timeout: 120_000,
     maxBuffer: 10 * 1024 * 1024,
   });
 
-  return { kind: "ready", path: targetPath, relocated: true };
+  return { kind: "ready", path: destinationPath, relocated: true };
 }
 
 function retireEmptyLegacyWorktreesRoot(
@@ -701,6 +711,24 @@ export async function cleanupOrphanedWorktrees(
  * so a transient read error (EACCES/EBUSY) on a genuinely-live worktree's `.git`
  * must never be misread as dangling and force-removed.
  */
+/*
+FNXC:WorktreeOrphanReap 2026-10-04-19:31:
+A dangling Git pointer proves the checkout registration is stale, not that retained environment files
+are safe to delete. Preserve generic and Fusion-managed secret material for explicit task cleanup rather
+than turning an orphan scan into a credential-deletion authority.
+*/
+function hasSensitiveWorktreeArtifacts(worktreePath: string, secretsEnvFilename?: string): boolean {
+  /*
+  FNXC:WorktreeOrphanReap 2026-10-04-20:17:
+  A configured secrets file supplements, rather than replaces, the standard `.env` preservation
+  signal. Retain either unique filename and the fingerprint so orphan reaping remains fail-closed
+  while explicit secret teardown keeps ownership of managed-file deletion.
+  */
+  const sensitiveEnvFilenames = new Set([".env", secretsEnvFilename].filter((filename): filename is string => !!filename));
+  return [...sensitiveEnvFilenames].some((filename) => existsSync(join(worktreePath, filename)))
+    || existsSync(join(worktreePath, FINGERPRINT_FILE));
+}
+
 function dotGitPointerIsDangling(dotGitPath: string): boolean {
   try {
     if (lstatSync(dotGitPath).isDirectory()) return false;
@@ -717,7 +745,7 @@ function dotGitPointerIsDangling(dotGitPath: string): boolean {
 
 export async function reapOrphanWorktrees(
   projectRoot: string,
-  settings?: Pick<Settings, "worktreesDir" | "workspaceMode">,
+  settings?: Pick<Settings, "worktreesDir" | "workspaceMode" | "secretsEnv">,
 ): Promise<number> {
   if (settings?.workspaceMode) {
     worktreePoolLog.debug?.("Skipping workspace orphan reaping; recorded paths are reclaimed addressably.");
@@ -796,13 +824,18 @@ export async function reapOrphanWorktrees(
         continue;
       }
       worktreePoolLog.debug(`reapOrphanWorktrees: ${name} has a dangling .git pointer (admin entry missing) — treating as orphan`);
-      // fall through to the non-recursive removal below; `.git` makes it fail closed.
+      // fall through to the ownership-proven orphan removal below.
     }
 
-    // This directory is on disk but has no valid .git entry and is not a registered
-    // worktree — it is a half-initialized / leaked orphan.  Remove it.
+    if (hasSensitiveWorktreeArtifacts(resolvedFull, settings?.secretsEnv?.filename)) {
+      worktreePoolLog.debug(`reapOrphanWorktrees: preserving ${name} (contains sensitive environment artifacts)`);
+      continue;
+    }
+
+    // This directory is on disk but has no valid .git entry, no sensitive artifacts, and is not a
+    // registered worktree — it is a half-initialized / leaked orphan. Remove its proven contents.
     try {
-      rmdirSync(resolvedFull);
+      rmSync(resolvedFull, { recursive: true, force: true });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       worktreePoolLog.warn(`reapOrphanWorktrees: failed to remove ${name} — ${msg}`);

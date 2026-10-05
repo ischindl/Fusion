@@ -6,7 +6,7 @@ import { buildWorkflowCompletionSummary } from "../workflows/workflow-completion
 import type { WorkflowNodeResult } from "../workflows/workflow-graph-executor.js";
 import type { PreparedWorktree, WorkflowRuntimePrimitives } from "../execution/runtime-primitives.js";
 
-const task = { id: "FN-9002" } as TaskDetail;
+const task = { id: "FN-9002", column: "todo", steps: [] } as TaskDetail;
 const flagOff = { experimentalFeatures: {} } as unknown as Pick<Settings, "experimentalFeatures">;
 const promptWithOneStep = "# Task: FN-9002 - Runtime default\n\n## Steps\n\n### Step 1: Implement runtime default\n- Exercise the default workflow.\n";
 
@@ -342,7 +342,7 @@ describe("WorkflowTaskRuntime", () => {
     expect(result.disposition).toBe("completed");
     // Default Coding is stepwise: planning writes PROMPT.md, parse projects steps,
     // then foreach runs `runTaskStep`; completion summary precedes the sealing Code Review.
-    expect(calls).toEqual(["planning", "custom:plan-review-step", "step:0", "custom:completion-summary", "custom:code-review-step", "merge"]);
+    expect(calls).toEqual(["planning", "custom:plan-review-step", "step:0", "custom:completion-summary", "custom:code-review-step", "merge", "custom:post-merge-verification-step"]);
     expect(observed.executedTasks).toHaveLength(1);
     expect(observed.executedTasks[0]?.attachments).toEqual(attachments);
   });
@@ -549,6 +549,31 @@ describe("WorkflowTaskRuntime", () => {
     await runtime.run(task, flagOff);
 
     expect(observedRunIds).toContain("FN-9002:WF-001");
+  });
+
+  it("dispatches a recovered nested executor continuation using its preserved instance identity", async () => {
+    const calls: string[] = [];
+    const workItem = {
+      id: "recovered", taskId: task.id, runId: "run:steps#0:step-execute", kind: "task", state: "running",
+      nodeId: "step-execute", nodeInstanceId: "steps#0:step-execute",
+      principalAgentId: null, workflowRole: null, authorityKind: null,
+    } as WorkflowWorkItem;
+    const ir = { ...selectedIr(), nodes: [{ id: "steps", kind: "foreach", config: {
+      template: { nodes: [{ id: "step-execute", kind: "prompt", config: { seam: "execute" } }], edges: [] },
+    } }], edges: [] } as WorkflowIr;
+    const runtime = new WorkflowTaskRuntime({
+      store: {
+        getTask: async () => ({ ...task, column: "in-progress", workflowIrPinNodeId: "steps" }),
+        getTaskWorkflowSelection: () => ({ workflowId: "WF-001", stepIds: [] }),
+        getWorkflowDefinition: async () => ({ ir }),
+        transitionWorkflowWorkItem: (_id, state, patch) => ({ ...workItem, ...patch, state }),
+      },
+      primitives: recordingPrimitives(calls),
+    });
+    const result = await runtime.runWorkItem(workItem, flagOff);
+    expect(result.disposition).toBe("completed");
+    expect(result.visitedNodeIds).toEqual(["step-execute"]);
+    expect(calls).toEqual(["prepare-worktree", "execute"]);
   });
 
   it("runs a leased workflow work item at its addressed node and persists success", async () => {

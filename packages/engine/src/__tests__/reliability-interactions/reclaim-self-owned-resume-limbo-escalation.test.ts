@@ -49,11 +49,16 @@ function makeStore(task: Task, settingsOverrides: Partial<MutableSettings> = {})
     getSettings: vi.fn(async () => settings),
     getTask: vi.fn(async () => task),
     listTasks: vi.fn(async ({ column }: { column?: string } = {}) => (column === task.column ? [task] : [])),
+    getTask: vi.fn(async () => task),
     updateTask: vi.fn(async (_id: string, updates: Partial<Task>) => Object.assign(task, updates)),
     moveTask: vi.fn(async (_id: string, column: Task["column"], opts?: Record<string, unknown>) => {
       task.column = column;
       (task as any).__lastMoveOpts = opts;
       return task;
+    }),
+    moveTaskIf: vi.fn(async (id: string, column: Task["column"], predicate: (live: Task) => boolean | Promise<boolean>, opts?: Record<string, unknown>) => {
+      if (!await predicate(task)) return { moved: false, task };
+      return { moved: true, task: await (emitter as any).moveTask(id, column, opts) };
     }),
     logEntry: vi.fn(async () => undefined),
     recordRunAuditEvent: vi.fn(async () => undefined),
@@ -94,6 +99,7 @@ describe("FN-5704: reclaim self-owned resume limbo escalation", () => {
     expect(task.resumeLimboCount).toBe(1);
     await manager.reclaimSelfOwnedBranchConflicts();
 
+    // FNXC:LifecycleContainment 2026-10-04-14:44: limbo escalation remains observable but cannot move WIP backward without a revision.
     expect(store.moveTask).not.toHaveBeenCalled();
     expect(task.column).toBe("in-progress");
     expect(task.resumeLimboCount).toBe(0);

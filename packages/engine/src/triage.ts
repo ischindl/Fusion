@@ -307,7 +307,10 @@ export function buildPlanningDependencyInstallationInstruction(
       lines.push(`- \`${target.repository}\`: Fusion has no built-in command for ${readiness.evidence.join(", ")}. Determine the package manager and run its install command through \`fn_install_worktree_dependencies\`, or use its \`none\` action with a reason if no install step is genuinely required.`);
     }
   }
-  lines.push("", "Plan Review will return a REVISE beginning `Dependencies are not installed.` until these records are resolved.");
+  const configurationBlocked = blocking.some(({ readiness }) => readiness.unresolvedRepos.some((row) => row.refusal === "configuration-required" || row.refusal === "environment-incompatible"));
+  lines.push("", configurationBlocked
+    ? "Plan Review is held for project configuration and will not consume the replan budget. Configure `worktreeInitCommand` or record an engine-observed explicit resolution."
+    : "Plan Review will return a REVISE beginning `Dependencies are not installed.` until these records are resolved.");
   return lines.join("\n");
 }
 
@@ -2433,10 +2436,19 @@ export class TriageProcessor {
 
   private startAdmittedPlanning(task: Task): void {
     void this.specifyTask(task)
-      .catch(async (error: unknown) => {
+      .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
         planLog.error(`${task.id}: admitted planning promise rejected:`, error);
-        await this.parkPlanningRecoveryWriteFailure(task, message, error);
+        /*
+        FNXC:PlanningAdmission 2026-10-04-15:00:
+        A rejected planner has already returned its concurrency slot. Wake waiting planning and
+        execution immediately rather than serializing the wake behind a best-effort failure park;
+        a slow or failing diagnostic write must not strand ready work. Contain that detached write
+        so its own failure never becomes an unhandled rejection.
+        */
+        void this.parkPlanningRecoveryWriteFailure(task, message, error).catch((writeError: unknown) => {
+          planLog.warn(`${task.id}: planning recovery write could not be parked: ${writeError instanceof Error ? writeError.message : String(writeError)}`);
+        });
       })
       /*
       FNXC:EventDrivenDispatch 2026-09-18-00:40:

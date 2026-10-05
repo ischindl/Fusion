@@ -18,7 +18,32 @@ second function:
   - `paused` cards whose only hold is the engine's own in-review stall deadlock stay resumable (RUFU-391):
     the classifier exempts paused cards, so refusing them here could never lift.
 */
+/*
+FNXC:PostMergeRecovery 2026-10-05-09:31 (origin/main FN-9502 adopted on top of the fork's contract seam):
+This sync brings in upstream's second FN-9442 follow-up, which retried the same file. Nothing upstream added
+is dropped, and nothing the fork layered on is dropped either:
+  - ADOPTED verbatim: `EXHAUSTED_PREFIX`, `hasLegacyRecoveryFailure`, `isRejectedGateRecheckDue` (the
+    15/30/60-then-hourly revisit of rejected evidence), and the exported `isPostMergeGateRecoveryDue` that
+    puts them together. Upstream's fenced clear of the legacy `Post-merge verification needs remediation`
+    park is adopted too, fence and checkout-lease preconditions included, because that park was written by
+    an older build in the field and nothing else lifts it.
+  - KEPT: the one `(store, task, { source, contract })` seam with the named refusal taxonomy. It is not a
+    cosmetic preference — every production caller in the merged tree hands a card projection plus the
+    per-project contract (`auto-merge-finalization.ts`, four `self-healing.ts` sites), and the finalizer's
+    operator notice reads `reason` through `isTerminalPostMergeReseedRefusal`. Upstream's
+    `{outcome:"resumed"} | {outcome:"not-resumable"}` is strictly less informative than `outcome` + `reason`
+    (`resumed` ≡ `outcome:"seeded"`, `not-resumable` ≡ `outcome:"not-seeded"` plus the reason that names the
+    operator action), so mapping their arms onto ours loses no answer.
+  - NOT re-added: upstream's `exhausted` arm and `hasExhaustedRechecks` helper. They exist only in the merge
+    base; FN-9502 deleted both from `origin/main` and replaced the terminal exhaustion park with the legacy
+    clear plus the hourly revisit. The ≥3-failed-attempts count survives there as the schedule's clamp.
+  - The two arms this seam can take are each bounded by the mechanism its own requirement names: the MISSING
+    arm by the fork's durable per-(task, gate) budget, the REJECTED-EVIDENCE arm by upstream's schedule. The
+    budget counts only the missing arm's own log marker, so it cannot strand CI evidence that lands after
+    the early retries — which is the failure upstream's comment forbids.
+*/
 import {
+  ACTIVE_WORKFLOW_WORK_ITEM_STATES,
   allowsAutoMergeProcessing,
   computeWorkflowIrPin,
   getPostMergeEvidenceGateStatuses,
@@ -30,11 +55,23 @@ import {
   type PostMergeEvidenceContract,
   type Task,
   type TaskStore,
+  type WorkflowStepResult,
 } from "@fusion/core";
 import { activeSessionRegistry, executingTaskLock } from "../agents/active-session-registry.js";
 // FN-9175: engine-lane emitters use the engine seam, which absorbs an absent, throwing, or hanging sink.
 import { emitBoundedRunAudit } from "../util/emit-bounded-run-audit.js";
+import { createMergeWriteFence, type MergeWriteFence } from "./merge-write-fence.js";
 import { isTaskExecutionLive } from "./merge-execution-exclusion.js";
+
+/*
+FNXC:PostMergeRecovery 2026-10-05-09:31:
+`RequiredPostMergeEvidenceDecision` is derived from the reader rather than imported. The fork's earlier
+sync resolved `@fusion/core`'s barrel to our line and dropped upstream's separate
+`export type { RequiredPostMergeEvidenceDecision }` statement, so the NAME is not exported from
+`index.ts` even though the shape is reachable through `getRequiredPostMergeEvidenceDecision`. Deriving it
+keeps upstream's exported helper signature intact without widening this file's scope into core's barrel.
+*/
+type RequiredPostMergeEvidenceDecision = Awaited<ReturnType<typeof getRequiredPostMergeEvidenceDecision>>;
 
 /*
 FNXC:UnrunPostMergeGateRecovery 2026-09-28-07:34 (RUFU-370):
@@ -190,6 +227,43 @@ function hasFreshCheckoutLease(
   return !!task.checkoutRunId && Number.isFinite(leaseAge) && leaseAge >= 0 && leaseAge < graceMs;
 }
 
+const EXHAUSTED_PREFIX = "Post-merge verification needs remediation";
+
+/**
+ * A card an earlier build terminalized over repeated rejected evidence (FN-9442's own exhaustion park).
+ * FN-9502 treats it as stale state to clear, not as a durable verdict: the gate result and its completion
+ * timestamp, not this sentence, govern approval and retry timing.
+ */
+function hasLegacyRecoveryFailure(task: Pick<Task, "status" | "error">): boolean {
+  return task.status === "failed" && task.error?.startsWith(`${EXHAUSTED_PREFIX}:`) === true;
+}
+
+/*
+FNXC:ReviewRecovery 2026-10-04-02:24:
+Post-merge reviewers can run before hosted CI finishes. Revisit rejected evidence after 15 minutes,
+then 30 and 60 minutes, with further checks capped at one per hour. CI and follow-up fixes can
+arrive after the early retries; a total attempt cap would strand their evidence permanently.
+Durable result history survives restart and task-log updates cannot shorten the wait. Missing
+timestamps, duplicate evidence and live owners fail closed.
+*/
+function isRejectedGateRecheckDue(result: WorkflowStepResult): boolean {
+  const failures = (result.priorAttempts ?? []).filter((entry) => entry.status === "failed").length;
+  const completedAt = Date.parse(result.completedAt ?? "");
+  return result.status === "failed" && Number.isFinite(completedAt)
+    && Date.now() - completedAt >= 15 * 60_000 * 2 ** Math.min(failures, 2);
+}
+
+export function isPostMergeGateRecoveryDue(
+  task: Pick<Task, "workflowStepResults" | "status" | "error">,
+  decision: RequiredPostMergeEvidenceDecision,
+): boolean {
+  if (hasLegacyRecoveryFailure(task)) return true;
+  if (decision.outcome === "resumable") return true;
+  if (decision.outcome !== "blocked" || decision.reason !== "failed") return false;
+  const result = task.workflowStepResults?.find((entry) => entry.workflowStepId === decision.gateId);
+  return !!result && isRejectedGateRecheckDue(result);
+}
+
 /**
  * Put a landed card back in front of the required post-merge gate that produced no result row.
  *
@@ -199,12 +273,25 @@ function hasFreshCheckoutLease(
  */
 async function runPostMergeGateResume(
   store: TaskStore,
-  task: Task,
+  incomingTask: Task,
   options: {
     source: "self-healing" | "auto-merge" | "manual-reconcile";
     contract: PostMergeEvidenceContract | undefined;
+    /**
+     * FN-9502: an explicit landed reconciliation (Retry / `manual-reconcile`) may recheck rejected evidence
+     * immediately instead of waiting out the revisit schedule. Never set by a timed recovery pass.
+     */
+    manualRetry?: boolean;
+    /**
+     * FN-9502: the owning merge body's fence. The legacy-park clear below is this seam's only task
+     * mutation, so it is fence-guarded exactly as upstream guarded it; a lane that supplies no fence owns
+     * the whole call externally (as `auto-merge-finalization.ts` does around this function).
+     */
+    fence?: MergeWriteFence;
   },
 ): Promise<PostMergeGateReseedResult> {
+  const fence = options.fence ?? createMergeWriteFence({ taskId: incomingTask.id });
+  let task = incomingTask;
   /*
   FNXC:PostMergeGateDeliveryShape 2026-09-30-13:09 (RUFU-429):
   This refusal is a backstop, not the reason workspace cards stall: the requirement itself resolves to
@@ -248,23 +335,82 @@ async function runPostMergeGateResume(
     || typeof store.listWorkflowWorkItemsForTask !== "function") {
     return { outcome: "not-seeded", reason: "unsupported-store" };
   }
+
+  /*
+  FNXC:ReviewRecovery 2026-10-04-02:24 (adopted from origin/main with the fork's refusal names):
+  FN-9442's own exhaustion park outlived its writer. Clear ONLY that owned diagnostic — the gate result,
+  its verdict, and its completion timestamp stay, because they are what `isRejectedGateRecheckDue` reads
+  and what approval depends on. A concurrent operator hold, a committed Reset, a live checkout lease, live
+  execution, or a queued continuation each refuse the clear and are reported as the actionable reason
+  rather than collapsing into one boolean.
+  */
+  if (hasLegacyRecoveryFailure(task)) {
+    // Old recovery marked waiting reviews failed. Clear only its owned diagnostic;
+    // the gate result and completion timestamp still govern approval and retry timing.
+    const snapshot = task;
+    let cleared = false;
+    let heldByLiveWorkItem = false;
+    const updated = await fence.write("finalization", () => store.updateTaskAtomic(task.id, async (live) => {
+      if (live.updatedAt !== snapshot.updatedAt || live.column !== snapshot.column
+        || live.status !== snapshot.status || live.error !== snapshot.error
+        || live.paused || live.userPaused || live.deletedAt
+        || !live.mergeDetails?.mergeConfirmed || live.autoMerge === false
+        || hasFreshCheckoutLease(live, settings)
+        || isTaskExecutionLive(live.id, { activeSessionRegistry, executingTaskLock })) return null;
+      const items = await store.listWorkflowWorkItemsForTask(task.id);
+      if (items.some((item) => ACTIVE_WORKFLOW_WORK_ITEM_STATES.includes(item.state))) {
+        heldByLiveWorkItem = true;
+        return null;
+      }
+      fence.assertOwned("finalization");
+      cleared = true;
+      return { status: null as unknown as Task["status"], error: null as unknown as Task["error"] };
+    }, undefined, () => !fence.isOrphaned(), {
+      expectedUpdatedAt: snapshot.updatedAt,
+      expectedCheckedOutBy: snapshot.checkedOutBy ?? null,
+      expectedCheckoutNodeId: snapshot.checkoutNodeId ?? null,
+      expectedCheckoutLeaseEpoch: snapshot.checkoutLeaseEpoch ?? 0,
+    }));
+    if (!cleared || !updated || updated.status != null || updated.error != null) {
+      // A live continuation is a different operator action from a card that moved under the fence.
+      return {
+        outcome: "not-seeded",
+        reason: heldByLiveWorkItem ? "active-continuation" : "task-state-changed",
+      };
+    }
+    task = updated;
+  }
+
   // A gate that already holds a result — approved, REVISE, or failed — is authoritative; never seed over it.
   const irForGate = await resolveWorkflowIrForTaskWithProvenance(store, task.id);
   const statuses = getPostMergeEvidenceGateStatuses(task, irForGate.ir, options.contract);
   const missingGate = statuses.find((status) => status.state === "missing");
-  if (!missingGate) {
-    // Nothing is absent: no gate is required, the requirement is inapplicable on this board (RUFU-429
-    // delivery shape, RUFU-430 no-reporter), or a result already exists and stays authoritative. Seeding
-    // would overwrite a real verdict.
-    return { outcome: "not-seeded", reason: "gate-not-resumable" };
-  }
 
   const decision = await getRequiredPostMergeEvidenceDecision(store, task, options.contract);
-  if (decision.outcome !== "resumable") return { outcome: "not-seeded", reason: "gate-not-resumable" };
+  const manualRetry = options.manualRetry === true && decision.outcome === "blocked" && decision.reason === "failed";
+  /*
+  FNXC:PostMergeRecovery 2026-10-05-09:31:
+  Two arms reach a seed and each is bounded by the mechanism its own requirement names. The MISSING arm
+  (`decision.outcome === "resumable"`, i.e. this board really owes the gate and no row exists) is bounded by
+  the durable per-(task, gate) budget below. The REJECTED-EVIDENCE arm (`blocked`/`failed` whose revisit is
+  due, or an explicit Retry) is bounded by upstream's 15/30/60-then-hourly schedule INSTEAD of that budget,
+  because hosted CI can land after the early retries and a total cap would strand its evidence permanently.
+  Anything else — an approval, a pending row, a duplicate, a requirement this board cannot report
+  (RUFU-429 delivery shape, RUFU-430 no-reporter) — is refused without touching the graph, and seeding over
+  it would overwrite a real verdict.
+  */
+  if (decision.outcome === "finalizable" || (!manualRetry && !isPostMergeGateRecoveryDue(task, decision))) {
+    return { outcome: "not-seeded", reason: "gate-not-resumable" };
+  }
+  if (decision.outcome !== "resumable" && !manualRetry && !missingGate) {
+    // Nothing is absent and nothing is due: the refusal above already named the case that applied.
+    return { outcome: "not-seeded", reason: "gate-not-resumable" };
+  }
   const gateId = decision.gateId;
+  const recheckRejectedEvidence = decision.outcome === "blocked";
 
   const priorAttemptCount = await countReseedAttempts(store, task, gateId);
-  if (priorAttemptCount >= MAX_POST_MERGE_GATE_RESEED_ATTEMPTS) {
+  if (!recheckRejectedEvidence && priorAttemptCount >= MAX_POST_MERGE_GATE_RESEED_ATTEMPTS) {
     return { outcome: "not-seeded", reason: "rerun-budget-exhausted", workflowStepId: gateId, priorAttemptCount };
   }
 
@@ -314,10 +460,19 @@ async function runPostMergeGateResume(
     return { outcome: "not-seeded", reason: refusal, workflowStepId: gateId };
   }
 
+  /*
+  FNXC:PostMergeRecovery 2026-10-05-09:31 (upstream's two sentences, one durable write):
+  Each arm names what it actually did, because the sentence is what an operator reads and what the budget
+  matches. The missing arm keeps the counted marker and its attempt ordinal — upstream's own sentence is
+  exactly this marker's prefix, so a card seeded by either build stays countable. The rejected-evidence arm
+  deliberately does NOT write the counted marker: FN-9502's schedule, not the seed budget, bounds it.
+  */
   await store.logEntry(
     task.id,
-    `${postMergeGateReseedLogMarker(node.id)}; already-landed implementation and merge `
-      + `will not run again (reseed ${priorAttemptCount + 1} of ${MAX_POST_MERGE_GATE_RESEED_ATTEMPTS})`,
+    recheckRejectedEvidence
+      ? `[post-merge] Rechecking rejected evidence at '${node.id}'; already-landed implementation and merge will not run again.`
+      : `${postMergeGateReseedLogMarker(node.id)}; already-landed implementation and merge `
+        + `will not run again (reseed ${priorAttemptCount + 1} of ${MAX_POST_MERGE_GATE_RESEED_ATTEMPTS})`,
   );
   /*
   FNXC:RunAudit 2026-10-01-09:01 (FN-9175 seam kept through the upstream adoption):

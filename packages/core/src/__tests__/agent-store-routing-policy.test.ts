@@ -10,8 +10,11 @@
  * Plus project isolation: an agent registered in another project's store can never be bound to this
  * project's tasks through any binding primitive.
  */
-import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from "vitest";
+import { getBuiltinWorkflow } from "../workflows/builtin-workflows.js";
+import type { WorkflowIrNode } from "../workflows/workflow-ir-types.js";
 import { AgentStore } from "../agents/agent-store.js";
+import { TaskStore } from "../store.js";
 import { AgentTaskRoutingPolicyError } from "../agents/agent-role-policy.js";
 import {
   pgDescribe,
@@ -348,6 +351,293 @@ pgTest("task→agent routing policy (issue #2015)", () => {
       await h.store().moveTask(overrideTask.id, "todo");
       const overrideSelection = await h.store().selectNextTaskForAgent(custom.id, { id: custom.id, role: custom.role });
       expect(overrideSelection?.task.id).toBe(overrideTask.id);
+    });
+  });
+
+  describe("durable executor handoff", () => {
+    it.each(["paused", "error", "active"] as const)("rechecks %s queued ownership before automatic handoff", async (state) => {
+      const engineer = await agentStore.createAgent({ name: "Admission owner", role: "engineer" });
+      const task = await h.store().createTask({ description: "queued admission" });
+      await agentStore.assignTask(engineer.id, task.id);
+      await h.store().updateTask(task.id, { assignedAgentId: engineer.id });
+      await h.store().moveTask(task.id, "todo");
+      await agentStore.updateAgentState(engineer.id, state);
+      const result = await agentStore.handoffTaskToWorkflowExecutor(engineer.id, task.id, undefined, { requireUnavailableOwner: true });
+      expect(result.ok).toBe(state !== "active");
+      if (state === "active") expect(result).toMatchObject({ reason: "owner_available" });
+      expect(await h.store().getTask(task.id)).toMatchObject({ column: "todo", assignedAgentId: state === "active" ? engineer.id : undefined });
+      expect(await agentStore.getAgent(engineer.id)).toMatchObject({ state });
+    });
+
+    it("releases a queued engineer-owned task once so a Workflow Executor can claim it", async () => {
+      const engineer = await agentStore.createAgent({ name: "Engineer", role: "engineer" });
+      const executor = await agentStore.createAgent({ name: "Handoff Executor", role: "executor" });
+      const task = await h.store().createTask({ description: "executor-class implementation" });
+      await agentStore.assignTask(engineer.id, task.id);
+      await h.store().updateTask(task.id, { assignedAgentId: engineer.id });
+      await h.store().moveTask(task.id, "todo");
+
+      const first = await agentStore.handoffTaskToWorkflowExecutor(engineer.id, task.id);
+      const second = await agentStore.handoffTaskToWorkflowExecutor(engineer.id, task.id);
+
+      expect(first.ok).toBe(true);
+      expect(second).toMatchObject({ ok: false, reason: "already_released" });
+      expect((await h.store().getTask(task.id))?.assignedAgentId).toBeUndefined();
+      expect((await agentStore.getAgent(engineer.id))?.taskId).toBeUndefined();
+      await expect(agentStore.claimTaskForAgent(executor.id, task.id)).resolves.toMatchObject({ ok: true });
+    });
+
+    async function idlePrincipalHold(direct = false) {
+      const engineer = await agentStore.createAgent({ name: "Unavailable Engineer", role: "engineer" });
+      const task = await h.store().createTask({ description: "admitted implementation" });
+      await agentStore.assignTask(engineer.id, task.id);
+      await h.store().updateTask(task.id, { assignedAgentId: engineer.id });
+      await h.store().moveTask(task.id, "todo");
+      await h.store().moveTask(task.id, "in-progress");
+      await h.store().updateTask(task.id, { workflowIrPinNodeId: "steps" });
+      await agentStore.updateAgentState(engineer.id, "paused");
+      const item = await h.store().upsertWorkflowWorkItem({
+        runId: `${task.id}:held`, taskId: task.id, nodeId: direct ? "steps" : "step-execute", nodeInstanceId: direct ? "steps" : "steps#0:step-execute", kind: "task", state: "held",
+        blockedReason: "workflow-principal-named-principal-unavailable:executor",
+        principalAgentId: engineer.id, workflowRole: "executor", authorityKind: "task-assignee",
+      });
+      return { engineer, task, item };
+    }
+
+    it("atomically releases an unavailable idle WIP owner and wakes its exact held continuation in place", async () => {
+      const { engineer, task, item } = await idlePrincipalHold();
+      await expect(agentStore.handoffTaskToWorkflowExecutor(engineer.id, task.id)).resolves.toMatchObject({ ok: false, reason: "not_queued" });
+      await expect(agentStore.handoffTaskToWorkflowExecutor(engineer.id, task.id, undefined, {
+        allowIdleWipPrincipalHold: true,
+      })).resolves.toMatchObject({ ok: true });
+      expect(await h.store().getTask(task.id)).toMatchObject({ column: "in-progress", workflowIrPinNodeId: "steps", assignedAgentId: undefined });
+      expect(await agentStore.getAgent(engineer.id)).toMatchObject({ state: "paused", taskId: undefined });
+      expect(await h.store().listWorkflowWorkItemsForTask(task.id)).toEqual([expect.objectContaining({ id: item.id, state: "runnable", principalAgentId: null, blockedReason: null, nodeInstanceId: "steps#0:step-execute" })]);
+    });
+
+    it.each(["direct", "optional", "nested-optional", "nested-foreach", "multiple-templates"])("recovers the exact executor instance inside %s without changing its cursor", async (shape) => {
+      const { engineer, task, item } = await idlePrincipalHold(shape === "direct");
+      const ir = structuredClone(getBuiltinWorkflow("builtin:coding")!.ir);
+      const pin = ir.nodes.find(node => node.id === "steps")!;
+      const executor: WorkflowIrNode = { id: "step-execute", kind: "prompt", config: { seam: "execute" } };
+      let instance = "steps::step-execute";
+      if (shape === "direct") {
+        pin.kind = "prompt";
+        pin.config = { seam: "execute" };
+        instance = "steps";
+      } else if (shape === "optional") {
+        pin.kind = "optional-group";
+        pin.config = { template: { nodes: [executor], edges: [] } };
+      } else {
+        const nestedKind = shape === "nested-foreach" ? "foreach" : "optional-group";
+        const nested: WorkflowIrNode = { id: "inner", kind: nestedKind, config: { template: { nodes: [executor], edges: [] } } };
+        pin.config = { template: { nodes: [nested, ...(shape === "multiple-templates" ? [{ ...nested, id: "other" }] : [])], edges: [] } };
+        instance = nestedKind === "foreach" ? "steps#0:inner#2:step-execute" : "steps#0:inner::step-execute";
+      }
+      const selection = vi.spyOn(h.store(), "getTaskWorkflowSelectionAsync").mockResolvedValue({ workflowId: "custom-recovery", stepIds: [] });
+      const definition = vi.spyOn(h.store(), "getWorkflowDefinition").mockResolvedValue({ ir } as never);
+      try {
+        await h.store().transitionWorkflowWorkItem(item.id, "held", { nodeInstanceId: instance });
+        await expect(agentStore.handoffTaskToWorkflowExecutor(engineer.id, task.id, undefined, {
+          allowIdleWipPrincipalHold: true,
+        })).resolves.toMatchObject({ ok: true });
+        expect((await h.store().listWorkflowWorkItemsForTask(task.id))[0]).toMatchObject({ state: "runnable", nodeInstanceId: instance });
+        expect(await h.store().getTask(task.id)).toMatchObject({ column: "in-progress", currentStep: 0 });
+      } finally {
+        selection.mockRestore();
+        definition.mockRestore();
+      }
+    });
+
+    it.each([false, true])("uses runtime principal eligibility for a disabled owner (builtin=%s)", async (builtin) => {
+      const { engineer, task } = await idlePrincipalHold();
+      await agentStore.updateAgentState(engineer.id, "active");
+      await agentStore.updateAgent(engineer.id, {
+        runtimeConfig: { enabled: false },
+        ...(builtin ? { metadata: { builtInWorkflowRole: true, workflowRole: "executor" } } : {}),
+      });
+      const result = await agentStore.handoffTaskToWorkflowExecutor(engineer.id, task.id, undefined, { allowIdleWipPrincipalHold: true });
+      expect(result).toMatchObject(builtin ? { ok: false, reason: "owner_available" } : { ok: true });
+      expect((await h.store().getTask(task.id)).assignedAgentId).toBe(builtin ? engineer.id : undefined);
+    });
+
+    it("rejects a container incorrectly labelled as an executor hold", async () => {
+      const { engineer, task } = await idlePrincipalHold(true);
+      await expect(agentStore.handoffTaskToWorkflowExecutor(engineer.id, task.id, undefined, {
+        allowIdleWipPrincipalHold: true,
+      })).resolves.toMatchObject({ ok: false, reason: "not_idle_executor_hold" });
+      expect(await h.store().getTask(task.id)).toMatchObject({ assignedAgentId: engineer.id });
+    });
+
+    it("rolls back assignment release when its durable continuation cannot be resumed", async () => {
+      const { engineer, task, item } = await idlePrincipalHold();
+      const transition = vi.spyOn(h.store(), "transitionWorkflowWorkItem").mockResolvedValue(item);
+      await expect(agentStore.handoffTaskToWorkflowExecutor(engineer.id, task.id, undefined, {
+        allowIdleWipPrincipalHold: true,
+      })).rejects.toThrow("lost its held continuation");
+      transition.mockRestore();
+      expect(await h.store().getTask(task.id)).toMatchObject({ assignedAgentId: engineer.id });
+      expect(await agentStore.getAgent(engineer.id)).toMatchObject({ taskId: task.id });
+      expect((await h.store().listWorkflowWorkItemsForTask(task.id))[0]).toMatchObject({ id: item.id, state: "held" });
+    });
+
+    it.each(["task-pause", "user-pause", "checkout", "running", "reviewer", "wrong-pin", "available-owner", "competing-work", "column-binding", "wrong-instance"])("preserves ownership and held work when WIP handoff sees %s", async (fence) => {
+      const { engineer, task, item } = await idlePrincipalHold();
+      if (fence === "task-pause") await h.store().updateTask(task.id, { paused: true, pausedByAgentId: engineer.id });
+      if (fence === "user-pause") await h.store().updateTask(task.id, { paused: true, userPaused: true });
+      if (fence === "checkout") await h.store().updateTask(task.id, { checkedOutBy: engineer.id });
+      if (fence === "running") await h.store().transitionWorkflowWorkItem(item.id, "running");
+      if (fence === "reviewer") await h.store().transitionWorkflowWorkItem(item.id, "held", { blockedReason: "workflow-principal-named-principal-unavailable:reviewer", workflowRole: "reviewer" });
+      if (fence === "column-binding") await h.store().transitionWorkflowWorkItem(item.id, "held", { authorityKind: "column-binding" });
+      if (fence === "wrong-instance") await h.store().transitionWorkflowWorkItem(item.id, "held", { nodeInstanceId: "steps#99:step-execute" });
+      if (fence === "wrong-pin") await h.store().updateTask(task.id, { workflowIrPinNodeId: "other" });
+      if (fence === "available-owner") await agentStore.updateAgentState(engineer.id, "active");
+      if (fence === "competing-work") await h.store().upsertWorkflowWorkItem({ runId: `${task.id}:other`, taskId: task.id, nodeId: "execute", kind: "workflow-step", state: "running" });
+      await expect(agentStore.handoffTaskToWorkflowExecutor(engineer.id, task.id, undefined, {
+        allowIdleWipPrincipalHold: true, allowAgentOwnedPause: true,
+      })).resolves.toMatchObject({ ok: false });
+      expect(await h.store().getTask(task.id)).toMatchObject({ column: "in-progress", assignedAgentId: engineer.id });
+      expect((await h.store().listWorkflowWorkItemsForTask(task.id)).find(work => work.id === item.id)?.state).toBe(fence === "running" ? "running" : "held");
+    });
+
+    it("releases an unavailable owner's automatic pause but preserves human pause authority", async () => {
+      const engineer = await agentStore.createAgent({ name: "Paused Engineer", role: "engineer" });
+      const task = await h.store().createTask({ description: "agent-owned pause recovery" });
+      await agentStore.assignTask(engineer.id, task.id);
+      await h.store().updateTask(task.id, {
+        assignedAgentId: engineer.id,
+        paused: true,
+        pausedByAgentId: engineer.id,
+      });
+      await h.store().moveTask(task.id, "todo");
+
+      await expect(agentStore.handoffTaskToWorkflowExecutor(engineer.id, task.id, undefined, {
+        allowAgentOwnedPause: true,
+      })).resolves.toMatchObject({ ok: true });
+      expect(await h.store().getTask(task.id)).toMatchObject({
+        assignedAgentId: undefined,
+        paused: undefined,
+        pausedByAgentId: undefined,
+      });
+      expect((await agentStore.getAgent(engineer.id))?.taskId).toBeUndefined();
+    });
+
+    it("does not erase an operator assignment committed while another store waits to hand off", async () => {
+      const engineer = await agentStore.createAgent({ name: "Stale Engineer", role: "engineer" });
+      const executor = await agentStore.createAgent({ name: "Operator Executor", role: "executor" });
+      const task = await h.store().createTask({ description: "cross-process ownership fence" });
+      await agentStore.assignTask(engineer.id, task.id);
+      await h.store().updateTask(task.id, { assignedAgentId: engineer.id });
+      await h.store().moveTask(task.id, "todo");
+
+      let releaseAdvisoryLock!: () => void;
+      const advisoryLockReleased = new Promise<void>((resolve) => { releaseAdvisoryLock = resolve; });
+      let advisoryLockAcquired!: () => void;
+      const advisoryLockAcquiredPromise = new Promise<void>((resolve) => { advisoryLockAcquired = resolve; });
+      const lockHolder = h.adminSql().begin(async (tx) => {
+        await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`task:${h.layer().projectId}:${task.id}`}, 0))`;
+        advisoryLockAcquired();
+        await advisoryLockReleased;
+      });
+      await advisoryLockAcquiredPromise;
+
+      const secondProcessStore = new AgentStore({ rootDir: h.rootDir(), asyncLayer: h.layer(), taskStore: h.store() });
+      // Queue the operator write first while the advisory lock is held. Once it
+      // commits, the heartbeat from the other store must re-read that owner.
+      const operatorAssignment = (async () => {
+        await h.store().updateTask(task.id, { assignedAgentId: executor.id });
+        await secondProcessStore.assignTask(executor.id, task.id);
+      })();
+      await Promise.resolve();
+      const staleHandoff = agentStore.handoffTaskToWorkflowExecutor(engineer.id, task.id);
+      releaseAdvisoryLock();
+
+      await operatorAssignment;
+      await expect(staleHandoff).resolves.toMatchObject({ ok: false, reason: "assigned_to_other" });
+      await lockHolder;
+      expect((await h.store().getTask(task.id))?.assignedAgentId).toBe(executor.id);
+      expect((await agentStore.getAgent(engineer.id))?.taskId).toBeUndefined();
+      expect((await agentStore.getAgent(executor.id))?.taskId).toBe(task.id);
+      secondProcessStore.close();
+    });
+
+    it("revalidates cache and lifecycle publication after a newer assignment", async () => {
+      const engineer = await agentStore.createAgent({ name: "Publishing Engineer", role: "engineer" });
+      const executor = await agentStore.createAgent({ name: "Publishing Executor", role: "executor" });
+      const task = await h.store().createTask({ description: "post-commit publication ownership fence" });
+      await agentStore.assignTask(engineer.id, task.id);
+      await h.store().updateTask(task.id, { assignedAgentId: engineer.id });
+      await h.store().moveTask(task.id, "todo");
+
+      const store = h.store();
+      // A separate TaskStore models the dashboard/executor process that wins
+      // after the heartbeat has committed but before it can publish a mirror.
+      const otherStore = new TaskStore(h.rootDir(), h.globalDir(), { asyncLayer: h.layer() });
+      const operatorAgentStore = new AgentStore({ rootDir: h.rootDir(), asyncLayer: h.layer(), taskStore: otherStore });
+      await operatorAgentStore.init();
+      let releasePublication!: () => void;
+      const publicationBlocked = new Promise<void>((resolve) => { releasePublication = resolve; });
+      let mirrorPublicationStarted!: () => void;
+      const mirrorPublicationStartedPromise = new Promise<void>((resolve) => { mirrorPublicationStarted = resolve; });
+      const writeTaskJsonFile = store.writeTaskJsonFile.bind(store);
+      vi.spyOn(store, "isWatching", "get").mockReturnValue(true);
+      vi.spyOn(store, "writeTaskJsonFile").mockImplementation(async (dir, candidate) => {
+        if (candidate.id === task.id && candidate.assignedAgentId === undefined) {
+          mirrorPublicationStarted();
+          await publicationBlocked;
+        }
+        await writeTaskJsonFile(dir, candidate);
+      });
+
+      let releaseCacheRefresh!: () => void;
+      const cacheRefreshBlocked = new Promise<void>((resolve) => { releaseCacheRefresh = resolve; });
+      let refreshRead!: () => void;
+      const refreshReadPromise = new Promise<void>((resolve) => { refreshRead = resolve; });
+      const publishedOwners: Array<string | undefined> = [];
+      store.on("task:updated", (candidate) => {
+        if (candidate.id === task.id) publishedOwners.push(candidate.assignedAgentId);
+      });
+      (store as unknown as {
+        __afterHandoffPublicationReadForTest?: () => void | Promise<void>;
+      }).__afterHandoffPublicationReadForTest = async () => {
+        refreshRead();
+        await cacheRefreshBlocked;
+      };
+
+      const handoff = agentStore.handoffTaskToWorkflowExecutor(engineer.id, task.id);
+      await mirrorPublicationStartedPromise;
+      releasePublication();
+      // Pause immediately after the releasing store read the unassigned row.
+      // The operator assignment commits before publication resumes, so the
+      // handoff must re-read the row instead of emitting that stale release.
+      await refreshReadPromise;
+      await otherStore.updateTask(task.id, { assignedAgentId: executor.id });
+      await operatorAgentStore.assignTask(executor.id, task.id);
+      releaseCacheRefresh();
+
+      await expect(handoff).resolves.toMatchObject({ ok: true });
+      expect((await store.getTask(task.id))?.assignedAgentId).toBe(executor.id);
+      await expect(store.readTaskJson(store.taskDir(task.id))).resolves.toMatchObject({ assignedAgentId: executor.id });
+      expect(store.taskCache.get(task.id)?.assignedAgentId).toBe(executor.id);
+      expect(publishedOwners).not.toContain(undefined);
+      expect(publishedOwners.at(-1)).toBe(executor.id);
+    });
+
+    it("never releases a user-paused task or a newer operator assignment", async () => {
+      const engineer = await agentStore.createAgent({ name: "Engineer", role: "engineer" });
+      const executor = await agentStore.createAgent({ name: "Handoff Executor", role: "executor" });
+      const task = await h.store().createTask({ description: "manually controlled implementation" });
+      await h.store().updateTask(task.id, { assignedAgentId: engineer.id });
+      await h.store().moveTask(task.id, "todo");
+      await h.store().moveTask(task.id, "in-progress");
+      await h.store().moveTask(task.id, "todo", { moveSource: "user" });
+
+      await expect(agentStore.handoffTaskToWorkflowExecutor(engineer.id, task.id)).resolves.toMatchObject({ ok: false, reason: "paused" });
+      expect(await h.store().getTask(task.id)).toMatchObject({ assignedAgentId: engineer.id, userPaused: true });
+
+      await h.store().updateTask(task.id, { assignedAgentId: executor.id });
+      await expect(agentStore.handoffTaskToWorkflowExecutor(engineer.id, task.id)).resolves.toMatchObject({ ok: false, reason: "assigned_to_other" });
+      expect((await h.store().getTask(task.id))?.assignedAgentId).toBe(executor.id);
     });
   });
 

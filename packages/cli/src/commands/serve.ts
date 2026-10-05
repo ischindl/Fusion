@@ -19,10 +19,8 @@ import {
   INSIGHT_EXTRACTION_SCHEDULE_NAME,
   processAndAuditInsightExtraction,
   getEnabledPiExtensionPaths,
-  mergeBuiltInGrokProviderModels,
-  mergeBuiltInZaiProviderModels,
-  registerBuiltInGrokProvider,
-  registerBuiltInZaiProvider,
+  hydrateGrokApiKeyFromUserSettings,
+  projectPiXaiModelsToGrokCli,
 } from "@fusion/core";
 import type { AutomationRunResult, ScheduledTask } from "@fusion/core";
 import { createServer, GitHubClient, createDashboardMissionForgeReader, createSkillsAdapter, getCliPackageVersion, getProjectSettingsPath, isUnresolvedCliPackageVersion, loadTlsCredentialsFromEnv, refreshAllCustomProviderModels, registerGithubTrackingHook, resolveGitLabClient } from "@fusion/dashboard";
@@ -771,8 +769,7 @@ export async function runServe(
 
   const authStorage = createFusionAuthStorage();
   const modelRegistry = await createFusionModelRegistry(authStorage);
-  registerBuiltInZaiProvider(modelRegistry, (message) => console.log(`[extensions] ${message}`));
-  registerBuiltInGrokProvider(modelRegistry, (message) => console.log(`[extensions] ${message}`));
+  hydrateGrokApiKeyFromUserSettings((message) => console.warn(`[extensions] ${message}`));
   const dashboardAuthStorage = wrapAuthStorageWithApiKeyProviders(authStorage, modelRegistry);
 
   // PackageManager may be used for skills adapter even if extension loading fails
@@ -888,8 +885,6 @@ export async function runServe(
     }
 
     extensionsResult.runtime.pendingProviderRegistrations = [];
-    mergeBuiltInZaiProviderModels(modelRegistry, (message) => console.log(`[extensions] ${message}`));
-    mergeBuiltInGrokProviderModels(modelRegistry, (message) => console.log(`[extensions] ${message}`));
     /*
     FNXC:ModelRegistry 2026-07-21-17:15:
     Bound post-extension refresh so a hung remote catalog cannot leave serve stuck before listen.
@@ -897,6 +892,7 @@ export async function runServe(
     await refreshFusionModelRegistry(modelRegistry, {
       log: (message) => console.log(`[extensions] ${message}`),
     });
+    projectPiXaiModelsToGrokCli(modelRegistry, (message) => console.warn(`[extensions] ${message}`));
 
     try {
       const globalSettings = await store.getGlobalSettingsStore().getSettings();
@@ -917,6 +913,7 @@ export async function runServe(
     await refreshFusionModelRegistry(modelRegistry, {
       log: (message) => console.log(`[extensions] ${message}`),
     });
+    projectPiXaiModelsToGrokCli(modelRegistry, (message) => console.warn(`[extensions] ${message}`));
   }
 
   void syncStartupModels({

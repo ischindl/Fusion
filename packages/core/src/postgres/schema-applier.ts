@@ -100,7 +100,8 @@ touches no data; it must advance in the same change that ships a new migration f
 /* FNXC:ReviewLaneDispatch 2026-09-16-18:30 (merge origin/main): the ceiling includes the renumbered ledger migration. The stale-binary guard compares the DB's highest marker against Number(SCHEMA_BASELINE_VERSION), so a bundled migration ABOVE the ceiling would make the ledger's self-marked version look like a newer Fusion's write and every boot after it would raise StaleBinarySchemaError.
 FNXC:ReviewLaneDispatch 2026-09-18-13:40 (sync the FN-511..526 wave): upstream released FN-509 queue order as 0082 and human merge approval as 0083 while the main-local ledger held 0082 — the ledger renumbered to 0084 (same renumbering as open PR #3619's branch) and the ceiling follows. */
 /* FNXC:MigrationVersionCollision 2026-10-01-15:26: upstream FN-9429 claimed 0086, the slot this line had already given its review-lane ledger, so one marker named two migrations. The ledger is re-issued at 0088 and FN-9429's receipts at 0089; the ceiling tracks the highest file so no boot can call a migration it just applied a newer Fusion's write. */
-export const SCHEMA_BASELINE_VERSION = "0089";
+/* FNXC:MigrationVersionCollision 2026-10-05-08:52 (merge origin/main): upstream FN-9439 shipped PR readiness as 0087, the slot this line already gave its overlap-owner FK repair, so the incoming migration re-issues at 0090 — the same rule that moved FN-9429's receipts to 0089 — and the ceiling follows the highest bundled file. */
+export const SCHEMA_BASELINE_VERSION = "0090";
 /** FNXC:SymbolLock 2026-07-20-10:00: upgrades need durable task declarations before admission resolves symbols. */
 export const TASK_DECLARED_SYMBOLS_VERSION = "0028";
 const INITIAL_SCHEMA_VERSION = "0000";
@@ -312,6 +313,17 @@ export const TASK_QUEUE_ORDER_VERSION = "0082";
 export const TASK_HUMAN_MERGE_APPROVAL_VERSION = "0083";
 /** FNXC:MigrationVersionCollision 2026-10-01-15:26: upstream FN-9429 released these receipts as 0086, already held here by the review-lane ledger, so both were re-issued (ledger 0088, receipts 0089). One marker must name exactly one migration. */
 export const STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_VERSION = "0089";
+/*
+FNXC:MigrationVersionCollision 2026-10-05-08:52 (merge origin/main):
+Upstream FN-9439 released PR readiness at 0087. Here 0087 is the overlap-owner FK repair and 0088/0089 are
+already taken, so the migration re-issues locally at 0090 and the file is renamed to match — a released
+upstream number is never reused on this line. The re-issue is drift-free by construction: no applied fork
+database has ever recorded 0090, so the step runs exactly once and no existing marker changes meaning.
+Re-numbering OURS instead would have made every recorded 0087 name a different migration than the one that
+wrote it, which is the failure the 0065 collision repair exists to undo.
+*/
+/** FN-9439: provider-neutral current-head readiness snapshot columns. */
+export const PULL_REQUEST_READINESS_VERSION = "0090";
 
 /** FNXC:MemoryFocus 2026-08-21-06:10: explicit registration prevents the per-conversation memory-focus migration from being skipped. Renumbered to 0060, then 0061, then 0065: the upstream FN-066..FN-101 batch (2026-08-21) owns 0061-0064 (activity-log index, splitting removal, AI-merge review, repository scope). */
 /* FNXC:MemoryFocus 2026-08-23-07:07: renumbered 0065 -> 0066 in the RUFU-160 origin/main merge: origin/main independently shipped 0065 as FN-149's review-convergence migration (v0.77.0-beta.7); keeping both lines' migrations requires the deploy-line file to take the next free sequence. */
@@ -599,6 +611,8 @@ const TASK_QUEUE_ORDER_MIGRATION_PATH = join(MIGRATIONS_DIR, "0082_fn_509_task_q
 const TASK_HUMAN_MERGE_APPROVAL_MIGRATION_PATH = join(MIGRATIONS_DIR, "0083_fn_514_task_human_merge_approval.sql");
 /* FNXC:MigrationVersionCollision 2026-10-01-15:26: FN-9429 re-issued at 0089 (upstream shipped it as 0086; see STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_VERSION). */
 const STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_MIGRATION_PATH = join(MIGRATIONS_DIR, "0089_fn_9429_stale_review_callback_waiver_receipts.sql");
+/* FNXC:MigrationVersionCollision 2026-10-05-08:52: upstream shipped this as `0087_fn_9439_pull_request_readiness.sql`; renamed locally so the file prefix matches the re-issued 0090 version. */
+const PULL_REQUEST_READINESS_MIGRATION_PATH = join(MIGRATIONS_DIR, "0090_fn_9439_pull_request_readiness.sql");
 
 /**
  * Ensure the migration bookkeeping table exists. Lives in the public schema so
@@ -756,6 +770,7 @@ export async function applySchemaBaseline(
     const taskQueueOrderAlreadyApplied = applied.includes(TASK_QUEUE_ORDER_VERSION);
     const taskHumanMergeApprovalAlreadyApplied = applied.includes(TASK_HUMAN_MERGE_APPROVAL_VERSION);
     const staleReviewCallbackWaiverReceiptsAlreadyApplied = applied.includes(STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_VERSION);
+    const pullRequestReadinessAlreadyApplied = applied.includes(PULL_REQUEST_READINESS_VERSION);
     assertBinaryNotOlderThanDatabase(applied);
     let schemaChanged = false;
 
@@ -1965,6 +1980,17 @@ export async function applySchemaBaseline(
       const migrationSql = await readFile(STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_MIGRATION_PATH, "utf8");
       await tx.execute(sql.raw(migrationSql));
       await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+    /*
+    FNXC:PullRequestReadiness 2026-10-04-23:13 (upstream FN-9439, re-issued locally at 0090):
+    Upgraded stores must materialize SHA-fenced readiness evidence before PR readers use it. The DDL is
+    additive and idempotent (`ADD COLUMN IF NOT EXISTS`), so a re-run after a partial apply is safe.
+    */
+    if (!pullRequestReadinessAlreadyApplied) {
+      const migrationSql = await readFile(PULL_REQUEST_READINESS_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${PULL_REQUEST_READINESS_VERSION}) ON CONFLICT (version) DO NOTHING`);
       schemaChanged = true;
     }
     return { applied: schemaChanged, pluginHooksRun: pluginHooks.length };

@@ -173,9 +173,9 @@ pgDescribe("live move path — which targets it accepts after the Planning merge
     the literals on the conversion backlog, so that is bug-compatibility, not an
     invariant, and pinning it would cement the bug.
 
-    An undeclared source has no lifecycle adjacency to violate, so its only legal target is the
-    workflow's resolved rebound column. This permits repair without granting a jump directly into
-    WIP, review, or Complete.
+    Lifecycle containment now supersedes the former recovery escape hatch: a recovery re-home
+    may not revive archived work into a hold lane even when the workflow declares that target.
+    The assertion below pins the refusal rather than preserving a forbidden backward move.
     */
     const store = h.store();
     /*
@@ -197,11 +197,22 @@ pgDescribe("live move path — which targets it accepts after the Planning merge
     expect(await column(task.id)).toBe("stranded");
 
     await expect(
-      store.moveTask(task.id, "in-progress" as never, { moveSource: "engine" } as never),
-    ).rejects.toThrow(/Valid targets: todo/);
-    expect(await column(task.id)).toBe("stranded");
+      store.moveTask(task.id, "todo" as never, { moveSource: "engine" } as never),
+    ).rejects.toThrow();
+    expect(await column(task.id)).toBe("archived");
 
-    await store.moveTask(task.id, "todo" as never, { moveSource: "engine" } as never);
-    expect(await column(task.id)).toBe("todo");
+    /*
+    FNXC:LifecycleContainment 2026-10-04-11:58:
+    Recovery re-home remains constrained by lifecycle containment. Archived work cannot be
+    automatically revived into a hold lane; only an explicit user revision may restore it.
+    */
+    await expect(
+      store.moveTask(task.id, "todo" as never, {
+        moveSource: "engine",
+        recoveryRehome: true,
+      } as never),
+    ).rejects.toThrow(/Automatic moves may not step backward/);
+
+    expect(await column(task.id)).toBe("archived");
   });
 });

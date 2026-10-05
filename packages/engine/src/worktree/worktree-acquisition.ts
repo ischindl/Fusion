@@ -1,3 +1,4 @@
+import { proveTaskWorktreeRebind } from "./prove-task-worktree-rebind.js";
 import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -73,6 +74,7 @@ import {
   type DependencyCommandRunner,
   type DependencyCommandResult,
 } from "./worktree-dependency-install.js";
+import { getConfiguredWorktreeInitCommand } from "./dependency-bootstrap-inference.js";
 
 const execAsync = promisify(exec);
 const PRESERVED_ORPHAN_RETENTION_COUNT = 10;
@@ -315,10 +317,10 @@ async function maybeWarnForeignTaskStartPoint(
 /*
 FNXC:TaskPinnedWorktrees 2026-07-16-00:00:
 Warm-reuse of a task-pinned worktree requires the on-disk directory to be checked out on the task's own
-branch. A same-name directory carrying a foreign branch (or detached HEAD) is stale/foreign and must be
-reclaimed in place rather than reused, so pinned mode never hands a task another task's checkout.
+branch. Read the registered branch before choosing between ownership-proven renamed-branch adoption and
+foreign-checkout reclamation, so pinned mode never hands a task another task's checkout.
 */
-async function pinnedWorktreeBranchMatches(rootDir: string, worktreePath: string, expectedBranch: string): Promise<boolean> {
+async function pinnedWorktreeBranchAtPath(rootDir: string, worktreePath: string): Promise<string | undefined> {
   const canonical = canonicalizePath(worktreePath);
   const entries = await getRegisteredWorktreeBranches(rootDir);
   /*
@@ -333,11 +335,20 @@ async function pinnedWorktreeBranchMatches(rootDir: string, worktreePath: string
    */
   if (entries.length === 0) {
     throw new Error(
-      `pinned branch probe returned no registered worktrees for ${rootDir}; cannot confirm branch of ${worktreePath} (transient git failure) — refusing to prove mismatch`,
+      `pinned branch probe returned no registered worktrees for ${rootDir}; cannot confirm branch of ${worktreePath} (transient git failure) — refusing to prove ownership`,
     );
   }
-  const match = entries.find((entry) => entry.worktreePath === canonical);
-  return match?.branch === expectedBranch;
+  return entries.find((entry) => entry.worktreePath === canonical)?.branch;
+}
+
+/*
+FNXC:TaskPinnedWorktrees 2026-10-04-19:31:
+A distinct canonical task branch proves another task owns the registered checkout. Do not send it
+through renamed-branch adoption, whose task-store snapshot is only valid for a potentially renamed
+branch; reclaim the proven foreign checkout at the same pinned path instead.
+*/
+function isForeignTaskPinnedBranch(branch: string | undefined, expectedBranch: string): boolean {
+  return Boolean(branch && branch !== expectedBranch && /^fusion\/fn-\d+$/i.test(branch));
 }
 
 /*
@@ -956,14 +967,15 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
     await copyConfiguredFilesForPreparedWorktree(source);
 
     let configuredInitResult: InitCommandResult | undefined;
-    if (runInitCommand && settings.worktreeInitCommand && runConfiguredCommand) {
+    const configuredWorktreeInitCommand = getConfiguredWorktreeInitCommand(settings);
+    if (runInitCommand && configuredWorktreeInitCommand && runConfiguredCommand) {
       const initStartedAt = Date.now();
       try {
-        configuredInitResult = await runConfiguredCommand(settings.worktreeInitCommand, worktreePath, 300_000, taskEnv);
+        configuredInitResult = await runConfiguredCommand(configuredWorktreeInitCommand, worktreePath, 300_000, taskEnv);
         if (configuredInitResult.spawnError || configuredInitResult.timedOut || configuredInitResult.exitCode !== 0) {
           throw new Error(configuredCommandErrorMessage(configuredInitResult));
         }
-        await store.logEntry(task.id, `[timing] Worktree init command completed in ${Date.now() - initStartedAt}ms`, settings.worktreeInitCommand, runContext);
+        await store.logEntry(task.id, `[timing] Worktree init command completed in ${Date.now() - initStartedAt}ms`, configuredWorktreeInitCommand, runContext);
       } catch (err) {
         if (err instanceof Error && err.name === "AbortError") {
           throw err;
@@ -1135,9 +1147,10 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
 
     if (existsSync(pinnedPath)) {
       const classification = await classifyTaskWorktree(rootDir, pinnedPath);
-      const branchMatches = classification.ok
-        ? await pinnedWorktreeBranchMatches(rootDir, pinnedPath, resumedBranch)
-        : false;
+      const registeredBranch = classification.ok
+        ? await pinnedWorktreeBranchAtPath(rootDir, pinnedPath)
+        : undefined;
+      const branchMatches = registeredBranch === resumedBranch;
       if (classification.ok && branchMatches) {
         /*
          * FNXC:TaskPinnedWorktrees 2026-07-16-12:30:
@@ -1152,6 +1165,40 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
           await persistWorktreeAssignment({ worktree: pinnedPath, branch: resumedBranch, branchWriteOrigin: branchWriteOriginFor(resumedBranch) });
         }
         return reuseWarmWorktree(pinnedPath, resumedBranch, "existing");
+      }
+      if (classification.ok && !isForeignTaskPinnedBranch(registeredBranch, resumedBranch)) {
+        const snapshot = await store.getTask(task.id);
+        if (!snapshot.updatedAt) throw new Error("Task snapshot unavailable for branch rebind");
+        const proof = await proveTaskWorktreeRebind({
+          rootDir, worktreePath: pinnedPath, task, store,
+          integrationBranch: await resolveIntegrationBranch(rootDir, settings, { logger: logger ?? console }),
+        });
+        if (opts.suppressSingularWorktreePersist) throw new Error("Renamed branch recovery requires a singular task assignment");
+        let rebound = false;
+        const persisted = await store.updateTaskAtomic(task.id, (live) => {
+          const identityFields = ["branch", "worktree", "column", "status", "paused", "userPaused", "checkedOutBy", "workflowIrPinNodeId", "lineageId"] as const;
+          if (live.paused || live.userPaused || live.deletedAt || live.updatedAt !== snapshot.updatedAt || identityFields.some((key) => (live[key] ?? null) !== (task[key] ?? null))) return null;
+          if (activeSessionRegistry.isPathActive(pinnedPath)) return null;
+          rebound = true;
+          return { worktree: pinnedPath, branch: proof.branch, branchWriteOrigin: branchWriteOriginFor(proof.branch) };
+        }, runContext, () => !activeSessionRegistry.isPathActive(pinnedPath), {
+          expectedUpdatedAt: snapshot.updatedAt,
+          expectedCheckedOutBy: snapshot.checkedOutBy ?? null,
+          expectedCheckoutNodeId: snapshot.checkoutNodeId ?? null,
+          expectedCheckoutLeaseEpoch: snapshot.checkoutLeaseEpoch ?? 0,
+        });
+        if (!rebound || persisted.branch !== proof.branch || persisted.worktree !== pinnedPath)
+          throw new Error(`preserving ${pinnedPath}: task ownership changed during branch rebind`);
+        await installTaskWorktreeIdentityGuard({
+          worktreePath: pinnedPath, taskId: task.id, expectedBranch: proof.branch,
+          commitMsgHookEnabled: settings.commitMsgHookEnabled, taskPrefix: settings.taskPrefix,
+          taskAttributionTrailerName: settings.taskAttributionTrailerNames?.[0],
+          commitAuthorEnabled: settings.commitAuthorEnabled, commitAuthorName: settings.commitAuthorName,
+          commitAuthorEmail: settings.commitAuthorEmail,
+        });
+        await store.logEntry(task.id, "Rebound task-pinned checkout to its ownership-proven renamed branch", proof.branch, runContext);
+        // This is identity repair, not a base refresh: preserve HEAD, dirty files and ignored evidence.
+        return guardAcquisitionReturn({ worktreePath: pinnedPath, branch: proof.branch, source: "existing", hydrated: false, isResume: true });
       }
       // Invalid / foreign-branch / stale (crash leftover, archive→restore) → reclaim in place: remove the
       // registered worktree (owner probe via removeWorktree) then recreate fresh at the SAME path — never suffix.
