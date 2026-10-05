@@ -1037,12 +1037,20 @@ export class MissionExecutionLoop extends EventEmitter {
     // Manual and recovery runs must resolve the selected workflow's terminal
     // lanes before judging delivery. A renamed complete lane still requires the
     // landed-SHA evidence path and must never fall back to an ambient checkout.
+    //
+    // FNXC:MissionValidationEvidence 2026-10-05-01:55:
+    // Fork adaptation on top of upstream FN-9464 (05c7ae51aa). Upstream also
+    // treats its archived lane as terminal for delivery judgement; this build
+    // retired task archiving under FN-9187, so `LifecycleColumns` exposes only
+    // intake/hold/wip/review/complete and `taskLifecycle.archived` does not
+    // typecheck here. No card can ever sit in an archived column, so the clause
+    // is dead weight rather than a lost behaviour — `complete` remains the sole
+    // terminal lane. Keep this single divergence when re-taking FN-9464.
     const taskLifecycle = task
       ? await resolveTaskLifecycleColumns(this.taskStore, task.id).catch(() => undefined)
       : undefined;
     const completedLinkedTask = task !== null && (
       task.column === (taskLifecycle?.complete ?? "done")
-      || task.column === (taskLifecycle?.archived ?? "archived")
     );
     if (!prepared && completedLinkedTask && landedSha) {
       const evidence = await this.validationEvidenceProvider.prepare({
