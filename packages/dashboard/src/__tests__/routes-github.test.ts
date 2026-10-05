@@ -2857,9 +2857,16 @@ describe("POST /tasks/:id/approve-plan", () => {
     FNXC:SpecLockApproval 2026-08-15-05:10:
     A readable PROMPT.md is now mandatory at approval (unreadable is a 409), so the persisted
     patch always carries the real fingerprint hash of the approved on-disk plan — never null.
+
+    FNXC:ApprovalHoldInvariant 2026-10-05-04:45:
+    RUFU-297 made approval clear the approval hold in the same patch, because a hold whose gate
+    evidence has just been rewritten is evidenceless. The expected patch therefore also carries
+    `awaitingApprovalReason: null`; asserting the old two-field shape pinned a contract the
+    product had deliberately widened.
     */
     expect(store.updateTask).toHaveBeenCalledWith("FN-001", {
       status: null,
+      awaitingApprovalReason: null,
       approvedPlanFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
     expect(res.body.column).toBe("todo");
@@ -3858,8 +3865,25 @@ describe("GET /tasks/:id/diff", () => {
         expect(gitSpawnArgsSince(secondBefore)).toEqual([]);
         expect(JSON.stringify(second.body)).toBe(JSON.stringify(first.body));
 
-        // Past the 10s TTL the lane recomputes rather than serving a stale answer.
+        /*
+        FNXC:TaskDiffStatsCache 2026-10-05-04:40:
+        The TTL deliberately outlasts the client poll period, so a poll-period jump must NOT expire
+        it — that is the behaviour RUFU-479 chose when it raised the TTL past the old 10s. Both
+        boundaries are asserted from the exported constant, so a future TTL bump moves this test with
+        the source instead of silently leaving it asserting the expired contract.
+        */
+        const ttlMs = (sessionDiffRoutes as unknown as Partial<Record<string, number>>).TASK_DIFF_STATS_CACHE_TTL_MS ?? 60_000;
+
+        // One poll period later the answer is still served from the cache — the whole point of a TTL
+        // that outlasts the poll: the board's own refresh rate never reaches git.
         now += 10_001;
+        const pollPeriodBefore = mockExecFile.mock.calls.length;
+        const pollPeriod = await GET(app, "/api/tasks/FN-2108/diff?stats=1");
+        expect(gitSpawnArgsSince(pollPeriodBefore)).toEqual([]);
+        expect(JSON.stringify(pollPeriod.body)).toBe(JSON.stringify(first.body));
+
+        // Past the TTL itself the lane recomputes rather than serving a stale answer.
+        now += ttlMs;
         const thirdBefore = mockExecFile.mock.calls.length;
         await GET(app, "/api/tasks/FN-2108/diff?stats=1");
         expect(gitSpawnArgsSince(thirdBefore).length).toBeGreaterThan(0);
