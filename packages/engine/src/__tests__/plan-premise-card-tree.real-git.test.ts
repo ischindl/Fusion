@@ -6,6 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { Task, TaskStore, WorkflowIr } from "@fusion/core";
 import { admitTaskToWip } from "../execution/hold-release.js";
+import { resolveCardGitIdentity } from "../execution/plan-premise-tree.js";
 import { checkPlanPremises } from "../execution/plan-premise-check.js";
 import {
   TRIAGE_PLAN_PREMISE_INVALIDATED_BY_DELIVERY_LOG_ACTION,
@@ -532,5 +533,108 @@ describe("a premise the card invalidated stays delivery-invalidated after the de
     const result = await admitTaskToWip(door.store, door.deps, task, "doing", ir);
     expect(result).toMatchObject({ released: false, rejection: "plan-premise-stale" });
     expect(task.sourceMetadata?.planPremiseRejection).toMatchObject({ refusalCount: 1 });
+  }, 30_000);
+});
+
+/*
+FNXC:PlanPremiseWorkspaceIdentity 2026-10-05-18:57 (RUFU-570):
+Measured on project saneca: a workspace project's root (`/home/schindler/saneca-ws`) is a CONTAINER of
+sibling repositories and answers `rev-parse` with "fatal: not a git repository", so the declared-base
+rung of the identity ladder — the last rung, and the only one a card with no worktree and no branch
+reaches — raised for every premise-bearing card in such a workspace. Because the same helper backs the
+scheduler sweep, automatic admission, operator promote, and event release, the card was unadmittable by
+every documented verb, and `fn task retry` could not re-dispatch it either.
+These four cases are the whole contract: a single-repo checkout resolves from the root EXACTLY as it
+always has (that path must not regress), a container resolves from the member that carries the base,
+and a container in which no member carries the base still refuses — naming the base, saying the root is
+not a git repository, and listing the members searched, so the refusal is actionable. A member the card
+names that is not on disk is called out separately: reading some other sibling instead would be a
+silent wrong answer, which is worse than the bug being fixed.
+*/
+describe("a workspace container root resolves identity from its member repositories", () => {
+  /** A real repository at an exact path, so a container can hold several members. */
+  async function createRepoAt(root: string, relative: string, files: Record<string, string>): Promise<string> {
+    const repo = path.join(root, relative);
+    await mkdir(repo, { recursive: true });
+    await git("init -q -b main .", repo);
+    await git("config user.email test@example.com", repo);
+    await git("config user.name Test User", repo);
+    for (const [file, text] of Object.entries(files)) await write(repo, file, text);
+    await commit(repo, "chore: base");
+    return repo;
+  }
+
+  /** A container directory that is NOT a git repository, holding `members`. */
+  async function createContainer(members: Record<string, Record<string, string>>): Promise<string> {
+    const root = await mkdtemp(path.join(tmpdir(), "rufu570-container-"));
+    tempDirs.push(root);
+    for (const [member, files] of Object.entries(members)) await createRepoAt(root, member, files);
+    return root;
+  }
+
+  /** The identity ladder's own seam: the release door, scheduler, promote, and release all call it. */
+  const identityOf = async (root: string, fields: Partial<Task> = {}) =>
+    await resolveCardGitIdentity(
+      { getRootDir: () => root, getSettings: async () => ({}) } as unknown as TaskStore,
+      premiseTask([ALPHA_PRESENT], fields),
+    );
+
+  it("resolves a single-repo card from the project root, exactly as before", async () => {
+    const root = await createRepo({ "src/App.tsx": FLAG_OFF });
+    const result = await identityOf(root, { baseBranch: "main" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.identity.source).toBe("declared-base");
+    expect(result.identity.repo).toBe(root);
+    expect(result.identity.ref).toBe("main");
+  }, 30_000);
+
+  it("resolves the declared base from the member repository when the root is only a container", async () => {
+    const root = await createContainer({
+      "lager-manager": { "src/App.tsx": FLAG_OFF },
+      saneca: { "src/App.tsx": FLAG_OFF },
+    });
+    // The premise of the whole card: the root itself answers no git probe at all.
+    await expect(git("rev-parse --is-inside-work-tree", root)).rejects.toThrow();
+
+    const result = await identityOf(root, { baseBranch: "main" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Every git read now runs in a real repository, never in the container.
+    expect(result.identity.source).toBe("declared-base");
+    expect(result.identity.repo).not.toBe(root);
+    expect([path.join(root, "lager-manager"), path.join(root, "saneca")]).toContain(result.identity.repo);
+    // The caller can read the committed tree out of the repository it was handed.
+    expect(await git(`ls-tree -r --name-only ${result.identity.commit}`, result.identity.repo)).toContain("src/App.tsx");
+  }, 30_000);
+
+  it("fails closed naming the base and the members tried when no member carries the base", async () => {
+    const root = await createContainer({
+      "lager-2026": { "src/App.tsx": FLAG_OFF },
+      "lager-manager": { "src/App.tsx": FLAG_OFF },
+    });
+
+    const result = await identityOf(root, { baseBranch: "ghost/base" });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.detail).toContain("git identity");
+    expect(result.detail).toContain("ghost/base");
+    expect(result.detail).toContain("not a git repository");
+    expect(result.detail).toContain("lager-2026");
+    expect(result.detail).toContain("lager-manager");
+  }, 30_000);
+
+  it("refuses a card naming a member the workspace does not have instead of silently reading another", async () => {
+    const root = await createContainer({ saneca: { "src/App.tsx": FLAG_OFF } });
+
+    const result = await identityOf(root, {
+      baseBranch: "ghost/base",
+      workspaceWorktrees: { "lager-x": { worktreePath: path.join(root, "lager-x"), branch: "fusion/fn-282-t" } },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.detail).toContain("git identity");
+    expect(result.detail).toContain("not a git repository");
+    expect(result.detail).toContain("lager-x");
   }, 30_000);
 });

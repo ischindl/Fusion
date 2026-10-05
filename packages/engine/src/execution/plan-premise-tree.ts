@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import type { PlanPremise, Task, TaskStore } from "@fusion/core";
 import { extractAttributedTaskId } from "./branch-conflicts.js";
@@ -134,12 +135,79 @@ export async function resolveCardGitIdentity(store: TaskStore, task: Task): Prom
     return { ok: true, identity: { source: "declared-base", taskId, repo: root, commit: baseCommit, ref: base, baseRef: base, rangeBase: baseCommit } };
   }
 
+  /*
+  FNXC:PlanPremiseWorkspaceIdentity 2026-10-05-18:57 (RUFU-570):
+  A workspace project's root is a CONTAINER of sibling repositories, not a repository. Measured on
+  project saneca, `/home/schindler/saneca-ws` answers `rev-parse` with "fatal: not a git repository"
+  while holding saneca, lager-2026 and lager-manager, so this last rung raised for EVERY
+  premise-bearing workspace card and the card was refused at admission before any worktree existed —
+  reached from the scheduler sweep, automatic admission, operator promote, and event release alike.
+  When the root is not a git database, the base is therefore retried against the member repositories
+  that actually exist under it, ordered by the order the card names them in its own
+  `workspaceWorktrees` (the card's stated scope outranks a directory listing) and then sorted by name.
+  A single-repo checkout never enters this branch — `baseCommit` already resolved there — so the
+  common case is untouched. Nothing is substituted when no member carries the base: the refusal names
+  the base, says the root is not a git repository, and lists which members were tried, because
+  "tried base main" was the same words for "no such repository", "no such ref", and "not a git
+  repository" and told an operator nothing actionable. An absent member the card named is reported
+  separately from the members that were searched, so a plan pointing at a sibling this workspace does
+  not have reads differently from a base that is simply missing.
+  */
+  if (!await isGitDatabase(root)) {
+    const { members, absent } = await workspaceMemberRepositories(root, task);
+    for (const member of members) {
+      const repo = join(root, member);
+      const commit = await resolveCommit(repo, base);
+      if (commit) {
+        return { ok: true, identity: { source: "declared-base", taskId, repo, commit, ref: base, baseRef: base, rangeBase: commit } };
+      }
+    }
+    const searched = members.length > 0 ? members.join(", ") : "none — the root holds no git repository";
+    const namedAbsent = absent.length > 0 ? `; named by this card but absent from the workspace: ${absent.join(", ")}` : "";
+    return {
+      ok: false,
+      detail: `This card has no resolvable committed git identity: base ${base} resolved in no repository and the project root ${root} is not a git repository, so it was tried in each workspace member (members tried: ${searched}${namedAbsent})`,
+    };
+  }
+
   const tried = [
     worktree.length > 0 && "its registered checkout",
     branch.length > 0 && `branch ${branch}`,
     `base ${base}`,
   ].filter(Boolean).join(", ");
   return { ok: false, detail: `This card has no resolvable committed git identity (tried ${tried})` };
+}
+
+/** True when `dir` is usable as a git database — a repository or work tree at that exact path. */
+async function isGitDatabase(dir: string): Promise<boolean> {
+  return (await gitLine(dir, ["rev-parse", "--git-dir"])) !== null;
+}
+
+/*
+FNXC:PlanPremiseWorkspaceIdentity 2026-10-05-18:57 (RUFU-570):
+Immediate children only, and only those that are git repositories, so `.fusion` and any other
+container artifact never masquerade as a member. A member the card names but that is not on disk is
+reported rather than silently dropped from the search — an unregistered or since-removed sibling is
+not something this card may read, and it must not look like a base that merely went missing.
+*/
+async function workspaceMemberRepositories(root: string, task: Task): Promise<{ members: string[]; absent: string[] }> {
+  let children: string[];
+  try {
+    children = readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+      .map((entry) => entry.name)
+      .sort();
+  } catch {
+    return { members: [], absent: [] };
+  }
+  const named = [...new Set(Object.keys(task.workspaceWorktrees ?? {}).map((member) => member.trim()).filter(Boolean))];
+  const ordered = [...named.filter((member) => children.includes(member)), ...children];
+  const members: string[] = [];
+  for (const child of ordered) {
+    if (members.includes(child)) continue;
+    if (await isGitDatabase(join(root, child))) members.push(child);
+  }
+  return { members, absent: named.filter((member) => !members.includes(member)) };
 }
 
 /*
