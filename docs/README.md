@@ -67,6 +67,7 @@ Planner oversight (FN-7508 → FN-7583) is fully documented in Settings Referenc
 | Guide | Description |
 |---|---|
 | [Architecture](./architecture.md) | System architecture, package layout, storage model, and engine execution flow |
+| [Fork Extensions](./fork-extensions.md) | Which capabilities this build adds beyond upstream Runfusion/Fusion (with per-symbol evidence), the archive-retirement silent-conflict trap, and the rules that keep upstream pull requests shippable from a large private base |
 | [Secrets Store (`SecretsStore`)](./architecture.md#secrets-store-secretsstore) | Core encrypted secret subsystem overview: scopes, AES-256-GCM at-rest model, policy semantics, and public store API surface |
 | [Dashboard Real-Time](./dashboard-realtime.md) | Canonical event-stream architecture contract (shared `/api/events` bus + dedicated stream boundaries), with project/node scoping, reconnect/cleanup behavior, and realtime pitfalls |
 | [Agent Activity Contract](./agent-activity-contract.md) | Canonical wire, cursor, and retention contract for the project-scoped `GET /api/agent-activity` durable activity-history API |

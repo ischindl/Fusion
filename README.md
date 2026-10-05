@@ -33,6 +33,13 @@ Describe what you want — a team of AI agents **plans, builds, reviews, and shi
 
 ---
 
+> **Running this build rather than the published one?** It carries lifecycle depth and a set of
+> capabilities upstream deliberately does not ship — see
+> [Fork extensions](./docs/fork-extensions.md) for what is ours, and how we keep sending pull
+> requests upstream anyway.
+
+---
+
 ## Your entire dev environment. On a single pane of glass.
 
 Describe a task in plain language. A planning agent reads your project, understands context, and writes a full `PROMPT.md` plan — steps, file scope, acceptance criteria. Then Fusion plans, reviews, executes, and reviews again, in an isolated git worktree, with a human approval gate wherever you want one.
