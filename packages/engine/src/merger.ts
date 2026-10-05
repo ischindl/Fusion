@@ -31,13 +31,19 @@ happened to have — and on a host with none (container, CI, fresh machine) git 
 all, so the merge stalled at `status:merging` with no error surfaced. `resolveCommitIdentity`
 returns undefined only when the operator sets `commitAuthorEnabled: false`, which restores the old
 ambient-config behaviour for anyone who wants commits authored as themselves.
+
+FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210):
+This env is also where the merge lane's non-interactive git floor rides: the merger drives every
+`git commit`/rebase on the autonomous merge path, and any of them opening an editor or the
+credential prompt would hang the lane (measured precedent: a `git rebase --continue` orphaned in
+`vi` for 1d13h inside an already-deleted worktree). Floor applied LAST so ambient env cannot clear it.
 */
 function mergerCommitEnv(identity?: CommitIdentity): NodeJS.ProcessEnv {
-  return {
+  return applyNonInteractiveGitEnv({
     ...process.env,
     [IDENTITY_GUARD_BYPASS_ENV]: "1",
     ...commitIdentityEnv(identity ?? resolveCommitIdentity()),
-  };
+  });
 }
 import { commitIdentityEnv, resolveCommitIdentity, type CommitIdentity } from "./git-identity.js";
 import {
@@ -306,7 +312,7 @@ import { resolveAgentInstructions, buildSystemPromptWithInstructions } from "./a
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createRunAuditor, generateSyntheticRunId, type EngineRunContext, type RunAuditor } from "./util/run-audit.js";
-import { resolveAgentActivityAttribution } from "@fusion/core";
+import { applyNonInteractiveGitEnv, resolveAgentActivityAttribution } from "@fusion/core";
 import { createWebFetchTool } from "./agent-tools.js";
 import {
   auditSquashMerge,
@@ -6271,8 +6277,12 @@ async function pullWithRebaseAndResolveConflicts(
 
         try {
           throwIfAborted(options?.signal, taskId);
+          // FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210): the inline GIT_EDITOR prefix is
+          // the historical precedent for this hang class; keep the command string and close the
+          // rest of the floor (pager / credential prompt) via the hardened env.
           await execAsync("GIT_EDITOR=true git rebase --continue", {
             cwd: rootDir,
+            env: applyNonInteractiveGitEnv(process.env),
             timeout: PULL_REBASE_TIMEOUT_MS,
             maxBuffer: VERIFICATION_COMMAND_MAX_BUFFER,
             encoding: "utf-8",

@@ -4,8 +4,17 @@
  *
  * Build task-scoped runtime env carrying plugin-injected keys plus PATH contribution.
  * Never mutates process.env globally — scoped env is threaded through taskEnv.
+ *
+ * FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210):
+ * The non-interactive git floor is applied LAST — after the plugin-injected spread and the PATH
+ * rebuild — so a `collectExecutorRuntimeEnv` contribution (e.g. GIT_EDITOR=vim) cannot clear it.
+ * Incident evidence: a task-session `git rebase --continue` blocked on `git commit -e` → `vi`
+ * for 1 day 13 hours, surviving its session as an orphan inside an already-deleted worktree.
+ * `injectedKeyCount`/`pathEntryCount` intentionally keep counting the PLUGIN's contributions,
+ * not the fixed floor keys, so task-log injection telemetry is unchanged.
  */
 import { delimiter } from "node:path";
+import { applyNonInteractiveGitEnv } from "@fusion/core";
 import { createFusionBrowserLease } from "../agent-browser-lifecycle.js";
 
 export type BuildInjectedRuntimeEnvDeps = {
@@ -32,11 +41,17 @@ export async function buildInjectedRuntimeEnv(
   });
   const pathPrepend = runtimeEnvContribution?.pathPrepend ?? [];
   const injectedEnv = runtimeEnvContribution?.env ?? {};
-  const baseEnv = {
+  /*
+  FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210):
+  The floor is applied to `baseEnv` — before the browser lease — so every lane that
+  consumes this env (including the lease's own env) is hardened, and the fixed keys
+  win over ambient and plugin-injected values.
+  */
+  const baseEnv = applyNonInteractiveGitEnv({
     ...process.env,
     ...injectedEnv,
     PATH: [...pathPrepend, process.env.PATH ?? ""].filter(Boolean).join(delimiter),
-  };
+  });
   /*
   FNXC:AgentBrowserOwnership 2026-09-20-00:56:
   Every actual executor environment receives one opaque browser lease. The native

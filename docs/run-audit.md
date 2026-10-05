@@ -63,6 +63,12 @@ Reconciliation-scoped auto-recover/reclaim events the self-healing sweep surface
 | `task:reconcile-stranded-completed-no-action` | A stranded-completed promoter withholds promotion of an all-steps-done/skipped task with a failure-park provenance (no-action). |
 | `task:reconcile-legacy-adoption` | Self-healing startup adopts a pre-cutover legacy task row through the KTD-8 adoption table. |
 
+### Orphaned git child reaper
+
+`worktree:orphaned-git-child-reaped` records one signal-only termination pass (RUFU-210) over reparented git child processes still holding a removed task worktree as their cwd — the post-mortem shape of the RUFU-194 incident (`git rebase --continue` → `git commit -e` wedged on a missing editor for 1d13h after the worktree was gone). The sweep runs at startup recovery and, cadence-gated with the other git/worktree churn steps, in maintenance batch 1. A candidate must be a `git`-named process under a registered worktrees scan root whose directory is proven removed (readlink failure or the kernel ` (deleted)` cwd suffix) and whose `/proc` starttime proves it is older than the 30-minute grace floor; it receives SIGTERM, then SIGKILL after a 5 s grace, capped at 10 reaps per sweep. The sweep signals processes only — it never mutates task, worktree, or lifecycle state. One row is emitted per deleted worktree path with `target` = the path and metadata limited to `count`, `pids` (capped at 20), `ageMs`, the fixed `reason` (`deleted-worktree-cwd` or `deleted-cwd-suffix`), and `outcome: "reaped"`. Command lines, argv, other-process cwd values, and error prose are never recorded. On a host without `/proc` the sweep emits nothing at all — the absent row is the signal that the host could not be probed.
+
+`worktree:orphaned-git-child-reap-no-action` is the deduped sibling: emitted once per manager lifetime (re-armed after any reap row) when the sweep ran on a probeable host and found no candidates, with `target: "orphaned-git-children"` and metadata `{ count: 0, outcome: "no-action" }`. Both writes use the FN-9175 bounded best-effort seam and are intentionally outside the curated delivery-pipeline event catalogue.
+
 ## Durable-agent error-state
 
 Events that make durable-agent error states and their recovery inspectable.

@@ -19,6 +19,7 @@ import type {
   WorkflowStepResult,
 } from "@fusion/core";
 import {
+  applyNonInteractiveGitEnv,
   applyReviewSeverityGate,
   computePlanApprovalFingerprint,
   isOpenWorkflowReviewFinding,
@@ -923,10 +924,15 @@ CRITICAL SCOPING RULES — read before doing anything else:
       // (U3) FUSION_HEADLESS=1 marks a genuinely-unattended run (LFG/pipeline) so
       // skills record assumptions and proceed instead of parking. Set ONLY when
       // the explicit `unattended` flag is true; absent on a board run.
-      const stepEnv: NodeJS.ProcessEnv = {
+      //
+      // FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210): the non-interactive git floor is
+      // applied at construction, immediately after the taskEnv/process.env spread. It only
+      // writes GIT_* keys, so it is order-independent with the FUSION_HEADLESS strip below —
+      // stripping can never resurrect a git key and the floor can never carry headless.
+      const stepEnv: NodeJS.ProcessEnv = applyNonInteractiveGitEnv({
         ...(taskEnv ?? process.env),
         FUSION_WORKFLOW_STEP: "1",
-      };
+      });
       // FNXC:WorkflowSteps 2026-06-21-06:30:
       // Default-safe invariant (KTD-3): a board run must NEVER be headless. Since
       // stepEnv spreads taskEnv/process.env, an inherited FUSION_HEADLESS (e.g. an

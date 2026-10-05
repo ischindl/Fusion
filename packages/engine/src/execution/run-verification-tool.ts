@@ -18,7 +18,7 @@
  * without a full agent session.
  */
 
-import { superviseSpawn, type SupervisedChild } from "@fusion/core";
+import { applyNonInteractiveGitEnv, superviseSpawn, type SupervisedChild } from "@fusion/core";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { Type, type Static } from "@earendil-works/pi-ai";
@@ -680,13 +680,15 @@ async function runVerificationCommandUnlocked(
     const supervised = superviseSpawn(command, [], {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
-      env: {
+      // FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210): verification commands run arbitrary
+      // project git next to the Corepack prompt guard — same hang class, same containment.
+      env: applyNonInteractiveGitEnv({
         ...process.env,
         // Corepack otherwise prompts interactively before fetching a pinned
         // packageManager version, which hangs the non-TTY child until the
         // hard timeout. Disable the prompt so it proceeds (or errors fast).
         COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
-      },
+      }),
       shell: true,
       killGraceMs: SIGKILL_GRACE_MS,
       maxLifetimeMs: timeoutMs > 0 ? timeoutMs + SIGKILL_GRACE_MS + 1_000 : undefined,

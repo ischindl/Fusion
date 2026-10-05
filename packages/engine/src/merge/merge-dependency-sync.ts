@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { applyNonInteractiveGitEnv } from "@fusion/core";
 import type { Settings } from "@fusion/core";
 import {
   formatDependencyBootstrapDiagnostic,
@@ -219,7 +220,10 @@ export async function installWorktreeDependencies(options: InstallWorktreeDepend
   resolvable even when the engine process starts without full shell initialization. Without
   these vars, corepack cannot locate its pnpm shim and "pnpm: command not found" occurs.
   */
-  const resolvedEnv: NodeJS.ProcessEnv = { ...process.env };
+  // FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210): dependency sync can shell git (lockfile
+  // fetches, workspace links) on the autonomous merge lane — the floor rides the base spread so
+  // later NODE_ENV/registry overrides cannot clear it.
+  const resolvedEnv: NodeJS.ProcessEnv = applyNonInteractiveGitEnv({ ...process.env });
   /*
   FNXC:MergeDeps 2026-08-26-13:05:
   NEVER INSTALL IN PRODUCTION MODE. A clean room exists to RUN THE PROJECT'S CHECKS, and every test

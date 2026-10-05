@@ -129,8 +129,33 @@ describe("buildInjectedRuntimeEnv", () => {
     expect(result.pathEntryCount).toBe(1);
     expect(result.env.FUSION_CE_SKILLS_DIR).toBe("/skills");
     expect(result.env.PATH?.startsWith("/plugin/bin")).toBe(true);
+    // FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210): the floor rides every task env —
+    // and injectedKeyCount/pathEntryCount above still count ONLY the plugin's contributions
+    // (1 key / 1 PATH entry, never the 5 fixed floor keys).
+    expect(result.env.GIT_EDITOR).toBe("true");
+    expect(result.env.GIT_TERMINAL_PROMPT).toBe("0");
     expect(process.env.PATH).toBe(originalPath);
     expect(process.env.FUSION_CE_SKILLS_DIR).toBeUndefined();
+  });
+
+  it("beats a plugin that injects an interactive git editor (floor applies after the spread)", async () => {
+    // FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210): design decision — a plugin or task
+    // wanting an editor is not a reason to hang the board (RUFU-210 acceptance clause).
+    const { buildInjectedRuntimeEnv: build } = await import("../build-injected-runtime-env.js");
+    const result = await build(
+      {
+        rootDir: "/repo",
+        collectExecutorRuntimeEnv: async () => ({
+          env: { GIT_EDITOR: "vim", GIT_PAGER: "less", GIT_TERMINAL_PROMPT: "1" },
+        }),
+      },
+      "T1",
+      "/wt",
+      undefined,
+    );
+    expect(result.env.GIT_EDITOR).toBe("true");
+    expect(result.env.GIT_PAGER).toBe("cat");
+    expect(result.env.GIT_TERMINAL_PROMPT).toBe("0");
   });
 
   it("works without a plugin collector", async () => {

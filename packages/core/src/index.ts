@@ -1358,6 +1358,13 @@ export {
   writeProjectIdentityAsync,
 } from "./central/project-identity.js";
 export { ProcessSupervisor, superviseSpawn, releaseSupervisedChild, FUSION_RESTART_EXIT_CODE, FUSION_NON_RETRYABLE_EXIT_CODE } from "./process/process-supervisor.js";
+/*
+FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210):
+The shared non-interactive git floor exported next to `superviseSpawn` on purpose: both engine
+env seams and the runtime plugins' agent-spawn seams import it from here, so every autonomous
+lane applies the same constants (RUFU-216's droid/paperclip/openclaw lanes consume this export).
+*/
+export { NON_INTERACTIVE_GIT_ENV, applyNonInteractiveGitEnv } from "./git/non-interactive-git-env.js";
 export { isPostgresUniqueError } from "./db/postgres-errors.js";
 export type {
   SuperviseSpawnOptions,

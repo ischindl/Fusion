@@ -9,7 +9,7 @@
  * Per-node worktree acquisition is expected graph plumbing once the task has a worktree.
  */
 import type { Settings, Task, TaskDetail, TaskStore } from "@fusion/core";
-import { type RunCommandResult, type WorkspaceConfig } from "@fusion/core";
+import { applyNonInteractiveGitEnv, type RunCommandResult, type WorkspaceConfig } from "@fusion/core";
 import { executorLog } from "../logger.js";
 import { generateSyntheticRunId, createRunAuditor, type EngineRunContext, type RunAuditor } from "../util/run-audit.js";
 import { acquireTaskWorktree, acquireWorkspaceTaskWorktrees } from "../worktree/worktree-acquisition.js";
@@ -102,7 +102,7 @@ export async function ensureGraphCustomNodeWorktree(
             }
             return result;
           }),
-        taskEnv: process.env,
+        taskEnv: applyNonInteractiveGitEnv(process.env), // FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210): autonomous worktree-acquire git lane
         addActiveWorktree: deps.addActiveWorktree,
         refreshStaleBase,
       });
@@ -142,7 +142,7 @@ export async function ensureGraphCustomNodeWorktree(
           }
           return result;
         }),
-      taskEnv: process.env,
+      taskEnv: applyNonInteractiveGitEnv(process.env), // FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210): autonomous worktree-acquire git lane
       secretsStore: deps.secretsStore,
       refreshStaleBase,
     });

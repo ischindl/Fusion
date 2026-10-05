@@ -59,6 +59,7 @@ import {
   resolvePiExtensionProjectRoot,
   resolveToolOutputBudget,
   matchStepHeadings,
+  applyNonInteractiveGitEnv,
 } from "@fusion/core";
 import type {
   AgentPermissionPolicyActionCategory,
@@ -2662,21 +2663,28 @@ export async function createPiAgentSessionRaw(options: AgentOptions): Promise<Ag
     ? resolveSandboxBackend({ backendId: options.sandboxBackendId })
     : undefined;
   if (sessionSandbox && options.sandboxPolicy) await sessionSandbox.prepare(options.sandboxPolicy);
-  const bashToolOptions = (options.taskEnv || sessionSandbox)
-    ? {
-        spawnHook: ({ command, cwd, env }: { command: string; cwd: string; env: NodeJS.ProcessEnv }) => {
-          const wrapped = sessionSandbox?.wrapCommand?.(command, { cwd, env });
-          return {
-            command: wrapped ? shellEscapeCommand(wrapped.command, wrapped.args) : command,
-            cwd,
-            env: {
-              ...env,
-              ...options.taskEnv,
-            },
-          };
-        },
-      }
-    : undefined;
+  /*
+  FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210):
+  `bashToolOptions` is now UNCONDITIONAL. It used to be built only when `options.taskEnv ||
+  sessionSandbox` was set, so durable heartbeat / agent-prompt-turn sessions — which carry
+  neither — got an unhardened bash tool and could still block on `git commit -e` → editor.
+  The non-interactive git floor is applied LAST inside the hook, so neither ambient env nor
+  task env can clear it. Guarded incident: a task-session `git rebase --continue` orphaned in
+  `vi` for 1d13h inside an already-deleted worktree (measured on a production host, 2026-09-09).
+  */
+  const bashToolOptions = {
+    spawnHook: ({ command, cwd, env }: { command: string; cwd: string; env: NodeJS.ProcessEnv }) => {
+      const wrapped = sessionSandbox?.wrapCommand?.(command, { cwd, env });
+      return {
+        command: wrapped ? shellEscapeCommand(wrapped.command, wrapped.args) : command,
+        cwd,
+        env: applyNonInteractiveGitEnv({
+          ...env,
+          ...options.taskEnv,
+        }),
+      };
+    },
+  };
 
   const isReadonly = options.tools === "readonly";
   const normalizedToolsAllowlist = options.toolsAllowlist === undefined

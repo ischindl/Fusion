@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
+import { applyNonInteractiveGitEnv } from "@fusion/core";
 import type { WorkspaceLeaseClaimOutcome, WorkspaceLeaseHandle } from "@fusion/core";
 
 const execFileAsync = promisify(execFile);
@@ -63,11 +64,13 @@ async function createFenceObject(cwd: string, handle: WorkspaceLeaseHandle): Pro
   ], {
     cwd,
     encoding: "utf8",
-    env: {
+    // FNXC:NonInteractiveGit 2026-09-11-22:40 (RUFU-210): fence-ref commit-tree runs on the
+    // merge-dispatch lane with a pinned fake date — it must never open an editor/prompt either.
+    env: applyNonInteractiveGitEnv({
       ...process.env,
       GIT_AUTHOR_DATE: "2000-01-01T00:00:00Z",
       GIT_COMMITTER_DATE: "2000-01-01T00:00:00Z",
-    },
+    }),
   });
   return stdout.trim();
 }
