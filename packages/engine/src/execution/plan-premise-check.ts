@@ -1,5 +1,6 @@
 import { parsePlanPremises, type PlanPremise, type Task, type TaskStore } from "@fusion/core";
 import { createHash } from "node:crypto";
+import { relative } from "node:path";
 import { readFile } from "node:fs/promises";
 import {
   attachCardCommitRange,
@@ -72,6 +73,35 @@ function enumerate(violations: Array<{ premise: PlanPremise; reason: string }>):
 }
 
 /*
+FNXC:PlanPremiseWorkspaceReRoot 2026-10-05-19:14 (RUFU-570):
+Name the workspace member the identity was resolved in, relative to the project root. Workspace
+members are direct children of the container, so anything that is not exactly one path segment is not
+a member and nothing is stripped — a card is never quietly measured against a sibling it did not name.
+"" means "evaluate the path exactly as written", which is every single-repo card.
+*/
+function memberRepositoryName(rootDir: string, repo: string): string {
+  if (repo === rootDir) return "";
+  const rel = relative(rootDir, repo).split(/[\\/]/).filter(Boolean).join("/");
+  return rel.length > 0 && !rel.startsWith("../") && !rel.includes("/") ? rel : "";
+}
+
+function reRootedPath(store: TaskStore, repo: string, premise: PlanPremise): { premise: PlanPremise; reRooted: boolean; member: string } {
+  let rootDir: string;
+  try {
+    rootDir = store.getRootDir();
+  } catch {
+    return { premise, reRooted: false, member: "" };
+  }
+  const member = memberRepositoryName(rootDir, repo);
+  if (member.length === 0) return { premise, reRooted: false, member: "" };
+  const prefix = `${member}/`;
+  if (!premise.path.startsWith(prefix)) return { premise, reRooted: false, member };
+  const path = premise.path.slice(prefix.length);
+  if (path.length === 0) return { premise, reRooted: false, member };
+  return { premise: { ...premise, path } as PlanPremise, reRooted: true, member };
+}
+
+/*
 FNXC:PlanPremises 2026-09-27-02:40:
 Release evaluates plan facts against the CARD's own committed content — its worktree HEAD, else its
 branch tip, else its declared base — never against the project root or common directory. See
@@ -113,9 +143,44 @@ export async function checkPlanPremises(store: TaskStore, task: Task): Promise<P
   }
 
   const violations: PlanPremiseViolation[] = [];
+  const resolvedPaths: string[] = [];
   for (const premise of premises) {
-    const verdict = await evaluatePremiseAtCommit(identity.identity, premise);
-    if (!verdict.satisfied) violations.push({ premise, reason: verdict.reason });
+    /*
+    FNXC:PlanPremiseWorkspaceReRoot 2026-10-05-19:14 (RUFU-570):
+    Round 1 made the identity ladder resolve the declared base inside a workspace MEMBER, because a
+    workspace root is a container and not a git repository. A premise path is written from the project
+    root, so `lager-manager/src/main/java/X.java` is the SAME file the member repo calls
+    `src/main/java/X.java`. Reading the written path out of the member's tree would ask that repo for a
+    path it has never had and would call a true fact false. The path is therefore re-rooted at the
+    member the identity resolved in — and ONLY when its first segment is exactly that member, because
+    guessing which sibling a bare path meant is how a premise stops being falsifiable. A single-repo
+    card has no member prefix and takes the untouched path.
+
+    The violation keeps the WRITTEN path and only the git read is re-rooted: the refusal-episode
+    signature is hashed from the premise as the plan states it, and shifting it under a running card
+    would silently reset an escalation count the operator is watching. Both paths are named in the
+    reason, because an operator reading only the card must be able to tell whether the plan named the
+    wrong file or the resolved-in-member file is what went missing.
+
+    An unresolvable re-rooted path stays `stale`, deliberately and not `unavailable`. We DID measure
+    it: `git ls-tree` answered definitively inside the right repository at the right commit, and the
+    answer was "not there" — which is the same physical fact that has always produced `stale` for a
+    single-repo card, so a card must not get a different kind for the same fact depending on how its
+    project is laid out. `unavailable` is the shape reserved for "the engine could not look", and
+    claiming that here is what would wedge the card: `hold-release` treats it as a retryable refusal
+    with NO episode, NO escalation, and NO replan, so the card would be re-measured forever, produce
+    the same definitive negative every time, and never be handed the one remedy that clears a wrong
+    path — a replan. `stale` is self-clearing by construction: it rewrites PROMPT.md, the prompt
+    fingerprint changes, and the refusal count resets. Only a planner that keeps writing the same
+    missing path escalates on, and that refusal is the correct loud one.
+    */
+    const written = premise.path;
+    const resolved = reRootedPath(store, identity.identity.repo, premise);
+    const verdict = await evaluatePremiseAtCommit(identity.identity, resolved.premise);
+    if (!verdict.satisfied) {
+      violations.push({ premise, reason: resolved.reRooted ? `${verdict.reason} (written "${written}", resolved inside workspace member "${resolved.member}" as "${resolved.premise.path}")` : verdict.reason });
+    }
+    resolvedPaths.push(resolved.premise.path);
   }
   if (violations.length === 0) return { outcome: "satisfied", promptFingerprint, premiseViolations: [] };
 
@@ -129,9 +194,10 @@ export async function checkPlanPremises(store: TaskStore, task: Task): Promise<P
   */
   const withRange = await attachCardCommitRange(store, task, identity.identity);
   const attributed = [];
-  for (const violation of violations) {
-    const delivery = await invalidatedByCardDelivery(withRange, violation.premise.path);
-    attributed.push({ ...violation, delivery, upstream: delivery ? null : await lastCommitTouching(withRange, violation.premise.path) });
+  for (const [index, violation] of violations.entries()) {
+    const path = resolvedPaths[index] ?? violation.premise.path;
+    const delivery = await invalidatedByCardDelivery(withRange, path);
+    attributed.push({ ...violation, delivery, upstream: delivery ? null : await lastCommitTouching(withRange, path) });
   }
   const evaluatedAt = `Evaluated at ${describeCardGitIdentity(withRange)}.`;
 

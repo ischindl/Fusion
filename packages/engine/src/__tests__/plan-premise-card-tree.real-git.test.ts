@@ -637,4 +637,83 @@ describe("a workspace container root resolves identity from its member repositor
     expect(result.detail).toContain("not a git repository");
     expect(result.detail).toContain("lager-x");
   }, 30_000);
+
+  /*
+  FNXC:PlanPremiseWorkspaceReRoot 2026-10-05-19:14 (RUFU-570):
+  Resolving identity in a member is only half the fix: the premise PATH is written from the project
+  root, so `lager-manager/src/main/java/X.java` and the member's own `src/main/java/X.java` are the
+  same file. Measuring the written path inside the member would call a true fact false for every
+  member-prefixed premise in a workspace — which is the `stale` route into the episode-hold-park
+  ladder, i.e. a wedge for a card whose only defect is that its plan was written from the other end of
+  the path. These cases pin the strip, the refusal to guess, the KIND an unresolvable re-rooted path
+  produces, and that a single-repo card pays nothing at all.
+  */
+  /** The release-gate verdict, which is what the scheduler, promote, and event release all branch on. */
+  const verdictOf = async (root: string, bullet: string, fields: Partial<Task> = {}) =>
+    await checkPlanPremises(
+      { getRootDir: () => root, getSettings: async () => ({}) } as unknown as TaskStore,
+      premiseTask([bullet], fields),
+    );
+
+  it("measures a member-prefixed premise inside that member after stripping the member name", async () => {
+    const root = await createContainer({
+      "lager-manager": { "src/main/java/X.java": FLAG_ON },
+    });
+
+    const prefixed = '{"kind":"text-present","path":"lager-manager/src/main/java/X.java","literal":"alphaUpdatesEnabled"}';
+    const verdict = await verdictOf(root, prefixed);
+    // Same file, two spellings: the member's committed tree really does carry the fact.
+    expect(verdict).toMatchObject({ outcome: "satisfied", premiseViolations: [] });
+
+    // And the spelling that is false in that member stays refutable — the strip did not make premises
+    // unfalsifiable, it only moved the read to the repository the path named.
+    const missing = '{"kind":"text-present","path":"lager-manager/src/main/java/X.java","literal":"noSuchFlag"}';
+    expect(await verdictOf(root, missing)).toMatchObject({ outcome: "stale" });
+  }, 30_000);
+
+  it("evaluates an unprefixed or other-member path exactly as written instead of guessing a sibling", async () => {
+    const root = await createContainer({
+      "aaa-shell": { "README.md": "shell only\n" },
+      "lager-manager": { "src/App.tsx": FLAG_ON },
+    });
+
+    // No member prefix: read literally, out of whichever repository the identity resolved in.
+    const bare = await verdictOf(root, ALPHA_PRESENT);
+    expect(bare.outcome).toBe("stale");
+    expect(JSON.stringify(bare.premiseViolations)).not.toContain("resolved inside workspace member");
+
+    // Names a member that is not the one the identity resolved in: NOT re-rooted into it. Reading the
+    // named sibling anyway would be a silent guess about which repository the card meant.
+    const otherMember = await verdictOf(root, '{"kind":"file-exists","path":"lager-manager/src/App.tsx"}');
+    expect(otherMember.outcome).toBe("stale");
+    expect(JSON.stringify(otherMember.premiseViolations)).not.toContain("resolved inside workspace member");
+  }, 30_000);
+
+  it("reports a re-rooted path that is absent as stale, naming the written and the resolved path", async () => {
+    const root = await createContainer({ "lager-manager": { "src/App.tsx": FLAG_OFF } });
+
+    const verdict = await verdictOf(root, '{"kind":"file-exists","path":"lager-manager/src/Gone.java"}');
+    /*
+    `stale`, asserted on purpose. The engine DID look, inside the right repository at the right commit,
+    and got a definitive "not there" — the same fact that has always been `stale` for a single-repo
+    card. `unavailable` would claim it could not look, which releases the refusal with no episode and no
+    replan, so the card would be retried forever on a plan nobody is ever asked to correct.
+    */
+    expect(verdict.outcome).toBe("stale");
+    expect(verdict.detail).toContain("lager-manager/src/Gone.java");
+    expect(verdict.detail).toContain("resolved inside workspace member \"lager-manager\" as \"src/Gone.java\"");
+    // The episode signature stays keyed to the path the plan actually states.
+    expect(verdict.premiseViolations[0]?.premise.path).toBe("lager-manager/src/Gone.java");
+  }, 30_000);
+
+  it("leaves a single-repo card on the untouched path and reason", async () => {
+    const root = await createRepo({ "src/App.tsx": FLAG_OFF });
+
+    const verdict = await verdictOf(root, ALPHA_PRESENT, { baseBranch: "main" });
+    expect(verdict.outcome).toBe("stale");
+    // Byte-identical reason and identity clause: no member, no re-root, no extra wording.
+    expect(verdict.premiseViolations[0]?.reason).toBe("literal not found in file");
+    expect(verdict.detail).toMatch(/Evaluated at declared base main at [0-9a-f]{8}/);
+    expect(verdict.detail).not.toContain("resolved inside workspace member");
+  }, 30_000);
 });
