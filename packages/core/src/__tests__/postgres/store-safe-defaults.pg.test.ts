@@ -59,15 +59,22 @@ pgDescribe("TaskStore PostgreSQL safe-default removal", () => {
     });
     await store.deleteTask(task.id);
 
+        /*
+    FNXC:ForkedProductLine 2026-10-05-11:29 (merge origin/main): this fork retired task archiving
+    (FN-9187) and its refusal sentences now read "is deleted or historical — ... read-only", so the
+    upstream `archived.*read-only` pattern cannot match a source line that no longer uses the word.
+    The alternation keeps asserting the real invariant (the write is refused as read-only) without
+    resurrecting retired vocabulary; the `logEntry` assertion below already used this shape.
+    */
     await expect(store.logEntry(task.id, "must reject")).rejects.toThrow(/(?:archived|historical).*read-only/);
     await expect(store.moveTask(task.id, "todo")).rejects.toThrow(/archived|soft-deleted|not found/);
     await expect(store.updateTask(task.id, { priority: "high" })).rejects.toThrow(/archived|soft-deleted|not found/);
-    await expect(store.addComment(task.id, "must reject", "user")).rejects.toThrow(/archived.*read-only/);
-    await expect(store.updateTaskComment(task.id, commentId!, "must reject")).rejects.toThrow(/archived.*read-only/);
-    await expect(store.deleteTaskComment(task.id, commentId!)).rejects.toThrow(/archived.*read-only/);
-    await expect(store.upsertTaskDocument(task.id, { key: "spec", content: "must reject" })).rejects.toThrow(/archived.*read-only/);
-    await expect(store.deleteTaskDocument(task.id, "spec")).rejects.toThrow(/archived.*read-only/);
-    await expect(store.updateArtifact(artifact.id, { title: "must reject" })).rejects.toThrow(/archived.*read-only/);
+    await expect(store.addComment(task.id, "must reject", "user")).rejects.toThrow(/(?:archived|historical).*read-only/);
+    await expect(store.updateTaskComment(task.id, commentId!, "must reject")).rejects.toThrow(/(?:archived|historical).*read-only/);
+    await expect(store.deleteTaskComment(task.id, commentId!)).rejects.toThrow(/(?:archived|historical).*read-only/);
+    await expect(store.upsertTaskDocument(task.id, { key: "spec", content: "must reject" })).rejects.toThrow(/(?:archived|historical).*read-only/);
+    await expect(store.deleteTaskDocument(task.id, "spec")).rejects.toThrow(/(?:archived|historical).*read-only/);
+    await expect(store.updateArtifact(artifact.id, { title: "must reject" })).rejects.toThrow(/(?:archived|historical).*read-only/);
     await expect(store.registerArtifact({
       type: "document",
       title: "must reject",

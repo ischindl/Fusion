@@ -1,3 +1,7 @@
+import { createLogger } from "../process/logger.js";
+
+const schemaApplierLog = createLogger("schema-applier");
+
 /**
  * PostgreSQL schema applier.
  *
@@ -398,8 +402,24 @@ export function assertBinaryNotOlderThanDatabase(applied: readonly string[]): vo
       highestRaw = version;
     }
   }
+  /*
+  FNXC:ForkedProductLine 2026-10-05-11:29 (merge origin/main, adopted from upstream):
+  A database newer than this binary is WARN-ONLY, never fatal. This line is a permanently
+  feature-reduced fork that will routinely open a database carrying migration slots it will
+  never implement (upstream's own 0085 header documents the same shape), and a hard throw here
+  bricked every open - including an ordinary upgrade-then-rollback - with StaleBinarySchemaError
+  telling the operator to upgrade a binary that is intentionally behind. Unknown tables/columns
+  are ignored rather than written to, so continuing is safe. Our own contract already said this:
+  schema-applier.test.ts asserts `not.toThrow()` for a newer version and states "it's warn-only
+  (padding included)". No test anywhere asserted the throw.
+  */
   if (highest > binaryVersion) {
-    throw new StaleBinarySchemaError(highestRaw, SCHEMA_BASELINE_VERSION);
+    schemaApplierLog.warn(
+      `database has schema migration ${highestRaw} applied, but this binary only knows up to `
+      + `${SCHEMA_BASELINE_VERSION}. Continuing: this binary intentionally does not implement every `
+      + `migration slot a full-featured build owns, and unknown tables/columns are ignored rather than `
+      + `written to.`,
+    );
   }
 }
 
