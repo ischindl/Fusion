@@ -1188,3 +1188,58 @@ Narrow Files windows use the same single-pane list/editor behavior as mobile eve
   font-size: calc(var(--space-sm) + var(--space-xs) * 0.5);
   font-family: var(--font-mono);
 }
+
+/*
+FNXC:FileBrowserUpload 2026-09-05-15:57:
+RUFU-189 upload affordance. The hidden file input is display:none for safety beyond the bare
+[hidden] UA rule; the dismissible status strip renders per-file upload verdicts (failures name
+the file plus reason) so a partial batch never fails silently, reusing the same semantic
+tokens as the dialog error block.
+*/
+.file-browser-upload-input {
+  display: none;
+}
+
+.file-browser-upload-status {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  margin: var(--space-sm) var(--space-md) 0;
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-sm);
+  font-size: calc(var(--space-md) + var(--space-xs) * 0.25);
+  line-height: 1.4;
+}
+
+.file-browser-upload-status--error {
+  color: var(--color-error);
+  background: color-mix(in srgb, var(--color-error) 10%, transparent);
+}
+
+.file-browser-upload-status--success {
+  color: var(--color-success);
+  background: color-mix(in srgb, var(--color-success) 10%, transparent);
+}
+
+.file-browser-upload-status-lines {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--space-xs) * 0.5);
+}
+
+.file-browser-upload-status-lines span {
+  overflow-wrap: anywhere;
+}
+
+.file-browser-upload-status-dismiss {
+  display: flex;
+  align-items: center;
+  padding: var(--space-xs);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}

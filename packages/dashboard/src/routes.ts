@@ -1021,7 +1021,7 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
   registrarMounter.mount("registerGitGitHubRoutes", () => registerGitGitHubRoutes(routeContext));
   registrarMounter.mount("registerGitLabRoutes", () => registerGitLabRoutes(routeContext));
   registrarMounter.mount("registerJiraRoutes", () => registerJiraRoutes(routeContext));
-  registrarMounter.mount("registerFilesTerminalWorkspaceRoutes", () => registerFilesTerminalWorkspaceRoutes(routeContext));
+  registrarMounter.mount("registerFilesTerminalWorkspaceRoutes", () => registerFilesTerminalWorkspaceRoutes({ ...routeContext, workspaceUpload: upload }));
   registrarMounter.mount("registerAgentsProjectsNodesRoutes", () => registerAgentsProjectsNodesRoutes(routeContext));
   registrarMounter.mount("registerPluginsAutomationRoutes", () => registerPluginsAutomationRoutes(routeContext, { parseLastEventId, replayBufferedSSE, getCreateFnAgent: () => createFnAgentForRefine }));
   registrarMounter.mount("registerApprovalRoutes", () => registerApprovalRoutes(routeContext));

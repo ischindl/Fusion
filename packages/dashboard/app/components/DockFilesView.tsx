@@ -171,6 +171,13 @@ export function DockFilesView({ projectId, openFile, layout = "auto" }: DockFile
           onRefresh={refresh}
           projectId={projectId}
           showProjectFileControls
+          /*
+          FNXC:FileBrowserUpload 2026-09-05-16:11:
+          RUFU-189: the right-dock Files tab and its expand pop-out share this view and are
+          first-class file surfaces, so uploads are enabled here (Settings pickers, which also
+          reuse FileBrowser, deliberately leave allowUpload off).
+          */
+          allowUpload
         />
       </div>
 

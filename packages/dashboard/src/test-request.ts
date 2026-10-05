@@ -48,6 +48,17 @@ export async function request(
   body?: Buffer | string,
   headers: Record<string, string> = {},
   rawBody: Buffer | undefined = undefined,
+  /*
+  FNXC:FileBrowserUpload 2026-09-05-15:01:
+  Optional hook invoked after the body bytes are delivered but before the stream 'end' event.
+  multer (and any drain-before-respond middleware) aborts an over-limit upload but defers its
+  response until the request 'end' arrives AFTER its abort listener registered; the harness's
+  synchronous data+end pair means such aborts register too late and the response never comes.
+  A hook lets one test stage the mid-upload client timing a real socket produces, while every
+  other caller sees byte-identical behavior to before (an awaited no-op callback only adds a
+  microtask before 'end').
+  */
+  onBodyDelivered?: (req: http.IncomingMessage) => Promise<void>,
 ): Promise<TestResponse> {
   const normalizedBody = normalizeBody(body);
   const socket = new MockSocket();
@@ -114,9 +125,12 @@ export async function request(
 
   app(req, res);
 
-  process.nextTick(() => {
+  process.nextTick(async () => {
     if (normalizedBody) {
-    req.emit("data", normalizedBody);
+      req.emit("data", normalizedBody);
+    }
+    if (onBodyDelivered) {
+      await onBodyDelivered(req);
     }
     req.complete = true;
     req.emit("end");

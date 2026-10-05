@@ -1556,7 +1556,10 @@
     "collapseArchivedTitle": "Contraer tareas archivadas",
     "expandArchivedLabel": "Expandir tareas archivadas",
     "expandArchivedTitle": "Expandir tareas archivadas",
-    "failedToArchive": "No se pudieron archivar las tareas"
+    "failedToArchive": "No se pudieron archivar las tareas",
+    "archiveAllMessage_one": "",
+    "archivedTasks_one": "",
+    "archivedTasksWithSkips_one": ""
   },
   "commandCenter": {
     "activity": {
@@ -2559,7 +2562,25 @@
     "upOneLevel": "Subir un nivel",
     "workspaceProject": "Proyecto",
     "previewOnly": "Solo vista previa",
-    "previewTitle": "Vista previa de {{file}}"
+    "previewTitle": "Vista previa de {{file}}",
+    "upload": "",
+    "uploadCollisionMessage": "",
+    "uploadCollisionMore_one": "",
+    "uploadCollisionMore_other": "",
+    "uploadCollisionTitle": "",
+    "uploadFailed": "",
+    "uploadFiles": "",
+    "uploadFilesInput": "",
+    "uploading": "",
+    "uploadKeptOld_one": "",
+    "uploadKeptOld_other": "",
+    "uploadReplace": "",
+    "uploadReplacing": "",
+    "uploadStatusDismiss": "",
+    "uploadSummary_one": "",
+    "uploadSummary_other": "",
+    "uploadTitle": "",
+    "uploadTooLarge": ""
   },
   "fileEditor": {
     "autoSave": "",
@@ -3439,7 +3460,6 @@
     "statusReplan": "Replanificar",
     "statusWaiting": "",
     "statusWaitingOn": "",
-    "bulkDeleteSummary": "",
     "archiveSelected": "Archivar seleccionadas",
     "archiveSelectedTitle": "Archivar las tareas seleccionadas que están completadas",
     "archiveUnavailable": "La acción de archivar no está disponible",
@@ -3452,7 +3472,9 @@
     "bulkDeleteArchiveSummary": "{{archived}} archivadas, {{deleted}} eliminadas, {{failed}} fallidas",
     "bulkDeleteNoTasks": "No se puede eliminar ninguna tarea seleccionada (se excluyen las archivadas)",
     "bulkDeleteWithDoneMessage": "¿Eliminar {{deletable}} tarea(s), o archivar las {{done}} tarea(s) completadas y eliminar el resto?",
-    "lineageArchiveMessage": "{{taskId}} tiene hijos de linaje ({{children}}) que lo referencian como padre de origen.\n\n¿Archivar de todos modos desvinculando primero estas referencias?"
+    "lineageArchiveMessage": "{{taskId}} tiene hijos de linaje ({{children}}) que lo referencian como padre de origen.\n\n¿Archivar de todos modos desvinculando primero estas referencias?",
+    "bulkArchiveDone_one": "",
+    "bulkArchiveMessage_one": ""
   },
   "mailbox": {
     "agent": "Agente",
