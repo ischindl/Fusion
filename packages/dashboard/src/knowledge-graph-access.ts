@@ -1,6 +1,9 @@
 import { stat } from "node:fs/promises";
 import {
   buildKnowledgeGraph,
+  runKnowledgeGraphBuild,
+  runKnowledgeGraphBuildInProcess,
+  KnowledgeGraphBuildOffloadUnavailableError,
   KnowledgeGraphError,
   loadArtifacts,
   resolveKnowledgeGraphDir,
@@ -87,9 +90,31 @@ export async function rebuildProjectKnowledgeGraph(store: TaskStore, options: { 
   const active = rebuilds.get(graphDir);
   if (active) return active;
   const rebuild = (async () => {
-    const built = await buildKnowledgeGraph({ projectRoot: store.getRootDir(), graphDir, force: options.force });
+    /*
+    FNXC:KnowledgeGraph 2026-10-02-14:05:
+    A build is CPU-bound and was measured at 84.8% of this process for minutes, which is the difference
+    between a live board and one that answers `/api/health` in 3.5 s. Ask for the offloaded build; fall back
+    to the in-process one ONLY when the child cannot be used (source checkout, incomplete bundle, failed
+    spawn). A genuine build failure still propagates — swallowing it would report a graph that was never
+    written. `buildKnowledgeGraph` stays imported for the type behind `RebuildKnowledgeGraphResult`.
+    */
+    const built = await runKnowledgeGraphBuild({
+      projectRoot: store.getRootDir(),
+      graphDir,
+      force: options.force,
+      // The decision line lands in the server log: an offload that silently declines is the failure mode this
+      // whole change exists to remove, and it is invisible in every other signal.
+      log: (message) => console.warn(message),
+    }).catch(
+      (error: unknown) => {
+        if (error instanceof KnowledgeGraphBuildOffloadUnavailableError) {
+          return runKnowledgeGraphBuildInProcess({ projectRoot: store.getRootDir(), graphDir, force: options.force });
+        }
+        throw error;
+      },
+    );
     invalidateKnowledgeGraphCache(graphDir);
-    return { changed: built.changed, nodes: built.graph.nodes.length, edges: built.graph.edges.length, stats: built.stats };
+    return { changed: built.changed, nodes: built.nodes, edges: built.edges, stats: built.stats };
   })();
   rebuilds.set(graphDir, rebuild);
   try { return await rebuild; } finally { rebuilds.delete(graphDir); }
