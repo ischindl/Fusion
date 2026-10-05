@@ -3262,3 +3262,54 @@ void beforeAll;
  * stable for future plugin additions.)
  */
 const roadmapPluginInitHook = roadmapPluginSchemaInit;
+
+/*
+FNXC:MigrationVersionCollision 2026-10-05-11:29:
+The deploy question this renumbering raises cannot be answered by a fresh-apply test: on an empty
+database nothing is missing, so applying 0090 proves only that the file runs. Every applied FORK
+database is in a different shape - it recorded 0086-0089 against THIS line's meanings (0087 overlap-
+owner FK repair, 0088 review-lane ledger, 0089 the re-issued FN-9429 receipts) and has never seen
+slot 0090. So the fixture reproduces that shape deliberately: fully apply, then rewind to the last
+slot a fork database recorded by deleting the 0090 marker AND dropping the columns the step owns.
+The assertions are the deploy contract: the next open must apply exactly once, land both columns,
+record exactly one marker, and then be a no-op - drift-free by construction.
+*/
+describe("schema-applier: upgrade from a fork database recorded at 0089 (production shape)", () => {
+  let ctx: TestContext | null = null;
+  afterEach(async () => {
+    await teardownDb(ctx);
+    ctx = null;
+  });
+
+  it("applies exactly 0090 once, lands the readiness columns, then settles", async () => {
+    ctx = await setupFreshDb();
+    await applySchemaBaseline(ctx.db, { pluginHooks: [] });
+
+    await ctx.db.execute(sql.raw(`
+      ALTER TABLE project.pull_requests DROP COLUMN IF EXISTS readiness;
+      ALTER TABLE project.pull_requests DROP COLUMN IF EXISTS readiness_provider;
+      DELETE FROM public.fusion_schema_migrations WHERE version = '0090';
+    `));
+    const markerColumn = async () => ((await ctx!.db.execute(sql`
+      SELECT count(*)::int AS count FROM public.fusion_schema_migrations WHERE version = ${PULL_REQUEST_READINESS_VERSION}
+    `)) as unknown as Array<{ count: number }>)[0].count;
+    const columnNames = async () => ((await ctx!.db.execute(sql`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_schema = 'project' AND table_name = 'pull_requests'
+        AND column_name IN ('readiness', 'readiness_provider')
+      ORDER BY column_name
+    `)) as unknown as Array<{ column_name: string }>).map((r) => r.column_name);
+
+    expect(await markerColumn()).toBe(0);
+    expect(await columnNames()).toEqual([]);
+
+    const upgraded = await applySchemaBaseline(ctx.db, { pluginHooks: [] });
+    expect(upgraded.applied).toBe(true);
+    expect(await markerColumn()).toBe(1);
+    expect(await columnNames()).toEqual(["readiness", "readiness_provider"]);
+
+    const settled = await applySchemaBaseline(ctx.db, { pluginHooks: [] });
+    expect(settled.applied).toBe(false);
+    expect(await markerColumn()).toBe(1);
+  });
+});
