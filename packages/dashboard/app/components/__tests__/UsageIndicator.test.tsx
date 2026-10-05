@@ -754,7 +754,7 @@ describe("UsageIndicator", () => {
     expect(refreshBtn).toBeDisabled();
   });
 
-  it("passes autoRefresh option based on isOpen prop", () => {
+  it("gates both polling and reading on the isOpen prop", () => {
     mockUseUsageData.mockReturnValue(createUsageDataState({
       providers: [],
       loading: false,
@@ -769,7 +769,10 @@ describe("UsageIndicator", () => {
     // When isOpen is true, autoRefresh should be true
     const { unmount } = render(<UsageIndicator isOpen={true} onClose={mockOnClose} projectId={TEST_PROJECT_ID} />);
 
-    expect(mockUseUsageData).toHaveBeenCalledWith({ autoRefresh: true });
+    // RUFU-493: `enabled` travels with `autoRefresh`. The view is mounted closed on every boot, and the
+    // hook's initial fetch ignored `autoRefresh` — that is what put a 61-82s /api/usage read on every board
+    // mount, per tab.
+    expect(mockUseUsageData).toHaveBeenCalledWith({ autoRefresh: true, enabled: true });
 
     unmount();
 
@@ -779,9 +782,9 @@ describe("UsageIndicator", () => {
     // When isOpen is false, autoRefresh should be false to prevent polling
     render(<UsageIndicator isOpen={false} onClose={mockOnClose} projectId={TEST_PROJECT_ID} />);
 
-    // The hook is called even when isOpen is false because hooks must be called
-    // unconditionally at the top level in React
-    expect(mockUseUsageData).toHaveBeenCalledWith({ autoRefresh: false });
+    // The hook is still called (hooks must be called unconditionally at the top level in React) but it is
+    // told to read nothing, which is the whole point of RUFU-493.
+    expect(mockUseUsageData).toHaveBeenCalledWith({ autoRefresh: false, enabled: false });
   });
 
   it("does not render a Connected badge for providers with ok status", () => {

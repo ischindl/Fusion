@@ -16,6 +16,17 @@ interface UseUsageDataOptions {
   pollInterval?: number;
   /** Whether to auto-refresh (default: true) */
   autoRefresh?: boolean;
+  /*
+  FNXC:UsageFetchGating 2026-10-02-11:05 (RUFU-493):
+  `autoRefresh` gated only the POLL. The initial fetch ran on mount regardless, and `UsageIndicator` is
+  rendered with `isOpen={false}` on every dashboard boot — so `GET /api/usage` was fired on every board
+  mount even though nobody had opened Usage. Measured on the production dashboard: 61.8s and 81.7s to
+  completion, holding two of the four client read slots for over a minute while the board cards waited
+  behind it, and the operator runs one tab per project, so a refresh-everything multiplies it.
+  `enabled` gates ALL fetching — the initial fetch, the poll, and it aborts a request still in flight when
+  the view closes, which is what frees the slot.
+  */
+  enabled?: boolean;
 }
 
 /**
@@ -29,11 +40,13 @@ interface UseUsageDataOptions {
  * - Cleanup on unmount
  */
 export function useUsageData(options: UseUsageDataOptions = {}) {
-  const { pollInterval = 30_000, autoRefresh = true } = options;
+  const { pollInterval = 30_000, autoRefresh = true, enabled = true } = options;
 
   const [state, setState] = useState<UsageDataState>({
     providers: [],
-    loading: true,
+    // A closed Usage view has not started loading; reporting `loading` there renders a spinner for a
+    // request that will never be made.
+    loading: enabled,
     error: null,
     lastUpdated: null,
     hasFetched: false,
@@ -63,7 +76,7 @@ export function useUsageData(options: UseUsageDataOptions = {}) {
     }
 
     try {
-      const { providers } = await fetchUsageData();
+      const { providers } = await fetchUsageData(abortRef.current.signal);
       setState({
         providers,
         loading: false,
@@ -93,10 +106,24 @@ export function useUsageData(options: UseUsageDataOptions = {}) {
     }
   }, [shouldSuppressVisibilityResumeError]);
 
-  // Initial fetch
+  // Initial fetch — and the fetch that a newly-opened view needs, since mount happened closed.
   useEffect(() => {
+    if (!enabled) return;
     fetchData();
-  }, [fetchData]);
+  }, [enabled, fetchData]);
+
+  /*
+  FNXC:UsageFetchGating 2026-10-02-11:05 (RUFU-493):
+  Closing the view must also stop the work already running. `/api/usage` measured 61-82s on the production
+  board, so without this abort the read slot stays occupied for a minute after the operator closed Usage —
+  in a multi-tab session that is the difference between a queue that drains and one that never does.
+  */
+  useEffect(() => {
+    if (!enabled && abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+  }, [enabled]);
 
   /*
   FNXC:MobileTabRetention 2026-07-26-11:00:
@@ -108,7 +135,7 @@ export function useUsageData(options: UseUsageDataOptions = {}) {
   const pollUsage = useCallback(() => {
     void fetchData(false);
   }, [fetchData]);
-  useVisibilityAwarePoll(pollUsage, pollInterval, { enabled: autoRefresh });
+  useVisibilityAwarePoll(pollUsage, pollInterval, { enabled: autoRefresh && enabled });
 
   // Cleanup on unmount
   useEffect(() => {

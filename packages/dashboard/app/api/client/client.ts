@@ -3,6 +3,7 @@
  * Dashboard API client core (fetch wrapper + ApiRequestError).
  */
 import { getAuthToken, withTokenHeader } from "../../auth";
+import { readPriorityClass, scheduleRead } from "./read-scheduler.js";
 import type { DedupeOptions } from "./dedupe.js";
 // FNXC:TaskDeleteAttribution 2026-07-26-17:05: import the browser-safe leaf, not the package root — the root alias resolves to `core/src/types.ts` in the client bundle and does not carry these constants.
 import { FUSION_CLIENT_HEADER, FUSION_DASHBOARD_UI_CLIENT } from "@fusion/core/task-delete-attribution";
@@ -11,8 +12,7 @@ import { FUSION_CLIENT_HEADER, FUSION_DASHBOARD_UI_CLIENT } from "@fusion/core/t
  * FNXC:DashboardApi 2026-07-15-13:25:
  * Options accepted by deduped fetchers. Pass `{ forceFresh: true }` after a
  * mutation to bypass any in-flight pre-mutation request and force a new one.
- */
-export type FetchOptions = DedupeOptions;
+ */export type FetchOptions = DedupeOptions;
 
 export class ApiRequestError extends Error {
   readonly status: number;
@@ -116,10 +116,18 @@ export async function api<T = unknown>(path: string, opts: RequestInit = {}): Pr
     return Object.fromEntries(defaultHeaders.entries());
   })();
 
-  const res = await fetch(url, {
-    ...opts,
-    headers,
-  });
+  /*
+   * FNXC:BoardBootstrap 2026-10-02-02:05:
+   * GETs are dispatched through the bounded read queue so a cold mount's ~20 DISTINCT endpoint calls
+   * cannot all hit the server at once. Measured in a real browser on the deployed build: 19 concurrent
+   * GETs at t≈0.9s, every one of them then 13-17s, cards visible only at 14-19s. Mutations bypass the
+   * queue — saving must never wait behind a slow read.
+   */
+  const method = (opts.method ?? "GET").toUpperCase();
+  const send = () => fetch(url, { ...opts, headers });
+  const res = method === "GET"
+    ? await scheduleRead(readPriorityClass(path), send, opts.signal ?? undefined)
+    : await send();
 
   /*
    * FNXC:DashboardApi 2026-07-15-13:25:
