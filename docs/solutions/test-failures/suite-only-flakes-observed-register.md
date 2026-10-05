@@ -871,32 +871,24 @@ self-tests spawned `pnpm --filter @fusion/dashboard test`, re-entering the suite
 
 ---
 
-## Entry: `executor-prompt` pause-resume agent-creation count (first sighting)
+## Entry: `executor-prompt` pause-resume agent-creation count (quarantined second sighting)
 
+- **Status:** Quarantined 2026-10-05 by FN-9510 under the deletion ratchet; delete the file, ledger row, and engine-default exclusion after 2026-10-19 unless a non-appeasement root-cause repair rescues it.
 - **File:** `packages/engine/src/__tests__/executor-prompt.test.ts`
 - **Exact test:** `TaskExecutor pause behavior > resumes unpaused in-progress task with no active session`
-- **Owner:** unowned — first sighting, recorded rather than quarantined because the file's remaining 113 tests are substantial coverage and quarantine is file-level.
-- **Observed tree/SHA:** `5769d5cd6` plus the then-uncommitted main-checkout-guard narrowing (guard classification, its audit metadata, and the workspace prompt string) — none of which this test exercises.
-- **Observed frequency:** once, and only when the file ran in the same vitest command as five other executor/workspace files. Passes deterministically alone (114/114).
+- **Observed trees/SHAs:** [run 33034719148](https://github.com/Runfusion/Fusion/actions/runs/33034719148) at `5769d5cd610e8830be24c4ede6eb79b38d2143c1`, and [run 37339500295](https://github.com/Runfusion/Fusion/actions/runs/37339500295) at `1a648d35d3987a6722b221e37df3084f75df6f0d`.
+- **Observed frequency:** two shard/multi-file sightings. The first record's six-file arrangement and the current isolated file both passed locally; the current hosted shard failed with 564 reported engine results.
 
-Verbatim observed failure:
+The second-sighting timing artifact [`11358593242`](https://github.com/Runfusion/Fusion/actions/runs/37339500295) reports the exact identity failed in 79.776822 ms at `executor-prompt.test.ts:1083:51` with `AssertionError: expected 0 to be greater than or equal to 2`. Post-merge artifact `11359244080` confirms it was the only failed engine identity in shard 2. The original assertion is retained unchanged; only routine engine-default discovery excludes the file.
 
-```
-FAIL |engine-default| src/__tests__/executor-prompt.test.ts > TaskExecutor pause behavior > resumes unpaused in-progress task with no active session
-AssertionError: expected 0 to be greater than or equal to 2
- ❯ src/__tests__/executor-prompt.test.ts:1047:51
-```
-
-| run | result |
+| evidence | result |
 |---|---|
-| six files in one command (`task-done-refusal-x-invariant`, `executor-workspace`, `executor-prompt`, `verify-worktree-invariants-missing`, `executor-workspace-config-propagation`, `executor-workspace-capture`) | **failed** — 1 failed / 147 passed |
-| `executor-prompt.test.ts` alone, same tree | **passed** (114/114) |
+| first sighting: six files in one command (`task-done-refusal-x-invariant`, `executor-workspace`, `executor-prompt`, `verify-worktree-invariants-missing`, `executor-workspace-config-propagation`, `executor-workspace-capture`) | **failed** — 1 failed / 147 passed |
+| first sighting: `executor-prompt.test.ts` alone | **passed** (114/114) |
+| FN-9510: current `executor-prompt.test.ts` alone | **passed** in 6.3s |
+| FN-9510: documented six-file engine-default arrangement | **passed** in 8.6s |
 
-The assertion counts `createFnAgent` calls after a resume and observed ZERO, so the resume path never
-reached agent creation at all — reads as module-mock ownership racing across files that share the
-`@fusion/core` agent-factory mock, not a wait that needs lengthening. No timeout was widened, no retry
-added, and no assertion relaxed. A SECOND sighting is an ordinary on-sight quarantine with no further
-discretion, per the standing rule in AGENTS.md.
+The assertion counts `createFnAgent` calls after a resume and observed zero only in broad shard/multi-file execution. FN-9510 traced the production `task:updated` listener through its synchronous single-flight claim, pause/dependency admission, active session/graph re-check, resume log, and graph-owned execution handoff; no reachable resume invariant violation was found. No timeout was widened, no retry added, and no assertion relaxed. This is therefore a file-level quarantine rather than a product repair, with healthy coverage intentionally excluded until the 14-day deletion deadline.
 
 ### 15. `packages/cli/src/__tests__/package-config.test.ts` > `shipped agent skills` > `keeps computer-use in the published skill tree`
 
@@ -981,3 +973,13 @@ Both assertions depend on real-timer `waitFor` windows around deferred preview/a
 loaded worker reads as scheduling pressure rather than a product race. No timeout was widened, no retry
 added, and no assertion relaxed. A SECOND sighting is an ordinary on-sight quarantine with no further
 discretion, per the standing rule in AGENTS.md.
+
+## Entry: PlanningModeModal 'reconnect' recovery, pool-dependent (first sighting)
+
+- **File:** `packages/dashboard/app/components/__tests__/PlanningModeModal.planning-flow.test.tsx`
+- **Exact test:** `PlanningModeModal sequential flow > keeps 'reconnect' stream-error recovery when stale duplicate reconciliation resolves on 'mobile'`
+- **Owner:** unowned — recorded rather than quarantined, per the first-sighting exception: the file retains 83 passing tests, so a file-level quarantine would evict substantial coverage over one observation. A SECOND sighting is an ordinary on-sight quarantine with no further discretion.
+- **Observed tree/SHA:** recorded while completing the merge of `main` ← `origin/main 33945a9270` (FN-9511) onto `61b7bd271b`. The conflicted hunk resolved in this merge was in a DIFFERENT test of the same file (the `Next`-button readiness hunk), so the failing case was not edited by this change.
+- **Observed frequency:** 1 of 4 runs, and only under one invocation path: `pnpm --filter @fusion/dashboard exec vitest run <file>` fails (project `dashboard-app-quality-backfill`), while `npx vitest run <file>` from `packages/dashboard` passed 84/84 twice. Same file, same code, different pool assignment.
+- **Root cause hypothesis (not proven):** pool/shard-dependent state leaking between files that share the mock dashboard lane — the same shape FN-9510 just quarantined for pause/resume and FN-9511 tried to stabilise here. It is NOT a widened-wait problem, so no timeout was touched, no retry added, and no assertion relaxed.
+- **What a second sighting should do:** add the `scripts/lib/test-quarantine.json` entry plus the matching vitest-config `exclude` in the same commit, per AGENTS.md. Do not "fix" it by adding an `await`.

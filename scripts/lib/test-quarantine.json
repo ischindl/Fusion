@@ -20,6 +20,11 @@
       "file": "packages/dashboard/app/components/__tests__/TaskPlannerChatTab.virtualization.test.tsx",
       "reason": "First on-sight quarantine: upstream FN-304 test captured no IntersectionObserver callback under components-dir load (assertion at :164 `expected undefined to be type of 'function'`), passes isolated 5/5. Coverage is 5 load-sensitive tests, so the register's substantial-coverage exception does not apply.",
       "quarantinedAt": "2026-09-07"
+    },
+    {
+      "file": "packages/engine/src/__tests__/executor-prompt.test.ts",
+      "reason": "Second sightings: https://github.com/Runfusion/Fusion/actions/runs/33034719148 (5769d5cd610e8830be24c4ede6eb79b38d2143c1) and https://github.com/Runfusion/Fusion/actions/runs/37339500295 (1a648d35d3987a6722b221e37df3084f75df6f0d); TaskExecutor pause-resume agent-creation count was zero only in shard/multi-file execution.",
+      "quarantinedAt": "2026-10-05"
     }
   ]
 }
