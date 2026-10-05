@@ -224,10 +224,69 @@ const diffStatsCache = new Map<string, { stats: DiffStats; expiresAt: number }>(
 const CACHE_TTL_MS = 30_000; // 30 seconds
 ```
 
-- Key format: `"taskId:projectId"`
+- Key format: `"taskId:projectId:worktree:stepVersion:mode"` — identity only, never the stats-only transport flag (the server's `?stats=1` answers the same numbers under this key)
 - Entries expire after TTL to ensure freshness
 - Cache is checked before initiating fetch - returns immediately on hit
 - Export `__test_clearDiffStatsCache()` for testing
+
+### Server-side stats-only diff mode (RUFU-206)
+
+`useTaskDiffStats` calls `fetchTaskDiff(taskId, worktree, projectId, true)`, which adds `?stats=1` to
+`GET /api/tasks/:id/diff`. The server answers that request **without the per-file patch fan-out** and
+writes it to a server-side stats cache, because the card badge consumes only `stats.filesChanged` while the
+full-detail path paid one `git diff <spec> -- <path>` subprocess per changed file to produce patches nobody
+on a card renders.
+
+**Measured spawn cost the design rests on** (2026-09-09 production profile, dashboard live RSS 2.07 GB,
+24 cores; full table in `docs/solutions/performance/done-range-attribution-subprocess-batching.md`):
+
+| Condition | Main-thread CPU per subprocess spawn |
+|---|---|
+| 0.06 GB live RSS | 1.15 ms |
+| 2.02 GB live RSS (production dashboard) | **31.7 ms** |
+
+Spawn cost tracks the parent's live resident memory (vfork/execve page-table work), not the V8 heap cap.
+Before this change the board's 30 s active-column poll therefore burned ≥ 22 git spawns/s (~0.7 core, `spawn`
+= 41.8 % CPU self time, 0.77–3.4 s API latency, ~52,700 minor page faults/s). A scratch-repo control on
+this host measured 12 sequential path-limited diffs at 37.3 ms vs ONE whole-tree `git diff --numstat -z
+--no-renames` at 2.9 ms, with byte-identical additions/deletions totals.
+
+**Per-lane diff-body subprocess budget (stats mode).** Attribution (`git log` + one batched
+`--no-walk --name-only`, cached + coalesced per RUFU-207) and `resolveDiffBase` plumbing are additional,
+unchanged, and cached on every lane:
+
+| Lane | Diff-body spawns before | Diff-body spawns after (`?stats=1`) |
+|---|---|---|
+| Active worktree, F files | 3 + F (per-file patches, concurrency 8) | 3 name-status + 1 numstat = **4** (numstat skipped when the path set is empty) |
+| Landed/done aggregation over K resolved commit specs | K × (1 name-status + F per-spec patches, serial) | K × (1 name-status + 1 numstat) = **2K** |
+| Rebase-range / commit-shape range | 1 + F (serial) | **2** |
+| Branch-ref fallback (worktree gone) | 1 + F (serial) | **2** |
+| Landed last-resort shortstat | 1 | **1** (already O(1), unchanged) |
+| Workspace, R sub-repos | R × lane cost | R × lane constant — never O(R × files) |
+| Server stats-cache hit | n/a (no cache existed) | **0** total |
+
+The whole-tree numstat is **joined onto the existing `--name-status` path set**, never used as a bare
+total, because a raw `diff --numstat base..HEAD` would count foreign commits' files on shared branches —
+the own-task attribution filter must run first (see `docs/architecture.md` → "Done-task files-changed
+sources of truth"). The diff-body spawn count is independent of the number of changed files: a 3-file and
+a 12-file card cost identically (pinned by a spawn-count test).
+
+**Server stats cache** (`register-session-diff-routes.ts`, keyed `task.id | task.column |
+resolved worktree | mergeDetails.commitSha | mergeDetails.rebaseBaseSha`):
+
+- TTL **10 s** — at parity with `sessionFilesCache`/`fileDiffsCache` and the attribution cache, so this
+  layer never compounds staleness beyond what already exists; the client cache is 30 s, so nothing
+  observable gets staler than today.
+- Read **before** the lane dispatch, so a cache-served badge poll performs zero git subprocesses
+  (including attribution and base resolution).
+- A column move, merge landing, or worktree swap changes the key and misses immediately — lane changes
+  need no invalidator. New commits inside an unchanged active worktree are visible ≤ 10 s late, which the
+  30 s poll cadence cannot observe (every poll outlives the TTL).
+- Only successful answers are written; plain `Map` with insertion-order eviction, injectable clock, and a
+  `__resetTaskDiffStatsCacheForTests()` hook (mirrors the RUFU-207 attribution cache idiom).
+
+The unparameterized `/diff` route and `/tasks/:id/file-diffs` still return full patches byte-identically
+for the Changes tab and diff viewer; `TaskChangesTab` never sets the stats flag (asserted in tests).
 
 ## Files Modified
 

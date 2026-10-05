@@ -1063,6 +1063,9 @@ export type {
   TaskCommitAssociationRow,
   TaskCommitAssociationsResponse,
   TaskDiff,
+  TaskDiffResponse,
+  TaskDiffStats,
+  TaskDiffStatsResponse,
   TaskFileDiff,
 } from "./tasks/task-diff.js";
 
