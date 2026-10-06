@@ -103,4 +103,59 @@ describe("ResearchRunDispatcher", () => {
     await vi.advanceTimersByTimeAsync(300);
     expect(startRun).toHaveBeenCalledTimes(callsAfterStop);
   });
+
+  it("does not stack store reads while a pass is suspended", async () => {
+    /*
+    FNXC:ResearchDispatcher 2026-10-06-09:34 (RUFU-588 follow-up):
+    Regression for the measured pile: a live heap snapshot at 25 minutes of process life held
+    1 125 suspended `listResearchRuns` frames because every interval fired another poll while the
+    previous one was still awaiting the store. This asserts the invariant, not the repro: a suspended
+    pass must never admit a second concurrent store read, and the poll must resume afterwards.
+    */
+    vi.useFakeTimers();
+    let resolveList: ((value: ResearchRun[]) => void) | undefined;
+    const listRuns = vi.fn(() => new Promise<ResearchRun[]>((resolve) => { resolveList = () => resolve([]); }));
+    const store = { listRuns } as unknown as ResearchStore;
+    const startRun = vi.fn(async () => ({ id: "RR-none" } as ResearchRun));
+    const orchestrator = { startRun } as unknown as ResearchOrchestrator;
+
+    const dispatcher = new ResearchRunDispatcher({ store, orchestrator, tickIntervalMs: 10 });
+    dispatcher.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(listRuns).toHaveBeenCalledTimes(1);
+
+    // Twenty minutes of intervals while the first read is still in flight: still exactly one read.
+    await vi.advanceTimersByTimeAsync(1_200_000);
+    expect(listRuns).toHaveBeenCalledTimes(1);
+
+    resolveList?.([]);
+    const resumedFrom = listRuns.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(1_000);
+    // The exact tick count depends on where the interval boundary lands after the resolution, so the
+    // invariant asserted here is "polling resumed", not a counted number of ticks.
+    expect(listRuns.mock.calls.length).toBeGreaterThan(resumedFrom);
+    await dispatcher.stop();
+  });
+
+  it("resumes polling after a failing read instead of wedging the overlap guard", async () => {
+    vi.useFakeTimers();
+    let fail = true;
+    const listRuns = vi.fn(async () => {
+      if (fail) throw new Error("connection pool timeout");
+      return [] as ResearchRun[];
+    });
+    const store = { listRuns } as unknown as ResearchStore;
+    const orchestrator = { startRun: vi.fn(async () => ({ id: "RR-none" } as ResearchRun)) } as unknown as ResearchOrchestrator;
+
+    const dispatcher = new ResearchRunDispatcher({ store, orchestrator, tickIntervalMs: 10 });
+    dispatcher.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(listRuns).toHaveBeenCalledTimes(1);
+
+    // The guard must be released on the throwing path too, or one bad read stops polling forever.
+    fail = false;
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(listRuns.mock.calls.length).toBeGreaterThan(1);
+    await dispatcher.stop();
+  });
 });
