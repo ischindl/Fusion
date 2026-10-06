@@ -8,6 +8,7 @@ import {
   AGENT_PERMISSION_POLICY_ACTION_CATEGORIES,
   AGENT_PERMISSIONS,
   aggregateTaskTokenTotalsByAgentLinkAsync,
+  countLiveTasks,
   getDefaultHeartbeatProcedurePath,
   isAgentPermissionPolicyPresetId,
   isEphemeralAgent,
@@ -429,22 +430,36 @@ export function registerAgentCoreRoutes(ctx: ApiRoutesContext, deps: AgentCoreRo
       the lanes the operator actually sees cannot drift apart.
       */
       const preWipColumns = [...await resolveProjectColumnsForRoles(scopedStore, ["intake", "hold"])] as ColumnId[];
-      const queuedTasks = await scopedStore.listTasks({
-        columns: preWipColumns,
-        includeArchived: false,
-        startupMemo: false,
-        /*
-        Counting rows needs no board badge. `derive: false` skips the nine per-row derivations and
-        `excludeLog: true` drops the heaviest column, both documented as safe for consumers that read
-        none of the derived signals (FNXC:ListTasksDeriveOptOut 2026-09-08-20:58 and
-        FNXC:ListTasksExcludeLog 2026-09-09-01:48). `slim` is deliberately NOT passed: it re-parses
-        PROMPT.md for every card whose persisted `steps` is empty, which is unbounded per-pass file
-        I/O for a number that needs no `steps` at all.
-        */
-        derive: false,
-        excludeLog: true,
-      });
-      const todoTaskCount = queuedTasks.length;
+      /*
+      FNXC:AgentStatsQueuedCount 2026-10-06-13:17 (RUFU-591):
+      RUFU-378 removed the per-card workflow-IR reads, but the counter still MATERIALIZED every queued
+      row to produce `.length`. Measured live on the RunFusion board the endpoint answered 157 bytes
+      after 7.62 s, and sampling `pg_stat_activity` during one call showed two full `project.tasks`
+      scans plus per-card `task_workflow_selection` reads; the project holds 565 rows / 42 MB while the
+      response is 157 bytes. The queue count is now the same SQL `COUNT(*)` the board lane pager
+      already runs for its `total` (`countLiveTasks`, reads.ts `listTaskQueuePageImpl`), so the number
+      the panel shows and the pager's total come from one primitive and neither hydrates a row.
+      The SQLite backend has no async layer, so that mode keeps the previous column-scoped read; it is
+      bounded by the local store and is the only path where row materialization remains.
+      */
+      const asyncLayer = scopedStore.getAsyncLayer();
+      const todoTaskCount = asyncLayer
+        ? await countLiveTasks(asyncLayer, { columns: preWipColumns })
+        : (await scopedStore.listTasks({
+          columns: preWipColumns,
+          includeArchived: false,
+          startupMemo: false,
+          /*
+          Counting rows needs no board badge. `derive: false` skips the nine per-row derivations and
+          `excludeLog: true` drops the heaviest column, both documented as safe for consumers that read
+          none of the derived signals (FNXC:ListTasksDeriveOptOut 2026-09-08-20:58 and
+          FNXC:ListTasksExcludeLog 2026-09-09-01:48). `slim` is deliberately NOT passed: it re-parses
+          PROMPT.md for every card whose persisted `steps` is empty, which is unbounded per-pass file
+          I/O for a number that needs no `steps` at all.
+          */
+          derive: false,
+          excludeLog: true,
+        })).length;
       res.json({
         activeCount,
         assignedTaskCount,

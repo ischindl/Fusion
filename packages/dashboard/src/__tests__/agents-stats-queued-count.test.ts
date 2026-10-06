@@ -17,6 +17,8 @@ const coreState = vi.hoisted(() => ({
     { id: "agent-active", name: "active-one", state: "active", taskId: "FN-10" },
     { id: "agent-idle", name: "idle-one", state: "idle" },
   ],
+  queuedCount: 42,
+  countLiveCalls: [] as Array<{ columns?: readonly string[] } | undefined>,
 }));
 
 vi.mock("@fusion/core", async (importOriginal) => {
@@ -30,16 +32,24 @@ vi.mock("@fusion/core", async (importOriginal) => {
       return { completedRuns: 7, failedRuns: 3 };
     }
   };
-  return { ...actual, AgentStore };
+  return {
+    ...actual,
+    AgentStore,
+    // The SQL COUNT(*) seam the board lane pager uses. Recording its scope is the RUFU-591 seam.
+    countLiveTasks: async (_layer: unknown, options?: { columns?: readonly string[] }) => {
+      coreState.countLiveCalls.push(options);
+      return coreState.queuedCount;
+    },
+  };
 });
 
 const { registerAgentCoreRoutes } = await import("../routes/register-agent-core-routes.js");
 
-function mount() {
+function mount(options?: { asyncLayer?: unknown }) {
   const router = express.Router();
   const store = {
     getFusionDir: () => "/tmp/fusion-agents-stats-test",
-    getAsyncLayer: () => null,
+    getAsyncLayer: () => options?.asyncLayer ?? null,
     // The project vocabulary walks definitions when the reader exists; reporting none keeps the
     // resolver on its legacy intake/hold vocabulary (todo + triage).
     listWorkflowDefinitions: vi.fn().mockResolvedValue([]),
@@ -104,5 +114,35 @@ describe("GET /api/agents/stats queued-count read shape", () => {
 
     expect(store.getTaskWorkflowSelection).not.toHaveBeenCalled();
     expect(store.getTaskWorkflowSelectionAsync).not.toHaveBeenCalled();
+  });
+
+  /*
+  FNXC:AgentStatsQueuedCount 2026-10-06-13:17 (RUFU-591):
+  RUFU-378 removed the per-card IR reads, but the counter still hydrated every queued row to produce
+  `.length`: 157 bytes of response measured at 7.62 s, with `pg_stat_activity` showing two full
+  `project.tasks` scans behind it (565 rows / 42 MB in the project). With the PostgreSQL async layer
+  the count is one SQL COUNT over the same lane vocabulary, and `listTasks` must not run at all.
+  */
+  it("counts queued cards with one SQL count instead of hydrating every queued row", async () => {
+    coreState.countLiveCalls.length = 0;
+    const { server, store } = mount({ asyncLayer: { projectId: "proj-test" } });
+
+    const response = await request(server, "GET", "/api/agents/stats");
+
+    expect(response.status).toBe(200);
+    expect(response.body.todoTaskCount).toBe(coreState.queuedCount);
+    expect(store.listTasks).not.toHaveBeenCalled();
+    expect(coreState.countLiveCalls).toHaveLength(1);
+    expect(coreState.countLiveCalls[0]?.columns).toEqual(expect.arrayContaining(["todo", "triage"]));
+  });
+
+  it("keeps the row-scoped read only where no async layer exists (SQLite backend)", async () => {
+    coreState.countLiveCalls.length = 0;
+    const { server, store } = mount();
+
+    await request(server, "GET", "/api/agents/stats");
+
+    expect(store.listTasks).toHaveBeenCalledTimes(1);
+    expect(coreState.countLiveCalls).toHaveLength(0);
   });
 });
