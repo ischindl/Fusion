@@ -193,6 +193,36 @@ function describeFields(ir: WorkflowIr): BoardWorkflowField[] | undefined {
   return fields;
 }
 
+/*
+FNXC:BoardLoad 2026-10-06-18:55 (RUFU-585):
+Both independent fan-outs in the board payload (per-card selection reads on the
+fallback path, and per-workflow IR description) used to be awaited inside a
+`for … of` loop, so a request paid the SUM of every round-trip instead of the
+slowest one. This bounded mapper keeps result order while running at most
+`limit` items at a time, so the fan-out is bounded by concurrency rather than by
+how many cards or workflows the board happens to reference.
+
+`github-tracking-reconciler.ts` has a private worker-pool limiter with the same
+shape but a `void` worker, so it cannot carry results. A shared util is the right
+home for this and is deliberately left as follow-up rather than widening two
+unrelated modules in a latency fix.
+*/
+const SELECTION_READ_CONCURRENCY = 8;
+const WORKFLOW_DESCRIBE_CONCURRENCY = 4;
+
+async function mapWithLimit<T, R>(items: T[], limit: number, worker: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex++;
+      results[index] = await worker(items[index] as T);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
 async function describeWorkflow(
   store: Pick<TaskStore, "getWorkflowDefinition">,
   workflowId: string,
@@ -309,23 +339,42 @@ export async function buildBoardWorkflowsPayload(
       batchedSelections = undefined;
     }
   }
-  for (const taskId of taskIds) {
-    let workflowId = defaultWorkflowId;
-    if (batchedSelections) {
-      const batchedWorkflowId = batchedSelections.get(taskId)?.workflowId;
-      if (batchedWorkflowId) workflowId = batchedWorkflowId;
-    } else {
-      try {
-        const selection = store.getTaskWorkflowSelectionAsync
-          ? await store.getTaskWorkflowSelectionAsync(taskId)
-          : store.getTaskWorkflowSelection(taskId);
-        if (selection?.workflowId) workflowId = selection.workflowId;
-      } catch {
-        workflowId = defaultWorkflowId;
-      }
+  /*
+  FNXC:BoardLoad 2026-10-06-18:55 (RUFU-585):
+  The degenerate branch awaited ONE selection read per card inside the loop, so a
+  board of N cards paid N serial round-trips on the request path. Characterized
+  against a counting store: 120 cards with no batched reader produced 120 awaited
+  selection reads. The batched reader is still preferred whenever the store
+  exposes it (that path stays exactly one query); this change only removes the
+  serial fan-out from the fallback, so an older/partial store degrades by read
+  COUNT, never by serial LATENCY.
+  */
+  if (batchedSelections) {
+    for (const taskId of taskIds) {
+      const workflowId = batchedSelections.get(taskId)?.workflowId ?? defaultWorkflowId;
+      taskWorkflowIds[taskId] = workflowId;
+      referenced.add(workflowId);
     }
-    taskWorkflowIds[taskId] = workflowId;
-    referenced.add(workflowId);
+  } else {
+    const resolvedWorkflowIds = await mapWithLimit(
+      taskIds,
+      SELECTION_READ_CONCURRENCY,
+      async (taskId): Promise<string> => {
+        try {
+          const selection = store.getTaskWorkflowSelectionAsync
+            ? await store.getTaskWorkflowSelectionAsync(taskId)
+            : store.getTaskWorkflowSelection(taskId);
+          return selection?.workflowId || defaultWorkflowId;
+        } catch {
+          return defaultWorkflowId;
+        }
+      },
+    );
+    taskIds.forEach((taskId, index) => {
+      const workflowId = resolvedWorkflowIds[index] ?? defaultWorkflowId;
+      taskWorkflowIds[taskId] = workflowId;
+      referenced.add(workflowId);
+    });
   }
 
   // The effective default is always describable so a no-task board still
@@ -346,10 +395,23 @@ export async function buildBoardWorkflowsPayload(
     severityAuditLog.warn("[board-workflows] listWorkflowDefinitions failed; using referenced workflows only", err);
   }
 
-  const workflows: BoardWorkflowDefinition[] = [];
-  for (const workflowId of referenced) {
-    workflows.push(await describeWorkflow(store, workflowId, selectableWorkflowIds.has(workflowId)));
-  }
+  /*
+  FNXC:BoardLoad 2026-10-06-18:55 (RUFU-585):
+  Describing a workflow compiles its IR (`resolveWorkflowIrById`), which is the
+  expensive half of this payload — measured as the slowest remaining board
+  request (13.2 s / 14.2 s for an 11 KB response, second call 10.3 s, so nothing
+  is cached across requests). Each referenced workflow is independent, so the
+  serial `for … await` made the request cost the SUM of every IR build instead of
+  the slowest one. Cross-request caching is deliberately NOT added here: prompt
+  overrides are project-scoped and a stale IR would silently render wrong lanes,
+  so the invalidation seam belongs at the definition-write path, not at this
+  read path.
+  */
+  const workflows = await mapWithLimit(
+    [...referenced],
+    WORKFLOW_DESCRIBE_CONCURRENCY,
+    (workflowId) => describeWorkflow(store, workflowId, selectableWorkflowIds.has(workflowId)),
+  );
 
   return {
     flagEnabled,
