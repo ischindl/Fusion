@@ -122,6 +122,89 @@ uses a fresh cache (fresh WeakMap slot) and is always observed.
 const inflightSelectionReads = new WeakMap<WorkflowSelectionCache, Map<string, Promise<WorkflowSelection | undefined>>>();
 
 /*
+FNXC:WorkflowScheduling 2026-10-06-08:56 (RUFU-588):
+The RUFU-073 coalescer above only helps callers that PASS a `selectionCache`. Measured from two live
+heap snapshots of the production dashboard: ~4 000 async frames were suspended on the workflow-IR
+selection read (`resolveWorkflowIrForTask` 2 003 + the provenance variant 2 014 + 1 963 queries still
+in flight inside drizzle), because the resolver has ~150 call sites and most pass no cache at all.
+The no-cache branch was deliberately live-per-call and cached nothing, so every concurrent caller
+issued its own SELECT and parked a frame — and each parked frame retained the batch of materialized
+tasks it had closed over, which is what grew the heap from 914 MB to 2.4 GB and OOM-killed the UI hourly.
+
+This is a coalescer, NOT a cache. The in-flight entry is removed in `finally`, so it cannot outlive the
+query it represents: a call arriving after an operator edits a workflow still reads fresh, which is the
+property `resolveWorkflowIrForTask` is documented on and the reason the old branch refused to cache.
+Keyed by the store, because a selection row is project-owned and each project scope owns its store; the
+map dies with the store, so there is no global retention and no cross-project bleed.
+*/
+const inflightUncachedSelectionReads = new WeakMap<WorkflowIrResolverStore, Map<string, Promise<WorkflowSelection | undefined>>>();
+
+/*
+FNXC:WorkflowScheduling 2026-10-06-08:56 (RUFU-588):
+Coalescing alone still admits one query per DISTINCT task in a pass, and the pool is sized in the tens
+(RUFU-577), so the overflow just moves from JS frames into driver-queue frames that pin the same
+closures. The bound caps concurrent uncached selection reads per store. It wraps ONLY the store read:
+the selection implementation re-reads through its own advisory-fence path and never acquires this
+semaphore, so the bound cannot deadlock by re-entrancy.
+*/
+export const SELECTION_READ_CONCURRENCY = 16;
+type SelectionReadSlots = { free: number; waiters: Array<() => void> };
+const selectionReadSlots = new WeakMap<WorkflowIrResolverStore, SelectionReadSlots>();
+
+function acquireSelectionReadSlot(store: WorkflowIrResolverStore): Promise<void> {
+  let queue = selectionReadSlots.get(store);
+  if (!queue) {
+    queue = { free: SELECTION_READ_CONCURRENCY, waiters: [] };
+    selectionReadSlots.set(store, queue);
+  }
+  if (queue.free > 0) {
+    queue.free -= 1;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => queue!.waiters.push(resolve));
+}
+
+function releaseSelectionReadSlot(store: WorkflowIrResolverStore): void {
+  const queue = selectionReadSlots.get(store);
+  if (!queue) return;
+  const next = queue.waiters.shift();
+  // A woken waiter inherits the released slot directly, so `free` is only restored when nobody waits.
+  if (next) next();
+  else queue.free += 1;
+}
+
+/**
+ * Read one task's workflow selection for callers that own no per-pass cache, collapsing concurrent
+ * duplicate reads onto one query and bounding how many distinct queries may be in flight at once.
+ */
+async function readSelectionWithCoalescing(
+  store: WorkflowIrResolverStore,
+  taskId: string,
+): Promise<WorkflowSelection | undefined> {
+  let pending = inflightUncachedSelectionReads.get(store);
+  if (!pending) {
+    pending = new Map<string, Promise<WorkflowSelection | undefined>>();
+    inflightUncachedSelectionReads.set(store, pending);
+  }
+  const existing = pending.get(taskId);
+  if (existing) return existing;
+  const inFlight = (async (): Promise<WorkflowSelection | undefined> => {
+    await acquireSelectionReadSlot(store);
+    try {
+      return store.getTaskWorkflowSelectionAsync
+        ? await store.getTaskWorkflowSelectionAsync(taskId)
+        : store.getTaskWorkflowSelection(taskId);
+    } finally {
+      releaseSelectionReadSlot(store);
+      // Bookkeeping is released with the query on BOTH paths, so the next pass is a real read.
+      pending!.delete(taskId);
+    }
+  })();
+  pending.set(taskId, inFlight);
+  return inFlight;
+}
+
+/*
 FNXC:WorkflowScheduling 2026-09-08-04:11:
 Task-list rows share a caller-owned cache but populate it only after the definition await, so concurrent
 misses previously re-read and re-parse one custom workflow per row (Runfusion/Fusion#3585). This weak
@@ -392,18 +475,27 @@ export async function resolveWorkflowIrForTaskWithProvenance(
           coalesced = true;
         }
       }
-      if (!coalesced) {
+      if (!coalesced && selectionCache && inflight) {
         const readPromise = store.getTaskWorkflowSelectionAsync
           ? store.getTaskWorkflowSelectionAsync(taskId)
           : Promise.resolve(store.getTaskWorkflowSelection(taskId));
         // Book first, then fulfill; any subsequent caller sharing this cache sees `pending` and awaits
         // the same promise instead of issuing its own DB read.
-        if (inflight) inflight.set(taskId, readPromise);
+        inflight.set(taskId, readPromise);
         try {
           selection = await readPromise;
         } finally {
-          inflight?.delete(taskId);
+          inflight.delete(taskId);
         }
+      }
+      if (!coalesced && !selectionCache) {
+        /*
+        FNXC:WorkflowScheduling 2026-10-06-08:56 (RUFU-588):
+        This is the branch the ~150 uncached call sites fall through, and until now it issued an
+        uncoalesced, unbounded SELECT per caller. Coalescing here is per-query-lifetime only, so
+        live-per-call is preserved; see the WeakMap declaration above for the measured rationale.
+        */
+        selection = await readSelectionWithCoalescing(store, taskId);
       }
       // Cache the resolved value so SEQUENTIAL later calls in the same pass skip even the coalescer.
       // A throwing read is deliberately NOT cached so transient failures are retried next pass.
