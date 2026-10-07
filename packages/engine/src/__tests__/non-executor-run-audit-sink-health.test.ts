@@ -177,6 +177,86 @@ describe("FN-9175 non-executor audit sink health", () => {
       manager.stop();
     });
 
+    /*
+    FNXC:RunAudit 2026-10-07-16:29 (RUFU-314 finding 2, FN-9175):
+    BEHAVIORAL SINK HEALTH FOR THE DRIFTED-APPROVAL-HOLD SWEEP. Its repair is a lifecycle outcome — a
+    card held by an approval pair whose evidence no longer exists must be released — while its audit
+    row is telemetry, so a hostile sink may never change that outcome. BOTH reason codes the sweep now
+    owns (`code-review-non-convergence`, `plan-review-replan-cap`) run the whole hostile matrix. This
+    coverage is what the run-auditor wrapper could not prove at this call site: it forwarded to the
+    same bounded seam, but a call site that goes through the wrapper can also silently emit NOTHING
+    (no context → no-op auditor), so "the row landed with the documented payload" was not assertable
+    here at all. On the named seam every non-absent mode must land exactly one closed-shape row.
+    IR resolution is deliberately not what this file pins — the fixture's step list is empty, so the
+    clear holds under both the resolved-IR and fail-safe branches (see the pg sweep test for those).
+    */
+    const driftedHoldCases = hostileModes.flatMap((mode, index) => ([{
+      mode,
+      reason: index % 2 === 0 ? "code-review-non-convergence" : "plan-review-replan-cap",
+    }]));
+
+    it.each(driftedHoldCases)("clears a drifted $reason hold with a $mode audit sink", async ({ mode, reason }) => {
+      const sink = sinkFor(mode);
+      const task: Record<string, unknown> = {
+        id: `RUFU314-DRIFT-${mode}`,
+        title: "drifted non-convergence hold",
+        description: "",
+        column: "in-review",
+        status: "awaiting-approval",
+        awaitingApprovalReason: reason,
+        paused: false,
+        userPaused: false,
+        dependencies: [],
+        steps: [],
+        enabledWorkflowSteps: ["plan-review", "code-review"],
+        // The drift itself: a pre-RUFU-297 non-user move wiped the step results under the hold.
+        workflowStepResults: null,
+        updatedAt: "2026-10-01T00:00:00.000Z",
+      };
+      const store = {
+        ...sink.host,
+        getTaskWorkflowSelection: vi.fn(() => undefined),
+        listTasks: vi.fn(async () => [task]),
+        // Hydrated rows are per-read copies, as in the real store: the sweep captures its `fresh`
+        // row, clears it, and THEN builds the audit payload from that captured row. Handing
+        // `getTask` and `updateTask` the same mutable object would let the fixture's own write
+        // erase `status` before the emit read it, so the fixture — not the code — would disagree
+        // with production (the pg sweep test pins `priorStatus` as the PRE-clear status).
+        getTask: vi.fn(async () => ({ ...task })),
+        updateTask: vi.fn(async (_id: string, patch: Record<string, unknown>) => { Object.assign(task, patch); }),
+        logEntry: vi.fn(async () => undefined),
+      };
+      const manager = new SelfHealingManager(store as any, { rootDir: "/tmp/rufu-314" });
+      await expect(settleBounded(sink, () => manager.reconcileOrphanedNonConvergenceHolds())).resolves.toBe(1);
+      // Identical repair in every sink mode: the pair is cleared IN PLACE — same lane, no pause mutation.
+      expect(task.status).toBeNull();
+      expect(task.awaitingApprovalReason).toBeNull();
+      expect(task.column).toBe("in-review");
+      expect(task.paused).toBe(false);
+      expect(store.logEntry).toHaveBeenCalledOnce();
+      if (sink.recordRunAuditEvent) {
+        expect(sink.recordRunAuditEvent).toHaveBeenCalledOnce();
+        const event = sink.recordRunAuditEvent.mock.calls[0][0] as Record<string, unknown>;
+        const metadata = event.metadata as Record<string, unknown>;
+        expect(event).toMatchObject({
+          agentId: "self-healing",
+          taskId: task.id,
+          domain: "database",
+          mutationType: "task:reconcile-orphaned-non-convergence-hold",
+          target: task.id,
+        });
+        expect(String(event.runId)).toContain("reconcile-orphaned-non-convergence-holds");
+        expect(metadata).toEqual({
+          taskId: task.id,
+          column: "in-review",
+          priorStatus: "awaiting-approval",
+          reasonCode: reason,
+          outcome: "cleared",
+        });
+      }
+      manager.stop();
+    });
+
     it.each(hostileModes)("reclaims a wedged active merge with a %s audit sink", async (mode) => {
       const sink = sinkFor(mode);
       const task = { id: "FN-WEDGE", title: "wedged", description: "", column: "in-review", status: "reviewing", paused: false, dependencies: [], steps: [], updatedAt: "2026-01-01T00:00:00.000Z" };

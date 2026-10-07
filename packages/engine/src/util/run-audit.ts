@@ -805,11 +805,16 @@ export type DatabaseMutationType =
   | "task:reconcile-stale-duplicate-decision"
   /*
   FNXC:ApprovalHoldMoveClear 2026-09-25-11:12 (RUFU-297 defect B):
-  `reconcile-orphaned-non-convergence-holds` clears a drifted `code-review-non-convergence`
-  approval hold in place when no pre-merge step result carries the `failed`/`advisory_failure`
-  evidence the escalation was parked on. Metadata: { taskId, column, priorStatus, reasonCode,
-  outcome } — ids, the lane, the cleared status, the fixed reason code, and a fixed outcome;
-  never hold prose or reviewer text.
+  `reconcile-orphaned-non-convergence-holds` clears a drifted approval hold in place when no
+  pre-merge step result carries the `failed`/`advisory_failure` evidence the escalation was
+  parked on. Metadata: { taskId, column, priorStatus, reasonCode, outcome } — ids, the lane,
+  the cleared status, the fixed reason code, and a fixed outcome; never hold prose or reviewer text.
+
+  FNXC:ApprovalHoldMoveClear 2026-10-07-17:03 (RUFU-314 finding 1): the declaration is unchanged;
+  what widened is which holds the sweep admits. Both stage-one non-convergence parks are now
+  covered — `code-review-non-convergence` and `plan-review-replan-cap` — and `reasonCode` is the
+  key that says which one was cleared, so one mutation type still distinguishes the two shapes.
+  The event name, the domain, and the five-key set stay exactly as RUFU-297 shipped them.
   */
   | "task:reconcile-orphaned-non-convergence-hold"
   /*

@@ -2086,9 +2086,27 @@ Reason-code verdict table (binding evidence decides, never a blanket clear):
 A card already drifted BEFORE the move (hold present, results already absent) is NOT cleared by the
 move — there is no wipe witness, and an opportunistic move-side guess would misread engine-owned
 holds. That shape belongs to the bounded, audited self-healing sweep
-`reconcile-orphaned-non-convergence-holds` (scoped to `code-review-non-convergence` alone, in-place,
-lifecycle-contained: no column move; skips live sessions, user pauses, and surviving failed/advisory
-pre-merge evidence).
+`reconcile-orphaned-non-convergence-holds` (in-place, lifecycle-contained: no column move; skips live
+sessions, user pauses, and surviving failed/advisory pre-merge evidence). Its admitted reason codes are
+`SWEEP_OWNED_NON_CONVERGENCE_HOLD_REASONS` = `code-review-non-convergence` **and**
+`plan-review-replan-cap` (RUFU-314 widened it from the first code alone). The set is an explicit
+allowlist, never a negation, so the asymmetries with the move-side table above are deliberate:
+the bare `awaiting-approval` marker (`awaitingApprovalReason` absent) is the move seam's case only — a
+hold with no reason code names no gate whose evidence could be tested — while `human-plan-approval` and
+`merge-blocked-by-policy` are excluded for both because their proof lives outside
+`workflowStepResults` (FN-408's plan-approval state / an external branch-protection diagnosis), so a
+wipe proves nothing about them. Discovery is `listTasks` over every unarchived lane rather than
+`getReviewTasks()`, because the cap park is authored from the executor/planning lane
+(`request-pre-merge-optional-step-fix.ts`, `triage.ts`) while the ladder park is a review-lane one: a
+drifted cap hold sitting in `in-progress`/`todo` is therefore this sweep's case too, and no planning-lane
+cap park was found ownerless — the repair stays in-place in every lane, so the wider discovery adds no
+lifecycle move. Both entrants reach the drifted shape through the same writer: a pre-RUFU-297 non-user
+move (`moveSource !== "user"`, stage-rebuild/rehome) whose reopen hooks wiped the rows under the hold.
+RUFU-314 looked for a current-build writer that destroys the cap's counted rows while leaving the hold
+and found none — the only `workflowStepResults` wipes are those reopen hooks and
+`reset-lifecycle.ts`'s Reset, and Reset clears `awaitingApprovalReason` in the same write, while
+automatic remediation archives terminal failure rows instead of dropping them (FN-295). The audit
+`reasonCode` is what keeps the two shapes distinguishable in the record.
 
 Full clear-path inventory for approval holds:
 
@@ -2096,12 +2114,28 @@ Full clear-path inventory for approval holds:
 2. **Review-lane Retry** (`task-restart-stage.ts`) — Restart-stage fence, not an approval reason.
 3. **Manual merge clear / approve-plan / reject-plan routes** — decision surfaces that resolve the hold.
 4. **FN-7720 operator bypass** (`bypassFailedPreMergeReviewStep`) — clears the failed gate the hold anchors to.
-5. **Self-healing sweep** (RUFU-297, defect B) — `task:reconcile-orphaned-non-convergence-hold`.
+5. **Self-healing sweep** (RUFU-297 defect B, reason-code set widened by RUFU-314) — `task:reconcile-orphaned-non-convergence-hold`.
 6. **Dependency respecify** — the replan path re-seeds planning and clears its own parks.
 
 Every clear records a task-log entry plus a bounded run-audit row (ids/counts/fixed enums only, never
 prose); the move-side clear commits with the column move in one transaction, so a committed move NEVER
 leaves a hold behind its destroyed evidence.
+
+**What neither clear path does** (binding, and the reason defect C needed a test rather than a prose
+claim): no clear forges an approval, writes no `workflowStepResults` row, or fabricates a verdict. A card
+that leaves a reason-cleared hold behind and re-enters `in-review` is therefore **not** mergeable with
+its gate never re-run — the wipe leaves an enabled required pre-merge gate with zero result rows, which
+`evaluatePreMergeApprovals` resolves as `state: "missing"` (FN-180), and every merge door that resolves
+the card's gate set forwards `requiredPreMergeStepIds`, so `getTaskMergeBlocker` answers the canonical
+`PRE_MERGE_STEPS_NOT_RUN_BLOCKER`. The remedy is a gate re-run (the FN-9243 reseed) or an audited human
+waiver (the FN-7720 bypass), never a merge. RUFU-297 shipped this as enforced behavior with no pair test;
+RUFU-314 closed that gap with the defect C assertion in
+`packages/core/src/__tests__/postgres/store-move-approval-hold-clear.pg.test.ts` — two enabled gates
+(`plan-review` approved + `code-review`), a real user review-lane exit as the wipe witness, the card
+returned to the review lane with its plan steps complete, and the door asked with the gate set its own
+resolver produces. It also pins the opposite half: a RECOVERY scanner that omits `requiredPreMergeStepIds`
+deliberately does not hear that sentence, because FN-9243/FN-8492 discovery must keep finding resultless
+gates to re-seed instead of hiding them.
 
 ### Planner overseer runtime-state exposure (FN-7531)
 

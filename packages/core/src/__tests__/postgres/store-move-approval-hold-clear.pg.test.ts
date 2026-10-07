@@ -16,6 +16,14 @@ import {
   type SharedPgTaskStoreHarness,
 } from "../../__test-utils__/pg-test-harness.js";
 import * as schema from "../../postgres/schema/index.js";
+import {
+  getTaskMergeBlocker,
+  isPreMergeStepsNotRunBlocker,
+  PRE_MERGE_STEPS_NOT_RUN_BLOCKER,
+} from "../../merge/task-merge.js";
+import { evaluatePreMergeApprovals } from "../../merge/pre-merge-approval.js";
+import { resolveRequiredPreMergeStepIds } from "../../merge/required-pre-merge-steps.js";
+import { BUILTIN_CODING_WORKFLOW_IR } from "../../workflows/builtin-coding-workflow-ir.js";
 
 const pgTest = pgDescribe;
 
@@ -28,6 +36,20 @@ const failedCodeReviewRow = {
   phase: "pre-merge" as const,
   status: "failed" as const,
   verdict: "REVISE" as const,
+  startedAt: "2026-01-01T00:00:00.000Z",
+};
+
+/**
+ * An approved Plan Review row for the two-gate defect C fixture. `plan-review` is not a content
+ * review (`requiresContentReviewProof` is code-review only), so this approval needs no
+ * `reviewInputFingerprint` and reads as `approved` at the door before the wipe destroys it.
+ */
+const approvedPlanReviewRow = {
+  workflowStepId: "plan-review",
+  workflowStepName: "Plan Review",
+  phase: "pre-merge" as const,
+  status: "passed" as const,
+  verdict: "APPROVE" as const,
   startedAt: "2026-01-01T00:00:00.000Z",
 };
 
@@ -45,7 +67,7 @@ pgTest("approval-hold clear on review-lane exit (PostgreSQL, RUFU-297)", () => {
   /** Seed an in-review card carrying an approval hold + failed pre-merge evidence. */
   async function seedHeldCard(
     id: string,
-    hold: { status?: string; awaitingApprovalReason?: string; paused?: boolean; pausedReason?: string; userPaused?: boolean; pausedStartedAt?: string },
+    hold: { status?: string; awaitingApprovalReason?: string; paused?: boolean; pausedReason?: string; userPaused?: boolean; pausedStartedAt?: string; enabled?: readonly string[]; rows?: readonly Record<string, unknown>[] },
   ) {
     const store = h.store();
     await store.createTaskWithReservedId(
@@ -55,8 +77,8 @@ pgTest("approval-hold clear on review-lane exit (PostgreSQL, RUFU-297)", () => {
     await store.updateTask(id, {
       status: hold.status as never,
       awaitingApprovalReason: hold.awaitingApprovalReason as never,
-      enabledWorkflowSteps: ["code-review"],
-      workflowStepResults: [failedCodeReviewRow],
+      enabledWorkflowSteps: [...(hold.enabled ?? ["code-review"])],
+      workflowStepResults: (hold.rows ?? [failedCodeReviewRow]) as never,
     });
     await h.adminDb()
       .update(schema.project.tasks)
@@ -383,5 +405,85 @@ pgTest("approval-hold clear on review-lane exit (PostgreSQL, RUFU-297)", () => {
     } else {
       expect(moved?.status).toBe("awaiting-approval");
     }
+  });
+
+  /*
+   * FNXC:ApprovalHoldMoveClear 2026-10-07-16:45 (RUFU-314, closes RUFU-297's open defect C):
+   * The reopen wipe deliberately deletes `workflowStepResults`, which leaves an ENABLED required
+   * pre-merge gate with ZERO result rows. RUFU-297's independent review required proof that such a
+   * card can never be silently merged, and the guarantee lives in FN-180's approval authority: an
+   * enabled required gate with no rows is `missing` and the door turns `missing` into the canonical
+   * unrun-gate sentence. Nothing in the core suite pinned that AT THE MOVE, which is where the rows
+   * die — hence this pair, in the two-gate shape (`plan-review` + `code-review`) so a card whose
+   * Plan Review had been approved is still owed Code Review after the wipe destroys BOTH rows.
+   *
+   * It deliberately does NOT assert that an enabled gate keeps its result rows across the wipe: the
+   * wipe is the reopen contract's intent (RUFU-297 defect A) and defect B's sweep is the owner of the
+   * hold it strands. The guarantee asserted here is about the NEXT delivery attempt, not this row's
+   * history, so the card is asked where the door actually asks it — back in the review lane after
+   * finishing its remediation, with `requiredPreMergeStepIds` forwarded exactly as the four merge
+   * doors do. The remedy for the refusal is the FN-9243 graph reseed (or the FN-7720 audited bypass).
+   */
+  it("refuses the merge for the wiped required gate — missing is not approved (defect C)", async () => {
+    const store = h.store();
+    await seedHeldCard("rufu297-c1", {
+      status: "awaiting-approval",
+      awaitingApprovalReason: "plan-review-replan-cap",
+      enabled: ["plan-review", "code-review"],
+      rows: [approvedPlanReviewRow, failedCodeReviewRow],
+    });
+
+    // Resolve the demanded gate set through the same resolver the merge doors use, so the fixture
+    // and the production question cannot drift apart.
+    const seeded = await store.getTask("rufu297-c1");
+    const required = resolveRequiredPreMergeStepIds(BUILTIN_CODING_WORKFLOW_IR, seeded?.enabledWorkflowSteps, seeded ?? undefined);
+    expect([...required].sort()).toEqual(["code-review", "plan-review"]);
+    // The pre-wipe card is not the defect: its approved gate is provably approved at the door.
+    expect(evaluatePreMergeApprovals(seeded!, { requiredPreMergeStepIds: required }).find((r) => r.workflowStepId === "plan-review")?.state).toBe("approved");
+
+    // A real user move out of the review lane — the wipe, not a simulated patch.
+    await store.moveTask("rufu297-c1", "in-progress", { moveSource: "user" });
+    const reopened = await store.getTask("rufu297-c1");
+    expect(reopened?.workflowStepResults ?? undefined).toBeUndefined();
+    expect(reopened?.status ?? undefined).toBeUndefined();
+    expect(reopened?.awaitingApprovalReason ?? undefined).toBeUndefined();
+    // What survives the wipe is the ENABLED set — that is exactly what makes the gate owed again.
+    expect(reopened?.enabledWorkflowSteps).toEqual(["plan-review", "code-review"]);
+    // And the reopen resets the local plan steps, which is why the door has to be asked later, not here.
+    expect(reopened?.steps.every((s) => s.status === "pending")).toBe(true);
+
+    // Model the rest of the real lifecycle: the card executes its remediation and hands itself back
+    // to the review lane. Steps completed, so no earlier arm of the door can stand in for the one
+    // under test — the only thing left owed is the gate evidence the wipe destroyed.
+    await store.updateTask("rufu297-c1", {
+      steps: (reopened!.steps ?? []).map((s) => ({ ...s, status: "done" as const })),
+    });
+    store.taskCache.delete("rufu297-c1");
+    await store.moveTask("rufu297-c1", "in-review", { moveSource: "engine" });
+
+    const atDoor = await store.getTask("rufu297-c1");
+    expect(atDoor?.column).toBe("in-review");
+    expect(atDoor?.workflowStepResults ?? undefined).toBeUndefined();
+
+    // The defect C assertion: zero result rows on an enabled required gate is a refusal, not an approval.
+    const blocker = getTaskMergeBlocker(atDoor!, { requiredPreMergeStepIds: required });
+    expect(blocker).toBe(PRE_MERGE_STEPS_NOT_RUN_BLOCKER);
+    expect(isPreMergeStepsNotRunBlocker(blocker)).toBe(true);
+    // Both gates are owed, and the authority names the state rather than guessing one culprit.
+    expect(
+      evaluatePreMergeApprovals(atDoor!, { requiredPreMergeStepIds: required })
+        .filter((r) => r.state !== "approved")
+        .map((r) => `${r.workflowStepId}:${r.state}`)
+        .sort(),
+    ).toEqual(["code-review:missing", "plan-review:missing"]);
+
+    /*
+    The caller split stays honest: a RECOVERY scanner omits the resolved set on purpose (it must keep
+    discovering resultless cards to re-seed rather than hear "gate missing" and hide them), so it does
+    NOT see this sentence. Pinning both halves keeps a future reader from concluding the wipe is
+    universally safe — every merge DOOR forwards the set; the discovery scanners do not.
+    */
+    const recoveryBlocker = getTaskMergeBlocker(atDoor!);
+    expect(isPreMergeStepsNotRunBlocker(recoveryBlocker)).toBe(false);
   });
 });

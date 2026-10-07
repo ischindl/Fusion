@@ -169,7 +169,7 @@ export const DELIVERY_PIPELINE_RUN_AUDIT_EVENT_NOTES: Readonly<Record<DeliveryPi
   "task:reconcile-unproven-review-approval":
     "Self-healing rewrites singular content-review approvals without input proof to recoverable failed results.",
   "task:reconcile-orphaned-non-convergence-hold":
-    "Self-healing clears a code-review-non-convergence approval hold whose failed-review evidence no longer exists, in place and without a lifecycle move.",
+    "Self-healing clears a drifted stage-one approval hold (code-review-non-convergence or plan-review-replan-cap) whose gate evidence no longer exists, in place and without a lifecycle move.",
   "task:reconcile-stale-duplicate-decision":
     "Self-healing clears a recurring duplicate-decision pause with no canonical target.",
   "task:reconcile-stale-agent-assignment":

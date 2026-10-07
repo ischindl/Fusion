@@ -1208,6 +1208,22 @@ export type LandedReviewReconcileResult =
   | { outcome: "raced"; reason: string }
   | { outcome: "ineligible"; reason: "workspace" | "not-in-review" | "paused" | "user-paused" | "executing" | "live-session" | "checkout-leased" | "auto-merge-off" | "no-branch-recorded" | "branch-present" | "branch-has-unlanded-content" | "foreign-ownership" | "workflow-approval-blocked" | "engine-paused" | "post-merge-evidence-pending" | "awaiting-finalization" };
 
+/*
+FNXC:ApprovalHoldMoveClear 2026-10-07-16:12 (RUFU-314 finding 1):
+`reconcile-orphaned-non-convergence-holds` owns exactly TWO approval holds — the two
+NON-CONVERGENCE parks whose evidence is the pre-merge step-result rows: `code-review-non-convergence`
+(review-convergence ladder stage 3 / RUFU-276's repeated-unchanged-revision park) and
+`plan-review-replan-cap` (`parkPlanReviewReplanCapExhausted`, the Plan Review replan budget). The
+list is an explicit allowlist, never a negation: every other `awaitingApprovalReason` has its own
+owner (`human-plan-approval` → the decision-marker reconciler, `merge-blocked-by-policy` → the
+merge-policy resume path, the absent/null marker → the move seam) and must stay untouched here.
+Widening is by adding to THIS set, so a new reason code defaults to "not ours".
+*/
+const SWEEP_OWNED_NON_CONVERGENCE_HOLD_REASONS: ReadonlySet<NonNullable<Task["awaitingApprovalReason"]>> = new Set([
+  "code-review-non-convergence",
+  "plan-review-replan-cap",
+]);
+
 export class SelfHealingManager extends SelfHealingGitEvidence {
   /*
   FNXC:ChatRestartAutoContinue 2026-09-17-21:05:
@@ -9623,6 +9639,27 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   legitimate, which must never be cleared against a half-updated step list. The other two ladder
   reasons are NOT this sweep's case: `human-plan-approval` is a decision pause owned by the
   decision-marker reconciler, and `restart-stage-publishing` is a Restart-stage fence, not a hold.
+
+  FNXC:ApprovalHoldMoveClear 2026-10-07-16:12 (RUFU-314 finding 1):
+  The sweep's candidate set is now the TWO non-convergence holds, not one. RUFU-297's move-side clear
+  refuses `plan-review-replan-cap` without its wipe witness and routes the drifted shape to THIS
+  sweep, but RUFU-297's own candidate gate stayed `code-review-non-convergence`-only, so the pair
+  invariant had a hole: a card held by the Plan Review replan cap whose `workflowStepResults` were
+  already destroyed (the pre-RUFU-297 stage-rebuild/rehome drift, reachable by engine and rehome moves
+  with `moveSource !== "user"`, which the move clear deliberately does not handle) had no automatic
+  exit at all — only a manual merge or the FN-7720 `bypassFailedPreMergeReviewStep` waiver, both of
+  which destroy the review trail the cap existed to protect. Rejected instead of widening: teach the
+  move seam to clear it there, because that is the defect-RUFU-297-fixed case (an opportunistic clear
+  with no evidence proof is exactly the silent merge the cap prevents). The evidence test is
+  unchanged and is what makes the widening safe: plan-review's non-convergence evidence is its
+  `advisory_failure`/`REVISE` row, so a cap hold whose gate still carries that row stays held.
+
+  LANE BOUNDARY (measured while widening, RUFU-314): discovery is `listTasks` over every unarchived
+  lane, NOT `getReviewTasks()`, precisely because `parkPlanReviewReplanCapExhausted` fires from the
+  executor/planning lane (`request-pre-merge-optional-step-fix.ts`, `triage.ts`) while the ladder hold
+  is a review-lane park. So a drifted cap park in `in-progress`/`todo` is THIS sweep's case too — no
+  second discovery lane is needed, and none was found ownerless. The repair stays in-place in every
+  lane, so widening discovery adds no lifecycle move.
   Metadata: { taskId, column, priorStatus, reasonCode, outcome } — ids/counts/fixed enums only,
   never hold prose or reviewer text.
   */
@@ -9658,7 +9695,16 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           const fresh = await this.store.getTask(task.id);
           if (!fresh || fresh.userPaused === true) continue;
           if (!isTaskBlockedOnApproval(fresh)) continue;
-          if (fresh.awaitingApprovalReason !== "code-review-non-convergence") continue;
+          /*
+          FNXC:ApprovalHoldMoveClear 2026-10-07-16:12 (RUFU-314 finding 1): candidacy is the TWO
+          non-convergence holds in `SWEEP_OWNED_NON_CONVERGENCE_HOLD_REASONS`, not just the Code
+          Review one. `plan-review-replan-cap` has the same step-bound evidence shape (the plan-review
+          `advisory_failure`/`REVISE` row `requestPreMergeOptionalStepFix` writes), so the SAME
+          evidence test below decides it; pre-RUFU-297 drift left those cards held with their step
+          results already destroyed, which is the shape the move seam in
+          `task-store/moves.ts` refuses to clear without its wipe witness.
+          */
+          if (!fresh.awaitingApprovalReason || !SWEEP_OWNED_NON_CONVERGENCE_HOLD_REASONS.has(fresh.awaitingApprovalReason)) continue;
           // A gated `paused` row whose pausedReason belongs to another owner is not this hold.
           if (fresh.paused === true && fresh.pausedReason !== AWAITING_APPROVAL_PAUSE_REASON) continue;
           if (isSessionLive(fresh.id)) continue;
@@ -9697,40 +9743,48 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             await this.store.updateTask(fresh.id, { status: null, awaitingApprovalReason: null, ...pausePatch });
             await this.store.logEntry(
               fresh.id,
-              "Cleared drifted code-review-non-convergence approval hold: no required pre-merge step carries a failed result any more. The card is no longer held.",
+              `Cleared drifted ${fresh.awaitingApprovalReason} approval hold: no required pre-merge step carries a failed result any more. The card is no longer held.`,
             );
           } catch (error) {
             log.warn(`reconcileOrphanedNonConvergenceHolds: failed for ${fresh.id}: ${error instanceof Error ? error.message : String(error)}`);
             continue;
           }
           cleared += 1;
-          try {
-            await createRunAuditor(this.store, {
-              runId: generateSyntheticRunId("reconcile-orphaned-non-convergence-holds", fresh.id),
-              agentId: "self-healing",
+          /*
+          FNXC:RunAudit 2026-10-07-16:22 (RUFU-314 finding 2, FN-9175):
+          THIS EMIT MOVED OFF THE RUN-AUDITOR WRAPPER ONTO THE NAMED SEAM. The auditor already forwards
+          to `emitBoundedRunAudit`, so the bounding itself did not change — what the indirection cost was
+          this event's own contract. `database()` injects `phase` (plus `source`/`taskLineageId` when the
+          context carries them) INTO the metadata jsonb, so the stored row held keys the documented
+          closed set — `taskId, column, priorStatus, reasonCode, outcome` — does not declare, and its
+          `taskId` came from context/`FN-`-prefix target inference instead of the row this sweep just
+          repaired. The auditor also no-ops SILENTLY whenever no run context is threaded, so a later
+          refactor that drops one erases this repair with no signal at all. FN-9175 names the seam
+          directly, which is what the core half of this same RUFU-297 pair (FN-9177) and the newer
+          sweeps (FN-9304, RUFU-276) already do. Attribution now rides the row's own `agentId`/`runId`
+          columns and the payload below stays the closed ids/enums set.
+          */
+          await emitBoundedRunAudit(this.store, {
+            agentId: "self-healing",
+            runId: generateSyntheticRunId("reconcile-orphaned-non-convergence-holds", fresh.id),
+            taskId: fresh.id,
+            domain: "database",
+            mutationType: "task:reconcile-orphaned-non-convergence-hold" as DatabaseMutationType,
+            target: fresh.id,
+            // ids/counts/fixed enums only — never hold prose or reviewer text.
+            metadata: {
               taskId: fresh.id,
-              taskLineageId: fresh.lineageId,
-              phase: "reconcile-orphaned-non-convergence-holds",
-            }).database({
-              type: "task:reconcile-orphaned-non-convergence-hold",
-              target: fresh.id,
-              // ids/counts/fixed enums only — never hold prose or reviewer text.
-              metadata: {
-                taskId: fresh.id,
-                column: fresh.column,
-                priorStatus: fresh.status ?? null,
-                reasonCode: fresh.awaitingApprovalReason,
-                outcome: "cleared",
-              },
-            });
-          } catch (error) {
-            log.warn(`reconcileOrphanedNonConvergenceHolds: audit emit failed for ${fresh.id}: ${error instanceof Error ? error.message : String(error)}`);
-          }
+              column: fresh.column,
+              priorStatus: fresh.status ?? null,
+              reasonCode: fresh.awaitingApprovalReason,
+              outcome: "cleared",
+            },
+          }, { log });
         }
         if (tasks.length < pageSize) break;
         offset += tasks.length;
       }
-      if (cleared > 0) log.log(`Cleared drifted code-review-non-convergence approval holds on ${cleared} task(s)`);
+      if (cleared > 0) log.log(`Cleared drifted non-convergence approval holds on ${cleared} task(s)`);
       return cleared;
     } catch (error) {
       log.error(`reconcileOrphanedNonConvergenceHolds failed: ${error instanceof Error ? error.message : String(error)}`);
