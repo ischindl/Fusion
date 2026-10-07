@@ -97,6 +97,18 @@ function recoveryStore(task: Task) {
     recordRunAuditEvent: vi.fn(async () => undefined),
     getCompletionHandoffAcceptedMarker: vi.fn(async () => null),
     getAgentLogs: vi.fn(async () => []),
+    /*
+    FNXC:StaleReviewWaiverFixture 2026-10-02-15:59 (RUFU-452):
+    This fake is handed straight to `ProjectEngine.resolveMergeGateBlocker` by the merge-admission case
+    below, and FN-9429 (`6e4ab56f44`) made that door read the durable stale-review-callback waiver ledger
+    (`store.getStaleReviewCallbackWaiverReceipts` + `store.getProjectId`) without updating this fixture — so
+    the case died on `store.getStaleReviewCallbackWaiverReceipts is not a function` at branch point
+    4efb3946d6, before RUFU-452 touched this lane (base-proved by running the single case at that SHA).
+    A receipt is only ever a SUPPRESSION of a blocker proven stale, so an empty ledger plus a project id
+    keeps every blocker assertion in this file asserting what it always asserted.
+    */
+    getStaleReviewCallbackWaiverReceipts: vi.fn(async () => []),
+    getProjectId: vi.fn(() => "fn-9243"),
   } as any;
 }
 
@@ -167,6 +179,15 @@ describe("unrun pre-merge gate wedge regression", () => {
   pre-existing "remediation was not scheduled" park — byte-identical to what an authored REVISE
   whose remediation was declined sees below. The budget is the difference between the two cards;
   the park text must not be.
+
+  FNXC:NoVerdictRerunBudget 2026-10-01-04:20 (RUFU-452):
+  The strikes live only on the durable row and the caller hands a slim projection (`log: []`) —
+  the shape a board read produces — so the refusal is proved independent of the object the lane
+  was invoked with. This lane re-reads the row itself at `handle-graph-failure.ts:269`, which is
+  why it was the one producer whose numbering ever advanced (1→2→3 on 2026-09-24); the pre-fix
+  red evidence for the projection-trusting counter therefore lives in the unit and sweep files,
+  and this file owns the reachability claim: the cap bites through `handleGraphFailure`, not only
+  through a direct helper call.
   */
   it("parks a verdict-less gate with the pre-existing message once the re-run budget is spent", async () => {
     const rerunMarkers = Array.from({ length: 3 }, () => ({
@@ -187,7 +208,7 @@ describe("unrun pre-merge gate wedge regression", () => {
     vi.spyOn(executor as any, "routeGraphFailureToExecutionResume").mockResolvedValue(false);
     const fixSpy = vi.spyOn(executor as any, "requestPreMergeOptionalStepFix").mockResolvedValue(false);
 
-    await (executor as any).handleGraphFailure(live, {
+    await (executor as any).handleGraphFailure({ ...live, log: [] }, {
       disposition: "failed", outcome: "failure", reason: "gate-session-died", visitedNodeIds: ["code-review"], context: { "node:code-review:outcome": "failure", "node:code-review:value": "gate-session-died" },
     });
 

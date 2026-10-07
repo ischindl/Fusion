@@ -106,16 +106,70 @@ export function verdictlessGateRerunLogMarker(gateId: string): string {
   return `[verdictless-gate-rerun] gate '${gateId}'`;
 }
 
-/** Counts persisted verdict-less rerun markers for one gate, hydrating the log when slimmed away. */
+/*
+FNXC:NoVerdictRerunBudget 2026-10-01-01:29 (RUFU-452):
+The budget counts from the DURABLE row, never from the `task` projection the caller handed us. An
+empty log is a PROJECTION, not an absence: every board read the recovery lanes run —
+`listTasks({ slim: true })`, the modified-since prelude, and search — answers `log: []` for a card
+whose durable log still holds every strike (`reads.ts` hydrates the activity log separately and
+`slim` strips the entry, and a `logLimit: 0` read does the same to a full `getTask`). So the
+original `Array.isArray(task.log) ? task.log : hydrate` arm was dead code on the engine's own hot
+path: the array test passed, the store arm never ran, and the counter read zero strikes forever.
+Measured 2026-09-30: RUFU-281 carried 11 markers, each written as `rerun 1 of 3` — a permanent
+no-cap loop whose own log line claimed a cap, while the sibling RUFU-449 evidence (~72 failed
+`code-review` items per card, 20-34 doomed continuations per hour for twelve hours) showed what an
+uncapped verdict-less lane costs. `log: undefined` — the only shape the fallback was written for —
+is not what production hands this lane, which is why the pre-fix test suite stayed green.
+
+The read is one indexed durable read per seedable-gate evaluation on a cold recovery path, and it
+is the same read the caller would have had to make to know the truth.
+
+FNXC:NoVerdictRerunBudget 2026-10-01-01:52 (RUFU-452):
+A REJECTED read is fail-closed: the error propagates instead of being swallowed to zero strikes,
+so an unreadable durable row seeds nothing. Swallowing would be self-defeating here — the failure
+mode this counter exists to bound is a lane that keeps re-seeding on false evidence of a fresh
+budget, and a flaky read is exactly that false evidence. Every production caller already contains
+the rejection: `project-engine.ts:3127` and the three self-healing park routes `.catch` the reroute
+into a `no-unrun-gate` refusal, both `handle-graph-failure` routes catch it into an absent reroute,
+and the no-verdict sweep wraps each card in its own try — so a throwing sink costs a skipped card
+plus a warn line, never an unbounded seed and never a crashed sweep.
+
+A MISSING row is a different fact, and its real-store shape is a THROW, not a `null`: the real
+`getTask` raises `TaskNotFoundError` (and `TaskDeletedError` for a soft-deleted card), so an absent
+card takes the rejection path above and seeds nothing — the safe direction for a card that no longer
+exists. A `null` row is the fake/legacy-store shape and stays decision-neutral: it carries no
+strikes, and the seed that follows has no card to seed, so it counts zero — the same value the
+pre-fix `?.log ?? []` arm returned.
+
+FNXC:NoVerdictRerunBudget 2026-10-02-09:10 (RUFU-452):
+The durable source of truth is bounded, and the bound is stated rather than assumed. The task
+activity log itself retains only its most recent `DEFAULT_TASK_ACTIVITY_LOG_ENTRY_LIMIT` (1,000)
+entries — `logEntryImpl` splices the oldest entries off the front on every append
+(`packages/core/src/task-store/audit-ops.ts`). This read deliberately passes no `activityLogLimit`
+(that option exists for dashboard surfaces that page a capped log view and could only narrow what
+the counter sees), so the count covers every strike still inside the retained window: a card whose
+log churns past 1,000 entries after its strikes loses its oldest markers and can earn one further
+re-run. That is a bounded degradation of the ceiling, not the failure this counter replaces — the
+pre-fix projection read reset the count on EVERY pass (measured: 11 strikes all claiming
+`rerun 1 of 3`), and a card that streams 1,000 log entries inside three passes is not the loop RUFU-452
+was filed for. Closing the bound exactly needs a durable per-(task, gate) counter, i.e. new durable
+state plus a migration, which the task's own "do not" list withholds; the operator's 2026-10-02
+scope ruling on this card likewise keeps it to the verdictless class and routes the unbounded
+`active-continuation` arm to RUFU-490.
+
+`store.getTask` is safe here because it takes the NON-REENTRANT per-task advisory lock and no
+caller of either reroute lane holds that lock — `withTaskLock` appears in the engine only in triage
+and the agent-tool prompt writer.
+*/
 async function countVerdictlessGateRerunAttempts(
   store: TaskStore,
   task: Task,
   gateId: string,
 ): Promise<number> {
   const marker = verdictlessGateRerunLogMarker(gateId);
-  const log: TaskLogEntry[] = Array.isArray(task.log)
-    ? task.log
-    : ((await store.getTask(task.id))?.log ?? []);
+  // No `.catch`: a rejected read must not be mistaken for "no strikes" — see the FNXC note above.
+  const live = await store.getTask(task.id);
+  const log: TaskLogEntry[] = Array.isArray(live?.log) ? live.log : [];
   return log.filter((entry) => typeof entry.action === "string" && entry.action.startsWith(marker)).length;
 }
 

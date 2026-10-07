@@ -21,7 +21,10 @@ import {
   MAX_VERDICTLESS_GATE_RERUN_ATTEMPTS,
   rerouteFailedNoVerdictPreMergeGateToReview,
   rerouteUnrunPreMergeGateToReview,
+  verdictlessGateRerunLogMarker,
 } from "../merge/pre-merge-gate-reseed.js";
+// Real core class (the module mock spreads importOriginal), so the throw below is the production error.
+import { TaskNotFoundError } from "@fusion/core";
 
 const singular = { kind: "singular", diff: { state: "fingerprint", fingerprint: "current" } } as any;
 const subject = (overrides: Record<string, unknown> = {}) => ({
@@ -33,10 +36,13 @@ const subject = (overrides: Record<string, unknown> = {}) => ({
 }) as any;
 
 /*
-FNXC:NoVerdictRerunBudget 2026-09-30-14:34 (RUFU-449):
+FNXC:NoVerdictRerunBudget 2026-10-01-01:29 (RUFU-449, RUFU-452):
 The re-seed lanes count their durable rerun budget from task-log markers, so the shared fake must expose
-both halves of that seam: `getTask` for a card whose log was slimmed out of the projection, and `logEntry`
-for the marker written after a seed lands. Tests that care about the counter pass `log` on the task.
+both halves of that seam: `getTask` for the DURABLE row the counter reads, and `logEntry` for the marker
+written after a seed lands. RUFU-452 moved the source of truth: `log` on the task is a board PROJECTION
+and is never consulted, so a budget test states its strikes through `storeWithDurableLog(...)` and keeps
+the projection slim (`log: []`) the way `listTasks({ slim: true })` hands it over. A fixture that puts
+strikes only on the projection now asserts the opposite claim.
 */
 function store(seeded = true) {
   return {
@@ -260,6 +266,16 @@ describe("unrun pre-merge gate reseed", () => {
     }));
   }
 
+  /**
+   * The durable row the counter reads, kept separate from the caller's projection — RUFU-452's
+   * source-of-truth seam. Pair with a `log: []` projection to reproduce a slim board read.
+   */
+  function storeWithDurableLog(log: Array<{ action: string }>) {
+    const fake = store();
+    fake.getTask = vi.fn(async () => ({ log }));
+    return fake;
+  }
+
   const failedNoVerdictResult = { workflowStepId: "code-review", phase: "pre-merge", status: "failed" };
 
   it("logs the rerun marker on the card for each bounded re-seed of a verdict-less gate", async () => {
@@ -276,9 +292,31 @@ describe("unrun pre-merge gate reseed", () => {
     expect(fake.logEntry).toHaveBeenCalledWith(task.id, expect.stringContaining("rerun 1 of 3"));
   });
 
-  it.each([1, 2])("re-seeds a verdict-less gate up to the cap (existing markers: %i)", async (existing) => {
-    const task = subject({ workflowStepResults: [failedNoVerdictResult], log: rerunMarkers("code-review", existing) });
+  /*
+  FNXC:NoVerdictRerunBudget 2026-10-01-02:45 (RUFU-452):
+  Fresh-card semantics stay decision-neutral for every shape of an absent durable log: no row at all
+  (`getTask` → `null`, the default every other test here already relies on), a row with no `log` field,
+  and a row whose `log` is `undefined` are all zero strikes, so a first re-run still seeds and labels
+  itself honestly. Only a REJECTED read is fail-closed — see the pair further below.
+  */
+  it.each([
+    ["no durable row", null],
+    ["a durable row with no log field", {}],
+    ["a durable row whose log is undefined", { log: undefined }],
+  ])("counts zero strikes for %s and seeds the first re-run", async (_shape, durable) => {
+    const task = subject({ workflowStepResults: [failedNoVerdictResult], log: [] });
     const fake = store();
+    fake.getTask = vi.fn(async () => durable);
+
+    await expect(rerouteFailedNoVerdictPreMergeGateToReview(fake, task, {
+      requiredPreMergeStepIds: required, mergeContent: singular,
+    })).resolves.toMatchObject({ rerouted: true, reason: "seeded" });
+    expect(fake.logEntry).toHaveBeenCalledWith(task.id, expect.stringContaining("rerun 1 of 3"));
+  });
+
+  it.each([1, 2])("re-seeds a verdict-less gate up to the cap (durable markers so far: %i)", async (existing) => {
+    const task = subject({ workflowStepResults: [failedNoVerdictResult], log: [] });
+    const fake = storeWithDurableLog(rerunMarkers("code-review", existing));
 
     await expect(rerouteFailedNoVerdictPreMergeGateToReview(fake, task, {
       requiredPreMergeStepIds: required, mergeContent: singular,
@@ -287,12 +325,9 @@ describe("unrun pre-merge gate reseed", () => {
   });
 
   it("stops re-seeding once the shared per-gate budget is spent and says why", async () => {
-    const task = subject({
-      workflowStepResults: [failedNoVerdictResult],
-      log: rerunMarkers("code-review", MAX_VERDICTLESS_GATE_RERUN_ATTEMPTS),
-    });
+    const task = subject({ workflowStepResults: [failedNoVerdictResult], log: [] });
     const before = structuredClone(task);
-    const fake = store();
+    const fake = storeWithDurableLog(rerunMarkers("code-review", MAX_VERDICTLESS_GATE_RERUN_ATTEMPTS));
 
     await expect(rerouteFailedNoVerdictPreMergeGateToReview(fake, task, {
       requiredPreMergeStepIds: required, mergeContent: singular,
@@ -309,8 +344,8 @@ describe("unrun pre-merge gate reseed", () => {
     core.evaluatePreMergeApprovals.mockReturnValueOnce([
       { workflowStepId: "code-review", state: "approved", verdictLessFailed: true },
     ]);
-    const task = subject({ workflowStepResults: [], log: rerunMarkers("code-review", MAX_VERDICTLESS_GATE_RERUN_ATTEMPTS) });
-    const fake = store();
+    const task = subject({ workflowStepResults: [], log: [] });
+    const fake = storeWithDurableLog(rerunMarkers("code-review", MAX_VERDICTLESS_GATE_RERUN_ATTEMPTS));
 
     await expect(rerouteUnrunPreMergeGateToReview(fake, task, {
       requiredPreMergeStepIds: required, mergeContent: singular,
@@ -318,16 +353,176 @@ describe("unrun pre-merge gate reseed", () => {
     expect(fake.seedWorkspaceCodeReviewContinuationIfIdle).not.toHaveBeenCalled();
   });
 
-  it("hydrates the rerun budget from the store when the task projection carries no log", async () => {
-    const task = subject({ workflowStepResults: [failedNoVerdictResult] }) as any;
-    delete task.log;
-    const fake = store();
-    fake.getTask = vi.fn(async () => ({ log: rerunMarkers("code-review", MAX_VERDICTLESS_GATE_RERUN_ATTEMPTS) }));
+  /*
+  FNXC:NoVerdictRerunBudget 2026-10-01-01:29 (RUFU-452):
+  The mirror-image control for the pair below: strikes that live only on the caller's projection must
+  NOT spend a strike — pre-fix this card was refused with `rerun-budget-exhausted` while its durable
+  log held nothing at all. The same trusted projection that under-counted on a slim read over-counted
+  here, which is the whole argument for one source of truth.
+  */
+  it("counts a marker-bearing projection as zero strikes when the durable row holds none", async () => {
+    const task = subject({
+      workflowStepResults: [failedNoVerdictResult],
+      log: rerunMarkers("code-review", MAX_VERDICTLESS_GATE_RERUN_ATTEMPTS),
+    });
+    const fake = storeWithDurableLog([]);
 
     await expect(rerouteFailedNoVerdictPreMergeGateToReview(fake, task, {
       requiredPreMergeStepIds: required, mergeContent: singular,
-    })).resolves.toMatchObject({ rerouted: false, reason: "rerun-budget-exhausted" });
+    })).resolves.toMatchObject({ rerouted: true, reason: "seeded" });
     expect(fake.getTask).toHaveBeenCalledWith(task.id);
+    expect(fake.logEntry).toHaveBeenCalledWith(task.id, expect.stringContaining("rerun 1 of 3"));
+  });
+
+  /*
+  FNXC:NoVerdictRerunBudget 2026-10-01-01:29 (RUFU-452):
+  A board read is a PROJECTION, not an absence. `listTasks({ slim: true })` answers `log: []` for a card
+  whose durable log carries every strike, so the old `Array.isArray(task.log) ? task.log : hydrate`
+  arm never hydrated on a production read and the per-(task, gate) budget read zero strikes forever —
+  measured 2026-09-30 as 11 strikes on RUFU-281 all claiming `rerun 1 of 3`. These two cases are the
+  shape the engine actually hands the counter (an empty projection plus a marker-bearing durable row)
+  through BOTH lanes that consume the shared budget; the `log: []` on the projection is what makes the
+  case reachable at all, which is why the pre-fix suite — whose only hydration case deleted `log`
+  outright — could never have caught it.
+  */
+  it("refuses the sixth re-run when the durable row holds the strikes the empty projection hid (no-verdict lane)", async () => {
+    const durable = { log: rerunMarkers("code-review", MAX_VERDICTLESS_GATE_RERUN_ATTEMPTS) };
+    const task = subject({ workflowStepResults: [failedNoVerdictResult], log: [] });
+    const fake = store();
+    fake.getTask = vi.fn(async () => durable);
+
+    await expect(rerouteFailedNoVerdictPreMergeGateToReview(fake, task, {
+      requiredPreMergeStepIds: required, mergeContent: singular,
+    })).resolves.toMatchObject({ rerouted: false, reason: "rerun-budget-exhausted", workflowStepId: "code-review" });
+    expect(fake.getTask).toHaveBeenCalledWith(task.id);
+    expect(fake.seedWorkspaceCodeReviewContinuationIfIdle).not.toHaveBeenCalled();
+    expect(fake.logEntry).not.toHaveBeenCalled();
+  });
+
+  it("refuses the sixth re-run when the durable row holds the strikes the empty projection hid (unrun-gate lane)", async () => {
+    // A verdict-less failed row classified through the unrun lane: same shared budget, other call site.
+    core.evaluatePreMergeApprovals.mockReturnValueOnce([
+      { workflowStepId: "code-review", state: "approved", verdictLessFailed: true },
+    ]);
+    const durable = { log: rerunMarkers("code-review", MAX_VERDICTLESS_GATE_RERUN_ATTEMPTS) };
+    const task = subject({ workflowStepResults: [], log: [] });
+    const fake = store();
+    fake.getTask = vi.fn(async () => durable);
+
+    await expect(rerouteUnrunPreMergeGateToReview(fake, task, {
+      requiredPreMergeStepIds: required, mergeContent: singular,
+    })).resolves.toMatchObject({ rerouted: false, reason: "rerun-budget-exhausted", workflowStepId: "code-review" });
+    expect(fake.getTask).toHaveBeenCalledWith(task.id);
+    expect(fake.seedWorkspaceCodeReviewContinuationIfIdle).not.toHaveBeenCalled();
+  });
+
+  /*
+  FNXC:NoVerdictRerunBudget 2026-10-01-01:52 (RUFU-452):
+  The budget is per (task, GATE), and now that the count comes from the durable log the scoping rule
+  is load-bearing: a card whose `plan-review` gate burned its three strikes must still get its three
+  honest `code-review` re-runs. Matching stays on the quoted gate id inside the marker prefix, so
+  another gate's strikes are inert here.
+  */
+  it("does not let another gate's durable markers spend this gate's budget", async () => {
+    const task = subject({ workflowStepResults: [failedNoVerdictResult], log: [] });
+    const fake = storeWithDurableLog(rerunMarkers("plan-review", MAX_VERDICTLESS_GATE_RERUN_ATTEMPTS));
+
+    await expect(rerouteFailedNoVerdictPreMergeGateToReview(fake, task, {
+      requiredPreMergeStepIds: required, mergeContent: singular,
+    })).resolves.toMatchObject({ rerouted: true, reason: "seeded" });
+    expect(fake.logEntry).toHaveBeenCalledWith(task.id, expect.stringContaining("rerun 1 of 3"));
+  });
+
+  /*
+  FNXC:NoVerdictRerunBudget 2026-10-01-01:52 (RUFU-452):
+  Fail-closed on an unreadable durable row. Swallowing the read error would count zero strikes, i.e.
+  exactly the false "budget is fresh" evidence RUFU-452 exists to remove — a flaky sink must cost a
+  skipped card, not an unlimited re-seed of a gate that keeps dying without a verdict. Every caller
+  contains the rejection (`.catch` in project-engine/self-healing, try/catch in handle-graph-failure
+  and the no-verdict sweep), which is why propagating is safe rather than a new crash surface.
+  */
+  it("seeds nothing when the durable read is rejected (no-verdict lane)", async () => {
+    const task = subject({ workflowStepResults: [failedNoVerdictResult], log: [] });
+    const fake = store();
+    fake.getTask = vi.fn(async () => { throw new Error("durable read unavailable"); });
+
+    await expect(rerouteFailedNoVerdictPreMergeGateToReview(fake, task, {
+      requiredPreMergeStepIds: required, mergeContent: singular,
+    })).rejects.toThrow("durable read unavailable");
+    expect(fake.seedWorkspaceCodeReviewContinuationIfIdle).not.toHaveBeenCalled();
+    expect(fake.logEntry).not.toHaveBeenCalled();
+  });
+
+  it("seeds nothing when the durable read is rejected (unrun-gate lane)", async () => {
+    core.evaluatePreMergeApprovals.mockReturnValueOnce([
+      { workflowStepId: "code-review", state: "approved", verdictLessFailed: true },
+    ]);
+    const task = subject({ workflowStepResults: [], log: [] });
+    const fake = store();
+    fake.getTask = vi.fn(async () => { throw new Error("durable read unavailable"); });
+
+    await expect(rerouteUnrunPreMergeGateToReview(fake, task, {
+      requiredPreMergeStepIds: required, mergeContent: singular,
+    })).rejects.toThrow("durable read unavailable");
+    expect(fake.seedWorkspaceCodeReviewContinuationIfIdle).not.toHaveBeenCalled();
+    expect(fake.logEntry).not.toHaveBeenCalled();
+  });
+
+  /*
+  FNXC:NoVerdictRerunBudget 2026-10-02-09:10 (RUFU-452):
+  The counter filters markers out of the WHOLE retained durable log, so ordinary churn between strikes
+  (comments, status writes, other lanes' entries) must not hide a spent budget. This is the reach for
+  the retention bound stated on the counter: `logEntryImpl` keeps only the newest
+  `DEFAULT_TASK_ACTIVITY_LOG_ENTRY_LIMIT` (1,000) entries, so churn is guaranteed while strikes are
+  young — a counter that only inspected consecutive rows, or that read the newest N entries, would
+  lose the budget here. It also pins that the read passes no `activityLogLimit`.
+  */
+  it("counts strikes separated by unrelated durable log churn", async () => {
+    const churn = (index: number) => ({ action: `Heartbeat move to in-review (${index})` });
+    const strike = (n: number) => ({
+      action: `${verdictlessGateRerunLogMarker("code-review")} verdict-less failure, re-seeded in place` +
+        ` for a fresh run (rerun ${n} of 3)`,
+    });
+    const durable = {
+      log: [
+        strike(1),
+        ...Array.from({ length: 5 }, (_unused, index) => churn(index)),
+        strike(2),
+        ...Array.from({ length: 40 }, (_unused, index) => churn(index + 5)),
+        strike(3),
+        churn(99),
+      ],
+    };
+    const task = subject({ workflowStepResults: [failedNoVerdictResult], log: [] });
+    const fake = store();
+    fake.getTask = vi.fn(async () => durable);
+
+    await expect(rerouteFailedNoVerdictPreMergeGateToReview(fake, task, {
+      requiredPreMergeStepIds: required, mergeContent: singular,
+    })).resolves.toMatchObject({ rerouted: false, reason: "rerun-budget-exhausted", workflowStepId: "code-review" });
+    expect(fake.getTask).toHaveBeenCalledWith(task.id);
+    expect(fake.seedWorkspaceCodeReviewContinuationIfIdle).not.toHaveBeenCalled();
+  });
+
+  /*
+  FNXC:NoVerdictRerunBudget 2026-10-02-09:10 (RUFU-452):
+  The production shape of a missing durable row is a THROW, not a `null`: the real `getTask` raises
+  `TaskNotFoundError` for an absent id and `TaskDeletedError` for a soft-deleted card. So "the card is
+  gone" travels the same fail-closed path as "the row is unreadable" and seeds nothing — seeding a
+  soft-deleted card would strand a continuation on a row no read path can show. This pins that the
+  engine lane does not special-case the 404 into a fresh budget, which is the distinction the
+  decision-neutral `null` arm (fake/legacy stores) must keep.
+  */
+  it("seeds nothing when the durable read throws TaskNotFoundError (the real store's missing row)", async () => {
+    const task = subject({ workflowStepResults: [failedNoVerdictResult], log: [] });
+    const fake = store();
+    fake.getTask = vi.fn(async () => { throw new TaskNotFoundError(task.id); });
+
+    await expect(rerouteFailedNoVerdictPreMergeGateToReview(fake, task, {
+      requiredPreMergeStepIds: required, mergeContent: singular,
+    })).rejects.toThrow(new TaskNotFoundError(task.id));
+    expect(fake.seedWorkspaceCodeReviewContinuationIfIdle).not.toHaveBeenCalled();
+    expect(fake.logEntry).not.toHaveBeenCalled();
   });
 
   it("refuses duplicate dispatch, manual hold, and selection change", async () => {

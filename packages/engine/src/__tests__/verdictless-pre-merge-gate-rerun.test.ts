@@ -107,10 +107,24 @@ function verdictlessTask(id: string, fingerprint: string, overrides: Partial<Tas
   } as unknown as Task;
 }
 
+/*
+FNXC:NoVerdictRerunBudget 2026-10-01-01:29 (RUFU-452):
+A board read is a PROJECTION, not the row. `listTasks({ slim: true })` answers `log: []` for a card
+whose durable log still holds every rerun strike (`reads.ts` hydrates the activity log separately and
+`slim` strips it), so this fake must NOT hand the sweep the same object `getTask` answers. Sharing one
+object is what let the counter's `Array.isArray(task.log)` arm look right in-test while it was dead
+in production: the swept candidate carried the markers the durable row had accrued, so the budget
+looked enforced. Returning a slim copy makes the starvation cap below a real reachability proof for
+the self-healing sweep, and it fails against the pre-fix counter (4 seeds instead of 3).
+*/
+function slimBoardProjection(live: Task): Task {
+  return { ...live, log: [] };
+}
+
 /** Live-object TaskStore fake for `recoverMergeableReviewTasks`. `updateTaskAtomic` has real
  *  semantics (mutator over the live row; a null patch writes nothing) — the all-or-nothing park
  *  clear depends on it, and the drift tests mutate the row from inside the seed seam to watch the
- *  transaction fence refuse. */
+ *  transaction fence refuse. The swept candidate is a projection; `getTask` is the durable row. */
 function sweepStore(live: Task, hooks: { onSeed?: () => void; discardClearPatches?: boolean } = {}) {
   const auditEvents: Array<Record<string, unknown>> = [];
   const logLines: string[] = [];
@@ -120,7 +134,7 @@ function sweepStore(live: Task, hooks: { onSeed?: () => void; discardClearPatche
   });
   const store = Object.assign(new EventEmitter(), {
     getSettings: vi.fn(async () => ({ autoMerge: true })),
-    listTasks: vi.fn(async (options?: { column?: string }) => (options?.column === "in-review" ? [live] : [])),
+    listTasks: vi.fn(async (options?: { column?: string }) => (options?.column === "in-review" ? [slimBoardProjection(live)] : [])),
     getTask: vi.fn(async (id: string) => (id === live.id ? live : undefined)),
     updateTask: vi.fn(async (_id: string, patch: Partial<Task>) => { Object.assign(live, patch); return live; }),
     updateTaskAtomic: vi.fn(async (_id: string, updater: (current: Task) => Record<string, unknown> | null) => {
@@ -268,6 +282,43 @@ describe("RUFU-217 verdict-less pre-merge gate re-run", () => {
     expect(logLines.filter((line) => line.includes("Stopped verdict-less gate park recovery after 3 attempts"))).toHaveLength(1);
     expect(live.paused).toBe(true);
     expect(live.status).toBe("failed");
+  });
+
+  /*
+  FNXC:NoVerdictRerunBudget 2026-10-01-01:29 (RUFU-452):
+  Reachability through the sweep, not only through the helper. The candidate `recoverMergeableReviewTasks`
+  walks in is a slim board projection whose `log` is empty, while the durable row already holds all
+  three strikes an earlier pass wrote. The lane must refuse on the DURABLE count: no fourth seed, the
+  park stays byte-identical, and the audit row names `rerun-budget-exhausted` instead of claiming a
+  fresh run. Against the pre-fix counter this card re-seeded — the projection's `[]` read as zero
+  strikes, which is exactly how RUFU-281 accrued 11 strikes that all claimed `rerun 1 of 3`.
+  */
+  it("sweep: refuses the fourth re-seed when the durable row holds strikes the slim projection hides", async () => {
+    const fx = await gitFixture();
+    const strikes = [1, 2, 3].map((n) => ({
+      timestamp: "2026-09-13T11:0" + n + ":00.000Z",
+      action: `[verdictless-gate-rerun] gate 'plan-review' verdict-less failure, re-seeded in place for a fresh run`
+        + ` (rerun ${n} of 3)`,
+    }));
+    const live = verdictlessTask("RUFU-217D", fx.fingerprint, {
+      worktree: fx.dir, baseCommitSha: fx.base, log: strikes,
+    }) as unknown as Task;
+    const { store, auditEvents, logLines, seed } = sweepStore(live);
+    const manager = new SelfHealingManager(store, { rootDir: fx.dir, enqueueMerge: vi.fn(async () => undefined) } as never);
+
+    await manager.recoverMergeableReviewTasks();
+
+    expect(seed).not.toHaveBeenCalled();
+    expect(logLines.some((line) => line.includes("re-seeded the workflow graph at the verdict-less pre-merge gate"))).toBe(false);
+    // All-or-nothing: a refused seed clears nothing, so the card stays honestly parked.
+    expect(live.paused).toBe(true);
+    expect(live.status).toBe("failed");
+    expect(rerouteAudits(auditEvents).map((entry) => entry.metadata)).toEqual(
+      expect.arrayContaining([expect.objectContaining({
+        taskId: "RUFU-217D", workflowStepId: "plan-review",
+        reason: "rerun-budget-exhausted", source: "self-healing",
+      })]),
+    );
   });
 
   it("(e) the stall router counts fresh verdict-less attempts as progress and never disposes the card", async () => {
