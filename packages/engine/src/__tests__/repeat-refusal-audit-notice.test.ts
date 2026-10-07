@@ -3,7 +3,7 @@ import "./executor-test-helpers.js";
 import { createMockStore } from "./executor-test-helpers.js";
 import type { Task } from "@fusion/core";
 import {
-  clearWorkflowRunSuspendedNotice,
+  SUSPEND_NOTICE_WINDOW_MS,
   noteWorkflowRunSuspended,
   resetWorkflowRunSuspendedNoticeState,
   runSuspendedNoticeSignature,
@@ -71,26 +71,63 @@ describe("RUFU-442 suspended-run notice", () => {
     expect(logger.lines.filter((l) => l.level === "debug")).toHaveLength(2);
   });
 
-  it("treats every field of the wait as a transition: reason, continuation, and boundary", () => {
+  it("treats a changed reason or boundary as news, and keeps cards independent", () => {
     const logger = fakeLogger();
     noteWorkflowRunSuspended(logger, "SANE-2", runSuspendedNoticeSignature(wait), "m");
-    // A different refusal reason is news.
+    // A different refusal reason is news, inside the window.
     expect(noteWorkflowRunSuspended(logger, "SANE-2", runSuspendedNoticeSignature({ ...wait, reason: "pause" }), "m")).toBe(true);
-    // The same reason on a re-seeded continuation is news: the previous wait ended.
-    expect(noteWorkflowRunSuspended(logger, "SANE-2", runSuspendedNoticeSignature({ ...wait, reason: "pause", continuationId: "cont-2" }), "m")).toBe(true);
+    // A different column boundary is news too: the card is waiting somewhere else.
+    expect(
+      noteWorkflowRunSuspended(
+        logger,
+        "SANE-2",
+        runSuspendedNoticeSignature({ ...wait, reason: "pause", toColumn: "hold" }),
+        "m",
+      ),
+    ).toBe(true);
     // Identical again → restatement.
-    expect(noteWorkflowRunSuspended(logger, "SANE-2", runSuspendedNoticeSignature({ ...wait, reason: "pause", continuationId: "cont-2" }), "m")).toBe(false);
+    expect(
+      noteWorkflowRunSuspended(logger, "SANE-2", runSuspendedNoticeSignature({ ...wait, reason: "pause", toColumn: "hold" }), "m"),
+    ).toBe(false);
     // A different card is independent.
     expect(noteWorkflowRunSuspended(logger, "SANE-3", runSuspendedNoticeSignature(wait), "m")).toBe(true);
   });
 
-  it("reports a later wait afresh once the card stops being suspended", () => {
+  /*
+  FNXC:RunSuspendedAuditBackoff 2026-10-07-18:40 (RUFU-442 follow-up):
+  This is the shape that defeated the first cut in production: SANE-556 wrote 7 rows for the SAME
+  `(parse, capacity)` wait in 4 minutes, because the signature carried the continuation identity and the
+  scheduler installs a fresh continuation every pass. Continuation churn may therefore never produce a
+  row. Before this test existed, that assertion was the opposite (`toBe(true)`), which is exactly how a
+  wrong design passes its own suite.
+  */
+  it("does not treat a fresh continuation identity as a new wait while the card keeps waiting", () => {
+    const logger = fakeLogger();
+    const results = Array.from({ length: 7 }, (_, i) =>
+      noteWorkflowRunSuspended(
+        logger,
+        "SANE-556",
+        runSuspendedNoticeSignature({ ...wait, continuationId: `cont-${i}`, continuationState: i % 2 ? "held" : "running" }),
+        "m",
+      ),
+    );
+
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(logger.lines.filter((l) => l.level === "log")).toHaveLength(1);
+  });
+
+  it("produces one signature for one wait regardless of continuation identity", () => {
+    const base = runSuspendedNoticeSignature(wait);
+    expect(runSuspendedNoticeSignature({ ...wait, continuationId: "c1", continuationState: "held", continuationNodeId: "parse" })).toBe(base);
+    expect(runSuspendedNoticeSignature({ ...wait, continuationId: "c2", continuationState: "running" })).toBe(base);
+  });
+
+  it("reports the same wait again once the notice window has elapsed", () => {
     const logger = fakeLogger();
     const signature = runSuspendedNoticeSignature(wait);
-    expect(noteWorkflowRunSuspended(logger, "SANE-4", signature, "m")).toBe(true);
-    expect(noteWorkflowRunSuspended(logger, "SANE-4", signature, "m")).toBe(false);
-    clearWorkflowRunSuspendedNotice("SANE-4");
-    expect(noteWorkflowRunSuspended(logger, "SANE-4", signature, "m")).toBe(true);
+    expect(noteWorkflowRunSuspended(logger, "SANE-6", signature, "m", 1_000)).toBe(true);
+    expect(noteWorkflowRunSuspended(logger, "SANE-6", signature, "m", 1_000 + SUSPEND_NOTICE_WINDOW_MS - 1)).toBe(false);
+    expect(noteWorkflowRunSuspended(logger, "SANE-6", signature, "m", 1_000 + SUSPEND_NOTICE_WINDOW_MS)).toBe(true);
   });
 
   it("writes one audit row across repeated suspended graph runs, and a new row after the run stops suspended", async () => {
@@ -113,12 +150,25 @@ describe("RUFU-442 suspended-run notice", () => {
       await executor.executeWorkflowGraph(task);
       expect(rows()).toBe(1);
 
-      // The wait ends, then the card suspends again at the same seam: that is a new wait.
+      /*
+      FNXC:RunSuspendedAuditBackoff 2026-10-07-18:40 (RUFU-442 follow-up):
+      The interleaved non-suspended run is the capacity-loop shape: dispatch → suspend → dispatch →
+      suspend. The first cut wrote a second row here because the non-suspended pass cleared the notice.
+      A row now appears only when the wait identity changes, so an alternating loop stays at one row.
+      */
       run.mockResolvedValue({ disposition: "completed", outcome: "success", visitedNodeIds: [] } as any);
       await executor.executeWorkflowGraph(task);
       run.mockResolvedValue({
         disposition: "suspended", outcome: "failure", visitedNodeIds: [],
         suspension: { nodeId: "wait", reason: "capacity", fromColumn: "in-progress", toColumn: "todo" },
+      } as any);
+      await executor.executeWorkflowGraph(task);
+      expect(rows()).toBe(1);
+
+      // The same card waiting for a DIFFERENT reason is a new condition and reports immediately.
+      run.mockResolvedValue({
+        disposition: "suspended", outcome: "failure", visitedNodeIds: [],
+        suspension: { nodeId: "wait", reason: "dependency", fromColumn: "in-progress", toColumn: "todo" },
       } as any);
       await executor.executeWorkflowGraph(task);
       expect(rows()).toBe(2);
