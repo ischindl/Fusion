@@ -5,7 +5,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Settings, Task, TaskStore } from "@fusion/core";
-import { SelfHealingManager } from "../self-healing.js";
+import { SelfHealingManager, landedReviewReconcileLogMarker } from "../self-healing.js";
+import { MAX_POST_MERGE_GATE_RESEED_ATTEMPTS, postMergeGateReseedLogMarker } from "../merge/post-merge-gate-reseed.js";
 
 /*
 Surface enumeration: this covers the engine reconciliation seam shared by `fn task reconcile`
@@ -56,10 +57,49 @@ function storeWithTask(task: Task, settings: Partial<Settings> = {}) {
     updateTask,
     updateTaskAtomic,
     moveTask,
-    logEntry: vi.fn(async () => undefined),
+    /*
+    FNXC:UnrunPostMergeGateRecovery 2026-10-07-12:38 (RUFU-306):
+    The real `logEntry` APPENDS to the durable log, and RUFU-306's once-per-reason dedup reads that log back.
+    A no-op fake would make every pass look unrecorded, which is the pre-RUFU-502 bug the reseed budget had
+    to be fixed for, so the append is part of the fixture contract. `updatedAt` is deliberately NOT bumped:
+    this file's CAS tests pin `expectedUpdatedAt`, and the refusal marker is written on paths that never
+    reach a CAS, so the clock stays out of the assertion.
+    */
+    logEntry: vi.fn(async (id: string, action: string) => {
+      const current = tasks.get(id);
+      if (!current) return;
+      tasks.set(id, { ...current, log: [...(current.log ?? []), { action }] } as Task);
+    }),
     recordRunAuditEvent: vi.fn(async () => undefined),
   }) as unknown as TaskStore & EventEmitter;
   return { store, tasks, updateTask, updateTaskAtomic, moveTask };
+}
+
+/** Every durable line this file's refusal marker could have written, for silence/duplication assertions. */
+function reconcileRefusalLines(task: Task | undefined): string[] {
+  return (task?.log ?? [])
+    .map((entry) => (typeof entry.action === "string" ? entry.action : ""))
+    .filter((line) => line.includes("[landed-review reconcile:"));
+}
+
+/** A merge-confirmed card whose required post-merge gate is stuck unapproved → `post-merge-evidence-pending`. */
+function pendingEvidenceTask(id = "RUFU-306"): Task {
+  return baseTask({
+    id,
+    autoMerge: true,
+    mergeDetails: { mergeConfirmed: true },
+    enabledWorkflowSteps: ["post-merge-verification"],
+    workflowStepResults: [{ workflowStepId: "post-merge-verification", status: "pending" }],
+  });
+}
+
+function withPostMergeSelection(store: TaskStore & EventEmitter): TaskStore & EventEmitter {
+  return Object.assign(store, {
+    getTaskWorkflowSelection: vi.fn(() => ({ workflowId: "builtin:coding", stepIds: ["post-merge-verification"] })),
+    getTaskWorkflowSelectionAsync: vi.fn(async () => ({ workflowId: "builtin:coding", stepIds: ["post-merge-verification"] })),
+    listWorkflowWorkItemsForTask: vi.fn(async () => [{ id: "wi-active", state: "running" }]),
+    seedWorkspaceCodeReviewContinuationIfIdle: vi.fn(async () => ({ seeded: false, reason: "active-continuation" })),
+  });
 }
 
 /** Builds a manager with the git-evidence and worktree-cleanup seams stubbed so only the
@@ -351,5 +391,299 @@ describe("SelfHealingManager.reconcileLandedReviewTask", () => {
 
     const allowed = await manager.reconcileLandedReviewTask("FN-9304", { source: "manual", requireAutoMergeEligible: false });
     expect(allowed.outcome).toBe("reconciled");
+  });
+});
+
+/*
+FNXC:UnrunPostMergeGateRecovery 2026-10-07-12:38 (RUFU-306):
+The durable refusal marker. Three review lanes could run against the same landed card and leave nothing an
+operator could read: the sweep's run-audit rows hide behind a synthetic run id that resolves through a durable
+agent's heartbeat run (a route the dashboard and CLI do not expose), `fn task reconcile` wrote only to stdout,
+and the audit convention forbids the blocker sentence in metadata anyway. These cases pin the one durable
+surface — the card's own task log — and its two policies: the reason in the line IS the returned reason, and
+the automatic lane may not spam it.
+*/
+describe("reconcileLandedReviewTask durable refusal marker", () => {
+  it("names the returned reason and the gate id in the durable refusal line", async () => {
+    const task = pendingEvidenceTask();
+    const { store, tasks } = storeWithTask(task);
+    withPostMergeSelection(store);
+    const manager = managerWithStubs(store);
+
+    const result = await manager.reconcileLandedReviewTask(task.id, { source: "manual" });
+
+    expect(result).toEqual({ outcome: "ineligible", reason: "post-merge-evidence-pending" });
+    const lines = reconcileRefusalLines(tasks.get(task.id));
+    expect(lines).toHaveLength(1);
+    // The marker's reason is exactly the reason the caller got, so the two can never disagree.
+    expect(lines[0]!.startsWith(`${landedReviewReconcileLogMarker("post-merge-evidence-pending")} `)).toBe(true);
+    expect(lines[0]!).toContain("post-merge-verification");
+  });
+
+  it("records the resume-seam refusal reason, not the raw seam reason", async () => {
+    const task = baseTask({
+      id: "RUFU-306B",
+      autoMerge: true,
+      mergeDetails: { mergeConfirmed: true },
+      enabledWorkflowSteps: ["post-merge-verification"],
+      workflowStepResults: [],
+    });
+    const { store, tasks } = storeWithTask(task);
+    withPostMergeSelection(store);
+    const manager = managerWithStubs(store);
+
+    const result = await manager.reconcileLandedReviewTask(task.id, { source: "manual" });
+
+    expect(result).toEqual({ outcome: "raced", reason: "post-merge-continuation-not-idle" });
+    const lines = reconcileRefusalLines(tasks.get(task.id));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.startsWith(`${landedReviewReconcileLogMarker("post-merge-continuation-not-idle")} `)).toBe(true);
+    expect(lines[0]!).toContain("post-merge-verification");
+  });
+
+  it("records `awaiting finalization` with no gate clause when no gate is identifiable", async () => {
+    const { store, tasks } = storeWithTask(baseTask({ mergeDetails: { mergeConfirmed: true, commitSha: "zzz" } }));
+    const manager = managerWithStubs(store);
+
+    await expect(manager.reconcileLandedReviewTask("FN-9304", { source: "manual" }))
+      .resolves.toEqual({ outcome: "ineligible", reason: "awaiting-finalization" });
+
+    const lines = reconcileRefusalLines(tasks.get("FN-9304"));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.startsWith(`${landedReviewReconcileLogMarker("awaiting-finalization")} `)).toBe(true);
+    expect(lines[0]!).not.toContain("for gate");
+  });
+
+  it("writes no refusal marker for a refusal that was never made", async () => {
+    const held = [
+      baseTask({ id: "RUFU-306-PAUSED", paused: true }),
+      baseTask({ id: "RUFU-306-LEASED", checkoutRunId: "run-1", checkoutLeaseRenewedAt: new Date().toISOString() }),
+    ];
+    for (const task of held) {
+      const { store, tasks } = storeWithTask(task);
+      const manager = managerWithStubs(store);
+
+      const result = await manager.reconcileLandedReviewTask(task.id, { source: "manual" });
+
+      expect(result.outcome).toBe("ineligible");
+      expect(reconcileRefusalLines(tasks.get(task.id))).toEqual([]);
+    }
+  });
+
+  it("records a refusal of an unmerged card nowhere — the marker belongs to the merged lane alone", async () => {
+    const guarded = baseTask({
+      enabledWorkflowSteps: ["code-review"],
+      workflowStepResults: [{ workflowStepId: "code-review", phase: "pre-merge", status: "failed" } as never],
+    });
+    const { store, tasks } = storeWithTask(guarded);
+    (store as unknown as { getTaskWorkflowSelection: ReturnType<typeof vi.fn> }).getTaskWorkflowSelection = vi.fn(() => ({
+      workflowId: "builtin:coding", stepIds: ["code-review"],
+    }));
+    const manager = managerWithStubs(store);
+
+    await expect(manager.reconcileLandedReviewTask("FN-9304", { source: "manual" }))
+      .resolves.toEqual({ outcome: "ineligible", reason: "workflow-approval-blocked" });
+
+    expect(reconcileRefusalLines(tasks.get("FN-9304"))).toEqual([]);
+  });
+
+  it("keeps the successful outcomes silent: a resume and an awaiting-finalization pass write no refusal", async () => {
+    const task = baseTask({
+      id: "RUFU-306-SEEDED",
+      autoMerge: true,
+      mergeDetails: { mergeConfirmed: true },
+      enabledWorkflowSteps: ["post-merge-verification"],
+      workflowStepResults: [],
+    });
+    const { store, tasks } = storeWithTask(task);
+    const continuations: unknown[] = [];
+    Object.assign(store, {
+      getTaskWorkflowSelection: vi.fn(() => ({ workflowId: "builtin:coding", stepIds: ["post-merge-verification"] })),
+      getTaskWorkflowSelectionAsync: vi.fn(async () => ({ workflowId: "builtin:coding", stepIds: ["post-merge-verification"] })),
+      listWorkflowWorkItemsForTask: vi.fn(async () => continuations),
+      seedWorkspaceCodeReviewContinuationIfIdle: vi.fn(async (input) => {
+        if (continuations.length > 0) return { seeded: false, reason: "active-continuation" };
+        continuations.push(input);
+        return { seeded: true, workItemId: "post-merge" };
+      }),
+    });
+    const manager = managerWithStubs(store);
+
+    await expect(manager.reconcileLandedReviewTask(task.id, { source: "manual" })).resolves.toMatchObject({
+      outcome: "resumed", gateId: "post-merge-verification",
+    });
+    expect(reconcileRefusalLines(tasks.get(task.id))).toEqual([]);
+
+    // Second pass: the card is no longer idle, so THIS pass is a refusal and is the first marker.
+    await expect(manager.reconcileLandedReviewTask(task.id, { source: "manual" })).resolves.toEqual({
+      outcome: "raced", reason: "post-merge-continuation-not-idle",
+    });
+    const afterRefusal = reconcileRefusalLines(tasks.get(task.id));
+    expect(afterRefusal).toHaveLength(1);
+    // The reseed seam's own success marker is a different sentence and is not the refusal marker.
+    expect(afterRefusal[0]!).toContain(landedReviewReconcileLogMarker("post-merge-continuation-not-idle"));
+  });
+
+  it("writes every refusal for an explicit manual reconcile — a human asking twice is two events", async () => {
+    const task = pendingEvidenceTask("RUFU-306-MANUAL");
+    const { store, tasks } = storeWithTask(task);
+    withPostMergeSelection(store);
+    const manager = managerWithStubs(store);
+
+    for (let pass = 0; pass < 3; pass += 1) {
+      await expect(manager.reconcileLandedReviewTask(task.id, { source: "manual" }))
+        .resolves.toEqual({ outcome: "ineligible", reason: "post-merge-evidence-pending" });
+    }
+
+    expect(reconcileRefusalLines(tasks.get(task.id))).toHaveLength(3);
+  });
+
+  it("writes each distinct refusal reason once for the automatic sweep, but never another reason's", async () => {
+    const task = pendingEvidenceTask("RUFU-306-SWEEP");
+    const { store, tasks } = storeWithTask(task);
+    withPostMergeSelection(store);
+    const manager = managerWithStubs(store);
+
+    for (let pass = 0; pass < 4; pass += 1) {
+      await expect(manager.reconcileLandedReviewTask(task.id, { source: "self-healing", requireAutoMergeEligible: true }))
+        .resolves.toEqual({ outcome: "ineligible", reason: "post-merge-evidence-pending" });
+    }
+
+    const lines = reconcileRefusalLines(tasks.get(task.id));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!).toContain("source: self-healing");
+
+    // A fifth pass over the same unchanged refusal still adds nothing: one line per (card, reason).
+    await manager.reconcileLandedReviewTask(task.id, { source: "self-healing", requireAutoMergeEligible: true });
+    expect(reconcileRefusalLines(tasks.get(task.id))).toHaveLength(1);
+  });
+
+  it("lets a rejected durable write change nothing about the reported refusal", async () => {
+    const task = pendingEvidenceTask("RUFU-306-HOSTILE");
+    const { store } = storeWithTask(task);
+    withPostMergeSelection(store);
+    (store as unknown as { logEntry: ReturnType<typeof vi.fn> }).logEntry = vi.fn(async () => { throw new Error("log sink down"); });
+    const manager = managerWithStubs(store);
+
+    await expect(manager.reconcileLandedReviewTask(task.id, { source: "manual" }))
+      .resolves.toEqual({ outcome: "ineligible", reason: "post-merge-evidence-pending" });
+  });
+
+  /*
+  FNXC:UnrunPostMergeGateRecovery 2026-10-07-13:05 (RUFU-306):
+  Dedup is per (card, reason), not per card: a card whose blocker changes (an operator cleared the stale row,
+  a hold appeared, the seed budget ran out afterwards) must not be silenced by its first refusal, while the
+  sweep may still never write the same reason twice. The last pass proves both directions at once — the
+  first reason returns and reopens nothing.
+  */
+  it("opens exactly one new line when the refusal reason changes, and never reopens a named reason", async () => {
+    const task = pendingEvidenceTask("RUFU-306-DRIFT");
+    const { store, tasks } = storeWithTask(task);
+    withPostMergeSelection(store);
+    const manager = managerWithStubs(store);
+
+    await expect(manager.reconcileLandedReviewTask(task.id, { source: "self-healing", requireAutoMergeEligible: true }))
+      .resolves.toEqual({ outcome: "ineligible", reason: "post-merge-evidence-pending" });
+    expect(reconcileRefusalLines(tasks.get(task.id))).toHaveLength(1);
+
+    // The stale row is cleared, so the card now owes a SEED that the active continuation refuses.
+    tasks.set(task.id, { ...tasks.get(task.id)!, workflowStepResults: [] } as Task);
+    await expect(manager.reconcileLandedReviewTask(task.id, { source: "self-healing", requireAutoMergeEligible: true }))
+      .resolves.toEqual({ outcome: "raced", reason: "post-merge-continuation-not-idle" });
+    expect(reconcileRefusalLines(tasks.get(task.id))).toHaveLength(2);
+
+    for (let pass = 0; pass < 2; pass += 1) {
+      await manager.reconcileLandedReviewTask(task.id, { source: "self-healing", requireAutoMergeEligible: true });
+    }
+    expect(reconcileRefusalLines(tasks.get(task.id))).toHaveLength(2);
+
+    tasks.set(task.id, {
+      ...tasks.get(task.id)!,
+      workflowStepResults: [{ workflowStepId: "post-merge-verification", status: "pending" }],
+    } as Task);
+    await manager.reconcileLandedReviewTask(task.id, { source: "self-healing", requireAutoMergeEligible: true });
+    expect(reconcileRefusalLines(tasks.get(task.id))).toHaveLength(2);
+  });
+
+  /*
+  FNXC:UnrunPostMergeGateRecovery 2026-10-07-13:05 (RUFU-306):
+  The hold class is the standing answer an operator reads most ("someone paused it", "auto-merge is off"),
+  and the pair below is what keeps the assertion non-vacuous: the identical refusal on a card that was never
+  merged must write nothing, because that refusal belongs to the unconfirmed-branch lane. Asserting only the
+  merge-confirmed half would also pass if the hold fences never wrote a marker at all.
+  */
+  it.each(["auto-merge-off", "paused", "user-paused"] as const)(
+    "names the hold class on a merge-confirmed card: %s",
+    async (reason) => {
+      const hold = reason === "auto-merge-off" ? { autoMerge: false }
+        : reason === "paused" ? { paused: true }
+          : { userPaused: true };
+      const task = baseTask({ id: `RUFU-306-HOLD-${reason}`, mergeDetails: { mergeConfirmed: true }, ...hold });
+      const { store, tasks } = storeWithTask(task);
+      const manager = managerWithStubs(store);
+
+      await expect(manager.reconcileLandedReviewTask(task.id, { source: "manual", requireAutoMergeEligible: true }))
+        .resolves.toEqual({ outcome: "ineligible", reason });
+
+      const lines = reconcileRefusalLines(tasks.get(task.id));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]!).toContain(landedReviewReconcileLogMarker(reason));
+      // A hold names no gate: the sentence must not invent one.
+      expect(lines[0]!).not.toContain("for gate");
+    },
+  );
+
+  it.each(["auto-merge-off", "paused", "user-paused"] as const)(
+    "keeps the same hold refusal silent on a card that was never merged: %s",
+    async (reason) => {
+      const hold = reason === "auto-merge-off" ? { autoMerge: false }
+        : reason === "paused" ? { paused: true }
+          : { userPaused: true };
+      const task = baseTask({ id: `RUFU-306-UNMERGED-${reason}`, mergeDetails: {}, ...hold });
+      const { store, tasks } = storeWithTask(task);
+      const manager = managerWithStubs(store);
+
+      await expect(manager.reconcileLandedReviewTask(task.id, { source: "self-healing", requireAutoMergeEligible: true }))
+        .resolves.toEqual({ outcome: "ineligible", reason });
+      expect(reconcileRefusalLines(tasks.get(task.id))).toEqual([]);
+    },
+  );
+
+  /*
+  FNXC:UnrunPostMergeGateRecovery 2026-10-07-13:05 (RUFU-306):
+  The spent-budget sentence is the one RUFU-220's operator needed and never got. Three reseed markers in the
+  durable log is exactly the shape `countReseedAttempts` reads, so this drives the real budget read through
+  the reconcile lane: the refusal names the derived reason and the gate, and the seed itself never happened
+  — a counted budget that still seeded would be the wedge this bound exists to prevent.
+  */
+  it("records the spent rerun budget, the sentence RUFU-220's operator never saw", async () => {
+    const task = baseTask({
+      id: "RUFU-306-BUDGET",
+      autoMerge: true,
+      mergeDetails: { mergeConfirmed: true },
+      enabledWorkflowSteps: ["post-merge-verification"],
+      workflowStepResults: [],
+      log: Array.from({ length: MAX_POST_MERGE_GATE_RESEED_ATTEMPTS }, (_unused, index) => ({
+        action: `${postMergeGateReseedLogMarker("post-merge-verification")}; (reseed ${index + 1} of ${MAX_POST_MERGE_GATE_RESEED_ATTEMPTS})`,
+      })),
+    });
+    const { store, tasks } = storeWithTask(task);
+    Object.assign(store, {
+      getTaskWorkflowSelection: vi.fn(() => ({ workflowId: "builtin:coding", stepIds: ["post-merge-verification"] })),
+      getTaskWorkflowSelectionAsync: vi.fn(async () => ({ workflowId: "builtin:coding", stepIds: ["post-merge-verification"] })),
+      listWorkflowWorkItemsForTask: vi.fn(async () => []),
+      seedWorkspaceCodeReviewContinuationIfIdle: vi.fn(async () => ({ seeded: true, workItemId: "post-merge" })),
+    });
+    const manager = managerWithStubs(store);
+
+    await expect(manager.reconcileLandedReviewTask(task.id, { source: "self-healing", requireAutoMergeEligible: true }))
+      .resolves.toEqual({ outcome: "raced", reason: "post-merge-resume-rerun-budget-exhausted" });
+
+    expect((store as unknown as { seedWorkspaceCodeReviewContinuationIfIdle: ReturnType<typeof vi.fn> })
+      .seedWorkspaceCodeReviewContinuationIfIdle).not.toHaveBeenCalled();
+    const lines = reconcileRefusalLines(tasks.get(task.id));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!).toContain(landedReviewReconcileLogMarker("post-merge-resume-rerun-budget-exhausted"));
+    expect(lines[0]!).toContain("post-merge-verification");
   });
 });

@@ -1224,6 +1224,24 @@ const SWEEP_OWNED_NON_CONVERGENCE_HOLD_REASONS: ReadonlySet<NonNullable<Task["aw
   "plan-review-replan-cap",
 ]);
 
+/*
+FNXC:UnrunPostMergeGateRecovery 2026-10-07-12:38 (RUFU-306):
+The durable record of a REFUSED merge-confirmed reconciliation. Before this marker existed, a refusal was
+invisible in every place an operator actually reads: the sweep files its run-audit rows under the synthetic
+`reconcile-absent-branch:<id>` run id, which resolves through a durable agent's heartbeat run — a route the
+dashboard and CLI do not expose — while `fn task reconcile` printed its refusal sentence to stdout and wrote
+nothing durable. Three review lanes could run against the same card and leave nothing behind to compare, and
+the run-audit convention forbids putting the blocker sentence in metadata anyway. The task log is the one
+surface that reaches an operator without DB access, so the refusal lands there.
+
+Exported for exactly the reason `postMergeGateReseedLogMarker` is: the once-per-reason dedup is READ back out
+of the task log, so anything that writes this marker by hand (a test, an operator repair) must write this
+exact shape or it will not be counted.
+*/
+export function landedReviewReconcileLogMarker(reason: string): string {
+  return `[landed-review reconcile: ${reason}]`;
+}
+
 export class SelfHealingManager extends SelfHealingGitEvidence {
   /*
   FNXC:ChatRestartAutoContinue 2026-09-17-21:05:
@@ -17651,6 +17669,66 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
     }
   }
 
+  /*
+  FNXC:UnrunPostMergeGateRecovery 2026-10-07-12:38 (RUFU-306):
+  Writes the durable refusal marker for a merge-confirmed card whose reconciliation did nothing. Only the
+  merge-confirmed lane reaches this: a card that was never merged has a different owner and a different
+  answer, so the ownership fences (`live-session`, `executing`, `checkout-leased`) return silently and are
+  reported by the sweep's own reason-keyed audit instead of being double-logged. The hold-class fences
+  (`paused`, `user-paused`, `auto-merge-off`) DO call this, but only for a merge-confirmed card — see
+  `refuseMergeConfirmedHold` for why that gate is the whole distinction.
+
+  Dedup policy differs by caller on purpose. An explicit `fn task reconcile` is a human asking "why?", so
+  every refusal earns its own line. The sweep runs every maintenance cycle against an unchanged refusal, so
+  it records one line per (card, reason) — the same durable-marker scan `countReseedAttempts` uses. A dedup
+  read that fails is read as ABSENCE of evidence to suppress, not as permission to stay quiet: the
+  invisibility this marker exists to repair is worse than one duplicated row.
+
+  The write is tolerant. A rejected `logEntry` must never change the outcome the caller returns — this line
+  is a report about the decision, not a participant in it.
+  */
+  private async logMergeConfirmedReconcileRefusal(
+    task: Task,
+    source: "self-healing" | "manual",
+    reason: string,
+    gateId?: string,
+  ): Promise<void> {
+    const marker = landedReviewReconcileLogMarker(reason);
+    if (source === "self-healing") {
+      // Prefer the durable row over the projection this method was handed; fall back to it when unreadable.
+      const durable = await this.store.getTask(task.id).catch(() => null);
+      const log = Array.isArray(durable?.log) ? durable.log : Array.isArray(task.log) ? task.log : [];
+      if (log.some((entry) => typeof entry.action === "string" && entry.action.startsWith(marker))) return;
+    }
+    const gate = gateId ? ` for gate '${gateId}'` : "";
+    await this.store.logEntry(
+      task.id,
+      `${marker} Reconcile refused${gate} (source: ${source}); the card was left exactly as it is — still in review, nothing written.`,
+    ).catch(() => undefined);
+  }
+
+  /*
+  FNXC:UnrunPostMergeGateRecovery 2026-10-07-13:05 (RUFU-306):
+  The hold-class fences are the most common STANDING answer to "why is my landed card still in review" — an
+  operator paused the card, or switched auto-merge off — which is exactly the silence this card exists to
+  repair: the refusal reached only the caller's stdout, so the board showed a merge-confirmed card sitting in
+  review with nothing on it explaining the hold. They are annotated under one condition, `mergeConfirmed`:
+  the identical refusal on a card that was never merged belongs to the unconfirmed-branch lane, whose answer
+  is "was it even merged?", and RUFU-306's non-goals keep that lane's output untouched. The transient
+  ownership fences deliberately do NOT come through here — a merger that owns the card this second is not a
+  standing reason, and annotating it would write a refusal line on every healthy card caught mid-merge.
+  */
+  private async refuseMergeConfirmedHold(
+    task: Task,
+    source: "self-healing" | "manual",
+    reason: "paused" | "user-paused" | "auto-merge-off",
+  ): Promise<LandedReviewReconcileResult> {
+    if (task.mergeDetails?.mergeConfirmed) {
+      await this.logMergeConfirmedReconcileRefusal(task, source, reason);
+    }
+    return { outcome: "ineligible", reason };
+  }
+
   /**
    * Reconciles an absent post-merge branch only after ownership proof and liveness fences agree.
    *
@@ -17701,8 +17779,8 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
       });
       if (approvalBlocker) return { outcome: "ineligible", reason: "workflow-approval-blocked" };
     }
-    if (task.paused) return { outcome: "ineligible", reason: "paused" };
-    if (task.userPaused) return { outcome: "ineligible", reason: "user-paused" };
+    if (task.paused) return await this.refuseMergeConfirmedHold(task, options.source, "paused");
+    if (task.userPaused) return await this.refuseMergeConfirmedHold(task, options.source, "user-paused");
     const livePaths = activeSessionRegistry.pathsForTask(task.id).filter((path) => activeSessionRegistry.isPathActive(path));
     if (livePaths.length > 0) return { outcome: "ineligible", reason: "live-session" };
     if (executingTaskLock.has(task.id) || this.options.isTaskActive?.(task.id) === true) return { outcome: "ineligible", reason: "executing" };
@@ -17712,7 +17790,9 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
     const graceMs = (settings.taskStuckTimeoutMs ?? STALE_ACTIVE_BRANCH_EXECUTION_GRACE_MS) * PHANTOM_EXECUTOR_BINDING_AGE_MULTIPLIER;
     const leaseAge = task.checkoutLeaseRenewedAt ? Date.now() - Date.parse(task.checkoutLeaseRenewedAt) : Number.POSITIVE_INFINITY;
     if (task.checkoutRunId && Number.isFinite(leaseAge) && leaseAge >= 0 && leaseAge < graceMs) return { outcome: "ineligible", reason: "checkout-leased" };
-    if ((options.requireAutoMergeEligible && !allowsAutoMergeProcessing(task, settings)) || task.autoMerge === false) return { outcome: "ineligible", reason: "auto-merge-off" };
+    if ((options.requireAutoMergeEligible && !allowsAutoMergeProcessing(task, settings)) || task.autoMerge === false) {
+      return await this.refuseMergeConfirmedHold(task, options.source, "auto-merge-off");
+    }
     if (task.mergeDetails?.mergeConfirmed) {
       /*
       FNXC:PostMergeRecovery 2026-10-01-06:36:
@@ -17736,14 +17816,25 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
          * the retry router and the CLI were written against; every other refusal names our own reason so
          * an operator sees whether it is a hold, a lease, or the spent reseed budget.
          */
-        return {
+        const refusal: LandedReviewReconcileResult = {
           outcome: "raced",
           reason: resumed.reason === "active-continuation"
             ? "post-merge-continuation-not-idle"
             : `post-merge-resume-${resumed.reason}`,
         };
+        await this.logMergeConfirmedReconcileRefusal(
+          task, options.source, refusal.reason, resumed.workflowStepId ?? decision.gateId,
+        );
+        return refusal;
       }
-      return { outcome: "ineligible", reason: decision.outcome === "blocked" ? "post-merge-evidence-pending" : "awaiting-finalization" };
+      const evidenceRefusal: LandedReviewReconcileResult = {
+        outcome: "ineligible",
+        reason: decision.outcome === "blocked" ? "post-merge-evidence-pending" : "awaiting-finalization",
+      };
+      // `finalizable` names no gate, so that refusal is recorded without a gate clause.
+      const pendingGateId = decision.outcome === "blocked" ? decision.gateId : undefined;
+      await this.logMergeConfirmedReconcileRefusal(task, options.source, evidenceRefusal.reason, pendingGateId);
+      return evidenceRefusal;
     }
     const branch = task.branch;
     if (!branch) return { outcome: "ineligible", reason: "no-branch-recorded" };

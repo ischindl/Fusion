@@ -306,6 +306,15 @@ async function runPostMergeGateResume(
   zero-commit delivery door first, and `reconcileLandedReviewTask` proves the trailer on the base branch.
   Re-checking a SHA here would only re-litigate a fact the caller already fenced, and it silently refused
   cards whose proof is a PR number rather than a local SHA. An empty merge-shaped object still refuses.
+
+  FNXC:UnrunPostMergeGateRecovery 2026-10-07-13:25 (RUFU-306):
+  `commitSha` must never return as a proof requirement. RUFU-220 hung 41 h in review and RUFU-289 deferred
+  on `[post-merge gate reseed: no-merge-proof]` precisely for the class that carries no local sha: a
+  squash-merge cleanup or PR-only land writes `{ mergeConfirmed: true, mergedAt }` (sometimes with
+  `noOpMerge: true`) after the branch and worktree are already gone, so a sha check asks for evidence that
+  the successful landing deliberately deleted. Both sides of this key are pinned by the proof-class pair in
+  `post-merge-gate-reseed.test.ts` — confirmation without a sha seeds, a bare unconfirmed sha refuses before
+  any workflow read — so re-adding the condition turns those cases red instead of quietly re-wedging cards.
   */
   if (!task.mergeDetails?.mergeConfirmed) return { outcome: "not-seeded", reason: "no-merge-proof" };
   if (
