@@ -1,7 +1,6 @@
 import {
   getPostMergeFinalizeBlocker,
   getRequiredPostMergeEvidenceBlocker,
-  getRequiredPostMergeEvidenceDecision,
   planConfirmedMergeChecklistReconciliation,
   resolveWorkflowIrForTask,
   resolveCompleteColumn,
@@ -34,6 +33,7 @@ therefore asked separately, and before any cleanup, because a cleanup would dest
 */
 import { enforceZeroCommitLandingProof } from "./zero-commit-finalization-guard.js";
 import { resumeMissingPostMergeGate } from "./post-merge-gate-reseed.js";
+import { isBoundedFinalizationRefusal, shouldRecordFinalizationRefusal } from "./finalization-refusal-notice.js";
 
 /*
 FNXC:WorkflowMergeFinalization 2026-07-19-07:20 (U7 / R2/R3/KTD-1):
@@ -296,6 +296,30 @@ async function recordFinalizationAudit(args: {
   auditAgentId?: string;
   auditPhase?: string;
 }): Promise<void> {
+  /*
+  FNXC:FinalizationRefusalBounded 2026-10-07-09:10 (RUFU-431):
+  A refusal is a state, not an event. The auto-merge sweep re-attempts a blocked finalization every
+  pass, so without this gate the SAME (task, refusal) was re-recorded forever — measured 5,356 rows
+  for 7 cards in one day, and 61 rows from one card in 30 minutes. Terminal outcomes (`…-reconciled`,
+  successful finalization) are not in the bounded set and always write their row.
+
+  FNXC:FinalizationRefusalBounded 2026-10-07-09:20 (RUFU-431):
+  The refusal's IDENTITY is the discriminating metadata the row itself carries — which lane the card
+  was refused in, its status, its blockers, and why. Keying on the reason sentence alone collapsed two
+  genuinely different refusals of one card (refused in the default `done` lane vs refused in a board's
+  renamed complete lane, identical sentence) into one row, caught by
+  `merge-proof-reason-renamed-complete-lane.test.ts`. A card that moved lanes, changed status, or
+  gained a blocker is refusing for a NEW reason and must be recorded again — bounding a restatement
+  may never mask a state change.
+  */
+  if (isBoundedFinalizationRefusal(args.type)
+    && !shouldRecordFinalizationRefusal(
+      args.task.id,
+      args.type,
+      JSON.stringify(buildMismatchMetadata(args.task, args.reason)),
+    )) {
+    return;
+  }
   try {
     const auditor = args.audit ?? createRunAuditor(args.store, {
       runId: generateSyntheticRunId("auto-merge-finalize", args.task.id),

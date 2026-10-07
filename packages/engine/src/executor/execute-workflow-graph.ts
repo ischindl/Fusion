@@ -73,6 +73,11 @@ export function buildWorkflowGateActivityMetadata(
   };
 }
 import { executorLog } from "../logger.js";
+import {
+  clearWorkflowRunSuspendedNotice,
+  noteWorkflowRunSuspended,
+  runSuspendedNoticeSignature,
+} from "./run-suspended-notice.js";
 import type { EngineRunContext } from "../util/run-audit.js";
 import { emitBoundedRunAudit } from "./emit-bounded-run-audit.js";
 import { takePreHeldExecutorSlot } from "../concurrency/concurrency.js";
@@ -1356,8 +1361,32 @@ export async function executeWorkflowGraph(
         /*
          * FNXC:WorkflowExecution 2026-08-07-22:52:
          * Record suspension so an invisible wait is greppable (ids/outcomes-only audit).
+         *
+         * FNXC:RunSuspendedAuditBackoff 2026-10-07-09:10 (RUFU-442):
+         * The audit row and its log line now fire on the TRANSITION into a wait, not on every
+         * re-dispatch of it. A card parked at a capacity seam is re-dispatched every scheduler pass and
+         * wrote 108 identical rows in ~45 min (2.4/min), which made the monitor's `capacity_suspends`
+         * read as board pressure when it was one card talking to itself (measured again 2026-10-07:
+         * 176 suspensions in 45 min across 6 cards, engine at 0 leases). The wait itself is untouched —
+         * the graph still persists the continuation — only its restatement is bounded.
          */
         const suspension = result.suspension;
+        const signature = runSuspendedNoticeSignature({
+          nodeId: suspension?.nodeId ?? "unknown",
+          reason: suspension?.reason ?? "unknown",
+          fromColumn: suspension?.fromColumn ?? null,
+          toColumn: suspension?.toColumn ?? null,
+          continuationId: continuation?.id ?? null,
+          continuationNodeId: continuation?.nodeId ?? null,
+          continuationState: continuation?.state ?? null,
+        });
+        const isNewWait = noteWorkflowRunSuspended(
+          executorLog,
+          task.id,
+          signature,
+          `[workflow-graph] ${task.id} suspended at node '${suspension?.nodeId ?? "unknown"}' (${suspension?.reason ?? "unknown"})`,
+        );
+        if (!isNewWait) return;
         await emitBoundedRunAudit(deps.store, {
           taskId: task.id,
           agentId: "executor",
@@ -1376,11 +1405,15 @@ export async function executeWorkflowGraph(
             continuationState: continuation?.state ?? null,
           },
         });
-        executorLog.log(
-          `[workflow-graph] ${task.id} suspended at node '${suspension?.nodeId ?? "unknown"}' (${suspension?.reason ?? "unknown"})`,
-        );
         return;
       }
+      /*
+      FNXC:RunSuspendedAuditBackoff 2026-10-07-09:10 (RUFU-442):
+      Every non-suspended disposition ends the remembered wait, so the card's NEXT suspension is a real
+      transition and must be reported at full level again. Without this a card that resumed and later
+      re-suspended at the same node would be silenced forever.
+      */
+      clearWorkflowRunSuspendedNotice(task.id);
       if (result.disposition === "failed") {
         await closeContinuation("failed");
         await deps.handleGraphFailure(task, result);

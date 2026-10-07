@@ -171,6 +171,7 @@ import { ResearchStepRunner } from "./research/research-step-runner.js";
 import { ResearchProviderRegistry } from "./research/provider-registry.js";
 import { createRunAuditor, generateSyntheticRunId } from "./util/run-audit.js";
 import { finalizeProvenAutoMergeTask } from "./merge/auto-merge-finalization.js";
+import { noteFinalizationPass } from "./merge/finalization-refusal-notice.js";
 import { isTransientError } from "./errors/transient-error-detector.js";
 import { classifyTransientMergeError, MAX_AUTO_MERGE_TRANSIENT_RETRIES } from "./errors/transient-merge-error-classifier.js";
 import { TunnelProcessManager } from "./remote-access/tunnel-process-manager.js";
@@ -4657,13 +4658,27 @@ export class ProjectEngine {
                 }
               }
 
-              runtimeLog.log(
-                `Auto-merge: ${taskId} already has mergeConfirmed — refreshing row and finalizing to done`,
-              );
-              await store.logEntry(
+              /*
+              FNXC:FinalizationRefusalBounded 2026-10-07-09:10 (RUFU-431):
+              This pair of `store.logEntry` calls ran once per auto-merge pass. The per-task activity log
+              retains only its most recent 1,000 entries, so restating a known state scrolled real
+              delivery history off the row AND disarmed RUFU-452's verdict-less-gate re-run budget, which
+              counts its strikes as markers in that same log (measured: SANE-507 held 0 markers against
+              ~30 real re-runs). The durable log is now written on the transition only; the repeated pass
+              still leaves a `debug()` line for `FUSION_DEBUG`.
+              */
+              if (noteFinalizationPass(
+                runtimeLog,
                 taskId,
-                "Merge already confirmed; refreshing row and completing task (recovered from post-merge state inconsistency)",
-              );
+                "fast-path-attempt",
+                "attempted",
+                `Auto-merge: ${taskId} already has mergeConfirmed — refreshing row and finalizing to done`,
+              )) {
+                await store.logEntry(
+                  taskId,
+                  "Merge already confirmed; refreshing row and completing task (recovered from post-merge state inconsistency)",
+                );
+              }
               const auditor = createRunAuditor(store, {
                 runId: generateSyntheticRunId("merger-fast-path-finalize", taskId),
                 agentId: "merger",
@@ -4697,17 +4712,24 @@ export class ProjectEngine {
                 log: (message) => runtimeLog.warn(message),
               });
               if (finalization.outcome === "blocked") {
-                runtimeLog.warn(
-                  `Auto-merge: ${taskId} merge-confirmed finalize blocked — ${finalization.reason ?? "unknown"}`,
-                );
-                await store.logEntry(
+                const blockedSignature = finalization.reason ?? "unknown";
+                if (noteFinalizationPass(
+                  runtimeLog,
                   taskId,
-                  finalization.resumedPostMergeEvidence
-                    ? `Merge confirmed; resumed graph-owned post-merge verification — ${finalization.reason}.`
-                    : finalization.deferredPostMergeEvidence
-                      ? `Merge confirmed; awaiting graph-owned post-merge verification — ${finalization.reason}.`
-                      : `Merge confirmed finalization blocked — ${finalization.reason ?? "unknown"}.`,
-                );
+                  "fast-path-outcome",
+                  blockedSignature,
+                  `Auto-merge: ${taskId} merge-confirmed finalize blocked — ${finalization.reason ?? "unknown"}`,
+                  "warn",
+                )) {
+                  await store.logEntry(
+                    taskId,
+                    finalization.resumedPostMergeEvidence
+                      ? `Merge confirmed; resumed graph-owned post-merge verification — ${finalization.reason}.`
+                      : finalization.deferredPostMergeEvidence
+                        ? `Merge confirmed; awaiting graph-owned post-merge verification — ${finalization.reason}.`
+                        : `Merge confirmed finalization blocked — ${finalization.reason ?? "unknown"}.`,
+                  );
+                }
                 continue;
               }
               const mergedTask = finalization.task ?? (await store.getTask(taskId).catch(() => null)) ?? task;

@@ -183,6 +183,20 @@ import { detectMergeOverlap, restoreBranchWinsFiles } from "../merge/merger-over
 import { execSync, exec } from "node:child_process";
 import * as core from "@fusion/core";
 import { type TaskStore, type Task, type MergeResult, DEFAULT_SETTINGS } from "@fusion/core";
+import { resetWorkflowRunSuspendedNoticeState } from "../executor/run-suspended-notice.js";
+import { resetFinalizationNoticeState } from "../merge/finalization-refusal-notice.js";
+
+/*
+FNXC:FinalizationRefusalBounded 2026-10-07-09:10 (RUFU-431 / RUFU-442):
+A restated refusal is now recorded once per (card, refusal) instead of once per engine pass, and that
+decision lives in per-process state. Each case below is an independent scenario, so the remembered
+state is dropped between them — otherwise a parameterised table would suppress every row after the
+first case and the assertion would be testing the harness, not the engine.
+*/
+beforeEach(() => {
+  resetWorkflowRunSuspendedNoticeState();
+  resetFinalizationNoticeState();
+});
 
 const mockedCreateFnAgent = vi.mocked(createFnAgent);
 const mockedAuditSquashMerge = vi.mocked(auditSquashMerge);
