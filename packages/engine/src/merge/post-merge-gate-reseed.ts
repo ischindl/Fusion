@@ -393,7 +393,6 @@ async function runPostMergeGateResume(
   // A gate that already holds a result — approved, REVISE, or failed — is authoritative; never seed over it.
   const irForGate = await resolveWorkflowIrForTaskWithProvenance(store, task.id);
   const statuses = getPostMergeEvidenceGateStatuses(task, irForGate.ir, options.contract);
-  const missingGate = statuses.find((status) => status.state === "missing");
 
   const decision = await getRequiredPostMergeEvidenceDecision(store, task, options.contract);
   const manualRetry = options.manualRetry === true && decision.outcome === "blocked" && decision.reason === "failed";
@@ -411,8 +410,25 @@ async function runPostMergeGateResume(
   if (decision.outcome === "finalizable" || (!manualRetry && !isPostMergeGateRecoveryDue(task, decision))) {
     return { outcome: "not-seeded", reason: "gate-not-resumable" };
   }
-  if (decision.outcome !== "resumable" && !manualRetry && !missingGate) {
-    // Nothing is absent and nothing is due: the refusal above already named the case that applied.
+  /*
+  FNXC:PostMergeRecovery 2026-10-08-01:54 (RUFU-319):
+  The second admission test is per-GATE, not per-BOARD. The guard it replaces demanded that SOME gate on
+  the card carry state `missing`. The MISSING arm always satisfies that, and the REJECTED-EVIDENCE arm
+  never can: a card whose gate already reported a failed REVISE has that gate's row, so its status is
+  `not-approved` and no `missing` entry exists anywhere on the card. The guard therefore refused the very
+  arm the ladder above had just admitted as due, and FN-9502's 15/30/60-then-hourly revisit of rejected
+  evidence could only ever fire through an explicit Retry. Measured on the merged tree: a 61-minute-old
+  REVISE with zero prior attempts satisfied `isPostMergeGateRecoveryDue` while the seam answered
+  `gate-not-resumable`, which also made `recheckRejectedEvidence` and its "Rechecking rejected evidence"
+  log line unreachable. Asking the question the arm actually needs — is THIS gate's report owed, and in
+  one of the two seedable states — preserves every refusal the fork layered on: a requirement this board
+  cannot report (`not-applicable`, RUFU-429 delivery shape / RUFU-430 no reporter) and any non-seedable
+  row state (an approval, a `pending` row, a duplicate) still refuse without touching the graph.
+  */
+  const owedGateStatus = statuses.find((status) => status.gateId === decision.gateId);
+  const rejectedEvidenceArm = decision.outcome === "blocked" && decision.reason === "failed";
+  if (!owedGateStatus || owedGateStatus.state === "not-applicable"
+    || (decision.outcome !== "resumable" && !rejectedEvidenceArm)) {
     return { outcome: "not-seeded", reason: "gate-not-resumable" };
   }
   const gateId = decision.gateId;
@@ -439,7 +455,21 @@ async function runPostMergeGateResume(
   dispatches (`executor/run-graph-custom-node.ts` via `executor/post-merge-prompt.ts`), so a reseed picks up
   whatever evidence contract the board resolves at that moment and nothing here can drift from that wording.
   */
-  const seeded = await store.seedWorkspaceCodeReviewContinuationIfIdle({
+  /*
+  FNXC:PostMergeRecovery 2026-10-08-02:01 (RUFU-319): upstream's fence coverage around the seed, restored.
+  The sync merge narrowed this seam's fence to the legacy-park clear alone, on the reasoning that the clear
+  is the only TASK mutation. The reasoning holds for task rows and fails for the card's work: the idle
+  continuation insert below is a durable write that starts a reviewer run, and `merge-write-fence.ts`'s own
+  contract is that "abort is asynchronous, so ownership is read immediately before each individual mutation
+  or irreversible action; a closure, loop, or function-entry check cannot cover a later write". The outer
+  wrap in `auto-merge-finalization.ts` cannot substitute for it: that check runs BEFORE `resume()` is
+  entered, and the abort that matters lands DURING the resume — between the work-item read and the insert —
+  which is precisely the window origin's `fence.write("finalization", seed)` closed. Measured on the merged
+  tree, an aborted lane still inserted the continuation and still wrote its log line, so a merge body that
+  no longer owned the card could schedule work on it. The suppressed write is reported as the already
+  existing transient `finalize-blocked` refusal: the lane lost ownership, a later pass owns the card.
+  */
+  const seeded = await fence.write("finalization", () => store.seedWorkspaceCodeReviewContinuationIfIdle({
     taskId: task.id,
     nodeId: node.id,
     kind: "task",
@@ -452,7 +482,11 @@ async function runPostMergeGateResume(
     irHash: computeWorkflowIrPin(ir, node.id).irHash,
     expectedWorkflowSelection: selection ?? null,
     expectedTaskUpdatedAt: task.updatedAt,
-  });
+  }));
+  if (!seeded) {
+    // A suppressed fenced write means this lane no longer owns the card: nothing was seeded.
+    return { outcome: "not-seeded", reason: "finalize-blocked", workflowStepId: gateId };
+  }
   if (!seeded.seeded) {
     /*
     FNXC:PostMergeRecovery 2026-10-01-10:58: the idle-seed primitive names THREE refusals, and collapsing
@@ -476,13 +510,13 @@ async function runPostMergeGateResume(
   exactly this marker's prefix, so a card seeded by either build stays countable. The rejected-evidence arm
   deliberately does NOT write the counted marker: FN-9502's schedule, not the seed budget, bounds it.
   */
-  await store.logEntry(
+  await fence.write("log", () => store.logEntry(
     task.id,
     recheckRejectedEvidence
       ? `[post-merge] Rechecking rejected evidence at '${node.id}'; already-landed implementation and merge will not run again.`
       : `${postMergeGateReseedLogMarker(node.id)}; already-landed implementation and merge `
         + `will not run again (reseed ${priorAttemptCount + 1} of ${MAX_POST_MERGE_GATE_RESEED_ATTEMPTS})`,
-  );
+  ));
   /*
   FNXC:RunAudit 2026-10-01-09:01 (FN-9175 seam kept through the upstream adoption):
   Handing a card back to the graph is an ACTION on the card, so it is countable: `task:merge-unrun-post-

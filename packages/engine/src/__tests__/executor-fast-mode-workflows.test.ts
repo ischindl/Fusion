@@ -11,6 +11,7 @@ import { FAST_LANE_STEP_NAME, getBuiltinWorkflow } from "@fusion/core";
 import { TaskExecutor } from "../executor.js";
 import { resolveExternalExecutionCheckoutRoute } from "../execution/external-execution-checkout.js";
 import { WorkflowGraphTaskRunner } from "../workflows/workflow-graph-task-runner.js";
+import { resetPostMergeEvidenceContractCacheForTest } from "../merge/post-merge-evidence-contract.js";
 import { FOREACH_ACTIVE_CONTEXT_KEY } from "../workflows/workflow-node-handlers.js";
 import {
   createMockStore,
@@ -79,6 +80,15 @@ function workflowResult() {
 describe("fast mode workflow/runtime invariants", () => {
   beforeEach(() => {
     resetExecutorMocks();
+    /*
+    FNXC:PostMergeEvidenceContract 2026-10-08-03:40 (RUFU-319):
+    The evidence-contract resolver memoizes per project root, and every fixture in this file shares the
+    executor root `/tmp/test`. Without a reset, whichever test resolves first decides the board shape the
+    later ones see, so a card that is supposed to be owed post-merge evidence can inherit a `none`
+    exemption recorded by an unrelated case (and vice versa). Clearing the memo per test keeps each
+    fixture's own declaration authoritative.
+    */
+    resetPostMergeEvidenceContractCacheForTest();
     mockedResolveExternalExecutionCheckoutRoute.mockReset();
     mockedResolveExternalExecutionCheckoutRoute.mockResolvedValue({ configured: false });
     // FNXC:TaskPinnedWorktrees 2026-09-19-22:20: Native acquisition derives an absent task-id-pinned destination before creation.
@@ -1027,6 +1037,19 @@ describe("fast mode workflow/runtime invariants", () => {
     });
     const store = createMockStore();
     store.getTask.mockResolvedValue(liveTask);
+    /*
+    FNXC:PostMergeEvidenceContract 2026-10-08-03:40 (RUFU-319):
+    The requirement under test — an enabled post-merge gate must get its turn before finalization — is only
+    real on a board that OWES that evidence. Since RUFU-430 the reporter contract decides exactly that, and
+    the shared mock store's root is `/tmp/test`, so an undeclared fixture asked the host filesystem
+    "does /tmp/test have a git origin?" and, on a machine where it does not, the derived contract was
+    `provider: "none"` (`no-remote`), the CI-shaped gate became `not-applicable`, and finalizing to `done`
+    was correct behavior — the card was never owed the gate. Declaring the reporter through the supported
+    project-settings surface states the board shape the test always assumed, so the assertion below is a
+    demand the shipped contract layer actually upholds instead of an accident of /tmp.
+    */
+    store.readRawProjectSettings = vi.fn(async () => ({ postMergeEvidence: { provider: "github-actions" } }));
+    resetPostMergeEvidenceContractCacheForTest();
     store.getTaskWorkflowSelection = vi.fn(() => ({
       workflowId: "builtin:coding",
       stepIds: ["post-merge-verification"],

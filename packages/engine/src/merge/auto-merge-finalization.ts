@@ -1,7 +1,19 @@
+/*
+FNXC:PostMergeEvidenceContract 2026-10-08-04:14 (RUFU-319):
+`getRequiredPostMergeEvidenceDecision` was origin's gate for this block (`outcome !== "finalizable"`), and the
+`origin-sync 2026-10-05` merge (9ecab8cae6) kept the import while taking the fork's rewrite of the body, which
+answers the same three questions through the contract-aware seam: the blocker sentence from
+`getRequiredPostMergeEvidenceBlocker`, the deferral fact from the structured
+`getPostMergeEvidenceGateStatuses(...).state === "missing"` instead of origin's `outcome === "resumable"`, and
+the revisit schedule because `resumeMissingPostMergeGate` tests `isPostMergeGateRecoveryDue` INTERNALLY
+(post-merge-gate-reseed.ts, FNXC:PostMergeRecovery 2026-10-05-09:31) — so origin's pre-check here was redundant,
+not missing. The import was therefore dead code that failed `pnpm lint`; every origin guarantee it carried is
+still asserted by `confirmed-merge-must-finalize.test.ts` (`deferredPostMergeEvidence`, and
+`resumedPostMergeEvidence` firing on the first poll only). Do not read this deletion as removing the hold.
+*/
 import {
   getPostMergeFinalizeBlocker,
   getRequiredPostMergeEvidenceBlocker,
-  getRequiredPostMergeEvidenceDecision,
   planConfirmedMergeChecklistReconciliation,
   resolveWorkflowIrForTask,
   resolveCompleteColumn,
@@ -422,7 +434,11 @@ export async function finalizeProvenAutoMergeTask({
     re-announced seconds apart indefinitely), while every other refusal keeps the transient-defer shape.
     Seeding is not a verdict — the blocker still stands and this path never completes a card itself.
     */
-    const resume = () => resumeMissingPostMergeGate(store, latest, { source: "auto-merge", contract: evidenceContract });
+    // RUFU-319: hand the lane's fence to the seam. The seam defaults to a fresh, never-orphaned fence, so
+    // the outer `fence.write` below only checks ownership on ENTRY — an abort that lands DURING the resume
+    // (between the work-item read and the continuation insert) would otherwise still schedule a reviewer
+    // run on a card this merge body no longer owns.
+    const resume = () => resumeMissingPostMergeGate(store, latest, { source: "auto-merge", contract: evidenceContract, fence });
     const reseed = (fence ? await fence.write("finalization", resume) : await resume())
       // A fenced write that was suppressed means this lane no longer owns the card: nothing was seeded.
       ?? { outcome: "not-seeded" as const, reason: "finalize-blocked" as const };

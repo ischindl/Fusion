@@ -604,6 +604,16 @@ When a confirmed landing is durable but an enabled required post-merge gate has 
 The built-in `post-merge-verification` gate demands a **post-landing CI delivery record**: the landed SHA, the first push-to-main run at or after it, a Pipeline smoke conclusion, four Test shard conclusions, and four `test-timings-shard-N` artifacts. That record exists only where a CI reporter can produce it, so the requirement is resolved against one project-level fact — `derivePostMergeEvidenceContract()` in `packages/core/src/merge/post-merge-evidence-contract.ts`:
 
 <!--
+FNXC:PostMergeEvidenceWording 2026-10-08-04:52 (RUFU-319):
+FN-9442 changed what a shard conclusion must SATISFY, and RUFU-319 found that change dropped on `main` by
+the `origin-sync 2026-10-05` merge while its tests survived — so this section documented only the artifact
+list. Recorded because the difference is operator-visible: the shipped prompt demands the CONCLUSION,
+never a green one.
+-->
+
+What each conclusion must satisfy is a **completed run plus a disposition**, not a green one. Full Suite and Pipeline smoke are non-blocking signals, so a failed lane is answered by naming the actual failures from the logs and the `post-merge-full-suite-evidence` artifact, establishing whether this task introduced them, and linking the existing or newly created follow-up for unrelated failures; completed red lanes with a documented, supported disposition may receive `APPROVE_WITH_NOTES`. Demanding a green conclusion instead turns an honest reviewer into a permanent `REVISE` on any board whose non-blocking lane is red for reasons this task did not cause — the measured shape behind this rule. Attribution is performed from the available diff, logs, and failure artifact rather than deferred wholesale to the follow-up, and a red shard count or an open follow-up alone is never evidence of a task regression.
+
+<!--
 FNXC:PostMergeEvidenceContract 2026-10-01-08:31 (RUFU-457):
 This table previously collapsed OneDev and self-hosted GitLab into `none` because Fusion had no reader for
 their pipelines. That host-shaped exemption was the bug: it forgave boards that DO have a pipeline and kept

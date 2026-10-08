@@ -70,6 +70,8 @@ import {
   isUncommittedWorkHold,
   resolvePreMergeGateForTask,
   buildManualRetryResetPatch,
+  getRequiredPostMergeEvidenceDecision,
+  getRequiredPostMergeEvidenceBlocker,
 } from "@fusion/core";
 import { assemblePlannerOverseerRuntimeSnapshot } from "./overseer/planner-overseer-runtime-snapshot.js";
 import { activeSessionRegistry, executingTaskLock } from "./agents/active-session-registry.js";
@@ -77,6 +79,9 @@ import { isTaskExecutionLive } from "./merge/merge-execution-exclusion.js";
 import { isMergeActiveStatus } from "./merge/merge-active-status.js";
 import { captureMergeContentDescriptor } from "./merge/merge-content-capture.js";
 import { resolveIntegrationBranch } from "./merge/integration-branch.js";
+import { recoverConfirmedMergePush } from "./merge/recover-confirmed-merge-push.js";
+import { resumeMissingPostMergeGate, isPostMergeGateRecoveryDue } from "./merge/post-merge-gate-reseed.js";
+import { resolvePostMergeEvidenceContract } from "./merge/post-merge-evidence-contract.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { InProcessRuntime } from "./runtimes/in-process-runtime.js";
@@ -3212,11 +3217,24 @@ export class ProjectEngine {
     updatedAt?: string | null;
     mergeDetails?: { mergeConfirmed?: boolean } | null;
   }, maxAutoMergeRetries: number, reviewColumns?: ReadonlySet<string>, enforcePrRetryBackoff = false, resolvedMergeBlocker?: string | null): boolean {
-    // Merge-confirmed tasks use the fast-path finalizer, which applies blocker
-    // checks after clearing transient status/error state. Once that path parks
-    // a blocked task as failed, skip future auto-merge retries.
+    /*
+    FNXC:PostMergeEvidenceHold 2026-10-03-23:32:
+    Landing proof bypasses pre-merge checks, not the resolved post-merge evidence hold. Re-admitting
+    a rejected or pending gate every sweep only repeats finalization; it cannot produce new evidence.
+    */
+    /*
+    FNXC:PostMergeEvidenceHold 2026-10-08-02:58 (RUFU-319):
+    Second half of the `origin/main` block that the `origin-sync 2026-10-05` merge (9ecab8cae6) dropped: it kept
+    the origin test and took the fork parent's unconditional `return true`. `resolveMergeGateBlocker` above is
+    the one place that resolves this card's post-merge evidence requirement (contract-aware, one IR read per
+    card), so honouring its answer here is what keeps a landed card whose required gate reported REVISE, PENDING
+    or SKIPPED out of the merge pump instead of re-running finalization every tick to produce the same refusal.
+    An absent gate still returns `true`: `getRequiredPostMergeEvidenceDecision` calls that outcome `resumable`
+    precisely so the graph-resume lane can seed the gate, and the exemption for a board with no evidence
+    reporter (RUFU-430) arrives as `undefined` blocker through the same argument.
+    */
     if (task.mergeDetails?.mergeConfirmed) {
-      return true;
+      return !resolvedMergeBlocker;
     }
     /*
     FNXC:MergeExecutionExclusion 2026-08-23-06:52:
@@ -3266,9 +3284,59 @@ export class ProjectEngine {
   probes each repository; a failure becomes an unprovable descriptor and defers.
   */
   private async resolveMergeGateBlocker(store: TaskStore, task: Task, settings: Settings): Promise<string | undefined> {
-    // Confirmed work takes the reconciliation fast path and must not be stranded
-    // behind a review capture while its executor session winds down.
-    if (task.mergeDetails?.mergeConfirmed) return undefined;
+    /*
+    FNXC:PostMergeEvidenceHold 2026-10-03-23:32:
+    Confirmed work still bypasses pre-merge capture. An absent post-merge gate may be resumed by
+    finalization, but an existing pending/rejected result must wait for its evidence owner instead
+    of monopolizing the merge pump. Once approved, this read automatically admits finalization again.
+    */
+    /*
+    FNXC:PostMergeEvidenceHold 2026-10-08-02:58 (RUFU-319):
+    This block is `origin/main`'s, restored. The `origin-sync 2026-10-05` merge (9ecab8cae6) kept the
+    origin TEST (`project-engine-post-merge-hold.test.ts`, same FNXC stamp) while taking the fork parent's
+    one-line `if (mergeConfirmed) return undefined;`, so 14 of that file's cases went deterministically red
+    with `expected true to be false`: a landed card whose required post-merge gate reported REVISE was
+    admitted to the merge pump again every tick. Two corroborations that the production half — not the test
+    — was the discarded side: `recoverConfirmedMergePush` had ZERO production callers left anywhere in
+    `packages/engine/src` after the merge (its only call site was this block), and the surviving test spies
+    it. Ported to the fork's shipped APIs rather than copied verbatim, because two of the three seams this
+    block calls changed shape underneath it:
+      1. the evidence requirement is now contract-dependent (RUFU-430/429/457), so the contract resolved here
+         is threaded into all three calls — a board with no evidence reporter keeps its `not-applicable`
+         exemption here exactly as the finalizer honors it, instead of this read resurrecting the
+         waiver-per-landing refusal on every reporter-less board;
+      2. `resumeMissingPostMergeGate` now takes the task plus `{ source, contract }` (RUFU-502/FN-9502) and is
+         routed `auto-merge`, this being the auto-merge pump;
+      3. the stale-merge-activity clear stays `updateTaskAtomic`-guarded on the same signature, so a card that
+         moved under this read is left alone.
+    */
+    if (task.mergeDetails?.mergeConfirmed) {
+      const evidenceContract = await resolvePostMergeEvidenceContract(store, { auditHost: store });
+      if (!await this.isMergePending(task.id)) await recoverConfirmedMergePush(store, task, settings);
+      const decision = await getRequiredPostMergeEvidenceDecision(store, task, evidenceContract);
+      if (decision.outcome !== "blocked") return undefined;
+      if (isPostMergeGateRecoveryDue(task, decision) && !await this.isMergePending(task.id)) {
+        await resumeMissingPostMergeGate(store, task, { source: "auto-merge", contract: evidenceContract });
+      }
+      if (!task.paused && !task.userPaused && !task.deletedAt && task.autoMerge !== false
+        && !settings.globalPause && !settings.enginePaused && isMergeActiveStatus(task.status)
+        && !isTaskExecutionLive(task.id, { activeSessionRegistry, executingTaskLock })
+        && !await this.isMergePending(task.id)) {
+        const cleared = await store.updateTaskAtomic(task.id, (current) => {
+          if (current.updatedAt !== task.updatedAt || current.status !== task.status
+            || this.mergeActive.has(task.id) || this.mergeQueue.includes(task.id)
+            || this.capacityDeferredMergeTaskIds.has(task.id)
+            || current.paused || current.userPaused || current.deletedAt
+            || !current.mergeDetails?.mergeConfirmed
+            || isTaskExecutionLive(task.id, { activeSessionRegistry, executingTaskLock })) return null;
+          return { status: null };
+        });
+        if (cleared) await store.logEntry(task.id,
+          `[post-merge] Landing is complete; cleared stale merge activity while '${decision.gateId}' remains ${decision.reason}. Verification evidence is unchanged.`);
+      }
+      return await getRequiredPostMergeEvidenceBlocker(store, task, evidenceContract)
+        ?? `required post-merge evidence gate '${decision.gateId}' is not approved`;
+    }
     const injected = this.options.getTaskMergeBlocker?.(task);
     if (injected || !Array.isArray(task.steps)) return injected ?? undefined;
     let mergeGate;

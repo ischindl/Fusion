@@ -856,7 +856,18 @@ export function normalizePlanningSummaryPayload(
     /* FNXC:TaskQueueOrder 2026-09-17-12:07: FN-509 — a legacy saved summary may still carry a level
          in its raw JSON. It is DROPPED here rather than converted into a rank, so resuming an old
          planning session keeps working without reintroducing a priority. */
-    suggestedDependencies: normalizeStringArray(summary.suggestedDependencies),
+    /*
+    FNXC:PlanningDependencyNormalization 2026-10-08-04:35 (RUFU-319):
+    FN-9412 (2e18a2cc8c) swapped THIS call from `normalizeStringArray` to `normalizePlanningSuggestedDependencies`
+    — the only filter that keeps non-canonical suggestions out of a summary, so prose an interviewer
+    model emits inside `suggestedDependencies` cannot be carried into a created task's `dependencies`.
+    The `origin-sync 2026-10-05` merge (9ecab8cae6) resolved this hunk back to the pre-FN-9412
+    `normalizeStringArray` (present at `^1`, absent at `^2`), which left FN-9412's own census test
+    (`planning-interview-formatters.test.ts` — "retains only canonical dependency IDs") red on `main`.
+    Restoring the filter is also what makes the create-path pass-throughs in this file and in
+    `register-planning-subtask-routes.ts` belt-and-braces rather than the only line of defence.
+    */
+    suggestedDependencies: normalizePlanningSuggestedDependencies(summary.suggestedDependencies),
     keyDeliverables: normalizeStringArray(summary.keyDeliverables),
     suggestedRefinements: normalizeStringArray(summary.suggestedRefinements),
   };
@@ -4618,10 +4629,23 @@ export async function createTaskFromPlanSession(
     const trackingDecision = sourceContext
       ? await (await import("./github-tracking.js")).resolvePlanningGithubTrackingDecision(store, await store.getSettings(), { owner: sourceContext.sourceIssue.repository.split("/")[0], repo: sourceContext.sourceIssue.repository.split("/")[1], issueNumber: sourceContext.sourceIssue.issueNumber, url: sourceContext.sourceIssue.url ?? "" })
       : undefined;
+    // FN-9412: only deduplicated canonical task IDs may reach the row; prose suggestions are dropped.
     const dependencies = normalizePlanningSuggestedDependencies(summary.suggestedDependencies);
     const task = await store.createTask({
       title: summary.title,
       description: sourceContext ? (await import("./github.js")).appendSourceIssueBlock(planMd, sourceContext.markdown, sourceContext.sourceIssue.url ?? "") : planMd,
+      /*
+      FNXC:PlanningDependencyNormalization 2026-10-08-04:26 (RUFU-319):
+      Restores a line the `origin-sync 2026-10-05` merge (9ecab8cae6) silently discarded. FN-9412
+      (2e18a2cc8c) pairs this `normalizePlanningSuggestedDependencies` call with exactly this pass-through —
+      origin's side of the merge (`9ecab8cae6^2:planning.ts:4511`) still carries both, the fork's side
+      (`^1`) carried the call without the key, and the merge took the fork's side. A plan-session task
+      therefore got NO dependencies at all — the normalizer's output was computed and thrown away — and
+      `routes-planning.test.ts`'s FN-9412 case ("drops prose dependencies from a summary override while
+      retaining canonical IDs on replay") stayed red on `main`. Pass the normalized list so a malformed
+      suggestion can neither reach the row nor block task creation.
+      */
+      dependencies: dependencies.length > 0 ? dependencies : undefined,
       ...(sourceContext ? { sourceIssue: sourceContext.sourceIssue, source: { sourceType: "github_import" as const, sourceMetadata: sourceContext.sourceMetadata }, ...(trackingDecision?.githubTracking ? { githubTracking: trackingDecision.githubTracking } : {}) } : { source: { sourceType: options?.sourceType ?? "cli" } }),
       ...(options?.baseBranch?.trim() ? { baseBranch: options.baseBranch.trim() } : {}),
       proposalClaimId: currentProposalClaimId(),
