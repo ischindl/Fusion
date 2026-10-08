@@ -33,6 +33,8 @@ import type {
 } from "../project/project-runtime.js";
 import { InProcessRuntime } from "../runtimes/in-process-runtime.js";
 import { ChildProcessRuntime } from "../runtimes/child-process-runtime.js";
+import { TaskExecutor } from "../executor.js";
+import { addActiveWorktree } from "../executor/active-worktrees.js";
 
 /**
  * Mock implementation of ProjectRuntime for interface compliance testing.
@@ -380,5 +382,120 @@ describe("ProjectRuntime Interface", () => {
       expect(typeof metrics.lastActivityAt).toBe("string");
       expect(typeof metrics.memoryBytes).toBe("number");
     });
+  });
+});
+
+/*
+FNXC:WorktreeLiveness 2026-10-08-04:04 (RUFU-323):
+`RuntimeMetrics.inFlightTasks` is the number an operator's isolation transition is judged by:
+`ProjectManager.restartProjectRuntime()` throws `{ kind: "active_tasks", count }` whenever it is
+non-zero. Deriving it from the raw size of the executor's worktree-OWNERSHIP map made a card whose run
+had already ended report as running work forever, so a project holding only terminal `failed` cards
+could never transition without `force`. These cases pin the liveness-derived derivation and, just as
+importantly, the two ways it must never break: it must still count genuinely live work, and it must
+never throw for an executor object that cannot answer the liveness question — `stop()`'s post-abort
+drain reads the same metric and re-throws anything raised inside `stop()`.
+*/
+describe("InProcessRuntime in-flight metric derivation", () => {
+  const metricsConfig = {
+    projectId: "proj_inflight",
+    workingDirectory: "worktree-relative",
+    isolationMode: "in-process",
+  } as const;
+
+  function makeRuntime(): any {
+    return new InProcessRuntime(metricsConfig as any, {} as any);
+  }
+
+  /**
+   * A real TaskExecutor carrying only the liveness surfaces `isTaskLiveForOverseerRetry` consults
+   * (the same shape `leaked-slot-reaper-planner-liveness.test.ts` builds), so the assertion exercises
+   * the production facade instead of a hand-counted fake.
+   */
+  function makeExecutorHolding(taskId: string, worktreePath: string): any {
+    const executor = Object.create(TaskExecutor.prototype) as any;
+    executor.activeSessions = new Map();
+    executor.activeStepExecutors = new Map();
+    executor.activeWorkflowStepSessions = new Map();
+    executor.activePlanningWorkflowSessions = new Map();
+    executor.activeCliTaskSessions = new Map();
+    executor.activeWorktrees = new Map([[taskId, new Set([worktreePath])]]);
+    executor.executing = new Set();
+    executor.recoveringCompleted = new Set();
+    executor.resumingUnpaused = new Set();
+    executor.approvalSuspended = new Set();
+    executor.approvalResumeAfterUnwind = new Set();
+    executor.effectiveColumnAgentByTask = new Map();
+    return executor;
+  }
+
+  it("counts a card that owns a checkout but runs nowhere as zero in-flight work", () => {
+    const runtime = makeRuntime();
+    runtime.executor = makeExecutorHolding("SANE-435", "worktree/sane-435");
+
+    const metrics = runtime.getMetrics();
+
+    expect(metrics.inFlightTasks).toBe(0);
+    expect(metrics.activeAgents).toBe(0);
+  });
+
+  it("still counts a card that is live on an execution surface", () => {
+    const runtime = makeRuntime();
+    const executor = makeExecutorHolding("SANE-435", "worktree/sane-435");
+    executor.executing.add("SANE-435");
+    runtime.executor = executor;
+
+    expect(runtime.getMetrics().inFlightTasks).toBe(1);
+  });
+
+  it("counts each workspace card once whatever number of sub-repo checkouts it holds", () => {
+    const runtime = makeRuntime();
+    const executor = makeExecutorHolding("SANE-500", "worktree/apps-api");
+    addActiveWorktree(executor.activeWorktrees, "SANE-500", "worktree/apps-web");
+    executor.executing.add("SANE-500");
+    runtime.executor = executor;
+
+    expect(runtime.getMetrics().inFlightTasks).toBe(1);
+  });
+
+  it("falls back to the ownership-map size for an executor that cannot prove liveness, without throwing", () => {
+    const runtime = makeRuntime();
+    // The `engine-stop-aborts-execution.test.ts` double shape: a map, placeholder values, no facade.
+    runtime.executor = { activeWorktrees: new Map([["FN-1", { taskId: "FN-1" }]]) };
+
+    expect(() => runtime.getMetrics()).not.toThrow();
+    expect(runtime.getMetrics().inFlightTasks).toBe(1);
+  });
+
+  it("reports zero in-flight work when no executor exists yet", () => {
+    const runtime = makeRuntime();
+
+    expect(runtime.getMetrics().inFlightTasks).toBe(0);
+    expect(runtime.getMetrics().activeAgents).toBe(0);
+  });
+
+  it("keeps the stop() drain loop resolvable for an executor double without the facade", async () => {
+    vi.useFakeTimers();
+    try {
+      const runtime = makeRuntime();
+      runtime.status = "active";
+      runtime.taskStore = { getSettings: vi.fn().mockResolvedValue({ runtimeStopDrainMs: 10 }) };
+      runtime.pluginRunner = { shutdown: vi.fn().mockResolvedValue(undefined) };
+      runtime.worktreePool = { drain: vi.fn().mockReturnValue([]) };
+      runtime.executor = {
+        activeWorktrees: new Map([["FN-1", { taskId: "FN-1" }]]),
+        abortAllSessionBash: vi.fn(),
+        abortAllInFlight: vi.fn().mockResolvedValue(undefined),
+        disposeStoreLifecycleDisposers: vi.fn(),
+        disposeEphemeralTimers: vi.fn(),
+      };
+
+      const stopPromise = runtime.stop();
+      await vi.advanceTimersByTimeAsync(50);
+
+      await expect(stopPromise).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

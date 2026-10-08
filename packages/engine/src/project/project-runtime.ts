@@ -19,7 +19,14 @@ export type RuntimeStatus =
  * Used for monitoring and health tracking.
  */
 export interface RuntimeMetrics {
-  /** Number of tasks currently in-progress */
+  /**
+   * Worktree-holding tasks that are live on an execution surface — not the size of the executor's
+   * worktree-ownership registry. A card whose run ended can still own a checkout while it waits in a
+   * lane for its operator, and counting that as in-flight work would refuse an isolation transition
+   * (`{ kind: "active_tasks" }`) for a project that is executing nothing.
+   *
+   * FNXC:WorktreeLiveness 2026-10-08-04:04 (RUFU-323)
+   */
   inFlightTasks: number;
   /** Number of active agents currently running */
   activeAgents: number;

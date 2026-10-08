@@ -394,7 +394,7 @@ The one route that genuinely needs loaded runtimes is the live isolation-mode tr
 
 | State | Answer |
 | --- | --- |
-| Runtimes loaded | unchanged `200`, or `409 active_tasks` when the project is busy |
+| Runtimes loaded | unchanged `200`, or `409 active_tasks` when the project has live in-flight work (see **Isolation-mode transition** for what counts as busy) |
 | Still loading when the window expires | `503 hybrid_executor_starting` — retry shortly |
 | Boot never completed / last attempt failed | `503 hybrid_executor_failed` — waiting will not help |
 
@@ -435,6 +435,7 @@ Owning-node outage behavior is explicitly governed by `owningNodeHandoffPolicy` 
 
 - In HybridExecutor mode, transition persists via `CentralCore.transitionProjectIsolation(...)` then restarts the project runtime.
 - If restart is blocked by active tasks and `force` is not set, the persisted isolation-mode change is rolled back and the call returns `reason: "active_tasks"`.
+- **What "busy" means here is live work, not board traffic** (RUFU-323). The count is the executor's live worktree-holder count — a card is counted only while it is actively executing or holds a live session surface — so cards merely parked in in-progress or in-review lanes, including terminal `failed` cards, never refuse a transition. Before this, the number was the size of the executor's in-memory worktree map, which retains a terminal park's binding, so a project whose only activity was two failed cards answered `active_tasks` forever and the operator could not switch its isolation mode without `force`. A committed terminal park now also releases that binding, which is what makes the count converge on its own.
 - In single-project mode (no HybridExecutor), the dashboard route falls back to `updateProject(...)` and returns `transitionDeferred: true` so callers know the change applies on next engine start.
 
 For a bounded remediation/design predicate that clarifies the multi-node runtime readiness follow-up scope (distributed ownership claim boundary, unavailable-owner handoff semantics, single↔multi isolation transition guards, and explicit no-remediation non-goals), see `docs/design/fn-4814-multi-node-runtime-readiness.md`. That brief is the execution contract for FN-4813 and supersedes any stale framing that implies HybridExecutor wiring is missing.

@@ -50,6 +50,16 @@ export abstract class TaskExecutorWorktreePureFacades extends TaskExecutorState 
   protected async recoverMissingWorktreeSessionStartFailure(...args: FacadeRestArgs<typeof impl.recoverMissingWorktreeSessionStartFailureImpl>): ReturnType<typeof impl.recoverMissingWorktreeSessionStartFailureImpl> { return impl.recoverMissingWorktreeSessionStartFailureImpl(bags.buildRecoverMissingWorktreeSessionStartFailureDeps(this), ...args); }
   protected async emitWorktreeReanchoredAudit(...args: FacadeRestArgs<typeof impl.emitWorktreeReanchoredAuditImpl>): ReturnType<typeof impl.emitWorktreeReanchoredAuditImpl> { return impl.emitWorktreeReanchoredAuditImpl(bags.buildStoreRunContextDeps(this), ...args); }
   listWorktreeHolders(): Array<{ taskId: string; worktreePath: string }> { return impl.listWorktreeHoldersImpl(this.activeWorktrees); }
+  /*
+  FNXC:WorktreeLiveness 2026-10-08-04:04 (RUFU-323):
+  The liveness-filtered holder count behind `RuntimeMetrics.inFlightTasks`. The ownership map is NOT a
+  liveness registry, so the metric must not read its raw size; this facade is the only sanctioned
+  in-process answer to "how much work is really running". The predicate is the canonical expression
+  `isTaskLiveForOverseerRetry` (hosted on the session facades below this class, hence the abstract hook),
+  which is what self-healing's leaked-slot reaper classifies with, so metric and reaper cannot drift.
+  */
+  getLiveWorktreeHolderCount(): number { return impl.countLiveWorktreeHoldersImpl(this.activeWorktrees, (taskId) => this.isTaskLiveForOverseerRetry(taskId)); }
+  abstract isTaskLiveForOverseerRetry(taskId: string): boolean;
   protected async tryCreateWorktree(...args: FacadeRestArgs<typeof impl.tryCreateWorktreeImpl>): Promise<{ path: string; branch: string }> { return impl.tryCreateWorktreeImpl(bags.buildWorktreeCreateConflictFacadeDeps(this, (this as { MAX_WORKTREE_RETRIES?: number }).MAX_WORKTREE_RETRIES ?? constants.MAX_WORKTREE_RETRIES, bindHandleWorktreeConflict(this), bindTryCreateWorktree(this)), ...args); }
   protected async handleWorktreeConflict(...args: FacadeRestArgs<typeof impl.handleWorktreeConflictImpl>): Promise<{ path: string; branch: string } | null> { return impl.handleWorktreeConflictImpl(bags.buildWorktreeCreateConflictFacadeDeps(this, (this as { MAX_WORKTREE_RETRIES?: number }).MAX_WORKTREE_RETRIES ?? constants.MAX_WORKTREE_RETRIES, bindHandleWorktreeConflict(this), bindTryCreateWorktree(this)), ...args); }
   protected async cleanupConflictingWorktree(...args: FacadeRestArgs<typeof impl.cleanupConflictingWorktreeImpl>): ReturnType<typeof impl.cleanupConflictingWorktreeImpl> { return impl.cleanupConflictingWorktreeImpl(bags.buildCleanupConflictingWorktreeDeps(this), ...args); }
