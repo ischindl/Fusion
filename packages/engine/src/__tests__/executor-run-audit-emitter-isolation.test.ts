@@ -10,12 +10,26 @@ import { advanceNoMergeWorkflowToCompleteColumn } from "../executor/no-merge-com
 import { recoverMissingRequiredArtifacts } from "../executor/required-artifact-recovery.js";
 import { handleStaleInReviewPlanPauseAbortReplay } from "../executor/handle-stale-in-review-plan-pause-abort-replay.js";
 import { WorkflowGraphTaskRunner } from "../workflows/workflow-graph-task-runner.js";
+import { resetWorkflowRunSuspendedNoticeState } from "../executor/run-suspended-notice.js";
+import { resetFinalizationNoticeState } from "../merge/finalization-refusal-notice.js";
 import {
   createMockStore,
   mockedCreateFnAgent,
   mockedExecSync,
   resetExecutorMocks,
 } from "./executor-test-helpers.js";
+
+/*
+FNXC:FinalizationRefusalBounded 2026-10-07-09:10 (RUFU-431 / RUFU-442):
+A restated refusal is now recorded once per (card, refusal) instead of once per engine pass, and that
+decision lives in per-process state. Each case below is an independent scenario, so the remembered
+state is dropped between them — otherwise a parameterised table would suppress every row after the
+first case and the assertion would be testing the harness, not the engine.
+*/
+beforeEach(() => {
+  resetWorkflowRunSuspendedNoticeState();
+  resetFinalizationNoticeState();
+});
 
 const NO_MERGE_IR = {
   version: "v2", id: "wf-audit", name: "audit", nodes: [], edges: [],

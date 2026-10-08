@@ -73,6 +73,10 @@ export function buildWorkflowGateActivityMetadata(
   };
 }
 import { executorLog } from "../logger.js";
+import {
+  noteWorkflowRunSuspended,
+  runSuspendedNoticeSignature,
+} from "./run-suspended-notice.js";
 import type { EngineRunContext } from "../util/run-audit.js";
 import { emitBoundedRunAudit } from "./emit-bounded-run-audit.js";
 import { takePreHeldExecutorSlot } from "../concurrency/concurrency.js";
@@ -1356,8 +1360,36 @@ export async function executeWorkflowGraph(
         /*
          * FNXC:WorkflowExecution 2026-08-07-22:52:
          * Record suspension so an invisible wait is greppable (ids/outcomes-only audit).
+         *
+         * FNXC:RunSuspendedAuditBackoff 2026-10-07-09:10 (RUFU-442):
+         * The audit row and its log line now fire on the TRANSITION into a wait, not on every
+         * re-dispatch of it. A card parked at a capacity seam is re-dispatched every scheduler pass and
+         * wrote 108 identical rows in ~45 min (2.4/min), which made the monitor's `capacity_suspends`
+         * read as board pressure when it was one card talking to itself (measured again 2026-10-07:
+         * 176 suspensions in 45 min across 6 cards, engine at 0 leases). The wait itself is untouched —
+         * the graph still persists the continuation — only its restatement is bounded.
+         *
+         * FNXC:RunSuspendedAuditBackoff 2026-10-07-18:40 (RUFU-442 follow-up):
+         * The signature carries ONLY the durable wait identity (node, reason, boundary). Continuation
+         * id/state/node stay in the audit row's METADATA, where they are useful forensics, and are
+         * deliberately kept out of the signature: the scheduler installs a fresh continuation each pass,
+         * so a state-keyed bound re-reported every cycle of the loop it was meant to bound (measured on
+         * the deployed first cut: SANE-556, 7 identical `(parse, capacity)` waits in 4 minutes).
          */
         const suspension = result.suspension;
+        const signature = runSuspendedNoticeSignature({
+          nodeId: suspension?.nodeId ?? "unknown",
+          reason: suspension?.reason ?? "unknown",
+          fromColumn: suspension?.fromColumn ?? null,
+          toColumn: suspension?.toColumn ?? null,
+        });
+        const isNewWait = noteWorkflowRunSuspended(
+          executorLog,
+          task.id,
+          signature,
+          `[workflow-graph] ${task.id} suspended at node '${suspension?.nodeId ?? "unknown"}' (${suspension?.reason ?? "unknown"})`,
+        );
+        if (!isNewWait) return;
         await emitBoundedRunAudit(deps.store, {
           taskId: task.id,
           agentId: "executor",
@@ -1376,11 +1408,17 @@ export async function executeWorkflowGraph(
             continuationState: continuation?.state ?? null,
           },
         });
-        executorLog.log(
-          `[workflow-graph] ${task.id} suspended at node '${suspension?.nodeId ?? "unknown"}' (${suspension?.reason ?? "unknown"})`,
-        );
         return;
       }
+      /*
+      FNXC:RunSuspendedAuditBackoff 2026-10-07-18:40 (RUFU-442 follow-up):
+      There is deliberately NO clear-on-non-suspended-disposition call here any more. The first cut had
+      one, and it was the second half of why the bound never held: a capacity loop alternates suspended
+      and non-suspended dispositions, so the remembered wait was wiped every cycle and the next identical
+      wait re-reported. A bound its own caller erases is not a bound. The window in
+      `noteWorkflowRunSuspended` is what ends a notice now, and a genuinely new wait (different node,
+      reason, or column boundary) still changes the signature and reports immediately.
+      */
       if (result.disposition === "failed") {
         await closeContinuation("failed");
         await deps.handleGraphFailure(task, result);
