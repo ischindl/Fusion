@@ -105,7 +105,8 @@ touches no data; it must advance in the same change that ships a new migration f
 FNXC:ReviewLaneDispatch 2026-09-18-13:40 (sync the FN-511..526 wave): upstream released FN-509 queue order as 0082 and human merge approval as 0083 while the main-local ledger held 0082 — the ledger renumbered to 0084 (same renumbering as open PR #3619's branch) and the ceiling follows. */
 /* FNXC:MigrationVersionCollision 2026-10-01-15:26: upstream FN-9429 claimed 0086, the slot this line had already given its review-lane ledger, so one marker named two migrations. The ledger is re-issued at 0088 and FN-9429's receipts at 0089; the ceiling tracks the highest file so no boot can call a migration it just applied a newer Fusion's write. */
 /* FNXC:MigrationVersionCollision 2026-10-05-08:52 (merge origin/main): upstream FN-9439 shipped PR readiness as 0087, the slot this line already gave its overlap-owner FK repair, so the incoming migration re-issues at 0090 — the same rule that moved FN-9429's receipts to 0089 — and the ceiling follows the highest bundled file. */
-export const SCHEMA_BASELINE_VERSION = "0090";
+/* FNXC:MigrationVersionCollision 2026-10-08-13:06 (merge origin/main): upstream FN-9512 shipped the recovery-disposition column as 0088, the slot this line already gave its review-lane ledger, so the incoming migration re-issues at 0091 and the ceiling tracks the highest bundled file. A DB that ran an upstream build carries marker 0088 for the OTHER meaning — that ambiguity is why the slots are never reused, and it is the reason the ceiling must never sit below the highest file. */
+export const SCHEMA_BASELINE_VERSION = "0091";
 /** FNXC:SymbolLock 2026-07-20-10:00: upgrades need durable task declarations before admission resolves symbols. */
 export const TASK_DECLARED_SYMBOLS_VERSION = "0028";
 const INITIAL_SCHEMA_VERSION = "0000";
@@ -328,6 +329,13 @@ wrote it, which is the failure the 0065 collision repair exists to undo.
 */
 /** FN-9439: provider-neutral current-head readiness snapshot columns. */
 export const PULL_REQUEST_READINESS_VERSION = "0090";
+/**
+ * FN-9512: privacy-safe route code for a recovery owner that has reseeded work.
+ * FNXC:MigrationVersionCollision 2026-10-08-13:06: upstream released this as 0088; this line owns 0088
+ * (review-lane ledger), so the column's marker is re-issued at 0091. The marker value and the .sql basename
+ * must stay equal — migration-wiring-integrity.test.ts requires every `^\d{4}_` file to be named in this source.
+ */
+export const RECOVERY_DISPOSITION_VERSION = "0091";
 
 /** FNXC:MemoryFocus 2026-08-21-06:10: explicit registration prevents the per-conversation memory-focus migration from being skipped. Renumbered to 0060, then 0061, then 0065: the upstream FN-066..FN-101 batch (2026-08-21) owns 0061-0064 (activity-log index, splitting removal, AI-merge review, repository scope). */
 /* FNXC:MemoryFocus 2026-08-23-07:07: renumbered 0065 -> 0066 in the RUFU-160 origin/main merge: origin/main independently shipped 0065 as FN-149's review-convergence migration (v0.77.0-beta.7); keeping both lines' migrations requires the deploy-line file to take the next free sequence. */
@@ -633,6 +641,8 @@ const TASK_HUMAN_MERGE_APPROVAL_MIGRATION_PATH = join(MIGRATIONS_DIR, "0083_fn_5
 const STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_MIGRATION_PATH = join(MIGRATIONS_DIR, "0089_fn_9429_stale_review_callback_waiver_receipts.sql");
 /* FNXC:MigrationVersionCollision 2026-10-05-08:52: upstream shipped this as `0087_fn_9439_pull_request_readiness.sql`; renamed locally so the file prefix matches the re-issued 0090 version. */
 const PULL_REQUEST_READINESS_MIGRATION_PATH = join(MIGRATIONS_DIR, "0090_fn_9439_pull_request_readiness.sql");
+/* FNXC:MigrationVersionCollision 2026-10-08-13:06: upstream shipped this as `0088_fn_9512_recovery_disposition.sql`; renamed locally so the file prefix matches the re-issued 0091 version. */
+const RECOVERY_DISPOSITION_MIGRATION_PATH = join(MIGRATIONS_DIR, "0091_fn_9512_recovery_disposition.sql");
 
 /**
  * Ensure the migration bookkeeping table exists. Lives in the public schema so
@@ -791,6 +801,7 @@ export async function applySchemaBaseline(
     const taskHumanMergeApprovalAlreadyApplied = applied.includes(TASK_HUMAN_MERGE_APPROVAL_VERSION);
     const staleReviewCallbackWaiverReceiptsAlreadyApplied = applied.includes(STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_VERSION);
     const pullRequestReadinessAlreadyApplied = applied.includes(PULL_REQUEST_READINESS_VERSION);
+    const recoveryDispositionAlreadyApplied = applied.includes(RECOVERY_DISPOSITION_VERSION);
     assertBinaryNotOlderThanDatabase(applied);
     let schemaChanged = false;
 
@@ -2011,6 +2022,12 @@ export async function applySchemaBaseline(
       const migrationSql = await readFile(PULL_REQUEST_READINESS_MIGRATION_PATH, "utf8");
       await tx.execute(sql.raw(migrationSql));
       await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${PULL_REQUEST_READINESS_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+    if (!recoveryDispositionAlreadyApplied) {
+      const migrationSql = await readFile(RECOVERY_DISPOSITION_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${RECOVERY_DISPOSITION_VERSION}) ON CONFLICT (version) DO NOTHING`);
       schemaChanged = true;
     }
     return { applied: schemaChanged, pluginHooksRun: pluginHooks.length };

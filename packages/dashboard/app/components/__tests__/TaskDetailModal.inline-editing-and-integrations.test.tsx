@@ -2740,6 +2740,13 @@ describe("TaskDetailModal", () => {
 
       // After fetch resolves, spec content appears in the Plan document rather than the Description markdown.
       await waitFor(() => {
+        expect(document.querySelector(".markdown-body")).toBeTruthy();
+        /*
+        FNXC:TaskDetailPlanDocument 2026-10-08-13:10 (merge origin/main): upstream FN-9515 collapsed this wait to
+        `getByText(<spec text>)`; this line scopes the same fact to the Plan document region via the data-testid FN-376
+        added, because the spec text may legitimately render in more than one place. Both facts survive: the markdown
+        body exists (upstream) AND the loaded text is inside the plan document specifically (ours).
+        */
         expect(screen.getByTestId("task-detail-plan-full")).toHaveTextContent("This is the loaded spec content.");
       }, { timeout: 3000 });
 
@@ -2756,7 +2763,14 @@ describe("TaskDetailModal", () => {
       expect(screen.getByText("Execution mode")).toBeInTheDocument();
       expect(screen.getByText("Runtime status")).toBeInTheDocument();
       expect(screen.getAllByText("Fast").length).toBeGreaterThan(0);
-      expectSingleStatsRuntimeStatus("executing");
+      /*
+      FNXC:TaskDetailStatsAssertions 2026-10-08-13:10 (merge origin/main): upstream FN-9515 widened the shared helper
+      to take the header badge label separately, and this fixture now carries recoveryRetryCount: 3, so the header badge
+      legitimately reads "Recovery pending" while Stats still reports the raw `executing` runtime status. The
+      two-argument call is upstream's intent; keeping the one-argument form here would assert a badge the product no
+      longer renders.
+      */
+      expectSingleStatsRuntimeStatus("executing", "Recovery pending");
       /*
       FNXC:TaskDetailTokenTotals 2026-10-02-20:31 (upstream FN-9459 test scoping adopted over our relaxation):
       Our side relaxed these four assertions to `getAllByText(...).length > 0` because the numbers started

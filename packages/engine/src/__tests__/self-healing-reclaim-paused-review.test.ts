@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { TaskStore } from "@fusion/core";
+import type { Task, TaskStore } from "@fusion/core";
 import { SelfHealingManager } from "../self-healing.js";
 import * as branchConflicts from "../execution/branch-conflicts.js";
 import {
@@ -37,6 +37,28 @@ function createStore(): TaskStore & EventEmitter {
   (emitter as any).listTasks = vi.fn();
   (emitter as any).getTask = vi.fn().mockResolvedValue({ column: "in-review" });
   (emitter as any).updateTask = vi.fn(withBranchWriteProvenance(async () => undefined));
+  /*
+  FNXC:BranchConflictRecoveryFence 2026-10-08-13:30 (merge origin/main): this spy is restored from the merge base.
+  This line deleted it together with its own call-site assertion; upstream FN-9512's refusal test needs the spy to
+  EXIST in order to assert that no atomic write happened. A missing spy makes `not.toHaveBeenCalled()` throw
+  "undefined is not a spy", which reads as a code failure rather than a proven absence.
+  */
+  (emitter as any).updateTaskAtomic = vi.fn(async (id: string, updater: (task: Task) => Partial<Task> | null) => {
+    const suffix = id.toLowerCase();
+    const current = {
+      id,
+      branch: `fusion/${suffix}`,
+      worktree: `/tmp/${suffix}`,
+      status: "failed",
+      error: undefined,
+      paused: true,
+      pausedReason: "branch-conflict-unrecoverable",
+      userPaused: undefined,
+    } as Task;
+    const patch = updater(current);
+    if (patch) await (emitter as any).updateTask(id, patch);
+    return { ...current, ...patch };
+  });
   (emitter as any).moveTask = vi.fn().mockResolvedValue(undefined);
   (emitter as any).handoffToReview = vi.fn().mockImplementation(async (taskId: string) => {
     await (emitter as any).moveTask(taskId, "in-review");
@@ -148,8 +170,15 @@ describe("self-healing reclaim paused review", () => {
 
     const recovered = await manager.reclaimSelfOwnedBranchConflicts();
 
+    /*
+     * FNXC:BranchConflictRecoveryFence 2026-10-06-17:44:
+     * A foreign live conflict is refused before any recovery mutation. FN-9512 may reseed only
+     * self-owned, fenced recoverable work; this fixture proves a foreign checkout remains untouched.
+     */
     expect(recovered).toBe(0);
-    expect(store.moveTask).toHaveBeenCalledWith("FN-4487", "in-review");
+    expect((store as any).updateTaskAtomic).not.toHaveBeenCalled();
+    expect(store.updateTask).not.toHaveBeenCalled();
+    expect(store.moveTask).not.toHaveBeenCalled();
   });
 
   it("does not reclaim userPaused tasks without branch-conflict paused reason", async () => {

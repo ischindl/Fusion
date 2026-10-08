@@ -3968,7 +3968,7 @@ function TaskCardComponent({
               : showQueuedBadge
                 ? t("tasks.statusQueued", "Queued")
                 : wipLifecycleBadgeLabel
-                  ?? getTaskStatusLabel(visualStatus ?? "", t, showOptionalGateBadge ? undefined : getRunningWorkflowStepLabel(task), { idle: !isAgentActive, overlapBlockedBy: task.overlapBlockedBy ?? null, sessionContentionWaitReason: task.sessionContentionWaitReason ?? null });
+                  ?? getTaskStatusLabel(visualStatus ?? "", t, showOptionalGateBadge ? undefined : getRunningWorkflowStepLabel(task), { idle: !isAgentActive, overlapBlockedBy: task.overlapBlockedBy ?? null, sessionContentionWaitReason: task.sessionContentionWaitReason ?? null, recoveryRetryCount: task.recoveryRetryCount, recoveryDisposition: task.recoveryDisposition, nextRecoveryAt: task.nextRecoveryAt, userPaused: task.userPaused, paused: task.paused, awaitingApproval: task.status === "awaiting-approval", externalBlocked: task.status === "blocked" });
   /*
   FNXC:HumanPlanApproval 2026-09-15-23:08:
   FN-443 — human plan approval is a card metadata badge in its own right, so the wrapper guard must
@@ -3982,6 +3982,13 @@ function TaskCardComponent({
   const humanPlanApprovalBadgeState = resolveHumanPlanApprovalBadgeState(task);
   /* FNXC:HumanMergeApproval 2026-09-17-18:09: FN-514 — declared in the wrapper guard, or the badge never mounts on a card whose only metadata is the lock. */
   const humanMergeApprovalBadgeState = resolveHumanMergeApprovalBadgeState(task);
+  /*
+  FNXC:RecoveryVisibility 2026-10-08-13:08 (merge origin/main): the label call above now carries FN-9512's recovery
+  context (recoveryRetryCount/recoveryDisposition/nextRecoveryAt plus the pause/hold exclusions), and this guard keeps
+  FN-443/FN-514's approval badges. The merge base's `showPriorityBadge` term is gone on purpose — this line replaced
+  priority levels with the arrival-ordered queue — so the union is upstream's label arguments AND this guard, not one
+  side's whole block.
+  */
   const hasCardMetaBadges = task.executionMode === "fast"
     || humanPlanApprovalBadgeState !== null
     || humanMergeApprovalBadgeState !== null

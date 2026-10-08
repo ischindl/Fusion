@@ -270,8 +270,8 @@ describe("SelfHealingManager.reclaimPrConflictForTask", () => {
     }
   });
 
-  it("returns paused-unrecoverable when conflict is unrecoverable and dispatcher pauses", async () => {
-    const task = makeTask();
+  it("reseeds an unrecoverable branch conflict at and beyond its retry cap", async () => {
+    const task = makeTask({ recoveryRetryCount: 3, status: "queued", error: "branch recovery" });
     const store = makeStore(task);
     vi.spyOn(branchConflicts, "inspectBranchConflict").mockResolvedValue({
       kind: "live-foreign",
@@ -284,18 +284,21 @@ describe("SelfHealingManager.reclaimPrConflictForTask", () => {
         recommendedAction: "manual",
       }),
     } as any);
-    vi.spyOn(AutoRecoveryDispatcher.prototype, "dispatch").mockResolvedValue({ action: "pause", reason: "test" } as any);
     const manager = new SelfHealingManager(store as any, { rootDir: "/tmp/test" } as any);
+
     const result = await manager.reclaimPrConflictForTask(task.id);
-    expect(result.outcome).toBe("paused-unrecoverable");
+
+
+    expect(result.outcome).toBe("escalated-reseed");
+    expect(task).toMatchObject({ column: "in-progress", paused: false, status: null, error: null });
+    expect(task.recoveryRetryCount).toBeNull();
+    expect(store.logEntry).toHaveBeenCalledWith(task.id, expect.stringContaining("fenced reclaim reseed"));
     /*
-    FNXC:BranchConflictRecoveryFence 2026-10-01-08:15 (upstream FN-9423 port):
-    The pause is no longer written through `updateTask`; it is authored inside the atomic fence, so
-    the old call-site assertion pinned a writer that no longer exists. The durable outcome is the
-    contract: the card ends paused with the branch-conflict reason, and the fence is what wrote it.
+    FNXC:BranchConflictRecoveryFence 2026-10-01-08:15 (kept through the 2026-10-08 origin/main merge):
+    The disposition change is upstream FN-9512's — a spent budget now reseeds instead of parking — but the
+    durability point this line added still holds and still needs pinning: the state change is authored INSIDE
+    `updateTaskAtomic`, never through a plain `updateTask` call site.
     */
-    expect(task.paused).toBe(true);
-    expect(task.pausedReason).toBe("branch-conflict-unrecoverable");
     expect((store as any).updateTaskAtomic).toHaveBeenCalled();
   });
 

@@ -86,6 +86,47 @@ export async function reclaimExistingWorktree(
   await deps.store.appendAgentLog(task.id, "Branch conflict auto-recovery", "status", message, "executor");
 }
 
+/**
+ * FNXC:RecoveryOwnership 2026-10-06-15:51:
+ * A branch-conflict retry cap changes recovery strategy, not task ownership. The
+ * executor must clear only the conflicting checkout identity under the task fence,
+ * leaving the resolved workflow lane dispatchable for fresh acquisition on its next pass.
+ */
+export async function reseedExhaustedBranchConflict(
+  deps: Pick<BranchConflictHandleDeps, "store" | "getRunContextFor">,
+  task: Task,
+): Promise<boolean> {
+  let reseeded = false;
+  await deps.store.updateTaskAtomic(task.id, (live) => {
+    const sameGeneration = live.column === task.column
+      && (live.status ?? null) === (task.status ?? null)
+      && live.branch === task.branch
+      && live.worktree === task.worktree
+      && (live.recoveryRetryCount ?? null) === (task.recoveryRetryCount ?? null);
+    if (!sameGeneration || live.userPaused || live.paused || live.status === "blocked") return null;
+    reseeded = true;
+    return {
+      status: null,
+      error: null,
+      recoveryRetryCount: null,
+      recoveryDisposition: "escalated-reseed",
+      nextRecoveryAt: null,
+      worktree: null,
+      branch: null,
+      branchWriteOrigin: "engine" as const,
+    };
+  });
+  if (reseeded) {
+    await deps.store.logEntry(
+      task.id,
+      "Branch-conflict retry budget escalated to a fenced fresh-checkout reseed.",
+      undefined,
+      deps.getRunContextFor(task.id),
+    );
+  }
+  return reseeded;
+}
+
 export async function handleBranchConflict(
   deps: BranchConflictHandleDeps,
   task: Task,
@@ -298,7 +339,25 @@ export async function handleBranchConflict(
     settings: settings.autoRecovery ?? { mode: "deterministic-only", maxRetries: 3 },
   });
 
-  if (decision.rationale === "destructive-ambiguity" || decision.rationale === "retry-budget-exhausted") {
+  /*
+  FNXC:RecoveryOwnership 2026-10-08-13:18 (merge origin/main): upstream FN-9512 turns a spent branch-conflict
+  budget into `action: "escalate"` and hands it to `reseedExhaustedBranchConflict`. That check runs FIRST: this
+  line's RUFU-231 park used to catch the same condition by rationale (`retry-budget-exhausted`), and keeping it
+  ahead of this branch would park terminal exactly the cards FN-9512 reseeds. The two dispositions are disjoint
+  (`escalate` only for the spent budget, `pause` for destructive ambiguity), so both behaviours survive.
+  */
+  if (decision.action === "escalate") {
+    return (await reseedExhaustedBranchConflict(deps, task)) ? "recovered" : "sticky";
+  }
+
+  /*
+  FNXC:BranchConflictRecovery 2026-09-13-01:46 (RUFU-231, narrowed by the 2026-10-08 origin/main merge):
+  A destructive-ambiguity refusal is a SAFETY stop, not a spent budget: destroying a branch whose own vs foreign
+  commits cannot be attributed needs an operator, so it keeps the terminal park with the checkout retained. The
+  `retry-budget-exhausted` alternative is dropped because that rationale now always arrives as `action: "escalate"`
+  and is reseeded above.
+  */
+  if (decision.rationale === "destructive-ambiguity") {
     await deps.store.updateTask(task.id, buildBranchConflictRecoveryParkPatch(recoveryPass, error.startPoint, conflictMessage));
     await emitBranchConflictRecoveryParkAudit({
       store: deps.store,

@@ -131,6 +131,7 @@ import {
   OVERLAP_OWNER_FK_DEFERRABLE_REPAIR_VERSION,
   STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_VERSION,
   PULL_REQUEST_READINESS_VERSION,
+  RECOVERY_DISPOSITION_VERSION,
 } from "../../postgres/schema-applier.js";
 import { ProjectPartitionRekeyError, rekeyFallbackProjectPartition } from "../../postgres/migration-stamping.js";
 import type { PluginSchemaInitHook } from "../../postgres/plugin-schema-hook.js";
@@ -246,7 +247,7 @@ describe("schema-applier: immutable migration identities", () => {
     change — which is what makes renumbering a published identity survivable here.
     */
     expect(STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_VERSION).toBe("0089");
-    expect(SCHEMA_BASELINE_VERSION).toBe("0090");
+    expect(SCHEMA_BASELINE_VERSION).toBe("0091");
 
       /*
       FNXC:MigrationVersionCollision 2026-10-05-09:43 (merge origin/main, upstream FN-9439):
@@ -263,6 +264,16 @@ describe("schema-applier: immutable migration identities", () => {
       expect(PULL_REQUEST_READINESS_VERSION).toBe("0090");
       expect(Number(PULL_REQUEST_READINESS_VERSION)).toBeGreaterThan(Number(STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_VERSION));
       expect(Number(SCHEMA_BASELINE_VERSION)).toBeGreaterThanOrEqual(Number(PULL_REQUEST_READINESS_VERSION));
+    /*
+    FNXC:MigrationVersionCollision 2026-10-08-13:26 (merge origin/main, upstream FN-9512):
+    Upstream ships the recovery-disposition column as 0088 — the identity this fork already recorded for its
+    review-lane ledger — so the incoming migration re-issues at 0091 (file 0091_fn_9512_recovery_disposition.sql),
+    the same convention that moved FN-9429's receipts to 0089 and FN-9439's readiness to 0090. Exact equality on the
+    new identity; the ceiling keeps its single `>=` so the two sides of a merge cannot contradict each other.
+    */
+    expect(RECOVERY_DISPOSITION_VERSION).toBe("0091");
+    expect(Number(RECOVERY_DISPOSITION_VERSION)).toBeGreaterThan(Number(PULL_REQUEST_READINESS_VERSION));
+    expect(Number(SCHEMA_BASELINE_VERSION)).toBeGreaterThanOrEqual(Number(RECOVERY_DISPOSITION_VERSION));
   });
 
   it("keeps monitor and approval isolation assigned to version 0003", () => {
@@ -2160,6 +2171,16 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       { column_name: "readiness", data_type: "jsonb" },
       { column_name: "readiness_provider", data_type: "text" },
     ]);
+    const recoveryDispositionColumns = (await ctx.db.execute(sql`
+      SELECT column_name, data_type
+      FROM information_schema.columns
+      WHERE table_schema = 'project'
+        AND table_name = 'tasks'
+        AND column_name = 'recovery_disposition'
+    `)) as unknown as Array<{ column_name: string; data_type: string }>;
+    expect(recoveryDispositionColumns).toEqual([
+      { column_name: "recovery_disposition", data_type: "text" },
+    ]);
     const versions = (await ctx.db.execute(sql`
       SELECT version FROM public.fusion_schema_migrations ORDER BY version
     `)) as unknown as Array<{ version: string }>;
@@ -2275,6 +2296,7 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       */
       STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_VERSION,
       PULL_REQUEST_READINESS_VERSION,
+    RECOVERY_DISPOSITION_VERSION,
       /* FNXC:MigrationCollisionRepair 2026-10-05-11:29: this fork records the non-numeric repair
       identity and ORDER BY version is TEXT, so it sorts after every numeric slot. Keep it last. */
       MIXED_0065_REPAIR_VERSION,
@@ -2292,6 +2314,32 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       WHERE version = ${PULL_REQUEST_READINESS_VERSION}
     `)) as unknown as Array<{ count: number }>;
     expect(rerunMarkerCount).toEqual([{ count: 1 }]);
+  });
+
+  it("applies and records recovery disposition exactly once on an upgraded database", async () => {
+    ctx = await setupFreshDb();
+    await applySchemaBaseline(ctx.db, { pluginHooks: [] });
+    await ctx.db.execute(sql.raw(`
+      ALTER TABLE project.tasks DROP COLUMN recovery_disposition;
+      DELETE FROM public.fusion_schema_migrations WHERE version = '${RECOVERY_DISPOSITION_VERSION}';
+    `));
+
+    expect((await applySchemaBaseline(ctx.db, { pluginHooks: [] })).applied).toBe(true);
+    const columns = (await ctx.db.execute(sql`
+      SELECT column_name, data_type
+      FROM information_schema.columns
+      WHERE table_schema = 'project'
+        AND table_name = 'tasks'
+        AND column_name = 'recovery_disposition'
+    `)) as unknown as Array<{ column_name: string; data_type: string }>;
+    expect(columns).toEqual([{ column_name: "recovery_disposition", data_type: "text" }]);
+    const marker = (await ctx.db.execute(sql`
+      SELECT count(*)::int AS count
+      FROM public.fusion_schema_migrations
+      WHERE version = ${RECOVERY_DISPOSITION_VERSION}
+    `)) as unknown as Array<{ count: number }>;
+    expect(marker).toEqual([{ count: 1 }]);
+    expect((await applySchemaBaseline(ctx.db, { pluginHooks: [] })).applied).toBe(false);
   });
 
   it("fails loudly when legacy automation ownership is ambiguous", async () => {
@@ -2312,7 +2360,7 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
   "serializes concurrent schema appliers" is upstream's, and it is deliberately NOT imported on this
   line. Its expected ledger enumerates upstream's slot set (0074/0076/0079-0083/0085), which this
   feature-reduced fork never implements, while our applied ledger carries this fork's own 0080-0083
-  plus the renumbered 0087-0090 and the non-numeric local-repair-mixed-0065 marker - the fixture
+  plus the renumbered 0087-0091 and the non-numeric local-repair-mixed-0065 marker - the fixture
   cannot be reconciled by appending entries, only by re-authoring it against our slot set. The
   2026-10-05 merge re-imported it as a side effect of grafting ledger entries into the surrounding
   upstream region; removed again here. The applier's serialized-DDL path is still covered by
@@ -2577,6 +2625,7 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       REVIEW_LANE_LEDGER_VERSION,
       STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_VERSION,
       PULL_REQUEST_READINESS_VERSION,
+    RECOVERY_DISPOSITION_VERSION,
       /* keep the non-numeric repair identity last: ORDER BY version is TEXT */
       MIXED_0065_REPAIR_VERSION,
     ]);
@@ -2720,6 +2769,7 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       REVIEW_LANE_LEDGER_VERSION,
       STALE_REVIEW_CALLBACK_WAIVER_RECEIPTS_VERSION,
       PULL_REQUEST_READINESS_VERSION,
+    RECOVERY_DISPOSITION_VERSION,
       /* keep the non-numeric repair identity last: ORDER BY version is TEXT */
       MIXED_0065_REPAIR_VERSION,
     ]);

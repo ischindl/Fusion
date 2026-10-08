@@ -45,6 +45,20 @@ describe("isTaskPlanningActive", () => {
 });
 
 describe("getTaskStatusBadgeLabel", () => {
+  it("preserves the raw runtime label when recovery metadata is absent or zero", () => {
+    expect(getTaskStatusBadgeLabel("executing", t)).toBe("executing");
+    expect(getTaskStatusBadgeLabel("executing", t, undefined, { recoveryRetryCount: 0 })).toBe("executing");
+  });
+
+  it("renders recovery state while preserving explicit stationary-state precedence", () => {
+    expect(getTaskStatusBadgeLabel("executing", t, undefined, { recoveryRetryCount: 2 })).toBe("Recovery pending");
+    expect(getTaskStatusBadgeLabel("executing", t, undefined, { recoveryDisposition: "verification-pending" })).toBe("Recovery pending");
+    expect(getTaskStatusBadgeLabel("needs-replan", t, undefined, { recoveryDisposition: "escalated-reseed" })).toBe("Recovery reseeded");
+    expect(getTaskStatusBadgeLabel("needs-replan", t, undefined, { paused: true, recoveryRetryCount: 2 })).toBe("Paused");
+    expect(getTaskStatusBadgeLabel("needs-replan", t, undefined, { awaitingApproval: true, recoveryRetryCount: 2 })).toBe("Awaiting Approval");
+    expect(getTaskStatusBadgeLabel("needs-replan", t, undefined, { externalBlocked: true, recoveryRetryCount: 2 })).toBe("Blocked");
+  });
+
   it("maps external Blocked to operator copy while waiting states remain distinct", () => {
     expect(getTaskStatusBadgeLabel("blocked", t)).toBe("Blocked");
     expect(getTaskStatusBadgeLabel("contention-hold", t)).toBe("Waiting");
