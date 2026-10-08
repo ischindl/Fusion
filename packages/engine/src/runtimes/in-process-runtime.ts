@@ -3097,10 +3097,35 @@ export class InProcessRuntime
    * Get current runtime metrics.
    */
   getMetrics(): RuntimeMetrics {
-    // Estimate in-flight tasks by checking active sessions
-    const inFlightTasks = this.executor
-      ? (this.executor as unknown as { activeWorktrees?: Map<string, string> }).activeWorktrees?.size ?? 0
-      : 0;
+    /*
+    FNXC:WorktreeLiveness 2026-10-08-04:04 (RUFU-323):
+    `inFlightTasks` is read as "how much work is running", but it was derived from the raw size of the
+    executor's worktree-OWNERSHIP map. Ownership is not liveness: a card whose graph run ended in a
+    terminal park can keep its binding (the run's `finally` releases only external-execution checkouts),
+    so two already-failed cards kept the count above zero and `ProjectManager.restartProjectRuntime()`
+    refused the isolation transition with `{ kind: "active_tasks" }` for a project executing nothing.
+    The honest number is the count of worktree-holding tasks that are live on an execution surface,
+    which is what `TaskExecutor.getLiveWorktreeHolderCount()` answers through the canonical
+    `isTaskLiveForOverseerRetry` predicate (counted per task, so a workspace card holding N sub-repos
+    is one card, not N).
+
+    The call is feature-detected on purpose. This metric has two consumers in this file — the `stop()`
+    post-abort drain loop, whose body errors are re-thrown by `stop()`, and the value `ProjectManager`
+    guards on — and executor test doubles exist that supply `activeWorktrees` without the facade
+    (`engine-stop-aborts-execution.test.ts`). An object that cannot prove liveness is therefore counted
+    conservatively as BUSY (a bounded drain timeout or an honest refusal) rather than as free, and the
+    derivation can never throw. Production `InProcessRuntime` always constructs a real `TaskExecutor`,
+    so the facade is the path actually taken in the field.
+    */
+    const executor = this.executor as unknown as {
+      activeWorktrees?: Map<string, unknown>;
+      getLiveWorktreeHolderCount?: () => number;
+    } | undefined;
+    const inFlightTasks = !executor
+      ? 0
+      : typeof executor.getLiveWorktreeHolderCount === "function"
+        ? executor.getLiveWorktreeHolderCount()
+        : executor.activeWorktrees?.size ?? 0;
 
     /*
     FNXC:CapacityModel 2026-07-28-20:10 (drop the cross-project cap):

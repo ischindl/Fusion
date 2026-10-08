@@ -65,7 +65,7 @@ Reconciliation-scoped auto-recover/reclaim events the self-healing sweep surface
 | `task:stale-review-callback-waived` | Self-healing records a receipt-backed waiver for an eligible stale code-review callback. Metadata is ids, receipt presence, fixed actor/reason, prior status, and threshold category only; reviewer output, findings, lease owners, paths, and errors never enter run-audit, and an absent, throwing, or hanging sink cannot change the durable waiver. |
 | `task:reconcile-unproven-review-approval` | Self-healing rewrites singular content-review approvals without input proof to recoverable `failed` results. |
 | `task:reconcile-stale-duplicate-decision` | Self-healing clears a recurring duplicate-decision pause with no canonical target. |
-| `task:reconcile-orphaned-non-convergence-hold` | Self-healing clears a drifted `code-review-non-convergence` approval hold whose failed-review evidence no longer exists, in place and without a lifecycle move. |
+| `task:reconcile-orphaned-non-convergence-hold` | Self-healing clears a drifted stage-one approval hold (`code-review-non-convergence` or `plan-review-replan-cap`) whose gate evidence no longer exists, in place and without a lifecycle move. |
 | `task:reconcile-stale-agent-assignment` | Self-healing clears stale durable Agent.taskId/state drift while preserving file-scope leases. |
 | `task:reconcile-engine-downtime-active-timing` | Self-healing shifts active-task anchors to exclude proven stopped-engine wall-clock. |
 | `task:reconcile-engine-downtime-active-timing-no-action` | Self-healing finds no active task qualifies for downtime-timing reconciliation (no-action). |
@@ -99,7 +99,28 @@ The literal names the class the operator must never lose silently — approved w
 
 `task:move-cleared-approval-hold` is emitted post-commit by the core move implementation when a **user-driven move out of a review lane** clears an approval hold whose evidence the reopen hooks just destroyed (or the gated-session pause shape the move supersedes). Metadata: `{ priorStatus, awaitingApprovalReason, fromColumn, toColumn, moveSource, outcome: "cleared" }` — the reason-code enum (`"none"` for the bare marker), never hold prose or error text. It is written by `@fusion/core` through the FN-9177 bounded seam, so — like the vanished-work pair — it sits intentionally outside the curated delivery-pipeline catalogue. The row is the audit proof of the pair invariant at the move seam: a `step-wiping` review exit with **no** such row means the move preserved the evidence (plan-approval release, graph remediation, `preserveStatus`, `userPaused`) — the invariant's second half.
 
-`task:reconcile-orphaned-non-convergence-hold` is the sweep-side twin (defect B): pre-fix builds could leave a card holding `status: "awaiting-approval"` + `awaitingApprovalReason: "code-review-non-convergence"` after its `workflowStepResults` were already destroyed, whose only pre-existing exit was merging the card — exactly what the escalation hold was meant to defer. The `reconcile-orphaned-non-convergence-holds` sweep clears that drifted shape **in place** (no lifecycle move) when no pre-merge step result carries the `failed`/`advisory_failure` evidence any more, skipping live sessions, pauses, and merge-active work. Metadata: `{ taskId, column, priorStatus, reasonCode, outcome }`.
+`task:reconcile-orphaned-non-convergence-hold` is the sweep-side twin (defect B): a card can hold
+`status: "awaiting-approval"` + `awaitingApprovalReason: "code-review-non-convergence" | "plan-review-replan-cap"`
+after its `workflowStepResults` were already destroyed, whose only pre-existing exit was merging the card —
+exactly what the escalation hold was meant to defer. RUFU-297 shipped this event for the Code Review
+class alone, so every card carrying the other drifted shape stayed silently merge-blocked; RUFU-314 widened
+it to both (its `mutationType` declaration is unchanged — only its description, and the `reasonCode` values
+that actually occur). The `reconcile-orphaned-non-convergence-holds` sweep clears either drifted shape
+**in place** (no lifecycle move) when no pre-merge step result carries the `failed`/`advisory_failure`
+evidence any more, skipping live sessions, pauses, and merge-active work. Discovery is `listTasks` over
+every unarchived lane, not `getReviewTasks()`, because the cap park is authored from the planning/executor
+lane — the wider scan still only clears in place.
+Metadata: `{ taskId, column, priorStatus, reasonCode, outcome }` — five keys, pinned exactly by
+`self-healing-orphaned-non-convergence-holds.pg.test.ts`. `reasonCode` is the fixed hold-reason enum (which
+ladder parked the card — the two shapes are otherwise identical rows). The row carries no `phase`, no
+`source`/`taskLineageId` envelope, and no rendered `awaitingApprovalReason` copy: RUFU-314 put the emit on
+the FN-9175 seam (`emitBoundedRunAudit` directly, synthetic `self-healing` run id) precisely because the
+run-auditor wrapper it replaced forwarded those envelope keys and no-op'd silently with no run context.
+Neither value is prose — the `reasonCode` enum names both — so the closed set is what operators query.
+The bounded seam is covered behaviorally, not by inspection: `non-executor-run-audit-sink-health.test.ts`
+runs both reason codes through absent / throwing / rejecting / hanging / late-settling sinks and asserts the
+clear, the task-log entry, and the pass count are identical in every mode while each non-absent mode still
+lands exactly one closed-shape row.
 
 Metadata is ids/counts/fixed enums only: `taskId`, `reason`, `branchRef`, `unmergedCommitCount`, `gateApproved` (whether a gate actually approved the card — `false` is a still-live card that vanished, not a false positive), and `salvageTarget`. Mirror prose, status text, step results, and error strings are never recorded — the mirror is read defensively for `column`/gate rows and discarded. `target` is `task:<ID>` and `agentId` is `self-healing`. The row is written before the mailbox notice, so a mailbox outage still leaves a queryable record; `unmergedCommitCount: null` is the honest "unknown", never a zero.
 

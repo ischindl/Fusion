@@ -19,7 +19,7 @@ tags:
 
 # Observed suite-only flakes register
 
-This register has **4 active observation records** (entries 2, 13, 20, and 21), all **active first sightings**. Entries 1, 15, and 18 closed after structural fixes with recorded verification, and stay in place below for campaign and first-sighting evidence. Entries 7 and 14 below are closed and retained for cross-reference only. It also has **1 merge-gate eviction record** (entry 6) and **12 archived closed records**. Only the active section drives quarantine and escalation decisions; the other sections preserve historical evidence.
+This register has **5 active observation records** (entries 2, 13, 20, 21, and 22), all **active first sightings**. Entries 1, 15, and 18 closed after structural fixes with recorded verification, and stay in place below for campaign and first-sighting evidence. Entries 7 and 14 below are closed and retained for cross-reference only. It also has **1 merge-gate eviction record** (entry 6) and **12 archived closed records**. Only the active section drives quarantine and escalation decisions; the other sections preserve historical evidence.
 
 <!--
 FNXC:TestFlakeRegister 2026-08-19-11:14:
@@ -355,6 +355,18 @@ The combined ProjectEngine/workspace-merger verification observed an empty recal
 The verified `test-timings-shard-3` artifact (`11332755977`, SHA-256 `85a8465f96e26a8ec9f0d80ff9f051f6a9e66673a0042fdd18c2d434a7577ec4`) reported the badge as `pending` rather than `auto-available` at `AgentDetailView.core.test.tsx:507` after 58.443616 ms. The shard command was `pnpm test:ci:shard --shard 3 --total 4`; its dashboard reporter was otherwise complete (176 suites, 6,008 passing tests, one failure).
 
 FN-9506 reproduced the pending-to-resolved transition with a deferred discovery response. It preserves the stored legacy reference in the tooltip, proves a pending click makes no content request, waits for `data-skill-state="auto-available"`, and then proves one `fetchSkillContent(canonicalId, projectId)` request. Production code was unchanged: `AgentDetailView` deliberately mounts skill discovery only after the agent has loaded, so agent-before-discovery is the reachable lifecycle. No retry, timeout, skip, or weakened assertion was introduced. The file has 55 focused cases and is outside the thin merge gate, so this high-value first sighting remains recorded rather than quarantined. A second sighting of this file requires a same-change file-level quarantine in `scripts/lib/test-quarantine.json` and `quarantinedDashboardTests`.
+
+### 22. RUFU-076 pause-gate git-silence observes a maintenance process sweep
+
+- **Status:** Active first sighting — recorded 2026-10-08 by RUFU-323, attributed only as far as the recorded shellout names it.
+- **File:** `packages/engine/src/__tests__/in-process-runtime-076-pause-gate.test.ts`
+- **Exact test:** `RUFU-076 runtime pause-gate seam (InProcessRuntime lifecycle) > I1: a project that starts paused stays git-silent across many maintenance windows`
+- **Observed tree/SHA:** `b0c9889987` (RUFU-323 task worktree) inside a seven-file engine verification that also loaded `concurrency-worktree-capacity-emptiness.test.ts`.
+- **Observed frequency:** 1 sighting in the combined run. The exact file passed 4/4 solo, the identical seven-file combination passed 2/2 (86 tests) immediately afterwards, and the two-file combination passed 12/12.
+
+The failure read `expected "vi.fn()" to not be called at all, but actually been called 1 times`, and the single recorded call was a process-table sweep (`ps -axo pid=,ppid=,pgid=,command=` with a `stdio` option) — not the `git worktree prune` / `git branch` / `git log` storm the case exists to forbid, so the pause-arm invariant I1 guards was never violated. The case calls `runMaintenance()` directly and asserts the file's module-mocked `node:child_process` received zero calls, which makes it sensitive to any shellout from any batch item that settles inside its window. The named candidate emitter is the repository's only `ps -axo pid=,ppid=,pgid=,command=` sweep, `createFusionBrowserProductionReaperDeps().findProcessGroups` (`packages/engine/src/agent-browser-lifecycle.ts:172`), reached from the maintenance batch item `reap-expired-agent-browser-leases` (`packages/engine/src/self-healing.ts:2413` and `:3429`); no diagnosis beyond that attribution was performed, and none is justified by one observation.
+
+No timeout, retry, skip, quarantine, or weakened assertion was applied. The file holds 4 runtime-boundary cases and is outside the thin merge gate (`packages/engine/vitest.config.ts`'s `engine-core` include array names no `076` entry), so this first sighting is recorded rather than file-level quarantined. A second sighting of this file requires a same-change file-level quarantine in `scripts/lib/test-quarantine.json` plus the package vitest exclude list.
 
 ### Common shape and investigated result
 

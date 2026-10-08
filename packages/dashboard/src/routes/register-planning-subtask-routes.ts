@@ -1076,11 +1076,20 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
         ? await resolvePlanningGithubTrackingDecision(scopedStore, projectSettings, { owner: sourceContext.sourceIssue.repository.split("/")[0], repo: sourceContext.sourceIssue.repository.split("/")[1], issueNumber: sourceContext.sourceIssue.issueNumber, url: sourceContext.sourceIssue.url ?? "" })
         : undefined;
       // Create the task. Provenance is truthful even when a live importer suppresses tracking.
+      /*
+      FNXC:PlanningDependencyNormalization 2026-10-08-04:28 (RUFU-319):
+      FN-9412 (2e18a2cc8c) normalized this route's dependencies too, and the `origin-sync 2026-10-05` merge
+      (9ecab8cae6) kept the fork's pre-FN-9412 line here (`^1` passes the raw `summary.suggestedDependencies`,
+      `^2` passes `dependencies`) while carrying the normalizer call on both sides. Passing the raw list
+      bypasses the only guard that drops non-canonical suggestions, so a prose or malformed entry could
+      reach `Task.dependencies` — the `FNXC:TaskQueueOrder 2026-09-17-12:07` note below promises a legacy
+      level is DROPPED here, and that promise is delivered by this normalizer alone.
+      */
       const dependencies = normalizePlanningSuggestedDependencies(summary.suggestedDependencies);
       const task = await scopedStore.createTask({
         title: summary.title,
         description: sourceContext ? appendSourceIssueBlock(planMd, sourceContext.markdown, sourceContext.sourceIssue.url ?? "") : planMd,
-        dependencies: summary.suggestedDependencies.length > 0 ? summary.suggestedDependencies : undefined,
+        dependencies: dependencies.length > 0 ? dependencies : undefined,
         /* FNXC:TaskQueueOrder 2026-09-17-12:07: FN-509 — a legacy saved summary may still carry a level in
        its raw JSON. It is DROPPED here rather than converted into a rank, so resuming an old
        planning session keeps working without reintroducing a priority. */

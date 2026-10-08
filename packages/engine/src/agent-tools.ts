@@ -1269,17 +1269,26 @@ type AgentTaskInputWithBootstrap = TaskCreateInput & {
   reconcileCreatedDuplicate?: (duplicate: Task, created: Task) => Promise<void>;
 };
 
-async function definedFeatureBootstrapInput(store: TaskStore, lineage: MissionLineageReference | null, workflowId?: string): Promise<Pick<AgentTaskInputWithBootstrap, "afterTaskInsert" | "validateDuplicateCanonical" | "skipSameAgentDuplicateIntake" | "preflightSameAgentDuplicate" | "reconcileCreatedDuplicate">> {
+async function definedFeatureBootstrapInput(store: TaskStore, lineage: MissionLineageReference | null, _workflowId?: string): Promise<Pick<AgentTaskInputWithBootstrap, "afterTaskInsert" | "validateDuplicateCanonical" | "skipSameAgentDuplicateIntake" | "preflightSameAgentDuplicate" | "reconcileCreatedDuplicate">> {
   if (!lineage?.bootstrapDefinedFeature) return {};
   const missionStore = store.getMissionStore() as Partial<DefinedFeatureBootstrapStore>;
   if (!missionStore.claimDefinedFeatureTaskInTransaction || !missionStore.claimDefinedFeatureTask || !missionStore.deleteDefinedFeatureBootstrapDuplicate) {
     throw new Error("Defined-feature bootstrap requires the PostgreSQL mission store; no task was created.");
   }
-  const selectedWorkflowId = workflowId ?? (await store.getDefaultWorkflowId()) ?? "builtin:coding";
-  const workflow = await resolveWorkflowIrById(store, selectedWorkflowId);
   /* Upstream FN-9402 resolves the lane vocabulary before a pool connection is held; our side owns
      that vocabulary as the historical-sentinel constant, so the caller passes it and never borrows
      a second connection to ask for it. */
+  /*
+  FNXC:MissionAdmission 2026-10-08-04:35 (RUFU-319):
+  The `origin-sync 2026-10-05` merge (9ecab8cae6) kept upstream FN-9402's
+  `resolveWorkflowIrById(store, selectedWorkflowId)` line while taking the fork's constant for its ANSWER,
+  so `pnpm lint` reported `workflow` unused on `main`. The resolution AND its `getDefaultWorkflowId()`
+  lookup are deleted rather than wired back up: re-adding a per-task IR read here would borrow a
+  PostgreSQL connection to ask for a vocabulary this side deliberately owns as `ARCHIVED_SENTINEL_LANES`,
+  which is what the note above refuses. Callers still pass the selection, so the parameter remains on the
+  signature as `_workflowId` — under `args: "after-used"` a plainly-named unused trailing parameter is an
+  error, and the underscore is how the intent survives instead of being silently dropped a second time.
+  */
   const archivedLanes = fusionCore.ARCHIVED_SENTINEL_LANES;
   const claim = (taskId: string) => ({ featureId: lineage.featureId, taskId, missionId: lineage.missionId, sliceId: lineage.sliceId });
   return {

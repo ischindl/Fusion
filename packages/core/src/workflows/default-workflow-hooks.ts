@@ -407,6 +407,17 @@ export function applyReopenFieldClears(ctx: DefaultWorkflowMoveContext): void {
   comment re-engagement, merge bounces, and every `-> todo`/`-> triage` rebound still clear, so the
   executor's documented bounce invariant ("moveTask(in-review->todo) already clears ALL results")
   survives unchanged.
+
+  FNXC:WorkflowReviewGates 2026-10-07-16:55 (RUFU-314): the middle bullet's MERGEABILITY claim is
+  obsolete as written and the other two still carry this scoping decision, so the behavior stands and
+  the wording is corrected for what FN-180 later added. An ENABLED required pre-merge gate with ZERO
+  result rows is `state: "missing"` in `evaluatePreMergeApprovals`, and every merge door forwards a
+  resolved `requiredPreMergeStepIds`, so `getTaskMergeBlocker` answers the canonical
+  `PRE_MERGE_STEPS_NOT_RUN_BLOCKER` rather than going vacuously false: a wiped card is refused, not
+  mergeable, and its remedy is the FN-9243 graph reseed (or the FN-7720 audited bypass), never a merge.
+  Pinned at the move seam by `store-move-approval-hold-clear.pg.test.ts` (defect C). The two surviving
+  reasons this crossing must not clear are unchanged: the recovery selectors above no-op on an empty
+  array, and `priorAttempts` history would restart at zero.
   */
   const lifecycle = ctx.lifecycleColumns;
   const planning = planningColumnsOf(lifecycle);

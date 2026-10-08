@@ -480,19 +480,30 @@ describe("App dashboard keyboard shortcuts", () => {
   /*
    * FN-468 : l'hôte suit désormais la propriété du shell de navigation. Sous 1024 px (téléphone ET tablette) la
    * popover du pied de page n'a plus d'hôte, donc le tiroir plein écran est la seule cible.
+   *
+   * RUFU-326 extends the same seam with the stored Chat launch mode: above 1024 px "view" picks the Chat PAGE
+   * (the surface the nav button opens) and "popup" keeps the footer popover, while below the breakpoint the
+   * drawer wins for BOTH modes because `resolveChatHost` resolves the mobile host before placement or dock.
    */
-  it("resolves the FN-441 chat-list shortcut host from project presence and the mobile shell predicate", () => {
-    expect(resolveChatListShortcutTarget({ hasProject: false, mobileShellActive: true })).toBe("none");
-    expect(resolveChatListShortcutTarget({ hasProject: false, mobileShellActive: false })).toBe("none");
+  it("resolves the FN-441 chat-list shortcut host from project presence, the mobile shell predicate, and the stored launch mode", () => {
+    for (const chatLaunchMode of ["popup", "view"] as const) {
+      expect(resolveChatListShortcutTarget({ hasProject: false, mobileShellActive: true, chatLaunchMode }), chatLaunchMode).toBe("none");
+      expect(resolveChatListShortcutTarget({ hasProject: false, mobileShellActive: false, chatLaunchMode }), chatLaunchMode).toBe("none");
+    }
     for (const mode of ["mobile", "tablet"] as const) {
-      expect(
-        resolveChatListShortcutTarget({ hasProject: true, mobileShellActive: isMobileShellMode(mode) }),
-        mode,
-      ).toBe("drawer");
+      for (const chatLaunchMode of ["popup", "view"] as const) {
+        expect(
+          resolveChatListShortcutTarget({ hasProject: true, mobileShellActive: isMobileShellMode(mode), chatLaunchMode }),
+          `${mode}/${chatLaunchMode}`,
+        ).toBe("drawer");
+      }
     }
     expect(
-      resolveChatListShortcutTarget({ hasProject: true, mobileShellActive: isMobileShellMode("desktop") }),
+      resolveChatListShortcutTarget({ hasProject: true, mobileShellActive: isMobileShellMode("desktop"), chatLaunchMode: "popup" }),
     ).toBe("popover");
+    expect(
+      resolveChatListShortcutTarget({ hasProject: true, mobileShellActive: isMobileShellMode("desktop"), chatLaunchMode: "view" }),
+    ).toBe("page");
   });
 
   it("reads the chat popover anchor from the same footer trigger the pointer uses", () => {

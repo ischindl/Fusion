@@ -360,6 +360,73 @@ describe("ProjectManager", () => {
     });
   });
 
+  /*
+  FNXC:WorktreeLiveness 2026-10-08-06:05 (RUFU-323):
+  The restart/isolation-transition guard consumes `metrics.inFlightTasks`, which the runtime now
+  derives from LIVE worktree holders rather than the ownership-registry size. These tests pin the
+  guard's half of that contract: a zero derived count releases the transition — the shape a landed
+  terminal park produces — a non-zero count still refuses with the `active_tasks` payload, and
+  `force` still bypasses. The derivation itself is pinned in `project-runtime.test.ts`.
+  */
+  describe("restartProjectRuntime in-flight guard", () => {
+    const testConfig: ProjectRuntimeConfig = {
+      projectId: "proj_test123",
+      workingDirectory: "/tmp/test-project",
+      isolationMode: "in-process",
+      maxConcurrent: 2,
+      maxWorktrees: 4,
+    };
+
+    beforeEach(() => {
+      mockCentralCore.resolveLocalProjectWorkingDirectory = vi.fn().mockResolvedValue("/tmp/test-project");
+    });
+
+    function stubInFlight(count: number) {
+      const runtime = manager.getRuntime("proj_test123") as unknown as {
+        getMetrics: ReturnType<typeof vi.fn>;
+      };
+      runtime.getMetrics.mockReturnValue({
+        inFlightTasks: count,
+        activeAgents: count,
+        lastActivityAt: new Date().toISOString(),
+      });
+      return runtime;
+    }
+
+    it("permits the transition when the only remaining holder is a terminal card", async () => {
+      await manager.addProject(testConfig);
+      const runtime = stubInFlight(0);
+
+      await manager.restartProjectRuntime("proj_test123", { reason: "isolation-change" });
+
+      // The guard released, the old runtime was stopped, and a fresh one took its place.
+      expect(runtime.stop).toHaveBeenCalled();
+      expect(manager.getRuntime("proj_test123")).not.toBe(runtime);
+    });
+
+    it("refuses while work is genuinely live, naming the live count", async () => {
+      await manager.addProject(testConfig);
+      const runtime = stubInFlight(2);
+
+      await expect(manager.restartProjectRuntime("proj_test123")).rejects.toEqual(
+        expect.objectContaining({ kind: "active_tasks", count: 2 }),
+      );
+
+      expect(runtime.stop).not.toHaveBeenCalled();
+      expect(manager.getRuntime("proj_test123")).toBe(runtime);
+    });
+
+    it("still lets force bypass the guard over live work", async () => {
+      await manager.addProject(testConfig);
+      const runtime = stubInFlight(2);
+
+      await manager.restartProjectRuntime("proj_test123", { force: true });
+
+      expect(runtime.stop).toHaveBeenCalled();
+      expect(manager.getRuntime("proj_test123")).not.toBe(runtime);
+    });
+  });
+
   describe("stopAll", () => {
     it("should stop all runtimes", async () => {
       const config1: ProjectRuntimeConfig = {

@@ -76,6 +76,20 @@ function makeManager(store: TestStore, options: ConstructorParameters<typeof Sel
   return manager;
 }
 
+/*
+FNXC:UnrunPostMergeGateRecovery 2026-10-07-13:05 (RUFU-306):
+RUFU-306 gave the merge-confirmed reconcile lane a durable refusal line, and this file is its silence half:
+every refusal below happens on the fences BEFORE that lane, on a card that was never merge-confirmed, so the
+marker must appear nowhere. The `merge confirmation` drift case is the sharpest of these — confirmation
+arrives INSIDE the atomic fence, so the projection this method reasoned from held none, and a marker written
+there would attribute a refusal to a lane that never ran.
+*/
+function landedReviewRefusalWrites(store: TestStore): string[] {
+  return (store.logEntry as unknown as ReturnType<typeof vi.fn>).mock.calls
+    .map((call) => (typeof call[1] === "string" ? call[1] : ""))
+    .filter((line) => line.includes("[landed-review reconcile:"));
+}
+
 async function reconcile(manager: SelfHealingManager) {
   return manager.reconcileLandedReviewTask(taskId, { source: "manual", requireAutoMergeEligible: false });
 }
@@ -100,6 +114,7 @@ describe("reconcileLandedReviewTask liveness and CAS fences", () => {
     await expect(reconcile(manager)).resolves.toEqual({ outcome: "ineligible", reason });
     expect(store.updateTaskAtomic).not.toHaveBeenCalled();
     expect(store.updateTask).not.toHaveBeenCalled();
+    expect(landedReviewRefusalWrites(store)).toEqual([]);
   });
 
   it("refuses an active registered session and executing lock", async () => {
@@ -108,12 +123,14 @@ describe("reconcileLandedReviewTask liveness and CAS fences", () => {
     const sessionStore = storeFor(task());
     await expect(reconcile(makeManager(sessionStore))).resolves.toEqual({ outcome: "ineligible", reason: "live-session" });
     expect(sessionStore.updateTaskAtomic).not.toHaveBeenCalled();
+    expect(landedReviewRefusalWrites(sessionStore)).toEqual([]);
     activeSessionRegistry.unregisterPath(path);
 
     const lease = executingTaskLock.claim(taskId)!;
     const lockStore = storeFor(task());
     await expect(reconcile(makeManager(lockStore))).resolves.toEqual({ outcome: "ineligible", reason: "executing" });
     expect(lockStore.updateTaskAtomic).not.toHaveBeenCalled();
+    expect(landedReviewRefusalWrites(lockStore)).toEqual([]);
     await executingTaskLock.invalidate(lease);
   });
 
@@ -121,6 +138,7 @@ describe("reconcileLandedReviewTask liveness and CAS fences", () => {
     const fresh = storeFor(task({ checkoutRunId: "remote-run", checkoutLeaseRenewedAt: new Date().toISOString() }));
     await expect(reconcile(makeManager(fresh))).resolves.toEqual({ outcome: "ineligible", reason: "checkout-leased" });
     expect(fresh.updateTaskAtomic).not.toHaveBeenCalled();
+    expect(landedReviewRefusalWrites(fresh)).toEqual([]);
 
     const stale = storeFor(task({ checkoutRunId: "old-run", checkoutLeaseRenewedAt: new Date(Date.now() - 180_000).toISOString() }));
     await expect(reconcile(makeManager(stale))).resolves.toMatchObject({ outcome: "reconciled" });
@@ -132,6 +150,7 @@ describe("reconcileLandedReviewTask liveness and CAS fences", () => {
     const manager = makeManager(store, { isTaskActive: () => true });
     await expect(manager.reconcileLandedReviewTask(taskId, { source: "self-healing" })).resolves.toEqual({ outcome: "ineligible", reason: "executing" });
     expect(store.updateTaskAtomic).not.toHaveBeenCalled();
+    expect(landedReviewRefusalWrites(store)).toEqual([]);
   });
 
   it.each([
@@ -146,6 +165,7 @@ describe("reconcileLandedReviewTask liveness and CAS fences", () => {
     await expect(reconcile(manager)).resolves.toEqual({ outcome: "raced", reason: "task-state-changed" });
     expect(store.updateTask).not.toHaveBeenCalled();
     expect((manager as any).moveToCompleteLaneAfterLandedCleanup).not.toHaveBeenCalled();
+    expect(landedReviewRefusalWrites(store)).toEqual([]);
   });
 
   it("allows one of two concurrent reconciliation attempts to finalize", async () => {

@@ -213,6 +213,17 @@ describe("FN-180 confirmed merge must finalize", () => {
 });
 
 /* FNXC:PostMergeRecovery 2026-10-01-04:43: Lost graph traversal must schedule real evidence, never manufacture approval. */
+/*
+FNXC:PostMergeRecovery 2026-10-08-01:32 (RUFU-319):
+These call sites spoke the pre-`7f111ff3fe` two-argument API (`store, taskId, opts?`). The origin-sync merge
+kept this file while taking the fork's single `(store, task, { source, contract, manualRetry?, fence? })`
+seam, so `options.fence` threw a TypeError that the seam's catch reported as
+`{outcome:"not-seeded", reason:"durable-read-unavailable"}` and every assertion below failed for the same
+unrelated reason. The arms translate 1:1 (`resumed` ≡ `outcome:"seeded"`, `not-resumable` ≡ `not-seeded` plus
+the reason that names the operator action) — see the FNXC:PostMergeRecovery notes in
+`packages/engine/src/merge/post-merge-gate-reseed.ts`. No behavioral guarantee was relaxed: each case still
+asserts the same absence of merge, completion, evidence rewrite, and mutation.
+*/
 describe("missing post-merge continuation recovery", () => {
   function recoveryFixture() {
     const task = {
@@ -261,9 +272,15 @@ describe("missing post-merge continuation recovery", () => {
       const seed = store.seedWorkspaceCodeReviewContinuationIfIdle;
       store.seedWorkspaceCodeReviewContinuationIfIdle = vi.fn(async (...args) => { const result = await seed(...args); controller.abort(); return result; });
     }
-    const recovery = resumeMissingPostMergeGate(store, task.id, { fence });
+    const recovery = resumeMissingPostMergeGate(store, task, { source: "self-healing", contract: undefined, fence });
     if (point === "during-cleanup-read") {
-      await expect(recovery).rejects.toMatchObject({ name: "MergeAbortedError" });
+      // RUFU-502 made this seam never throw: the MergeAbortedError that `fence.assertOwned` raises inside
+      // the fenced clear surfaces as the named refusal `durable-read-unavailable` (the outer catch cannot
+      // tell an aborted write from an unreadable row, and neither may seed). Origin asserted
+      // `rejects.toMatchObject({name:"MergeAbortedError"})` against the pre-RUFU-502 two-argument API.
+      // The reason is pinned exactly rather than left as the bare outcome, and the fence guarantee this
+      // case is about — no mutation, an untouched card — is asserted by `expect(task).toEqual(before)`.
+      await expect(recovery).resolves.toMatchObject({ outcome: "not-seeded", reason: "durable-read-unavailable" });
       expect(task).toEqual(before);
     } else {
       await recovery;
@@ -326,7 +343,7 @@ describe("missing post-merge continuation recovery", () => {
       const rejection = { workflowStepId: "post-merge-verification", phase: "post-merge", status: "failed", verdict: "REVISE", completedAt: new Date(Date.now() - 61 * 60_000).toISOString() };
       task.workflowStepResults = [{ ...rejection, priorAttempts: Array(attempt).fill(rejection) }] as Task["workflowStepResults"];
       items.length = 0;
-      await expect(resumeMissingPostMergeGate(store, task.id)).resolves.toMatchObject({ outcome: "resumed" });
+      await expect(resumeMissingPostMergeGate(store, task, { source: "self-healing", contract: undefined })).resolves.toMatchObject({ outcome: "seeded", reason: "seeded", workflowStepId: "post-merge-verification" });
       expect(task.status).toBeUndefined();
       expect(task.error).toBeUndefined();
       expect(task.column).toBe("in-review");
@@ -345,7 +362,7 @@ describe("missing post-merge continuation recovery", () => {
     Object.assign(task, state);
     task.workflowStepResults = [{ workflowStepId: "post-merge-verification", phase: "post-merge", status: "failed", verdict: "REVISE", completedAt: new Date().toISOString() }];
     const before = structuredClone(task);
-    await resumeMissingPostMergeGate(store, task.id);
+    await resumeMissingPostMergeGate(store, task, { source: "self-healing", contract: undefined });
     expect(task).toEqual(before);
     expect(store.updateTaskAtomic).not.toHaveBeenCalled();
     expect(store.seedWorkspaceCodeReviewContinuationIfIdle).not.toHaveBeenCalled();
@@ -358,7 +375,7 @@ describe("missing post-merge continuation recovery", () => {
     task.status = "failed";
     task.error = "Post-merge verification needs remediation: waiting for CI";
     const before = structuredClone(task.workflowStepResults);
-    for (let n = 0; n < 3; n++) await resumeMissingPostMergeGate(store, task.id);
+    for (let n = 0; n < 3; n++) await resumeMissingPostMergeGate(store, task, { source: "self-healing", contract: undefined });
     expect(items).toHaveLength(1);
     expect(task.status).toBeNull();
     expect(task.error).toBeNull();
@@ -371,8 +388,8 @@ describe("missing post-merge continuation recovery", () => {
     const rejection = { workflowStepId: "post-merge-verification", phase: "post-merge", status: "failed", verdict: "REVISE", completedAt: new Date().toISOString(), notes: "Needs an evidence document" };
     task.workflowStepResults = [{ ...rejection, priorAttempts: [rejection, rejection, rejection] }] as Task["workflowStepResults"];
     const before = structuredClone(task.workflowStepResults);
-    const result = await resumeMissingPostMergeGate(store, task.id, { manualRetry: true });
-    expect(result).toEqual({ outcome: "resumed", gateId: "post-merge-verification" });
+    const result = await resumeMissingPostMergeGate(store, task, { source: "manual-reconcile", contract: undefined, manualRetry: true });
+    expect(result).toMatchObject({ outcome: "seeded", reason: "seeded", workflowStepId: "post-merge-verification" });
     expect(items).toHaveLength(1);
     expect(task.workflowStepResults).toEqual(before);
     expect(store.moveTask).not.toHaveBeenCalled();
@@ -390,7 +407,11 @@ describe("missing post-merge continuation recovery", () => {
       if (patch) Object.assign(task, patch);
       return task;
     });
-    expect(await resumeMissingPostMergeGate(store, task.id)).toEqual({ outcome: "not-resumable" });
+    // Origin asserted only `{outcome:"not-resumable"}`; the shipped taxonomy names the same refusal as
+    // `task-state-changed` because the hold lands INSIDE the fenced clear (the card moved under us), which
+    // is a different operator action from `operator-held` — a hold that was already on the row at entry.
+    // The reason is pinned, so the two refusals cannot silently collapse into one another.
+    expect(await resumeMissingPostMergeGate(store, task, { source: "self-healing", contract: undefined })).toMatchObject({ outcome: "not-seeded", reason: "task-state-changed" });
     expect(task.error).toContain("Post-merge verification needs remediation:");
     expect(task.userPaused).toBe(true);
     expect(store.seedWorkspaceCodeReviewContinuationIfIdle).not.toHaveBeenCalled();
@@ -403,7 +424,8 @@ describe("missing post-merge continuation recovery", () => {
     task.status = "failed";
     task.error = "Post-merge verification needs remediation: waiting for CI";
     items.push({ kind: "task", state: "runnable" });
-    expect(await resumeMissingPostMergeGate(store, task.id)).toEqual({ outcome: "not-resumable" });
+    // The live work item is read inside the clear, so the refusal names it rather than a generic state change.
+    expect(await resumeMissingPostMergeGate(store, task, { source: "self-healing", contract: undefined })).toMatchObject({ outcome: "not-seeded", reason: "active-continuation" });
     expect(task.status).toBe("failed");
     expect(task.error).toContain("Post-merge verification needs remediation:");
   });
@@ -427,7 +449,8 @@ describe("missing post-merge continuation recovery", () => {
       if (persistFence?.expectedUpdatedAt === task.updatedAt && patch) Object.assign(task, patch);
       return snapshot;
     });
-    expect(await resumeMissingPostMergeGate(store, task.id)).toEqual({ outcome: "not-resumable" });
+    // The refused persist leaves the card's status/error intact, so the seam reports the state it found.
+    expect(await resumeMissingPostMergeGate(store, task, { source: "self-healing", contract: undefined })).toMatchObject({ outcome: "not-seeded", reason: "task-state-changed" });
     expect(task).toMatchObject({ status: "failed", error: "Reset in progress", userPaused: true });
     expect(task.workflowStepResults).toEqual(original.workflowStepResults);
     expect(store.seedWorkspaceCodeReviewContinuationIfIdle).not.toHaveBeenCalled();
@@ -497,7 +520,8 @@ describe("missing post-merge continuation recovery", () => {
         reason: expect.stringContaining("post-merge evidence"),
       });
     }
-    await expect(resumeMissingPostMergeGate(store, task.id)).resolves.toEqual({ outcome: "not-resumable" });
+    // An archived `skipped` row is still a result: the gate is not resumable, so no seed is written.
+    await expect(resumeMissingPostMergeGate(store, task, { source: "self-healing", contract: undefined })).resolves.toMatchObject({ outcome: "not-seeded", reason: "gate-not-resumable" });
 
     expect(task.column).toBe("in-review");
     expect(task.workflowStepResults).toEqual(before);

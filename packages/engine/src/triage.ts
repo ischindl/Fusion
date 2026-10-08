@@ -2665,6 +2665,18 @@ export class TriageProcessor {
         whole-board clear pass. Keep this signature composite (never a bare code, and never `sweep:`-prefixed):
         flattening it to the code would read as sweep-owned and let the sweep erase a live throttle claim.
         */
+        /*
+        FNXC:PlanningAdmissionStall 2026-10-08-07:10 (RUFU-325):
+        This write is a COMPETING WRITER on the same key, and the age claim it shares with the reconciliation sweep
+        must survive it. `updateTask` bumps the row's `updatedAt` for every writer — a key-level
+        `sourceMetadataPatch` included — so each throttle refresh here moves the clock the sweep would otherwise
+        read as "how long has this card been waiting". That is why a refresh is not allowed to be evidence that the
+        wait ended: the sweep measures a claim it owns from the episode's own reconstructed base
+        (`planningAdmissionEffectiveAgeMs`), and a claim it does not own — this composite signature — is withheld
+        from retraction inside the ownership window instead of being aged out by a raw clock this lane is moving.
+        The two rules are complementary and both are required: the base makes this lane's refresh harmless to a
+        sweep-named badge, the ownership floor makes the sweep harmless to this lane's live claim.
+        */
         void Promise.all(eligibleTasks.map(async (task) => {
           const episode = planAdmissionStallWrite(readPlanAdmissionStallEpisode(task.sourceMetadata), {
             code: "plan-admission-throttled",

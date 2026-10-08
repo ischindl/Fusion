@@ -1,6 +1,34 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { filterPathsByIgnoreList, Scheduler } from "../scheduler.js";
+import { getPromptPath } from "../execution/spec-staleness.js";
 import type { Agent, AgentStore, Settings, Task, TaskStore } from "@fusion/core";
+
+/*
+FNXC:PlanPremises 2026-10-08-03:12 (RUFU-319):
+The release choke point (`issueRelease` → `checkPlanPremises`) reads the card's authoritative
+`PROMPT.md` at `getTasksDir()/<id>/PROMPT.md` BEFORE it reserves a slot, and an unreadable plan yields
+`plan-premise-unavailable` — a retryable refusal with no episode, no escalation and no move, so the card
+simply never dispatches. In production a card that has cleared Plan Review always has that document on
+disk, because planning writes it. A fixture whose `getTasksDir()` points at a directory that was never
+created therefore modelled a state no real card can be in, and every dispatch assertion in this file
+failed on the missing file rather than on the overlap behaviour under test. The fixture now materialises
+one premise-less `PROMPT.md` per card — the vacuously-satisfied shape the checker documents — so releases
+are decided by overlap/capacity logic, not by an absent plan document.
+*/
+const tasksRoot = mkdtempSync(join(tmpdir(), "fusion-rufu319-sched-"));
+afterAll(() => rmSync(tasksRoot, { recursive: true, force: true }));
+
+/** Materialise a minimal plan document for every fixture card; returns the shared tasks dir. */
+function writePlanDocuments(tasks: Task[]): string {
+  for (const task of tasks) {
+    mkdirSync(join(tasksRoot, task.id), { recursive: true });
+    writeFileSync(getPromptPath(tasksRoot, task.id), `# ${task.title}\n\nPlanned fixture plan for ${task.id}.\n`, "utf8");
+  }
+  return tasksRoot;
+}
 
 /*
 FNXC:PlanReviewStep 2026-07-26-17:10:
@@ -52,6 +80,8 @@ function createAgentStore(agents: Agent[]): AgentStore {
 }
 
 function createStore(tasks: Task[], scopes: Record<string, string[]>, settings: Partial<Settings> = {}): TaskStore {
+  // FNXC:PlanPremises 2026-10-08-03:12 (RUFU-319): every card this store hands out gets a readable plan document.
+  writePlanDocuments(tasks);
   const updateTask = vi.fn(async (id: string, patch: Partial<Task>) => {
     const task = tasks.find((candidate) => candidate.id === id);
     if (task) Object.assign(task, patch);
@@ -120,7 +150,7 @@ function createStore(tasks: Task[], scopes: Record<string, string[]>, settings: 
       return { appended, task };
     }),
     getRootDir: vi.fn(() => "/tmp/project"),
-    getTasksDir: vi.fn(() => "/tmp/project/.fusion/tasks"),
+    getTasksDir: vi.fn(() => tasksRoot),
     on: vi.fn(),
     off: vi.fn(),
     recordRunAuditEvent: vi.fn(async () => undefined),
@@ -1074,7 +1104,14 @@ describe("scheduler overlap starvation regression (FN-057)", () => {
   it("does not let a lower-priority dormant holder delay a higher-priority candidate", async () => {
     const tasks = [
       makeTask({ id: "FN-A", column: "triage", worktree: "/wt/a", priority: "low" }),
-      makeTask({ id: "FN-B", column: "todo", priority: "normal" }),
+            /*
+      FNXC:TaskQueueOrder 2026-10-08-03:49 (RUFU-319): "higher priority" in this test is QUEUE ORDER, not the
+      `priority` level. RUFU-222 routed dormant-holder contention through the shared comparator
+      (`compareTasksByQueueOrder`: boost, then creation time, numeric id last) and states plainly that no
+      level participates, so a candidate wins its own scope only by arriving earlier. The retained
+      low/normal levels are deliberate: they keep proving the retired level ordering is not consulted.
+      */
+      makeTask({ id: "FN-B", column: "todo", priority: "normal", createdAt: "2025-12-31T00:00:00.000Z" }),
     ];
     const store = createStore(tasks, {
       "FN-A": ["packages/core/src/store.ts"],

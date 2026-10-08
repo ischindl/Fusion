@@ -7,6 +7,23 @@ const FUSION_DISABLED_EXTENSIONS_KEY = "fusionDisabledExtensions";
 const require = createRequire(import.meta.url);
 
 let cachedSpawnSync: typeof import("node:child_process")["spawnSync"] | undefined;
+/** Test seam: counts git spawns that actually reached the subprocess layer, for cache coverage. */
+let spawnCallCountForTests: (() => void) | undefined;
+
+/**
+ * FNXC:ProjectRootResolution 2026-10-06-22:13:
+ * Test-only controls. The resolution caches are module-level on purpose (their whole point is to
+ * survive across callers in one process), so a regression test needs to clear them and to observe
+ * whether the subprocess layer was reached at all.
+ */
+export function resetProjectRootResolutionCachesForTests(): void {
+  gitLinkedWorktreeRootCache.clear();
+  extensionProjectRootCache.clear();
+}
+
+export function setProjectRootSpawnObserverForTests(observer?: () => void): void {
+  spawnCallCountForTests = observer;
+}
 let didLoadSpawnSync = false;
 function getSpawnSync(): typeof import("node:child_process")["spawnSync"] | undefined {
   if (!didLoadSpawnSync) {
@@ -195,7 +212,53 @@ function resolveCommonGitDirFromWorktreeGitFile(gitFilePath: string, gitFileDir:
   return suffixMatch ? suffixMatch[1]! : null;
 }
 
+/*
+FNXC:ProjectRootResolution 2026-10-06-22:13:
+`getProjectRootFromGitLinkedWorktree` is a pure function of `cwd`, but for every ORDINARY repository
+(a `.git` **directory**, where `getMainRepoRootFromGitFile` deliberately returns null because a normal
+repo root is not a linked worktree) the resolution fell through to TWO synchronous
+`git rev-parse` spawns on EVERY call. CDP sampling of the live dashboard attributed 22.8 % of
+process CPU to `child_process` spawn machinery, with these resolvers among the named callers, and
+`resolvePiExtensionProjectRoot` is itself called once per extension directory through `sourceForDir`,
+so one board render could pay the same two git spawns many times over for the same path.
+
+Results are memoised per resolved cwd. A positive main-repo root for a path that exists does not
+change while the process lives, so it caches unbounded; a negative result expires after
+`PROJECT_ROOT_MISS_TTL_MS` so a worktree created during the process lifetime is still discovered.
+The cache is keyed on `resolve(cwd)`, never on relative spellings of it.
+*/
+const PROJECT_ROOT_MISS_TTL_MS = 60_000;
+const gitLinkedWorktreeRootCache = new Map<string, { root: string | null; expiresAt: number }>();
+const extensionProjectRootCache = new Map<string, { root: string; expiresAt: number }>();
+
+function cachedOrNull(
+  cache: Map<string, { root: string | null; expiresAt: number }>,
+  key: string,
+): { hit: true; root: string | null } | { hit: false } {
+  const entry = cache.get(key);
+  if (!entry) return { hit: false };
+  if (entry.root === null && Date.now() >= entry.expiresAt) {
+    cache.delete(key);
+    return { hit: false };
+  }
+  return { hit: true, root: entry.root };
+}
+
 function getProjectRootFromGitLinkedWorktree(cwd: string): string | null {
+  const key = resolve(cwd);
+  const seen = cachedOrNull(gitLinkedWorktreeRootCache, key);
+  if (seen.hit) {
+    return seen.root;
+  }
+  const root = computeProjectRootFromGitLinkedWorktree(key);
+  gitLinkedWorktreeRootCache.set(key, {
+    root,
+    expiresAt: root ? Number.POSITIVE_INFINITY : Date.now() + PROJECT_ROOT_MISS_TTL_MS,
+  });
+  return root;
+}
+
+function computeProjectRootFromGitLinkedWorktree(cwd: string): string | null {
   const fsResolvedRoot = getMainRepoRootFromGitFile(cwd);
   if (fsResolvedRoot) {
     return fsResolvedRoot;
@@ -205,6 +268,7 @@ function getProjectRootFromGitLinkedWorktree(cwd: string): string | null {
   if (!spawnSync) {
     return null;
   }
+  spawnCallCountForTests?.();
 
   const resolvedCwd = resolve(cwd);
   const commonDir = spawnSync("git", ["rev-parse", "--git-common-dir"], {
@@ -233,7 +297,25 @@ function getProjectRootFromGitLinkedWorktree(cwd: string): string | null {
   return existsSync(join(parentRoot, ".fusion")) ? parentRoot : null;
 }
 
+/*
+FNXC:ProjectRootResolution 2026-10-06-22:13:
+Same treatment as above: this walked the ancestor chain with `existsSync` per call and per
+extension directory (`sourceForDir` calls it for every candidate source dir). Cached per resolved
+cwd with a bounded TTL in BOTH directions, because unlike a linked-worktree root, the presence of a
+`.fusion` directory can appear during a process lifetime.
+*/
 export function resolvePiExtensionProjectRoot(cwd: string): string {
+  const key = resolve(cwd);
+  const entry = extensionProjectRootCache.get(key);
+  if (entry && Date.now() < entry.expiresAt) {
+    return entry.root;
+  }
+  const root = computePiExtensionProjectRoot(key);
+  extensionProjectRootCache.set(key, { root, expiresAt: Date.now() + PROJECT_ROOT_MISS_TTL_MS });
+  return root;
+}
+
+function computePiExtensionProjectRoot(cwd: string): string {
   const worktreeProjectRoot = getProjectRootFromWorktree(cwd);
   if (worktreeProjectRoot && existsSync(join(worktreeProjectRoot, ".fusion"))) {
     return worktreeProjectRoot;

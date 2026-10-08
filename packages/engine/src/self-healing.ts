@@ -1208,6 +1208,40 @@ export type LandedReviewReconcileResult =
   | { outcome: "raced"; reason: string }
   | { outcome: "ineligible"; reason: "workspace" | "not-in-review" | "paused" | "user-paused" | "executing" | "live-session" | "checkout-leased" | "auto-merge-off" | "no-branch-recorded" | "branch-present" | "branch-has-unlanded-content" | "foreign-ownership" | "workflow-approval-blocked" | "engine-paused" | "post-merge-evidence-pending" | "awaiting-finalization" };
 
+/*
+FNXC:ApprovalHoldMoveClear 2026-10-07-16:12 (RUFU-314 finding 1):
+`reconcile-orphaned-non-convergence-holds` owns exactly TWO approval holds — the two
+NON-CONVERGENCE parks whose evidence is the pre-merge step-result rows: `code-review-non-convergence`
+(review-convergence ladder stage 3 / RUFU-276's repeated-unchanged-revision park) and
+`plan-review-replan-cap` (`parkPlanReviewReplanCapExhausted`, the Plan Review replan budget). The
+list is an explicit allowlist, never a negation: every other `awaitingApprovalReason` has its own
+owner (`human-plan-approval` → the decision-marker reconciler, `merge-blocked-by-policy` → the
+merge-policy resume path, the absent/null marker → the move seam) and must stay untouched here.
+Widening is by adding to THIS set, so a new reason code defaults to "not ours".
+*/
+const SWEEP_OWNED_NON_CONVERGENCE_HOLD_REASONS: ReadonlySet<NonNullable<Task["awaitingApprovalReason"]>> = new Set([
+  "code-review-non-convergence",
+  "plan-review-replan-cap",
+]);
+
+/*
+FNXC:UnrunPostMergeGateRecovery 2026-10-07-12:38 (RUFU-306):
+The durable record of a REFUSED merge-confirmed reconciliation. Before this marker existed, a refusal was
+invisible in every place an operator actually reads: the sweep files its run-audit rows under the synthetic
+`reconcile-absent-branch:<id>` run id, which resolves through a durable agent's heartbeat run — a route the
+dashboard and CLI do not expose — while `fn task reconcile` printed its refusal sentence to stdout and wrote
+nothing durable. Three review lanes could run against the same card and leave nothing behind to compare, and
+the run-audit convention forbids putting the blocker sentence in metadata anyway. The task log is the one
+surface that reaches an operator without DB access, so the refusal lands there.
+
+Exported for exactly the reason `postMergeGateReseedLogMarker` is: the once-per-reason dedup is READ back out
+of the task log, so anything that writes this marker by hand (a test, an operator repair) must write this
+exact shape or it will not be counted.
+*/
+export function landedReviewReconcileLogMarker(reason: string): string {
+  return `[landed-review reconcile: ${reason}]`;
+}
+
 export class SelfHealingManager extends SelfHealingGitEvidence {
   /*
   FNXC:ChatRestartAutoContinue 2026-09-17-21:05:
@@ -9623,6 +9657,27 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   legitimate, which must never be cleared against a half-updated step list. The other two ladder
   reasons are NOT this sweep's case: `human-plan-approval` is a decision pause owned by the
   decision-marker reconciler, and `restart-stage-publishing` is a Restart-stage fence, not a hold.
+
+  FNXC:ApprovalHoldMoveClear 2026-10-07-16:12 (RUFU-314 finding 1):
+  The sweep's candidate set is now the TWO non-convergence holds, not one. RUFU-297's move-side clear
+  refuses `plan-review-replan-cap` without its wipe witness and routes the drifted shape to THIS
+  sweep, but RUFU-297's own candidate gate stayed `code-review-non-convergence`-only, so the pair
+  invariant had a hole: a card held by the Plan Review replan cap whose `workflowStepResults` were
+  already destroyed (the pre-RUFU-297 stage-rebuild/rehome drift, reachable by engine and rehome moves
+  with `moveSource !== "user"`, which the move clear deliberately does not handle) had no automatic
+  exit at all — only a manual merge or the FN-7720 `bypassFailedPreMergeReviewStep` waiver, both of
+  which destroy the review trail the cap existed to protect. Rejected instead of widening: teach the
+  move seam to clear it there, because that is the defect-RUFU-297-fixed case (an opportunistic clear
+  with no evidence proof is exactly the silent merge the cap prevents). The evidence test is
+  unchanged and is what makes the widening safe: plan-review's non-convergence evidence is its
+  `advisory_failure`/`REVISE` row, so a cap hold whose gate still carries that row stays held.
+
+  LANE BOUNDARY (measured while widening, RUFU-314): discovery is `listTasks` over every unarchived
+  lane, NOT `getReviewTasks()`, precisely because `parkPlanReviewReplanCapExhausted` fires from the
+  executor/planning lane (`request-pre-merge-optional-step-fix.ts`, `triage.ts`) while the ladder hold
+  is a review-lane park. So a drifted cap park in `in-progress`/`todo` is THIS sweep's case too — no
+  second discovery lane is needed, and none was found ownerless. The repair stays in-place in every
+  lane, so widening discovery adds no lifecycle move.
   Metadata: { taskId, column, priorStatus, reasonCode, outcome } — ids/counts/fixed enums only,
   never hold prose or reviewer text.
   */
@@ -9658,7 +9713,16 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           const fresh = await this.store.getTask(task.id);
           if (!fresh || fresh.userPaused === true) continue;
           if (!isTaskBlockedOnApproval(fresh)) continue;
-          if (fresh.awaitingApprovalReason !== "code-review-non-convergence") continue;
+          /*
+          FNXC:ApprovalHoldMoveClear 2026-10-07-16:12 (RUFU-314 finding 1): candidacy is the TWO
+          non-convergence holds in `SWEEP_OWNED_NON_CONVERGENCE_HOLD_REASONS`, not just the Code
+          Review one. `plan-review-replan-cap` has the same step-bound evidence shape (the plan-review
+          `advisory_failure`/`REVISE` row `requestPreMergeOptionalStepFix` writes), so the SAME
+          evidence test below decides it; pre-RUFU-297 drift left those cards held with their step
+          results already destroyed, which is the shape the move seam in
+          `task-store/moves.ts` refuses to clear without its wipe witness.
+          */
+          if (!fresh.awaitingApprovalReason || !SWEEP_OWNED_NON_CONVERGENCE_HOLD_REASONS.has(fresh.awaitingApprovalReason)) continue;
           // A gated `paused` row whose pausedReason belongs to another owner is not this hold.
           if (fresh.paused === true && fresh.pausedReason !== AWAITING_APPROVAL_PAUSE_REASON) continue;
           if (isSessionLive(fresh.id)) continue;
@@ -9697,40 +9761,48 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             await this.store.updateTask(fresh.id, { status: null, awaitingApprovalReason: null, ...pausePatch });
             await this.store.logEntry(
               fresh.id,
-              "Cleared drifted code-review-non-convergence approval hold: no required pre-merge step carries a failed result any more. The card is no longer held.",
+              `Cleared drifted ${fresh.awaitingApprovalReason} approval hold: no required pre-merge step carries a failed result any more. The card is no longer held.`,
             );
           } catch (error) {
             log.warn(`reconcileOrphanedNonConvergenceHolds: failed for ${fresh.id}: ${error instanceof Error ? error.message : String(error)}`);
             continue;
           }
           cleared += 1;
-          try {
-            await createRunAuditor(this.store, {
-              runId: generateSyntheticRunId("reconcile-orphaned-non-convergence-holds", fresh.id),
-              agentId: "self-healing",
+          /*
+          FNXC:RunAudit 2026-10-07-16:22 (RUFU-314 finding 2, FN-9175):
+          THIS EMIT MOVED OFF THE RUN-AUDITOR WRAPPER ONTO THE NAMED SEAM. The auditor already forwards
+          to `emitBoundedRunAudit`, so the bounding itself did not change — what the indirection cost was
+          this event's own contract. `database()` injects `phase` (plus `source`/`taskLineageId` when the
+          context carries them) INTO the metadata jsonb, so the stored row held keys the documented
+          closed set — `taskId, column, priorStatus, reasonCode, outcome` — does not declare, and its
+          `taskId` came from context/`FN-`-prefix target inference instead of the row this sweep just
+          repaired. The auditor also no-ops SILENTLY whenever no run context is threaded, so a later
+          refactor that drops one erases this repair with no signal at all. FN-9175 names the seam
+          directly, which is what the core half of this same RUFU-297 pair (FN-9177) and the newer
+          sweeps (FN-9304, RUFU-276) already do. Attribution now rides the row's own `agentId`/`runId`
+          columns and the payload below stays the closed ids/enums set.
+          */
+          await emitBoundedRunAudit(this.store, {
+            agentId: "self-healing",
+            runId: generateSyntheticRunId("reconcile-orphaned-non-convergence-holds", fresh.id),
+            taskId: fresh.id,
+            domain: "database",
+            mutationType: "task:reconcile-orphaned-non-convergence-hold" as DatabaseMutationType,
+            target: fresh.id,
+            // ids/counts/fixed enums only — never hold prose or reviewer text.
+            metadata: {
               taskId: fresh.id,
-              taskLineageId: fresh.lineageId,
-              phase: "reconcile-orphaned-non-convergence-holds",
-            }).database({
-              type: "task:reconcile-orphaned-non-convergence-hold",
-              target: fresh.id,
-              // ids/counts/fixed enums only — never hold prose or reviewer text.
-              metadata: {
-                taskId: fresh.id,
-                column: fresh.column,
-                priorStatus: fresh.status ?? null,
-                reasonCode: fresh.awaitingApprovalReason,
-                outcome: "cleared",
-              },
-            });
-          } catch (error) {
-            log.warn(`reconcileOrphanedNonConvergenceHolds: audit emit failed for ${fresh.id}: ${error instanceof Error ? error.message : String(error)}`);
-          }
+              column: fresh.column,
+              priorStatus: fresh.status ?? null,
+              reasonCode: fresh.awaitingApprovalReason,
+              outcome: "cleared",
+            },
+          }, { log });
         }
         if (tasks.length < pageSize) break;
         offset += tasks.length;
       }
-      if (cleared > 0) log.log(`Cleared drifted code-review-non-convergence approval holds on ${cleared} task(s)`);
+      if (cleared > 0) log.log(`Cleared drifted non-convergence approval holds on ${cleared} task(s)`);
       return cleared;
     } catch (error) {
       log.error(`reconcileOrphanedNonConvergenceHolds failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -17597,6 +17669,66 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
     }
   }
 
+  /*
+  FNXC:UnrunPostMergeGateRecovery 2026-10-07-12:38 (RUFU-306):
+  Writes the durable refusal marker for a merge-confirmed card whose reconciliation did nothing. Only the
+  merge-confirmed lane reaches this: a card that was never merged has a different owner and a different
+  answer, so the ownership fences (`live-session`, `executing`, `checkout-leased`) return silently and are
+  reported by the sweep's own reason-keyed audit instead of being double-logged. The hold-class fences
+  (`paused`, `user-paused`, `auto-merge-off`) DO call this, but only for a merge-confirmed card — see
+  `refuseMergeConfirmedHold` for why that gate is the whole distinction.
+
+  Dedup policy differs by caller on purpose. An explicit `fn task reconcile` is a human asking "why?", so
+  every refusal earns its own line. The sweep runs every maintenance cycle against an unchanged refusal, so
+  it records one line per (card, reason) — the same durable-marker scan `countReseedAttempts` uses. A dedup
+  read that fails is read as ABSENCE of evidence to suppress, not as permission to stay quiet: the
+  invisibility this marker exists to repair is worse than one duplicated row.
+
+  The write is tolerant. A rejected `logEntry` must never change the outcome the caller returns — this line
+  is a report about the decision, not a participant in it.
+  */
+  private async logMergeConfirmedReconcileRefusal(
+    task: Task,
+    source: "self-healing" | "manual",
+    reason: string,
+    gateId?: string,
+  ): Promise<void> {
+    const marker = landedReviewReconcileLogMarker(reason);
+    if (source === "self-healing") {
+      // Prefer the durable row over the projection this method was handed; fall back to it when unreadable.
+      const durable = await this.store.getTask(task.id).catch(() => null);
+      const log = Array.isArray(durable?.log) ? durable.log : Array.isArray(task.log) ? task.log : [];
+      if (log.some((entry) => typeof entry.action === "string" && entry.action.startsWith(marker))) return;
+    }
+    const gate = gateId ? ` for gate '${gateId}'` : "";
+    await this.store.logEntry(
+      task.id,
+      `${marker} Reconcile refused${gate} (source: ${source}); the card was left exactly as it is — still in review, nothing written.`,
+    ).catch(() => undefined);
+  }
+
+  /*
+  FNXC:UnrunPostMergeGateRecovery 2026-10-07-13:05 (RUFU-306):
+  The hold-class fences are the most common STANDING answer to "why is my landed card still in review" — an
+  operator paused the card, or switched auto-merge off — which is exactly the silence this card exists to
+  repair: the refusal reached only the caller's stdout, so the board showed a merge-confirmed card sitting in
+  review with nothing on it explaining the hold. They are annotated under one condition, `mergeConfirmed`:
+  the identical refusal on a card that was never merged belongs to the unconfirmed-branch lane, whose answer
+  is "was it even merged?", and RUFU-306's non-goals keep that lane's output untouched. The transient
+  ownership fences deliberately do NOT come through here — a merger that owns the card this second is not a
+  standing reason, and annotating it would write a refusal line on every healthy card caught mid-merge.
+  */
+  private async refuseMergeConfirmedHold(
+    task: Task,
+    source: "self-healing" | "manual",
+    reason: "paused" | "user-paused" | "auto-merge-off",
+  ): Promise<LandedReviewReconcileResult> {
+    if (task.mergeDetails?.mergeConfirmed) {
+      await this.logMergeConfirmedReconcileRefusal(task, source, reason);
+    }
+    return { outcome: "ineligible", reason };
+  }
+
   /**
    * Reconciles an absent post-merge branch only after ownership proof and liveness fences agree.
    *
@@ -17647,8 +17779,8 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
       });
       if (approvalBlocker) return { outcome: "ineligible", reason: "workflow-approval-blocked" };
     }
-    if (task.paused) return { outcome: "ineligible", reason: "paused" };
-    if (task.userPaused) return { outcome: "ineligible", reason: "user-paused" };
+    if (task.paused) return await this.refuseMergeConfirmedHold(task, options.source, "paused");
+    if (task.userPaused) return await this.refuseMergeConfirmedHold(task, options.source, "user-paused");
     const livePaths = activeSessionRegistry.pathsForTask(task.id).filter((path) => activeSessionRegistry.isPathActive(path));
     if (livePaths.length > 0) return { outcome: "ineligible", reason: "live-session" };
     if (executingTaskLock.has(task.id) || this.options.isTaskActive?.(task.id) === true) return { outcome: "ineligible", reason: "executing" };
@@ -17658,7 +17790,9 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
     const graceMs = (settings.taskStuckTimeoutMs ?? STALE_ACTIVE_BRANCH_EXECUTION_GRACE_MS) * PHANTOM_EXECUTOR_BINDING_AGE_MULTIPLIER;
     const leaseAge = task.checkoutLeaseRenewedAt ? Date.now() - Date.parse(task.checkoutLeaseRenewedAt) : Number.POSITIVE_INFINITY;
     if (task.checkoutRunId && Number.isFinite(leaseAge) && leaseAge >= 0 && leaseAge < graceMs) return { outcome: "ineligible", reason: "checkout-leased" };
-    if ((options.requireAutoMergeEligible && !allowsAutoMergeProcessing(task, settings)) || task.autoMerge === false) return { outcome: "ineligible", reason: "auto-merge-off" };
+    if ((options.requireAutoMergeEligible && !allowsAutoMergeProcessing(task, settings)) || task.autoMerge === false) {
+      return await this.refuseMergeConfirmedHold(task, options.source, "auto-merge-off");
+    }
     if (task.mergeDetails?.mergeConfirmed) {
       /*
       FNXC:PostMergeRecovery 2026-10-01-06:36:
@@ -17682,14 +17816,25 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
          * the retry router and the CLI were written against; every other refusal names our own reason so
          * an operator sees whether it is a hold, a lease, or the spent reseed budget.
          */
-        return {
+        const refusal: LandedReviewReconcileResult = {
           outcome: "raced",
           reason: resumed.reason === "active-continuation"
             ? "post-merge-continuation-not-idle"
             : `post-merge-resume-${resumed.reason}`,
         };
+        await this.logMergeConfirmedReconcileRefusal(
+          task, options.source, refusal.reason, resumed.workflowStepId ?? decision.gateId,
+        );
+        return refusal;
       }
-      return { outcome: "ineligible", reason: decision.outcome === "blocked" ? "post-merge-evidence-pending" : "awaiting-finalization" };
+      const evidenceRefusal: LandedReviewReconcileResult = {
+        outcome: "ineligible",
+        reason: decision.outcome === "blocked" ? "post-merge-evidence-pending" : "awaiting-finalization",
+      };
+      // `finalizable` names no gate, so that refusal is recorded without a gate clause.
+      const pendingGateId = decision.outcome === "blocked" ? decision.gateId : undefined;
+      await this.logMergeConfirmedReconcileRefusal(task, options.source, evidenceRefusal.reason, pendingGateId);
+      return evidenceRefusal;
     }
     const branch = task.branch;
     if (!branch) return { outcome: "ineligible", reason: "no-branch-recorded" };

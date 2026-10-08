@@ -305,17 +305,27 @@ describe("FN-468 mobile shell breakpoint", () => {
   // Cas (j) : le raccourci liste de conversations suit la même frontière.
   it("routes the chat-list shortcut to the drawer across the whole mobile shell", () => {
     for (const mode of ["mobile", "tablet"] as const) {
-      expect(
-        resolveChatListShortcutTarget({ hasProject: true, mobileShellActive: isMobileShellMode(mode) }),
-        mode,
-      ).toBe("drawer");
+      for (const chatLaunchMode of ["popup", "view"] as const) {
+        expect(
+          resolveChatListShortcutTarget({ hasProject: true, mobileShellActive: isMobileShellMode(mode), chatLaunchMode }),
+          `${mode}/${chatLaunchMode}`,
+        ).toBe("drawer");
+      }
     }
-    expect(resolveChatListShortcutTarget({ hasProject: true, mobileShellActive: isMobileShellMode("desktop") })).toBe("popover");
+    /*
+    RUFU-326: the mobile shell short-circuits the stored launch mode for BOTH modes — `resolveChatHost`
+    answers `mobile-page` before placement or dock state, so a stored "view" must never mount the desktop
+    popover below 1024 px. Desktop is the only place the stored mode picks the surface.
+    */
+    expect(resolveChatListShortcutTarget({ hasProject: true, mobileShellActive: false, chatLaunchMode: "popup" })).toBe("popover");
+    expect(resolveChatListShortcutTarget({ hasProject: true, mobileShellActive: false, chatLaunchMode: "view" })).toBe("page");
     for (const mode of ["mobile", "tablet", "desktop"] as const) {
-      expect(
-        resolveChatListShortcutTarget({ hasProject: false, mobileShellActive: isMobileShellMode(mode) }),
-        mode,
-      ).toBe("none");
+      for (const chatLaunchMode of ["popup", "view"] as const) {
+        expect(
+          resolveChatListShortcutTarget({ hasProject: false, mobileShellActive: isMobileShellMode(mode), chatLaunchMode }),
+          `${mode}/${chatLaunchMode}`,
+        ).toBe("none");
+      }
     }
   });
 });

@@ -90,6 +90,34 @@ export type HandleGraphFailureDeps = {
   store: TaskStore;
   rootDir: string;
   options: { stuckTaskDetector?: { untrackTask?: (taskId: string) => void }; [k: string]: unknown };
+  /*
+  FNXC:WorktreeLiveness 2026-10-08-04:04 (RUFU-323):
+  `activeWorktrees` is an OWNERSHIP registry (taskId -> checkout paths), not a running-work registry,
+  and this handler is one of the two places allowed to end an ownership claim: a terminal park it lands
+  must delete the entry. Neither release path happens otherwise — `execute()`'s `finally` releases only
+  external-execution checkouts (`run-implementation.ts` finally -> `releaseExternalExecutionActiveWorktree`,
+  which reads `externalExecutionHeldTaskIds` and returns for an ordinary graph run), and the release
+  inside `execute()` is `if (task.paused)`, which a failed card never satisfies. That is why the four
+  benign releases above are written as `deps.activeWorktrees.delete(task.id)` inline (the FN-6782
+  in-file precedent states the reason outright: "The execute() finally does not delete activeWorktrees
+  on this path"). Before RUFU-323 no terminal park released anything, so a failed card's entry survived
+  forever and `InProcessRuntime.getMetrics()` — which counted this map's size as in-flight work —
+  reported a project that was executing nothing as busy, and `ProjectManager.restartProjectRuntime()`
+  refused its isolation transition with `{ kind: "active_tasks" }` until `force`.
+
+  Release only where a park is PROVEN landed. Each release site below sits after the write's own
+  landed signal (a fenced-CAS flag or `retryTerminalFailurePersistence`'s committed result), never after
+  the call: a fenced updater that returns `null` declines the write, a thrown write leaves the row
+  lane-resident for `resumeOrphaned()` / self-healing, and a run-identity or live-surface fence short-
+  circuits before the write — in all three the card may still be live, and a newer run re-registers its
+  own binding through `addActiveWorktree`. Deleting on a skipped park would remove a live run's holder
+  while its checkout is still in use.
+
+  Releasing the in-memory binding does NOT expose the card's worktree: the durable leg of
+  `findActiveWorktreeOwner` (`executor/worktree-ownership.ts`) resolves the `in-review` lane and any
+  task with an owned `fusion/<id>` branch as a holder independently of this map, so the checkout stays
+  protected from pool reuse and cleanup either way.
+  */
   activeWorktrees: Map<string, Set<string>>;
   completionFinalizedTaskIds: Set<string>;
   graphExecuteSelfRequeued: Set<string>;
@@ -174,6 +202,16 @@ async function retryTerminalFailurePersistence(
   runContext: EngineRunContext | undefined,
   capturedColumnMovedAt: string | undefined,
   declineIfHandedOff?: (current: Task) => boolean,
+  /*
+  FNXC:WorktreeLiveness 2026-10-08-04:04 (RUFU-323):
+  `true` from this helper means the write RESOLVED, which is not the same claim as the terminal state
+  being COMMITTED: a fenced reducer that returns `null` (already terminal, deleted, paused, an
+  incomparable `columnMovedAt` after an operator requeue, or a completed handoff) also resolves, and
+  every one of those shapes leaves the card live or delivered. A caller that ends an ownership claim
+  must therefore key on the reducer actually returning a patch, which is what `onCommitted` reports —
+  the same committed-signal shape the deferred chain's `fencedParked` flag and the fenced-CAS parks use.
+  */
+  onCommitted?: () => void,
 ): Promise<boolean> {
   /*
   FNXC:MergeRetryReliability 2026-09-04-02:24:
@@ -205,6 +243,7 @@ async function retryTerminalFailurePersistence(
           // review when the sink read it); the old stamp fence is not broken.
           || (declineIfHandedOff !== undefined && !declineIfHandedOff(current))
         ) return null;
+        onCommitted?.();
         return { error: message, status: "failed" };
       }, runContext);
       return true;
@@ -1704,6 +1743,9 @@ export async function handleGraphFailure(
             return { error: message, status: "failed" };
           }, deps.getRunContextFor(task.id));
           if (!cursorOwnedTerminalPark) return;
+          // RUFU-323: this park landed, so the card is terminal — release its binding (see the
+          // WorktreeLiveness note above the deps type for why the release belongs at the sink).
+          deps.activeWorktrees.delete(task.id);
           if (await deps.store.markToolFailureRetryExhaustedAudit(task.id)) {
             await emitBoundedRunAudit(deps.store, { taskId: task.id, agentId: "executor", runId: generateSyntheticRunId("tool-failure-retry-exhausted", task.id), domain: "database", mutationType: "task:execution-tool-failure-retry-exhausted", target: task.id, metadata: { taskId: task.id, nodeId: failedNode ?? "unknown", attempts: maxToolFailureRetries, limit: maxToolFailureRetries, outcome: "terminal-park" } });
           }
@@ -1743,6 +1785,9 @@ export async function handleGraphFailure(
           return { error: message, status: "failed" };
         }, deps.getRunContextFor(task.id));
         if (!escalationTerminalParked) return;
+        // RUFU-323: landed terminal park — release the binding (see the WorktreeLiveness note above
+        // the deps type). A declined fence returned above and leaves the binding to its newer owner.
+        deps.activeWorktrees.delete(task.id);
         await emitBoundedRunAudit(deps.store, { taskId: task.id, agentId: "executor", runId: generateSyntheticRunId("escalation-exhausted", task.id), domain: "database", mutationType: "task:execution-escalation-exhausted", target: task.id, metadata: { taskId: task.id, nodeId: failedNode ?? "unknown", hadModelTarget: escalationHadModelTarget, hadNodeTarget: escalationHadNodeTarget } });
       } else {
         /*
@@ -1757,6 +1802,13 @@ export async function handleGraphFailure(
         const declineIfHandedOff = isExecuteFamilyNode
           ? (current: Task): boolean => !isHandedOffAndWorkComplete(current, failureLanes.review)
           : undefined;
+        /*
+        FNXC:WorktreeLiveness 2026-10-08-04:04 (RUFU-323):
+        Release inside the reducer's committed path, NOT on `parked`: a resolved-but-declined fence
+        (operator requeue moved `columnMovedAt`, a completed handoff, a pause, an already-terminal row)
+        means a NEWER run or the review lane owns this card now, and deleting the entry would drop the
+        binding out from under a live run. Same committed-signal rule as the three fenced-CAS parks.
+        */
         const parked = await retryTerminalFailurePersistence(
           deps.store,
           task.id,
@@ -1764,6 +1816,9 @@ export async function handleGraphFailure(
           deps.getRunContextFor(task.id),
           live.columnMovedAt,
           declineIfHandedOff,
+          () => {
+            deps.activeWorktrees.delete(task.id);
+          },
         );
         if (!parked) {
           /*
@@ -1906,6 +1961,9 @@ export async function handleGraphFailure(
                 await intentWrite;
                 await rm(deferredParkIntentPath, { force: true }).catch(() => undefined);
                 if (fencedParked) {
+                  // RUFU-323: the deferred fenced park landed after store recovery — release the
+                  // binding. A declined reducer (`fencedParked === false`) or a thrown write keeps it.
+                  deps.activeWorktrees.delete(task.id);
                   executorLog.warn(`${task.id}: deferred terminal persistence parked the row after store recovery`);
                 }
                   } finally {

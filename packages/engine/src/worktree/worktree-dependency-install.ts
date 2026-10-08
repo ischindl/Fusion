@@ -9,7 +9,11 @@ import {
   isOutdatedLockfileError,
 } from "../merge/merge-dependency-sync.js";
 import { formatDependencyBootstrapDiagnostic, getConfiguredWorktreeInitCommand, getInferredNodeDependencyCommand, resolveUvDependencyBootstrapDecision } from "./dependency-bootstrap-inference.js";
-import { analyzeUvDependencySelection, uvCommandSelectsOptionalDependencies } from "./python-uv-inference.js";
+// FNXC:DependencyBootstrap 2026-10-08-04:34 (RUFU-319): `analyzeUvDependencySelection` is not this module's —
+// the uv selection analysis lives in `dependency-bootstrap-inference.ts`, which this file already calls
+// through `resolveUvDependencyBootstrapDecision` below. The import was a leftover from before that
+// analysis was factored out and `pnpm lint` flagged it as unused on `main`.
+import { uvCommandSelectsOptionalDependencies } from "./python-uv-inference.js";
 import {
   classifyDependencyInstallFailure,
   dependencyFailureRepeatsWithoutChange,

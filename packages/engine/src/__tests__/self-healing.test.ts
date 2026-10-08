@@ -8,6 +8,7 @@ and, because the converted sweeps resolve intake by ROLE, would have quietly
 asserted that the sweeps do nothing.
 */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { resetPostMergeEvidenceContractCacheForTest } from "../merge/post-merge-evidence-contract.js";
 
 // Mock node modules
 // Route async `exec` through the `execSync` mock so existing tests that set up
@@ -2022,17 +2023,33 @@ describe("SelfHealingManager", () => {
     });
 
     it("allows unmerged graph recovery but blocks proven-merged recovery while enabled post-merge evidence is absent", async () => {
+      /*
+      FNXC:PostMergeEvidenceContract 2026-10-08-02:12 (RUFU-319):
+      This case asserts the OWED half of the post-merge fence, so the fixture has to state the fact that makes
+      the gate owed. RUFU-430/RUFU-457 made the requirement depend on the evidence contract, and the contract
+      is derived from repo facts read through `node:child_process` — which this file mocks, so `git rev-parse`
+      and `git remote get-url origin` answer with empty stdout instead of failing. That reads as "a readable
+      repo that names no origin", which derives `provider: "none"`, makes the gate `not-applicable`, and lets
+      the sweep recover the card — so this assertion passed or failed on what an unrelated mock of git happened
+      to print. The contract is therefore DECLARED here through `readRawProjectSettings`, the operator layer
+      that outranks observed facts, so the gate is owed for the reason this case is about. The exemption half
+      is pinned as its own case below rather than left as a side effect of the git mock.
+      */
       const recoverFn = vi.fn().mockResolvedValue(true);
       const managerWithRecovery = new SelfHealingManager(store, {
         rootDir: "/tmp/test-project",
         recoverCompletedTask: recoverFn,
         getExecutingTaskIds: () => new Set<string>(),
       });
+      // The resolver caches a contract per project root for the process lifetime.
+      resetPostMergeEvidenceContractCacheForTest();
       Object.assign(store, {
         getTaskWorkflowSelection: vi.fn(() => ({
           workflowId: "builtin:coding",
           stepIds: ["post-merge-verification"],
         })),
+        getRootDir: vi.fn(() => `/tmp/fusion-rufu319-owed-${process.pid}-${Date.now()}`),
+        readRawProjectSettings: vi.fn(async () => ({ postMergeEvidence: "github-actions" })),
       });
       (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([{
         id: "FN-PM-recovery",
@@ -2059,6 +2076,55 @@ describe("SelfHealingManager", () => {
       }]);
       await expect(managerWithRecovery.recoverCompletedTasks()).resolves.toBe(0);
       expect(recoverFn).not.toHaveBeenCalled();
+      resetPostMergeEvidenceContractCacheForTest();
+      managerWithRecovery.stop();
+    });
+
+    /*
+    FNXC:PostMergeEvidenceContract 2026-10-08-02:12 (RUFU-319):
+    The other half of the same fence, previously only reachable by accident: a board with NO evidence
+    reporter is never held out of `done` for a post-merge gate it could not ring — that exemption is
+    RUFU-430's whole point, and before this case the only thing in the tree proving the recovery sweep
+    honors it was a host directory's contents. The contract is supplied as an operator DECLARATION through
+    `readRawProjectSettings` rather than a real checkout, because the derivation's other input is `git` in
+    the project root and this file mocks `node:child_process` — a declared `none` is the same resolver
+    output reached without touching a filesystem. The assertion is the inverse of the case above on the
+    same card shape, so the two together pin the ladder: reporter-shaped board → withhold; reporter-less
+    board → recover.
+    */
+    it("recovers a proven-merged card whose board declares no evidence reporter (RUFU-430 exemption)", async () => {
+      const recoverFn = vi.fn().mockResolvedValue(true);
+      const managerWithRecovery = new SelfHealingManager(store, {
+        rootDir: "/tmp/test-project",
+        recoverCompletedTask: recoverFn,
+        getExecutingTaskIds: () => new Set<string>(),
+      });
+      resetPostMergeEvidenceContractCacheForTest();
+      Object.assign(store, {
+        getTaskWorkflowSelection: vi.fn(() => ({
+          workflowId: "builtin:coding",
+          stepIds: ["post-merge-verification"],
+        })),
+        readRawProjectSettings: vi.fn(async () => ({ postMergeEvidence: "none" })),
+      });
+      try {
+        (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([{
+          id: "FN-PM-no-reporter",
+          column: "in-progress",
+          paused: false,
+          mergeDetails: { mergeConfirmed: true },
+          enabledWorkflowSteps: ["post-merge-verification"],
+          workflowStepResults: [],
+          steps: [{ status: "done" }],
+        }]);
+
+        await expect(managerWithRecovery.recoverCompletedTasks()).resolves.toBe(1);
+        expect(recoverFn).toHaveBeenCalledWith(expect.objectContaining({ id: "FN-PM-no-reporter" }));
+      } finally {
+        delete (store as { readRawProjectSettings?: unknown }).readRawProjectSettings;
+        // The resolver caches per project root for the process lifetime; leave no residue for later cases.
+        resetPostMergeEvidenceContractCacheForTest();
+      }
       managerWithRecovery.stop();
     });
 

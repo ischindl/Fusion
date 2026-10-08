@@ -68,8 +68,15 @@ function task(overrides: Partial<Task> = {}): Task {
     FNXC:PostMergeRecovery 2026-10-01-09:01: the merged guard is upstream's `mergeConfirmed` (FN-9442) — the
     SHA alone used to be this seam's proof, but every caller proves landing before asking, so the fixture
     carries the durable confirmation the real row carries.
+
+    FNXC:UnrunPostMergeGateRecovery 2026-10-07-12:34 (RUFU-306): the fixture deliberately carries NO
+    `commitSha`. A squash-merge cleanup or an external-land reconciliation writes
+    `{ mergeConfirmed: true, mergedAt }` with no sha at all, and that card is still merged — the class the
+    guard must admit. A default that always supplied a sha would leave the no-sha proof class unexercised
+    and a re-added `commitSha` condition green; the pair with the unconfirmed-sha case below is what pins
+    the guard's key, so neither condition may be re-added.
     */
-    mergeDetails: { mergeConfirmed: true, commitSha: "c1321d86936e6187ff8b5c769d2c15e204c4a3cb" },
+    mergeDetails: { mergeConfirmed: true },
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     ...overrides,
@@ -266,6 +273,40 @@ describe("resumeMissingPostMergeGate", () => {
     const parkedByOurOwnLane = task({ paused: true, pausedReason: IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON } as never);
     const admitted = fakeStore();
     expect((await resumeMissingPostMergeGate(admitted.store, parkedByOurOwnLane, { source: "self-healing", contract: undefined })).outcome).toBe("seeded");
+  });
+
+  /*
+  FNXC:UnrunPostMergeGateRecovery 2026-10-07-12:34 (RUFU-306):
+  Proof-class regression lock. The refusal this lane exists to stop was silent, and the shape that made it
+  silent was a card that was genuinely merged but held no local `commitSha`. These two cases pin both sides
+  of the guard's key: the confirmation admits, the SHA alone does not, and a refusal that cannot seed may
+  not even begin workflow resolution.
+  */
+  it("seeds from a merge confirmation that carries no commitSha, because a landed card need not", async () => {
+    const noSha = task({ mergeDetails: { mergeConfirmed: true, mergedAt: new Date().toISOString() } as never });
+    expect(noSha.mergeDetails?.commitSha).toBeUndefined();
+    const { store, calls } = fakeStore();
+
+    const result = await resumeMissingPostMergeGate(store, noSha, { source: "manual-reconcile", contract: undefined });
+
+    expect(result.outcome).toBe("seeded");
+    expect(calls.seed).toHaveLength(1);
+    expect(calls.seed[0]).toMatchObject({ nodeId: GATE_ID, targetColumn: "in-review" });
+  });
+
+  it("refuses a bare commitSha that carries no merge confirmation, without touching the graph", async () => {
+    const unconfirmed = task({
+      mergeDetails: { commitSha: "c1321d86936e6187ff8b5c769d2c15e204c4a3cb" } as never,
+    });
+    const { store, calls } = fakeStore();
+
+    const result = await resumeMissingPostMergeGate(store, unconfirmed, { source: "manual-reconcile", contract: undefined });
+
+    expect(result.reason).toBe("no-merge-proof");
+    expect(calls.seed).toHaveLength(0);
+    expect(calls.logged).toHaveLength(0);
+    // An unconfirmed sha must not even start workflow resolution — the guard runs first.
+    expect(calls.selectionReads).toBe(0);
   });
 
   it("demands landed proof before touching the graph, and stays silent without a selection read", async () => {

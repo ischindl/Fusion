@@ -347,6 +347,17 @@ test("observed-flake register active count, escalation state, and owners stay sy
       heading: "21. Agent Detail legacy skill discovery ordering",
       status: "Active first sighting — recorded 2026-10-05 by FN-9506; deterministic test repair landed, with a second sighting requiring file-level quarantine.",
     },
+    /*
+    FNXC:TestFlakeRegister 2026-10-08-05:27:
+    RUFU-323 recorded active record 22 (a first-sighting process-sweep observation inside the RUFU-076
+    pause-gate git-silence case), so the order-sensitive pinned list gains its sixth element in the same
+    change that appended the record. The list mirrors document order; a new active record must be appended
+    last here or this guard reddens on the mismatch rather than on the drift it exists to catch.
+    */
+    {
+      heading: "22. RUFU-076 pause-gate git-silence observes a maintenance process sweep",
+      status: "Active first sighting — recorded 2026-10-08 by RUFU-323, attributed only as far as the recorded shellout names it.",
+    },
   ]);
 });
 

@@ -170,14 +170,29 @@ export function postMergeEvidenceDemandsCi(kind: PostMergeEvidenceKind): boolean
   );
 }
 
+/*
+FNXC:PostMergeEvidenceWording 2026-10-08-01:32 (RUFU-319):
+The origin-sync merge (9ecab8cae6) kept this file's pre-`7f111ff3fe` block while taking the test that
+`7f111ff3fe fix(FN-9442)` had already updated, so the CI-shaped contract lost both halves of FN-9442: the
+non-blocking/disposition paragraphs and the "completed conclusion" wording. "A successful conclusion" is
+exactly the demand that turned an honest reviewer into a permanent REVISE — Full Suite and Pipeline smoke
+are non-blocking signals, so the gate must require the run to REACH a conclusion plus a documented
+disposition for any non-success one, not require the conclusion itself to be green. `builtin-workflows.test.ts`
+pins the restored contract (`completed conclusion for Pipeline smoke tier`, `explicit evidence-backed
+disposition`, `Do not require unrelated follow-up completion`, and `not.toContain("A successful conclusion")`).
+*/
 const FULL_SUITE_EVIDENCE_BLOCK = `## Required post-landing Full Suite evidence
 This enabled gate requires post-landing Full Suite evidence. Do NOT approve until its delivery record names all of the following:
 1. The landed SHA and the first Full Suite push-to-main run at or after that SHA, including the run ID and run SHA.
-2. A successful conclusion for Pipeline smoke tier.
-3. A successful conclusion for every Test shard: 1/4, 2/4, 3/4, and 4/4.
+2. The completed conclusion for Pipeline smoke tier.
+3. The completed conclusion for every Test shard: 1/4, 2/4, 3/4, and 4/4.
 4. All four timing artifacts: test-timings-shard-1, test-timings-shard-2, test-timings-shard-3, and test-timings-shard-4.
 
-Pre-landing, unrelated-main, or partial evidence does not satisfy this contract. If the required run or any required evidence is unavailable, return REVISE and state that final completion remains blocked pending the post-landing evidence. Record verified evidence in the task delivery record before approving.`;
+Full Suite and Pipeline smoke are non-blocking signals. A failed lane requires an explicit evidence-backed disposition in the delivery record: identify the actual failures from the logs and the post-merge-full-suite-evidence artifact, establish whether this task introduced them, and link the existing or newly created follow-up task for unrelated failures. Never fabricate success, dismiss an unexplained failure as pre-existing, or approve an unresolved regression introduced by this task. Completed red lanes with documented, supported dispositions may receive APPROVE_WITH_NOTES.
+
+Judge failures against this task's landed changes. For evidence-backed unrelated failures, a linked follow-up with an accountable owner satisfies the disposition requirement; that follow-up may still be open, running, or failed. Do not require unrelated follow-up completion, disposition of the entire repository backlog, or a green non-blocking Full Suite before approving this task. You must perform this task's attribution from the available diff, logs, and failure artifact rather than defer it wholesale to the follow-up. If attribution remains unknown, name the specific failure and missing evidence that prevents the decision; a red shard count or an open follow-up alone is not a task regression.
+
+Pre-landing, unrelated-main, or partial evidence does not satisfy this contract. If the required run is still running or required evidence is unavailable, return REVISE and state that final completion remains blocked pending the post-landing evidence. Record verified evidence and every non-success disposition in the task delivery record before approving.`;
 
 /*
 FNXC:PostMergeEvidenceRequirement 2026-09-30-22:51 (RUFU-430):

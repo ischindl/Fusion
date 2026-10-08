@@ -262,6 +262,7 @@ export { clearWorkflowRerunWatchdog as clearWorkflowRerunWatchdogImpl } from "./
 export { getModelRegistry as getModelRegistryImpl } from "./get-model-registry.js";
 export { hasLiveSessionSurface as hasLiveSessionSurfaceImpl } from "./has-live-session-surface.js";
 export { listWorktreeHolders as listWorktreeHoldersImpl } from "./list-worktree-holders.js";
+export { countLiveWorktreeHolders as countLiveWorktreeHoldersImpl } from "./list-worktree-holders.js";
 export { isAgentEffectivelyExecuting as isAgentEffectivelyExecutingImpl } from "./is-agent-effectively-executing.js";
 export { getWorktreePath as getWorktreePathImpl } from "./get-worktree-path.js";
 export { buildInjectedRuntimeEnv as buildInjectedRuntimeEnvImpl } from "./build-injected-runtime-env.js";

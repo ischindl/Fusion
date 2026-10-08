@@ -380,7 +380,17 @@ describe("decidePlanningAdmissionStall — precedence is the contract", () => {
 /* -------------------------------------------------------------------------- */
 
 describe("age, threshold, lane eligibility, and spec readability", () => {
-  it("measures from the most recent touch, and refuses to invent an age from an unparseable clock", () => {
+  /*
+  FNXC:PlanningAdmissionStall 2026-10-08-06:58 (RUFU-325):
+  This pins the RAW helper, and it still measures from the most recent touch. Both facts belong together here,
+  because `updatedAt` is precisely the field this feature's own `updateTask` writes, so this value is NOT what
+  gates a retraction any more (RUFU-350): `planningAdmissionEffectiveAgeMs` supersedes it whenever the episode
+  proves its own waiting base. What the raw helper legitimately still owns is (a) population PARSEABILITY in the
+  sweep filter — a membership test, never an age verdict — and (b) the fallback for a card with no episode and
+  for a foreign stamp that carries no inheritable base. Do not "consolidate" these two helpers into one: the
+  sweep needs both readings at once, and the next pass of a card it just named is the shape that proves it.
+  */
+  it("measures the raw clock from the most recent touch, and refuses to invent an age from an unparseable clock", () => {
     expect(planningAdmissionAgeMs({ createdAt: AGED_ISO, updatedAt: FRESH_ISO }, NOW)).toBe(HOUR);
     expect(planningAdmissionAgeMs({ createdAt: "not-a-date" }, NOW)).toBeUndefined();
     expect(planningAdmissionAgeMs({}, NOW)).toBeUndefined();
@@ -1167,6 +1177,62 @@ describe("reconcilePlanningAdmissionStalls — the badge survives its own sweep 
     // The age is the one the decision measured, not the one the clear's own `updatedAt` bump left behind
     // (a write-then-measure bug reports ~0 or a negative here).
     expect(auditFor(h, task.id)?.metadata?.ageMs).toBeGreaterThanOrEqual(4 * HOUR);
+  });
+
+  it("asks who owns the claim BEFORE the age gate retracts it, and stays free on consecutive passes", async () => {
+    /*
+    FNXC:PlanningAdmissionStall 2026-10-08-06:58 (RUFU-325):
+    The one retract path no existing fixture reaches with a LIVE foreign claim. RUFU-350's foreign-episode cases
+    arrive through the other two doors: the whole-board pass (`no-longer-a-candidate`, on a card the population
+    filter dropped for carrying a `status`) and the decision ladder (`triage-owned` at the ownership rung, which
+    is only reachable once the raw clock ALREADY says the card is aged). The age gate fires before the ladder and
+    on this shape it is the door that opens: a triage stamp proves no waiting base this sweep may inherit, so
+    `planningAdmissionEffectiveAgeMs` falls back to the raw clock, the raw clock here reads one hour against a
+    48 h threshold, and the card goes straight to the retract helper. That helper's ownership floor was therefore
+    guarding the age-based retraction by construction only, never under test — which is precisely the contract
+    RUFU-325 states as acceptance: ownership must be consulted BEFORE an age-based retraction, not merely before
+    a ladder write.
+
+    Two consecutive passes are the write-war proof, for two separate reasons. A retraction bumps `updatedAt`, so
+    a single pass could hide a guard that only holds until its own write moves the clock; and an in-memory or
+    per-pass suppression would still satisfy a one-pass test. A card the pass refuses to touch keeps its
+    `updatedAt` byte-identical, so pass 2 sees exactly pass 1's row and must answer identically — the guard is
+    stateless, and this is what shows it.
+    */
+    const task = agedTask({
+      // Young by the RAW clock: this is the branch where the age gate, not the ladder, holds the pen.
+      createdAt: FRESH_ISO,
+      updatedAt: FRESH_ISO,
+      sourceMetadata: {
+        [PLAN_ADMISSION_STALL_METADATA_KEY]: episodeOf({
+          // triage's FN-8600 shape (pipe-joined gate identity, never a `sweep:` prefix), refreshed 10 min ago —
+          // deep inside PLANNING_ADMISSION_STALL_TRIAGE_OWNERSHIP_MS, i.e. a claim its writer is still polling.
+          signature: "running-agent cap|2|2|3",
+          firstAt: new Date(NOW - 30 * MIN).toISOString(),
+          lastAt: new Date(NOW - 10 * MIN).toISOString(),
+        }),
+      },
+    });
+    const untouchedUpdatedAt = task.updatedAt;
+    writeSpec(task.id);
+    const h = harness([task], planningIr());
+
+    for (const pass of [1, 2]) {
+      h.updates.length = 0;
+      h.audit.length = 0;
+      expect(await h.manager.reconcilePlanningAdmissionStalls()).toBe(0);
+      // Zero writes: a young age is not evidence that ANOTHER lane's live claim is false.
+      expect(h.updates, `pass ${pass} retracted a claim triage still owns`).toHaveLength(0);
+      // The withheld card reports the same `triage-owned` vocabulary the ladder and the whole-board pass use.
+      expect(auditFor(h, task.id)?.metadata).toMatchObject({ outcome: "triage-owned" });
+      expect(episodeOnRow(task)?.signature).toBe("running-agent cap|2|2|3");
+      expect(task.updatedAt).toBe(untouchedUpdatedAt);
+    }
+
+    // The operator keeps reading triage's capacity sentence — the badge was never erased, only never claimed.
+    expect(await deriveTaskStallReason(task, readCtx())).toMatchObject({
+      code: "plan-admission-throttled",
+    });
   });
 });
 
