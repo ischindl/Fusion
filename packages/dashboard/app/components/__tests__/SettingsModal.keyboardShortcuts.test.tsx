@@ -102,7 +102,7 @@ describe("SettingsModal Keyboard Shortcuts section", () => {
     expect(screen.getByRole("textbox", { name: "Open Settings" })).toHaveValue("Ctrl+,");
     expect(screen.getByRole("textbox", { name: "Open Command Center" })).toHaveValue("Ctrl+K");
     expect(screen.getByRole("textbox", { name: "New Task" })).toHaveValue("Ctrl+Shift+N");
-    expect(screen.getByRole("textbox", { name: "Open Chat List" })).toHaveValue("Ctrl+Shift+L");
+    expect(screen.getByRole("textbox", { name: "Open Chat" })).toHaveValue("Ctrl+Shift+L");
 
     expect(screen.getByText("Communication")).toBeInTheDocument();
     expect(screen.getByText("Workspace")).toBeInTheDocument();
@@ -160,12 +160,17 @@ describe("SettingsModal Keyboard Shortcuts section", () => {
   FN-441 : la nouvelle ligne « Open Chat List » doit réellement apparaître dans la section (KeyboardShortcutsSection
   itère SHORTCUT_CATEGORIES), être rebindable avec persistance dans la charge utile GLOBALE uniquement, et pouvoir
   être vidée pour désactiver l'action.
+
+  FNXC:DashboardShortcuts 2026-10-08-07:13:
+  RUFU-326 : le libellé de cette ligne est devenu « Open Chat », car le mode de lancement stocké choisit désormais la
+  surface ouverte — « List » n'était plus vrai. L'`id` persisté `dashboardShortcut-openChatList` reste inchangé, et la
+  deuxième assertion l'épingle exprès : c'est la preuve que le rebinding écrit toujours sur la même clé de réglage.
   */
   it("renders the FN-441 chat-list row and persists a rebind to global settings only", async () => {
     const user = userEvent.setup();
     render(<SettingsModal onClose={() => {}} addToast={() => {}} initialSection="keyboard-shortcuts" />);
 
-    const chatListInput = await screen.findByRole("textbox", { name: "Open Chat List" });
+    const chatListInput = await screen.findByRole("textbox", { name: "Open Chat" });
     expect(chatListInput).toHaveAttribute("id", "dashboardShortcut-openChatList");
     expect(chatListInput).toHaveValue("Ctrl+Shift+L");
 
@@ -185,7 +190,7 @@ describe("SettingsModal Keyboard Shortcuts section", () => {
     const user = userEvent.setup();
     render(<SettingsModal onClose={() => {}} addToast={() => {}} initialSection="keyboard-shortcuts" />);
 
-    const chatListInput = await screen.findByRole("textbox", { name: "Open Chat List" });
+    const chatListInput = await screen.findByRole("textbox", { name: "Open Chat" });
     await user.clear(chatListInput);
 
     await waitFor(() => expect(mockUpdateGlobalSettings).toHaveBeenCalled());

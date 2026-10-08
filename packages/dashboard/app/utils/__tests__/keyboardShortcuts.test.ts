@@ -90,9 +90,14 @@ describe("keyboard shortcut utilities", () => {
 
   /*
   FNXC:DashboardShortcuts 2026-09-16-02:27:
-  FN-441 : le raccourci « Open Chat List » doit se résoudre à son défaut documenté quand aucun réglage n'est
+  FN-441 : le raccourci « Open Chat » doit se résoudre à son défaut documenté quand aucun réglage n'est
   persisté, matcher exactement Ctrl+Shift+L (et pas Ctrl+L), rester vide quand l'opérateur le désactive, et
   n'introduire aucun conflit dans le jeu de défauts livré.
+
+  FNXC:DashboardShortcuts 2026-10-08-07:13:
+  RUFU-326 renomme le LIBELLÉ « Open Chat List » → « Open Chat » : l'idée que l'action ouvre une « liste » n'est
+  plus vraie depuis que le mode de lancement stocké choisit entre la page Chat et la popover. L'ID persisté
+  `openChatList` est intentionnellement inchangé (clé de réglage), donc seul ce texte bouge ici.
   */
   it("resolves, matches, and validates the FN-441 chat-list action", () => {
     expect(resolveDashboardKeyboardShortcuts(undefined).openChatList).toBe("Ctrl+Shift+L");
@@ -104,13 +109,13 @@ describe("keyboard shortcut utilities", () => {
 
     const duplicated = { ...DEFAULT_DASHBOARD_KEYBOARD_SHORTCUTS, openChatList: "Ctrl+K" };
     expect(findShortcutConflicts(duplicated)).toEqual([
-      { shortcut: "Ctrl+K", actions: ["openCommandCenter", "openChatList"], labels: ["Open Command Center", "Open Chat List"] },
+      { shortcut: "Ctrl+K", actions: ["openCommandCenter", "openChatList"], labels: ["Open Command Center", "Open Chat"] },
     ]);
     expect(describeShortcutValidation(duplicated)).toContain("both use Ctrl+K");
 
     expect(resolveDashboardKeyboardShortcuts({ openChatList: "" }).openChatList).toBe("");
     expect(shortcutMatchesEvent("", keydown({ key: "l", ctrlKey: true, shiftKey: true }))).toBe(false);
-    expect(getShortcutActionLabel("openChatList")).toBe("Open Chat List");
+    expect(getShortcutActionLabel("openChatList")).toBe("Open Chat");
   });
 
   it("identifies editable and interactive targets that should not be captured by global shortcuts", () => {

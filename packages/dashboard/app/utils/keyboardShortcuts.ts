@@ -14,6 +14,13 @@ export type DashboardShortcutAction =
   FN-441 : ouvrir la liste des chats au clavier. L'action ne possède AUCUNE surface propre — elle bascule l'hôte
   existant choisi par le point de rupture mesuré : destination `chat` (tiroir plein écran) sur téléphone, popover
   `chat` du pied de page (ancrée sur `desktop-nav-chat-panel`) sur tablette/ordinateur.
+
+  FNXC:DashboardShortcuts 2026-10-08-07:13:
+  RUFU-326 adds the THIRD desktop target and makes the shell question alone insufficient: above 1024 px the stored
+  Chat launch mode picks between the Chat PAGE (`view`) and the footer popover (`popup`), while the mobile shell keeps
+  the drawer in both modes. The action id stays `openChatList` — it is a persisted settings key, so renaming it would
+  silently orphan every operator binding — but the LABEL became untruthful once a second presentation existed: it
+  promised a "List" and said nothing about the mode, while its siblings are "Open Files"/"Open Settings".
   */
   | "openChatList";
 
@@ -41,7 +48,8 @@ const ACTION_LABELS: Record<DashboardShortcutAction, string> = {
   openSettings: "Open Settings",
   openCommandCenter: "Open Command Center",
   newTask: "New Task",
-  openChatList: "Open Chat List",
+  /* RUFU-326: "Open Chat", not "Open Chat List" — the surface is launch-mode-dependent, and the toggle-label convention is "Open <surface>". */
+  openChatList: "Open Chat",
 };
 
 export interface DashboardShortcutCategory {
