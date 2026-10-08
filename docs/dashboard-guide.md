@@ -230,12 +230,15 @@ FN-7553 promotes shortcuts to a dedicated Settings section (Keyboard Shortcuts, 
 FNXC:DashboardShortcuts 2026-09-16-02:27:
 FN-441 adds Open Chat List. Its host depends on the measured breakpoint and it reuses those existing owners rather than adding a second chat host, so the docs must state which surface opens where and that a second press closes it.
 
+FNXC:DashboardShortcuts 2026-10-08-07:36:
+RUFU-326 renames that action's row to Open Chat and makes it obey the stored Chat display mode, so from 1024 px up the key and the bottom-bar entry open the SAME surface. The docs must therefore describe the shortcut's desktop host as mode-dependent (page under view, anchored popover under popup) instead of shell-dependent only, and must keep the row label in sync with ACTION_LABELS — the action id stays openChatList because it is a persisted settings key.
+
 FNXC:DashboardShortcuts 2026-09-16-19:44:
 FN-468 moves that host boundary to 1024px: the full-screen chat drawer covers the whole mobile interface (phone AND tablet) because the wide footer — and therefore its conversation popover — no longer exists below 1024px.
 -->
 Open **Settings → Keyboard Shortcuts** (its own dedicated section, no longer under General) to configure dashboard-wide shortcut bindings. Actions are grouped by category:
 
-- **Communication:** Hide or restore dashboard windows (blank by default), Open Chat List (`Ctrl+Shift+L`)
+- **Communication:** Hide or restore dashboard windows (blank by default), Open Chat (`Ctrl+Shift+L`)
 - **Workspace:** Terminal (<kbd>Ctrl+`</kbd>), Open Files (`Ctrl+E`)
 - **Navigation:** Open Command Center (`Ctrl+K`), Open Settings (`Ctrl+,`)
 - **Tasks:** New Task (`Ctrl+Shift+N`)
@@ -254,7 +257,8 @@ Terminal, Files, Settings, Command Center, and New Task retain their ordinary op
 <!-- FNXC:ChatWindowsDocs 2026-09-02-05:24: FN-285 makes the Quick Chat binding a whole-chat-set visibility control and excludes minimized windows from Escape dismissal. -->
 The Quick Chat action controls every open floating chat: when none is open it opens Quick Chat, when any chat is visible it minimizes all visible chat windows together, and when all are minimized it restores the captured set at their previous positions. Terminal, Files, Settings, Command Center, and New Task retain their ordinary open/close toggle behavior. For Settings and Command Center, the second press returns to the view that was active before the surface opened.
 
-**Open Chat List** (`Ctrl+Shift+L`) opens the conversation list on whichever surface your screen size already uses: the full-screen chat drawer below 1024 pixels, phones and tablets alike, and the footer conversation popover — the same one the bottom bar's chat control opens, anchored to that same control — from 1024 pixels up. Pressing it again closes the list and returns you to what you were looking at. The shortcut does nothing when no project is open, and like every other shortcut it is ignored while you are typing in a field, editor, chat composer, or terminal. Rebind or blank it in **Settings → Keyboard Shortcuts** like any other action.
+<!-- FNXC:DashboardShortcuts 2026-10-08-07:36: RUFU-326 — this paragraph said the desktop host was chosen by screen width alone, which stopped being true once the shortcut shared the bottom bar's launcher. -->
+**Open Chat** (`Ctrl+Shift+L`) opens the same Chat surface as the bottom bar's **Chat** entry, and below 1024 pixels the full-screen chat drawer always wins regardless of that preference — phones and tablets have no wide footer to anchor a popover to. On a desktop-width screen the stored **Chat display mode** decides: **view** opens the classic full-page Chat, and **popup** (or a missing or unreadable stored value) opens the footer conversation popover anchored to the same bottom-bar control. Pressing the shortcut again closes that surface and returns you to what you were looking at; the pointer control, by contrast, stays put when you click it a second time while the page is open. The shortcut does nothing when no project is open, and like every other shortcut it is ignored while you are typing in a field, editor, chat composer, or terminal. Rebind or blank it in **Settings → Keyboard Shortcuts** like any other action.
 
 Press `Escape` to close the current/topmost visible dashboard popup. Popped-out task and chat windows close before fixed app modals such as Terminal, Settings, Files, or Task Detail, and only one surface closes per key press. A window hidden by the dashboard-wide visibility control is never an Escape target. Nested editors and menus that already handle Escape keep first ownership by preventing the global handler.
 Press `Escape` to close the current/topmost VISIBLE dashboard popup. Popped-out task windows and visible floating chats close before fixed app modals such as Terminal, Settings, Files, or Task Detail, and only one surface closes per key press. A minimized chat is never an Escape target. Nested editors and menus that already handle Escape keep first ownership by preventing the global handler.
@@ -1455,14 +1459,17 @@ The footer **Chat** action opens the same project-scoped Chat experience used by
 - Narrow Chat containers use full-width message bubbles and compact, single-line tool summaries. The mobile drawer follows the visual viewport so its composer remains above the software keyboard.
 - Scrolling away from the newest message stops automatic following and exposes **Latest**. Returning to the bottom resumes following.
 
-<!-- FNXC:ChatPresentationToggle 2026-09-26-02:22: RUFU-303 documents which Chat entry obeys the stored launch mode after a wiring regression made the **Open chat as view** choice unreachable from the desktop bottom bar. The preference is per browser, and the surfaces listed below deliberately keep their own presentation. -->
+<!-- FNXC:ChatPresentationToggle 2026-09-26-02:22: RUFU-303 documents which Chat entry obeys the stored launch mode after a wiring regression made the **Open chat as view** choice unreachable from the desktop bottom bar. The preference is per browser, and the surfaces listed below deliberately keep their own presentation.
+
+FNXC:ChatPresentationToggle 2026-10-08-07:36: RUFU-326 — the Open Chat keyboard shortcut is no longer in the ignore list below. It used to carry its own popover call, so the button honoured the preference while Ctrl+Shift+L opened the anchored list; both now route through one launcher, which is why the docs list it as following the preference. The mobile exception is a shell boundary, not a preference override. -->
 ### Chat display mode: popover or full page
 
 Chat's header carries a two-segment display-mode control: **Open chat as popup** and **Open chat as view**. Choosing a segment stores the preference for the current browser and re-presents Chat in that host immediately, so the control is both a preference and an instant switch. A missing or unreadable stored value means **popup**.
 
 - The desktop bottom-bar **Chat** entry is the surface that follows this preference. **Popup** opens the conversation list as a panel anchored to that entry; **view** opens the classic full-page Chat — conversation list on the left, conversation on the right — in the main panel and closes the popover. Clicking the entry again while the page is open keeps you on the page instead of bouncing back to the Board.
+- The **Open Chat** shortcut (`Ctrl+Shift+L`) follows it too, choosing the same desktop surface as the bottom-bar entry. The two differ only in what a repeat does: the shortcut is a true toggle and closes the surface it opened, while the pointer entry leaves an open page alone. Below 1024 pixels the shortcut opens the drawer for either mode, because the mobile shell has no footer to anchor a popover to.
 - **View** means the classic full-page Chat, not the right dock. Choosing it never opens the dock and never overwrites what the dock has selected, and the dock's **Chat** tab stays openable while the page is the active view.
-- Surfaces that keep their own presentation and ignore the preference: the **Open Chat List** shortcut (`Ctrl+Shift+L`), which always opens the anchored list on the surface your screen width already uses; the right dock's **Chat** tab; the separate conversation windows opened with **Open in new window**; and every phone and tablet host, where the wide footer does not exist below 1024 pixels and Chat stays a full-screen drawer or page.
+- Surfaces that keep their own presentation and ignore the preference: the right dock's **Chat** tab; the separate conversation windows opened with **Open in new window**; and every phone and tablet host, where the wide footer does not exist below 1024 pixels and Chat stays a full-screen drawer or page.
 
 ## Quick Chat
 

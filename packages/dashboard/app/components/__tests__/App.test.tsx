@@ -8404,6 +8404,188 @@ describe("RUFU-303 stored Chat launch mode owns the Chat entry surfaces", () => 
 });
 
 /*
+RUFU-326 — THE STORED CHAT LAUNCH MODE DECIDES THE KEYBOARD TARGET TOO.
+
+Original state: RUFU-303 gave the footer Chat entry its launch-mode launcher, but `toggleChatListShortcut` kept its
+own inline `openToolPanel("chat", …)` call, so an operator who stored the classic full-page layout
+(`fusion:chat-launch-mode = "view"`) got the Chat PAGE from the bottom-bar button and the anchored POPOVER from
+`Ctrl+Shift+L` — the same key on the same screen answering with two different surfaces. Every case below mounts the
+real `<App />` and dispatches the real binding, then asserts WHICH surface appears: the defect was wiring, so a
+resolver-level assertion would have passed while the key still opened the wrong thing. The `popup` and unreadable-value
+cases are the unchanged-default controls, and the mobile case is the shell-boundary control (FN-468).
+*/
+describe("RUFU-326 stored Chat launch mode owns the keyboard Chat target", () => {
+  const toolSettings = (overrides: Record<string, unknown> = {}) => ({
+    ...defaultSettings,
+    navigationPlacement: "footer" as const,
+    rightSidebarEnabled: false,
+    ...overrides,
+  });
+
+  /* The shipped default binding; asserted against the real listener rather than a call into the callback. */
+  const pressChatShortcut = () => fireEvent.keyDown(document, { key: "l", ctrlKey: true, shiftKey: true });
+
+  /*
+   * THE SYMPTOM CASE. `aria-hidden` carries the assertion: the keep-alive host hides an inactive entry instead of
+   * unmounting it, so finding `chat-keep-alive` alone would also pass when the route fell back to the Board.
+   */
+  it("opens the Chat page instead of the popover when the operator stored the view launch mode", async () => {
+    mockUseViewportMode.mockReturnValue("desktop");
+    localStorage.setItem("fusion:chat-launch-mode", "view");
+    vi.mocked(fetchSettings).mockResolvedValue(toolSettings());
+
+    render(<App />);
+
+    pressChatShortcut();
+
+    const chatHost = await screen.findByTestId("chat-keep-alive");
+    expect(chatHost).not.toHaveAttribute("aria-hidden");
+    const chatSurfaces = await screen.findAllByTestId("canonical-chat-host");
+    expect(chatSurfaces).toHaveLength(1);
+    expect(chatHost.contains(chatSurfaces[0])).toBe(true);
+    // The popover the shortcut used to open unconditionally must stay unmounted.
+    expect(screen.queryByTestId("chat-tool-popover")).toBeNull();
+    expect(screen.queryByTestId("right-dock-body")).toBeNull();
+  });
+
+  /*
+   * Press-again-closes (FN-8069) is the shortcut's own contract and must survive the new hop through the launcher.
+   * Non-vacuity for `closeViewShortcut`'s `onMissingRevert` fallback: the launcher's view branch opens the page with
+   * the RAW setter, which pushes no view-nav revert, so the second press can only return to the Board through that
+   * fallback. The pushState spy is the ownership boundary — the keyboard Chat page must add no second navigation
+   * history entry (only `handleTaskViewChange` pushes one, and it stays the drawer branch's owner).
+   */
+  it("closes the Chat page on the second press through the missing-revert fallback, pushing no nav entry", async () => {
+    mockUseViewportMode.mockReturnValue("desktop");
+    localStorage.setItem("fusion:chat-launch-mode", "view");
+    vi.mocked(fetchSettings).mockResolvedValue(toolSettings());
+    const push = vi.spyOn(window.history, "pushState");
+
+    render(<App />);
+
+    pressChatShortcut();
+    const chatHost = await screen.findByTestId("chat-keep-alive");
+    expect(chatHost).not.toHaveAttribute("aria-hidden");
+
+    pressChatShortcut();
+
+    // The kept-alive Chat entry is hidden again and the Board is the active surface — not a popover, not a dead key.
+    expect(await screen.findByTestId("chat-keep-alive")).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByTestId("board-keep-alive")).not.toHaveAttribute("aria-hidden");
+    expect(screen.queryByTestId("chat-tool-popover")).toBeNull();
+    expect(push).not.toHaveBeenCalled();
+    push.mockRestore();
+  });
+
+  /*
+   * The pointer and the key must read the mode the same way, because they act on ONE shared piece of state: a press
+   * after a pointer-open CLOSES the page, and the pointer's own second click stays idempotent (RUFU-303). So two
+   * presses net to closed and one pointer click afterwards re-opens it.
+   */
+  it("shares one open/closed state with the pointer button in view mode", async () => {
+    mockUseViewportMode.mockReturnValue("desktop");
+    localStorage.setItem("fusion:chat-launch-mode", "view");
+    vi.mocked(fetchSettings).mockResolvedValue(toolSettings());
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByTestId("desktop-nav-chat-panel"));
+    expect(await screen.findByTestId("chat-keep-alive")).not.toHaveAttribute("aria-hidden");
+
+    // The key closes what the pointer opened — the surfaces are not two independent stacks.
+    pressChatShortcut();
+    expect(screen.getByTestId("chat-keep-alive")).toHaveAttribute("aria-hidden", "true");
+
+    // Idempotence control: the pointer opened and left the page open through its own second click.
+    fireEvent.click(screen.getByTestId("desktop-nav-chat-panel"));
+    expect(screen.getByTestId("chat-keep-alive")).not.toHaveAttribute("aria-hidden");
+    fireEvent.click(screen.getByTestId("desktop-nav-chat-panel"));
+    expect(screen.getByTestId("chat-keep-alive")).not.toHaveAttribute("aria-hidden");
+    expect(screen.queryByTestId("chat-tool-popover")).toBeNull();
+  });
+
+  /* View mode with the right dock opted in: the key opens the PAGE, never the dock's Chat tab. */
+  it("opens the Chat page and not the dock on the keyboard in view mode when the right dock is enabled", async () => {
+    mockUseViewportMode.mockReturnValue("desktop");
+    localStorage.setItem("fusion:chat-launch-mode", "view");
+    vi.mocked(fetchSettings).mockResolvedValue(toolSettings({ rightSidebarEnabled: true }));
+
+    render(<App />);
+
+    await screen.findByTestId("header-right-dock-toggle");
+    pressChatShortcut();
+
+    const chatHost = await screen.findByTestId("chat-keep-alive");
+    expect(chatHost).not.toHaveAttribute("aria-hidden");
+    expect(await screen.findAllByTestId("canonical-chat-host")).toHaveLength(1);
+    expect(screen.queryByTestId("chat-tool-popover")).toBeNull();
+    expect(screen.queryByTestId("right-dock-body")).toBeNull();
+    await waitFor(() => expect(screen.getByTestId("chat-keep-alive")).not.toHaveAttribute("aria-hidden"));
+  });
+
+  /* Controls: `popup` and an unreadable stored value keep the pre-feature popover, anchor and all. */
+  it.each([["popup"], ["garbage"], [""]])("keeps opening the anchored popover for the stored value %j", async (stored) => {
+    mockUseViewportMode.mockReturnValue("desktop");
+    localStorage.setItem("fusion:chat-launch-mode", stored);
+    vi.mocked(fetchSettings).mockResolvedValue(toolSettings());
+
+    render(<App />);
+
+    pressChatShortcut();
+
+    expect(await screen.findByTestId("chat-tool-popover")).toBeInTheDocument();
+    expect(screen.queryByTestId("chat-keep-alive")).toBeNull();
+  });
+
+  it("keeps opening the anchored popover when no launch mode is stored", async () => {
+    mockUseViewportMode.mockReturnValue("desktop");
+    vi.mocked(fetchSettings).mockResolvedValue(toolSettings());
+
+    render(<App />);
+
+    pressChatShortcut();
+
+    expect(await screen.findByTestId("chat-tool-popover")).toBeInTheDocument();
+    expect(screen.queryByTestId("chat-keep-alive")).toBeNull();
+  });
+
+  /*
+   * FN-468 is a SHELL boundary, so a stored "view" must not move a phone or tablet off the drawer. The drawer is
+   * `keepMounted`, so presence alone proves nothing — the assertion is that it is the OPEN one (no `aria-hidden`),
+   * and the control is that the desktop popover the `view` mode would otherwise open never mounts.
+   */
+  it("keeps the mobile drawer regardless of the stored view launch mode", async () => {
+    mockUseViewportMode.mockReturnValue("mobile");
+    localStorage.setItem("fusion:chat-launch-mode", "view");
+    vi.mocked(fetchSettings).mockResolvedValue(toolSettings());
+
+    render(<App />);
+
+    pressChatShortcut();
+
+    const drawer = await screen.findByTestId("mobile-drawer-chat");
+    expect(drawer).not.toHaveAttribute("aria-hidden");
+    expect(screen.getByTestId("canonical-chat-host")).toBeInTheDocument();
+    expect(screen.queryByTestId("chat-tool-popover")).toBeNull();
+    expect(screen.queryByTestId("desktop-action-bar")).toBeNull();
+  });
+
+  /* Same control on the popup side of the mobile boundary: the drawer host is mode-independent. */
+  it("keeps the mobile drawer for the stored popup launch mode", async () => {
+    mockUseViewportMode.mockReturnValue("mobile");
+    localStorage.setItem("fusion:chat-launch-mode", "popup");
+    vi.mocked(fetchSettings).mockResolvedValue(toolSettings());
+
+    render(<App />);
+
+    pressChatShortcut();
+
+    expect(await screen.findByTestId("mobile-drawer-chat")).not.toHaveAttribute("aria-hidden");
+    expect(screen.queryByTestId("chat-tool-popover")).toBeNull();
+  });
+});
+
+/*
 FN-435 — L'HÔTE DES SURFACES ACTIVITY ET NOTES EST RÉSOLU PAR LE POINT DE RUPTURE MESURÉ.
 
 État initial : les deux outils s'ouvraient dans la MÊME popover ancrée à l'en-tête quel que soit le format d'écran ;

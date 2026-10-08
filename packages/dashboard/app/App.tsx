@@ -1928,6 +1928,34 @@ const { tasks, isStale, isBoardRefreshInFlight, createTask, moveTask, boostTask,
   }, [dashboardWindowVisibility]);
 
   /*
+  FNXC:ChatPresentationToggle 2026-09-26-01:24:
+  This launcher is the SINGLE owner of the launch-mode branch for the desktop Chat entry, so it takes
+  no arguments: the navigation registry types an entry callback as zero-arg (`onOpenChatPanel?: () => void`),
+  which means a launcher that required an anchor rect could never be passed as the direct reference below.
+  It therefore reads its own popover anchor with `readShortcutAnchorRect("desktop-nav-chat-panel")` in the
+  `popup` branch — the same anchor the keyboard shortcut and the previous inline closure used, so the
+  popover geometry (FN-433/FN-436 placement) is unchanged. `view` keeps closing the tool panel and routing
+  to the Chat page. RUFU-303: the regression was an inline `openToolPanel("chat", …)` closure at the call
+  site, which hard-coded the popover and made the stored `view` preference unreachable from the action bar;
+  deleting this callback to silence the unused-variable lint error would erase the branch instead of fixing it.
+
+  FNXC:DashboardShortcuts 2026-10-08-07:08:
+  RUFU-326 hoists this callback above `toggleChatListShortcut`, because a `useCallback` dependency array is
+  evaluated during render and therefore cannot name a callback declared later in the body (TDZ). The hoist is
+  safe: every dependency here (`chatLaunchMode`, `closeToolPanel`, `handleChangeTaskView`, `openToolPanel`,
+  `taskView`) is declared above, and the component has no early return before this point. Keeping ONE opener is
+  the point — the second open path the shortcut used to own is exactly how the button and the key drifted apart.
+  */
+  const openChatFromLaunchMode = useCallback(() => {
+    if (chatLaunchMode === "view") {
+      closeToolPanel();
+      if (taskView !== "chat") handleChangeTaskView("chat");
+      return;
+    }
+    openToolPanel("chat", readShortcutAnchorRect("desktop-nav-chat-panel"));
+  }, [chatLaunchMode, closeToolPanel, handleChangeTaskView, openToolPanel, taskView]);
+
+  /*
   FNXC:DashboardShortcuts 2026-09-16-02:27:
   FN-441 : le clavier doit choisir le MÊME hôte et la MÊME ancre que le pointeur.
 
@@ -1940,21 +1968,38 @@ const { tasks, isStale, isBoardRefreshInFlight, createTask, moveTask, boostTask,
   existants (handleTaskViewChange / closeViewShortcutWithNav côté vue, openToolPanel / closeToolPanel côté popover)
   pour ne jamais créer une seconde entrée d'historique de navigation ni un second propriétaire de session de
   conversation. Sans projet courant aucun hôte n'existe : l'action est inerte.
+
+/*
+  FNXC:DashboardShortcuts 2026-10-08-07:08:
+  RUFU-326 operator requirement: the stored Chat launch mode decides the desktop Chat surface for EVERY input,
+  not only for the pointer — "one selection = one surface". So the mode is an input to the resolver here, and the
+  new `page` target (desktop + `view`) opens the Chat page through `openChatFromLaunchMode`, the single owner of
+  the view/popup branch, instead of a shortcut-local `openToolPanel` call. The mobile `drawer` branch is untouched
+  in both modes: `resolveChatHost` answers `mobile-page` before placement or dock state (FN-435/FN-437).
+  Press-again-closes stays this shortcut's own FN-8069 true-toggle contract — `closeViewShortcutWithNav` pops the
+  retained view-nav revert; its `onMissingRevert` fallback covers a page opened through the raw setter, which
+  pushes no revert, and that fallback is load-bearing because the launcher's view branch uses that raw setter.
+  The pointer stays idempotent on a second click (RUFU-303 pins that), so only the key toggles closed.
   */
   const toggleChatListShortcut = useCallback(() => {
-    const target = resolveChatListShortcutTarget({ hasProject: Boolean(currentProject), mobileShellActive });
+    const target = resolveChatListShortcutTarget({ hasProject: Boolean(currentProject), mobileShellActive, chatLaunchMode });
     if (target === "none") return;
     if (target === "drawer") {
       if (taskView === "chat") closeViewShortcutWithNav("chat");
       else handleTaskViewChange("chat");
       return;
     }
+    if (target === "page") {
+      if (taskView === "chat") closeViewShortcutWithNav("chat");
+      else openChatFromLaunchMode();
+      return;
+    }
     if (toolPanel?.kind === "chat") {
       closeToolPanel();
       return;
     }
-    openToolPanel("chat", readShortcutAnchorRect("desktop-nav-chat-panel"));
-  }, [closeToolPanel, closeViewShortcutWithNav, currentProject, handleTaskViewChange, mobileShellActive, openToolPanel, taskView, toolPanel?.kind]);
+    openChatFromLaunchMode();
+  }, [chatLaunchMode, closeToolPanel, closeViewShortcutWithNav, currentProject, handleTaskViewChange, mobileShellActive, openChatFromLaunchMode, taskView, toolPanel?.kind]);
 
   useDashboardKeyboardShortcuts({
     shortcuts: dashboardKeyboardShortcuts,
@@ -2324,26 +2369,6 @@ const { tasks, isStale, isBoardRefreshInFlight, createTask, moveTask, boostTask,
     if (taskView === "chat") handleChangeTaskView("board");
     openToolPanel("chat", readShortcutAnchorRect("desktop-nav-chat-panel"));
   }, [chatDockHostOpen, closeToolPanel, handleChangeTaskView, openToolPanel, rightDock, setChatLaunchModePersisted, taskView]);
-  /*
-  FNXC:ChatPresentationToggle 2026-09-26-01:24:
-  This launcher is the SINGLE owner of the launch-mode branch for the desktop Chat entry, so it takes
-  no arguments: the navigation registry types an entry callback as zero-arg (`onOpenChatPanel?: () => void`),
-  which means a launcher that required an anchor rect could never be passed as the direct reference below.
-  It therefore reads its own popover anchor with `readShortcutAnchorRect("desktop-nav-chat-panel")` in the
-  `popup` branch — the same anchor the keyboard shortcut and the previous inline closure used, so the
-  popover geometry (FN-433/FN-436 placement) is unchanged. `view` keeps closing the tool panel and routing
-  to the Chat page. RUFU-303: the regression was an inline `openToolPanel("chat", …)` closure at the call
-  site, which hard-coded the popover and made the stored `view` preference unreachable from the action bar;
-  deleting this callback to silence the unused-variable lint error would erase the branch instead of fixing it.
-  */
-  const openChatFromLaunchMode = useCallback(() => {
-    if (chatLaunchMode === "view") {
-      closeToolPanel();
-      if (taskView !== "chat") handleChangeTaskView("chat");
-      return;
-    }
-    openToolPanel("chat", readShortcutAnchorRect("desktop-nav-chat-panel"));
-  }, [chatLaunchMode, closeToolPanel, handleChangeTaskView, openToolPanel, taskView]);
   /*
   FNXC:ChatPresentationToggle 2026-09-16-23:35:
   `onOpenChatPanel` keeps the DIRECT `openChatFromLaunchMode` reference. Production diagnosis also
