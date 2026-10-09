@@ -84,6 +84,18 @@ export interface MergeSectionProps extends SectionBaseProps {
     gitRemoteOptions?: string[];
     projectId?: string;
 }
+/*
+FNXC:SettingsReadPath 2026-10-09-12:43:
+Session-scoped cache for the legacy auto-merge stamp scan, keyed by project. The panel used to fire a
+GET /api/maintenance/legacy-automerge-stamps on EVERY mount, and that GET answers with a reconcile scan
+(listLegacyAutoMergeStampCandidates + resolveLegacyStampReviewColumns), measured on production at
+8.84s (RunFusion), 14.17s (stash) and 11.63s then 24.72s for the SAME saneca input — to return
+`{"candidates":[],"count":0}`. Merge renders from a switch case in SettingsModal, so a tab visit paid
+the sweep again. A scan is a maintenance action, not a read: results now live here for the session and
+the sweep only runs when an operator asks for it.
+*/
+const legacyStampScanCache = new Map<string, LegacyAutoMergeStampCandidate[]>();
+
 export function MergeSection({ form, setForm, integrationBranchOptions, integrationBranchCustomMode, setIntegrationBranchCustomMode, onOpenWorkflowSettings, gitRemoteOptions = [], projectId, }: MergeSectionProps) {
     const { t } = useTranslation("app");
     const [requiredChecksInput, setRequiredChecksInput] = useState(() => (form.requiredChecks ?? []).join(", "));
@@ -112,8 +124,11 @@ export function MergeSection({ form, setForm, integrationBranchOptions, integrat
             .catch(() => { if (!cancelled) setPushBranchOptions([]); });
         return () => { cancelled = true; };
     }, [form.pushAfterMerge, pushTarget.remote, projectId, gitRemoteOptions.length]);
-    const [legacyStampCandidates, setLegacyStampCandidates] = useState<LegacyAutoMergeStampCandidate[]>([]);
-    const [legacyStampLoading, setLegacyStampLoading] = useState(true);
+    const scanCacheKey = projectId ?? "";
+    const [legacyStampCandidates, setLegacyStampCandidates] = useState<LegacyAutoMergeStampCandidate[]>(() => legacyStampScanCache.get(scanCacheKey) ?? []);
+    // `scanned` distinguishes "checked and found nothing" from "never asked" — an empty list must not claim either.
+    const [legacyStampScanned, setLegacyStampScanned] = useState(() => legacyStampScanCache.has(scanCacheKey));
+    const [legacyStampLoading, setLegacyStampLoading] = useState(false);
     const [legacyStampApplying, setLegacyStampApplying] = useState(false);
     const [legacyStampError, setLegacyStampError] = useState<string | null>(null);
     const [legacyStampSuccess, setLegacyStampSuccess] = useState<string | null>(null);
@@ -122,7 +137,10 @@ export function MergeSection({ form, setForm, integrationBranchOptions, integrat
         setLegacyStampError(null);
         try {
             const data = await readLegacyAutoMergeStampResponse(await fetch("/api/maintenance/legacy-automerge-stamps"));
-            setLegacyStampCandidates(Array.isArray(data.candidates) ? data.candidates : []);
+            const candidates = Array.isArray(data.candidates) ? data.candidates : [];
+            legacyStampScanCache.set(scanCacheKey, candidates);
+            setLegacyStampCandidates(candidates);
+            setLegacyStampScanned(true);
         }
         catch (err) {
             setLegacyStampError(err instanceof Error ? err.message : "Failed to load legacy auto-merge stamps");
@@ -130,10 +148,9 @@ export function MergeSection({ form, setForm, integrationBranchOptions, integrat
         finally {
             setLegacyStampLoading(false);
         }
-    }, []);
-    useEffect(() => {
-        void loadLegacyAutoMergeStamps();
-    }, [loadLegacyAutoMergeStamps]);
+    }, [scanCacheKey]);
+    // No mount effect: FNXC:SettingsReadPath 2026-10-09-12:43 removed the eager scan so opening Settings
+    // never waits on a maintenance sweep. `applyLegacyAutoMergeStampCleanup` still refreshes after applying.
     const applyLegacyAutoMergeStampCleanup = async () => {
         const confirmed = window.confirm("Apply cleanup for legacy auto-merge stamps? This clears only legacy non-override in-review stamps returned by the store and never touches genuine per-task overrides.");
         if (!confirmed)
@@ -212,7 +229,7 @@ export function MergeSection({ form, setForm, integrationBranchOptions, integrat
           <h5 className="settings-section-heading">{t("settings.merge.legacyAutoMergeStampCleanup", "Legacy auto-merge stamp cleanup")}</h5>
           <SettingsHelpTip settingKey="legacy-automerge-stamp-cleanup">{t("settings.merge.findsInReviewTasksWhoseAutoMergeValue", " Finds in-review tasks whose auto-merge value came from the legacy review-entry stamp. Dry-run is automatic; applying delegates to the store cleanup and preserves genuine per-task overrides. ")}</SettingsHelpTip>
         </div>
-        {legacyStampLoading ? (<small aria-live="polite">{t("settings.merge.checkingForLegacyAutoMergeStamps", "Checking for legacy auto-merge stamps\u2026")}</small>) : legacyStampCandidates.length === 0 ? (<small data-testid="legacy-automerge-stamp-empty-state">{t("settings.merge.noLegacyAutoMergeStampsToCleanUp", " No legacy auto-merge stamps to clean up. ")}</small>) : (<>
+        {!legacyStampScanned && !legacyStampLoading ? (<><small data-testid="legacy-automerge-stamp-idle-state">{t("settings.merge.legacyAutoMergeStampScanOnDemand", " This scan reads every in-review card, so it runs on request.")}{" "}<button type="button" className="btn btn-sm" onClick={() => void loadLegacyAutoMergeStamps()} data-testid="legacy-automerge-stamp-scan-button">Scan now</button></small></>) : legacyStampLoading ? (<small aria-live="polite">{t("settings.merge.checkingForLegacyAutoMergeStamps", "Checking for legacy auto-merge stamps\u2026")}</small>) : legacyStampCandidates.length === 0 ? (<small data-testid="legacy-automerge-stamp-empty-state">{t("settings.merge.noLegacyAutoMergeStampsToCleanUp", " No legacy auto-merge stamps to clean up. ")}</small>) : (<>
             <small>{legacyStampCandidates.length}{t("settings.merge.legacyAutoMergeStamp", " legacy auto-merge stamp")}{legacyStampCandidates.length === 1 ? "" : "s"}{t("settings.merge.readyToCleanUp", " ready to clean up.")}</small>
             <ul>
               {legacyStampCandidates.map((candidate) => (<li key={candidate.taskId} data-testid="legacy-automerge-stamp-candidate-row">

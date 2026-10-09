@@ -15,7 +15,7 @@ function jsonResponse(body: unknown, ok = true): Response {
   } as Response;
 }
 
-function makeProps(overrides: Partial<MergeSectionProps["form"]> = {}): MergeSectionProps {
+function makeProps(overrides: Partial<MergeSectionProps["form"]> = {}, projectId?: string): MergeSectionProps {
   return {
     form: {
       autoMerge: true,
@@ -29,6 +29,9 @@ function makeProps(overrides: Partial<MergeSectionProps["form"]> = {}): MergeSec
     integrationBranchOptions: ["main"],
     integrationBranchCustomMode: false,
     setIntegrationBranchCustomMode: vi.fn(),
+    // FNXC:SettingsReadPath 2026-10-09-12:43: each case gets its own project key because the scan result
+    // is cached per project for the session; a shared key would leak one test's scan into the next.
+    projectId,
   };
 }
 
@@ -68,7 +71,12 @@ describe("MergeSection legacy auto-merge stamp cleanup", () => {
     }));
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<MergeSection {...makeProps()} />);
+    render(<MergeSection {...makeProps({}, "scan-list")} />);
+
+    // Opening the section must not reach the server at all: the scan is operator-triggered.
+    expect(await screen.findByTestId("legacy-automerge-stamp-idle-state")).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("legacy-automerge-stamp-scan-button"));
 
     await waitFor(() => expect(screen.getByText("FN-101")).toBeInTheDocument());
     expect(screen.getByText("FN-USER")).toBeInTheDocument();
@@ -80,8 +88,9 @@ describe("MergeSection legacy auto-merge stamp cleanup", () => {
   it("renders an explicit empty state and no apply shell when there are zero candidates", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ candidates: [], count: 0 })));
 
-    render(<MergeSection {...makeProps()} />);
+    render(<MergeSection {...makeProps({}, "scan-empty")} />);
 
+    fireEvent.click(await screen.findByTestId("legacy-automerge-stamp-scan-button"));
     expect(await screen.findByTestId("legacy-automerge-stamp-empty-state")).toHaveTextContent(
       "No legacy auto-merge stamps to clean up.",
     );
@@ -101,8 +110,9 @@ describe("MergeSection legacy auto-merge stamp cleanup", () => {
       .mockResolvedValueOnce(jsonResponse({ candidates: [], count: 0 }));
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<MergeSection {...makeProps()} />);
+    render(<MergeSection {...makeProps({}, "scan-apply")} />);
 
+    fireEvent.click(await screen.findByTestId("legacy-automerge-stamp-scan-button"));
     fireEvent.click(await screen.findByTestId("legacy-automerge-stamp-apply-button"));
 
     expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("never touches genuine per-task overrides"));
@@ -120,8 +130,9 @@ describe("MergeSection legacy auto-merge stamp cleanup", () => {
       count: 1,
     })));
 
-    render(<MergeSection {...makeProps()} />);
+    render(<MergeSection {...makeProps({}, "scan-mobile")} />);
 
+    fireEvent.click(await screen.findByTestId("legacy-automerge-stamp-scan-button"));
     expect(await screen.findByText("FN-MOBILE")).toBeInTheDocument();
     const applyButton = screen.getByTestId("legacy-automerge-stamp-apply-button");
     expect(applyButton.tagName).toBe("BUTTON");
