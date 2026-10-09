@@ -19,6 +19,8 @@ import { IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON, type Task, type TaskStore } from
 
 import {
   MAX_POST_MERGE_GATE_RESEED_ATTEMPTS,
+  STALE_CONTINUATION_RECLAIM_LOG_MARKER,
+  findStaleRunningGateContinuations,
   isTerminalPostMergeReseedRefusal,
   postMergeGateReseedLogMarker,
   resumeMissingPostMergeGate,
@@ -330,5 +332,104 @@ describe("resumeMissingPostMergeGate", () => {
     expect(result.reason).toBe("active-continuation");
     expect(calls.logged).toHaveLength(0);
     expect(calls.audits).toHaveLength(0);
+  });
+});
+
+/*
+FNXC:PostMergeRecovery 2026-10-09-15:20 (RUFU-610):
+The safety of the reclaim lives entirely in this predicate, because the write it enables (retire + seed) is not
+self-limiting. Measured production shape: `leaseOwner = planning-continuation-dispatch:<id>:0`,
+`lease_expires_at IS NULL`, `updated_at` 6,6-10,7 h old, exactly one such row per stuck card.
+*/
+const hoursAgo = (hours: number) => new Date(Date.now() - hours * 3_600_000).toISOString();
+const zombieRow = (overrides: Record<string, unknown> = {}) => ({
+  id: "wi-zombie",
+  kind: "task",
+  nodeId: GATE_ID,
+  state: "running",
+  leaseExpiresAt: null,
+  updatedAt: hoursAgo(7),
+  ...overrides,
+});
+
+describe("findStaleRunningGateContinuations", () => {
+  it("reclaims this gate's own leaseless running row once it is past the floor", () => {
+    expect(findStaleRunningGateContinuations([zombieRow()] as never, GATE_ID).map((i) => i.id)).toEqual(["wi-zombie"]);
+  });
+
+  it("reclaims a row whose lease already expired, because an expired lease proves no owner", () => {
+    expect(findStaleRunningGateContinuations([zombieRow({ leaseExpiresAt: hoursAgo(3) })] as never, GATE_ID)).toHaveLength(1);
+  });
+
+  it("leaves a row that still holds a live lease", () => {
+    const items = [zombieRow({ leaseExpiresAt: new Date(Date.now() + 60_000).toISOString() })];
+    expect(findStaleRunningGateContinuations(items as never, GATE_ID)).toEqual([]);
+  });
+
+  it("leaves a row younger than the floor, which is ordinary in-flight work", () => {
+    expect(findStaleRunningGateContinuations([zombieRow({ updatedAt: hoursAgo(0.5) })] as never, GATE_ID)).toEqual([]);
+  });
+
+  it("leaves a row whose write timestamp is unreadable, because an unprovable age is not proof of death", () => {
+    expect(findStaleRunningGateContinuations([zombieRow({ updatedAt: null })] as never, GATE_ID)).toEqual([]);
+  });
+
+  it("refuses the pass when any active row belongs to a different node", () => {
+    // Retiring a reviewer that is live on another node is not this lane's decision to make.
+    const items = [zombieRow(), zombieRow({ id: "wi-review", nodeId: "code-review" })];
+    expect(findStaleRunningGateContinuations(items as never, GATE_ID)).toEqual([]);
+  });
+
+  it.each(["held", "retrying", "runnable"] as const)(
+    "refuses a %s row: only an ownerless running row is dead work", (state) => {
+      expect(findStaleRunningGateContinuations([zombieRow({ state })] as never, GATE_ID)).toEqual([]);
+    },
+  );
+
+  it("says nothing when the card holds no active continuation", () => {
+    expect(findStaleRunningGateContinuations([zombieRow({ state: "succeeded" })] as never, GATE_ID)).toEqual([]);
+  });
+});
+
+describe("resumeMissingPostMergeGate stale continuation reclaim", () => {
+  it("retires the gate's own ownerless running row and seeds, instead of refusing not-idle", async () => {
+    const { store, calls } = fakeStore();
+    const transitions: Array<{ id: string; state: string; patch: Record<string, unknown> }> = [];
+    Object.assign(store, {
+      listWorkflowWorkItemsForTask: async () => [zombieRow()],
+      transitionWorkflowWorkItem: async (id: string, state: string, patch: Record<string, unknown> = {}) => {
+        transitions.push({ id, state, patch });
+        return { id, state };
+      },
+    });
+
+    const result = await resumeMissingPostMergeGate(store, task(), { source: "manual-reconcile", contract: undefined });
+
+    expect(result.outcome).toBe("seeded");
+    expect(transitions).toHaveLength(1);
+    expect(transitions[0]).toMatchObject({
+      id: "wi-zombie",
+      state: "failed",
+      patch: { lastError: "stale-running-continuation-reclaimed", leaseOwner: null, leaseExpiresAt: null },
+    });
+    expect(calls.seed).toHaveLength(1);
+    expect(calls.logged.some((line) => line.includes("retired 1 abandoned running continuation"))).toBe(true);
+    // A reclaim is not an attempt: only the seam's own counted marker may charge the budget.
+    expect(calls.logged.filter((line) => line.startsWith(postMergeGateReseedLogMarker(GATE_ID)))).toHaveLength(1);
+    expect(STALE_CONTINUATION_RECLAIM_LOG_MARKER).not.toBe(postMergeGateReseedLogMarker(GATE_ID));
+  });
+
+  it("does not retire another node's running row, and still reports the idle-seed refusal", async () => {
+    const { store } = fakeStore({ seedResult: { seeded: false, reason: "active-continuation" } });
+    const transitions: string[] = [];
+    Object.assign(store, {
+      listWorkflowWorkItemsForTask: async () => [zombieRow({ id: "wi-review", nodeId: "code-review" })],
+      transitionWorkflowWorkItem: async (id: string) => { transitions.push(id); return { id }; },
+    });
+
+    const result = await resumeMissingPostMergeGate(store, task(), { source: "manual-reconcile", contract: undefined });
+
+    expect(result.reason).toBe("active-continuation");
+    expect(transitions).toEqual([]);
   });
 });

@@ -238,6 +238,61 @@ function hasLegacyRecoveryFailure(task: Pick<Task, "status" | "error">): boolean
   return task.status === "failed" && task.error?.startsWith(`${EXHAUSTED_PREFIX}:`) === true;
 }
 
+/** Element type of the work-item read, derived the same way `RequiredPostMergeEvidenceDecision` is above. */
+type GateWorkItem = Awaited<ReturnType<TaskStore["listWorkflowWorkItemsForTask"]>>[number];
+
+/**
+ * Floor below which a `running` gate continuation with no live lease is treated as abandoned work.
+ * Measured 2026-10-09 on the 5 such rows that existed board-wide: 6,6 / 7,8 / 9,5 / 10,7 h since their last
+ * write, every one of them on a card with no session. Two hours leaves an order of magnitude of headroom
+ * over a real reviewer step and still clears the stuck state within one maintenance pass.
+ */
+export const STALE_RUNNING_CONTINUATION_FLOOR_MS = 2 * 60 * 60_000;
+
+/**
+ * Find the gate's own `running` continuations that no owner can reach any more.
+ *
+ * FNXC:PostMergeRecovery 2026-10-09-15:20 (RUFU-610):
+ * A dispatcher claims a work item by writing `state='running'` plus a `leaseOwner` and, for these five rows,
+ * NO `leaseExpiresAt` at all. That single NULL makes the row invisible to both of its owners: the scheduler's
+ * claim predicate looks for `runnable`/`retrying`, and the idle-seed predicate that guards this seam treats
+ * ANY `running` row as an active continuation. Nothing reclaims it, so the card is pinned forever — measured
+ * on RUFU-290/319/323/325, whose `post-merge-verification` rows sat `running` for 6,6-10,7 h while their
+ * sibling rows for the same node accumulated to 20 `failed` entries, and every `fn task reconcile` answered
+ * `post-merge-continuation-not-idle`. This is the work-item-layer twin of the `in-progress` capacity-slot
+ * leak the board monitor's own note names.
+ *
+ * The predicate is deliberately narrow, because the safety here cannot come from the write primitive: the
+ * sanctioned replacement helper retires EVERY active task continuation of the card and drops the seed's
+ * `expectedWorkflowSelection` / `expectedTaskUpdatedAt` fences. So instead of loosening what counts as idle
+ * (which would put a second active row on `idx_workflow_work_items_one_active_task_continuation` and raise),
+ * only a row that is (a) this gate's own node, (b) `running`, (c) leaseless or lease-expired, and (d) past
+ * the floor is reclaimed — one row at a time, transitioned to `failed` so the merge gate stays shut. A live
+ * reviewer for another node, a `held` row, or a fresh lease keeps the card exactly as stuck as it was.
+ */
+export function findStaleRunningGateContinuations(
+  items: GateWorkItem[],
+  gateId: string,
+  nowMs = Date.now(),
+): GateWorkItem[] {
+  const activeForTask = items.filter(
+    (item) => item.kind === "task" && ACTIVE_WORKFLOW_WORK_ITEM_STATES.includes(item.state as never),
+  );
+  if (activeForTask.length === 0) return [];
+  const blockingThisGate = activeForTask.filter((item) => item.nodeId === gateId);
+  if (blockingThisGate.length === 0 || blockingThisGate.length !== activeForTask.length) return [];
+  return blockingThisGate.filter((item) => {
+    if (item.state !== "running") return false;
+    const hasLiveLease = !!item.leaseExpiresAt && Date.parse(item.leaseExpiresAt) > nowMs;
+    if (hasLiveLease) return false;
+    const wroteAt = item.updatedAt ? Date.parse(item.updatedAt) : Number.NaN;
+    return Number.isFinite(wroteAt) && nowMs - wroteAt > STALE_RUNNING_CONTINUATION_FLOOR_MS;
+  });
+}
+
+/** Distinct from `postMergeGateReseedLogMarker` on purpose: a reclaim is not an attempt and must not charge the reseed budget. */
+export const STALE_CONTINUATION_RECLAIM_LOG_MARKER = "[post-merge stale continuation reclaimed]";
+
 /*
 FNXC:ReviewRecovery 2026-10-04-02:24:
 Post-merge reviewers can run before hosted CI finishes. Revisit rejected evidence after 15 minutes,
@@ -469,6 +524,35 @@ async function runPostMergeGateResume(
   no longer owned the card could schedule work on it. The suppressed write is reported as the already
   existing transient `finalize-blocked` refusal: the lane lost ownership, a later pass owns the card.
   */
+  /*
+  FNXC:PostMergeRecovery 2026-10-09-15:20 (RUFU-610):
+  Retire the gate's own abandoned `running` continuation before asking the idle seed, or the card stays pinned
+  behind a row no owner can reach (see `findStaleRunningGateContinuations`). This sits behind the same write
+  fence as the seed itself — ownership is read before every individual mutation, not once per pass — and
+  behind a liveness proof, because an in-process session is the only evidence that separates a leaseless row
+  owned by a live reviewer from one left by a dispatcher that never ran. The retired row goes to `failed`,
+  never deleted: the merge gate blocks on a missing/failed result, so deleting it would silently satisfy the
+  gate (FN-8492's lesson).
+  */
+  const staleRunning = findStaleRunningGateContinuations(items, node.id);
+  if (staleRunning.length > 0 && !isTaskExecutionLive(task.id, { activeSessionRegistry, executingTaskLock })) {
+    const reclaimed = await fence.write("finalization", async () => {
+      for (const stale of staleRunning) {
+        await store.transitionWorkflowWorkItem(stale.id, "failed", {
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          lastError: "stale-running-continuation-reclaimed",
+        });
+      }
+      return staleRunning.length;
+    });
+    if (reclaimed) {
+      await fence.write("log", () => store.logEntry(
+        task.id,
+        `${STALE_CONTINUATION_RECLAIM_LOG_MARKER} ${node.id}: retired ${reclaimed} abandoned running continuation(s); no live lease, no session`,
+      ));
+    }
+  }
   const seeded = await fence.write("finalization", () => store.seedWorkspaceCodeReviewContinuationIfIdle({
     taskId: task.id,
     nodeId: node.id,
