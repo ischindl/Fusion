@@ -57,8 +57,43 @@ import {
 export const ACTIVE_TASK_FILTER: SQL = isNull(schema.project.tasks.deletedAt);
 
 /**
+ * FNXC:ListReadSearchVectorOmission 2026-10-09-20:07:
+ * Task-table columns that no row consumer can read, so they are omitted from EVERY
+ * live-list projection rather than only from the slim one.
+ *
+ * `search_vector` is a `tsvector GENERATED ALWAYS AS (...) STORED` column. It is a
+ * search *predicate* target and a `ts_rank` input (see `liveSearchPredicate` /
+ * `searchTasksTsvector`), never a value: no `pgRowToTaskRow`, `rowToTask`, or
+ * store-list consumer reads it, and it is not a field of `Task`. Measured on a live
+ * 24-project / 2 417-card board it is 12.49 MB of 73.6 MB — 17.0% of every live row's
+ * bytes, 5.0 KiB per card — and `readLiveTaskRows`' full-row branch was a bare
+ * `.select()` (= `SELECT *`), so every board list shipped all of it to Node for a
+ * value nothing could address. `log` (42.7%) stays: `stalledReview`, `inReviewStall*`
+ * and `timedExecutionMs` are derived from it in `listTasksImpl`.
+ *
+ * Omitting a column here is only safe because nothing projects it back; the row-level
+ * column-parity test in `__tests__/postgres/list-read-projection-parity.pg.test.ts` is
+ * what proves a new entry to this set cannot change the `Task` a caller receives.
+ */
+const LIST_READ_OMITTED_COLUMNS: ReadonlySet<string> = new Set(["searchVector"]);
+
+/**
+ * FNXC:ListReadSearchVectorOmission 2026-10-09-20:07:
+ * The full-row live-list column set: every column except the never-addressed ones.
+ * Used where `log` must still be fetched (deriving consumers), replacing the bare
+ * `.select()` that used to mean `SELECT *`.
+ */
+const TASK_READ_PROJECTION: Record<string, PgColumn> = Object.fromEntries(
+  Object.entries(schema.project.tasks)
+    .filter(([, value]) => is(value, Column))
+    .filter(([key]) => !LIST_READ_OMITTED_COLUMNS.has(key))
+    .map(([key, value]) => [key, value as PgColumn]),
+);
+
+/**
  * FNXC:TaskStoreReads 2026-06-26-11:45:
- * Projection of every task-table column EXCEPT `log`, built from Drizzle
+ * Projection of every task-table column EXCEPT `log` (and the columns in
+ * LIST_READ_OMITTED_COLUMNS), built from Drizzle
  * Column objects. This is the slim-read column set for `readLiveTaskRows`
  * (excludeLog mode), which drops the heavy `log` jsonb payload (~99% of row
  * bytes on busy boards) so board-list hydration stays bounded.
@@ -82,6 +117,7 @@ const TASK_SLIM_PROJECTION: Record<string, PgColumn> = Object.fromEntries(
   Object.entries(schema.project.tasks)
     .filter(([, value]) => is(value, Column))
     .filter(([key]) => key !== "log")
+    .filter(([key]) => !LIST_READ_OMITTED_COLUMNS.has(key))
     .map(([key, value]) => [key, value as PgColumn]),
 );
 
@@ -651,7 +687,15 @@ export async function readLiveTaskRows(
     const rows = await applyPagination(query);
     return rows as unknown as Record<string, unknown>[];
   }
-  let query = layer.db.select().from(schema.project.tasks).$dynamic();
+  let query = layer.db.select(TASK_READ_PROJECTION).from(schema.project.tasks).$dynamic();
+  /*
+  FNXC:ListReadSearchVectorOmission 2026-10-09-20:07:
+  Was `layer.db.select()` — i.e. `SELECT *`, which shipped the stored `search_vector`
+  tsvector (17.0% of live row bytes, 5.0 KiB/card measured live) on every list read for a
+  value no deserializer can address. The explicit projection drops it and nothing else;
+  `log` remains here because the deriving consumers need it (see the note on
+  TASK_READ_PROJECTION for why the slim branch keeps dropping it too).
+  */
   if (liveFilter) query = query.where(liveFilter);
   return applyPagination(query);
 }
