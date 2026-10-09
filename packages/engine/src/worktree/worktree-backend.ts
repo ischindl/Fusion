@@ -1398,21 +1398,15 @@ export async function probeWorktreeRemovalContent(worktreePath: string): Promise
 }
 
 /*
-FNXC:WorktreeCleanup 2026-09-25-19:30:
-RUFU-278: a caller that can safely *vacate* a checkout instead of deleting it needs to know whether a
-defensive removal would refuse, before it picks a strategy. This is the same predicate `removeWorktree`
-applies to its defensive reasons (probe classification plus the `ignored-only`-without-landing-proof
-refusal), reused rather than re-derived so the two cannot drift. It mutates nothing: `true` means
-"do not attempt the removal, vacate the checkout by another means", never "delete it carefully".
+FNXC:WorktreeCleanup 2026-10-09-13:10 (RUFU-329 — one seam decides, the other only reports):
+There is deliberately no "would this removal refuse?" boolean beside this guard. RUFU-278 shipped one for the
+pinned-worktree reclaim; RUFU-298 moved that caller onto `probeWorktreeRemovalContent`'s classification, which
+carries strictly more information (remove / preserve aside / fail closed), and RUFU-329 deleted the wrapper once it
+had no callers left. A second API expressing half of another API's contract is a second call site every future
+content class must be threaded through, so the choice stays here (throw) or on the probe (report), never in between.
+It was never exported from `packages/engine/src/index.ts`, so its removal ships no API change and no changeset; the
+deletion commit carries the evidence (zero production callers, zero plugin consumers).
 */
-export async function defensiveRemovalWouldPreserve(rootDir: string, worktreePath: string): Promise<boolean> {
-  try {
-    const probe = await assertCleanForDefensiveRemoval(rootDir, worktreePath);
-    return probe.classification === "ignored-only";
-  } catch (error) {
-    return error instanceof WorktreeContentPreservationError;
-  }
-}
 
 /*
 FNXC:CardOwnershipGuard 2026-09-26-05:16:
@@ -1641,9 +1635,16 @@ async function assertCleanForDefensiveRemoval(rootDir: string, worktreePath: str
     /*
     FNXC:WorktreeCleanup 2026-09-29-22:04 (fusion/rufu-274 squash merge):
     RUFU-274 moved the tree read into the non-throwing `probeWorktreeRemovalContent`; RUFU-278's typed
-    `WorktreeContentPreservationError` stays on this refusal so callers that own a safe preserve path
-    (`defensiveRemovalWouldPreserve`, the pinned-worktree reclaim) can still discriminate by type. The
-    class reproduces the original message verbatim, so nothing matching on the wording changed either.
+    `WorktreeContentPreservationError` stays on this refusal so callers that own a safe preserve path can still
+    discriminate by type. The class reproduces the original message verbatim, so nothing matching on the wording
+    changed either.
+
+    FNXC:WorktreeCleanup 2026-10-09-13:10 (RUFU-329):
+    That safe preserve path is the pinned-worktree reclaim, and since RUFU-298 it decides from
+    `probeWorktreeRemovalContent`'s classification instead of asking a helper whether removal would refuse, so no
+    production caller discriminates this class by `instanceof` any more. It stays a typed error because its contract
+    is a typed, byte-stable refusal at the removal door — the real-git suites match its `preserving` wording — and a
+    future caller that must tell a content refusal from a lock refusal can do so without a regex.
     */
     throw new WorktreeContentPreservationError(worktreePath);
   }

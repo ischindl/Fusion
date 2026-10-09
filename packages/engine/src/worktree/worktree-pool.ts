@@ -23,7 +23,6 @@ export {
   NativeWorktreeBackend,
   WorktrunkOperationError,
   WorktrunkWorktreeBackend,
-  defensiveRemovalWouldPreserve,
   probeWorktreeRemovalContent,
   removeWorktree,
   resolveWorktreeBackend,

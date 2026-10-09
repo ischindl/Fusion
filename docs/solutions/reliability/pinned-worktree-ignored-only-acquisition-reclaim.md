@@ -30,7 +30,7 @@ acquisition failed identically at the same pinned path.
 
 Two secondary defects made it uninvestigable: the preserve audit row recorded the literal string
 `content-preservation` in its `classification` field, so the row could not say which class had blocked removal,
-and the task-log sentence said only "content-preservation".
+and the task-log sentence said only "content-preservation" (RUFU-329: both sat on acquisition's own preserve row — `worktree:removal-preserved` never carried this label).
 
 ## Resolution
 
@@ -87,7 +87,15 @@ The audit row and the task-log line now carry the concrete class.
   real-git repro, including the audit-row class assertion.
 - `packages/engine/src/__tests__/worktree-acquisition-pinned.test.ts` — the whole decision table, the
   `unverifiable` fail-closed row, and the workspace `EXDEV` preserve root.
-- `packages/engine/src/__tests__/worktree-backend.test.ts` — probe classification and the removal-side lockstep
-  guards that keep `defensiveRemovalWouldPreserve()` honest.
+- `packages/engine/src/__tests__/worktree-backend.test.ts` — probe classification plus the removal-side refusals
+  that only the throwing guard makes (root checkout, unreadable tree), asserted through public `removeWorktree`
+  with a defensive reason. RUFU-329 retired the second set of assertions here when it deleted the boolean wrapper:
+  they restated `assertCleanForDefensiveRemoval` through a helper no production code called.
 - `packages/engine/src/__tests__/reliability-interactions/worktree-defensive-removal-preservation.real-git.test.ts`
   — removal-side preservation semantics, unchanged by this change.
+- `packages/engine/src/__tests__/worktree-doc-accuracy.test.ts` — the prose and symbol surface of this record,
+  added by RUFU-329: the corrected sentences credit the acquisition row that actually changed, both defect labels
+  survive only in the history above and nowhere else in `docs/`, no code-carrying tree references the boolean that
+  was deleted, and every guard listed in this section is a file that still exists. It is what keeps a later rewrite
+  from re-crediting an audit event that never carried the placeholder, or from promising a guard that has since
+  been removed.

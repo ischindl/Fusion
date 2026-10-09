@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   ActiveSessionWorktreeRemovalError,
   classifyWorktreeRemovalContent,
-  defensiveRemovalWouldPreserve,
   isRegenerableScratchDirectory,
   InvalidPostLandingProofUsageError,
   NativeWorktreeBackend,
@@ -121,8 +120,15 @@ modality — remove / preserve aside / fail closed — from the concrete class. 
 assertion in exactly one way: a `deliverable` tree is RETURNED, not thrown. Unreadable state is likewise
 RETURNED as `status: "probe-failed"` with an `ignored-only` classification, because a probe that guesses is
 worse than one that reports; every consumer that DECIDES must read `status`, and only
-`assertCleanForDefensiveRemoval` (i.e. `removeWorktree`/`defensiveRemovalWouldPreserve`) turns a failed probe
-back into a throw. The paired expectations below pin that division so the two can never drift.
+`assertCleanForDefensiveRemoval` (reachable only through `removeWorktree`'s defensive reasons) turns a failed
+probe back into a throw. The paired expectations below pin that division so the two can never drift.
+
+FNXC:WorktreeCleanup 2026-10-09-13:16 (RUFU-329 — the boolean wrapper is gone, the probe is the only seam):
+This file used to also assert the boolean wrapper RUFU-278 had added over the assertion for a caller that could
+vacate a checkout. RUFU-298 moved that caller onto the classification and RUFU-329 deleted the wrapper: zero
+production callers, zero plugin consumers, and never part of the engine's public exports. Nothing behavioral was
+lost — the removal-side refusals it reproduced are asserted through public `removeWorktree` below and across
+`worktree-defensive-removal-preservation.real-git.test.ts`.
 */
 describe("probeWorktreeRemovalContent", () => {
   beforeEach(() => {
@@ -193,41 +199,30 @@ describe("probeWorktreeRemovalContent", () => {
 
   /*
   FNXC:WorktreeCleanup 2026-10-02-15:56 (RUFU-298): the root-checkout and unreadable-tree refusals live on the
-  ASSERTION side of the seam, so they are asserted where the assertion is reachable — through the boolean
-  predicate and `removeWorktree` — never by poking the probe, which cannot see the root at all.
+  ASSERTION side of the seam, so they are asserted where the assertion is reachable — through public
+  `removeWorktree` — never by poking the probe, which cannot see the root at all.
+
+  FNXC:WorktreeCleanup 2026-10-09-13:16 (RUFU-329): these two refusals were previously asserted through the
+  boolean predicate. They are now driven through `removeWorktree` with a defensive reason (`PoolPrune` is in
+  `DEFENSIVE_REMOVAL_REASONS`, which is what makes `requiresCleanWorktree` true), so the assertion under test is
+  reached by the same route production takes. The root-checkout row matters most: a plain probe of the root would
+  classify cleanly, so only the guard's own identity check refuses it.
   */
   it("keeps the removal-side refusals that the probe deliberately does not make", async () => {
-    // Root checkout: refused even though a plain probe of it would classify cleanly.
-    execFileMock.mockResolvedValue({ stdout: "", stderr: "" });
-    await expect(defensiveRemovalWouldPreserve("/repo", "/repo")).resolves.toBe(false);
-
-    // Unreadable tree: the predicate reports "would not preserve", so only the throwing guard can fail closed.
-    execFileMock.mockRejectedValueOnce(new Error("not a git repository"));
-    await expect(defensiveRemovalWouldPreserve("/repo", "/repo/.worktrees/fn-298")).resolves.toBe(false);
-    execFileMock.mockRejectedValueOnce(new Error("not a git repository"));
-    await expect(removeWorktree({
-      worktreePath: "/repo/.worktrees/fn-298",
-      rootDir: "/repo",
+    const defensiveRemoval = (worktreePath: string, rootDir = "/repo") => removeWorktree({
+      worktreePath,
+      rootDir,
       settings: {},
       reason: RemovalReason.PoolPrune,
-    })).rejects.toThrow(/status probe failed/);
-  });
+    });
 
-  it("keeps the boolean predicate in lockstep with the probe's classes", async () => {
-    execFileMock.mockResolvedValueOnce({ stdout: "\n", stderr: "" });
-    await expect(defensiveRemovalWouldPreserve("/repo", "/repo/.worktrees/fn-298")).resolves.toBe(false);
+    // Root checkout: refused even though a plain probe of it would classify cleanly.
+    execFileMock.mockResolvedValue({ stdout: "", stderr: "" });
+    await expect(defensiveRemoval("/repo")).rejects.toThrow(/refusing to remove the project root checkout/);
 
-    execFileMock.mockResolvedValueOnce({ stdout: "!! dist/\n", stderr: "" });
-    await expect(defensiveRemovalWouldPreserve("/repo", "/repo/.worktrees/fn-298")).resolves.toBe(false);
-
-    execFileMock.mockResolvedValueOnce({ stdout: "!! .env\n", stderr: "" });
-    await expect(defensiveRemovalWouldPreserve("/repo", "/repo/.worktrees/fn-298")).resolves.toBe(true);
-
-    execFileMock.mockResolvedValueOnce({ stdout: "?? wip.txt\n", stderr: "" });
-    await expect(defensiveRemovalWouldPreserve("/repo", "/repo/.worktrees/fn-298")).resolves.toBe(true);
-
-    execFileMock.mockRejectedValueOnce(new Error("status probe blew up"));
-    await expect(defensiveRemovalWouldPreserve("/repo", "/repo/.worktrees/fn-298")).resolves.toBe(false);
+    // Unreadable tree: the probe never guesses, so only the throwing guard can fail closed.
+    execFileMock.mockRejectedValueOnce(new Error("not a git repository"));
+    await expect(defensiveRemoval("/repo/.worktrees/fn-298")).rejects.toThrow(/status probe failed/);
   });
 });
 
