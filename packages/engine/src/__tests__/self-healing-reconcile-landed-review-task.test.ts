@@ -186,6 +186,50 @@ describe("SelfHealingManager.reconcileLandedReviewTask", () => {
     expect(moveTask).not.toHaveBeenCalled();
   });
 
+  /*
+  FNXC:PostMergeRecovery 2026-10-09-13:04 (RUFU-611):
+  The rejected-evidence arm. A card whose post-merge gate reported and was refused used to be answered with
+  `post-merge-evidence-pending` and never reached the resume seam, so the operator had no lever at all while
+  the hourly self-reseed kept failing at attempt=0. This is the shape measured on production: 12 cards in this
+  exact state. The recheck is still bounded by the idle-continuation fence, so one retry cannot queue a second.
+  */
+  it("rechecks rejected post-merge evidence on an explicit manual reconcile instead of refusing it", async () => {
+    const task = baseTask({
+      id: "FN-611", updatedAt: "2026-10-09T13:04:00.000Z", autoMerge: true,
+      mergeDetails: { mergeConfirmed: true, commitSha: "5999ba4" },
+      enabledWorkflowSteps: ["post-merge-verification"],
+      workflowStepResults: [{
+        workflowStepId: "post-merge-verification",
+        phase: "post-merge",
+        status: "failed",
+        output: "Pending step result had no live session or lease; marked failed by self-healing (FN-8492).",
+      }],
+    });
+    const { store, moveTask } = storeWithTask(task);
+    const continuations: unknown[] = [];
+    Object.assign(store, {
+      getTaskWorkflowSelection: vi.fn(() => ({ workflowId: "builtin:coding", stepIds: ["post-merge-verification"] })),
+      getTaskWorkflowSelectionAsync: vi.fn(async () => ({ workflowId: "builtin:coding", stepIds: ["post-merge-verification"] })),
+      listWorkflowWorkItemsForTask: vi.fn(async () => continuations),
+      seedWorkspaceCodeReviewContinuationIfIdle: vi.fn(async (input) => {
+        if (continuations.length > 0) return { seeded: false, reason: "active-continuation" };
+        continuations.push(input);
+        return { seeded: true, workItemId: "post-merge" };
+      }),
+    });
+    const manager = managerWithStubs(store);
+
+    await expect(manager.reconcileLandedReviewTask(task.id, { source: "manual" })).resolves.toEqual({
+      outcome: "resumed", gateId: "post-merge-verification", attempt: expect.any(Number),
+    });
+    // A second explicit retry cannot stack a second run on the same gate.
+    await expect(manager.reconcileLandedReviewTask(task.id, { source: "manual" })).resolves.toEqual({
+      outcome: "raced", reason: "post-merge-continuation-not-idle",
+    });
+    expect(continuations).toHaveLength(1);
+    expect(moveTask).not.toHaveBeenCalled();
+  });
+
   it.each(["pending", "skipped"] as const)("leaves confirmed %s post-merge evidence blocked", async (status) => {
     const task = baseTask({
       autoMerge: true, mergeDetails: { mergeConfirmed: true }, enabledWorkflowSteps: ["post-merge-verification"],

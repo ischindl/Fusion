@@ -17887,8 +17887,25 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
       */
       const contract = await resolvePostMergeEvidenceContract(this.store, { auditHost: this.store });
       const decision = await getRequiredPostMergeEvidenceDecision(this.store, task, contract);
-      if (decision.outcome === "resumable") {
-        const resumed = await resumeMissingPostMergeGate(this.store, task, { source: "manual-reconcile", contract });
+      /*
+      FNXC:PostMergeRecovery 2026-10-09-13:04 (RUFU-611):
+      The manual arm used to reach this seam only when the gate had NO row (`resumable`). A card whose gate
+      reported and was rejected (`blocked` / `failed`) returned `post-merge-evidence-pending` here without
+      ever calling the resume — so `manualRetry`, which FN-9502 added for exactly this arm and which the
+      options type still advertises, had no caller and was unreachable in production. Measured: 12 cards
+      re-seed their post-merge node hourly and fail with `attempt=0`, so nothing clamps or parks them, and
+      `fn task reconcile <id>` answered every one of them with this sentence. An operator retry now asks the
+      seam to recheck immediately; every guard inside the seam still refuses (a workspace lane, a missing
+      merge proof, an operator hold, a live lease, an approval or `pending` row) and a failed recheck
+      returns its refusal instead of a success.
+      */
+      const rejectedEvidence = decision.outcome === "blocked" && decision.reason === "failed";
+      if (decision.outcome === "resumable" || rejectedEvidence) {
+        const resumed = await resumeMissingPostMergeGate(this.store, task, {
+          source: "manual-reconcile",
+          contract,
+          manualRetry: rejectedEvidence,
+        });
         if (resumed.outcome === "seeded") {
           return {
             outcome: "resumed",
