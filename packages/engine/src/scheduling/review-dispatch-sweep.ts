@@ -510,7 +510,25 @@ export class ReviewDispatchSweep {
    */
   private async findReviewLaneCandidates(): Promise<ReviewDispatchCandidate[]> {
     const selectionCache: WorkflowSelectionCache = new Map();
-    const tasks = await this.options.store.listTasks({ slim: true, includeArchived: false });
+    /*
+    FNXC:ListTasksDeriveOptOut 2026-10-09-20:25 (RUFU-201 follow-through):
+    This sweep ticks every 15 s (DEFAULT_REVIEW_TICK_MS) and it reads ONLY persisted columns —
+    `column`, `enabledWorkflowSteps`, `id`, `paused`, `pausedReason`, `reviewLevel`,
+    `updatedAt`, `userPaused`, `workflowStepResults` — here, in `classifyReviewCard`, and in
+    `dispatch`. It never reads a derived board badge (`stalledReview`, `inReviewStall*`,
+    `retrySummary`, `stallReason`, `reviewBypass`, `ageStaleness`, `timedExecutionMs`), yet with
+    derivation on it paid nine per-row derivations AND the full `log` jsonb column every tick.
+    Measured live: `log` is 42.7% of every live row's bytes (31.4 MB of 73.6 MB, 12.7 KiB/card
+    over 2 417 cards), and ~91% of the server's allocation churn sits in this one row→Task read
+    path, which is what drives board latency and the RSS climb to the watchdog's 16 GiB kill.
+
+    `derive: false` keeps every persisted field byte-identical (it is `workflow_step_results`
+    that routes this sweep, and it stays), drops `log` from the SQL projection, and skips the
+    derivation prelude (settings read, merge-queue set, selection + IR prefetch). If a future
+    edit here starts reading a derived badge, `derive` has to come back — and the read should
+    move to the detail fetch instead of the 15 s sweep.
+    */
+    const tasks = await this.options.store.listTasks({ slim: true, derive: false, includeArchived: false });
     const candidates: ReviewDispatchCandidate[] = [];
     for (const task of tasks) {
       // Paused cards stay candidates: the classifier buckets them as excluded-paused (E2), so a

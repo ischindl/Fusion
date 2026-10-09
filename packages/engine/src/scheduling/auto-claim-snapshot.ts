@@ -161,7 +161,9 @@ export async function resolveFreshAutoClaimCandidates(
     return [];
   }
 
-  const allTasks = await taskStore.listTasks({ slim: true });
+  /* FNXC:ListTasksDeriveOptOut 2026-10-09-20:25: derive:false for the reason documented on
+     * AutoClaimSnapshotManager.rebuild — this path decides candidacy from stored state only. */
+  const allTasks = await taskStore.listTasks({ slim: true, derive: false });
   const tasksById = new Map(allTasks.map((task) => [task.id, task]));
   const rolesByTask = await resolveAutoClaimLifecycleRoles(taskStore, allTasks);
   const resolvedAt = now();
@@ -225,7 +227,24 @@ export class AutoClaimSnapshotManager {
   }
 
   private async rebuild(): Promise<AutoClaimSnapshot> {
-    const allTasks = await this.taskStore.listTasks({ slim: true });
+    /*
+    FNXC:ListTasksDeriveOptOut 2026-10-09-20:25 (RUFU-201 follow-through):
+    The snapshot is rebuilt on its TTL (30 s) AND on every auto-claim fingerprint invalidation,
+    so it is one of the board's hottest reads. It reads only persisted columns —
+    `column`, `paused`, `userPaused`, `assignedAgentId`, `checkedOutBy`, `deletedAt`,
+    `dependencies`, `id`, `title`, `description`, `createdAt`, `columnMovedAt` — in
+    `isRunnableAutoClaimCandidate`, `toAutoClaimCandidate`, `compareTasksByQueueOrder` and
+    `resolveAutoClaimLifecycleRoles`; no derived badge is read anywhere on this path. With
+    derivation on it nevertheless paid nine derivations per card, the workflow-selection and
+    prompt-override prefetches, and the `log` jsonb column (42.7% of live row bytes, 12.7 KiB
+    per card measured live) every rebuild — reads the snapshot then throws away.
+
+    Same contract as `resolveFreshAutoClaimCandidates` below: candidacy is decided from stored
+    state, so `derive: false` is behaviour-preserving here and strictly cheaper. Lifecycle roles
+    are still resolved by `resolveAutoClaimLifecycleRoles`, which owns its own IR cache and is
+    unaffected by what the list pass prefetches.
+    */
+    const allTasks = await this.taskStore.listTasks({ slim: true, derive: false });
     const tasksById = new Map(allTasks.map((candidate) => [candidate.id, candidate]));
     const rolesByTask = await resolveAutoClaimLifecycleRoles(this.taskStore, allTasks);
     const now = this.now();

@@ -355,6 +355,35 @@ describe("review-lane dispatch sweep classification", () => {
   }
 
   /*
+  FNXC:ListTasksDeriveOptOut 2026-10-09-20:25:
+  The sweep runs every 15 s and decides routing from persisted columns only, so it must not pay
+  for the board's derived badges or the `log` jsonb column (42.7% of live row bytes measured live,
+  the single heaviest thing this read fetched). This pins the read shape at the call boundary the
+  same way the pause tests above pin "do not scan at all": a regression that reintroduces
+  derivation shows up here instead of as a slower board and a faster RSS climb.
+  */
+  it("asks the store for a zero-derivation list read", async () => {
+    const seen: unknown[] = [];
+    const store = {
+      getSettings: async () => ({}),
+      listTasks: async (options?: unknown) => {
+        seen.push(options);
+        return [];
+      },
+    };
+    const sweep = new ReviewDispatchSweep({
+      store: store as never,
+      agentStore: { listAgents: async () => [] } as never,
+      heartbeatMonitor: { executeHeartbeat: async () => {} } as never,
+    });
+
+    await sweep.tick(new Date(NOW));
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ slim: true, derive: false, includeArchived: false });
+  });
+
+  /*
   FNXC:ReviewLaneDispatch 2026-09-16-16:20 (#3619 review A / greptile P1):
   An unreadable settings row ABORTS the pass: the heartbeat source this sweep dispatches through
   does not re-check `enginePaused` downstream, so dispatching while pause state is unknown could

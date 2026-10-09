@@ -61,6 +61,29 @@ describe("AutoClaimSnapshotManager", () => {
     expect(listTasks).toHaveBeenCalledTimes(1);
   });
 
+  /*
+  FNXC:ListTasksDeriveOptOut 2026-10-09-20:25:
+  The snapshot rebuilds on a 30 s TTL AND on every auto-claim invalidation, and it decides
+  candidacy from stored state only (`column`, `paused`, `userPaused`, `assignedAgentId`,
+  `checkedOutBy`, `deletedAt`, `dependencies`, plus what `toAutoClaimCandidate` renders). With
+  derivation on it still paid nine derivations per card, the selection/override prefetches and
+  the `log` jsonb column — 42.7% of live row bytes, 12.7 KiB/card measured live — and threw all
+  of it away. Pinned at the store boundary for BOTH entry points, because only one of them was
+  audited the first time this class was written down.
+  */
+  it("asks the store for a zero-derivation read on both snapshot paths", async () => {
+    const listTasks = vi.fn(async () => [makeTask({ id: "FN-1" })]);
+    const manager = new AutoClaimSnapshotManager({ taskStore: { listTasks }, now: () => Date.parse("2026-01-03T00:00:00.000Z") });
+
+    const snapshot = await manager.getSnapshot();
+    await resolveFreshAutoClaimCandidates({ listTasks }, snapshot.tasks, () => Date.parse("2026-01-03T00:00:00.000Z"));
+
+    expect(listTasks).toHaveBeenCalledTimes(2);
+    for (const [options] of listTasks.mock.calls) {
+      expect(options).toMatchObject({ slim: true, derive: false });
+    }
+  });
+
   it("rebuilds after TTL expiry", async () => {
     let now = Date.parse("2026-01-03T00:00:00.000Z");
     const listTasks = vi.fn(async () => [makeTask({ id: "FN-1" })]);
