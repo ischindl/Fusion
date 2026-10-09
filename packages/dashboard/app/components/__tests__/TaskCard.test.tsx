@@ -24,7 +24,13 @@ import { NavigationHistoryProvider, useNavigationHistory } from "../../hooks/use
 import { useOverlayDismiss } from "../../hooks/useOverlayDismiss";
 import type { ConfirmOptions } from "../../hooks/useConfirm";
 import { type Task, type TaskDetail } from "@fusion/core";
-import { getPriorityColorVar, getPriorityLabel } from "../../utils/priorityIndicator";
+/*
+FNXC:TaskPriority 2026-10-09-16:15:
+FN-509 (fa5cdf67ce) retired task priority levels for an arrival-ordered queue plus a per-card Boost,
+and deleted `app/utils/priorityIndicator.ts` with them. The old `getPriorityColorVar/getPriorityLabel`
+import lived on here as dead code (its only consumers were the priority-badge cases this card's
+fixture cleanup removed), and the module it named no longer exists.
+*/
 
 // Mock lucide-react to avoid SVG rendering issues in test env
 vi.mock("lucide-react", () => ({
@@ -44,10 +50,12 @@ vi.mock("lucide-react", () => ({
   RotateCw: () => null,
   Zap: () => <svg data-testid="icon-zap" />,
   AlertTriangle: () => null,
-  ArrowDown: ({ style, ...props }: React.SVGProps<SVGSVGElement>) => <svg data-testid="priority-icon-low" className="lucide-arrow-down" style={style} {...props} />,
-  Flag: ({ style, ...props }: React.SVGProps<SVGSVGElement>) => <svg data-testid="priority-icon-normal" className="lucide-flag" style={style} {...props} />,
-  ArrowUp: ({ style, ...props }: React.SVGProps<SVGSVGElement>) => <svg data-testid="priority-icon-high" className="lucide-arrow-up" style={style} {...props} />,
-  TriangleAlert: ({ style, ...props }: React.SVGProps<SVGSVGElement>) => <svg data-testid="priority-icon-urgent" className="lucide-triangle-alert" style={style} {...props} />,
+  /*
+  FNXC:TaskPriority 2026-10-09-16:15:
+  REMOVED: the ArrowDown / Flag / ArrowUp / TriangleAlert mocks (`priority-icon-low|normal|high|urgent`).
+  They existed only for the FN-509-retired priority badge rendered by `priorityIndicator.tsx`, and this
+  closed-world factory needs one entry per icon TaskCard actually imports — no assertion named those testids.
+  */
   ArrowUpRight: () => null,
   // FNXC:RefinementTitle 2026-07-26-20:10: icon on the "Refines <id>" provenance chip.
   Sparkles: () => null,
@@ -920,10 +928,17 @@ describe("TaskCard", () => {
 
    /*
    FNXC:TaskRefine 2026-09-14-22:23:
-   FN-400 replaced this case's subject: Refine no longer depends on a caller-supplied opener, because the card owns the
-   composer. A review card therefore always offers Refine, alongside its PR status actions.
+   FN-400 replaced this case's subject: the review-card action no longer depends on a caller-supplied opener, because
+   the card owns the composer.
+
+   FNXC:TaskFollowUp 2026-10-09-16:15:
+   FN-513 (22d0cb78be) then took the review lane away from Refine: `isFollowUpEligible` makes an
+   in-flight card qualify for Follow-up (a SEPARATE successor card), and the menu model renders
+   follow-up and refine as complementary, never both. Refine keeps the terminal lane, which
+   TaskCard.refine-dialog.test.tsx pins. What stays owned HERE is the review-lane pairing: the
+   follow-up entry must not crowd out the PR-status actions, and it must not open the record.
    */
-   it("offers refine and PR status actions on a review card from the board context menu", async () => {
+   it("offers follow-up and PR status actions, and never Refine, on a review card from the board context menu", async () => {
     const onOpenDetail = vi.fn();
     vi.mocked(refreshPrStatus).mockResolvedValueOnce({} as any);
     render(
@@ -941,7 +956,8 @@ describe("TaskCard", () => {
     );
 
     fireEvent.contextMenu(document.querySelector(".card")!, { clientX: 24, clientY: 28 });
-    expect(screen.getByRole("menuitem", { name: "Refine" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Follow-up" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Refine" })).not.toBeInTheDocument();
     expect(onOpenDetail).not.toHaveBeenCalled();
     fireEvent.keyDown(document, { key: "Escape" });
 
@@ -3817,13 +3833,20 @@ describe("TaskCard", () => {
   });
 
 
-  it("keeps priority and fast mode in meta while agent-created and time move to bottom rows", () => {
+  /*
+  FNXC:TaskPriority 2026-10-09-16:15:
+  FN-509 (fa5cdf67ce) removed the per-card priority badge, so `.card-meta-badges` is now the
+  fast-mode / plan-approval / merge-approval / opt-in-oversight cluster (see `hasCardMetaBadges` in
+  TaskCard.tsx). These cases keep their original subject — WHICH row a grouped affordance lands in,
+  and that an empty wrapper is never rendered — asserted over the surviving affordance set instead of
+  the retired one, so the `priority:` fixture props and `.card-priority-badge` expectations are gone.
+  */
+  it("keeps fast mode in meta while agent-created and time move to bottom rows", () => {
 
     const { container } = render(
       <TaskCard
         task={makeTask({
           column: "done",
-          priority: "high",
           executionMode: "fast",
           sourceType: "automation",
           sourceMetadata: { agentName: "Task Robot" },
@@ -3839,7 +3862,6 @@ describe("TaskCard", () => {
     expect(group).not.toBeNull();
 
     const expectedMetaSelectors = [
-      ".card-priority-badge",
       ".card-execution-mode-badge",
     ];
     expectedMetaSelectors.forEach((selector) => {
@@ -3866,7 +3888,6 @@ describe("TaskCard", () => {
     expect(agentBadge?.closest(".card-header")).toBeNull();
 
     expect(Array.from(group?.children ?? []).map((child) => child.className)).toEqual([
-      "card-priority-badge card-priority-badge--high",
       "card-execution-mode-badge card-execution-mode-badge--fast",
     ]);
   });
@@ -3879,7 +3900,6 @@ describe("TaskCard", () => {
       <TaskCard
         task={makeTask({
           column: "triage",
-          priority: "urgent",
           executionMode: "fast",
           sourceType: "automation",
           sourceMetadata: { agentName: "Task Robot" },
@@ -3891,7 +3911,6 @@ describe("TaskCard", () => {
 
     const group = container.querySelector(".card-meta-badges");
     expect(group).not.toBeNull();
-    expect(group?.querySelector(".card-priority-badge")).not.toBeNull();
     expect(group?.querySelector(".card-execution-mode-badge")).not.toBeNull();
     expect(group?.querySelector(".card-agent-created-badge")).toBeNull();
     expect(container.querySelector(".card-agent-created-badge")?.closest(".card-agent-badge-row")).not.toBeNull();
@@ -3946,14 +3965,13 @@ describe("TaskCard", () => {
       <TaskCard
         task={makeTask({
           column: "todo",
-          priority: "normal",
           executionMode: "standard",
           sourceType: "dashboard_ui",
           // FNXC:PlannerOversight 2026-07-04-00:00: an unset oversight override now
           // resolves to the schema default ("autonomous") and renders a badge
           // (FN-7516) — pin the level explicitly "off" here so this test keeps
-          // asserting the ORIGINAL affordance set (priority/fast-mode/agent-created)
-          // is what determines the wrapper's presence.
+          // asserting that the grouped affordance set (fast-mode / plan-approval /
+          // merge-approval / oversight) is what determines the wrapper's presence.
           plannerOversightLevel: "off",
         })}
         onOpenDetail={noop}
@@ -4735,7 +4753,7 @@ describe("TaskCard", () => {
   it("places card-header-actions as a direct header child after the wrapped badge group", () => {
     const { container } = render(
       <TaskCard
-        task={makeTask({ size: "S", priority: "urgent" as Task["priority"], executionMode: "fast" })}
+        task={makeTask({ size: "S", executionMode: "fast" })}
         onOpenDetail={noop}
         addToast={noop}
       />,
@@ -7639,7 +7657,6 @@ describe("TaskCard workflow badges", () => {
       <TaskCard
         task={makeTask({
           column: "in-progress",
-          priority: "high",
           executionMode: "fast",
           sourceType: "automation",
           sourceMetadata: { agentName: "Created Robot" },
@@ -7659,7 +7676,8 @@ describe("TaskCard workflow badges", () => {
     const workflowRow = screen.getByTestId("card-workflow-badge-row");
     const agentRow = screen.getByTestId("card-agent-badge-row");
     const agentBadge = container.querySelector(".card-agent-created-badge");
-    expect(metaBadges.querySelector(".card-priority-badge")).not.toBeNull();
+    // FNXC:TaskPriority 2026-10-09-16:15: FN-509 retired the priority badge; the meta-cluster
+    // membership this case owns is now proven by the fast-mode badge alone.
     expect(metaBadges.querySelector(".card-execution-mode-badge")).not.toBeNull();
     expect(metaBadges.querySelector(".card-agent-created-badge")).toBeNull();
     expect(metaBadges.querySelector(".card-workflow-badge")).toBeNull();

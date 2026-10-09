@@ -674,9 +674,17 @@ export function TaskContextMenu({
   implementation, and it is the richer of the two former variants — it keeps `renderAction`, the `role`
   override, left-opening submenu placement and non-focusable note rows, while the shared `UiMenu` now
   provides focus entry and restoration for every caller (card, detail and list) unconditionally.
+
+  FNXC:TaskCardMenu 2026-10-09-16:15:
+  The card surface must opt out of the shared menu's autofocus scroll (`preventScrollOnFocus`). TaskCard
+  closes an open menu on any scroll event captured at the window (FN-8178 contract), and `UiMenu` focuses
+  its first item with `preventScroll: false` by default, so on a scrolled board the menu's own initial
+  focus dismissed it the tick it opened. This surface's own focus effect already asks for
+  `preventScroll: true`; the primitive's default contradicted it. `ListItemContextMenu` passes the same
+  opt-in.
   */
   return (
-    <UiMenu ref={menuRef} className={className} aria-label="Task actions" role={role} onKeyDown={handleKeyDown}>
+    <UiMenu ref={menuRef} className={className} aria-label="Task actions" role={role} preventScrollOnFocus onKeyDown={handleKeyDown}>
       {actions.map((item) => {
         if ("items" in item) {
           const isOpen = openSubmenuId === item.id;

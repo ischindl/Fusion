@@ -23,10 +23,12 @@ vi.mock("lucide-react", () => ({
   ShieldCheck: () => <svg />,
   Eye: () => <svg />,
   AlertTriangle: () => null,
-  ArrowDown: ({ style }: { style?: React.CSSProperties }) => <svg className="lucide-arrow-down" style={style} />,
-  Flag: ({ style }: { style?: React.CSSProperties }) => <svg className="lucide-flag" style={style} />,
-  ArrowUp: ({ style }: { style?: React.CSSProperties }) => <svg className="lucide-arrow-up" style={style} />,
-  TriangleAlert: ({ style }: { style?: React.CSSProperties }) => <svg className="lucide-triangle-alert" style={style} />,
+  /*
+  FNXC:TaskPriority 2026-10-09-16:15:
+  REMOVED: the ArrowDown / Flag / ArrowUp / TriangleAlert mocks rendered by the FN-509-retired priority
+  badge (`priorityIndicator.tsx`). This closed-world factory needs one entry per icon TaskCard imports,
+  and no assertion in this file named those renders.
+  */
 }));
 
 vi.mock("../ProviderIcon", () => ({
@@ -89,7 +91,16 @@ function getCssBlocks(css: string, atRuleFragment: string): string[] {
 }
 
 describe("TaskCard badge heights (FN-4369)", () => {
-  it("keeps triage planning, merging, and priority pills at identical dimensions", () => {
+  /*
+  FNXC:TaskPriority 2026-10-09-16:15:
+  FN-509 (fa5cdf67ce) removed the priority pills and their TaskCard.css rules, so the three
+  `card-priority-badge--{urgent,high,low}` samples that used to be compared against the status chips no
+  longer exist. The FN-4369 invariant this case owns is unchanged — a meta chip must not grow its own
+  box beside a status chip — and is now asserted over the meta chips that survived the retirement
+  (fast-mode and the opt-in oversight chip, whose declarations mirror `.card-status-badge` in
+  TaskCard.css).
+  */
+  it("keeps triage planning, merging, and meta chips at identical dimensions", () => {
     const cleanupCss = mountCss();
 
     const planning = render(
@@ -100,27 +111,22 @@ describe("TaskCard badge heights (FN-4369)", () => {
       <TaskCard task={makeTask({ id: "FN-101", column: "in-review", status: "merging" as Task["status"] })} onOpenDetail={noop} addToast={noop} />,
     ).container.querySelector(".card-status-badge");
 
-    const urgent = render(
-      <TaskCard task={makeTask({ id: "FN-102", priority: "urgent" as Task["priority"] })} onOpenDetail={noop} addToast={noop} />,
-    ).container.querySelector(".card-priority-badge--urgent");
+    const fast = render(
+      <TaskCard task={makeTask({ id: "FN-102", executionMode: "fast" })} onOpenDetail={noop} addToast={noop} />,
+    ).container.querySelector(".card-execution-mode-badge");
 
-    const high = render(
-      <TaskCard task={makeTask({ id: "FN-103", priority: "high" as Task["priority"] })} onOpenDetail={noop} addToast={noop} />,
-    ).container.querySelector(".card-priority-badge--high");
-
-    const low = render(
-      <TaskCard task={makeTask({ id: "FN-104", priority: "low" as Task["priority"] })} onOpenDetail={noop} addToast={noop} />,
-    ).container.querySelector(".card-priority-badge--low");
+    const oversight = render(
+      <TaskCard task={makeTask({ id: "FN-103", plannerOversightLevel: "steer" })} onOpenDetail={noop} addToast={noop} />,
+    ).container.querySelector(".card-oversight-badge");
 
     expect(planning).toBeTruthy();
     expect(merging).toBeTruthy();
-    expect(urgent).toBeTruthy();
-    expect(high).toBeTruthy();
-    expect(low).toBeTruthy();
+    expect(fast).toBeTruthy();
+    expect(oversight).toBeTruthy();
 
     const baseline = getComputedStyle(planning!);
 
-    for (const badge of [merging!, urgent!, high!, low!]) {
+    for (const badge of [merging!, fast!, oversight!]) {
       const styles = getComputedStyle(badge);
       expect(styles.height).toBe(baseline.height);
       expect(styles.paddingTop).toBe(baseline.paddingTop);
@@ -142,7 +148,6 @@ describe("TaskCard badge heights (FN-4369)", () => {
           id: "FN-8254",
           status: "running" as Task["status"],
           size: "M",
-          priority: "urgent" as Task["priority"],
           executionMode: "fast",
           missionId: "M-8254",
           plannerOversightLevel: "autonomous",
@@ -238,7 +243,6 @@ describe("TaskCard badge heights (FN-4369)", () => {
           id: `FN-8675-${size}`,
           status: "planning" as Task["status"],
           size,
-          priority: "urgent" as Task["priority"],
           executionMode: "fast",
           missionId: "M-8675",
         })}
@@ -253,7 +257,7 @@ describe("TaskCard badge heights (FN-4369)", () => {
     expect(sizeBadge).toBeTruthy();
     expect(statusBadge).toBeTruthy();
     expect(headerBadges).toBeTruthy();
-    expect(headerBadges.querySelectorAll(".card-status-badge, .card-priority-badge, .card-execution-mode-badge, .card-mission-badge").length).toBeGreaterThan(1);
+    expect(headerBadges.querySelectorAll(".card-status-badge, .card-execution-mode-badge, .card-mission-badge").length).toBeGreaterThan(1);
 
     /*
      * FNXC:TaskCardLayout 2026-08-01-06:46 (FN-8675):

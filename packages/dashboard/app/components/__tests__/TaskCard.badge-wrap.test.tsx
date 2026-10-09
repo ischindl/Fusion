@@ -24,10 +24,12 @@ vi.mock("lucide-react", () => ({
   Zap: () => null,
   ShieldCheck: () => null,
   AlertTriangle: () => null,
-  ArrowDown: ({ style }: { style?: React.CSSProperties }) => <svg className="lucide-arrow-down" style={style} />,
-  Flag: ({ style }: { style?: React.CSSProperties }) => <svg className="lucide-flag" style={style} />,
-  ArrowUp: ({ style }: { style?: React.CSSProperties }) => <svg className="lucide-arrow-up" style={style} />,
-  TriangleAlert: ({ style }: { style?: React.CSSProperties }) => <svg className="lucide-triangle-alert" style={style} />,
+  /*
+  FNXC:TaskPriority 2026-10-09-16:15:
+  REMOVED: the ArrowDown / Flag / ArrowUp / TriangleAlert mocks rendered by the FN-509-retired priority
+  badge (`priorityIndicator.tsx`). This closed-world factory needs one entry per icon TaskCard imports,
+  and no assertion in this file named those renders.
+  */
   Eye: () => null,
   MoreHorizontal: () => null,
   Sparkles: () => null,
@@ -242,7 +244,6 @@ describe("TaskCard badge wrapping (FN-5162)", () => {
       <TaskCard
         task={makeTask({
           status: "executing" as Task["status"],
-          priority: "urgent" as Task["priority"],
           executionMode: "fast",
           noCommitsExpected: true,
           sourceType: "agent_heartbeat",
@@ -286,11 +287,16 @@ describe("TaskCard badge wrapping (FN-5162)", () => {
     expect(container.querySelector(".card-header-actions")).toBeNull();
   });
 
+  /*
+  FNXC:TaskPriority 2026-10-09-16:15:
+  FN-509 (fa5cdf67ce) removed the priority badge, so "fast with priority" and "fast with priority and
+  oversight" became byte-for-byte duplicates of their priority-free siblings (the retired `priority:`
+  prop rendered nothing). The combination matrix this case owns is now the metadata cluster beside the
+  queued-to-plan chip: fast alone, and fast with the surviving oversight chip.
+  */
   it.each([
-    ["fast alone", { priority: "normal", plannerOversightLevel: "off" }],
-    ["fast with priority", { priority: "urgent", plannerOversightLevel: "off" }],
-    ["fast with oversight", { priority: "normal", plannerOversightLevel: "steer" }],
-    ["fast with priority and oversight", { priority: "urgent", plannerOversightLevel: "steer" }],
+    ["fast alone", { plannerOversightLevel: "off" }],
+    ["fast with oversight", { plannerOversightLevel: "steer" }],
   ] as const)("keeps %s beside a queued-to-plan status chip in the shared wrap context", (_name, meta) => {
     const { container: queuedContainer } = render(
       <TaskCard
@@ -320,8 +326,6 @@ describe("TaskCard badge wrapping (FN-5162)", () => {
     expect(headerBadges.contains(fastBadge)).toBe(true);
     expect(getComputedStyle(metaBadges).display).toBe("contents");
     expect(getComputedStyle(fastBadge).flexShrink).toBe("0");
-    const priorityBadge = queuedContainer.querySelector(".card-priority-badge") as HTMLElement | null;
-    if (priorityBadge) expect(getComputedStyle(priorityBadge).flexShrink).toBe("0");
   });
 
   it("keeps the layout-transparent meta wrapper contract in the mobile badge context", () => {
@@ -348,7 +352,6 @@ describe("TaskCard badge wrapping (FN-5162)", () => {
           column: "done",
           status: "done" as Task["status"],
           size: "S",
-          priority: "urgent" as Task["priority"],
           executionMode: "fast",
           noCommitsExpected: true,
           issueInfo: {
@@ -399,7 +402,6 @@ describe("TaskCard badge wrapping (FN-5162)", () => {
           column: "in-progress",
           status: "planning" as Task["status"],
           size: "M",
-          priority: "urgent" as Task["priority"],
           executionMode: "fast",
           plannerOverseerState: { state: "watching", oversightLevel: "observe" },
         })}
@@ -430,7 +432,6 @@ describe("TaskCard badge wrapping (FN-5162)", () => {
           column: "triage",
           status: undefined,
           size: "M",
-          priority: "normal" as Task["priority"],
           executionMode: "standard",
           plannerOversightLevel: "off",
         })}
@@ -681,9 +682,13 @@ describe("TaskCard badge wrapping (FN-5162)", () => {
      * jsdom does not apply the mobile media query. Inspect its shared declaration directly so
      * text, icon-only, size, PR, mission, and oversight chips cannot regain divergent box geometry.
      */
+    /*
+     * FNXC:TaskPriority 2026-10-09-16:15: FN-509 deleted the `.card-priority-badge` rules from
+     * TaskCard.css along with the badge, so this shared mobile-chip geometry list covers the chips
+     * that still render. Do not re-add it: the selector matches nothing in the sheet.
+     */
     const mobileHeaderChipSelectors = [
       ".card-status-badge",
-      ".card-priority-badge",
       ".card-size-badge",
       ".card-planner-overseer-state",
       ".card-execution-mode-badge",
@@ -711,7 +716,6 @@ describe("TaskCard badge wrapping (FN-5162)", () => {
 
   it.each([
     ".card-status-badge",
-    ".card-priority-badge",
     ".card-agent-created-badge",
     ".card-no-commits-expected-badge",
     ".card-github-badge",
@@ -776,7 +780,6 @@ describe("TaskCard badge wrapping (FN-5162)", () => {
     const { container: agentOnlyContainer } = render(
       <TaskCard
         task={makeTask({
-          priority: "normal" as Task["priority"],
           executionMode: "standard",
           sourceType: "agent_heartbeat",
           sourceAgentId: "agent-only",
@@ -798,7 +801,6 @@ describe("TaskCard badge wrapping (FN-5162)", () => {
     const { container: nonAgentContainer } = render(
       <TaskCard
         task={makeTask({
-          priority: "normal" as Task["priority"],
           executionMode: "standard",
           sourceType: "dashboard_ui",
           sourceAgentId: undefined,
@@ -841,7 +843,6 @@ describe("TaskCard badge wrapping (FN-5162)", () => {
         task={makeTask({
           id: "FN-8802-POPULATED",
           title: "A deliberately long task title that must shrink inside a very narrow card without moving controls outside its boundary",
-          priority: "urgent" as Task["priority"],
           executionMode: "fast",
           size: "L",
           sourceType: "agent_heartbeat",

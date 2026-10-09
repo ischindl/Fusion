@@ -60,6 +60,11 @@ never mounted and the operator had NO visible proof the task would wait for thei
 render the real card: armed alone (the reported symptom), armed beside another badge, and each of the
 three visible states. The negative cases keep the inverse invariant — the wrapper is never rendered
 empty for a card with no option and no other badge.
+
+FNXC:TaskPriority 2026-10-09-16:15:
+FN-509 (fa5cdf67ce) later retired the priority member of that guard set: `hasCardMetaBadges` now reads
+fast-mode / plan-approval / merge-approval / opt-in oversight. The FN-443 invariant below is unchanged —
+only the co-tenant badge used to prove it differs.
 */
 const PLAN_REVIEW_PASSED = {
   workflowStepId: "plan-review",
@@ -107,11 +112,13 @@ describe("TaskCard human plan approval badge (FN-443)", () => {
   });
 
   it("renders the badge alongside another metadata badge without disturbing it", () => {
-    renderCard(armedTask({ id: "FN-armed-priority", priority: "urgent" }));
+    // FNXC:TaskPriority 2026-10-09-16:15: FN-509 removed the priority badge this case used as its
+    // co-tenant; the fast-mode chip is the surviving `.card-meta-badges` sibling.
+    renderCard(armedTask({ id: "FN-armed-fast", executionMode: "fast" }));
 
     const wrapper = screen.getByTestId("card-meta-badges");
     expect(wrapper).toContainElement(screen.getByTestId("card-human-plan-approval-badge"));
-    expect(wrapper.querySelector(".card-priority-badge")).not.toBeNull();
+    expect(wrapper.querySelector(".card-execution-mode-badge")).not.toBeNull();
   });
 
   it.each([

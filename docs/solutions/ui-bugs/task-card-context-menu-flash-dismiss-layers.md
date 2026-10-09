@@ -33,3 +33,22 @@ Keep automatic keyboard focus, but call `focus({ preventScroll: true })` for the
 ## Regression coverage
 
 The TaskCard suite simulates a browser that dispatches a scroll after default focus and verifies that each card entry method remains open with `preventScroll`, invokes its action, and still honors outside-click, Escape, and real-scroll dismissal.
+
+## Recurrence — the same fault one layer up (2026-10-09, RUFU-335)
+
+The 2026-07-16 fix put `preventScroll: true` in `TaskContextMenu`'s own focus effect. FN-486 later moved
+the card's ⋯ menu onto the shared `UiMenu` primitive, which runs its **own** first-item focus-transfer
+effect on open with `preventScrollOnFocus` defaulting to `false`. That focus fires before the surface's
+`preventScroll: true` effect, so the portaled menu scrolled the board and dismissed itself again — the
+same open → autofocus → scroll → close loop, now owned by the primitive rather than the surface.
+
+The invariant is therefore shared, not surface-local: **every focus a menu takes while a scroll-dismissing
+host is listening must use `preventScroll`.** A host that closes an open menu on capture-phase `scroll`
+must pass `preventScrollOnFocus` to `UiMenu` — `TaskContextMenu` and `ListItemContextMenu` both do. A
+new menu host that forgets the opt-in does not fail loudly: the symptom is a query that cannot find its
+own menu items (`Unable to find role "menuitem"`), because the menu is gone by the time the assertion
+runs, which reads as a broken test rather than a dismissed popover.
+
+`TaskCard.test.tsx > keeps every card menu entry point open when autofocus would otherwise scroll` is the
+automated guard for all card entry methods (⋯ click, right-click, long-press, keyboard).
+
