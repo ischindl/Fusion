@@ -1687,7 +1687,12 @@ Features:
 - Commit and diff browsing, including a read-only **History target** selector for Git-reported worktrees in the Commits panel and **View commits** shortcuts from populated Worktrees rows. Changing this target affects only the Commits list and diff viewer, and the API accepts only worktrees already reported by `git worktree list` for the current repository target.
 - Push/pull/fetch actions
 - Pull with rebase option (split-button chooses between `git pull` and `git pull --rebase`)
-- One-click **Sync** action in Remotes (`git pull --rebase` followed by push; it stops and surfaces an error instead of pushing when the pull conflicts or fails)
+
+<!-- FNXC:GitManagerPush 2026-10-10-02:43: RUFU-337 F-7 — on a shared branch a plain `git push` is rejected as non-fast-forward, so an affordance that offered it on a behind branch was an affordance for a guaranteed failure (the reporter measured `main...origin/main [ahead 676, behind 7]` with Push looking available). Push availability now reads `status.behind`, the same measurement the "ahead X / behind Y" badges use, so the control and the badge can never disagree. The reading is deliberately the last-fetch snapshot and is never presented as a live remote query. -->
+- **Push is offered only when the branch can accept it.** When the status read reports the branch behind its upstream, Remotes **Push** is disabled and the warning beside it states the behind count and names **Sync** as the remedy, so the blocked state explains itself instead of producing a failed push. The same rule is enforced in the action itself, not only in the button, so no other click path can send the doomed push.
+- **Commit and Push keeps its half-promise.** With the branch behind, it still creates the local commit and then skips the push leg, telling you the commit hash and that **Sync** is needed. The local commit is never withheld because publishing is blocked.
+- One-click **Sync** action in Remotes (`git pull --rebase` followed by push; it stops and surfaces an error instead of pushing when the pull conflicts or fails). Sync stays available while Push is blocked — it is the way out of that state, so gating it would deadlock the branch.
+- Both readings are as of the last fetch: **Fetch** (or reopening Git Manager) is how you refresh them, and a branch with no upstream is reported as not behind, so the first push is never blocked.
 - Remote editing controls
 - Stash inspection (view stat + patch) before apply/pop/drop actions
 - **Recovery** tab for orphaned merger-autostashes; orphan counts appear on Git Manager entry points

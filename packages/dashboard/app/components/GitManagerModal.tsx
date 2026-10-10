@@ -638,6 +638,30 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
       commitHash = commitResult.hash;
       addToast(t("git.committedHash", "Committed: {{hash}}", { hash: commitResult.hash }), "success");
 
+      /*
+      FNXC:GitManagerPush 2026-10-10-02:12:
+      Guard for the push leg ONLY: a commit made while the branch is behind origin is still valid local
+      work, so it stays committed and its toast stays shown; the doomed push is skipped rather than sent
+      (RUFU-337 finding F-7 — the affordance must never advertise an action git cannot accept). A local
+      commit does not change `behind`, so the closure's `status` is still the live measurement. Refresh
+      changes + status and preserve the commit message exactly as the push-failure branch below does, so
+      the operator can Sync and re-push without retyping.
+      */
+      if ((status?.behind ?? 0) > 0) {
+        addToast(t("git.commitSucceededPushSkipped", "Committed locally ({{hash}}). Push skipped — Sync (pull --rebase + push) first.", { hash: commitHash }), "warning");
+        try {
+          const [changes, statusData] = await Promise.all([fetchFileChanges(projectId, gitRepoPath), fetchGitStatus(projectId, { extended: true }, gitRepoPath)]);
+          setFileChanges(changes);
+          setStatus(statusData);
+          setSelectedDiffTarget(null);
+          setChangeDiff(null);
+          setChangeDiffError(null);
+        } catch {
+          // The skip toast is already actionable; a failed refresh must not replace it.
+        }
+        return;
+      }
+
       const pushResult = await pushBranch(projectId, gitRepoPath);
       setLastRemoteResult(pushResult);
       addToast(pushResult.message || t("git.pushCompleted", "Push completed"), "success");
@@ -669,7 +693,7 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
     } finally {
       setCommitting(false);
     }
-  }, [commitMessage, addToast, projectId, gitRepoPath, t]);
+  }, [commitMessage, addToast, projectId, gitRepoPath, status?.behind, t]);
 
   const handleStageAllAndCommit = useCallback(async () => {
     if (!commitMessage.trim()) return;
@@ -1043,7 +1067,19 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
     }
   }, [addToast, projectId]);
 
+  /*
+  FNXC:GitManagerPush 2026-10-10-02:12:
+  Handler-side belt for the RemotesPanel affordance gate: no UI click path may send a push the remote has
+  no chance to fast-forward. The refusal reads the already-fetched `status.behind` — no extra network
+  round-trip to answer a question the panel already answered — and warns with the remedy instead of
+  letting git raise the non-fast-forward error. `handleSyncWithOrigin` is deliberately NOT gated: pull
+  --rebase followed by push IS the sanctioned remediation, so gating it would remove the way out.
+  */
   const handlePush = useCallback(async () => {
+    if ((status?.behind ?? 0) > 0) {
+      addToast(t("git.pushRequiresSyncToast", "Branch is behind origin as of the last fetch. Sync (pull --rebase + push) before pushing."), "warning");
+      return;
+    }
     setRemoteLoading("push");
     try {
       const result = await pushBranch(projectId, gitRepoPath);
@@ -1056,7 +1092,7 @@ export function GitManagerModal({ isOpen, onClose, tasks: _tasks, addToast, proj
     } finally {
       setRemoteLoading(null);
     }
-  }, [addToast, projectId]);
+  }, [addToast, projectId, gitRepoPath, status?.behind, t]);
 
   const handleSyncWithOrigin = useCallback(async () => {
     setRemoteLoading("sync");
@@ -1928,6 +1964,18 @@ function ChangesPanel({
   const selectedUnstaged = unstagedFiles.filter((f) => selectedFiles.has(`unstaged:${f.file}`));
   const selectedStaged = stagedFiles.filter((f) => selectedFiles.has(`staged:${f.file}`));
 
+  /*
+  FNXC:GitManagerPush 2026-10-10-02:12:
+  "Commit and Push" promises two things and only the push half is impossible while the branch is behind
+  origin. The button deliberately stays ENABLED — the local commit still works and disabling it would
+  delete a working feature — but its tooltip must stop promising a push that git will reject as a
+  non-fast-forward (RUFU-337 finding F-7). Derived from the `status` prop this panel already receives.
+  */
+  const behindCount = status?.behind ?? 0;
+  const commitAndPushTitle = behindCount > 0
+    ? t("git.commitAndPushBlockedTitle", "Commit staged changes now. Push will be skipped: branch is behind origin by {{count}} commit(s) as of the last fetch — Sync (pull --rebase + push) afterwards.", { count: behindCount })
+    : t("git.commitAndPushTitle", "Commit staged changes, then push the current branch");
+
   return (
     <div className="gm-panel" data-testid="changes-panel">
       {/* Current branch indicator */}
@@ -2162,7 +2210,7 @@ function ChangesPanel({
             className="btn btn-sm"
             onClick={onCommitAndPush}
             disabled={committing || !commitMessage.trim() || stagedFiles.length === 0}
-            title={t("git.commitAndPushTitle", "Commit staged changes, then push the current branch")}
+            title={commitAndPushTitle}
           >
             {committing ? <Loader2 size={14} className="spin" /> : <ArrowUp size={14} />}
             {t("git.commitAndPush", "Commit and Push")}
@@ -2810,6 +2858,19 @@ function RemotesPanel({
 }) {
   const { t } = useTranslation("app");
 
+  /*
+  FNXC:GitManagerPush 2026-10-10-02:12:
+  A plain `git push` cannot succeed while the branch is behind its upstream — git rejects it as a
+  non-fast-forward — so the Push affordance must not be offered in that state. The decision reuses the
+  SAME `status.behind` the ahead/behind badges already render (RUFU-337 finding F-7: the panel read
+  "ahead 676, behind 7" next to an unrestricted Push button). `status === null` (first paint or a failed
+  status read) resolves to 0 so publishing capability is never removed by a missing measurement; a branch
+  with no upstream also reports `behind: 0` from the status route, so its first push keeps working.
+  Sync stays the ungated remediation path.
+  */
+  const behindCount = status?.behind ?? 0;
+  const pushRequiresSync = behindCount > 0;
+
   /** Extract hostname from remote URL */
   const getHostFromUrl = (url: string): string => {
     try {
@@ -2893,6 +2954,11 @@ function RemotesPanel({
   // Load ahead commits whenever the ahead count indicates commits to push.
   // This covers: initial mount (when status arrives), status refresh after
   // remote actions (fetch/pull/push), and any other status updates.
+  //
+  // FNXC:GitManagerPush 2026-10-10-02:12: the *preview* of commits to push stays a function of
+  // `status.ahead` alone, which is correct — the commits exist locally regardless of upstream state.
+  // The *availability* of the Push affordance is a separate question and additionally consults
+  // `status.behind` (see `pushRequiresSync` above); do not read this effect as the push gate.
   useEffect(() => {
     if (status && status.ahead > 0) {
       loadAheadCommits();
@@ -3300,7 +3366,14 @@ function RemotesPanel({
                   <button
                     className="btn btn-primary"
                     onClick={onPush}
-                    disabled={remoteLoading !== null || loading}
+                    disabled={remoteLoading !== null || loading || pushRequiresSync}
+                    title={
+                      pushRequiresSync
+                        ? t("git.pushBlockedTitle", "Blocked: branch is behind origin by {{count}} commit(s) as of the last fetch. Run Sync first.", { count: behindCount })
+                        : t("git.pushTitle", "Push current branch to origin")
+                    }
+                    aria-describedby={pushRequiresSync ? "git-push-requires-sync" : undefined}
+                    data-testid="remotes-push-btn"
                   >
                     {remoteLoading === "push" ? (
                       <Loader2 size={14} className="spin" />
@@ -3344,6 +3417,22 @@ function RemotesPanel({
                     </button>
                   )}
                 </div>
+                {/*
+                  FNXC:GitManagerPush 2026-10-10-02:12: the disabled control must explain itself in place
+                  (an error toast after a doomed click is not guidance), so the reason is rendered beside
+                  the row using the existing `.gm-status-warning` primitive — the same one the stale-index
+                  alert uses — and names the remediation the row already offers: Sync. Rendered as a flow
+                  sibling inside `.gm-remote-sync-card` (a flex column), so no new CSS is needed. The id is
+                  the Push button's `aria-describedby` target only while blocked, so no dangling reference.
+                */}
+                {pushRequiresSync ? (
+                  <div className="gm-status-warning" role="alert" id="git-push-requires-sync" data-testid="push-requires-sync-hint">
+                    <AlertCircle size={14} />
+                    <div>
+                      {t("git.pushRequiresSync", "Branch is behind origin by {{count}} commit(s) as of the last fetch. Sync (pull --rebase + push) first; Push is blocked until then.", { count: behindCount })}
+                    </div>
+                  </div>
+                ) : null}
               </div>
 
               {/* Remote Detail Card */}

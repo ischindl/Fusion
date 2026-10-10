@@ -5,7 +5,7 @@ import { GitManagerModal } from "../GitManagerModal";
 import { KeyboardViewportOwnerProvider } from "../../hooks/useKeyboardViewportSurface";
 import { assertModalGeometryRecoveryAndSheetContracts, assertRenderedModalTouchGeometry } from "./floatingWindowMigration.test-helpers";
 import type { Task } from "@fusion/core";
-import { loadAllAppCss } from "../../test/cssFixture";
+import { loadAllAppCss, readAppFile } from "../../test/cssFixture";
 
 // Mock SSE bus before module imports so the GitManagerModal SSE effect is a no-op
 vi.mock("../../sse-bus", () => ({
@@ -2163,6 +2163,230 @@ describe("GitManagerModal", () => {
     });
     expect(pushBranch).not.toHaveBeenCalled();
     expect(mockAddToast).toHaveBeenCalledWith("sync pull failed", "error");
+  });
+
+  // ── Push blocked by a behind upstream (RUFU-337 finding F-7) ────────
+  //
+  // A plain `git push` cannot fast-forward while the branch is behind origin, so the affordance must
+  // never be offered in that state. Every case below sets `behind` through the SAME status mock the
+  // ahead/behind badges read — the gate consumes `status.behind`, never a fresh fetch of its own — and
+  // queries the real Push button inside `.gm-remote-sync-card` rather than an extracted subcomponent.
+
+  const mockBehindStatus = (behind: number, ahead = 2) => {
+    (fetchGitStatus as any).mockResolvedValue({
+      branch: "main",
+      commit: "abc1234",
+      isDirty: false,
+      ahead,
+      behind,
+    });
+  };
+
+  it("disables the Push button and explains the blocked state when the branch is behind origin", async () => {
+    mockBehindStatus(3);
+
+    render(
+      <GitManagerModal isOpen={true} onClose={vi.fn()} tasks={mockTasks} addToast={mockAddToast} />
+    );
+    fireEvent.click(screen.getByRole("tab", { name: /remotes/i }));
+
+    const syncCard = await screen.findByTestId("remote-sync-card");
+    const pushButton = within(syncCard).getByTestId("remotes-push-btn");
+    expect(pushButton).toBeDisabled();
+    expect(pushButton).toHaveAccessibleName("Push");
+    expect(pushButton).toHaveAttribute(
+      "title",
+      "Blocked: branch is behind origin by 3 commit(s) as of the last fetch. Run Sync first."
+    );
+
+    const hint = within(syncCard).getByTestId("push-requires-sync-hint");
+    expect(hint).toHaveTextContent(
+      "Branch is behind origin by 3 commit(s) as of the last fetch. Sync (pull --rebase + push) first; Push is blocked until then."
+    );
+    // The explanation is announced to the button it explains, and only while blocked.
+    expect(pushButton).toHaveAttribute("aria-describedby", "git-push-requires-sync");
+    expect(hint).toBeInTheDocument();
+  });
+
+  it("renders the blocked Push hint with the same warning primitive and layout slot the stale-index alert uses", async () => {
+    mockBehindStatus(3);
+
+    render(
+      <GitManagerModal isOpen={true} onClose={vi.fn()} tasks={mockTasks} addToast={mockAddToast} />
+    );
+    fireEvent.click(screen.getByRole("tab", { name: /remotes/i }));
+
+    const syncCard = await screen.findByTestId("remote-sync-card");
+    const hint = within(syncCard).getByTestId("push-requires-sync-hint");
+    // No bespoke styling: the reuse of `.gm-status-warning` is what keeps the blocked state on-token.
+    expect(hint).toHaveClass("gm-status-warning");
+    // Flow sibling immediately after the action row it explains — not an absolutely positioned
+    // overlay and not hoisted outside the card, so the mobile sheet lays it out in normal flow.
+    expect(hint.parentElement).toBe(syncCard);
+    expect(hint.previousElementSibling).not.toBeNull();
+    expect(hint.previousElementSibling!.className).toContain("gm-remote-actions");
+  });
+
+  it("renders the blocked Push copy grammatically for a single behind commit", async () => {
+    mockBehindStatus(1);
+
+    render(
+      <GitManagerModal isOpen={true} onClose={vi.fn()} tasks={mockTasks} addToast={mockAddToast} />
+    );
+    fireEvent.click(screen.getByRole("tab", { name: /remotes/i }));
+
+    const syncCard = await screen.findByTestId("remote-sync-card");
+    expect(within(syncCard).getByTestId("push-requires-sync-hint")).toHaveTextContent(
+      "Branch is behind origin by 1 commit(s) as of the last fetch."
+    );
+    expect(within(syncCard).getByTestId("remotes-push-btn")).toBeDisabled();
+  });
+
+  it("keeps Push enabled with no blocked hint when the branch is not behind", async () => {
+    // The default status fixture is ahead: 0 / behind: 0; the 676-ahead-0-behind shape from the field
+    // report is the publishing case, so pin a non-zero ahead count alongside behind: 0.
+    mockBehindStatus(0, 676);
+
+    render(
+      <GitManagerModal isOpen={true} onClose={vi.fn()} tasks={mockTasks} addToast={mockAddToast} />
+    );
+    fireEvent.click(screen.getByRole("tab", { name: /remotes/i }));
+
+    const syncCard = await screen.findByTestId("remote-sync-card");
+    const pushButton = within(syncCard).getByTestId("remotes-push-btn");
+    expect(pushButton).toBeEnabled();
+    expect(within(syncCard).queryByTestId("push-requires-sync-hint")).not.toBeInTheDocument();
+    expect(pushButton).not.toHaveAttribute("aria-describedby");
+    expect(pushButton).toHaveAttribute("title", "Push current branch to origin");
+  });
+
+  it("keeps Push enabled and still publishes when the behind count was never measured", async () => {
+    const user = userEvent.setup();
+    // The gate's default is "not behind": a status payload without a `behind` field (an older status
+    // route or a non-extended read) must leave the publishing path open rather than gate it. The
+    // `status === null` shape cannot be reached with this panel mounted at all — with no status the
+    // modal renders its loading/error state and never mounts the sync card — so the missing-measurement
+    // default is pinned at the payload seam that can actually reach the button.
+    (fetchGitStatus as any).mockResolvedValue({
+      branch: "main",
+      commit: "abc1234",
+      isDirty: false,
+      ahead: 2,
+    });
+
+    render(
+      <GitManagerModal isOpen={true} onClose={vi.fn()} tasks={mockTasks} addToast={mockAddToast} />
+    );
+    fireEvent.click(screen.getByRole("tab", { name: /remotes/i }));
+
+    const syncCard = await screen.findByTestId("remote-sync-card");
+    const pushButton = within(syncCard).getByTestId("remotes-push-btn");
+    expect(pushButton).toBeEnabled();
+    expect(within(syncCard).queryByTestId("push-requires-sync-hint")).not.toBeInTheDocument();
+    expect(pushButton).not.toHaveAttribute("aria-describedby");
+
+    await user.click(pushButton);
+    await waitFor(() => {
+      expect(pushBranch).toHaveBeenCalled();
+    });
+  });
+
+  it("guards the push handler on the behind count, not only on the disabled attribute", () => {
+    // The affordance gate makes an enabled Push unreachable while behind, and jsdom delivers no click
+    // to a control rendered `disabled` (measured: fireEvent.click, removeAttribute + fireEvent.click,
+    // and a raw bubbling MouseEvent each produced 0 handler calls), so the handler-side belt cannot be
+    // driven through the DOM here. The reachable belt is the Commit-and-Push push leg above; this pins
+    // the second one as a code construct: the guard must run on the model and return before pushBranch.
+    const source = readAppFile("components/GitManagerModal.tsx");
+    const start = source.indexOf("const handlePush = useCallback(");
+    expect(start).toBeGreaterThan(-1);
+    const body = source.slice(start, source.indexOf("}, [", start));
+    const guardIndex = body.indexOf("(status?.behind ?? 0) > 0");
+    const pushCallIndex = body.indexOf("pushBranch(");
+
+    expect(guardIndex).toBeGreaterThan(-1);
+    expect(pushCallIndex).toBeGreaterThan(guardIndex);
+    expect(body.slice(guardIndex, pushCallIndex)).toContain("return;");
+    expect(body.slice(guardIndex, pushCallIndex)).toContain(
+      "Branch is behind origin as of the last fetch. Sync (pull --rebase + push) before pushing."
+    );
+  });
+
+  it("leaves Sync as the ungated remedy while Push is blocked", async () => {
+    const user = userEvent.setup();
+    mockBehindStatus(3);
+
+    render(
+      <GitManagerModal isOpen={true} onClose={vi.fn()} tasks={mockTasks} addToast={mockAddToast} />
+    );
+    fireEvent.click(screen.getByRole("tab", { name: /remotes/i }));
+
+    const syncCard = await screen.findByTestId("remote-sync-card");
+    expect(within(syncCard).getByTestId("remotes-push-btn")).toBeDisabled();
+
+    const syncButton = within(syncCard).getByTestId("remotes-sync-origin-btn");
+    expect(syncButton).toBeEnabled();
+    await user.click(syncButton);
+
+    await waitFor(() => {
+      expect(pullBranch).toHaveBeenCalledWith({ rebase: true }, undefined, undefined);
+    });
+    expect(mockAddToast).not.toHaveBeenCalledWith(
+      "Branch is behind origin as of the last fetch. Sync (pull --rebase + push) before pushing.",
+      "warning"
+    );
+  });
+
+  it("commits locally but skips the push leg of Commit and Push while behind, keeping the commit message", async () => {
+    const user = userEvent.setup();
+    mockBehindStatus(3);
+
+    render(
+      <GitManagerModal isOpen={true} onClose={vi.fn()} tasks={mockTasks} addToast={mockAddToast} />
+    );
+    fireEvent.click(screen.getByRole("tab", { name: /changes/i }));
+
+    const commitAndPush = await screen.findByRole("button", { name: /commit and push/i });
+    const textarea = screen.getByPlaceholderText("Commit message...");
+    await user.type(textarea, "feat: blocked push leg");
+
+    // The local half of the promise still works, so the button stays enabled and says what it will skip.
+    expect(commitAndPush).toBeEnabled();
+    expect(commitAndPush.getAttribute("title")).toContain(
+      "Push will be skipped: branch is behind origin by 3 commit(s)"
+    );
+
+    await user.click(commitAndPush);
+
+    await waitFor(() => {
+      expectLatestCallStartsWith(createCommit as any, "feat: blocked push leg");
+      expect(mockAddToast).toHaveBeenCalledWith(
+        "Committed locally (def5678). Push skipped — Sync (pull --rebase + push) first.",
+        "warning"
+      );
+    });
+    expect(pushBranch).not.toHaveBeenCalled();
+    expect(screen.getByDisplayValue("feat: blocked push leg")).toBeInTheDocument();
+  });
+
+  it("renders both the blocked Push affordance and its explanation in the mobile viewport", async () => {
+    mockBehindStatus(3);
+    mockUseViewportMode.mockReturnValue("mobile");
+
+    render(
+      <GitManagerModal isOpen={true} onClose={vi.fn()} tasks={mockTasks} addToast={mockAddToast} />
+    );
+    fireEvent.click(screen.getByRole("tab", { name: /remotes/i }));
+
+    const syncCard = await screen.findByTestId("remote-sync-card");
+    expect(within(syncCard).getByTestId("remotes-push-btn")).toBeDisabled();
+    expect(within(syncCard).getByTestId("push-requires-sync-hint")).toHaveTextContent(
+      "Branch is behind origin by 3 commit(s) as of the last fetch."
+    );
+    expect(within(syncCard).getByTestId("remotes-push-btn")).toHaveAttribute(
+      "aria-describedby",
+      "git-push-requires-sync"
+    );
   });
 
   it("shows a spinner and disables the Sync button while syncing", async () => {
