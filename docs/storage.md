@@ -547,14 +547,31 @@ FN-509 removed task priority levels. An ordinary queue is strictly arrival-order
 
 **Settled `slim` answer.** `slim` stays what it was: a *row-shape* flag that re-parses `PROMPT.md` for cards with empty persisted `steps` and blanks a few fields; it is not a bandwidth flag, and it is not gated on `derive`. A caller that wants badges and no log wants `excludeLog`, not `slim`. Measured on a distribution-matched 2 417-row board (31.8 MB of `log`, envelope 841 KB, 38:1 after TOAST):
 
-| Read shape | median |
-|---|---|
-| `{}` — today's full-row deriving board read | 1 176 ms |
-| `{ derive: false }` | 689 ms |
-| `{ derive: false, excludeLog: true }` — the RUFU-202 shape | 294 ms |
-| `{ slim: true }` | 1 113 ms |
-| `{ slim: true, excludeLog: true }` — the board page now | 815 ms |
-| `{ derive: true, excludeLog: true }` — badges from the projections | 640 ms |
+(median of 3, `--expose-gc`, heap sampled after an explicit GC; `board-read-shape.bench.pg.test.ts`
+under `FUSION_BOARD_BENCH=1` reproduces it)
+
+| Read shape | median | retained heap |
+|---|---|---|
+| `{}` — today's full-row deriving board read | 910 ms | 190.6 MB |
+| `{ derive: false }` | 647 ms | 123.2 MB |
+| `{ derive: false, excludeLog: true }` — the RUFU-202 shape | **245 ms** | 88.5 MB |
+| `{ slim: true }` | 898 ms | 187.0 MB |
+| `{ slim: true, excludeLog: true }` — the board page now | **616 ms** | **60.0 MB** |
+| `{ derive: true, excludeLog: true }` — badges from the projections | 489 ms | 129.4 MB |
+
+Two readings of that table matter for how it is used:
+
+- **The 0.2–0.35 s target is met by the shape it was set for.** The prototype's no-`log` baseline was a
+  `derive:false` read; that same shape with the column dropped lands at 245 ms, inside the band. A
+  badge-deriving board read lands at 489–616 ms because hydrating and deriving 2 417 cards in JavaScript
+  is what is left — the column is off the bill, per-row work is not.
+- **The PROMPT.md re-read cost is NOT in these numbers.** Every seeded row carries persisted `steps`, so
+  `finalizeSlimListTask` never fired and the bench performed zero task-file reads. `slim`'s per-card
+  re-parse is documented above from the code path, not measured here; nobody should read 898 → 616 ms as
+  the price of dropping `slim`.
+- **Write side, from the same run:** the derivation alone over the worst-case log (271 entries, 1.1 MB)
+  medians **0.25 ms**; a full `logEntry` append on that row medians 94 ms, which is the pre-existing cost
+  of rewriting a megabyte column, and 19 ms on a typical ~5 KB row.
 
 **Per-caller shapes.** Board page and queue page (`listCurrentTasksPageImpl`, `listTaskQueuePageImpl`), `GET /api/tasks`, and the triage/scheduler/gridlock sweeps pass `excludeLog: true`; the hold-release sweep already did. The lane-role read that feeds merge eligibility deliberately does **not**: `hasAutoHealableVerificationBufferFailure` pattern-matches log *content*, which no bounded envelope carries. `packages/engine/src/__tests__/board-read-shape-guard.test.ts` pins both halves, so dropping the column where a consumer reads it fails a test just as keeping it where nobody reads it does.
 
