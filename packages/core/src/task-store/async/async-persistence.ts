@@ -47,6 +47,8 @@ import {
   TASK_JSONB_COLUMNS,
   type TaskPersistSerializationContext,
 } from "../persistence.js";
+/* FNXC:TaskLogProjections 2026-10-10-19:13 (RUFU-615): see `updateTaskColumns` for the invariant. */
+import { withTaskLogProjections } from "../task-log-projections.js";
 
 /**
  *FNXC:TaskStorePersistence 2026-06-24-13:05:
@@ -776,10 +778,18 @@ export async function updateTaskColumns(
   id: string,
   updates: Record<string, unknown>,
 ): Promise<void> {
-  if (Object.keys(updates).length === 0) return;
+  /*
+  FNXC:TaskLogProjections 2026-10-10-19:13 (RUFU-615):
+  THE WRITE PAIRING, targeted-UPDATE half. `logEntryImpl` and friends write `log` without going through
+  the column descriptors, so this is the central place where the two derived columns get recomputed from
+  the array the statement is about to store. Doing it here rather than at each call site is what keeps
+  the invariant true for the next log writer nobody has enumerated yet.
+  */
+  const withProjections = withTaskLogProjections(updates);
+  if (Object.keys(withProjections).length === 0) return;
   await layer.db
     .update(schema.project.tasks)
-    .set(updates as never)
+    .set(withProjections as never)
     .where(and(
       eq(schema.project.tasks.projectId, layer.projectId?.trim() || "__legacy_unscoped__"),
       eq(schema.project.tasks.id, id),
