@@ -14,6 +14,17 @@ function readDoc(relativePath: string): string {
 FNXC:WorkspaceDocs 2026-08-15-04:31:
 Workspace mode shipped without an operator guide. This contract preserves the required lifecycle
 sections, entry-point links, and source names so the guide cannot silently drift or disappear.
+
+FNXC:WorkspaceDocs 2026-10-09-12:44 (RUFU-327):
+FN-295 retired the task-archiving lifecycle, so docs/workspaces.md renamed its archiving-era cleanup
+section to "## Completion cleanup", whose body states there is no separate archive lifecycle. The
+expected-heading list below therefore names the successor sections (Completion cleanup, Task Reset);
+restoring retired archiving wording into the guide to make a red run here go green is a defect, not a
+fix — the guide is the correct artifact and this assertion is the one that was stale. The list stays a
+subset contract over the lifecycle spine, deliberately not an inventory of every heading in the guide,
+so broadening it to all headings is a separate decision. This note describes the retired heading in
+prose instead of quoting it: RUFU-327's acceptance proof greps packages/, docs/ and scripts/ for zero
+hits of that heading text, so a quoted literal here would make the proof unsatisfiable by construction.
 */
 describe("workspace documentation contract", () => {
   it("includes the canonical guide structure and required cross-references", () => {
@@ -34,7 +45,8 @@ describe("workspace documentation contract", () => {
       "## landedSha idempotency",
       "## Partial-land recovery and self-healing",
       "## Reverting a workspace task",
-      "## Archiving and cleanup",
+      "## Completion cleanup",
+      "## Task Reset",
       "## Limitations and known sharp edges",
       "## Troubleshooting",
     ]) {
