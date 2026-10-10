@@ -108,6 +108,17 @@ export interface AutoMergeFinalizationResult {
   reason?: string;
   /** True only for the graph-owned post-merge gate that must run before retrying finalization. */
   deferredPostMergeEvidence?: boolean;
+  /*
+  FNXC:MergePublishBeforeFinalize 2026-10-10-00:20 (RUFU-346):
+  Names WHY the pass is blocked. `outcome: "blocked"` also covers a blocking task status, a column the
+  lane may not write, and a failed landing-proof door, and those blockers do NOT mean the landed work is
+  ready for the remote. The publish-before-blocked-finalization owner therefore needs the cause, not just
+  the refusal: this flag is set only by the required-post-merge-evidence blocker, which is the one blocker
+  that coexists with a durable landing. `deferredPostMergeEvidence` stays the resumability axis (can the
+  graph still produce the gate?), so the two booleans answer different questions and are not redundant.
+  */
+  /** True when the block was raised by required post-merge evidence, i.e. the landing itself is durable. */
+  postMergeEvidenceBlocked?: boolean;
   /** True when this invocation installed the missing graph-owned post-merge continuation. */
   resumedPostMergeEvidence?: boolean;
 }
@@ -484,6 +495,7 @@ export async function finalizeProvenAutoMergeTask({
         previousColumn: latest.column,
         reason: unreachablePostMergeGateReason(evidenceBlocker, reseed.reason),
         deferredPostMergeEvidence,
+        postMergeEvidenceBlocked: true,
       };
     }
     await recordFinalizationAudit({
@@ -503,6 +515,7 @@ export async function finalizeProvenAutoMergeTask({
       previousColumn: latest.column,
       reason: evidenceBlocker,
       deferredPostMergeEvidence,
+      postMergeEvidenceBlocked: true,
       /*
       FNXC:PostMergeRecovery 2026-10-02-20:31 (upstream FN-9442 field kept on our seam):
       `resumedPostMergeEvidence` is upstream's signal that THIS pass claimed the missing post-merge gate, so

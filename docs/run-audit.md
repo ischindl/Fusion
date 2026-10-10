@@ -433,6 +433,19 @@ A Code Review `REVISE` with named remediation steps refuses the merge door for e
 
 Metadata is `taskId`, `workflowStepId` (the gate whose authored `REVISE` the card is answering), fixed `source` (`self-healing`) and `outcome` only — no findings, verdicts, blocker sentences, or error text.
 
+### Publishing a landing the completion gate would not acknowledge (RUFU-346)
+
+Required post-merge evidence can block completion after the merge is already durable. Before this change the post-merge publish was a step that ran strictly *after* finalization, so every blocked or deferred arm returned or threw before it: the local integration ref had advanced, `origin` was never offered the landing, and the hosted gate that the card is waiting on cannot report against a ref the remote does not have. The wait was self-blocking — the missing evidence could never arrive because the publish that would let it arrive was gated behind the evidence.
+
+The publish now runs inside finalization, before the refusal. Both events are written by the merger lane (`agentId: "merger"`, `runId: merge-<taskId>`, `target: <taskId>`, `domain: "git"`):
+
+- `task:merge-publish-before-finalize` — the push step was reached. Metadata is `taskId`, `outcome` (`pushed`, or `not-pushed` when the push step ran and did not advance the remote ref) and `landingProof` (`lane` when the lane proved the landing in-process, `recorded` when only the durable `mergeDetails` record proved it). The transport detail stays on the `push:origin` row the push itself still writes; this row only explains why a push exists on a card that never completed.
+- `task:merge-publish-before-finalize-unavailable` — a candidate existed and something stopped the push before it ran, which is the half that answers "why is landed work not on the remote?". Metadata is `taskId`, `hold` (fixed vocabulary: `policy-disabled`, `global-pause`, `task-paused`, `auto-merge-off`, `destination-changed`, `landing-proof-unproven`, `task-unavailable`, `authorization-unavailable`, `merge-aborted`, `push-failed`), `landingProof`, `landingProven`, and `reachedPush` (was the push step entered before the hold took effect). `push-failed` is the defensive member: a publish that *raised* inside the push step. A push that reports its own failure without raising records `outcome: not-pushed` on the published row instead, because the push did run.
+
+Neither row carries a remote URL, ref tip, error message, finding, or spec sentence; a failed push keeps its detail in the engine log and its own `push:origin` row. Emission is the bounded seam (FN-9175), so telemetry can never replace the blocked-finalization refusal the caller has to see. A pass that COMPLETED publishes too but records neither row here — the card is done and `push:origin` is its record — and a pass that was never blocked on required evidence emits nothing at all.
+
+These two events are deliberately **not** in the curated delivery-pipeline event catalogue. That catalogue is the lifecycle record of a card moving through delivery and `run-audit-catalogue.test.ts` locks it table-for-table against the `## Delivery-pipeline finalization` section above; this pair records a git-transport decision taken on a card that never reached the completion leg, alongside the other prose-documented exceptions (`task:external-block-parked`, the chat-lane compaction pair, the worktree-base decision rows). Do not add rows for them to that table.
+
 ### Long-term memory budget maintenance (RUFU-279)
 
 `memory:long-term-over-budget` records a long-term `MEMORY.md` (project scope, or one durable agent's

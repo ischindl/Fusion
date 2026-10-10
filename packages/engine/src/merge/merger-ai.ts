@@ -1752,6 +1752,24 @@ export async function runAiMerge(
   const setStatus = (status: string | null): Promise<unknown> =>
     writeTransientMergeStatus(store, taskId, options.signal, status);
 
+  /*
+  FNXC:MergePublishBeforeFinalize 2026-10-10-00:22 (RUFU-346):
+  Publish ownership used to sit strictly AFTER `finalizeTask`, so every required-post-merge-evidence block
+  — the fatal refusal, the non-graph deferred refusal, and the graph-owned deferred return — left the
+  function before `runPushAfterMergeStep` was ever reached, and `origin` stayed behind a durable landing
+  (RUFU-337 F-6, reported by RUFU-333 round 3 and RUFU-325 round 3). The lane now hands finalization a
+  publish attempt it owns: `finalizeTask` calls it before it refuses on the blocked arms and on the success
+  path in place of the old post-finalize callsite, so exactly one publish runs per lane result and the two
+  `finalizeTask`-only surfaces (no-commits / missing-branch) get one for the first time.
+  Both closures re-read the task and settings live, because a hold applied while finalization was running
+  (pause, pushAfterMerge flipped, destination repointed) must stop the push.
+  */
+  const publishLandingContext = { store, projectRootDir, taskId, settings, integrationBranch, audit, log, options, fence };
+  /** A landing this lane produced or re-proved in-process (already-landed, no-op, squash surfaces). */
+  const publishLandedWork = createPublishBeforeFinalizeLanding({ ...publishLandingContext, requireRecordedLandingProof: false });
+  /** A surface with no in-process landing: publish only what `mergeDetails` can prove is integrated. */
+  const publishRecordedLanding = createPublishBeforeFinalizeLanding({ ...publishLandingContext, requireRecordedLandingProof: true });
+
   // Branch must exist to merge it.
   if (!(await gitOk(["rev-parse", "--verify", `refs/heads/${branch}`], projectRootDir))) {
     // A missing branch is benign in two cases — the task was never executed
@@ -1885,7 +1903,7 @@ export async function runAiMerge(
         target: branch,
         metadata: { taskId, kind: "no-commits-expected", noCommitsExpected: true },
       });
-      return await finalizeTask(store, taskId, noOpResult(task, branch, "no-commits-expected"), undefined, undefined, projectRootDir, fence, options.graphOwnedPostMergeTraversal === true);
+      return await finalizeTask(store, taskId, noOpResult(task, branch, "no-commits-expected"), undefined, undefined, projectRootDir, fence, options.graphOwnedPostMergeTraversal === true, publishRecordedLanding);
     }
     if (wasExecuted && !alreadyMerged) {
       await audit.git({
@@ -1904,7 +1922,7 @@ export async function runAiMerge(
       target: branch,
       metadata: { taskId, kind: alreadyMerged ? "already-merged" : "never-executed" },
     });
-    return await finalizeTask(store, taskId, noOpResult(task, branch, alreadyMerged ? "already-merged" : "no-branch"), undefined, undefined, projectRootDir, fence, options.graphOwnedPostMergeTraversal === true);
+    return await finalizeTask(store, taskId, noOpResult(task, branch, alreadyMerged ? "already-merged" : "no-branch"), undefined, undefined, projectRootDir, fence, options.graphOwnedPostMergeTraversal === true, publishRecordedLanding);
   }
 
   /*
@@ -1972,7 +1990,7 @@ export async function runAiMerge(
       const finalized = await finalizeMerged(store, projectRootDir, taskId, task, branch, integrationBranch, alreadyLanded.landedSha, audit, log, {
         empty: false,
         expectedBranchTipSha: alreadyLanded.landedBranchTipSha,
-      }, mergeTarget, groupRouting, options.syncGroupPr, fence, options.graphOwnedPostMergeTraversal === true);
+      }, mergeTarget, groupRouting, options.syncGroupPr, fence, options.graphOwnedPostMergeTraversal === true, publishLandedWork);
       await audit.git({
         type: "merge:ai-landed",
         target: integrationBranch,
@@ -1981,7 +1999,6 @@ export async function runAiMerge(
       await log(
         `AI merge: ${branch} already landed on ${integrationBranch} at ${short(alreadyLanded.landedSha)} — skipped a second clean-room merge`,
       );
-      await runPushAfterMergeStep({ store, projectRootDir, taskId, settings, integrationBranch, audit, log, options, result: finalized, fence });
       return finalized;
     } catch (error) {
       if (!(error instanceof RecordedMergeBranchTipChangedError)) throw error;
@@ -2249,14 +2266,13 @@ export async function runAiMerge(
     }
 
     await log(`AI merge: ${branch} had no net changes vs ${integrationBranch} — finalizing as no-op`);
-    const noOpFinalized = await finalizeMerged(store, projectRootDir, taskId, task, branch, integrationBranch, landResult.tipSha, audit, log, { empty: true }, mergeTarget, groupRouting, options.syncGroupPr, fence, options.graphOwnedPostMergeTraversal === true);
-    await runPushAfterMergeStep({ store, projectRootDir, taskId, settings, integrationBranch, audit, log, options, result: noOpFinalized, fence });
+    const noOpFinalized = await finalizeMerged(store, projectRootDir, taskId, task, branch, integrationBranch, landResult.tipSha, audit, log, { empty: true }, mergeTarget, groupRouting, options.syncGroupPr, fence, options.graphOwnedPostMergeTraversal === true, publishLandedWork);
     return noOpFinalized;
   }
 
   let finalized: MergeResult;
   try {
-    finalized = await finalizeMerged(store, projectRootDir, taskId, task, branch, integrationBranch, landResult.squashSha, audit, log, { empty: false }, mergeTarget, groupRouting, options.syncGroupPr, fence, options.graphOwnedPostMergeTraversal === true);
+    finalized = await finalizeMerged(store, projectRootDir, taskId, task, branch, integrationBranch, landResult.squashSha, audit, log, { empty: false }, mergeTarget, groupRouting, options.syncGroupPr, fence, options.graphOwnedPostMergeTraversal === true, publishLandedWork);
   } catch (error: unknown) {
     const failure = getErrorMessage(error);
     const landingMessage = `AI merge: landed ${short(landResult.squashSha)} on ${integrationBranch}, but post-landing finalization failed: ${failure}. The landing is durable; a retry will finalize without re-merging.`;
@@ -2270,7 +2286,6 @@ export async function runAiMerge(
     await fence.write("log", () => store.logEntry(taskId, landingMessage, "AiMerge")).catch(() => undefined);
     throw error;
   }
-  await runPushAfterMergeStep({ store, projectRootDir, taskId, settings, integrationBranch, audit, log, options, result: finalized, fence });
   return finalized;
   } finally {
     /*
@@ -2293,6 +2308,16 @@ Also runs after an empty/no-op finalize: the integration ref may still be ahead 
 remote from earlier merges whose pushes failed, and pushing an up-to-date remote is a
 free no-op — this makes the setting self-healing. Every attempt emits a `push:origin`
 run-audit event; failures additionally get a durable task-log entry.
+
+FNXC:MergePublishBeforeFinalize 2026-10-10-01:22 (RUFU-346):
+The "AFTER the task is finalized" framing above is no longer the whole contract. This step is now
+reached through the publish closure `finalizeTask` is handed, so it runs after DURABLE LANDING PROOF
+rather than after completion: on the success path (after the `done` move, unchanged behavior) AND on
+the arms that refuse or defer completion because required post-merge evidence has not reported.
+The second half is what makes hosted CI able to start at all — the gate cannot report against a ref
+`origin` was never offered — and a push problem still cannot park, roll back, or replace the
+blocked-finalization refusal, because the closure catches every throw and only the refusal reaches
+the caller.
 */
 async function runPushAfterMergeStep(input: {
   store: TaskStore;
@@ -2396,6 +2421,231 @@ async function runPushAfterMergeStep(input: {
       "PushToRemoteFailed",
     ).catch(() => undefined));
   }
+}
+
+/*
+FNXC:MergePublishBeforeFinalize 2026-10-10-00:22 (RUFU-346):
+The publish attempt a blocked finalization runs before it refuses. It exists because the RUFU-337 F-6
+shape — the integration ref advanced, required post-merge evidence blocked the `done` move, and
+`origin` was never offered the landing — was invisible from the lane's own call site: publish used to
+run strictly after `finalizeTask`, so every blocked or deferred arm returned/rejected before it. The
+attempt re-reads the task and settings rather than trusting the values the lane captured earlier, so a
+hold that appears DURING finalization (a pause, `pushAfterMerge` switched off, the destination
+repointed, auto-merge withdrawn) still stops the push; and it can never throw, because a push problem
+must not replace the blocked-finalization refusal the caller has to see.
+*/
+
+/** Why a pre-finalization publish was withheld. Fixed vocabulary for run-audit, never free text. */
+export type MergePublishHold =
+  | "policy-disabled"
+  | "global-pause"
+  | "task-paused"
+  | "auto-merge-off"
+  | "destination-changed"
+  | "landing-proof-unproven"
+  | "task-unavailable"
+  | "authorization-unavailable"
+  | "merge-aborted"
+  | "push-failed";
+
+/** Outcome of one pre-finalization publish attempt. */
+export interface PublishLandingAttempt {
+  /** The push actually ran (and wrote its own `push:origin` row). */
+  attempted: boolean;
+  /** The push reached the remote. */
+  pushed: boolean;
+  /** Landing proof held: the lane proved it in-process, or `mergeDetails` proved it. */
+  landingProven: boolean;
+  /** Fixed hold code when withheld, `null` otherwise. */
+  withheld: MergePublishHold | null;
+}
+
+/**
+ * One publish attempt handed to finalization by the lane that owns the landing.
+ *
+ * @param finalizationBlocked - true on the arms that refuse or defer completion on required post-merge
+ * evidence. The audit pair is recorded only for those arms: a normal completed merge already explains
+ * its own push through `push:origin`, so a row per success would put noise on every merge for a question
+ * only the blocked shape asks.
+ */
+export type PublishLanding = (result: MergeResult, finalizationBlocked: boolean) => Promise<PublishLandingAttempt>;
+
+/**
+ * The un-reported half of the pair: one attempt, no audit row. `createPublishBeforeFinalizeLanding`
+ * wraps it and owns the reporting, so the runner itself never needs to know which arm called it.
+ */
+type PublishLandingAttemptRunner = (result: MergeResult) => Promise<PublishLandingAttempt>;
+
+function withheldPublish(withheld: MergePublishHold, landingProven = false): PublishLandingAttempt {
+  return { attempted: false, pushed: false, landingProven, withheld };
+}
+
+/**
+ * Prove a landing from the durable record alone, for the surfaces that have no in-process landing to
+ * point at (`no-commits-expected`, missing-branch). It deliberately does NOT require the task branch to
+ * still exist — a missing branch is what those surfaces are — so the proof is the recorded confirmation
+ * plus reachability: `mergeConfirmed`, a sha-shaped `commitSha` that exists as a commit, and that commit
+ * as an ancestor of the local integration ref. That is what keeps `unexecuted`, `missing-sha`, and
+ * `unreachable-sha` from publishing a local `main` carrying someone else's work: an unexecuted card has
+ * no `mergeConfirmed` record at all, and an unrecorded or unreachable sha proves nothing.
+ */
+async function proveRecordedLandingForPublish(
+  live: Task,
+  integrationBranch: string,
+  projectRootDir: string,
+): Promise<boolean> {
+  const details = live.mergeDetails;
+  const landedSha = details?.commitSha?.trim() ?? "";
+  if (details?.mergeConfirmed !== true || !/^[a-f0-9]{40,64}$/i.test(landedSha)) return false;
+  if (details.mergeTargetBranch && details.mergeTargetBranch !== integrationBranch) return false;
+  return (await gitOk(["cat-file", "-e", `${landedSha}^{commit}`], projectRootDir))
+    && (await gitOk(["merge-base", "--is-ancestor", landedSha, `refs/heads/${integrationBranch}`], projectRootDir));
+}
+
+/**
+ * The policy door for a pre-finalization publish, mirroring the `recoverConfirmedMergePush` eligibility
+ * set minus `getPostMergeFinalizeBlocker`: this lane is still stamped `merging` while it finalizes, and
+ * that transient status is the lane's own write, not a reason to keep landed work unpushed.
+ */
+function classifyPublishBeforeFinalizeHold(input: {
+  live: Task;
+  liveSettings: Settings;
+  laneSettings: Settings;
+  manual: boolean;
+}): MergePublishHold | null {
+  const { live, liveSettings, laneSettings, manual } = input;
+  if (live.deletedAt) return "task-unavailable";
+  if (live.paused || live.userPaused) return "task-paused";
+  if (liveSettings.globalPause || liveSettings.enginePaused) return "global-pause";
+  if (!isPushAfterMergeEnabled(liveSettings, { lane: "single-repo" })) return "policy-disabled";
+  if ((liveSettings.pushRemote ?? "") !== (laneSettings.pushRemote ?? "")) return "destination-changed";
+  if (!manual && (live.autoMerge === false || !allowsAutoMergeProcessing(live, liveSettings))) return "auto-merge-off";
+  return null;
+}
+
+/** Everything the pre-finalization publish needs from the lane that owns the landing. */
+interface PublishBeforeFinalizeInput {
+  store: TaskStore;
+  projectRootDir: string;
+  taskId: string;
+  settings: Settings;
+  integrationBranch: string;
+  audit: RunAuditor;
+  log: (message: string) => Promise<void>;
+  options: MergerOptions;
+  fence: MergeWriteFence;
+  /** Require the durable record to prove the landing (surfaces with no in-process landing). */
+  requireRecordedLandingProof: boolean;
+}
+
+function runPublishBeforeFinalizeAttempt(input: PublishBeforeFinalizeInput): PublishLandingAttemptRunner {
+  const { store, projectRootDir, taskId, settings, integrationBranch, audit, log, options, fence, requireRecordedLandingProof } = input;
+  return async (result: MergeResult): Promise<PublishLandingAttempt> => {
+    if (options.signal?.aborted === true) return withheldPublish("merge-aborted", !requireRecordedLandingProof);
+    const live = await store.getTask(taskId).catch(() => null);
+    if (!live || live.deletedAt) return withheldPublish("task-unavailable");
+    if (requireRecordedLandingProof && !(await proveRecordedLandingForPublish(live, integrationBranch, projectRootDir))) {
+      return withheldPublish("landing-proof-unproven");
+    }
+    const liveSettings = await store.getSettings().catch(() => null);
+    if (!liveSettings) return withheldPublish("authorization-unavailable", true);
+    const hold = classifyPublishBeforeFinalizeHold({
+      live,
+      liveSettings,
+      laneSettings: settings,
+      manual: options.manual === true,
+    });
+    if (hold) return withheldPublish(hold, true);
+    try {
+      await runPushAfterMergeStep({
+        store,
+        projectRootDir,
+        taskId,
+        settings: liveSettings,
+        integrationBranch,
+        audit,
+        log,
+        options,
+        result,
+        fence,
+      });
+    } catch (error: unknown) {
+      // A push problem is reported, never thrown: the caller still has to raise the blocked finalization.
+      aiMergeLog.error(`${taskId}: publish before blocked finalization failed: ${getErrorMessage(error)}`);
+      return { attempted: true, pushed: false, landingProven: true, withheld: "push-failed" };
+    }
+    return { attempted: true, pushed: result.pushedToRemote === true, landingProven: true, withheld: null };
+  };
+}
+
+/*
+FNXC:MergePublishBeforeFinalize 2026-10-10-00:45 (RUFU-346):
+One run-audit row per pre-finalization publish on a finalization that refused or deferred, emitted at the
+single seam that sees every outcome. "Why is landed work not on the remote?" has two answers — the push
+ran, or a hold stopped it — and before this pair only the first was answerable, and only from the
+`push:origin` row the push itself writes on a card that never completed. The withhold row is the one an
+operator needs. A pass that COMPLETED publishes too, but records nothing here: the card is done and its
+`push:origin` row is the record, so an always-on row would tax every merge for a question only the blocked
+shape asks. Metadata is ids/fixed enums/booleans only (`taskId`, `outcome`|`hold`, `landingProof`,
+`landingProven`, `reachedPush`); a remote URL, ref tip, error message, or spec sentence never enters it — a
+failed push keeps its detail in the engine log and its own `push:origin` row. Emission is the bounded seam
+(FN-9175), so an absent, throwing, or hanging sink cannot change the publish or replace the
+blocked-finalization refusal, and it is intentionally NOT in the curated delivery-pipeline catalogue, which
+`run-audit-catalogue.test.ts` locks table-for-table against `docs/run-audit.md`; this pair documents as
+prose instead.
+*/
+function reportPublishBeforeFinalize(
+  store: TaskStore,
+  taskId: string,
+  attempt: PublishLandingAttempt,
+  landingProof: "lane" | "recorded",
+): void {
+  const context = {
+    taskId,
+    agentId: "merger",
+    runId: `merge-${taskId}`,
+    domain: "git" as const,
+    target: taskId,
+  };
+  if (attempt.withheld) {
+    void emitBoundedRunAudit(store, {
+      ...context,
+      mutationType: "task:merge-publish-before-finalize-unavailable",
+      metadata: {
+        taskId,
+        hold: attempt.withheld,
+        landingProof,
+        landingProven: attempt.landingProven,
+        reachedPush: attempt.attempted,
+      },
+    }, { log: aiMergeLog });
+    return;
+  }
+  void emitBoundedRunAudit(store, {
+    ...context,
+    mutationType: "task:merge-publish-before-finalize",
+    metadata: { taskId, outcome: attempt.pushed ? "pushed" : "not-pushed", landingProof },
+  }, { log: aiMergeLog });
+}
+
+/**
+ * The publish closure finalization is handed: one attempt, then exactly one audit row describing it,
+ * including the withheld cases. Never throws.
+ */
+function createPublishBeforeFinalizeLanding(input: PublishBeforeFinalizeInput): PublishLanding {
+  const attemptPublish = runPublishBeforeFinalizeAttempt(input);
+  return async (result: MergeResult, finalizationBlocked: boolean): Promise<PublishLandingAttempt> => {
+    const attempt = await attemptPublish(result);
+    if (finalizationBlocked) {
+      reportPublishBeforeFinalize(
+        input.store,
+        input.taskId,
+        attempt,
+        input.requireRecordedLandingProof ? "recorded" : "lane",
+      );
+    }
+    return attempt;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -4111,6 +4361,7 @@ export async function finalizeMerged(
   syncGroupPr?: SyncGroupPrFn,
   fence?: MergeWriteFence,
   graphOwnedPostMergeTraversal = false,
+  publishLanding?: PublishLanding,
 ): Promise<MergeResult> {
   /*
   FNXC:BranchGroupCompletion 2026-07-04-00:00:
@@ -4317,7 +4568,7 @@ export async function finalizeMerged(
   }
 
   fence?.assertOwned("finalization");
-  const finalized = await finalizeTask(store, taskId, result, audit, log, projectRootDir, fence, graphOwnedPostMergeTraversal);
+  const finalized = await finalizeTask(store, taskId, result, audit, log, projectRootDir, fence, graphOwnedPostMergeTraversal, publishLanding);
   if (finalized.deferredPostMergeEvidence) {
     await log(`AI merge: ${taskId} landed; awaiting required post-merge verification before task finalization`);
   } else {
@@ -4329,6 +4580,29 @@ export async function finalizeMerged(
 
 type FinalizeTaskResult = MergeResult & { deferredPostMergeEvidence?: boolean };
 
+/*
+FNXC:MergePublishBeforeFinalize 2026-10-09-02:35 (RUFU-346):
+The blocked-finalization throw used to be a bare `Error`, so a caller could not tell "the landing is
+ durable and only hosted evidence is missing" from "the merge failed" without substring-matching the
+ sentence — and the publish owner lived strictly AFTER `finalizeTask`, so a blocked finalization never
+ reached it. The typed error is the observable contract for that distinction: `landed` says the lane's
+ work is on the integration branch, `publishAttempted` says this lane already tried to hand it to the
+ remote before raising. Message text is unchanged on purpose: existing callers and tests match on the
+ sentence (`has not reported`), and RUFU-346 changes the type, not the wording.
+*/
+export class AiMergeFinalizationBlockedError extends Error {
+  readonly name = "AiMergeFinalizationBlockedError";
+  constructor(
+    readonly taskId: string,
+    readonly reason: string,
+    readonly deferredPostMergeEvidence: boolean,
+    readonly landed: boolean,
+    readonly publishAttempted: boolean,
+  ) {
+    super(`AI merge finalization blocked for ${taskId}: ${reason}`);
+  }
+}
+
 /** Move the task to done and emit, mirroring the legacy completeTask. */
 async function finalizeTask(
   store: TaskStore,
@@ -4339,6 +4613,7 @@ async function finalizeTask(
   rootDir?: string,
   fence?: MergeWriteFence,
   graphOwnedPostMergeTraversal = false,
+  publishLanding?: PublishLanding,
 ): Promise<FinalizeTaskResult> {
   const finalization = await finalizeProvenAutoMergeTask({
     store,
@@ -4353,9 +4628,36 @@ async function finalizeTask(
     fence,
   });
   if (finalization.outcome === "blocked" && !finalization.deferredPostMergeEvidence) {
-    throw new Error(`AI merge finalization blocked for ${taskId}: ${finalization.reason ?? "unknown"}`);
+    /*
+    FNXC:MergePublishBeforeFinalize 2026-10-10-00:22 (RUFU-346):
+    A block that names required post-merge evidence proves the landing is durable — only the hosted
+    verdict is missing — so publish it BEFORE raising. The refusal is unchanged (still a throw, still
+    not done, no `task:merged`); only the remote is allowed to move. A block that names anything else
+    is not post-landing, so it publishes nothing and the `landed` field stays honest at `true` only
+    for the lane that actually landed work here.
+    */
+    const publish = finalization.postMergeEvidenceBlocked && publishLanding
+      ? await publishLanding(result, true)
+      : null;
+    throw new AiMergeFinalizationBlockedError(
+      taskId,
+      finalization.reason ?? "unknown",
+      false,
+      publish ? publish.landingProven : true,
+      publish?.attempted === true,
+    );
   }
   if (finalization.deferredPostMergeEvidence) {
+    /*
+    FNXC:MergePublishBeforeFinalize 2026-10-10-00:22 (RUFU-346):
+    This arm was RUFU-337 F-6: the graph-owned deferred return left `runAiMerge` for the `todo`
+    traversal and the post-finalize publish callsite was never reached, so the landing advanced the
+    local integration branch and never `origin`. Publishing here — before the return, not after —
+    makes the observable contract "the graph still has to run its gate", not "origin is behind".
+    A push failure can never replace the deferral signal, and `runPushAfterMergeStep` already
+    absorbs it as `outcome: "error"` on the `push:origin` row.
+    */
+    const publish = finalization.postMergeEvidenceBlocked && publishLanding ? await publishLanding(result, true) : null;
     /*
     FNXC:PostMergeEvidenceOrdering 2026-09-25-20:07:
     Proven no-op merge proof cannot substitute for required post-merge evidence. Only the graph
@@ -4363,7 +4665,13 @@ async function finalizeTask(
     visibly rather than reporting a successful merge that leaves the required gate stranded.
     */
     if (!graphOwnedPostMergeTraversal) {
-      throw new Error(`AI merge finalization blocked for ${taskId}: ${finalization.reason ?? "required post-merge evidence has not reported"}`);
+      throw new AiMergeFinalizationBlockedError(
+        taskId,
+        finalization.reason ?? "required post-merge evidence has not reported",
+        true,
+        publish ? publish.landingProven : true,
+        publish?.attempted === true,
+      );
     }
     return {
       ...result,
@@ -4377,6 +4685,12 @@ async function finalizeTask(
   result.task = finalization.task;
   fence?.assertOwned("finalization");
   store.emit("task:merged", result);
+  /*
+  FNXC:MergePublishBeforeFinalize 2026-10-10-00:22 (RUFU-346):
+  The publish moved INSIDE finalization rather than staying a post-finalize step, so one lane result has
+  exactly one publish owner — which is also what keeps the deferred arms from double-publishing.
+  */
+  if (publishLanding) await publishLanding(result, false);
   return result;
 }
 

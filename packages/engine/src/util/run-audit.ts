@@ -1091,6 +1091,28 @@ export type DatabaseMutationType =
   | "task:zero-commit-landing-proof-cleared"
   /** FNXC:MergeExecutionExclusion 2026-08-23-08:25: FN-180 records live-execution admission deferrals with ids and fixed signal/source/outcome enums only. */
   | "task:merge-admission-deferred-live-execution"
+  /**
+   * FNXC:MergePublishBeforeFinalize 2026-10-10-00:45 (RUFU-346):
+   * The merge lane offered its durable landing to the remote from INSIDE finalization, because required
+   * post-merge evidence blocks the `done` move (RUFU-337 F-6: publish used to run strictly after
+   * `finalizeTask`, so every blocked or deferred arm returned before it). One row per attempt that
+   * reached the push step. Metadata is ids/fixed enums/booleans only
+   * (`taskId`, `outcome` `pushed`|`not-pushed`, `landingProof` `lane`|`recorded`); the push itself keeps
+   * writing its own `push:origin` row, so this row explains WHY a push exists on a card that never
+   * completed, never the transport detail. Best-effort: a hostile sink cannot change the publish.
+   */
+  | "task:merge-publish-before-finalize"
+  /**
+   * FNXC:MergePublishBeforeFinalize 2026-10-10-00:45 (RUFU-346):
+   * A pre-finalization publish was withheld, which is the half that matters for "why is landed work not
+   * on the remote?": the card is blocked on evidence AND nobody offered the push. Names the fixed hold
+   * code (`hold` from the `MergePublishHold` vocabulary: `policy-disabled`, `global-pause`, `task-paused`,
+   * `auto-merge-off`, `destination-changed`, `landing-proof-unproven`, `task-unavailable`,
+   * `authorization-unavailable`, `merge-aborted`, `push-failed`) plus `landingProof`, `landingProven`, and
+   * `reachedPush`. Never a remote URL, ref tip, error message, or spec prose; `push-failed` says only that
+   * the push step ran and threw — its detail stays in the engine log and the `push:origin` row.
+   */
+  | "task:merge-publish-before-finalize-unavailable"
   /** FNXC:ConfirmedMergeFinalization 2026-08-23-08:25: FN-180 records counts-only reconciliation of stale checklist state after durable merge proof. */
   | "task:reconcile-confirmed-merge-checklist"
   /**
