@@ -1314,6 +1314,15 @@ export async function listCurrentTasksPageImpl(store: TaskStore, options: { limi
       ...columnScope,
       includeArchived: false,
       slim: true,
+      /*
+      FNXC:TaskLogProjections 2026-10-10-20:01 (RUFU-615): the hot board feed drops `log` while still
+      deriving. Before RUFU-615 this combination was a documented no-op — the five log-derived signals
+      were computed FROM the column, so asking for badges and the drop together returned the whole
+      column (31.4 MB of 73.6 MB of live-row bytes, measured). They are now read from
+      `timing_total_ms` + `log_recent`, both written with the log they summarise, so the badges survive
+      the drop. `task-log-projections.pg.test.ts` proves the five figures are deep-equal either way.
+      */
+      excludeLog: true,
       compactBoardFeed: true,
       limit: limit + 1,
       sort: "created-asc",
@@ -1403,6 +1412,9 @@ export async function listTaskQueuePageImpl(store: TaskStore, options: TaskQueue
       columns: columns as ColumnId[],
       includeArchived: false,
       slim: true,
+      // FNXC:TaskLogProjections 2026-10-10-20:01 (RUFU-615): same settlement as the board page above —
+      // a lane-scoped feed reads badges from the write-time projections, not from the log column.
+      excludeLog: true,
       limit: limit + 1,
       sort: order === "intake" ? "intake-desc" : "queue-order",
       startupMemo: false,

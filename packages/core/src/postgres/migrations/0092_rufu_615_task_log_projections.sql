@@ -331,39 +331,57 @@ columns are still NULL, and it skips exactly the rows the live write seam refuse
 and the historical sentinel lane (`log` is read-only there, so a derived column must not be authored
 for them — `task-log-write-refusal.ts` is the authority, and 'archived' is its SQL-parity sentinel).
 */
+/*
+FNXC:TaskLogProjections 2026-10-10-19:55 (RUFU-615):
+The backfill runs as dynamic SQL behind a column-existence guard. The schema-applier upgrade fixtures
+hand-build a partial historical `tasks` table that predates `log`, and a migration that reads a column
+the upgrading database does not have must skip rather than fail the upgrade; `plpgsql` parses a
+statement before it runs, so the only way to skip over a missing column is `EXECUTE`.
+*/
 DO $fn$
-DECLARE
-  v_batch int := 500;
-  v_found int;
 BEGIN
-  LOOP
-    WITH picked AS (
-      -- `log` is carried out of the CTE because the LATERAL derivation below reads it; a derived column
-      -- cannot be computed from a row the statement never selected.
-      SELECT id, project_id, log
-        FROM project.tasks
-       WHERE timing_total_ms IS NULL
-         AND log_recent IS NULL
-         AND deleted_at IS NULL
-         AND "column" IS DISTINCT FROM 'archived'
-       ORDER BY project_id, id
-       LIMIT v_batch
-       FOR UPDATE SKIP LOCKED
-    ), computed AS (
-      SELECT p.id, p.project_id, f.timing_total_ms, f.log_recent
-        FROM picked p
-        -- A jsonb-typed `string` log is passed through untouched: the function's own
-        -- `jsonb_typeof(p_log) <> 'array'` branch is what turns it into the empty envelope, which is the
-        -- same answer `rowToTask` gives the readers. Neither implementation repairs the row.
-        CROSS JOIN LATERAL project.fusion_task_log_projections(p.log) f
-    )
-    UPDATE project.tasks t
-       SET timing_total_ms = c.timing_total_ms,
-           log_recent      = c.log_recent
-      FROM computed c
-     WHERE t.id = c.id AND t.project_id = c.project_id;
-    GET DIAGNOSTICS v_found = ROW_COUNT;
-    EXIT WHEN v_found = 0;
-  END LOOP;
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+      WHERE table_schema = 'project' AND table_name = 'tasks' AND column_name = 'log'
+  ) THEN
+    RETURN;
+  END IF;
+
+  EXECUTE $q$DO $inner$
+    DECLARE
+      v_batch int := 500;
+      v_found int;
+    BEGIN
+      LOOP
+        WITH picked AS (
+          -- `log` is carried out of the CTE because the LATERAL derivation below reads it; a derived column
+          -- cannot be computed from a row the statement never selected.
+          SELECT id, project_id, log
+            FROM project.tasks
+           WHERE timing_total_ms IS NULL
+             AND log_recent IS NULL
+             AND deleted_at IS NULL
+             AND "column" IS DISTINCT FROM 'archived'
+           ORDER BY project_id, id
+           LIMIT v_batch
+           FOR UPDATE SKIP LOCKED
+        ), computed AS (
+          SELECT p.id, p.project_id, f.timing_total_ms, f.log_recent
+            FROM picked p
+            -- A jsonb-typed `string` log is passed through untouched: the function's own
+            -- `jsonb_typeof(p_log) <> 'array'` branch is what turns it into the empty envelope, which is the
+            -- same answer `rowToTask` gives the readers. Neither implementation repairs the row.
+            CROSS JOIN LATERAL project.fusion_task_log_projections(p.log) f
+        )
+        UPDATE project.tasks t
+           SET timing_total_ms = c.timing_total_ms,
+               log_recent      = c.log_recent
+          FROM computed c
+         WHERE t.id = c.id AND t.project_id = c.project_id;
+        GET DIAGNOSTICS v_found = ROW_COUNT;
+        EXIT WHEN v_found = 0;
+      END LOOP;
+    END
+  $inner$;$q$;
 END
 $fn$;

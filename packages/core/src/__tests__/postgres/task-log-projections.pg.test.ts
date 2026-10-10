@@ -311,6 +311,39 @@ pgTest("a log-free board read derives the same signals as a read that loaded the
     );
   });
 
+  /*
+  FNXC:TaskLogProjections 2026-10-10-20:01 (RUFU-615):
+  The other half of the equivalence the task is built on. `slim` already strips `log` from the row it
+  RETURNS (it only never stopped READING it in SQL), so the byte saving must not move a single byte of
+  the HTTP payload — not a key, not a derived value, not a field order. This compares the serialized
+  rows, with only the reads' own wall-clock stamps normalised, because `observedAt` is `Date.now()` of
+  whichever call produced the signal and two calls are never the same millisecond.
+  */
+  it("keeps the serialized board row byte-identical when the log column is dropped", async () => {
+    const store = h.store();
+    const withLog = await store.listTasks({ slim: true, startupMemo: false });
+    const withoutLog = await store.listTasks({ slim: true, excludeLog: true, startupMemo: false });
+    expect(withoutLog.length).toBe(withLog.length);
+    const normalize = (rows: Task[]) => JSON.stringify(rows.map((row) => {
+      const clone = { ...(row as unknown as Record<string, unknown>) };
+      /*
+      `lineageId` is synthesised per row-per-read when the row carries no lineage, so two reads of the
+      SAME row never agree on it and it has nothing to do with the log. Everything else stays in the
+      compared bytes, including key order, which is what makes this a payload test rather than a
+      field-equality test.
+      */
+      if ("lineageId" in clone) clone.lineageId = "<per-read>";
+      for (const key of ["inReviewStalled", "inReviewStall", "stallReason"]) {
+        const signal = clone[key] as { observedAt?: string } | undefined;
+        if (signal && typeof signal === "object" && "observedAt" in signal) {
+          clone[key] = { ...signal, observedAt: "<read-clock>" };
+        }
+      }
+      return clone;
+    }));
+    expect(normalize(withoutLog)).toBe(normalize(withLog));
+  });
+
   it("omits the log column from the executed read while keeping both derived columns", async () => {
     const layer = h.layer();
     const full = await readLiveTaskRows(layer, {});
