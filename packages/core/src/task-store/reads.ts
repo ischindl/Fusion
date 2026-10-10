@@ -679,6 +679,18 @@ profile behind the task measured 281.9 MB / 240 s of short-lived allocations in 
 and ~19% of CPU in GC, while the live server showed 73.5% of in-flight statements spent on the
 selection/override reads these feeders drive.
 
+FNXC:MemoryDiagnosis 2026-10-10-18:52 (RUFU-627):
+"short-lived" was the wrong word, and this sentence is why the growth was read as churn for weeks.
+A V8 sampling heap profiler run (live samples; samples of collected objects are dropped) over 281 s on
+the production process attributed 1.327 GiB of STILL-LIVE allocations to this path: `rowToTask` 0.625 GiB
+via `listTasksImpl -> map -> rowToTask`, `DataRow` 0.343 GiB retained from `(root) -> onStreamRead` (the
+wire bytes of the same query), `fromJson` 0.218 GiB, `parse` 0.105 GiB -- everything outside this path was
+<= 0.013 GiB. The forced-GC floor of that process rose live +33 MiB/min and old_space +27 MiB/min while
+large_object_space, new_space, external and arrayBuffers all fell. A `dashboard --no-engine` shadow on the
+same DB plateaus at 1.28 GiB across 18 concurrent full-project reads and returns to 0.80 GiB when idle, so
+the allocation is pinned only while engine consumers overlap: one fully parsed board is ~0.58 GiB for 2417
+rows, ~240 KB of heap per Task against ~30 KB of stored row. Treat this path as retention-capable, not transient.
+
 /*
 FNXC:WorkflowLifecycleColumns 2026-07-28-18:05 (PR #2479 review, P2):
 ONE IR cache for the whole list pass. Without it, every paused row resolved
