@@ -35,8 +35,9 @@ import {
   deriveTaskLogProjections,
   LOG_RECENT_INLINE_BYTE_BUDGET,
 } from "../../task-store/task-log-projections.js";
-import { readLiveTaskRows } from "../../task-store/async/async-persistence.js";
+import { readLiveTaskRows, TASK_READ_PROJECTION, TASK_SLIM_PROJECTION } from "../../task-store/async/async-persistence.js";
 import { countRecentIdenticalStallEntries } from "../../tasks/in-review-stall.js";
+import { tasks as tasksTable } from "../../postgres/schema/project.js";
 import type { Task, TaskLogEntry } from "../../types.js";
 
 const pgTest = pgDescribe;
@@ -375,6 +376,34 @@ pgTest("a log-free board read derives the same signals as a read that loaded the
     expect(Object.keys(pruned[0]!)).not.toContain("log");
     expect(pruned[0]).toHaveProperty("logRecent");
     expect(pruned[0]).toHaveProperty("timingTotalMs");
+  });
+
+  /*
+  FNXC:TaskLogProjections 2026-10-10-21:28 (RUFU-615):
+  The shape above proves what came BACK; this proves what was SENT, which is the acceptance wording
+  ("the executed SELECT for that shape does not reference the `log` column"). The row-key assertion alone
+  would still pass if the reader selected the column and discarded it client-side — which is precisely
+  the cost the task exists to remove, since the transfer is the bill. So the projection objects the
+  reader itself uses are rendered to SQL text and inspected.
+  */
+  it("sends SQL that stops naming the log column once the caller opts out", () => {
+    const layer = h.layer();
+    const fullSql = layer.db.select(TASK_READ_PROJECTION).from(tasksTable).toSQL().sql;
+    const prunedSql = layer.db.select(TASK_SLIM_PROJECTION).from(tasksTable).toSQL().sql;
+
+    // Drizzle quotes every identifier, so `"log"` cannot be matched by `"log_recent"` — the quoted form
+    // is what makes this a column-level claim rather than a substring accident.
+    expect(fullSql).toContain('"log"');
+    expect(prunedSql).not.toContain('"log"');
+    expect(prunedSql).toContain('"log_recent"');
+    expect(prunedSql).toContain('"timing_total_ms"');
+
+    // And the two shapes differ by exactly that one column: the log-free read is not silently losing a
+    // second figure on the way, which is how a bandwidth flag turns into a blanked badge.
+    const fullKeys = Object.keys(TASK_READ_PROJECTION).sort();
+    const prunedKeys = Object.keys(TASK_SLIM_PROJECTION).sort();
+    expect(fullKeys.filter((key) => !prunedKeys.includes(key))).toEqual(["log"]);
+    expect(prunedKeys.filter((key) => !fullKeys.includes(key))).toEqual([]);
   });
 
   it("transfers a fraction of the bytes on the row that motivated the task", async () => {

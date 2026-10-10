@@ -84,8 +84,14 @@ const LIST_READ_OMITTED_COLUMNS: ReadonlySet<string> = new Set(["searchVector"])
  * The full-row live-list column set: every column except the never-addressed ones.
  * Used where `log` must still be fetched (deriving consumers), replacing the bare
  * `.select()` that used to mean `SELECT *`.
+ *
+ * FNXC:TaskLogProjections 2026-10-10-21:28 (RUFU-615): exported (with the slim projection below) because
+ * this task's acceptance contract is stated about the SQL — "the executed SELECT for the
+ * `derive:true + excludeLog:true` shape does not reference the `log` column". Asserting a test-local copy
+ * of the projection would prove nothing about what the reader actually sends, so the objects themselves
+ * are the observable surface. Nothing outside tests imports them.
  */
-const TASK_READ_PROJECTION: Record<string, PgColumn> = Object.fromEntries(
+export const TASK_READ_PROJECTION: Record<string, PgColumn> = Object.fromEntries(
   Object.entries(schema.project.tasks)
     .filter(([, value]) => is(value, Column))
     .filter(([key]) => !LIST_READ_OMITTED_COLUMNS.has(key))
@@ -115,7 +121,7 @@ const TASK_READ_PROJECTION: Record<string, PgColumn> = Object.fromEntries(
  * Computed once at module load (the schema is static); `log` is restored to
  * `[]` by `pgRowToTaskRow` / `rowToTask` when a single task is fetched in full.
  */
-const TASK_SLIM_PROJECTION: Record<string, PgColumn> = Object.fromEntries(
+export const TASK_SLIM_PROJECTION: Record<string, PgColumn> = Object.fromEntries(
   Object.entries(schema.project.tasks)
     .filter(([, value]) => is(value, Column))
     .filter(([key]) => key !== "log")
