@@ -840,6 +840,8 @@ export function buildRouteGraphFailureToExecutionResumeDeps(host: any): any {
       "persistTokenUsage",
       // FNXC:WorkflowRemediation 2026-08-09-21:41: FN-8910 completed-review park for refused remediation.
       "isRemediationGraphNode",
+      // FNXC:LifecycleContainment 2026-10-07-14:06 (RUFU-308): an execution re-arm must not race a live step session.
+      "hasLiveTaskSessionSurface",
     ]),
   };
 }

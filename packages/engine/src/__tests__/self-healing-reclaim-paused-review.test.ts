@@ -65,6 +65,35 @@ function createStore(): TaskStore & EventEmitter {
   });
   (emitter as any).logEntry = vi.fn().mockResolvedValue(undefined);
   (emitter as any).recordRunAuditEvent = vi.fn().mockResolvedValue(undefined);
+  /*
+  FNXC:BranchConflictRecoveryFence 2026-10-07-17:53 (RUFU-308):
+  FN-9434 moved the sweep's unrecoverable-pause write behind `updateTaskAtomic` so a refusal never
+  burns recovery budget the fence did not spend, but this shared fixture factory was never given the
+  seam. Every task reaching the pause branch therefore threw `this.store.updateTaskAtomic is not a
+  function`, the sweep's own catch swallowed it, and the reclaim returned 0 before its handoff — the
+  foreign-conflict case below could never observe its re-park. Red at base d97aab25c0, independent of
+  RUFU-308.
+
+  The real method re-reads the row inside the transaction, so the fixture resolves the live row from
+  the same rows the sweep was handed by `listTasks` (its most recent resolutions, newest first) and
+  falls back to `getTask`. That keeps the guard's live-row comparison honest without editing each test.
+  */
+  (emitter as any).updateTaskAtomic = vi.fn(async (_id: string, updater: (current: any) => any) => {
+    const results = (emitter as any).listTasks.mock.results as Array<{ value: unknown }>;
+    let current: any = undefined;
+    for (const result of [...results].reverse()) {
+      const rows = (await result.value) as Array<{ id: string }> | undefined;
+      const hit = Array.isArray(rows) ? rows.find((row) => row?.id === _id) : undefined;
+      if (hit) {
+        current = hit;
+        break;
+      }
+    }
+    if (!current) current = await (emitter as any).getTask(_id);
+    const updates = updater(current ?? {});
+    if (updates) Object.assign(current ?? {}, updates);
+    return current;
+  });
   return emitter;
 }
 

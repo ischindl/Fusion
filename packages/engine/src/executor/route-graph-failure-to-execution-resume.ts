@@ -20,6 +20,7 @@
 import type { Settings, TaskDetail, TaskStore, WorkflowIrNode, WorkflowWorkItem } from "@fusion/core";
 import { COMPLETION_SUMMARY_NODE_ID, allowsAutoMergeProcessing, isTaskExternallyBlocked, resolveWorkflowIrForTask } from "@fusion/core";
 import { isDurableBlockedTask } from "../execution-block-classifier.js";
+import { containmentLiveSignature, shouldLogContainmentRefusal } from "../execution/lifecycle-move.js";
 import { executorLog } from "../logger.js";
 import type { EngineRunContext } from "../util/run-audit.js";
 import { resolveTerminalColumnsFor } from "./lifecycle-columns.js";
@@ -28,6 +29,12 @@ import { formatGraphFailureDiagnostic, isMergeGraphFailure } from "./graph-failu
 import { MERGE_BOUNDARY_RECOVERY_VALUE } from "../workflows/workflow-merge-nodes.js";
 import type { MergeBoundaryRecoveryEvidence } from "./workflow-merge-boundary.js";
 import type { ResumeLanes } from "./resolve-resume-lanes.js";
+import type { CheckoutEmptinessProver } from "../worktree/checkout-emptiness.js";
+import {
+  EXECUTION_REARM_STEP_FAILED_REASON,
+  attemptExecutionRearm,
+  type ExecutionRarmResult,
+} from "./execution-rearm.js";
 
 export type RouteGraphFailureToExecutionResumeDeps = {
   store: TaskStore;
@@ -45,6 +52,19 @@ export type RouteGraphFailureToExecutionResumeDeps = {
   isRemediationGraphNode: (taskId: string, failedNode: string | undefined) => Promise<boolean>;
   /** Shared-branch integration remains the single narrow exception to a human auto-merge hold. */
   isLiveSharedBranchGroupMember?: (live: Pick<TaskDetail, "branchContext" | "autoMerge" | "autoMergeProvenance">) => Promise<boolean>;
+  /**
+   * FNXC:LifecycleContainment 2026-10-07-14:06 (RUFU-308):
+   * An execution re-arm must never race a live step session — the drain would dispatch a second run
+   * over a worktree that is still being written. Absent on a store/host without session maps, where the
+   * durable continuation fence (`onlyIfNoActiveTaskContinuation`) stays the only contention proof.
+   */
+  hasLiveTaskSessionSurface?: (taskId: string) => boolean;
+  /**
+   * Injectable checkout-emptiness prover. Production leaves this unset and the re-arm seam builds the
+   * process-wide prover for the store's root; a test injects a fake so evidence assertions never shell out
+   * to real git.
+   */
+  checkoutEmptinessProver?: CheckoutEmptinessProver;
 };
 
 /*
@@ -317,6 +337,39 @@ async function seedBoundaryRecoveryContinuation(
   return seeded === null ? BOUNDARY_RECOVERY_CONCURRENT : owner;
 }
 
+/**
+ * Decides whether a re-arm outcome lets the router claim the card (so the caller does NOT terminalize
+ * it) or must fall through to the ordinary containment refusal.
+ *
+ * FNXC:LifecycleContainment 2026-10-07-14:10 (RUFU-308):
+ * Three claims, each for a different reason. `rearmed` is the point: the re-entry is durable, so the
+ * graph failure is fully handled. `already-owned` must never escalate either — the sanctioned seed
+ * primitive's own contract forbids terminalizing a row another legitimate hold owns, and an active
+ * continuation already gives the card its re-entry. `budget-exhausted` is claimed because the re-arm
+ * seam already wrote the ONE bounded, operator-visible park; a second park from here would be the
+ * duplicate-notice behavior the fix contract forbids. Everything else returns false so the pre-existing
+ * refusal line and terminal park stay exactly as they were.
+ */
+async function claimExecutionRearmOutcome(
+  deps: RouteGraphFailureToExecutionResumeDeps,
+  live: TaskDetail,
+  rearm: ExecutionRarmResult,
+  failedNode: string,
+  failureValue: string | undefined,
+  nodeError: string | undefined,
+): Promise<boolean> {
+  if (rearm.outcome === "rearmed" || rearm.outcome === "already-owned" || rearm.outcome === "budget-exhausted") {
+    executorLog.warn(`${live.id}: ${rearm.detail} (graph failure '${failedNode}'${failureValue ? `/${failureValue}` : ""}${nodeError ? `: ${nodeError}` : ""})`);
+    // An `already-owned` claim deliberately writes nothing to the card History: an active hold can
+    // outlive several recovery passes, and a repeating entry is the exact noise this task removes.
+    await deps.persistTokenUsage(live.id);
+    return true;
+  }
+  // Evidence-less or ineligible: the refusal below stays the single record, the caller parks the card.
+  executorLog.warn(`${live.id}: execution re-arm declined for '${failedNode}' — ${rearm.detail}`);
+  return false;
+}
+
 export async function routeGraphFailureToExecutionResume(
   deps: RouteGraphFailureToExecutionResumeDeps,
   live: TaskDetail,
@@ -409,9 +462,60 @@ export async function routeGraphFailureToExecutionResume(
     // foreach/node result was persisted, so select and fence the durable IR owner below.
     const mayRepairBoundary = boundaryEvidenceRecovery && live.column === resumeRouterLanes.review;
     if (!mayResumeInPlace && !mayRepairBoundary) {
+      /*
+      FNXC:LifecycleContainment 2026-10-07-14:10 (RUFU-308):
+      Containment refuses a lifecycle MOVE out of the WIP lane, and this router has never owned a
+      review-to-WIP recovery (FN-8910's note above). An execution re-arm is neither: it keeps the column,
+      keeps the status, and installs a runnable continuation at the node that just failed, which is the
+      only thing that gives the card re-entry — the failed `kind:"task"` work item is invisible to the
+      due-poll and to stranded-continuation reclaim, so a card left in that shape is dead but unmovable
+      while its worktree already holds the step's commits (RUFU-291: 1h42m, four steps committed).
+
+      Admission is deliberately narrower than the resume above, and adds no new lane vocabulary:
+      the card must ALREADY sit in the resolved WIP lane, its workflow steps must be non-terminal, the
+      failed node must be a `step-execute` owner in the current IR, and the checkout must prove work.
+      Merge-classified failures keep their own owners (in-place resume above, boundary recovery below,
+      merge-retry in the caller) and revision reasons keep their contained remediation moves — none of
+      those route here. Without that evidence this branch behaves exactly as before: refusal line, then
+      the caller parks the card `failed`.
+      */
+      if (incompleteSteps && resumeRouterLanes.wip !== undefined && live.column === resumeRouterLanes.wip
+          && !isMergeGraphFailure(failedNode)) {
+        const rearm = await attemptExecutionRearm(
+          {
+            store: deps.store,
+            getRunContextFor: deps.getRunContextFor,
+            hasLiveExecutionSurface: deps.hasLiveTaskSessionSurface,
+            emptinessProver: deps.checkoutEmptinessProver,
+          },
+          {
+            taskId: live.id,
+            failedNode,
+            wipColumn: resumeRouterLanes.wip,
+            reason: EXECUTION_REARM_STEP_FAILED_REASON,
+          },
+        ).catch((error: unknown) => {
+          // A re-arm seam that cannot answer must never widen the failure: today's refusal path is the
+          // fallback, so a store without the evidence/continuation surface behaves exactly as before.
+          executorLog.warn(`${live.id}: execution re-arm probe errored — ${error instanceof Error ? error.message : String(error)}`);
+          return null;
+        });
+        if (rearm && await claimExecutionRearmOutcome(deps, live, rearm, failedNode, failureValue, nodeError)) return true;
+      }
       const message = `${formatGraphFailureDiagnostic(failedNode, failureValue, nodeError, "Workflow graph failed")} — automatic recovery cannot move '${live.column}' backward; card remains in place`;
       executorLog.warn(`${live.id}: ${message}`);
-      await deps.store.logEntry(live.id, message, undefined, deps.getRunContextFor(live.id));
+      /*
+      FNXC:LifecycleContainment 2026-10-07-17:05 (RUFU-308 Step 5):
+      The durable History line is a SIGHTING record, so it is bounded by the same first-sighting rule the
+      containment seam uses. This is the line RUFU-291's card wrote on every ~45 s pass for over two
+      hours while nothing owned its re-entry; the engine log above stays unconditional (an operator
+      reading engine logs wants every pass), only the card's History stops repeating itself until the
+      card's own state changes. A refusal is never SILENTLY dropped for a new state: the fingerprint
+      covers lane, status, pause flags, step rows, and gate rows.
+      */
+      if (shouldLogContainmentRefusal(deps.store, live.id, `graph-failure-refusal:${failedNode ?? "unknown"}`, containmentLiveSignature(live))) {
+        await deps.store.logEntry(live.id, message, undefined, deps.getRunContextFor(live.id));
+      }
       return false;
     }
 

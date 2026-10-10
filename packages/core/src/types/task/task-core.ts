@@ -168,6 +168,26 @@ export interface MergeDetails {
     nextCheckAt: string | null;
     heldAt?: string;
   };
+  /**
+   * FNXC:WorkflowExecutionReentry 2026-10-07-14:04 (RUFU-308):
+   * An execution re-arm changes no column and no status — it installs a runnable continuation at the
+   * step node that just failed, so the scheduler re-enters the same step. Because that re-entry writes
+   * no lifecycle row, its retry authority has to live somewhere durable or a restart re-arms forever.
+   * This JSON-backed marker is that authority: `signature` binds the ladder to the unchanged step
+   * frontier (node + step completion + worktree evidence), `attempt` counts re-arms that actually ran
+   * while `refusal` counts evidence-less rejections — a refusal is the containment loop repeating
+   * itself, not a burn, so it gets its own larger bound before the card is terminalized once and
+   * announced once. Additive optional field on the task JSON column: no SQL migration, mirroring the
+   * `mergeBoundaryRecovery` sibling.
+   */
+  executionRearm?: {
+    signature: string;
+    attempt: number;
+    refusal: number;
+    firstAt: string;
+    at: string;
+    heldAt: string | null;
+  };
   commitSha?: string;
   /**
    * FNXC:AIMerge 2026-08-28-09:29:

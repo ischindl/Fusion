@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getBuiltinWorkflow,
   resolveContainedBackwardTargetForTask,
@@ -11,6 +11,10 @@ import {
 } from "@fusion/core";
 import { ContaminationAutoRecoveryHandler } from "../auto-recovery-handlers/contamination.js";
 import { performWorkflowRerunBounce } from "../executor/workflow-rerun-bounce.js";
+import {
+  moveTaskToContainedBackwardTarget,
+  resetContainmentRefusalLogForTesting,
+} from "../execution/lifecycle-move.js";
 import { RestartRecoveryCoordinator } from "../healing/restart-recovery-coordinator.js";
 import { reboundAiMergeTask } from "../merge/merger-ai.js";
 import { reboundLegacyMergeTask } from "../merger.js";
@@ -272,6 +276,99 @@ describe("forbidden lifecycle rebound paths", () => {
       task.id,
       expect.stringContaining("has no backward-move authority"),
     );
+  });
+
+  /*
+  FNXC:LifecycleContainment 2026-10-07-16:05 (RUFU-308 Step 3):
+  The terminal invariant for a refusal this seam must never own: RUFU-291's card sat in the WIP lane
+  while `self-healing-stranded-recovery` asked for a backward move on every ~45 s pass, containment
+  refused each time, and the History surface accumulated byte-identical lines that made a dead card look
+  worked-on. A refusal is a SIGHTING record, so N identical refusals write one line and zero moves; a
+  genuinely changed card is a new sighting and announces once again.
+  */
+  describe("containment refusals are bounded sighting records (RUFU-308)", () => {
+    const strandedRecovery = () => ({ preserveProgress: true, moveSource: "engine" }) as never;
+
+    beforeEach(() => {
+      resetContainmentRefusalLogForTesting();
+    });
+
+    it("writes one durable rejection line and zero moves across repeated identical refusals", async () => {
+      const { store, task } = productionStore({ task: { column: "in-progress" } });
+
+      const results = await Promise.all(Array.from({ length: 5 }, () =>
+        moveTaskToContainedBackwardTarget(
+          store, task.id, "self-healing-stranded-recovery", strandedRecovery(), task.column,
+        )));
+
+      for (const result of results) {
+        expect(result).toEqual({ moved: false, reason: "in-place-recovery", column: "in-progress" });
+      }
+      expect(task.column).toBe("in-progress");
+      expect(store.moveTask).not.toHaveBeenCalled();
+      const refusalLines = store.logEntry.mock.calls.filter((call: any[]) =>
+        String(call[1]).includes("has no backward-move authority"));
+      expect(refusalLines).toHaveLength(1);
+      expect(refusalLines[0]?.[1]).toContain("self-healing-stranded-recovery");
+    });
+
+    it("announces again when the card's own state changes, then re-settles into silence", async () => {
+      const { store, task } = productionStore({ task: { column: "in-progress" } });
+      const ask = () => moveTaskToContainedBackwardTarget(
+        store, task.id, "self-healing-stranded-recovery", strandedRecovery(), task.column,
+      );
+
+      await ask();
+      await ask();
+      expect(store.logEntry).toHaveBeenCalledTimes(1);
+
+      // The step actually moved: this is a different card-state, so the operator sees the refusal once
+      // more — the bound suppresses repetition, never information the operator has not yet seen.
+      task.steps = [{ name: "Implementation", status: "done" }, { name: "Tests", status: "in-progress" }];
+      await ask();
+      expect(store.logEntry).toHaveBeenCalledTimes(2);
+
+      await ask();
+      await ask();
+      expect(store.logEntry).toHaveBeenCalledTimes(2);
+      expect(store.moveTask).not.toHaveBeenCalled();
+    });
+
+    it("bounds the no-contained-target refusal the same way", async () => {
+      const noWipIr = {
+        version: 2,
+        id: "custom:no-wip-refusal",
+        name: "No WIP refusal",
+        entry: "planning",
+        columns: [
+          { id: "planning", name: "Planning", traits: ["hold"] },
+          { id: "review", name: "Review", traits: ["merge-blocker", "human-review"] },
+          { id: "done", name: "Done", traits: ["complete"] },
+        ],
+        nodes: [{ id: "review-node", kind: "prompt", column: "review", config: { prompt: "Review" } }],
+        edges: [],
+      } as unknown as WorkflowIr;
+      const { store, task } = productionStore({
+        workflowId: noWipIr.id!,
+        customIr: noWipIr,
+        task: { column: "review", steps: [] },
+      });
+      const ask = () => moveTaskToContainedBackwardTarget(
+        store, task.id, "merge-fix-remediation", strandedRecovery(), task.column,
+      );
+
+      await ask();
+      await ask();
+      await ask();
+
+      expect(store.logEntry).toHaveBeenCalledTimes(1);
+      expect(store.logEntry).toHaveBeenCalledWith(
+        task.id,
+        expect.stringContaining("no adjacent backward destination"),
+      );
+      expect(task.column).toBe("review");
+      expect(store.moveTask).not.toHaveBeenCalled();
+    });
   });
 
   it("permits only the declared adjacent recovery pairs for automatic movers", () => {

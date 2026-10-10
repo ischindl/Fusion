@@ -105,6 +105,7 @@
     "packages/engine/src/executor/deterministic-verification.ts",
     "packages/engine/src/executor/emit-bounded-run-audit.ts",
     "packages/engine/src/executor/evaluate-workflow-merge-boundary.ts",
+    "packages/engine/src/executor/execution-rearm.ts",
     "packages/engine/src/executor/execute-workflow-graph.ts",
     "packages/engine/src/executor/executor-method-docs.ts",
     "packages/engine/src/executor/executor-product-fnxc.ts",
@@ -4811,6 +4812,126 @@
       "executionProof": "none:out-of-frontier",
       "followUpTaskId": "none:out-of-frontier",
       "axis1Evidence": "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo to runVerificationCommandUnlocked; this imported module belongs to the legacy/independent subsystem closure."
+    },
+    {
+      "callSiteId": "packages/engine/src/executor/execution-rearm.ts::attemptExecutionRearm::store.logEntry::#1",
+      "callSiteFingerprint": "deps.store.logEntry(input.taskId,message,undefined,deps.getRunContextFor?.(input.taskId))",
+      "file": "packages/engine/src/executor/execution-rearm.ts",
+      "enclosingSymbolPath": "attemptExecutionRearm",
+      "writer": "store.logEntry",
+      "ordinal": 1,
+      "lineHint": 400,
+      "owningEntryPoint": "indeterminate",
+      "reachableDataStates": [
+        "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo"
+      ],
+      "axis1": "out-of-frontier",
+      "axis1Evidence": "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo; this scanned closure call belongs to another engine caller (the executor graph-failure recovery router, not a merge entry point).",
+      "axis2Provisional": "out-of-frontier",
+      "axis2Final": "out-of-frontier",
+      "observedInSuite": "out-of-frontier",
+      "executionProof": "none:out-of-frontier",
+      "followUpTaskId": "none:out-of-frontier"
+    },
+    {
+      "callSiteId": "packages/engine/src/executor/execution-rearm.ts::attemptExecutionRearm::store.replaceActiveTaskWorkflowContinuation::#1",
+      "callSiteFingerprint": "deps.store.replaceActiveTaskWorkflowContinuation({taskId,runId,?,kind,state,attempt,blockedReason,lastError,leaseOwner,leaseExpiresAt,onlyIfNoActiveTaskContinuation})",
+      "file": "packages/engine/src/executor/execution-rearm.ts",
+      "enclosingSymbolPath": "attemptExecutionRearm",
+      "writer": "store.replaceActiveTaskWorkflowContinuation",
+      "ordinal": 1,
+      "lineHint": 366,
+      "owningEntryPoint": "indeterminate",
+      "reachableDataStates": [
+        "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo"
+      ],
+      "axis1": "out-of-frontier",
+      "axis1Evidence": "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo; this scanned closure call belongs to another engine caller (the executor graph-failure recovery router, not a merge entry point).",
+      "axis2Provisional": "out-of-frontier",
+      "axis2Final": "out-of-frontier",
+      "observedInSuite": "out-of-frontier",
+      "executionProof": "none:out-of-frontier",
+      "followUpTaskId": "none:out-of-frontier"
+    },
+    {
+      "callSiteId": "packages/engine/src/executor/execution-rearm.ts::attemptExecutionRearm::store.updateTask::#1",
+      "callSiteFingerprint": "deps.store.updateTask(input.taskId,{status,error},deps.getRunContextFor?.(input.taskId))",
+      "file": "packages/engine/src/executor/execution-rearm.ts",
+      "enclosingSymbolPath": "attemptExecutionRearm",
+      "writer": "store.updateTask",
+      "ordinal": 1,
+      "lineHint": 395,
+      "owningEntryPoint": "indeterminate",
+      "reachableDataStates": [
+        "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo"
+      ],
+      "axis1": "out-of-frontier",
+      "axis1Evidence": "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo; this scanned closure call belongs to another engine caller (the executor graph-failure recovery router, not a merge entry point).",
+      "axis2Provisional": "out-of-frontier",
+      "axis2Final": "out-of-frontier",
+      "observedInSuite": "out-of-frontier",
+      "executionProof": "none:out-of-frontier",
+      "followUpTaskId": "none:out-of-frontier"
+    },
+    {
+      "callSiteId": "packages/engine/src/executor/execution-rearm.ts::claimRearmSlot>updated::store.updateTaskAtomic::#1",
+      "callSiteFingerprint": "deps.store.updateTaskAtomic(input.taskId,(current) => { if (!current || current.deletedAt) return null; if (current.paused === true || current.userPaused === tru,deps.getRunContextFor?.(input.taskId))",
+      "file": "packages/engine/src/executor/execution-rearm.ts",
+      "enclosingSymbolPath": "claimRearmSlot>updated",
+      "writer": "store.updateTaskAtomic",
+      "ordinal": 1,
+      "lineHint": 205,
+      "owningEntryPoint": "indeterminate",
+      "reachableDataStates": [
+        "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo"
+      ],
+      "axis1": "out-of-frontier",
+      "axis1Evidence": "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo; this scanned closure call belongs to another engine caller (the executor graph-failure recovery router, not a merge entry point).",
+      "axis2Provisional": "out-of-frontier",
+      "axis2Final": "out-of-frontier",
+      "observedInSuite": "out-of-frontier",
+      "executionProof": "none:out-of-frontier",
+      "followUpTaskId": "none:out-of-frontier"
+    },
+    {
+      "callSiteId": "packages/engine/src/executor/execution-rearm.ts::terminalizeRearmBudget::store.logEntryOnce::#1",
+      "callSiteFingerprint": "deps.store.logEntryOnce(input.taskId,{action,outcome,dedupeKey,windowMs})",
+      "file": "packages/engine/src/executor/execution-rearm.ts",
+      "enclosingSymbolPath": "terminalizeRearmBudget",
+      "writer": "store.logEntryOnce",
+      "ordinal": 1,
+      "lineHint": 296,
+      "owningEntryPoint": "indeterminate",
+      "reachableDataStates": [
+        "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo"
+      ],
+      "axis1": "out-of-frontier",
+      "axis1Evidence": "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo; this scanned closure call belongs to another engine caller (the executor graph-failure recovery router, not a merge entry point).",
+      "axis2Provisional": "out-of-frontier",
+      "axis2Final": "out-of-frontier",
+      "observedInSuite": "out-of-frontier",
+      "executionProof": "none:out-of-frontier",
+      "followUpTaskId": "none:out-of-frontier"
+    },
+    {
+      "callSiteId": "packages/engine/src/executor/execution-rearm.ts::terminalizeRearmBudget::store.updateTask::#1",
+      "callSiteFingerprint": "deps.store.updateTask(input.taskId,{status,error,mergeDetails},deps.getRunContextFor?.(input.taskId))",
+      "file": "packages/engine/src/executor/execution-rearm.ts",
+      "enclosingSymbolPath": "terminalizeRearmBudget",
+      "writer": "store.updateTask",
+      "ordinal": 1,
+      "lineHint": 278,
+      "owningEntryPoint": "indeterminate",
+      "reachableDataStates": [
+        "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo"
+      ],
+      "axis1": "out-of-frontier",
+      "axis1Evidence": "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo; this scanned closure call belongs to another engine caller (the executor graph-failure recovery router, not a merge entry point).",
+      "axis2Provisional": "out-of-frontier",
+      "axis2Final": "out-of-frontier",
+      "observedInSuite": "out-of-frontier",
+      "executionProof": "none:out-of-frontier",
+      "followUpTaskId": "none:out-of-frontier"
     },
     {
       "callSiteId": "packages/engine/src/executor/create-authoritative-workflow-seams.ts::createAuthoritativeWorkflowSeams::store.logEntry::#1",

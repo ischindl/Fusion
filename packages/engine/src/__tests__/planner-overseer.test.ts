@@ -399,21 +399,182 @@ describe("PlannerOverseerMonitor.observeTask — FN-7743 executor stall detectio
     expect(observation?.reason).toMatch(/inactive for over \d+h/);
   });
 
-  it("prefers columnMovedAt over updatedAt when both are present", async () => {
+  /*
+  FNXC:PlannerOversight 2026-10-07-16:17:
+  RUFU-308 rewrote this case, which previously pinned the opposite polarity
+  ("`updatedAt` looks fresh, but `columnMovedAt` (the more specific signal) is stale"). That polarity
+  is what made the hourly "Executor stage inactive for over 3h … over 9h with no execution activity"
+  broadcast go out on RUFU-291 while its Step 3 and Step 4 completed at 04:43 and 05:17, and again on
+  RUFU-308 on 2026-10-07 (first steering injection three hours after column entry, card's own step
+  bookkeeping under an hour old). Column entry is not an activity clock: `updateTask` bumps
+  `updatedAt` for every writer — including every step-status transition, which carries no per-step
+  timestamp of its own — so the freshest evidence the row carries IS the activity signal. The stale
+  control below is what keeps the fix from becoming a mute: a stalled card writes nothing, so the
+  same verdict still fires on the same schedule with the same reason string.
+  */
+  it("measures executor inactivity from the freshest execution evidence, not from column entry (RUFU-308)", async () => {
     const monitor = new PlannerOverseerMonitor();
-    const task = taskFixture({
+    const keptWorking = taskFixture({
       column: "in-progress",
-      // updatedAt looks fresh, but columnMovedAt (the more specific signal) is stale.
-      updatedAt: isoMsAgo(1000),
+      // Entered the WIP lane 3h ago, but its own row was written a second ago (step bookkeeping).
+      updatedAt: isoMsAgo(1_000),
       columnMovedAt: isoMsAgo(THRESHOLD_MS + 60 * 60 * 1000),
     });
 
-    const observation = await monitor.observeTask(task, "autonomous", {
+    const observation = await monitor.observeTask(keptWorking, "autonomous", {
       now: () => NOW,
       executorStuckAfterMs: THRESHOLD_MS,
     });
 
-    expect(observation?.signal).toBe("stuck");
+    expect(observation?.signal).toBe("progressing");
+
+    // Control: nothing has touched the card at all, so the verdict is unchanged.
+    const stalled = taskFixture({
+      column: "in-progress",
+      updatedAt: isoMsAgo(THRESHOLD_MS + 60 * 60 * 1000),
+      columnMovedAt: isoMsAgo(THRESHOLD_MS + 60 * 60 * 1000),
+    });
+    const stalledObs = await monitor.observeTask(stalled, "autonomous", {
+      now: () => NOW,
+      executorStuckAfterMs: THRESHOLD_MS,
+    });
+    expect(stalledObs?.signal).toBe("stuck");
+    expect(stalledObs?.reason).toMatch(/inactive for over 3h with no execution activity/);
+
+    // A workflow gate that ran recently is execution evidence too, even when both row clocks are cold.
+    const gateRanRecently = taskFixture({
+      column: "in-progress",
+      updatedAt: isoMsAgo(THRESHOLD_MS + 60 * 60 * 1000),
+      columnMovedAt: isoMsAgo(THRESHOLD_MS + 60 * 60 * 1000),
+      workflowStepResults: [
+        {
+          workflowStepId: "code-review",
+          workflowStepName: "Code review",
+          status: "passed",
+          startedAt: isoMsAgo(20 * 60 * 1000),
+          completedAt: isoMsAgo(10 * 60 * 1000),
+        },
+      ],
+    });
+    const gateObs = await monitor.observeTask(gateRanRecently, "autonomous", {
+      now: () => NOW,
+      executorStuckAfterMs: THRESHOLD_MS,
+    });
+    expect(gateObs?.signal).toBe("progressing");
+
+    // RUFU-291's actual shape: the executor delivered step reports while both row clocks sat cold.
+    const stepsReportedRecently = taskFixture({
+      column: "in-progress",
+      updatedAt: isoMsAgo(THRESHOLD_MS + 60 * 60 * 1000),
+      columnMovedAt: isoMsAgo(THRESHOLD_MS + 60 * 60 * 1000),
+      stepReports: [
+        {
+          id: "sr-1",
+          stepIndex: 3,
+          stepName: "Step 4",
+          summary: "Delivered the stall-reason derivation.",
+          recordedAt: isoMsAgo(20 * 60 * 1000),
+          source: "agent",
+          attempt: 1,
+        },
+      ],
+    });
+    const reportObs = await monitor.observeTask(stepsReportedRecently, "autonomous", {
+      now: () => NOW,
+      executorStuckAfterMs: THRESHOLD_MS,
+    });
+    expect(reportObs?.signal).toBe("progressing");
+
+    // A malformed ledger entry must not fabricate activity (nor crash the derivation).
+    const malformedReports = taskFixture({
+      column: "in-progress",
+      updatedAt: isoMsAgo(THRESHOLD_MS + 60 * 60 * 1000),
+      columnMovedAt: isoMsAgo(THRESHOLD_MS + 60 * 60 * 1000),
+      stepReports: [
+        {
+          id: "sr-bad",
+          stepIndex: 1,
+          stepName: "Step 2",
+          summary: "",
+          recordedAt: "not-a-timestamp",
+          source: "agent",
+          attempt: 1,
+        },
+      ] as unknown as OverseerTaskRef["stepReports"],
+    });
+    const malformedObs = await monitor.observeTask(malformedReports, "autonomous", {
+      now: () => NOW,
+      executorStuckAfterMs: THRESHOLD_MS,
+    });
+    expect(malformedObs?.signal).toBe("stuck");
+    expect(malformedObs?.reason).toMatch(/inactive for over \d+h/);
+  });
+
+  /*
+  FNXC:PlannerOversight 2026-10-07-16:42 (RUFU-308 Step 5 — symptom verification):
+  The acceptance sentence for the overseer half of this task, stated literally: a card whose step
+  completed TWENTY MINUTES ago must not be reported `no execution activity` even when it entered the
+  WIP lane SIX HOURS ago. That is exactly RUFU-291's measurement — Steps 3 and 4 completed at 04:43 and
+  05:17 while the hourly `over 3h … over 9h with no execution activity` broadcast continued, and the
+  same false claim was made about RUFU-308 itself on 2026-10-07. The contrast case below (identical
+  six-hour clocks, completion five hours old) is what keeps this from becoming a mute: the verdict is
+  measured from the completion, not suppressed.
+  */
+  it("cannot claim no execution activity for a step that completed 20 minutes ago after a six-hour lane", async () => {
+    const monitor = new PlannerOverseerMonitor();
+    const recentlyCompleted = taskFixture({
+      column: "in-progress",
+      updatedAt: isoMsAgo(6 * 60 * 60 * 1000),
+      columnMovedAt: isoMsAgo(6 * 60 * 60 * 1000),
+      workflowStepResults: [
+        {
+          workflowStepId: "steps#3:step-execute",
+          workflowStepName: "Step 4",
+          status: "passed",
+          startedAt: isoMsAgo(45 * 60 * 1000),
+          completedAt: isoMsAgo(20 * 60 * 1000),
+        },
+      ],
+      stepReports: [{
+        id: "sr-rufu291",
+        stepIndex: 3,
+        stepName: "Step 4",
+        summary: "Step completed.",
+        recordedAt: isoMsAgo(20 * 60 * 1000),
+        source: "agent",
+        attempt: 1,
+      }],
+    });
+
+    const observation = await monitor.observeTask(recentlyCompleted, "autonomous", {
+      now: () => NOW,
+      executorStuckAfterMs: THRESHOLD_MS,
+    });
+
+    expect(observation?.signal).toBe("progressing");
+    expect(observation?.reason ?? "").not.toMatch(/no execution activity/);
+
+    // Control: the same six-hour clocks with a five-hour-old completion still report the stall.
+    const staleCompletion = taskFixture({
+      column: "in-progress",
+      updatedAt: isoMsAgo(6 * 60 * 60 * 1000),
+      columnMovedAt: isoMsAgo(6 * 60 * 60 * 1000),
+      workflowStepResults: [
+        {
+          workflowStepId: "steps#3:step-execute",
+          workflowStepName: "Step 4",
+          status: "passed",
+          startedAt: isoMsAgo(5 * 60 * 60 * 1000 + 10 * 60 * 1000),
+          completedAt: isoMsAgo(5 * 60 * 60 * 1000),
+        },
+      ],
+    });
+    const stalledObs = await monitor.observeTask(staleCompletion, "autonomous", {
+      now: () => NOW,
+      executorStuckAfterMs: THRESHOLD_MS,
+    });
+    expect(stalledObs?.signal).toBe("stuck");
+    expect(stalledObs?.reason).toMatch(/inactive for over 5h with no execution activity/);
   });
 
   it("remains progressing for a non-paused in-progress task with recent activity", async () => {
@@ -741,10 +902,26 @@ describe("PlannerOverseerMonitor.observeTask — executor dead-session detection
     expect(observation?.signal).toBe("progressing");
   });
 
+  /*
+  FNXC:PlannerOversight 2026-10-07-16:20:
+  RUFU-308 rewrote this case twice over. Its primary invariant still holds and is asserted first:
+  a live session is never observed as sessionless. What changed is the secondary assertion, which
+  used to pin the FN-7743 proxy's hourly "no execution activity" verdict for a card that HAD a live
+  session — but a live session is execution activity, so that sentence contradicts its own input,
+  and the false claim is what put repeated steering injections on RUFU-308's own card on 2026-10-07
+  while its executor session was running.
+
+  Two independent controls keep both suppressions non-vacuous, because the two arms can no longer
+  share one fixture (RUFU-308 also made the anchor the freshest execution evidence, so the original
+  cold-column/fresh-row fixture now reads as active for every probe):
+  (a) all clocks cold + a LIVE probe → still progressing, so the suppression comes from liveness;
+  (b) all clocks cold + the probe unwired (`undefined`) or proven not-live → the FN-7743 hourly
+      verdict and the dead-session reason fire exactly as before, so nothing here mutes a stall.
+  A live-but-wedged session stays the in-session `StuckTaskDetector`'s job (it terminated RUFU-291's
+  at ~27 min of no progress), and FN-8471's live-session guard remains the action-side backstop that
+  keeps any retry from hard-cancelling a running card.
+  */
   it("never routes a LIVE session into the dead-session reason, even past the stall proxy", async () => {
-    // The FN-7743 timestamp proxy can still flag a long-running live card (pre-existing behaviour,
-    // and FN-8471's live-session guard is what keeps that from hard-cancelling it). The invariant
-    // this change adds is narrower: a live session must never be observed as sessionless.
     const monitor = new PlannerOverseerMonitor();
     const task = taskFixture({
       column: "in-progress",
@@ -759,7 +936,38 @@ describe("PlannerOverseerMonitor.observeTask — executor dead-session detection
     });
 
     expect(observation?.reason).not.toBe(EXECUTOR_SESSION_NOT_LIVE_REASON);
-    expect(observation?.reason).toMatch(/inactive for over \d+h/);
+    expect(observation?.signal).toBe("progressing");
+
+    // Control (a): every clock is cold, so the only thing that can refute the verdict is liveness.
+    const cold = taskFixture({
+      column: "in-progress",
+      columnMovedAt: isoMsAgo(THRESHOLD_MS + 60 * 60 * 1000),
+      updatedAt: isoMsAgo(THRESHOLD_MS + 60 * 60 * 1000),
+    });
+    const liveOnColdCard = await monitor.observeTask(cold, "autonomous", {
+      now: () => NOW,
+      executorStuckAfterMs: THRESHOLD_MS,
+      isTaskLive: () => true,
+    });
+    expect(liveOnColdCard?.signal).toBe("progressing");
+
+    // Control (b1): an unwired probe leaves the FN-7743 hourly verdict intact for a cold card.
+    const unwired = await monitor.observeTask(cold, "autonomous", {
+      now: () => NOW,
+      executorStuckAfterMs: THRESHOLD_MS,
+    });
+    expect(unwired?.signal).toBe("stuck");
+    expect(unwired?.reason).toMatch(/inactive for over \d+h/);
+
+    // Control (b2): a probe that proves the session is gone keeps the stall, in its sharper
+    // dead-session form (the probe is checked ahead of the proxy on purpose).
+    const notLive = await monitor.observeTask(cold, "autonomous", {
+      now: () => NOW,
+      executorStuckAfterMs: THRESHOLD_MS,
+      isTaskLive: () => false,
+    });
+    expect(notLive?.signal).toBe("stuck");
+    expect(notLive?.reason).toBe(EXECUTOR_SESSION_NOT_LIVE_REASON);
   });
 
   it("holds the dead-session signal inside the grace floor so a just-claimed card is not bounced", async () => {

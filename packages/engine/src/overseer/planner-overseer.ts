@@ -111,6 +111,16 @@ export type OverseerTaskRef = Pick<
   // pre-merge gate's pending lease to anchor their stall check on when the GATE started, not when
   // the card entered the column. See `reviewGateStallReason`.
   | "workflowStepResults"
+  /*
+  FNXC:PlannerOversight 2026-10-07-16:19:
+  RUFU-308: the executor-stage activity anchor also reads the step-report ledger. A delivered step
+  report is the strongest durable proof the executing lane produced work (`TaskStepReport.recordedAt`
+  is stamped when the executor reports that step's summary), and it is the ONLY per-step completion
+  clock that survives a replan — `task.steps` is replaced wholesale and `TaskStep` carries no
+  timestamp at all. RUFU-291's Step 3 and Step 4 completed at 04:43 and 05:17 through exactly these
+  rows while the hourly "no execution activity" sentence kept broadcasting.
+  */
+  | "stepReports"
 >;
 
 /**
@@ -305,6 +315,47 @@ function reviewGateStallReason(
   return `Review gate running for over ${inactiveHours}h with no verdict`;
 }
 
+/*
+FNXC:PlannerOversight 2026-10-07-16:15:
+RUFU-308: the executor-stage inactivity verdict must be measured from the card's LAST EXECUTION
+EVIDENCE, not from the moment it entered the WIP lane. `columnMovedAt ?? updatedAt` — the FN-7743
+proxy — prefers the column-entry clock whenever it exists, so a card that kept completing steps
+after entry was still declared inactive: measured on RUFU-291 (main tip `5b7cdd962b`) the overseer
+emitted "Executor stage inactive for over 3h / … / over 9h with no execution activity" every hour
+while its Step 3 and Step 4 completed at 04:43 and 05:17. Measured again on RUFU-308 itself on
+2026-10-07: the first steering injection landed at 17:34, three hours after column entry, while
+the card's own step bookkeeping had been written less than an hour earlier — the claim is false in
+both directions (silent during a real stall, loud during real progress).
+`updateTask` bumps `updatedAt` unconditionally for every writer (AGENTS.md, RUFU-350), and
+`TaskStep` carries no per-step timestamps, so the freshest durable proof that the executing lane
+touched this card is the row clock itself plus the newest workflow-step-result lease/completion.
+Taking the maximum costs nothing in sharpness: a genuinely stalled card writes nothing, so its
+row clock stays as cold as its column entry and the verdict fires on exactly the same schedule it
+always did. It is deliberately NOT the base for the dead-session probe above — that probe answers
+"is anything running this card?", which no amount of recent row-writing can answer yes to.
+*/
+function latestExecutionEvidenceMs(
+  task: Partial<OverseerTaskRef>,
+  fallbacks: Array<string | undefined>,
+): number {
+  let latest = Number.NEGATIVE_INFINITY;
+  for (const stamp of fallbacks) {
+    const ms = stamp ? Date.parse(stamp) : NaN;
+    if (Number.isFinite(ms) && ms > latest) latest = ms;
+  }
+  for (const result of task.workflowStepResults ?? []) {
+    for (const stamp of [result.startedAt, result.completedAt]) {
+      const ms = stamp ? Date.parse(stamp) : NaN;
+      if (Number.isFinite(ms) && ms > latest) latest = ms;
+    }
+  }
+  for (const report of task.stepReports ?? []) {
+    const ms = report?.recordedAt ? Date.parse(report.recordedAt) : NaN;
+    if (Number.isFinite(ms) && ms > latest) latest = ms;
+  }
+  return latest;
+}
+
 function deriveSignalAndSources(
   taskId: string,
   stage: OverseerWatchedStage,
@@ -376,8 +427,27 @@ function deriveSignalAndSources(
       // degrades to "progressing" — never fabricate a stall. The reason is
       // bucketed to whole hours so the FN-7577 `stage|signal|reason` feed dedup
       // stays effective (it must not embed an ever-changing millisecond value).
-      if (Number.isFinite(activityAtMs) && stallInput.executorStuckAfterMs > 0) {
-        const inactiveMs = stallInput.now() - activityAtMs;
+      /*
+      FNXC:PlannerOversight 2026-10-07-16:16:
+      RUFU-308, two corrections to this verdict — it is the sentence that lied about RUFU-291
+      (`over 3h … over 9h with no execution activity` broadcast hourly while Steps 3 and 4 finished)
+      and about RUFU-308 itself on 2026-10-07 (first steering injection 3h after column entry while
+      the card's own step bookkeeping was under an hour old).
+      (a) The clock is the card's latest execution evidence (`latestExecutionEvidenceMs`), not its
+          column entry. A stalled card writes nothing, so this cannot soften a genuine stall; a
+          card that keeps finishing steps is no longer called inert for finishing them.
+      (b) A live executor session IS execution activity, so it refutes this sentence outright. The
+          probe is the same predicate the retry handler gates on (`isTaskLiveForOverseerRetry`,
+          FN-8471), so observation and action cannot disagree; a session that is registered yet
+          wedged stays the in-session `StuckTaskDetector`'s job, and a sessionless card is already
+          caught earlier and sharper by the dead-session probe above. `undefined` (probe unwired)
+          keeps the FN-7743 behaviour exactly, as it does everywhere else in this input.
+      Both the dead-session probe and this proxy keep their exact reason strings: the FN-7577 feed
+      dedup keys on `stage|signal|reason`, and neither verdict's policy changes here.
+      */
+      const executionEvidenceMs = latestExecutionEvidenceMs(task, [task.columnMovedAt, task.updatedAt]);
+      if (Number.isFinite(executionEvidenceMs) && stallInput.executorStuckAfterMs > 0 && stallInput.isTaskLive?.(taskId) !== true) {
+        const inactiveMs = stallInput.now() - executionEvidenceMs;
         if (inactiveMs >= stallInput.executorStuckAfterMs) {
           const inactiveHours = Math.max(1, Math.floor(inactiveMs / 3_600_000));
           return {

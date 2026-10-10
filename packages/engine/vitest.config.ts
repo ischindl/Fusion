@@ -301,6 +301,21 @@ export default defineConfig({
             */
             "src/__tests__/executor-graph-requeue-gate.test.ts",
             /*
+            FNXC:EngineTests 2026-10-07-14:26 (RUFU-308):
+            THE EXECUTION RE-ARM OWNERSHIP RATCHET BELONGS NEXT TO THE RE-QUEUE GATE IT SITS BEHIND.
+            This is the seam that decides whether a card whose step session was disposed gets re-entry or
+            silently stops: the router refused (correctly under containment), and nothing replaced the
+            authority that the failed run had destroyed. Outside the gate a PR can delete the re-arm call
+            and every blocking check stays green while cards stop moving on their own — the same silent
+            regression class the containment ratchets above exist for.
+
+            Admission evidence, on the same terms as its neighbours: deterministic and fake-seamed. The
+            checkout-emptiness verdict enum is injected, so the file shells out to no git, opens no store,
+            starts no timers, and reaches no network. Measured ~1.5s for 7 cases (11s of the earlier
+            standalone run was Vitest boot for a one-file project).
+            */
+            "src/__tests__/route-graph-failure-step-rearm.test.ts",
+            /*
             FNXC:EngineTests 2026-06-25-18:00:
             hold-release.test.ts evicted from the gate: it constructs TaskStore with
             inMemoryDb:false and directly manipulates the SQLite DB via store.db.prepare().

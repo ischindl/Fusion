@@ -101,6 +101,13 @@ import { createResolvedAgentSession } from "./agents/agent-session-helpers.js";
 import type { PrNodeGithubOps } from "./merge/pr-nodes.js";
 /* FNXC:PlannerOversight 2026-10-05-08:52 (merge origin/main): upstream deleted this import with its own containment call site, but this fork's FN-429 refusal handling still calls the helper at the stranded-recovery seam. Re-added deliberately; see the FN-9359 ∪ FN-429 union below. */
 import { moveTaskToContainedBackwardTarget } from "./execution/lifecycle-move.js";
+/*
+FNXC:ExecutionReArm 2026-10-07-15:22 (RUFU-308 Step 3):
+One re-entry authority, two callers: the graph-failure router (Step 1) and this stranded fallback share
+`attemptExecutionRearm`, so a card that was already stranded before any graph run existed to report its
+failed node can no longer be resumed by a different, weaker rule.
+*/
+import { attemptExecutionRearm, resolveStrandedStepExecuteNode } from "./executor/execution-rearm.js";
 import { PrReconciler, type PrReconcileFetchResult, type PrReconcileGithubOps } from "./merge/pr-reconcile.js";
 import { PrCommentHandler } from "./merge/pr-comment-handler.js";
 import { NtfyNotifier } from "./util/notifier.js";
@@ -2642,7 +2649,36 @@ export class ProjectEngine {
               return { status: "queued", error: null, sessionFile: null };
             });
           }
-          if (!resumedInPlace) {
+          /*
+          FNXC:ExecutionReArm 2026-10-07-15:22 (RUFU-308 Step 3):
+          WHICH RECOVERY OWNS WHICH SHAPE — the split this card exists to make explicit:
+          • FN-9359's `status === "failed"` fence above is the **failed-badge** path: the card shows a
+            failure, containment stayed in place, and the recovery is to hand the lane back (`queued`).
+          • This block is the **re-arm** path: an executor-stage card whose graph run is already over —
+            the shape a stuck-session disposal leaves, where `status` was cleared first so the fence
+            above cannot fire and containment will refuse the WIP→todo move forever by design. It
+            re-enters the SAME node and SAME step by installing the durable runnable continuation the
+            scheduler due-poll reads, because a status clear alone is exactly what produced RUFU-291's
+            dead-but-unmovable card. Neither path may come to depend on the other: the fence grants no
+            continuation, and this path never touches `status`/`error` unless the seed succeeded.
+          • FN-8471 still holds on both: no live executor is ever hard-cancelled (re-proved below), and
+            a containment refusal that yields no re-entry consumes no attempt budget.
+          A refusal that does NOT lead to re-entry keeps FN-429 semantics exactly as before.
+          */
+          let reenteredInPlace = false;
+          if (!resumedInPlace && "reason" in contained && contained.reason === "in-place-recovery"
+            && (decision.watchedStage ?? "executor") === "executor") {
+            const strandedNode = await resolveStrandedStepExecuteNode(store, task).catch(() => null);
+            if (strandedNode && executor?.isTaskLiveForOverseerRetry?.(task.id) !== true) {
+              const rearm = await attemptExecutionRearm(
+                { store, hasLiveExecutionSurface: (taskId) => executor?.isTaskLiveForOverseerRetry?.(taskId) === true },
+                { taskId: task.id, failedNode: strandedNode, wipColumn: task.column, reason: "self-healing-stranded-recovery" },
+              ).catch(() => null);
+              reenteredInPlace = rearm?.outcome === "rearmed" || rearm?.outcome === "already-owned";
+              runtimeLog.log(`[planner-oversight] retry_step re-arm for ${task.id} @ ${strandedNode}: ${rearm?.outcome ?? "attempt-failed"} — ${rearm?.detail ?? "re-arm attempt threw"}`);
+            }
+          }
+          if (!resumedInPlace && !reenteredInPlace) {
             const refusalKey = `${task.id}::${stage}::${outcome}`;
             if (!this.plannerLiveRetrySkipLogDedup.has(refusalKey)) {
               this.plannerLiveRetrySkipLogDedup.add(refusalKey);
