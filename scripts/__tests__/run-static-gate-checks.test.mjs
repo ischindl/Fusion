@@ -68,6 +68,26 @@ const EXPECTED_GATE_CHECKS = [
   check("runtime-skill-loader-drift"),
   check("fusion-skill-sync"),
   check("retention-coverage"),
+  /*
+  FNXC:TestInfrastructure 2026-10-08-05:06 (RUFU-324):
+  check-changeset-migration-references was already the 20th validator in the production chain but was
+  missing from this mirror, which is why this test was red before RUFU-324 touched anything (proved at
+  base 89c2b53510: `node --test scripts/__tests__/run-static-gate-checks.test.mjs` -> 1 failure, plus 2
+  in verify-fast.test.mjs). Repaired in the same commit that appends the 21st validator, because a
+  permanently-red drift guard cannot report the drift it exists to catch.
+  */
+  check("changeset-migration-references"),
+  /*
+  FNXC:OperatorLanguageIntegrity 2026-10-08-05:06 (RUFU-324):
+  Appends the 21st validator, check-nonlatin-tracked-text, at the end of the blocking chain. Model
+  code-switch contamination in stored cards, PROMPT.md contracts, docs, and shipped source has been
+  observed three times (RUFU-266 Cyrillic board cards, FNXC:FleetClaims' CJK comment, and a CJK
+  insertion inside a shipped type contract's JSDoc) and no blocking chain could see any of it: lint,
+  typecheck, build, and the gate ignore non-ASCII text entirely. Membership is pinned on its own below
+  for the same reason RUFU-257/266 pinned theirs — the mirror list above would be updated by the very
+  reshuffle that dropped the validator.
+  */
+  check("nonlatin-tracked-text"),
 ];
 
 function createFixture() {
@@ -138,6 +158,21 @@ test("blocking gate chain enforces module-scope retention coverage", () => {
   assert.ok(
     checks.includes(check("retention-coverage")),
     "scripts/check-retention-coverage.mjs must stay in the contiguous blocking validator prefix of test:gate:static",
+  );
+});
+
+/*
+FNXC:OperatorLanguageIntegrity 2026-10-08-05:06 (RUFU-324):
+Same reasoning as RUFU-257/RUFU-266 above: pin membership directly so a chain reshuffle cannot
+quietly downgrade the operator-language ratchet to a non-blocking step. Contamination that reaches
+main is invisible to every other required check, so a gate that stops running it is the same as no
+ratchet at all.
+*/
+test("blocking gate chain enforces non-Latin script contamination detection", () => {
+  const checks = readStaticGateChecks();
+  assert.ok(
+    checks.includes(check("nonlatin-tracked-text")),
+    "scripts/check-nonlatin-tracked-text.mjs must stay in the contiguous blocking validator prefix of test:gate:static",
   );
 });
 

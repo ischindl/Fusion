@@ -871,7 +871,7 @@ export interface AgentApiKey {
 
 /** Result returned when creating a new API key — includes the plaintext token exactly once. */
 export interface AgentApiKeyCreateResult {
-  /** The persisted key metadata (不含 plaintext token) */
+  /** The persisted key metadata — no plaintext token */
   key: AgentApiKey;
   /** The plaintext token — shown only at creation, never stored */
   token: string;

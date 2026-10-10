@@ -104,6 +104,24 @@ const PRETEST_CHECKS = [
   "scripts/check-pre-json-anchor.mjs",
   "scripts/check-routes-modular.mjs",
   "scripts/check-runtime-skill-loader-drift.mjs",
+  /*
+  FNXC:TestInfrastructure 2026-10-08-05:06 (RUFU-324):
+  check-changeset-migration-references was already in the canonical pretest chain but was missing
+  from this mirror and from the docs/testing.md anchor block, so `node --test
+  scripts/__tests__/verify-fast.test.mjs` was red (2 failures) before RUFU-324 touched anything —
+  proved at base 89c2b53510. Repaired here because this task owns the same order-sensitive mirror:
+  the drift guard is only meaningful if it reports real divergence, and a permanently-red mirror is
+  indistinguishable from the drift it exists to catch.
+  */
+  "scripts/check-changeset-migration-references.mjs",
+  /*
+  FNXC:OperatorLanguageIntegrity 2026-10-08-05:06 (RUFU-324):
+  RUFU-324 appends the non-Latin script ratchet to the canonical pretest chain, so verify:fast runs it
+  too: model code-switch contamination (a Slovak/English word replaced mid-word by a CJK/Cyrillic
+  synonym) has reached stored cards, docs, and shipped source three times while every required check
+  stayed green, because lint/typecheck/build/gate do not look at non-ASCII text.
+  */
+  "scripts/check-nonlatin-tracked-text.mjs",
 ];
 const STATIC_STEP_IDS = PRETEST_CHECKS.map((script) => `static-check:${script.slice("scripts/".length, -".mjs".length)}`);
 const PRETEST_VALIDATORS_START = "<!-- pretest-validators:start -->";

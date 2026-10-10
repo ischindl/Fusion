@@ -234,6 +234,12 @@ What to do instead, in order of preference:
 
 Enforced by `scripts/check-no-comment-assertions-in-tests.mjs`, which runs in `pretest`, `pretest:full`, and `test:gate:static`. It flags the unambiguous case (an `FNXC:` stamp inside an assertion matcher); an earlier draft that also matched `/*` produced 24 false positives and zero true ones, because a regex cannot tell comment prose from a path glob. The rest of this rule is enforced by review.
 
+### Standing Rule: Tracked Text Carries No Letter Outside The Latin Script
+
+A model-authored card, `PROMPT.md` contract, or code comment can silently replace a word mid-sentence with a CJK or Cyrillic synonym (a shipped JSDoc sentence about stored keys that ended up carrying U+4E0D U+542B inside an English clause). Nothing else in the toolchain notices: lint, typecheck, build, and the gate all accept the file, so the contamination survives to `main` and into shipped source. Do not write such text, and do not "fix" a hit by moving the file out of the scan — cite the code points instead of reproducing the letter, which is what this paragraph does.
+
+Enforced by `scripts/check-nonlatin-tracked-text.mjs`, which runs in `pretest`, `pretest:full`, and `test:gate:static`. It refuses any tracked text file holding a true letter whose script is neither Latin nor Common — Han, Hiragana, Hangul, Cyrillic, Greek, Hebrew, Arabic, Thai, Devanagari and the rest — naming the path, 1-based line, code point, and script. Slovak/Czech diacritics, IPA notation, and script-less glyphs (`© ✓ → … ½`) are not violations. **There is deliberately no global CJK ban:** translated READMEs, locale catalogs, language-name rosters, and the i18n tests that feed non-Latin fixtures on purpose are legitimate, and legitimacy is registered only in the script's centralized `ALLOWLIST`, where every entry needs a pattern plus a one-line reason. Accidental code-switch → rewrite the wording; genuine i18n content → add the reasoned entry. See `docs/testing.md` for the full detection contract.
+
 ### Standing Rule: A Behavior Change Owns Every Test That Asserts The Old Behavior
 
 **Changing behavior is not done until the tests that encoded the old behavior are updated or deleted — in the same change.** This is not the same rule as "keep the tests green": targeted verification runs the tests for the files you touched, and the stale assertions are almost always in files you did not touch, so a green targeted run is not evidence that no test still encodes the behavior you just changed.
