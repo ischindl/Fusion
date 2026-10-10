@@ -27,7 +27,7 @@ pattern match running against full text, where the full text still exists: at wr
 */
 
 import type { TaskLogEntry } from "../types.js";
-import { computeTimedExecutionMs } from "./serialization.js";
+import { computeTimedExecutionMs } from "../tasks/log-timing.js";
 import {
   IN_REVIEW_STALL_LOG_PREFIX,
   type InReviewStallCode,
