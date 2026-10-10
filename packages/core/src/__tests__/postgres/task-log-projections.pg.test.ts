@@ -24,6 +24,7 @@ column" is a fact rather than an intention.
 */
 import { expect, it, beforeAll, afterAll } from "vitest";
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   pgDescribe,
@@ -342,6 +343,27 @@ pgTest("a log-free board read derives the same signals as a read that loaded the
       return clone;
     }));
     expect(normalize(withoutLog)).toBe(normalize(withLog));
+  });
+
+  /*
+  FNXC:TaskLogProjections 2026-10-10-20:15 (RUFU-615): the mirror half of the wire/mirror stability
+  requirement. `timingTotalMs`/`logRecent` are row-and-database-only on purpose: the per-task
+  `.fusion/tasks/<ID>/task.json` mirror is written from a `Task`, and an operator-visible mirror that
+  grows two new keys on every upgrade is a migration of its own. A future author who adds either field
+  to the `Task` type will make this fail with a diff that explains the consequence.
+  */
+  it("keeps the two derived columns out of the task.json mirror", async () => {
+    const store = h.store();
+    const task = await store.getTask("RUFU-PROJ-0");
+    expect(task).toBeTruthy();
+    const dir = store.taskDir("RUFU-PROJ-0");
+    await store.writeTaskJsonFile(dir, task!);
+    const mirror = JSON.parse(await readFile(join(dir, "task.json"), "utf8")) as Record<string, unknown>;
+    expect(Object.keys(mirror)).not.toContain("timingTotalMs");
+    expect(Object.keys(mirror)).not.toContain("logRecent");
+    // The log itself still mirrors: a single-task read loads it, and the mirror is that read's record.
+    expect(Array.isArray(mirror.log)).toBe(true);
+    expect((mirror.log as unknown[]).length).toBe(task!.log.length);
   });
 
   it("omits the log column from the executed read while keeping both derived columns", async () => {
