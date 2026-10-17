@@ -258,6 +258,29 @@ FNXC:HoldReleaseAttribution 2026-09-10-01:10 (RUFU-209):
 Field evidence: on 151-215-task boards sweeps ran 2132-10327 ms and the `evaluate` accumulator was a single anonymous residual (sampled 2012-8928 ms) — an operator could not tell which sub-phase to cut, and on a multi-project host the line named no project at all. Every summary line now starts `Hold-release sweep: project=<key>` and the `evaluate` figure is decomposed into disjoint named buckets — `(release-config, dependency, readiness, issue-release, prompt, unplanned, workitem, handoff, slot, unattributed)` — where each net bucket excludes the time its nested buckets already claimed and `unattributed` is the honest residual, so the buckets always reconcile to `evaluate`. The `reads(...)` tally gained `prompts`, `workItems`, and `evalSettings`: counts of round trips the pass ACTUALLY issued (memo hits are not counted). The same work eliminated most of the time those buckets measure: one per-scheduler-pass observation record memoises stable input facts (PROMPT.md content, work-item list, settings snapshot, dependency verdicts) per task id for the pass only, so a card consumed by several gates is read once per pass instead of once per consumer, and nothing is cached across passes.
 -->
 
+## Hold-release slot attribution fields (RUFU-698)
+
+The `slot` bucket was the sweep's only un-attributed giant (`slot=13770ms` inside a `30038ms` sweep with `released=0, held=3`), and the number that matters — cost per capacity reservation — could not be read from it because the reservation count was invisible. Two fields, printed **after** the reconciling parenthesis so the RUFU-209 bucket list keeps its exact meaning:
+
+- `slot-calls=N` — reservations performed by this pass. `slot ÷ slot-calls` is now arithmetic on one line instead of an inference from `released`/`held` counters.
+- `slot-detail=(slot:dispatch-guard=…, slot:scope=…, slot:claim-snapshot=…, slot:admission=…, slot:lease-write=…, slot:residual=…)` — the breakdown of the reservation leg, printed only when at least one child recorded time. Children are recorded as **full wall windows** and deliberately never enter the reconciling bucket list: a child that contained an inner sweep bucket (for example `unplanned`, which the planning guard records itself) would otherwise be subtracted twice, shrinking `slot` and inflating `unattributed`. `slot:residual` is the slot window minus every named child, so a cost nobody named is still visible as a number. `sum(slot-detail) <= slot` therefore holds whenever the slot window contains no inner sweep buckets, and `slot:residual` absorbs the difference when it does.
+
+Reading it: a large `slot:claim-snapshot` means the reservation leg is re-deriving board-wide capacity state per candidate; a large `slot:admission` means the serialized admission drain itself dominates; a large `slot:residual` means unobserved work inside the reservation and is the cue to add a named child, not to raise the sweep budget.
+
+## Hold-release truncation rotation field (RUFU-698)
+
+- `rotated-deferred=N` — the sweep evaluated `N` cards first because the previous pass was budget-truncated before reaching them. Printed only when `N > 0`, and only on the full summary line: a pass truncated in its preamble never built an ordered candidate list, so it rotated nothing and printing the field there would be a claim about work it did not do.
+
+Reading it: `rotated-deferred` recurring pass after pass means the board cannot be evaluated inside the budget at all, and the lever is the cost of the leg named by `slot-detail`, not `SWEEP_BUDGET_MS`. A pass that finishes inside its budget clears the rotation, so the field disappearing is the signal that the queue head is no longer being inverted.
+
+<!--
+FNXC:CapacitySlotCost 2026-10-16-21:08 (RUFU-698):
+The field exists because `budget-truncated unevaluated=444` was stable across passes on a 642-task project
+with `capacity_refused=0`: the same tail was re-skipped forever. Pair it with `slot-calls` and
+`slot:claim-snapshot` — before this card they read `released=0, slot-calls=high,
+slot:claim-snapshot=large`, which is the signature of per-candidate whole-board re-derivation.
+-->
+
 ## `/metrics` observability endpoint (RUFU-081)
 
 The dashboard HTTP server exposes **`GET /metrics`** — a plain-text Prometheus exposition endpoint (`text/plain; version=0.0.4; charset=utf-8`) serving the system / runtime / Fusion-domain measurements that earlier CPU and UI-responsiveness diagnoses had to collect by hand (`curl /api/health` for event-loop latency, `ps` for child-process cadence, `psql` for query rate, RAM-usage sampling for RSS). A `curl /metrics` returns the same numbers a Prometheus/Grafana scrape would consume; no OTLP collector or `prom-client` dependency is involved — the module serializes Prometheus text in-process.

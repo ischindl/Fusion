@@ -144,11 +144,34 @@ export interface HoldReleasePass {
   net<T>(name: string, fn: () => T | Promise<T>): Promise<T>;
   /** Total ms recorded so far (used by `net` to subtract nested leaves). */
   recordedMs(): number;
+  /*
+  FNXC:HoldReleaseSlotAttribution 2026-10-16-17:19 (RUFU-698 Step 1):
+  The `slot` bucket was the sweep's only un-attributed giant (field: `slot=13770ms` inside a 30038ms
+  sweep with `released=0`), but the work behind it lives inside the scheduler's `reserveSlot` closure,
+  which the sweep cannot see into. `slotChildren` holds FULL wall ms per `slot:*` child so the
+  reservation leg becomes measurable at call granularity. Children deliberately do NOT go through
+  `phases`/`recorded`: a child that contained an inner sweep net (e.g. `unplanned`, which
+  `isUnplannedForExecution` records itself) would be subtracted twice — once from `slot` and once from
+  the child — which would shrink `slot` and inflate `unattributed` while leaving the reconciling list
+  wrong. Keeping them in a separate map is what preserves both contracts at once: the printed
+  `(release-config=…, unattributed=…)` list keeps its exact meaning, and `sum(slotChildren) ≤
+  netWallMs("slot")` holds by construction because every child is a sequential wall window inside the
+  slot window.
+  */
+  slotChildren: Map<string, number>;
+  /** FULL wall ms per `net()` bucket name. Never printed in the reconciling list; used to bound `slotChildren`. */
+  netWallMs: Map<string, number>;
+  /** Capacity reservations THIS pass performed — the divisor that turns a `slot` total into a per-call cost. */
+  slotCalls: number;
+  /** Record `fn`'s FULL wall time under a `slot:*` child name without touching the reconciling buckets. */
+  wall<T>(name: string, fn: () => T | Promise<T>): Promise<T>;
 }
 
 /** Build a fresh per-pass observation record. Never reuse across passes. */
 function createHoldReleasePass(now: () => number, counters?: SweepCounters): HoldReleasePass {
   const phases = new Map<string, number>();
+  const slotChildren = new Map<string, number>();
+  const netWallMs = new Map<string, number>();
   let recorded = 0;
   const add = (name: string, ms: number): void => {
     phases.set(name, (phases.get(name) ?? 0) + ms);
@@ -157,10 +180,19 @@ function createHoldReleasePass(now: () => number, counters?: SweepCounters): Hol
   const pass: HoldReleasePass = {
     now,
     phases,
+    slotChildren,
+    netWallMs,
+    slotCalls: 0,
     promptMemo: new Map(),
     workItemMemo: new Map(),
     counters,
     recordedMs: () => recorded,
+    async wall<T>(name: string, fn: () => T | Promise<T>): Promise<T> {
+      const start = now();
+      const value = await fn();
+      slotChildren.set(name, (slotChildren.get(name) ?? 0) + Math.max(0, now() - start));
+      return value;
+    },
     async time<T>(name: string, fn: () => T | Promise<T>): Promise<T> {
       const start = now();
       const value = await fn();
@@ -171,8 +203,10 @@ function createHoldReleasePass(now: () => number, counters?: SweepCounters): Hol
       const start = now();
       const before = recorded;
       const value = await fn();
+      const wallMs = Math.max(0, now() - start);
       // Net = wall time minus everything attributed inside `fn`, so buckets stay non-overlapping.
-      add(name, Math.max(0, (now() - start) - (recorded - before)));
+      add(name, Math.max(0, wallMs - (recorded - before)));
+      netWallMs.set(name, (netWallMs.get(name) ?? 0) + wallMs);
       return value;
     },
   };
@@ -271,6 +305,8 @@ export interface HoldReleaseResult {
   skippedConcurrent?: boolean;
   budgetTruncated?: boolean;
   unevaluatedCount?: number;
+  /** Cards moved to the front of this pass because a truncated pass never evaluated them (RUFU-698). */
+  rotatedDeferredCount?: number;
 }
 
 export type WipAdmissionRejection =
@@ -910,6 +946,20 @@ Issue #3364 requires a bounded sweep to stop starting new awaits after its budge
 */
 const SWEEP_BUDGET_MS = 10_000;
 const inFlightSweepProjects = new Set<string>();
+/*
+FNXC:HoldReleaseTruncationRotation 2026-10-16-19:56 (RUFU-698 Step 3):
+A budget-truncated pass stops at `breakIndex`, and the next pass re-sorts the SAME list into the SAME
+order (core's priority → createdAt → id comparator is deterministic), so the cards behind the break are
+re-skipped every single time. Field evidence: `budget-truncated unevaluated=444` on every pass of a
+642-task project while `released=0` and `capacity_refused=0` — that is a starved tail, not saturation.
+Recording the tail per project key and evaluating it FIRST on the next pass is a deliberate BOUNDED
+priority inversion: a card the sweep never examined goes before cards it never competed with. It is
+bounded twice — to `MAX_ROTATED_DEFERRED_IDS`, keeping the front of the tail because that is the part
+the next pass would reach anyway — and it ends by construction at the first pass that finishes inside
+its budget, which deletes the entry.
+*/
+const MAX_ROTATED_DEFERRED_IDS = 500;
+const deferredTailsByProject = new Map<string, string[]>();
 const syntheticSweepProjects = new WeakMap<object, string>();
 let syntheticSweepProjectCounter = 0;
 
@@ -936,6 +986,21 @@ function sweepProjectKey(store: TaskStore): string {
   return key;
 }
 
+/** Put the previously-deferred cards first, keeping queue order WITHIN each partition. */
+function rotateDeferredToFront(
+  ordered: Task[],
+  deferredIds: readonly string[] | undefined,
+): { tasks: Task[]; rotatedCount: number } {
+  if (!deferredIds || deferredIds.length === 0) return { tasks: ordered, rotatedCount: 0 };
+  const deferred = new Set(deferredIds);
+  const first: Task[] = [];
+  const rest: Task[] = [];
+  // Ids that left the board simply never appear, so a stale tail cannot shift any other card.
+  for (const task of ordered) (deferred.has(task.id) ? first : rest).push(task);
+  if (first.length === 0) return { tasks: ordered, rotatedCount: 0 };
+  return { tasks: [...first, ...rest], rotatedCount: first.length };
+}
+
 /** Record/refresh the held-since clock for a task and return how long it has been held. */
 function trackHeld(taskId: string, reason: string, nowMs: number): number {
   const existing = heldSince.get(taskId);
@@ -950,6 +1015,8 @@ function trackHeld(taskId: string, reason: string, nowMs: number): number {
 export function resetHoldReleaseInstrumentation(): void {
   heldSince.clear();
   inFlightSweepProjects.clear();
+  // RUFU-698: rotation state is per-process test-isolated state, and 11 suites call this between files.
+  deferredTailsByProject.clear();
 }
 
 export async function runHoldReleaseSweep(
@@ -985,6 +1052,34 @@ export async function runHoldReleaseSweep(
     `evaluate` — `unattributed` is the honest residual, never a hidden slice.
     */
     const PHASE_ORDER = ["release-config", "dependency", "readiness", "issue-release", "prompt", "unplanned", "workitem", "handoff", "slot"] as const;
+    /*
+    FNXC:HoldReleaseSlotAttribution 2026-10-16-17:19 (RUFU-698 Step 1):
+    Printed as its OWN group after the reconciling parenthesis, never inside it: the existing
+    `(release-config=…, slot=…, unattributed=…)` list is an operator contract (docs/diagnostics.md) and
+    is asserted literally by hold-release-sweep-evaluate-attribution.test.ts. `slot-calls` is the field
+    that replaces an inference with a measurement — before it, a `slot=12074ms` line with `released=0`
+    and `held=5` only allowed a ~2s-per-call guess, because the handful of candidates that reached the
+    reservation line was unknown.
+    */
+    const SLOT_PHASE_ORDER = ["slot:dispatch-guard", "slot:scope", "slot:claim-snapshot", "slot:admission", "slot:lease-write"] as const;
+    const slotFields = (): string => {
+      const named = SLOT_PHASE_ORDER.filter((name) => pass.slotChildren.has(name));
+      // An unlisted child is still printed (sorted) — an unexpected cost must not be silently dropped.
+      const extra = [...pass.slotChildren.keys()].filter((name) => !(SLOT_PHASE_ORDER as readonly string[]).includes(name)).sort();
+      const children = [...named, ...extra];
+      if (children.length === 0) return `, slot-calls=${pass.slotCalls}`;
+      /*
+      FNXC:HoldReleaseSlotAttribution 2026-10-16-17:19 (RUFU-698 Step 1):
+      `slot:residual` is the slot WINDOW minus every named child, so the detail group reconciles with
+      the reservation leg the same way `unattributed` reconciles the phase list. A cost nobody named is
+      therefore visible as a number instead of disappearing, which is what makes the next step (cut the
+      dominant child) decidable from one log line.
+      */
+      const residualMs = Math.max(0, (pass.netWallMs.get("slot") ?? 0) - [...pass.slotChildren.values()].reduce((sum, ms) => sum + ms, 0));
+      const parts = children.map((name) => `${name}=${Math.max(0, pass.slotChildren.get(name) ?? 0)}ms`);
+      if (residualMs > 0) parts.push(`slot:residual=${residualMs}ms`);
+      return `, slot-calls=${pass.slotCalls}, slot-detail=(${parts.join(", ")})`;
+    };
     const phasesSummary = (evaluateMs: number): string => {
       const bucket = (name: string): number => Math.max(0, pass.phases.get(name) ?? 0);
       const attributedMs = PHASE_ORDER.reduce((sum, name) => sum + bucket(name), 0);
@@ -996,7 +1091,7 @@ export async function runHoldReleaseSweep(
     const logPreambleTruncation = (unevaluatedCount: number): HoldReleaseResult => {
       prefetchMs = deps.now() - prefetchStartedMs;
       const sweepMs = deps.now() - sweepStartedMs;
-      const summary = `Hold-release sweep: project=${projectKey}: ${sweepMs}ms (prefetch ${prefetchMs}ms, ir-resolve ${irResolveMs}ms, evaluate 0ms over ${unevaluatedCount} tasks${phasesSummary(0)}), released=0, held=0`
+      const summary = `Hold-release sweep: project=${projectKey}: ${sweepMs}ms (prefetch ${prefetchMs}ms, ir-resolve ${irResolveMs}ms, evaluate 0ms over ${unevaluatedCount} tasks${phasesSummary(0)})${slotFields()}, released=0, held=0`
         + `, budget-truncated unevaluated=${unevaluatedCount}`
         + (sweepMs > budgetMs ? `, budgetOverrunMs=${sweepMs - budgetMs}` : "")
         + `, reads(settings=${counters.settings}, tasks=${counters.tasks}, batchSelections=${counters.batchSelections}, selections=${counters.selections}, definitions=${counters.definitions}, handoffMarkers=${counters.handoffMarkers}, prompts=${counters.prompts}, workItems=${counters.workItems}, evalSettings=${counters.evalSettings}), scanned=0, heldCandidates=0`;
@@ -1111,7 +1206,12 @@ export async function runHoldReleaseSweep(
     dispatcher and board ordering cannot drift; retain allTasks as the occupancy
     and dependency snapshot rather than changing the global listTasks order.
     */
-    const tasksForReleaseEvaluation = sortTasksByQueueOrder(allTasks);
+    const tasksForReleaseEvaluation = (() => {
+      // RUFU-698: the cards the last truncated pass never reached get their turn first (see helper).
+      const rotation = rotateDeferredToFront(sortTasksByQueueOrder(allTasks), deferredTailsByProject.get(projectKey));
+      if (rotation.rotatedCount > 0) result.rotatedDeferredCount = rotation.rotatedCount;
+      return rotation.tasks;
+    })();
 
     let breakIndex: number | undefined;
     for (let index = 0; index < tasksForReleaseEvaluation.length; index += 1) {
@@ -1202,7 +1302,19 @@ export async function runHoldReleaseSweep(
       else { trackHeld(task.id, "move-rejected-or-no-slot", deps.now()); result.held.push({ taskId: task.id, reason: "move-rejected-or-no-slot" }); }
       evaluatedTaskIds.add(task.id);
     }
-    if (breakIndex !== undefined) { result.budgetTruncated = true; result.unevaluatedCount = tasksForReleaseEvaluation.length - breakIndex; }
+    if (breakIndex !== undefined) { result.budgetTruncated = true; result.unevaluatedCount = tasksForReleaseEvaluation.length - breakIndex;
+      /*
+      FNXC:HoldReleaseTruncationRotation 2026-10-16-19:56 (RUFU-698 Step 3):
+      Remember who was never evaluated, so the next pass starts with them. Only the LOOP-truncation site
+      can do this: a preamble-truncated pass never built an ordered list, which is also why the preamble
+      line prints no `rotated-deferred` field — it has not rotated anything.
+      */
+      const tail = tasksForReleaseEvaluation.slice(breakIndex).map((task) => task.id);
+      deferredTailsByProject.set(projectKey, tail.slice(0, MAX_ROTATED_DEFERRED_IDS));
+    } else {
+      // A pass that finished inside its budget examined everyone: the inversion is over by definition.
+      deferredTailsByProject.delete(projectKey);
+    }
     const sweepMs = deps.now() - sweepStartedMs;
     const longestHeldMs = result.held.reduce((max, held) => Math.max(max, deps.now() - (heldSince.get(held.taskId)?.sinceMs ?? deps.now())), 0);
     const evaluateMs = Math.max(0, sweepMs - prefetchMs - irResolveMs);
@@ -1215,7 +1327,8 @@ export async function runHoldReleaseSweep(
     is the honest residual so the phase list always reconciles with `evaluate` rather than silently
     hiding a slice of it.
     */
-    const summary = `Hold-release sweep: project=${projectKey}: ${sweepMs}ms (prefetch ${prefetchMs}ms, ir-resolve ${irResolveMs}ms, evaluate ${evaluateMs}ms over ${allTasks.length} tasks${phasesSummary(evaluateMs)}), released=${result.released.length}, held=${result.held.length}`
+    const rotationField = (): string => (result.rotatedDeferredCount ? `, rotated-deferred=${result.rotatedDeferredCount}` : "");
+    const summary = `Hold-release sweep: project=${projectKey}: ${sweepMs}ms (prefetch ${prefetchMs}ms, ir-resolve ${irResolveMs}ms, evaluate ${evaluateMs}ms over ${allTasks.length} tasks${phasesSummary(evaluateMs)})${slotFields()}${rotationField()}, released=${result.released.length}, held=${result.held.length}`
       + (result.budgetTruncated ? `, budget-truncated unevaluated=${result.unevaluatedCount ?? 0}` : "")
       + (sweepMs > budgetMs ? `, budgetOverrunMs=${sweepMs - budgetMs}` : "")
       + `, reads(settings=${counters.settings}, tasks=${counters.tasks}, batchSelections=${counters.batchSelections}, selections=${counters.selections}, definitions=${counters.definitions}, handoffMarkers=${counters.handoffMarkers}, prompts=${counters.prompts}, workItems=${counters.workItems}, evalSettings=${counters.evalSettings})`
@@ -1555,6 +1668,7 @@ async function issueRelease(
     // pass's prompt memo and its cost lands in the `slot` phase rather than vanishing from attribution.
     const doReserve = () => deps.reserveSlot!(task, target, options.pass);
     reservation = options.pass ? await options.pass.net("slot", doReserve) : await doReserve();
+    if (options.pass) options.pass.slotCalls += 1;
     if (!reservation) {
       /*
       Semaphore/worktree exhausted — reservation-first means no move at all.
