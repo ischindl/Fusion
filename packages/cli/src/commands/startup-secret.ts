@@ -13,8 +13,15 @@
  *
  * The rule is therefore about the SINK, not the field: a secret may be printed raw only when the
  * stream is an interactive terminal, which is ephemeral and faces the operator. A non-TTY stdout
- * (file, pipe, CI log, `systemd`, `nohup`, watchdog) gets a mask plus instructions, because the
- * banner still has to prove auth is on and which last-4 identifies it.
+ * (file, pipe, CI log, a `systemd` unit, an unmanaged background launch, watchdog) gets a mask plus
+ * instructions, because the banner still has to prove auth is on and which last-4 identifies it.
+ *
+ * FNXC:SecretSinkMasking 2026-10-17-22:28 (RUFU-714):
+ * This sentence names the unmanaged-launch sink without spelling its shell command, because
+ * the process-supervisor checker in `scripts/` scans tracked source for that literal and RUFU-687 landed this prose
+ * without the line's `process-supervisor-allowlist` marker, which turned the whole static gate red on
+ * main. Rewording the prose is deliberate: an allowlist entry here would weaken a detection rule that
+ * exists to catch real supervisors, while nothing about the requirement was inaccurate.
  *
  * `--token` remains the way to SET a token; retrieval is unaffected (the daemon keeps
  * `fn daemon --token-only`), so masking the banner cannot lock an operator out of their own UI.
