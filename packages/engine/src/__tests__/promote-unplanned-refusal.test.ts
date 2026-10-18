@@ -92,7 +92,20 @@ describe("unplanned promote refusal", () => {
 
     const result = await promoteHeldTask(store as never, "FN-1403");
 
-    expect(result).toEqual({ released: false, rejection: "unplanned-for-execution", toColumn: "in-progress" });
+    /*
+    FNXC:ExecutionAdmissionReason 2026-10-18-09:40 (RUFU-718):
+    RUFU-718 widened the refusal: the same `unplanned-for-execution` code now carries the closed
+    reason the single decision source computed, plus a reason-specific `detail`. The exact-object
+    literal below is the pre-change shape, so the assertions record the new truth as FIELDS — the
+    wire code is still exactly one value, and the detail must name this card's own cause.
+    */
+    expect(result).toMatchObject({
+      released: false,
+      rejection: "unplanned-for-execution",
+      toColumn: "in-progress",
+      reason: "needs-replan",
+    });
+    expect(result.detail).toMatch(/replan/i);
     expect(store.moveTaskIf).not.toHaveBeenCalled();
     expect(store.task.status).toBe("needs-replan");
     expect(store.updateTask).not.toHaveBeenCalledWith("FN-1403", { status: null });
@@ -140,7 +153,18 @@ describe("unplanned promote refusal", () => {
 
     const result = await releaseHeldTaskByEvent(store as never, "FN-1403", "webhook");
 
-    expect(result).toEqual({ released: false, rejection: "unplanned-for-execution", toColumn: "in-progress" });
+    /*
+    FNXC:ExecutionAdmissionReason 2026-10-18-09:40 (RUFU-718):
+    The external-event door consulted the boolean wrapper, so it could not name a reason at all.
+    It now reports the same closed reason the move surface reports for the same row.
+    */
+    expect(result).toMatchObject({
+      released: false,
+      rejection: "unplanned-for-execution",
+      toColumn: "in-progress",
+      reason: "needs-replan",
+    });
+    expect(result.detail).toMatch(/replan/i);
     expect(store.checkAndRecordUnplannedExecutionBlock).toHaveBeenCalledTimes(1);
     expect(store.moveTaskIf).not.toHaveBeenCalled();
     expect(store.task.status).toBe("needs-replan");
@@ -156,7 +180,19 @@ describe("unplanned promote refusal", () => {
 
     const result = await promoteHeldTask(store as never, "FN-1403", { reserveSlot });
 
-    expect(result).toEqual({ released: false, rejection: "unplanned-for-execution", toColumn: "in-progress" });
+    /*
+    FNXC:ExecutionAdmissionReason 2026-10-18-09:40 (RUFU-718):
+    The under-lock live re-check used the boolean wrapper too, so a card that became unplanned while
+    its slot was reserved produced a refusal that named nothing. It now reads the same reason-bearing
+    source as the pre-move door.
+    */
+    expect(result).toMatchObject({
+      released: false,
+      rejection: "unplanned-for-execution",
+      toColumn: "in-progress",
+      reason: "needs-replan",
+    });
+    expect(result.detail).toMatch(/replan/i);
     expect(store.moveTaskIf).toHaveBeenCalledTimes(1);
     expect(store.task.column).toBe("todo");
     expect(store.task.status).toBe("needs-replan");
@@ -183,7 +219,19 @@ describe("unplanned promote refusal", () => {
 
     const result = await releaseHeldTaskByEvent(store as never, "FN-1403", "webhook", { reserveSlot });
 
-    expect(result).toEqual({ released: false, rejection: "unplanned-for-execution", toColumn: "in-progress" });
+    /*
+    FNXC:ExecutionAdmissionReason 2026-10-18-09:40 (RUFU-718):
+    Race refusal on the event surface. A background/event pass arms nothing itself — stranded-
+    continuation reconciliation owns that repair — so its detail says the review still has to report,
+    and the copy must not promise a queue this call did not create.
+    */
+    expect(result).toMatchObject({
+      released: false,
+      rejection: "unplanned-for-execution",
+      toColumn: "in-progress",
+      reason: "plan-review-pending",
+    });
+    expect(result.detail).toMatch(/plan review/i);
     expect(store.moveTaskIf).toHaveBeenCalledTimes(1);
     expect(store.task.column).toBe("todo");
     expect(store.task.workflowStepResults).toEqual([]);
@@ -209,11 +257,21 @@ describe("fn_task_promote refusal surface", () => {
     const result = await tool.execute("call-1", {});
 
     expect(result.isError).toBe(true);
+    /*
+    FNXC:ExecutionAdmissionReason 2026-10-18-10:01 (RUFU-718):
+    The tool used to answer every unplanned refusal with "is still waiting on planning or plan
+    review", which is six conditions wearing one sentence. The refusal now carries the closed reason
+    in `details` and prints the sentence that names this card's own cause, so the agent (or the
+    operator reading its log) knows what to do next.
+    */
     expect(result.details).toMatchObject({
       released: false,
       rejection: "unplanned-for-execution",
+      reason: "needs-replan",
     });
     expect(result.details).not.toHaveProperty("forcedUnplanned");
+    expect(result.content[0]?.text).toMatch(/replan/i);
+    expect(result.content[0]?.text).not.toMatch(/still waiting on planning or plan review/);
     expect(result.content[0]?.text).not.toContain("force");
     expect(store.moveTaskIf).not.toHaveBeenCalled();
   });

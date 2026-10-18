@@ -78,7 +78,7 @@ import { schedulerLog } from "../logger.js";
 import { emitBoundedRunAudit } from "../util/emit-bounded-run-audit.js";
 import { getPromptPath } from "./spec-staleness.js";
 import { isTaskPlanningOrExecutionLive } from "../agents/planning-execution-liveness.js";
-import { evaluateStrandedHoldContinuation } from "../plan-review-continuation.js";
+import { evaluateStrandedHoldContinuation, seedPreReleasePlanReviewContinuation, type PlanReviewSeedBailReason } from "../plan-review-continuation.js";
 import { checkPlanPremises, type PlanPremiseCheckResult } from "./plan-premise-check.js";
 import {
   advancePlanPremiseRejectionEpisode,
@@ -325,9 +325,21 @@ export type WipAdmissionRejection =
   | "capacity-exhausted-or-no-slot"
   | "source-changed";
 
+/*
+FNXC:ExecutionAdmissionReason 2026-10-18-09:12 (RUFU-718):
+The unplanned refusal used to publish only `rejection: "unplanned-for-execution"`, so an operator
+reading a refused move could not tell a real gate from a stale claim: six different conditions
+(`plan-review-pending`, `human-plan-approval-pending`, `planning-status`, `needs-replan`,
+`duplicate-prompt`, `seed-prompt`) shared one sentence. The refusal now carries the closed reason the
+single decision source already computed, typed FROM `UnplannedForExecutionEvaluation` so a new reason
+there is a compile error here rather than another silently-unnamed refusal. `rejection` itself is
+UNCHANGED: a new wire code with no client case reproduces FN-8471's raw-key printing.
+*/
+export type UnplannedAdmissionReason = Exclude<UnplannedForExecutionEvaluation["reason"], null>;
+
 export type WipAdmissionResult =
   | { released: true; task: Task }
-  | { released: false; rejection?: WipAdmissionRejection; detail?: string };
+  | { released: false; rejection?: WipAdmissionRejection; detail?: string; reason?: UnplannedAdmissionReason };
 
 type IssueReleaseResult = WipAdmissionResult;
 
@@ -526,9 +538,180 @@ export async function isUnplannedForExecution(store: TaskStore, task: Task, ir: 
   return (await evaluateUnplannedForExecution(store, task, ir, pass)).unplanned;
 }
 
+/*
+FNXC:ExecutionAdmissionReason 2026-10-18-09:12 (RUFU-718):
+One operator-facing sentence per closed reason, naming both the cause and the next action. This is the
+ONLY place that wording lives, so the board move route, promote, the CLI and `fn_task_promote` cannot
+disagree about why a card stayed held. The `undefined` arm is defensive: every `unplanned: true` return
+of `evaluateUnplannedForExecution` names a reason, so the generic sentence is not reachable from a
+classified refusal — it exists so an unclassified one is never silent.
+*/
+const UNPLANNED_ADMISSION_DETAIL: Record<UnplannedAdmissionReason, string> = {
+  "plan-review-pending": "Plan Review has not reported a passing verdict for this plan, so the card cannot enter execution.",
+  "human-plan-approval-pending": "This plan is waiting on your approval decision — approve it on the card, or send it back for revision, before it can enter execution.",
+  "planning-status": "A planner session is writing this card's plan right now — wait for it to finish, then move the card again.",
+  "needs-replan": "This plan was rejected and is waiting to be replanned — run Replan on the card before it enters execution.",
+  "duplicate-prompt": "This card's plan is only a duplicate redirect to its canonical card — resolve the duplicate, or write this card its own plan, before it enters execution.",
+  "seed-prompt": "This card still holds only its original-request seed — plan it first, then move it into execution.",
+};
+
+const UNCLASSIFIED_UNPLANNED_DETAIL = "This card is not ready for execution — its plan has not finished, so planning must complete first.";
+
+/** Reason-specific operator copy for an `unplanned-for-execution` refusal. Never empty. */
+export function unplannedAdmissionDetail(reason: UnplannedAdmissionReason | undefined | null): string {
+  return reason ? UNPLANNED_ADMISSION_DETAIL[reason] : UNCLASSIFIED_UNPLANNED_DETAIL;
+}
+
+/*
+FNXC:ExecutionAdmissionReason 2026-10-18-09:12 (RUFU-718):
+What the discharge attempt actually did decides the rest of the sentence. Claiming "Plan Review is
+queued" when the sanctioned seam refused to arm it would be a false promise, so every
+`PlanReviewSeedBailReason` maps to its own honest remedy, and an automatic (non-explicit) pass says
+nothing was armed because it arms nothing.
+*/
+type PlanReviewArming =
+  | { kind: "armed"; workItemId?: string }
+  | { kind: "bailed"; bail: PlanReviewSeedBailReason }
+  | { kind: "unavailable" }
+  | { kind: "automatic" };
+
+function planReviewArmingSuffix(arming: PlanReviewArming): string {
+  switch (arming.kind) {
+    case "armed":
+      return " Plan Review is now queued for this card and will run; the card releases itself once it reports a passing verdict.";
+    case "automatic":
+      return " Plan Review runs before execution; this card stays in its planning lane until it reports.";
+    case "unavailable":
+      return " Plan Review could not be armed from this surface; stranded-continuation recovery re-arms it shortly.";
+    case "bailed":
+      switch (arming.bail) {
+        case "active-continuation":
+          return " Plan Review is already queued for this card and will run; the card releases itself once it reports a passing verdict.";
+        case "plan-review-passed":
+          return " A passing Plan Review has just been recorded — move the card again and it will be admitted.";
+        case "awaiting-approval":
+          return " Plan Review cannot start while the plan is held for your approval — approve the plan to continue.";
+        case "paused":
+          return " This card is paused — unpause it so Plan Review can run.";
+        case "retry-owned":
+          return " This card is parked after a failed run — Retry it to re-arm Plan Review.";
+        case "no-pre-release-plan-review":
+          // The gate that refused is not the gate the seam would arm; say nothing more than the cause.
+          return "";
+      }
+  }
+}
+
+/**
+ * FNXC:ExecutionAdmissionReason 2026-10-18-10:12 (RUFU-718):
+ * The only place an admission refusal may arm work: `seedPreReleasePlanReviewContinuation` is the
+ * sanctioned seam the planning handoff and FN-8592 already share, so an explicit operator release
+ * re-arms the review the gate is waiting on without inventing a second recovery owner or a new
+ * durable episode field. It never manufactures a verdict, and a narrow store adapter or a failing
+ * seed transaction degrades to `unavailable` — a refusal must not become a dispatch failure.
+ */
+async function armPreReleasePlanReview(store: TaskStore, task: Task, ir: WorkflowIr): Promise<PlanReviewArming> {
+  try {
+    const seeded = await seedPreReleasePlanReviewContinuation(store, task, ir, { atomic: true });
+    if (seeded.seeded) return { kind: "armed", workItemId: seeded.workItemId };
+    return { kind: "bailed", bail: seeded.reason ?? "no-pre-release-plan-review" };
+  } catch {
+    // A narrow store adapter without the conditional seed writer, or a failing seed transaction,
+    // must not turn a refusal into a dispatch failure — the recovery owner stays self-healing.
+    return { kind: "unavailable" };
+  }
+}
+
+/**
+ * FNXC:ExecutionAdmissionReason 2026-10-18-09:12 (RUFU-718):
+ * A refused admission must leave the card closer to running than it found it, because the operator's
+ * explicit move is the action that looks like the remedy. Two conditions can be discharged WITHOUT
+ * waiving anything:
+ *
+ *  - `plan-review-pending` — arm Plan Review through `seedPreReleasePlanReviewContinuation`, the same
+ *    seam the planning handoff and FN-8592 use. The review still has to pass; nothing is approved.
+ *  - `planning-status` whose planner session is gone AND whose claim is the only blocker — perform the
+ *    same stale-claim clear triage performs (`updateTask(id, { status: null })` plus a task-log line).
+ *
+ * The background sweep never discharges: FN-8592 stranded-continuation reconciliation, FN-8923,
+ * RUFU-273, RUFU-288 and triage's own sweeps stay the sole owners of automatic repair, and no new
+ * episode field or recovery loop is added here. Returns `continueRelease: true` only when the stale
+ * claim was cleared and the caller should proceed with the release it was about to refuse.
+ */
+async function dischargeUnplannedAdmission(
+  store: TaskStore,
+  deps: HoldReleaseDeps,
+  task: Task,
+  ir: WorkflowIr,
+  reason: UnplannedAdmissionReason | undefined,
+  options: { explicit: boolean; canContinueRelease: boolean; pass?: HoldReleasePass },
+): Promise<{ continueRelease: true } | { continueRelease: false; detail: string }> {
+  const base = unplannedAdmissionDetail(reason);
+  if (!reason) return { continueRelease: false, detail: base };
+  if (reason === "plan-review-pending") {
+    const arming: PlanReviewArming = options.explicit
+      ? await armPreReleasePlanReview(store, task, ir)
+      : { kind: "automatic" };
+    return { continueRelease: false, detail: `${base}${planReviewArmingSuffix(arming)}` };
+  }
+  if (reason === "planning-status") {
+    const staleClaim = await clearStalePlanningClaimIfSoleBlocker(store, deps, task, ir, options.pass);
+    if (staleClaim.cleared) {
+      if (options.canContinueRelease) return { continueRelease: true };
+      return {
+        continueRelease: false,
+        detail: "Cleared the stale `planning` claim a planner that never finished left behind — move the card again and it will be admitted.",
+      };
+    }
+    if (staleClaim.reason === "plan-incomplete") {
+      return {
+        continueRelease: false,
+        detail: "This card is still marked `planning` but no planner session is running, and its plan is not complete — replan it, then move the card again.",
+      };
+    }
+  }
+  return { continueRelease: false, detail: base };
+}
+
+/**
+ * A stale `planning` claim whose planner session is gone is the one unplanned refusal an explicit
+ * release can clear itself: the clear IS the repair (same write and same liveness predicate semantics
+ * as triage's `clearStaleSpecifyingStatuses` / `sweepStalePlanningStatuses`). It is cleared only when
+ * it is the sole blocker, proved by re-running the one decision source with the status removed — so a
+ * card that would still be refused for a real reason keeps its claim, its reason, and its owner.
+ */
+async function clearStalePlanningClaimIfSoleBlocker(
+  store: TaskStore,
+  deps: HoldReleaseDeps,
+  task: Task,
+  ir: WorkflowIr,
+  pass?: HoldReleasePass,
+): Promise<{ cleared: true } | { cleared: false; reason: "live" | "plan-incomplete" }> {
+  if (task.status !== "planning") return { cleared: false, reason: "live" };
+  if (isTaskPlanningOrExecutionLive(task.id, { isTaskActive: deps.isTaskActive })) return { cleared: false, reason: "live" };
+  // In-memory probe copy only — the durable clear below writes the real `status: null` patch.
+  const afterClear = await evaluateUnplannedForExecution(store, { ...task, status: undefined }, ir, pass);
+  if (afterClear.unplanned) return { cleared: false, reason: "plan-incomplete" };
+  await store.updateTask(task.id, { status: null });
+  if (typeof store.logEntry === "function") {
+    await store.logEntry(
+      task.id,
+      "Auto-recovered: cleared the stale planning status left by a planner that never finished",
+    ).catch(() => undefined);
+  }
+  return { cleared: true };
+}
+
 export type CapacityHoldReadiness =
   | { releasable: true }
-  | { releasable: false; kind: "awaiting-planning" | "awaiting-approval"; reason: string };
+  /*
+  FNXC:ExecutionAdmissionReason 2026-10-18-09:12 (RUFU-718):
+  The readiness verdict already computed the closed reason; typing it here is what lets the refusal
+  sites forward it instead of flattening six conditions into one code. `"unplanned"` stays a legal
+  value because the sweep's `held` reason string is built from this field.
+  */
+  | { releasable: false; kind: "awaiting-planning"; reason: UnplannedAdmissionReason | "unplanned" }
+  | { releasable: false; kind: "awaiting-approval"; reason: "awaiting-approval" };
 
 /*
 FNXC:WorkflowScheduling 2026-08-28-21:24:
@@ -1655,9 +1838,30 @@ async function issueRelease(
         return { released: false };
       }
       if (!readiness.releasable) {
-        await checkAndRecordUnplannedExecutionBlock(store, task, ir, options.pass);
-        schedulerLog.debug(`Hold release for ${task.id} blocked — card is unplanned and cannot enter processing column ${target}`);
-        return { released: false, rejection: "unplanned-for-execution" };
+        /*
+        FNXC:ExecutionAdmissionReason 2026-10-18-09:12 (RUFU-718):
+        Refusal site 1 of 4. `readiness.reason` is the closed reason the one decision source computed;
+        forwarding it with reason-specific copy is what turns "not ready for execution" into something
+        an operator can act on. An EXPLICIT release also discharges what it legitimately can (arm Plan
+        Review, or clear a dead planner claim that is the sole blocker), so the refusal never leaves the
+        card ownerless. This path performs no lifecycle move and writes no gate evidence.
+        */
+        const reason = readiness.kind === "awaiting-planning" && readiness.reason !== "unplanned" ? readiness.reason : undefined;
+        const discharge = await dischargeUnplannedAdmission(store, deps, task, ir, reason, {
+          explicit: options.moveSource === "user",
+          canContinueRelease: true,
+          pass: options.pass,
+        });
+        if (!discharge.continueRelease) {
+          await checkAndRecordUnplannedExecutionBlock(store, task, ir, options.pass);
+          schedulerLog.debug(`Hold release for ${task.id} blocked — card is unplanned (${reason ?? "unclassified"}) and cannot enter processing column ${target}`);
+          return {
+            released: false,
+            rejection: "unplanned-for-execution",
+            ...(reason ? { reason } : {}),
+            detail: discharge.detail,
+          };
+        }
       }
     }
   }
@@ -1684,6 +1888,13 @@ async function issueRelease(
   try {
     const originalColumn = options.expectedColumn ?? task.column;
     let liveUnplanned: Task | undefined;
+    /*
+    FNXC:ExecutionAdmissionReason 2026-10-18-09:12 (RUFU-718):
+    The under-lock verdict used to run through the boolean wrapper, so a card that became unplanned
+    while its slot was reserved produced a refusal that named no reason at all. It now reads the same
+    reason-bearing source as the pre-move door, so both sites speak one vocabulary.
+    */
+    let liveUnplannedReason: UnplannedAdmissionReason | undefined;
     let livePremiseFailure: Extract<PlanPremiseCheckResult, { outcome: "stale" | "invalid-contract" | "unavailable" }> | undefined;
     let livePremiseDeliveryInvalidated: Extract<PlanPremiseCheckResult, { outcome: "premise-invalidated-by-delivery" }> | undefined;
     // RUFU-246: set when the locked live row already carries a terminal premise park (see predicate).
@@ -1717,9 +1928,13 @@ async function issueRelease(
         // mid-pass still refuses the move. Only the STABLE INPUT FACTS (PROMPT.md contents, work
         // items, settings) come from the pass memo; like the selection/IR caches this pass owns, a
         // mid-pass change to them can at worst delay a release to the next pass, never force one.
-        if (targetIsProcessing && await isUnplannedForExecution(store, live, ir, options.pass)) {
-          liveUnplanned = live;
-          return false;
+        if (targetIsProcessing) {
+          const liveEvaluation = await evaluateUnplannedForExecution(store, live, ir, options.pass);
+          if (liveEvaluation.unplanned) {
+            liveUnplanned = live;
+            liveUnplannedReason = liveEvaluation.reason ?? undefined;
+            return false;
+          }
         }
         /*
         FNXC:PlanPremises 2026-09-16-04:08:
@@ -1768,9 +1983,26 @@ async function issueRelease(
     if (!result.moved) {
       reservation?.release();
       if (liveUnplanned) {
+        /*
+        FNXC:ExecutionAdmissionReason 2026-10-18-09:12 (RUFU-718):
+        Refusal site 2 of 4 — the race refusal. Same reason vocabulary as the pre-move door, so the two
+        cannot print different sentences for one condition. The discharge runs AFTER the move lock
+        released: a seed or a status write must never sit inside the move transaction, and the move is
+        already lost, so this site cannot continue the release itself.
+        */
+        const discharge = await dischargeUnplannedAdmission(store, deps, liveUnplanned, ir, liveUnplannedReason, {
+          explicit: options.moveSource === "user",
+          canContinueRelease: false,
+          pass: options.pass,
+        });
         await checkAndRecordUnplannedExecutionBlock(store, liveUnplanned, ir, options.pass);
-        schedulerLog.debug(`Hold release for ${task.id} blocked — card became unplanned before entering processing column ${target}`);
-        return { released: false, rejection: "unplanned-for-execution" };
+        schedulerLog.debug(`Hold release for ${task.id} blocked — card became unplanned (${liveUnplannedReason ?? "unclassified"}) before entering processing column ${target}`);
+        return {
+          released: false,
+          rejection: "unplanned-for-execution",
+          ...(liveUnplannedReason ? { reason: liveUnplannedReason } : {}),
+          detail: discharge.continueRelease ? unplannedAdmissionDetail(liveUnplannedReason) : discharge.detail,
+        };
       }
       if (livePremiseExhausted) {
         return { released: false, rejection: "plan-premise-exhausted", detail: "Plan premise contract exhausted; operator Retry/Reset required to clear the refusal episode" };
@@ -1828,7 +2060,7 @@ export async function promoteHeldTask(
   store: TaskStore,
   taskId: string,
   deps: Pick<HoldReleaseDeps, "reserveSlot" | "allocateWorktree"> = {},
-): Promise<{ released: boolean; toColumn?: string; rejection?: string }> {
+): Promise<{ released: boolean; toColumn?: string; rejection?: string; reason?: UnplannedAdmissionReason; detail?: string }> {
   const task = await store.getTask(taskId);
   if (!task) return { released: false, rejection: "task-not-found" };
 
@@ -1844,15 +2076,32 @@ export async function promoteHeldTask(
   FN-245 replaces the synthetic skipped Plan Review result and replan-status
   clear with a terminal refusal. The explicit promotion path records the
   existing refusal evidence but cannot manufacture a waiver for plan review.
+
+  FNXC:ExecutionAdmissionReason 2026-10-18-09:12 (RUFU-718):
+  Refusal site 3 of 4. This door called the BOOLEAN wrapper, so the reason was lost twice: never
+  computed as a reason, then never returned. It consults `evaluateUnplannedForExecution` directly and
+  forwards `reason` + `detail`, keeping the existing refusal recording untouched.
   */
   const targetColumn = findColumn(ir, target);
   const targetIsProcessing = targetColumn
     ? resolveColumnFlags(targetColumn).countsTowardWip === true
     : false;
-  const unplanned = targetIsProcessing && (await isUnplannedForExecution(store, task, ir));
-  if (unplanned) {
-    await checkAndRecordUnplannedExecutionBlock(store, task, ir);
-    return { released: false, rejection: "unplanned-for-execution", toColumn: target };
+  const evaluation = targetIsProcessing ? await evaluateUnplannedForExecution(store, task, ir) : undefined;
+  if (evaluation?.unplanned) {
+    const discharge = await dischargeUnplannedAdmission(store, { now: () => Date.now() }, task, ir, evaluation.reason ?? undefined, {
+      explicit: true,
+      canContinueRelease: true,
+    });
+    if (!discharge.continueRelease) {
+      await checkAndRecordUnplannedExecutionBlock(store, task, ir);
+      return {
+        released: false,
+        rejection: "unplanned-for-execution",
+        toColumn: target,
+        ...(evaluation.reason ? { reason: evaluation.reason } : {}),
+        detail: discharge.detail,
+      };
+    }
   }
 
   const releaseResult = await issueRelease(
@@ -1866,6 +2115,8 @@ export async function promoteHeldTask(
     return {
       released: false,
       rejection: releaseResult.rejection ?? "capacity-exhausted-or-no-slot",
+      ...(releaseResult.reason ? { reason: releaseResult.reason } : {}),
+      ...(releaseResult.detail ? { detail: releaseResult.detail } : {}),
       ...(releaseResult.rejection ? { toColumn: target } : {}),
     };
   }
@@ -1883,7 +2134,7 @@ export async function releaseHeldTaskByEvent(
   taskId: string,
   eventTag: string,
   deps: Pick<HoldReleaseDeps, "reserveSlot" | "allocateWorktree"> = {},
-): Promise<{ released: boolean; toColumn?: string; rejection?: string }> {
+): Promise<{ released: boolean; toColumn?: string; rejection?: string; reason?: UnplannedAdmissionReason; detail?: string }> {
   const task = await store.getTask(taskId);
   if (!task) return { released: false, rejection: "task-not-found" };
 
@@ -1910,14 +2161,33 @@ export async function releaseHeldTaskByEvent(
   FN-245 requires an external-event release to report the same terminal
   unplanned refusal as manual promotion. Classify and record the refusal before
   the boolean release helper so a planning gate cannot be reported as capacity.
+
+  FNXC:ExecutionAdmissionReason 2026-10-18-09:12 (RUFU-718):
+  Refusal site 4 of 4 — same fix as manual promotion: consult the reason-bearing source rather than
+  the boolean wrapper, so a webhook release names the same cause the board and CLI name.
   */
   const targetColumn = findColumn(ir, target);
   const targetIsProcessing = targetColumn
     ? resolveColumnFlags(targetColumn).countsTowardWip === true
     : false;
-  if (targetIsProcessing && await isUnplannedForExecution(store, task, ir)) {
-    await checkAndRecordUnplannedExecutionBlock(store, task, ir);
-    return { released: false, rejection: "unplanned-for-execution", toColumn: target };
+  if (targetIsProcessing) {
+    const evaluation = await evaluateUnplannedForExecution(store, task, ir);
+    if (evaluation.unplanned) {
+      const discharge = await dischargeUnplannedAdmission(store, { now: () => Date.now() }, task, ir, evaluation.reason ?? undefined, {
+        explicit: true,
+        canContinueRelease: true,
+      });
+      if (!discharge.continueRelease) {
+        await checkAndRecordUnplannedExecutionBlock(store, task, ir);
+        return {
+          released: false,
+          rejection: "unplanned-for-execution",
+          toColumn: target,
+          ...(evaluation.reason ? { reason: evaluation.reason } : {}),
+          detail: discharge.detail,
+        };
+      }
+    }
   }
 
   const releaseResult = await issueRelease(
@@ -1932,6 +2202,8 @@ export async function releaseHeldTaskByEvent(
     : {
         released: false,
         rejection: releaseResult.rejection ?? "capacity-exhausted-or-no-slot",
+        ...(releaseResult.reason ? { reason: releaseResult.reason } : {}),
+        ...(releaseResult.detail ? { detail: releaseResult.detail } : {}),
         ...(releaseResult.rejection ? { toColumn: target } : {}),
       };
 }

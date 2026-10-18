@@ -1235,6 +1235,7 @@ export {
   type SlotReservation,
   type WipAdmissionResult,
   type WipAdmissionRejection,
+  type UnplannedAdmissionReason,
 } from "./execution/hold-release.js";
 export {
   resumeApprovedPlanReviewHandoff,

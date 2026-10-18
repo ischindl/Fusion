@@ -31,6 +31,16 @@ function createTask(overrides: Partial<Task> = {}): Task {
     description: "Promote route fixture",
     column: "todo",
     status: "needs-replan",
+    /*
+    FNXC:PlanPremises 2026-10-18-09:40 (RUFU-718):
+    This fixture predates the plan-premise release door. With no authoritative PROMPT.md and no
+    `getTasksDir`, `checkPlanPremises` answers `unavailable` and every promote in this file 409s —
+    measured red on base 2585ade5af, before any RUFU-718 change. The card here is a PLANNED card, so
+    the fixture now states that intent with a real plan text; a plan that declares no premises is
+    vacuously satisfied, which keeps this file asserting what its names claim (the gate under test is
+    FN-245's no-waiver contract, not premise verification).
+    */
+    prompt: "# Promote route fixture\n\n## Mission\nHold the no-waiver promote contract.\n",
     dependencies: [],
     steps: [],
     log: [],
@@ -121,14 +131,24 @@ describe("POST /api/tasks/:id/promote without a force override", () => {
     const { app, moveTaskIf, task } = buildApp(createTask());
 
     const response = await promote(app, { force: true });
-    const body = response.body as { details: Record<string, unknown> };
+    const body = response.body as { error: string; details: Record<string, unknown> };
 
     expect(response.status).toBe(409);
+    /*
+    FNXC:ExecutionAdmissionReason 2026-10-18-09:40 (RUFU-718):
+    The no-force contract is unchanged — `force` in the body still buys nothing. What widened is the
+    explanation: the promote route now resolves its `messageKey` from the closed reason, so a replan
+    card gets the replan key and the details name the reason. `code` stays the single existing wire
+    value, which is what FN-8471's raw-key defect turned on.
+    */
     expect(body.details).toMatchObject({
       code: "unplanned-for-execution",
-      messageKey: "board.rejection.unplannedForExecution",
+      reason: "needs-replan",
+      messageKey: "board.rejection.unplannedForExecutionNeedsReplan",
       retryable: true,
     });
+    // The 409 sentence itself is the engine's reason-bearing detail, not the old fixed English line.
+    expect(body.error).toMatch(/replan/i);
     expect(body.details).not.toHaveProperty("forceable");
     expect(moveTaskIf).not.toHaveBeenCalled();
     expect(task.status).toBe("needs-replan");

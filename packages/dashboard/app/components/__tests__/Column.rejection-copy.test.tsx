@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractTransitionRejection, translateRejection } from "../Column";
+import { extractTransitionRejection, translateRejection, translateRejectionKey } from "../Column";
 
 /*
 FNXC:CompleteColumnGateEvidence 2026-10-11-19:35 (RUFU-406):
@@ -98,5 +98,77 @@ describe("extractTransitionRejection — the 409 the move route emits", () => {
   it("returns null for the legacy error shape so untouched surfaces keep their old handling", () => {
     expect(extractTransitionRejection(new Error("Invalid transition"))).toBeNull();
     expect(extractTransitionRejection({ details: { code: "gate-evidence-missing" } })).toBeNull();
+  });
+});
+
+/*
+FNXC:ExecutionAdmissionReason 2026-10-18-10:00 (RUFU-718):
+`unplanned-for-execution` is ONE wire code carrying six different conditions, and the refusal now says
+which one by carrying a reason-specific messageKey. FN-8471 is the failure mode this loop exists to
+keep impossible: the server gained a key the client had no case for, `t(key, key)` printed the raw key
+on the board, and the operator lost the explanation at the exact moment they needed it. The key strings
+below are the same closed set the move and promote routes resolve from
+(`UNPLANNED_ADMISSION_MESSAGE_KEYS` in `register-task-workflow-routes.ts`); both sides name them, so a
+rename on either side goes red here or there rather than shipping untranslated copy.
+*/
+const UNPLANNED_REASON_KEYS: Record<string, string> = {
+  "plan-review-pending": "board.rejection.unplannedForExecutionPlanReviewPending",
+  "human-plan-approval-pending": "board.rejection.unplannedForExecutionHumanApprovalPending",
+  "planning-status": "board.rejection.unplannedForExecutionPlanningInFlight",
+  "needs-replan": "board.rejection.unplannedForExecutionNeedsReplan",
+  "duplicate-prompt": "board.rejection.unplannedForExecutionDuplicateRedirect",
+  "seed-prompt": "board.rejection.unplannedForExecutionSeedPrompt",
+};
+const GENERIC_UNPLANNED_KEY = "board.rejection.unplannedForExecution";
+
+describe("translateRejection — unplanned-for-execution reason copy", () => {
+  const t = (_key: string, defaultValue: string) => defaultValue;
+
+  it("renders real copy for every reason key the release routes can emit, never the raw key", () => {
+    for (const [reason, messageKey] of Object.entries(UNPLANNED_REASON_KEYS)) {
+      const rendered = translateRejection(t, rejection("unplanned-for-execution", messageKey));
+      expect(rendered, `reason "${reason}" must not render its raw key`).not.toBe(messageKey);
+      expect(rendered.trim().length).toBeGreaterThan(0);
+      // The same sentence must come back for the bare drag pre-check path, which carries only a key.
+      expect(translateRejectionKey(t, messageKey)).toBe(rendered);
+    }
+  });
+
+  it("keeps the generic unplanned key as the fallback and never a raw key", () => {
+    const generic = translateRejection(t, rejection("unplanned-for-execution", GENERIC_UNPLANNED_KEY));
+    expect(generic).not.toBe(GENERIC_UNPLANNED_KEY);
+    expect(generic.toLowerCase()).toContain("execution");
+    expect(translateRejectionKey(t, GENERIC_UNPLANNED_KEY)).toBe(generic);
+    // A key this build has never seen still degrades to the generic sentence, not to a key.
+    expect(translateRejection(t, rejection("unplanned-for-execution", "board.rejection.unplannedForExecutionBrandNewReason")))
+      .toBe(generic);
+  });
+
+  it("says something different for each condition, because each has a different remedy", () => {
+    /*
+    A pending Plan Review is a gate that will clear itself; a duplicate redirect and a seed prompt are
+    cards that were never planned, and a human-approval wait needs the operator's own decision. One
+    sentence for all of them sends the operator to the wrong subsystem, so the sentences must stay
+    observably distinct strings — asserted pairwise, not by paraphrasing the copy here.
+    */
+    const seen = new Map<string, string>();
+    for (const [reason, messageKey] of Object.entries(UNPLANNED_REASON_KEYS)) {
+      seen.set(reason, translateRejection(t, rejection("unplanned-for-execution", messageKey)));
+    }
+    const distinct = new Set(seen.values());
+    expect(distinct.size).toBe(seen.size);
+
+    // The three named pairs whose remedies live in different subsystems.
+    expect(seen.get("plan-review-pending")).not.toBe(seen.get("seed-prompt"));
+    expect(seen.get("plan-review-pending")).not.toBe(seen.get("duplicate-prompt"));
+    expect(seen.get("human-plan-approval-pending")).not.toBe(seen.get("planning-status"));
+
+    // And each sentence names its own cause in words an operator can act on.
+    expect(seen.get("plan-review-pending")).toMatch(/plan review/i);
+    expect(seen.get("human-plan-approval-pending")).toMatch(/approval/i);
+    expect(seen.get("planning-status")).toMatch(/planner|planning/i);
+    expect(seen.get("needs-replan")).toMatch(/replan/i);
+    expect(seen.get("duplicate-prompt")).toMatch(/duplicate/i);
+    expect(seen.get("seed-prompt")).toMatch(/plan/i);
   });
 });

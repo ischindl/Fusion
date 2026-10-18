@@ -52,6 +52,58 @@ export function extractTransitionRejection(err: unknown): TransitionRejectionDet
  * key resolves correctly.
  */
 type TFn = (key: string, defaultValue: string) => string;
+
+/*
+FNXC:ExecutionAdmissionReason 2026-10-18-09:12 (RUFU-718):
+`unplanned-for-execution` is six different conditions and the refusal now names which one, so the
+board resolves its copy from the carried `messageKey` rather than from the code alone. The wire code
+is unchanged on purpose: FN-8471 shipped a new code with no client case and the board printed the raw
+`board.rejection.unplannedForExecution` key at operators, so an unknown key here falls back to the
+generic unplanned sentence — never to a raw key. Each sentence names the next action, and the
+plan-review sentence stays observably different from the duplicate/seed sentences (different
+subsystems, different remedies). Both public helpers below route through this one function, and
+`Column`'s `rejectionCopy` anchor repeats the same literals for the i18next extractor.
+*/
+function unplannedRejectionCopy(t: TFn, messageKey: string): string {
+  switch (messageKey) {
+    case "board.rejection.unplannedForExecutionPlanReviewPending":
+      return t(
+        "board.rejection.unplannedForExecutionPlanReviewPending",
+        "Plan Review hasn't reported a passing verdict for this plan yet — wait for Plan Review to finish, then move the card again.",
+      );
+    case "board.rejection.unplannedForExecutionHumanApprovalPending":
+      return t(
+        "board.rejection.unplannedForExecutionHumanApprovalPending",
+        "This plan is waiting on your approval decision — approve it, or send it back for revision, to release the card.",
+      );
+    case "board.rejection.unplannedForExecutionPlanningInFlight":
+      return t(
+        "board.rejection.unplannedForExecutionPlanningInFlight",
+        "A planner session is writing this plan right now — wait for it to finish, then move the card again.",
+      );
+    case "board.rejection.unplannedForExecutionNeedsReplan":
+      return t(
+        "board.rejection.unplannedForExecutionNeedsReplan",
+        "This plan was rejected and needs replanning — run Replan on the card before it can be executed.",
+      );
+    case "board.rejection.unplannedForExecutionDuplicateRedirect":
+      return t(
+        "board.rejection.unplannedForExecutionDuplicateRedirect",
+        "This card is only a duplicate redirect — resolve it against its canonical card before executing.",
+      );
+    case "board.rejection.unplannedForExecutionSeedPrompt":
+      return t(
+        "board.rejection.unplannedForExecutionSeedPrompt",
+        "This card hasn't been planned yet — its plan is still just the original request. Plan it first.",
+      );
+    default:
+      return t(
+        "board.rejection.unplannedForExecution",
+        "This task isn't ready for execution yet — planning or plan review is still outstanding.",
+      );
+  }
+}
+
 export function translateRejection(t: TFn, rejection: TransitionRejectionDetail): string {
   switch (rejection.code) {
     case "guard-rejected":
@@ -86,12 +138,14 @@ export function translateRejection(t: TFn, rejection: TransitionRejectionDetail)
     printed the raw `board.rejection.unplannedForExecution` key at operators. The
     static literal here is also what the i18next extractor sees, so the key must
     be spelled out in the switch rather than resolved via the carried messageKey.
+
+    FNXC:ExecutionAdmissionReason 2026-10-18-09:12 (RUFU-718):
+    One code, six reasons. Resolution now goes through `unplannedRejectionCopy`, which reads the
+    carried messageKey for the reason-specific sentence and still cannot print a raw key: an
+    unrecognised key lands on the generic unplanned sentence above.
     */
     case "unplanned-for-execution":
-      return t(
-        "board.rejection.unplannedForExecution",
-        "This task isn't ready for execution yet — planning or plan review is still outstanding.",
-      );
+      return unplannedRejectionCopy(t, rejection.messageKey);
     case "stale-move-precondition":
       return t(
         "board.rejection.staleMovePrecondition",
@@ -116,11 +170,21 @@ export function translateRejectionKey(t: TFn, messageKey: string): string {
       return t("board.rejection.workflowMismatch", "Drag can't move a card between workflows. Use the workflow switcher instead.");
     case "board.rejection.mergeBlocked":
       return t("board.rejection.mergeBlocked", "This task is blocked from completing until its merge step finishes.");
+    /*
+    FNXC:ExecutionAdmissionReason 2026-10-18-09:40 (RUFU-718):
+    A bare drag pre-check (R17 no-move) carries only a messageKey, so the reason-specific unplanned
+    keys resolve here too — the same sentences as `translateRejection`, from the same function. The
+    generic key shares the group rather than standing above it with its own body: an empty `case` is
+    a fallthrough, and the shared helper answers the generic key with the generic sentence anyway.
+    */
     case "board.rejection.unplannedForExecution":
-      return t(
-        "board.rejection.unplannedForExecution",
-        "This task isn't ready for execution yet — planning or plan review is still outstanding.",
-      );
+    case "board.rejection.unplannedForExecutionPlanReviewPending":
+    case "board.rejection.unplannedForExecutionHumanApprovalPending":
+    case "board.rejection.unplannedForExecutionPlanningInFlight":
+    case "board.rejection.unplannedForExecutionNeedsReplan":
+    case "board.rejection.unplannedForExecutionDuplicateRedirect":
+    case "board.rejection.unplannedForExecutionSeedPrompt":
+      return unplannedRejectionCopy(t, messageKey);
     case "board.rejection.staleMovePrecondition":
       return t(
         "board.rejection.staleMovePrecondition",
@@ -269,6 +333,20 @@ function ColumnComponent({ column, tasks, projectId, maxWorktrees, showWorktreeG
     unknownColumn: t("board.rejection.unknownColumn", "That column doesn't exist in this task's workflow."),
     workflowMismatch: t("board.rejection.workflowMismatch", "Drag can't move a card between workflows. Use the workflow switcher instead."),
     mergeBlocked: t("board.rejection.mergeBlocked", "This task is blocked from completing until its merge step finishes."),
+    /*
+    FNXC:ExecutionAdmissionReason 2026-10-18-09:12 (RUFU-718):
+    The extractor scopes `t` to this `useTranslation("app")` binding, so the shared helpers' calls are
+    not statically discovered and this anchor is what keeps the keys in the catalog. The generic
+    `unplannedForExecution` anchor was missing entirely, and every reason-specific key would have been
+    missing with it — the board would ship untranslated keys for a refusal it can now explain.
+    */
+    unplannedForExecution: t("board.rejection.unplannedForExecution", "This task isn't ready for execution yet — planning or plan review is still outstanding."),
+    unplannedForExecutionPlanReviewPending: t("board.rejection.unplannedForExecutionPlanReviewPending", "Plan Review hasn't reported a passing verdict for this plan yet — wait for Plan Review to finish, then move the card again."),
+    unplannedForExecutionHumanApprovalPending: t("board.rejection.unplannedForExecutionHumanApprovalPending", "This plan is waiting on your approval decision — approve it, or send it back for revision, to release the card."),
+    unplannedForExecutionPlanningInFlight: t("board.rejection.unplannedForExecutionPlanningInFlight", "A planner session is writing this plan right now — wait for it to finish, then move the card again."),
+    unplannedForExecutionNeedsReplan: t("board.rejection.unplannedForExecutionNeedsReplan", "This plan was rejected and needs replanning — run Replan on the card before it can be executed."),
+    unplannedForExecutionDuplicateRedirect: t("board.rejection.unplannedForExecutionDuplicateRedirect", "This card is only a duplicate redirect — resolve it against its canonical card before executing."),
+    unplannedForExecutionSeedPrompt: t("board.rejection.unplannedForExecutionSeedPrompt", "This card hasn't been planned yet — its plan is still just the original request. Plan it first."),
     staleMovePrecondition: t("board.rejection.staleMovePrecondition", "This card already moved on. Refresh to see where it is now."),
   }), [t]);
   void rejectionCopy;

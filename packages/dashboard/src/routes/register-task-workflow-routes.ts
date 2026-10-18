@@ -122,6 +122,7 @@ import {
   describeFileScopeOverlapBlocker,
   promoteHeldTask,
   admitTaskToWip,
+  type UnplannedAdmissionReason,
   isFirstPlanningToWipAdmission,
   evaluateTaskReleaseGate,
   performTaskRevert,
@@ -206,6 +207,31 @@ changes the count), so a correctly-converted guard with an inline legacy arm sta
 permanently and the number stops distinguishing real debt from documented degraded answers.
 */
 const LEGACY_WIP_LANES: ReadonlySet<string> = new Set(["in-progress"]);
+
+/*
+FNXC:ExecutionAdmissionReason 2026-10-18-09:12 (RUFU-718):
+An `unplanned-for-execution` refusal is six different conditions, and the engine now names which one.
+The wire `code` deliberately stays the single existing value — a new code with no client case is
+FN-8471's defect (the board printed the raw `board.rejection.unplannedForExecution` key) — so the
+reason selects the *messageKey* instead. Every key below must have a `Column.tsx` case:
+`Column.rejection-copy.test.tsx` loops this closed set and fails a key that renders as a raw key.
+Exported so the route test and the client copy test assert the same closed vocabulary.
+*/
+export const UNPLANNED_FOR_EXECUTION_MESSAGE_KEY = "board.rejection.unplannedForExecution";
+
+export const UNPLANNED_ADMISSION_MESSAGE_KEYS: Record<UnplannedAdmissionReason, string> = {
+  "plan-review-pending": "board.rejection.unplannedForExecutionPlanReviewPending",
+  "human-plan-approval-pending": "board.rejection.unplannedForExecutionHumanApprovalPending",
+  "planning-status": "board.rejection.unplannedForExecutionPlanningInFlight",
+  "needs-replan": "board.rejection.unplannedForExecutionNeedsReplan",
+  "duplicate-prompt": "board.rejection.unplannedForExecutionDuplicateRedirect",
+  "seed-prompt": "board.rejection.unplannedForExecutionSeedPrompt",
+};
+
+/** Reason-specific board copy key, falling back to the generic unplanned key when no reason exists. */
+export function unplannedAdmissionMessageKey(reason: UnplannedAdmissionReason | undefined | null): string {
+  return reason ? UNPLANNED_ADMISSION_MESSAGE_KEYS[reason] : UNPLANNED_FOR_EXECUTION_MESSAGE_KEY;
+}
 
 
 const REVIEW_BLOCK_RE = /##\s+(Code|Plan)\s+Review:[\s\S]*?(?=\n##\s+(?:Code|Plan)\s+Review:|$)/gi;
@@ -2787,10 +2813,19 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
           },
         );
         if (!admission.released) {
+          /*
+          FNXC:ExecutionAdmissionReason 2026-10-18-09:12 (RUFU-718):
+          The 409 now carries the closed reason and picks its messageKey from it, so a board drag that
+          is refused for a pending Plan Review cannot print the same sentence as a duplicate redirect.
+          `code` is unchanged; `detail` (the engine's reason-bearing sentence) is the message.
+          */
           const retryable = admission.rejection === "plan-premise-unavailable" || admission.rejection === "source-changed";
           throw new ApiError(409, admission.detail ?? `Execution admission refused: ${admission.rejection ?? "release-gate"}`, {
             code: admission.rejection ?? "release-gate-refused",
-            messageKey: "board.rejection.unplannedForExecution",
+            messageKey: admission.rejection === "unplanned-for-execution"
+              ? unplannedAdmissionMessageKey(admission.reason)
+              : UNPLANNED_FOR_EXECUTION_MESSAGE_KEY,
+            ...(admission.reason ? { reason: admission.reason } : {}),
             retryable,
           });
         }
@@ -2883,9 +2918,16 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         is full when plan-review is still outstanding (FN-8471).
         */
         if (result.rejection === "unplanned-for-execution") {
-          throw new ApiError(409, "Task is not ready for execution (plan review or planning still outstanding)", {
+          /*
+          FNXC:ExecutionAdmissionReason 2026-10-18-09:12 (RUFU-718):
+          Promote used to hard-code one English sentence and one key for all six conditions. It now
+          resolves both from the reason the same way the move route does, so the two routes cannot
+          disagree about the same refusal.
+          */
+          throw new ApiError(409, result.detail ?? "Task is not ready for execution (plan review or planning still outstanding)", {
             code: "unplanned-for-execution",
-            messageKey: "board.rejection.unplannedForExecution",
+            messageKey: unplannedAdmissionMessageKey(result.reason),
+            ...(result.reason ? { reason: result.reason } : {}),
             retryable: true,
           });
         }

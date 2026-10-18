@@ -3604,15 +3604,26 @@ export function createTaskPromoteTool(store: TaskStore, currentTaskId: string): 
             },
           };
         }
+        /*
+        FNXC:ExecutionAdmissionReason 2026-10-18-10:01 (RUFU-718):
+        This refusal used to print one sentence for six different conditions — `plan-review-pending`,
+        a human approval the operator still owes, a live planner, a replan request, a duplicate
+        redirect, and an unplanned seed all read as "still waiting on planning or plan review", which
+        told an agent nothing it could act on. `promoteHeldTask` now carries the closed reason plus a
+        sentence naming that cause and its next action, so the sentence is printed as-is and `reason`
+        travels beside it. `rejection` on the wire is unchanged, and no waiver exists: an unplanned
+        card is still refused (FN-245).
+        */
+        const reasonSentence = outcome.detail?.trim();
         const message = outcome.rejection === "unplanned-for-execution"
-          ? `${taskId} is still waiting on planning or plan review.`
+          ? (reasonSentence || `${taskId} is still waiting on planning or plan review.`)
           : outcome.rejection ?? "unknown";
         return {
           content: [{
             type: "text" as const,
-            text: `ERROR: Could not promote ${taskId}: ${message}.`,
+            text: `ERROR: Could not promote ${taskId}: ${message}${message.endsWith(".") ? "" : "."}`,
           }],
-          details: { taskId, released: false, rejection: outcome.rejection },
+          details: { taskId, released: false, rejection: outcome.rejection, ...(outcome.reason ? { reason: outcome.reason } : {}) },
           isError: true,
         };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

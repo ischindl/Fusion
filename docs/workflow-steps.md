@@ -142,6 +142,50 @@ After the workflow-columns cutover, the only automatic queued-work dispatcher is
 
 **Unplanned/intake cards never release into a processing column (FN-7648).** The sweep and both explicit release surfaces (`promoteHeldTask` and `releaseHeldTaskByEvent`) refuse to move a card into a `countsTowardWip` column while it is still unplanned: `status === "planning"`, a pending pre-release Plan Review, a durable replan signal, its PROMPT.md is still the bootstrap stub, or it currently rests in a column carrying the `intake` trait. An approval-held card is refused as well. FN-245 removes any operator override from `promoteHeldTask`, so an explicit promote refusal is terminal until planning or plan review genuinely completes. This is trait-based, not keyed on the literal `"todo"` id, so a custom workflow whose intake column is renamed (`ideas`, `Inbox`, ...) is covered the same way as the default workflow's `triage`/"Planning" column. See `docs/architecture.md` § "Workflow-defined columns & traits" → "Execution-entry invariant" for the implementation detail.
 
+#### The unplanned-for-execution refusal names its reason (RUFU-718)
+
+`evaluateUnplannedForExecution` (`packages/engine/src/execution/hold-release.ts`) is the single
+decision source for that gate and it returns a **closed reason** next to its verdict. Every refusal
+that surfaces to an operator now carries that reason plus a sentence naming the cause and the next
+action, so the six conditions no longer share one line of copy:
+
+| Reason | What is actually missing | What the refusal tells the operator |
+| --- | --- | --- |
+| `plan-review-pending` | No `plan-review` result row satisfies `isPlanReviewSatisfied` (an approved plan fingerprint is not a verdict) | Plan Review is queued from the explicit release and will run; the card releases itself once it reports a passing verdict |
+| `human-plan-approval-pending` | The card's own human plan-approval requirement is armed and unanswered | Approve the plan on the card, or send it back for revision |
+| `planning-status` | `status === "planning"` with a live planner session | The plan is in flight; wait, then move the card again |
+| `needs-replan` | A durable replan request | Run Replan on the card |
+| `duplicate-prompt` | The plan text is only a duplicate redirect | Resolve it against the canonical card, or write this card its own plan |
+| `seed-prompt` | `PROMPT.md` is still the bootstrap stub | Plan the card first |
+
+Two refusals can be discharged by the release itself without waiving anything, and the copy reports
+what actually happened instead of promising it:
+
+- `plan-review-pending` arms pre-release Plan Review through `seedPreReleasePlanReviewContinuation`
+  (`packages/engine/src/plan-review-continuation.ts`) — the same seam the planning handoff and the
+  FN-8592 stranded-continuation sweep use. When that seam bails (`active-continuation`,
+  `plan-review-passed`, `awaiting-approval`, `paused`, `retry-owned`, `no-pre-release-plan-review`)
+  the sentence names the existing owner; the refusal never claims a queue it did not create.
+- `planning-status` whose planner session is gone is cleared only when it is provably the sole
+  blocker, which is the same `status: null` clear triage performs; the release then continues in the
+  same call. A live session keeps the refusal.
+
+The background hold-release sweep arms nothing — FN-8592, FN-8923, RUFU-273, RUFU-288 and triage's
+own sweeps stay the sole automatic repair owners, so an explicit operator action arms the owner while
+the sweep keeps its single authority.
+
+Two contracts the surfaces must not drift on:
+
+- **The wire code is unchanged.** `rejection` / `code` stay exactly `unplanned-for-execution`; the
+  reason selects the `messageKey` instead. FN-8471 shipped a new code with no client case and the
+  board printed the raw `board.rejection.unplannedForExecution` key at operators. Every
+  reason-specific key has a case in `packages/dashboard/app/components/Column.tsx`, and
+  `Column.rejection-copy.test.tsx` loops the closed set so a key that renders as a raw key fails.
+- **FN-245's no-waiver contract stands.** No release surface gained a `force`, `allowUnplanned`, or
+  synthetic-approval path: `routes-tasks-promote-no-force.test.ts` and the `fn_task_promote`
+  parameter census pin it. A refusal performs no lifecycle column move and writes no approving
+  `workflowStepResults` row.
+
 Pure-v1 custom workflow definitions (`start` / `prompt` / `script` / `gate` / `end` nodes with default columns) still parse and upgrade by synthesizing the legacy column ids with empty trait sets. That shape is intentional for FN-5769 / issue #1405 rollback compatibility: it can be downgraded back to v1 for older binaries. The tradeoff is that a pure-v1 custom workflow's `todo` column is not a hold column, so tasks can sit in `todo` instead of dispatching to `in-progress`.
 
 For capacity-dispatched custom workflows, author or migrate the workflow as IR v2 and give `todo` and `in-progress` the canonical dispatch traits (the same minimum used by the built-in coding workflow):

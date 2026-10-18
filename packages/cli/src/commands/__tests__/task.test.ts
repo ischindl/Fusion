@@ -1374,6 +1374,46 @@ describe("project-aware task command behavior", () => {
     expect(moveTask).not.toHaveBeenCalled();
   });
 
+  it("prints the reason-bearing sentence when admission is refused as unplanned", async () => {
+    /*
+    FNXC:ExecutionAdmissionReason 2026-10-18-10:01 (RUFU-718):
+    A refused `fn task move` used to end on the wire code (`Execution admission refused:
+    unplanned-for-execution`), which is six conditions in one string. The engine now carries the
+    closed reason plus a sentence naming the cause and its next action, and the terminal prints that
+    sentence verbatim; the code stays only as the fallback for a refusal with no sentence.
+    */
+    const current = makeTask({ id: "RUFU-718-C", column: "planning" });
+    const moveTask = vi.fn();
+    const store = {
+      getTask: vi.fn().mockResolvedValue(current),
+      getTaskWorkflowSelection: vi.fn(() => undefined),
+      getWorkflowDefinition: vi.fn(),
+      getSettings: vi.fn().mockResolvedValue({}),
+      getRootDir: vi.fn(() => "/test"),
+      moveTask,
+    };
+    vi.mocked(resolveProject).mockResolvedValue({
+      projectId: "proj_test", projectPath: "/test", projectName: "demo-project", isRegistered: true,
+      store: store as unknown as TaskStore,
+    });
+    vi.mocked(isFirstPlanningToWipAdmission).mockReturnValue(true);
+    vi.mocked(admitTaskToWip).mockResolvedValue({
+      released: false,
+      rejection: "unplanned-for-execution",
+      reason: "plan-review-pending",
+      detail: "Plan Review has not reported a passing verdict for this plan, so the card cannot enter execution. Plan Review is now queued for this card and will run.",
+    } as never);
+
+    const failure = await runTaskMove(current.id, "in-progress", "demo-project").catch((err: unknown) => err);
+
+    expect(failure).toBeInstanceOf(Error);
+    const message = (failure as Error).message;
+    expect(message).toMatch(/Plan Review has not reported a passing verdict/);
+    expect(message).not.toContain("Execution admission refused: unplanned-for-execution");
+    expect(admitTaskToWip).toHaveBeenCalledOnce();
+    expect(moveTask).not.toHaveBeenCalled();
+  });
+
   it("runTaskMove passes the user source through to the task-move disposer seam (hard cancel)", async () => {
     /*
     FNXC:TaskMovement 2026-07-26-12:35:

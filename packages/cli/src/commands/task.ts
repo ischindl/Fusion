@@ -1794,6 +1794,13 @@ export async function runTaskMove(id: string, column: string, projectName?: stri
         ir,
         { expectedColumn: current.column, moveSource: "user", workflowMoveSource: "cli-plan-premise-release" },
       );
+      /*
+      FNXC:ExecutionAdmissionReason 2026-10-18-10:01 (RUFU-718):
+      `admission.detail` is now the reason-bearing sentence (which gate, and what happens next), so it
+      is what the operator reads. The `Execution admission refused: <code>` form survives only as the
+      fallback for a refusal with no sentence at all — printing the wire code when a named cause
+      exists is the defect this line had to keep working.
+      */
       if (!admission.released) throw new Error(admission.detail ?? `Execution admission refused: ${admission.rejection ?? "release-gate"}`);
       task = admission.task;
     } else {
