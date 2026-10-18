@@ -10,7 +10,9 @@ import type {
   RuntimeStatus,
   GlobalMetrics,
   RuntimeStopOptions,
+  InFlightObservation,
 } from "./project-runtime.js";
+import { INFLIGHT_OBSERVATION_READ_TIMEOUT_MS } from "./project-runtime.js";
 import type { IsolationBlockerAnswer } from "./isolation-transition-blockers.js";
 import { ISOLATION_BLOCKER_READ_TIMEOUT_MS } from "./isolation-transition-blockers.js";
 import { projectManagerLog } from "../logger.js";
@@ -65,12 +67,37 @@ export interface ProjectRuntimeRestartBlockedError {
    * only case where `count` is a live-holder number rather than the size of a proven set.
    */
   taskIds?: string[];
+  /*
+  FNXC:RuntimeInFlightProvenance 2026-10-18-11:21 (RUFU-332):
+  `unproven` distinguishes the one refusal that is NOT a positive observation of live work: the transport
+  could not prove the project idle, so `count` is a last-known number that may be zero while work runs.
+  Without it, "a card is executing" and "we cannot tell" reach the operator as the same sentence, which
+  is how RUFU-332's remote-node report read as a phantom busy project. A proven-busy refusal omits the
+  key entirely rather than writing `false` — absence already means "the count is an observation".
+  */
+  /**
+   * True when the refusal rests on a transport that could not prove the project idle, rather than on an
+   * observation of live work. Only ever present on a bare-count refusal (no `taskIds`).
+   */
+  unproven?: boolean;
 }
 
 export function isProjectRuntimeRestartBlockedError(error: unknown): error is ProjectRuntimeRestartBlockedError {
   if (!error || typeof error !== "object") return false;
   const candidate = error as { kind?: unknown; count?: unknown };
   return candidate.kind === "active_tasks" && typeof candidate.count === "number";
+}
+
+/*
+FNXC:RuntimeInFlightProvenance 2026-10-18-11:21 (RUFU-332):
+One clause naming what an observation proved, shared by the release and refusal log lines so an operator
+reading the engine log can attribute a stall to a transport (`in-process`, `child-process`, `remote-node`,
+or `unavailable` for a runtime that gave no answer at all) instead of guessing from a bare count.
+*/
+function describeInFlightObservation(observation: InFlightObservation): string {
+  return observation.proven
+    ? `the ${observation.source} transport reports ${observation.inFlightTasks} live card(s)`
+    : `the ${observation.source} transport cannot prove idleness (last known count: ${observation.inFlightTasks})`;
 }
 
 /**
@@ -308,6 +335,12 @@ export class ProjectManager extends EventEmitter<ProjectManagerEvents> {
 
   /**
    * Get global metrics aggregated across all runtimes.
+   *
+   * FNXC:RuntimeInFlightProvenance 2026-10-18-11:21 (RUFU-332):
+   * This is the DISPLAY / HEALTH consumer of `getMetrics()` — dashboard polling and health reporting — and
+   * stays on the cached estimate deliberately: aggregating an awaited probe per runtime would make a
+   * dashboard poll depend on every transport's reachability. Lifecycle decisions never read here; see
+   * `restartProjectRuntime`, which decides from `observeInFlight()`.
    */
   async getGlobalMetrics(): Promise<GlobalMetrics> {
     const statusCounts: Record<RuntimeStatus, number> = {
@@ -496,6 +529,65 @@ export class ProjectManager extends EventEmitter<ProjectManagerEvents> {
     }
   }
 
+  /*
+  FNXC:RuntimeInFlightProvenance 2026-10-18-11:21 (RUFU-332):
+  The observation the guard decides from, with every hostile outcome degraded to `proven: false` over the
+  last known number rather than to a throw. A runtime that declares no `observeInFlight` keeps its
+  historical treatment — its synchronous `getMetrics()` is authoritative by construction, which is the
+  contract the in-process transport and the doubles in this file's tests present — so absent means proven,
+  NOT unproven; reading absence as unproven would refuse every transition the moment a transport declines
+  to implement the seam, which is the false-409 direction this guard already fights.
+
+  The bound is `INFLIGHT_OBSERVATION_READ_TIMEOUT_MS`, deliberately above the transport's own probe budget
+  so the transport wins the race and its `proven: false` is what gets reported; this bound only stops a
+  method that never returns from holding a transition open. `getMetrics()` is never consulted on the
+  `force` path — it is not a cheap call on an isolated transport — so a runtime whose metric throws cannot
+  break a forced restart.
+  */
+  private async readInFlightObservation(runtime: ProjectRuntime): Promise<InFlightObservation> {
+    const lastKnownCount = (): number => {
+      try {
+        return runtime.getMetrics().inFlightTasks;
+      } catch {
+        // A runtime that cannot even answer the display question certainly cannot prove idleness; the
+        // count it would have carried is moot, because `proven: false` refuses either way.
+        return 0;
+      }
+    };
+
+    if (!runtime.observeInFlight) {
+      return { inFlightTasks: lastKnownCount(), proven: true, source: "unavailable" };
+    }
+
+    try {
+      const answer = await Promise.race<InFlightObservation | null>([
+        runtime.observeInFlight(),
+        new Promise<null>((resolve) => {
+          const timer = setTimeout(() => resolve(null), INFLIGHT_OBSERVATION_READ_TIMEOUT_MS);
+          timer.unref?.();
+        }),
+      ]);
+      if (
+        answer &&
+        typeof answer === "object" &&
+        typeof answer.inFlightTasks === "number" &&
+        Number.isFinite(answer.inFlightTasks) &&
+        typeof answer.proven === "boolean"
+      ) {
+        return answer;
+      }
+      projectManagerLog.warn(
+        "In-flight observation came back unusable; treating the runtime as unable to prove idleness",
+      );
+      return { inFlightTasks: lastKnownCount(), proven: false, source: "unavailable" };
+    } catch (error) {
+      projectManagerLog.warn(
+        `In-flight observation failed (${error instanceof Error ? error.message : String(error)}); treating the runtime as unable to prove idleness`,
+      );
+      return { inFlightTasks: lastKnownCount(), proven: false, source: "unavailable" };
+    }
+  }
+
   async restartProjectRuntime(projectId: string, options?: { reason?: string; force?: boolean }): Promise<void> {
     // One timestamp for the whole attempt, so the guard's decision and the shutdown that follows it
     // divide a single bound instead of each being handed a fresh one.
@@ -504,45 +596,57 @@ export class ProjectManager extends EventEmitter<ProjectManagerEvents> {
       throw new Error(`Runtime not found for project ${projectId}`);
     }
 
-    const metrics = runtime.getMetrics();
     // Set only on the proven-clear path: the drain budget the runtime handed back, and the moment it
     // handed it back, so the shutdown can be charged for everything that happened since.
     let carriedDrainMs: number | undefined;
     let answeredAtMs: number | undefined;
     /*
+    FNXC:RuntimeInFlightProvenance 2026-10-18-11:21 (RUFU-332):
+    The decision input is an OBSERVATION, not a metric. `getMetrics()` is a display/health estimate whose
+    per-transport contract differs — cached fire-and-forget over IPC, cached-and-refreshed-unawaited over
+    HTTP — and the guard previously read whichever number the last round trip happened to leave behind.
+    That produced both directions of the reported bug: a child cache stuck high refused a transition for
+    work that had already ended, and a remote node whose fetch failed reported zero, which permitted a
+    transition over possibly-live work. `observeInFlight()` answers now and says whether it got there.
+    */
+    const observation = options?.force ? undefined : await this.readInFlightObservation(runtime);
+    /*
     FNXC:IsolationTransitionBlockers 2026-10-15-00:02 (RUFU-328):
     The in-flight answer used to come from process memory alone, so a card whose durable row was a
     terminal park — `failed` in the in-progress lane, nothing running behind it — refused isolation
     transitions forever, and the operator's only route to the setting was deleting or moving cards from
-    an unrelated screen.
-
-    The metric stays the fast path and the fallback; durable state is consulted only when memory says
-    busy, because a busy answer is the only case where the refusal is worth a read:
-    - a proven-empty blocker set proceeds even though the metric is non-zero;
+    an unrelated screen. Durable state is what releases that class, and RUFU-332 left the rule standing:
+    - a proven-empty blocker set proceeds even though the transport says busy or cannot prove idleness;
     - a non-empty set refuses and names the cards, so the refusal can be read without guessing;
-    - a cannot-answer (no durable read, a hang, a rejection, or a runtime with no such path) refuses
-      exactly as before and carries no ids, because "the store would not answer" is not evidence of an
-      idle runtime — a slow store never buys a restart, and never costs more than the bound either.
-    `force: true` never reaches this read at all: same behaviour, same instant return, as before.
+    - a cannot-answer (no durable read, a hang, a rejection, or a runtime with no such path) refuses and
+      carries no ids, because "the store would not answer" is not evidence of an idle runtime.
+    `force: true` never reaches either read at all: same behaviour, same instant return, as before.
     */
-    if (!options?.force && metrics.inFlightTasks > 0) {
+    if (observation && (observation.inFlightTasks > 0 || !observation.proven)) {
       const answer = await this.readIsolationTransitionBlockers(runtime);
 
       if (answer && Array.isArray(answer.taskIds)) {
         if (answer.taskIds.length > 0) {
           throw {
             kind: "active_tasks",
-            count: metrics.inFlightTasks,
+            count: observation.inFlightTasks,
             taskIds: answer.taskIds,
           } satisfies ProjectRuntimeRestartBlockedError;
         }
         projectManagerLog.log(
-          `Project ${projectId}: in-flight metric says ${metrics.inFlightTasks}, durable state proves no blocker — proceeding with the transition`,
+          `Project ${projectId}: ${describeInFlightObservation(observation)}, durable state proves no blocker — proceeding with the transition`,
         );
         carriedDrainMs = typeof answer.drainMs === "number" ? answer.drainMs : undefined;
         answeredAtMs = Date.now();
       } else {
-        throw { kind: "active_tasks", count: metrics.inFlightTasks } satisfies ProjectRuntimeRestartBlockedError;
+        projectManagerLog.warn(
+          `Project ${projectId}: refusing the transition — ${describeInFlightObservation(observation)} and the durable read could not answer`,
+        );
+        throw {
+          kind: "active_tasks",
+          count: observation.inFlightTasks,
+          ...(observation.proven ? {} : { unproven: true }),
+        } satisfies ProjectRuntimeRestartBlockedError;
       }
     }
 

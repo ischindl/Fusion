@@ -529,5 +529,52 @@ describe("HybridExecutor", () => {
       const result = await executor.transitionProjectIsolation("proj_test123", "child-process");
       expect(result).toEqual({ ok: false, reason: "active_tasks", activeTaskCount: 1 });
     });
+
+    /*
+    FNXC:RuntimeInFlightProvenance 2026-10-18-11:21 (RUFU-332):
+    This return value is the ONLY thing the dashboard's 409 body is built from, so the provenance of a
+    refusal — could not prove idle, versus observed live work — survives to the operator only if this
+    mapping carries it. Exact equality again: a proven-busy refusal must not grow the flag (the pre-existing
+    describes above pin that), and an unproven one must not lose it, because a count of 0 without it reads
+    to an operator as "blocked by nothing", which is the claim the whole change exists to stop making.
+    */
+    it("carries the unproven provenance when the guard could not certify idleness", async () => {
+      const manager = mockProjectManagerInstances[0];
+      manager?.restartProjectRuntime.mockRejectedValueOnce({
+        kind: "active_tasks",
+        count: 0,
+        unproven: true,
+      });
+
+      const result = await executor.transitionProjectIsolation("proj_test123", "child-process");
+      expect(result).toEqual({
+        ok: false,
+        reason: "active_tasks",
+        activeTaskCount: 0,
+        inFlightUnproven: true,
+      });
+      // The persisted mode is still rolled back: an unprovable transport refuses, it does not proceed.
+      expect(mockCentralCore.updateProject).toHaveBeenCalledWith("proj_test123", { isolationMode: "in-process" });
+    });
+
+    it("keeps named blockers and unproven provenance apart in one refusal", async () => {
+      const manager = mockProjectManagerInstances[0];
+      manager?.restartProjectRuntime.mockRejectedValueOnce({
+        kind: "active_tasks",
+        count: 4,
+        taskIds: ["SANE-435"],
+        unproven: true,
+      });
+
+      const result = await executor.transitionProjectIsolation("proj_test123", "child-process");
+      // Both facts ride through: the guard saw a blocker set AND could not trust its transport.
+      expect(result).toEqual({
+        ok: false,
+        reason: "active_tasks",
+        activeTaskCount: 4,
+        blockingTaskIds: ["SANE-435"],
+        inFlightUnproven: true,
+      });
+    });
   });
 });

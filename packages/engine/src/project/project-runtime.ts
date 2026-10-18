@@ -54,6 +54,67 @@ export interface RuntimeMetrics {
   memoryBytes?: number;
 }
 
+/*
+FNXC:RuntimeInFlightProvenance 2026-10-18-11:21 (RUFU-332):
+Two budgets, one place. `INFLIGHT_PROBE_TIMEOUT_MS` is what a transport gives ITS OWN round trip
+(the IPC round trip to a child, the HTTP round trip to a remote node). `INFLIGHT_OBSERVATION_READ_TIMEOUT_MS`
+is what the guard gives the transport's method, and is deliberately LARGER: a transport that honours its
+own budget must win the race so its answer — including its `proven: false` — is what the guard reports,
+while the guard's bound exists only so a method that never returns cannot hold an isolation transition
+open indefinitely. Neither number is a retry policy and neither is a tuning knob for a wedged transport:
+a probe that cannot answer is a real state that is correctly refused.
+*/
+
+/** Budget a transport gives its own decision-time in-flight round trip. */
+export const INFLIGHT_PROBE_TIMEOUT_MS = 1_500;
+/** Budget the lifecycle guard gives `ProjectRuntime.observeInFlight()`, above the transport's own bound. */
+export const INFLIGHT_OBSERVATION_READ_TIMEOUT_MS = 2_000;
+
+/**
+ * A decision-time answer to "how much work is running in this project right now?", carrying its own
+ * provenance so a caller can tell an answer from an estimate.
+ *
+ * FNXC:RuntimeInFlightProvenance 2026-10-18-11:21 (RUFU-332):
+ * `getMetrics()` answers per-transport with different contracts: synchronous and authoritative in-Process,
+ * fire-and-forget cached over IPC, and — before this change — fail-open to zero when a remote node could
+ * not be reached. `ProjectManager.restartProjectRuntime()` guarded the isolation-transition on that one
+ * number, which produced BOTH failure directions the operator reported:
+ * - a false 409: a child-process cache stuck high from an observation one step behind refused a
+ *   transition for work that had already ended (the `active_tasks` class of RUFU-323, in its
+ *   transport-freshness form rather than its counting form);
+ * - and its dangerous mirror, a false ALLOW: an unreachable remote node whose fetch failed read
+ *   `inFlightTasks: 0`, so the transition was permitted to stop a project that may have been executing.
+ * `proven` is what kills both: `true` means THIS transport answered authoritatively just now, `false`
+ * means the number is the last known value and the decision must fail closed.
+ */
+export interface InFlightObservation {
+  /**
+   * How many cards this transport counts as live work. When `proven` is `false` this is the LAST KNOWN
+   * value, not a current one — it may be carried for the operator's benefit, but it must never settle a
+   * lifecycle decision in either direction.
+   */
+  inFlightTasks: number;
+  /**
+   * `true` only when the transport reached its source of truth within its own budget and the answer
+   * belongs to the process/node that is live right now. `false` covers every cannot-answer — a
+   * disconnected IPC channel, a wedged child, an unreachable node, a timeout, a rejection, a malformed
+   * frame, or a response from a child that has since been replaced.
+   */
+  proven: boolean;
+  /** Which transport answered, so a refusal is attributable after the fact. */
+  source: InFlightObservationSource;
+}
+
+/**
+ * Which transport produced an {@link InFlightObservation}.
+ *
+ * `"unavailable"` is reserved for the guard's own fallbacks: a runtime that declares no `observeInFlight`
+ * seam (whose synchronous metric is authoritative by construction, hence `proven: true`), and a seam that
+ * threw, hung, or answered unusably (hence `proven: false`). Keeping both under one value rather than
+ * inventing per-fallback sources is what stops the enum from accreting a meaning per defect.
+ */
+export type InFlightObservationSource = "in-process" | "child-process" | "remote-node" | "unavailable";
+
 /**
  * Configuration for creating a ProjectRuntime instance.
  */
@@ -199,9 +260,28 @@ export interface ProjectRuntime extends EventEmitter<ProjectRuntimeEvents> {
 
   /**
    * Get current runtime metrics.
-   * @returns Metrics including in-flight tasks, active agents, and memory usage
+   *
+   * FNXC:RuntimeInFlightProvenance 2026-10-18-11:21 (RUFU-332):
+   * This is a DISPLAY / HEALTH estimate and may be cached: `ChildProcessRuntime` returns its cache and
+   * refreshes it fire-and-forget, `RemoteNodeRuntime` returns its cache and refreshes it unawaited. Its
+   * shape and synchronicity are shared with health reporting and dashboard polling and MUST NOT change.
+   * A lifecycle guard may not decide on it — that is {@link observeInFlight}.
    */
   getMetrics(): RuntimeMetrics;
+
+  /*
+  FNXC:RuntimeInFlightProvenance 2026-10-18-11:21 (RUFU-332):
+  The ONLY form a lifecycle guard may decide an in-flight question from. Where `getMetrics()` answers from
+  whatever the last round trip left behind, this method reaches its source of truth NOW and reports whether
+  it got there (`proven`). Every transport owes an answer rather than a throw: an unreachable child or node
+  resolves `proven: false` over its last known number, because "cannot answer" and "answered idle" must not
+  arrive as the same value — the second one is what lets a transition stop live work.
+
+  Optional like `getInFlightBlockers`, so a transport that cannot answer yet keeps compiling: the guard then
+  falls back to `getMetrics().inFlightTasks` treated as proven, which is exactly right for the synchronous
+  in-process transport (authoritative by construction) and the only shape a test fake presents.
+  */
+  observeInFlight?(): Promise<InFlightObservation>;
 
   /*
   FNXC:IsolationTransitionBlockers 2026-10-15-00:02 (RUFU-328):

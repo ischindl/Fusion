@@ -603,7 +603,19 @@ export class HybridExecutor extends EventEmitter<HybridExecutorEvents> {
     opts?: { force?: boolean },
   ): Promise<
     | { ok: true }
-    | { ok: false; reason: string; activeTaskCount?: number; blockingTaskIds?: string[] }
+    | {
+        ok: false;
+        reason: string;
+        activeTaskCount?: number;
+        blockingTaskIds?: string[];
+        /*
+        FNXC:RuntimeInFlightProvenance 2026-10-18-11:21 (RUFU-332):
+        Carried from `ProjectRuntimeRestartBlockedError.unproven`: the refusal is a transport that could
+        not prove the project idle, not an observation of live work. Under this flag `activeTaskCount` is
+        a last-known number that may be zero while work runs, so no surface may render it as a card count.
+        */
+        inFlightUnproven?: boolean;
+      }
   > {
     const current = await this.centralCore.getProject(projectId);
     if (!current) {
@@ -628,11 +640,14 @@ export class HybridExecutor extends EventEmitter<HybridExecutorEvents> {
         const blockingTaskIds = Array.isArray(named)
           ? named.filter((id): id is string => typeof id === "string" && id.length > 0)
           : undefined;
+        const unproven = (error as { unproven?: unknown }).unproven === true;
         return {
           ok: false,
           reason: "active_tasks",
           activeTaskCount: Number((error as { count?: unknown }).count) || 0,
           ...(blockingTaskIds && blockingTaskIds.length > 0 ? { blockingTaskIds } : {}),
+          // A proven-busy refusal omits the key entirely, matching the error shape it came from.
+          ...(unproven ? { inFlightUnproven: true } : {}),
         };
       }
       throw error;

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { NodeConfig } from "@fusion/core";
 import type { RuntimeMetrics } from "../../project/project-runtime.js";
+import { INFLIGHT_PROBE_TIMEOUT_MS } from "../../project/project-runtime.js";
 import { RemoteNodeRuntime } from "../remote-node-runtime.js";
 
 const mockClientConstructor = vi.hoisted(() => vi.fn());
@@ -144,7 +145,17 @@ describe("RemoteNodeRuntime", () => {
     expect(() => runtime.getScheduler()).toThrow("Scheduler not accessible for remote node runtime");
   });
 
-  it("getMetrics() returns fetched metrics on success and fallback on failure", async () => {
+  /*
+  FNXC:RuntimeInFlightProvenance 2026-10-18-11:21 (RUFU-332):
+  This is the test that pinned the bug. It used to assert that a failed fetch produced
+  `{ inFlightTasks: 0, activeAgents: 0 }`, i.e. that an unreachable node was indistinguishable from an
+  idle one — and `ProjectManager`'s isolation-transition guard read that number, so the failure direction
+  was a transition ALLOWED over work that may have been running. It now pins the two halves of the fix:
+  the display cache retains the last REAL observation, and the decision-grade form reports `proven: false`
+  instead of a zero. Both assertions are read after an AWAITED failing probe, so the failing fetch has
+  provably landed before retention is asserted.
+  */
+  it("keeps the last real observation when the node cannot be reached, and reports it as unproven", async () => {
     const runtime = new RemoteNodeRuntime({
       nodeConfig: createNode(),
       projectId: "proj_5",
@@ -161,12 +172,16 @@ describe("RemoteNodeRuntime", () => {
 
     mockGetMetrics.mockRejectedValueOnce(new Error("metrics unavailable"));
 
-    runtime.getMetrics();
-    await Promise.resolve();
+    await expect(runtime.observeInFlight()).resolves.toEqual({
+      inFlightTasks: 1,
+      proven: false,
+      source: "remote-node",
+    });
 
+    // No invented idle: the estimate keeps the last observation that actually came from the node.
     expect(runtime.getMetrics()).toEqual({
-      inFlightTasks: 0,
-      activeAgents: 0,
+      inFlightTasks: 1,
+      activeAgents: 2,
       lastActivityAt: NOW,
     });
 
@@ -315,5 +330,103 @@ describe("RemoteNodeRuntime", () => {
     });
 
     await expect(runtime.start()).rejects.toThrow("requires a remote node configuration");
+  });
+
+  /*
+  FNXC:RuntimeInFlightProvenance 2026-10-18-11:21 (RUFU-332):
+  The decision-grade half of this transport. Every arms race this transport can lose — unreachable node,
+  a budget that expires before the answer, a frame with no usable count — must land on `proven: false`,
+  because the alternative is the shape that let an isolation transition stop possibly-live work. Fake
+  timers pin the budget: the repo forbids a test that waits on a real timeout.
+  */
+  describe("observeInFlight", () => {
+    function createRuntime(projectId: string): RemoteNodeRuntime {
+      return new RemoteNodeRuntime({ nodeConfig: createNode(), projectId, projectName: projectId });
+    }
+
+    it("proves the count it read from the node just now", async () => {
+      const runtime = createRuntime("proj_inflight_ok");
+      await runtime.start();
+      mockGetMetrics.mockResolvedValueOnce({
+        inFlightTasks: 4,
+        activeAgents: 1,
+        lastActivityAt: "2026-04-08T01:00:00.000Z",
+      } satisfies RuntimeMetrics);
+
+      await expect(runtime.observeInFlight()).resolves.toEqual({
+        inFlightTasks: 4,
+        proven: true,
+        source: "remote-node",
+      });
+
+      await runtime.stop();
+    });
+
+    it("refuses to certify a stale zero cache as idle when the node is unreachable", async () => {
+      const runtime = createRuntime("proj_inflight_unreachable");
+      await runtime.start();
+      // The shape the removed fail-open used to leave behind: zeros that were never observed.
+      (runtime as unknown as { cachedMetrics: RuntimeMetrics }).cachedMetrics = {
+        inFlightTasks: 0,
+        activeAgents: 0,
+        lastActivityAt: NOW,
+      };
+      mockGetMetrics.mockRejectedValueOnce(new Error("ECONNREFUSED"));
+
+      await expect(runtime.observeInFlight()).resolves.toEqual({
+        inFlightTasks: 0,
+        proven: false,
+        source: "remote-node",
+      });
+
+      await runtime.stop();
+    });
+
+    it("treats an answer that arrives after the probe budget as no answer", async () => {
+      const runtime = createRuntime("proj_inflight_late");
+      await runtime.start();
+
+      let resolveLate: ((metrics: RuntimeMetrics) => void) | undefined;
+      mockGetMetrics.mockImplementationOnce(
+        () => new Promise<RuntimeMetrics>((resolve) => { resolveLate = resolve; }),
+      );
+
+      vi.useFakeTimers();
+      const probe = runtime.observeInFlight();
+      await vi.advanceTimersByTimeAsync(INFLIGHT_PROBE_TIMEOUT_MS);
+
+      await expect(probe).resolves.toEqual({
+        inFlightTasks: 1,
+        proven: false,
+        source: "remote-node",
+      });
+      vi.useRealTimers();
+
+      // A late success is still no answer: it must neither be certified nor rewrite the estimate.
+      resolveLate?.({ inFlightTasks: 7, activeAgents: 7, lastActivityAt: "2026-04-08T02:00:00.000Z" });
+      await Promise.resolve();
+      expect((runtime as unknown as { cachedMetrics: RuntimeMetrics }).cachedMetrics.inFlightTasks).toBe(1);
+
+      await runtime.stop();
+    });
+
+    it("treats a frame with no usable count as no answer rather than as zero", async () => {
+      const runtime = createRuntime("proj_inflight_malformed");
+      await runtime.start();
+      mockGetMetrics.mockResolvedValueOnce({ activeAgents: 3 } as unknown as RuntimeMetrics);
+
+      await expect(runtime.observeInFlight()).resolves.toEqual({
+        inFlightTasks: 1,
+        proven: false,
+        source: "remote-node",
+      });
+      expect((runtime as unknown as { cachedMetrics: RuntimeMetrics }).cachedMetrics).toEqual({
+        inFlightTasks: 1,
+        activeAgents: 2,
+        lastActivityAt: NOW,
+      });
+
+      await runtime.stop();
+    });
   });
 });

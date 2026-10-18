@@ -12,9 +12,11 @@ import type {
   ProjectRuntimeConfig,
   RuntimeStatus,
   RuntimeMetrics,
+  InFlightObservation,
   ProjectRuntimeEvents,
   RuntimeStopOptions,
 } from "../project/project-runtime.js";
+import { INFLIGHT_PROBE_TIMEOUT_MS } from "../project/project-runtime.js";
 import { IpcHost } from "../ipc/ipc-host.js";
 import {
   START_RUNTIME,
@@ -36,7 +38,11 @@ import {
   type ErrorEventPayload,
   type HealthChangedPayload,
 } from "../ipc/ipc-protocol.js";
-import { ISOLATION_BLOCKER_READ_TIMEOUT_MS, type IsolationBlockerAnswer } from "../project/isolation-transition-blockers.js";
+import {
+  ISOLATION_BLOCKER_READ_TIMEOUT_MS,
+  withBoundedRead,
+  type IsolationBlockerAnswer,
+} from "../project/isolation-transition-blockers.js";
 import { runtimeLog } from "../logger.js";
 
 /**
@@ -136,6 +142,9 @@ class HealthMonitor {
  * - Timers are cleared during shutdown and before replacement to avoid stacked callbacks.
  * - Each spawned child increments a monotonic generation counter captured by callbacks.
  *   If a callback's captured generation no longer matches, it bails as stale.
+ * - Cached DATA follows the same rule as cached timers: a metrics answer captured against an older
+ *   generation is dropped rather than written, or the replaced child inherits a count it never earned.
+ *   (FNXC:RuntimeInFlightProvenance 2026-10-18-11:21, RUFU-332)
  *
  * @example
  * ```typescript
@@ -462,16 +471,24 @@ export class ChildProcessRuntime
   }
 
   /**
-   * Get current runtime metrics (via IPC query).
+   * Get current runtime metrics.
+   *
+   * FNXC:RuntimeInFlightProvenance 2026-10-18-11:21 (RUFU-332):
+   * A DISPLAY / HEALTH estimate only. The IPC query is fire-and-forget and the returned number is
+   * whatever the previous round trip left in `lastMetrics` (zeros before the first one), so it is one
+   * observation behind in both directions — high enough to refuse a transition for work that has ended,
+   * low enough to allow one over work that is running. The lifecycle guard therefore reads
+   * {@link observeInFlight}, which awaits the same query and says whether it answered.
    */
   getMetrics(): RuntimeMetrics {
     // Query metrics via IPC if connected
     if (this.ipcHost?.isConnected()) {
+      const generation = this.generation;
       // Fire-and-forget metrics request - returns cached value immediately
       this.ipcHost
         .sendCommand(GET_METRICS, {})
         .then((metrics: unknown) => {
-          this.lastMetrics = metrics as RuntimeMetrics;
+          this.applyMetricsObservation(metrics, generation);
         })
         .catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
@@ -483,6 +500,78 @@ export class ChildProcessRuntime
       ...this.lastMetrics,
       lastActivityAt: new Date().toISOString(),
     };
+  }
+
+  /*
+  FNXC:RuntimeInFlightProvenance 2026-10-18-11:21 (RUFU-332):
+  The decision-grade form of the same question. Three things separate it from `getMetrics()`:
+  - it AWAITS the child under `INFLIGHT_PROBE_TIMEOUT_MS` instead of returning a stale cache;
+  - a disconnected channel answers `proven: false` WITHOUT firing a command — the send would only spend
+    the budget learning what `isConnected()` already knows, and a refused transition must cost nothing;
+  - every cannot-answer (disconnected, timeout, rejection, a malformed frame, or an answer that arrived
+    after this runtime's generation moved on and therefore belongs to a dead child) answers
+    `proven: false` over the last known number, never a throw and never a zero.
+  This transport's zero used to be reachable by pure absence: an unreachable child read as idle. Under
+  this contract a zero costs an answer from the child that is live right now.
+  */
+  async observeInFlight(): Promise<InFlightObservation> {
+    const generation = this.generation;
+    const ipcHost = this.ipcHost;
+    if (!ipcHost?.isConnected()) {
+      return { inFlightTasks: this.lastMetrics.inFlightTasks, proven: false, source: "child-process" };
+    }
+
+    const answer = await withBoundedRead(
+      () => ipcHost.sendCommand(GET_METRICS, {}, INFLIGHT_PROBE_TIMEOUT_MS),
+      INFLIGHT_PROBE_TIMEOUT_MS,
+    );
+
+    if (this.generation !== generation) {
+      runtimeLog.warn(
+        `In-flight probe for project ${this.config.projectId} was answered after its child was replaced; treating as unproven`,
+      );
+      return { inFlightTasks: this.lastMetrics.inFlightTasks, proven: false, source: "child-process" };
+    }
+
+    const observed = this.applyMetricsObservation(answer, generation);
+    if (!observed) {
+      runtimeLog.warn(
+        `In-flight probe for project ${this.config.projectId} got no usable answer within ${INFLIGHT_PROBE_TIMEOUT_MS}ms; treating as unproven`,
+      );
+      return { inFlightTasks: this.lastMetrics.inFlightTasks, proven: false, source: "child-process" };
+    }
+
+    return { inFlightTasks: observed.inFlightTasks, proven: true, source: "child-process" };
+  }
+
+  /**
+   * Record one metrics answer into the estimate cache, honoring the class's timer/generation safety
+   * pattern: an answer captured against an older child must not poison the cache the new one has not
+   * yet filled, and a frame that does not carry a usable count is not an answer at all.
+   *
+   * FNXC:RuntimeInFlightProvenance 2026-10-18-11:21 (RUFU-332):
+   * Both metrics paths — the fire-and-forget refresh and the awaited in-flight probe — write through
+   * here, so the generation guard the class documents for its timers covers its data as well. Returns
+   * the accepted metrics, or `null` when nothing was written; `null` is what the probe reads as
+   * "cannot prove", which is why an unusable frame is refused rather than defaulted to zero.
+   */
+  private applyMetricsObservation(answer: unknown, generation: number): RuntimeMetrics | null {
+    if (generation !== this.generation) return null;
+    if (!answer || typeof answer !== "object") return null;
+
+    const candidate = answer as Partial<RuntimeMetrics>;
+    if (typeof candidate.inFlightTasks !== "number" || !Number.isFinite(candidate.inFlightTasks) || candidate.inFlightTasks < 0) {
+      return null;
+    }
+
+    this.lastMetrics = {
+      inFlightTasks: candidate.inFlightTasks,
+      activeAgents: typeof candidate.activeAgents === "number" ? candidate.activeAgents : this.lastMetrics.activeAgents,
+      lastActivityAt:
+        typeof candidate.lastActivityAt === "string" ? candidate.lastActivityAt : this.lastMetrics.lastActivityAt,
+      ...(typeof candidate.memoryBytes === "number" ? { memoryBytes: candidate.memoryBytes } : {}),
+    };
+    return this.lastMetrics;
   }
 
   /**

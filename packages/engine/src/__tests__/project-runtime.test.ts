@@ -474,6 +474,51 @@ describe("InProcessRuntime in-flight metric derivation", () => {
     expect(runtime.getMetrics().activeAgents).toBe(0);
   });
 
+  /*
+  FNXC:RuntimeInFlightProvenance 2026-10-18-11:21 (RUFU-332):
+  The same derivation now answers the decision-grade question. Two things are pinned here that a
+  per-transport implementation could each get wrong on its own: this transport CERTIFIES its answer — it
+  reads its own executor synchronously, so there is no round trip to be stale — and it shares the one
+  derivation with the display estimate, so a transition is never decided from a different number than the
+  one the operator sees on the dashboard.
+  */
+  it("certifies its own live count as proven through the decision-time seam", async () => {
+    const runtime = makeRuntime();
+    const executor = makeExecutorHolding("SANE-435", "worktree/sane-435");
+    executor.executing.add("SANE-435");
+    runtime.executor = executor;
+
+    await expect(runtime.observeInFlight()).resolves.toEqual({
+      inFlightTasks: 1,
+      proven: true,
+      source: "in-process",
+    });
+  });
+
+  it("certifies a terminal park as proven idle, the release RUFU-323 was chasing", async () => {
+    const runtime = makeRuntime();
+    runtime.executor = makeExecutorHolding("SANE-435", "worktree/sane-435");
+
+    // Ownership without liveness: the observation must say proven ZERO, not hedge.
+    await expect(runtime.observeInFlight()).resolves.toEqual({
+      inFlightTasks: 0,
+      proven: true,
+      source: "in-process",
+    });
+  });
+
+  it("answers the observation and the display estimate from one derivation", async () => {
+    const runtime = makeRuntime();
+    const executor = makeExecutorHolding("SANE-435", "worktree/sane-435");
+    addActiveWorktree(executor.activeWorktrees, "SANE-435", "worktree/apps-web");
+    executor.executing.add("SANE-435");
+    runtime.executor = executor;
+
+    await expect(runtime.observeInFlight()).resolves.toMatchObject({
+      inFlightTasks: runtime.getMetrics().inFlightTasks,
+    });
+  });
+
   it("keeps the stop() drain loop resolvable for an executor double without the facade", async () => {
     vi.useFakeTimers();
     try {

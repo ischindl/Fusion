@@ -6,6 +6,7 @@ import type {
   RuntimeMetrics,
   RuntimeStatus,
 } from "../../project/project-runtime.js";
+import { INFLIGHT_PROBE_TIMEOUT_MS } from "../../project/project-runtime.js";
 import { runtimeLog } from "../../logger.js";
 import {
   START_RUNTIME,
@@ -40,6 +41,8 @@ type MockChildOptions = {
   blockersResponse?: unknown;
   /** When true the child never answers GET_IN_FLIGHT_BLOCKERS, so the parent's own bound must fire. */
   blockersSilent?: boolean;
+  /** When true the child never answers GET_METRICS, so an in-flight probe's own bound must fire. */
+  metricsSilent?: boolean;
 };
 
 type MockChildProcess = {
@@ -93,15 +96,17 @@ function createMockChildProcess(options: MockChildOptions = {}): MockChildProces
       } else if (message.type === STOP_RUNTIME) {
         respond(OK, { data: { stopped: true } });
       } else if (message.type === GET_METRICS) {
-        respond(OK, {
-          data:
-            options.metricsResponse ??
-            {
-              inFlightTasks: 4,
-              activeAgents: 2,
-              lastActivityAt: "2026-04-08T00:00:00.000Z",
-            },
-        });
+        if (!options.metricsSilent) {
+          respond(OK, {
+            data:
+              options.metricsResponse ??
+              {
+                inFlightTasks: 4,
+                activeAgents: 2,
+                lastActivityAt: "2026-04-08T00:00:00.000Z",
+              },
+          });
+        }
       } else if (message.type === GET_IN_FLIGHT_BLOCKERS) {
         if (!options.blockersSilent) {
           respond(
@@ -821,6 +826,129 @@ describe("ChildProcessRuntime", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  /*
+  FNXC:RuntimeInFlightProvenance 2026-10-18-11:21 (RUFU-332):
+  The decision-grade form of the metrics question on the transport where the reported incident lived: a
+  cache the child had left high refused transitions for work that had already ended, while a cache the
+  child had never filled read as zero and permitted a transition over possibly-live work. `getMetrics()`
+  may return either; `observeInFlight()` may only certify what the child answered now. Every arm that
+  cannot answer must land on `proven: false` over the last known number — never a throw, never a zero.
+  */
+  describe("observeInFlight", () => {
+    it("proves the count the child answered just now", async () => {
+      queueChild({
+        metricsResponse: {
+          inFlightTasks: 5,
+          activeAgents: 1,
+          lastActivityAt: "2026-04-08T05:00:00.000Z",
+        },
+      });
+      await runtime.start();
+
+      await expect(runtime.observeInFlight()).resolves.toEqual({
+        inFlightTasks: 5,
+        proven: true,
+        source: "child-process",
+      });
+      // A decision-grade answer is also the freshest estimate there is, so it refreshes the cache.
+      expect(runtimeAny.lastMetrics.inFlightTasks).toBe(5);
+    });
+
+    it("carries the last known count as unproven when no child is reachable, without querying", async () => {
+      // Never started: there is no channel at all. The probe must learn that cheaply — the refusal it
+      // causes must not cost a round trip that cannot happen.
+      runtimeAny.lastMetrics = {
+        inFlightTasks: 6,
+        activeAgents: 2,
+        lastActivityAt: "2026-04-08T06:00:00.000Z",
+      };
+
+      await expect(runtime.observeInFlight()).resolves.toEqual({
+        inFlightTasks: 6,
+        proven: false,
+        source: "child-process",
+      });
+      expect(forkedChildren).toHaveLength(0);
+    });
+
+    it("reports unproven for a frame with no usable count and leaves the estimate untouched", async () => {
+      queueChild({ metricsResponse: { activeAgents: 3 } as unknown as RuntimeMetrics });
+      await runtime.start();
+      runtimeAny.lastMetrics = {
+        inFlightTasks: 7,
+        activeAgents: 7,
+        lastActivityAt: "2026-04-08T07:00:00.000Z",
+      };
+
+      await expect(runtime.observeInFlight()).resolves.toEqual({
+        inFlightTasks: 7,
+        proven: false,
+        source: "child-process",
+      });
+      expect(runtimeAny.lastMetrics).toEqual({
+        inFlightTasks: 7,
+        activeAgents: 7,
+        lastActivityAt: "2026-04-08T07:00:00.000Z",
+      });
+    });
+
+    it("reports unproven when the child never answers, settling inside the probe bound", async () => {
+      vi.useFakeTimers();
+      try {
+        queueChild({ metricsSilent: true });
+        await runtime.start();
+        runtimeAny.lastMetrics = {
+          inFlightTasks: 8,
+          activeAgents: 8,
+          lastActivityAt: "2026-04-08T08:00:00.000Z",
+        };
+
+        const answered = vi.fn();
+        runtime
+          .observeInFlight()
+          .then((observation: unknown) => answered(observation))
+          .catch((error: unknown) => answered({ rejected: String(error) }));
+
+        await vi.advanceTimersByTimeAsync(INFLIGHT_PROBE_TIMEOUT_MS);
+
+        expect(answered).toHaveBeenCalledWith({
+          inFlightTasks: 8,
+          proven: false,
+          source: "child-process",
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("drops an estimate written by a child of an older generation", async () => {
+      /*
+      The observable route to this rule (a child that dies mid-probe) surfaces as a rejected command, so
+      the generation check is what stands between a replaced child's late frame and the estimate the new
+      child has not yet filled. Pinned at the single writer, which is where both metrics paths funnel.
+      */
+      queueChild({
+        metricsResponse: {
+          inFlightTasks: 2,
+          activeAgents: 2,
+          lastActivityAt: "2026-04-08T09:00:00.000Z",
+        },
+      });
+      await runtime.start();
+
+      const staleGeneration = runtimeAny.generation as number;
+      runtimeAny.generation += 1;
+
+      expect(
+        runtimeAny.applyMetricsObservation(
+          { inFlightTasks: 99, activeAgents: 99, lastActivityAt: "2026-04-08T10:00:00.000Z" },
+          staleGeneration,
+        ),
+      ).toBeNull();
+      expect(runtimeAny.lastMetrics.inFlightTasks).not.toBe(99);
     });
   });
 });

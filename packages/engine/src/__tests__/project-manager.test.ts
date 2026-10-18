@@ -5,7 +5,8 @@ import { ChildProcessRuntime } from "../runtimes/child-process-runtime.js";
 import { RemoteNodeRuntime } from "../runtimes/remote-node-runtime.js";
 import { ProjectManager } from "../project/project-manager.js";
 import { ISOLATION_BLOCKER_READ_TIMEOUT_MS } from "../project/isolation-transition-blockers.js";
-import type { ProjectRuntimeConfig } from "../project/project-runtime.js";
+import type { InFlightObservation, ProjectRuntimeConfig } from "../project/project-runtime.js";
+import { INFLIGHT_OBSERVATION_READ_TIMEOUT_MS } from "../project/project-runtime.js";
 
 // Mock the runtimes
 vi.mock("../runtimes/in-process-runtime.js", () => ({
@@ -600,6 +601,186 @@ describe("ProjectManager", () => {
 
       expect(idle.veto).not.toHaveBeenCalled();
       expect(idle.runtime.stop).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  /*
+  FNXC:RuntimeInFlightProvenance 2026-10-18-11:21 (RUFU-332):
+  The guard now decides on an OBSERVATION instead of the cached metric, and the two halves of the reported
+  bug live on opposite sides of that distinction: a cache stuck above zero refused a project that was
+  actually idle (the transport's live answer must release it), while a cache that was never filled read as
+  zero and permitted a transition over possibly-live work (an unprovable transport must refuse). Both arms
+  are pinned here, plus the provenance the refusal must carry: `unproven: true` appears ONLY on a bare
+  count that came from a transport which could not answer, and never alongside named blockers, which are
+  by definition a positive observation. A runtime with no `observeInFlight` at all keeps its historical
+  treatment — proven by construction — which is what the pre-existing describes above exercise.
+  */
+  describe("restartProjectRuntime in-flight observation guard", () => {
+    const testConfig: ProjectRuntimeConfig = {
+      projectId: "proj_test123",
+      workingDirectory: "/tmp/test-project",
+      isolationMode: "in-process",
+      maxConcurrent: 2,
+      maxWorktrees: 4,
+    };
+
+    beforeEach(() => {
+      mockCentralCore.resolveLocalProjectWorkingDirectory = vi.fn().mockResolvedValue("/tmp/test-project");
+    });
+
+    function stubObservedRuntime(
+      observation: Partial<InFlightObservation> | (() => Promise<InFlightObservation>),
+      cachedCount: number,
+      blockers?: (options?: { budgetMs?: number }) => Promise<unknown>,
+    ) {
+      const runtime = manager.getRuntime("proj_test123") as unknown as {
+        getMetrics: ReturnType<typeof vi.fn>;
+        stop: ReturnType<typeof vi.fn>;
+        observeInFlight?: ReturnType<typeof vi.fn>;
+        getInFlightBlockers?: ReturnType<typeof vi.fn>;
+      };
+      runtime.getMetrics.mockReturnValue({
+        inFlightTasks: cachedCount,
+        activeAgents: cachedCount,
+        lastActivityAt: new Date().toISOString(),
+      });
+      runtime.observeInFlight = vi.fn(
+        typeof observation === "function"
+          ? observation
+          : () =>
+              Promise.resolve({
+                inFlightTasks: observation.inFlightTasks ?? 0,
+                proven: observation.proven ?? true,
+                source: observation.source ?? "child-process",
+              }),
+      );
+      const veto = blockers ? vi.fn(blockers) : undefined;
+      if (veto) runtime.getInFlightBlockers = veto;
+      return { runtime, veto };
+    }
+
+    it("releases when the transport proves zero in-flight work, whatever its cache says", async () => {
+      await manager.addProject(testConfig);
+      // The stale-high cache from the report, overruled by what the child actually runs right now.
+      const { runtime, veto } = stubObservedRuntime(
+        { inFlightTasks: 0, proven: true, source: "child-process" },
+        7,
+        async () => ({ taskIds: ["should-not-be-read"], drainMs: 1 }),
+      );
+
+      await manager.restartProjectRuntime("proj_test123", { reason: "isolation-change" });
+
+      expect(runtime.stop).toHaveBeenCalledTimes(1);
+      expect(veto).not.toHaveBeenCalled();
+      expect(manager.getRuntime("proj_test123")).not.toBe(runtime);
+    });
+
+    it("refuses an unprovable idle transport instead of reading the zero cache as permission", async () => {
+      await manager.addProject(testConfig);
+      // The false-allow shape: the cache says 0 because the transport never got an answer at all.
+      const { runtime } = stubObservedRuntime(
+        { inFlightTasks: 0, proven: false, source: "remote-node" },
+        0,
+      );
+
+      // Exact equality: the count alone is not the answer, and `unproven` is what separates this refusal
+      // from "a card is executing".
+      await expect(manager.restartProjectRuntime("proj_test123")).rejects.toEqual({
+        kind: "active_tasks",
+        count: 0,
+        unproven: true,
+      });
+      expect(runtime.stop).not.toHaveBeenCalled();
+    });
+
+    it("releases an unprovable transport once durable state proves no blocker", async () => {
+      await manager.addProject(testConfig);
+      const { runtime, veto } = stubObservedRuntime(
+        { inFlightTasks: 0, proven: false, source: "remote-node" },
+        0,
+        async () => ({ taskIds: [], reason: "declared-clear", drainMs: 500 }),
+      );
+
+      await manager.restartProjectRuntime("proj_test123");
+
+      // The durable answer is a proof of no destructive transition, so it releases even without the
+      // transport's own certification — that is RUFU-328's rule, kept intact for the new arm.
+      expect(veto).toHaveBeenCalledTimes(1);
+      expect(runtime.stop).toHaveBeenCalledTimes(1);
+    });
+
+    it("names the blockers without the unproven flag when durable state names them", async () => {
+      await manager.addProject(testConfig);
+      const { runtime } = stubObservedRuntime(
+        { inFlightTasks: 4, proven: false, source: "child-process" },
+        4,
+        async () => ({ taskIds: ["SANE-435"], reason: "declared-blocked", drainMs: 8_000 }),
+      );
+
+      // Exact equality: named blockers are a positive observation, so `unproven` must be ABSENT — an
+      // unprovable transport plus a proven blocker set is a busy project, not an unknowable one.
+      await expect(manager.restartProjectRuntime("proj_test123")).rejects.toEqual({
+        kind: "active_tasks",
+        count: 4,
+        taskIds: ["SANE-435"],
+      });
+      expect(runtime.stop).not.toHaveBeenCalled();
+    });
+
+    it("treats a throwing probe as unable to prove idleness, not as idle", async () => {
+      await manager.addProject(testConfig);
+      const { runtime } = stubObservedRuntime(() => Promise.reject(new Error("child vanished")), 5);
+
+      await expect(manager.restartProjectRuntime("proj_test123")).rejects.toEqual({
+        kind: "active_tasks",
+        count: 5,
+        unproven: true,
+      });
+      expect(runtime.stop).not.toHaveBeenCalled();
+    });
+
+    it("refuses inside its own bound when the probe never returns", async () => {
+      await manager.addProject(testConfig);
+      const { runtime } = stubObservedRuntime(
+        () => new Promise<InFlightObservation>(() => {}),
+        2,
+      );
+
+      vi.useFakeTimers();
+      try {
+        let refused: unknown;
+        const pending = manager
+          .restartProjectRuntime("proj_test123")
+          .then(() => (refused = "resolved"))
+          .catch((error: unknown) => (refused = error));
+
+        await vi.advanceTimersByTimeAsync(INFLIGHT_OBSERVATION_READ_TIMEOUT_MS - 1);
+        // One millisecond short of the bound the guard is still waiting, not guessing.
+        expect(refused).toBeUndefined();
+
+        await vi.advanceTimersByTimeAsync(1);
+        await pending;
+
+        expect(refused).toEqual({ kind: "active_tasks", count: 2, unproven: true });
+        expect(runtime.stop).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("never pays for a probe on a forced transition", async () => {
+      await manager.addProject(testConfig);
+      const { runtime } = stubObservedRuntime(
+        { inFlightTasks: 9, proven: true, source: "child-process" },
+        9,
+      );
+
+      await manager.restartProjectRuntime("proj_test123", { force: true });
+
+      // `force` means "do it now": the guard must not spend a round trip it is going to overrule.
+      expect(runtime.observeInFlight).not.toHaveBeenCalled();
+      expect(runtime.getMetrics).not.toHaveBeenCalled();
+      expect(runtime.stop).toHaveBeenCalledTimes(1);
     });
   });
 

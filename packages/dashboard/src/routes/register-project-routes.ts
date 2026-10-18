@@ -866,6 +866,14 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
               the key is OMITTED rather than sent empty, because an empty list would claim the board
               proved nothing blocks while the transition was still refused. `activeTaskCount` remains in
               every shape, so any client reading only the count is unaffected.
+
+              FNXC:RuntimeInFlightProvenance 2026-10-18-11:21 (RUFU-332):
+              `inFlightUnproven` is the second thing the count could not say: the refusal came from a
+              transport that cannot prove the project idle (a wedged child, an unreachable remote node),
+              so `activeTaskCount` is a last-known number that may well be zero while work runs. A client
+              that renders the count must branch on this flag, and a retry is only worth it once the
+              transport is reachable again — not after moving cards, which was the dead end the reporter
+              was left chasing. Omitted, never `false`, for a refusal that really did observe live work.
               */
               throw new ApiError(409, "active_tasks", {
                 error: "active_tasks",
@@ -873,6 +881,7 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
                 ...(transition.blockingTaskIds?.length
                   ? { blockingTaskIds: transition.blockingTaskIds }
                   : {}),
+                ...(transition.inFlightUnproven ? { inFlightUnproven: true } : {}),
               });
             }
             delete updates.isolationMode;

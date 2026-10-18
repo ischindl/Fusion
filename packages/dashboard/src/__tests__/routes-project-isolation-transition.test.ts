@@ -182,6 +182,50 @@ describe("project isolation transition route", () => {
     const details = (res.body as { details?: Record<string, unknown> }).details ?? {};
     expect(details.activeTaskCount).toBe(3);
     expect("blockingTaskIds" in details).toBe(false);
+    /*
+    FNXC:RuntimeInFlightProvenance 2026-10-18-11:21 (RUFU-332):
+    A refusal with no ids is NOT automatically an unproven one — this shape is a guard that observed live
+    work through a transport it trusts but could not cross-check against durable state. Pinning the ABSENCE
+    here is what keeps the two flags from collapsing into one "we don't know" badge, which would make the
+    provenance signal useless exactly when an operator most needs to trust the count.
+    */
+    expect("inFlightUnproven" in details).toBe(false);
+  });
+
+  /*
+  FNXC:RuntimeInFlightProvenance 2026-10-18-11:21 (RUFU-332):
+  The third shape of the 409 body: a refusal whose count came from a transport that could not prove the
+  project idle. `activeTaskCount: 0` alone is the payload that sent an operator chasing cards that were
+  already terminal; with the flag it reads truthfully as "we could not ask", and the remedy is to make the
+  transport reachable rather than to move cards around.
+  */
+  it("flags inFlightUnproven in the 409 body when the transport could not prove idleness", async () => {
+    const hybridExecutor = readyExecutor(
+      vi.fn().mockResolvedValue({
+        ok: false,
+        reason: "active_tasks",
+        activeTaskCount: 0,
+        inFlightUnproven: true,
+      }),
+    );
+
+    const res = await request(
+      createApp({ hybridExecutor: hybridExecutor as any }),
+      "PATCH",
+      "/api/projects/proj_1",
+      JSON.stringify({ isolationMode: "child-process" }),
+      { "content-type": "application/json" },
+    );
+
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({
+      error: "active_tasks",
+      details: {
+        activeTaskCount: 0,
+        inFlightUnproven: true,
+      },
+    });
+    expect(central.updateProject).not.toHaveBeenCalled();
   });
 
   /*

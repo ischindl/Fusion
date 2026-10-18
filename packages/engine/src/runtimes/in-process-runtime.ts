@@ -54,6 +54,7 @@ import type {
   ProjectRuntimeConfig,
   RuntimeStatus,
   RuntimeMetrics,
+  InFlightObservation,
   ProjectRuntimeEvents,
   RuntimeStopOptions,
 } from "../project/project-runtime.js";
@@ -3192,38 +3193,45 @@ export class InProcessRuntime
   }
 
   /**
-   * Get current runtime metrics.
+   * The one in-flight derivation this runtime owns, shared by the display estimate and the
+   * decision-time observation so the two can never disagree about what "live" means.
+   *
+   * FNXC:WorktreeLiveness 2026-10-08-04:04 (RUFU-323):
+   * `inFlightTasks` is read as "how much work is running", but it was derived from the raw size of the
+   * executor's worktree-OWNERSHIP map. Ownership is not liveness: a card whose graph run ended in a
+   * terminal park can keep its binding (the run's `finally` releases only external-execution checkouts),
+   * so two already-failed cards kept the count above zero and `ProjectManager.restartProjectRuntime()`
+   * refused the isolation transition with `{ kind: "active_tasks" }` for a project executing nothing.
+   * The honest number is the count of worktree-holding tasks that are live on an execution surface,
+   * which is what `TaskExecutor.getLiveWorktreeHolderCount()` answers through the canonical
+   * `isTaskLiveForOverseerRetry` predicate (counted per task, so a workspace card holding N sub-repos
+   * is one card, not N).
+   *
+   * The call is feature-detected on purpose. This derivation has three consumers — the `stop()`
+   * post-abort drain loop, whose body errors are re-thrown by `stop()`, the value health reporting shows,
+   * and the number `ProjectManager` guards on through `observeInFlight()` — and executor test doubles exist
+   * that supply `activeWorktrees` without the facade (`engine-stop-aborts-execution.test.ts`). An object
+   * that cannot prove liveness is therefore counted conservatively as BUSY (a bounded drain timeout or an
+   * honest refusal) rather than as free, and the derivation can never throw. Production `InProcessRuntime`
+   * always constructs a real `TaskExecutor`, so the facade is the path actually taken in the field.
    */
-  getMetrics(): RuntimeMetrics {
-    /*
-    FNXC:WorktreeLiveness 2026-10-08-04:04 (RUFU-323):
-    `inFlightTasks` is read as "how much work is running", but it was derived from the raw size of the
-    executor's worktree-OWNERSHIP map. Ownership is not liveness: a card whose graph run ended in a
-    terminal park can keep its binding (the run's `finally` releases only external-execution checkouts),
-    so two already-failed cards kept the count above zero and `ProjectManager.restartProjectRuntime()`
-    refused the isolation transition with `{ kind: "active_tasks" }` for a project executing nothing.
-    The honest number is the count of worktree-holding tasks that are live on an execution surface,
-    which is what `TaskExecutor.getLiveWorktreeHolderCount()` answers through the canonical
-    `isTaskLiveForOverseerRetry` predicate (counted per task, so a workspace card holding N sub-repos
-    is one card, not N).
-
-    The call is feature-detected on purpose. This metric has two consumers in this file — the `stop()`
-    post-abort drain loop, whose body errors are re-thrown by `stop()`, and the value `ProjectManager`
-    guards on — and executor test doubles exist that supply `activeWorktrees` without the facade
-    (`engine-stop-aborts-execution.test.ts`). An object that cannot prove liveness is therefore counted
-    conservatively as BUSY (a bounded drain timeout or an honest refusal) rather than as free, and the
-    derivation can never throw. Production `InProcessRuntime` always constructs a real `TaskExecutor`,
-    so the facade is the path actually taken in the field.
-    */
+  private countLiveInFlightTasks(): number {
     const executor = this.executor as unknown as {
       activeWorktrees?: Map<string, unknown>;
       getLiveWorktreeHolderCount?: () => number;
     } | undefined;
-    const inFlightTasks = !executor
+    return !executor
       ? 0
       : typeof executor.getLiveWorktreeHolderCount === "function"
         ? executor.getLiveWorktreeHolderCount()
         : executor.activeWorktrees?.size ?? 0;
+  }
+
+  /**
+   * Get current runtime metrics.
+   */
+  getMetrics(): RuntimeMetrics {
+    const inFlightTasks = this.countLiveInFlightTasks();
 
     /*
     FNXC:CapacityModel 2026-07-28-20:10 (drop the cross-project cap):
@@ -3241,6 +3249,21 @@ export class InProcessRuntime
       activeAgents,
       lastActivityAt: this.lastActivityAt,
       memoryBytes,
+    };
+  }
+
+  /*
+  FNXC:RuntimeInFlightProvenance 2026-10-18-11:21 (RUFU-332):
+  This transport answers its own number synchronously from its own executor, so its answer is proven by
+  construction — there is no round trip that could be stale and no transport that could be unreachable.
+  It still has to ANSWER through the async seam: a guard that special-cased "in-process may skip the
+  observation" would be a second, divergent decision rule, which is the thing this seam exists to remove.
+  */
+  async observeInFlight(): Promise<InFlightObservation> {
+    return {
+      inFlightTasks: this.countLiveInFlightTasks(),
+      proven: true,
+      source: "in-process",
     };
   }
 
