@@ -41,7 +41,14 @@ const LEGACY_PRE_IMPLEMENTATION_COLUMN_IDS: ReadonlySet<string> = new Set(["todo
 const LEGACY_HOLD_COLUMN_ID = "todo";
 const LEGACY_WIP_COLUMN_ID = "in-progress";
 const LEGACY_REVIEW_COLUMN_ID = "in-review";
-const LEGACY_COMPLETE_COLUMN_ID = "done";
+/*
+FNXC:WorkflowResolvedColumns 2026-10-18-18:02 (RUFU-341):
+The complete-lane id is now exported because a second consumer must keep the SAME floor.
+`resolveTaskCompleteColumns` in `workflows/workflow-lifecycle-traits.ts` falls back to it whenever a
+board's lifecycle vocabulary cannot be read, so the overlap-wait release decision and these predicates
+cannot answer "is that predecessor finished?" differently — the disagreement that froze a released card.
+*/
+export const LEGACY_COMPLETE_COLUMN_ID = "done";
 
 /** The subset of resolved trait flags these role questions read. */
 export type ColumnRoleTraitFlags = Pick<

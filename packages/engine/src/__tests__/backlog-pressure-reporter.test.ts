@@ -163,6 +163,43 @@ describe("BacklogPressureReporter", () => {
     expect(ids).not.toContain("FN-E");
   });
 
+  /*
+  FNXC:OverlapWaitRelease 2026-10-18-19:04 (RUFU-341 code review — reporting face):
+  A released overlap wait froze its victim on BOTH fields the backlog-pressure candidate predicate reads
+  (`overlapBlockedBy` and `status === "queued"`), so the frozen card was silently missing from the pressure
+  report while it was unrunnable. The previous case here only pins the exclusion; this one pins the other
+  half of the invariant the release repair depends on — clearing both fields puts the SAME card back in the
+  candidate set. Without it, a repair that cleared only one field (e.g. the marker but not the dispatch
+  status) would keep the card invisible to the reporter and stay green.
+  */
+  it("a released-overlap freeze leaves the candidate set, and clearing both fields returns the card to it", async () => {
+    const now = Date.parse("2026-05-18T12:00:00.000Z");
+    const todoSlim = Array.from({ length: 44 }, (_, i) => createTask({ id: `FN-T${i}` }));
+    const inProgressSlim = Array.from({ length: 3 }, (_, i) => createTask({ id: `FN-P${i}`, column: "in-progress" }));
+    const plain = ["FN-G", "FN-H", "FN-I"].map((id) => createTask({ id, priority: "high" }));
+    const allTasks = [...plain, createTask({ id: "FN-Y", column: "done" })];
+
+    const frozen = createTask({ id: "FN-Frozen", priority: "urgent", overlapBlockedBy: "FN-Y", status: "queued" as Task["status"] });
+    const frozenInsights = { upsertInsight: vi.fn(), listInsights: vi.fn().mockResolvedValue([]) };
+    const frozenResult = await new BacklogPressureReporter({
+      store: createStore({ todoSlim, inProgressSlim, todoFull: [frozen, ...plain], allTasks, insightStore: frozenInsights }),
+      projectId: "/tmp/project", logger, now: () => now,
+    }).report();
+    expect(frozenResult.alerted).toBe(true);
+    expect(JSON.parse(frozenInsights.upsertInsight.mock.calls[0][1].content).candidates.map((c: { id: string }) => c.id))
+      .not.toContain("FN-Frozen");
+
+    const cleared = createTask({ id: "FN-Frozen", priority: "urgent", overlapBlockedBy: "", status: undefined });
+    const clearedInsights = { upsertInsight: vi.fn(), listInsights: vi.fn().mockResolvedValue([]) };
+    const clearedResult = await new BacklogPressureReporter({
+      store: createStore({ todoSlim, inProgressSlim, todoFull: [cleared, ...plain], allTasks, insightStore: clearedInsights }),
+      projectId: "/tmp/project", logger, now: () => now,
+    }).report();
+    expect(clearedResult.alerted).toBe(true);
+    expect(JSON.parse(clearedInsights.upsertInsight.mock.calls[0][1].content).candidates.map((c: { id: string }) => c.id))
+      .toContain("FN-Frozen");
+  });
+
   it("emits payload with counts, ratio, detectedAt, and candidates", async () => {
     const now = Date.parse("2026-05-18T12:00:00.000Z");
     const todoSlim = Array.from({ length: 44 }, (_, i) => createTask({ id: `FN-T${i}` }));

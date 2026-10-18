@@ -4,7 +4,7 @@ import type { TaskStore } from "../store.js";
 import type { Task, TaskOverlapWait } from "../types.js";
 import type { WorkflowIr } from "../workflows/workflow-ir-types.js";
 import * as schema from "../postgres/schema/index.js";
-import { resolveTaskLifecycleColumns } from "../workflows/workflow-lifecycle-traits.js";
+import { resolveTaskCompleteColumns } from "../workflows/workflow-lifecycle-traits.js";
 import { acquireTaskAdvisoryXactLock } from "./task-advisory-lock.js";
 import { readTaskRowInTransaction } from "./async/async-persistence.js";
 import { getTaskActivityLogEntryLimit } from "./comments.js";
@@ -41,9 +41,18 @@ export async function reconcileTaskOverlapWaitsImpl(
   const refs = new Set([taskId, ...observed.map((episode) => episode.blockerTaskId), ...[initial.overlapBlockedBy, initial.blockedBy].filter((id): id is string => Boolean(id))]);
   const completeById = new Map<string, Set<string>>();
   const irCache = new Map<string, WorkflowIr>();
+  /*
+  FNXC:OverlapWaitRelease 2026-10-18-18:02 (RUFU-341): this set is the ONLY test for "that predecessor is
+  finished", so an empty answer must mean "this board declares no complete lane" and never "the board's
+  vocabulary could not be read". It used to be built as `lanes?.complete ? [lanes.complete] : []`, which made
+  a column-less (v1) or trait-less synthesized board answer empty, so a card resting in `done` was never
+  recognised as terminal: no reason, no cancel, no clear, on every pass, silently — while the scheduler's
+  `isCompleteColumnRole` (which keeps a legacy `done` floor) called that same predecessor terminal. The card
+  kept `overlapBlockedBy` plus `status="queued"`, both admission gates, and stayed unclaimable forever.
+  `resolveTaskCompleteColumns` now owns that floor, so this seam and the scheduler cannot disagree.
+  */
   for (const id of refs) {
-    const lanes = await resolveTaskLifecycleColumns(store, id, irCache);
-    completeById.set(id, new Set(lanes?.complete ? [lanes.complete] : []));
+    completeById.set(id, new Set(await resolveTaskCompleteColumns(store, id, irCache)));
   }
   const outcome = await layer.transactionImmediate(async (tx) => {
     await acquireTaskAdvisoryXactLock(tx, projectId, taskId);

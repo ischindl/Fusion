@@ -22,6 +22,7 @@ resolves to the same columns the old literals named):
 import type { WorkflowIr, WorkflowIrColumn } from "./workflow-ir-types.js";
 import type { TraitFlags } from "./trait-types.js";
 import { getTraitRegistry } from "./trait-registry.js";
+import { LEGACY_COMPLETE_COLUMN_ID } from "../column-roles.js";
 import { resolveWorkflowIrForTask, type WorkflowIrResolverStore, type WorkflowSelectionCache } from "./workflow-ir-resolver.js";
 
 /** The v2 column list, or [] for a v1/column-less IR. */
@@ -523,6 +524,75 @@ export async function resolveTaskLifecycleColumns(
   } catch {
     return undefined;
   }
+}
+
+/*
+FNXC:OverlapWaitRelease 2026-10-18-18:02 (RUFU-341 — a released overlap wait left the victim frozen forever):
+
+Reading `resolveTaskLifecycleColumns(...)?.complete` and treating "no answer" as "no complete lane" reproduces
+the bug that function's own doc warns about, because "no answer" has THREE causes and only one of them means the
+lane is absent: a column-less (v1) graph, the SYNTHESIZED face this module documents (a v1 graph upgraded to v2
+whose columns carry `traits: []` — "placement only"), and a resolver failure. In all three the naive answer is
+an empty set, so a predecessor resting in its terminal lane can never be recognised as finished.
+
+That asymmetry is what froze RUFU-254. `reconcileTaskOverlapWaits` built its release test as
+`new Set(lanes?.complete ? [lanes.complete] : [])`, while the scheduler asks the same question through
+`isCompleteColumnRole(flags, id)` — which keeps a `=== "done"` floor for exactly this degraded state, and which
+`column-roles.ts` records as "the degraded mode, named once … rather than an inline id comparison repeated per
+call site." The two authorities disagree on precisely the boards whose vocabulary does not resolve: the scheduler
+would not dispatch the waiter because the predecessor's lane was terminal, while the reconciler would not release
+it because it could not tell. Both fields the release left behind (`overlapBlockedBy`, `status="queued"`) are
+admission gates in `scheduler.ts`, so the card was not merely mislabelled — it was permanently unclaimable, on
+every pass, silently. Hence a floor here, in the resolver, rather than a patch at one call site.
+
+Fallback semantics mirror `resolveTaskImplementationColumns` above: a trait-less or unreadable board falls back
+to the legacy vocabulary, while a board that DECLARES lifecycle traits and names no complete lane is answered
+honestly with the empty set — that is the fail-closed half of the contract, keeping the wait held while the
+predecessor is still mid-flight.
+
+FNXC:OverlapWaitRelease 2026-10-18-18:51 (RUFU-341 code review — the FIRST draft reproduced the bug one board up):
+
+The first version of this function answered the declared board with `resolveLifecycleColumns(ir)?.complete`.
+That resolver is documented FIRST-MATCH-PER-ROLE and its own doc says a move target wants `resolveX(ir)` while
+"IS THIS CARD ALREADY THERE" wants `columnsWithFlag(ir, flag)`. This function is a membership answer — its only
+caller asks `completeColumns.has(blocker.column)` — so first-match was the wrong shape: a board declaring TWO
+complete lanes (`shipped-primary` + `shipped-secondary`, exactly `MULTI_LEASE_IR` in
+`store-overlap-repair-lanes-resolved.test.ts`, which is why that face already has an owned green pin) resolved
+to the FIRST one only, so a predecessor resting in the SECOND complete lane was still never recognised as
+finished. The freeze this task exists to fix then reproduced verbatim on every multi-complete board: same empty
+reason, same retained `overlapBlockedBy` + `status="queued"`, same permanent unclaimable card. The declared
+branch therefore now reads `columnsWithFlag(ir, "complete")` — every complete lane — which is also what the
+board's OTHER terminal authority, `TaskMoveLanes.terminal` (`toTaskMoveLanes`), already returns, so the two
+cannot disagree about which lanes are terminal. `LEGACY_COMPLETE_COLUMN_ID` stays ONLY the fallback for the
+degraded face (trait-less / column-less / unreadable), never a substitute for a resolved answer.
+*/
+
+/**
+ * The COMPLETE lanes for a task's workflow, WITH the legacy floor the raw lifecycle resolution omits — for
+ * consumers whose "otherwise" is a permanent hold rather than a visible failure.
+ *
+ * Answers EVERY lane the board marks complete (a board may declare several, so this is membership and must
+ * never collapse to a first match); the empty set when the board declares lifecycle traits and names no
+ * complete lane at all; and the legacy `done` id for a trait-less, column-less, or unreadable board, matching
+ * what `isCompleteColumnRole(undefined, id)` answers. Never throws, so a broken workflow row cannot silently
+ * strand the work waiting behind it.
+ *
+ * Membership-shaped on purpose (a set, not a single id): its callers ask `.has(task.column)`, which
+ * `resolveLifecycleColumns` is explicitly NOT for.
+ */
+export async function resolveTaskCompleteColumns(
+  store: WorkflowIrResolverStore,
+  taskId: string,
+  cache?: Map<string, WorkflowIr>,
+  selectionCache?: WorkflowSelectionCache,
+): Promise<ReadonlySet<string>> {
+  try {
+    const ir = await resolveWorkflowIrForTask(store, taskId, cache, selectionCache);
+    if (ir && declaresAnyLifecycleTrait(ir)) return new Set(columnsWithFlag(ir, "complete"));
+  } catch {
+    /* fall through to the legacy floor below */
+  }
+  return new Set([LEGACY_COMPLETE_COLUMN_ID]);
 }
 
 /*
