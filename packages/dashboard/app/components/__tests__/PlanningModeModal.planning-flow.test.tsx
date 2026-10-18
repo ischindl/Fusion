@@ -85,6 +85,15 @@ async function clickEnabledPlanningButton(name: string) {
   });
 }
 
+async function emitPlanningSessionUpdated(payload: Record<string, unknown>) {
+  await waitFor(() => expect(mockPlanningSse.events?.["ai_session:updated"]).toEqual(expect.any(Function)));
+  act(() => {
+    mockPlanningSse.events?.["ai_session:updated"]?.(new MessageEvent("ai_session:updated", {
+      data: JSON.stringify(payload),
+    }));
+  });
+}
+
 describe("PlanningModeModal sequential flow", () => {
   beforeEach(() => {
     vi.useRealTimers();
@@ -656,13 +665,114 @@ describe("PlanningModeModal sequential flow", () => {
       result: JSON.stringify(summaryWithRefinements),
       inputPayload: "{}",
     });
-    mockPlanningSse.events?.["ai_session:updated"]?.(new MessageEvent("ai_session:updated", {
-      data: JSON.stringify({ ...base, type: "planning", status: "awaiting_input" }),
-    }));
+    await emitPlanningSessionUpdated({ ...base, type: "planning", status: "awaiting_input" });
 
     expect(await screen.findByText("New question?")).toBeInTheDocument();
     expect(screen.queryByText("Old question?")).toBeNull();
     expect(mockConnectPlanningStream).not.toHaveBeenCalled();
+  });
+
+  it("refreshes a restored session when a peer advances it before its first hydration settles", async () => {
+    const oldSession = {
+      ...base,
+      status: "awaiting_input",
+      currentQuestion: JSON.stringify({ id: "q-old", type: "text", question: "Old question?" }),
+      result: JSON.stringify(summaryWithRefinements),
+      inputPayload: "{}",
+    };
+    let resolveInitialHydration!: (session: Record<string, unknown>) => void;
+    mockFetchAiSession
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveInitialHydration = resolve; }))
+      .mockResolvedValueOnce({
+        ...oldSession,
+        updatedAt: new Date(Date.now() + 1_000).toISOString(),
+        currentQuestion: JSON.stringify({ id: "q-new", type: "text", question: "New question?" }),
+      });
+
+    renderSession();
+    await waitFor(() => expect(mockFetchAiSession).toHaveBeenCalledTimes(1));
+    await emitPlanningSessionUpdated({ ...base, type: "planning", status: "awaiting_input" });
+    await waitFor(() => expect(mockFetchAiSession).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      resolveInitialHydration(oldSession);
+      await Promise.resolve();
+    });
+
+    expect(await screen.findByText("New question?")).toBeInTheDocument();
+    expect(screen.queryByText("Old question?")).toBeNull();
+    expect(mockConnectPlanningStream).not.toHaveBeenCalled();
+  });
+
+  it("ignores malformed, foreign, and replayed idle-session updates", async () => {
+    const oldSession = {
+      ...base,
+      status: "awaiting_input",
+      currentQuestion: JSON.stringify({ id: "q-old", type: "text", question: "Old question?" }),
+      result: JSON.stringify(summaryWithRefinements),
+      inputPayload: "{}",
+    };
+    mockFetchAiSession.mockResolvedValue(oldSession);
+    renderSession();
+    await screen.findByText("Old question?");
+
+    await emitPlanningSessionUpdated({ type: "chat", id: "session-1" });
+    await emitPlanningSessionUpdated({ type: "planning" });
+    await emitPlanningSessionUpdated({ ...base, type: "planning", id: "other-session" });
+    expect(mockFetchAiSession).toHaveBeenCalledTimes(1);
+
+    const peerUpdate = { ...base, type: "planning", status: "awaiting_input" };
+    await emitPlanningSessionUpdated(peerUpdate);
+    await waitFor(() => expect(mockFetchAiSession).toHaveBeenCalledTimes(2));
+    await emitPlanningSessionUpdated(peerUpdate);
+    await act(async () => Promise.resolve());
+
+    expect(mockFetchAiSession).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("Old question?")).toBeInTheDocument();
+    expect(mockConnectPlanningStream).not.toHaveBeenCalled();
+  });
+
+  it("keeps a submitted turn when an earlier peer refresh settles late", async () => {
+    const oldSession = {
+      ...base,
+      status: "awaiting_input",
+      currentQuestion: JSON.stringify({ id: "q-old", type: "text", question: "Old question?" }),
+      result: JSON.stringify(summaryWithRefinements),
+      inputPayload: "{}",
+    };
+    let resolvePeerRefresh!: (session: Record<string, unknown>) => void;
+    let resolveResponse!: (response: { currentQuestion: { id: string; type: "text"; question: string }; summary: typeof summaryWithRefinements }) => void;
+    mockFetchAiSession
+      .mockResolvedValueOnce(oldSession)
+      .mockImplementationOnce(() => new Promise((resolve) => { resolvePeerRefresh = resolve; }));
+    mockRespondToPlanning.mockImplementationOnce(() => new Promise((resolve) => { resolveResponse = resolve; }));
+
+    renderSession();
+    await screen.findByText("Old question?");
+    const user = userEvent.setup();
+    await user.type(screen.getByPlaceholderText("Type your answer here..."), "Keep this answer");
+
+    await emitPlanningSessionUpdated({ ...base, type: "planning", status: "awaiting_input" });
+    await waitFor(() => expect(mockFetchAiSession).toHaveBeenCalledTimes(2));
+    await clickEnabledPlanningButton("Next");
+    await waitFor(() => expect(mockRespondToPlanning).toHaveBeenCalledWith("session-1", { "q-old": "Keep this answer" }, "project-1"));
+    expect(screen.getByTestId("planning-workspace")).toHaveAttribute("aria-busy", "true");
+
+    await act(async () => {
+      resolvePeerRefresh(oldSession);
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId("planning-workspace")).toHaveAttribute("aria-busy", "true");
+
+    await act(async () => {
+      resolveResponse({
+        currentQuestion: { id: "q-new", type: "text", question: "Newest question?" },
+        summary: summaryWithRefinements,
+      });
+      await Promise.resolve();
+    });
+    expect(await screen.findByText("Newest question?")).toBeInTheDocument();
+    expect(screen.queryByText("Old question?")).toBeNull();
   });
 
   /*
@@ -702,9 +812,7 @@ describe("PlanningModeModal sequential flow", () => {
     }
     expect(screen.getByRole("button", { name: "Next" })).toBeEnabled();
 
-    mockPlanningSse.events?.["ai_session:updated"]?.(new MessageEvent("ai_session:updated", {
-      data: JSON.stringify({ ...base, type: "planning", status: "awaiting_input" }),
-    }));
+    await emitPlanningSessionUpdated({ ...base, type: "planning", status: "awaiting_input" });
     await act(async () => {
       await Promise.resolve();
     });
@@ -1540,6 +1648,11 @@ describe("PlanningModeModal sequential flow", () => {
     }
   });
 
+  /*
+  FNXC:PlanningSessionOwnership 2026-10-18-03:12:
+  A delayed rejected response must retain the load and turn ownership it captured before A → B → A navigation.
+  The reloaded A question remains authoritative after the stale reconciliation fetch settles on both responsive forms.
+  */
   it.each(["desktop", "mobile"] as const)("does not let a rejected response adopt a reloaded session epoch on %s", async (viewport) => {
     mockViewportMode.mockReturnValue(viewport);
     const submittedQuestion = {
@@ -1549,6 +1662,7 @@ describe("PlanningModeModal sequential flow", () => {
       options: [{ id: "secure", label: "Secure defaults" }],
     };
     let rejectResponse!: (error: Error) => void;
+    let resolveReloadedHydration!: (session: Record<string, unknown>) => void;
     let resolveStaleReconciliation!: (session: Record<string, unknown>) => void;
     let sessionACalls = 0;
     mockFetchAiSession.mockImplementation((id: string) => {
@@ -1563,6 +1677,9 @@ describe("PlanningModeModal sequential flow", () => {
         });
       }
       sessionACalls += 1;
+      if (sessionACalls === 2) {
+        return new Promise((resolve) => { resolveReloadedHydration = resolve; });
+      }
       if (sessionACalls === 3) {
         return new Promise((resolve) => { resolveStaleReconciliation = resolve; });
       }
@@ -1570,9 +1687,7 @@ describe("PlanningModeModal sequential flow", () => {
         ...base,
         id: "session-a",
         status: "awaiting_input",
-        currentQuestion: JSON.stringify(sessionACalls === 1
-          ? submittedQuestion
-          : { id: "q-reloaded", type: "text", question: "What did the reloaded session A ask?" }),
+        currentQuestion: JSON.stringify(submittedQuestion),
         result: JSON.stringify(summaryWithRefinements),
         inputPayload: "{}",
       });
@@ -1587,6 +1702,18 @@ describe("PlanningModeModal sequential flow", () => {
     rerender(<PlanningModeModal {...props} resumeSessionId="session-b" />);
     expect(await screen.findByText("What did session B ask?")).toBeInTheDocument();
     rerender(<PlanningModeModal {...props} resumeSessionId="session-a" />);
+    await waitFor(() => expect(sessionACalls).toBe(2));
+    await act(async () => {
+      resolveReloadedHydration({
+        ...base,
+        id: "session-a",
+        status: "awaiting_input",
+        currentQuestion: JSON.stringify({ id: "q-reloaded", type: "text", question: "What did the reloaded session A ask?" }),
+        result: JSON.stringify(summaryWithRefinements),
+        inputPayload: "{}",
+      });
+      await Promise.resolve();
+    });
     expect(await screen.findByText("What did the reloaded session A ask?")).toBeInTheDocument();
 
     await act(async () => {
@@ -1608,6 +1735,9 @@ describe("PlanningModeModal sequential flow", () => {
 
     expect(screen.getByText("What did the reloaded session A ask?")).toBeInTheDocument();
     expect(screen.queryByText("What did stale reconciliation ask?")).toBeNull();
+    expect(screen.queryByText("What did session B ask?")).toBeNull();
+    expect(mockRespondToPlanning).toHaveBeenCalledWith("session-a", { "q-submitted": "secure" }, "project-1");
+    expect(mockConnectPlanningStream).toHaveBeenCalledTimes(1);
   });
 
   it.each(["desktop", "mobile"] as const)("does not let an older stream-error recovery reconnect over a later response on %s", async (viewport) => {

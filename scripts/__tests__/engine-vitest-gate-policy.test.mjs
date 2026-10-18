@@ -168,6 +168,17 @@ test("root and package gate scripts still propagate real Vitest failures", () =>
   assert.match(gate, /pnpm --filter @fusion\/core test:pg-gate/);
   assert.match(gate, /pnpm --filter @fusion\/core test:unit-gate/);
   assert.match(gate, /&& pnpm --filter @runfusion\/fusion test:ci-shape$/);
+  /*
+  FNXC:PgGateRootTopology 2026-10-18-00:35:
+  FN-9563 keeps a production-shaped diagnostic driver beside the exact root composition. It must continue to
+  invoke the root gate rather than recreating its three concurrent lanes in a test-only approximation.
+  Carried verbatim from origin/main during the merge; our side of this file asserts composition by property
+  (RUFU-197), so this stays an exact pin of the one root script FN-9563 introduced.
+  */
+  assert.equal(
+    root.scripts?.["test:pg-gate-root-topology"],
+    "node scripts/test-pg-gate-root-topology.mjs",
+  );
 
   // The blocking lanes must run in parallel and still propagate each lane's own exit status.
   for (const lane of ["engine_pid", "pg_pid", "unit_pid"]) {
