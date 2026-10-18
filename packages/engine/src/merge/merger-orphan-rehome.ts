@@ -30,6 +30,7 @@ import { resolveWorkflowIrForTask, columnsWithFlag } from "@fusion/core";
 import {
   advanceIntegrationBranchRef,
 } from "./merger-ref-update-advance.js";
+import { extractAttributedTaskId } from "../execution/branch-conflicts.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -80,11 +81,24 @@ export interface ClassifyOrphanOurAdvanceInput {
 export async function classifyOrphanOurAdvance(
   input: ClassifyOrphanOurAdvanceInput,
 ): Promise<OrphanClassification> {
-  const subjectPattern = /^(feat|fix|test|chore|docs|refactor|perf|build)\((FN-\d+)\):/i;
-  const trailerPattern = /(?:^|\n)Fusion-Task-Id:\s*(FN-\d+)\s*(?:\n|$)/i;
-  const subjectMatch = input.commitSubject.match(subjectPattern);
-  const trailerMatch = input.commitBody.match(trailerPattern);
-  const sourceTaskId = (trailerMatch?.[1] ?? subjectMatch?.[2] ?? "").toUpperCase();
+  /*
+  FNXC:TaskIdAttribution 2026-10-18-13:53 (RUFU-352):
+  Attribution is delegated to the shared helper rather than parsed here. Two local patterns hardcoded
+  `FN-\d+`, so a `fix(RUFU-274): …` commit carrying `Fusion-Task-Id: RUFU-274` was read as naming no card
+  and returned `no-trailer` — the orphan verdict that gates this whole recovery path never fired, and the
+  source card's finished work stayed stranded off the integration branch. The subject-only prefix also
+  dropped a hand-authored lowercase trailer (`rufu-274`), which `extractAttributedTaskId` normalizes.
+
+  Delegating removes a latent footgun too: the local subject pattern put the id in capture group 2 behind
+  the commit-type group, and this function read `[2]` while its trailer pattern put the id in `[1]` —
+  the asymmetry RUFU-292 named as the reason `extractAttributedTaskId` returns an id, not a match object.
+
+  Only attribution widened. Every refusal below is unchanged and still gates the WRITE, because a
+  positive verdict here makes the merger advance `refs/heads/<integration>` onto another card's commit:
+  self-attribution, source-resolves, source-is-complete (renamed-lane aware), and unreachable-from-
+  integration all still have to hold.
+  */
+  const sourceTaskId = extractAttributedTaskId(input.commitSubject, input.commitBody);
   if (!sourceTaskId) return { orphan: false, reason: "no-trailer" };
   if (sourceTaskId === input.currentTaskId.toUpperCase()) {
     return { orphan: false, reason: "self-attributed" };

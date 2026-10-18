@@ -1252,8 +1252,8 @@ Heartbeat prompts may include a **Room Coordination Notices** section after **Ro
 
 This notice is advisory prompt-layer routing (not server-side serialization), with two branches:
 
-- **claim**: the agent should post a one-line claim via `fn_post_room_message` first, then call `fn_task_create`, then post the resulting `FN-NNNN` task ID back to the room.
-- **defer-suggested**: a peer claim or task announcement was already seen in recent room history; the agent should **not** call `fn_task_create`, and should instead acknowledge the prior claim/announcement via `fn_post_room_message`.
+- **claim**: the agent should post a one-line claim via `fn_post_room_message` first, then call `fn_task_create`, then post the resulting task ID back to the room. The ID is echoed with whatever prefix the project's `settings.taskPrefix` mints, so the instruction names "the task id the call returned" rather than a fixed `FN-NNNN` shape (RUFU-352).
+- **defer-suggested**: a peer claim or task announcement was already seen in recent room history; the agent should **not** call `fn_task_create`, and should instead acknowledge the prior claim/announcement via `fn_post_room_message`. The prior card is recognized by the canonical task-id grammar (`[A-Z][A-Z0-9]*-<digits>`, shared with commit attribution via `TASK_ID_TOKEN_SOURCE`), so an announcement naming a non-`FN` card such as `RUFU-318` still defers; a token embedded in a longer hyphenated word (for example `step-3-build`) is deliberately not treated as a card id.
 
 Deterministic duplicate prevention remains authoritative: FN-4918, FN-4829, FN-5152, and FN-5220 are still the hard intake backstop. The coordination notice reduces upstream duplicate pressure but does not replace those guards.
 

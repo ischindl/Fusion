@@ -171,6 +171,70 @@ describe("room-coordination", () => {
       });
       expect(result?.branch).toBe("claim");
     });
+
+    /*
+    FNXC:TaskIdAttribution 2026-10-18-13:53 (RUFU-352):
+    Room coordination is a duplicate-filing guard: it defers a filing agent when a peer already announced
+    the card. Its two task-id patterns were hardcoded `FN-\d{1,6}`, so a peer announcing
+    "filed RUFU-318 for the secrets regression" matched nothing, the decision fell through to `claim`,
+    and the room filed a second card for work already tracked — the precise failure this advisory exists
+    to prevent. Generalizing the grammar must preserve the capture-group contract the caller reads
+    (`[1]` for verb-before-id, `[2]` for id-before-verb) and the uppercase normalization.
+    */
+    it("defers to a peer announcement naming a non-FN task id", () => {
+      const result = decideRoomCoordination({
+        detection,
+        members: [roomMember("a1"), roomMember("a2")],
+        recentMessages: [roomMessage("m10", "filed RUFU-318 for the secrets regression", "agent-peer")],
+        pendingSenderAgentId: "agent-main",
+      });
+      expect(result?.branch).toBe("defer-suggested");
+      expect(result?.priorTaskId).toBe("RUFU-318");
+    });
+
+    it("defers when the non-FN id precedes the announcement verb", () => {
+      const result = decideRoomCoordination({
+        detection,
+        members: [roomMember("a1"), roomMember("a2")],
+        recentMessages: [roomMessage("m11", "RUFU-318 was created earlier today", "agent-peer")],
+        pendingSenderAgentId: "agent-main",
+      });
+      expect(result?.branch).toBe("defer-suggested");
+      expect(result?.priorTaskId).toBe("RUFU-318");
+    });
+
+    it("falls back to the bare-id pattern for a non-FN claim-only message", () => {
+      const result = decideRoomCoordination({
+        detection,
+        members: [roomMember("a1"), roomMember("a2")],
+        recentMessages: [roomMessage("m12", "Claiming: fixing SANE-452 sync", "agent-peer")],
+        pendingSenderAgentId: "agent-main",
+      });
+      expect(result?.branch).toBe("defer-suggested");
+      expect(result?.priorTaskId).toBe("SANE-452");
+    });
+
+    it("normalizes a lowercase non-FN id announced by a peer", () => {
+      const result = decideRoomCoordination({
+        detection,
+        members: [roomMember("a1"), roomMember("a2")],
+        recentMessages: [roomMessage("m13", "created rufu-318 for the secrets regression", "agent-peer")],
+        pendingSenderAgentId: "agent-main",
+      });
+      expect(result?.branch).toBe("defer-suggested");
+      expect(result?.priorTaskId).toBe("RUFU-318");
+    });
+
+    it("does not invent a prior task id from prose that names no card", () => {
+      const result = decideRoomCoordination({
+        detection,
+        members: [roomMember("a1"), roomMember("a2")],
+        recentMessages: [roomMessage("m14", "Claiming: filing the thing", "agent-peer")],
+        pendingSenderAgentId: "agent-main",
+      });
+      expect(result?.branch).toBe("defer-suggested");
+      expect(result?.priorTaskId).toBeUndefined();
+    });
   });
 
   describe("renderRoomCoordinationPromptBlock", () => {
@@ -212,6 +276,44 @@ describe("room-coordination", () => {
       expect(block).toContain("message m4");
       expect(block).toContain("FN-9042");
       expect(block).toContain("reply_to_message_id = m6");
+    });
+
+    /*
+    FNXC:TaskIdAttribution 2026-10-18-13:53 (RUFU-352):
+    The claim branch told the agent to post back "the resulting FN-NNNN id". Under a non-FN project that
+    instruction names a prefix the card will never carry, so an agent either omits the echo or invents an
+    FN id to satisfy it. The wording is now prefix-neutral and pinned so it cannot drift back.
+    */
+    it("renders claim instructions without naming a single task-id prefix", () => {
+      const block = renderRoomCoordinationPromptBlock(
+        {
+          branch: "claim",
+          memberCount: 2,
+          detection: { isTaskFilingIntent: true, cues: ["file a task"], subject: "secrets-sync regression" },
+        },
+        { id: "m7" },
+      ).join("\n");
+
+      expect(block).not.toMatch(/FN-NNNN/i);
+      expect(block).toMatch(/task id/i);
+      expect(block).toContain("reply_to_message_id = m7");
+    });
+
+    it("renders the defer branch echoing a non-FN prior task id", () => {
+      const block = renderRoomCoordinationPromptBlock(
+        {
+          branch: "defer-suggested",
+          memberCount: 2,
+          detection: { isTaskFilingIntent: true, cues: ["create a task"], subject: "secrets-sync regression" },
+          priorClaimMessageId: "m8",
+          priorClaimSenderId: "agent-peer",
+          priorTaskId: "RUFU-318",
+        },
+        { id: "m9" },
+      ).join("\n");
+
+      expect(block).toContain("RUFU-318");
+      expect(block).toContain("reply_to_message_id = m9");
     });
   });
 });

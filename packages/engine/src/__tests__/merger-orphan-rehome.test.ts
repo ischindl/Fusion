@@ -254,6 +254,221 @@ describe("classifyOrphanOurAdvance", () => {
   });
 });
 
+/*
+FNXC:TaskIdAttribution 2026-10-18-13:53 (RUFU-352):
+Orphan rehoming is the destructive consumer of task-id attribution: a positive classification makes the
+merger advance `refs/heads/<integration>` onto someone else's commit. Before RUFU-352 the classifier
+hardcoded `FN-\d+` in BOTH its subject and trailer patterns, so a `fix(RUFU-274): …` commit carrying a
+`Fusion-Task-Id: RUFU-274` trailer was read as naming no card at all (`no-trailer`) and its work stayed
+stranded off the integration branch forever. RUFU-292 generalized the five branch-conflict attribution
+sites; these cases pin the same generalization here, on prefixes the FN-only pattern can never match.
+
+The refusal cases matter more than the positive one: widening attribution must not widen the WRITE.
+Each case below re-asserts the ref-unchanged proof from the caller's position (`if (orphan) rehome(...)`),
+so a classifier that attributes a non-FN commit but loses its source-done gate is caught red-handed.
+*/
+describe("classifyOrphanOurAdvance non-FN prefixes", () => {
+  it("attributes a foreign commit by a non-FN trailer and subject", async () => {
+    const dir = setupRepo();
+    try {
+      git(dir, "git checkout -b rufu-orphan");
+      writeFileSync(join(dir, "rufu.txt"), "rufu\n");
+      git(dir, "git add rufu.txt");
+      git(dir, `git commit -m "fix(RUFU-274): orphaned squash" -m "Fusion-Task-Id: RUFU-274"`);
+      const orphanSha = git(dir, "git rev-parse HEAD");
+      git(dir, "git checkout main");
+
+      const result = await classifyOrphanOurAdvance({
+        repoDir: dir,
+        taskStore: makeFakeStore({ "RUFU-274": { column: "done" } }),
+        integrationBranch: "main",
+        currentTaskId: "RUFU-290",
+        commitSha: orphanSha,
+        commitSubject: "fix(RUFU-274): orphaned squash",
+        commitBody: "Fusion-Task-Id: RUFU-274\n",
+      });
+
+      expect(result.orphan).toBe(true);
+      if (result.orphan) {
+        expect(result.sourceTaskId).toBe("RUFU-274");
+        expect(result.orphanSha).toBe(orphanSha);
+      }
+    } finally {
+      removeTmpDirSync(dir);
+    }
+  });
+
+  it("attributes a non-FN commit from the subject scope alone when the body is empty", async () => {
+    const dir = setupRepo();
+    try {
+      git(dir, "git checkout -b sane-subject-only");
+      writeFileSync(join(dir, "sane.txt"), "sane\n");
+      git(dir, "git add sane.txt");
+      git(dir, `git commit -m "chore(SANE-452): docs refresh"`);
+      const orphanSha = git(dir, "git rev-parse HEAD");
+      git(dir, "git checkout main");
+
+      const result = await classifyOrphanOurAdvance({
+        repoDir: dir,
+        taskStore: makeFakeStore({ "SANE-452": { column: "done" } }),
+        integrationBranch: "main",
+        currentTaskId: "RUFU-290",
+        commitSha: orphanSha,
+        commitSubject: "chore(SANE-452): docs refresh",
+        commitBody: "",
+      });
+
+      expect(result.orphan).toBe(true);
+      if (result.orphan) expect(result.sourceTaskId).toBe("SANE-452");
+    } finally {
+      removeTmpDirSync(dir);
+    }
+  });
+
+  it("normalizes a hand-authored lowercase trailer to the canonical id", async () => {
+    const dir = setupRepo();
+    try {
+      git(dir, "git checkout -b lowercase-trailer");
+      writeFileSync(join(dir, "lc.txt"), "lc\n");
+      git(dir, "git add lc.txt");
+      git(dir, `git commit -m "fix: orphaned squash" -m "Fusion-Task-Id: rufu-274"`);
+      const orphanSha = git(dir, "git rev-parse HEAD");
+      git(dir, "git checkout main");
+
+      const result = await classifyOrphanOurAdvance({
+        repoDir: dir,
+        taskStore: makeFakeStore({ "RUFU-274": { column: "done" } }),
+        integrationBranch: "main",
+        currentTaskId: "RUFU-290",
+        commitSha: orphanSha,
+        commitSubject: "fix: orphaned squash",
+        commitBody: "Fusion-Task-Id: rufu-274\n",
+      });
+
+      expect(result.orphan).toBe(true);
+      if (result.orphan) expect(result.sourceTaskId).toBe("RUFU-274");
+    } finally {
+      removeTmpDirSync(dir);
+    }
+  });
+
+  it("refuses a non-FN orphan whose source card is mid-flight and never moves the integration ref", async () => {
+    /*
+    Destructive-path proof. The rehome WRITE is gated solely on `orphan: true`, so this asserts the
+    source-done gate survives generalization by mirroring the caller: run the classifier, honour its
+    verdict the way run-implementation.ts does, and require refs/heads/main to be untouched.
+    */
+    const dir = setupRepo();
+    try {
+      const integrationTipBefore = git(dir, "git rev-parse refs/heads/main");
+      git(dir, "git checkout -b sane-wip");
+      writeFileSync(join(dir, "wip.txt"), "wip\n");
+      git(dir, "git add wip.txt");
+      git(dir, `git commit -m "feat(SANE-452): wip" -m "Fusion-Task-Id: SANE-452"`);
+      const sha = git(dir, "git rev-parse HEAD");
+      git(dir, "git checkout main");
+
+      const result = await classifyOrphanOurAdvance({
+        repoDir: dir,
+        taskStore: makeFakeStore({ "SANE-452": { column: "in-progress" } }),
+        integrationBranch: "main",
+        currentTaskId: "RUFU-290",
+        commitSha: sha,
+        commitSubject: "feat(SANE-452): wip",
+        commitBody: "Fusion-Task-Id: SANE-452\n",
+      });
+
+      expect(result.orphan).toBe(false);
+      if (!result.orphan) expect(result.reason).toBe("source-task-not-done");
+      // Caller contract: rehome only on a positive verdict, so the ref must not move.
+      if (result.orphan) throw new Error("refusing a mid-flight source must not yield an orphan verdict");
+      expect(git(dir, "git rev-parse refs/heads/main")).toBe(integrationTipBefore);
+    } finally {
+      removeTmpDirSync(dir);
+    }
+  });
+
+  it("refuses a non-FN commit already reachable from integration", async () => {
+    const dir = setupRepo();
+    try {
+      writeFileSync(join(dir, "landed.txt"), "landed\n");
+      git(dir, "git add landed.txt");
+      git(dir, `git commit -m "fix(RUFU-274): landed" -m "Fusion-Task-Id: RUFU-274"`);
+      const sha = git(dir, "git rev-parse HEAD");
+
+      const result = await classifyOrphanOurAdvance({
+        repoDir: dir,
+        taskStore: makeFakeStore({ "RUFU-274": { column: "done" } }),
+        integrationBranch: "main",
+        currentTaskId: "RUFU-290",
+        commitSha: sha,
+        commitSubject: "fix(RUFU-274): landed",
+        commitBody: "Fusion-Task-Id: RUFU-274\n",
+      });
+
+      expect(result.orphan).toBe(false);
+      if (!result.orphan) expect(result.reason).toBe("reachable-from-integration");
+    } finally {
+      removeTmpDirSync(dir);
+    }
+  });
+
+  it("keeps the self-attribution gate across prefixes", async () => {
+    const dir = setupRepo();
+    try {
+      git(dir, "git checkout -b self-owned");
+      writeFileSync(join(dir, "self.txt"), "self\n");
+      git(dir, "git add self.txt");
+      git(dir, `git commit -m "fix(RUFU-274): my own work" -m "Fusion-Task-Id: RUFU-274"`);
+      const sha = git(dir, "git rev-parse HEAD");
+      git(dir, "git checkout main");
+
+      const result = await classifyOrphanOurAdvance({
+        repoDir: dir,
+        // Same prefix AND same id on both sides: the card merging must not rehome its own commit.
+        taskStore: makeFakeStore({ "RUFU-274": { column: "done" } }),
+        integrationBranch: "main",
+        currentTaskId: "RUFU-274",
+        commitSha: sha,
+        commitSubject: "fix(RUFU-274): my own work",
+        commitBody: "Fusion-Task-Id: RUFU-274\n",
+      });
+
+      expect(result.orphan).toBe(false);
+      if (!result.orphan) expect(result.reason).toBe("self-attributed");
+    } finally {
+      removeTmpDirSync(dir);
+    }
+  });
+
+  it("still refuses a commit naming no card at all under the generalized grammar", async () => {
+    const dir = setupRepo();
+    try {
+      git(dir, "git checkout -b stray-grammar");
+      writeFileSync(join(dir, "stray.txt"), "stray\n");
+      git(dir, "git add stray.txt");
+      git(dir, `git commit -m "chore(anything): untagged" -m "Co-authored-by: someone"`);
+      const sha = git(dir, "git rev-parse HEAD");
+      git(dir, "git checkout main");
+
+      const result = await classifyOrphanOurAdvance({
+        repoDir: dir,
+        taskStore: makeFakeStore({}),
+        integrationBranch: "main",
+        currentTaskId: "RUFU-290",
+        commitSha: sha,
+        commitSubject: "chore(anything): untagged",
+        commitBody: "Co-authored-by: someone\n",
+      });
+
+      expect(result.orphan).toBe(false);
+      if (!result.orphan) expect(result.reason).toBe("no-trailer");
+    } finally {
+      removeTmpDirSync(dir);
+    }
+  });
+});
+
 describe("rehomeOrphanOntoIntegration", () => {
   it("fast-forwards integration when its tip is an ancestor of the orphan", async () => {
     const dir = setupRepo();

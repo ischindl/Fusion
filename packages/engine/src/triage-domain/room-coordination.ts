@@ -1,4 +1,5 @@
 import type { ChatRoomMember, ChatRoomMessage } from "@fusion/core";
+import { TASK_ID_TOKEN_PROSE_SOURCE } from "../execution/branch-conflicts.js";
 
 /**
  * FN-5425: prompt-layer multi-agent coordination advisory for explicit task-filing room messages.
@@ -28,9 +29,29 @@ export interface RenderCoordinationOptions {
 const MAX_INTENT_CONTENT_LENGTH = 800;
 const MAX_SUBJECT_LENGTH = 140;
 const DEICTIC_NOUN_FOLLOWUP_PATTERN = /\b(?:it|that|this)\s+(?:as|for|to)\b/i;
-const TASK_ID_PATTERN = /\b(FN-\d{1,6})\b/i;
+
+/*
+FNXC:TaskIdAttribution 2026-10-18-13:53 (RUFU-352):
+Room coordination is the guard against two agents in one room filing the same card twice: when a peer
+has already claimed or announced the work, the pending agent is told to defer. Both task-id patterns here
+were hardcoded to the FN prefix, so a peer posting "filed RUFU-318 for the secrets regression" matched
+nothing — the decision fell through to `claim` and the room filed a second card for work already tracked,
+which is precisely the failure this advisory exists to prevent.
+
+The grammar composes `TASK_ID_TOKEN_PROSE_SOURCE` — the shared token plus its free-text right boundary —
+so the room cannot drift from the rest of attribution again, and a workflow-step mention like
+"step-3-build" is not misread as the card `STEP-3`. Capture positions are load-bearing, not incidental:
+the caller reads `[1]` for verb-before-id and `[2]` for id-before-verb, then falls back to the bare-id
+pattern for a claim-only message. Case-insensitive matching plus the existing `toUpperCase()` keeps a
+hand-typed `rufu-318` canonical.
+*/
+const TASK_ID_PATTERN = new RegExp(`\\b(${TASK_ID_TOKEN_PROSE_SOURCE})\\b`, "i");
 const PRIOR_CLAIM_RE = /^\s*claiming[:-]/i;
-const TASK_ANNOUNCED_RE = /\b(?:filed|created|opened|tracked|added)\b[\s\S]{0,60}?\b(FN-\d{1,6})\b|\b(FN-\d{1,6})\b[\s\S]{0,60}?\b(?:filed|created|opened|tracked|added)\b/i;
+const ANNOUNCEMENT_VERBS = "filed|created|opened|tracked|added";
+const TASK_ANNOUNCED_RE = new RegExp(
+  `\\b(?:${ANNOUNCEMENT_VERBS})\\b[\\s\\S]{0,60}?\\b(${TASK_ID_TOKEN_PROSE_SOURCE})\\b|\\b(${TASK_ID_TOKEN_PROSE_SOURCE})\\b[\\s\\S]{0,60}?\\b(?:${ANNOUNCEMENT_VERBS})\\b`,
+  "i",
+);
 
 const TASK_CONTEXT_SUFFIX = "(?=$|[.?!,:;-]|\\s+(?:for|about|to|on|regarding)\\b)";
 
@@ -192,7 +213,14 @@ export function renderRoomCoordinationPromptBlock(
       `Multi-agent room (${decision.memberCount} agents). Before calling fn_task_create for this request, coordinate:`,
       `1. Post a ONE-LINE claim to the room first via fn_post_room_message: "Claiming: filing task for <subject>" (reply_to_message_id = ${pendingMessage.id}).`,
       "2. Then call fn_task_create. The deterministic / near-duplicate / explicit-marker intake guards (FN-4918 / FN-4829 / FN-5152 / FN-5220) are your authoritative backstop — do NOT pass acknowledgedDuplicates or bypassDuplicateCheck to silence a duplicate match for a room request.",
-      `3. After fn_task_create returns, post the resulting FN-NNNN id back to the room via fn_post_room_message (reply_to_message_id = ${pendingMessage.id}).`,
+      /*
+      FNXC:TaskIdAttribution 2026-10-18-13:53 (RUFU-352):
+      This line used to tell the agent to post back "the resulting FN-NNNN id". Where the project's
+      `settings.taskPrefix` is not FN, the card that comes back never carries that shape, so the agent
+      either skipped the echo or invented an FN id to satisfy the instruction. The wording is now
+      prefix-neutral and pinned by test so it cannot drift back to a single prefix.
+      */
+      `3. After fn_task_create returns, post the resulting task id (the id the call returned, whatever its prefix) back to the room via fn_post_room_message (reply_to_message_id = ${pendingMessage.id}).`,
       `Detected subject: ${decision.detection.subject ?? "(none extracted — restate the user's request in your claim)"}.`,
     ];
   }

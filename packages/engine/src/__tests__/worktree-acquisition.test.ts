@@ -1405,4 +1405,137 @@ describe("acquireTaskWorktree foreign start-point warning", () => {
     expect(warn).not.toHaveBeenCalled();
     expect(logEntry).not.toHaveBeenCalledWith("FN-4488", expect.stringContaining("foreign-task start point"), undefined, undefined);
   });
+
+  /*
+  FNXC:TaskIdAttribution 2026-10-18-13:53 (RUFU-352):
+  The warning is observability-only, but before RUFU-352 its opening gate was `/^fusion\/fn-\d+$/i`, so a
+  lane branched off `fusion/rufu-274` or `fusion/sane-452` was silently misbound — the operator saw no
+  warning and the card's History got no line, which is exactly how a wrong start point stays invisible
+  until it produces a contamination refusal much later. These cases pin both halves of the generalization:
+  the branch-shape gate now takes the canonical id grammar, and the commit parse reuses the shared
+  attribution helper rather than a second FN-only regex.
+
+  The negative branch shapes are load-bearing. `fusion/fn-252-0-code-review` and `fusion/step-3-build`
+  are real workflow node branches, and `fusion/revert-fn-123` is not an id at all; matching the id
+  grammar exactly once (prefix, one hyphen, digits) is what keeps them silent.
+  */
+  it("warns for a non-FN task start point attributed to a foreign non-FN card", async () => {
+    vi.resetModules();
+    const warn = vi.fn();
+    const logEntry = vi.fn().mockResolvedValue(undefined);
+
+    const execMock: any = (_command: string, _opts: any, cb: any) => cb(null, "", "");
+    execMock[promisify.custom] = (command: string) => {
+      if (command.startsWith("git rev-parse --verify \"fusion/rufu-274^")) {
+        return Promise.resolve({ stdout: "cafebabecafebabe\n", stderr: "" });
+      }
+      if (command.startsWith("git log -1 --format=%s%x1f%b")) {
+        return Promise.resolve({ stdout: "fix(RUFU-274): dep\u001fFusion-Task-Id: RUFU-274\n", stderr: "" });
+      }
+      return Promise.resolve({ stdout: "", stderr: "" });
+    };
+
+    vi.doMock("node:child_process", () => ({ exec: execMock, execFile: execMock }));
+    const mod = await import("../worktree/worktree-acquisition.js");
+
+    await mod.acquireTaskWorktree({
+      task: { id: "SANE-9", title: "Task", description: "Desc", branch: null, worktree: null, executionStartBranch: "fusion/rufu-274" } as any,
+      rootDir: "/tmp/repo",
+      store: { updateTask: vi.fn().mockResolvedValue(undefined), logEntry } as any,
+      settings: {},
+      logger: { log: vi.fn(), warn, error: vi.fn() },
+      createWorktree: vi.fn().mockResolvedValue({ path: "/tmp/repo/.worktrees/x", branch: "fusion/sane-9" }),
+    });
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("worktree acquired with foreign-task start point: fusion/rufu-274"));
+    expect(logEntry).toHaveBeenCalledWith("SANE-9", expect.stringContaining("worktree acquired with foreign-task start point: fusion/rufu-274"), undefined, undefined);
+  });
+
+  /*
+  FNXC:TaskIdAttribution 2026-10-18-13:53 (RUFU-352):
+  The Symptom Verification the card specifies asks for the reproduction against a real `.git`, not a
+  mocked transport, so this case builds a real repository, a real `fusion/rufu-274` branch whose tip
+  commit carries a real `Fusion-Task-Id: RUFU-274` trailer, and a real worktree for the acquiring card.
+  `maybeWarnForeignTaskStartPoint` shells out to `git rev-parse --verify` and `git log -1` directly, so
+  with no `node:child_process` mock in place both readings come from genuine git objects — which is what
+  distinguishes this from the stubbed case above: that one pins the gate and the `logEntry` call shape,
+  this one proves the warning still fires when the tip sha and the subject/body come out of a real repo.
+  */
+  it("warns from real git objects for a non-FN task start point attributed to a foreign card", async () => {
+    const rootDir = makeRepo();
+    git(rootDir, "git checkout -b fusion/rufu-274");
+    writeFileSync(join(rootDir, "foreign.md"), "foreign work\n", "utf-8");
+    git(rootDir, "git add foreign.md");
+    git(rootDir, 'git commit -m "fix(RUFU-274): foreign work" -m "Fusion-Task-Id: RUFU-274"');
+    git(rootDir, "git checkout main");
+
+    const worktreePath = join(rootDir, ".worktrees", "sane-9");
+    git(rootDir, `git worktree add -b fusion/sane-9 '${worktreePath}' main`);
+
+    const warn = vi.fn();
+    const logEntry = vi.fn().mockResolvedValue(undefined);
+
+    await acquireTaskWorktree({
+      task: {
+        id: "SANE-9",
+        title: "Task",
+        description: "Desc",
+        branch: null,
+        worktree: null,
+        executionStartBranch: "fusion/rufu-274",
+      } as any,
+      rootDir,
+      store: { updateTask: vi.fn().mockResolvedValue(undefined), logEntry } as any,
+      settings: {},
+      logger: { log: vi.fn(), warn, error: vi.fn() },
+      createWorktree: vi.fn().mockResolvedValue({ path: worktreePath, branch: "fusion/sane-9" }),
+    });
+
+    const tipSha = git(rootDir, "git rev-parse fusion/rufu-274");
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining(`foreign-task start point: fusion/rufu-274 (resolved tip ${tipSha.slice(0, 12)})`),
+    );
+    expect(logEntry).toHaveBeenCalledWith(
+      "SANE-9",
+      expect.stringContaining("worktree acquired with foreign-task start point: fusion/rufu-274"),
+      undefined,
+      undefined,
+    );
+  });
+
+  it.each([
+    ["workflow node branch", "fusion/fn-252-0-code-review"],
+    ["foreach step branch", "fusion/step-3-build"],
+    ["revert branch that only contains an id", "fusion/revert-fn-123"],
+  ])("stays silent for a non-task start point: %s", async (_label, startBranch) => {
+    vi.resetModules();
+    const warn = vi.fn();
+    const logEntry = vi.fn().mockResolvedValue(undefined);
+
+    const execMock: any = (_command: string, _opts: any, cb: any) => cb(null, "", "");
+    execMock[promisify.custom] = (command: string) => {
+      if (command.startsWith(`git rev-parse --verify "${startBranch}^`)) {
+        return Promise.resolve({ stdout: "deadbeefdeadbeef\n", stderr: "" });
+      }
+      if (command.startsWith("git log -1 --format=%s%x1f%b")) {
+        return Promise.resolve({ stdout: "fix(RUFU-274): dep\u001fFusion-Task-Id: RUFU-274\n", stderr: "" });
+      }
+      return Promise.resolve({ stdout: "", stderr: "" });
+    };
+
+    vi.doMock("node:child_process", () => ({ exec: execMock, execFile: execMock }));
+    const mod = await import("../worktree/worktree-acquisition.js");
+
+    await mod.acquireTaskWorktree({
+      task: { id: "SANE-9", title: "Task", description: "Desc", branch: null, worktree: null, executionStartBranch: startBranch } as any,
+      rootDir: "/tmp/repo",
+      store: { updateTask: vi.fn().mockResolvedValue(undefined), logEntry } as any,
+      settings: {},
+      logger: { log: vi.fn(), warn, error: vi.fn() },
+      createWorktree: vi.fn().mockResolvedValue({ path: "/tmp/repo/.worktrees/x", branch: "fusion/sane-9" }),
+    });
+
+    expect(warn.mock.calls.some((call: unknown[]) => String(call[0]).includes("foreign-task start point"))).toBe(false);
+    expect(logEntry).not.toHaveBeenCalledWith("SANE-9", expect.stringContaining("foreign-task start point"), undefined, undefined);
+  });
 });

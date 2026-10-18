@@ -56,6 +56,36 @@ describe("room-ambiguity", () => {
       ]);
       expect(candidates[0]?.sourceMessageId).toBe("m2");
     });
+
+    /*
+    FNXC:TaskIdAttribution 2026-10-18-13:53 (RUFU-352):
+    Antecedent extraction resolves what a deictic "do that" refers to, and its id pattern was hardcoded
+    `FN-\d{1,6}` with the global flag its `matchAll` consumer needs. In a non-FN project every id mention
+    in the room was invisible to it, so referent confidence collapsed to `low` and the agent asked a
+    clarification question the transcript had already answered. Cases run newest-message-first because the
+    scanner walks the window backwards.
+    */
+    it("extracts non-FN task ids from recent messages", () => {
+      const candidates = extractAntecedentCandidates([
+        roomMessage("m1", "RUFU-318 needs a rebase"),
+        roomMessage("m2", "SANE-452 landed already"),
+      ]);
+
+      expect(candidates.map((candidate) => candidate.summary)).toEqual(["SANE-452", "RUFU-318"]);
+      expect(candidates[0]?.sourceMessageId).toBe("m2");
+    });
+
+    it("normalizes a lowercase non-FN id mention", () => {
+      const candidates = extractAntecedentCandidates([roomMessage("m3", "please revisit sane-452")]);
+
+      expect(candidates.map((candidate) => candidate.summary)).toEqual(["SANE-452"]);
+    });
+
+    it("does not harvest a non-id token as a task id", () => {
+      const candidates = extractAntecedentCandidates([roomMessage("m4", "see step-3-build for details")]);
+
+      expect(candidates.map((candidate) => candidate.summary)).toEqual([]);
+    });
   });
 
   describe("scoreReferentConfidence", () => {

@@ -1,4 +1,5 @@
 import type { ChatRoomMessage } from "@fusion/core";
+import { TASK_ID_TOKEN_PROSE_SOURCE } from "../execution/branch-conflicts.js";
 
 export interface DeicticDetectionResult {
   isDeictic: boolean;
@@ -58,7 +59,21 @@ const PROPOSAL_SUMMARY_PATTERNS: ReadonlyArray<RegExp> = [
 ];
 
 const QUOTED_TITLE_PATTERN = /"([^"]{3,120})"|'([^']{3,120})'/g;
-const TASK_ID_PATTERN = /\bFN-\d{1,6}\b/gi;
+/*
+FNXC:TaskIdAttribution 2026-10-18-13:53 (RUFU-352):
+Antecedent extraction decides what a deictic room message ("do that as a task") refers to, and its id
+pattern was hardcoded to the FN prefix. In a project whose `settings.taskPrefix` is not FN, every id
+mention in the transcript was invisible here, so referent confidence collapsed to `low` and the agent
+asked a clarification question the room had already answered.
+
+The `g` flag is a hard requirement, not a style choice: `collectSummariesFromMessage` consumes this via
+`matchAll`, so a non-global pattern would yield only the first id per message. `collectSummariesFromMessage`
+also reads `match[0]` rather than a capture group, so the whole match must be the id — which is why the
+prose-bounded token is interpolated ungrouped. The prose boundary additionally means a workflow-step
+mention like "step-3-build" contributes no candidate, rather than a phantom `STEP-3` the agent could
+later be steered toward.
+*/
+const TASK_ID_PATTERN = new RegExp(`\\b${TASK_ID_TOKEN_PROSE_SOURCE}\\b`, "gi");
 const DEICTIC_NOUN_FOLLOWUP_PATTERN = /\b(?:it|that|this)\s+(?:as|for|to)\b/i;
 
 const DEFAULT_MAX_CANDIDATES = 3;

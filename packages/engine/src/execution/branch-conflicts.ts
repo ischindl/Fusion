@@ -409,8 +409,38 @@ Attribution lives in these helpers for a second reason: every previous site inde
 `subjectMatch[2]` behind a capture group for the commit type, so dropping that group would silently
 read `undefined` and classify real work as unattributed. `extractAttributedTaskId` returns the id
 instead of a match object, which removes that footgun from all five call sites.
+
+FNXC:TaskIdAttribution 2026-10-18-13:53 (RUFU-352):
+The token is now exported as the engine's ONE task-id grammar source. RUFU-292 generalized commit
+attribution across five branch-conflict sites but left three families still hardcoded to `FN-\d+`: orphan
+rehoming (`merger-orphan-rehome.ts`), the foreign worktree start-point warning
+(`worktree-acquisition.ts`), and room coordination/ambiguity id extraction (`triage-domain/`). Those now
+compose this token instead of forking a second dictionary — a duplicated grammar is how a prefix
+generalization silently stops being general, and each family below reproduced the same non-FN failure
+RUFU-292 had already fixed (a `RUFU-274`/`SANE-452` card read as naming no card at all).
+
+Deliberately NOT generalized, by operator ruling: `deriveTaskIdFromFusionBranch` and
+`parseFusionTaskBranch` stay FN-only, as does any branch-shape test that gates destructive reclaim or
+deletion authority (`isForeignTaskPinnedBranch`). Widening attribution for observation and recovery is
+safe; widening it for a destructive write is a separate authority decision.
 */
-const TASK_ID_TOKEN_SOURCE = "[A-Z][A-Z0-9]*-\\d+";
+export const TASK_ID_TOKEN_SOURCE = "[A-Z][A-Z0-9]*-\\d+";
+
+/*
+FNXC:TaskIdAttribution 2026-10-18-13:53 (RUFU-352):
+`TASK_ID_TOKEN_SOURCE` alone is only correct where the surrounding syntax already bounds the id — a commit
+subject ends the token at `):` and a trailer at end-of-line, so RUFU-292 never needed a right boundary.
+Scanning free text does. `\b` after `\d+` is satisfied by a hyphen, so a naive `\b(TOKEN)\b` over
+"step-3-build" reports the phantom card `STEP-3`. In an orchestrable surface that error is not benign:
+room coordination turns a matched id into `defer-suggested` with "do NOT call fn_task_create", so an
+invented id silently blocks legitimate filing, while a missed id only costs one extra clarifying question.
+This source adds the trailing `(?![\w-])` so a token embedded in a longer hyphenated compound never
+matches, and it is exported rather than open-coded per site for the same reason the token is — a
+second hand-rolled boundary is how these grammars drift apart again.
+
+Structured branch names do not need it: the `^fusion/<token>$` gate is already bounded by its anchors.
+*/
+export const TASK_ID_TOKEN_PROSE_SOURCE = `${TASK_ID_TOKEN_SOURCE}(?![\\w-])`;
 const CONVENTIONAL_COMMIT_TYPES = "feat|fix|test|chore|docs|refactor|perf|build";
 
 function escapeRegExp(value: string): string {

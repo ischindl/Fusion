@@ -11,7 +11,7 @@ import { findWorktreeHoldingBranch, resolveWorkspaceRootMembership } from "./wor
 import { resolveTaskWorktreePathForBackend, resolveWorktreesDir, WORKTREE_RECOVERY_DIRNAME } from "./worktree-paths.js";
 import { hydrateWorktreeDb } from "./worktree-db-hydrate.js";
 import { formatError } from "../logger.js";
-import { classifyBootstrapMisbinding, reanchorBranchToBase } from "../execution/branch-conflicts.js";
+import { classifyBootstrapMisbinding, extractAttributedTaskId, reanchorBranchToBase, TASK_ID_TOKEN_SOURCE } from "../execution/branch-conflicts.js";
 import {
   canonicalizePath,
   classifyTaskWorktree,
@@ -283,6 +283,22 @@ function formatInitFailureOutcome(initResult: InitCommandResult | undefined, err
   return fallback.length > 0 ? fallback : "Command failed";
 }
 
+/*
+FNXC:TaskIdAttribution 2026-10-18-13:53 (RUFU-352):
+A task's own branch is `fusion/<taskId>`, so the start-point gate has to recognize the same id grammar
+the rest of attribution uses. It previously tested `/^fusion\/fn-\d+$/i`, which meant a lane branched off
+`fusion/rufu-274` or `fusion/sane-452` returned before ever probing the tip: no `logger.warn`, no
+`store.logEntry`, and a misbound start point stayed invisible until a much later contamination refusal.
+Composing the shared token keeps ONE grammar; the anchors are what stop it over-matching — `fusion/` plus
+the complete token to end-of-string is one id and nothing else, so real non-task branch shapes
+(`fusion/fn-252-0-code-review`, `fusion/step-3-build`, `fusion/revert-fn-123`) stay silent as before.
+
+This widens OBSERVABILITY only. The `store.logEntry` call shape below is pinned byte-for-byte by
+`fixtures/merge-orphan-durable-write-inventory.json`, and the sibling `isForeignTaskPinnedBranch` test —
+which drives destructive reclaim — is deliberately left FN-only.
+*/
+const taskStartPointBranchPattern = new RegExp(`^fusion/${TASK_ID_TOKEN_SOURCE}$`, "i");
+
 async function maybeWarnForeignTaskStartPoint(
   input: {
     baseBranch: string | null;
@@ -295,15 +311,14 @@ async function maybeWarnForeignTaskStartPoint(
   },
 ): Promise<void> {
   const { baseBranch, rootDir, worktreePath, taskId, logger, store, runContext } = input;
-  if (!baseBranch || !/^fusion\/fn-\d+$/i.test(baseBranch)) return;
+  if (!baseBranch || !taskStartPointBranchPattern.test(baseBranch)) return;
 
   try {
     const tipSha = (await execAsync(`git rev-parse --verify ${JSON.stringify(`${baseBranch}^{commit}`)}`, { cwd: rootDir, encoding: "utf-8" })).stdout.trim();
     const details = (await execAsync(`git log -1 --format=%s%x1f%b ${JSON.stringify(tipSha)}`, { cwd: worktreePath, encoding: "utf-8" })).stdout.trim();
     const [subject = "", body = ""] = details.split("\u001f");
-    const subjectMatch = subject.match(/^(?:feat|fix|test|chore|docs|refactor|perf|build)\((FN-\d+)\):/i);
-    const trailerMatch = body.match(/(?:^|\n)Fusion-Task-Id:\s*(FN-\d+)\s*(?:\n|$)/i);
-    const attributedTaskId = (trailerMatch?.[1] ?? subjectMatch?.[1] ?? "").toUpperCase();
+    // Trailer wins over subject and normalizes case; see `extractAttributedTaskId` for the grammar.
+    const attributedTaskId = extractAttributedTaskId(subject, body);
     if (!attributedTaskId || attributedTaskId === taskId.toUpperCase()) return;
 
     const warning = `worktree acquired with foreign-task start point: ${baseBranch} (resolved tip ${tipSha.slice(0, 12)}) — bootstrap-misbinding recovery may engage on contamination check`;
