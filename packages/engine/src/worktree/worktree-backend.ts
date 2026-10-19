@@ -661,7 +661,21 @@ export class NativeWorktreeBackend implements WorktreeBackend {
             await this.deps.audit?.git({
               type: "worktree:branch-collision-recovery",
               target: input.worktreePath,
-              metadata: { taskId: input.taskId, disposition: "refused-foreign-unmerged", uniqueCommitCount: inspection.uniqueCommitCount },
+              /*
+              FNXC:BranchPhantomEcho 2026-10-19-15:43 (RUFU-376):
+              The refused destination stays recoverable here — this is the audit trail, the one surface
+              the contract allows the requested path on — recorded under `desiredWorktreePath` and tagged
+              `conflictShape: "bare-branch-collision"` so a reader knows no checkout was ever involved.
+              No key naming a checkout location carries it: the error object this row accompanies now
+              carries an empty `conflictingWorktreePath` for exactly that reason.
+              */
+              metadata: {
+                taskId: input.taskId,
+                disposition: "refused-foreign-unmerged",
+                uniqueCommitCount: inspection.uniqueCommitCount,
+                conflictShape: "bare-branch-collision",
+                desiredWorktreePath: inspection.desiredWorktreePath,
+              },
             });
             throw inspection.error;
           }

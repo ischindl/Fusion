@@ -110,11 +110,32 @@ describe("NativeWorktreeBackend bare branch collision recovery", { timeout: 60_0
       const tip = git(repo, "git rev-parse HEAD");
       git(repo, "git checkout -q main");
       const target = join(repo, ".worktrees", `refused-${taskId}`);
-      const error = await new NativeWorktreeBackend().create({
+      const events: any[] = [];
+      const error = await new NativeWorktreeBackend({ audit: { git: async (event: any) => { events.push(event); } } as any }).create({
         rootDir: repo, branch, worktreePath: target, startPoint: "main", taskId, allowSiblingBranchRename: false,
       }).catch((caught: unknown) => caught);
       expect(error).toBeInstanceOf(BranchConflictError);
-      expect((error as BranchConflictError).collisionKind).toBe("foreign-unmerged");
+      const conflict = error as BranchConflictError;
+      expect(conflict.collisionKind).toBe("foreign-unmerged");
+      /*
+      FNXC:BranchPhantomEcho 2026-10-19-16:30 (RUFU-376) — the real-git phantom-echo gate:
+      Real git proves the branch is checked out nowhere, so the refusal may not name a checkout. This is
+      the shape that actually shipped to operators (the board told them to clear a worktree that git had
+      just proved did not exist), and no mock could have caught it: the phantom came from the producer
+      that had just observed the absence. The requested destination survives only on `desiredWorktreePath`
+      and on the audit row.
+      */
+      expect(conflict.conflictingWorktreePath).toBe("");
+      expect(conflict.desiredWorktreePath).toBe(target);
+      expect(conflict.message).not.toContain(target);
+      const refused = events.find((event) => event.type === "worktree:branch-collision-recovery"
+        && event.metadata?.disposition === "refused-foreign-unmerged");
+      expect(refused?.metadata).toMatchObject({
+        taskId,
+        conflictShape: "bare-branch-collision",
+        desiredWorktreePath: target,
+      });
+      expect(Object.keys(refused?.metadata ?? {})).not.toContain("conflictingWorktreePath");
       expect(git(repo, `git rev-parse ${branch}`)).toBe(tip);
       expect(existsSync(target)).toBe(false);
     }
@@ -150,7 +171,12 @@ describe("NativeWorktreeBackend bare branch collision recovery", { timeout: 60_0
       title: "Fresh branch recovery",
       column: "in-progress",
       branch,
-      worktree: missingPath,
+      /*
+      FNXC:BranchPhantomEcho 2026-10-19-16:30 (RUFU-376): this row used to carry `worktree: missingPath` —
+      the phantom persisted on the card — which is what let the recovery loop re-inspect a directory that
+      git says is registered nowhere. A card whose branch was never checked out has no checkout.
+      */
+      worktree: null,
       baseCommitSha: "main",
       paused: true,
       pausedReason: "branch-conflict-unrecoverable",
@@ -173,7 +199,12 @@ describe("NativeWorktreeBackend bare branch collision recovery", { timeout: 60_0
       },
       logEntry: async () => undefined,
     } as any;
-    const audit = { database: async () => undefined, git: async () => undefined, filesystem: async () => undefined } as any;
+    const auditRows: any[] = [];
+    const audit = {
+      database: async (event: any) => { auditRows.push(event); },
+      git: async () => undefined,
+      filesystem: async () => undefined,
+    } as any;
     const handler = new BranchWorktreeAutoRecoveryHandler({ taskStore: store, runAudit: audit });
     const dispatcher = new AutoRecoveryDispatcher({
       taskStore: store,
@@ -189,7 +220,8 @@ describe("NativeWorktreeBackend bare branch collision recovery", { timeout: 60_0
       evidence: {
         repoDir: repo,
         branchName: branch,
-        conflictingWorktreePath: missingPath,
+        // FK-6: the refused destination travels under its own key, never as a checkout.
+        desiredWorktreePath: missingPath,
         collisionKind: error.collisionKind,
       },
     }, { task, retryCount: 0, settings: { mode: "programmatic", maxRetries: 3 } as any });
@@ -197,6 +229,14 @@ describe("NativeWorktreeBackend bare branch collision recovery", { timeout: 60_0
     expect(decision.action).toBe("retry");
     expect(task.branch).toBe(expectedBranch);
     expect(task.worktree).toBeNull();
+    /*
+    FNXC:BranchPhantomEcho 2026-10-19-16:30 (RUFU-376): the recovery audit trail keeps the refused
+    destination (an operator must still be able to find the preserved branch) under `desiredWorktreePath`,
+    and names no checkout key at all.
+    */
+    const requeued = auditRows.find((row) => row.type === "branch-worktree:auto-requeue");
+    expect(requeued?.metadata?.evidence).toMatchObject({ desiredWorktreePath: missingPath });
+    expect(Object.keys(requeued?.metadata?.evidence ?? {})).not.toContain("conflictingWorktreePath");
     expect(git(repo, `git rev-parse ${branch}`)).toBe(preservedTip);
 
     const acquired = await acquireTaskWorktree({

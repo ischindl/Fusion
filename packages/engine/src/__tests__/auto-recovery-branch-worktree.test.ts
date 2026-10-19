@@ -86,8 +86,16 @@ describe("BranchWorktreeAutoRecoveryHandler", () => {
   });
 
   it("preserves a bare foreign-unmerged branch and reserves a fresh engine sibling", async () => {
-    const f = createFixtures();
-    f.failure.evidence = { branchName: "fusion/fn-4536", conflictingWorktreePath: "/tmp/missing", collisionKind: "foreign-unmerged" };
+    /*
+    FNXC:BranchPhantomEcho 2026-10-19-16:20 (RUFU-376):
+    These fixtures used to hand the handler a checkout the scenario had just proved did not exist, which
+    is the shape that made RUFU-376's phantom uncatchable: every mock happily accepted it. A
+    `foreign-unmerged` card now models the truth — no checkout on the row, refused destination under
+    `desiredWorktreePath` — and the collision inspection is asserted to RECEIVE that destination, so the
+    case still proves recovery can locate the refused path without anyone claiming to hold it.
+    */
+    const f = createFixtures({ worktree: null });
+    f.failure.evidence = { branchName: "fusion/fn-4536", desiredWorktreePath: "/tmp/missing", collisionKind: "foreign-unmerged" };
     branchConflictMocks.inspectBareBranchCollision.mockResolvedValue({
       kind: "foreign-unmerged",
       tipSha: "preserved-tip",
@@ -96,6 +104,9 @@ describe("BranchWorktreeAutoRecoveryHandler", () => {
 
     await f.handler.issueRetry(f.failure, f.decision, f.ctx);
 
+    expect(branchConflictMocks.inspectBareBranchCollision).toHaveBeenCalledWith(
+      expect.objectContaining({ conflictingWorktreePath: "/tmp/missing" }),
+    );
     expect(f.taskStore.moveTask).not.toHaveBeenCalled();
     expect(f.taskStore.updateTaskAtomic).toHaveBeenCalledTimes(1);
     expect(f.taskStore.updateTask).not.toHaveBeenCalledWith("FN-4536", expect.objectContaining({ branch: "fusion/fn-4536-2" }));
@@ -113,8 +124,8 @@ describe("BranchWorktreeAutoRecoveryHandler", () => {
   });
 
   it("does not overwrite a newer branch write after reserving a fresh sibling", async () => {
-    const f = createFixtures();
-    f.failure.evidence = { branchName: "fusion/fn-4536", conflictingWorktreePath: "/tmp/missing", collisionKind: "foreign-unmerged" };
+    const f = createFixtures({ worktree: null });
+    f.failure.evidence = { branchName: "fusion/fn-4536", desiredWorktreePath: "/tmp/missing", collisionKind: "foreign-unmerged" };
     branchConflictMocks.inspectBareBranchCollision.mockResolvedValue({
       kind: "foreign-unmerged",
       tipSha: "preserved-tip",
@@ -138,14 +149,22 @@ describe("BranchWorktreeAutoRecoveryHandler", () => {
   });
 
   it("does not replace an operator-supplied branch after a bare collision", async () => {
-    const f = createFixtures({ branch: "operator/topic" });
-    f.failure.evidence = { branchName: "operator/topic", conflictingWorktreePath: "/tmp/missing", collisionKind: "foreign-unmerged" };
+    const f = createFixtures({ branch: "operator/topic", worktree: null });
+    f.failure.evidence = { branchName: "operator/topic", desiredWorktreePath: "/tmp/missing", collisionKind: "foreign-unmerged" };
 
     await f.handler.issueRetry(f.failure, f.decision, f.ctx);
 
     expect(branchConflictMocks.inspectBareBranchCollision).not.toHaveBeenCalled();
     expect(f.taskStore.moveTask).not.toHaveBeenCalled();
-    expect(f.taskStore.updateTask).not.toHaveBeenCalled();
+    /*
+    FNXC:BranchConflictBudget 2026-09-13 + RUFU-376 fixture repair:
+    This asserted `updateTask` was never called at all, which encoded the pre-RUFU-231 world where an
+    irreducible pause consumed no budget. Every irreducible pause now spends one bounded pass, so the
+    invariant this case actually guards is that NO CHECKOUT IDENTITIES are rewritten: the operator's
+    branch stays put and no phantom worktree is persisted.
+    */
+    expect(f.taskStore.updateTask).toHaveBeenCalledTimes(1);
+    expect(f.taskStore.updateTask).toHaveBeenCalledWith("FN-4536", { recoveryRetryCount: 1 });
     expect(f.runAudit.database).toHaveBeenCalledWith(expect.objectContaining({
       type: "branch-worktree:irreducible-pause",
       metadata: expect.objectContaining({ reason: "operator-branch-preserved" }),

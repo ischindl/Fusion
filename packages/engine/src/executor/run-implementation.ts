@@ -146,6 +146,8 @@ import {
   classifyForeignOnlyContamination,
   classifyMisroutedForeignCommit,
   isBranchConflictError,
+  liveCheckoutPathFor,
+  desiredPathFor,
   reportBranchAttribution,
   BranchCrossContaminationError,
 } from "../execution/branch-conflicts.js";
@@ -4040,9 +4042,18 @@ export async function runImplementation(
           deps.branchConflictErrorCount.set(task.id, conflictCount);
 
           if (conflictCount > deps.BRANCH_CONFLICT_TRIPWIRE_THRESHOLD) {
+            /*
+            FNXC:BranchPhantomEcho 2026-10-19-15:43 (RUFU-376):
+            This tripwire text reaches the task log AND the card's `error` column when the dispatcher
+            pauses, so it renders only a proven live checkout — `none` when the refusal proved there is
+            none, matching the formatter's vocabulary. The requested destination stays in the
+            dispatcher evidence under its own key, where the recovery handler can still use it.
+            */
+            const tripwireLivePath = liveCheckoutPathFor(err);
+            const tripwireDesiredPath = desiredPathFor(err);
             const details = [
               `branch=${err.branchName}`,
-              `worktree=${err.conflictingWorktreePath}`,
+              `worktree=${tripwireLivePath.length > 0 ? tripwireLivePath : "none"}`,
               `existingTipSha=${err.existingTipSha}`,
               `startPoint=${err.startPoint}`,
             ].join(" ");
@@ -4056,7 +4067,8 @@ export async function runImplementation(
               pausedReason: "branch-conflict-tripwire",
               evidence: {
                 branchName: err.branchName,
-                conflictingWorktreePath: err.conflictingWorktreePath,
+                ...(tripwireLivePath.length > 0 ? { conflictingWorktreePath: tripwireLivePath } : {}),
+                ...(tripwireDesiredPath.length > 0 ? { desiredWorktreePath: tripwireDesiredPath } : {}),
               },
               underlyingError: err,
             }, {
@@ -4104,7 +4116,14 @@ export async function runImplementation(
               pausedReason: "branch-conflict-recovery-exhausted",
               evidence: {
                 branchName: err.branchName,
-                conflictingWorktreePath: err.conflictingWorktreePath,
+                /*
+                FNXC:BranchPhantomEcho 2026-10-19-15:43 (RUFU-376):
+                Same contract as the executor's sticky dispatch: this evidence slot is read downstream
+                as "a checkout we believe is live", so a refusal that proved none omits it and keeps
+                the requested destination under `desiredWorktreePath`.
+                */
+                ...(liveCheckoutPathFor(err).length > 0 ? { conflictingWorktreePath: liveCheckoutPathFor(err) } : {}),
+                ...(desiredPathFor(err).length > 0 ? { desiredWorktreePath: desiredPathFor(err) } : {}),
               },
               underlyingError: err,
             }, {
@@ -4130,7 +4149,7 @@ export async function runImplementation(
               await deps.store.updateTask(task.id, buildBranchConflictRecoveryParkPatch(
                 exhaustionPass,
                 err.startPoint,
-                `Branch ${err.branchName} stayed in conflict at ${err.conflictingWorktreePath} after ${deps.MAX_AUTO_RECOVERY_ATTEMPTS} in-session auto-recovery attempts.`,
+                `Branch ${err.branchName} ${liveCheckoutPathFor(err).length > 0 ? `stayed in conflict at ${liveCheckoutPathFor(err)}` : "stayed in conflict with no live checkout of it"} after ${deps.MAX_AUTO_RECOVERY_ATTEMPTS} in-session auto-recovery attempts.`,
               ));
               await emitBranchConflictRecoveryParkAudit({
                 store: deps.store,

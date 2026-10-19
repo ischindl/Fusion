@@ -369,11 +369,30 @@ export class BranchWorktreeAutoRecoveryHandler {
 
     const repoDir = await this.resolveRepoDir(ctx, failure);
     const branchName = (ctx.task.branch ?? (typeof failure.evidence?.branchName === "string" ? failure.evidence.branchName : "")).trim();
-    const conflictingWorktreePath = (ctx.task.worktree ?? (typeof failure.evidence?.conflictingWorktreePath === "string"
-      ? failure.evidence.conflictingWorktreePath
-      : typeof failure.evidence?.worktreePath === "string"
-        ? failure.evidence.worktreePath
-        : "")).trim();
+    const evidenceString = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
+    /*
+    FNXC:BranchPhantomEcho 2026-10-19-15:59 (RUFU-376):
+    This resolution is where the phantom of RUFU-376 became permanent: the old chain read
+    `ctx.task.worktree ?? evidence.conflictingWorktreePath ?? evidence.worktreePath`, and a bare
+    caller-requested destination that had never been created flowed straight through into git
+    subprocesses, `existsSync` liveness checks and this handler's own audit rows.
+    `BranchConflictError.conflictingWorktreePath` now reads as "the checkout we believe is live", so a
+    `foreign-unmerged` refusal leaves it blank: the chain is blank-aware (an empty field must not stop
+    resolution, or the bare shape would re-acquire forever) and keeps the two identities apart —
+    `liveConflictingWorktreePath` for liveness/removal, `desiredWorktreePath` for collision-branch
+    bookkeeping only.
+    */
+    const liveConflictingWorktreePath = evidenceString(ctx.task.worktree)
+      || evidenceString(failure.evidence?.conflictingWorktreePath)
+      || evidenceString(failure.evidence?.worktreePath);
+    const desiredWorktreePath = evidenceString(failure.evidence?.desiredWorktreePath);
+    /** Path used for collision-branch inspection: a proven checkout wins, else the refused destination. */
+    const conflictingWorktreePath = liveConflictingWorktreePath || desiredWorktreePath;
+    /** Checkout-truthful evidence pair: only a proven live checkout may occupy the checkout key. */
+    const checkoutEvidence = (): Record<string, string> => ({
+      ...(liveConflictingWorktreePath ? { conflictingWorktreePath: liveConflictingWorktreePath } : {}),
+      ...(desiredWorktreePath ? { desiredWorktreePath } : {}),
+    });
     if (!branchName || !conflictingWorktreePath) return;
 
     const integrationBranch = await resolveIntegrationBranch(
@@ -424,7 +443,9 @@ export class BranchWorktreeAutoRecoveryHandler {
           worktreePresent: false,
           tipSha: bare.tipSha,
           inspectionKind: bare.kind,
-        }, replacementBranch, conflictingWorktreePath);
+          // FK-6: the refused destination stays under its own key in the recovery audit trail.
+          ...checkoutEvidence(),
+        }, replacementBranch, liveConflictingWorktreePath);
         if (accepted) {
           await this.deps.taskStore.logEntry(
             ctx.task.id,
@@ -456,20 +477,21 @@ export class BranchWorktreeAutoRecoveryHandler {
       */
       const unprovenRelease = inspection.kind === "tip-already-merged"
         && inspection.landedVia === "remote-tracking"
-        && existsSync(conflictingWorktreePath)
-        && !await taskWorktreeCheckoutIsClean(conflictingWorktreePath);
+        && existsSync(liveConflictingWorktreePath)
+        && !await taskWorktreeCheckoutIsClean(liveConflictingWorktreePath);
       if (!unprovenRelease) {
         await this.requeueAfterRecovery(ctx.task, failure, inspection.kind, {
           branchExists: await this.hasBranchRef(repoDir, branchName),
-          worktreePresent: existsSync(conflictingWorktreePath),
+          worktreePresent: existsSync(liveConflictingWorktreePath),
           tipSha: "tipSha" in inspection ? inspection.tipSha : undefined,
           inspectionKind: inspection.kind,
+          ...checkoutEvidence(),
         });
         return;
       }
       await this.emitIrreduciblePause(ctx, ctx.task, failure, "remote-landed-checkout-unproven", {
         branchName,
-        conflictingWorktreePath,
+        ...checkoutEvidence(),
         inspectionKind: inspection.kind,
         landedOn: inspection.kind === "tip-already-merged" ? inspection.integrationRef : undefined,
       });
@@ -550,20 +572,27 @@ export class BranchWorktreeAutoRecoveryHandler {
       // requeuing so the executor's next pickup creates a fresh `fusion/<task-id>`.
       // Safety: respect FN-4811 active-session gate — don't yank live worktrees.
       const tipSha = await this.getTipSha(repoDir, branchName);
-      const isLiveOwned = activeSessionRegistry.isPathActive(conflictingWorktreePath);
+      /*
+      FNXC:BranchPhantomEcho 2026-10-19-15:59 (RUFU-376):
+      In the live-foreign arm the authoritative checkout is the mapping's own `livePath` — the path Git
+      reported as holding the branch — so liveness, removal, and this row's checkout key all read it
+      instead of the value this handler resolved from the task row or the refusal.
+      */
+      const livePath = inspection.livePath;
+      const isLiveOwned = livePath.length > 0 && activeSessionRegistry.isPathActive(livePath);
       let branchDeleted = false;
       let worktreeRemoved = false;
       if (!isLiveOwned) {
-        if (existsSync(conflictingWorktreePath)) {
+        if (livePath.length > 0 && existsSync(livePath)) {
           try {
-            await execAsync(`git worktree remove --force ${this.quote(conflictingWorktreePath)}`, {
+            await execAsync(`git worktree remove --force ${this.quote(livePath)}`, {
               cwd: repoDir,
               timeout: GIT_TIMEOUT_MS,
               maxBuffer: GIT_MAX_BUFFER,
             });
             worktreeRemoved = true;
           } catch (err) {
-            this.logger.warn(`FN-4847 discard: worktree remove failed for ${conflictingWorktreePath}: ${err instanceof Error ? err.message : String(err)}`);
+            this.logger.warn(`FN-4847 discard: worktree remove failed for ${livePath}: ${err instanceof Error ? err.message : String(err)}`);
           }
         }
         try {
@@ -596,7 +625,7 @@ export class BranchWorktreeAutoRecoveryHandler {
         metadata: {
           class: failure.class,
           branchName,
-          conflictingWorktreePath,
+          conflictingWorktreePath: livePath,
           inspectionKind: inspection.kind,
           tipSha,
           isLiveOwned,
@@ -607,7 +636,7 @@ export class BranchWorktreeAutoRecoveryHandler {
       });
       await this.requeueAfterRecovery(ctx.task, failure, "live-foreign-discard-and-recreate", {
         branchExists: !branchDeleted,
-        worktreePresent: !worktreeRemoved && existsSync(conflictingWorktreePath),
+        worktreePresent: !worktreeRemoved && existsSync(livePath),
         tipSha,
         inspectionKind: inspection.kind,
       });
@@ -634,10 +663,10 @@ export class BranchWorktreeAutoRecoveryHandler {
     if (recovered?.recovered) return;
     await this.emitIrreduciblePause(ctx, ctx.task, failure, "deterministic-unresolved", {
       branchName,
-      conflictingWorktreePath,
+      ...checkoutEvidence(),
       inspectionKind: inspection.kind,
       branchExists,
-      worktreePresent: existsSync(conflictingWorktreePath),
+      worktreePresent: existsSync(liveConflictingWorktreePath),
       tipSha,
     });
   }

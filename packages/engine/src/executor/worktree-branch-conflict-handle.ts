@@ -10,7 +10,9 @@ import { classifyTaskBranchOrigin, isFusionDeletableBranch, type Settings, type 
 import {
   assertCleanBranchAtBase,
   BranchConflictError,
+  desiredPathFor,
   inspectBranchConflict,
+  liveCheckoutPathFor,
   taskWorktreeCheckoutIsClean,
 } from "../execution/branch-conflicts.js";
 import { recoverForeignOnlyContamination } from "../recovery/foreign-only-contamination.js";
@@ -132,16 +134,30 @@ export async function handleBranchConflict(
   task: Task,
   error: BranchConflictError,
 ): Promise<"retry" | "reclaimed" | "recovered" | "sticky"> {
+  /*
+  FNXC:BranchPhantomEcho 2026-10-19-15:43 (RUFU-376):
+  Every checkout-derived input below this line reads `liveCheckoutPathFor`, never a desired path.
+  `foreign-unmerged` carries "" here because Git proved the branch is held by no checkout, and an
+  empty path is a real answer rather than a gap to paper over: the FN-4811 guard, the inspection
+  that may force-remove a checkout, the pause row, and the operator sentence all have to say "no
+  live checkout" instead of substituting the caller's requested path. Treating a desired path as
+  liveness is the other half of the same defect — it both fabricates an owner and, worse, can let
+  the guard decline a recovery over a directory nobody has open.
+  */
+  const liveConflictPath = liveCheckoutPathFor(error);
   // FN-4811: Before invoking inspection-based recovery (which may force-remove the
   // conflicting worktree), verify the conflict isn't currently bound to a live session.
   // If it is, refuse the whole recovery dance — a force-remove here would yank an active
   // task's filesystem out from under it, producing FN-4781/FN-4804-style cascade failures.
-  const activeOwner = await deps.findActiveWorktreeOwner(error.conflictingWorktreePath, task.id);
-  if (activeOwner !== null) {
-    const refusalMessage = `[FN-4811] Branch conflict on ${error.branchName} deferred: conflicting worktree ${error.conflictingWorktreePath} is actively owned by ${activeOwner}`;
-    executorLog.warn(refusalMessage);
-    await deps.store.logEntry(task.id, refusalMessage, undefined, deps.getRunContextFor(task.id));
-    return "sticky";
+  // A refusal that proved no checkout skips the probe entirely: there is no filesystem to yank.
+  if (liveConflictPath.length > 0) {
+    const activeOwner = await deps.findActiveWorktreeOwner(liveConflictPath, task.id);
+    if (activeOwner !== null) {
+      const refusalMessage = `[FN-4811] Branch conflict on ${error.branchName} deferred: conflicting worktree ${liveConflictPath} is actively owned by ${activeOwner}`;
+      executorLog.warn(refusalMessage);
+      await deps.store.logEntry(task.id, refusalMessage, undefined, deps.getRunContextFor(task.id));
+      return "sticky";
+    }
   }
   const settings = await mergeEffectiveSettings(deps.store, task, await deps.store.getSettings());
 
@@ -149,7 +165,7 @@ export async function handleBranchConflict(
   const inspection = await inspectBranchConflict({
     repoDir: deps.rootDir,
     branchName: error.branchName,
-    conflictingWorktreePath: error.conflictingWorktreePath,
+    conflictingWorktreePath: liveConflictPath,
     requestingTaskId: task.id,
     ownerTaskId: task.id,
     startPoint: error.startPoint,
@@ -280,8 +296,21 @@ export async function handleBranchConflict(
     }
   }
 
-  const conflictMessage = `Task branch conflict: ${error.branchName} is already checked out at ${error.conflictingWorktreePath}. ` +
-    `Resolve the local branch/worktree conflict with git tooling (inspect/reclaim or discard) before retrying.`;
+  /*
+  FNXC:BranchPhantomEcho 2026-10-19-15:43 (RUFU-376):
+  The one sentence that survives this pause is the card's own `error` text and the dispatcher's
+  reason — everything richer (the structured fields, the desired path) dies with this call frame.
+  So the no-live shape has to say so in words: "no live checkout of it was found" is the fact the
+  operator needs in order to stop hunting for the phantom second checkout and go inspect the
+  branch itself instead. The requested path is deliberately NOT named here either — FK-1 holds the
+  card's `error` column to the same standard as the message and the formatted lines.
+  */
+  const conflictMessage = liveConflictPath.length > 0
+    ? `Task branch conflict: ${error.branchName} is already checked out at ${liveConflictPath}. ` +
+      `Resolve the local branch/worktree conflict with git tooling (inspect/reclaim or discard) before retrying.`
+    : `Task branch conflict: ${error.branchName} is refused and no live checkout of it was found — ` +
+      `nothing is holding this branch in a worktree, so there is no checkout to clear. ` +
+      `Inspect the branch itself against the integration branch and reclaim or discard it with git tooling before retrying.`;
   await deps.store.logEntry(task.id, formatBranchConflictLifecycleLog(task.id, error), undefined, deps.getRunContextFor(task.id));
   await deps.store.appendAgentLog(task.id, "Branch conflict recovery required", "tool_error", formatBranchConflictAgentLog(task.id, error), "executor");
   /*
@@ -316,7 +345,18 @@ export async function handleBranchConflict(
     pausedReason: "branch-conflict-unrecoverable",
     evidence: {
       branchName: error.branchName,
-      conflictingWorktreePath: error.conflictingWorktreePath,
+      /*
+      FNXC:BranchPhantomEcho 2026-10-19-15:43 (RUFU-376):
+      The evidence slot is typed "a checkout we believe is live" on the consuming side — the
+      recovery handler reads `evidence.conflictingWorktreePath` as an existing checkout and hands
+      it to `activeSessionRegistry.isPathActive()`. A refusal with no proven checkout therefore
+      OMITS the key rather than sending `""` or the requested path: an empty string would still be
+      consumed as "a checkout exists somewhere at no path", and the requested path would be probed
+      for session liveness as if it were one. The requested path rides along under its own name, so
+      the handler still learns which path the acquire asked for.
+      */
+      ...(liveConflictPath.length > 0 ? { conflictingWorktreePath: liveConflictPath } : {}),
+      ...(desiredPathFor(error).length > 0 ? { desiredWorktreePath: desiredPathFor(error) } : {}),
       ...(error.collisionKind ? { collisionKind: error.collisionKind } : {}),
       /*
       FNXC:BranchConflictRecovery 2026-09-13-02:10:
@@ -376,7 +416,15 @@ export async function handleBranchConflict(
       status: "failed",
       error: conflictMessage,
       branch: error.branchName,
-      worktree: error.conflictingWorktreePath,
+      /*
+      FNXC:BranchPhantomEcho 2026-10-19-15:43 (RUFU-376):
+      The task row is where the phantom outlives its own incident: this write stored the caller's
+      requested path as the card's `worktree`, and the row — not the error — is what every later
+      reader treats as a live checkout, from workspace membership through the ownership probe to the
+      recovery handler's fallback. A refusal that proved no checkout therefore persists NO checkout,
+      which also repairs a row that already carried a stale path into this pause.
+      */
+      worktree: liveConflictPath.length > 0 ? liveConflictPath : null,
       /*
        * FNXC:BranchWriteOrigin 2026-08-20-14:40: FN-9161's store validation requires an explicit write origin on every branch write.
        * FNXC:BranchWriteOrigin 2026-08-28-10:12: the parked branch may be operator-supplied, so origin derives from the classifier
@@ -388,7 +436,11 @@ export async function handleBranchConflict(
       ...branchConflictRecoveryCounterPatch(recoveryPass),
     });
     await deps.persistTokenUsage(task.id);
-    executorLog.warn(`✗ ${task.id} branch conflict sticky failure: ${error.branchName} @ ${error.conflictingWorktreePath}`);
+    executorLog.warn(
+      liveConflictPath.length > 0
+        ? `✗ ${task.id} branch conflict sticky failure: ${error.branchName} @ ${liveConflictPath}`
+        : `✗ ${task.id} branch conflict sticky failure: ${error.branchName} — no live checkout of the branch was found`,
+    );
     deps.onError?.(task, error);
     return "sticky";
   }

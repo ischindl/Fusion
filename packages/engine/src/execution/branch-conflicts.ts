@@ -21,7 +21,25 @@ export interface BranchCrossContaminationCommit extends BranchConflictCommit {
 
 export interface BranchConflictDetails {
   branchName: string;
+  /**
+   * RUFU-376: the path of a checkout Git was PROVEN to hold when it refused the acquire, or `""`
+   * when it refused a bare branch collision with no checkout registered anywhere. The shape is
+   * carried solely by this field (empty = no live checkout), so it is also what decides the refusal
+   * family the refusal sentence names — which is why every surface that reports "the engine thinks
+   * this branch is checked out somewhere" reads this field and never `desiredWorktreePath`. Reading
+   * a desired path as liveness is what made a foreign-unmerged refusal report the card's own
+   * never-created destination as a live checkout held by another machine.
+   */
   conflictingWorktreePath: string;
+  /**
+   * FNXC:BranchPhantomEcho 2026-10-19-15:43 (RUFU-376):
+   * The path the CALLER asked to acquire — `input.worktreePath` at the refuse site. A desired
+   * location says nothing about whether anything is checked out there, so it is diagnostic-only:
+   * it is never rendered as a checkout location, never becomes liveness evidence, and never reaches
+   * the task row's `worktree` column. Producers fill it for every refusal that had a requested path,
+   * so the one question this field answers — "which path was refused?" — always has an answer.
+   */
+  desiredWorktreePath?: string;
   /**
    * FNXC:BranchCollisionRecovery 2026-09-20-00:56:
    * Bare collisions need a durable typed source because their requested path is absent.
@@ -37,23 +55,37 @@ export class BranchConflictError extends Error implements BranchConflictDetails 
   readonly name = "BranchConflictError";
   readonly branchName: string;
   readonly conflictingWorktreePath: string;
+  readonly desiredWorktreePath: string;
   readonly existingTipSha: string;
   readonly strandedCommits: BranchConflictCommit[];
   readonly startPoint: string;
   readonly recommendedAction: string;
   readonly collisionKind?: "foreign-unmerged";
 
+  /*
+  FNXC:BranchPhantomEcho 2026-10-19-15:43 (RUFU-376):
+  The refusal sentence is a pure function of the structured fields — no ambient git state is read —
+  so re-running the constructor over the same details with one field changed proves the message was
+  composed, not echoed from a prior lookup. A refusal that had no proven live checkout names NO path
+  at all: the phantom the operator saw came from printing a field the classifier had no evidence for,
+  and a qualifier beside a path ("desired", "requested") is not enough to stop a reader — and the
+  repo's own recovery tooling downstream of the card — from treating the named path as real.
+  */
   constructor(details: BranchConflictDetails) {
     const commitSummary = details.strandedCommits.length > 0
       ? `${details.strandedCommits.length} stranded commit${details.strandedCommits.length === 1 ? "" : "s"}`
       : "no stranded commits";
+    const location = details.conflictingWorktreePath.length > 0
+      ? `is already checked out at ${details.conflictingWorktreePath}`
+      : "is refused: it is not checked out in any live worktree";
     super(
-      `Branch ${details.branchName} is already checked out at ${details.conflictingWorktreePath} ` +
+      `Branch ${details.branchName} ${location} ` +
       `(tip ${details.existingTipSha.slice(0, 12)}, ${commitSummary} since ${details.startPoint}). ` +
       details.recommendedAction,
     );
     this.branchName = details.branchName;
     this.conflictingWorktreePath = details.conflictingWorktreePath;
+    this.desiredWorktreePath = details.desiredWorktreePath ?? "";
     this.existingTipSha = details.existingTipSha;
     this.strandedCommits = details.strandedCommits;
     this.startPoint = details.startPoint;
@@ -64,6 +96,42 @@ export class BranchConflictError extends Error implements BranchConflictDetails 
 
 export function isBranchConflictError(error: unknown): error is BranchConflictError {
   return error instanceof BranchConflictError;
+}
+
+/*
+FNXC:BranchPhantomEcho 2026-10-19-15:43 (RUFU-376):
+Three accessors sit beside the constructor on purpose: the refusal sentence above and the rules below
+are the two halves of one contract, and the shapes the refusal text can take are exactly the shapes
+these two reads can take. A surface that wants "where is it checked out?" calls the first, gets `""`
+when nothing is checked out anywhere, and must therefore say so; a surface that wants "which path did
+the acquire ask for?" calls the second and may only ever render it as a requested location.
+*/
+
+/** The only path that may be presented as a live checkout; `""` when nothing is checked out anywhere. */
+export function liveCheckoutPathFor(error: BranchConflictError): string {
+  return error.conflictingWorktreePath;
+}
+
+/** The path the acquire requested — diagnosis only, never a checkout location and never liveness. */
+export function desiredPathFor(error: BranchConflictError): string {
+  return error.desiredWorktreePath;
+}
+
+/**
+ * The refusal family a persisted branch-conflict sentence belongs to.
+ *
+ * FNXC:BranchPhantomEcho 2026-10-19-15:43 (RUFU-376):
+ * A refusal survives to the surfaces that need it as a plain string only — the card's `error` column
+ * and the dashboard row under it — so those surfaces recover the family from the sentence rather than
+ * re-deriving a checkout from it. It deliberately answers one question and no other: which refusal
+ * this is. It resolves no path, and no caller may read a location out of a message, because the
+ * structured field is the only source of a checkout claim. Rewording the constructor above therefore
+ * has to keep the family anchors these two patterns match.
+ */
+export function classifyBranchConflictRefusalFamily(message: string): "branch-conflict" | null {
+  const namesBranch = /\bbranch\s+\S+\b/i.test(message);
+  const namesRefusal = /\bis already checked out at\b|\bis refused\b/i.test(message);
+  return namesBranch && namesRefusal ? "branch-conflict" : null;
 }
 
 export interface BranchCrossContaminationDetails {
@@ -250,7 +318,7 @@ export type BareBranchCollisionInspectionResult =
   | { kind: "tip-already-merged"; tipSha: string; integrationRef: string } & TipAlreadyLandedFields
   | { kind: "fully-subsumed"; tipSha: string }
   | { kind: "reclaimable"; tipSha: string; taskAttributedCommitCount: number; uniqueCommitCount: number }
-  | { kind: "foreign-unmerged"; tipSha: string; uniqueCommitCount: number; error: BranchConflictError }
+  | { kind: "foreign-unmerged"; tipSha: string; uniqueCommitCount: number; desiredWorktreePath: string; error: BranchConflictError }
   | { kind: "live-foreign"; tipSha: string; error: BranchConflictError };
 
 interface UniqueBranchCommitListResult {
@@ -1327,6 +1395,7 @@ export async function inspectBareBranchCollision(
       error: new BranchConflictError({
         branchName: input.branchName,
         conflictingWorktreePath: livePath,
+        desiredWorktreePath: input.conflictingWorktreePath,
         existingTipSha: tipSha,
         strandedCommits: uniqueCommitResult.commits,
         startPoint: uniqueCommitResult.mainRef,
@@ -1395,9 +1464,20 @@ export async function inspectBareBranchCollision(
     kind: "foreign-unmerged",
     tipSha,
     uniqueCommitCount: uniqueCommitResult.commits.length,
+    /*
+    FNXC:BranchPhantomEcho 2026-10-19-15:43 (RUFU-376):
+    The refusal above this return already proved there is no live checkout: Git reported a bare
+    branch collision, the mapping lookup found no entry for the branch, and a missing destination path
+    is exactly what the caller never created. So `conflictingWorktreePath` is emptied — leaving the
+    caller's own requested path in that slot is what made the refusal read as "another machine holds
+    this checkout" and steered the operator to the wrong remedy — and the path travels under
+    `desiredWorktreePath`, where it stays diagnosable and cannot be mistaken for one.
+    */
+    desiredWorktreePath: input.conflictingWorktreePath,
     error: new BranchConflictError({
       branchName: input.branchName,
-      conflictingWorktreePath: input.conflictingWorktreePath,
+      conflictingWorktreePath: "",
+      desiredWorktreePath: input.conflictingWorktreePath,
       existingTipSha: tipSha,
       strandedCommits: uniqueCommitResult.commits,
       startPoint: uniqueCommitResult.mainRef,
@@ -1549,6 +1629,7 @@ export async function inspectBranchConflict(
     error: new BranchConflictError({
       branchName: input.branchName,
       conflictingWorktreePath: livePath,
+      desiredWorktreePath: input.conflictingWorktreePath,
       existingTipSha,
       strandedCommits: uniqueCommitResult.commits,
       startPoint: uniqueCommitResult.mainRef,

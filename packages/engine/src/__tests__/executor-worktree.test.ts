@@ -984,9 +984,15 @@ describe("TaskExecutor worktree recovery", () => {
   it("stops the original conflict retry after a foreign-unmerged recovery pins a sibling", async () => {
     const store = createMockStore();
     const executor = createWorktreeExecutor(store, "/tmp/test");
+    /*
+    FNXC:BranchPhantomEcho 2026-10-19-16:20 (RUFU-376): the `foreign-unmerged` shape names NO checkout.
+    The refused destination is the caller's desired path and travels under `desiredWorktreePath`; putting
+    it in `conflictingWorktreePath` is the exact phantom this task removed from the producer.
+    */
     const conflictError = new BranchConflictError({
       branchName: "fusion/fn-050",
-      conflictingWorktreePath: "/tmp/test/.worktrees/fn-050",
+      conflictingWorktreePath: "",
+      desiredWorktreePath: "/tmp/test/.worktrees/fn-050",
       existingTipSha: "abc123def456",
       strandedCommits: [],
       startPoint: "main",
@@ -1020,7 +1026,8 @@ describe("TaskExecutor worktree recovery", () => {
     const executor = createWorktreeExecutor(store, "/tmp/test");
     const conflictError = new BranchConflictError({
       branchName: "fusion/fn-050",
-      conflictingWorktreePath: "/tmp/test/.worktrees/fn-050",
+      conflictingWorktreePath: "",
+      desiredWorktreePath: "/tmp/test/.worktrees/fn-050",
       existingTipSha: "abc123def456",
       strandedCommits: [],
       startPoint: "main",
