@@ -6,6 +6,7 @@ import {
   attachCardCommitRange,
   describeCardGitIdentity,
   evaluatePremiseAtCommit,
+  falsifyingCommitForPremise,
   invalidatedByCardDelivery,
   lastCommitTouching,
   resolveCardGitIdentity,
@@ -143,7 +144,12 @@ export async function checkPlanPremises(store: TaskStore, task: Task): Promise<P
   }
 
   const violations: PlanPremiseViolation[] = [];
-  const resolvedPaths: string[] = [];
+  /*
+  The premise AS GIT WAS ASKED ABOUT IT: re-rooted into the workspace member the identity resolved in.
+  Attribution must probe the same path the evaluation probed, while the violation itself keeps the
+  written path so a refusal-episode signature cannot shift under a running card (see the re-root note).
+  */
+  const evaluatedPremises: PlanPremise[] = [];
   for (const premise of premises) {
     /*
     FNXC:PlanPremiseWorkspaceReRoot 2026-10-05-19:14 (RUFU-570):
@@ -189,8 +195,16 @@ export async function checkPlanPremises(store: TaskStore, task: Task): Promise<P
     const verdict = evaluation.value;
     if (!verdict.satisfied) {
       violations.push({ premise, reason: resolved.reRooted ? `${verdict.reason} (written "${written}", resolved inside workspace member "${resolved.member}" as "${resolved.premise.path}")` : verdict.reason });
+      /*
+      FNXC:PlanPremiseFalsifier 2026-10-19-08:59 (RUFU-727):
+      The attribution loop below walks `violations` and indexes this array by the SAME position, so the
+      two must be appended together or a card with any satisfied premise before a violated one would
+      have its falsifier looked for in the wrong file — and the answer it gets then belongs to a premise
+      nobody violated. Satisfaction is exactly the case that shifts the indexes, so the push belongs
+      inside the violated branch rather than beside it.
+      */
+      evaluatedPremises.push(resolved.premise);
     }
-    resolvedPaths.push(resolved.premise.path);
   }
   if (violations.length === 0) return { outcome: "satisfied", promptFingerprint, premiseViolations: [] };
 
@@ -205,19 +219,36 @@ export async function checkPlanPremises(store: TaskStore, task: Task): Promise<P
   const withRange = await attachCardCommitRange(store, task, identity.identity);
   const attributed = [];
   for (const [index, violation] of violations.entries()) {
-    const path = resolvedPaths[index] ?? violation.premise.path;
-    const delivery = await invalidatedByCardDelivery(withRange, path);
+    const premise = evaluatedPremises[index] ?? violation.premise;
+    const path = premise.path;
+    let delivery = await invalidatedByCardDelivery(withRange, path);
     let upstream: string | null = null;
     if (!delivery) {
-      const commit = await lastCommitTouching(withRange, path);
       /*
-      STAS-301: an unanswered `git log` used to be reported as "<path> is absent from this history" —
-      git never said that. The verdict stays `stale`, the pre-existing fail-closed direction, but the
-      detail now says which probe failed instead of asserting a fact nobody observed.
+      FNXC:PlanPremiseFalsifier 2026-10-19-08:59 (RUFU-727):
+      The probes above answer "what last touched this file". When that answer is not the card, the
+      falsifier is still provable from git's own presence-transition history, and WHO wrote the
+      falsifying commit decides the verdict: the card's own commit is delivery evidence (which releases,
+      STAS-282) and a stranger's is the upstream name the `stale` sentence should have carried all
+      along. An unprovable flip falls through to the historical naming, so this probe only ever sharpens
+      an attribution — never a release.
       */
-      upstream = commit.ok
-        ? (commit.value ?? `${path} is absent from this history`)
-        : `${path}'s last commit could not be read (${commit.detail})`;
+      const falsifier = await falsifyingCommitForPremise(withRange, premise);
+      if (falsifier.ok && falsifier.value) {
+        if (falsifier.value.cardOwned) delivery = falsifier.value.commit;
+        else upstream = falsifier.value.commit;
+      }
+      if (!delivery && upstream === null) {
+        const commit = await lastCommitTouching(withRange, path);
+        /*
+        STAS-301: an unanswered `git log` used to be reported as "<path> is absent from this history" —
+        git never said that. The verdict stays `stale`, the pre-existing fail-closed direction, but the
+        detail now says which probe failed instead of asserting a fact nobody observed.
+        */
+        upstream = commit.ok
+          ? (commit.value ?? `${path} is absent from this history`)
+          : `${path}'s last commit could not be read (${commit.detail})`;
+      }
     }
     attributed.push({ ...violation, delivery, upstream });
   }

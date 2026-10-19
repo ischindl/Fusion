@@ -391,7 +391,11 @@ async function landedCardDelivery(identity: CardGitIdentity, path: string): Prom
  *  `base..tip` set, or — once that set is empty because the delivery landed — a commit in the
  *  evaluated history that names this exact card through the engine's attribution convention. A probe
  *  that could not answer maps to null, which is the pre-existing fail-closed direction toward `stale`
- *  (see `landedCardDelivery`); it is never read as an absence premise. */
+ *  (see `landedCardDelivery`); it is never read as an absence premise.
+ *
+ *  FNXC:PlanPremiseFalsifier 2026-10-19-08:59 (RUFU-727): this recency probe answers "who last edited
+ *  the file", which is NOT "who falsified the premise" — see `falsifyingCommitForPremise` for the
+ *  measured hole and for why the caller consults the proven falsifier whenever this answers null. */
 export async function invalidatedByCardDelivery(identity: CardGitIdentity, path: string): Promise<string | null> {
   if (identity.rangeBase) {
     const ownRange = await gitLine(identity.repo, ["log", "-1", "--format=%h %s", `${identity.rangeBase}..${identity.commit}`, "--", path]);
@@ -399,6 +403,118 @@ export async function invalidatedByCardDelivery(identity: CardGitIdentity, path:
   }
   return await landedCardDelivery(identity, path);
 }
+
+/*
+FNXC:PlanPremiseFalsifier 2026-10-19-08:59 (RUFU-727):
+Recency is not authorship. Attribution asked `git log -1 -- <path>` — the most recent commit that
+touched the FILE — and tested whether that one commit names the card. RUFU-698 measured the hole on
+main 7342c6e705: its own commit b7bfb9243a deleted the `getFinalClaimSnapshot` block its plan assumed
+present, deleted the assumed `enrichedTopLevelAgentTasksFromStore(store: WorkflowIrResolverStore,
+tasks: Task[])` signature, and ADDED the `rotated-deferred` marker its own `text-absent` premise
+forbade; a later, unrelated RUFU-718 commit then edited those same files for another reason. The
+last-toucher named RUFU-718 on all three paths, so every violation fell to the upstream arm, the
+verdict degraded from `premise-invalidated-by-delivery` (which releases, STAS-282) to `stale`, and the
+ladder started burning a finished card toward a terminal park of work that is running in production.
+Measured refusal: `fn task move RUFU-698 in-progress` on board 4040.
+
+The falsifier of a premise is not the last commit that touched a file: it is the commit whose tree
+turned the premise from true to false. That is directly provable, and cheaply, because git already
+indexes presence transitions — `git log -S<literal> -- <path>` answers exactly the commits where the
+literal's occurrence count CHANGED, and `--diff-filter=AD` answers them for a file-existence premise.
+Walking those newest-first and evaluating the premise at the candidate and at its parent proves which
+commit flipped the truth; the engine's own attribution convention (`extractAttributedTaskId`) then says
+WHO wrote it — the card (release, with evidence) or a stranger (loud plan-stale, now naming the commit
+that actually destroyed the fact instead of one that merely edited the file afterwards).
+
+The fail-closed direction is unchanged and this helper can only ADD delivery evidence: an unanswered
+probe, an unprovable flip, a falsifier older than the scan bound, or a falsifier that names no card all
+answer `null`, which leaves the pre-existing path-level attribution and the `stale` route exactly as
+they were. It introduces no new verdict arm and never removes an attribution the old probe found.
+*/
+export interface PremiseFalsifier {
+  /** Operator-facing commit identity, `%h %s`, in the same shape every premise sentence already uses. */
+  commit: string;
+  /** Whether the falsifier names THIS card through the engine's attribution convention. */
+  cardOwned: boolean;
+}
+
+/** Bounds on the WORST case of a hot file, not thresholds of correctness: a flip older than the scan,
+ *  or older than the number of candidates worth two git reads each, simply stays unattributed — the
+ *  existing `stale` route, which is the direction that re-plans rather than releases. */
+const FALSIFIER_SCAN = 40;
+const FALSIFIER_PROOF_LIMIT = 6;
+
+/** Presence-changing commits for this premise alone, newest first. `%H` answers the reads, `%h %s`
+ *  the operator-facing sentence, `%b` the attribution trailer. */
+async function premisePresenceTransitions(
+  identity: CardGitIdentity,
+  premise: PlanPremise,
+): Promise<Probe<{ sha: string; header: string; subject: string; body: string }[]>> {
+  const transitionFilter =
+    premise.kind === "file-exists" || premise.kind === "file-absent"
+      ? ["--diff-filter=AD"]
+      : [`-S${(premise as Extract<PlanPremise, { literal: string }>).literal}`];
+  const records = await gitProbe(identity.repo, [
+    "log",
+    ...transitionFilter,
+    `-n${FALSIFIER_SCAN}`,
+    "--format=%H%x1f%h %s%x1f%b%x1e",
+    identity.commit,
+    "--",
+    premise.path,
+  ]);
+  if (!records.ok) return records;
+  const parsed = records.value
+    .split("\u001e")
+    .map((record) => record.trim())
+    .filter((record) => record.length > 0)
+    .map((record) => {
+      const [sha = "", header = "", body = ""] = record.split("\u001f");
+      return { sha: sha.trim(), header: header.trim(), subject: header.trim().replace(/^[0-9a-f]+\s+/, ""), body };
+    })
+    .filter((record) => record.sha.length > 0 && record.header.length > 0);
+  return { ok: true, value: parsed };
+}
+
+/**
+ * The commit that git PROVES turned `premise` from satisfied to violated, or `null` when no commit in
+ * the scan bound carries that proof. Answered `ok: false` never produces a verdict on its own: the
+ * caller treats an unanswered probe as "nothing provable" and keeps the conservative `stale` route.
+ */
+export async function falsifyingCommitForPremise(identity: CardGitIdentity, premise: PlanPremise): Promise<Probe<PremiseFalsifier | null>> {
+  const transitions = await premisePresenceTransitions(identity, premise);
+  if (!transitions.ok) return transitions;
+  const cardTaskId = identity.taskId.toUpperCase();
+  for (const record of transitions.value.slice(0, FALSIFIER_PROOF_LIMIT)) {
+    const atCandidate = await evaluatePremiseAtCommit({ ...identity, commit: record.sha }, premise);
+    // An unreadable tree proves nothing; and a transition that leaves the premise TRUE is not the one
+    // that produced the violated state the card is being refused for, so it is skipped, not concluded.
+    if (!atCandidate.ok) return { ok: true, value: null };
+    if (atCandidate.value.satisfied) continue;
+    // `^{commit}` would PEEL the object, not step to the parent: the parent is `^1`, and a merge commit's
+    // first parent is the tree the merge was applied to.
+    const parent = await gitLine(identity.repo, ["rev-parse", "--verify", `${record.sha}^1`]);
+    if (!parent.ok) return { ok: true, value: null };
+    if (parent.value.length > 0) {
+      const beforeFlip = await evaluatePremiseAtCommit({ ...identity, commit: parent.value }, premise);
+      if (!beforeFlip.ok) return { ok: true, value: null };
+      // Already false at the parent: this commit did not falsify it, so keep walking into the past.
+      if (!beforeFlip.value.satisfied) continue;
+    }
+    // Reached only when this commit's tree is violated and its parent's tree was satisfied (or there is
+    // no parent, so this tree is the first state the fact ever had). That is the flip, not a guess.
+    return {
+      ok: true,
+      value: {
+        commit: record.header,
+        cardOwned: cardTaskId.length > 0 && extractAttributedTaskId(record.subject, record.body) === cardTaskId,
+      },
+    };
+  }
+  return { ok: true, value: null };
+}
+
+
 
 /** Commit that last changed `path` anywhere in the evaluated history — what an ordinary stale verdict
  *  names when the card's own delivery is not responsible. `null` is git's answered "no commit in this

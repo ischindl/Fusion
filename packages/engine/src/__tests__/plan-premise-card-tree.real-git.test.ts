@@ -717,3 +717,186 @@ describe("a workspace container root resolves identity from its member repositor
     expect(verdict.detail).not.toContain("resolved inside workspace member");
   }, 30_000);
 });
+
+/*
+FNXC:PlanPremiseFalsifier 2026-10-19-08:59 (RUFU-727):
+Live instance, measured on board 4040 against main 7342c6e705: RUFU-698's own commit b7bfb9243a
+deleted the `getFinalClaimSnapshot` block and the assumed `enrichedTopLevelAgentTasksFromStore(...)`
+signature its plan stated, and ADDED the `rotated-deferred` marker its own `text-absent` premise
+forbade. Every one of those facts was destroyed by that single commit — and every one of them was
+attributed to RUFU-718, because attribution read `git log -1 -- <path>`: the most recent commit that
+touched the FILE. All three violations landed in the upstream arm, the verdict degraded from
+`premise-invalidated-by-delivery` (which releases with evidence, STAS-282) to `stale`, and the ladder
+began burning a shipped, production-running card toward a terminal park whose only exits were
+"rewrite the plan" or "delete the card".
+
+The invariant these cases pin is that attribution follows the PREMISE, not the file's edit history —
+across both premise directions (a fact removed, a forbidden marker added, a file deleted), across both
+verdict arms (the card's own falsifier releases, a stranger's stays loud and is named exactly), and in
+the mixed set where one class must not launder the other. The last case is the anti-fabrication wall:
+when git cannot prove a falsifier, the card must not be released.
+*/
+describe("falsification is attributed to the commit that turned the premise false, not the last file editor", () => {
+  const verdictOf = async (root: string, bullets: string[], fields: Partial<Task> = {}) => {
+    const task = premiseTask(bullets, fields);
+    return await checkPlanPremises(releaseDoor(task, root).store, task);
+  };
+
+  /** Land a card's branch on `main` and delete the branch: the delivered position RUFU-698 sits in. */
+  async function land(root: string, branch: string): Promise<void> {
+    await git("checkout -q main", root);
+    await git(`merge -q ${branch} --no-edit -m 'Merge ${branch}'`, root);
+    await git(`branch -d ${branch}`, root);
+  }
+
+  it("attributes a landed delivery whose file an unrelated commit later edited (RUFU-698's shape)", async () => {
+    const root = await createRepo({ "src/App.tsx": FLAG_ON });
+    await git("checkout -qb fusion/fn-282", root);
+    await write(root, "src/App.tsx", FLAG_OFF);
+    const ownDelivery = await commitFor(root, "perf: derive capacity facts once per pass", "FN-282");
+    await land(root, "fusion/fn-282");
+    // The mask: a DIFFERENT card edits the same file afterwards without touching the assumed literal.
+    await write(root, "src/App.tsx", `${FLAG_OFF}// explained by a later fix\n`);
+    const mask = await commitFor(root, "fix: name the admission reason", "FN-718");
+
+    const task = premiseTask([ALPHA_PRESENT], { id: "FN-282", branch: "fusion/fn-282" });
+    const door = releaseDoor(task, root);
+    const verdict = await checkPlanPremises(door.store, task);
+    // The last file editor names another card, so recency alone could only say "upstream".
+    expect(verdict.outcome).toBe("premise-invalidated-by-delivery");
+    expect(verdict.detail).toContain(ownDelivery);
+    expect(verdict.detail).not.toContain(mask);
+
+    // And the consequence the mis-attribution caused: the finished card is releasable, never re-planned.
+    const result = await admitTaskToWip(door.store, door.deps, task, "doing", ir);
+    expect(result).toMatchObject({ released: true, task: { column: "doing" } });
+    expect(door.logActions(TRIAGE_PLAN_PREMISE_INVALIDATED_BY_DELIVERY_LOG_ACTION)).toBe(1);
+    expect(task.sourceMetadata?.planPremiseRejection).toBeUndefined();
+  }, 30_000);
+
+  it("attributes the delivered marker a text-absent premise forbids, behind the same mask", async () => {
+    // The opposite direction: the card ADDS the thing its plan asserted absent, then somebody else
+    // edits the same file. RUFU-698's `rotated-deferred` premise is exactly this shape.
+    const root = await createRepo({ ".env.example": "SLACK_WEBHOOK=https://example.com/hook\n" });
+    await git("checkout -qb fusion/fn-282", root);
+    await write(root, ".env.example", "SLACK_WEBHOOK=https://example.com/hook\n# ALERT_SLACK_TEAM_ID=T_000000000000000000000000\n");
+    const ownDelivery = await commitFor(root, "feat: make unconfigured alerting inspectable", "FN-282");
+    await land(root, "fusion/fn-282");
+    await write(root, ".env.example", "SLACK_WEBHOOK=https://example.com/hook\n# ALERT_SLACK_TEAM_ID=T_000000000000000000000000\nTZ=UTC\n");
+    const mask = await commitFor(root, "fix: pin the deployment timezone", "FN-718");
+
+    const verdict = await verdictOf(root, [ALERT_ABSENT], { id: "FN-282", branch: "fusion/fn-282" });
+    expect(verdict.outcome).toBe("premise-invalidated-by-delivery");
+    expect(verdict.detail).toContain(ownDelivery);
+    expect(verdict.detail).not.toContain(mask);
+  }, 30_000);
+
+  it("names the stranger that destroyed the fact, not the stranger that edited the file last", async () => {
+    const root = await createRepo({ "src/App.tsx": FLAG_ON });
+    // An upstream card falsifies the plan, then a third card touches the file for an unrelated reason.
+    await write(root, "src/App.tsx", FLAG_OFF);
+    const destroyer = await commit(root, "chore: upstream retires the alpha flag");
+    await write(root, "src/App.tsx", `${FLAG_OFF}// unrelated later edit\n`);
+    const lastEditor = await commit(root, "chore: upstream comments the retired flag");
+
+    const task = premiseTask([ALPHA_PRESENT], { id: "FN-282", baseBranch: "main" });
+    const door = releaseDoor(task, root);
+    const verdict = await checkPlanPremises(door.store, task);
+    // This plan really is false, so it keeps its replan — but it is refused in the name of the commit
+    // that actually made it false, which is what makes the refusal actionable.
+    expect(verdict.outcome).toBe("stale");
+    expect(verdict.detail).toContain(destroyer);
+    expect(verdict.detail).not.toContain(lastEditor);
+    const result = await admitTaskToWip(door.store, door.deps, task, "doing", ir);
+    expect(result).toMatchObject({ released: false, rejection: "plan-premise-stale" });
+  }, 30_000);
+
+  it("keeps a masked delivery and a genuine upstream drift in one premise set on the loud route, naming both", async () => {
+    const root = await createRepo({ "src/App.tsx": FLAG_ON, "src/Beta.tsx": BETA_ON });
+    await git("checkout -qb fusion/fn-282", root);
+    await write(root, "src/App.tsx", FLAG_OFF);
+    const ownDelivery = await commitFor(root, "feat: retire the alpha flag", "FN-282");
+    await land(root, "fusion/fn-282");
+    // Upstream drift on the second premise, and the mask on the card's own file.
+    await write(root, "src/Beta.tsx", BETA_OFF);
+    const upstream = await commit(root, "chore: upstream retires the beta flag");
+    await write(root, "src/App.tsx", `${FLAG_OFF}// unrelated later edit\n`);
+    const mask = await commitFor(root, "fix: name the admission reason", "FN-718");
+
+    const task = premiseTask([ALPHA_PRESENT, BETA_PRESENT], { id: "FN-282", branch: "fusion/fn-282" });
+    const door = releaseDoor(task, root);
+    const verdict = await checkPlanPremises(door.store, task);
+    // Precise attribution must not turn a mixed set into a release: one genuinely false premise still
+    // refuses, and the card's own delivered half still has to be named so the replan cannot redo it.
+    expect(verdict.outcome).toBe("stale");
+    expect(verdict.premiseViolations).toHaveLength(2);
+    expect(verdict.detail).toContain(upstream);
+    expect(verdict.detail).toContain(ownDelivery);
+    expect(verdict.detail).toContain("Part of it is this card's own delivery");
+    expect(verdict.detail).not.toContain(mask);
+    const result = await admitTaskToWip(door.store, door.deps, task, "doing", ir);
+    expect(result).toMatchObject({ released: false, rejection: "plan-premise-stale" });
+  }, 30_000);
+
+  it("attributes a file the card deleted, proved at the deletion commit", async () => {
+    /*
+    An ABSENCE cannot be masked by a later edit — nothing can touch a path that is not there — so this
+    case does not retry the mask. It pins the other half of the new evidence: a file premise is
+    attributed by proving the flip (`--diff-filter=AD` plus the parent tree), not by noticing that the
+    card's name happens to sit on the most recent commit that touched the path.
+    */
+    const configExists = '{"kind":"file-exists","path":"src/Config.ts"}';
+    const root = await createRepo({ "src/Config.ts": "export const cfg = 1;\n" });
+    await git("checkout -qb fusion/fn-282", root);
+    await rm(path.join(root, "src", "Config.ts"));
+    const ownDeletion = await commitFor(root, "refactor: drop the legacy config module", "FN-282");
+    // A second card edits the file on main, so landing the deletion is a git modify/delete merge and the
+    // merge is what the history arrives through.
+    await git("checkout -q main", root);
+    await write(root, "src/Config.ts", "export const cfg = 2;\n");
+    await commitFor(root, "fix: tune the legacy config", "FN-718");
+    expect(await execAsync("git merge -m 'Merge fusion/fn-282' fusion/fn-282", { cwd: root, encoding: "utf-8" }).then(() => "clean").catch(() => "conflict")).toBe("conflict");
+    await git("rm -f src/Config.ts", root);
+    await git("commit --no-edit", root);
+
+    const verdict = await verdictOf(root, [configExists], { id: "FN-282", branch: "fusion/fn-282" });
+    expect(verdict.outcome).toBe("premise-invalidated-by-delivery");
+    expect(verdict.detail).toContain(ownDeletion);
+  }, 30_000);
+
+  it("attributes a violated premise by its OWN path when an earlier premise in the set is satisfied", async () => {
+    /*
+    The attribution loop indexes the evaluated premises by the position of the violation. With a
+    satisfied premise ahead of a violated one, those indexes differ, and the falsifier of the second
+    fact was being looked for in the first fact's file — where git confidently reports somebody else.
+    This is the shape that made a delivered card look upstream-stale even with no mask anywhere.
+    */
+    const root = await createRepo({ "src/App.tsx": FLAG_ON, "src/Beta.tsx": BETA_ON });
+    await git("checkout -qb fusion/fn-282", root);
+    await write(root, "src/Beta.tsx", BETA_OFF);
+    const ownDelivery = await commitFor(root, "feat: retire the beta flag", "FN-282");
+    await land(root, "fusion/fn-282");
+
+    const verdict = await verdictOf(root, [ALPHA_PRESENT, BETA_PRESENT], { id: "FN-282", branch: "fusion/fn-282" });
+    expect(verdict.premiseViolations).toHaveLength(1);
+    expect(verdict.outcome).toBe("premise-invalidated-by-delivery");
+    expect(verdict.detail).toContain(ownDelivery);
+  }, 30_000);
+
+  it("invents nothing: a premise the repository never carried stays loud with the historical naming", async () => {
+    // The plan states a literal this file never held, so no commit can be proven to have falsified it.
+    // The new probe must answer "unprovable" and leave the verdict exactly where it was: stale, refused.
+    const neverStated = '{"kind":"text-present","path":"src/App.tsx","literal":"alphaWasNeverImplemented"}';
+    const root = await createRepo({ "src/App.tsx": FLAG_ON });
+    await write(root, "src/App.tsx", `${FLAG_ON}// a comment\n`);
+    const lastTouch = await commitFor(root, "chore: comment the flag", "FN-718");
+
+    const task = premiseTask([neverStated], { id: "FN-282", baseBranch: "main" });
+    const door = releaseDoor(task, root);
+    const verdict = await checkPlanPremises(door.store, task);
+    expect(verdict.outcome).toBe("stale");
+    expect(verdict.detail).toContain(lastTouch);
+    const result = await admitTaskToWip(door.store, door.deps, task, "doing", ir);
+    expect(result).toMatchObject({ released: false, rejection: "plan-premise-stale" });
+  }, 30_000);
+});
