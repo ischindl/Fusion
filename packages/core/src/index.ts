@@ -1454,6 +1454,20 @@ export {
 export type { StalledReviewSignal } from "./tasks/stalled-review-detector.js";
 export {
   detectTaskIdIntegrityAnomalies,
+  /*
+  FNXC:TaskIdIntegrityCanary 2026-10-18-22:31 (RUFU-333):
+  The shared integrity vocabulary is exported from the module that DEFINES it, so every arm resolves
+  one binding. `TaskIdIntegrityMeasurementError` is the failure class RUFU-301 shipped on the async
+  PostgreSQL arm; it was root-exported from the postgres barrel, which left the sync arm importing
+  nothing — a documented reason that arm stayed fail-open. The class now lives here and the
+  `@fusion/core/postgres` path resolves it through a re-export, so the shipped import path is unchanged
+  while both arms throw the SAME class object: each surface catches it by identity, so a second class of
+  the same name would type-check and silently make every `instanceof` guard on the other arm's error false.
+  `TASK_ID_INTEGRITY_NOT_MEASURED` is exported as a value because its OBJECT IDENTITY is the contract —
+  consumers distinguish "never measured" from "measured and failed" by comparison, not by parsing prose.
+  */
+  TASK_ID_INTEGRITY_NOT_MEASURED,
+  TaskIdIntegrityMeasurementError,
 } from "./tasks/task-id-integrity.js";
 export {
   TASK_ID_TOKEN_RE,
@@ -1502,7 +1516,9 @@ export type {
 export type {
   TaskIdIntegrityAnomaly,
   TaskIdIntegrityAnomalyKind,
+  TaskIdIntegrityMeasurementFailure,
   TaskIdIntegrityReport,
+  TaskIdIntegrityState,
 } from "./tasks/task-id-integrity.js";
 export {
   FUSION_TASK_LINEAGE_TRAILER_KEY,
@@ -3271,7 +3287,13 @@ export {
   validateAndHealSchema,
   vacuumAnalyze,
   detectTaskIdIntegrityAnomaliesAsync,
-  TaskIdIntegrityMeasurementError,
+  /*
+  FNXC:TaskIdIntegrityCanary 2026-10-18-22:31 (RUFU-333):
+  `TaskIdIntegrityMeasurementError` is no longer listed in this PostgreSQL block. The class moved to
+  `tasks/task-id-integrity.ts` (its definition site) and is root-exported from there, so listing it here
+  too would be a duplicate root export — a SyntaxError, not a shadow. `./postgres/index.ts` still names it,
+  which is what preserves `@fusion/core/postgres` for RUFU-301's shipped callers.
+  */
   /*
   FNXC:TaskIdIntegrityCanary 2026-09-26-02:10 (RUFU-301):
   The dashboard probe caller and the PostgreSQL health transport live in different

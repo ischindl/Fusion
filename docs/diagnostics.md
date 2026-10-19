@@ -111,6 +111,24 @@ Operator interpretation:
 - `ageBucket: "aging"` → review blocker progress.
 - `ageBucket: "stale"` → emerging stall; escalate/unblock blocker.
 
+## Task-ID integrity measurement failures (`[task-id-integrity]`)
+
+<!--
+FNXC:TaskIdIntegrityCanary 2026-10-18-23:59 (RUFU-333):
+Documented because the absence of this line used to be the misleading signal. The synchronous store-path
+canary swallowed every read failure and logged a warning about degrading to a healthy report, so a broken
+database produced a clean bill of health and no error line at all.
+-->
+
+The store's task-ID integrity canary logs through `coreLog.error` whenever a measurement lands on a state worth announcing:
+
+- `[task-id-integrity] measurement failed; canary is unmeasured, NOT healthy` — `{ error }` names the driver's reason. The measurement did not complete, so the canary publishes no verdict; the cached report is `status: "error"` and `taskIdStateReconciled` stays false.
+- `[task-id-integrity] anomaly detected` — `{ anomalies }` lists what the completed scan found.
+
+Both lines are deduped by a namespaced signature (`failure:<reason>` / `anomaly:<json>`) held per store instance, so a database handle that is permanently unusable — backend mode's synchronous handle is — cannot append the same line on every store open. The signature namespaces the two kinds, so a failure can never silence a later anomaly or the reverse. The cached state is rewritten on every attempt regardless of dedupe: log silence is a logging decision and never a claim about the corpus.
+
+Operator interpretation: this line repeating across restarts means the canary has never seen your task tables, which is not the same fact as "the IDs are consistent". `GET /api/health` answers from the async PostgreSQL probe and is unaffected by the synchronous canary; the store-side state is what `taskIdStateReconciled` and the store's own report surface.
+
 ## Windows embedded PostgreSQL recovery (`[postgres-embedded]`, FN-8522)
 
 When a Fusion-owned Windows embedded cluster reports the exact `0xC0000142` backend DLL-initialization failure followed by PostgreSQL's shutdown chain, the existing startup/System diagnostic sink records:

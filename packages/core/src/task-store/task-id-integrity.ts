@@ -22,7 +22,18 @@ import { getErrorMessage } from "../process/error-message.js";
 import { buildSnippet, extractGoalCitations } from "../goals/goal-citation-extractor.js";
 import * as schema from "../postgres/schema/index.js";
 import { getTaskCreatedHook } from "../tasks/task-creation-hooks.js";
-import { type TaskIdIntegrityReport, detectTaskIdIntegrityAnomalies } from "../tasks/task-id-integrity.js";
+/*
+FNXC:TaskIdIntegrityCanary 2026-10-18-22:31 (RUFU-333):
+The store seam now traffics in `TaskIdIntegrityState` (report OR explicit failure) rather than
+`TaskIdIntegrityReport` alone — the old single type is what forced "we could not measure" to be written
+as `status: "ok"`.
+*/
+import {
+  detectTaskIdIntegrityAnomalies,
+  TASK_ID_INTEGRITY_NOT_MEASURED,
+  type TaskIdIntegrityMeasurementFailure,
+  type TaskIdIntegrityState,
+} from "../tasks/task-id-integrity.js";
 import { createBranchGroup as createBranchGroupAsync } from "./async/async-branch-groups.js";
 import { findLiveLineageChildren as findLiveLineageChildrenAsync, projectPartition } from "./async/async-lifecycle.js";
 import { recordRunAuditEvent as recordRunAuditEventAsync } from "./async/async-audit.js";
@@ -71,27 +82,86 @@ export function archiveDbImpl(_store: TaskStore): ArchiveDatabase {
     );
 }
 
-export function buildTaskIdIntegrityFallbackReportImpl(_store: TaskStore): TaskIdIntegrityReport {
-    return {
-      status: "ok",
-      checkedAt: new Date().toISOString(),
-      anomalies: [],
-    };
+/*
+FNXC:TaskIdIntegrityCanary 2026-10-18-22:31 (RUFU-333):
+This function returned a hard-coded `{ status: "ok", anomalies: [] }`. It was the widest lie on the
+store path: not a verdict about data but a fabricated healthy verdict handed to every caller after a
+failure, and (via the field initializer and the test-harness reset) even before anything had run.
+A fallback whose job is to describe "we could not measure" must SAY that, so it now returns the shared
+not-measured sentinel. The name stays because the engine's durable-write inventory classifies
+`buildTaskIdIntegrityFallbackReport` as a public TaskStore surface; renaming it would strand that row.
+*/
+export function buildTaskIdIntegrityFallbackReportImpl(_store: TaskStore): TaskIdIntegrityMeasurementFailure {
+    return TASK_ID_INTEGRITY_NOT_MEASURED;
 }
 
-export function detectAndCacheTaskIdIntegrityReportImpl(store: TaskStore): TaskIdIntegrityReport {
-    const report = detectTaskIdIntegrityAnomalies(store.db);
-    store.taskIdIntegrityReport = report;
-    const signature = report.status === "anomaly" ? JSON.stringify(report.anomalies) : null;
-    if (report.status === "anomaly" && signature !== store.lastTaskIdIntegrityLogSignature) {
-      coreLog.error("[task-id-integrity] anomaly detected", { anomalies: report.anomalies });
+/*
+FNXC:TaskIdIntegrityCanary 2026-10-18-22:31 (RUFU-333):
+`store.db` throws outright in backend mode (`dbImpl`), so a failed measurement most often arrives
+here as an exception rather than as a returned report. This is the ONE place that owns that
+conversion, because it is the one place that knows a measurement was attempted: the attempt's failure
+is cached as an honest `status: "error"` state carrying the driver's reason, and logged as a failed
+measurement rather than as a degradation to healthy. Previously the catch lived in `refresh…` and
+swallowed the failure into a healthy report, which is the appeasement this card deletes — a canary
+that reports clean when the database was unreadable is worse than no canary.
+*/
+export function detectAndCacheTaskIdIntegrityReportImpl(store: TaskStore): TaskIdIntegrityState {
+    let state: TaskIdIntegrityState;
+    let signature: string | null = null;
+    try {
+      state = detectTaskIdIntegrityAnomalies(store.db);
+      if (state.status === "anomaly") {
+        signature = `anomaly:${JSON.stringify(state.anomalies)}`;
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      state = {
+        status: "error",
+        checkedAt: new Date().toISOString(),
+        anomalies: [],
+        error: reason,
+      };
+      signature = `failure:${reason}`;
+    }
+
+    store.taskIdIntegrityReport = state;
+    /*
+    FNXC:TaskIdIntegrityCanary 2026-10-18-23:40 (RUFU-333):
+    One namespaced signature per measurement drives both log lines, so an unchanged reading logs once.
+    The namespaces are load-bearing: a shared bare signature would let a failure silence a later
+    anomaly (and the reverse) whenever the two strings happened to collide, and a permanently failing
+    sync handle would otherwise re-log its error on every store-open refresh.
+    */
+    if (signature !== null && signature !== store.lastTaskIdIntegrityLogSignature) {
+      if (state.status === "anomaly") {
+        coreLog.error("[task-id-integrity] anomaly detected", { anomalies: state.anomalies });
+      } else if (state.status === "error") {
+        coreLog.error("[task-id-integrity] measurement failed; canary is unmeasured, NOT healthy", { error: state.error });
+      }
     }
     store.lastTaskIdIntegrityLogSignature = signature;
-    return report;
+    return state;
 }
 
-export function mergeTaskIdIntegrityReportsImpl(store: TaskStore, ...reports: TaskIdIntegrityReport[]): TaskIdIntegrityReport {
+/*
+FNXC:TaskIdIntegrityCanary 2026-10-18-22:31 (RUFU-333):
+A merge used to be able to launder a failure into `ok`, because a failed input had no representable
+shape and arrived as an empty clean report. Precedence is now explicit and monotone — a merge may
+never lose information:
+  1. a genuine failure (it names a real cause) outranks everything,
+  2. else the not-measured sentinel — an unmeasured canary is never overwritten by a sibling's `ok`,
+  3. else anomalies are unioned across the completed scans (`anomaly` if any, `ok` only if all were clean).
+`checkedAt` keeps the latest reading among the inputs, as before.
+*/
+export function mergeTaskIdIntegrityReportsImpl(store: TaskStore, ...reports: TaskIdIntegrityState[]): TaskIdIntegrityState {
     const checkedAt = reports[reports.length - 1]?.checkedAt ?? new Date().toISOString();
+    const failure = reports.find((report) => report.status === "error" && report !== TASK_ID_INTEGRITY_NOT_MEASURED);
+    if (failure) {
+      return failure;
+    }
+    if (reports.some((report) => report === TASK_ID_INTEGRITY_NOT_MEASURED)) {
+      return TASK_ID_INTEGRITY_NOT_MEASURED;
+    }
     const seen = new Set<string>();
     const anomalies = reports.flatMap((report) => report.anomalies).filter((anomaly) => {
       const key = JSON.stringify(anomaly);
@@ -108,18 +178,12 @@ export function mergeTaskIdIntegrityReportsImpl(store: TaskStore, ...reports: Ta
     };
 }
 
-export function refreshTaskIdIntegrityReportImpl(store: TaskStore): TaskIdIntegrityReport {
-    try {
-      return store.detectAndCacheTaskIdIntegrityReport();
-    } catch (error) {
-      const fallback = store.buildTaskIdIntegrityFallbackReport();
-      store.taskIdIntegrityReport = fallback;
-      store.lastTaskIdIntegrityLogSignature = null;
-      coreLog.warn("[task-id-integrity] detector failed; degrading to healthy report", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return fallback;
-    }
+export function refreshTaskIdIntegrityReportImpl(store: TaskStore): TaskIdIntegrityState {
+    // FNXC:TaskIdIntegrityCanary 2026-10-18-22:31 (RUFU-333):
+    // No catch here anymore. This delegate exists only as the store's refresh entry point; owning a
+    // failure handler here is what let the path log a "degrading to healthy" warning and cache an `ok`.
+    // Failure conversion lives in `detectAndCacheTaskIdIntegrityReportImpl`, which caches the honest state.
+    return store.detectAndCacheTaskIdIntegrityReport();
 }
 
 export function reconcileDistributedTaskIdStateOnOpenImpl(store: TaskStore): void {
@@ -130,12 +194,28 @@ export function reconcileDistributedTaskIdStateOnOpenImpl(store: TaskStore): voi
     const preReconcileReport = store.refreshTaskIdIntegrityReport();
     reconcileTaskIdState(store.db);
     const postReconcileReport = store.refreshTaskIdIntegrityReport();
-    store.taskIdIntegrityReport = store.mergeTaskIdIntegrityReports(
-      previousReport,
-      preReconcileReport,
-      postReconcileReport,
-    );
-    store.taskIdStateReconciled = true;
+    /*
+    FNXC:TaskIdIntegrityCanary 2026-10-18-22:31 (RUFU-333):
+    The prior cache is merged forward only when it IS a measurement. Carrying the not-measured
+    sentinel into a merge pins the canary at unmeasured permanently (precedence rule 2 is
+    deliberately sticky so a merge can never launder a failure), and a never-measured store carries no
+    information about the corpus to preserve. A genuine failure IS carried forward: it names a real
+    cause that a later clean scan must not erase.
+    */
+    const inputs: TaskIdIntegrityState[] = [preReconcileReport, postReconcileReport];
+    if (previousReport !== TASK_ID_INTEGRITY_NOT_MEASURED) {
+      inputs.unshift(previousReport);
+    }
+    const merged = store.mergeTaskIdIntegrityReports(...inputs);
+    store.taskIdIntegrityReport = merged;
+    /*
+    Reconciliation is only done once it actually ran. Marking the flag on a fabricated `ok` was how the
+    open sequence could declare itself finished while having measured nothing, leaving no path that
+    would ever try again.
+    */
+    if (merged.status !== "error") {
+      store.taskIdStateReconciled = true;
+    }
 }
 
 export async function readPromptForArchiveImpl(store: TaskStore, taskId: string): Promise<string | undefined> {

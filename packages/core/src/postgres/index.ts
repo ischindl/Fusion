@@ -170,6 +170,16 @@ export {
 } from "./postgres-health.js";
 export {
   detectTaskIdIntegrityAnomaliesAsync,
+  /*
+  FNXC:TaskIdIntegrityCanary 2026-10-18-22:31 (RUFU-333):
+  This stays a RE-EXPORT, not a definition. `TaskIdIntegrityMeasurementError` is defined once in
+  `tasks/task-id-integrity.ts`; `./async-task-id-integrity.ts` re-exports it purely so this shipped path keeps
+  resolving. RUFU-301 put the definition here, which gave the synchronous arm no importable failure type — a
+  documented reason that arm stayed fail-open. Both arms must throw ONE class object: every surface catches it
+  by identity, so a second class of the same name would type-check and make each arm's `instanceof` guard false
+  on the other's error. Importing it from `tasks/task-id-integrity.js` directly would also do, but only this
+  path currently re-exports the async detector's budget constants, so the name stays reachable from both barrels.
+  */
   TaskIdIntegrityMeasurementError,
 } from "./async-task-id-integrity.js";
 

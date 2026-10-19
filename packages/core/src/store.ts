@@ -139,7 +139,11 @@ import { createLogger } from "./process/logger.js";
 import { type UsageEventInput } from "./tasks/usage-events.js";
 import { assertNotLinkedWorktreeOfExistingProject, assertProjectRootDir } from "./central/project-root-guard.js";
 import { type DistributedTaskIdAllocator } from "./tasks/distributed-task-id.js";
-import { type TaskIdIntegrityReport } from "./tasks/task-id-integrity.js";
+import {
+  TASK_ID_INTEGRITY_NOT_MEASURED,
+  type TaskIdIntegrityMeasurementFailure,
+  type TaskIdIntegrityState,
+} from "./tasks/task-id-integrity.js";
 import { AgentStore } from "./agents/agent-store.js";
 import type { IntakeOwnershipExemption } from "./tasks/task-intake-owner-resolver.js";
 
@@ -854,7 +858,16 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   public taskIdStateReconciled = false;
   /** Set when startup auto-recovery rebuilt a corrupt fusion.db; lets the orphan reconcile bypass its recency window so rows dropped by `.recover` are recovered even with old task.json mtimes. */
   public dbWasCorruptionRecovered = false;
-  public taskIdIntegrityReport: TaskIdIntegrityReport = { status: "ok", checkedAt: new Date().toISOString(), anomalies: [] };
+  /*
+  FNXC:TaskIdIntegrityCanary 2026-10-18-22:31 (RUFU-333):
+  This field used to initialise to `{ status: "ok", anomalies: [] }`, so a freshly constructed TaskStore
+  published "measured and clean" before any measurement had run, and any reader that touched it before
+  the first refresh got a clean verdict for nothing. The field now starts as the not-measured sentinel:
+  `status: "ok"` is reachable only from a completed scan, and `TASK_ID_INTEGRITY_NOT_MEASURED` is
+  re-exported as the sentinel identity so consumers can distinguish "never measured" from "measured and
+  failed" without parsing prose.
+  */
+  public taskIdIntegrityReport: TaskIdIntegrityState = TASK_ID_INTEGRITY_NOT_MEASURED;
   public lastTaskIdIntegrityLogSignature: string | null = null;
   public workflowStepsCache: import("./types.js").WorkflowStep[] | null = null;
   public _pluginWorkflowStepTemplates: Array<{ pluginId: string; template: WorkflowStepTemplate }> = [];
@@ -1060,19 +1073,26 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     return dbImpl(this);
   }
 
-  public buildTaskIdIntegrityFallbackReport(): TaskIdIntegrityReport {
+  /*
+  FNXC:TaskIdIntegrityCanary 2026-10-18-22:31 (RUFU-333):
+  Return types moved from `TaskIdIntegrityReport` to `TaskIdIntegrityState` so "could not measure" is
+  representable. The six method NAMES are deliberately unchanged: the engine's durable-write inventory
+  classifies each of them as a public TaskStore surface, so adding, renaming, or removing one fails
+  `merge-orphan-durable-write-inventory-drift.test.ts` while changing a return type does not.
+  */
+  public buildTaskIdIntegrityFallbackReport(): TaskIdIntegrityMeasurementFailure {
     return buildTaskIdIntegrityFallbackReportImpl(this);
   }
-  public detectAndCacheTaskIdIntegrityReport(): TaskIdIntegrityReport {
+  public detectAndCacheTaskIdIntegrityReport(): TaskIdIntegrityState {
     return detectAndCacheTaskIdIntegrityReportImpl(this);
   }
-  public mergeTaskIdIntegrityReports(...reports: TaskIdIntegrityReport[]): TaskIdIntegrityReport {
+  public mergeTaskIdIntegrityReports(...reports: TaskIdIntegrityState[]): TaskIdIntegrityState {
     return mergeTaskIdIntegrityReportsImpl(this, ...reports);
   }
-  refreshTaskIdIntegrityReport(): TaskIdIntegrityReport {
+  refreshTaskIdIntegrityReport(): TaskIdIntegrityState {
     return refreshTaskIdIntegrityReportImpl(this);
   }
-  getTaskIdIntegrityReport(): TaskIdIntegrityReport {
+  getTaskIdIntegrityReport(): TaskIdIntegrityState {
     return this.taskIdIntegrityReport;
   }
   public reconcileDistributedTaskIdStateOnOpen(): void {

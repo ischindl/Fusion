@@ -189,6 +189,23 @@ Fusion runs a read-only task-ID integrity detector at startup and on demand to s
 - committed reservation rows that still reference existing task IDs
 - active task rows whose prefix falls outside the prefixes declared in `distributed_task_id_state`
 
+<!--
+FNXC:TaskIdIntegrityCanary 2026-10-18-23:59 (RUFU-333):
+The synchronous store-path detector and the async PostgreSQL probe now share one fail-closed contract and
+one error class. Documented here because the two halves used to disagree: the async probe raised, the sync
+detector answered `status: "ok"`, and that answer was the bug, not a fallback.
+-->
+
+Both halves honour the same three outcomes, and a consumer must handle all three:
+
+- **completed and clean** — `status: "ok"`, zero anomalies. Only a measurement that read everything it set out to read may say this, including a scan that legitimately found the tables absent: a successful probe that reports "no tables yet" is a completed measurement, not a failure.
+- **completed and anomalous** — `status: "anomaly"` with the anomaly list.
+- **not measured** — the measurement did not complete, so it publishes no verdict at all. The synchronous detector *raises* `TaskIdIntegrityMeasurementError`, which carries the driver's own reason as `cause`; the store seam that called it converts that into a cached `status: "error"` report naming the reason. A brand-new store that has not measured anything yet starts on the frozen `TASK_ID_INTEGRITY_NOT_MEASURED` sentinel (`error: "not measured"`) rather than on a healthy report.
+
+`TaskIdIntegrityMeasurementError` is defined once, in `packages/core/src/tasks/task-id-integrity.ts`, and re-exported from `packages/core/src/postgres/async-task-id-integrity.ts` and both core barrels, so `instanceof` holds whichever import path a consumer took. A second definition of the same name would type-check and silently make every guard on the other arm false.
+
+Where the verdict is combined — the store merges the open-time scan with the scan that ran before it — precedence is monotone: a real measurement failure outranks the never-measured sentinel, which outranks any completed scan. `ok` is only ever produced by completed scans, never by an absent, unreadable, or half-finished measurement. This is why an unusable database handle makes the canary loudly unmeasured instead of quietly healthy.
+
 The latest report is exposed in two operator-facing places:
 
 - `GET /api/health` returns a `taskIdIntegrity` object with `status`, `checkedAt`, `anomalies`, and a `recommendedAction` string. Anomalies or an integrity-query `error` degrade the top-level health status; missing PostgreSQL layers and connectivity failures also fail closed rather than reporting the backend-mode healthy sentinel.

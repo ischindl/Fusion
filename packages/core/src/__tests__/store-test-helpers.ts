@@ -27,6 +27,7 @@ import { runCommandAsync } from "../process/run-command.js";
 import { Database, setInMemoryTemplateSnapshot } from "../db/db.js";
 import { DEFAULT_PROJECT_SETTINGS } from "../types.js";
 import { TaskStore, TaskHasDependentsError } from "../store.js";
+import { TASK_ID_INTEGRITY_NOT_MEASURED } from "../tasks/task-id-integrity.js";
 import type { Task } from "../types.js";
 
 export { TaskStore, TaskHasDependentsError };
@@ -171,7 +172,14 @@ function resetTaskStorePrivateState(store: TaskStore): void {
   (store as any).taskLocks?.clear?.();
   (store as any).workflowStepsCache = null;
   (store as any).taskIdStateReconciled = false;
-  (store as any).taskIdIntegrityReport = (store as any).buildTaskIdIntegrityFallbackReport?.();
+  /*
+  FNXC:TaskIdIntegrityCanary 2026-10-18-22:31 (RUFU-333):
+  Reset to the not-measured sentinel, assigned directly rather than borrowed from
+  `buildTaskIdIntegrityFallbackReport()`. A cross-test reset must assert "nothing has been measured", and
+  going through the fallback factory hid that intent behind an optional call — when the fallback still
+  returned a hard-coded `status: "ok"`, this line was silently seeding every test with a fake clean verdict.
+  */
+  (store as any).taskIdIntegrityReport = TASK_ID_INTEGRITY_NOT_MEASURED;
   (store as any).lastTaskIdIntegrityLogSignature = null;
   (store as any).distributedTaskIdAllocator = null;
   (store as any)._archiveDb = null;

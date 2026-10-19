@@ -23,37 +23,27 @@
 
 import { sql } from "drizzle-orm";
 import type { DrizzleDb } from "./data-layer.js";
-import type {
-  TaskIdIntegrityAnomaly,
-  TaskIdIntegrityReport,
+import {
+  TaskIdIntegrityMeasurementError,
+  type TaskIdIntegrityAnomaly,
+  type TaskIdIntegrityReport,
 } from "../tasks/task-id-integrity.js";
 import { PROJECT_SCHEMA } from "./schema/_shared.js";
 
+/*
+FNXC:TaskIdIntegrityCanary 2026-10-18-22:31 (RUFU-333):
+`TaskIdIntegrityMeasurementError` is DEFINED once, in `../tasks/task-id-integrity.js` (the sync arm),
+and is re-exported here so the shipped `@fusion/core/postgres` import path keeps resolving unchanged.
+RUFU-301 homed the class in this PostgreSQL module, which left the synchronous detector with no
+importable failure type — one of the reasons that arm stayed fail-open. Homing it in the shared module
+is what lets both arms throw the SAME class object: each surface catches it by identity, so a second
+class of the same name would type-check while making every `instanceof` guard on the other arm's error
+false. A re-export, never a second definition, is what preserves that identity across `@fusion/core`
+and `@fusion/core/postgres`.
+*/
+export { TaskIdIntegrityMeasurementError };
+
 const TASK_ID_PATTERN = /^([A-Z][A-Z0-9]*)-(\d+)$/;
-
-/**
- * Raised when a task-ID integrity measurement could not be completed.
- *
- * FNXC:TaskIdIntegrityCanary 2026-09-26-00:50 (RUFU-301):
- * This detector used to swallow every query failure and answer
- * `buildReport(checkedAt, [])`, i.e. `status: "ok"` with zero anomalies. A
- * cancelled, lock-blocked, or otherwise failed read therefore published the
- * same clean verdict as a completed scan, which is how the canary went blind
- * while `/api/health` kept reporting `status: "ok"`. An integrity check that
- * never finished is not a clean result, so no failure path may fabricate a
- * report: the measurement either returns rows it actually read or it raises.
- * Callers map this to an explicitly unmeasured verdict.
- */
-export class TaskIdIntegrityMeasurementError extends Error {
-  override readonly cause: unknown;
-
-  constructor(cause: unknown) {
-    const reason = cause instanceof Error ? cause.message : String(cause);
-    super(`Task-ID integrity measurement did not complete: ${reason}`);
-    this.name = "TaskIdIntegrityMeasurementError";
-    this.cause = cause;
-  }
-}
 
 function parseTaskId(taskId: string): { prefix: string; sequence: number } | null {
   const match = taskId.trim().toUpperCase().match(TASK_ID_PATTERN);

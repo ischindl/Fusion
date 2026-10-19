@@ -1161,8 +1161,18 @@ export {
   detectStalledReview,
 } from "./tasks/stalled-review-detector.js";
 export type { StalledReviewSignal } from "./tasks/stalled-review-detector.js";
+/*
+FNXC:TaskIdIntegrityCanary 2026-10-18-22:31 (RUFU-333):
+Gate-barrel mirror of `index.ts`, and load-bearing rather than cosmetic: the `engine-core` merge-gate
+vitest project aliases `@fusion/core` to the bundle built from this file, so a symbol exported only from
+`index.ts` is invisible to the gate suite. The sync task-ID integrity canary is guarded by gate-suite
+files, so the failure class both arms throw, the not-measured sentinel, and the state union are exported
+here too. Parity is pinned by `__tests__/task-id-integrity-measurement-failure.test.ts`.
+*/
 export {
   detectTaskIdIntegrityAnomalies,
+  TASK_ID_INTEGRITY_NOT_MEASURED,
+  TaskIdIntegrityMeasurementError,
 } from "./tasks/task-id-integrity.js";
 export {
   TASK_ID_TOKEN_RE,
@@ -1214,7 +1224,9 @@ export type {
 export type {
   TaskIdIntegrityAnomaly,
   TaskIdIntegrityAnomalyKind,
+  TaskIdIntegrityMeasurementFailure,
   TaskIdIntegrityReport,
+  TaskIdIntegrityState,
 } from "./tasks/task-id-integrity.js";
 export {
   FUSION_TASK_LINEAGE_TRAILER_KEY,

@@ -134,10 +134,19 @@ new costume. Instead:
 
 ## Reachability boundary
 
-This fixes the async PostgreSQL canary, which is the path `/api/health` uses. The synchronous,
-SQLite-era detector in `packages/core/src/tasks/task-id-integrity.ts` retains a fail-open shape
-(empty report on error) with no production caller found for the health path; it was left alone
-rather than changed under this task's acceptance gate, and is filed as a follow-up.
+<!--
+FNXC:TaskIdIntegrityCanary 2026-10-18-23:59 (RUFU-333):
+This boundary closed. The passage below originally recorded the synchronous detector as deliberately left
+fail-open and filed as a follow-up; RUFU-333 landed that follow-up, so leaving the old wording would tell
+a reader the sync half still lies.
+-->
+
+This card fixed the async PostgreSQL canary, the path `/api/health` uses. The synchronous, SQLite-era
+detector in `packages/core/src/tasks/task-id-integrity.ts` was left in its fail-open shape (empty report on
+error) and filed as a follow-up; **RUFU-333 closed that follow-up**. The sync detector now raises the same
+`TaskIdIntegrityMeasurementError` — defined once in that module and re-exported from the async module — and
+the store seam caches it as an unmeasured `status: "error"` state instead of a healthy report. Both seams
+share the three-outcome contract documented in `docs/storage.md` § Task-ID integrity detection.
 
 `*.pg.test.ts` — `packages/core/src/__tests__/postgres/health-session-statement-cap.pg.test.ts` —
 asserts the cap against a real server (wiring, cancellation inside the budget, immediate reuse of
