@@ -31,8 +31,16 @@ const mockChatStore = {
   recordTokenUsage: vi.fn(),
 };
 
+/*
+FNXC:AgentWorkingDirectoryPolicy 2026-10-18-13:29 (RUFU-334):
+The cli-agent send branch now hands the runner an explicit working directory (the ChatManager's own root)
+instead of omitting the key and letting the CLI manager default to the server's launch directory. The root
+is named once so construction and assertion cannot drift.
+*/
+const MANAGER_ROOT = "/tmp/test";
+
 function makeManager(): ChatManager {
-  return new ChatManager(mockChatStore as never, "/tmp/test");
+  return new ChatManager(mockChatStore as never, MANAGER_ROOT);
 }
 
 describe("ChatManager.sendMessage — cli-agent send branch", () => {
@@ -105,7 +113,7 @@ describe("ChatManager.sendMessage — cli-agent send branch", () => {
 
     await manager.sendMessage("chat-cli", "hello agent");
 
-    expect(ensureSession).toHaveBeenCalledWith("chat-cli", { projectId: "proj-1" });
+    expect(ensureSession).toHaveBeenCalledWith("chat-cli", { projectId: "proj-1", worktreePath: MANAGER_ROOT });
     expect(send).toHaveBeenCalledWith("chat-cli", "hello agent");
     // The model-agent path persists in-flight generation state; the cli branch
     // must NOT touch it.
@@ -126,7 +134,7 @@ describe("ChatManager.sendMessage — cli-agent send branch", () => {
 
     await manager.sendMessage("chat-cli2", "queued please");
 
-    expect(ensureSession).toHaveBeenCalledWith("chat-cli2", { projectId: "proj-from-session" });
+    expect(ensureSession).toHaveBeenCalledWith("chat-cli2", { projectId: "proj-from-session", worktreePath: MANAGER_ROOT });
     expect(send).toHaveBeenCalledWith("chat-cli2", "queued please");
   });
 

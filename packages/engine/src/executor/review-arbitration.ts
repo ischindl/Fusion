@@ -175,10 +175,22 @@ export async function runReviewArbitration(
   const provider = configuredTarget.provider ?? fallbackTarget.provider;
   const modelId = configuredTarget.modelId ?? fallbackTarget.modelId;
   const history = collectGateAttemptHistory(task, failed.workflowStepId);
+  /*
+  FNXC:AgentWorkingDirectoryPolicy 2026-10-18-13:29:
+  RUFU-334 closes the last serve-root inheritance in the arbitration lane. The arbiter is a real review
+  session (`reviewStep` opens one against this path), so the `?? process.cwd()` that used to stand in for
+  a missing remediation checkout put a write-capable reviewer inside the server's launch directory — the
+  deployment checkout on the incident host — and its binding ruling then drove remediation against a tree
+  it had no standing to read. The decline used to happen only after the session had already run, and only
+  for review-upheld rulings, so an implementer-upholding verdict released the gate from work it had
+  adjudicated in the wrong tree. A missing root now declines exactly like the sibling preconditions
+  above, before any session exists: this function's refusal shape, with no relocated default.
+  */
+  if (!remediationCheckout?.path) return "declined";
   const prompt = `${task.prompt ?? ""}\n\n## Review arbitration\nDecide this disagreement using the code and the complete same-gate ledger below. Return exactly one trailing JSON object: {"decision":"UPHOLD_REVIEW"|"UPHOLD_IMPLEMENTER"|"SPLIT","notes":"...","bindingFindingIds":["..."]}.\n\n${JSON.stringify(history)}`;
   let raw: string;
   try {
-    const result = await reviewStep(remediationCheckout?.path ?? process.cwd(), task.id, 0, `Arbitration: ${stepName}`, "code", prompt, undefined, {
+    const result = await reviewStep(remediationCheckout.path, task.id, 0, `Arbitration: ${stepName}`, "code", prompt, undefined, {
       store: deps.store,
       taskId: task.id,
       settings,
@@ -197,7 +209,6 @@ export async function runReviewArbitration(
     const release = await applyReviewArbitrationRelease(deps, task.id, fence);
     return release.applied ? "arbitrated" : "declined";
   }
-  if (!remediationCheckout) return "declined";
   const obligations = bindingObligations(failed.findings, ruling.bindingFindingIds, ruling.decision);
   /*
   FNXC:ReviewConvergence 2026-08-22-05:56:

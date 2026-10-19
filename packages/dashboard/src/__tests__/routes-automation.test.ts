@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeAll, beforeEach, afterAll, afterEach } 
 import express from "express";
 import http from "node:http";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -192,6 +192,16 @@ function createMockGlobalSettingsStore() {
   };
 }
 
+/*
+FNXC:AgentWorkingDirectoryPolicy 2026-10-18-13:29 (RUFU-334):
+A manual automation/schedule command step now runs with `cwd` = the store's project root instead of
+inheriting the server's launch directory, so the shared store fixture has to name a directory that
+actually exists — the previous `/fake/root` made `exec` fail with ENOENT, which is exactly the refusal the
+new contract intends (a root that is not a real working directory is not a usable root).
+*/
+const MOCK_STORE_ROOT = mkdtempSync(join(tmpdir(), "fusion-automation-root-"));
+afterAll(() => rmSync(MOCK_STORE_ROOT, { recursive: true, force: true }));
+
 function createMockStore(overrides: Partial<TaskStore> = {}): TaskStore {
   return {
     getTask: vi.fn(),
@@ -225,7 +235,7 @@ function createMockStore(overrides: Partial<TaskStore> = {}): TaskStore {
     deleteTaskDocument: vi.fn().mockResolvedValue(undefined),
     updatePrInfo: vi.fn().mockResolvedValue(undefined),
     updateIssueInfo: vi.fn().mockResolvedValue(undefined),
-    getRootDir: vi.fn().mockReturnValue("/fake/root"),
+    getRootDir: vi.fn().mockReturnValue(MOCK_STORE_ROOT),
     /*
     FNXC:PluginMcpServers 2026-07-23-23:40:
     FN-8491 (3cd023fa4) made resolveProjectContext bind a project-scoped plugin
@@ -496,6 +506,14 @@ describe("Terminal session routes", () => {
   });
 });
 
+/*
+FNXC:AgentWorkingDirectoryPolicy 2026-10-18-13:29 (RUFU-334):
+The terminal WebSocket handler rejects a session whose `cwd` is outside the store's resolved project root
+(cross-project cwd guard). These fakes used to pair a session `cwd` of `/fake/root` with a mock store whose
+root was the same literal; now that the shared store fixture names a real directory (a command step needs
+an existing cwd), the fakes derive their session cwd from that same root so the connection handler
+actually runs instead of closing with 4510 before any listener is attached.
+*/
 describe("Terminal WebSocket close handler", () => {
   it("does NOT kill PTY session when WebSocket closes (session persists for reconnect)", async () => {
     // After FN-762, closing a WebSocket must not destroy the PTY session.
@@ -504,7 +522,7 @@ describe("Terminal WebSocket close handler", () => {
     const getSessionMock = vi.fn().mockReturnValue({
       id: "term-ws-test",
       shell: "/bin/zsh",
-      cwd: "/fake/root",
+      cwd: join(MOCK_STORE_ROOT, "terminal-session"),
       scrollbackBuffer: "hello",
       lastActivityAt: new Date(),
     });
@@ -565,7 +583,7 @@ describe("Terminal WebSocket close handler", () => {
     const getSessionMock = vi.fn().mockReturnValue({
       id: "term-ws-err",
       shell: "/bin/zsh",
-      cwd: "/fake/root",
+      cwd: join(MOCK_STORE_ROOT, "terminal-session"),
       lastActivityAt: new Date(),
     });
     const getScrollbackAndClearPendingMock = vi.fn().mockReturnValue(null);
@@ -629,7 +647,7 @@ describe("Terminal WebSocket close handler", () => {
     const getSessionMock = vi.fn().mockReturnValue({
       id: "term-ws-unsub",
       shell: "/bin/zsh",
-      cwd: "/fake/root",
+      cwd: join(MOCK_STORE_ROOT, "terminal-session"),
       lastActivityAt: new Date(),
     });
     const getScrollbackAndClearPendingMock = vi.fn().mockReturnValue(null);
@@ -1183,6 +1201,48 @@ describe("Automation routes", () => {
         toolsAllowlist: undefined,
         defaultThinkingLevel: undefined,
       }));
+    });
+
+    /*
+    FNXC:AgentWorkingDirectoryPolicy 2026-10-18-13:29 (RUFU-334):
+    Card requirement (h) at the surface an operator actually triggers: a manual automation run must never
+    shell out or open an agent session in the directory the server was launched from (measured leak: the
+    AI-prompt step passed `cwd: process.cwd()`, so on a host whose service starts from the deployment
+    checkout the step was a write-capable coding agent inside the deployed tree). The neighbouring fixtures
+    assert run success/failure/output shapes and asserted nothing about where the work ran, so both legs —
+    the shell leg and the agent-session leg — name their working directory here.
+    */
+    it("runs a manual command step in the store's project root, never in the server's launch directory", async () => {
+      const mockStore = createMockAutomationStore();
+      mockStore.getSchedule.mockResolvedValue({ ...FAKE_SCHEDULE, command: "pwd -P" });
+      const { app } = buildApp(mockStore);
+
+      const res = await REQUEST(app, "POST", "/api/automations/sched-001/run");
+
+      expect(res.status).toBe(200);
+      expect(res.body.result.success).toBe(true);
+      expect(String(res.body.result.output).trim()).toBe(realpathSync(MOCK_STORE_ROOT));
+      expect(String(res.body.result.output).trim()).not.toBe(process.cwd());
+    });
+
+    it("hands a manual ai-prompt run the store's project root instead of the server's launch directory", async () => {
+      vi.mocked(createFnAgent).mockClear();
+      const mockStore = createMockAutomationStore();
+      mockStore.getSchedule.mockResolvedValue({
+        ...FAKE_SCHEDULE,
+        command: "",
+        steps: [
+          { id: "step-ai", type: "ai-prompt", name: "AI analysis", prompt: "Summarize repository status" },
+        ],
+      });
+
+      const { app } = buildApp(mockStore);
+      const res = await REQUEST(app, "POST", "/api/automations/sched-001/run");
+
+      expect(res.status).toBe(200);
+      const call = vi.mocked(createFnAgent).mock.calls.at(-1)?.[0] as { cwd?: string } | undefined;
+      expect(call?.cwd).toBe(MOCK_STORE_ROOT);
+      expect(call?.cwd).not.toBe(process.cwd());
     });
 
     it("executes create-task steps during manual runs", async () => {

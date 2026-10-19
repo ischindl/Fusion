@@ -36,9 +36,11 @@ import {
   SessionManager,
   SettingsManager,
   type AgentSession,
+  type ProviderConfig,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import {
+  assertAgentCwdAllowed,
   clampToolOutputBlocks,
   customProviderRegistryKey,
   getEnabledPiExtensionPaths,
@@ -1882,7 +1884,49 @@ function resolveVendoredDroidCliEntry(): string | null {
   }
 }
 
-async function registerExtensionProviders(cwd: string, modelRegistry: ModelRegistry): Promise<void> {
+/*
+FNXC:AgentCwdBoundary 2026-10-18-10:31:
+RUFU-334: pi's `SimpleStreamOptions` carries NO `cwd` field, so the vendored
+`@fusion/pi-claude-cli` provider used to fall back to `process.cwd()` — the directory
+the dashboard or engine was launched from (a live production deployment checkout on
+the incident host). The extension now refuses a missing working directory instead,
+so the registration seam that already knows the session's acquired checkout has to
+hand it over. Wrapping here rather than in the extension is what keeps
+`@fusion/pi-claude-cli` free of `@fusion/*` imports. The value is applied only when
+absent, so an explicit caller cwd keeps precedence, and the extension's own
+`ExtensionContext.cwd` latch stays the primary path when the provider instance is
+session-bound. Scanned to the Claude runtime lane on purpose: HTTP providers ignore
+unknown stream options, but injecting a write-path notion into every registered
+provider would widen an unrelated lane.
+*/
+const CLAUDE_CLI_PROVIDER_ID = "pi-claude-cli";
+
+/** Stamp the session's working directory onto the Claude CLI provider's stream options. */
+export function withAgentCwd(name: string, config: ProviderConfig, agentCwd: string): ProviderConfig {
+  const streamSimple = config.streamSimple;
+  if (name !== CLAUDE_CLI_PROVIDER_ID || typeof streamSimple !== "function") return config;
+  if (!isAbsolute(agentCwd)) {
+    // Never substitute a relative path: the extension's contract refuses it too, and a
+    // refusal at the child boundary is what keeps an inherited serve root impossible.
+    extensionsLog.warn(`Claude CLI provider registered without an absolute session cwd; the lane will refuse rather than inherit the process directory`);
+    return config;
+  }
+  return {
+    ...config,
+    streamSimple: (model, context, options) => {
+      // `cwd` is not a declared SimpleStreamOptions field (upstream pi never carries it);
+      // the vendored transport reads it off the same object.
+      const withCwd = { ...(options ?? {}), cwd: agentCwd } as NonNullable<Parameters<typeof streamSimple>[2]>;
+      return streamSimple(model, context, withCwd);
+    },
+  };
+}
+
+async function registerExtensionProviders(
+  cwd: string,
+  modelRegistry: ModelRegistry,
+  sessionCwd?: string,
+): Promise<void> {
   hydrateGrokApiKeyFromUserSettings((message) => extensionsLog.warn(message));
 
   try {
@@ -1937,7 +1981,7 @@ async function registerExtensionProviders(cwd: string, modelRegistry: ModelRegis
 
     for (const { name, config, extensionPath } of extensionsResult.runtime.pendingProviderRegistrations) {
       try {
-        modelRegistry.registerProvider(name, config);
+        modelRegistry.registerProvider(name, withAgentCwd(name, config, sessionCwd ?? cwd));
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         extensionsLog.warn(`Failed to register provider from ${extensionPath}: ${message}`);
@@ -2059,6 +2103,24 @@ async function assertValidWorktreeSession(cwd: string, projectRoot: string): Pro
   }
 }
 
+/*
+FNXC:AgentWorkingDirectoryPolicy 2026-10-18-13:29:
+RUFU-334 makes this the single enforcement seam for the agent working-directory policy. Every
+`createFnAgent` lane — chat, planning, executor, heartbeat, dashboard helper lanes, scheduled jobs and
+manual automation runs — already crosses this resolver to decide its boundary root, so one check here
+closes every lane at once instead of one check per caller (the per-caller version is what leaked: nine
+lanes each had their own `?? process.cwd()` default, and only the reported one was ever read).
+The check is placed BEFORE any boundary decision so a refused session never reaches tool wrapping, and
+`ProtectedCheckoutError` propagates as the ordinary session-start failure it is: the policy refuses and
+never redirects, so there is no fallback root to fall back to.
+
+The resolver keeps returning the caller's own path rather than the policy's realpath on purpose. The
+realpath is the policy's comparison value; the returned root is the handle every downstream tool-boundary
+comparison and task row uses, and rewriting it to a canonical form would change behaviour for legitimate
+symlinked lanes on hosts where `FUSION_PROTECTED_CHECKOUTS` is unset — the policy's own contract is that
+an unset declaration changes nothing. A second realpath call is therefore not saved, only avoided.
+*/
+
 /**
  * FNXC:WorkspaceBoundary 2026-08-22-21:58:
  * FN-158 declares task boundaries at the executor because grouped configured
@@ -2069,6 +2131,8 @@ export async function resolveSessionBoundaryRoot(
   cwd: string,
   descriptor?: SessionBoundaryDescriptor,
 ): Promise<{ worktreePath: string | null; worktreeProjectRoot: string | null }> {
+  assertAgentCwdAllowed(cwd, descriptor?.kind ? { lane: descriptor.kind } : undefined);
+
   if (!descriptor) {
     const worktreeProjectRoot = getProjectRootFromWorktree(cwd);
     if (worktreeProjectRoot) await assertValidWorktreeSession(cwd, worktreeProjectRoot);
@@ -2076,6 +2140,7 @@ export async function resolveSessionBoundaryRoot(
   }
 
   const root = descriptor.writableRoot ?? cwd;
+  if (root !== cwd) assertAgentCwdAllowed(root, { lane: `${descriptor.kind} writable root` });
   if (!existsSync(root) || !existsSync(descriptor.projectRoot)) {
     throw new Error(`Refusing to start declared ${descriptor.kind} session: boundary root is missing`);
   }
@@ -2975,7 +3040,7 @@ export async function createPiAgentSessionRaw(options: AgentOptions): Promise<Ag
   // and resource loading all use the correct root when cwd is a worktree,
   // subdirectory, or any path other than the project root itself.
   const resolvedProjectRoot = getProjectRootFromWorktree(options.cwd) ?? resolvePiExtensionProjectRoot(options.cwd);
-  await registerExtensionProviders(resolvedProjectRoot, modelRegistry);
+  await registerExtensionProviders(resolvedProjectRoot, modelRegistry, options.cwd);
 
   const customProviders = readCustomProviders();
   for (const provider of customProviders) {

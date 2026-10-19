@@ -590,6 +590,36 @@ Agent deletion is available from both the detail header lifecycle controls and t
 
 ![Agents view](./screenshots/agents-view.png)
 
+## Agent Working Directory
+
+<!--
+FNXC:AgentWorkingDirectoryPolicy 2026-10-18-14:39 (RUFU-334):
+The rule that keeps a production deployment from being everybody's fallback cwd. Before RUFU-334 every lane
+that omitted a working directory silently inherited the server process's own directory, which is how two
+`claude --add-dir <deployment checkout>` processes ended up with write access to the live deployment. The
+invariant below is enforced structurally by `packages/engine/src/__tests__/agent-cwd-ratchet.test.ts`; a new
+lane that reads the process directory fails that gate rather than reaching review.
+-->
+
+A session inherits its working directory for real: the model's shell tool starts there, so a lane that never chose a directory is choosing whatever directory the server happened to be started in. **Every lane that launches an agent-capable session passes an explicit working directory, and a missing one is a named refusal rather than a default.**
+
+- **Core policy:** `assertAgentCwdAllowed(cwd, { env, lane })` in `@fusion/core` (`packages/core/src/agent-cwd-policy.ts`) returns the resolved `realpath` or throws — `TypeError` for a candidate that is not a usable directory (non-string, empty, `.`, or unresolvable), `ProtectedCheckoutError` when the resolved directory is or lives inside a `FUSION_PROTECTED_CHECKOUTS` entry. It never redirects a path. Semantics of the variable are in `docs/settings-reference.md`.
+- **Engine choke point:** `resolveSessionBoundaryRoot` in `packages/engine/src/pi.ts` applies that policy to every session the engine starts through that seam, so a lane that forgets to check is still covered — including the dashboard helper lanes that reach `createFnAgent` without a declared boundary.
+- **Named refusals.** A lane that cannot name its root says so, with a code an operator can grep:
+  | Code | Raised by | Meaning |
+  |---|---|---|
+  | `MissingAgentCwdError` | `packages/pi-claude-cli/src/cwd-contract.ts` (both the CLI and ACP transports, plus ACP session/prompt) | the caller supplied no cwd; no child is spawned |
+  | `CLI_MISSING_WORKTREE` | `packages/engine/src/cli-agent/session-manager.ts` | a CLI agent session was requested with no acquired worktree |
+  | `CLI_CHAT_WORKING_DIRECTORY_MISSING` | `packages/dashboard/src/cli-chat.ts` | a Chat CLI session was requested with no explicit project root |
+  | `AUTOMATION_MISSING_WORKING_DIRECTORY` | `packages/dashboard/src/routes/automation-step-execution.ts` | a manual automation command or AI-prompt step has no store root |
+  | `SCHEDULED_EVAL_MISSING_WORKING_DIRECTORY` | `packages/engine/src/scheduling/cron-runner.ts` | the scheduled evaluator was never given a project root |
+  | `SANDBOX_WRITABLE_ROOT_MISSING` | `packages/engine/src/sandbox/sandbox-exec-policy.ts` | a sandboxed run has no explicit writable root to build its profile from |
+  | `ProtectedCheckoutError` | `@fusion/core` agent cwd policy | the resolved root is a declared protected checkout |
+- **`@fusion/pi-claude-cli` never reads the process directory at all.** The package is a standalone pi extension with zero `@fusion/*` imports, so it carries its own contract (`resolveRequiredCwd`), and it returns the declared cwd verbatim — no `resolve`/`normalize` — because ACP warm-session reuse compares cwd by identity. Its ratchet rule is zero `process.cwd()` call sites across the whole package, including the root `index.ts`.
+- **No server path in a spawn argument.** A probe or session must not grant itself access to the tree it was launched from (`--add-dir <serve root>` was the incident's write vector).
+
+Exemptions live in the ratchet test, not in new code: `packages/engine/src/__tests__/agent-cwd-ratchet.test.ts` scans `packages/engine/src`, `packages/dashboard/src`, and the whole `packages/pi-claude-cli` package (test files excluded), and every allow-listed `process.cwd()` site carries the evidence and reason it is exempt — read-only watchdog discovery, the heartbeat research root, and operator-owned pi configuration. Adding a new launch path that inherits its directory fails that test; adding a genuinely legitimate read means adding an entry with a reason.
+
 ## Agent Memory Layers in Runtime Tools
 
 When engine sessions include per-agent memory context, the memory tools operate over the full agent-memory workspace under `.fusion/agent-memory/{agentId}/`, not only the inline `agent.memory` field.

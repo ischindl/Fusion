@@ -47,6 +47,7 @@ import { AssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { Api, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { buildPrompt, buildResumePrompt, buildSystemPrompt, type PiContext } from "./prompt-builder.js";
 import { createEventBridge } from "./event-bridge.js";
+import { resolveRequiredCwd } from "./cwd-contract.js";
 import { registerProcess, captureStderr } from "./process-manager.js";
 import { isPiKnownClaudeTool } from "./tool-mapping.js";
 import type { ClaudeApiEvent } from "./types.js";
@@ -257,13 +258,22 @@ export function streamViaAcp(
   context: PiContext,
   options: StreamViaAcpOptions,
 ): AssistantMessageEventStream {
+  /*
+  FNXC:AgentCwdBoundary 2026-10-18-10:29:
+  RUFU-334. This was `options.cwd ?? process.cwd()`, so the ACP transport of the same
+  Claude runtime lane inherited the host launch directory: both the bridge `spawn`
+  and ACP `session/new` would have pointed at a production deployment checkout on
+  the incident host. Resolved before the stream exists, so the refusal is
+  synchronous and typed. The resolved string is used verbatim (never `resolve`d) so
+  the warm-session reuse identity check below compares like for like.
+  */
+  const cwd = resolveRequiredCwd(options.cwd, "streamViaAcp");
   // @ts-expect-error — pi-ai exports AssistantMessageEventStream as a type; the
   // constructor exists at runtime (same workaround as streamViaCli).
   const stream = new AssistantMessageEventStream();
   const bridge = createEventBridge(stream, model);
 
   (async () => {
-    const cwd = options.cwd ?? process.cwd();
     const reuseKey =
       acpReuseEnabled() && options.sessionId && context.messages.length > 1
         ? options.sessionId

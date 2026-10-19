@@ -597,7 +597,25 @@ export class CronRunner {
       };
     }
     const evalSettings = resolveTaskEvaluationSettings(settings);
-    const evaluator = new HybridEvaluatorService({ cwd: this.options.workingDirectory ?? process.cwd(), store: this.store });
+    /*
+    FNXC:AgentWorkingDirectoryPolicy 2026-10-18-13:29 (RUFU-334):
+    The evaluator is an in-process lane that reads and writes the project tree, so its root has to come
+    from the engine that owns the project (`project-engine.ts` already passes `workingDirectory`). It used
+    to fall back to `process.cwd()`, which is the server's launch directory on any host where the service
+    does not set `WorkingDirectory=` — a scheduled batch would then evaluate against the deployment tree.
+    A scheduled run with no resolvable project root is reported as a configuration error instead.
+    */
+    const evaluatorCwd = this.options.workingDirectory?.trim();
+    if (!evaluatorCwd) {
+      return {
+        success: false,
+        output: "scheduled-eval-missing-working-directory",
+        error: "SCHEDULED_EVAL_MISSING_WORKING_DIRECTORY: the cron runner needs the project root (workingDirectory) to run an evaluator session",
+        startedAt,
+        completedAt: new Date().toISOString(),
+      };
+    }
+    const evaluator = new HybridEvaluatorService({ cwd: evaluatorCwd, store: this.store });
 
     const result = await runScheduledEvalBatch({
       store: this.store,

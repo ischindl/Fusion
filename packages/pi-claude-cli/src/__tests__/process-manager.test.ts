@@ -52,6 +52,16 @@ import {
   cleanupSystemPromptFile,
 } from "../process-manager";
 
+/*
+FNXC:AgentCwdBoundary 2026-10-18-10:31:
+RUFU-334: `spawnClaude` no longer defaults its working directory — a spawned `claude`
+inherits the serve root when the caller omits one, which on the incident host was a
+live production deployment checkout. Every case below therefore names the checkout it
+means to spawn in; the refusal itself is covered in `cli-cwd-contract.test.ts`.
+*/
+const AGENT_CWD = "/mock/agent-checkout";
+const SPAWN_OPTS = { cwd: AGENT_CWD };
+
 describe("buildClaudeSpawnArgs", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -89,7 +99,7 @@ describe("spawnClaude", () => {
   });
 
   it("spawns claude with all required CLI flags", () => {
-    spawnClaude("claude-sonnet-4-5-20250929");
+    spawnClaude("claude-sonnet-4-5-20250929", undefined, SPAWN_OPTS);
 
     expect(spawn).toHaveBeenCalledTimes(1);
     const [cmd, args] = (spawn as any).mock.calls[0];
@@ -109,7 +119,7 @@ describe("spawnClaude", () => {
   });
 
   it("passes stream-json for both input-format and output-format", () => {
-    spawnClaude("claude-sonnet-4-5-20250929");
+    spawnClaude("claude-sonnet-4-5-20250929", undefined, SPAWN_OPTS);
     const args = (spawn as any).mock.calls[0][1] as string[];
 
     const inputFormatIdx = args.indexOf("--input-format");
@@ -120,7 +130,7 @@ describe("spawnClaude", () => {
   });
 
   it("sets stdio to pipe for stdin, stdout, and stderr", () => {
-    spawnClaude("claude-sonnet-4-5-20250929");
+    spawnClaude("claude-sonnet-4-5-20250929", undefined, SPAWN_OPTS);
     const options = (spawn as any).mock.calls[0][2];
     expect(options.stdio).toEqual(["pipe", "pipe", "pipe"]);
   });
@@ -134,7 +144,7 @@ describe("spawnClaude", () => {
   });
 
   it("writes system prompt to temp file and passes path via --append-system-prompt", () => {
-    spawnClaude("claude-sonnet-4-5-20250929", "You are a helpful assistant.");
+    spawnClaude("claude-sonnet-4-5-20250929", "You are a helpful assistant.", SPAWN_OPTS);
     const args = (spawn as any).mock.calls[0][1] as string[];
     const expectedTmpFile = `/mock-tmp/pi-claude-cli-sysprompt-${process.pid}.txt`;
 
@@ -150,7 +160,7 @@ describe("spawnClaude", () => {
   });
 
   it("temp file contains the system prompt text", () => {
-    spawnClaude("claude-sonnet-4-5-20250929", "You are a helpful assistant.");
+    spawnClaude("claude-sonnet-4-5-20250929", "You are a helpful assistant.", SPAWN_OPTS);
 
     expect(mocks.writeFileSync).toHaveBeenCalledWith(
       `/mock-tmp/pi-claude-cli-sysprompt-${process.pid}.txt`,
@@ -160,13 +170,13 @@ describe("spawnClaude", () => {
   });
 
   it("does not include --append-system-prompt when no system prompt", () => {
-    spawnClaude("claude-sonnet-4-5-20250929");
+    spawnClaude("claude-sonnet-4-5-20250929", undefined, SPAWN_OPTS);
     const args = (spawn as any).mock.calls[0][1] as string[];
     expect(args).not.toContain("--append-system-prompt");
   });
 
   it("returns the spawned ChildProcess", () => {
-    const proc = spawnClaude("claude-sonnet-4-5-20250929");
+    const proc = spawnClaude("claude-sonnet-4-5-20250929", undefined, SPAWN_OPTS);
     expect(proc).toBeDefined();
     expect(proc.pid).toBe(12345);
   });
@@ -178,7 +188,7 @@ describe("effort flag", () => {
   });
 
   it("includes --effort and high in args when effort is high", () => {
-    spawnClaude("claude-sonnet-4-5-20250929", undefined, { effort: "high" });
+    spawnClaude("claude-sonnet-4-5-20250929", undefined, { cwd: AGENT_CWD, effort: "high" });
     const args = (spawn as any).mock.calls[0][1] as string[];
 
     expect(args).toContain("--effort");
@@ -187,7 +197,7 @@ describe("effort flag", () => {
   });
 
   it("includes --effort and max in args when effort is max", () => {
-    spawnClaude("claude-opus-4-6-20260301", undefined, { effort: "max" });
+    spawnClaude("claude-opus-4-6-20260301", undefined, { cwd: AGENT_CWD, effort: "max" });
     const args = (spawn as any).mock.calls[0][1] as string[];
 
     expect(args).toContain("--effort");
@@ -196,7 +206,7 @@ describe("effort flag", () => {
   });
 
   it("includes --effort and low in args when effort is low", () => {
-    spawnClaude("claude-sonnet-4-5-20250929", undefined, { effort: "low" });
+    spawnClaude("claude-sonnet-4-5-20250929", undefined, { cwd: AGENT_CWD, effort: "low" });
     const args = (spawn as any).mock.calls[0][1] as string[];
 
     expect(args).toContain("--effort");
@@ -212,7 +222,7 @@ describe("effort flag", () => {
   });
 
   it("does NOT include --effort when options is undefined", () => {
-    spawnClaude("claude-sonnet-4-5-20250929");
+    spawnClaude("claude-sonnet-4-5-20250929", undefined, SPAWN_OPTS);
     const args = (spawn as any).mock.calls[0][1] as string[];
 
     expect(args).not.toContain("--effort");
@@ -484,7 +494,7 @@ describe("CLI flags", () => {
   });
 
   it("spawnClaude does NOT include --permission-mode or dontAsk in args", () => {
-    spawnClaude("claude-sonnet-4-5-20250929");
+    spawnClaude("claude-sonnet-4-5-20250929", undefined, SPAWN_OPTS);
     const args = (spawn as any).mock.calls[0][1] as string[];
 
     expect(args).not.toContain("--permission-mode");
@@ -492,7 +502,7 @@ describe("CLI flags", () => {
   });
 
   it("spawnClaude does NOT include --permission-prompt-tool in args", () => {
-    spawnClaude("claude-sonnet-4-5-20250929");
+    spawnClaude("claude-sonnet-4-5-20250929", undefined, SPAWN_OPTS);
     const args = (spawn as any).mock.calls[0][1] as string[];
 
     expect(args).not.toContain("--permission-prompt-tool");
@@ -505,7 +515,7 @@ describe("mcp-config flag", () => {
   });
 
   it("spawnClaude with mcpConfigPath includes --mcp-config followed by the path", () => {
-    spawnClaude("claude-sonnet-4-5-20250929", undefined, {
+    spawnClaude("claude-sonnet-4-5-20250929", undefined, { cwd: AGENT_CWD,
       mcpConfigPath: "/tmp/mcp-config.json",
     });
     const args = (spawn as any).mock.calls[0][1] as string[];
@@ -516,14 +526,14 @@ describe("mcp-config flag", () => {
   });
 
   it("spawnClaude without mcpConfigPath does NOT include --mcp-config in args", () => {
-    spawnClaude("claude-sonnet-4-5-20250929");
+    spawnClaude("claude-sonnet-4-5-20250929", undefined, SPAWN_OPTS);
     const args = (spawn as any).mock.calls[0][1] as string[];
 
     expect(args).not.toContain("--mcp-config");
   });
 
   it("spawnClaude NEVER includes --strict-mcp-config in args", () => {
-    spawnClaude("claude-sonnet-4-5-20250929", undefined, {
+    spawnClaude("claude-sonnet-4-5-20250929", undefined, { cwd: AGENT_CWD,
       mcpConfigPath: "/tmp/mcp-config.json",
     });
     const args = (spawn as any).mock.calls[0][1] as string[];
@@ -677,7 +687,7 @@ describe("resume session flag", () => {
   });
 
   it("includes --resume followed by session ID when resumeSessionId is provided", () => {
-    spawnClaude("claude-sonnet-4-5-20250929", undefined, {
+    spawnClaude("claude-sonnet-4-5-20250929", undefined, { cwd: AGENT_CWD,
       resumeSessionId: "session-abc-123",
     });
     const args = (spawn as any).mock.calls[0][1] as string[];
@@ -688,14 +698,14 @@ describe("resume session flag", () => {
   });
 
   it("does NOT include --resume when resumeSessionId is undefined", () => {
-    spawnClaude("claude-sonnet-4-5-20250929");
+    spawnClaude("claude-sonnet-4-5-20250929", undefined, SPAWN_OPTS);
     const args = (spawn as any).mock.calls[0][1] as string[];
 
     expect(args).not.toContain("--resume");
   });
 
   it("does not include --session-id when --resume is provided", () => {
-    spawnClaude("claude-sonnet-4-5-20250929", undefined, {
+    spawnClaude("claude-sonnet-4-5-20250929", undefined, { cwd: AGENT_CWD,
       resumeSessionId: "session-abc",
       newSessionId: "session-new",
     });
@@ -706,7 +716,7 @@ describe("resume session flag", () => {
   });
 
   it("includes both --resume and --effort when both are provided", () => {
-    spawnClaude("claude-sonnet-4-5-20250929", undefined, {
+    spawnClaude("claude-sonnet-4-5-20250929", undefined, { cwd: AGENT_CWD,
       resumeSessionId: "session-abc",
       effort: "high",
     });
@@ -717,7 +727,7 @@ describe("resume session flag", () => {
   });
 
   it("includes both --resume and --mcp-config when both are provided", () => {
-    spawnClaude("claude-sonnet-4-5-20250929", undefined, {
+    spawnClaude("claude-sonnet-4-5-20250929", undefined, { cwd: AGENT_CWD,
       resumeSessionId: "session-abc",
       mcpConfigPath: "/tmp/mcp.json",
     });

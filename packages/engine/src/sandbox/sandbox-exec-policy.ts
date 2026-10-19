@@ -9,6 +9,7 @@ import {
   SBPL_TMP_WRITE,
 } from "./sandbox-exec-profile-templates.js";
 import type { SandboxPolicy } from "./types.js";
+import { getProjectRootFromWorktree } from "@fusion/core";
 
 export class SandboxPolicyError extends Error {
   constructor(message: string) {
@@ -21,6 +22,50 @@ export interface SandboxExecPolicy extends SandboxPolicy {
   failureMode?: "fail-hard" | "fallback-native";
   allowedPorts?: number[];
   allowPort4040Override?: boolean;
+}
+
+/*
+FNXC:AgentWorkingDirectoryPolicy 2026-10-18-13:29 (RUFU-334):
+A Seatbelt profile grants writes by absolute path, so the root it names IS the sandbox's write boundary.
+This module used to receive roots that `SandboxExecBackend` derived from `process.cwd()`, which on a unit
+with no `WorkingDirectory` (or any serve started from inside another checkout) granted writes to — and
+reported as the readable repo root of — the server's own tree. A root therefore has to arrive from a
+caller that owns a real directory (the run cwd, or a policy that declares its writable paths), and the
+absence of one is a named refusal rather than an inherited default.
+*/
+export class SandboxWritableRootMissingError extends Error {
+  readonly code = "SANDBOX_WRITABLE_ROOT_MISSING";
+  constructor(lane: string) {
+    super(
+      `Refusing to build a sandbox-exec profile for the ${lane} leg without an explicit working directory: pass the run cwd or declare policy.allowedWritePaths rather than inheriting the server's launch directory.`,
+    );
+    this.name = "SandboxWritableRootMissingError";
+  }
+}
+
+/**
+ * The one root resolver behind every sandbox-exec profile leg. The run cwd wins over a policy-declared
+ * root because the profile has to match the directory the child is actually about to run in.
+ */
+export function resolveSandboxWritableRoot(opts: {
+  policyWriteRoot?: string | null;
+  runCwd?: string | null;
+  lane: string;
+}): string {
+  for (const candidate of [opts.runCwd, opts.policyWriteRoot]) {
+    const trimmed = typeof candidate === "string" ? candidate.trim() : "";
+    if (trimmed) return trimmed;
+  }
+  throw new SandboxWritableRootMissingError(opts.lane);
+}
+
+/**
+ * The repository root the `.fusion` write guard is measured against, derived from the resolved worktree:
+ * a task worktree below `.fusion/worktrees/<id>` still belongs to the project root above it, so collapsing
+ * the two would let a session write the Fusion database. Never derived from the process working directory.
+ */
+export function deriveSandboxRepoRoot(worktreePath: string): string {
+  return getProjectRootFromWorktree(worktreePath) ?? worktreePath;
 }
 
 export interface SandboxExecContext {

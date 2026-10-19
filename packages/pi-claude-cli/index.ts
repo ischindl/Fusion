@@ -16,7 +16,7 @@
  */
 import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import { getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai/utils/transcript";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { streamViaCli } from "./src/provider.js";
 import { streamViaAcp } from "./src/acp-driver.js";
 import {
@@ -202,14 +202,43 @@ export default function (pi: ExtensionAPI) {
     // The installed Pi catalog is the sole source for Claude CLI model metadata.
     const models = catalogModels;
 
+    /*
+    FNXC:AgentCwdBoundary 2026-10-18-10:29:
+    RUFU-334: pi's `SimpleStreamOptions` carries NO `cwd` field (upstream pi
+    1.1.0 `ProviderRequestOptions` is signal/apiKey/fetch/env/headers/sessionId
+    only), so `options.cwd` was never populated in a hosted run and both Claude
+    transports silently fell back to `process.cwd()` — the directory the engine or
+    dashboard process was launched from, which on the incident host was a live
+    production deployment checkout. pi DOES hand the session's own working
+    directory to every event handler through `ExtensionContext.cwd`, so the
+    extension now latches it here and passes it explicitly to the transports.
+    Deliberately NOT a `process.cwd()` fallback: an unreadable lane must fail
+    loudly rather than repeat the incident.
+    */
+    let sessionCwd: string | undefined;
+    /** Latch pi's session working directory from any event context that carries it. */
+    function noteSessionCwd(ctx: ExtensionContext): void {
+      if (typeof ctx?.cwd === "string" && ctx.cwd.length > 0) sessionCwd = ctx.cwd;
+    }
+
     // Ensure all registered tools are active so pi can execute them.
     // Some tools (find, grep, ls) are registered but not activated by default.
-    pi.on("session_start", async () => {
+    pi.on("session_start", async (_event, ctx) => {
+      noteSessionCwd(ctx);
       const allTools = pi.getAllTools();
       if (Array.isArray(allTools)) {
         pi.setActiveTools(allTools.map((t: { name: string }) => t.name));
       }
     });
+
+    /*
+    FNXC:AgentCwdBoundary 2026-10-18-10:29:
+    RUFU-334. `turn_start` re-reads the cwd every turn, so a fork, resume, or in-session
+    switch that pi never re-announces to this extension still cannot leave a stale cwd
+    behind; `agent_start` covers lanes that stream without a turn boundary.
+    */
+    pi.on("turn_start", (_event, ctx) => { noteSessionCwd(ctx); });
+    pi.on("agent_start", (_event, ctx) => { noteSessionCwd(ctx); });
 
     pi.registerProvider(PROVIDER_ID, {
       baseUrl: "pi-claude-cli",
@@ -225,6 +254,17 @@ export default function (pi: ExtensionAPI) {
         // FNXC:PiTranscriptBridge 2026-09-20-17:02: Prompt adapters still consume Context.tools for MCP tool-name instructions, so forward Pi's normalized current transcript tools after replacing its retired source field.
         const cliContext = { ...context, systemPrompt: getCurrentSystemPrompt(context.messages), tools: contextTools };
 
+        /*
+        FNXC:AgentCwdBoundary 2026-10-18-10:29:
+        RUFU-334: an explicit caller-supplied `cwd` always wins; otherwise use the session
+        directory latched from pi's event context. Never `process.cwd()` — the transports
+        refuse a still-missing value rather than inherit the host launch directory. Read
+        structurally because upstream pi's `SimpleStreamOptions` declares no `cwd` field at
+        all; a caller that names a directory (the engine registration seam) extends that
+        shape rather than replaces it.
+        */
+        const agentCwd = (options as { cwd?: string } | undefined)?.cwd ?? sessionCwd;
+
         // FNXC:pi-claude-cli 2026-06-27-06:39: Route A drives Claude through the ACP bridge only when the kill-switch is on AND a bridge path is injected. OFF by default → `-p` path below.
         const bridgePath = resolveAcpBridgePath();
         if (bridgePath) {
@@ -233,6 +273,7 @@ export default function (pi: ExtensionAPI) {
           const hash = createHash("sha1").update(JSON.stringify({ toolDefs, userMcpServerNames: userMcpServers.map((server) => server.name) })).digest("hex").slice(0, 12);
           return streamViaAcp(model, cliContext as never, {
             ...options,
+            cwd: agentCwd,
             bridgePath,
             mcpServers: buildAcpMcpServers(toolDefs, hash, userMcpServers),
             // FNXC:pi-claude-cli 2026-06-27-06:39: Forward only HOME/PATH so the bridged `claude` authenticates from the login/keychain session (R17); never inherited process.env or API keys.
@@ -243,6 +284,7 @@ export default function (pi: ExtensionAPI) {
         const configPath = ensureMcpConfig(pi, contextTools, getUserMcpServers(options));
         return streamViaCli(model, cliContext as never, {
           ...options,
+          cwd: agentCwd,
           mcpConfigPath: configPath,
         });
       },

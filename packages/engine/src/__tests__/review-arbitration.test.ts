@@ -321,7 +321,10 @@ describe("review arbitration fence", () => {
     expect(harness.scheduleWorkflowRerun).not.toHaveBeenCalled();
   });
 
-  it("retains the process cwd arbitration fallback when no checkout is resolvable", async () => {
+  // RUFU-334 replaced the old "retains the process cwd arbitration fallback" case: the arbiter is a real
+  // review session, so running it at the server's launch directory was a write-capable session in the
+  // wrong tree, and the decline only arrived after some rulings had already been written.
+  it("declines before any session exists when no remediation checkout is resolvable", async () => {
     const task = failedTask() as any;
     task.worktree = undefined;
     vi.mocked(reviewStep).mockResolvedValue({
@@ -336,17 +339,10 @@ describe("review arbitration fence", () => {
       updateTaskAtomic: vi.fn(async () => task),
     };
 
-    await runReviewArbitration({ store, getRunContextFor: () => undefined, sendTaskBackForFix: vi.fn() }, task, "code-review", "Code Review", "feedback", 2, 3);
+    await expect(runReviewArbitration({ store, getRunContextFor: () => undefined, sendTaskBackForFix: vi.fn() }, task, "code-review", "Code Review", "feedback", 2, 3))
+      .resolves.toBe("declined");
 
-    expect(reviewStep).toHaveBeenCalledWith(
-      process.cwd(),
-      task.id,
-      expect.anything(),
-      expect.anything(),
-      "code",
-      expect.anything(),
-      undefined,
-      expect.anything(),
-    );
+    expect(reviewStep).not.toHaveBeenCalled();
+    expect(store.updateTaskAtomic).not.toHaveBeenCalled();
   });
 });

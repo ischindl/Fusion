@@ -84,6 +84,16 @@ import { spawn } from "node:child_process";
 import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import { streamViaCli } from "../provider";
 
+/*
+FNXC:AgentCwdBoundary 2026-10-18-10:31:
+RUFU-334: every case below spawns a Claude subprocess, and `streamViaCli` now refuses
+a missing working directory instead of inheriting `process.cwd()`. These fixtures state
+the directory each case means to run in — they used to be implicit, which is exactly
+how the Claude lane ended up launching in the server's launch directory.
+*/
+const AGENT_CWD = "/mock/agent-checkout";
+const AGENT_OPTS = { cwd: AGENT_CWD };
+
 describe("provider registration (default export)", () => {
   it("registers provider with ID pi-claude-cli", async () => {
     const registerProvider = vi.fn();
@@ -205,7 +215,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
       systemPrompt: "Be helpful",
     };
 
-    const result = streamViaCli(model, context);
+    const result = streamViaCli(model, context, AGENT_OPTS);
     expect(result).toBeDefined();
     expect(result.push).toBeDefined();
     expect(result.end).toBeDefined();
@@ -231,7 +241,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
 
     const errorSpy = vi.spyOn(console, "error");
 
-    streamViaCli(model, context);
+    streamViaCli(model, context, AGENT_OPTS);
     await vi.advanceTimersByTimeAsync(0);
 
     expect(errorSpy).toHaveBeenCalledWith(
@@ -245,7 +255,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
       messages: [{ role: "user", content: "Hello" }],
     };
 
-    streamViaCli(model, context);
+    streamViaCli(model, context, AGENT_OPTS);
 
     // Allow async IIFE to start
     await vi.advanceTimersByTimeAsync(0);
@@ -270,7 +280,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         messages: [{ role: "user", content: "Hello" }],
       };
 
-      streamViaCli(model, context);
+      streamViaCli(model, context, AGENT_OPTS);
       await vi.advanceTimersByTimeAsync(0);
 
       const proc = (spawn as any).mock.results[0].value;
@@ -288,7 +298,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
       };
       const errorSpy = vi.spyOn(console, "error");
 
-      streamViaCli(model, context);
+      streamViaCli(model, context, AGENT_OPTS);
       await vi.advanceTimersByTimeAsync(0);
 
       const proc = (spawn as any).mock.results[0].value;
@@ -342,7 +352,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
       messages: [{ role: "user", content: "Hello" }],
     };
 
-    streamViaCli(model, context);
+    streamViaCli(model, context, AGENT_OPTS);
     await vi.advanceTimersByTimeAsync(0);
 
     // Get the mock process
@@ -433,7 +443,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
       messages: [{ role: "user", content: "Hello" }],
     };
 
-    streamViaCli(model, context);
+    streamViaCli(model, context, AGENT_OPTS);
     await vi.advanceTimersByTimeAsync(0);
 
     const proc = (spawn as any).mock.results[0].value;
@@ -463,7 +473,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
       messages: [{ role: "user", content: "Hello" }],
     };
 
-    streamViaCli(model, context);
+    streamViaCli(model, context, AGENT_OPTS);
     await vi.advanceTimersByTimeAsync(0);
 
     const proc = (spawn as any).mock.results[0].value;
@@ -488,7 +498,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
     };
     const controller = new AbortController();
 
-    streamViaCli(model, context, { signal: controller.signal });
+    streamViaCli(model, context, { cwd: AGENT_CWD, signal: controller.signal });
     await vi.advanceTimersByTimeAsync(0);
 
     const proc = (spawn as any).mock.results[0].value;
@@ -513,7 +523,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         messages: [{ role: "user", content: "Think about this" }],
       };
 
-      streamViaCli(model, context, { reasoning: "high" } as any);
+      streamViaCli(model, context, { cwd: AGENT_CWD, reasoning: "high" } as any);
       await vi.advanceTimersByTimeAsync(0);
 
       // Verify spawn was called with effort arg
@@ -529,7 +539,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         messages: [{ role: "user", content: "Think about this" }],
       };
 
-      streamViaCli(model, context, { reasoning: "high" } as any);
+      streamViaCli(model, context, { cwd: AGENT_CWD, reasoning: "high" } as any);
       await vi.advanceTimersByTimeAsync(0);
 
       // Opus "high" should map to "max"
@@ -545,7 +555,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         messages: [{ role: "user", content: "Hello" }],
       };
 
-      streamViaCli(model, context);
+      streamViaCli(model, context, AGENT_OPTS);
       await vi.advanceTimersByTimeAsync(0);
 
       const args = (spawn as any).mock.calls[0][1] as string[];
@@ -558,7 +568,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         messages: [{ role: "user", content: "Think" }],
       };
 
-      streamViaCli(model, context, { reasoning: "medium" } as any);
+      streamViaCli(model, context, { cwd: AGENT_CWD, reasoning: "medium" } as any);
       await vi.advanceTimersByTimeAsync(0);
 
       const args = (spawn as any).mock.calls[0][1] as string[];
@@ -572,7 +582,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         messages: [{ role: "user", content: "Think" }],
       };
 
-      streamViaCli(model, context, { reasoning: "medium" } as any);
+      streamViaCli(model, context, { cwd: AGENT_CWD, reasoning: "medium" } as any);
       await vi.advanceTimersByTimeAsync(0);
 
       const args = (spawn as any).mock.calls[0][1] as string[];
@@ -590,7 +600,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         messages: [{ role: "user", content: "Hello" }],
       };
 
-      streamViaCli(model, context, {
+      streamViaCli(model, context, { cwd: AGENT_CWD,
         mcpConfigPath: "/tmp/mcp-config.json",
       } as any);
       await vi.advanceTimersByTimeAsync(0);
@@ -614,7 +624,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         messages: [{ role: "user", content: "Read a file" }],
       };
 
-      streamViaCli(model, context);
+      streamViaCli(model, context, AGENT_OPTS);
       await vi.advanceTimersByTimeAsync(0);
 
       const proc = (spawn as any).mock.results[0].value;
@@ -696,7 +706,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         messages: [{ role: "user", content: "Search for something" }],
       };
 
-      streamViaCli(model, context);
+      streamViaCli(model, context, AGENT_OPTS);
       await vi.advanceTimersByTimeAsync(0);
 
       const proc = (spawn as any).mock.results[0].value;
@@ -756,7 +766,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         messages: [{ role: "user", content: "Hello" }],
       };
 
-      streamViaCli(model, context);
+      streamViaCli(model, context, AGENT_OPTS);
       await vi.advanceTimersByTimeAsync(0);
 
       const proc = (spawn as any).mock.results[0].value;
@@ -836,7 +846,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         messages: [{ role: "user", content: "Use weather tool" }],
       };
 
-      streamViaCli(model, context);
+      streamViaCli(model, context, AGENT_OPTS);
       await vi.advanceTimersByTimeAsync(0);
 
       const proc = (spawn as any).mock.results[0].value;
@@ -907,7 +917,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         messages: [{ role: "user", content: "Run an agent" }],
       };
 
-      streamViaCli(model, context);
+      streamViaCli(model, context, AGENT_OPTS);
       await vi.advanceTimersByTimeAsync(0);
 
       const proc = (spawn as any).mock.results[0].value;
@@ -1059,7 +1069,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         messages: [{ role: "user", content: "Use user MCP tool" }],
       };
 
-      streamViaCli(model, context);
+      streamViaCli(model, context, AGENT_OPTS);
       await vi.advanceTimersByTimeAsync(0);
 
       const proc = (spawn as any).mock.results[0].value;
@@ -1134,7 +1144,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         messages: [{ role: "user", content: "Hello" }],
       };
 
-      streamViaCli(model, context);
+      streamViaCli(model, context, AGENT_OPTS);
       await vi.advanceTimersByTimeAsync(0);
 
       const proc = (spawn as any).mock.results[0].value;
@@ -1159,7 +1169,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         messages: [{ role: "user", content: "Hello" }],
       };
 
-      streamViaCli(model, context);
+      streamViaCli(model, context, AGENT_OPTS);
       await vi.advanceTimersByTimeAsync(0);
 
       const proc = (spawn as any).mock.results[0].value;
@@ -1184,7 +1194,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         messages: [{ role: "user", content: "Hello" }],
       };
 
-      streamViaCli(model, context);
+      streamViaCli(model, context, AGENT_OPTS);
       await vi.advanceTimersByTimeAsync(0);
 
       const proc = (spawn as any).mock.results[0].value;
@@ -1216,7 +1226,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
 
         const warnSpy = vi.spyOn(console, "warn");
 
-        streamViaCli(model, context);
+        streamViaCli(model, context, AGENT_OPTS);
         await vi.advanceTimersByTimeAsync(0);
 
         const proc = (spawn as any).mock.results[0].value;
@@ -1248,7 +1258,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
 
       const warnSpy = vi.spyOn(console, "warn");
 
-      streamViaCli(model, context);
+      streamViaCli(model, context, AGENT_OPTS);
       await vi.advanceTimersByTimeAsync(0);
 
       const proc = (spawn as any).mock.results[0].value;
@@ -1267,7 +1277,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         messages: [{ role: "user", content: "Hello" }],
       };
 
-      streamViaCli(model, context);
+      streamViaCli(model, context, AGENT_OPTS);
       await vi.advanceTimersByTimeAsync(0);
 
       const proc = (spawn as any).mock.results[0].value;
@@ -1307,7 +1317,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         messages: [{ role: "user", content: "Read a file" }],
       };
 
-      streamViaCli(model, context);
+      streamViaCli(model, context, AGENT_OPTS);
       await vi.advanceTimersByTimeAsync(0);
 
       const proc = (spawn as any).mock.results[0].value;
@@ -1376,7 +1386,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         messages: [{ role: "user", content: "Hello" }],
       };
 
-      streamViaCli(model, context);
+      streamViaCli(model, context, AGENT_OPTS);
       await vi.advanceTimersByTimeAsync(0);
 
       const proc = (spawn as any).mock.results[0].value;
@@ -1403,7 +1413,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         messages: [{ role: "user", content: "Hello" }],
       };
 
-      streamViaCli(model, context);
+      streamViaCli(model, context, AGENT_OPTS);
       await vi.advanceTimersByTimeAsync(0);
 
       const proc = (spawn as any).mock.results[0].value;
@@ -1452,7 +1462,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         messages: [{ role: "user", content: "Hello" }],
       };
 
-      streamViaCli(model, context);
+      streamViaCli(model, context, AGENT_OPTS);
       await vi.advanceTimersByTimeAsync(0);
 
       const proc = (spawn as any).mock.results[0].value;
@@ -1497,7 +1507,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
       };
       const controller = new AbortController();
 
-      streamViaCli(model, context, { signal: controller.signal });
+      streamViaCli(model, context, { cwd: AGENT_CWD, signal: controller.signal });
       await vi.advanceTimersByTimeAsync(0);
 
       const proc = (spawn as any).mock.results[0].value;
@@ -1529,7 +1539,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
       const controller = new AbortController();
       controller.abort(); // Abort BEFORE calling streamViaCli
 
-      streamViaCli(model, context, { signal: controller.signal });
+      streamViaCli(model, context, { cwd: AGENT_CWD, signal: controller.signal });
       await vi.advanceTimersByTimeAsync(0);
 
       const proc = (spawn as any).mock.results[0].value;
@@ -1552,7 +1562,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         ],
       };
 
-      streamViaCli(model, context, { sessionId: "session-follow-up" } as any);
+      streamViaCli(model, context, { cwd: AGENT_CWD, sessionId: "session-follow-up" } as any);
       await vi.advanceTimersByTimeAsync(0);
 
       const args = (spawn as any).mock.calls[0][1] as string[];
@@ -1586,7 +1596,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         ],
       };
 
-      streamViaCli(model, context, {
+      streamViaCli(model, context, { cwd: AGENT_CWD,
         mcpConfigPath: "/tmp/mcp.json",
       } as any);
       await vi.advanceTimersByTimeAsync(0);
@@ -1607,7 +1617,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         messages: [{ role: "user", content: "Hello" }],
       };
 
-      streamViaCli(model, context, {
+      streamViaCli(model, context, { cwd: AGENT_CWD,
         mcpConfigPath: "/tmp/mcp.json",
       } as any);
       await vi.advanceTimersByTimeAsync(0);
@@ -1629,7 +1639,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         messages: [{ role: "user", content: "Hello" }],
       };
 
-      streamViaCli(model, context);
+      streamViaCli(model, context, AGENT_OPTS);
       await vi.advanceTimersByTimeAsync(0);
 
       const proc = (spawn as any).mock.results[0].value;
@@ -1697,7 +1707,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         messages: [{ role: "user", content: "Read a file" }],
       };
 
-      streamViaCli(model, context);
+      streamViaCli(model, context, AGENT_OPTS);
       await vi.advanceTimersByTimeAsync(0);
 
       const proc = (spawn as any).mock.results[0].value;
@@ -1775,7 +1785,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         messages: [{ role: "user", content: "Hello" }],
       };
 
-      streamViaCli(model, context);
+      streamViaCli(model, context, AGENT_OPTS);
       await vi.advanceTimersByTimeAsync(0);
 
       const proc = (spawn as any).mock.results[0].value;
@@ -1826,7 +1836,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         messages: [{ role: "user", content: "Write a very long essay" }],
       };
 
-      streamViaCli(model, context);
+      streamViaCli(model, context, AGENT_OPTS);
       await vi.advanceTimersByTimeAsync(0);
 
       const proc = (spawn as any).mock.results[0].value;
@@ -1900,7 +1910,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         ],
       };
 
-      streamViaCli(model, context, { sessionId: "sess-abc-123" } as any);
+      streamViaCli(model, context, { cwd: AGENT_CWD, sessionId: "sess-abc-123" } as any);
       await vi.advanceTimersByTimeAsync(0);
 
       const args = (spawn as any).mock.calls[0][1] as string[];
@@ -1920,7 +1930,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         messages: [{ role: "user", content: "Hello" }],
       };
 
-      streamViaCli(model, context, { sessionId: "sess-new" } as any);
+      streamViaCli(model, context, { cwd: AGENT_CWD, sessionId: "sess-new" } as any);
       await vi.advanceTimersByTimeAsync(0);
 
       const args = (spawn as any).mock.calls[0][1] as string[];
@@ -1941,7 +1951,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         messages: [{ role: "user", content: "Hello" }],
       };
 
-      streamViaCli(model, context);
+      streamViaCli(model, context, AGENT_OPTS);
       await vi.advanceTimersByTimeAsync(0);
 
       const args = (spawn as any).mock.calls[0][1] as string[];
@@ -1964,7 +1974,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         ],
       };
 
-      streamViaCli(model, context, { sessionId: "sess-resume" } as any);
+      streamViaCli(model, context, { cwd: AGENT_CWD, sessionId: "sess-resume" } as any);
       await vi.advanceTimersByTimeAsync(0);
 
       const proc = (spawn as any).mock.results[0].value;
@@ -1989,7 +1999,7 @@ describe("streamViaCli", { timeout: 90_000 }, () => {
         systemPrompt: "Be helpful",
       };
 
-      streamViaCli(model, context, { sessionId: "sess-resume" } as any);
+      streamViaCli(model, context, { cwd: AGENT_CWD, sessionId: "sess-resume" } as any);
       await vi.advanceTimersByTimeAsync(0);
 
       const args = (spawn as any).mock.calls[0][1] as string[];

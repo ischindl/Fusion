@@ -30,6 +30,7 @@ import {
   buildResumePrompt,
   type PiContext,
 } from "./prompt-builder.js";
+import { resolveRequiredCwd } from "./cwd-contract.js";
 import {
   spawnClaude,
   writeUserMessage,
@@ -98,6 +99,15 @@ export function streamViaCli(
   context: PiContext,
   options?: StreamViaCLiOptions,
 ): AssistantMessageEventStream {
+  /*
+  FNXC:AgentCwdBoundary 2026-10-18-10:29:
+  RUFU-334. Resolved BEFORE the stream is constructed so a missing working directory
+  is a synchronous, typed refusal rather than a stream error the caller only learns
+  about after subscribing. It used to read `options?.cwd ?? process.cwd()` inside the
+  async body, which silently pointed `claude` at whatever directory the host process
+  was launched from.
+  */
+  const cwd = resolveRequiredCwd(options?.cwd, "streamViaCli");
   // @ts-expect-error — tsc can't verify AssistantMessageEventStream is a value
   // through pi-ai's `export *` re-export chain. The class constructor exists at runtime.
   const stream = new AssistantMessageEventStream();
@@ -107,8 +117,6 @@ export function streamViaCli(
     let abortHandler: (() => void) | undefined;
 
     try {
-      const cwd = options?.cwd ?? process.cwd();
-
       // Resume if pi provides a session ID AND this isn't the first turn.
       // Pi passes sessionId on every call (including first), but we can only
       // --resume a CLI session that already exists on disk from a prior turn.

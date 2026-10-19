@@ -36,6 +36,14 @@ import {
 } from "@fusion/engine";
 import { CliChatSessionRunner, type ChatStoreLike } from "../cli-chat.js";
 
+/*
+FNXC:AgentWorkingDirectoryPolicy 2026-10-18-13:29 (RUFU-334):
+This harness drives the real `CliSessionManager`, which now refuses a spawn without an explicit working
+directory rather than inheriting the process cwd, so the resume fixtures name the checkout they are
+simulating (the pty is faked, so the path is never resolved).
+*/
+const TEST_WORKTREE = "/test/cli-chat-resume-worktree";
+
 // ── Fakes ────────────────────────────────────────────────────────────────
 
 interface FakePty {
@@ -282,7 +290,7 @@ describe("CliChatSessionRunner resume id-linkage (RUFU-142)", () => {
 
     // Fresh spawn: the store mints a cli-<…> record id distinct from the chat id.
     const runner1 = makeRunner();
-    const cliId = await runner1.ensureSession("chat-1", { projectId: "proj-1" });
+    const cliId = await runner1.ensureSession("chat-1", { projectId: "proj-1", worktreePath: TEST_WORKTREE });
     expect(cliId).toMatch(/^cli-/);
     expect(cliId).not.toBe("chat-1");
 
@@ -301,7 +309,7 @@ describe("CliChatSessionRunner resume id-linkage (RUFU-142)", () => {
     // A fresh runner instance resumes by the CHAT session id — pre-fix this
     // step threw UnknownCliSessionError("chat-1").
     const runner2 = makeRunner();
-    const resumedId = await runner2.ensureSession("chat-1", { projectId: "proj-1" });
+    const resumedId = await runner2.ensureSession("chat-1", { projectId: "proj-1", worktreePath: TEST_WORKTREE });
 
     // Symptom gone: the resume resolves the MINTED record, not a new one.
     expect(resumedId).toBe(cliId);
@@ -335,7 +343,7 @@ describe("CliChatSessionRunner resume id-linkage (RUFU-142)", () => {
 
     const runner = makeRunner();
     const err = await runner
-      .ensureSession("chat-2", { projectId: "proj-1" })
+      .ensureSession("chat-2", { projectId: "proj-1", worktreePath: TEST_WORKTREE })
       .catch((e: unknown) => e);
 
     expect(err).toBeInstanceOf(UnknownCliSessionError);
@@ -376,7 +384,7 @@ describe("CliChatSessionRunner resume id-linkage (RUFU-142)", () => {
     chatStore.putSession({ id: "chat-3", cliSessionFile: "native-OLD" });
 
     const runner = makeRunner();
-    const resumedId = await runner.ensureSession("chat-3", { projectId: "proj-1" });
+    const resumedId = await runner.ensureSession("chat-3", { projectId: "proj-1", worktreePath: TEST_WORKTREE });
 
     // The nativeSessionId match wins over the newest-record fallback.
     expect(resumedId).toBe(a.id);

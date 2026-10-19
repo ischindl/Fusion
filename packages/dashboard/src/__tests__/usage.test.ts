@@ -37,7 +37,14 @@ import {
   _clearRefreshedToken,
   readCursorApiKey,
   fetchCursorUsage,
+  fetchClaudeUsageViaCli,
+  USAGE_PROBE_DIR_PREFIX,
+  USAGE_PROBE_ENV_MARKER,
+  USAGE_PROBE_ENV_VALUE,
 } from "../usage.js";
+import { existsSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename } from "node:path";
 
 // Mock the https module
 const mockRequest = vi.fn();
@@ -5552,6 +5559,234 @@ describe("usage", () => {
       expect(weeklyWindow.resetText).toBeNull();
       expect(weeklyWindow.resetMs).toBeUndefined();
       expect(weeklyWindow.resetAt).toBeUndefined();
+    });
+  });
+
+  /*
+  FNXC:UsageProbeHermeticity 2026-10-18-08:45:
+  RUFU-334's contract for the Claude Usage probe. The assertions are grouped by the four ways the probe
+  is reached, because every one of them inherits the same spawn: an earlier delivery of this suite drove
+  only the 429 leg, and the other three legs were the ones that kept the serve-checkout cwd in
+  production. The scratch directory is created for real (node:fs is not mocked here) so cleanup is
+  asserted against the filesystem rather than against a call that merely claims to delete it.
+  */
+  describe("Claude CLI probe hermeticity (RUFU-334)", () => {
+    const recordedProbe = () => {
+      expect(nodePtyMocks.spawn).toHaveBeenCalled();
+      const [shell, args, options] = nodePtyMocks.spawn.mock.calls[0] as [
+        string,
+        string[],
+        Record<string, unknown>,
+      ];
+      return { shell, args, options, command: [shell, ...args].join(" ") };
+    };
+
+    const probeScratchDir = () => String(recordedProbe().options.cwd);
+
+    const expectHermeticProbe = (leg: string) => {
+      const { args, options, command } = recordedProbe();
+      const serveDir = realpathSync(process.cwd());
+      const scratch = String(options.cwd);
+      const scratchRoot = realpathSync(tmpdir());
+
+      // The probe owns a fresh scratch directory under the OS temp dir …
+      expect(scratch.startsWith(scratchRoot), leg).toBe(true);
+      expect(basename(scratch).startsWith(USAGE_PROBE_DIR_PREFIX), leg).toBe(true);
+      // … and it is emphatically not the directory the server was launched from.
+      expect(scratch).not.toBe(serveDir);
+      expect(scratch).not.toBe(process.cwd());
+      // Nothing in the argv may reference the serve checkout, in either argv shape.
+      expect(command.includes(serveDir), leg).toBe(false);
+      for (const arg of args) expect(arg.includes(serveDir), leg).toBe(false);
+      expect(command).not.toContain("--add-dir");
+      // The child identifies its own lane, which is what makes it recognizable in /proc/<pid>/environ.
+      expect((options.env as Record<string, string>)[USAGE_PROBE_ENV_MARKER], leg).toBe(
+        USAGE_PROBE_ENV_VALUE,
+      );
+    };
+
+    /** A PTY stub that behaves like a working CLI: emits the Usage screen and exits. */
+    const stubProbePty = (output: string) => {
+      const kill = vi.fn();
+      nodePtyMocks.spawn.mockImplementation(() => ({
+        write: vi.fn(),
+        kill,
+        onData: vi.fn((handler: (data: string) => void) => {
+          handler(output);
+        }),
+        onExit: vi.fn((handler: () => void) => {
+          handler();
+        }),
+      }));
+      return kill;
+    };
+
+    const USAGE_SCREEN = ["Current session", "██ 42% used", "Resets in 2h", ""].join("\n");
+
+    /** Credentials that only auth storage can supply, so no keychain/credential-file noise is in scope. */
+    const authStorageWith = (overrides: Record<string, unknown>) => ({
+      reload: vi.fn(),
+      hasAuth: vi.fn(() => true),
+      get: vi.fn((provider: string) =>
+        provider === "anthropic"
+          ? {
+              type: "oauth",
+              access: "fusion-token",
+              expires: Date.now() + 3_600_000,
+              scopes: ["user:profile"],
+              ...overrides,
+            }
+          : null,
+      ),
+    });
+
+    const respondWith = (statusCode: number, body: string) => {
+      const mockReq = { on: vi.fn(), write: vi.fn(), end: vi.fn() };
+      mockRequest.mockImplementation((_options: unknown, callback: (res: unknown) => void) => {
+        callback({
+          statusCode,
+          headers: {},
+          on: vi.fn((event: string, handler: (chunk: unknown) => void) => {
+            if (event === "data") handler(Buffer.from(body));
+            if (event === "end") handler(undefined);
+          }),
+        });
+        return mockReq;
+      });
+    };
+
+    const isolateCredentialSources = () => {
+      mockReadFile.mockImplementation(async () => {
+        throw new Error("File not found");
+      });
+      mockExecFileSync.mockImplementation(() => {
+        throw new Error("Keychain item not found");
+      });
+    };
+
+    const claudeLegs = [
+      {
+        label: "expired token with no refresh token",
+        run: async () => {
+          isolateCredentialSources();
+          respondWith(200, "{}");
+          return fetchAllProviderUsage(
+            authStorageWith({ expires: Date.now() - 60_000 }) as never,
+          );
+        },
+      },
+      {
+        label: "expired token whose refresh fails",
+        run: async () => {
+          isolateCredentialSources();
+          respondWith(400, '{"error":"invalid_grant"}');
+          return fetchAllProviderUsage(
+            authStorageWith({ refresh: "bad-refresh-token", expires: Date.now() - 60_000 }) as never,
+          );
+        },
+      },
+      {
+        label: "401 with token-refresh exhausted",
+        run: async () => {
+          isolateCredentialSources();
+          respondWith(401, '{"error":"authentication_error"}');
+          return fetchAllProviderUsage(authStorageWith({ refresh: "refresh-token" }) as never);
+        },
+      },
+      {
+        label: "429 with retries exhausted",
+        run: async () => {
+          // Credentials come from the Claude CLI credential file so the API leg is reached at all;
+          // `isolateCredentialSources()` would leave the function with no credentials and no fallback.
+          mockReadFile.mockImplementation(async (filePath: string) => {
+            if (String(filePath).includes("claude")) {
+              return JSON.stringify({ accessToken: "usage-token", scopes: ["user:profile"] });
+            }
+            throw new Error("File not found");
+          });
+          mockExecFileSync.mockImplementation(() => {
+            throw new Error("Keychain item not found");
+          });
+          respondWith(429, '{"error":"rate_limited"}');
+          _setSleepFn(async () => {});
+          try {
+            return await fetchAllProviderUsage();
+          } finally {
+            _resetSleepFn();
+          }
+        },
+      },
+    ];
+
+    for (const leg of claudeLegs) {
+      it(`runs the probe in a scratch directory with no serve-checkout reference on the ${leg.label} leg`, async () => {
+        nodePtyMocks.available = true;
+        stubProbePty(USAGE_SCREEN);
+
+        await leg.run();
+
+        expectHermeticProbe(leg.label);
+      });
+    }
+
+    it("spawns one probe for two overlapping refreshes", async () => {
+      nodePtyMocks.available = true;
+      stubProbePty(USAGE_SCREEN);
+
+      const [first, second] = await Promise.all([fetchClaudeUsageViaCli(), fetchClaudeUsageViaCli()]);
+
+      expect(nodePtyMocks.spawn).toHaveBeenCalledTimes(1);
+      // The joiner receives the same result object rather than a second parse of a second session.
+      expect(second).toBe(first);
+      expect(first.status).toBe("ok");
+    });
+
+    it("removes the scratch directory after a successful parse", async () => {
+      nodePtyMocks.available = true;
+      stubProbePty(USAGE_SCREEN);
+
+      const result = await fetchClaudeUsageViaCli();
+
+      expect(result.status).toBe("ok");
+      expect(result.windows.length).toBeGreaterThan(0);
+      expect(existsSync(probeScratchDir())).toBe(false);
+    });
+
+    it("removes the scratch directory after the auth-error leg", async () => {
+      nodePtyMocks.available = true;
+      stubProbePty("Not logged in · Run /login\nSession\nTotal cost: $0.0000");
+
+      const result = await fetchClaudeUsageViaCli();
+
+      expect(result.status).toBe("error");
+      expect(result.error).toContain("/login");
+      expect(existsSync(probeScratchDir())).toBe(false);
+    });
+
+    it("removes the scratch directory after the timeout leg", async () => {
+      nodePtyMocks.available = true;
+      const kill = vi.fn();
+      nodePtyMocks.spawn.mockImplementation(() => ({
+        write: vi.fn(),
+        kill,
+        onData: vi.fn(),
+        onExit: vi.fn(),
+      }));
+
+      vi.useFakeTimers();
+      try {
+        const probe = fetchClaudeUsageViaCli();
+        await vi.runAllTimersAsync();
+        const result = await probe;
+
+        expect(result.status).toBe("error");
+        expect(result.error).toContain("timed out");
+        expect(kill).toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+
+      expect(existsSync(probeScratchDir())).toBe(false);
     });
   });
 });

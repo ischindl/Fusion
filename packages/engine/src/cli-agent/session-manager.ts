@@ -30,6 +30,7 @@
 
 import {
   CliSessionStore,
+  assertAgentCwdAllowed,
   type CliAutonomyPosture,
   type CliSession,
   type CliSessionPurpose,
@@ -79,6 +80,46 @@ export class UnknownCliSessionError extends Error {
     super(`No live CLI session: ${sessionId}`);
     this.name = "UnknownCliSessionError";
   }
+}
+
+/*
+FNXC:AgentWorkingDirectoryPolicy 2026-10-18-13:29 (RUFU-334):
+The PTY cwd used to be `options.worktreePath ?? process.cwd()`, and `chat.ts` never passed a
+`worktreePath` at all, so the chat CLI lane's production shape was the null branch: an interactive,
+write-capable CLI whose working directory was the dashboard's launch directory — the deployment
+checkout on the incident host — with no `FUSION_TASK_ID`/`FUSION_AGENT_ID` in its environment to blame.
+A missing root is a required-field failure now: this error is raised before any durable record or PTY
+exists, because the only alternative default is the exact defect this card removes.
+*/
+export class CliMissingWorktreeError extends Error {
+  readonly code = "CLI_MISSING_WORKTREE";
+  constructor(purpose: string, lane: "spawn" | "resume") {
+    super(
+      `Refusing to ${lane} a cli-agent ${purpose} session without an explicit working directory: pass the acquired worktree or the project root instead of inheriting the server's launch directory.`,
+    );
+    this.name = "CliMissingWorktreeError";
+  }
+}
+
+/**
+ * Resolve the one cwd a cli-agent PTY may start in, refusing blank and absent values by name.
+ *
+ * Kept as a plain trim rather than a path resolve: the caller owns the root (an acquired worktree or the
+ * project root) and rewriting it here would move the boundary the session's tools are checked against.
+ *
+ * FNXC:AgentWorkingDirectoryPolicy 2026-10-18-12:59 (RUFU-334):
+ * When the operator declares protected checkouts (`FUSION_PROTECTED_CHECKOUTS`), that refusal is evaluated
+ * here too — before any PTY exists — on both the spawn and the resume leg, because a cli-agent session
+ * reached through chat or the executor lane is the same class of unattributed write access this card was
+ * filed for. The declared-path check is skipped while the variable is unset: the core policy also refuses
+ * a path whose realpath cannot be resolved, and this seam legitimately names roots the caller has not
+ * created yet (a missing directory is reported by the PTY spawn itself, with the child's own error).
+ */
+function resolveCliSessionCwd(raw: string | null | undefined, purpose: string, lane: "spawn" | "resume"): string {
+  const trimmed = typeof raw === "string" ? raw.trim() : "";
+  if (!trimmed) throw new CliMissingWorktreeError(purpose, lane);
+  if (process.env.FUSION_PROTECTED_CHECKOUTS?.trim()) assertAgentCwdAllowed(trimmed);
+  return trimmed;
 }
 
 /** Thrown when a resume is requested for an adapter that cannot resume. */
@@ -292,7 +333,12 @@ export interface SpawnCliSessionOptions {
   taskId?: string | null;
   /** Owning chat session id, when applicable. */
   chatSessionId?: string | null;
-  /** Worktree the CLI runs in (also the PTY cwd). */
+  /**
+   * Worktree the CLI runs in (also the PTY cwd). Required in substance: a missing
+   * or blank value fails with `CliMissingWorktreeError` rather than defaulting to
+   * the server's launch directory (RUFU-334). The nullable type stays so legacy
+   * callers reach that refusal instead of being silently relocated.
+   */
   worktreePath?: string | null;
   /** Autonomy posture (drives privileged flags + resume caps). */
   posture?: CliAutonomyPosture | null;
@@ -473,6 +519,7 @@ export class CliSessionManager {
     // duplicate row); a fresh launch uses `buildLaunch` and mints a new record.
     let launch: CliLaunchSpec;
     let record: CliSession;
+    let spawnCwd: string;
     let launchCtx: { settings: Record<string, unknown>; posture: CliAutonomyPosture | null };
     if (options.resume) {
       if (!adapter.capabilities.supportsResume || typeof adapter.buildResume !== "function") {
@@ -504,11 +551,14 @@ export class CliSessionManager {
           chatRecords[0];
       }
       if (!existing) throw new UnknownCliSessionError(options.resume.sessionId);
+      // A resume may be re-anchored by the caller, but the durable record's own root is the
+      // fallback; a record with no root is refused by name rather than started at the server cwd.
+      spawnCwd = resolveCliSessionCwd(options.worktreePath ?? existing.worktreePath, options.purpose, "resume");
       // Move the reused record back to "starting" for the relaunch. Always by
       // the record's OWN id — the caller may have identified it by chat id.
       record = this.store.updateSession(existing.id, {
         agentState: "starting",
-        worktreePath: options.worktreePath ?? existing.worktreePath ?? null,
+        worktreePath: spawnCwd,
       }) ?? existing;
       /*
       FNXC:CliChatRecall 2026-08-19-11:08:
@@ -534,13 +584,14 @@ export class CliSessionManager {
       // construction (RUFU-128) because the launch-settings provider keys its
       // per-spawn artifacts to the MINTED record id; the PTY still starts only
       // after the durable-write flush below.
+      spawnCwd = resolveCliSessionCwd(options.worktreePath, options.purpose, "spawn");
       record = this.store.createSession({
         adapterId: options.adapterId,
         projectId: options.projectId,
         purpose: options.purpose,
         taskId: options.taskId ?? null,
         chatSessionId: options.chatSessionId ?? null,
-        worktreePath: options.worktreePath ?? null,
+        worktreePath: spawnCwd,
         autonomyPosture: posture,
         agentState: "starting",
       });
@@ -566,7 +617,7 @@ export class CliSessionManager {
         name: "xterm-color",
         cols: options.cols ?? 80,
         rows: options.rows ?? 24,
-        cwd: options.worktreePath ?? process.cwd(),
+        cwd: spawnCwd,
         env: env as { [key: string]: string },
       });
     } catch (err) {
@@ -613,7 +664,7 @@ export class CliSessionManager {
     if (adapter.wireTelemetry) {
       disposeTelemetry = adapter.wireTelemetry({
         sessionId: record.id,
-        worktreePath: options.worktreePath ?? null,
+        worktreePath: spawnCwd,
       });
     }
 

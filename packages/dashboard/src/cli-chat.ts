@@ -7,7 +7,8 @@
  * session and the durable chat transcript:
  *
  *  - It spawns (or resumes) a `CliSessionManager` session with purpose "chat",
- *    cwd = the configured working directory (or the project root), persisting the
+ *    cwd = the caller's explicit working directory (the project root or an acquired
+ *    worktree — never the server's launch directory, RUFU-334), persisting the
  *    native session id back onto the chat session for resume.
  *  - Composer messages route through the inject path (FIFO, serialized by the
  *    manager's write queue). While the session is busy, sends queue; the flush
@@ -55,6 +56,23 @@ export interface CliSessionLike {
   agentState: string;
 }
 
+/*
+FNXC:AgentWorkingDirectoryPolicy 2026-10-18-13:29 (RUFU-334):
+This leg used to hand `opts.worktreePath ?? null` to the manager, and `chat.ts` never supplied one, so
+the chat CLI lane always took the null branch: an interactive PTY whose cwd was the dashboard's launch
+directory (the deployment checkout on the incident host). A chat with no resolvable root is refused by
+name here instead of being relocated, because a chat is write-capable and its tools boundary follows cwd.
+*/
+export class CliChatWorkingDirectoryMissingError extends Error {
+  readonly code = "CLI_CHAT_WORKING_DIRECTORY_MISSING";
+  constructor(public readonly chatSessionId: string) {
+    super(
+      `Refusing to start the CLI-agent chat session ${chatSessionId} without an explicit working directory; the caller must pass the project root or an acquired worktree rather than inheriting the server's launch directory.`,
+    );
+    this.name = "CliChatWorkingDirectoryMissingError";
+  }
+}
+
 /** The slice of CliSessionManager this runner needs. */
 export interface CliSessionManagerLike {
   spawn(options: {
@@ -62,7 +80,8 @@ export interface CliSessionManagerLike {
     projectId: string;
     purpose: "chat";
     chatSessionId: string;
-    worktreePath?: string | null;
+    /** Required explicit cwd for the chat PTY (RUFU-334); never null. */
+    worktreePath: string;
     resume?: { sessionId: string; nativeSessionId: string };
   }): Promise<CliSessionLike>;
   inject(sessionId: string, text: string): Promise<void>;
@@ -126,7 +145,7 @@ export class CliChatSessionRunner {
    */
   async ensureSession(
     chatSessionId: string,
-    opts: { projectId: string; worktreePath?: string | null },
+    opts: { projectId: string; worktreePath: string },
   ): Promise<string> {
     const existing = this.cliSessionByChat.get(chatSessionId);
     if (existing) return existing;
@@ -138,6 +157,9 @@ export class CliChatSessionRunner {
       throw new Error(`Chat session ${chatSessionId} has no cli-agent executor`);
     }
 
+    const worktreePath = opts.worktreePath?.trim();
+    if (!worktreePath) throw new CliChatWorkingDirectoryMissingError(chatSessionId);
+
     // Resume if we previously recorded a native session id (cliSessionFile-style
     // linkage; here the native id lives on the cli_sessions record).
     const resumeNative = chat.cliSessionFile; // native session id persisted on the chat
@@ -146,7 +168,7 @@ export class CliChatSessionRunner {
       projectId: opts.projectId,
       purpose: "chat",
       chatSessionId,
-      worktreePath: opts.worktreePath ?? null,
+      worktreePath,
       ...(resumeNative
         ? { resume: { sessionId: chatSessionId, nativeSessionId: resumeNative } }
         : {}),

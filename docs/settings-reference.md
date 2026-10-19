@@ -33,6 +33,42 @@ The `Default` column below is the same source of truth (`DEFAULT_GLOBAL_SETTINGS
 
 This setting does not contain credentials. Use it only after confirming that the PostgreSQL server and any pooler have enough connection capacity; it does not change those upstream limits.
 
+## Agent working-directory environment variable
+
+<!--
+FNXC:AgentWorkingDirectoryPolicy 2026-10-18-14:39 (RUFU-334):
+Documents the only operator knob over where an agent session may run. It is deliberately an explicit
+declaration rather than a detection: a deployment checkout carries no filesystem marker that distinguishes it
+from an ordinary working copy (on the incident host the deployment was itself a linked worktree of the repo
+the fleet edits), so every `.git`/lockfile/CI-config heuristic considered was rejected for firing on the
+agent worktrees and the serve root while leaving a differently-shaped deployment unprotected.
+-->
+
+| Environment variable | Default | Valid values | Resolution | Behavior |
+|---|---:|---|---|---|
+| `FUSION_PROTECTED_CHECKOUTS` | unset — refusal disabled | Delimited list of directory paths | Read from the dashboard/engine process environment at each session-boundary decision; there is no settings row and no per-task override | Names checkout directories that must never host an agent session. A session whose resolved working directory *is* one of them, or lives anywhere inside it, is refused by name before the child is spawned. |
+
+Set it in the service environment (a systemd `Environment=` line, the launcher's `.env`, or the shell that starts Fusion) and restart Fusion — the value is read from the process environment, so a running process cannot adopt a new list.
+
+**How the list is read**
+
+- Entries are split on the platform path delimiter (`:` on POSIX, `;` on Windows) and on newlines, so a list pasted from a shell script or a YAML block works. Entries are trimmed, blank entries dropped, and duplicates collapsed in order.
+- A leading `~` or `~/` expands against the `HOME` of the environment Fusion reads (`USERPROFILE` on Windows) — never an implicit home directory — and a relative entry is anchored to the process's working directory. Prefer absolute paths.
+- Matching resolves the candidate with `realpath`, so a symlink that points into a protected tree is refused rather than waved through on its literal spelling. A candidate path that cannot be resolved at all is an error, not a pass.
+- The relation is **self-or-inside only**. An entry never refuses its own parent: if the parent is worth protecting, declare it as its own entry. An entry that does not exist on disk matches nothing and never throws.
+
+**What a refusal looks like**
+
+The session fails to start with `ProtectedCheckoutError`, naming the refused directory, the protected entry it collided with, and this variable. The policy never rewrites the path: a silent redirect would run the session in a directory nobody asked for while leaving anything already written inside the deployment in place.
+
+**Where the boundary sits**
+
+- An unscoped process — the Usage CLI fallback probe — may never inherit the server's launch directory under any setting; it always runs in its own scratch directory (see **Claude usage probe (CLI fallback)** in `docs/dashboard-guide.md`).
+- An agent session *may* run in the project root it was given, including the serve root, until that root is declared here. The variable is how an operator turns a legitimate default into a hard refusal, which is why it starts empty and the default deployment's behavior is unchanged when it is unset.
+- The policy governs agent-capable sessions only. It does not constrain interactive terminals you open deliberately, the dev server, the installer, git plumbing, or verification commands that run inside an acquired checkout.
+
+The lane-side rule — every agent lane passes an explicit working directory instead of defaulting to the process directory — is in `docs/agents.md`; `packages/engine/src/__tests__/agent-cwd-ratchet.test.ts` names every exempt site.
+
 ## Signal connector environment variables
 
 Command Center signal connectors are configured with process environment variables read by the dashboard/API server. These values are secrets and are never returned by the connectors-status endpoint; `GET /api/command-center/signals/connectors` reports only per-provider `configured` booleans.

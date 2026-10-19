@@ -159,7 +159,16 @@ async function makeManager(opts: {
   return { manager, store, sessions, pty, adapter };
 }
 
-const SPAWN_OPTS = { adapterId: "test", projectId: "project-a", purpose: "chat" as const };
+/*
+FNXC:AgentWorkingDirectoryPolicy 2026-10-18-13:29 (RUFU-334):
+`CliSessionManager.spawn` no longer defaults a missing `worktreePath` to the process working directory, so
+every spawn fixture has to state the directory it is pretending to run in. These tests never read the cwd
+(the pty is faked), so the shared fixture names one explicitly instead of relying on an inherited default
+the production seam now refuses.
+*/
+const TEST_SPAWN_CWD = tmpdir();
+
+const SPAWN_OPTS = { adapterId: "test", projectId: "project-a", purpose: "chat" as const, worktreePath: TEST_SPAWN_CWD };
 
 // ── Step 8 harness: real adapters + real provisioner + real hub, fake pty ──
 
@@ -454,6 +463,7 @@ describe("RUFU-128 Step 8: spawn-level chat recall integration (real adapters, r
       const record = await world.manager.spawn({
         adapterId: "claude-code",
         projectId: "project-a",
+        worktreePath: TEST_SPAWN_CWD,
         purpose: "chat",
         settings: { model: "claude-test-model" },
       });
@@ -503,6 +513,7 @@ describe("RUFU-128 Step 8: spawn-level chat recall integration (real adapters, r
       const record = await world.manager.spawn({
         adapterId: "claude-code",
         projectId: "project-a",
+        worktreePath: TEST_SPAWN_CWD,
         purpose: "chat",
       });
       // Resume by the MINTED record id read from the store (not the chat
@@ -527,6 +538,7 @@ describe("RUFU-128 Step 8: spawn-level chat recall integration (real adapters, r
       const resumed = await world.manager.spawn({
         adapterId: "claude-code",
         projectId: "project-a",
+        worktreePath: TEST_SPAWN_CWD,
         purpose: "chat",
         resume: { sessionId: record.id, nativeSessionId: "native-1" },
       });
@@ -553,6 +565,7 @@ describe("RUFU-128 Step 8: spawn-level chat recall integration (real adapters, r
       const record = await world.manager.spawn({
         adapterId: "pi",
         projectId: "project-a",
+        worktreePath: TEST_SPAWN_CWD,
         purpose: "chat",
       });
       expect(world.store.getSession(record.id)).toBeDefined();
@@ -581,6 +594,7 @@ describe("RUFU-128 Step 8: spawn-level chat recall integration (real adapters, r
       const resumed = await world.manager.spawn({
         adapterId: "pi",
         projectId: "project-a",
+        worktreePath: TEST_SPAWN_CWD,
         purpose: "chat",
         resume: { sessionId: record.id, nativeSessionId: "pi-native-1" },
       });
@@ -616,6 +630,7 @@ describe("RUFU-128 Step 8: task-purpose and settings-gated spawns stay bare", ()
         const record = await world.manager.spawn({
           adapterId: adapter.id,
           projectId: "project-a",
+          worktreePath: TEST_SPAWN_CWD,
           purpose: "execute",
           settings: { model: "m-1" },
         });
@@ -646,6 +661,7 @@ describe("RUFU-128 Step 8: task-purpose and settings-gated spawns stay bare", ()
           const record = await world.manager.spawn({
             adapterId: adapter.id,
             projectId: "project-a",
+            worktreePath: TEST_SPAWN_CWD,
             purpose: "chat",
           });
           const spec = world.pty.spec()!;

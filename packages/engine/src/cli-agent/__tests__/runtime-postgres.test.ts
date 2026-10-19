@@ -4,12 +4,21 @@
  * PostgreSQL data layer and flush its durable session queue on shutdown.
  */
 import { EventEmitter } from "node:events";
+import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CliSessionStore, type AsyncDataLayer } from "@fusion/core";
 import type { IPty } from "node-pty";
 import { CliAdapterRegistry, type CliAgentAdapter } from "../adapter.js";
 import { createCliAgentRuntime } from "../runtime.js";
 import { CliSessionManager } from "../session-manager.js";
+
+/*
+FNXC:AgentWorkingDirectoryPolicy 2026-10-18-13:22 (RUFU-334):
+`CliSessionManager.spawn` now refuses a session with no working directory (`CLI_MISSING_WORKTREE`) before
+it touches the PTY, so this fixture states the root the fake PTY would have been spawned in. The fake
+never reads the path, so the shared temp directory is enough to reach the spawn failure under test.
+*/
+const TEST_SPAWN_CWD = tmpdir();
 
 describe("createCliAgentRuntime PostgreSQL wiring", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -99,6 +108,7 @@ describe("createCliAgentRuntime PostgreSQL wiring", () => {
         adapterId: "test",
         projectId: "project-a",
         purpose: "execute",
+        worktreePath: TEST_SPAWN_CWD,
       })).rejects.toBe(spawnError);
       expect(flush).toHaveBeenCalledTimes(2);
       expect(updateSession).toHaveBeenCalledWith("session-1", {

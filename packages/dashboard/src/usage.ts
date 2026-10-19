@@ -1,5 +1,6 @@
 import * as os from "node:os";
 import * as path from "node:path";
+import { mkdtempSync, rmSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import * as https from "node:https";
 import * as child_process from "node:child_process";
@@ -633,8 +634,57 @@ export function _parseClaudeResetText(text: string): string | null {
 /**
  * Fetch Claude usage by spawning `claude /usage` via PTY and parsing the TUI output.
  * Used as a fallback when the OAuth API returns 429 (rate limited).
+ *
+ * The probe runs one at a time and inside a private scratch directory. See
+ * `runClaudeUsageProbe` for the full contract.
  */
+
+/*
+FNXC:UsageProbeHermeticity 2026-10-18-08:20:
+RUFU-334 measured two `claude --add-dir /home/<user>/git/kb-worktrees/prod-deploy` children of the
+Fusion dashboard, both with cwd = the live deployment checkout and neither carrying FUSION_TASK_ID or
+FUSION_AGENT_ID, so the card that owned the write could not be named. This probe was the code path: the
+Usage fallback opens a real interactive REPL (write-capable, and it auto-approves Claude's "do you want
+to work in this folder?" gate) with `cwd: process.cwd()` plus a `--add-dir` grant on that same
+directory. On a host whose server was launched from a deployment checkout, reading your quota cost a
+write-capable agent in production.
+
+The three exported markers below are the operator's answer to "how do I recognize such a process next
+time": `FUSION_PROBE` names the lane in `/proc/<pid>/environ`, and the scratch-directory prefix names it
+in the child's cwd.
+*/
+export const USAGE_PROBE_ENV_MARKER = "FUSION_PROBE";
+export const USAGE_PROBE_ENV_VALUE = "usage-claude";
+export const USAGE_PROBE_DIR_PREFIX = "fusion-usage-probe-";
+
+/*
+FNXC:UsageProbeHermeticity 2026-10-18-08:20:
+Single-flight. `fetchAllProviderUsage()` caches by TTL only (30 s) and the Usage view polls on the same
+30 s beat, while the probe itself runs up to 60 s — so two refreshes overlapped and each spawned its own
+REPL (the measured incident was two children started together). No join existed anywhere above this
+function: `withTimeout(fetchClaudeUsage(...))` abandons the wait at 75 s but leaves the child running.
+*/
+let claudeUsageProbeInFlight: Promise<ProviderUsage> | null = null;
+
 async function fetchClaudeUsageViaCli(): Promise<ProviderUsage> {
+  if (claudeUsageProbeInFlight) return claudeUsageProbeInFlight;
+  const started = runClaudeUsageProbe().finally(() => {
+    if (claudeUsageProbeInFlight === started) claudeUsageProbeInFlight = null;
+  });
+  claudeUsageProbeInFlight = started;
+  return started;
+}
+// Exported so the probe-hermeticity suite can drive the single-flight seam directly; production callers
+// reach it through `fetchClaudeUsage()`'s four fallback legs.
+export { fetchClaudeUsageViaCli };
+
+/**
+ * One probe run: a private scratch directory, no reference to the checkout the server was launched
+ * from, and an environment marker that identifies the lane. The directory is created per run and
+ * removed on every exit leg — success, timeout kill, auth error, early child exit, or a throw out of
+ * the parser — so a probe leaves nothing behind on disk.
+ */
+async function runClaudeUsageProbe(): Promise<ProviderUsage> {
   const usage: ProviderUsage = {
     name: "Claude",
     icon: "🟠",
@@ -642,22 +692,44 @@ async function fetchClaudeUsageViaCli(): Promise<ProviderUsage> {
     windows: [],
   };
 
+  let probeDir: string | null = null;
+
   try {
     // Dynamically import node-pty
     const pty = await import("node-pty");
     const isWindows = process.platform === "win32";
     const shell = isWindows ? "cmd.exe" : "/bin/sh";
-    const cwd = process.cwd();
-    const args = isWindows
-      ? ["/c", "claude", "--add-dir", cwd]
-      : ["-c", `claude --add-dir "${cwd}"`];
+    /*
+    FNXC:UsageProbeHermeticity 2026-10-18-08:20:
+    The probe's working directory is a throw-away scratch directory, not the server's. Claude reads its
+    credentials and quota from the user's own config, so the REPL needs nothing from the serve checkout
+    to answer `/usage`, and the trust prompt is now auto-approved for a directory that holds no user
+    data. The `--add-dir` grant is gone from both argv shapes: it existed only to widen the session
+    over the server's checkout, which is precisely the write access RUFU-334 removes.
+    */
+    probeDir = mkdtempSync(path.join(os.tmpdir(), USAGE_PROBE_DIR_PREFIX));
+    const args = isWindows ? ["/c", "claude"] : ["-c", "claude"];
 
     const ptyOptions: Record<string, unknown> = {
       name: "xterm-256color",
       cols: 120,
       rows: 30,
-      cwd,
-      env: { ...process.env, TERM: "xterm-256color" },
+      cwd: probeDir,
+      /*
+      FNXC:UsageProbeHermeticity 2026-10-18-08:20:
+      `PWD` is corrected to the scratch directory because the inherited value would still name the serve
+      checkout the child no longer lives in — a stale PWD alongside a real cwd is exactly the mismatch that
+      made the incident processes unreadable. `FUSION_PROBE` is this lane's own attribution: the probe
+      belongs to no card and no agent, so it sets neither `FUSION_TASK_ID` nor `FUSION_AGENT_ID` (nothing
+      in Fusion sets those two; card attribution travels as the `Fusion-Task-Id` commit trailer). Their
+      absence in `/proc/<pid>/environ` next to a `FUSION_PROBE` value is what identifies this lane.
+      */
+      env: {
+        ...process.env,
+        TERM: "xterm-256color",
+        PWD: probeDir,
+        [USAGE_PROBE_ENV_MARKER]: USAGE_PROBE_ENV_VALUE,
+      },
     };
     if (isWindows) ptyOptions.useConpty = false;
 
@@ -879,6 +951,20 @@ async function fetchClaudeUsageViaCli(): Promise<ProviderUsage> {
   } catch (e: unknown) {
     usage.status = "error";
     usage.error = e instanceof Error ? e.message : "CLI fallback failed";
+  } finally {
+    /*
+    FNXC:UsageProbeHermeticity 2026-10-18-08:20:
+    One cleanup point covers every exit leg, because the parse body below the `await` can throw as well
+    as resolve or reject. `force: true` keeps it idempotent, so a directory already reaped by an earlier
+    leg or by the OS temp sweep is not an error.
+    */
+    if (probeDir) {
+      try {
+        rmSync(probeDir, { recursive: true, force: true });
+      } catch {
+        // A scratch directory we cannot reap is a temp-dir leak, never a reason to fail the probe.
+      }
+    }
   }
 
   return usage;

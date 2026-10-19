@@ -522,7 +522,9 @@ describe("ChatManager.sendMessage — pre-overflow compaction gate (dashboard se
 
     await manager.sendMessage("chat-guard", "hello world");
 
-    expect(ensureSession).toHaveBeenCalledWith("chat-guard", { projectId: "proj-1" });
+    // RUFU-334: the cli branch now receives the manager root as an explicit worktreePath rather than
+    // omitting it and inheriting the server's launch directory.
+    expect(ensureSession).toHaveBeenCalledWith("chat-guard", { projectId: "proj-1", worktreePath: TEST_ROOT });
     expect(send).toHaveBeenCalledWith("chat-guard", "hello world");
     // The model loop never ran: no session creation, no gate, no prompt.
     expect(mockCreateResolvedAgentSession).not.toHaveBeenCalled();

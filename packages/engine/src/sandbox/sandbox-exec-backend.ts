@@ -5,8 +5,11 @@ import { promisify } from "node:util";
 
 import { detectSandboxExec } from "./sandbox-exec-detect.js";
 import {
+  deriveSandboxRepoRoot,
   fusionWorktreePreset,
   policyToSbplProfile,
+  resolveSandboxWritableRoot,
+  SandboxWritableRootMissingError,
   type SandboxExecContext,
   type SandboxExecPolicy,
 } from "./sandbox-exec-policy.js";
@@ -36,11 +39,25 @@ function shEscape(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+function defaultPnpmStorePath(): string {
+  return path.join(os.homedir(), "Library/pnpm/store");
+}
+
+/** True when the policy states its own paths, so the legacy preset is not implied. */
+function hasExplicitPaths(policy: SandboxExecPolicy): boolean {
+  return Boolean(policy.allowedWritePaths || policy.allowedReadPaths);
+}
+
 export class SandboxExecBackend implements SandboxBackend {
   private currentPolicy: SandboxExecPolicy = { allowNetwork: true };
-  private ctx: SandboxExecContext | null = null;
+  private prepared = false;
   private useNativeFallback = false;
   private fallbackAlerted = false;
+  /**
+   * The pnpm store path is probed once per declared root (the probe is a subprocess, so it can only run in
+   * an async leg); the synchronous wrap leg reads this cache and falls back to the platform default.
+   */
+  private readonly pnpmStorePathByRoot = new Map<string, string>();
 
   constructor(private readonly nativeBackend: SandboxBackend = new NativeSandboxBackend()) {}
 
@@ -54,14 +71,23 @@ export class SandboxExecBackend implements SandboxBackend {
     };
   }
 
+  /*
+  FNXC:AgentWorkingDirectoryPolicy 2026-10-18-13:29 (RUFU-334):
+  prepare() used to root the whole backend with `allowedWritePaths?.[0] ?? process.cwd()`, and
+  `repoRootPath` was `process.cwd()` outright — so a Seatbelt profile was generated for a directory
+  nobody had chosen, granting writes inside the server's own launch tree (the deployment checkout in the
+  incident), and that one profile was then reused for every run regardless of its real cwd.
+  prepare() now only detects capability and holds the policy: a profile is built in the legs that carry an
+  explicit working directory (`run`, `runStreaming`, `wrapCommand`), each against its own cwd. Nothing
+  here can silently root a policy any more.
+  */
   async prepare(policy: SandboxPolicy): Promise<void> {
     const nextPolicy = policy as SandboxExecPolicy;
     const policyChanged = JSON.stringify(this.currentPolicy) !== JSON.stringify(nextPolicy);
-    if (!policyChanged && this.ctx) {
+    this.currentPolicy = nextPolicy;
+    if (!policyChanged && this.prepared) {
       return;
     }
-
-    this.currentPolicy = nextPolicy;
 
     const detect = await detectSandboxExec();
     if (!detect.available) {
@@ -81,48 +107,76 @@ export class SandboxExecBackend implements SandboxBackend {
 
     this.useNativeFallback = false;
 
-    const worktreePath = this.currentPolicy.allowedWritePaths?.[0] ?? process.cwd();
-    const repoRootPath = process.cwd();
+    const declaredRoot = nextPolicy.allowedWritePaths?.[0] ?? nextPolicy.allowedReadPaths?.[0] ?? null;
+    if (declaredRoot) {
+      await this.probePnpmStore(declaredRoot);
+    }
 
-    let pnpmStorePath = path.join(os.homedir(), "Library/pnpm/store");
+    this.prepared = true;
+    log.log("[event:sandbox:prepare] backend=sandbox-exec");
+  }
+
+  /** Resolve a store path once per root; a failed probe keeps the platform default. */
+  private async probePnpmStore(root: string): Promise<string> {
+    const cached = this.pnpmStorePathByRoot.get(root);
+    if (cached) return cached;
+    let storePath = defaultPnpmStorePath();
     try {
       const { stdout } = await execAsync("pnpm store path --silent", {
-        cwd: worktreePath,
+        cwd: root,
         timeout: 10_000,
         maxBuffer: 256 * 1024,
         encoding: "utf-8",
       });
-      pnpmStorePath = stdout.trim() || pnpmStorePath;
+      storePath = stdout.trim() || storePath;
     } catch {
-      // fallback
+      // keep the default store path
     }
-
-    this.ctx = {
-      worktreePath,
-      repoRootPath,
-      pnpmStorePath,
-      nodeBinPath: process.execPath,
-      homeDir: os.homedir(),
-      tmpDirOverride: os.tmpdir(),
-    };
-
-    log.log("[event:sandbox:prepare] backend=sandbox-exec");
+    this.pnpmStorePathByRoot.set(root, storePath);
+    return storePath;
   }
 
-  wrapCommand(command: string, _options: Pick<SandboxRunOptions, "cwd" | "env">) {
-    if (this.useNativeFallback) return null;
-    const ctx = this.ctx ?? {
-      worktreePath: process.cwd(),
-      repoRootPath: process.cwd(),
-      pnpmStorePath: path.join(os.homedir(), "Library/pnpm/store"),
+  /**
+   * Build the profile context for one leg from an explicit working directory. A blank root follows the
+   * policy's `failureMode`: `fallback-native` returns null so the leg runs through the native backend,
+   * while `fail-hard` raises the named refusal — it never falls back to the process working directory.
+   * Only `allowedWritePaths` can supply the root: a policy that declares read paths alone has no
+   * writable root by definition, and borrowing a read root as the write boundary is the leak this closes.
+   */
+  private buildContext(rawCwd: string | null | undefined, lane: string): SandboxExecContext | null {
+    let worktreePath: string;
+    try {
+      worktreePath = resolveSandboxWritableRoot({
+        runCwd: rawCwd,
+        policyWriteRoot: this.currentPolicy.allowedWritePaths?.[0],
+        lane,
+      });
+    } catch (err) {
+      if (err instanceof SandboxWritableRootMissingError && (this.currentPolicy.failureMode ?? "fail-hard") === "fallback-native") {
+        return null;
+      }
+      throw err;
+    }
+    return {
+      worktreePath,
+      repoRootPath: deriveSandboxRepoRoot(worktreePath),
+      pnpmStorePath: this.pnpmStorePathByRoot.get(worktreePath) ?? defaultPnpmStorePath(),
       nodeBinPath: process.execPath,
       homeDir: os.homedir(),
       tmpDirOverride: os.tmpdir(),
     };
-    const basePolicy = this.currentPolicy.allowedWritePaths || this.currentPolicy.allowedReadPaths
-      ? this.currentPolicy
-      : fusionWorktreePreset(ctx);
-    return { command: "sandbox-exec", args: ["-p", policyToSbplProfile(basePolicy, ctx), "/bin/sh", "-c", command] };
+  }
+
+  private profileFor(ctx: SandboxExecContext): string {
+    const basePolicy = hasExplicitPaths(this.currentPolicy) ? this.currentPolicy : fusionWorktreePreset(ctx);
+    return policyToSbplProfile(basePolicy, ctx);
+  }
+
+  wrapCommand(command: string, options: Pick<SandboxRunOptions, "cwd" | "env">) {
+    if (this.useNativeFallback) return null;
+    const ctx = this.buildContext(options.cwd, "wrapCommand");
+    if (!ctx) return null;
+    return { command: "sandbox-exec", args: ["-p", this.profileFor(ctx), "/bin/sh", "-c", command] };
   }
 
   async run(command: string, options: SandboxRunOptions): Promise<SandboxRunResult> {
@@ -132,21 +186,11 @@ export class SandboxExecBackend implements SandboxBackend {
       return this.nativeBackend.run(command, options);
     }
 
-    if (!this.ctx) {
-      this.ctx = {
-        worktreePath: options.cwd,
-        repoRootPath: options.cwd,
-        pnpmStorePath: path.join(os.homedir(), "Library/pnpm/store"),
-        nodeBinPath: process.execPath,
-        homeDir: os.homedir(),
-        tmpDirOverride: os.tmpdir(),
-      };
+    const ctx = this.buildContext(options.cwd, "run");
+    if (!ctx) {
+      return this.nativeBackend.run(command, options);
     }
-
-    const basePolicy = this.currentPolicy.allowedWritePaths || this.currentPolicy.allowedReadPaths
-      ? this.currentPolicy
-      : fusionWorktreePreset(this.ctx);
-    const profile = policyToSbplProfile(basePolicy, this.ctx);
+    const profile = this.profileFor(ctx);
 
     const wrappedCommand = `sandbox-exec -p ${shEscape(profile)} /bin/sh -c ${shEscape(command)}`;
     log.log(`[event:sandbox:run] backend=sandbox-exec cmd=${JSON.stringify(command)}`);
@@ -201,20 +245,9 @@ export class SandboxExecBackend implements SandboxBackend {
   async runStreaming(command: string, options: SandboxRunStreamingOptions): Promise<SandboxStreamingResult> {
     if (this.useNativeFallback) return this.nativeBackend.runStreaming(command, options);
 
-    if (!this.ctx) {
-      this.ctx = {
-        worktreePath: options.cwd,
-        repoRootPath: options.cwd,
-        pnpmStorePath: path.join(os.homedir(), "Library/pnpm/store"),
-        nodeBinPath: process.execPath,
-        homeDir: os.homedir(),
-        tmpDirOverride: os.tmpdir(),
-      };
-    }
-    const basePolicy = this.currentPolicy.allowedWritePaths || this.currentPolicy.allowedReadPaths
-      ? this.currentPolicy
-      : fusionWorktreePreset(this.ctx);
-    const profile = policyToSbplProfile(basePolicy, this.ctx);
+    const ctx = this.buildContext(options.cwd, "runStreaming");
+    if (!ctx) return this.nativeBackend.runStreaming(command, options);
+    const profile = this.profileFor(ctx);
     /*
     FNXC:WorkspaceSandbox 2026-08-22-21:44:
     FN-158 routes streaming verification through Seatbelt. Native streaming
@@ -228,7 +261,8 @@ export class SandboxExecBackend implements SandboxBackend {
   }
 
   async dispose(): Promise<void> {
-    this.ctx = null;
+    this.prepared = false;
     this.useNativeFallback = false;
+    this.pnpmStorePathByRoot.clear();
   }
 }

@@ -1663,6 +1663,34 @@ To trim a slow first prompt:
 
 See `docs/solutions/developer-experience/login-shell-profile-latency.md` for the underlying measurement and the decision to keep `--login` unconditionally.
 
+## Claude usage probe (CLI fallback)
+
+<!--
+FNXC:UsageProbeHermeticity 2026-10-18-14:39 (RUFU-334):
+Records the observable contract of the Usage CLI fallback after the 2026-09-26 production incident: `ps aux`
+showed two `claude --add-dir <deployment checkout>` children of the dashboard process whose `/proc/<pid>/cwd`
+was the live deployment tree and whose environment carried no `FUSION_TASK_ID`/`FUSION_AGENT_ID`, so no card
+owned the writes. This section exists so an operator can diagnose that process shape without the task card.
+-->
+
+When the Anthropic OAuth usage API cannot answer — an expired refresh token, a failed refresh, or a 429 that survives the retry ladder — the **Usage** popover falls back to asking the Claude CLI itself (`claude` under a shell, with `/usage` typed into its REPL). That fallback is a real child process, so it is deliberately boxed in:
+
+- **It runs in a throw-away scratch directory** below the OS temp directory (`fusion-usage-probe-…`), never in the directory the dashboard process was started from. The directory is removed on every exit leg: parsed output, the 60 s timeout kill, an auth error, an early child exit, or a throw out of the probe.
+- **It asks for no directory access at all.** The `--add-dir <serve root>` grant that used to widen the session over the server's own checkout is gone on both platform branches (`/bin/sh -c claude` and `cmd.exe /c claude`); the probe needs only the user's own Claude credentials, which the CLI reads from its own configuration.
+- **Overlapping refreshes share one probe.** Two simultaneous Usage refreshes produce exactly one child process.
+- **It is identifiable from the host.** Its environment carries `FUSION_PROBE=usage-claude`, and — unlike an agent session — it deliberately carries neither `FUSION_TASK_ID` nor `FUSION_AGENT_ID`, because this lane belongs to no card and no agent.
+
+To inspect a stray `claude` (or any agent) process on a host:
+
+```bash
+ps -o pid,ppid,etimes,pcpu,args -C claude     # children, run time, and full argv
+readlink /proc/<pid>/cwd                       # the working directory it actually runs in
+tr '\0' '\n' < /proc/<pid>/environ | grep -E 'FUSION_|PWD'
+git -C "$(readlink /proc/<pid>/cwd)" rev-parse --show-toplevel
+```
+
+`FUSION_PROBE=usage-claude` names the Usage fallback. `FUSION_TASK_ID` / `FUSION_AGENT_ID` name the owning card or agent for a real agent session. A child with neither marker whose working directory sits inside a deployment checkout is the incident class RUFU-334 closes: no spawn path in Fusion may inherit the server's launch directory, and `FUSION_PROTECTED_CHECKOUTS` (see **Settings reference**) is the operator knob that makes such a launch refuse instead of run.
+
 ## Git Manager
 
 ## Git Manager

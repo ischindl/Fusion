@@ -49,6 +49,14 @@ import {
   type ChatTelemetryEvent,
 } from "../cli-chat.js";
 
+/*
+FNXC:AgentWorkingDirectoryPolicy 2026-10-18-13:29 (RUFU-334):
+`CliChatSessionRunner.ensureSession` now refuses a missing/blank `worktreePath` by name instead of letting
+the manager fall back to the server's launch directory, so every spawn fixture states the directory it is
+pretending to run in. The fake manager never touches the filesystem, so a literal path is enough.
+*/
+const TEST_WORKTREE = "/test/cli-chat-worktree";
+
 // ── Fakes ──────────────────────────────────────────────────────────────────
 
 class FakeChatStore implements ChatStoreLike {
@@ -175,22 +183,22 @@ describe("CliChatSessionRunner — session lifecycle", () => {
 
   it("resumes via the persisted native session id (cliSessionFile linkage)", async () => {
     ctx.store.putSession({ id: "chat-1", cliSessionFile: "native-abc" });
-    await ctx.runner.ensureSession("chat-1", { projectId: "proj-1" });
+    await ctx.runner.ensureSession("chat-1", { projectId: "proj-1", worktreePath: TEST_WORKTREE });
     const call = ctx.manager.spawnCalls[0] as Record<string, unknown>;
     expect(call.resume).toEqual({ sessionId: "chat-1", nativeSessionId: "native-abc" });
   });
 
   it("reuses an existing live session instead of respawning", async () => {
     ctx.store.putSession({ id: "chat-1" });
-    const a = await ctx.runner.ensureSession("chat-1", { projectId: "proj-1" });
-    const b = await ctx.runner.ensureSession("chat-1", { projectId: "proj-1" });
+    const a = await ctx.runner.ensureSession("chat-1", { projectId: "proj-1", worktreePath: TEST_WORKTREE });
+    const b = await ctx.runner.ensureSession("chat-1", { projectId: "proj-1", worktreePath: TEST_WORKTREE });
     expect(a).toBe(b);
     expect(ctx.manager.spawnCalls).toHaveLength(1);
   });
 
   it("rejects sessions with no cli-agent executor selected", async () => {
     ctx.store.putSession({ id: "chat-1", cliExecutorAdapterId: null });
-    await expect(ctx.runner.ensureSession("chat-1", { projectId: "proj-1" })).rejects.toThrow(
+    await expect(ctx.runner.ensureSession("chat-1", { projectId: "proj-1", worktreePath: TEST_WORKTREE })).rejects.toThrow(
       /no cli-agent executor/,
     );
   });
@@ -204,7 +212,7 @@ describe("CliChatSessionRunner — transcript mapping", () => {
   beforeEach(async () => {
     ctx = makeRunner();
     ctx.store.putSession({ id: "chat-1" });
-    cliId = await ctx.runner.ensureSession("chat-1", { projectId: "proj-1" });
+    cliId = await ctx.runner.ensureSession("chat-1", { projectId: "proj-1", worktreePath: TEST_WORKTREE });
   });
 
   it("maps a transcript fixture to the expected chat_messages sequence, excluding tool noise", async () => {
@@ -266,7 +274,7 @@ describe("CliChatSessionRunner — composer queue", () => {
   beforeEach(async () => {
     ctx = makeRunner();
     ctx.store.putSession({ id: "chat-1" });
-    cliId = await ctx.runner.ensureSession("chat-1", { projectId: "proj-1" });
+    cliId = await ctx.runner.ensureSession("chat-1", { projectId: "proj-1", worktreePath: TEST_WORKTREE });
   });
 
   it("injects immediately when the session is idle", async () => {
@@ -315,7 +323,7 @@ describe("CliChatSessionRunner — redaction before persistence", () => {
   beforeEach(async () => {
     ctx = makeRunner();
     ctx.store.putSession({ id: "chat-1" });
-    await ctx.runner.ensureSession("chat-1", { projectId: "proj-1" });
+    await ctx.runner.ensureSession("chat-1", { projectId: "proj-1", worktreePath: TEST_WORKTREE });
   });
 
   it("redacts a bearer token in transcript text before it lands in chat_messages", async () => {

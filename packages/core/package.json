@@ -44,6 +44,11 @@
       "source": "./src/agents/heartbeat-recovery-state.ts",
       "import": "./dist/agents/heartbeat-recovery-state.js"
     },
+    "./agent-cwd-policy": {
+      "types": "./src/agent-cwd-policy.ts",
+      "source": "./src/agent-cwd-policy.ts",
+      "import": "./dist/agent-cwd-policy.js"
+    },
     "./detect-content-language": {
       "types": "./src/i18n/detect-content-language.ts",
       "source": "./src/i18n/detect-content-language.ts",

@@ -140,8 +140,28 @@ export async function executeSingleCommand(
 
   const isWindows = process.platform === "win32";
 
+  /*
+  FNXC:AgentWorkingDirectoryPolicy 2026-10-18-13:29 (RUFU-334):
+  A manual automation/schedule command used to be spawned with no `cwd` at all, which means the child
+  inherited the dashboard process's working directory — on a service without `WorkingDirectory=` that is
+  wherever `fn serve` happened to start (the deployment checkout in the incident). An operator-authored
+  automation is write-capable, so its root is the project root the route's store already knows, and a run
+  with no resolvable root is refused in the route's ordinary result shape rather than relocated.
+  */
+  const shellCwd = taskStore?.getRootDir()?.trim();
+  if (!shellCwd) {
+    return {
+      success: false,
+      output: "",
+      error: "AUTOMATION_MISSING_WORKING_DIRECTORY: a manual command run needs the project root from its task store; refusing to execute in the server's launch directory",
+      startedAt,
+      completedAt: new Date().toISOString(),
+    };
+  }
+
   try {
     const { stdout, stderr } = await execAsyncFn(command, {
+      cwd: shellCwd,
       timeout: timeoutMs ?? DEFAULT_AUTOMATION_TIMEOUT_MS,
       maxBuffer: AUTOMATION_MAX_BUFFER,
       shell: isWindows ? "cmd.exe" : "/bin/sh",
@@ -234,8 +254,29 @@ async function executeAiPromptStep(
   const mcpServers = await resolveManualAiPromptMcpServers(taskStore);
   const defaultThinkingLevel = step.thinkingLevel?.trim() || undefined;
 
+  /*
+  FNXC:AgentWorkingDirectoryPolicy 2026-10-18-13:29 (RUFU-334):
+  This manual AI-prompt session passed `cwd: process.cwd()`, so an operator-run automation step ran its
+  coding-agent tools from the server's launch tree — the same leak class as the CLI lanes, and the same
+  fix: the project root comes from the store the route already holds. `createFnAgent` then applies the
+  protected-checkout policy to that root, so a protected root is refused rather than inherited.
+  */
+  const agentCwd = taskStore.getRootDir()?.trim();
+  if (!agentCwd) {
+    return {
+      stepId: step.id,
+      stepName: step.name,
+      stepIndex: 0,
+      success: false,
+      output: "",
+      error: "AUTOMATION_MISSING_WORKING_DIRECTORY: the AI prompt step needs the project root from its task store; refusing to start the session in the server's launch directory",
+      startedAt,
+      completedAt: new Date().toISOString(),
+    };
+  }
+
   const { session } = await createFnAgent({
-    cwd: process.cwd(),
+    cwd: agentCwd,
     systemPrompt: MANUAL_RUN_AI_SYSTEM_PROMPT,
     tools: "coding",
     toolsAllowlist: step.allowedTools,

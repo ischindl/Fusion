@@ -10,6 +10,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { resolveRequiredCwd } from "./cwd-contract.js";
 
 function debugLog(message: string): void {
   if (process.env.PI_CLAUDE_CLI_DEBUG !== "1") return;
@@ -17,12 +18,12 @@ function debugLog(message: string): void {
 }
 
 /**
- * Spawn a Claude CLI subprocess with all required flags for stream-json communication.
+ * Build the argv for a stream-json Claude CLI subprocess.
  *
  * @param modelId - The model ID to pass via --model flag
  * @param systemPrompt - Optional system prompt appended via --append-system-prompt
- * @param options - Optional cwd, AbortSignal, and effort level
- * @returns The spawned ChildProcess with piped stdin/stdout/stderr
+ * @param options - Optional effort level, MCP config path, and session ids
+ * @returns The Claude CLI argument vector (the working directory is not part of argv)
  */
 export function buildClaudeSpawnArgs(
   modelId: string,
@@ -76,6 +77,16 @@ export function buildClaudeSpawnArgs(
   return args;
 }
 
+/**
+ * Spawn a Claude CLI subprocess with all required flags for stream-json communication.
+ *
+ * @param modelId - The model ID to pass via --model flag
+ * @param systemPrompt - Optional system prompt appended via --append-system-prompt
+ * @param options - AbortSignal, effort level, and the working directory the child must
+ *   run in. `cwd` is typed optional only because the option bag is optional;
+ *   `resolveRequiredCwd` refuses a missing or relative one (RUFU-334).
+ * @returns The spawned ChildProcess with piped stdin/stdout/stderr
+ */
 export function spawnClaude(
   modelId: string,
   systemPrompt?: string,
@@ -97,7 +108,16 @@ export function spawnClaude(
 
   const proc = spawn("claude", args, {
     stdio: ["pipe", "pipe", "pipe"],
-    cwd: options?.cwd ?? process.cwd(),
+    /*
+    FNXC:AgentCwdBoundary 2026-10-18-10:29:
+    RUFU-334. This used to be `options?.cwd ?? process.cwd()`. In a hosted engine
+    or dashboard process `process.cwd()` is the directory the server was launched
+    from — on the incident host a production deployment checkout — so a Claude
+    turn spawned a write-capable `claude` inside the deployed tree. The working
+    directory is a caller obligation now: `spawnClaude` is the last seam before
+    the child exists, so it refuses instead of defaulting.
+    */
+    cwd: resolveRequiredCwd(options?.cwd, "spawnClaude"),
   });
 
   debugLog(`spawnClaude: pid=${proc.pid} model=${modelId}`);

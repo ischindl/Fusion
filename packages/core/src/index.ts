@@ -3689,3 +3689,17 @@ export type {
 } from "./agents/heartbeat-recovery-state.js";
 
 export { findWorkflowNodeInstance } from "./workflows/workflow-node-instance.js";
+
+/*
+FNXC:AgentWorkingDirectoryPolicy 2026-10-18-08:05:
+RUFU-334 exports the agent working-directory policy from the barrel so every agent lane resolves one
+authority over `FUSION_PROTECTED_CHECKOUTS`. The barrel is safe for this Node-only module: the dashboard's
+browser bundle aliases `@fusion/core` to the types-only leaf (see packages/dashboard/vite.config.ts), so
+the client never resolves this file, and the barrel already carries other `node:fs` readers such as
+`session-identity-registry.ts`. The `@fusion/core/agent-cwd-policy` subpath is kept for narrow imports.
+*/
+export {
+  FUSION_PROTECTED_CHECKOUTS_ENV,
+  ProtectedCheckoutError,
+  assertAgentCwdAllowed,
+} from "./agent-cwd-policy.js";

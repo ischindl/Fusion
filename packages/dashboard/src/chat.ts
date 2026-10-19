@@ -2141,7 +2141,7 @@ export class ChatManager {
    * after the ChatManager) so the positional ctor stays stable.
    */
   private cliChatRunner?: {
-    ensureSession(chatSessionId: string, opts: { projectId: string; worktreePath?: string | null }): Promise<string>;
+    ensureSession(chatSessionId: string, opts: { projectId: string; worktreePath: string }): Promise<string>;
     send(chatSessionId: string, text: string): Promise<"sent" | "queued">;
     getSessionStats?(chatSessionId: string): ChatSessionStatsLike | Promise<ChatSessionStatsLike | undefined> | undefined;
     getTokenUsageSnapshot?(chatSessionId: string): ({
@@ -3510,8 +3510,17 @@ export class ChatManager {
         );
       }
       try {
+        /*
+        FNXC:AgentWorkingDirectoryPolicy 2026-10-18-13:29 (RUFU-334):
+        This call used to omit `worktreePath` entirely, which the runner turned into `null` and the
+        manager turned into `process.cwd()` — so every CLI-agent-backed chat ran with the dashboard's
+        launch directory as its working directory (the deployment checkout on the incident host, with no
+        task/agent attribution). The project root this ChatManager already owns is the chat's explicit
+        root; a protected root is then refused by the session seam rather than inherited silently.
+        */
         await runner.ensureSession(sessionId, {
           projectId: this.cliChatProjectId ?? session.projectId ?? "",
+          worktreePath: this.rootDir,
         });
         await runner.send(sessionId, content);
         const usageSnapshot = await runner.getTokenUsageSnapshot?.(sessionId);

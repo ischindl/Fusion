@@ -3,6 +3,17 @@ import { CronRunner, createAiPromptExecutor, isInProcessBackupCommand, isInProce
 import type { AiPromptExecutor } from "../scheduling/cron-runner.js";
 import type { TaskStore, AutomationStore, ScheduledTask, AutomationRunResult, AutomationStep, Settings } from "@fusion/core";
 import { randomUUID } from "node:crypto";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+/*
+FNXC:AgentWorkingDirectoryPolicy 2026-10-18-13:29 (RUFU-334):
+A real temp directory stands in for the project root the engine hands the cron runner. It is deliberately
+not `process.cwd()`: the evaluator lane is one of the lanes RUFU-334 closed, and a fixture rooted at the
+test process's own directory would model exactly the leak the lane now refuses.
+*/
+const EVAL_PROJECT_ROOT = mkdtempSync(join(tmpdir(), "fusion-cron-eval-root-"));
 
 const cronLoggerSpies = vi.hoisted(() => ({
   log: vi.fn(), debug: vi.fn(),
@@ -2390,11 +2401,45 @@ describe("CronRunner", () => {
       store.listTasks = async () => [];
 
       const schedule = createMockSchedule({ id: "eval-on", command: "fn eval --scheduled-batch" });
-      runner = new CronRunner(store as unknown as TaskStore, createMockAutomationStore());
+      runner = new CronRunner(store as unknown as TaskStore, createMockAutomationStore(), { workingDirectory: EVAL_PROJECT_ROOT });
 
       const runResult = await (runner as unknown as { executeLegacyCommand: (s: ScheduledTask, startedAt: string) => Promise<AutomationRunResult> })
         .executeLegacyCommand(schedule, new Date().toISOString());
       expect(runResult.output).not.toBe("evals-experimental-disabled");
+    });
+
+    /*
+    FNXC:AgentWorkingDirectoryPolicy 2026-10-18-13:29 (RUFU-334):
+    The evaluator lane used to fall back to `process.cwd()`, i.e. the server's launch directory on a host
+    without `WorkingDirectory=`, so a scheduled batch could evaluate the deployment tree. The refusal has
+    to be observable in the run result AND prove nothing was evaluated: `getEvalStore` is the first thing
+    the batch touches, so counting it is the assertion that no evaluator session started.
+    */
+    it("refuses by name when the runner was never given a project root", async () => {
+      const getEvalStore = vi.fn(() => ({
+        listRuns: () => [],
+        createRun: () => ({ id: "run-1", window: { until: new Date().toISOString() } }),
+        appendRunEvent: () => {},
+        updateRun: () => {},
+      }));
+      const store = createMockStore({ experimentalFeatures: { evalsView: true } as Settings["experimentalFeatures"] }) as unknown as TaskStore & {
+        getEvalStore: typeof getEvalStore;
+        listTasks: (opts: { column: string }) => Promise<unknown[]>;
+      };
+      store.getEvalStore = getEvalStore;
+      store.listTasks = async () => [];
+      const schedule = createMockSchedule({ id: "eval-no-root", command: "fn eval --scheduled-batch" });
+      // No `workingDirectory` in the options: this is the shape that used to inherit the serve root.
+      runner = new CronRunner(store, createMockAutomationStore());
+
+      const runResult = await (runner as unknown as { executeLegacyCommand: (s: ScheduledTask, startedAt: string) => Promise<AutomationRunResult> })
+        .executeLegacyCommand(schedule, new Date().toISOString());
+
+      expect(runResult.success).toBe(false);
+      expect(runResult.output).toBe("scheduled-eval-missing-working-directory");
+      expect(runResult.error).toContain("SCHEDULED_EVAL_MISSING_WORKING_DIRECTORY");
+      expect(runResult.error).not.toContain(process.cwd());
+      expect(getEvalStore).not.toHaveBeenCalled();
     });
   });
 });

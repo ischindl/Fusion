@@ -1868,7 +1868,8 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
           projectId: string;
           purpose: "chat";
           chatSessionId: string;
-          worktreePath?: string | null;
+          /** Explicit cwd for the chat PTY (RUFU-334) — the runner never sends null now. */
+          worktreePath: string;
           resume?: { sessionId: string; nativeSessionId: string };
         }) => Promise<{ id: string; nativeSessionId: string | null; agentState: string }>;
         inject: (sessionId: string, text: string) => Promise<void>;
