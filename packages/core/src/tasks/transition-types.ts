@@ -62,12 +62,33 @@ export const TRANSITION_REJECTION_CODES: readonly TransitionRejectionCode[] = [
  *   capacity exhaustion frees up) versus a structural rejection that will not
  *   (e.g. unknown column).
  * - `detail` — optional, non-localized diagnostic context for audit/logs only.
+ * - `capacity` — structured identity of the capacity gate that refused, present only
+ *   on a `capacity-exhausted` rejection; see {@link CapacityRejectionFacts}.
  */
+export interface CapacityRejectionFacts {
+  /** Column whose capacity pool refused the move. */
+  column: string;
+  /** Live occupants of that column's capacity slot, with the moving task EXCLUDED. */
+  occupants: number;
+  /** Effective finite limit that was reached. */
+  limit: number;
+}
+
+/*
+FNXC:RunAuditCapacityDiagnostic 2026-10-20-20:25 (RUFU-372):
+`capacity` is new. The three numbers it carries have always existed at the refusal site —
+`evaluateCapacityRejection` interpolated `Column 'x' is at capacity (3/2)` into `detail` — but prose
+is not queryable and no consumer forwarded it, so a board that suspended 185 times in one hour across
+27 cards named neither the limit nor who held it, and an operator could not tell a full WIP pool from
+a full worktree pool from a wedged dispatcher. Structured facts are what let the refusal travel to the
+`task:workflow-run-suspended` row as ids/counts instead of a sentence.
+*/
 export interface TransitionRejection {
   code: TransitionRejectionCode;
   messageKey: string;
   retryable: boolean;
   detail?: string;
+  capacity?: CapacityRejectionFacts;
 }
 
 /**
@@ -110,6 +131,21 @@ export function makeTransitionRejection(
   if (detail !== undefined) {
     rejection.detail = detail;
   }
+  return rejection;
+}
+
+/**
+ * Construct a `capacity-exhausted` {@link TransitionRejection} that carries the gate identity
+ * alongside its prose. Kept separate from {@link makeTransitionRejection} so the other refusal
+ * sites keep their 4-argument shape and cannot mis-order a new positional.
+ */
+export function makeCapacityRejection(
+  messageKey: string,
+  capacity: CapacityRejectionFacts,
+  detail?: string,
+): TransitionRejection {
+  const rejection = makeTransitionRejection("capacity-exhausted", messageKey, true, detail);
+  rejection.capacity = capacity;
   return rejection;
 }
 
@@ -169,7 +205,20 @@ export function deserializeTransitionRejection(json: string): TransitionRejectio
   if (typeof obj.messageKey !== "string") return null;
   if (typeof obj.retryable !== "boolean") return null;
   if (obj.detail !== undefined && typeof obj.detail !== "string") return null;
-  return makeTransitionRejection(obj.code, obj.messageKey, obj.retryable, obj.detail as string | undefined);
+  const rejection = makeTransitionRejection(obj.code, obj.messageKey, obj.retryable, obj.detail as string | undefined);
+  /*
+  FNXC:RunAuditCapacityDiagnostic 2026-10-20-20:25 (RUFU-372):
+  Restore the structured capacity block, or a refusal that survives a persistence hop loses the
+  numbers this field exists to carry. A malformed or partial block is dropped rather than thrown,
+  which is the rule the rest of this parser follows for a corrupt audit payload.
+  */
+  if (typeof obj.capacity === "object" && obj.capacity !== null) {
+    const cap = obj.capacity as Record<string, unknown>;
+    if (typeof cap.column === "string" && typeof cap.occupants === "number" && typeof cap.limit === "number") {
+      rejection.capacity = { column: cap.column, occupants: cap.occupants, limit: cap.limit };
+    }
+  }
+  return rejection;
 }
 
 /** Serialize a pending marker to a JSON string for the `tasks.transitionPending` column. */

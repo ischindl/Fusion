@@ -278,6 +278,31 @@ would turn "stranded" into "attempts exhausted, parked forever". Metadata is ids
 `live-session` / `unparseable-start`), `source`. The registered sweep runs at startup and in maintenance batch 2,
 alongside `reconcile-orphaned-pending-step-results`, whose FN-8492 rules it deliberately mirrors.
 
+## Suspended-run diagnostics
+
+`task:workflow-run-suspended` is emitted by the executor whenever a graph run ends in the `suspended`
+disposition. It carries no task error by design, so it is the only durable trace of a card that waits at
+the same node on every dispatch. Before RUFU-372 the row named the node and a `reason` of `capacity` and
+nothing else, which made a board that suspended 185 times in an hour across 27 cards countable but not
+diagnosable: a full WIP pool, a full worktree pool, and a scheduler-owned seam all read identically.
+
+Two additions make the row answer the question instead:
+
+| key | meaning |
+|---|---|
+| `suspendSource` | Fixed enum naming the refusal that parked the run: `scheduler-seam` (a hold→wip boundary the scheduler owns — no capacity pool was consulted), `column-capacity` (a real `capacity-exhausted` transition rejection), or `capacity-rejection-without-facts` (a rejection written before this change or restored from a payload that dropped the block). |
+| `capacityColumn`, `capacityOccupants`, `capacityLimit` | The gate that refused and how full it was, forwarded from the refusal's structured `CapacityRejectionFacts` (the moving task is excluded from `occupants`). Present only on a real pool refusal. |
+
+Two rules keep the surface honest. **Absence is meaningful**: `scheduler-seam` rows carry no capacity block
+at all, because inventing `occupants: 0` for a branch that never asked a pool would be a fabricated
+measurement. **Counts describe the first sample of an ongoing wait**: RUFU-442's notice signature stays
+over node, reason, and column boundary only, so a card polling a full pool keeps one row rather than one
+row per poll. Folding the fluctuating occupant count into wait identity would restore the flood this event
+exists to bound.
+
+Still not carried, and the reason this section is not called a solution: **who holds the slots**. Holder
+identity is not in the refusal, so the row answers "which gate, how full" but not "which cards occupy it".
+
 ## Maintenance contract
 
 Adding a new catalogued run-audit event requires updating **both** the typed catalogue module (`packages/engine/src/run-audit/run-audit-catalogue.ts`) **and** this doc together — the parity test (`packages/engine/src/__tests__/run-audit-catalogue.test.ts`) fails if the documented event set and the catalogue module's set ever diverge, keeping the observability surface truthful as the real `DatabaseMutationType` union evolves. Removing an event likewise requires updating both in the same change.

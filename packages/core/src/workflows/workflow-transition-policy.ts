@@ -38,7 +38,7 @@ import {
   evaluateForbiddenLifecyclePath,
   isSanctionedEngineBackwardMove,
 } from "./workflow-lifecycle-direction.js";
-import { type TransitionRejection, makeTransitionRejection } from "../tasks/transition-types.js";
+import { type TransitionRejection, makeTransitionRejection, makeCapacityRejection } from "../tasks/transition-types.js";
 
 /** The trait-derived facts about a column, resolved by the caller from the IR.
  *  Kept as plain flags so the policy never touches the trait registry or IR. */
@@ -225,10 +225,9 @@ export function evaluateCapacityRejection(
   const { limit, occupants } = capacity;
   if (!Number.isFinite(limit)) return null;
   if (occupants < limit) return null;
-  return makeTransitionRejection(
-    "capacity-exhausted",
+  return makeCapacityRejection(
     "transition.rejected.capacityExhausted",
-    true,
+    { column: toColumnId, occupants, limit },
     `Column '${toColumnId}' is at capacity (${occupants}/${limit})`,
   );
 }

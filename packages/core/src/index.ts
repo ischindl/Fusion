@@ -646,6 +646,7 @@ export {
 } from "./workflows/default-workflow-hooks.js";
 // ── Typed transition contract + crash-safe marker (U3) ───────────────
 export type {
+  CapacityRejectionFacts,
   TransitionRejection,
   TransitionRejectionCode,
   TransitionResult,
@@ -653,6 +654,7 @@ export type {
 } from "./tasks/transition-types.js";
 export {
   TRANSITION_REJECTION_CODES,
+  makeCapacityRejection,
   makeTransitionRejection,
   makeTransitionPending,
   transitionOk,

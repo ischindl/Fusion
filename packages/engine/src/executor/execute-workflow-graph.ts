@@ -1406,6 +1406,27 @@ export async function executeWorkflowGraph(
             continuationId: continuation?.id ?? null,
             continuationNodeId: continuation?.nodeId ?? null,
             continuationState: continuation?.state ?? null,
+            /*
+            FNXC:RunAuditCapacityDiagnostic 2026-10-20-20:25 (RUFU-372):
+            The wait was countable but not diagnosable: 185 `reason=capacity` rows in an hour across 27
+            cards told an operator nothing about which gate refused, so a full WIP pool, a full worktree
+            pool, and a wedged dispatcher were indistinguishable from the board. These keys are ids and
+            counts only, per the run-audit rule — the refusal sentence stays in `detail` on the rejection
+            and never enters this row. They are written only when the suspending branch knew them, so a
+            `scheduler-seam` suspend carries a source and no counts rather than a fabricated zero. The
+            notice signature above is deliberately NOT widened: RUFU-442's bound counts a wait by
+            node/reason/columns, and folding the fluctuating occupant count into the identity would make
+            every poll of a full pool a new wait and restore the row flood this event was introduced to
+            tame. Counts therefore describe the FIRST sample of an ongoing wait.
+            */
+            ...(suspension?.source ? { suspendSource: suspension.source } : {}),
+            ...(suspension?.capacity
+              ? {
+                  capacityColumn: suspension.capacity.column,
+                  capacityOccupants: suspension.capacity.occupants,
+                  capacityLimit: suspension.capacity.limit,
+                }
+              : {}),
           },
         });
         return;

@@ -39,6 +39,7 @@ import {
   classifyLifecycleDirection,
   classifyLifecycleRole,
   findWorkflowColumn,
+  type CapacityRejectionFacts,
   isHoldToWipBoundary,
   isReviewGateNode,
   resolveColumnFlags,
@@ -143,7 +144,28 @@ export type WorkflowColumnBoundaryEntryResult =
       fromColumn: string;
       toColumn: string;
       irHash: string;
+      /**
+       * Which refusal produced the suspend, as a fixed enum the audit row can be grouped by.
+       *
+       * FNXC:RunAuditCapacityDiagnostic 2026-10-20-20:25 (RUFU-372):
+       * `reason: "capacity"` covered two unrelated situations — a scheduler-owned hold→wip seam that
+       * never consulted a capacity pool, and a real `capacity-exhausted` transition rejection — so 185
+       * rows an hour could not be separated into "pool full" and "waiting for the scheduler". Absent
+       * keeps the pre-RUFU-372 shape valid for producers that do not classify yet.
+       */
+      source?: WorkflowRunSuspendSource;
+      /** The gate that refused, with the counts that refused it. Absent when no pool was consulted. */
+      capacity?: CapacityRejectionFacts;
     };
+
+/** Fixed vocabulary for what made a graph run suspend at a column boundary. */
+export type WorkflowRunSuspendSource =
+  /** A hold→wip boundary the scheduler owns; no capacity pool was consulted. */
+  | "scheduler-seam"
+  /** A real column move refused by the in-transaction capacity gate. */
+  | "column-capacity"
+  /** A capacity rejection that arrived without structured facts (older writer or lost hop). */
+  | "capacity-rejection-without-facts";
 
 /*
 FNXC:WorkflowIrPin 2026-07-19-18:30 (KTD-3 / U9b):
@@ -413,6 +435,14 @@ export function createWorkflowColumnBoundary(
           fromColumn,
           toColumn,
           irHash: computeWorkflowIrPin(deps.ir, node.id).irHash,
+          /*
+          FNXC:RunAuditCapacityDiagnostic 2026-10-20-20:25 (RUFU-372):
+          Named `scheduler-seam`, deliberately NOT `column-capacity`: this branch never asks a capacity
+          pool, it declines to move because the scheduler is the sole hold→wip mover. Without the name
+          the seam and a full WIP pool were the same audit row, which is why a board idling here read
+          like capacity exhaustion. No `capacity` block exists to report.
+          */
+          source: "scheduler-seam",
         } as const;
         await deps.onSuspend?.(suspension);
         /*
@@ -468,6 +498,17 @@ export function createWorkflowColumnBoundary(
               fromColumn,
               toColumn,
               irHash: computeWorkflowIrPin(deps.ir, node.id).irHash,
+              /*
+              FNXC:RunAuditCapacityDiagnostic 2026-10-20-20:25 (RUFU-372):
+              This is the one branch that was actually refused by a finite pool, and the refusal already
+              knew the column, the occupants, and the limit (`CapacityFacts`). Forwarding them is the whole
+              fix: the audit row can now answer which gate was hit and how full it was instead of leaving
+              the operator to guess between a WIP pool, a worktree pool, and a wedged dispatcher. A
+              rejection without structured facts (written by an older build, or restored from a persisted
+              payload that dropped them) says so explicitly rather than looking like a zero-occupant pool.
+              */
+              source: err.rejection.capacity ? ("column-capacity" as const) : ("capacity-rejection-without-facts" as const),
+              ...(err.rejection.capacity ? { capacity: err.rejection.capacity } : {}),
             } as const;
             await deps.onSuspend?.(suspension);
             // FNXC:WorkflowEvents 2026-07-27-12:06 (U3): see the hold→wip seam above.

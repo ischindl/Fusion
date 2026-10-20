@@ -512,6 +512,14 @@ export interface WorkflowGraphExecutorResult {
     fromColumn: string;
     toColumn: string;
     irHash: string;
+    /**
+     * Mirrors `WorkflowColumnBoundaryEntryResult`'s suspended arm — the boundary result is thrown
+     * through `WorkflowGraphSuspended` unchanged, so the two shapes must stay structurally equal.
+     * RUFU-372 added the discriminator plus the refusing gate's counts; see the boundary for the
+     * vocabulary and `execute-workflow-graph.ts` for how they reach the audit row.
+     */
+    source?: import("./workflow-column-boundary.js").WorkflowRunSuspendSource;
+    capacity?: import("@fusion/core").CapacityRejectionFacts;
   };
 }
 
