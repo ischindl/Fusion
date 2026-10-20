@@ -236,6 +236,7 @@ import {
   takePreHeldExecutorSlot,
   recoverIdleSemaphoreLeakCandidate,
   type AgentSemaphore,
+  type CapacityEmptinessProof,
 } from "./concurrency/concurrency.js";
 /* FNXC:TaskFollowUp 2026-09-17-16:10: FN-513 — the bounded source-task context a follow-up's planning session receives. */
 import {
@@ -2737,10 +2738,20 @@ export class TriageProcessor {
         const row = allTasks.find((t) => t.id === id);
         if (!row || row.status !== "planning") pendingSpecifyCount += 1;
       }
+      /*
+      FNXC:ExternalBlock 2026-10-19-20:28 (RUFU-374):
+      ONE proof for this whole poll, shared by the claim, the throttle report's holder list, and the
+      per-admission fresh snapshot below. Planning admission is the surface the 2026-09-27 freeze
+      actually froze — `Plan throttled by running-agent cap: claimed=2/2, processing=0` repeated
+      82 370 times over four cards that owned no checkout — so the planner must not keep charging a
+      released slot. `rootDir` is the stable per-project identity this processor already holds.
+      */
+      const capacityEmptinessProof: CapacityEmptinessProof = { rootDir: this.rootDir, settings };
       const claimed = await computeTopLevelConcurrencyClaimedFromStore({
         store: this.store,
         tasks: allTasks,
         pendingSpecifyCount,
+        emptinessProof: capacityEmptinessProof,
       });
       /*
       FNXC:CapacityModel 2026-07-31-11:10 (PR #2562 review — coderabbit; CORRECTED):
@@ -2782,7 +2793,7 @@ export class TriageProcessor {
           gate: "maxConcurrent",
           limit: maxConcurrent,
           claimed,
-          holderTaskIds: await persistedTopLevelAgentTaskIdsFromStore(this.store, allTasks),
+          holderTaskIds: await persistedTopLevelAgentTaskIdsFromStore(this.store, allTasks, undefined, capacityEmptinessProof),
         });
         planLog.log(
           `Plan throttled by ${blockedBy}: eligible=${triageTasks.length} [${eligibleIds.join(", ")}], ` +
@@ -3047,7 +3058,7 @@ export class TriageProcessor {
             const row = fresh.find((task) => task.id === id);
             if (!row || row.status !== "planning") pending++;
           }
-          const ids = await persistedTopLevelAgentTaskIdsFromStore(this.store, fresh);
+          const ids = await persistedTopLevelAgentTaskIdsFromStore(this.store, fresh, undefined, capacityEmptinessProof);
           return { count: ids.length + pending, ids: [...new Set([...ids, ...this.processing])] };
         })();
         await projectAdmissionCoordinator.admitNext({

@@ -3,17 +3,16 @@ import { taskHoldsUnmergedCheckout } from "../tasks/file-scope-lease.js";
 import { isRunningAgentTask, type RunningAgentTaskShape } from "./live-agent-count.js";
 
 export type WorktreeCapacityTaskShape = RunningAgentTaskShape
-  & Pick<Task, "worktree" | "workspaceWorktrees"> & {
-    /**
-     * RUFU-200: `true` ONLY when the caller proved — via git, per repository — that every retained
-     * checkout of this task is a clean tree AND zero commits ahead of its base. Absent or `false`
-     * means "holder" (fail-closed): a caller that could not obtain the proof must keep today's
-     * counting, because the cost of a wrong downgrade is releasing a slot that still protects
-     * someone's uncommitted work. The engine computes this in
-     * `persistedWorktreeHolderTaskIdsFromStore` from the shared `CheckoutEmptinessProver` cache.
-     */
-    checkoutProvenEmpty?: boolean;
-  };
+  & Pick<Task, "worktree" | "workspaceWorktrees">;
+/*
+FNXC:OverlapScheduling 2026-09-09-00:40 (RUFU-200) / FNXC:ExternalBlock 2026-10-19-20:18 (RUFU-374):
+The downgrade-only `checkoutProvenEmpty` flag used to be declared here, which is why only the
+worktree dimension could consume it. RUFU-374 needed the identical proof for the external-block
+branch of `isRunningAgentTask` — the same question, the same fail-closed rule, one flag — so the
+declaration moved up to `RunningAgentTaskShape` and this shape inherits it. Keep exactly one
+spelling: a per-dimension copy of the flag would let the two capacity gates drift apart on the very
+evidence they share.
+*/
 
 /*
 FNXC:CapacityModel 2026-09-01-14:49:

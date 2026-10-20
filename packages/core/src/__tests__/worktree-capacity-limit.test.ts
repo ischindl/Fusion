@@ -323,9 +323,17 @@ describe("worktrees-off is structural: no unaudited maxWorktrees bound", () => {
       ["grep", "-n", "resolveAgentCapacityLimit", "--", "packages/engine/src"],
       { cwd: root, encoding: "utf-8" },
     ).split("\n").filter((line) => line && !line.includes("__tests__"));
+    /*
+    FNXC:CapacityModel 2026-10-19-20:28 (RUFU-374 stale-contract sweep):
+    Match the CALL shape, not the bare identifier. `git grep` also returns prose, so RUFU-290's
+    documentation block in `self-healing.ts` — which only *names* the helper to explain that it is
+    not a capacity consumer — turned this allow-list red with a file that calls nothing. Requiring
+    the open paren still trips on every real caller and on the definition itself, so the guard
+    keeps its teeth; it just stops asserting comments, which AGENTS.md forbids outright.
+    */
     const holderHits = execFileSync(
       "git",
-      ["grep", "-n", "persistedWorktreeHolderTaskIdsFromStore", "--", "packages/engine/src"],
+      ["grep", "-n", "persistedWorktreeHolderTaskIdsFromStore(", "--", "packages/engine/src"],
       { cwd: root, encoding: "utf-8" },
     ).split("\n").filter((line) => line && !line.includes("__tests__"));
 

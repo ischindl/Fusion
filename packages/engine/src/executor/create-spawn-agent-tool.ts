@@ -31,7 +31,7 @@ import {
   resolveExecutorFallbackThinkingLevel,
 } from "../agents/agent-session-helpers.js";
 import { buildSessionSkillContext } from "../cli-runtime/session-skill-context.js";
-import { computeTopLevelConcurrencyClaimedFromStore } from "../concurrency/concurrency.js";
+import { computeTopLevelConcurrencyClaimedFromStore, type CapacityEmptinessProof } from "../concurrency/concurrency.js";
 import { buildPromptLayers, collapsePromptLayers } from "../execution/prompt-layers.js";
 import { resolveTaskWorktreePath } from "../worktree/worktree-paths.js";
 import { createRunAuditor, type EngineRunContext } from "../util/run-audit.js";
@@ -137,10 +137,22 @@ export function createSpawnAgentTool(
         by NEITHER capacity gate, so a fan-out could put up to 20 extra worktrees on
         disk while the scheduler believed the project was at its limit.
         */
+        const spawnEmptinessProof: CapacityEmptinessProof = {
+          /*
+          FNXC:ExternalBlock 2026-10-19-20:28 (RUFU-374):
+          The spawn gate is the last `maxConcurrent` reader in the lane chain (plan admission,
+          scheduler, merge admission, continuation dispatch, spawn). `deps.rootDir` is this project's
+          stable root, so a card frozen by an external block with nothing behind its checkout stops
+          charging the parent a slot it no longer protects; an unprovable checkout keeps holding.
+          */
+          rootDir: deps.rootDir,
+          settings,
+        };
         const spawnClaimed = await computeTopLevelConcurrencyClaimedFromStore({
           store: deps.store,
           // FNXC:ListTasksExcludeLog 2026-10-12-15:35 (RUFU-615 tranche 3): `slim: true` does not drop the log column while deriving, and this consumer never reads log markers -- see dependency-dispatch-gate.ts for the measured rationale.
           tasks: await deps.store.listTasks({ slim: true, includeArchived: false, excludeLog: true }),
+          emptinessProof: spawnEmptinessProof,
         });
         const spawnCap = resolveEffectiveConcurrency(settings).maxConcurrent;
         const liveChildren = deps.getTotalSpawnedCount();

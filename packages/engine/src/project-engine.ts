@@ -144,6 +144,7 @@ import {
   persistedTopLevelAgentTaskIdsFromStore,
   projectAdmissionCoordinator,
   resolveAgentCapacityLimit,
+  type CapacityEmptinessProof,
 } from "./concurrency/concurrency.js";
 import { canStartNextMergeBody } from "./merge/merge-reclaim-policy.js";
 import { clearOwnedMergeStamp } from "./merge/clear-orphaned-merge-stamp.js";
@@ -5077,6 +5078,17 @@ export class ProjectEngine {
             }
             let selected = false;
             const admissionSettings = await store.getSettings();
+            /*
+            FNXC:ExternalBlock 2026-10-19-20:28 (RUFU-374):
+            The merge lane shares this pass's one checkout proof with the agent-dimension claim it
+            feeds, so a card frozen with no checkout behind it cannot keep the merge queue waiting on
+            a slot that protects nothing. `store.getRootDir?.()` keeps the existing fallback shape
+            used elsewhere in this file for a store without a resolvable root.
+            */
+            const mergeEmptinessProof: CapacityEmptinessProof = {
+              rootDir: () => store.getRootDir?.() ?? this.config.workingDirectory,
+              settings: admissionSettings,
+            };
             let mergeClaimSnapshot: Promise<{ count: number; ids: string[] }> | undefined;
             const getMergeClaimSnapshot = () => mergeClaimSnapshot ??= (async () => {
               // Full rows preserve pending optional workflow-step leases, which may be the only
@@ -5090,7 +5102,7 @@ export class ProjectEngine {
               claim count cannot depend on the column; see the matching block in `triage.ts`.
               */
               const tasks = await store.listTasks({ slim: false, includeArchived: false, excludeLog: true });
-              const ids = await persistedTopLevelAgentTaskIdsFromStore(store, tasks);
+              const ids = await persistedTopLevelAgentTaskIdsFromStore(store, tasks, undefined, mergeEmptinessProof);
               return { count: ids.length, ids };
             })();
             /*

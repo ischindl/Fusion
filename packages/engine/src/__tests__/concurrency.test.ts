@@ -6,10 +6,12 @@ The store-backed capacity helpers are the seam that turns a planner liveness pro
 decision; these tests register probes directly instead of building a whole TriageProcessor.
 */
 import { registerPlanningLivenessProbe } from "../agents/planning-liveness.js";
+import { CheckoutEmptinessProver } from "../worktree/checkout-emptiness.js";
 import {
   AgentSemaphore,
   ProjectAdmissionCoordinator,
   compareAdmissionCandidates,
+  formatAdmissionCapacityQueuedReason,
   ScopedAgentSemaphore,
   PRIORITY_MERGE,
   PRIORITY_EXECUTE,
@@ -1573,5 +1575,295 @@ describe("store-backed planning capacity", () => {
     expect(await persistedTopLevelAgentTaskIdsFromStore(store, tasks)).toEqual([]);
     expect(await persistedWorktreeHolderTaskIdsFromStore(store, tasks)).toEqual([]);
     expect(await computeTopLevelConcurrencyClaimedFromStore({ store, tasks })).toBe(0);
+  });
+});
+
+/*
+FNXC:ExternalBlock 2026-10-19-22:35 (RUFU-374):
+The store-backed seam that earns the downgrade-only `checkoutProvenEmpty` flag for the AGENT
+dimension. RUFU-200 built this proof for `maxWorktrees`; RUFU-374 extends the same question to
+`maxConcurrent`, because a classified external block froze its slot unconditionally. The 2026-09-27
+episode held two `maxConcurrent` slots with four cards queued behind them while every frozen card had
+already released its worktree and worktree admission had zero demand; the operator watched
+`claimed=2/2, processing=0` repeat for six hours.
+
+Every arm uses a real `CheckoutEmptinessProver` with an injected git runner, so a mock-the-world fake
+cannot be what releases a slot: the release must come from the same clean-and-zero-commits-ahead git
+evidence the lease classifier and the worktree gate already read.
+*/
+describe("persistedTopLevelAgentTaskIdsFromStore external-block checkout proof", () => {
+  const GIT_ROOT = "/main-checkout";
+  /*
+  An empty resolver store: no workflow IR means no derived trait fields, so the shapes below exercise
+  the same column-fallback enrichment a legacy caller sees. The blocked arm of the predicate is
+  reached before any WIP/review arm, so the proof verdict — not the IR — is what these tests measure.
+  */
+  const store = {} as unknown as WorkflowIrResolverStore;
+
+  interface FakeGit {
+    /** `git status --porcelain` stdout for the entry path (default clean). */
+    status?: string;
+    /** Throw to simulate a dead/unregistered path. */
+    statusFails?: boolean;
+    /** `rev-list --count base..HEAD` stdout (default "0"). */
+    ahead?: string;
+    /** Throw to simulate an unresolvable base/branch ref. */
+    aheadFails?: boolean;
+  }
+
+  function fakeProver(table: Record<string, FakeGit>) {
+    const calls: string[] = [];
+    const prover = new CheckoutEmptinessProver({
+      rootDir: GIT_ROOT,
+      integrationBranch: "main",
+      execImpl: async (command, options) => {
+        calls.push(`${options.cwd} ${command}`);
+        const entry = table[options.cwd] ?? {};
+        if (command.startsWith("git status")) {
+          if (entry.statusFails) throw new Error("fatal: not a worktree");
+          return { stdout: entry.status ?? "" };
+        }
+        if (entry.aheadFails) throw new Error("fatal: ambiguous argument");
+        return { stdout: `${entry.ahead ?? "0"}\n` };
+      },
+    });
+    return { prover, calls };
+  }
+
+  const proof = (prover: CheckoutEmptinessProver) => ({
+    rootDir: GIT_ROOT,
+    settings: { integrationBranch: "main" },
+    prover,
+  });
+
+  /** The FN-209 freeze shape: column/steps/worktree/branch retained, paused with a resume point. */
+  function frozen(id: string, overrides: Record<string, unknown> = {}): Task {
+    return {
+      id,
+      description: "external obstacle",
+      column: "in-progress",
+      status: "blocked",
+      paused: true,
+      dependencies: [],
+      steps: [{ name: "Testing & Verification", status: "in-progress" }],
+      currentStep: 0,
+      worktree: `/worktrees/${id.toLowerCase()}`,
+      branch: `fusion/${id.toLowerCase()}`,
+      baseCommitSha: "B",
+      fileScope: ["packages/core/**"],
+      externalBlock: {
+        origin: "host-environment",
+        code: "ENOSPC",
+        message: "no space left on device, write",
+        source: "agent-declaration",
+        blockedAt: "2026-10-17T23:10:00.000Z",
+        resume: {
+          column: "in-progress",
+          nodeId: "steps#0:step-execute",
+          currentStep: 0,
+          worktree: `/worktrees/${id.toLowerCase()}`,
+          branch: `fusion/${id.toLowerCase()}`,
+        },
+      },
+      ...overrides,
+    } as unknown as Task;
+  }
+
+  /** A checkout-free waiting card — the work the frozen slots were starving. */
+  function waiting(id: string): Task {
+    return {
+      id,
+      description: "queued work",
+      column: "todo",
+      status: null,
+      dependencies: [],
+      steps: [],
+    } as unknown as Task;
+  }
+
+  it("SYMPTOM ARM — two frozen cards with no proof freeze a two-slot project", async () => {
+    // The pre-RUFU-374 behavior, pinned: no proof requested (a legacy/flagless caller) means both hold.
+    const twoSlot = [frozen("FN-A"), frozen("FN-B")];
+    expect(await persistedTopLevelAgentTaskIdsFromStore(store, twoSlot)).toEqual(["FN-A", "FN-B"]);
+    expect(await computeTopLevelConcurrencyClaimedFromStore({ store, tasks: twoSlot })).toBe(2);
+    // ...which is the exact arithmetic that starves a queue at maxConcurrent=2.
+    expect(computeTopLevelConcurrencyClaimed({ tasks: [...twoSlot, waiting("FN-C")] })).toBeGreaterThanOrEqual(2);
+  });
+
+  it("keeps a frozen card with a live, dirty checkout holding its slot", async () => {
+    // FNXC:ExternalBlock 2026-08-28-04:01 — Retry must resume into the checkout, so a real one holds.
+    const { prover } = fakeProver({ "/worktrees/fn-a": { status: " M work in progress", ahead: "0" } });
+    expect(await persistedTopLevelAgentTaskIdsFromStore(store, [frozen("FN-A")], undefined, proof(prover)))
+      .toEqual(["FN-A"]);
+  });
+
+  it("keeps a frozen card holding when its checkout is ahead of base (unmerged commits)", async () => {
+    const { prover } = fakeProver({ "/worktrees/fn-a": { status: "", ahead: "3" } });
+    expect(await persistedTopLevelAgentTaskIdsFromStore(store, [frozen("FN-A")], undefined, proof(prover)))
+      .toEqual(["FN-A"]);
+  });
+
+  it("releases a frozen card whose checkout is proven clean and zero commits ahead", async () => {
+    // RUFU-374: the checkout protects nothing, so the slot is charged for nobody.
+    const { prover } = fakeProver({ "/worktrees/fn-a": { status: "", ahead: "0" } });
+    expect(await persistedTopLevelAgentTaskIdsFromStore(store, [frozen("FN-A")], undefined, proof(prover)))
+      .toEqual([]);
+    expect(await computeTopLevelConcurrencyClaimedFromStore({
+      store,
+      tasks: [frozen("FN-A")],
+      emptinessProof: proof(prover),
+    })).toBe(0);
+  });
+
+  it("releases a frozen card that retained no checkout path at all", async () => {
+    /* The RUFU-200 absence proof: a hydrated store row can distinguish "no checkout" from "column
+       not fetched", which is why this conclusion is earned in this layer and never in core. */
+    const { prover, calls } = fakeProver({});
+    const ids = await persistedTopLevelAgentTaskIdsFromStore(
+      store,
+      [frozen("FN-A", { worktree: undefined, branch: undefined, workspaceWorktrees: undefined })],
+      undefined,
+      proof(prover),
+    );
+    expect(ids).toEqual([]);
+    // Absence needs no git: the fan-out stayed empty.
+    expect(calls).toEqual([]);
+  });
+
+  it.each([
+    ["no proof requested at all", undefined],
+    ["a dirty tree", { "/worktrees/fn-a": { status: "?? scratch.txt", ahead: "0" } }],
+    ["one commit ahead", { "/worktrees/fn-a": { status: "", ahead: "1" } }],
+    /* A dead path falls back to ref-only mode, which probes the branch ref in the main checkout, so
+       the arm that means "nothing could be read" must fail the ref probe there too — otherwise the
+       ref-only mode legitimately proves emptiness and the card is released for real. */
+    ["an unreadable checkout and an unreadable branch ref", {
+      "/worktrees/fn-a": { statusFails: true, aheadFails: true },
+      [GIT_ROOT]: { aheadFails: true },
+    }],
+    ["an unresolvable base ref", { "/worktrees/fn-a": { status: "", aheadFails: true }, [GIT_ROOT]: { aheadFails: true } }],
+  ] as const)("fails closed for a frozen card: %s", async (_label, table) => {
+    const proofArg = table ? proof(fakeProver(table).prover) : undefined;
+    expect(await persistedTopLevelAgentTaskIdsFromStore(store, [frozen("FN-A")], undefined, proofArg))
+      .toEqual(["FN-A"]);
+  });
+
+  it("fails closed when the proof answers with no verdict for the card", async () => {
+    // The mapping seam, not a git failure: a prover that returns no row must not release anything.
+    const silent = { proveTasks: async () => new Map() } as unknown as CheckoutEmptinessProver;
+    expect(await persistedTopLevelAgentTaskIdsFromStore(store, [frozen("FN-A")], undefined, proof(silent)))
+      .toEqual(["FN-A"]);
+  });
+
+  it("fails closed when the prover itself rejects — nobody is downgraded", async () => {
+    /* The acceptance criterion names a throwing prover explicitly. `proveTasks` is fail-closed per
+       entry by design, so the injectable seam is what proves the CALLER also degrades to the
+       conservative count rather than crashing admission or releasing unmerged work. */
+    const rejecting = {
+      proveTasks: async () => { throw new Error("prover sink exploded"); },
+    } as unknown as CheckoutEmptinessProver;
+    expect(await persistedTopLevelAgentTaskIdsFromStore(store, [frozen("FN-A")], undefined, proof(rejecting)))
+      .toEqual(["FN-A"]);
+  });
+
+  it("per repository: one unproven sub-repo keeps a frozen workspace card holding", async () => {
+    const { prover } = fakeProver({
+      "/wt/a": { status: "", ahead: "0" },
+      "/wt/b": { status: "?? dirty", ahead: "0" },
+    });
+    const card = frozen("FN-A", {
+      worktree: undefined,
+      workspaceWorktrees: {
+        "packages/core": { worktreePath: "/wt/a", branch: "fusion/fn-a-core" },
+        "packages/engine": { worktreePath: "/wt/b", branch: "fusion/fn-a-engine" },
+      },
+    });
+    expect(await persistedTopLevelAgentTaskIdsFromStore(store, [card], undefined, proof(prover))).toEqual(["FN-A"]);
+  });
+
+  it("releases a frozen workspace card only when every retained repository is proven empty", async () => {
+    const { prover } = fakeProver({
+      "/wt/a": { status: "", ahead: "0" },
+      "/wt/b": { status: "", ahead: "0" },
+    });
+    const card = frozen("FN-A", {
+      worktree: undefined,
+      workspaceWorktrees: {
+        "packages/core": { worktreePath: "/wt/a", branch: "fusion/fn-a-core" },
+        "packages/engine": { worktreePath: "/wt/b", branch: "fusion/fn-a-engine" },
+      },
+    });
+    expect(await persistedTopLevelAgentTaskIdsFromStore(store, [card], undefined, proof(prover))).toEqual([]);
+  });
+
+  it("releases only the frozen card: an ordinary live card is untouched by the proof", async () => {
+    const { prover } = fakeProver({ "/worktrees/fn-b": { status: "", ahead: "0" } });
+    const live = {
+      ...waiting("FN-B"),
+      column: "in-progress",
+      status: "in-progress",
+      worktree: "/worktrees/fn-b",
+    } as unknown as Task;
+    const ids = await persistedTopLevelAgentTaskIdsFromStore(
+      store,
+      [frozen("FN-A", { worktree: undefined }), live],
+      undefined,
+      proof(prover),
+    );
+    // The proof releases the frozen card's slot and cannot release an executing card's.
+    expect(ids).toEqual(["FN-B"]);
+  });
+
+  it("the throttle line and the claimed number answer with one voice", async () => {
+    /*
+    FNXC:CapacitySlotLeak 2026-10-19-22:35 (RUFU-374, the RUFU-207 lesson):
+    The operator reads `used=N/limit; holders=...` as the explanation of a stall. If the proof released
+    a card from `claimed` but the holder list still named it, the line would blame a card that is not
+    consuming anything — the exact disagreement RUFU-207 had to fix. Both halves come from the same
+    proof object, so a checkout-free frozen card appears in NEITHER.
+    */
+    const { prover } = fakeProver({ "/worktrees/fn-a": { status: "", ahead: "0" } });
+    const shared = proof(prover);
+    const cards = [frozen("FN-A")];
+    const claimed = await computeTopLevelConcurrencyClaimedFromStore({ store, tasks: cards, emptinessProof: shared });
+    const holders = await persistedTopLevelAgentTaskIdsFromStore(store, cards, undefined, shared);
+    expect(claimed).toBe(0);
+    expect(holders).toEqual([]);
+    expect(formatAdmissionCapacityQueuedReason({ gate: "maxConcurrent", limit: 2, claimed, holderTaskIds: holders }))
+      .toContain("used=0/2; gate=maxConcurrent; holders=none");
+
+    // And the unproven arm keeps blaming the right card: the number and the list move together.
+    const unproven = await persistedTopLevelAgentTaskIdsFromStore(store, cards, undefined, proof(fakeProver({
+      "/worktrees/fn-a": { status: " M uncommitted", ahead: "0" },
+    }).prover));
+    const unprovenClaimed = await computeTopLevelConcurrencyClaimedFromStore({ store, tasks: cards });
+    expect(unproven).toEqual(["FN-A"]);
+    expect(unprovenClaimed).toBe(1);
+    expect(formatAdmissionCapacityQueuedReason({
+      gate: "maxConcurrent", limit: 2, claimed: unprovenClaimed, holderTaskIds: unproven,
+    })).toContain("used=1/2; gate=maxConcurrent; holders=FN-A");
+  });
+
+  it("one shared proof object answers both dimensions from one git fan-out", async () => {
+    /*
+    FNXC:ExternalBlock 2026-10-19-22:35 (RUFU-374): the scheduler builds ONE proof per evaluation and
+    hands it to the agent holder set and the worktree holder set. The prover keys its cache by
+    (path, baseRef), so one checkout is git-probed once and the two gates cannot disagree about the
+    same card.
+    */
+    const { prover, calls } = fakeProver({ "/worktrees/fn-a": { status: "", ahead: "0" } });
+    const shared = proof(prover);
+    const card = frozen("FN-A");
+    /** Probes aimed at THIS checkout — base-ref discovery in the main checkout is a separate ledger. */
+    const checkoutProbes = () => calls.filter((call) => call.startsWith("/worktrees/fn-a "));
+    const agentIds = await persistedTopLevelAgentTaskIdsFromStore(store, [card], undefined, shared);
+    const probesAfterAgentPass = checkoutProbes().length;
+    const worktreeIds = await persistedWorktreeHolderTaskIdsFromStore(store, [card], shared);
+    // A frozen card is paused, so it never held a worktree slot; its agent slot releases on proof.
+    expect(agentIds).toEqual([]);
+    expect(worktreeIds).toEqual([]);
+    expect(probesAfterAgentPass).toBeGreaterThan(0);
+    // The second dimension reuses the cached verdict: no additional git work on this checkout.
+    expect(checkoutProbes().length).toBe(probesAfterAgentPass);
   });
 });

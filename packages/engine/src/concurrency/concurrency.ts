@@ -3,6 +3,7 @@ import {
   countRunningAgentTasks,
   enrichRunningAgentTaskShape,
   isRunningAgentTask,
+  isTaskExternallyBlocked,
   isWorktreeCapacityHolder,
   resolveMaxConcurrentSetting,
   resolveWorkflowIrForTask,
@@ -16,7 +17,9 @@ import { isPlanningLive } from "../agents/planning-liveness.js";
 import { createLogger } from "../logger.js";
 /* RUFU-200: the worktree-capacity count answers the same checkout-emptiness question the lease
    classifier answers, through the SAME registry-shared prover, so admission and the capacity
-   readout can never disagree about the same card. */
+   readout can never disagree about the same card.
+   FNXC:ExternalBlock 2026-10-19-20:28 (RUFU-374) widens that single answer to the external-block
+   branch of the AGENT dimension: one prover, one verdict per (path, baseRef), shared by both gates. */
 import {
   proveDormantCheckoutEmptiness,
   type CheckoutEmptinessProver,
@@ -647,20 +650,36 @@ async function enrichedTopLevelAgentTasksFromStore(
   store: WorkflowIrResolverStore,
   tasks: Task[],
   caches?: CapacityEnrichmentCaches,
+  emptinessProof?: CapacityEmptinessProof,
 ) {
   const irCache = caches?.irCache ?? new Map();
-  return Promise.all(tasks.map(async (task) => {
+  const enriched = await Promise.all(tasks.map(async (task) => {
     const ir = await resolveWorkflowIrForTask(store, task.id, irCache, caches?.selectionCache);
     return { ...enrichRunningAgentTaskShape(task, ir), planningIsLive: isPlanningLive(task.id) };
   }));
+  /*
+  FNXC:ExternalBlock 2026-10-19-20:28 (RUFU-374):
+  The external-block arm of `isRunningAgentTask` releases its `maxConcurrent` slot on this flag
+  alone, so this store-backed layer is the only one allowed to conclude "checkout-free" — a hydrated
+  row can tell "no checkout" from "column not fetched", a serialized board row cannot.
+  Candidates narrow to blocked cards: no other arm of the predicate reads the flag, so an unblocked
+  card would pay for a prover verdict it cannot use.
+  */
+  const provenEmpty = await provenCheckoutFreeTaskIds(
+    enriched.filter((task) => isTaskExternallyBlocked(task)),
+    emptinessProof,
+  );
+  if (provenEmpty.size === 0) return enriched;
+  return enriched.map((task) => (provenEmpty.has(task.id) ? { ...task, checkoutProvenEmpty: true } : task));
 }
 
 export async function persistedTopLevelAgentTaskIdsFromStore(
   store: WorkflowIrResolverStore,
   tasks: Task[],
   caches?: CapacityEnrichmentCaches,
+  emptinessProof?: CapacityEmptinessProof,
 ): Promise<string[]> {
-  const enriched = await enrichedTopLevelAgentTasksFromStore(store, tasks, caches);
+  const enriched = await enrichedTopLevelAgentTasksFromStore(store, tasks, caches, emptinessProof);
   const ids: string[] = [];
   for (const task of enriched) {
     if (isRunningAgentTask(task)) ids.push(task.id);
@@ -680,37 +699,95 @@ as the scheduler's dormant-lease classification. The two-pass shape keeps git ou
 and out of cards that cannot change answer: terminal, paused, and checkout-free cards never touch git.
 Without this, the phantom holder RUFU-198 consumed one of the operator's `maxWorktrees` slots forever
 (the readout reported 3/4 for cards sitting in `todo`) while protecting nothing on disk.
+
+FNXC:ExternalBlock 2026-10-19-20:28 (RUFU-374):
+Renamed from `WorktreeHolderEmptinessProof` — the SAME proof now answers the agent dimension's
+external-block question too, so the type is capacity-wide. A caller constructs it ONCE per
+evaluation and hands that one object to every holder calculation in the pass (the scheduler's claim
+snapshot, triage's throttle/holder/fresh-claim reads, merge and continuation admission, the spawn
+gate). The registry keys the prover per `rootDir` and dedupes by (path, baseRef), so the two
+dimensions cannot reach different verdicts for one card, and one shared object cannot fan out the
+same `git status` twice.
 */
-export interface WorktreeHolderEmptinessProof {
+export interface CapacityEmptinessProof {
   rootDir: string | (() => string);
   settings: IntegrationBranchSettings;
   /** Injectable for tests and for a caller that already holds a prover instance; defaults to the registry. */
   prover?: CheckoutEmptinessProver;
 }
 
+/*
+FNXC:ExternalBlock 2026-10-19-20:28 (RUFU-374) / FNXC:OverlapScheduling 2026-09-09-00:40 (RUFU-200):
+The single spelling of "this card's checkout protects nothing", shared by BOTH capacity dimensions.
+Callers pass ONLY the cards whose answer depends on the proof — worktree holders on one side,
+externally blocked cards on the other — so the fan-out stays bounded by the rare card, never by the
+board.
+
+Two proofs release a card, in escalating cost:
+1. It retains no `worktree` / `workspaceWorktrees` path at all. Concluding that is safe ONLY here,
+   in the store-backed layer that received hydrated rows; the pure predicate in `@fusion/core` must
+   never read those fields, because a serialized board row cannot distinguish "no checkout" from
+   "the column was not fetched".
+2. It retains paths and git proved every one of them clean AND zero commits ahead of its base.
+
+Everything else keeps the card holding: a missing verdict map, a missing entry, `unknown`,
+`occupied`, an absent prover, an unresolvable base ref, or a prover that throws. The `catch` is not
+decoration — capacity admission sits on this call path, so a rejected proof must degrade to the
+historical conservative count rather than crash admission or release unmerged work.
+*/
+async function provenCheckoutFreeTaskIds(
+  candidates: readonly Task[],
+  proof?: CapacityEmptinessProof,
+): Promise<Set<string>> {
+  const proven = new Set<string>();
+  if (!proof || candidates.length === 0) return proven;
+  const needGit: Task[] = [];
+  for (const task of candidates) {
+    if (taskHoldsUnmergedCheckout(task)) needGit.push(task);
+    else proven.add(task.id);
+  }
+  if (needGit.length === 0) return proven;
+  try {
+    const emptinessByTaskId = await proveDormantCheckoutEmptiness({ ...proof, candidates: needGit });
+    for (const task of needGit) {
+      /* Fail-closed: no verdict map for the card, or any retained entry not proven `empty`, keeps
+         it a holder. Only a full clean-and-behind proof across every retained repository releases. */
+      const verdicts = emptinessByTaskId.get(task.id);
+      if (verdicts && !taskHoldsUnmergedCheckout(task, verdicts)) proven.add(task.id);
+    }
+  } catch {
+    // Fail-closed: nobody is downgraded; every candidate keeps its slot.
+  }
+  return proven;
+}
+
 export async function persistedWorktreeHolderTaskIdsFromStore(
   store: WorkflowIrResolverStore,
   tasks: Task[],
-  emptinessProof?: WorktreeHolderEmptinessProof,
+  emptinessProof?: CapacityEmptinessProof,
   caches?: CapacityEnrichmentCaches,
 ): Promise<string[]> {
-  const enriched = await enrichedTopLevelAgentTasksFromStore(store, tasks, caches);
-  const provenEmptyTaskIds = new Set<string>();
-  if (emptinessProof) {
-    const candidates = enriched.filter((task) => isWorktreeCapacityHolder(task));
-    if (candidates.length > 0) {
-      const emptinessByTaskId = await proveDormantCheckoutEmptiness({ ...emptinessProof, candidates });
-      for (const task of candidates) {
-        const verdicts = emptinessByTaskId.get(task.id);
-        /* Fail-closed: no verdict map for the card, or any retained entry not proven `empty`, keeps
-           the card a holder. Only a full clean-and-behind proof across every retained repository
-           releases the slot. */
-        if (verdicts && taskHoldsUnmergedCheckout(task) && !taskHoldsUnmergedCheckout(task, verdicts)) {
-          provenEmptyTaskIds.add(task.id);
-        }
-      }
-    }
-  }
+  const enriched = await enrichedTopLevelAgentTasksFromStore(store, tasks, caches, emptinessProof);
+  /* The blocked-card proof inside enrichment is disjoint from this candidate set by construction:
+     the freeze sets `paused`, and a paused card is never a worktree holder — so the shared prover
+     still sees each card at most once per pass.
+
+  FNXC:CapacityModel 2026-10-19-23:44 (RUFU-374 code-review finding 2):
+  Read this stamp narrowly. `provenCheckoutFreeTaskIds` answers "retains nothing protectable", which
+  a running WIP card with no retained path satisfies WITHOUT any git call (proof 1 is the hydrated
+  row itself). `isWorktreeCapacityHolder` consults `checkoutProvenEmpty` only inside its retained-path
+  clause, so such a liveness holder keeps holding and the flag is inert for it today.
+
+  The stamp is also confined to this callback: the stamped copy is never returned, so it cannot reach
+  the agent dimension — that one marks only ids `isTaskExternallyBlocked` selected, inside
+  `enrichedTopLevelAgentTasksFromStore`. RUFU-374 made the flag two-dimensional, so do not read it as
+  "git ran for this card" or "safe to release this card": either reading widens a predicate into a
+  fail-open on a card that was never git-proven. Narrow the stamp to git-proven cards first.
+  */
+  const provenEmptyTaskIds = await provenCheckoutFreeTaskIds(
+    enriched.filter((task) => isWorktreeCapacityHolder(task)),
+    emptinessProof,
+  );
   const ids: string[] = [];
   for (const task of enriched) {
     if (isWorktreeCapacityHolder(provenEmptyTaskIds.has(task.id) ? { ...task, checkoutProvenEmpty: true } : task)) {
@@ -724,8 +801,9 @@ export async function persistedTopLevelAgentSlotsFromStore(
   store: WorkflowIrResolverStore,
   tasks: Task[],
   caches?: CapacityEnrichmentCaches,
+  emptinessProof?: CapacityEmptinessProof,
 ): Promise<number> {
-  return countRunningAgentTasks(await enrichedTopLevelAgentTasksFromStore(store, tasks, caches));
+  return countRunningAgentTasks(await enrichedTopLevelAgentTasksFromStore(store, tasks, caches, emptinessProof));
 }
 
 /**
@@ -761,8 +839,12 @@ export async function computeTopLevelConcurrencyClaimedFromStore(params: {
   /** Host semaphore activity must never consume this project's capacity. */
   semaphoreActiveCount?: number;
   pendingSpecifyCount?: number;
+  /** FNXC:ExternalBlock 2026-10-19-20:28 (RUFU-374): optional and fail-closed — see `CapacityEmptinessProof`. */
+  emptinessProof?: CapacityEmptinessProof;
+  /** Pass-scoped IR/selection reuse, so one admission pass resolves each workflow at most once. */
+  caches?: CapacityEnrichmentCaches;
 }): Promise<number> {
-  const persisted = await persistedTopLevelAgentSlotsFromStore(params.store, params.tasks);
+  const persisted = await persistedTopLevelAgentSlotsFromStore(params.store, params.tasks, params.caches, params.emptinessProof);
   const pending = Math.max(0, Math.floor(params.pendingSpecifyCount ?? 0));
   return persisted + pending;
 }

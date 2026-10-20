@@ -72,6 +72,97 @@ describe("live agent count predicates", () => {
     expect(isWaitingAgentTask(blockedHold)).toBe(false);
   });
 
+  /*
+  FNXC:ExternalBlock 2026-10-19-20:18 (RUFU-374):
+  The freeze keeps a `maxConcurrent` slot only while it protects a checkout Retry resumes into.
+  Measured 2026-09-27T17:0xZ: AIWO-130/AIWO-132 (source `session-failure`) and BANKS-096/BANKS-097
+  (source `agent-declaration`, one of them "STOP at Step 0 … with zero writes") all carried
+  `checked_out_by=''`, no `worktree` value and no checkout lease, and their two slots froze both
+  projects with `claimed=2, processing=0` printed 82 370 times.
+
+  These four arms are the contract: the flagless shape still freezes a two-slot project (the
+  negative proof, and the guarantee every dashboard/CLI/leak-valve caller keeps byte-identically);
+  a card whose checkout could not be proven still holds; a card proven to own nothing protectable
+  releases; and a released card never re-enters capacity as waiting work.
+  */
+  describe("an external block releases its running-agent slot only on checkout proof", () => {
+    const freeze = (code: string, worktree?: string) => ({
+      origin: "credentials" as const,
+      code,
+      message: `Unable to select a usable model (${code})`,
+      source: "session-failure" as const,
+      blockedAt: "2026-09-23T00:00:00.000Z",
+      resume: { column: "in-progress", currentStep: 0, ...(worktree ? { worktree } : {}) },
+    });
+    /** The production shape: WIP lane, durable freeze patch applied, no checkout lease. */
+    const blocked = (overrides: Partial<RunningAgentTaskShape> = {}): RunningAgentTaskShape => task({
+      column: "in-progress",
+      columnCountsTowardWip: true,
+      status: "blocked",
+      paused: true,
+      externalBlock: freeze("CREDENTIALS"),
+      ...overrides,
+    });
+    const eligible = () => task({ column: "todo", columnIsIntakeOrHold: true });
+    const admits = (maxConcurrent: number, tasks: readonly RunningAgentTaskShape[]) =>
+      countRunningAgentTasks(tasks) < maxConcurrent;
+
+    it("negative proof: two unproven blocked cards freeze a two-slot project", () => {
+      const maxConcurrent = 2;
+      // Both cards own nothing on disk, yet the flagless predicate — the shape the dashboard
+      // footer, the CLI and the synchronous leak valve use — counts them both.
+      const frozen = [blocked(), blocked(), eligible()];
+      expect(countRunningAgentTasks(frozen)).toBe(maxConcurrent);
+      expect(admits(maxConcurrent, frozen)).toBe(false);
+      // The eligible card is not what filled the slots: it is neither running nor waiting-blocked.
+      expect(countRunningAgentTasks([blocked(), blocked()])).toBe(maxConcurrent);
+      // With the proof the same project has both slots back, so the eligible card is admitted.
+      expect(admits(maxConcurrent, [
+        blocked({ checkoutProvenEmpty: true }),
+        blocked({ checkoutProvenEmpty: true }),
+        eligible(),
+      ])).toBe(true);
+    });
+
+    it("keeps holding a blocked card whose checkout is live, dirty, ahead, or simply unproven", () => {
+      // A retained checkout that was not proven empty: the FNXC:ExternalBlock 2026-08-28 contract.
+      expect(isRunningAgentTask(blocked({ checkoutProvenEmpty: false }))).toBe(true);
+      // No proof at all is the same answer — fail-closed, not "assume empty". This is also the
+      // arm that forbids inferring checkout absence from a missing `worktree` field: this card has
+      // no `worktree` key whatsoever and must STILL hold, because a serialized board row cannot
+      // distinguish "no checkout" from "column not fetched".
+      expect(isRunningAgentTask(blocked())).toBe(true);
+      // The proof is the ONLY downgrade channel: the pure shape deliberately carries no `worktree`
+      // field, so a card that really does retain a checkout reaches this arm as `false`/absent
+      // (the engine proved it occupied) and can never be released by a missing serialized field.
+      expect(isRunningAgentTask(blocked({ checkedOutBy: "agent-a" }))).toBe(true);
+    });
+
+    it("releases the slot of a blocked card proven to own no checkout, and only that card's slot", () => {
+      expect(isRunningAgentTask(blocked({ checkoutProvenEmpty: true }))).toBe(false);
+      // Only the proven card releases; its unproven sibling keeps its own slot.
+      expect(countRunningAgentTasks([blocked({ checkoutProvenEmpty: true }), blocked()])).toBe(1);
+      // The release is confined to the blocked card: an unblocked WIP card is untouched by the flag
+      // plumbing, and a proven block does not make its siblings cheaper either.
+      expect(isRunningAgentTask(task({ column: "in-progress", columnCountsTowardWip: true }))).toBe(true);
+    });
+
+    it("resolves every blocked card through the blocked arm and never through waiting work", () => {
+      // Ordering is load-bearing: the freeze sets `paused: true`, so falling through to the pause
+      // arm would release every blocked card, proven or not.
+      expect(isRunningAgentTask(blocked({ paused: true }))).toBe(true);
+      expect(isRunningAgentTask(blocked({ userPaused: true }))).toBe(true);
+      // The arm owns the whole answer: a live gate-session lease cannot re-charge a released slot,
+      // because Retry resumes into the checkout, not into a step lease.
+      const liveLease = { workflowStepResults: [{ workflowStepId: "code-review", workflowStepName: "Code Review", status: "pending" as const, startedAt: "2026-10-01T00:00:00.000Z" }] };
+      expect(isRunningAgentTask(blocked({ ...liveLease }))).toBe(true);
+      expect(isRunningAgentTask(blocked({ ...liveLease, checkoutProvenEmpty: true }))).toBe(false);
+      // And the released card must not slip back in through the waiting door.
+      expect(isWaitingAgentTask(blocked({ checkoutProvenEmpty: true }))).toBe(false);
+      expect(isWaitingAgentTask(blocked({ column: "todo", columnIsIntakeOrHold: true, checkoutProvenEmpty: true }))).toBe(false);
+    });
+  });
+
   it("does not count failed WIP (or any failed row) as a live capacity holder", () => {
     // Failed parks remain in WIP until rebound/operator action but must free maxWorktrees/maxConcurrent.
     expect(isRunningAgentTask(task({ column: "in-progress", columnCountsTowardWip: true, status: "failed" }))).toBe(false);

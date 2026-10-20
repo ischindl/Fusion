@@ -102,6 +102,7 @@ import {
   persistedTopLevelAgentTaskIdsFromStore,
   projectAdmissionCoordinator,
   resolveAgentCapacityLimit,
+  type CapacityEmptinessProof,
 } from "../concurrency/concurrency.js";
 
 /*
@@ -905,6 +906,15 @@ export async function admitPlanningContinuation(input: {
   // would attach two releasers to one task-keyed coordinator reservation.
   if (planningContinuationRuns.has(runKey)) return true;
   const settings = await input.store.getSettings();
+  /*
+  FNXC:ExternalBlock 2026-10-19-20:28 (RUFU-374):
+  One proof for this admission evaluation, shared by the project-wide snapshot and the same-task
+  check below. `input.projectId` is this project's rootDir (the caller passes
+  `this.taskStore.getRootDir()`), which is what the registry needs to resolve the base ref; without
+  a resolvable root the prover answers `unknown` and every blocked card keeps holding, which is the
+  fail-closed direction.
+  */
+  const capacityEmptinessProof: CapacityEmptinessProof = { rootDir: input.projectId, settings };
   let selected = false;
   let duplicateHandled = false;
   const loadClaimSnapshot = async (): Promise<{ count: number; ids: string[] }> => {
@@ -923,13 +933,13 @@ export async function admitPlanningContinuation(input: {
     `log_recent` for the log-derived signals.
     */
     const tasks = await input.store.listTasks({ slim: false, includeArchived: false, excludeLog: true });
-    const ids = await persistedTopLevelAgentTaskIdsFromStore(input.store, tasks);
+    const ids = await persistedTopLevelAgentTaskIdsFromStore(input.store, tasks, undefined, capacityEmptinessProof);
     return { count: ids.length, ids };
   };
   // Resuming another node of an already-live task is a same-slot handoff, not a
   // new admission. Check only this fully hydrated task here; the project-wide
   // snapshot belongs inside the serialized coordinator drain below.
-  const taskAlreadyActive = (await persistedTopLevelAgentTaskIdsFromStore(input.store, [input.task]))
+  const taskAlreadyActive = (await persistedTopLevelAgentTaskIdsFromStore(input.store, [input.task], undefined, capacityEmptinessProof))
     .includes(input.task.id);
   if (taskAlreadyActive) {
     await dispatchPlanningContinuationIfCurrent({

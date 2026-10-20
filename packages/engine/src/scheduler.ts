@@ -35,6 +35,7 @@ import {
   registerPreHeldExecutorSlot,
   resolveAgentCapacityLimit,
   type AgentSemaphore,
+  type CapacityEmptinessProof,
 } from "./concurrency/concurrency.js";
 import { planTaskWorktreePath, resolveTaskWorkingBranch } from "./worktree/worktree-names.js";
 import { invalidateEmptinessProofsForTask, proveDormantCheckoutEmptiness } from "./worktree/checkout-emptiness.js";
@@ -2935,16 +2936,25 @@ export class Scheduler {
           return typeof value === "function" ? value.bind(target) : value;
         },
       });
+      /*
+      FNXC:ExternalBlock 2026-10-19-20:28 (RUFU-374):
+      ONE proof object for the whole pass. Every capacity derivation below — the worktree reservation,
+      the agent holder set, and the serialized final-claim snapshot — receives this same object, so
+      the two dimensions answer the checkout question from one prover and one verdict per
+      (path, baseRef). Constructing it per call site was already a latent disagreement: two literals
+      could drift in `settings` or `rootDir` while both claimed to describe the same pass.
+      */
+      const capacityEmptinessProof: CapacityEmptinessProof = {
+        rootDir: () => this.store.getRootDir(),
+        settings,
+      };
       /* RUFU-200: pass the emptiness proof so a retained checkout that is clean AND zero commits
          ahead of base releases its `maxWorktrees` slot instead of phantom-holding capacity; the
          shared prover cache makes this the same git evidence the dormant-lease pass reads below. */
       const activeWorktreeTaskIds = await persistedWorktreeHolderTaskIdsFromStore(
         selectionCachedStore,
         tasks,
-        {
-          rootDir: () => this.store.getRootDir(),
-          settings,
-        },
+        capacityEmptinessProof,
         // RUFU-698: same workflow-IR/selection caches as the claim snapshot below, per pass.
         { irCache: wipIrCache, selectionCache },
       );
@@ -3029,13 +3039,15 @@ export class Scheduler {
         the pass resolves a workflow IR once per workflow instead of once per dimension per candidate.
         */
         const [agentIds, worktreeIds] = await Promise.all([
-          persistedTopLevelAgentTaskIdsFromStore(selectionCachedStore, liveTasks, capacityCaches),
-          /* RUFU-200: same proof as the reservation below, so the serialized final-claim
+          /* RUFU-374: the agent dimension now takes the same proof, so a card frozen by an external
+             block with no checkout behind it stops charging this pass a `maxConcurrent` slot. */
+          persistedTopLevelAgentTaskIdsFromStore(selectionCachedStore, liveTasks, capacityCaches, capacityEmptinessProof),
+          /* RUFU-200: same proof as the reservation above, so the serialized final-claim
              snapshot and the capacity readout never disagree with admission. */
           persistedWorktreeHolderTaskIdsFromStore(
             selectionCachedStore,
             liveTasks,
-            { rootDir: () => this.store.getRootDir(), settings },
+            capacityEmptinessProof,
             capacityCaches,
           ),
         ]);

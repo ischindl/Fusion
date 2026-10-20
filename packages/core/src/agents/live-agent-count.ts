@@ -27,6 +27,25 @@ export type RunningAgentTaskShape = Pick<Task, "column" | "status" | "paused" | 
    * callers; absent means a flag-less legacy caller that cannot observe planners.
    */
   planningIsLive?: boolean;
+  /*
+  FNXC:ExternalBlock 2026-10-19-20:18 (RUFU-374) / FNXC:OverlapScheduling 2026-09-09-00:40 (RUFU-200):
+  DOWNGRADE-ONLY checkout proof, consumed by BOTH capacity dimensions: `isWorktreeCapacityHolder`
+  (a retained checkout's `maxWorktrees` slot) and the external-block branch of
+  {@link isRunningAgentTask} (a frozen card's `maxConcurrent` slot).
+
+  `true` ONLY when the caller proved the card owns nothing protectable: either it retains no
+  `worktree`/`workspaceWorktrees` path at all, or git proved every retained repository checkout is
+  a clean tree AND zero commits ahead of its base. Absent or `false` means "holder" (fail-closed):
+  a caller that could not obtain the proof must keep the historical counting, because the cost of a
+  wrong downgrade is releasing a slot that still protects someone's uncommitted or unmerged work.
+
+  The engine computes it in `persistedWorktreeHolderTaskIdsFromStore` (worktree dimension) and in
+  `enrichedTopLevelAgentTasksFromStore` (agent dimension) from the shared `CheckoutEmptinessProver`
+  cache. Only those store-backed layers may set it: a serialized board row erases the difference
+  between "no checkout" and "the column was not fetched", so the pure predicate must never read
+  `worktree`/`workspaceWorktrees` directly and infer absence from a missing field.
+  */
+  checkoutProvenEmpty?: boolean;
 };
 
 /*
@@ -242,8 +261,30 @@ export function isRunningAgentTask(task: RunningAgentTaskShape): boolean {
   A non-terminal external block deliberately remains a capacity holder even though its durable
   pause fence prevents execution. Keeping maxConcurrent and maxWorktrees occupied ensures another
   card cannot take the worktree slot the operator expects Retry to resume onto.
+
+  FNXC:ExternalBlock 2026-10-19-20:18 (RUFU-374):
+  That justification only holds while there IS a checkout to resume into, and the unconditional
+  `return true` never asked. Measured 2026-09-27T17:0xZ in production: four externally blocked cards
+  (`AIWO-130`, `AIWO-132`, `BANKS-096`, `BANKS-097`) carried `checked_out_by=''`, no `worktree` value
+  and no checkout lease, and their two slots froze both projects — `[plan] Plan throttled by
+  running-agent cap: eligible=4 …, maxConcurrent=2, claimed=2, processing=0` printed 82 370 times,
+  the FNXC:CapacitySlotLeak signature with no phantom planning row in sight. The protected resource
+  was an empty `maxConcurrent` counter, so a card with no working copy of any repository stopped
+  every remaining card in the project from planning.
+
+  The branch therefore answers the same absence/emptiness question RUFU-200 asks for the worktree
+  dimension, through the same downgrade-only `checkoutProvenEmpty` flag. Absent proof, `false`, an
+  unknown verdict, or a prover that could not answer all keep the card holding — byte-identical to
+  today for every flag-less caller (dashboard footer, CLI, the synchronous semaphore leak valve),
+  which cannot run the engine-owned git prover and must stay conservative.
+
+  Ordering is load-bearing twice over: this arm stays BEFORE the `paused` check (a freeze sets
+  `paused: true`, so falling through would release every blocked card, proven or not, and a
+  blocked+userPaused card must still resolve through the blocked arm), and it OWNS the whole answer
+  for a blocked card rather than falling through to the liveness arms — Retry resumes into the
+  checkout, not into a step lease, so nothing else about the row can change this verdict.
   */
-  if (isTaskExternallyBlocked(task)) return true;
+  if (isTaskExternallyBlocked(task)) return task.checkoutProvenEmpty !== true;
   if (task.paused || task.userPaused) return false;
   // Rationale for excluding a dead park lives at `isFailedWipPark`, the single spelling.
   if (isFailedWipPark(task)) return false;
@@ -287,6 +328,14 @@ export function isRunningAgentTask(task: RunningAgentTaskShape): boolean {
 
 /** Exact footer waiting membership: unpaused, non-terminal intake/hold work that is not live. */
 export function isWaitingAgentTask(task: RunningAgentTaskShape): boolean {
+  /*
+  FNXC:ExternalBlock 2026-10-19-20:18 (RUFU-374): the blocked arm stays first and stays `false`.
+  An external block is neither running nor waiting — its slot retention lives in the running arm —
+  and the new checkout-proof release must not let a frozen card re-enter capacity through this
+  door: it is not queued for dispatch, it is frozen awaiting an operator. The `||` order is part of
+  that contract: short-circuiting here means the proof-aware running arm is never consulted for a
+  blocked card, so a released block can only ever stop counting, never count as waiting work.
+  */
   if (isTaskExternallyBlocked(task) || task.paused || task.userPaused || terminalKind(task) !== "none" || isRunningAgentTask(task)) return false;
   return task.columnIsIntakeOrHold ?? isLegacyPreImplementationColumn(task.column);
 }
