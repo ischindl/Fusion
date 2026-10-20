@@ -91,10 +91,20 @@ export function createTaskUpdateTool(
       execute: async (_id: string, params: Static<typeof taskUpdateParams>) => {
         const { step, status, summary, dependencies, custom_fields, title } = params;
 
-        // Bare-call guard (P1 api-contract): a call with none of
-        // title/step/status/dependencies/custom_fields silently no-op'd, which the
-        // agent cannot observe. Reject it up front so the failure is visible and
-        // self-describing. The legacy no-op text is preserved as the detail.
+        /*
+        Bare-call guard (P1 api-contract): a call with none of
+        title/step/status/dependencies/custom_fields silently no-op'd, which the
+        agent cannot observe. Reject it up front so the failure is visible and
+        self-describing.
+
+        FNXC:TaskTitleHygiene 2026-10-20-02:26 (RUFU-363):
+        The no-op detail sentence enumerates every field this tool can update, so it names `title`
+        beside step+status/dependencies/custom_fields ever since RUFU-295 added the rename path.
+        The pre-RUFU-295 wording that omitted `title` exists nowhere in the repo: this emission,
+        the titleNote-bearing sibling no-op further below, and the pin in executor-prompt.test.ts
+        all carry the same sentence. Do not "restore" the older text to satisfy a test -- the
+        emission is the contract and the test is what was stale.
+        */
         if (title === undefined && step === undefined && status === undefined && dependencies === undefined && custom_fields === undefined) {
           return {
             content: [{

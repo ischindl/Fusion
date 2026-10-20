@@ -3037,8 +3037,14 @@ describe("fn_task_update bare-call guard (P1 api-contract)", () => {
     expect(result.isError).toBe(true);
     const text = result.content[0]?.type === "text" ? result.content[0].text : "";
     expect(text).toContain("fn_task_update requires at least one of");
-    // The legacy no-op text is preserved as the detail.
-    expect(text).toContain("No-op: provide a step+status, dependencies, or custom_fields to update.");
+    /*
+    FNXC:TaskTitleHygiene 2026-10-20-02:26 (RUFU-363):
+    The no-op detail enumerates every updatable field, so it includes the `title` rename that
+    RUFU-295 added. That squash landed the new sentence in the guard but left this pin asserting
+    the pre-RUFU-295 wording, which is not a substring of what the guard emits -- the inserted
+    "a title, " broke the containment. This is the sentence the guard actually returns.
+    */
+    expect(text).toContain("No-op: provide a title, step+status, dependencies, or custom_fields to update.");
   });
 
   it("does not trigger the guard when a dependencies-only patch is supplied", async () => {
