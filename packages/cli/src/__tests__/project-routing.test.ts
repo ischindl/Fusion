@@ -1,196 +1,94 @@
 /*
 FNXC:ProjectRoutingVisibility 2026-09-22-16:37:
-Acceptance matrix for the pure routing decision behind `fn task create|duplicate|refine`.
-The measured incident: cwd `/home/dev/git/Fusion` (registered `runfusion`), central default
-`gedapp`, and `fn task create` printed only `Project: gedapp` plus a relative
-`.fusion/tasks/RUFU-242/` path, so a card filed into another project looked local. Each case
-below pins one branch of the documented precedence (flag → default → cwd): only the
-DEFAULT-wins-and-the-cwd-belongs-to-a-different-project case may warn, because the flag case is
-what the operator asked for, the cwd case derives from the cwd by definition, and the fallback
-case has its own louder message.
+Acceptance matrix for the pure routing report behind `fn task create|duplicate|refine`. The measured
+incident: cwd `/home/dev/git/Fusion` (registered `runfusion`), central default `gedapp`, and `fn task create`
+printed only `Project: gedapp` plus a relative `.fusion/tasks/RUFU-242/` path, so a card filed into another
+project looked local.
+
+FNXC:DefaultProjectNotARouter 2026-10-20-19:46 (RUFU-572):
+The mismatch warning and the `[y/N]` confirmation are DELETED together with the routing source that could
+produce them. `resolveProject` now targets `--project` (the reserved `@default` included) or the current
+directory, so a card that lands outside the cwd requires the operator to have named that project themselves
+and nothing here may second-guess it. What stays under test is the part that must not drift across the three
+card-minting commands: the single shared target line per provenance value, the unregistered-cwd sentence, and
+the absolute card path.
 */
 import { describe, it, expect } from "vitest";
 import {
   cardDirectoryPath,
-  crossProjectWarning,
-  declinedCrossProjectNotice,
   evaluateProjectRouting,
   unregisteredCwdProjectWarning,
 } from "../project-routing.js";
 
-const RUNFUSION_CWD = { id: "proj_runfusion", name: "runfusion", path: "/home/dev/git/Fusion" };
 const GEDAPP_PATH = "/home/dev/work/gedapp";
 
-/** A resolved context: the central default picked `gedapp` while the cwd belongs to `runfusion`. */
-function crossProjectDefault(overrides: Record<string, unknown> = {}) {
-  return {
-    projectName: "gedapp",
-    projectPath: GEDAPP_PATH,
-    resolvedFrom: "default" as const,
-    cwdProject: RUNFUSION_CWD,
-    cwd: "/home/dev/git/Fusion/cli",
-    yes: false,
-    isTty: false,
-    ...overrides,
-  };
-}
-
 describe("evaluateProjectRouting", () => {
-  it("does not warn when --project chose the target, even across projects", () => {
+  it("names the target and its provenance when --project chose it", () => {
     const decision = evaluateProjectRouting({
       projectName: "gedapp",
       projectPath: GEDAPP_PATH,
       resolvedFrom: "flag",
-      cwdProject: RUNFUSION_CWD,
-      cwd: "/home/dev/git/Fusion",
-      yes: false,
-      isTty: true,
     });
 
-    expect(decision.warning).toBeUndefined();
-    expect(decision.requiresConfirm).toBe(false);
     expect(decision.targetLine).toContain("Project: gedapp");
     expect(decision.targetLine).toContain(GEDAPP_PATH);
     expect(decision.targetLine).toContain("resolved via the --project flag");
   });
 
-  it("warns and asks when the default project wins over a different cwd project", () => {
-    const decision = evaluateProjectRouting(crossProjectDefault({ isTty: true }));
-
-    expect(decision.requiresConfirm).toBe(true);
-    expect(decision.warning).toContain("runfusion");
-    expect(decision.warning).toContain("gedapp");
-    expect(decision.warning).toContain(RUNFUSION_CWD.path);
-    expect(decision.warning).toContain(GEDAPP_PATH);
-    expect(decision.targetLine).toContain("resolved via the central default project");
-  });
-
-  it("--yes keeps the warning but removes the confirmation", () => {
-    const decision = evaluateProjectRouting(crossProjectDefault({ isTty: true, yes: true }));
-
-    expect(decision.warning).toBeDefined();
-    expect(decision.requiresConfirm).toBe(false);
-  });
-
-  it("never asks for confirmation without a terminal", () => {
-    const decision = evaluateProjectRouting(crossProjectDefault({ isTty: false }));
-
-    expect(decision.warning).toBeDefined();
-    expect(decision.requiresConfirm).toBe(false);
-  });
-
-  it("does not warn when the target was derived from the cwd itself", () => {
-    const decision = evaluateProjectRouting({
-      projectName: "runfusion",
-      projectPath: RUNFUSION_CWD.path,
-      resolvedFrom: "cwd",
-      cwdProject: RUNFUSION_CWD,
-      cwd: "/home/dev/git/Fusion/packages/cli",
-      yes: false,
-      isTty: true,
-    });
-
-    expect(decision.warning).toBeUndefined();
-    expect(decision.requiresConfirm).toBe(false);
-    expect(decision.targetLine).toContain("resolved via current-directory detection");
-  });
-
-  it("does not warn when the default project IS the cwd project", () => {
-    const decision = evaluateProjectRouting({
-      projectName: "runfusion",
-      projectPath: RUNFUSION_CWD.path,
-      resolvedFrom: "default",
-      cwdProject: RUNFUSION_CWD,
-      cwd: RUNFUSION_CWD.path,
-      yes: false,
-      isTty: true,
-    });
-
-    expect(decision.warning).toBeUndefined();
-    expect(decision.requiresConfirm).toBe(false);
-  });
-
-  it.each([
-    ["a trailing separator", "/home/dev/git/Fusion/"],
-    ["an inner dot-segment", "/home/dev/git/./Fusion"],
-    ["a detour through a parent", "/home/dev/git/other/../Fusion"],
-  ])("treats the same folder spelled as %s as the target project itself", (_label, cwdPath) => {
-    const decision = evaluateProjectRouting({
-      projectName: "runfusion",
-      projectPath: "/home/dev/git/Fusion",
-      resolvedFrom: "default",
-      cwdProject: { id: "p", name: "runfusion", path: cwdPath },
-      cwd: cwdPath,
-      yes: false,
-      isTty: true,
-    });
-
-    expect(decision.warning).toBeUndefined();
-    expect(decision.requiresConfirm).toBe(false);
-  });
-
-  it("leaves a hand-built context (no provenance) exactly as silent as before", () => {
+  it("reports an @default target as the flag the operator actually typed", () => {
+    /*
+    FNXC:DefaultProjectNotARouter 2026-10-20-19:46 (RUFU-572): `--project @default` dereferences the stored
+    default, and `resolveProject` records it as `flag`. There is no `default` provenance to label any more, so
+    the operator reads the truth: they asked for this project on the command line.
+    */
     const decision = evaluateProjectRouting({
       projectName: "gedapp",
       projectPath: GEDAPP_PATH,
-      cwd: "/home/dev/git/Fusion",
-      yes: false,
-      isTty: true,
+      resolvedFrom: "flag",
     });
 
-    expect(decision.warning).toBeUndefined();
-    expect(decision.requiresConfirm).toBe(false);
-    // Byte-identical to the pre-RUFU-269 line, so anything parsing it keeps working.
+    expect(decision.targetLine).not.toContain("default project");
+    expect(decision.targetLine).toContain("--project flag");
+  });
+
+  it("names the target without second-guessing a cwd resolution", () => {
+    const decision = evaluateProjectRouting({
+      projectName: "runfusion",
+      projectPath: "/home/dev/git/Fusion",
+      resolvedFrom: "cwd",
+    });
+
+    expect(decision.targetLine).toContain("resolved via current-directory detection");
+  });
+
+  it("keeps the unregistered-cwd fallback to its own louder message", () => {
+    const decision = evaluateProjectRouting({
+      projectName: "new-thing",
+      projectPath: "/home/dev/git/new-thing",
+      resolvedFrom: "cwd-fallback",
+    });
+
+    expect(decision.targetLine).toContain("an unregistered local project in the current directory");
+  });
+
+  it("leaves a hand-built context (no provenance) as a bare target line", () => {
+    const decision = evaluateProjectRouting({ projectName: "gedapp", projectPath: GEDAPP_PATH });
+
     expect(decision.targetLine).toBe("  Project: gedapp");
   });
 
-  it("does not double-report the unregistered-cwd fallback", () => {
+  it("returns nothing but the target line, because there is no warning or prompt left to decide", () => {
     const decision = evaluateProjectRouting({
-      projectName: "fusion",
-      projectPath: "/home/dev/git/fusion",
-      resolvedFrom: "cwd-fallback",
-      cwdProject: { id: "", name: "fusion", path: "/home/dev/git/fusion" },
-      cwd: "/home/dev/git/fusion",
-      yes: false,
-      isTty: true,
+      projectName: "gedapp",
+      projectPath: GEDAPP_PATH,
+      resolvedFrom: "flag",
     });
 
-    // That path gets `unregisteredCwdProjectWarning`, which is specific; the generic one stays quiet.
-    expect(decision.warning).toBeUndefined();
-    expect(decision.requiresConfirm).toBe(false);
-    expect(decision.targetLine).toContain("resolved via an unregistered local project");
+    expect(Object.keys(decision)).toEqual(["targetLine"]);
   });
 });
 
 describe("routing message wording", () => {
-  it("names both projects, both paths, and both remedies in the warning", () => {
-    const warning = crossProjectWarning({
-      projectName: "gedapp",
-      projectPath: GEDAPP_PATH,
-      resolvedFrom: "default",
-      cwdProject: RUNFUSION_CWD,
-      cwd: "/home/dev/git/Fusion",
-      yes: false,
-      isTty: false,
-    });
-
-    expect(warning).toContain("runfusion");
-    expect(warning).toContain("gedapp");
-    expect(warning).toContain("/home/dev/git/Fusion");
-    expect(warning).toContain(GEDAPP_PATH);
-    expect(warning).toContain("--project");
-    expect(warning).toContain("fn project set-default");
-  });
-
-  it("names the target and the remedies when a declined create exits", () => {
-    const notice = declinedCrossProjectNotice("gedapp");
-
-    expect(notice).toContain("gedapp");
-    expect(notice).toMatch(/not created/i);
-    expect(notice).toContain("--project");
-    expect(notice).toContain("fn project set-default");
-  });
-
   it("states that the unregistered-cwd fallback is not a registered project", () => {
     const warning = unregisteredCwdProjectWarning("/home/dev/git/new-thing", "/home/dev/git/new-thing");
 
@@ -200,7 +98,6 @@ describe("routing message wording", () => {
     expect(warning).toContain("fn project add");
   });
 });
-
 /*
 FNXC:ProjectRoutingVisibility 2026-09-22-23:26 (RUFU-269): the printed card path was cwd-relative
 (`Path: .fusion/tasks/RUFU-242/`), so a card filed into `gedapp` while the shell stood in `Fusion` printed a
@@ -224,8 +121,8 @@ describe("cardDirectoryPath", () => {
 FNXC:ProjectRoutingVisibility 2026-09-22-23:26 (RUFU-269): `--yes` is a flag, not the description. Before
 this change `fn task create --project other "text" --yes` filed a card whose title literally ended in
 "--yes", because the flag was never consumed and the leftover became the positional description. These
-cases guard the parse half of that fix and pin that `--yes` answers ONLY the routing confirm — it must not
-quietly grow into a bypass of the duplicate guards.
+cases guard the parse half of that fix and pin that `--yes` never quietly grows into a bypass of the
+duplicate guards, even though RUFU-572 deleted the routing confirm it used to answer.
 */
 describe("fn task create argument parsing", () => {
   /** Load the CLI parser without letting `bin.ts` run `main()` on import. */
@@ -252,7 +149,7 @@ describe("fn task create argument parsing", () => {
     expect(parse(["text"]).yes).toBe(false);
   });
 
-  it("leaves the duplicate guards on: --yes answers the routing confirm only", async () => {
+  it("leaves the duplicate guards on: --yes stays inert on card minting", async () => {
     const parse = await loadParser();
 
     expect(parse(["text", "--yes"]).noDedup).toBe(false);

@@ -29,7 +29,7 @@ import {
   asLocalProjectContext,
   type ProjectContext,
 } from "../project-context.js";
-import { isQuietMode, promptOutputStream, result as outputResult } from "../output.js";
+import { promptOutputStream, result as outputResult } from "../output.js";
 /*
 FNXC:ProjectRoutingVisibility 2026-09-22-23:26 (RUFU-269): the card-minting commands must print where a
 card actually went. The decision itself lives in the pure `project-routing` module so the whole acceptance
@@ -37,8 +37,6 @@ matrix is unit-testable; this file owns only the printing and the prompting.
 */
 import {
   cardDirectoryPath,
-  crossProjectConfirmQuestion,
-  declinedCrossProjectNotice,
   evaluateProjectRouting,
   unregisteredCwdProjectWarning,
 } from "../project-routing.js";
@@ -364,27 +362,22 @@ async function closeBoardContextAndExit(context: ProjectContext, code: number): 
 }
 
 /*
-FNXC:ProjectRoutingVisibility 2026-09-23-00:04 (RUFU-269): warn-only routing report for the card-minting
-commands that are NOT `fn task create`. `duplicate` and `refine` mint a NEW card in the resolved project
-from an id the operator typed, so a central-default target that is not the cwd project still files a card
-somewhere the operator may not expect — but they already name a specific card (which only exists in the
-project it lives in) and carry no `--yes` of their own, so per spec they announce rather than block.
-`isTty: false` here is not a claim about the terminal, it is the instruction "never wait on an answer on
-this surface". The target line is returned for the caller's success block so all three commands print one
-`Project:` format from one formatter and cannot drift.
+FNXC:ProjectRoutingVisibility 2026-09-23-00:04 (RUFU-269): routing report for the card-minting commands that
+are NOT `fn task create`. `duplicate` and `refine` mint a NEW card in the resolved project from an id the
+operator typed, so they announce the target rather than block. The target line is returned for the caller's
+success block so all three commands print one `Project:` format from one formatter and cannot drift.
+
+FNXC:DefaultProjectNotARouter 2026-10-20-19:46 (RUFU-572): this helper used to print a cross-project warning
+as well. That warning only ever fired when the stored default beat the cwd project; the default is no longer
+a routing source, so the card-minting target is always either typed or the folder the operator is standing
+in and there is nothing left to warn about here.
 */
 function reportCardRouting(context: ProjectContext): string {
   const decision = evaluateProjectRouting({
     projectName: context.projectName,
     projectPath: context.projectPath,
     resolvedFrom: context.resolvedFrom,
-    cwdProject: context.cwdProject,
-    cwd: process.cwd(),
-    isTty: false,
   });
-  if (decision.warning) {
-    console.error(decision.warning);
-  }
   return decision.targetLine;
 }
 
@@ -530,31 +523,22 @@ async function runCliNearDuplicateCheck(args: {
   process.exit(0);
 }
 
-/**
- * Ask a yes/no question on the terminal and report whether the answer was affirmative.
- *
- * FNXC:ProjectRoutingVisibility 2026-09-22-23:26 (RUFU-269): the prompt writes to the un-gated output
- * stream, matching the near-duplicate confirm above, so a question stays visible even when informational
- * stdout is suppressed. Whether asking is allowed at all (TTY, not quiet, no `--yes`) is the caller's call.
- *
- * @param {string} question - Question to display, including the `[y/N]` affordance
- * @returns {Promise<boolean>} True when the answer was `y` or `yes` (case-insensitive)
- */
-async function confirmOnTerminal(question: string): Promise<boolean> {
-  const rl = createInterface({ input: process.stdin, output: promptOutputStream() });
-  try {
-    const answer = (await rl.question(question)).trim().toLowerCase();
-    return answer === "y" || answer === "yes";
-  } finally {
-    rl.close();
-  }
-}
+/*
+FNXC:DefaultProjectNotARouter 2026-10-20-19:46 (RUFU-572): `confirmOnTerminal`, which asked "Create this card
+in project X anyway? [y/N]", is DELETED together with the routing mismatch that prompted it. The other
+interactive prompts in this file keep their own `createInterface({ output: promptOutputStream() })` sites, so
+the readline import and the shared prompt-stream helper stay.
+*/
 
 /*
 FNXC:ProjectRoutingVisibility 2026-09-22-23:26 (RUFU-269): `yes` is the CLI `--yes` flag, threaded through
-from `parseTaskCreateArgs` in `bin.ts`. It answers an affirmative cross-project routing confirmation
-without asking, which is what lets a script target the default project deliberately. It has NO effect on
-precedence — `--project` still wins, an invalid one still throws.
+from `parseTaskCreateArgs` in `bin.ts`. It used to answer an affirmative cross-project routing confirmation
+without asking, which is what let a script target the default project deliberately.
+
+FNXC:DefaultProjectNotARouter 2026-10-20-19:46 (RUFU-572): there is no routing prompt left to answer, so
+`--yes` no longer changes card minting — it is inert on this path, NOT a switch that re-enables a
+default-project target. It still parses and still forwards, because it is a published signature with a tested
+parse contract. It never had any effect on precedence: an invalid `--project` still throws.
 */
 /*
 FNXC:TaskTitleHygiene 2026-09-26-02:28 (RUFU-295): `titleArg` is `fn task create --title <text>`, threaded
@@ -564,7 +548,7 @@ positional parameters before it are a tested call shape (`commands/__tests__/tas
 one of those calls for no behavioural gain. An explicit title reaches `store.createTask` verbatim, so the
 board stores the name the operator chose and the shared derivation never runs for that card.
 */
-export async function runTaskCreate(descriptionArg?: string, attachFiles?: string[], depends?: string[], projectName?: string, nodeName?: string, noDedup = false, githubOpts?: { github?: boolean; githubRepo?: string }, yes = false, titleArg?: string) {
+export async function runTaskCreate(descriptionArg?: string, attachFiles?: string[], depends?: string[], projectName?: string, nodeName?: string, noDedup = false, githubOpts?: { github?: boolean; githubRepo?: string }, _yes = false, titleArg?: string) {
   let description = descriptionArg;
   const explicitTitle = titleArg?.trim() || undefined;
 
@@ -609,32 +593,21 @@ export async function runTaskCreate(descriptionArg?: string, attachFiles?: strin
   const store = context.store;
   try {
     /*
-    FNXC:ProjectRoutingVisibility 2026-09-22-23:26 (RUFU-269): report the routing BEFORE the write and ask
-    before an irreversible one. An explicit `--project` or a cwd-derived target is what the operator already
-    expects, so it stays silent; a DEFAULT project that is not the one the shell sits in is RUFU-242's
-    accident (10 cards filed into GEDA) and must be announced, plus confirmed on a terminal, even though
-    precedence itself does not change. The check runs after context resolution — an invalid `--project` must
-    still throw out of resolution and write nothing rather than being asked about a project that does not
-    exist — and before the duplicate guard, so a declined answer writes no card and releases no lock it
-    never took. Quiet mode counts as non-interactive: an agent lane must never block on an answer nobody
-    will type.
+    FNXC:ProjectRoutingVisibility 2026-09-22-23:26 (RUFU-269): report the routing BEFORE the write. An
+    explicit `--project` or a cwd-derived target is what the operator already expects, so beyond the target
+    line it stays silent. The check runs after context resolution — an invalid `--project` must still throw
+    out of resolution and write nothing rather than be described as a target.
+
+    FNXC:DefaultProjectNotARouter 2026-10-20-19:46 (RUFU-572): the mismatch warning and the `[y/N]` gate are
+    GONE. RUFU-242's accident (10 cards filed into GEDA) was a stored default beating the cwd project, and
+    that routing source no longer exists; confirming now would mean asking the operator to approve a project
+    they just named on the command line.
     */
     const routing = evaluateProjectRouting({
       projectName: context.projectName,
       projectPath: context.projectPath,
       resolvedFrom: context.resolvedFrom,
-      cwdProject: context.cwdProject,
-      cwd: process.cwd(),
-      isTty: Boolean(process.stdin.isTTY && process.stdout.isTTY) && !isQuietMode(),
-      yes,
     });
-    if (routing.warning) {
-      console.error(routing.warning);
-    }
-    if (routing.requiresConfirm && !(await confirmOnTerminal(crossProjectConfirmQuestion(context.projectName)))) {
-      console.error(declinedCrossProjectNotice(context.projectName));
-      return;
-    }
     const task = await retryBoardCall(context, "create", "create task", async () => {
       const guard = await runDeterministicDuplicateGuard(
         store,

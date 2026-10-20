@@ -419,7 +419,7 @@ API endpoints reviewed:
 | `ntfyAccessToken` | Global | `GET/PUT /api/settings/global` | Access token for authenticated ntfy publishes |
 | `ntfyEvents` | Global | `GET/PUT /api/settings/global` | Notification event filters (includes opt-in `task-created` for agent-created task notifications) |
 | `ntfyDashboardHost` | Global | `GET/PUT /api/settings/global` | Host for deep links |
-| `defaultProjectId` | Global | `GET/PUT /api/settings/global` | CLI default project |
+| `defaultProjectId` | Global | `GET/PUT /api/settings/global` | Boot-time runtime dir; `--project @default` (not an implicit CLI fallback since RUFU-572) |
 | `setupComplete` | Global | `GET/PUT /api/settings/global` (internal first-run use) | Setup wizard completion flag |
 | `favoriteProviders` | Global | `GET/PUT /api/settings/global` | Favorited providers |
 | `favoriteModels` | Global | `GET/PUT /api/settings/global` | Favorited models |

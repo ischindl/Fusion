@@ -197,9 +197,9 @@ fn task create "Fix oauth callback" --project my-app
 
 Resolution order without `--project`:
 
-1. explicit flag
-2. default project
-3. current-directory auto-detection
+1. explicit flag — a project name, or the `@default` token for the stored default project
+2. current-directory auto-detection
+3. no match: the command errors with `No fusion project found…`; the stored default is never used implicitly
 
 ### Routing visibility
 
@@ -212,26 +212,33 @@ pointing at another repo used to file cards there with no output naming the targ
 another project's checkout and only found out by listing that disk. Resolution provenance is now recorded
 on the project context, printed by every card-minting command, and confirmed interactively when the
 central default disagrees with the project the shell sits in.
+
+FNXC:DefaultProjectNotARouter 2026-10-20-20:06 (RUFU-572):
+SUPERSEDED by RUFU-572, which reverses the deliberate choice above. "cwd-over-default would break agent
+lanes" turned out to be the hazard, not the safety: a card that is a filesystem object under the project
+that owns its `.fusion/tasks/` directory was being written into a foreign checkout, and a confirmation
+prompt on every card is not a fix for routing that should never have fired. A one-shot command now takes
+`--project` (or `@default`) or its current directory, and nothing else. The mismatch warning and the
+interactive confirm are deleted because the state they fired on is unreachable; the target line stays.
 -->
 
-The order itself is unchanged; what changed is that the CLI now tells you which branch of it fired. `ProjectContext` carries the resolution source (`flag` / `default` / `cwd` / `cwd-fallback`) plus the project detected from the current directory, and every command that mints a card (`fn task create`, `duplicate`, `refine`) prints the target before it writes:
+The CLI tells you which branch of the order fired. `ProjectContext` carries the resolution source (`flag` / `cwd` / `cwd-fallback`) plus the project detected from the current directory, and every command that mints a card (`fn task create`, `duplicate`, `refine`) prints the target before it writes:
 
 ```
-  Project: gedapp  /home/me/code/gedapp  (resolved via the central default project)
+  Project: gedapp  /home/me/code/gedapp  (resolved via current-directory detection)
   ✓ Created GEDA-1057: Fix checkout button
     Column: triage
     Path:   /home/me/code/gedapp/.fusion/tasks/GEDA-1057/
 ```
 
-When the **default project** wins but the current directory belongs to a **different registered project**, the CLI writes a warning naming both projects to **stderr** before any board write. On `fn task create` at a real terminal it then asks `Create this card in project "<name>" anyway? [y/N]:`; declining exits 0 having written nothing — no task row and no `.fusion/tasks/<id>/` directory. `duplicate` and `refine` warn but never block, since they already name an existing card.
+Nothing asks for confirmation. An explicit `--project` is the operator's own instruction and a `cwd` resolution derived its target from the folder they are standing in, so neither is second-guessed; the unregistered-cwd fallback has its own louder stderr notice. RUFU-572 removed the one route that needed a prompt: the stored default winning over a different project's checkout. An invalid `--project` value errors out during resolution and creates nothing.
 
-The prompt never fires — the warning is still shown — when an answer cannot be typed:
+### What the stored default project still does
 
-- `--yes` on `fn task create` (also stops `--yes` from leaking into the card title).
-- `--quiet` or `FUSION_QUIET=1`.
-- Piped or non-TTY stdin/stdout, so scripted pipelines cannot hang.
+`fn project set-default <name>` records `defaultProjectId` in the global settings file, and that value is read in exactly two places:
 
-An explicit `--project`, a cwd-detected target, and the unregistered-cwd local-store fallback are what the operator already asked for or already see announced elsewhere, so they are never second-guessed. An invalid `--project` value errors out during resolution and creates nothing. See [CLI reference — Project routing visibility](./cli-reference.md#project-routing-visibility).
+- **Boot-time host runtime directory** (`resolveHostRuntimeProjectPath()`): the dashboard/daemon/engine resolve their runtime dir from the default project once, at startup. That binding is unchanged.
+- **`--project @default`**: the token dereferences the stored name in `resolveProject()` and nowhere else, so the default is reachable but never implicit. `@default` with no default set is an actionable error, and a default naming an unregistered project is reported as stale. See [CLI reference — Project routing visibility](./cli-reference.md#project-routing-visibility).
 
 ## Project Health Tracking
 

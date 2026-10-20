@@ -103,9 +103,9 @@ Quiet suppression is disabled for `--json`, help/version requests (including del
 
 When `--project` is not supplied, Fusion resolves project context in this order:
 
-1. Explicit `--project` flag
-2. Default project (set via `fn project set-default <name>`)
-3. Current-directory auto-detection (`.fusion/project.json` lookup upward; legacy `fusion.db` is recognized only for migration)
+1. Explicit `--project` flag — a registered project name, or the `@default` token to dereference the stored default project
+2. Current-directory auto-detection (`.fusion/project.json` lookup upward; legacy `fusion.db` is recognized only for migration)
+3. No match: the command fails with `No fusion project found…`. A configured default project is **not** an implicit fallback for a one-shot command.
 
 ### Project routing visibility
 
@@ -116,45 +116,35 @@ project-B default set, ran `fn task create`, and the card landed in B because th
 nothing about the target. Every card-creating command now names its landing target, and the one route
 where the decision is not obvious (a default project other than the current directory's project) asks for
 confirmation before any row is written. Documented precedence itself is unchanged.
+
+FNXC:DefaultProjectNotARouter 2026-10-20-20:06 (RUFU-572):
+SUPERSEDED by RUFU-572. The confirmation this block introduced no longer exists, because the route it
+guarded is gone: the stored default is no longer a router input, so a card can only land in a project the
+operator named with `--project` (or `@default`) or in the one their shell sits in. Keeping a prompt to
+second-guess a target the operator typed themselves is noise, not safety. The target line and the
+absolute card path are what remain of RUFU-269.
 -->
 
-The resolution itself is silent when it is what the operator already asked for: an explicit `--project` and a current-directory match are never second-guessed. What gets announced is the target and, in one case, the mismatch.
+Resolution is silent when it is what the operator already asked for: an explicit `--project` and a current-directory match are never second-guessed, and **no command asks for confirmation**. What gets announced is the target.
 
 **The target is always printed.** `fn task create`, `fn task duplicate`, and `fn task refine` state where the card landed, before the write happens:
 
 ```bash
 $ cd ~/code/Fusion && fn task create "Fix checkout button"
 
-  Project: gedapp  /home/me/code/gedapp  (resolved via the central default project)
+  Project: Fusion  /home/me/code/Fusion  (resolved via current-directory detection)
   ✓ Created FN-042: Fix checkout button
     Column: triage
-    Path:   /home/me/code/gedapp/.fusion/tasks/FN-042/
+    Path:   /home/me/code/Fusion/.fusion/tasks/FN-042/
 ```
 
-- The `Project:` line carries the **absolute project path** plus its resolution source: `(resolved via the --project flag)`, `(resolved via the central default project)`, `(resolved via current-directory detection)`, or `(resolved via an unregistered local project in the current directory)`. A hand-built or plugin-supplied context with no recorded source prints the bare `Project: <name>` line, exactly as before.
+- The `Project:` line carries the **absolute project path** plus its resolution source: `(resolved via the --project flag)`, `(resolved via current-directory detection)`, or `(resolved via an unregistered local project in the current directory)`. `--project @default` reports as `the --project flag`, because that is what the operator typed. A hand-built or plugin-supplied context with no recorded source prints the bare `Project: <name>` line, exactly as before.
 - `Path:` is the **absolute** card directory (`<projectPath>/.fusion/tasks/<id>/`), so it can be pasted into another shell; it used to be the cwd-relative `.fusion/tasks/<id>/`, which was simply false for a card filed into another project.
-- An invalid `--project` value is an error and creates **nothing** — routing is evaluated while resolving the project, before any row is written.
+- An invalid `--project` value is an error and creates **nothing** — routing is evaluated while resolving the project, before any row is written. `--project @default` with no default set is an error naming the fix (`fn project set-default <name>`), and a default naming an unregistered project is reported as stale rather than silently ignored.
 
-**Cross-project confirmation (`fn task create` only).** When the *default project* wins while the current directory belongs to a **different** registered project, the CLI prints the mismatch on stderr and asks before writing:
+**The stored default project is read in two places only.** `fn project set-default <name>` writes `defaultProjectId` into the global settings file. Boot-time runtime-directory resolution (`resolveHostRuntimeProjectPath()`) reads it once at startup, and `--project @default` dereferences it on request. It never picks a target for a one-shot command.
 
-```
-⚠ Project routing: the current directory (/home/me/code/Fusion) belongs to project "Fusion" (/home/me/code/Fusion), but this card would be created in project "gedapp" (/home/me/code/gedapp) resolved via the central default project. Pass `--project Fusion` to target the project you are standing in, or run `fn project set-default <name>` to change which project is default.
-Create this card in project "gedapp" anyway? [y/N]:
-```
-
-Answering no exits 0 and writes **nothing** — no task row, no card directory — and prints where it *would* have gone plus how to make that routing permanent (`--project <name>`, `fn project set-default <name>`, or the `defaultProjectId` global setting).
-
-The prompt is skipped — the card is created with the warning still shown — whenever an answer cannot be typed:
-
-| Case | Behavior |
-|---|---|
-| `--yes` | Skips the prompt; warning still printed. The scripted escape hatch — a flag for the risky case, never a silent default. |
-| `--quiet` / `FUSION_QUIET=1` | Never prompts; warning on stderr, then proceeds. |
-| Piped or non-TTY stdin/stdout (`fn task create … \| jq`) | Never prompts; warning on stderr, then proceeds, so pipelines cannot hang. |
-
-`fn task duplicate` and `fn task refine` print the same warning and target line but **never block** — they already name a specific card and carry no `--yes`.
-
-All three commands build the `Project:` line through one shared routing module, so the wording cannot drift between them, and every `fn` command resolves its project through the one `resolveProject()` helper in `packages/cli/src/project-context.ts` — precedence is decided in exactly one place. The pi extension's `fn_task_create` tool is unchanged: it opens the store for the session's own working directory, so the central-default route that caused the mis-routing is not on its path and there is nothing to confirm there.
+Every card-minting command builds the `Project:` line through one shared routing module, so the wording cannot drift between them, and every `fn` command resolves its project through the one `resolveProject()` helper in `packages/cli/src/project-context.ts` — precedence is decided in exactly one place. The pi extension's `fn_task_create` tool resolves the session's own working directory, so a configured default never reroutes its cards.
 
 ---
 
@@ -637,7 +627,7 @@ fn task create "$(cat spec.md)" --title "Rename affordance must reach board card
 fn task plan "Design a new authentication flow"
 ```
 
-`--yes` skips the [cross-project confirmation](#project-routing-visibility) when the central default project routes the card somewhere other than the current directory's project; the warning is still printed. Every create prints the resolved project (with its source) and the absolute card path — see [Project routing visibility](#project-routing-visibility).
+`--yes` keeps its other meanings (non-interactive prompts in `task plan`, `settings import`, git pull/push, and destructive confirmations); it no longer answers a routing question, because card routing has no prompt to skip. Every create prints the resolved project (with its source) and the absolute card path — see [Project routing visibility](#project-routing-visibility).
 
 For AI-guided task specification, see [Planning mode](#planning-mode).
 
@@ -759,7 +749,7 @@ retry through a momentary `database is locked` (subject to the same
 `FUSION_CLI_LOCK_RETRY_MS` deadline override); external GitHub API calls and
 workflow-release side effects are not retried, to avoid re-issuing an
 already-completed side effect. The resolved `TaskStore` — whether resolved
-from the registered/default project or the uncached CWD-fallback project —
+from the registered project or the uncached CWD-fallback project —
 is always closed on exit so the CLI process exits promptly.
 
 FN-7739 extends the same pattern to `fn backup *` (`create`/`list`/
@@ -1514,7 +1504,7 @@ Subcommands: `search`, `install`, `get`.
 | `--github` / `--no-github` | `fn task create` (per-task GitHub issue tracking override; default comes from project/global settings) |
 | `--github-repo` | `fn task create` (`owner/repo` override for the tracking issue) |
 | `--feedback` | `fn task refine` |
-| `--yes` | confirmation-skipping flows (`task create` cross-project routing confirm, `task plan`, `settings import`, git pull/push, etc.) |
+| `--yes` | confirmation-skipping flows (`task plan`, `settings import`, git pull/push, etc.); card project routing has no prompt to skip since RUFU-572 |
 | `--limit`, `-l` | `fn task import`, `fn task import-gitlab` (default: 30, max: 100), `fn skills search` (default: 10, max: 50) |
 | `--labels`, `-L` | `fn task import`, `fn task import-gitlab` |
 | `--resource`, `-r` | `fn task import-gitlab` (`project-issues`, `group-issues`, or `merge-requests`) |

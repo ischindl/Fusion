@@ -130,6 +130,9 @@ vi.mock("../../project-context.js", () => ({
   formatProjectLine: mockFormatProjectLine,
   detectProjectFromCwd: mockDetectProjectFromCwd,
   setDefaultProject: mockSetDefaultProject,
+  // FNXC:DefaultProjectNotARouter 2026-10-20-19:46 (RUFU-572): `set-default` now names the reserved token in
+  // its own output and rejects it as an argument, so the module mock must expose it.
+  DEFAULT_PROJECT_TOKEN: "@default",
   resolveProject: vi.fn(),
 }));
 
@@ -348,7 +351,7 @@ describe("project commands", () => {
     expect(output).toContain("Project: demo");
   });
 
-  it("runProjectSetDefault sets default project", async () => {
+  it("runProjectSetDefault sets default project and states what the setting is for", async () => {
     mockGetProject.mockResolvedValue({ id: "proj-1", name: "demo", path: "/tmp/demo", status: "active", isolationMode: "in-process" });
 
     const { runProjectSetDefault } = await import("../project.js");
@@ -356,6 +359,26 @@ describe("project commands", () => {
 
     expect(mockSetDefaultProject).toHaveBeenCalledWith("proj-1");
     expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("Set 'demo' as default project"));
+    /*
+    FNXC:DefaultProjectNotARouter 2026-10-20-19:46 (RUFU-572): the setting no longer redirects one-shot
+    commands, so the success output must say what it actually does instead of letting the operator assume it
+    re-targets every `fn` call.
+    */
+    const output = consoleSpy.mock.calls.map((call) => String(call[0])).join("\n");
+    expect(output).toContain("--project @default");
+    expect(output).toContain("folder you are standing in");
+  });
+
+  it("runProjectSetDefault refuses the reserved @default token instead of storing it", async () => {
+    const { runProjectSetDefault } = await import("../project.js");
+    // This suite mocks `process.exit` to throw, which is how a refusal is observed without killing the worker.
+    await expect(runProjectSetDefault("@default")).rejects.toThrow("process.exit:1");
+
+    // `--project @default` means "the default project", so storing it would resolve to itself.
+    expect(mockSetDefaultProject).not.toHaveBeenCalled();
+    const errors = consoleErrorSpy.mock.calls.map((call) => String(call[0])).join("\n");
+    expect(errors).toContain("@default");
+    expect(errors).toContain("fn project set-default <name>");
   });
 
   it("runProjectDetect prints detected project without absolute path leakage", async () => {

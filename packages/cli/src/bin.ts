@@ -510,7 +510,8 @@ PR:
                                       See fn computer --help for snapshot → act → snapshot commands
 
 Options:
-  --project, -P <name>       Target a specific project (bypasses CWD detection)
+  --project, -P <name>       Target a specific project (bypasses CWD detection); the reserved
+                             value @default targets the project named by fn project set-default
   --port, -p <port>          Dashboard/serve port (default: 4040)
   --host <host>              Serve host (default: 127.0.0.1 — localhost only; pass 0.0.0.0 to expose)
   --token <token>            Dashboard/daemon bearer token. Default: $FUSION_DASHBOARD_TOKEN, $FUSION_DAEMON_TOKEN, or auto-generated.
@@ -529,7 +530,8 @@ Options:
   --no-github                Disable GitHub issue tracking (overrides project default)
   --github-repo <owner/repo> Repository override for the task's tracking issue
   --feedback <text>          Refinement feedback (non-interactive mode)
-  --yes                      Skip confirmation prompts (planning mode; task create cross-project routing)
+  --yes                      Skip confirmation prompts (planning mode; inert for task create since
+                             RUFU-572 removed the cross-project routing prompt)
   --limit, -l <n>            Max issues to import (default: 30, max: 100)
   --labels, -L <labels>      Comma-separated label filter for import
   --interactive, -i          Interactive mode for issue selection
@@ -665,7 +667,8 @@ export interface TaskCreateArgs {
   github?: boolean;
   /** `--github-repo` value. */
   githubRepo?: string;
-  /** `--yes` was passed: answer the cross-project routing confirmation affirmatively. */
+  /** `--yes` was passed. Since RUFU-572 there is no cross-project routing prompt to answer, so this is
+   *  forwarded for signature/parse compatibility and is inert on the card-minting path. */
   yes: boolean;
 }
 

@@ -2067,7 +2067,11 @@ describe("runTaskCreate project routing", () => {
       projectPath: GEDA_PATH,
       projectName: "geda",
       isRegistered: true,
-      resolvedFrom: "default",
+      /*
+      FNXC:DefaultProjectNotARouter 2026-10-20-19:46 (RUFU-572): this fixture used `resolvedFrom: "default"` —
+      the shape that no longer exists. A cross-project target is now always one the operator typed.
+      */
+      resolvedFrom: "flag",
       cwdProject: { id: "fusion", name: "Fusion", path: FUSION_CWD },
       store: {
         getRootDir: vi.fn().mockReturnValue(GEDA_PATH),
@@ -2087,12 +2091,6 @@ describe("runTaskCreate project routing", () => {
     Object.defineProperty(process.stdout, "isTTY", { value: isTty, configurable: true });
   };
 
-  const answerPrompt = (answer: string) => {
-    vi.mocked(createInterface).mockReturnValue({
-      question: vi.fn().mockResolvedValue(answer),
-      close: vi.fn(),
-    } as never);
-  };
 
   beforeEach(() => {
     logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -2116,16 +2114,22 @@ describe("runTaskCreate project routing", () => {
     vi.restoreAllMocks();
   });
 
-  it("warns on stderr when the default project is not the cwd project, and still creates off a terminal", async () => {
-    const { context, createTask } = routingContext();
+  /*
+  FNXC:DefaultProjectNotARouter 2026-10-20-19:46 (RUFU-572): this cluster used to pin a stderr warning plus a
+  `[y/N]` prompt for the case where the STORED DEFAULT beat the cwd project. That routing source is deleted, so
+  the only cross-project target left is one the operator typed themselves — and the cases that pinned asking are
+  deleted with it, not weakened. What stays is what must still be true: an explicit target prints no routing
+  warning, prints an absolute path, never waits for an answer, and a failed `--project` writes no card.
+  */
+  it("creates without any routing warning when an explicit --project names another project", async () => {
+    const { context, createTask } = routingContext({ resolvedFrom: "flag" });
     vi.mocked(resolveProject).mockResolvedValueOnce(context as never);
 
-    await runTaskCreate("cross-project default card", undefined, undefined, undefined, undefined, true);
+    await runTaskCreate("explicit cross-project card", undefined, undefined, "geda", undefined, true);
 
-    expect(warned()).toContain("Project routing");
-    expect(warned()).toContain("--project Fusion");
-    expect(warned()).toContain("fn project set-default");
-    // Off a terminal the warning must not become a question the process hangs on.
+    // Second-guessing a project the operator just named is exactly what RUFU-572 removed.
+    expect(warned()).not.toContain("Project routing");
+    expect(warned()).not.toContain("fn project set-default");
     expect(createInterface).not.toHaveBeenCalled();
     expect(createTask).toHaveBeenCalledTimes(1);
   });
@@ -2146,70 +2150,39 @@ describe("runTaskCreate project routing", () => {
     expect(createTask).toHaveBeenCalledTimes(1);
   });
 
-  it("prompts on a terminal before filing into a different project and writes nothing when declined", async () => {
+  it("waits for no answer on a terminal, because there is no routing prompt left to answer", async () => {
     setTty(true);
-    answerPrompt("");
-    const { context, createTask } = routingContext();
+    const { context, createTask } = routingContext({ resolvedFrom: "flag" });
     vi.mocked(resolveProject).mockResolvedValueOnce(context as never);
 
-    await runTaskCreate("mistaken default target", undefined, undefined, undefined, undefined, true);
+    await runTaskCreate("terminal cross-project target", undefined, undefined, "geda", undefined, true);
 
-    expect(createInterface).toHaveBeenCalledTimes(1);
-    expect(createTask).not.toHaveBeenCalled();
-    expect(warned()).toContain("Not created");
-    expect(warned()).toContain("no card was written");
-    // The resolved store is still closed: a declined confirm must not leak an open store.
+    expect(createInterface).not.toHaveBeenCalled();
+    expect(warned()).toBe("");
+    expect(createTask).toHaveBeenCalledTimes(1);
+    // The resolved store is still closed on the success path.
     expect(closeProjectStore).toHaveBeenCalledWith(context);
   });
 
-  it("creates the card when the terminal prompt is accepted", async () => {
+  it("says nothing beyond the target line when the cwd is the target", async () => {
     setTty(true);
-    answerPrompt("y");
-    const { context, createTask } = routingContext();
+    const { context, createTask } = routingContext({
+      projectName: "fusion",
+      projectPath: FUSION_CWD,
+      resolvedFrom: "cwd",
+    });
     vi.mocked(resolveProject).mockResolvedValueOnce(context as never);
 
-    await runTaskCreate("confirmed default target", undefined, undefined, undefined, undefined, true);
-
-    expect(createInterface).toHaveBeenCalledTimes(1);
-    expect(createTask).toHaveBeenCalledTimes(1);
-    expect(warned()).not.toContain("Not created");
-  });
-
-  it("answers the confirmation affirmatively without asking when --yes is set", async () => {
-    setTty(true);
-    const { context, createTask } = routingContext();
-    vi.mocked(resolveProject).mockResolvedValueOnce(context as never);
-
-    await runTaskCreate(
-      "scripted default target",
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      true,
-      undefined,
-      true,
-    );
-
-    expect(createInterface).not.toHaveBeenCalled();
-    expect(warned()).toContain("Project routing");
-    expect(createTask).toHaveBeenCalledTimes(1);
-  });
-
-  it("says nothing and asks nothing when the default target IS the cwd project", async () => {
-    setTty(true);
-    const { context, createTask } = routingContext({ projectName: "fusion", projectPath: FUSION_CWD });
-    vi.mocked(resolveProject).mockResolvedValueOnce(context as never);
-
-    await runTaskCreate("same-project default", undefined, undefined, undefined, undefined, true);
+    await runTaskCreate("same-project card", undefined, undefined, undefined, undefined, true);
 
     expect(warned()).toBe("");
     expect(createInterface).not.toHaveBeenCalled();
+    expect(printed()).toContain("resolved via current-directory detection");
     expect(createTask).toHaveBeenCalledTimes(1);
   });
 
   it("surfaces a failed --project resolution and creates nothing", async () => {
-    const { createTask } = routingContext();
+    const { createTask } = routingContext({ resolvedFrom: "flag" });
     vi.mocked(resolveProject).mockRejectedValueOnce(
       new Error("Project 'bogus' not found. Run 'fn project list' to see registered projects."),
     );
@@ -2252,7 +2225,11 @@ describe("card-minting routing on duplicate/refine and the unregistered-cwd fall
       projectPath: GEDA_PATH,
       projectName: "geda",
       isRegistered: true,
-      resolvedFrom: "default",
+      /*
+      FNXC:DefaultProjectNotARouter 2026-10-20-19:46 (RUFU-572): this fixture used `resolvedFrom: "default"` —
+      the shape that no longer exists. A cross-project target is now always one the operator typed.
+      */
+      resolvedFrom: "flag",
       cwdProject: { id: "fusion", name: "Fusion", path: FUSION_CWD },
       store: { getRootDir: vi.fn().mockReturnValue(GEDA_PATH), ...store },
     };
@@ -2272,7 +2249,13 @@ describe("card-minting routing on duplicate/refine and the unregistered-cwd fall
     vi.restoreAllMocks();
   });
 
-  it("duplicate warns about a cross-project target, never prompts, and still duplicates the card", async () => {
+  /*
+  FNXC:DefaultProjectNotARouter 2026-10-20-19:46 (RUFU-572): `duplicate` and `refine` used to print a
+  cross-project warning here, which only the stored-default-over-cwd routing could trigger. That routing is
+  deleted, so these cases now pin the opposite: a named target is announced, never argued with, and the card
+  still gets written.
+  */
+  it("duplicate announces a cross-project target, never prompts, and still duplicates the card", async () => {
     const duplicateTask = vi.fn().mockResolvedValue(makeTask({ id: "FN-002" }));
     vi.mocked(resolveProject).mockResolvedValueOnce(
       mismatchContext({ duplicateTask }) as never,
@@ -2280,13 +2263,12 @@ describe("card-minting routing on duplicate/refine and the unregistered-cwd fall
 
     await runTaskDuplicate("FN-001", "geda");
 
-    expect(warned()).toContain("Project routing");
-    expect(warned()).toContain("--project Fusion");
+    expect(warned()).not.toContain("Project routing");
     expect(createInterface).not.toHaveBeenCalled();
     expect(duplicateTask).toHaveBeenCalledWith("FN-001");
     const output = printed();
     expect(output).toContain("Project: geda");
-    expect(output).toContain("(resolved via the central default project)");
+    expect(output).toContain("(resolved via the --project flag)");
     expect(output).toContain(`${GEDA_PATH}/.fusion/tasks/FN-002/`);
     expect(output).not.toMatch(/Path:\s+\.fusion\/tasks\//);
   });
@@ -2308,7 +2290,7 @@ describe("card-minting routing on duplicate/refine and the unregistered-cwd fall
     expect(duplicateTask).toHaveBeenCalledWith("FN-001");
   });
 
-  it("refine warns about a cross-project target and still creates the refinement card", async () => {
+  it("refine announces a cross-project target and still creates the refinement card", async () => {
     const refineTask = vi.fn().mockResolvedValue(makeTask({ id: "FN-003", column: "triage" }));
     vi.mocked(resolveProject).mockResolvedValueOnce(
       mismatchContext({ refineTask }) as never,
@@ -2316,7 +2298,7 @@ describe("card-minting routing on duplicate/refine and the unregistered-cwd fall
 
     await runTaskRefine("FN-001", "needs a regression test", "geda");
 
-    expect(warned()).toContain("Project routing");
+    expect(warned()).not.toContain("Project routing");
     expect(createInterface).not.toHaveBeenCalled();
     expect(refineTask).toHaveBeenCalledWith("FN-001", "needs a regression test");
     const output = printed();

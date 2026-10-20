@@ -1,22 +1,31 @@
 /**
- * Pure project-routing decision surface for the CLI card-minting commands.
+ * Pure project-routing reporting surface for the CLI card-minting commands.
  *
  * FNXC:ProjectRoutingVisibility 2026-09-22-16:37:
  * `fn task create` (and its duplicate/refine siblings) silently filed cards into the central DEFAULT
  * project when the operator stood in a different project's checkout — GEDA-1057/1058 were created in
  * the gedapp project from cwd=git/Fusion, and the only routing hint in the output was an ambiguous
- * relative `.fusion/tasks/<ID>/` path. The fix must report precedence without changing it
- * (docs/multi-project.md: explicit `--project` > `defaultProjectId` > cwd discovery), so this module
- * turns the provenance recorded by `resolveProject()` into (a) the target line the command prints and
- * (b) an optional mismatch warning plus an interactive-confirm decision. It takes plain data and
- * touches no process state, no store, and no filesystem, which is what lets the acceptance matrix be
- * tested as a unit; the commands own the printing and the prompting.
+ * relative `.fusion/tasks/<ID>/` path. The fix reported the provenance recorded by `resolveProject()`
+ * as a target line, plus a mismatch warning and an interactive confirm. It takes plain data and touches
+ * no process state, no store, and no filesystem, which is what lets the acceptance matrix be tested as
+ * a unit; the commands own the printing and the prompting.
+ *
+ * FNXC:DefaultProjectNotARouter 2026-10-20-19:46 (RUFU-572):
+ * The mismatch warning and the confirm prompt are DELETED, because the state they fired on can no
+ * longer be reached. They existed for exactly one shape: the stored default winning while cwd belonged
+ * to a different project. RUFU-572 removed the default from the router — a one-shot command targets
+ * `--project` (including the `@default` token) or the current directory — so a cross-project card now
+ * requires the operator to have typed the project themselves, and second-guessing that is not this
+ * module's job. `evaluateProjectRouting` stays as the single shared target-line formatter so
+ * create/duplicate/refine cannot drift, and `unregisteredCwdProjectWarning` stays because that hazard
+ * is independent of the default project. With the prompt gone, `--yes` no longer answers a routing
+ * question; it keeps parsing and forwarding for its other meanings.
  */
 
-import { join, resolve as resolvePath } from "node:path";
-import type { CwdProjectSnapshot, ProjectResolutionSource } from "./project-context.js";
+import { join } from "node:path";
+import type { ProjectResolutionSource } from "./project-context.js";
 
-/** Everything the decision needs; a hand-built context simply omits the provenance fields. */
+/** Everything the report needs; a hand-built context simply omits the provenance field. */
 export interface ProjectRoutingInput {
   /** Name of the project that will receive the card. */
   projectName: string;
@@ -24,29 +33,22 @@ export interface ProjectRoutingInput {
   projectPath: string;
   /** Provenance from `resolveProject()`; undefined keeps today's unreported behavior. */
   resolvedFrom?: ProjectResolutionSource;
-  /** Project seen in the invocation cwd, whatever resolution chose. */
-  cwdProject?: CwdProjectSnapshot;
-  /** Refusing the mismatch without prompting (`--yes` / `--no-input`). */
-  yes?: boolean;
-  /** Whether an interactive confirmation is possible (TTY and not quiet/machine mode). */
-  isTty: boolean;
-  /** Invocation working directory, supplied by the caller so this module stays pure. */
-  cwd: string;
 }
 
 export interface ProjectRoutingDecision {
   /** The indented `Project:` result line, built once so create/duplicate/refine cannot drift. */
   targetLine: string;
-  /** Sentence for the caller to print on stderr before any board write; absent = nothing to say. */
-  warning?: string;
-  /** True when the caller must obtain an interactive confirmation before writing. */
-  requiresConfirm: boolean;
 }
 
-/** Sentence-ready provenance labels, ordered like `ProjectResolutionSource`. */
+/**
+ * Sentence-ready provenance labels, ordered like `ProjectResolutionSource`.
+ *
+ * FNXC:DefaultProjectNotARouter 2026-10-20-19:46 (RUFU-572): `default` is gone from the source union — the
+ * stored default no longer chooses a target, so there is nothing left to label. `@default` arrives as an
+ * explicit flag and is therefore reported as `the --project flag`, which is what the operator actually typed.
+ */
 const SOURCE_LABELS: Record<ProjectResolutionSource, string> = {
   flag: "the --project flag",
-  default: "the central default project",
   cwd: "current-directory detection",
   "cwd-fallback": "an unregistered local project in the current directory",
 };
@@ -54,73 +56,18 @@ const SOURCE_LABELS: Record<ProjectResolutionSource, string> = {
 /**
  * Decide what a card-minting command says about where the card is going.
  *
- * Reporting is unconditional; warning is not. An explicit `--project` is the operator's own
- * instruction and a `cwd` resolution derived its target from that same folder, so neither is ever
- * second-guessed. `cwd-fallback` stays quiet here because the louder unregistered-project message
- * owns that case. That leaves the one shape that surprised an operator in practice: the central
- * default project winning while the cwd belongs to a different project.
+ * Reporting is unconditional and nothing else. An explicit `--project` is the operator's own instruction
+ * and a `cwd` resolution derived its target from the folder they are standing in, so neither is
+ * second-guessed; `cwd-fallback` has its own louder message below.
  */
 export function evaluateProjectRouting(input: ProjectRoutingInput): ProjectRoutingDecision {
-  // `cwd` is read by `crossProjectWarning` through the spread `input`, so it is not destructured here.
-  const { projectName, projectPath, resolvedFrom, cwdProject, isTty } = input;
-  const yes = input.yes === true;
+  const { projectName, projectPath, resolvedFrom } = input;
   const sourceLabel = resolvedFrom ? SOURCE_LABELS[resolvedFrom] : undefined;
-  const targetLine = sourceLabel
-    ? `  Project: ${projectName}  ${projectPath}  (resolved via ${sourceLabel})`
-    : `  Project: ${projectName}`;
-
-  // No provenance (hand-built/plugin contexts) or no cwd evidence: report the target, say nothing more.
-  if (!sourceLabel || !resolvedFrom || !cwdProject) return { targetLine, requiresConfirm: false };
-  if (resolvedFrom === "cwd-fallback") return { targetLine, requiresConfirm: false };
-  if (resolvedFrom === "flag" || resolvedFrom === "cwd") return { targetLine, requiresConfirm: false };
-
-  /*
-  FNXC:ProjectRoutingVisibility 2026-09-22-16:37: the same folder written two ways (relative vs absolute,
-  trailing separator, an inner `..`) is not a routing mismatch. Deliberately textual: resolving symlinks
-  would need a filesystem read, and this module is pure so the whole matrix is testable with fake paths.
-  */
-  if (normalizePath(cwdProject.path) === normalizePath(projectPath)) {
-    return { targetLine, requiresConfirm: false };
-  }
-
   return {
-    targetLine,
-    warning: crossProjectWarning({ ...input, cwdProject }),
-    requiresConfirm: isTty && !yes,
+    targetLine: sourceLabel
+      ? `  Project: ${projectName}  ${projectPath}  (resolved via ${sourceLabel})`
+      : `  Project: ${projectName}`,
   };
-}
-
-/**
- * The cross-project mismatch sentence. Exported so a test can pin the wording of what an operator
- * actually reads, and so the confirm question and the declined notice name the same remedies.
- */
-export function crossProjectWarning(input: ProjectRoutingInput & { cwdProject: CwdProjectSnapshot }): string {
-  const label = input.resolvedFrom ? SOURCE_LABELS[input.resolvedFrom] : "an unknown source";
-  return (
-    `⚠ Project routing: the current directory (${input.cwd}) belongs to project ` +
-    `"${input.cwdProject.name}" (${input.cwdProject.path}), but this card would be created in ` +
-    `project "${input.projectName}" (${input.projectPath}) resolved via ${label}. Pass ` +
-    `\`--project ${input.cwdProject.name}\` to target the project you are standing in, or run ` +
-    "`fn project set-default <name>` to change which project is default."
-  );
-}
-
-/**
- * Sentence printed when an operator declines the cross-project confirmation. No card was written, so
- * the wording names the would-be target and the ways to make the routing permanent or repeat it.
- */
-export function declinedCrossProjectNotice(projectName: string): string {
-  return (
-    `Not created: no card was written to project "${projectName}". Re-run with ` +
-    `\`--project ${projectName}\` to target it again without being asked, or run ` +
-    "`fn project set-default <name>` (or set the `defaultProjectId` global setting) to make it " +
-    "the permanent default."
-  );
-}
-
-/** Interactive question shown when the mismatch cannot be auto-acknowledged. */
-export function crossProjectConfirmQuestion(projectName: string): string {
-  return `Create this card in project "${projectName}" anyway? [y/N]: `;
 }
 
 /**
@@ -153,17 +100,4 @@ export function unregisteredCwdProjectWarning(cwd: string, projectPath: string):
     "Register it with `fn project add <name> <path>` or pass `--project <name>` to target a " +
     "registered one."
   );
-}
-
-/**
- * Path identity for comparison only; the reported strings keep whatever spelling the registry has.
- * Textual (`path.resolve`), never `realpath` — a symlinked spelling of the same folder can still read
- * as a mismatch, which is the honest cost of keeping this module I/O-free.
- */
-function normalizePath(path: string): string {
-  try {
-    return resolvePath(path);
-  } catch {
-    return path;
-  }
 }

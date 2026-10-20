@@ -78,7 +78,7 @@ import { resolveSelfExtension } from "./self-extension.js";
 import { wrapAuthStorageWithApiKeyProviders } from "./provider-auth.js";
 import { getPackageManagerAgentDir } from "./auth-paths.js";
 import { createProjectScopedPackageManagerFactory } from "./skills-package-manager.js";
-import { resolveProject } from "../project-context.js";
+import { resolveHostRuntimeProjectPath } from "../project-context.js";
 import { startMigrationHoldingServer } from "./migration-holding-server.js";
 import { ensureBundledCursorRuntimePluginInstalled, ensureBundledDependencyGraphPluginInstalled, ensureBundledGrokRuntimePluginInstalled, ensureBundledPluginInstalled } from "../plugins/bundled-plugin-install.js";
 import { handleOpencodeGoApiKeySaved, syncStartupModels } from "./startup-model-sync.js";
@@ -89,12 +89,17 @@ const DIAGNOSTIC_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 let daemonStartTime = 0;
 let daemonDbHealthCheck: (() => boolean) | null = null;
 
+/**
+ * Resolve the project this host boots and binds, keeping the default-project boot binding.
+ *
+ * FNXC:DefaultProjectNotARouter 2026-10-20-19:46 (RUFU-572): this used to call `resolveProject(undefined)`,
+ * which was fine only because that router consulted the stored default. It no longer does — a one-shot
+ * command now targets cwd — and delegating here unchanged would have silently changed which project this
+ * headless host boots and auto-registers. The shared boot helper keeps today's answer by name instead of by
+ * router accident: default project when registered, else cwd discovery, else the raw cwd.
+ */
 async function resolveRuntimeProjectPath(): Promise<string> {
-  try {
-    return (await resolveProject(undefined)).projectPath;
-  } catch {
-    return process.cwd();
-  }
+  return resolveHostRuntimeProjectPath();
 }
 
 /**

@@ -1156,6 +1156,13 @@ Key server capabilities:
 - Headless runtimes auto-register the current working directory as a project when it is missing from central registry metadata, then continue normal engine startup.
 - First-run auto-bootstrap logs one line: `[serve] Auto-registered project "<name>" at <cwd>` (or `[daemon] ...`).
 - Primary engine binding order is: `--project <id|name>` → central `defaultProjectId` → cwd project (if registered/started) → first started engine in registry iteration order.
+<!--
+FNXC:DefaultProjectNotARouter 2026-10-20-20:06 (RUFU-572):
+This order is the BOOT/long-lived-runtime binding and stays as written: a server must pick one project to
+own its runtime directory before any cwd-intent exists. It is not the one-shot CLI router. Since RUFU-572
+a one-shot `fn` command resolves `--project` (including the `@default` token) → cwd detection → error, and
+never consults `defaultProjectId` implicitly, so cards cannot be filed into a foreign checkout.
+-->
 - This enables startup from arbitrary launch directories (systemd, Docker, parent directories, symlinked paths) without requiring cwd to be a registered project.
 - `--no-auto-register` still disables cwd registration, but startup only exits when zero engines start across the registry.
 

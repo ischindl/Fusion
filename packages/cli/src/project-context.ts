@@ -17,10 +17,36 @@ output said so. Resolution PRECEDENCE is the documented contract in docs/multi-p
 additionally carry is the PROVENANCE of the choice so the caller can report it and warn when the
 operator's folder disagreed. Both fields are optional so hand-built test/plugin contexts and the
 plugin-context clone keep today's behavior instead of crashing on a missing field.
+
+SUPERSEDED on one point: the sentence below stated `defaultProjectId` as a routing tier. RUFU-572 removed
+that tier; the provenance fields this block added are unchanged and still required.
 */
 
-/** How a target project was chosen: CLI flag, central default, cwd discovery, or local-store fallback. */
-export type ProjectResolutionSource = "flag" | "default" | "cwd" | "cwd-fallback";
+/*
+FNXC:DefaultProjectNotARouter 2026-10-20-19:46 (RUFU-572):
+`defaultProjectId` must never choose the target of a one-shot CLI command. It used to sit between the
+`--project` flag and cwd discovery, so with a default set, cwd detection never ran and every card-minting
+command filed into the default project while the operator stood in someone else's checkout. That is the
+OPPOSITE of what meta work needs: when Fusion finds a fault in its own tooling rather than in the product
+workspace the agent is in, the card belongs to a dedicated project, and the operator was burned twice
+(SANE, AIWO) by exactly that mis-filing. Precedence for one-shot commands is now explicit `--project`
+(including the `@default` token) → cwd discovery → the `No fusion project found…` error. The stored default
+survives only as a NAME reachable through `--project @default`, plus the untouched boot-time engine binding
+of `serve`/`daemon`/`dashboard`. This deliberately reverses RUFU-269's "default wins over cwd" contract; the
+superseded block above stays for history.
+*/
+
+/**
+ * Reserved `--project` value that expands to the stored default project.
+ *
+ * FNXC:DefaultProjectNotARouter 2026-10-20-19:46 (RUFU-572): the default project is operator-directed
+ * intent, so it is addressed by name at the call site instead of being applied implicitly. A CLI flag
+ * value only — dashboard/HTTP request bodies carry a real `projectId` and never this token.
+ */
+export const DEFAULT_PROJECT_TOKEN = "@default";
+
+/** How a target project was chosen: CLI flag (including `@default`), cwd discovery, or local-store fallback. */
+export type ProjectResolutionSource = "flag" | "cwd" | "cwd-fallback";
 
 /** Identity of the project seen in the invocation's working directory (id "" = unregistered directory). */
 export interface CwdProjectSnapshot {
@@ -109,7 +135,8 @@ async function closeOwnedProjectStore(store: TaskStore): Promise<void> {
  * 3. Else: auto-detect from CWD using `.fusion/project.json` (or a legacy
  *    SQLite database only as migration input)
  *
- * @param projectNameFlag - Optional explicit project name/ID from --project flag
+ * @param projectNameFlag - Optional explicit project name/ID from --project flag; the reserved value
+ *   `@default` (DEFAULT_PROJECT_TOKEN) dereferences the stored default project here and nowhere else
  * @param cwd - Current working directory for CWD detection (default: process.cwd())
  * @returns ProjectContext with resolved project and initialized TaskStore
  * @throws Error if project not found or no project detected from CWD
@@ -144,8 +171,23 @@ export async function resolveProject(
     */
     const cwdProject = await detectCwdProjectSnapshot(cwd, central);
 
-    // 1. Explicit --project flag
-    if (projectNameFlag) {
+    /*
+    1. Explicit --project flag. `@default` is the one flag value that dereferences the stored default
+    instead of naming a project, and it stays inside this branch: the operator asked for it here, so the
+    default still never routes anything on its own.
+    */
+    if (projectNameFlag === DEFAULT_PROJECT_TOKEN) {
+      const defaultProject = await getDefaultProject(globalDir);
+      project = defaultProject ? await central.getProject(defaultProject.id) : undefined;
+      if (!project) {
+        // A default pointing at a since-deleted project is cleared before the refusal, as branch 2 used to do.
+        if (defaultProject) await clearDefaultProject(globalDir);
+        throw new Error(
+          `No default project is set, so '${DEFAULT_PROJECT_TOKEN}' has no target. ` +
+          `Pick one explicitly, or name a default with 'fn project set-default <name>'.`
+        );
+      }
+    } else if (projectNameFlag) {
       project = await findProjectByNameOrId(central, projectNameFlag);
       if (!project) {
         throw new Error(
@@ -154,19 +196,7 @@ export async function resolveProject(
       }
     }
 
-    // 2. Default project from global settings
-    if (!project) {
-      const defaultProject = await getDefaultProject(globalDir);
-      if (defaultProject) {
-        project = await central.getProject(defaultProject.id);
-        // If default project was deleted from registry, clear it
-        if (!project) {
-          await clearDefaultProject(globalDir);
-        }
-      }
-    }
-
-    // 3. Auto-detect from CWD
+    // 2. Auto-detect from CWD
     if (!project) {
       const detected = cwdProject;
       if (!detected) {
@@ -216,14 +246,56 @@ export async function resolveProject(
       store,
       /*
       FNXC:ProjectRoutingVisibility 2026-09-22-16:37: the flag and central-default branches share this
-      return, so provenance is taken from whether an explicit flag actually resolved the target — the
-      precedence order is unchanged, only its reporting is added.
+      return, so provenance is taken from whether an explicit flag actually resolved the target.
+
+      FNXC:DefaultProjectNotARouter 2026-10-20-19:46 (RUFU-572): the central-default branch is gone, so this
+      return is reached only by an explicit flag (or `@default`) and the ternary collapses to `"flag"`.
       */
-      resolvedFrom: projectNameFlag ? "flag" : "default",
+      resolvedFrom: "flag",
       cwdProject,
     };
   } finally {
     if (!centralRetained) await central.close();
+  }
+}
+
+/**
+ * Project path a long-lived host (`fn serve` / `fn daemon` / `fn dashboard`) should boot and bind.
+ *
+ * FNXC:DefaultProjectNotARouter 2026-10-20-19:46 (RUFU-572):
+ * The stored default project stopped being a routing source for one-shot commands, but the operator fenced
+ * the long-lived boot path explicitly: a headless host has no meaningful cwd to stand in, so it still boots
+ * the default project when one is set. This helper is the ONLY sanctioned way to consult the default for a
+ * target, and it is boot-only by name — a one-shot command reaching for it is the bug this card installed.
+ * Order: registered default project → today's one-shot resolution (flag-free: cwd discovery) → the raw cwd.
+ * A default pointing at an unregistered project is cleared here, preserving what the deleted router branch
+ * did, and the refusal to boot it falls through to cwd rather than throwing.
+ *
+ * @param {string} [globalDir] - Global settings directory; defaults to the operator's Fusion home
+ * @param {string} [cwd] - Working directory used when no default project is registered
+ * @returns {Promise<string>} Absolute project path to boot, never a rejection
+ */
+export async function resolveHostRuntimeProjectPath(
+  globalDir?: string,
+  cwd: string = process.cwd(),
+): Promise<string> {
+  const central = new CentralCore(globalDir);
+  await central.init();
+  try {
+    const defaultProject = await getDefaultProject(globalDir);
+    if (defaultProject) {
+      const registered = await central.getProject(defaultProject.id);
+      if (registered) return registered.path;
+      await clearDefaultProject(globalDir);
+    }
+  } finally {
+    await central.close();
+  }
+
+  try {
+    return (await resolveProject(undefined, cwd, globalDir)).projectPath;
+  } catch {
+    return cwd;
   }
 }
 

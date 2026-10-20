@@ -33,7 +33,7 @@ import { resolve, isAbsolute, relative, basename, join } from "node:path";
 import { existsSync, statSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { promptOutputStream } from "../output.js";
-import { detectProjectFromCwd, setDefaultProject } from "../project-context.js";
+import { detectProjectFromCwd, setDefaultProject, DEFAULT_PROJECT_TOKEN } from "../project-context.js";
 import { maybeInstallClaudeSkillForNewProject } from "./claude-skills-runner.js";
 import { retryOnLock } from "../lock-retry.js";
 
@@ -671,6 +671,20 @@ export async function runProjectSetDefault(name: string): Promise<void> {
     process.exit(1);
   }
 
+  /*
+  FNXC:DefaultProjectNotARouter 2026-10-20-19:46 (RUFU-572): `@default` is a reserved flag VALUE meaning
+  "whatever project is set as default", so storing it as the default would make `--project @default` resolve to
+  itself. Refuse it with the sentence that names its real use — and refuse it BEFORE opening the registry, since
+  rejecting a reserved word needs no database and must not depend on one being reachable.
+  */
+  if (name === DEFAULT_PROJECT_TOKEN) {
+    console.error(
+      `Error: '${DEFAULT_PROJECT_TOKEN}' is not a project name — it is the flag value that stands for the ` +
+      `default project. Name a real project instead: fn project set-default <name>.`,
+    );
+    process.exit(1);
+  }
+
   const central = new CentralCore();
   await central.init();
 
@@ -684,6 +698,14 @@ export async function runProjectSetDefault(name: string): Promise<void> {
     await setDefaultProject(project.id);
     console.log();
     console.log(`  ✓ Set '${project.name}' as default project`);
+    /*
+    FNXC:DefaultProjectNotARouter 2026-10-20-19:46 (RUFU-572): the setting used to redirect every one-shot
+    CLI command, which is the sentence an operator used to read without meaning it. It now names the project
+    that `--project @default` expands to, plus the headless `fn serve`/`fn daemon`/`fn dashboard` boot
+    binding. Say the real contract so nobody files work into the wrong project by surprise.
+    */
+    console.log(`    Used by: --project ${DEFAULT_PROJECT_TOKEN}, and the project headless hosts boot.`);
+    console.log(`    Not used by: plain 'fn …' commands — those always target the folder you are standing in.`);
     console.log();
   } finally {
     await central.close();

@@ -179,12 +179,17 @@ pgDescribe("project-context (PostgreSQL-backed detection)", () => {
     FNXC:ProjectRoutingVisibility 2026-09-22-16:37:
     The measured mis-routing incident (GEDA-1057/1058): the operator stood in the `runfusion` checkout
     while the central DEFAULT project named another project, and `fn task create` filed cards there
-    with nothing in the output saying so. Resolution precedence (flag → default → cwd) is the documented
-    contract in docs/multi-project.md and stays unchanged; what the resolved context must now carry is
-    the PROVENANCE of the choice plus what cwd discovery saw, so the CLI can report and warn.
-    These three cases pin one branch of that precedence each.
+    with nothing in the output saying so. What the resolved context must carry is the PROVENANCE of the
+    choice plus what cwd discovery saw, so the CLI can report it.
+
+    FNXC:DefaultProjectNotARouter 2026-10-20-19:46 (RUFU-572):
+    The precedence those three cases pinned (flag → default → cwd) is DELETED. Standing in a project's
+    folder is now enough: one-shot resolution is `--project` (or `@default`) → cwd discovery → error, because
+    a stored default that outranks cwd is what mis-filed meta work into a product checkout (SANE, AIWO).
+    The pair below is the regression contract: cwd beats a set default, AND `@default` still reaches it.
+    Either half alone is green under the old code, so both must stay asserted together.
     */
-    it("records that the central default won over a different cwd project", async () => {
+    it("resolves to the cwd project even when another project is the stored default", async () => {
       const runfusionPath = createMockProject("runfusion");
       const gedappPath = createMockProject("gedapp");
       const runfusion = await central.registerProject({ name: "runfusion", path: resolve(runfusionPath) });
@@ -194,14 +199,37 @@ pgDescribe("project-context (PostgreSQL-backed detection)", () => {
 
       const context = await resolveProject(undefined, runfusionPath, homeDir);
       try {
-        expect(context.projectName).toBe("gedapp");
-        expect(context.projectPath).toBe(resolve(gedappPath));
-        expect(context.resolvedFrom).toBe("default");
+        // The symptom: this used to be `gedapp` / `"default"`.
+        expect(context.projectName).toBe("runfusion");
+        expect(context.projectPath).toBe(resolve(runfusionPath));
+        expect(context.resolvedFrom).toBe("cwd");
+        // The other project stays visible as evidence, it is simply no longer the target.
         expect(context.cwdProject).toMatchObject({
           id: runfusion.id,
           name: "runfusion",
           path: resolve(runfusionPath),
         });
+      } finally {
+        await closeProjectStore(context);
+      }
+    });
+
+    it("reaches the stored default only through the @default token", async () => {
+      const runfusionPath = createMockProject("runfusion");
+      const gedappPath = createMockProject("gedapp");
+      const runfusion = await central.registerProject({ name: "runfusion", path: resolve(runfusionPath) });
+      const gedapp = await central.registerProject({ name: "gedapp", path: resolve(gedappPath) });
+      createdProjectIds.push(runfusion.id, gedapp.id);
+      await setDefaultProject(gedapp.id, homeDir);
+
+      // cwd is runfusion, the default is gedapp: only the spelled token crosses the boundary.
+      const context = await resolveProject("@default", runfusionPath, homeDir);
+      try {
+        expect(context.projectName).toBe("gedapp");
+        expect(context.projectPath).toBe(resolve(gedappPath));
+        // The operator typed a flag, so the provenance is a flag — there is no `default` source any more.
+        expect(context.resolvedFrom).toBe("flag");
+        expect(context.cwdProject?.name).toBe("runfusion");
       } finally {
         await closeProjectStore(context);
       }
@@ -241,7 +269,7 @@ pgDescribe("project-context (PostgreSQL-backed detection)", () => {
       }
     });
 
-    it("keeps resolution working when cwd discovery finds nothing", async () => {
+    it("refuses a one-shot command outside any project instead of falling back to the default", async () => {
       const gedappPath = createMockProject("gedapp");
       const gedapp = await central.registerProject({ name: "gedapp", path: resolve(gedappPath) });
       createdProjectIds.push(gedapp.id);
@@ -249,15 +277,44 @@ pgDescribe("project-context (PostgreSQL-backed detection)", () => {
       const unrelatedDir = join(tempDir, "not-a-project");
       mkdirSync(unrelatedDir, { recursive: true });
 
-      const context = await resolveProject(undefined, unrelatedDir, homeDir);
-      try {
-        expect(context.projectName).toBe("gedapp");
-        expect(context.resolvedFrom).toBe("default");
-        // No evidence is not the same as a disagreement: consumers must degrade to silence.
-        expect(context.cwdProject).toBeUndefined();
-      } finally {
-        await closeProjectStore(context);
-      }
+      /*
+      FNXC:DefaultProjectNotARouter 2026-10-20-19:46 (RUFU-572): this case used to assert a silent
+      `resolvedFrom: "default"` landing. The default is now a name, not a fallback, so an operator standing
+      outside every project gets the same error they would get with no default set — and reaching `gedapp`
+      from here is an explicit `--project @default`.
+      */
+      await expect(resolveProject(undefined, unrelatedDir, homeDir)).rejects.toThrow(
+        /No fusion project found in current directory/,
+      );
+      // The refusal must not have consumed the operator's default setting.
+      expect(await getDefaultProject(homeDir)).toBeDefined();
+    });
+
+    it("says how to name a default when @default is used with none set", async () => {
+      const unrelatedDir = join(tempDir, "no-default-here");
+      mkdirSync(unrelatedDir, { recursive: true });
+      await clearDefaultProject(homeDir);
+
+      // "project '@default' not found" would be the confusing answer; the fix command is the useful one.
+      await expect(resolveProject("@default", unrelatedDir, homeDir)).rejects.toThrow(
+        /No default project is set.*fn project set-default/s,
+      );
+    });
+
+    it("clears a default that points at a deleted project and refuses @default", async () => {
+      const ghostPath = createMockProject("ghost");
+      const ghost = await central.registerProject({ name: "ghost", path: resolve(ghostPath) });
+      await setDefaultProject(ghost.id, homeDir);
+      // Simulate the registry row disappearing while the setting keeps pointing at it.
+      await central.unregisterProject(ghost.id);
+      const unrelatedDir = join(tempDir, "not-a-project-either");
+      mkdirSync(unrelatedDir, { recursive: true });
+
+      await expect(resolveProject("@default", unrelatedDir, homeDir)).rejects.toThrow(
+        /No default project is set/s,
+      );
+      // The stale-setting cleanup the old default branch performed must survive its deletion.
+      expect(await getDefaultProject(homeDir)).toBeUndefined();
     });
   });
 });
