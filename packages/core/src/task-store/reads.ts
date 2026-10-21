@@ -7,6 +7,7 @@
  * instance as its first parameter and performs byte-identical work.
  */
 import {TaskStore, storeLog} from "../store.js";
+import { recordReadCall } from "./read-attribution.js";
 import { shouldWarnPromptParseFailure } from "./task-artifacts-ops.js";
 import {readFile} from "node:fs/promises";
 import {join} from "node:path";
@@ -785,6 +786,12 @@ async function finalizeSlimListTask(store: TaskStore, task: Task, slim: boolean)
 }
 
 export async function listTasksImpl(store: TaskStore, options?: ListTasksOptions): Promise<Task[]> {
+    /*
+    FNXC:ReadAttribution 2026-10-21-00:36 (RUFU-756):
+    4 338 index scans on `tasks` in a 75 s window (58 per second) while the measured allocation is
+    row parsing. The caller cannot be recovered from a heap or CPU profile, so it is captured here.
+    */
+    recordReadCall(store, "listTasks");
     /*
     FNXC:TaskArchiveRemoval 2026-09-04-18:25:
     Ordinary task reads are live-only by default. Cold archive snapshots remain available solely to

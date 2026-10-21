@@ -10,6 +10,7 @@
  */
 
 import { TaskStore } from "../store.js";
+import { recordReadCall } from "./read-attribution.js";
 import {resolveEntryColumnId, WorkflowSwitchRehomeFailedError, buildSwitchReconciliation} from "../workflows/workflow-reconciliation.js";
 import { pruneAgentLogFiles as pruneAgentLogFileEntries, readAgentLogEntriesByTimeRange } from "../agents/agent-log-file-store.js";
 import { BUILTIN_WORKFLOWS, DEFAULT_WORKFLOW_ID, resolveDefaultWorkflowIr, getBuiltinWorkflow, getRequiredPluginIdForBuiltinWorkflow, isBuiltinWorkflowDeprecated, isBuiltinWorkflowEnabled, isBuiltinWorkflowId, isBuiltinWorkflowPluginGated } from "../workflows/builtin-workflows.js";
@@ -531,6 +532,14 @@ A built-in revision retains its original identity. Migration 0079 converges pers
 }
 
 export async function getTaskWorkflowSelectionAsyncImpl(store: TaskStore, taskId: string): Promise<{ workflowId: string; stepIds: string[] } | undefined> {
+    /*
+    FNXC:ReadAttribution 2026-10-21-00:36 (RUFU-756):
+    This single-task selection read is the measured hot spot — 46 117 index scans on
+    `task_workflow_selection` in a 75 s window, 615 per second — while the only wired timer is
+    2 seconds, so the reads are event-driven and unnamed. Counted here, at the one seam every caller
+    passes through, because the async boundary above erases the stack that a profiler would need.
+    */
+    recordReadCall(store, "workflowSelection");
     /* FNXC:SqliteDualPathCleanup 2026-07-26-14:15: always PostgreSQL path below. */
     const layer = store.asyncLayer!;
     /*
