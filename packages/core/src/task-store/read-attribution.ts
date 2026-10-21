@@ -57,7 +57,21 @@ So the signature is a short CHAIN of the first few surviving frames: the caller 
 small depth, no name list is needed, and the chain still distinguishes two call sites that share a
 wrapper. Depth is bounded because the signature is a Map key.
 */
-export const READ_ATTRIBUTION_STACK_DEPTH = 3;
+export const READ_ATTRIBUTION_STACK_DEPTH = 6;
+
+/*
+FNXC:ReadAttribution 2026-10-21-14:45 (RUFU-756):
+Depth 3 was not deep enough to name a caller, measured rather than guessed. Production windows report
+`workflowSelection` at 426-432 reads/s with the chain ending at the coalescer's own inner async frame:
+`getTaskWorkflowSelectionAsyncImpl < _TaskStore.getTaskWorkflowSelectionAsync < (anon)@bin.js:21089`.
+Frame three IS the coalescer (its `inFlight` arrow inside `readSelectionWithCoalescing`), so the code
+that actually asked for the read sits at frames four and five — `readSelectionWithCoalescing` itself and
+whichever resolver variant called it. An earlier attempt to attribute this by reasoning named the wrong
+code: the hold-release sweep looked like the driver because it scans 275-693 tasks per pass, but its own
+instrumentation reports `batchSelections=0, selections=0`, so it does almost no selection reads at all.
+That is why the instrument exists: reasoning about a fan-out this wide picks a plausible caller, not the
+real one. Depth costs one bounded Map key per distinct chain and buys the caller two frames later.
+*/
 
 /** Window length between emissions. Long enough that one row is not itself board noise. */
 export const READ_ATTRIBUTION_WINDOW_MS = 5 * 60_000;
