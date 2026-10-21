@@ -57,6 +57,28 @@ describe("read attribution", () => {
     expect(top.signature).not.toContain("recordReadCall");
   });
 
+  /*
+  FNXC:ReadAttribution 2026-10-21-09:22 (RUFU-756): the trap for the bug production caught. A
+  single-frame selector reported `listTasksImpl` / `getTaskWorkflowSelectionAsyncImpl` to themselves in
+  the bundled build, because the seam's own wrapper is unavoidably frame one there. The assertion that
+  would have stopped it is that a caller TWO frames up still appears in the signature.
+  */
+  it("keeps frames above the immediate caller, since a bundled seam is itself frame one", () => {
+    const { store } = fakeStore();
+    function outerDispatch() {
+      innerWrapper();
+    }
+    function innerWrapper() {
+      for (let i = 0; i < READ_ATTRIBUTION_SAMPLE_EVERY; i += 1) recordReadCall(store, "listTasks");
+    }
+    outerDispatch();
+
+    const top = snapshotReadAttribution().listTasks.top[0];
+    expect(top.signature).toContain("innerWrapper");
+    expect(top.signature).toContain("outerDispatch");
+    expect(top.signature).not.toContain("recordReadCall");
+  });
+
   it("emits one ids/counts row per busy seam and never the caller string", async () => {
     const { store, events } = fakeStore();
     for (let i = 0; i < READ_ATTRIBUTION_SAMPLE_EVERY * 2; i += 1) recordReadCall(store, "listTasks");

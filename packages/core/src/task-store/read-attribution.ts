@@ -44,6 +44,21 @@ export type ReadAttributionSeam = "listTasks" | "workflowSelection";
 /** Stack captures per N calls of one seam. 32 keeps the measured worst seam at ~19 captures/s. */
 export const READ_ATTRIBUTION_SAMPLE_EVERY = 32;
 
+/*
+FNXC:ReadAttribution 2026-10-21-09:22 (RUFU-756):
+The first production window proved the volume and disproved the single-frame selector. It reported
+`workflowSelection` 148 022 calls in 5 minutes (493 per second, which matches the independently measured
+615 PostgreSQL index scans per second on `task_workflow_selection`) and `listTasks` 4 110 (13,7 per
+second) — but `distinctCallers` was 1 in both, naming `getTaskWorkflowSelectionAsyncImpl@bin.js:92942`
+and `listTasksImpl@bin.js:112287`: the seam's own frames, not their callers. A bundle collapses every
+module into `dist/bin.js`, so a path test cannot separate the store's wrapper from the code above it,
+and a name list would have to enumerate every wrapper the seam sits under, which differs per backend.
+So the signature is a short CHAIN of the first few surviving frames: the caller is visible at a fixed
+small depth, no name list is needed, and the chain still distinguishes two call sites that share a
+wrapper. Depth is bounded because the signature is a Map key.
+*/
+export const READ_ATTRIBUTION_STACK_DEPTH = 3;
+
 /** Window length between emissions. Long enough that one row is not itself board noise. */
 export const READ_ATTRIBUTION_WINDOW_MS = 5 * 60_000;
 
@@ -106,22 +121,26 @@ function normalizeFrame(line: string): string | null {
 }
 
 /**
- * First stack frame outside this module's own seam — the caller this read is attributed to.
+ * The first `READ_ATTRIBUTION_STACK_DEPTH` frames outside this module's own seam, oldest-first.
  *
- * Depth is not fixed, because the seam sits under a different number of wrappers per backend, so the
- * frame is selected by identity (not node plumbing, not this module by path or by function name, not
- * the vitest runner) rather than by position. `(unknown)` is a real answer, not a failure: an empty
- * stack happens when V8 omits it, and `(unknown)` counting up is the signal that a caller reached the
- * seam through something that erased the stack too.
+ * Frames are selected by identity (not node plumbing, not this module by path or by function name, not
+ * the vitest runner) rather than by position, and kept as a chain because a bundle cannot be inspected
+ * by path: the store's own wrapper is unavoidably frame one, so a single-frame selector would report
+ * the seam to itself. `(unknown)` is a real answer, not a failure: an empty stack happens when V8 omits
+ * it, and `(unknown)` counting up is the signal that a caller reached the seam through something that
+ * erased the stack too.
  */
 function captureCallerSignature(): string {
   const stack = new Error().stack?.split("\n") ?? [];
+  const frames: string[] = [];
   for (const line of stack.slice(1)) {
     if (INTERNAL_FRAME.test(line) || OWN_FRAME.test(line) || RUNNER_FRAME.test(line)) continue;
     const frame = normalizeFrame(line);
-    if (frame) return frame;
+    if (!frame) continue;
+    frames.push(frame);
+    if (frames.length >= READ_ATTRIBUTION_STACK_DEPTH) break;
   }
-  return "(unknown)";
+  return frames.length > 0 ? frames.join(" < ") : "(unknown)";
 }
 
 function tallyFor(seam: ReadAttributionSeam): SeamTally {
