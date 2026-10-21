@@ -40,6 +40,10 @@ COPY plugins/fusion-plugin-openclaw-runtime/package.json ./plugins/fusion-plugin
 COPY plugins/fusion-plugin-hermes-runtime/package.json ./plugins/fusion-plugin-hermes-runtime/package.json
 COPY plugins/fusion-plugin-droid-runtime/package.json ./plugins/fusion-plugin-droid-runtime/package.json
 COPY plugins/fusion-plugin-cursor-runtime/package.json ./plugins/fusion-plugin-cursor-runtime/package.json
+# FNXC:DockerBuild 2026-10-21-11:05 (RUFU-763): this plugin was added to pnpm-workspace.yaml but not
+# staged here, so `docker build` failed later with `TS2688: Cannot find type definition file for 'node'`.
+# scripts/check-docker-workspace-manifests.mjs now refuses that drift in the static gate.
+COPY plugins/fusion-plugin-antigravity-runtime/package.json ./plugins/fusion-plugin-antigravity-runtime/package.json
 COPY plugins/fusion-plugin-grok-runtime/package.json ./plugins/fusion-plugin-grok-runtime/package.json
 COPY plugins/fusion-plugin-claude-runtime/package.json ./plugins/fusion-plugin-claude-runtime/package.json
 COPY plugins/fusion-plugin-omp-runtime/package.json ./plugins/fusion-plugin-omp-runtime/package.json
