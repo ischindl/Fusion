@@ -417,6 +417,15 @@ import {
   isPlanReviewRevisionEpisode,
   resolvePlanReviewSessionFailureBudget,
 } from "./executor/plan-review-session-failure-budget.js";
+import {
+  evaluatePlanningReseedCycle,
+  planningReseedCycleExhaustedError,
+  planningReseedCyclePatch,
+  planningReseedCycleResetPatch,
+  emitPlanningReseedCycleAudit,
+  PLANNING_RESEED_CYCLE_LIMIT,
+  readPlanningReseedCycleCount,
+} from "./executor/planning-reseed-cycle-budget.js";
 import { optionalStepRevisionLogOutcome } from "./executor/optional-step-revision.js";
 import { parkPlanReviewReplanCapExhausted } from "./executor/park-plan-review-replan-cap.js";
 import type { EngineRunContext } from "./util/run-audit.js";
@@ -4510,16 +4519,15 @@ export class TriageProcessor {
             A failed card has no automatic planning claimant, whereas needs-replan is consumed
             by triage under the planning lifecycle lock on the next admission pass.
             */
-            const escalationMessage = `${failure} exhausted its retry cadence; scheduling a fresh planning replan.`;
-            planLog.warn(`${task.id} clean planning attempt retry budget escalated to replan`);
-            await this.store.logEntry(task.id, escalationMessage);
-            await this.updatePlanningStateIfStillCurrent(task, {
-              status: await this.resolvePlanningRetryHoldStatus(task, written),
-              error: null,
-              recoveryRetryCount: null,
-              recoveryDisposition: "escalated-reseed",
-              nextRecoveryAt: null,
-              planningFailure: null,
+            /*
+            FNXC:PlanningReseedCycleBudget 2026-10-22-11:08 (RUFU-768): this escalation used to grant an
+            unbounded number of fresh cadences, because it cleared recoveryRetryCount and returned the
+            card to needs-replan, which triage always consumes. The shared seam now counts granted cycles.
+            */
+            await this.escalatePlanningReseed(task, written, {
+              message: `${failure} exhausted its retry cadence; scheduling a fresh planning replan.`,
+              warn: true,
+              clearPlanningFailure: true,
             });
             return;
           }
@@ -4562,18 +4570,13 @@ export class TriageProcessor {
               return;
             }
 
-            const escalationMessage =
-              `Specification validation exhausted its retry cadence; scheduling a fresh planning replan.`;
-            planLog.log(
-              `${task.id} deterministic spec validation exhausted its retry cadence`,
-            );
-            await this.store.logEntry(task.id, escalationMessage);
-            await this.updatePlanningStateIfStillCurrent(task, {
-              status: await this.resolvePlanningRetryHoldStatus(task, written),
-              error: null,
-              recoveryRetryCount: null,
-              recoveryDisposition: "escalated-reseed",
-              nextRecoveryAt: null,
+            /*
+            FNXC:PlanningReseedCycleBudget 2026-10-22-11:08 (RUFU-768): same ceiling as the clean-attempt
+            escalation; a deterministic spec failure is a dead planner session and must consume a cycle.
+            */
+            await this.escalatePlanningReseed(task, written, {
+              message: `Specification validation exhausted its retry cadence; scheduling a fresh planning replan.`,
+              warn: false,
             });
             return;
           }
@@ -4591,11 +4594,18 @@ export class TriageProcessor {
 
           // FNXC:TriagePlanningRetry 2026-08-03-00:02: a clean replacement consumed no
           // recovery budget; clear it only after the finalization preconditions have passed.
-          if (task.recoveryRetryCount != null || task.nextRecoveryAt != null) {
+          // FNXC:PlanningReseedCycleBudget 2026-10-22-11:08 (RUFU-768): a clean handoff also untaxes the
+          // card's reseed ceiling, so only a fresh episode can charge it again.
+          if (
+            task.recoveryRetryCount != null
+            || task.nextRecoveryAt != null
+            || readPlanningReseedCycleCount(task) > 0
+          ) {
             await this.updatePlanningStateIfStillCurrent(task, {
               error: null,
               recoveryRetryCount: null,
               nextRecoveryAt: null,
+              ...planningReseedCycleResetPatch(),
             });
           }
 
@@ -5521,6 +5531,66 @@ export class TriageProcessor {
   A retry over a finished-looking PROMPT.md must hold `needs-replan`, matching scheduler validation
   retries. Clearing status makes the card dispatchable and bypasses finalizeApprovedTask approval.
   */
+  /*
+  FNXC:PlanningReseedCycleBudget 2026-10-22-11:08 (RUFU-768):
+  Single escalation seam for both planning cadence budgets. The old behaviour returned `needs-replan`
+  and cleared `recoveryRetryCount` at every exhaustion, and `needs-replan` is consumed by triage's next
+  admission pass, so the counter that was supposed to bound planning was zeroed by the escalation that
+  used it: a card crashing at Plan Review before any verdict (outside the RUFU-251 REVISE-episode scope
+  guard) therefore looped forever, which is what the rtm3 report measured as seven attempts with
+  planReviewAttemptCount still 0. Each granted cycle is counted on sourceMetadata; on exhaustion the
+  card is parked `failed` with a named error, because the RUFU-251 header records the asymmetry that
+  makes this terminal: a failed card has no automatic planning claimant while `needs-replan` always has
+  one. Neither arm approves, fabricates, or synthesizes a Plan Review verdict.
+  */
+  private async escalatePlanningReseed(
+    task: Task,
+    written: string | undefined,
+    input: { message: string; warn: boolean; clearPlanningFailure?: boolean },
+  ): Promise<void> {
+    const decision = evaluatePlanningReseedCycle(task);
+    if (decision.exhausted) {
+      const error = planningReseedCycleExhaustedError(decision.granted, PLANNING_RESEED_CYCLE_LIMIT);
+      if (input.warn) planLog.warn(`${task.id} ${error}`);
+      else planLog.log(`${task.id} ${error}`);
+      await this.store.logEntry(
+        task.id,
+        `${error}. The card is parked instead of re-seeded, so planning admission will not re-admit it; operator repair is required.`,
+      );
+      await this.updatePlanningStateIfStillCurrent(task, {
+        status: "failed",
+        error,
+        recoveryRetryCount: null,
+        nextRecoveryAt: null,
+      });
+      await emitPlanningReseedCycleAudit(this.store, {
+        taskId: task.id,
+        cycles: decision.granted,
+        limit: PLANNING_RESEED_CYCLE_LIMIT,
+        outcome: "parked",
+      });
+      return;
+    }
+    if (input.warn) planLog.warn(`${task.id} ${input.message}`);
+    else planLog.log(`${task.id} ${input.message}`);
+    await this.store.logEntry(task.id, input.message);
+    await this.updatePlanningStateIfStillCurrent(task, {
+      status: await this.resolvePlanningRetryHoldStatus(task, written),
+      error: null,
+      recoveryRetryCount: null,
+      recoveryDisposition: "escalated-reseed",
+      nextRecoveryAt: null,
+      ...(input.clearPlanningFailure ? { planningFailure: null } : {}),
+      ...planningReseedCyclePatch(decision.next),
+    });
+    await emitPlanningReseedCycleAudit(this.store, {
+      taskId: task.id,
+      cycles: decision.next,
+      limit: PLANNING_RESEED_CYCLE_LIMIT,
+      outcome: "re-seeded",
+    });
+  }
+
   private async resolvePlanningRetryHoldStatus(task: Task, knownPromptContent?: string): Promise<Task["status"] | null> {
     const restored = this.restoreStatusAfterInterruptedTriageWork(task);
     if (restored) return restored;

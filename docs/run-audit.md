@@ -303,6 +303,18 @@ exists to bound.
 Still not carried, and the reason this section is not called a solution: **who holds the slots**. Holder
 identity is not in the refusal, so the row answers "which gate, how full" but not "which cards occupy it".
 
+## Planning re-seed ceiling
+
+RUFU-768: `task:planning-reseed-cycle` records one planning escalation for one card, either the cycle
+that was granted or the ceiling that stopped it. Metadata is ids/counts/fixed enums only (`taskId`,
+`cycles`, `limit`, `outcome` from `re-seeded`/`parked`). Planning transport text, generated spec text,
+and error prose never enter the row; the parked card carries its reason as its own task `error` with the
+`PLANNING_RESEED_CYCLE_EXHAUSTED:` prefix and a History entry, which is the operator-facing record.
+The row exists because the park is the whole point of the fix: without it a stopped card is a plain
+`failed` row indistinguishable from any other planning failure. The event is deliberately outside the
+curated delivery-pipeline catalogue, following the same precedent as `task:planning-admission-stalled`,
+which is why it is documented here as prose rather than as a catalogue table row.
+
 ## Maintenance contract
 
 Adding a new catalogued run-audit event requires updating **both** the typed catalogue module (`packages/engine/src/run-audit/run-audit-catalogue.ts`) **and** this doc together — the parity test (`packages/engine/src/__tests__/run-audit-catalogue.test.ts`) fails if the documented event set and the catalogue module's set ever diverge, keeping the observability surface truthful as the real `DatabaseMutationType` union evolves. Removing an event likewise requires updating both in the same change.
