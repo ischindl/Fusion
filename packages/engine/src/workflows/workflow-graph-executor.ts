@@ -19,6 +19,7 @@ import {
   isNonPlanDefectPlanReviewFailure,
 } from "../errors/transient-error-detector.js";
 import { isSessionContentionError } from "../errors/transient-error-patterns.js";
+import { errorTextWithThrowSite } from "./error-throw-site.js";
 import { isRequiredArtifactReadFailedValue, parseRequiredArtifactMissingValue } from "../execution/required-workflow-artifacts.js";
 import { workflowStepMissingVerdictNotice } from "../executor/workflow-step-verdict.js";
 
@@ -2261,7 +2262,9 @@ export class WorkflowGraphExecutor {
           outcome: "failure",
           value: "plugin-node-handler-error",
           contextPatch: {
-            [`node:${node.id}:error`]: error instanceof Error ? error.message : String(error),
+            /* FNXC:ErrorThrowSite 2026-10-22-13:38: RUFU-773 — an extension handler throw reaches the
+            same verdict-less diagnostic path as an agent node, so it names its throw site too. */
+            [`node:${node.id}:error`]: errorTextWithThrowSite(error instanceof Error ? error.message : String(error), error),
             [`node:${node.id}:extensionId`]: extensionId,
           },
         };
@@ -2529,6 +2532,15 @@ export class WorkflowGraphExecutor {
     }
 
     /*
+    FNXC:ErrorThrowSite 2026-10-22-13:38: RUFU-773 — this is the catch a Plan Review / agent-node
+    exception lands in after its retries are spent (`runGraphCustomNode` has no catch-all, so a
+    thrown `TypeError` propagates here), and this text is what `synthesizeNonVerdictFailureOutput`
+    puts on the card. The MESSAGE stays the classification input (`value`, `isSessionContentionError`)
+    and only the published context text gains the bounded throw site.
+    */
+    const lastErrorText = lastError instanceof Error ? lastError.message : String(lastError);
+
+    /*
      * FNXC:WorkflowCompletion 2026-07-01-16:24:
      * A thrown handler exception (missing/pruned worktree, model/provider error,
      * etc.) bypasses `runGraphCustomNode`'s advisory `!blocking → success`
@@ -2544,7 +2556,7 @@ export class WorkflowGraphExecutor {
         outcome: "success",
         value: "summary-unavailable",
         contextPatch: {
-          [`node:${node.id}:error`]: lastError instanceof Error ? lastError.message : String(lastError),
+          [`node:${node.id}:error`]: errorTextWithThrowSite(lastErrorText, lastError),
         },
       };
       if (recordProgress && this.shouldRecordNodeProgress(node)) {
@@ -2552,7 +2564,6 @@ export class WorkflowGraphExecutor {
       }
       return degraded;
     }
-    const lastErrorText = lastError instanceof Error ? lastError.message : String(lastError);
     const failureResult: WorkflowNodeResult = {
       outcome: "failure",
       // FNXC:SessionContention 2026-07-25-21:30: contention is a retryable hold, not an exception.
@@ -2560,7 +2571,13 @@ export class WorkflowGraphExecutor {
         ? BRANCH_WRITE_PROVENANCE_FAILURE_VALUE
         : isSessionContentionError(lastErrorText) ? SESSION_CONTENTION_HOLD_VALUE : "exception",
       contextPatch: {
-        [`node:${node.id}:error`]: lastErrorText,
+        /*
+        FNXC:ErrorThrowSite 2026-10-22-13:38: RUFU-773 — the message stays an exact prefix of this
+        text (nothing matching on it changes) and the failure `value` vocabulary is untouched; the
+        appended frames are what turns `Cannot read properties of undefined (reading 'trim')` into
+        a diagnosable throw site on the card.
+        */
+        [`node:${node.id}:error`]: errorTextWithThrowSite(lastErrorText, lastError),
       },
     };
     if (recordProgress && this.shouldRecordNodeProgress(node)) {

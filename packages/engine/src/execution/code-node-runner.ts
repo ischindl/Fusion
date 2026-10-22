@@ -60,6 +60,7 @@ import type { CustomFieldRejection, TaskDetail, WorkflowIrNode } from "@fusion/c
 
 import type { WorkflowNodeResult } from "../workflows/workflow-graph-executor.js";
 import { FOREACH_ACTIVE_CONTEXT_KEY, type CodeNodeRunner } from "../workflows/workflow-node-handlers.js";
+import { errorTextWithThrowSite } from "../workflows/error-throw-site.js";
 
 /** Default code-node timeout (KTD-15). */
 export const CODE_NODE_DEFAULT_TIMEOUT_MS = 30_000;
@@ -514,7 +515,11 @@ export function createCodeNodeRunner(deps: CodeNodeRunnerDeps): CodeNodeRunner {
       return {
         outcome: "failure",
         value: reason,
-        contextPatch: { [`node:${node.id}:error`]: message, [`node:${node.id}:stderr`]: capOutput(stderr) },
+        /* FNXC:ErrorThrowSite 2026-10-22-13:38: RUFU-773 — a code node's `runtime-throw` is the same
+        unknown-cause class as an agent-node exception and reaches the same verdict-less diagnostic,
+        so its published error text names the throw site; `value`/`reason` and the audit line stay
+        message-only. */
+        contextPatch: { [`node:${node.id}:error`]: errorTextWithThrowSite(message, err), [`node:${node.id}:stderr`]: capOutput(stderr) },
       };
     }
 

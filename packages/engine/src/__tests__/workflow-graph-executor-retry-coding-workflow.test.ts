@@ -86,7 +86,13 @@ describe("WorkflowGraphExecutor built-in coding workflow retries", () => {
     expect(executeCalls).toBe(2);
     expect(result.context["node:execute:outcome"]).toBe("failure");
     expect(result.context["node:execute:value"]).toBe("exception");
-    expect(result.context["node:execute:error"]).toBe("persistent execute failure");
+    /*
+    FNXC:ErrorThrowSite 2026-10-22-13:38: RUFU-773 widened the published node error text — the
+    message stays the exact prefix and the bounded throw site follows it. Asserted as prefix +
+    frame marker (never an exact equality) so the assertion records the new contract without
+    pinning this host's absolute paths.
+    */
+    expect(result.context["node:execute:error"]).toMatch(/^persistent execute failure \| at /);
     expect(result.outcome).toBe("failure");
     expect(BUILTIN_CODING_WORKFLOW_IR.edges).toContainEqual({ from: "execute", to: "end", condition: "failure" });
     expect(result.visitedNodeIds).toEqual([
@@ -143,7 +149,8 @@ describe("WorkflowGraphExecutor built-in coding workflow retries", () => {
     expect(reviewCalls).toBe(2);
     expect(result.context["node:review:outcome"]).toBe("failure");
     expect(result.context["node:review:value"]).toBe("exception");
-    expect(result.context["node:review:error"]).toBe("review seam failed");
+    // FNXC:ErrorThrowSite 2026-10-22-13:38: RUFU-773 — message prefix + bounded throw site, as above.
+    expect(result.context["node:review:error"]).toMatch(/^review seam failed \| at /);
     expect(result.outcome).toBe("failure");
     // FNXC:WorkflowGraphTests 2026-06-29-13:50: Review retry coverage follows the current builtin:coding success path through plan-review, bypassed browser verification, default-on code-review, completion summary, then review; a review failure stops before merge/post-merge traversal.
     expect(result.visitedNodeIds).toEqual([
