@@ -1,6 +1,7 @@
 import type { Task } from "@fusion/core";
 import { getNoCommitEligibilityReason } from "./no-commit-eligibility.js";
 import { evaluatePromptDerivedNoCommitEligibility } from "./prompt-derived-eligibility.js";
+import { parseTrimmedStringList } from "./json-string-list.js";
 
 export type WorkspaceZeroAcquireClassification =
   | { kind: "not-applicable" }
@@ -99,8 +100,22 @@ function classifyAcquiredWorkspaceCommitFree(
   if (scope?.state !== "confirmed" || scope.repositories.length === 0) {
     return { kind: "not-applicable" };
   }
-  const declared = scope.repositories.map((repository) => repository.trim());
-  if (declared.some((repository) => !repository) || new Set(declared).size !== declared.length) {
+  /*
+   * FNXC:ReviewInputTypeSafety 2026-10-22-13:02 (RUFU-771):
+   * `repositoryScope` is persisted JSON, so an element can arrive as null or undefined despite the
+   * `string[]` type, and `repository.trim()` would then raise a bare TypeError inside workspace
+   * acquisition. A malformed entry declines the classification, which is the conservative arm already
+   * coded here: the task keeps its ordinary acquisition path instead of being granted a commit-free
+   * acquisition derived from a repository list that lost entries.
+   */
+  const declaredParse = parseTrimmedStringList(scope.repositories);
+  const declaredRawEntries: readonly unknown[] = scope.repositories;
+  const declared = declaredParse.items;
+  if (
+    declaredParse.rejectedCount > 0
+    || declaredRawEntries.some((repository) => typeof repository === "string" && !repository.trim())
+    || new Set(declared).size !== declared.length
+  ) {
     return { kind: "not-applicable" };
   }
 
