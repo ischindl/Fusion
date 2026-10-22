@@ -69,27 +69,22 @@ vi.mock("../api", () => ({
 }));
 
 /*
-FNXC:LucideMockFragility 2026-10-02-09:54:
-This mock used to enumerate every icon the component imports, so the day the shared action row gained a
-`UserCheck` icon the file went RED with "No \"UserCheck\" export is defined on the mock" — four tests failed
-over an icon no test cares about. Any stub that must track production's import list is a standing
-rebreakage: the next icon does the same thing. Resolve any requested export as a null component instead;
-these tests assert layout and DOM structure, never icon identity.
-*/
-/*
-FNXC:LucideMockFragility 2026-10-02-09:54:
+FNXC:LucideMockFragility 2026-10-21-23:36 (RUFU-385):
 This mock used to enumerate every icon the component imports, so the day the shared action row gained a
 `UserCheck` icon the file went RED with `No "UserCheck" export is defined on the mock` — four tests failed
 over an icon no test in this file observes. A stub that must be kept in step with production's import list
-is a standing rebreakage: the next icon repeats it. Derive the stub from the module's own export names
-instead, so a new icon needs no test edit. A `Proxy` was tried first and vitest rejects it (a mock must be a
-plain object). These tests assert layout and DOM structure, never icon identity.
+is a standing rebreakage: the next icon repeats it. The file now resolves through the canonical helper
+(`app/test/mockLucide.ts`), which materialises every real export and synthesises any requested name, so a
+new icon needs no test edit. Two shapes were rejected on the way here and both are why the helper looks the
+way it does: a bare `Proxy` return is refused because vitest requires a mock module to be a plain object,
+and a top-level `import { createLucideMock }` is refused because `vi.mock` is hoisted above the imports, so
+the binding is still in its TDZ when the factory runs ("Cannot access '__vi_import_N__' before
+initialization") — hence the `await import()` inside the factory. These tests assert layout and DOM
+structure, never icon identity.
 */
 vi.mock("lucide-react", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("lucide-react")>();
-  const stub: Record<string, () => null> = {};
-  for (const name of Object.keys(actual)) stub[name] = () => null;
-  return stub;
+  const { createLucideMock } = await import("../test/mockLucide");
+  return createLucideMock(() => importOriginal() as Promise<Record<string, unknown>>);
 });
 
 vi.mock("../components/ModelSelectionModal", () => ({

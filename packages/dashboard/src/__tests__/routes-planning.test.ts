@@ -2840,9 +2840,16 @@ describe("Planning Mode Routes", () => {
             title: "Edited auth task",
             description: expect.stringContaining("## Key deliverables"),
             dependencies: ["FN-500"],
-            priority: "normal",
           }),
         );
+        /*
+        FNXC:TaskPriorityRetirement 2026-10-21-22:43 (RUFU-385):
+        FN-509 retired `priority` as a task field, so a summary that still carries the legacy level must
+        have it dropped at `planning.ts`'s `store.createTask(...)` seam rather than forwarded onto the row.
+        The `objectContaining` above cannot express that absence, so the dropped key is asserted directly on
+        the recorded call — same exact-call shape `routes-tasks.test.ts:370` uses for its `derive: false` guard.
+        */
+        expect((store.createTask as ReturnType<typeof vi.fn>).mock.calls[0]![0]).not.toHaveProperty("priority");
         expect(store.updateTask).toHaveBeenCalledWith("FN-099", { size: "S" });
         expect(store.upsertTaskDocument).toHaveBeenCalledWith("FN-099", expect.objectContaining({ key: "plan", content: expect.stringContaining("Edited description from summary view") }));
         expect(store.upsertTaskDocument).toHaveBeenCalledWith("FN-099", expect.objectContaining({ key: "original-description", content: "Build a user auth system" }));
@@ -3396,7 +3403,16 @@ describe("Planning Mode Routes", () => {
         }
       });
 
-      it("creates task with explicit summary priority", async () => {
+      /*
+      FNXC:TaskPriorityRetirement 2026-10-21-22:43 (RUFU-385):
+      This case was named "creates task with explicit summary priority" and asserted that a `priority: "high"`
+      in the create-task summary reached `store.createTask`. FN-509 deleted that contract: `priority` is no
+      longer a task field, tasks run in arrival order, and an operator raises one with Boost. The request
+      fixture keeps sending the legacy key on purpose — it is the input that proves the drop — but the
+      assertion now records the new truth. Renaming it is the honest repair: weakening the old name to pass
+      would leave a test that claims a contract nothing emits.
+      */
+      it("drops a legacy explicit summary priority instead of forwarding it", async () => {
         (store.createTask as ReturnType<typeof vi.fn>).mockResolvedValue({
           id: "FN-100",
           description: "Priority task",
@@ -3448,9 +3464,9 @@ describe("Planning Mode Routes", () => {
         expect(store.createTask).toHaveBeenCalledWith(
           expect.objectContaining({
             title: "Priority auth task",
-            priority: "high",
           }),
         );
+        expect((store.createTask as ReturnType<typeof vi.fn>).mock.calls[0]![0]).not.toHaveProperty("priority");
       });
 
       it("applies branchSelection when creating a planning task", async () => {

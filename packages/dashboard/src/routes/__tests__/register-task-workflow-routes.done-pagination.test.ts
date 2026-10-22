@@ -53,6 +53,15 @@ function buildApp(store: TaskStore, projectId = "project-a") {
   return app;
 }
 
+/*
+FNXC:BoardFeedCompaction 2026-10-21-22:41 (RUFU-385):
+The forwarded reader contract these cases pin is `{ limit, cursor, slim: true, compactBoardFeed: true }`.
+Two landed changes moved it and these expectations had not followed: RUFU-378 added `compactBoardFeed: true`
+(the Done lane renders `TaskCard` identity, never a step body, so it takes the compacted row) and FN-509
+deleted `sort` from the forwarded object entirely. Each expectation below is an exact object, so it fails
+both when `compactBoardFeed` is missing and if a `sort` key were ever re-added — the two directions of the
+same regression.
+*/
 describe("GET /tasks/done pagination", () => {
   it("returns the exact total with the default bounded page", async () => {
     const listCompletedTasks = vi.fn(async () => ({ tasks: [], total: 1_284, hasMore: true }));
@@ -60,7 +69,7 @@ describe("GET /tasks/done pagination", () => {
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual({ tasks: [], total: 1_284, hasMore: true });
-    expect(listCompletedTasks).toHaveBeenCalledWith({ limit: undefined, cursor: undefined, slim: true, sort: undefined });
+    expect(listCompletedTasks).toHaveBeenCalledWith({ limit: undefined, cursor: undefined, slim: true, compactBoardFeed: true });
   });
 
   it("forwards pagination and rejects invalid values before reading the store", async () => {
@@ -68,7 +77,7 @@ describe("GET /tasks/done pagination", () => {
     const app = buildApp({ listCompletedTasks } as unknown as TaskStore);
 
     expect((await request(app, "GET", "/api/tasks/done?limit=50&cursor=opaque")).status).toBe(200);
-    expect(listCompletedTasks).toHaveBeenCalledWith({ limit: 50, cursor: "opaque", slim: true, sort: undefined });
+    expect(listCompletedTasks).toHaveBeenCalledWith({ limit: 50, cursor: "opaque", slim: true, compactBoardFeed: true });
     expect((await request(app, "GET", "/api/tasks/done?limit=0")).status).toBe(400);
     expect((await request(app, "GET", "/api/tasks/done?limit=-1")).status).toBe(400);
     expect(listCompletedTasks).toHaveBeenCalledTimes(1);
@@ -91,7 +100,7 @@ describe("GET /tasks/done pagination", () => {
     expect(listCompletedTasks).not.toHaveBeenCalled();
 
     expect((await request(app, "GET", "/api/tasks/done")).status).toBe(200);
-    expect(listCompletedTasks).toHaveBeenCalledWith({ limit: undefined, cursor: undefined, slim: true, sort: undefined });
+    expect(listCompletedTasks).toHaveBeenCalledWith({ limit: undefined, cursor: undefined, slim: true, compactBoardFeed: true });
   });
 
   it("maps a malformed or scope-mismatched opaque cursor to 400", async () => {

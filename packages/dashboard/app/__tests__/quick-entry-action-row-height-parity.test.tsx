@@ -75,32 +75,19 @@ vi.mock("../api", () => ({
   updateGlobalSettings: vi.fn().mockResolvedValue({}),
 }));
 
-vi.mock("lucide-react", () => ({
-  // FNXC:DashboardTests 2026-07-15-12:15: session-advisor Eye/EyeOff on QuickEntryBox.
-  Eye: () => null,
-  EyeOff: () => null,
-  Link: () => null,
-  Paperclip: () => null,
-  Brain: () => null,
-  Lightbulb: () => null,
-  ListTree: () => null,
-  Sparkles: () => null,
-  ShieldCheck: () => null,
-  Save: () => null,
-  X: () => null,
-  ChevronDown: () => null,
-  ChevronUp: () => null,
-  ChevronRight: () => null,
-  Bot: () => null,
-  Server: () => null,
-  ArrowDown: () => null,
-  ArrowUp: () => null,
-  Flag: () => null,
-  TriangleAlert: () => null,
-  Zap: () => null,
-  Maximize2: () => null,
-  Minimize2: () => null,
-}));
+/*
+FNXC:DashboardTestFixtures 2026-10-21-22:43 (RUFU-385):
+Hand-listed lucide export stubs are a standing trap: QuickEntryBox imports an icon and every suite that
+stubs the module by hand goes red on "No \"<Icon>\" export is defined on the \"lucide-react\" mock" until
+somebody notices the stub list is short. This suite was killed by `UserCheck`, the centering suite by the
+same icon, and the Pull Request suite by `ChevronLeft` reached through `ViewHeader` — three outages from one
+pattern. `createLucideMock` is the canonical helper (`app/test/mockLucide.ts`): it proxies the real module
+and synthesises any icon on demand, so a newly imported icon can never break a suite again.
+*/
+vi.mock("lucide-react", async (importOriginal) => {
+  const { createLucideMock } = await import("../test/mockLucide");
+  return createLucideMock(() => importOriginal() as Promise<Record<string, unknown>>);
+});
 
 vi.mock("../components/ModelSelectionModal", () => ({
   ModelSelectionModal: () => null,
@@ -142,6 +129,34 @@ function renderQuickEntryBox(props: Record<string, unknown> = {}) {
     workflowOptions: [WORKFLOW_A, WORKFLOW_B],
   };
   return render(<QuickEntryBox {...defaultProps} {...props} />);
+}
+
+/*
+FNXC:DashboardTests 2026-10-21-22:54 (RUFU-385):
+Returns every block whose at-rule matches `pattern`, as separate bodies rather than one joined string, so a
+test can require that a declaration set appears in *some* tier without pretending the app has only one
+`max-width: 768px` tier (QuickEntryBox.css has several, plus a 640px and a tablet tier). Mirrors the local
+`extractMediaBlocks` helper used across the other CSS-contract suites.
+*/
+function extractMediaBlocks(content: string, pattern: RegExp): string[] {
+  const blocks: string[] = [];
+
+  for (const match of content.matchAll(pattern)) {
+    let index = match.index! + match[0].length;
+    let depth = 1;
+
+    while (index < content.length && depth > 0) {
+      if (content[index] === "{") depth += 1;
+      if (content[index] === "}") depth -= 1;
+      index += 1;
+    }
+
+    expect(depth).toBe(0);
+    blocks.push(content.slice(match.index! + match[0].length, index - 1));
+  }
+
+  expect(blocks.length, `expected at least one block matching ${pattern}`).toBeGreaterThan(0);
+  return blocks;
 }
 
 function cssDeclarationValue(ruleBody: string, property: string) {
@@ -208,35 +223,43 @@ describe("quick-entry action row height parity (FN-7680)", () => {
     expect(mobileBlockMatch![1].trim()).toBe("var(--quick-entry-action-row-height-mobile)");
   });
 
-  it("gives every Alpha mobile primary icon one token-sized square without sizing text options", () => {
+  it("gives every mobile primary icon one token-sized square without sizing text options", () => {
     const cssContent = loadAllAppCss();
-    const alphaBaseStart = cssContent.indexOf('.quick-entry-box {');
-    const mobileStart = cssContent.indexOf("@media (max-width: 768px)", alphaBaseStart);
-    const mobileEnd = cssContent.indexOf("\n@media", mobileStart + 1);
-    expect(alphaBaseStart).toBeGreaterThan(-1);
-    expect(mobileStart).toBeGreaterThan(alphaBaseStart);
-    expect(mobileEnd).toBeGreaterThan(mobileStart);
-    const mobileSection = cssContent.slice(mobileStart, mobileEnd);
-
-    const selector = '.quick-entry-primary-group .btn-icon';
-    const squareRule = mobileSection.match(
-      /\[data-alpha-surface="true"\] \.quick-entry-primary-group \.btn-icon\s*\{([^}]*)\}/,
-    );
-    expect(squareRule).not.toBeNull();
+    /*
+    FNXC:InterfaceStyleAxis 2026-10-21-22:54 (RUFU-385):
+    This case used to reach the square rule through `[data-alpha-surface="true"] .quick-entry-primary-group
+    .btn-icon` and to locate "the" mobile tier by slicing from `.quick-entry-box {` to the next `@media`. FN-399
+    replaced the Alpha boundary with the themeable Interface style axis, dropping the `[data-alpha-surface="true"]`
+    gate PREFIX while keeping this declaration block — and renaming `--alpha-touch-height` to `--ui-touch-height`,
+    which is why the assertions below already read the shared token. The marker is gone for good
+    (`ui-style-contract.test.ts` fails on its presence), and the block now sits in the NativeQuickEntry mobile tier
+    rather than the tier the old slice landed on, so the lookup returned null while the invariant it guards was
+    fully intact. Both anchors were incidental; the invariant is about the selector and its
+    declarations, so the rule is now found by selector across every `max-width: 768px` tier. The app CSS carries
+    more than one such tier (a compact one and the NativeQuickEntry one), hence selecting the declaration set
+    that carries the token width rather than assuming a single match. Every property assertion below is
+    unchanged, including the no-pixel rule.
+    */
+    const mobileSections = extractMediaBlocks(cssContent, /@media[^{]*max-width:\s*768px[^{]*\{/g);
+    const primaryIconRules = mobileSections.flatMap((section) => [...section.matchAll(/(^|\n)\s*\.quick-entry-primary-group \.btn-icon\s*\{([^}]*)\}/g)].map((m) => m[2]!));
+    const squareRule = primaryIconRules.find((body) => cssDeclarationValue(body, "width") === "var(--ui-touch-height)");
+    expect(squareRule, "a mobile tier must size every primary icon to one shared touch-height square").toBeDefined();
     for (const property of ["width", "min-width", "max-width", "height", "min-height", "max-height"] as const) {
-      expect(cssDeclarationValue(squareRule![1], property), `${property} must use the shared Alpha touch token`).toBe("var(--ui-touch-height)");
+      expect(cssDeclarationValue(squareRule!, property), `${property} must use the shared touch token`).toBe("var(--ui-touch-height)");
     }
-    expect(cssDeclarationValue(squareRule![1], "flex")).toBe("0 0 var(--ui-touch-height)");
-    expect(cssDeclarationValue(squareRule![1], "padding")).toBe("0");
-    expect(cssDeclarationValue(squareRule![1], "align-items")).toBe("center");
-    expect(cssDeclarationValue(squareRule![1], "justify-content")).toBe("center");
-    expect(squareRule![1]).not.toMatch(/\d+(?:\.\d+)?px/);
+    expect(cssDeclarationValue(squareRule!, "flex")).toBe("0 0 var(--ui-touch-height)");
+    expect(cssDeclarationValue(squareRule!, "padding")).toBe("0");
+    expect(cssDeclarationValue(squareRule!, "align-items")).toBe("center");
+    expect(cssDeclarationValue(squareRule!, "justify-content")).toBe("center");
+    expect(squareRule!).not.toMatch(/\d+(?:\.\d+)?px/);
 
     const baseOnlyCss = loadAllAppCssBaseOnly();
-    expect(baseOnlyCss).not.toContain(`${selector} {`);
-    expect(mobileSection).not.toMatch(
-      /\.quick-entry-options-group[^{}]*\{[^}]*(?:width|min-width|max-width):\s*var\(--ui-touch-height\)/,
-    );
+    expect(baseOnlyCss).not.toContain(`.quick-entry-primary-group .btn-icon {`);
+    for (const mobileSection of mobileSections) {
+      expect(mobileSection).not.toMatch(
+        /\.quick-entry-options-group[^{}]*\{[^}]*(?:width|min-width|max-width):\s*var\(--ui-touch-height\)/,
+      );
+    }
   });
 
   it("keeps options-group glyphs intrinsic while sizing only mobile primary controls", () => {
@@ -369,7 +392,7 @@ describe("quick-entry action row height parity (FN-7680)", () => {
     expect(depTriggerMatch![1].trim()).toBe("3px 8px");
   });
 
-  it("renders Save, workflow trigger, Attach, GitHub, Priority, Fast, and Deps as sibling .btn elements in the same .quick-entry-actions row", () => {
+  it("renders Save, workflow trigger, Attach, GitHub, Fast, and Deps as sibling .btn elements in the same .quick-entry-actions row", () => {
     mockDesktopViewport();
     renderQuickEntryBox();
 
@@ -380,14 +403,23 @@ describe("quick-entry action row height parity (FN-7680)", () => {
     const trigger = screen.getByTestId("quick-entry-workflow-trigger");
     const attach = screen.getByTestId("quick-entry-attach");
     const github = screen.getByTestId("quick-entry-github-toggle");
-    const priority = screen.getByTestId("quick-entry-priority-button");
     const fast = screen.getByTestId("quick-entry-fast-toggle");
     const deps = screen.getByTestId("quick-entry-deps");
 
-    for (const el of [save, trigger, attach, github, priority, fast, deps]) {
+    for (const el of [save, trigger, attach, github, fast, deps]) {
       expect(el.classList.contains("btn")).toBe(true);
       expect(actionsRow.contains(el)).toBe(true);
     }
+
+    /*
+    FNXC:TaskQueueOrder 2026-10-21-22:54 (RUFU-385):
+    FN-509 retired the task priority field and Quick Add's priority picker with it (`QuickEntryBox.tsx:241-247`
+    deletes the trigger, its portal, its position state and its listeners, leaving no empty shell), so this
+    row's sibling set no longer has a `quick-entry-priority-button`. The name was dropped from the enumeration
+    above and the removal is asserted here instead — a deleted affordance should be pinned absent, not simply
+    forgotten from a list, which is how a re-added control would otherwise slip back in unnoticed.
+    */
+    expect(screen.queryByTestId("quick-entry-priority-button")).toBeNull();
   });
 
   it("does not render an empty shell for the workflow trigger when fewer than 2 real workflow options exist", () => {

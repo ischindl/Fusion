@@ -26,32 +26,16 @@ vi.mock("../api", () => ({
   updateGlobalSettings: vi.fn().mockResolvedValue({}),
 }));
 
-vi.mock("lucide-react", () => ({
-  Link: () => null,
-  Paperclip: () => null,
-  Brain: () => null,
-  Lightbulb: () => null,
-  ListTree: () => null,
-  Sparkles: () => null,
-  Save: () => null,
-  Play: () => null,
-  X: () => null,
-  ChevronDown: () => null,
-  ChevronUp: () => null,
-  ChevronRight: () => null,
-  Bot: () => null,
-  Server: () => null,
-  ArrowDown: () => null,
-  ArrowUp: () => null,
-  Flag: () => null,
-  TriangleAlert: () => null,
-  Zap: () => null,
-  Eye: () => null,
-  EyeOff: () => null,
-  Github: () => null,
-  Maximize2: () => null,
-  Minimize2: () => null,
-}));
+/*
+FNXC:DashboardTestFixtures 2026-10-21-22:43 (RUFU-385):
+Same brittle hand-listed stub pattern that took out the parity and Pull Request suites — this copy was
+missing `UserCheck`, which QuickEntryBox renders in the workflow trigger. Switched to the canonical
+`createLucideMock` helper so the suite cannot go red again over an icon nobody listed.
+*/
+vi.mock("lucide-react", async (importOriginal) => {
+  const { createLucideMock } = await import("../test/mockLucide");
+  return createLucideMock(() => importOriginal() as Promise<Record<string, unknown>>);
+});
 vi.mock("../components/ModelSelectionModal", () => ({ ModelSelectionModal: () => null }));
 vi.mock("../components/CustomModelDropdown", () => ({ CustomModelDropdown: () => null }));
 vi.mock("../hooks/useComposerDictation", () => ({
@@ -158,6 +142,26 @@ describe("QuickEntryBox action-row centering", () => {
     ]);
     const actionButtons = [...actions.querySelectorAll("button[data-testid]")];
     expect(actionButtons.at(-1)?.getAttribute("data-testid")).toBe("quick-entry-save");
-    expect([...actions.children].every((child) => child.textContent?.trim() || child.getAttribute("aria-label"))).toBe(true);
+    /*
+    FNXC:QuickAddActionRow 2026-10-21-22:54 (RUFU-385):
+    This case guards "no empty spacer shell", and it used to measure that by requiring each group to carry
+    text or an `aria-label` of its own. That proxy only held while the primary group contained a text-bearing
+    control; the primary row is now icon-only by design — attach, GitHub tracking, session advisor, Fast, both
+    approval toggles and Save each carry their own `aria-label`/`title` and the group div carries none — so
+    the group-level check reported a well-populated 7-button cluster as if it were a spacer. The invariant is
+    now asserted with the two instruments that actually express it: a group must contain at least one real
+    control, and every control must be reachable by name (visible text, or an accessible name on the control).
+    The second half is new, and it is the guard the removed-affordance checklist wants: an icon-only button
+    that loses its `aria-label` fails here instead of shipping as a nameless click target.
+    */
+    for (const group of [...actions.children] as HTMLElement[]) {
+      const testid = group.getAttribute("data-testid");
+      const controls = [...group.querySelectorAll("button")];
+      expect(controls.length, `${testid} must not render as an empty spacer shell`).toBeGreaterThan(0);
+      for (const control of controls as HTMLButtonElement[]) {
+        const name = control.textContent?.trim() || control.getAttribute("aria-label") || control.getAttribute("title");
+        expect(name, `${testid} control ${control.getAttribute("data-testid")} must carry visible text or an accessible name`).toBeTruthy();
+      }
+    }
   });
 });

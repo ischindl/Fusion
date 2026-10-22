@@ -283,6 +283,28 @@ import { admitTaskToWip, aiMergeTask, isFirstPlanningToWipAdmission, planTaskWor
 
 const mockedExec = vi.mocked(exec);
 
+/*
+FNXC:TaskStoreLightBoot 2026-10-21-22:43 (RUFU-385):
+Shared expectation helper for the RUFU-275 light-boot contract that `fn task` board reads run under.
+`getBoardCommandContext` (`commands/task.ts:228-266`) resolves every one-shot board command through
+`resolveProject(name, process.cwd(), undefined, "light")` and mints its unregistered-cwd fallback with
+`createLocalStore(cwd, undefined, { lightBoot: true })`. Sixteen assertions spelled those calls out in
+their old one-argument shape and were red on `main` because of it.
+
+One helper instead of sixteen copies: the cwd argument is `process.cwd()`, which some cases stub and
+some leave real, so it is matched as `expect.any(String)` — the argument the tests actually care about
+is the BOOT PROFILE, and pinning a transient temp-directory path here would assert nothing about behaviour.
+The `undefined` third argument and the literal `"light"` / `{ lightBoot: true }` stay exact, so a command
+that silently reverts to a full boot still fails here.
+*/
+function expectLightBootResolution(projectName?: string): void {
+  expect(resolveProject).toHaveBeenCalledWith(projectName, expect.any(String), undefined, "light");
+}
+
+function expectLightBootLocalStore(projectPath: string): void {
+  expect(createLocalStore).toHaveBeenCalledWith(projectPath, undefined, { lightBoot: true });
+}
+
 function makeTask(overrides: Record<string, unknown> = {}) {
   return {
     id: "FN-001",
@@ -627,7 +649,7 @@ describe("project-aware task command behavior", () => {
 
     await expect(runTaskList("demo-project")).rejects.toThrow("process.exit");
 
-    expect(resolveProject).toHaveBeenCalledWith("demo-project");
+    expectLightBootResolution("demo-project");
     expect(mockListTasks).toHaveBeenCalledOnce();
     expect(logSpy.mock.calls.some((call) => String(call[0]).includes("Tasks for project 'demo-project':"))).toBe(true);
 
@@ -651,7 +673,7 @@ describe("project-aware task command behavior", () => {
 
     await expect(runTaskList()).rejects.toThrow("process.exit");
 
-    expect(resolveProject).toHaveBeenCalledWith(undefined);
+    expectLightBootResolution(undefined);
     expect(mockListTasks).toHaveBeenCalledOnce();
     exitSpy.mockRestore();
   });
@@ -676,8 +698,8 @@ describe("project-aware task command behavior", () => {
 
     await expect(runTaskList()).rejects.toThrow("process.exit");
 
-    expect(resolveProject).toHaveBeenCalledWith(undefined);
-    expect(createLocalStore).toHaveBeenCalledWith("/current/project");
+    expectLightBootResolution(undefined);
+    expectLightBootLocalStore("/current/project");
     expect(mockListTasks).toHaveBeenCalledOnce();
     cwdSpy.mockRestore();
     exitSpy.mockRestore();
@@ -705,7 +727,7 @@ describe("project-aware task command behavior", () => {
 
     await runTaskCreate("test task", undefined, undefined, "demo-project");
 
-    expect(resolveProject).toHaveBeenCalledWith("demo-project");
+    expectLightBootResolution("demo-project");
     expect(mockCreateTask).toHaveBeenCalledWith({
       description: "test task",
       dependencies: undefined,
@@ -731,7 +753,7 @@ describe("project-aware task command behavior", () => {
 
     await runTaskCreate("default task");
 
-    expect(resolveProject).toHaveBeenCalledWith(undefined);
+    expectLightBootResolution(undefined);
     expect(mockCreateTask).toHaveBeenCalledWith(
       { description: "default task", dependencies: undefined, source: { sourceType: "cli", sourceMetadata: undefined } },
       { invokeTaskCreatedHook: false },
@@ -761,8 +783,8 @@ describe("project-aware task command behavior", () => {
 
     await runTaskCreate("local task");
 
-    expect(resolveProject).toHaveBeenCalledWith(undefined);
-    expect(createLocalStore).toHaveBeenCalledWith("/current/project");
+    expectLightBootResolution(undefined);
+    expectLightBootLocalStore("/current/project");
     expect(mockCreateTask).toHaveBeenCalledWith(
       { description: "local task", dependencies: undefined, source: { sourceType: "cli", sourceMetadata: { contentFingerprint: "fp-local" } } },
       { invokeTaskCreatedHook: false },
@@ -1136,7 +1158,7 @@ describe("project-aware task command behavior", () => {
     expect(exitSpy).toHaveBeenCalledWith(0);
     promise.catch(() => {});
 
-    expect(resolveProject).toHaveBeenCalledWith("demo-project");
+    expectLightBootResolution("demo-project");
     expect(logSpy.mock.calls.some((call) => String(call[0]).includes("Logs for project 'demo-project':"))).toBe(true);
 
     logSpy.mockRestore();
@@ -1213,7 +1235,7 @@ describe("project-aware task command behavior", () => {
 
     await runTaskPlan("planned task", true, "demo-project");
 
-    expect(resolveProject).toHaveBeenCalledWith("demo-project");
+    expectLightBootResolution("demo-project");
     expect(createSession).toHaveBeenCalledWith("127.0.0.1", "planned task", expect.anything(), "/test");
   });
 
@@ -1231,7 +1253,7 @@ describe("project-aware task command behavior", () => {
 
     await runTaskShow("FN-123", "demo-project");
 
-    expect(resolveProject).toHaveBeenCalledWith("demo-project");
+    expectLightBootResolution("demo-project");
     expect(mockGetTask).toHaveBeenCalledWith("FN-123");
     logSpy.mockRestore();
   });
@@ -1254,7 +1276,7 @@ describe("project-aware task command behavior", () => {
 
     await runTaskMove("FN-123", "done", "demo-project");
 
-    expect(resolveProject).toHaveBeenCalledWith("demo-project");
+    expectLightBootResolution("demo-project");
     /*
     FNXC:TaskMovement 2026-07-26-12:35: `fn task move` is a human board action and
     must carry the user move source so user-move semantics (hard cancel) apply.
@@ -1600,7 +1622,7 @@ describe("project-aware task command behavior", () => {
 
     await runTaskAttach("FN-123", "/tmp/notes.txt", "demo-project");
 
-    expect(resolveProject).toHaveBeenCalledWith("demo-project");
+    expectLightBootResolution("demo-project");
     expect(mockAddAttachment).toHaveBeenCalled();
   });
 
@@ -1984,7 +2006,7 @@ describe("project-aware task command behavior", () => {
     ] as never);
 
     await runTaskImportFromGitHub("acme/demo", { limit: 1 }, "demo-project");
-    expect(resolveProject).toHaveBeenCalledWith("demo-project");
+    expectLightBootResolution("demo-project");
     expect(listTasks).toHaveBeenCalled();
   });
 
@@ -2019,7 +2041,7 @@ describe("project-aware task command behavior", () => {
 
     await runTaskImportGitHubInteractive("acme/demo", { limit: 1 }, "demo-project");
 
-    expect(resolveProject).toHaveBeenCalledWith("demo-project");
+    expectLightBootResolution("demo-project");
     expect(listTasks).toHaveBeenCalled();
     expect(createTask).toHaveBeenCalled();
   });
@@ -2332,7 +2354,7 @@ describe("card-minting routing on duplicate/refine and the unregistered-cwd fall
     expect(warned()).toContain("fn project add");
     // The fallback IS the cwd, so the cross-project sentence must not double up on it.
     expect(warned()).not.toContain("but this card would be created in project");
-    expect(createLocalStore).toHaveBeenCalledWith(FUSION_CWD);
+    expectLightBootLocalStore(FUSION_CWD);
     expect(createTask).toHaveBeenCalledTimes(1);
   });
 });

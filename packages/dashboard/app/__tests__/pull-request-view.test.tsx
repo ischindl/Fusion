@@ -2,21 +2,18 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { PullRequestView, type PrDetail } from "../components/PullRequestView";
 
-// Icons → simple stubs so assertions key on text/testids, not SVG internals.
-vi.mock("lucide-react", () => {
-  const Stub = () => <span />;
-  return {
-    AlertTriangle: Stub,
-    CheckCircle: Stub,
-    Clock: Stub,
-    ExternalLink: Stub,
-    GitMerge: Stub,
-    GitPullRequest: Stub,
-    MessageSquare: Stub,
-    RotateCcw: Stub,
-    ThumbsUp: Stub,
-    XCircle: Stub,
-  };
+/*
+FNXC:DashboardTestFixtures 2026-10-21-22:43 (RUFU-385):
+Icons → stubs so assertions key on text/testids, not SVG internals. This suite listed the ten icons
+PullRequestView itself imports, which is not the set the render needs: the back-to-list header renders
+`ViewHeader`/`ViewActionButton`, and their `ChevronLeft` was unstubbed, so the mock threw during render and
+the list-mode case died on "Unable to find an element by: [data-testid="pr-view"]" — a missing-icon error
+masquerading as a missing component. `createLucideMock` (`app/test/mockLucide.ts`) stubs the whole module
+through a proxy, so child-component icons are covered without enumerating them here.
+*/
+vi.mock("lucide-react", async (importOriginal) => {
+  const { createLucideMock } = await import("../test/mockLucide");
+  return createLucideMock(() => importOriginal() as Promise<Record<string, unknown>>);
 });
 
 function makeSummary(over: Partial<PrDetail["summary"]> = {}): PrDetail["summary"] {
