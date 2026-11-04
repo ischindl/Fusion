@@ -20,6 +20,13 @@
 import { DEFAULT_PROVIDER_INSTANCE_ID, deriveTaskLabelFromDescription, resolveAdvertisedCommentIds, HEARTBEAT_IDLE_BACKOFF_DEFAULT_CAP_MS, resolveHeartbeatIdleDeferralMs, resolveHeartbeatIdleDelayMs, resolveHeartbeatSilenceBudgetMs, type AgentStore, type AgentHeartbeatRun, type HeartbeatInvocationSource, type AgentHeartbeatConfig, type AgentBudgetStatus, type Message, type MessageStore, type TaskStore, type TaskDetail, type AgentRole, type Agent, type InboxTask, type RunMutationContext, type Settings, type AgentConfigRevision, type ReflectionStore, type ChatStore, type ChatRoom, type ChatRoomMessage, type AgentMemoryInclusionMode } from "@fusion/core";
 import { AutoClaimSnapshotManager, resolveFreshAutoClaimCandidates, type AutoClaimCandidate } from "./scheduling/auto-claim-snapshot.js";
 import {
+  ASSIGNMENT_WAKE_SUPPRESSION_WINDOW_MS,
+  buildAssignmentWakeSignature,
+  isAssignmentWakeSuppressed,
+  type AssignmentWakeDelta,
+  type AssignmentWakeRecord,
+} from "./scheduling/assignment-wake-signature.js";
+import {
   collectBoardSignal,
   classifyFresherWakeSignal,
   collectInboxSignal,
@@ -7047,6 +7054,26 @@ type PendingAssignment = {
 };
 
 /*
+FNXC:AssignmentWakeDedup 2026-11-04-21:07 (RUFU-411):
+Which arm of the assignment lane asked the suppression question. A fixed enum, never free text: the two
+arms fail differently in the field — the immediate arm needs a fresh `agent:assigned` event, the drain arm
+needs only a run-completion edge — so the 2026-09-29 storm could only be carried by the drain arm. An
+operator reading one `agent:assignment-wake-suppressed` row must be able to tell them apart without
+re-deriving the call stack.
+*/
+type AssignmentWakeArm = "immediate" | "drain";
+
+/*
+The audit ledger's episode key. One helper rather than two interpolated copies: a key written one way by the
+recorder and read another way by the delivery path would either re-announce a closed episode or swallow a new
+one, and the bug would show up only as a wrong row count. Built from ids and the delta digest only, so the
+key itself carries no prose and stays a legal identifier.
+*/
+function assignmentWakeEpisodeKey(delta: AssignmentWakeDelta, signature: string): string {
+  return `${delta.agentId}:${delta.taskId}:${signature}`;
+}
+
+/*
 FNXC:HeartbeatIdleBackoff 2026-11-01-00:35 (RUFU-268):
 The wake gate now also answers the idle-ladder question, so it takes the tick's effective interval as
 context. That keeps the ladder's base equal to the timer period the scheduler is actually running (a
@@ -7065,6 +7092,28 @@ export class HeartbeatTriggerScheduler {
   private timers: Map<string, AgentTimer> = new Map();
   private errorRecoveryLimit = MAX_HEARTBEAT_ERROR_RECOVERY_ATTEMPTS;
   private pendingAssignments: Map<string, PendingAssignment> = new Map();
+  /*
+  FNXC:AssignmentWakeDedup 2026-11-04-21:07 (RUFU-411):
+  The last assignment wake ACTUALLY DELIVERED per agent, keyed by agent id. `pendingAssignments` records
+  what the lane owes; this records what it paid, which is the half that makes a repeat detectable. Without
+  it the assignment lane is the only wake class with no memory of its own deliveries: steering comments
+  dedupe through `commentId`, in-flight duplicate wakes dedupe through the goal claim (RUFU-260), and
+  unread messages dedupe through read-marking (RUFU-348) — but a wake that already ran, exited as a no-op,
+  and released its claim looked brand new to every later arrival, so the identical delta re-fired 109 times
+  in 18 minutes on 2026-09-29 while the agent correctly no-op'd each time.
+
+  Per-agent rather than per-(agent, task): the goal identity is inside the signature, and an agent can only
+  be bound to one card, so one slot per agent cannot hide a pending goal. It also cannot leak.
+  */
+  private assignmentWakeHistory: Map<string, AssignmentWakeRecord> = new Map();
+  /*
+  Bounded per-episode audit ledger for suppressed assignment wakes, keyed by (agent, goal, delta).
+  Same prior art as `laneCapabilityDeclineAuditAt` (a cooldown map with an eviction floor): the FIRST
+  suppression of an episode always writes its row — nothing is ever suppressed silently — while 50 polls
+  of the same unchanged delta announce once instead of flooding the audit store. `suppressedCount` is what
+  makes the collapsed row still honest about how many arrivals it stood for.
+  */
+  private assignmentWakeSuppressionAudit: Map<string, { emittedAtMs: number; suppressedCount: number }> = new Map();
   private registrationEpochs: Map<string, number> = new Map();
   /*
    * FNXC:AgentHeartbeat 2026-07-17-18:15:
@@ -7139,6 +7188,13 @@ export class HeartbeatTriggerScheduler {
   private static readonly TIMER_AUDIT_WATCHDOG_INTERVAL_MS = 60_000;
   private static readonly TIMER_AUDIT_WATCHDOG_STALE_MS = HeartbeatTriggerScheduler.TIMER_AUDIT_INTERVAL_MS * 3;
   private static readonly NON_ADVANCING_REARM_ESCALATION_THRESHOLD = 3;
+  /*
+  FNXC:AssignmentWakeDedup 2026-11-04-21:07 (RUFU-411):
+  How often one ongoing suppression episode re-announces itself in run-audit. Deliberately the same bound
+  as the delivery window: a card whose delta has not changed in one window is either genuinely parked (the
+  row already says so) or has changed and will wake normally.
+  */
+  private static readonly ASSIGNMENT_WAKE_SUPPRESSION_AUDIT_FLOOR_MS = ASSIGNMENT_WAKE_SUPPRESSION_WINDOW_MS;
   private static readonly DEFAULT_REPAIR_STALE_MULTIPLIER = 2;
   private static readonly DEFAULT_HEARTBEAT_TIMEOUT_MS = 60_000;
 
@@ -7505,6 +7561,13 @@ export class HeartbeatTriggerScheduler {
     // FNXC:AgentHeartbeat 2026-07-17-18:15: clear the current-arm id so any
     // in-flight callback from this agent's last arm is rejected by onTimerTick.
     this.currentTimerArm.delete(agentId);
+    /*
+    FNXC:AssignmentWakeDedup 2026-11-04-21:07 (RUFU-411):
+    A deregistered agent's delivery memory must die with its registration, exactly like `pendingAssignments`
+    and `lastTimerFireAtMs` above: a re-registered (or re-transferred) agent starts cold and always gets its
+    first wake. No entry may survive for an agent this scheduler no longer ticks.
+    */
+    this.clearAssignmentWakeRecord(agentId);
     if (this.timers.has(agentId)) {
       this.clearAgentTimer(agentId);
       heartbeatLog.log(`Unregistered timer for ${agentId}`);
@@ -7566,6 +7629,113 @@ export class HeartbeatTriggerScheduler {
       return undefined;
     }
     return store as unknown as Pick<EventEmitter, "on" | "off">;
+  }
+
+  /*
+  FNXC:AssignmentWakeDedup 2026-11-04-21:07 (RUFU-411):
+  True when this arrival must NOT start a session, because the identical delta was already delivered to
+  this agent inside the window. Shared by both delivery arms so the two cannot disagree about what
+  "nothing changed" means; it never records anything, so a withheld wake leaves the marker pointing at the
+  delivery that actually happened.
+  */
+  private async withholdUnchangedAssignmentWake(
+    agentId: string,
+    delta: AssignmentWakeDelta,
+    arm: AssignmentWakeArm,
+  ): Promise<boolean> {
+    const nowMs = Date.now();
+    const prior = this.assignmentWakeHistory.get(agentId) ?? null;
+    if (!isAssignmentWakeSuppressed({ prior, delta, nowMs, windowMs: ASSIGNMENT_WAKE_SUPPRESSION_WINDOW_MS })) {
+      return false;
+    }
+    const signature = buildAssignmentWakeSignature(delta);
+
+    /*
+    This is the ONLY suppression authority on the lane and it is called from both arms, immediately before
+    the callback on each. The neighboring guard outcomes are deliberately NOT its business: `!isTickableState`,
+    global/engine pause, and a new active run all PRESERVE the pending wake (a defer that will be honoured
+    later), and budget exhaustion / a missing agent CLEAR it (terminal ineligibility). Those are eligibility
+    verdicts about a wake still owed; this one is a verdict about a wake already paid for.
+    */
+    // The predicate fails open without a prior delivery, so a suppression always has one to name.
+    if (prior) {
+      heartbeatLog.debug(`Assignment wake withheld for ${agentId} (task: ${delta.taskId}, arm: ${arm}): identical delta delivered ${Math.round((nowMs - prior.firedAtMs) / 1000)}s ago`);
+      await this.auditAssignmentWakeSuppressed(agentId, delta, signature, prior, arm, nowMs);
+    }
+    return true;
+  }
+
+  /**
+   * Record the delta of a wake that was actually delivered, so the next identical arrival is measurable
+   * against it. Called only on the delivery path and only for the delivered (agent, goal) pair — a wake
+   * that was skipped, preserved, or withheld must not advance the marker, or a lane that delivered nothing
+   * would start claiming it did.
+   */
+  private recordAssignmentWakeDelivery(delta: AssignmentWakeDelta): void {
+    const signature = buildAssignmentWakeSignature(delta);
+    this.assignmentWakeHistory.set(delta.agentId, { taskId: delta.taskId, signature, firedAtMs: Date.now() });
+    // A delivery ends the suppression episode it may have followed, so a later episode announces again.
+    this.assignmentWakeSuppressionAudit.delete(assignmentWakeEpisodeKey(delta, signature));
+  }
+
+  /**
+   * One run-audit row per suppression EPISODE (never zero, never one per poll), through the mandatory
+   * FN-9175 bounded seam so an absent, throwing, or hanging sink cannot alter dispatch — a telemetry
+   * failure must never turn into the wake storm it is reporting.
+   */
+  private async auditAssignmentWakeSuppressed(
+    agentId: string,
+    delta: AssignmentWakeDelta,
+    signature: string,
+    prior: AssignmentWakeRecord,
+    arm: AssignmentWakeArm,
+    nowMs: number,
+  ): Promise<void> {
+    const key = assignmentWakeEpisodeKey(delta, signature);
+    const episode = this.assignmentWakeSuppressionAudit.get(key);
+    const due = !episode || nowMs - episode.emittedAtMs >= HeartbeatTriggerScheduler.ASSIGNMENT_WAKE_SUPPRESSION_AUDIT_FLOOR_MS;
+    const suppressedCount = (episode?.suppressedCount ?? 0) + 1;
+    this.assignmentWakeSuppressionAudit.set(key, {
+      emittedAtMs: episode && !due ? episode.emittedAtMs : nowMs,
+      suppressedCount,
+    });
+    if (this.assignmentWakeSuppressionAudit.size > 512) {
+      for (const oldestKey of [...this.assignmentWakeSuppressionAudit.keys()].slice(0, 256)) {
+        this.assignmentWakeSuppressionAudit.delete(oldestKey);
+      }
+    }
+    if (!due) return;
+
+    await emitBoundedRunAudit(this.taskStore, {
+      taskId: delta.taskId,
+      agentId,
+      runId: `assignment-wake-suppressed:${agentId}:${delta.taskId}`,
+      domain: "database",
+      mutationType: "agent:assignment-wake-suppressed",
+      target: delta.taskId,
+      // ids / counts / fixed enums only: comment ids, task titles, prompt text, and the delta body never enter run-audit.
+      metadata: {
+        outcome: "unchanged-delta",
+        taskId: delta.taskId,
+        arm,
+        priorFiredAt: new Date(prior.firedAtMs).toISOString(),
+        suppressedCount,
+      },
+    });
+  }
+
+  /** Drop one agent's assignment-wake delivery memory and any open suppression episode (deregistration, transfer, unwatch). */
+  private clearAssignmentWakeRecord(agentId: string): void {
+    this.assignmentWakeHistory.delete(agentId);
+    this.clearAssignmentWakeEpisodes(agentId);
+  }
+
+  /** Drop every suppression episode belonging to one agent (deregistration, transfer, unwatch). */
+  private clearAssignmentWakeEpisodes(agentId: string): void {
+    const prefix = `${agentId}:`;
+    for (const key of Array.from(this.assignmentWakeSuppressionAudit.keys())) {
+      if (key.startsWith(prefix)) this.assignmentWakeSuppressionAudit.delete(key);
+    }
   }
 
   /*
@@ -7653,6 +7823,26 @@ export class HeartbeatTriggerScheduler {
           }
         }
 
+        /*
+        FNXC:AssignmentWakeDedup 2026-11-04-21:07 (RUFU-411):
+        Immediate arm. The check sits here — after every eligibility guard and after steering-comment
+        resolution — so it sees exactly what the session would have seen: same agent, same goal, same agent
+        state, same binding, same comment ids. Anything else (a new steering comment, a different card, a
+        rebind, a state transition) is a different delta and wakes instantly, in this same dispatch cycle.
+        */
+        const delta: AssignmentWakeDelta = {
+          agentId: agent.id,
+          taskId,
+          agentState: agent.state,
+          boundTaskId: agent.taskId ?? null,
+          triggeringCommentIds,
+          triggeringCommentType: triggeringCommentIds?.length ? "steering" : undefined,
+        };
+        if (await this.withholdUnchangedAssignmentWake(agent.id, delta, "immediate")) {
+          return;
+        }
+        this.recordAssignmentWakeDelivery(delta);
+
         heartbeatLog.log(`Assignment trigger for ${agent.id} (task: ${taskId})`);
         await this.callback(agent.id, "assignment", {
           taskId,
@@ -7685,11 +7875,28 @@ export class HeartbeatTriggerScheduler {
   */
   private async onTaskAssigneeChanged(event: import("@fusion/core").TaskAssigneeChangedEvent): Promise<void> {
     if (!this.running || !this.taskStore) return;
-    const { taskId, newOwnerId } = event;
+    const { taskId, previousOwnerId, newOwnerId } = event;
+
+    /*
+    FNXC:AssignmentWakeDedup 2026-11-04-21:07 (RUFU-411):
+    A hand-off in EITHER direction is a deliberate act on the card, and both parties' next wake for it is a
+    new fact about ownership rather than a repeat of what they already received. Clearing both named agents'
+    delivery records here is what keeps the spec's promise that "a re-transfer can always wake": the RUFU-260
+    transfer path re-enters through `fireAssignmentTrigger`, and a record written before the transfer would
+    otherwise make the engine deaf to the card coming back for the rest of the window.
+    */
+    if (previousOwnerId) this.clearAssignmentWakeRecord(previousOwnerId);
+    if (newOwnerId && newOwnerId !== previousOwnerId) this.clearAssignmentWakeRecord(newOwnerId);
 
     for (const [agentId, pending] of Array.from(this.pendingAssignments)) {
       if (pending.taskId !== taskId || newOwnerId === agentId) continue;
       this.pendingAssignments.delete(agentId);
+      /*
+      FNXC:AssignmentWakeDedup 2026-11-04-21:07 (RUFU-411):
+      Dropping the owed wake also drops the delivery memory that would suppress its replacement, so the
+      agent that is now supposed to act on this card is never held back by a wake it never received.
+      */
+      this.clearAssignmentWakeRecord(agentId);
       heartbeatLog.log(`Deferred assignment pruned for ${agentId} (task ${taskId} transferred to ${newOwnerId ?? "nobody"})`);
     }
 
@@ -7805,7 +8012,36 @@ export class HeartbeatTriggerScheduler {
         }
       }
 
+      /*
+      FNXC:AssignmentWakeDedup 2026-11-04-21:07 (RUFU-411):
+      Deferred arm — the arm that carried the 2026-09-29 storm. Re-evaluated at the LAST point where the
+      wake is still owed anything: every preserve/clear branch has passed and the RUFU-260 stale-goal
+      revalidation has re-read the card, so the delta below is the one the session would actually receive.
+
+      The pending entry is then consumed on BOTH outcomes. That is the load-bearing part of the fix: a
+      delivered wake ends as a run whose completion is the next drain edge, so an entry retained across a
+      delivery re-arms the lane forever — the self-sustaining shape the field data shows (109 exits against
+      one card, ~8-17 s after each previous `fn_heartbeat_done`, still running with RUFU-409 untouched in
+      `todo`). Consuming it makes the completion edge a one-shot edge, matching the terminal-clear precedent
+      above; a genuinely new delta arrives as a new event and re-parks the entry.
+      */
+      const delta: AssignmentWakeDelta = {
+        agentId,
+        taskId: pending.taskId,
+        agentState: agent.state,
+        boundTaskId: agent.taskId ?? null,
+        triggeringCommentIds: pending.triggeringCommentIds,
+        triggeringCommentType: pending.triggeringCommentIds?.length
+          ? pending.triggeringCommentType ?? "steering"
+          : undefined,
+      };
+      const withheld = await this.withholdUnchangedAssignmentWake(agentId, delta, "drain");
       this.pendingAssignments.delete(agentId);
+      if (withheld) {
+        return;
+      }
+      this.recordAssignmentWakeDelivery(delta);
+
       heartbeatLog.log(`Deferred assignment re-fired for ${agentId} (task: ${pending.taskId})`);
       await this.callback(agentId, "assignment", {
         taskId: pending.taskId,
@@ -7837,6 +8073,15 @@ export class HeartbeatTriggerScheduler {
       this.taskEventSurface()?.off("task:assignee-changed", this.assigneeChangeListener);
       this.assigneeChangeListener = null;
     }
+    /*
+    FNXC:AssignmentWakeDedup 2026-11-04-21:07 (RUFU-411):
+    The assignment lane's memory is scoped to the lane being watched: once the subscription is gone the
+    scheduler can no longer observe the deliveries it would otherwise be suppressing against, so a later
+    `start()` must not inherit a suppression record it never earned. `stop()` reaches this through the
+    existing `unwatchAssignments()` call.
+    */
+    this.assignmentWakeHistory.clear();
+    this.assignmentWakeSuppressionAudit.clear();
   }
 
   private updateErrorRecoveryLimit(settings: Settings | null | undefined): number {

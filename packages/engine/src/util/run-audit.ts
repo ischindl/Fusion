@@ -685,6 +685,16 @@ export type DatabaseMutationType =
   */
   | "agent:throttle-cooldown-armed"
   /*
+  FNXC:AssignmentWakeDedup 2026-11-04-21:07 (RUFU-411):
+  Records that the assignment-wake lane refused to start a second session for a delta it had already
+  delivered to that agent inside the suppression window. Metadata is ids / counts / fixed enums only —
+  `outcome` (`"unchanged-delta"`), `taskId`, `arm` (`immediate` | `drain`), `priorFiredAt` (ISO instant of
+  the delivery being repeated) and `suppressedCount` (how many arrivals this one collapsed row stands for).
+  Comment ids, card titles, prompt text, and the rendered wake delta never enter the row. One row per
+  suppression EPISODE, never zero: "why did my agent not wake?" has to stay answerable.
+  */
+  | "agent:assignment-wake-suppressed"
+  /*
   FNXC:RunAudit 2026-07-15-00:00:
   FN-8004 records a heartbeat move that lost a concurrent soft-delete using identifiers and timestamps only. Never place the failed run text or agent lastError in this event because the race is benign and audit metadata must remain structured.
   */

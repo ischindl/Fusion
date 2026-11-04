@@ -1573,9 +1573,15 @@ export class AgentStore extends EventEmitter {
     always allowed, and hosts without a TaskStore or with an unresolvable task stay fail-open because this
     primitive is also used for display-only linkage in stores that cannot resolve tasks.
     */
+    /*
+    FNXC:AssignmentWakeDedup 2026-11-04-21:07 (RUFU-411):
+    The pre-bind read is now held for the whole primitive, because the emit below has to know what the
+    binding WAS. Same read the bind evaluator already needed — no extra round trip.
+    */
+    let priorAgent: Agent | null = null;
     if (taskId !== undefined) {
-      const agent = await this.getAgent(agentId);
-      if (!agent) {
+      priorAgent = await this.getAgent(agentId);
+      if (!priorAgent) {
         throw new Error(`Agent ${agentId} not found`);
       }
       let task: Task | null = null;
@@ -1587,7 +1593,7 @@ export class AgentStore extends EventEmitter {
         }
       }
       if (task) {
-        assertImplementationTaskBindAllowed(agent, task, {
+        assertImplementationTaskBindAllowed(priorAgent, task, {
           explicitRouting: true,
           executorRoleOverride: task.sourceMetadata?.executorRoleOverride === true,
         });
@@ -1596,8 +1602,18 @@ export class AgentStore extends EventEmitter {
 
     const updated = await this.syncExecutionTaskLink(agentId, taskId);
 
-    // Emit agent:assigned only when assigning a task (not when clearing)
-    if (taskId !== undefined) {
+    /*
+    Emit agent:assigned only when assigning a task (not when clearing) AND only when the bound task
+    actually changed. RUFU-411: `agent:assigned` is the assignment WAKE trigger for every durable agent
+    (HeartbeatTriggerScheduler.watchAssignments), so emitting it for a no-op re-bind announced a hand-off
+    that did not happen and started a heartbeat session that could only report "nothing to do". This is
+    the same `assignmentChanged` discipline `updateTask` applies to `task:assignee-changed` — a wake
+    class that is emitted on every other wake path only when state moved was the outlier here.
+    Persisted state and `agent:updated` are untouched, so a redundant bind stays idempotent rather than
+    silently skipping the write; only the wake announcement is withheld.
+    */
+    const assignmentChanged = taskId !== undefined && priorAgent?.taskId !== taskId;
+    if (taskId !== undefined && assignmentChanged) {
       this.emit("agent:assigned", updated, taskId);
       // FNXC:AgentActivityStream 2026-08-09-09:09: assignment does not observe an acting manager, so no fromAgentId is inferred.
       if (this.asyncLayer) try { await appendAgentActivityEvent(this.asyncLayer, { type: "task:handed-off", attributionClaim: resolveAgentActivityAttribution([{ id: agentId, provenance: "roster" }], "executor"), toAgentIdClaim: resolveAgentActivityAttribution([{ id: agentId, provenance: "roster" }], "executor"), taskId, occurredAt: updated.updatedAt, discriminator: `${taskId}:${updated.updatedAt}`, metadata: { reason: "unlisted", source: "executor", delegationDirection: "unknown" } }); } catch { /* monitoring must not block assignment */ }
