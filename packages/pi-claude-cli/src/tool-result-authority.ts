@@ -14,13 +14,15 @@
  * labels severity — a predicate that gated the marking would have missed the one
  * payload this module exists for, while its test still read as satisfied.
  *
- * Why the payload checks throw: a tool result whose content length is absent is
- * a dropped payload, and rendering it as an empty string makes "nothing was
+ * Why the payload checks throw: a tool result whose content cannot be read at all
+ * is a dropped payload, and rendering it as an empty string makes "nothing was
  * delivered" indistinguishable from "the command printed nothing" — a verdict
  * carried by an empty output nobody can verify. Failing loud is the behaviour the
  * repository rules require, and the consequence is accepted: a defect in this
  * guard breaks the tool-result path for every agent on this provider, which is
- * why the logic below stays this small.
+ * why the logic below stays this small. A content-block array that is merely empty
+ * is not that case: upstream writes it on purpose, and the emptiness branch below
+ * announces it.
  *
  * Why the payload is neutralised rather than merely framed: the frame and the
  * assembler's role keys ARE the enforcement, so a payload that can write them
@@ -105,10 +107,20 @@ function isDirectiveShaped(text: string): boolean {
 }
 
 /**
- * Reads the payload's text, or throws when the payload has no content at all.
+ * Reads the text a tool result delivered.
  *
- * `[]` counts as absent: an array with no blocks states nothing, while
- * `[{ type: "text", text: "" }]` and `""` state that zero bytes were delivered.
+ * An empty content-block array is a value upstream authors on purpose, not a lost
+ * payload: `createToolResultMessage` in `@earendil-works/pi-agent-core@1.1.0`
+ * (dist/agent-loop.js:663) writes `content: finalized.result.content ?? []` for an
+ * untyped tool that returned nothing, and the message transform in
+ * `@earendil-works/pi-ai@1.1.0` (dist/api/transform-messages.js:49) normalises a
+ * null content to `[]` the same way. `[]` is therefore an expected input on every
+ * custom and MCP tool, so emptiness here is delivered, not absent, and the one
+ * emptiness branch in `markToolResultAsUntrusted` renders it.
+ *
+ * The throws are reserved for payloads that cannot be read at all: a content that
+ * is neither a string nor a content-block array, and a text block whose `text` is
+ * not a string.
  */
 function readToolResultText(content: string | unknown[]): string {
   if (typeof content === "string") return content;
@@ -116,11 +128,6 @@ function readToolResultText(content: string | unknown[]): string {
   if (!Array.isArray(content)) {
     throw new Error(
       `tool result payload has no content to mark: expected a string or a content-block array, got ${typeof content}`,
-    );
-  }
-  if (content.length === 0) {
-    throw new Error(
-      "tool result payload has no content to mark: the content-block array is empty, so no payload was delivered",
     );
   }
 

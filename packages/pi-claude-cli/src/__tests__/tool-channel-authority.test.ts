@@ -20,6 +20,10 @@ import { buildPrompt, buildResumePrompt } from "../prompt-builder";
 const ENVELOPE_OPEN = "<untrusted_tool_output";
 const ENVELOPE_CLOSE = "</untrusted_tool_output>";
 
+/** The notice the engine authors in place of an empty delivered payload. */
+const ZERO_BYTES_NOTICE =
+  "[the tool delivered an empty payload: zero bytes of output]";
+
 /** A payload cannot make these keys mean anything else, so the test may not either. */
 const ROLE_KEY = /^((?:USER|ASSISTANT|TOOL RESULT)(?: \([^)\n]*\))?):/gm;
 
@@ -192,11 +196,15 @@ describe("an ordinary payload is not rewritten (the anti-sledgehammer guard)", (
     expect(prompt).not.toContain("neutralised=");
   });
 
-  it("keeps the empty payload saying so instead of going silent, because this card must not widen or weaken the fail-loud rule it builds on", () => {
-    const prompt = promptWithToolResult("");
+  it("delivers an untyped tool's empty content array as the same zero-byte notice the empty string gets, because upstream authors `content: []` for a content-less untyped result rather than anyone typing a wrong payload, so fail-loud narrows only for that state", () => {
+    const asString = promptWithToolResult("");
+    const asEmptyArray = promptWithToolResult([]);
 
-    expect(prompt).toContain('delivered="zero-bytes"');
-    expect(prompt).toContain("zero bytes of output");
-    expect(() => promptWithToolResult([])).toThrow(/no content to mark/);
+    for (const prompt of [asString, asEmptyArray]) {
+      expect(prompt).toContain('delivered="zero-bytes"');
+      expect(prompt).toContain(ZERO_BYTES_NOTICE);
+    }
+    // One sentence, not two messages: both empties say the same thing.
+    expect(authoredFrameBody(asEmptyArray)).toBe(authoredFrameBody(asString));
   });
 });
