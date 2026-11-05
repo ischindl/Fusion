@@ -53,6 +53,8 @@ import {
   isHumanPlanApprovalEnabled,
   resolveWorkflowIrForTask,
   resolveLifecycleColumns,
+  prefetchWorkflowSelections,
+  type WorkflowSelectionCache,
   resolveWorkflowIrForTaskWithProvenance,
   resolveProjectColumnsForRoles,
   isWorkflowAgentNodeForRole,
@@ -2327,6 +2329,26 @@ export class TriageProcessor {
     };
 
     const candidates = allTasks.filter(couldBeCandidate);
+    /*
+    FNXC:TriageSelectionPrefill 2026-11-05-23:31 (RUFU-584 slice 2):
+    The window loop below resolves each candidate's workflow IR, and an IR resolution starts by reading that
+    card's `task_workflow_selection` row. Passing only `irCache` collapses the PARSE cost across cards that
+    share a workflow, but the selection row is keyed by TASK, so it stayed one read per candidate per poll —
+    on the engine's hottest loop, with the candidate set being exactly the planning backlog a throttled board
+    grows (RunFusion carried 203 cards on `plan-no-admission` while measuring).
+
+    Named by runtime stack samples, not inferred: after the review-sweep fix, the surviving selection reads
+    resolved through `resolveWorkflowIrForTask < (anon)` at the window loop, and the read-attribution seam
+    still reported ~100 000 singular reads per 5-minute window — the same band as before the sweep fix,
+    which is how we learned the sweep was a layer on top of this rather than the demand itself.
+
+    One batched read for the candidate ids, threaded through the same call, so the pass pays one round trip
+    instead of N. This mirrors `listTasks`, which hoists its prefetch out of the lane-resolution block for the
+    identical reason, and the review sweep's post-RUFU-584 prefill. `prefetchWorkflowSelections` tolerates a
+    store without the batch API by reporting the ids as singles, so behavior is unchanged there.
+    */
+    const selectionCache: WorkflowSelectionCache = new Map();
+    await prefetchWorkflowSelections(this.store, candidates.map((candidate) => candidate.id), selectionCache);
     for (const candidate of candidates) {
       if (isFastExecutionMode(candidate)) void this.recordFastLanePlanningSkip(candidate);
     }
@@ -2345,7 +2367,7 @@ export class TriageProcessor {
       const resolved = await Promise.all(
         window.map(async (t) => {
           try {
-            const ir = await resolveWorkflowIrForTask(this.store, t.id, irCache);
+            const ir = await resolveWorkflowIrForTask(this.store, t.id, irCache, selectionCache);
             const roles = resolveLifecycleColumns(ir);
             const columns = (ir as { columns?: Array<{ id: string; traits?: Array<{ trait: string; config?: Record<string, unknown> }> }> }).columns ?? [];
             /*
