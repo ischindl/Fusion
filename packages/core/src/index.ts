@@ -3510,8 +3510,6 @@ export {
   applySchemaBaseline,
   getAppliedMigrations,
   SCHEMA_BASELINE_VERSION,
-  // FNXC:StaleBinaryGuard 2026-07-19-03:10 (U9b / R10): old-binary write refusal.
-  StaleBinarySchemaError,
   assertBinaryNotOlderThanDatabase,
   // FNXC:BackendFlip 2026-06-26-14:30:
   // Runtime startup factory (cutover milestone). Production construction sites

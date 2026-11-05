@@ -101,7 +101,7 @@ touches no data; it must advance in the same change that ships a new migration f
 /* FNXC:WorkflowIdentity 2026-09-14-19:06: the ceiling includes the transactional Coding (Ideas) identity convergence and its recovery archives. */
 /* FNXC:HumanPlanApproval 2026-09-15-06:24: the ceiling includes FN-408's per-card decision column, so no release gate reads tasks before it exists. */
 /* FNXC:TaskPauseAccounting 2026-09-16-06:16: the ceiling includes FN-457's paused-time columns, so timing readers never query a tasks table that lacks them. */
-/* FNXC:ReviewLaneDispatch 2026-09-16-18:30 (merge origin/main): the ceiling includes the renumbered ledger migration. The stale-binary guard compares the DB's highest marker against Number(SCHEMA_BASELINE_VERSION), so a bundled migration ABOVE the ceiling would make the ledger's self-marked version look like a newer Fusion's write and every boot after it would raise StaleBinarySchemaError.
+/* FNXC:ReviewLaneDispatch 2026-09-16-18:30 (merge origin/main): the ceiling includes the renumbered ledger migration. The stale-binary guard compares the DB's highest marker against Number(SCHEMA_BASELINE_VERSION), so a bundled migration ABOVE the ceiling would make the ledger's self-marked version look like a newer Fusion's write and every boot after it would read the database it just migrated as newer than this binary and log the warn-only stale-binary warning.
 FNXC:ReviewLaneDispatch 2026-09-18-13:40 (sync the FN-511..526 wave): upstream released FN-509 queue order as 0082 and human merge approval as 0083 while the main-local ledger held 0082 — the ledger renumbered to 0084 (same renumbering as open PR #3619's branch) and the ceiling follows. */
 /* FNXC:MigrationVersionCollision 2026-10-01-15:26: upstream FN-9429 claimed 0086, the slot this line had already given its review-lane ledger, so one marker named two migrations. The ledger is re-issued at 0088 and FN-9429's receipts at 0089; the ceiling tracks the highest file so no boot can call a migration it just applied a newer Fusion's write. */ /* Superseded by FNXC:MigrationRestack 2026-10-12-18:24: receipts keep upstream's 0086 and the ledger moved to 0091. Kept because it records which meaning applied databases hold in each slot. */
 /* FNXC:MigrationVersionCollision 2026-10-05-08:52 (merge origin/main): upstream FN-9439 shipped PR readiness as 0087, the slot this line already gave its overlap-owner FK repair, so the incoming migration re-issues at 0090 — the same rule that moved FN-9429's receipts to 0089 — and the ceiling follows the highest bundled file. */
@@ -127,8 +127,8 @@ not "highest upstream number", and a number naming two migrations remains the on
 /* FNXC:StrandedContinuationDeferralHorizon 2026-11-02-12:27 (RUFU-299): the ceiling follows the highest bundled
  * file again (0095, `workflow_work_items.deferred_since`). The stale-binary guard compares the DB's highest
  * marker against Number(SCHEMA_BASELINE_VERSION), so leaving it at 0094 would make every boot after this one
- * raise StaleBinarySchemaError against the database this very binary migrated. Slot 0095 was free: no bundled
- * file and no open branch names it, and numbers are never reused. */
+ * read the database this very binary migrated as newer and log the warn-only stale-binary warning. Slot 0095
+ * was free: no bundled file and no open branch names it, and numbers are never reused. */
 export const SCHEMA_BASELINE_VERSION = "0095";
 /** FNXC:SymbolLock 2026-07-20-10:00: upgrades need durable task declarations before admission resolves symbols. */
 export const TASK_DECLARED_SYMBOLS_VERSION = "0028";
@@ -434,32 +434,30 @@ export const MIXED_0065_REPAIR_VERSION = "local-repair-mixed-0065";
 /** SECURITY DEFINER helper that only inserts LEGACY_ADOPTION_DRAINED_MARKER. */
 export const LEGACY_ADOPTION_DRAINED_MARKER_FUNCTION = "fusion_mark_legacy_adoption_drained";
 
-/**
- * Thrown when the database was migrated by a NEWER Fusion binary than the one now
- * opening it. Carries the offending versions so the operator sees what to upgrade.
+/*
+ * Stable class token for the stale-binary condition, interpolated into the guard's warn line.
+ * It is the count key for the documented class (docs/solutions/database-issues/
+ * stale-binary-schema-warning-is-an-operator-class.md): operators and agents grep this literal to
+ * learn how many cards the condition touched, so it must never be reworded. Deliberately NOT
+ * re-exported from any barrel — a log marker is consumed by grep and by the docs, not by imports.
+ *
+ * FNXC:StaleBinaryOperatorClass 2026-11-05-12:28 (RUFU-480):
+ * The token is the ONLY machine-readable identity the condition has. The reported failure shape was
+ * an agent lane reading a raw version sentence and mis-reading it as a card defect, because nothing
+ * in the line could be grepped or counted. Renaming this literal silently breaks the counting method
+ * in the doc above.
  */
-export class StaleBinarySchemaError extends Error {
-  constructor(
-    readonly databaseVersion: string,
-    readonly binaryVersion: string,
-  ) {
-    super(
-      `This Fusion binary is older than the database it opened: the database has schema `
-      + `migration ${databaseVersion} applied, but this binary only knows up to `
-      + `${binaryVersion}. Refusing to open so an old binary cannot write rows the newer `
-      + `schema's invariants depend on. Upgrade Fusion (e.g. \`brew upgrade fusion\`) and retry.`,
-    );
-    this.name = "StaleBinarySchemaError";
-  }
-}
+export const STALE_BINARY_SCHEMA_CLASS = "stale-binary-schema";
 
 /*
 FNXC:StaleBinaryGuard 2026-07-19-03:10 (U9b / R10):
-Old-binary write refusal. Migration bookkeeping is forward-only, so a database carrying a
+Old-binary detection rule. Migration bookkeeping is forward-only, so a database carrying a
 version ABOVE this binary's SCHEMA_BASELINE_VERSION was migrated by a newer Fusion. Letting
 the old binary proceed writes rows using the previous schema's assumptions (the observed
 stale-Homebrew-binary failure mode). Compared numerically, not lexically; unparseable
 identifiers are ignored so a plugin marker cannot brick every open.
+FNXC:ForkedProductLine 2026-10-05-11:29 made the outcome WARN-ONLY — this block describes the
+detection rule, not a write refusal; see the block inside the guard for why.
 
 /*
 FNXC:LegacyAdoption 2026-07-19-14:30 (PR #2341 review):
@@ -493,13 +491,21 @@ export function assertBinaryNotOlderThanDatabase(applied: readonly string[]): vo
   are ignored rather than written to, so continuing is safe. Our own contract already said this:
   schema-applier.test.ts asserts `not.toThrow()` for a newer version and states "it's warn-only
   (padding included)". No test anywhere asserted the throw.
+
+  FNXC:StaleBinaryOperatorClass 2026-11-05-12:28 (RUFU-480):
+  The warn-only policy is unchanged; what changed is what the line COMMUNICATES. Because a warning
+  is the only thing any surface sees in this state, that one line must carry the whole story: both
+  version numbers, `STALE_BINARY_SCHEMA_CLASS` as the greppable count key, the single remedy aimed
+  at the operator (run a build whose ceiling is at least the database's version - never an agent
+  action), and an attribution clause so no lane mis-reads a healthy boot as a failed card. Severity
+  stays `warn`: raising it would invent the failure mode the 2026-10-05 decision removed.
   */
   if (highest > binaryVersion) {
     schemaApplierLog.warn(
-      `database has schema migration ${highestRaw} applied, but this binary only knows up to `
-      + `${SCHEMA_BASELINE_VERSION}. Continuing: this binary intentionally does not implement every `
-      + `migration slot a full-featured build owns, and unknown tables/columns are ignored rather than `
-      + `written to.`,
+      `[${STALE_BINARY_SCHEMA_CLASS}] Database has schema migration ${highestRaw} applied; this binary's `
+      + `ceiling is ${SCHEMA_BASELINE_VERSION}. Continuing: unknown tables/columns are ignored rather `
+      + `than written to. Operator action: run a build whose schema ceiling is at least ${highestRaw}. `
+      + `This is not a card failure, and retry cannot change it.`,
     );
   }
 }

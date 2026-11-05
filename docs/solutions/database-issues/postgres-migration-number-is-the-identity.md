@@ -126,3 +126,7 @@ the next collision is a red test rather than a missing column.
   fork, assume it has, and probe the live schema.
 - See also [`schema-version-constant-must-equal-highest-migration.md`](schema-version-constant-must-equal-highest-migration.md)
   for the SQLite ancestor of this class (a gate constant one behind the highest block).
+- See also [`stale-binary-schema-warning-is-an-operator-class.md`](stale-binary-schema-warning-is-an-operator-class.md):
+  a database newer than this binary → the boot logs the warn-only `stale-binary-schema` warning naming both
+  versions and the store opens normally; it is not a refusal and not a card failure. This class is the opposite
+  half of the one above, where a number names the wrong migration and nothing is logged at all.

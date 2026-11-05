@@ -3089,8 +3089,8 @@ export { classifyLifecycleRole, classifyLifecycleDirection, evaluateForbiddenLif
 export { isReviewGateNode, clampReviewGateEntry, type ReviewGateEntryClamp } from "./workflows/workflow-review-gate-entry.js";
 export { evaluateTransitionInvariants, evaluateMergeBlockerPostcondition, evaluateTerminalReentryPostcondition, evaluateLifecycleDirectionPostcondition, evaluateCapacityRejection, isWipColumn, isTerminalColumn, isCompleteColumn, isHoldColumn, isHoldToWipBoundary, type CapacityFacts } from "./workflows/workflow-transition-policy.js";
 export { resolveProjectColumnsForRoles, ARCHIVED_SENTINEL_LANES, REVIEW_ROLES, TERMINAL_ROLES, LEGACY_COLUMN_IDS_BY_ROLE, type ProjectLaneVocabularyStore } from "./project-lane-vocabulary.js";
-// FNXC:GateBarrelSync 2026-07-19-12:20: stale-binary guard exports mirrored per the sync rule above (PR #2341 review).
-export { StaleBinarySchemaError, assertBinaryNotOlderThanDatabase } from "./postgres/schema-applier.js";
+// FNXC:GateBarrelSync 2026-07-19-12:20: the stale-binary guard's single mirrored export follows the sync rule above (PR #2341 review); the warn line's class token is deliberately not a barrel export - a log marker is counted by grep, not imported.
+export { assertBinaryNotOlderThanDatabase } from "./postgres/schema-applier.js";
 export { promoteResearchFinding } from "./research/research-feature-promotion.js";
 export type { ResearchFeaturePromotionInput } from "./research/research-feature-promotion.js";
 export { ACTIVE_WORKFLOW_WORK_ITEM_STATES } from "./types.js";

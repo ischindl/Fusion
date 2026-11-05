@@ -135,6 +135,18 @@ const DELETED_SYMBOLS: Array<{ symbol: string; why: string }> = [
   { symbol: "revalidatePendingOverlapWaitsAtGraphNode", why: "plan freshness is checked statelessly at WIP release, never by a graph-owned overlap reviewer" },
   { symbol: "OVERLAP_DELTA_TARGETED_PLAN_REPAIR", why: "the deleted synthetic repair prompt created a second plan authority inside execution" },
   { symbol: "overlap-plan-revalidation-", why: "the deleted pre-node review gate cannot suspend graph execution" },
+  /*
+  FNXC:StaleBinaryOperatorClass 2026-11-05-12:58 (RUFU-480):
+  The stale-binary hard refusal. `StaleBinarySchemaError` had no construction site left after the
+  2026-10-05 decision made a newer-than-binary database warn-only — this product line is a
+  permanently feature-reduced build that routinely opens databases carrying migration slots it will
+  never implement, so a throw bricked every open, including an ordinary upgrade-then-rollback. Its
+  message was also the actively misleading half: it told the operator to `brew upgrade fusion` and
+  RETRY, which contradicts the shipped policy (the open succeeds, retrying changes nothing) and is
+  how a healthy boot got mis-diagnosed as a failed card. Re-adding the class reintroduces that
+  refusal policy, so it is tombstoned rather than merely deleted.
+  */
+  { symbol: "StaleBinarySchemaError", why: "RUFU-480: warn-only since 2026-10-05; the refusal class and its brew-upgrade retry advice must not return" },
 ];
 
 /** Strip block and line comments so an explanatory tombstone note is not read as a live reference. */

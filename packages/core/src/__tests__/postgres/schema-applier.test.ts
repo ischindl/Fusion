@@ -256,7 +256,8 @@ describe("schema-applier: immutable migration identities", () => {
 
     FNXC:StrandedContinuationDeferralHorizon 2026-11-02-12:27 (RUFU-299): the ceiling moves to 0095
     (`workflow_work_items.deferred_since`). Same single-equality rule: this line and the file-level scan must
-    agree, and a ceiling left at 0094 would make every boot raise StaleBinarySchemaError.
+    agree, and a ceiling left at 0094 would make every boot read the database this very binary migrated as
+    newer and log the warn-only stale-binary warning.
     */
     expect(SCHEMA_BASELINE_VERSION).toBe("0095");
 
