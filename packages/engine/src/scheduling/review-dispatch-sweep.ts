@@ -24,6 +24,7 @@ import type {
   ReviewerRunRow,
   Task,
   TaskStore,
+  WorkflowIr,
   WorkflowSelectionCache,
 } from "@fusion/core";
 import type { HeartbeatMonitor } from "../agent-heartbeat.js";
@@ -609,6 +610,24 @@ export class ReviewDispatchSweep {
   private async findReviewLaneCandidates(): Promise<ReviewDispatchCandidate[]> {
     const selectionCache: WorkflowSelectionCache = new Map();
     /*
+    FNXC:ReviewSweepResolutionReuse 2026-11-05-22:33 (RUFU-584, last hot sweep left behind by it):
+    The IR cache was `undefined` here while the selection cache right next to it was passed, so every
+    card re-resolved its workflow IR from scratch. `resolveWorkflowIrForTaskWithProvenance` documents
+    `irCache` as "keyed by workflowId so each distinct workflow's [IR is resolved once]", and a board has
+    a handful of distinct workflows while this sweep walks every card on it — so the reuse available here
+    was (cards) : (workflows), and it was being thrown away every 15 s tick.
+
+    This is the site the read-attribution sampler named as the dominant producer of workflow-selection
+    reads: one 5-minute window recorded `361/6581` and `252/5280` calls whose stack was
+    `findReviewLaneCandidates < runPass < tick`. That is also why the two heap fixes that narrowed what a
+    read SELECTS (RUFU-883, RUFU-756) measured null: the retained mass is not the row bodies, it is the
+    locals of ~thousands of `await` frames pinned while they wait — a suspended `async` frame is a
+    `Generator` in a snapshot, and the retainer chain of every sampled board string ends in
+    `Array < Array Iterator < Generator`. Cutting the number of awaits per pass is therefore the lever;
+    cutting columns was not.
+    */
+    const irCache: Map<string, WorkflowIr> = new Map();
+    /*
     FNXC:ListTasksDeriveOptOut 2026-10-09-20:25 (RUFU-201 follow-through):
     This sweep ticks every 15 s (DEFAULT_REVIEW_TICK_MS) and it reads ONLY persisted columns —
     `column`, `enabledWorkflowSteps`, `id`, `paused`, `pausedReason`, `reviewLevel`,
@@ -628,12 +647,36 @@ export class ReviewDispatchSweep {
     */
     // FNXC:ListTasksExcludeLog 2026-10-12-16:20 (RUFU-615 tranche 4): this scan never reads task log or markers (no non-logger `.log` token in the file), so `slim` must not pay for hydrating the whole board's log. See list-tasks-slim-excludes-log.test.ts.
     const tasks = await this.options.store.listTasks({ slim: true, derive: false, includeArchived: false, excludeLog: true });
+    /*
+    FNXC:ReviewSweepSelectionBatch 2026-11-05-22:33 (RUFU-584):
+    `selectionCache` is keyed per TASK, so an empty cache still means one `task_workflow_selection` read
+    per card even though it is “cached” — which is how `task_workflow_selection` got to 615 index scans/s
+    against 58/s for the whole `tasks` table (the ratio is recorded in `read-attribution.ts`). Prefill it
+    with the batch API the scheduler already uses, turning (cards) round trips into one. Per-pass and
+    freshly allocated each tick, so no epoch guard is needed: a pass cannot serve a selection older than
+    itself. If the batch read fails the loop simply resolves per card as it always has — this is an
+    optimisation on top of the existing path, not a replacement for it.
+    */
+    const taskIds = [...new Set(tasks.map((task) => task.id))];
+    try {
+      const store = this.options.store as TaskStore & {
+        getTaskWorkflowSelectionsAsync?: (
+          ids: string[],
+        ) => Promise<Map<string, { workflowId: string; stepIds: string[] } | undefined>>;
+      };
+      if (store.getTaskWorkflowSelectionsAsync) {
+        const selections = await store.getTaskWorkflowSelectionsAsync(taskIds);
+        for (const id of taskIds) selectionCache.set(id, selections.get(id));
+      }
+    } catch {
+      // The per-task resolution below is the fallback; a failed prefill costs this pass its reuse.
+    }
     const candidates: ReviewDispatchCandidate[] = [];
     for (const task of tasks) {
       // Paused cards stay candidates: the classifier buckets them as excluded-paused (E2), so a
       // paused card remains VISIBLE in the sweep's accounting instead of silently vanishing from
       // it (#3619 review G4 — pre-filtering here made the E2 bucket unreachable from a real tick).
-      const provenance = await resolveWorkflowIrForTaskWithProvenance(this.options.store, task.id, undefined, selectionCache);
+      const provenance = await resolveWorkflowIrForTaskWithProvenance(this.options.store, task.id, irCache, selectionCache);
       const lanes = resolveLifecycleColumns(provenance.ir);
       // An unresolvable review lane is not a licence to assume the historical column name.
       if (!lanes?.review) continue;
