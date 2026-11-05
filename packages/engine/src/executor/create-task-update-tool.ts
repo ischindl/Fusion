@@ -12,7 +12,12 @@
  * Persisted-status mismatch is a deterministic churn signal after loop recovery.
  */
 import { Type, type Static } from "@earendil-works/pi-ai";
-import { describeTaskTitleRejection } from "@fusion/core";
+/*
+FNXC:AgentTextCharset 2026-11-04-12:08 (RUFU-307): this is the executor's OWN fn_task_update — the copy the
+implementation lane actually calls, whose `summary` the operator reads in the task History tab. Guarded here
+and not only in the chat copy because the two are separate implementations and both are agent-reachable.
+*/
+import { describeTaskTitleRejection, findDisallowedAgentTextChars, formatAgentTextRejection } from "@fusion/core";
 import type { StepStatus, TaskStore, WorkflowFieldDefinition } from "@fusion/core";
 import type { ToolDefinition, AgentSession } from "@earendil-works/pi-coding-agent";
 import type { ReviewVerdict } from "../execution/reviewer.js";
@@ -102,6 +107,39 @@ export function createTaskUpdateTool(
         */
         const writeTargetRefusal = guardBoundWriteTarget(taskId, params, "fn_task_update");
         if (writeTargetRefusal) return writeTargetRefusal;
+
+        /*
+        FNXC:AgentTextCharset 2026-11-04-12:08 (RUFU-307):
+        This copy writes the title FIRST and the step summary much further down, so both fields are validated
+        up front — a summary carrying a foreign-script glyph must refuse the call BEFORE the rename, or the
+        card would be renamed while the caller was told nothing persisted. Both fields are also guarded
+        because both reach the operator: `title` is the card face and `summary` is the History line.
+
+        Independent of the shape guard below: `describeTaskTitleRejection` refuses junk SHAPES (headings,
+        multi-line pastes, over-budget) and says nothing about which alphabet the words are in, so a
+        one-line title with two Han letters in it passes shape validation today.
+        Blank title = the existing "clear the title" contract, so it is not charset-checked.
+        */
+        if (title !== undefined && title.trim().length > 0) {
+          const titleFindings = findDisallowedAgentTextChars(title);
+          if (titleFindings.length > 0) {
+            return {
+              content: [{ type: "text" as const, text: `ERROR: ${formatAgentTextRejection("title", titleFindings)} Nothing was persisted.` }],
+              details: { taskId, field: "title", code: "AGENT_TEXT_CHARSET", disallowedCodePoints: titleFindings.map((f) => f.codePoint) },
+              isError: true,
+            };
+          }
+        }
+        if (summary !== undefined) {
+          const summaryFindings = findDisallowedAgentTextChars(summary);
+          if (summaryFindings.length > 0) {
+            return {
+              content: [{ type: "text" as const, text: `ERROR: ${formatAgentTextRejection("summary", summaryFindings)} Nothing was persisted.` }],
+              details: { taskId, field: "summary", code: "AGENT_TEXT_CHARSET", disallowedCodePoints: summaryFindings.map((f) => f.codePoint) },
+              isError: true,
+            };
+          }
+        }
 
         /*
         Bare-call guard (P1 api-contract): a call with none of

@@ -2410,6 +2410,22 @@ export {
   MAX_CHAT_HANDOFF_SUMMARY_LENGTH,
   CHAT_HANDOFF_TRUNCATION_MARKER,
 } from "./ai/ai-summarize.js";
+/*
+FNXC:AgentTextCharset 2026-11-04-12:08 (RUFU-307): the shared agent-text allowlist surface. Exported from
+BOTH barrels because the engine-core vitest project resolves `@fusion/core` through index.gate.ts, and the
+published CLI extension reaches it through the `fusionCore` namespace import.
+*/
+export {
+  findDisallowedAgentTextChars,
+  isAgentTextAllowed,
+  formatAgentTextRejection,
+  assertAgentTextAllowed,
+  describeAgentTextAllowlist,
+  formatAgentTextCodePoint,
+  AgentTextCharsetError,
+  AGENT_TEXT_REJECTION_MAX_ENUMERATED,
+  type AgentTextDisallowedChar,
+} from "./agent-text-charset.js";
 export {
   applyTestModeOverrides,
   hasConfiguredFallbackLane,

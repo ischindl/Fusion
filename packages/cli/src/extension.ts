@@ -2062,6 +2062,27 @@ export default function kbExtension(pi: ExtensionAPI) {
     });
   }
 
+  /*
+   * Refuse an agent-authored field carrying a code point outside the operator-visible allowlist, or return
+   * `null` when the text is clean.
+   *
+   * FNXC:AgentTextCharset 2026-11-04-12:08 (RUFU-307):
+   * The CLI's `fn_task_update` writes `updates.title`/`updates.description` through `store.updateTask` and
+   * bypasses the `createAgentTask()` chokepoint, so this lane needs its own refusal — the same one the
+   * engine and core lanes raise, worded identically and with the same `ERROR:` + `isError` result shape
+   * that `fn task rename` already uses. Call it BEFORE the first field is collected into the payload so
+   * "Nothing was persisted." stays true.
+   */
+  function cliAgentTextRefusal(field: string, value: string | undefined) {
+    const findings = fusionCore.findDisallowedAgentTextChars(value);
+    if (findings.length === 0) return null;
+    return {
+      content: [{ type: "text" as const, text: `ERROR: ${fusionCore.formatAgentTextRejection(field, findings)} Nothing was persisted.` }],
+      isError: true as const,
+      details: { code: "AGENT_TEXT_CHARSET" as const, field },
+    };
+  }
+
   // ── fn_task_create ───────────────────────────────────────────────
 
   pi.registerTool({
@@ -2307,6 +2328,20 @@ export default function kbExtension(pi: ExtensionAPI) {
             details: { error: error.message },
           };
         }
+        /*
+        FNXC:AgentTextCharset 2026-11-04-12:08 (RUFU-307):
+        The charset refusal arrives from the shared `createAgentTask()` chokepoint. It must read as a tool
+        result, not a crash: an uncaught throw here is what made an agent-authored RUFU-295 title look like
+        the machine was broken. Same `ERROR:` + `isError` shape as the neighbouring translation site, so
+        AgentLogger records a `tool_error` and the session survives to retry with rewritten text.
+        */
+        if (error instanceof fusionCore.AgentTextCharsetError) {
+          return {
+            content: [{ type: "text", text: `ERROR: ${error.message}` }],
+            isError: true,
+            details: { code: "AGENT_TEXT_CHARSET", field: error.field },
+          };
+        }
         throw error;
       }
     },
@@ -2379,6 +2414,19 @@ export default function kbExtension(pi: ExtensionAPI) {
       // Build update payload
       const updates: Record<string, unknown> = {};
       const updatedFields: string[] = [];
+
+      /*
+      FNXC:AgentTextCharset 2026-11-04-12:08 (RUFU-307):
+      Both free-text fields this tool can write are checked BEFORE any field is collected, because this call
+      writes them in one `store.updateTask` — refusing late would either persist half the call or force a
+      message that lies about what landed. Independent of the shape guard below: `describeTaskTitleRejection`
+      refuses junk SHAPES and says nothing about which alphabet the words are in.
+      Blank values are the pre-existing "clear the field" contract, so they stay untouched.
+      */
+      const titleCharsetRefusal = cliAgentTextRefusal("title", params.title?.trim());
+      if (titleCharsetRefusal) return titleCharsetRefusal;
+      const descriptionCharsetRefusal = cliAgentTextRefusal("description", params.description?.trim());
+      if (descriptionCharsetRefusal) return descriptionCharsetRefusal;
 
       if (params.title !== undefined) {
         /*
@@ -7012,6 +7060,17 @@ export default function kbExtension(pi: ExtensionAPI) {
       const taskExecutionDenied = denyTaskCreationForTaskExecutionPrincipal("fn_delegate_task", ctx as ExtensionCallerContext);
       if (taskExecutionDenied) return taskExecutionDenied;
       /*
+      FNXC:AgentTextCharset 2026-11-04-12:08 (RUFU-307):
+      Delegation writes through `store.createTask()` directly and so bypasses the `createAgentTask()`
+      chokepoint that guards every other create surface — without this guard it was the one create path that
+      could still land a card whose text carries a foreign-script code point. Same findings, same wording as
+      every other surface, and placed FIRST: refusing the caller's own text needs no store, so nothing is
+      opened, no agent is looked up, and no card exists to roll back. This tool takes no `title` parameter
+      (the label is derived from the description), so `description` is the whole surface.
+      */
+      const delegateDescriptionRefusal = cliAgentTextRefusal("description", params.description.trim());
+      if (delegateDescriptionRefusal) return delegateDescriptionRefusal;
+      /*
       FNXC:ToolPermissionGates 2026-07-26-13:55:
       Ordinary delegation stays ungated (coordination primitive), but the executor-role
       policy override is a sensitive escalation: policy-gate it for agent principals when
@@ -7293,6 +7352,14 @@ export default function kbExtension(pi: ExtensionAPI) {
             content: [{ type: "text", text: `ERROR: ${error.message}` }],
             isError: true,
             details: { error: error.message },
+          };
+        }
+        // FNXC:AgentTextCharset 2026-11-04-12:08 (RUFU-307): tool-result refusal, not a crash. See fn_task_create.
+        if (error instanceof fusionCore.AgentTextCharsetError) {
+          return {
+            content: [{ type: "text", text: `ERROR: ${error.message}` }],
+            isError: true,
+            details: { code: "AGENT_TEXT_CHARSET", field: error.field },
           };
         }
         throw error;

@@ -16,8 +16,9 @@ import * as fusionCore from "@fusion/core";
 import type { Agent, AgentState, AgentCapability, AgentUpdateInput, AgentLogEntry, Artifact, ArtifactCreateInput, ArtifactWithTask, Task, TaskDocument, TaskDocumentCreateInput, TaskStore, RunMutationContext, MessageStore, Message, SourceType, Settings, ResearchRun, ResearchRunStatus, TaskCreateInput, ReflectionStore, ApprovalRequestStore, ProjectSettings, ChatStore, WorkflowSettingDefinition, GoalStatus, WorkflowIrNode, IdeationCandidate, MissionWithHierarchy, DbTransaction } from "@fusion/core";
 import { listTraits, isBuiltinWorkflowId, isTaskNotFoundError, renderTaskCommentSection, AgentStore, validateColumnAgentBindings, ColumnAgentBindingError, stripApprovalBypassFlags, WorkflowSettingRejectionError, resolveEffectiveSettingsById, resolveWorkflowIrById, findOrphanedSettingValues, BUILTIN_WORKFLOW_SETTINGS, MAX_TASK_LIST_TEXT_CHARS, TASK_BOARD_READ_CAVEAT, formatCurrentTaskLine, normalizeWorkflowIcon, parseWorkflowIr, WorkflowIrError, assertColumnTraitsValid, ColumnTraitValidationError } from "@fusion/core";
 import { promoteHeldTask } from "./execution/hold-release.js";
+import { emitBoundedRunAudit } from "./util/emit-bounded-run-audit.js";
 import { stepLifecycleNoopResult, storeErrorResult, storeWriteFailure } from "./tool-store-errors.js";
-import { computeCrossParentDiagnosticClaim, computeCrossParentDiagnosticClaimId, computeParentIntentClaimId, DASHBOARD_USER_ID, dailyMemoryPath, ensureOpenClawMemoryFiles, evaluateImplementationTaskBind, extractAgentProvisioningRequest, findSameAgentDuplicates, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, normalizeMessageParticipant, reconcileDeterministicDuplicate, resolveAgentProvisioningPolicy, resolveMemoryBackend, resolveMemorySearchTopic, resolveResearchSettings, resolveTaskGithubTracking, runDeterministicDuplicateGuard, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh } from "@fusion/core";
+import { computeCrossParentDiagnosticClaim, computeCrossParentDiagnosticClaimId, computeParentIntentClaimId, DASHBOARD_USER_ID, dailyMemoryPath, ensureOpenClawMemoryFiles, evaluateImplementationTaskBind, extractAgentProvisioningRequest, findSameAgentDuplicates, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, normalizeMessageParticipant, reconcileDeterministicDuplicate, resolveAgentProvisioningPolicy, resolveMemoryBackend, resolveMemorySearchTopic, resolveResearchSettings, resolveTaskGithubTracking, runDeterministicDuplicateGuard, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh, AgentTextCharsetError, assertAgentTextAllowed } from "@fusion/core";
 import { formatLongTermMemoryAppendReport, formatMemorySize, measureLongTermMemory, type LongTermMemoryScope } from "./memory/memory-budget.js";
 import { ResearchOrchestrator } from "./research/research-orchestrator.js";
 import { ResearchProviderRegistry } from "./research/provider-registry.js";
@@ -1461,6 +1462,23 @@ export async function createAgentTask(
   input: TaskCreateInput,
   options?: AgentTaskCreationOptions,
 ): Promise<{ task: Awaited<ReturnType<TaskStore["createTask"]>>; wasDuplicate: boolean }> {
+  /*
+  FNXC:AgentTextCharset 2026-11-04-12:08 (RUFU-307):
+  One guard for every agent-reachable CREATE route, placed here because this function is the single
+  chokepoint behind engine `fn_task_create`, engine `fn_delegate_task`, triage's planner-side create, and
+  the CLI's `fn_task_create` (which imports this function from `@fusion/engine`). Measured defect: a model
+  wrote `U+521B U+5EFA` over the stem of a Slovak verb in a card description and seven cards shipped it —
+  the operator read half-replaced words directly on the board.
+
+  BEFORE the duplicate guard and before any store write, so a refused create leaves nothing behind: the
+  duplicate lock, the reservation, and the row are all downstream of this line. Throwing the typed error
+  rather than returning a string is what lets the CLI route — which reaches this function across a package
+  boundary and owns a different result shape — catch exactly this type; every engine lane converts it to
+  its own `ERROR:` tool text at its own call site.
+  */
+  if (input.title !== undefined) assertAgentTextAllowed("title", input.title);
+  assertAgentTextAllowed("description", input.description);
+
   const validateDuplicateCanonical = (input as AgentTaskInputWithBootstrap).validateDuplicateCanonical;
   const settings = typeof (store as { getSettings?: unknown }).getSettings === "function"
     ? await store.getSettings()
@@ -1807,6 +1825,18 @@ export function createTaskCreateTool(
           details: { taskId: task.id, wasDuplicate },
         };
       } catch (err) {
+        /*
+        FNXC:AgentTextCharset 2026-11-04-12:08 (RUFU-307): the chokepoint's typed refusal becomes this lane's
+        established `ERROR:` tool text. Session-safe by construction: the agent hears which code points to
+        rewrite and the run continues, instead of an exception escaping execute and failing the card.
+        */
+        if (err instanceof AgentTextCharsetError) {
+          return {
+            content: [{ type: "text" as const, text: `ERROR: ${err.rejection}` }],
+            details: { field: err.field, code: "AGENT_TEXT_CHARSET" },
+            isError: true,
+          };
+        }
         if (err instanceof Error && err.message.startsWith("Task ID already exists:")) {
           return {
             content: [{ type: "text" as const, text: `ERROR: ${err.message}` }],
@@ -2103,6 +2133,36 @@ export function createTaskReadTools(store: TaskStore): ToolDefinition[] {
 }
 
 /**
+ * Refuse an agent-authored field that carries a code point outside the operator-visible allowlist, or
+ * return `null` when the text is clean.
+ *
+ * FNXC:AgentTextCharset 2026-11-04-12:08 (RUFU-307):
+ * One refusal shape for every guarded engine surface, so a rejection reads identically whether it came from
+ * a task-log line, a mail body, or a memory append, and so no surface can quietly invent its own weaker
+ * wording. The message names the offending code points as `U+XXXX` with their indices — never the raw
+ * characters, which would put the contamination back in front of the operator that has to read the refusal.
+ * It is a TOOL result, not a thrown error: the agent's session survives and it can rewrite and retry.
+ *
+ * Kept beside `writeTargetErrorResult` (its sibling for the other class of up-front tool refusal) and
+ * always called at the top of `execute`, before the first store or file write, so "Nothing was persisted."
+ * stays true on every refusing surface.
+ */
+function agentTextRefusal(field: string, text: string | null | undefined) {
+  const findings = fusionCore.findDisallowedAgentTextChars(text);
+  if (findings.length === 0) return null;
+  return {
+    content: [{
+      type: "text" as const,
+      // The explicit nothing-persisted sentence, not an implication: a caller reading only this result must
+      // know no partial write landed, which is the same promise the executor lane's copy makes.
+      text: `ERROR: ${fusionCore.formatAgentTextRejection(field, findings)} Nothing was persisted.`,
+    }],
+    details: { field, code: "AGENT_TEXT_CHARSET", disallowedCodePoints: findings.map((f) => f.codePoint) },
+    isError: true as const,
+  };
+}
+
+/**
  * Create a `fn_task_log` tool that logs an entry for a specific task.
  *
  * @param store - TaskStore for task persistence
@@ -2128,6 +2188,15 @@ export function createTaskLogTool(store: TaskStore, taskId: string): ToolDefinit
       */
       const target = resolveWriteTarget(taskId, params, { toolName: "fn_task_log", disposition: "honours" });
       if (!target.ok) return writeTargetErrorResult(target.refusal);
+      /*
+      FNXC:AgentTextCharset 2026-11-04-12:08 (RUFU-307): task-log lines are the operator's History tab, and
+      this is the surface an executor writes most often. Runs after target resolution (a refusal must not
+      leak a code-point lesson about a card the caller was never allowed to touch) and before `logEntry`, so
+      a refused entry persists nothing. Agent-authored text is the guarded class; engine-internal log lines
+      are machinery and stay unguarded by design.
+      */
+      const charsetRefusal = agentTextRefusal("message", params.message);
+      if (charsetRefusal) return charsetRefusal;
 
       await store.logEntry(target.taskId, params.message, params.outcome);
 
@@ -2160,6 +2229,11 @@ export function createTaskLogToolWithContext(store: TaskStore, taskId: string, r
       // the run context still attributes the write to this session's run, which is the writer's identity.
       const target = resolveWriteTarget(taskId, params, { toolName: "fn_task_log", disposition: "honours" });
       if (!target.ok) return writeTargetErrorResult(target.refusal);
+      // FNXC:AgentTextCharset 2026-11-04-12:08 (RUFU-307): the mounted variant needs the same guard as its
+      // sibling — `shared-worker-tools.ts` puts THIS one in front of the executor, so guarding only the
+      // plain factory would leave the busiest writer of History lines unchecked.
+      const charsetRefusal = agentTextRefusal("message", params.message);
+      if (charsetRefusal) return charsetRefusal;
 
       await store.logEntry(target.taskId, params.message, params.outcome, runContext);
 
@@ -2689,6 +2763,21 @@ export function createTaskPromptWriteTool(
       const writeTargetRefusal = guardBoundWriteTarget(taskId, params, "fn_task_prompt_write");
       if (writeTargetRefusal) return writeTargetRefusal;
       /*
+      FNXC:AgentTextCharset 2026-11-04-12:08 (RUFU-307):
+      This is the ONE guarded surface that SAVES instead of refusing, and the reason is a lifecycle trap,
+      not softness about contaminated text. PROMPT.md's `## Original Description` block is copied verbatim
+      from the stored card description, and seven cards already carry the incident's Han code points — so a
+      refusing guard here would make those cards un-plannable forever: the planner cannot rewrite text the
+      plan contract requires it to preserve, the write fails every attempt, and the card dead-locks. A guard
+      that breaks the lifecycle is the worse defect (operator requirement 4: rejection must be feedback, not
+      a session failure).
+
+      So the contract here is: persist, warn loudly in the tool response naming every code point, and record
+      one bounded audit row. The plan author sees exactly which lines to rewrite on the next revision, and
+      the event makes the retained text queryable instead of silent. Never the raw characters in the row.
+      */
+      const promptCharsetFindings = fusionCore.findDisallowedAgentTextChars(params.content);
+      /*
       FNXC:RepositoryScope 2026-08-21-00:58:
       updateTask's authoritative prompt path owns the planning lifecycle lock. Do not wrap this
       tool in that non-reentrant lock: prompt publication would wait on itself before scope
@@ -2783,6 +2872,39 @@ export function createTaskPromptWriteTool(
           await mirrorPlanToProjectDb(store, taskId, params.content, {
             author: runContext?.agentId ?? "agent",
           });
+        }
+        /*
+        FNXC:AgentTextCharset 2026-11-04-12:08 (RUFU-307): the content is durable, so the warning is appended
+        to the SUCCESS text rather than replacing it — the plan did publish, and pretending otherwise would
+        make the planner retry a write that already landed. The audit row is bounded (`emitBoundedRunAudit`)
+        and awaited after the write, so a dead or hanging audit sink cannot alter the result the caller sees;
+        metadata is code points and counts only, never the offending characters or the surrounding prose.
+        */
+        if (promptCharsetFindings.length > 0) {
+          await emitBoundedRunAudit(store, {
+            taskId,
+            agentId: runContext?.agentId ?? "agent",
+            domain: "database",
+            mutationType: "task:agent-text-charset-warned",
+            target: `task:${taskId}`,
+            metadata: {
+              source: "fn_task_prompt_write",
+              field: "content",
+              disallowedCodePointCount: promptCharsetFindings.length,
+              disallowedCodePoints: promptCharsetFindings.slice(0, 20).map((f) => f.codePoint),
+              persisted: true,
+            },
+          });
+          return {
+            content: [{
+              type: "text" as const,
+              text: `Updated PROMPT.md for ${taskId}. WARNING: ${fusionCore.formatAgentTextRejection("content", promptCharsetFindings).replace(/^Agent text rejected: /, "Saved with disallowed code points: ")} The plan was published as written; rewrite these code points in your next revision.`,
+            }],
+            details: {
+              charsetWarning: true,
+              disallowedCodePoints: promptCharsetFindings.map((f) => f.codePoint),
+            },
+          };
         }
         return {
           content: [{ type: "text" as const, text: `Updated PROMPT.md for ${taskId}.` }],
@@ -3058,6 +3180,17 @@ async function registerArtifactForAgent(
 ) {
   let storeWriteAttempted = false;
   try {
+    /*
+    FNXC:AgentTextCharset 2026-11-04-12:08 (RUFU-307): artifact title/description/inline content all render
+    in the dashboard Artifacts gallery, so they are operator-visible prose. Checked before the payload reads
+    and before `registerArtifact`, and this sits inside the function BOTH the task lane and the chat lane
+    mount, so one guard covers both tools. Base64 payloads and file paths are binary/bytes and deliberately
+    unguarded — the invariant is about agent-authored TEXT, not about file contents.
+    */
+    for (const [field, value] of [["title", params.title], ["description", params.description], ["content", params.content]] as const) {
+      const refusal = agentTextRefusal(field, value);
+      if (refusal) return refusal;
+    }
     /*
     FNXC:ArtifactRegistry 2026-07-11-09:40:
     docs/agents.md promises "exactly one payload source" for fn_artifact_register. The path and
@@ -4034,6 +4167,22 @@ export function createTaskUpdateTool(store: TaskStore, taskId: string): ToolDefi
       */
       const writeTargetRefusal = guardBoundWriteTarget(taskId, params, "fn_task_update");
       if (writeTargetRefusal) return writeTargetRefusal;
+      /*
+      FNXC:AgentTextCharset 2026-11-04-12:08 (RUFU-307): BOTH operator-visible fields on this tool are checked
+      here, before the `try` block and therefore before the title write below. The ordering is the promise:
+      this copy applies `title` first and the step summary later, so validating only at each write would let
+      a dirty summary refuse the call AFTER a rename had already landed — leaving the card renamed and the
+      caller told "Nothing was persisted." Blank titles are not checked: blank is this tool's existing
+      "clear the title" contract, not agent prose.
+      */
+      if (params.title !== undefined && params.title.trim().length > 0) {
+        const titleCharsetRefusal = agentTextRefusal("title", params.title);
+        if (titleCharsetRefusal) return titleCharsetRefusal;
+      }
+      if (params.summary !== undefined) {
+        const summaryCharsetRefusal = agentTextRefusal("summary", params.summary);
+        if (summaryCharsetRefusal) return summaryCharsetRefusal;
+      }
       try {
         /*
         FNXC:TaskTitleDerivation 2026-09-26-04:45:
@@ -4940,6 +5089,16 @@ export function createMemoryAppendTool(rootDir: string, settings?: MemoryToolSet
       if (!content) {
         return { content: [{ type: "text" as const, text: "ERROR: memory content cannot be empty" }], details: {} };
       }
+      /*
+      FNXC:AgentTextCharset 2026-11-04-12:08 (RUFU-307): the highest-leverage surface in this guard. Memory
+      is retrieved into later prompts, so the measured incident was self-amplifying — `MEMORY.md` line 2270
+      carried U+8DDF/U+8FDB and that text re-entered every agent session that loaded it. ONE check here
+      covers BOTH backends, because `scope: "agent"` and `scope: "project"` only diverge below this line:
+      the agent branch appends to the agent's own file and the project branch to the shared one. Refused
+      before either `appendFile`, so no memory file is touched.
+      */
+      const charsetRefusal = agentTextRefusal("content", content);
+      if (charsetRefusal) return charsetRefusal;
       const scope = params.scope ?? "project";
 
       if (scope === "agent") {
@@ -6473,6 +6632,16 @@ export function createDelegateTaskTool(
           details: { taskId: task.id, agentId: agent.id, agentName: agent.name },
         };
       } catch (err) {
+        // FNXC:AgentTextCharset 2026-11-04-12:08 (RUFU-307): same typed refusal as `fn_task_create` above —
+        // delegation is the second agent-reachable route through `createAgentTask`, and its description
+        // lands on the board as the card body, so it refuses with the same `ERROR:` text and stays session-safe.
+        if (err instanceof AgentTextCharsetError) {
+          return {
+            content: [{ type: "text" as const, text: `ERROR: ${err.rejection}` }],
+            details: { field: err.field, code: "AGENT_TEXT_CHARSET" },
+            isError: true,
+          };
+        }
         if (err instanceof Error && err.message.startsWith("Task ID already exists:")) {
           return {
             content: [{ type: "text" as const, text: `ERROR: ${err.message}` }],
@@ -6642,6 +6811,35 @@ export function createSendMessageTool(
           content: [{ type: "text" as const, text: "ERROR: Message content exceeds 2000 character limit" }],
           details: {},
         };
+      }
+      /*
+      FNXC:AgentTextCharset 2026-11-04-12:08 (RUFU-307): mail lands in the operator's inbox and in the
+      receiving agent's prompt, so contaminated text here propagates the same way damaged project memory did.
+      Checked up front beside the existing emptiness/length validations — before the recipient resolution and
+      before any message row exists — and the report body is checked in the same pass, because
+      `report.sections[].body` is the larger half of what an operator actually reads.
+      */
+      const charsetRefusal = agentTextRefusal("content", content);
+      if (charsetRefusal) return charsetRefusal;
+      /*
+      FNXC:AgentTextCharset 2026-11-05-00:24 (RUFU-307):
+      The report fields are read defensively, NOT as `params.report.sections.flatMap(...)`: this block sits
+      outside the handler's `try`, and a malformed-but-schema-typed `report` (an object with no `sections`,
+      which a real caller can send — `tool-write-failure-boundary-drive.test.ts` drives exactly that payload)
+      must fall through to the structural validation inside the try instead. That validation either answers
+      its own `ERROR: report.sections must not be empty` or, when a field is absent entirely, the catch turns
+      the throw into the shared store-failure refusal — either way the agent gets a tool result. An exception
+      escaping `execute` is what this task's session-safety contract forbids.
+      */
+      if (params.report) {
+        const reportFields: Array<[string, string | undefined]> = [["report.title", params.report.title]];
+        for (const section of Array.isArray(params.report.sections) ? params.report.sections : []) {
+          reportFields.push(["report.sections[].heading", section?.heading], ["report.sections[].body", section?.body]);
+        }
+        const reportFieldRefusal = reportFields
+          .map(([field, value]) => agentTextRefusal(field, value))
+          .find((refusal) => refusal !== null);
+        if (reportFieldRefusal) return reportFieldRefusal;
       }
 
       try {
@@ -7082,6 +7280,10 @@ export function createPostRoomMessageTool(
           details: {},
         };
       }
+      // FNXC:AgentTextCharset 2026-11-04-12:08 (RUFU-307): a room post is read by every member's operator
+      // surface; refused before the membership read and before any room row is written.
+      const charsetRefusal = agentTextRefusal("content", content);
+      if (charsetRefusal) return charsetRefusal;
 
       const replyToMessageId = params.replyToMessageId?.trim();
       if (params.replyToMessageId !== undefined && !replyToMessageId) {

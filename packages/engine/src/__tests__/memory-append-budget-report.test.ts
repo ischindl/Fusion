@@ -58,7 +58,15 @@ describe("fn_memory_append long-term reporting", () => {
 
   it("counts appended UTF-8 bytes rather than characters", async () => {
     const root = await tempProject();
-    const content = "## Ünïcödé\nünïcödé piň ✓ — multibyte copy";
+    /*
+    FNXC:AgentTextCharset 2026-11-04-12:08 (RUFU-307):
+    This case used `Ünïcödé … ✓ — …` to prove the counter reports bytes. RUFU-307 made `fn_memory_append`
+    refuse code points outside the operator-visible allowlist, so that fixture text is now rejected before
+    the append. The subject here is byte-vs-character accounting, not which alphabet carries it, so the
+    multibyte payload is restated in allowed Slovak diacritics — still 2 bytes per letter, so the
+    `bytes > characters` assertion keeps proving exactly what it always proved.
+    */
+    const content = "## Diakritika\nčíslicové zadanie áčäďéíĺľňóôŕšťúýž multi-byte copy";
 
     const text = await append(root, { layer: "long-term", content });
 

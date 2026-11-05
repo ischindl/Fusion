@@ -21,6 +21,10 @@ import {
   isTaskNotFoundError,
   parseNoOpCompletionMarker,
   resolveWipTargetForTask,
+  // FNXC:AgentTextCharset 2026-11-04-12:08 (RUFU-307): the completion summary is the most-read agent prose on
+  // a card, so it is guarded here too, in this file's existing refusal-feedback shape.
+  findDisallowedAgentTextChars,
+  formatAgentTextRejection,
 } from "@fusion/core";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { ReviewVerdict } from "../execution/reviewer.js";
@@ -162,6 +166,23 @@ export function createTaskDoneTool(
         */
         const writeTargetRefusal = guardBoundWriteTarget(taskId, params, "fn_task_done");
         if (writeTargetRefusal) return writeTargetRefusal;
+        /*
+        FNXC:AgentTextCharset 2026-11-04-12:08 (RUFU-307): the completion summary is the single most-read
+        piece of agent prose on a card — it is what the operator sees in the History tab and in the review
+        hand-off. Refusal-feedback shape mirrors this file's existing `blocked` refusals (message text plus an
+        `error` detail, no throw), because the terminal transition must not be attempted with text the
+        operator cannot read: the agent rewrites the summary and calls `fn_task_done` again.
+        */
+        if (params.summary !== undefined) {
+          const summaryFindings = findDisallowedAgentTextChars(params.summary);
+          if (summaryFindings.length > 0) {
+            const message = formatAgentTextRejection("summary", summaryFindings);
+            return {
+              content: [{ type: "text" as const, text: message }],
+              details: { error: message, code: "AGENT_TEXT_CHARSET", disallowedCodePoints: summaryFindings.map((f) => f.codePoint) },
+            };
+          }
+        }
         /*
         FNXC:Lifecycle 2026-07-16-10:20:
         FN-8141 — the blocked exit runs BEFORE every completion gate (completion blocker, verdict providers, worktree

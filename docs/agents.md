@@ -74,6 +74,36 @@ Artifact tools operate on the shared artifact registry, so artifacts are visible
 
 For the user-facing gallery and notification UX, see [Artifacts View](./dashboard-guide.md#artifacts-view) and [Mailbox View](./dashboard-guide.md#mailbox-view). For storage layout and hydration semantics, see [Artifact registry](./storage.md#artifact-registry-fn-6777).
 
+### Agent-authored text character set
+
+A model can substitute a look-alike glyph from another alphabet into the middle of a word and leave the rest of the word intact, and the operator then reads a half-replaced word on the card. Measured on 2026-09-22..24, seven cards and one shared-memory line carried Han or Cyrillic code points inside Slovak words, across two lanes and two agents, and because project memory is loaded into every agent prompt, the damage re-entered later sessions. Fusion therefore validates agent-authored text against an **explicitly enumerated allowlist** before it can be stored or delivered (`packages/core/src/agent-text-charset.ts`).
+
+The allowed set is an enumeration, not a deny-list, so legitimate diacritics cannot be erased by the fix:
+
+- printable ASCII (`U+0020`-`U+007E`)
+- the newline pair (`U+000A`, `U+000D`) — LF and CRLF both pass
+- the Slovak diacritic letters, lowercase `áäčďéíĺľňóôŕšťúýž` and uppercase `ÁÄČĎÉÍĹĽŇÓÔŔŠŤÚÝŽ`
+
+Everything else is refused by contract, including characters that render fine — Tab (`U+0009`), em dash (`U+2014`), typographic quotes, emoji, CJK, Cyrillic. Prose that must survive a non-ASCII character writes it as `U+XXXX` notation instead.
+
+**Guarded surfaces** (agent tool parameters only, checked before the first store or file write):
+
+- `fn_task_create` / `fn_delegate_task` / triage planning creates — `title` when present, and `description` (the engine enforces this once in its shared creation chokepoint, so every lane that routes through it inherits it; the CLI delegation route writes through the store directly and guards its own description)
+- both implementations of `fn_task_update` (the executor's own copy and the chat copy) — `title` when non-blank plus the step `summary`; a blank title keeps its existing "clear the title" meaning
+- `fn_task_done` — the final `summary`
+- `fn_task_log` (both factories), `fn_send_message` (`content`, `report.title`, `report.sections[].heading`, `report.sections[].body`), `fn_post_room_message`, `fn_memory_append` (both `project` and `agent` scope), `fn_artifact_register` (`title`, optional `description`, optional inline `content`)
+- `fn_task_create` / `fn_task_update` in the `fn` CLI extension, which return the same refusal as `ERROR:` tool text with `isError`
+
+**Rejection contract.** A refusing surface answers a tool result, never an exception, so the agent's session survives and can rewrite and retry. The sentence names each offender as `U+XXXX` with its index — never the raw glyph, which would put the contamination back in front of the operator who has to read the refusal — enumerates at most 12 distinct code points, and always reports the total count:
+
+```text
+ERROR: Agent text rejected: field "description" contains 2 disallowed code point(s): U+521B (index 11), U+5EFA (index 12). Allowed: printable ASCII, newline, and Slovak diacritics (lowercase and uppercase). Rewrite with allowed characters and retry. Nothing was persisted.
+```
+
+**The plan lane saves instead of refusing.** `fn_task_prompt_write` persists the content, appends a `WARNING` naming the code points to its success text, and records one bounded `task:agent-text-charset-warned` run-audit row whose metadata is code points and counts only (`source`, `field`, `disallowedCodePointCount`, `disallowedCodePoints` capped at 20, `persisted`). Refusing a `PROMPT.md` write would dead-lock a card whose stored description already contains a rejected character, because the plan contract requires `## Original Description` to be copied verbatim — a guard that breaks the card lifecycle is the worse defect.
+
+**Deliberately unguarded:** human, dashboard, and HTTP/API writes; the shared store seams those paths share; `fn_task_attach` and any file or binary payload; engine-internal log lines; and the character content of `fn_task_document_write`. The character guard is also independent of the task-title **shape** guard (a heading or multi-line paste is refused by `describeTaskTitleRejection`): a title can be shape-valid and character-invalid, and both must hold. Finally, nothing already stored is rewritten — repairing contaminated text that predates this guard is an operator decision.
+
 ### Flags
 
 - `--once` send one message and exit after first reply (or timeout)

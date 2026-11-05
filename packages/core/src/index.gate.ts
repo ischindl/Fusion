@@ -2028,6 +2028,22 @@ export {
   AiServiceError,
   __resetSummarizeState,
 } from "./ai/ai-summarize.js";
+/*
+FNXC:AgentTextCharset 2026-11-04-12:08 (RUFU-307): mirrored from index.ts — the engine-core vitest project
+resolves `@fusion/core` through THIS barrel, so a gate-barrel omission TypeErrors in the merge gate while
+lint, typecheck, and build all stay green. `file-scope-lease.test.ts` pins the same both-barrels rule.
+*/
+export {
+  findDisallowedAgentTextChars,
+  isAgentTextAllowed,
+  formatAgentTextRejection,
+  assertAgentTextAllowed,
+  describeAgentTextAllowlist,
+  formatAgentTextCodePoint,
+  AgentTextCharsetError,
+  AGENT_TEXT_REJECTION_MAX_ENUMERATED,
+  type AgentTextDisallowedChar,
+} from "./agent-text-charset.js";
 export {
   applyTestModeOverrides,
   isTestModeActive,

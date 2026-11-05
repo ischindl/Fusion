@@ -79,6 +79,9 @@ import {
   parseStepHeadings,
   loadWorkspaceConfig,
   isUnavailablePlanLockError,
+  // FNXC:AgentTextCharset 2026-11-04-12:08 (RUFU-307): the planner's own create refuses typed charset
+  // findings; `storeErrorResult` would frame the planner's own text as a store outage.
+  AgentTextCharsetError,
   type NearDuplicateCandidate,
 } from "@fusion/core";
 
@@ -5386,6 +5389,19 @@ export class TriageProcessor {
             || fusionCore.deriveTaskLabelFromDescription(newTask.description, 60);
           return { content: [{ type: "text" as const, text: `${wasDuplicate ? "Linked existing task" : "Created independent task"} ${newTask.id}: ${createdLabel}` }], details: { taskId: newTask.id } };
         } catch (err: unknown) {
+          /*
+          FNXC:AgentTextCharset 2026-11-04-12:08 (RUFU-307): a charset refusal is the planner's own text,
+          not an infrastructure failure, so it must not go through `storeErrorResult` — that reports an
+          outage and invites a retry of the identical bytes. The planner hears the offending code points,
+          replans the sentence, and the planning session continues.
+          */
+          if (err instanceof AgentTextCharsetError) {
+            return {
+              content: [{ type: "text" as const, text: `ERROR: ${err.rejection}` }],
+              details: { field: err.field, code: "AGENT_TEXT_CHARSET" },
+              isError: true,
+            };
+          }
           return storeErrorResult("task creation", err);
         }
       },
