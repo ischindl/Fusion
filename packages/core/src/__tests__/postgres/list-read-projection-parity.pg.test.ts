@@ -187,6 +187,13 @@ pgTest("live list projections omit only the never-addressed columns", () => {
     { field: "summary", columns: ["summary"] },
     { field: "steps", columns: ["steps"] },
     { field: "attachments", columns: ["attachments"] },
+    {
+      field: "comments",
+      // One member owns both columns: `rowToTask` deliberately does not merge `steeringComments` into
+      // `comments` (a steering write also appends to `comments`), so a half-declaration would describe a
+      // shape the mapper cannot produce. RUFU-883.
+      columns: ["comments", "steeringComments"],
+    },
     { field: "workflowStepResults", columns: ["workflowStepResults"] },
     {
       field: "source",
@@ -222,12 +229,16 @@ pgTest("live list projections omit only the never-addressed columns", () => {
       log: [{ timestamp: new Date().toISOString(), action: "execution.started" }] as never,
       workflowStepResults: [{ id: "step-1", stepIndex: 0, stepName: "Implement", status: "approved", verdict: "APPROVE", output: "shipped" }] as never,
     });
-    // `attachments` and the `source*` columns are not reachable through `updateTask`, so the fixture
-    // seeds them the way the store does: straight into the jsonb/text columns.
+    // `attachments`, the `source*` columns and the comment pair are not reachable through `updateTask`,
+    // so the fixture seeds them the way the store does: straight into the jsonb/text columns. The
+    // comment pair needs a non-empty value for the same reason as everything else here: an empty column
+    // would let a leg pass on agreement-by-absence (RUFU-883).
     await h.layer().db
       .update(schema.project.tasks)
       .set({
         attachments: [{ name: "probe.png", url: "/tmp/probe.png" }] as never,
+        comments: [{ id: "c-1", author: "agent-probe", text: "declared-field probe comment", createdAt: new Date().toISOString() }] as never,
+        steeringComments: [{ id: "s-1", author: "planner", text: "declared-field probe steering guidance", createdAt: new Date().toISOString() }] as never,
         sourceType: "automation",
         sourceAgentId: "agent-probe",
         sourceRunId: "run-probe",
