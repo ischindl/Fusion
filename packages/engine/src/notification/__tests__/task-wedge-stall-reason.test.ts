@@ -113,7 +113,7 @@ describe("describeTaskWedgeFromStallReason", () => {
   */
   it("stays silent on awaiting-review-revision: an in-progress correction is nobody's wedge to announce", () => {
     expect(describeTaskWedgeFromStallReason(task({
-      stallReason: stall("awaiting-review-revision", "Working through review corrections: unfinished remediation work"),
+      stallReason: stall("awaiting-review-revision", "Working through review corrections: the latest review asked for changes and this card still has unfinished work to run"),
     }))).toBeNull();
   });
 

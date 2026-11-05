@@ -9174,9 +9174,9 @@ export default interface Resources {
         "suggestedAction": "No action needed unless it is still rate limited after the retry."
       },
       "awaiting-review-revision": {
-        "description": "The latest review asked for changes and this card still has unfinished remediation steps, so it is working rather than waiting on anyone.",
+        "description": "The latest review asked for changes and this card still has unfinished work to run, so it is working rather than waiting on anyone.",
         "headline": "Applying review corrections",
-        "suggestedAction": "Let the next review round run; open the Review tab only if the remediation steps stop moving."
+        "suggestedAction": "Let the next review round run; open the Review tab only if the steps stop advancing."
       },
       "completion-blocker": {
         "badgeLabel": "Completion blocked",

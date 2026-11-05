@@ -554,9 +554,16 @@ FNXC:ReviewRevisionWait 2026-09-29-16:35 (RUFU-280):
 Like `held-human-review`, this code must NOT read like a fault: a reviewer asked for changes and the
 engine is executing them, which is the review loop working. The copy therefore never says "blocked" and
 never points the operator at merge-retry tooling — the corrective action belongs to the next review round,
-and an operator only acts if those remediation steps stop moving. The server's own fixed sentence is
+and an operator only acts if the card's own steps stop moving. The server's own fixed sentence is
 catalog copy here rather than passed through (same rule as `held-human-review`: translator-owned prose is
 not diagnostic data), and the badge label reuses the headline because the code is face-suppressed.
+
+FNXC:ReviewRevisionWaitHorizon 2026-11-05-18:05 (RUFU-447):
+"remediation steps" became "the steps". The chip used to promise the operator a specific kind of step —
+one carrying `step.remediation` provenance — that the classified card's board may not contain: a reviewer
+who names the corrections in the verdict's NOTES authors a real `REVISE` with ordinary unfinished steps and
+no remediation step at all. Copy that names a step shape the board need not have is the same lie the
+server sentence stopped telling; both now say only that work is still owed.
 */
 function awaitingReviewRevisionReason(context: StallContext): StallReason {
   const { t } = context;
@@ -565,8 +572,8 @@ function awaitingReviewRevisionReason(context: StallContext): StallReason {
     code: "awaiting-review-revision",
     badgeLabel: headline,
     headline,
-    description: t("stall.awaiting-review-revision.description", "The latest review asked for changes and this card still has unfinished remediation steps, so it is working rather than waiting on anyone."),
-    suggestedAction: t("stall.awaiting-review-revision.suggestedAction", "Let the next review round run; open the Review tab only if the remediation steps stop moving."),
+    description: t("stall.awaiting-review-revision.description", "The latest review asked for changes and this card still has unfinished work to run, so it is working rather than waiting on anyone."),
+    suggestedAction: t("stall.awaiting-review-revision.suggestedAction", "Let the next review round run; open the Review tab only if the steps stop advancing."),
   };
 }
 

@@ -571,15 +571,23 @@ export function getInReviewStallReason(
 
     Unlike the two exemptions around it, this arm RETURNS rather than suppressing the signal: the state is
     genuinely reportable, only the park is withheld (see `InReviewStallCode`). The bound is this predicate's
-    own second clause rather than a new counter — the moment remediation stops being pending, this arm
-    falls through to the ordinary classification and the already-accumulated count parks on the next pass.
-    A card whose remediation was silently dropped is therefore still terminalized; it is only ever
-    terminalized later than the corrections it is waiting on.
+    own second clause rather than a new counter — the moment no step is pending any more, or the authored
+    row ages past `REVIEW_REVISION_PARK_DEFER_HORIZON_MS`, this arm falls through to the ordinary
+    classification and the already-accumulated count parks on the next pass. A card whose remediation was
+    silently dropped is therefore still terminalized; it is only ever terminalized later than the
+    corrections it is waiting on.
+
+    FNXC:ReviewRevisionWaitHorizon 2026-11-05-18:05 (RUFU-447): the second clause now reads ANY pending
+    step, not only a step carrying `remediation` provenance, because a reviewer who named the work in the
+    verdict's notes — or an executor that died before the remediation append landed — leaves exactly this
+    card with work owed and no provenance. The horizon is what keeps that widening from becoming an
+    indefinite reprieve, and the clock threaded in below is the classifier's own `now`, so the horizon and
+    `observedAt` are one measurement rather than two.
 
     `getTaskMergeBlocker` is evaluated first so the awaiting state is still anchored to a real refusal — a
     card with pending remediation and a clear merge door needs no explanation at all.
     */
-    if (isAwaitingReviewRevision(task)) {
+    if (isAwaitingReviewRevision(task, { nowMs: now })) {
       return {
         code: "awaiting-review-revision",
         reason: AWAITING_REVIEW_REVISION_STALL_REASON,

@@ -383,6 +383,17 @@ const STALL_WEDGE_ACTIONS: Record<TaskStallReasonCode, string | null> = {
   about work the engine is performing, and `task:reconcile-review-stall-notification` would fire once per
   revision episode for a card that is not stuck at all.
 
+  FNXC:ReviewRevisionWaitHorizon 2026-11-05-18:44 (RUFU-447):
+  The sentence above said "the named remediation steps are published ON the card", which was the narrow
+  clause's guarantee and is now false: the predicate this code is derived from accepts an authored `REVISE`
+  whose corrections live only in the verdict's NOTES (RUFU-269), and one whose remediation append died
+  mid-write. So the silence here no longer rests on steps existing — it rests on the wait being BOUNDED.
+  `REVIEW_REVISION_PARK_DEFER_HORIZON_MS` (6 h from the authored row) ends the deferral, the card falls back
+  to `merge-blocker`, and THIS table alerts on `merge-blocker`. The alarm therefore still exists; it is
+  delayed to the horizon rather than removed, which is why this entry stays `null` (RUFU-280's R6 decision:
+  an in-progress correction must not consume a wedge-alert episode) and why making it alertable would
+  double-announce work the executor is running while the terminal case is already covered below.
+
   This table is a pure notification-admission allowlist: `describeTaskWedgeFromStallReason` returns at the
   `!action` line below, so `null` suppresses only the alert and the card's own `stallReason` copy stays
   rendered on its face and in detail. It has NO authority over lane state, which is what makes the `null`

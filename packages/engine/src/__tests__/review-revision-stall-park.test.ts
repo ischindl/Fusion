@@ -17,17 +17,35 @@ import {
   IN_REVIEW_STALL_LOG_PREFIX,
 } from "@fusion/core";
 import { IN_REVIEW_STALL_DEADLOCK_ERROR_PREFIX } from "../merge/pre-merge-gate-reseed.js";
+import { describeTaskWedgeFromStallReason } from "../notification/task-wedge-notification.js";
 import { RUN_AUDIT_EMIT_TIMEOUT_MS } from "../util/emit-bounded-run-audit.js";
 import { SelfHealingManager } from "../self-healing.js";
 
 /** The one explanatory sentence this sweep writes; pinned by literal so a reword breaks the test. */
 const PARK_CLEAR_LOG_PREFIX = "[pre-merge] Cleared the engine's in-review stall park:";
 
+/** Stem that separates the deadlock park's own clause from the blocker sentence it embedded. */
+const DEADLOCK_REASON_STEM = "without progress. ";
+
 const REVISION_OBSERVATION = `${IN_REVIEW_STALL_LOG_PREFIX}awaiting-review-revision]: ${AWAITING_REVIEW_REVISION_STALL_REASON}`;
 
 function at(iso: string): string {
   return iso;
 }
+
+/*
+FNXC:ReviewRevisionWaitHorizon 2026-11-05-19:20 (RUFU-447):
+Every fixture in this file is authored around `2026-01-01T00:0x`, so the fake clock that used to sit
+anywhere near that instant is now load-bearing: the predicate's second clause gained
+`REVIEW_REVISION_PARK_DEFER_HORIZON_MS` (6 h) measured off the authored row, and a fixture read by the real
+clock (months later) reads as an expired revision and is handed back to `merge-blocker`. The cases below
+that want the DEFERRAL anchor the clock inside the horizon; the cases that want the EXPIRY anchor it past
+it, and say which they are doing.
+*/
+/** Inside the defer horizon: 2 h after the authored `REVISE` row. */
+const INSIDE_HORIZON = new Date("2026-01-01T02:00:00.000Z");
+/** Past the defer horizon: 7 h after the authored `REVISE` row. */
+const PAST_HORIZON = new Date("2026-01-01T07:00:00.000Z");
 
 /** A card mid-remediation on an authored `REVISE`: the shape the ladder used to terminalize. */
 function revisingCard(overrides: Partial<Task> = {}): Task {
@@ -126,6 +144,124 @@ describe("in-review stall ladder defers the park for an authored review revision
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
+  /*
+  FNXC:ReviewRevisionWaitHorizon 2026-11-05-19:20 (RUFU-447): THE SHAPE RUFU-280 COULD NOT SEE.
+  The reviewer published the corrections in the verdict's `notes` instead of a `Fix:` step list, so no
+  `step.remediation` provenance exists anywhere on the card. Under RUFU-280's clause this card was a
+  `merge-blocker`, and at threshold 3 — the same threshold the control case below parks on — it parked.
+  Here it must accumulate observations and never park.
+  */
+  it("defers the park for a REVISE whose corrections live only in the verdict notes", async () => {
+    const task = revisingCard({
+      id: "RUFU-447",
+      steps: [
+        { name: "implement", status: "done" },
+        { name: "verify", status: "pending" },
+        { name: "docs", status: "pending" },
+      ],
+      workflowStepResults: [{
+        workflowStepId: "code-review",
+        workflowStepName: "Code Review",
+        phase: "pre-merge",
+        status: "failed",
+        verdict: "REVISE",
+        reviewInputFingerprint: "sha256:notes-only",
+        notes: "Fix: lockfile drift in plugin workspaces. Fix: add the regression test. Fix: stale doc.",
+        startedAt: at("2026-01-01T00:00:00.000Z"),
+        completedAt: at("2026-01-01T00:01:00.000Z"),
+      }],
+      log: [
+        { timestamp: at("2026-01-01T00:02:00.000Z"), action: REVISION_OBSERVATION },
+        { timestamp: at("2026-01-01T00:03:00.000Z"), action: REVISION_OBSERVATION },
+      ],
+    });
+    const store = createStore(task);
+    const manager = new SelfHealingManager(store, { rootDir: "/tmp/repo" });
+
+    // Third identical observation at the threshold the control case parks on: deferral, not disposition.
+    vi.setSystemTime(new Date("2026-01-01T00:11:00.000Z"));
+    expect(await manager.surfaceInReviewStalls()).toBe(1);
+
+    expect(task.log.filter((entry: { action: string }) => entry.action === REVISION_OBSERVATION)).toHaveLength(3);
+    expect(task.paused).toBe(false);
+    expect(task.pausedReason).toBeUndefined();
+    expect(task.status).toBeUndefined();
+    expect(auditOfType(store, "task:in-review-stall-deadlock-disposed")).toHaveLength(0);
+    manager.stop();
+  });
+
+  /*
+  The other half of the horizon: the widening must not DELETE the alarm, only delay it. Past
+  `REVIEW_REVISION_PARK_DEFER_HORIZON_MS` the same notes-only card falls back to `merge-blocker`, its
+  episode re-keys, and at threshold 1 the very next observation parks it. This is the card whose remediation
+  append never landed — the case that would otherwise be deferred forever.
+  */
+  it("parks the notes-only REVISE once it ages past the defer horizon, so the deferral is finite", async () => {
+    const task = revisingCard({
+      id: "RUFU-447-EXPIRY",
+      steps: [
+        { name: "implement", status: "done" },
+        { name: "verify", status: "pending" },
+      ],
+      workflowStepResults: [{
+        workflowStepId: "code-review",
+        workflowStepName: "Code Review",
+        phase: "pre-merge",
+        status: "failed",
+        verdict: "REVISE",
+        reviewInputFingerprint: "sha256:notes-only",
+        notes: "Fix: lockfile drift in plugin workspaces.",
+        startedAt: at("2026-01-01T00:00:00.000Z"),
+        completedAt: at("2026-01-01T00:01:00.000Z"),
+      }],
+      updatedAt: at("2026-01-01T06:50:00.000Z"),
+    });
+    const store = createStore(task, { inReviewStallDeadlockThreshold: 1 });
+    const manager = new SelfHealingManager(store, { rootDir: "/tmp/repo" });
+
+    vi.setSystemTime(PAST_HORIZON);
+    expect(await manager.surfaceInReviewStalls()).toBe(1);
+
+    expect(task.paused).toBe(true);
+    expect(task.pausedReason).toBe(IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON);
+    expect(task.error).toContain(IN_REVIEW_STALL_DEADLOCK_ERROR_PREFIX);
+    // The alarm is not relabelled as the deferred wait: the park names the ordinary blocker.
+    expect(task.error).toContain("merge-blocker");
+    expect(auditOfType(store, "task:in-review-stall-deadlock-disposed")).toHaveLength(1);
+
+    /*
+    FNXC:ReviewRevisionWaitHorizon 2026-11-05-19:55 (RUFU-447, P2 half):
+    The expiry must land on a code the notification wedge ALERTS on, or the deferral would have deleted
+    the alarm rather than delayed it. A parked row can never be fed to the resolver itself —
+    `describeTaskWedgeFromStallReason` refuses any card with a `status` or a pause, because the legacy
+    failed-card classifier owns those — so the mapping is asserted on the classification the ladder
+    actually recorded, read back out of the park sentence the sweep itself wrote instead of a
+    hand-written fixture.
+    The paired negative is RUFU-280's R6 decision: the deferred wait itself stays silent.
+    */
+    const recordedPark = task.error ?? "";
+    expect(recordedPark).toContain("merge-blocker repeated");
+    const reasonStart = recordedPark.indexOf(DEADLOCK_REASON_STEM);
+    expect(reasonStart).toBeGreaterThan(-1);
+    const blockerSentence = recordedPark.slice(reasonStart + DEADLOCK_REASON_STEM.length);
+    expect(blockerSentence.length).toBeGreaterThan(0);
+    const expiredWedge = describeTaskWedgeFromStallReason({
+      ...task,
+      paused: false,
+      status: undefined,
+      stallReason: { code: "merge-blocker", reason: blockerSentence, observedAt: at("2026-01-01T07:00:00.000Z") },
+    } as Task);
+    expect(expiredWedge?.reasonKey).toBe("stall:merge-blocker");
+    expect(expiredWedge?.action.length).toBeGreaterThan(0);
+    expect(describeTaskWedgeFromStallReason({
+      ...task,
+      paused: false,
+      status: undefined,
+      stallReason: { code: "awaiting-review-revision", reason: AWAITING_REVIEW_REVISION_STALL_REASON, observedAt: at("2026-01-01T07:00:00.000Z") },
+    } as Task)).toBeNull();
+    manager.stop();
+  });
+
   it("keeps recording observations but never pauses the card while remediation is pending", async () => {
     const task = revisingCard({
       log: [
@@ -182,6 +318,20 @@ describe("in-review stall ladder defers the park for an authored review revision
 });
 
 describe("bounded repair of an authored-revision card frozen by the earlier build", () => {
+  /*
+  FNXC:ReviewRevisionWaitHorizon 2026-11-05-19:20 (RUFU-447):
+  The repair reads the same predicate the ladder defers on, so this sweep now reasons about a horizon too.
+  The clock is anchored HERE rather than per case because every fixture in this block is authored at
+  `2026-01-01T00:0x` and the sweep itself takes no clock argument — it reads `Date.now()` at pass time, so
+  leaving the real clock running would silently move all of these cards past the horizon and turn the whole
+  block into expiry tests wearing repair names.
+  */
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(INSIDE_HORIZON);
+  });
+  afterEach(() => vi.useRealTimers());
+
   function parkedForRevision(overrides: Partial<Task> = {}): Task {
     return revisingCard({
       paused: true,
@@ -223,6 +373,69 @@ describe("bounded repair of an authored-revision card frozen by the earlier buil
         outcome: "cleared",
       },
     }]);
+    manager.stop();
+  });
+
+  /*
+  FNXC:ReviewRevisionWaitHorizon 2026-11-05-19:20 (RUFU-447):
+  The repair's own version of the RUFU-447 hole. A card the pre-widening build parked while it was working
+  through a notes-only revision carries the same deadlock signature as any other mis-park, but the old
+  admission could not see it — the findings were never appended as steps, so no `step.remediation`
+  provenance existed to admit on. The sweep reads the predicate rather than a migration list, so widening
+  the predicate is what repairs them.
+  */
+  it("lifts the park on a notes-only revision, the shape the pre-widening admission could not see", async () => {
+    const task = parkedForRevision({
+      id: "RUFU-447-REPAIR",
+      steps: [
+        { name: "implement", status: "done" },
+        { name: "verify", status: "pending" },
+        { name: "docs", status: "pending" },
+      ],
+      workflowStepResults: [{
+        workflowStepId: "code-review",
+        workflowStepName: "Code Review",
+        phase: "pre-merge",
+        status: "failed",
+        verdict: "REVISE",
+        reviewInputFingerprint: "sha256:notes-only",
+        notes: "Fix: lockfile drift in plugin workspaces. Fix: add the regression test.",
+        startedAt: at("2026-01-01T00:00:00.000Z"),
+        completedAt: at("2026-01-01T00:01:00.000Z"),
+      }],
+    });
+    const store = createStore(task);
+    const manager = new SelfHealingManager(store, { rootDir: "/tmp/repo" });
+
+    expect(await manager.reconcileReviewRevisionStallParks()).toBe(1);
+
+    expect(task.paused).toBe(false);
+    expect(task.pausedReason).toBeNull();
+    expect(task.status).toBeNull();
+    expect(task.error).toBeNull();
+    expect(auditOfType(store, "task:merge-review-revision-park-cleared")).toMatchObject([{
+      metadata: { taskId: "RUFU-447-REPAIR", workflowStepId: "code-review", source: "self-healing", outcome: "cleared" },
+    }]);
+    manager.stop();
+  });
+
+  /*
+  The repair's expiry arm, and the honest answer to "why is my old park still badged": the sweep reads the
+  live predicate, and past the horizon the card is no longer provably mid-revision, so clearing it would be
+  the engine guessing. That park is the operator's to Retry, and the sweep leaves it standing.
+  */
+  it("leaves a park standing once the revision is older than the defer horizon", async () => {
+    const task = parkedForRevision();
+    const store = createStore(task);
+    const manager = new SelfHealingManager(store, { rootDir: "/tmp/repo" });
+
+    vi.setSystemTime(PAST_HORIZON);
+    expect(await manager.reconcileReviewRevisionStallParks()).toBe(0);
+
+    expect(task.paused).toBe(true);
+    expect(task.pausedReason).toBe(IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON);
+    expect(task.status).toBe("failed");
+    expect(auditOfType(store, "task:merge-review-revision-park-cleared")).toHaveLength(0);
     manager.stop();
   });
 
@@ -493,8 +706,12 @@ describe("bounded repair of an authored-revision card frozen by the earlier buil
   explanatory line. These cases need NO production change — `emitBoundedRunAudit` already absorbs all
   four — so a red run here means the emit placement, not the test, is the defect.
 
-  The hanging case is bounded by `RUN_AUDIT_EMIT_TIMEOUT_MS` and needs the fake clock, so it lives apart
-  from the `it.each` trio, which must stay on the real clock to prove the other three need no waiting.
+  The hanging case is bounded by `RUN_AUDIT_EMIT_TIMEOUT_MS` and needs to advance the clock, so it lives
+  apart from the `it.each` trio, which needs no timer advance at all. FNXC:ReviewRevisionWaitHorizon
+  2026-11-05-19:20 (RUFU-447) reworded this note: the trio used to run on the real clock precisely because
+  nothing in it cared about time. Now the whole block inherits the anchored fake clock from the describe
+  hook, because the admission predicate measures the authored row against a 6 h horizon and the real clock
+  would place every fixture past it. Advancing time is still what only the hanging case may do.
   */
   /**
    * Replace the healthy capturing sink with one of the hostile shapes, returning the spy where the
@@ -539,6 +756,9 @@ describe("bounded repair of an authored-revision card frozen by the earlier buil
   it("lifts the park when the audit sink never settles, bounded by the emit timeout", async () => {
     vi.useFakeTimers();
     try {
+      // Re-anchor after installing the fake clock: `useFakeTimers()` resets the clock to the real `now`,
+      // which is months past the fixture's authored row and would admit nothing at all.
+      vi.setSystemTime(INSIDE_HORIZON);
       const task = parkedForRevision();
       const store = createStore(task);
       const sink = vi.fn(() => new Promise<void>(() => undefined));

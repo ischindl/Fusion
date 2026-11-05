@@ -153,7 +153,7 @@ import { SelfHealingManager, isBranchAheadOfBase, MAX_AUTO_MERGE_RETRIES, MAX_TA
 import { resolveAiMergeRootPath } from "../worktree/worktree-paths.js";
 import { cleanupLandedTaskWorktree } from "../merge/post-landing-worktree-cleanup.js";
 import { HeartbeatMonitor, HEARTBEAT_ERROR_RECOVERY_METADATA_KEY, HEARTBEAT_ERROR_RETRY_EXHAUSTED_PAUSE_REASON, HEARTBEAT_ERROR_UNRECOVERABLE_PAUSE_REASON, readHeartbeatErrorRetryCount } from "../agent-heartbeat.js";
-import { PlanningLifecycleLockTransportError, TaskDeletedError, TaskNotFoundError, TransitionRejectionError, type TaskStore, type Settings, type Task, type AgentStore, type Agent, type AgentHeartbeatRun, type NotificationProvider } from "@fusion/core";
+import { AWAITING_REVIEW_REVISION_STALL_REASON, PlanningLifecycleLockTransportError, TaskDeletedError, TaskNotFoundError, TransitionRejectionError, type TaskStore, type Settings, type Task, type AgentStore, type Agent, type AgentHeartbeatRun, type NotificationProvider } from "@fusion/core";
 import { EventEmitter } from "node:events";
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -7171,6 +7171,115 @@ describe("SelfHealingManager", () => {
           repetitionCount: 3,
           threshold: 3,
         }),
+      }));
+      managerWithRecovery.stop();
+    });
+
+    /*
+    FNXC:ReviewRevisionWaitHorizon 2026-11-05-19:40 (RUFU-447):
+    The same deferral proven on this file's own harness, for the shape RUFU-280 could not see: a reviewer who
+    published the corrections in the verdict's NOTES authored a real `REVISE` with no `step.remediation`
+    provenance anywhere on the card. Under the shipped clause that card answered `merge-blocker`, and at the
+    threshold the test directly above parks on, it was terminalized while the executor was mid-correction —
+    the harm RUFU-280 was landed to prevent, arriving through the gap its own second clause left open.
+    Threshold 1 is deliberate: it removes "the count had not reached the threshold yet" as an alternative
+    explanation for the missing park.
+    */
+    it("withholds the deadlock park for a REVISE whose findings live only in the verdict notes", async () => {
+      vi.setSystemTime(new Date("2026-01-01T00:30:00.000Z"));
+      const managerWithRecovery = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
+      (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+        taskStuckTimeoutMs: 60_000,
+        autoMerge: true,
+        inReviewStallDeadlockThreshold: 1,
+      });
+      (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([{
+        id: "RUFU-447",
+        column: "in-review",
+        paused: false,
+        status: undefined,
+        mergeRetries: 0,
+        mergeDetails: {},
+        worktree: "/tmp/RUFU-447",
+        steps: [{ name: "implement", status: "done" }, { name: "verify", status: "pending" }],
+        workflowStepResults: [{
+          workflowStepId: "code-review",
+          workflowStepName: "Code Review",
+          phase: "pre-merge",
+          status: "failed",
+          verdict: "REVISE",
+          reviewInputFingerprint: "sha256:notes-only",
+          notes: "Fix: lockfile drift in plugin workspaces. Fix: add the regression test.",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          completedAt: "2026-01-01T00:01:00.000Z",
+        }],
+        updatedAt: "2026-01-01T00:20:00.000Z",
+        log: [],
+      }]);
+
+      // The pass still counts the card and still announces the wait — only the terminal action is withheld.
+      expect(await managerWithRecovery.surfaceInReviewStalls()).toBe(1);
+      expect(store.logEntry).toHaveBeenCalledWith(
+        "RUFU-447",
+        expect.stringContaining("In-review stall surfaced [awaiting-review-revision]:"),
+      );
+      expect(store.updateTask).not.toHaveBeenCalledWith("RUFU-447", expect.objectContaining({ paused: true }));
+      expect(store.recordRunAuditEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+        mutationType: "task:in-review-stall-deadlock-disposed",
+      }));
+      managerWithRecovery.stop();
+    });
+
+    /*
+    The bound that makes the deferral above honest. Past `REVIEW_REVISION_PARK_DEFER_HORIZON_MS` (6 h) the
+    predicate releases the card, the code falls back to `merge-blocker`, and the threshold that withheld
+    nothing a moment ago disposes of it — so a `REVISE` whose remediation append never landed is terminalized
+    hours later instead of never. A deferral with no expiry is an alarm that stopped existing, which is a
+    worse failure than the mis-park this change removes.
+    */
+    it("disposes of the notes-only REVISE once it ages past the defer horizon", async () => {
+      vi.setSystemTime(new Date("2026-01-01T07:00:00.000Z"));
+      const managerWithRecovery = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
+      (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+        taskStuckTimeoutMs: 60_000,
+        autoMerge: true,
+        inReviewStallDeadlockThreshold: 1,
+      });
+      (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([{
+        id: "RUFU-447-EXPIRED",
+        column: "in-review",
+        paused: false,
+        status: undefined,
+        mergeRetries: 0,
+        mergeDetails: {},
+        worktree: "/tmp/RUFU-447-EXPIRED",
+        steps: [{ name: "implement", status: "done" }, { name: "verify", status: "pending" }],
+        workflowStepResults: [{
+          workflowStepId: "code-review",
+          workflowStepName: "Code Review",
+          phase: "pre-merge",
+          status: "failed",
+          verdict: "REVISE",
+          reviewInputFingerprint: "sha256:notes-only",
+          notes: "Fix: lockfile drift in plugin workspaces.",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          completedAt: "2026-01-01T00:01:00.000Z",
+        }],
+        updatedAt: "2026-01-01T06:50:00.000Z",
+        log: [],
+      }]);
+
+      expect(await managerWithRecovery.surfaceInReviewStalls()).toBe(1);
+      expect(store.updateTask).toHaveBeenCalledWith("RUFU-447-EXPIRED", expect.objectContaining({
+        paused: true,
+        pausedReason: "in-review-stall-deadlock",
+        status: "failed",
+      }));
+      // The alarm arrives under the ordinary code, not as a relabelled deferred wait.
+      expect(store.recordRunAuditEvent).toHaveBeenCalledWith(expect.objectContaining({
+        mutationType: "task:in-review-stall-deadlock-disposed",
+        target: "RUFU-447-EXPIRED",
+        metadata: expect.objectContaining({ code: "merge-blocker", threshold: 1 }),
       }));
       managerWithRecovery.stop();
     });

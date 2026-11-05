@@ -6,12 +6,21 @@
  * together: dropping either one silently re-parks a card that is provably still working, and the
  * contrast test on the engine side (`verdictless-pre-merge-gate-rerun.test.ts` case (e)) depends on
  * the conjunction holding, because its REVISE fixture carries neither clause.
+ *
+ * FNXC:ReviewRevisionWaitHorizon 2026-11-05-18:05 (RUFU-447):
+ * The second clause is now ANY pending step bounded by `REVIEW_REVISION_PARK_DEFER_HORIZON_MS`, so the
+ * matrix gained the age axis (inside / past the horizon) and the shape RUFU-280 could not see: an
+ * authored `REVISE` whose findings exist only in the verdict's notes, or whose remediation append never
+ * landed. The fixture clock is anchored to the real clock rather than a fixed 2026 date, because the
+ * default `Date.now()` path IS the production path and a frozen past date would silently put every
+ * case outside the horizon. Age-sensitive cases inject `nowMs` explicitly; nothing here sleeps.
  */
 import { describe, expect, it } from "vitest";
 import {
   AWAITING_REVIEW_REVISION_STALL_REASON,
   findAwaitingReviewRevisionGate,
   isAwaitingReviewRevision,
+  REVIEW_REVISION_PARK_DEFER_HORIZON_MS,
 } from "../tasks/review-revision-wait.js";
 import { deriveTaskStallReason } from "../tasks/task-stall-reason.js";
 /*
@@ -26,11 +35,13 @@ import {
   AWAITING_REVIEW_REVISION_STALL_REASON as GATE_AWAITING_SENTENCE,
   findAwaitingReviewRevisionGate as findAwaitingReviewRevisionGateFromGateBarrel,
   isAwaitingReviewRevision as isAwaitingReviewRevisionFromGateBarrel,
+  REVIEW_REVISION_PARK_DEFER_HORIZON_MS as GATE_DEFER_HORIZON_MS,
 } from "../index.gate.js";
 import {
   AWAITING_REVIEW_REVISION_STALL_REASON as MAIN_AWAITING_SENTENCE,
   findAwaitingReviewRevisionGate as findAwaitingReviewRevisionGateFromMainBarrel,
   isAwaitingReviewRevision as isAwaitingReviewRevisionFromMainBarrel,
+  REVIEW_REVISION_PARK_DEFER_HORIZON_MS as MAIN_DEFER_HORIZON_MS,
 } from "../index.js";
 import type { ReviewRevisionWaitSubject as ReviewRevisionWaitSubjectFromGateBarrel } from "../index.gate.js";
 import { getInReviewStallReason } from "../tasks/in-review-stall.js";
@@ -38,7 +49,17 @@ import { PRE_MERGE_STEPS_NOT_RUN_BLOCKER } from "../merge/task-merge.js";
 import { hasPendingRemediationWork } from "../tasks/remediation-steps.js";
 import type { HumanMergeApprovalState, Task, TaskStep, WorkflowStepResult } from "../types.js";
 
-const NOW = Date.parse("2026-09-29T12:00:00.000Z");
+/*
+Anchored to the real clock: the predicate's default (`Date.now()`) is what production runs, and the
+fixture rows sit seconds old against it, i.e. inside the defer horizon by construction. Ageing a case
+is done by stamping the AUTHORED ROW older (`olderThanHorizon`), never by waiting on a wall clock.
+*/
+const NOW = Date.now();
+
+/** A row clock strictly older than the defer horizon — the expiry cases stamp their authored row with it. */
+function olderThanHorizon(): string {
+  return new Date(NOW - REVIEW_REVISION_PARK_DEFER_HORIZON_MS - 60_000).toISOString();
+}
 
 function at(offsetMs: number): string {
   return new Date(NOW + offsetMs).toISOString();
@@ -93,15 +114,34 @@ describe("isAwaitingReviewRevision — conjunction of authored verdict and pendi
     expect(findAwaitingReviewRevisionGate(task)).toBe("code-review");
   });
 
-  it("is false when remediation is no longer pending — the revision was already corrected", () => {
+  it("is false when no step of any kind is still pending — the revision was already corrected", () => {
     const task = card({ steps: [step({ status: "done", completedAt: at(0) } as Partial<TaskStep>)] });
     expect(hasPendingRemediationWork(task)).toBe(false);
     expect(isAwaitingReviewRevision(task)).toBe(false);
   });
 
-  it("is false for pending work that carries no remediation provenance", () => {
-    const task = card({ steps: [step()] });
-    expect(isAwaitingReviewRevision(task)).toBe(false);
+  /*
+  FNXC:ReviewRevisionWaitHorizon 2026-11-05-18:05 (RUFU-447): this is the case RUFU-280 asserted as
+  FALSE and the case this change exists to flip. A reviewer who names the corrections in the verdict's
+  `notes` publishes no `step.remediation` provenance, and neither does an executor that died between
+  the verdict write and the remediation append — yet the card still owes steps, and RUFU-269 measured
+  that shape reaching the deadlock park anyway.
+  */
+  it("classifies a notes-only REVISE whose board carries only ordinary pending steps", () => {
+    const notesOnly = reviewRow({
+      notes: "Fix: lockfile drift in plugin workspaces. Fix: add the regression test. Fix: stale doc.",
+    });
+    const task = card({
+      steps: [
+        step({ name: "Preflight", status: "done" } as Partial<TaskStep>),
+        step({ name: "Implement", status: "pending" } as Partial<TaskStep>),
+        step({ name: "Docs", status: "pending" } as Partial<TaskStep>),
+      ],
+      workflowStepResults: [notesOnly],
+    });
+    expect(hasPendingRemediationWork(task)).toBe(false);
+    expect(isAwaitingReviewRevision(task)).toBe(true);
+    expect(findAwaitingReviewRevisionGate(task)).toBe("code-review");
   });
 
   it("is false for an authored REVISE with no durable review input — that is a plumbing death, not a finding", () => {
@@ -159,6 +199,98 @@ describe("isAwaitingReviewRevision — conjunction of authored verdict and pendi
     expect(isAwaitingReviewRevision(card({ workflowStepResults: [] }))).toBe(false);
     expect(isAwaitingReviewRevision(card({ workflowStepResults: undefined }))).toBe(false);
     expect(findAwaitingReviewRevisionGate(card({ workflowStepResults: undefined }))).toBeUndefined();
+  });
+})
+
+/*
+FNXC:ReviewRevisionWaitHorizon 2026-11-05-18:05 (RUFU-447):
+The deferral is bounded, and the bound is the only thing that kept the broadened clause from deleting
+the operator alarm entirely. Past `REVIEW_REVISION_PARK_DEFER_HORIZON_MS` the predicate goes false, the
+card falls back to `merge-blocker`, the episode re-keys, and the ordinary deadlock park — which the
+wedge table DOES alert on — becomes reachable again. A deferral with no expiry is a card that can never
+be reported stuck, which is a worse failure than the one RUFU-280 removed.
+*/
+describe("the defer horizon bounds how long a revision can defer the park", () => {
+  /** Notes-only `REVISE` plus ordinary pending steps: the shape only the broadened clause can see. */
+  function notesOnlyCard(overrides: Partial<Task> = {}): Task {
+    return card({
+      steps: [
+        step({ name: "Implement", status: "done" } as Partial<TaskStep>),
+        step({ name: "Test", status: "pending" } as Partial<TaskStep>),
+      ],
+      ...overrides,
+    });
+  }
+
+  it("defers while the authored row is younger than the horizon", () => {
+    const task = notesOnlyCard();
+    expect(isAwaitingReviewRevision(task, { nowMs: NOW })).toBe(true);
+  });
+
+  it("releases the card to the ordinary classification once the authored row ages past the horizon", async () => {
+    const aged = reviewRow({ startedAt: olderThanHorizon(), completedAt: olderThanHorizon() });
+    const task = notesOnlyCard({ workflowStepResults: [aged] });
+    expect(isAwaitingReviewRevision(task, { nowMs: NOW })).toBe(false);
+    expect(findAwaitingReviewRevisionGate(task, { nowMs: NOW })).toBeUndefined();
+    // Both authorities hand the released card back to the ordinary blocker, so the alertable park and the
+    // operator's `merge-blocker` chip stay reachable — the alarm never stops existing.
+    expect(getInReviewStallReason(task, { now: NOW })?.code).toBe("merge-blocker");
+    expect((await deriveTaskStallReason(task, { now: NOW }))?.code).toBe("merge-blocker");
+  });
+
+  it("bounds the STRUCTURAL shape too, so no provenance buys an indefinite reprieve", () => {
+    const aged = reviewRow({ startedAt: olderThanHorizon(), completedAt: olderThanHorizon() });
+    expect(isAwaitingReviewRevision(card({ workflowStepResults: [aged] }), { nowMs: NOW })).toBe(false);
+    // Contrast on the same fixture with a fresh row: the row's age is the only difference.
+    expect(isAwaitingReviewRevision(card(), { nowMs: NOW })).toBe(true);
+  });
+
+  it("ages from the authored row's own clock, never from `updatedAt` a foreign write bumped", () => {
+    // A stale card touched five minutes ago by an unrelated write still defers: the row, not the row's
+    // `updatedAt`, is what the horizon measures (otherwise every board write would extend the grace).
+    const task = notesOnlyCard({ updatedAt: new Date(NOW - 5 * 60_000).toISOString() });
+    expect(isAwaitingReviewRevision(task, { nowMs: NOW })).toBe(true);
+  });
+
+  it("refuses the deferral for an untimeable authored row — no date, no reprieve", () => {
+    const task = notesOnlyCard({
+      workflowStepResults: [reviewRow({ completedAt: undefined as unknown as string, startedAt: undefined as unknown as string })],
+    });
+    expect(isAwaitingReviewRevision(task, { nowMs: NOW })).toBe(false);
+  });
+
+  it("is false for pending ordinary steps with no authored REVISE — execution is never a revision", () => {
+    // This is the `hasPendingReviewRemediationWork` trap: under `reopen-trailing` that helper is true for
+    // any mid-implementation card, and labeling one a review revision is the false claim the
+    // verdict-first clause order prevents.
+    const executing = card({ workflowStepResults: [] });
+    expect(isAwaitingReviewRevision(executing, { nowMs: NOW })).toBe(false);
+    const approved = card({
+      workflowStepResults: [reviewRow({ verdict: "APPROVE", status: "passed" })],
+    });
+    expect(isAwaitingReviewRevision(approved, { nowMs: NOW })).toBe(false);
+  });
+
+  it("keeps a review-convergence human hold out of the revision class in both authorities", async () => {
+    /*
+    The convergence ladder parks its terminal escalation as `status: "awaiting-approval"` +
+    `awaitingApprovalReason: "code-review-non-convergence"`. The predicate itself never reads `status` (its
+    subject type excludes it on purpose), so what keeps a human-arbitration hold from being labelled "the
+    engine is applying corrections" is the AUTHORITIES: the engine mirror exempts the two human-hold
+    statuses at the top of its ladder, and the read side gates its own awaiting arm on the same status set
+    (`FNXC:ReviewRevisionHoldParity`). Asserted at both authorities because their agreement IS the
+    invariant — a chip promising corrections on a card whose only outstanding move is operator arbitration
+    is the RUFU-280 consent-precedence defect wearing a different code.
+    */
+    const held = notesOnlyCard({
+      status: "awaiting-approval",
+      awaitingApprovalReason: "code-review-non-convergence",
+    });
+    expect(getInReviewStallReason(held, { now: NOW })).toBeUndefined();
+    const derived = await deriveTaskStallReason(held, { now: NOW });
+    expect(derived?.code).not.toBe("awaiting-review-revision");
+    // Non-vacuity: the SAME card with the hold lifted is the deferred case asserted above.
+    expect((await deriveTaskStallReason(notesOnlyCard(), { now: NOW }))?.code).toBe("awaiting-review-revision");
   });
 })
 
@@ -281,6 +413,15 @@ describe("the predicate reaches consumers through both @fusion/core barrels", ()
     }
     expect(GATE_AWAITING_SENTENCE).toBe(MAIN_AWAITING_SENTENCE);
     expect(GATE_AWAITING_SENTENCE).toBe(AWAITING_REVIEW_REVISION_STALL_REASON);
+    /*
+    FNXC:ReviewRevisionWaitHorizon 2026-11-05-18:05 (RUFU-447): the horizon constant joined the exported
+    set, so parity now covers it too — the engine-core lane reads the predicate AND its bound through the
+    gate barrel, and a bound that resolves to `undefined` there compares as `ageMs <= undefined` → false,
+    silently un-deferring every card in the gate lane.
+    */
+    expect(MAIN_DEFER_HORIZON_MS).toBe(REVIEW_REVISION_PARK_DEFER_HORIZON_MS);
+    expect(GATE_DEFER_HORIZON_MS).toBe(REVIEW_REVISION_PARK_DEFER_HORIZON_MS);
+    expect(GATE_DEFER_HORIZON_MS).toBe(6 * 60 * 60 * 1000);
     // The type-only export is the compile-time half of the parity: a gate-barrel consumer must be able
     // to name the subject without reaching past the barrel into `../tasks/review-revision-wait.js`.
     const gateBarrelSubject: ReviewRevisionWaitSubjectFromGateBarrel = { workflowStepResults: [], steps: [] };

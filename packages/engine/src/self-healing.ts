@@ -10869,20 +10869,20 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   REPAIR A CARD AN EARLIER BUILD FROZE WHILE ITS REVIEWER WAS WAITING FOR CORRECTIONS.
 
   The stall ladder now withholds this park (see `isAwaitingReviewRevision`), but a card parked by a
-  pre-fix build is still sitting `paused: true` + `status: "failed"` with unfinished remediation steps,
+  pre-fix build is still sitting `paused: true` + `status: "failed"` with unfinished work on its step board,
   and nothing else owns that combination: the failed-pre-merge-gate revival lanes all require an
   engine-authored park signature this card's error does carry, but each of them re-runs a gate, while
   this card's gate ran, produced findings, and its work is merely not finished yet. So this sweep does
   one thing — lift the park in place — and no column move, no verdict fabrication, and no re-run.
 
   Why the signature is the PREDICATE and not the error text: the predicate is content-keyed
-  (`verdict === "REVISE"` + a real `reviewInputFingerprint` + pending structural remediation), so a
-  verdict-less plumbing death parked under the identical sentence stays with the verdict-less recovery
+  (`verdict === "REVISE"` + a real `reviewInputFingerprint` + unfinished work inside the defer horizon), so
+  a verdict-less plumbing death parked under the identical sentence stays with the verdict-less recovery
   lanes (RUFU-204/217/234) that actually re-run it. The clear is `updateTaskAtomic`-all-or-nothing on
   the same signature that admitted it, so a card whose shape drifted between the page read and the
   write keeps its park, and an operator hold (`userPaused`, or a pause whose reason is not the deadlock
-  park) is never lifted. Clearing is not disarming: the detector re-parks on the same threshold once
-  remediation stops being pending.
+  park) is never lifted. Clearing is not disarming: the detector re-parks on the same threshold once the
+  predicate goes false again.
 
   The clear also resets `mergeRetries`, matching the other two lifts of this same park
   (`routeUnrunGateParkBackToReview` and the workspace-partial-land stall clear): a card frozen by a
@@ -10902,6 +10902,14 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   are one predicate (`isReviewRevisionParkRepairAdmissible`) so the pre-filter and the atomic write
   cannot diverge; the merge-queue leg needs an await and so lives in the pre-check, which the sync
   atomic updater cannot host.
+
+  FNXC:ReviewRevisionWaitHorizon 2026-11-05-18:05 (RUFU-447): this sweep's admission is the SAME predicate
+  the stall ladder defers on, so it widened with it — a card whose reviewer named the corrections only in
+  the verdict's NOTES is repaired too now. The consequence is deliberate and must stay understood: a park
+  whose authored `REVISE` row has already aged past `REVIEW_REVISION_PARK_DEFER_HORIZON_MS` is NOT cleared,
+  because the predicate that justifies the clear is false by then, and a clear the very next stall pass
+  re-parks is a loop rather than a repair. Those older parks remain the operator's to Retry — the horizon is
+  this sweep's expiry date, not a gap in it.
   */
   async reconcileReviewRevisionStallParks(): Promise<number> {
     try {
@@ -10970,7 +10978,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             */
             await this.store.logEntry(
               fresh.id,
-              `[pre-merge] Cleared the engine's in-review stall park: the latest review authored a REVISE verdict and this card still has unfinished remediation, so it is working, not stalled.`,
+              `[pre-merge] Cleared the engine's in-review stall park: the latest review authored a REVISE verdict and this card still has unfinished work to run, so it is working, not stalled.`,
             );
 
             let outcome: "cleared" | "signature-drift" = "signature-drift";
@@ -15474,15 +15482,23 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
           the classifier's `signal.code`, so the guard is the predicate itself and not a code frozen at an
           earlier read: today the classifier's awaiting arm and this call agree by construction, and the
           re-derivation is what keeps them from silently diverging if the arm ever gains a second route.
-          That is also why no second budget was invented — when remediation stops being pending, this arm
+          That is also why no second budget was invented — when the predicate finally goes false, this arm
           falls through to the ordinary classification, whose code change re-keys the episode (finishing
           remediation is progress), and the pre-existing threshold governs whatever episode follows.
+
+          FNXC:ReviewRevisionWaitHorizon 2026-11-05-18:05 (RUFU-447): the predicate's second clause widened
+          to ANY pending step (RUFU-269: an authored `REVISE` whose findings lived only in the verdict's
+          notes, plus the crash window between the verdict write and the remediation append), so this guard
+          now defers those cards too. What keeps it from being an open-ended reprieve is the predicate's own
+          `REVIEW_REVISION_PARK_DEFER_HORIZON_MS`, and the clock handed to it is `cycleStartMs` — the same
+          reading this pass already gave `getInReviewStallReason` — so the classifier's code and this
+          withholding conjunct cannot disagree about the row's age.
           */
           if (
             threshold > 0
             && live.userPaused !== true
             && repetitionCount >= threshold
-            && !isAwaitingReviewRevision(live)
+            && !isAwaitingReviewRevision(live, { nowMs: cycleStartMs })
           ) {
             disposition = "deadlock";
             /*

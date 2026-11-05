@@ -664,7 +664,9 @@ export async function deriveTaskStallReason(
     || task.column === LEGACY_ARCHIVED_COLUMN;
   if (inTerminalLane) return undefined;
 
-  const observedAt = new Date(context.now ?? Date.now()).toISOString();
+  // One clock reading for the whole derivation: `observedAt` and the defer-horizon comparison below must come from the same measurement.
+  const clockNowMs = context.now ?? Date.now();
+  const observedAt = new Date(clockNowMs).toISOString();
 
   const reviewColumns = context.reviewColumns?.size ? context.reviewColumns : undefined;
   const inReviewLane = reviewColumns
@@ -721,7 +723,21 @@ export async function deriveTaskStallReason(
       withheld the pre-existing classification is the truthful one: `merge-blocker` while the door
       refuses the card, `held-human-review` otherwise (the rung directly below).
       */
-      if (!unrunGate && context.autoMergeAllowed !== false && isAwaitingReviewRevision(task)) {
+      /*
+      FNXC:ReviewRevisionHoldParity 2026-11-05-18:05 (RUFU-447):
+      A card held for a HUMAN decision is not a card the engine is working on. `getInReviewStallReason`
+      exempts `awaiting-approval` / `awaiting-user-review` outright at the top of its ladder, and while the
+      read side's pre-existing rungs answered those statuses the same way as long as the awaiting arm needed
+      structural remediation provenance (the convergence ladder only parks a cap when none is pending), the
+      broadened clause made this arm reachable for them: a review-convergence escalation hold
+      (`status: "awaiting-approval"` + `awaitingApprovalReason: "code-review-non-convergence"`) carrying an
+      ordinary pending step would have rendered a green "applying review corrections" chip on a card whose
+      only outstanding move is operator arbitration. The gate is on THIS arm alone, not the ladder, so every
+      other code keeps answering exactly as it did; the status set is the mirror's, verbatim, so the two
+      authorities cannot disagree about what a human hold is.
+      */
+      const heldOnHumanDecision = task.status === "awaiting-approval" || task.status === "awaiting-user-review";
+      if (!unrunGate && context.autoMergeAllowed !== false && !heldOnHumanDecision && isAwaitingReviewRevision(task, { nowMs: clockNowMs })) {
         return {
           code: "awaiting-review-revision",
           reason: AWAITING_REVIEW_REVISION_STALL_REASON,

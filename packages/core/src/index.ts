@@ -1243,9 +1243,12 @@ export {
   remediationDeclaredFiles,
 } from "./tasks/remediation-steps.js";
 export type { RemediationStepInput } from "./tasks/remediation-steps.js";
-/* FNXC:ReviewRevisionWait 2026-09-29-14:12 (RUFU-280): the authored-REVISE-with-pending-remediation predicate, exported beside the remediation helpers it consumes so the narrow-vs-broad predicate pair stays adjacent. */
-export { isAwaitingReviewRevision, findAwaitingReviewRevisionGate, AWAITING_REVIEW_REVISION_STALL_REASON } from "./tasks/review-revision-wait.js";
-export type { ReviewRevisionWaitSubject } from "./tasks/review-revision-wait.js";
+/*
+FNXC:ReviewRevisionWait 2026-09-29-14:12 (RUFU-280): the authored-REVISE-with-pending-remediation predicate, exported beside the remediation helpers it consumes so the narrow-vs-broad predicate pair stays adjacent.
+FNXC:ReviewRevisionWaitHorizon 2026-11-05-18:05 (RUFU-447): the defer horizon is exported because it is the bound a reader needs to interpret the predicate's absence — without it, "this card stopped being deferred" is unanswerable. Same named list in BOTH barrels.
+*/
+export { isAwaitingReviewRevision, findAwaitingReviewRevisionGate, AWAITING_REVIEW_REVISION_STALL_REASON, REVIEW_REVISION_PARK_DEFER_HORIZON_MS } from "./tasks/review-revision-wait.js";
+export type { ReviewRevisionWaitSubject, ReviewRevisionWaitOptions } from "./tasks/review-revision-wait.js";
 export type { AppendRemediationStepsOptions, AppendRemediationStepsResult } from "./task-store/remediation-step-ops.js";
 export { evaluateNoCommitsNoOpFinalize, WORKTREE_CONTENT_UNPROVEN_REASON } from "./merge/no-commits-finalize-guard.js";
 /* FNXC:ZeroCommitLandingProof 2026-09-25-11:17 (RUFU-274): the shared durable landing-proof predicate every finalization lane must consult before reporting a zero-commit card done. */

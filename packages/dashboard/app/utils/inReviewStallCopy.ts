@@ -82,14 +82,20 @@ const COPY_BY_CODE: Record<InReviewStallCode, Omit<InReviewStallCopy, "badgeLabe
   FNXC:ReviewRevisionWait 2026-09-29-16:40 (RUFU-280):
   The state this code names is the review loop WORKING, so the copy must not read as a fault: no "blocked",
   no pointer at merge-retry tooling (there is no retry to retry), and no instruction to intervene while the
-  remediation steps are still advancing. The operator's real action is to notice when they stop.
+  card's own steps are still advancing. The operator's real action is to notice when they stop.
+
+  FNXC:ReviewRevisionWaitHorizon 2026-11-05-18:05 (RUFU-447):
+  "unfinished remediation steps" -> "unfinished work it still has to run". The deferral now covers any card
+  with an authored `REVISE` and a pending step, which includes the shape that has no remediation step at all
+  (findings published in the verdict's `notes`). Naming a step kind the board may not contain is a claim this
+  state no longer licenses.
   */
   "awaiting-review-revision": {
     headline: "Applying review corrections",
     description:
-      "The latest code review authored a REVISE verdict and this card still has unfinished remediation steps. The engine is executing them, which is why the card sits in review without being stalled.",
+      "The latest code review authored a REVISE verdict and this card still has unfinished work to run. The engine is executing it, which is why the card sits in review without being stalled.",
     suggestedAction:
-      "Let the next review round run. Open the Review tab only if the remediation steps stop advancing; Retry or a manual fix is for a card that stops producing progress, not for one mid-correction.",
+      "Let the next review round run. Open the Review tab only if the steps stop advancing; Retry or a manual fix is for a card that stops producing progress, not for one mid-correction.",
   },
   "non-retryable-provider-error": {
     headline: "Terminal provider error",
@@ -195,10 +201,13 @@ visual affordance is withheld — so the Review tab, run-audit, and self-healing
 
 - `no-worktree-no-merge-confirmed`: never surfaced as a badge.
 - `merge-blocker`: ordinary waiting stays quiet; a current failed pre-merge gate overrides suppression.
-- `awaiting-review-revision` (RUFU-280): a REVISE verdict with unfinished remediation is the review loop
-  mid-flight, and the executor's remediation steps already name that work on the card. Badging it would
-  mark routine revision abnormal — the same reasoning that quiets `merge-blocker`, and the reason the
-  notification wedge table admits it as `null` rather than an alert.
+- `awaiting-review-revision` (RUFU-280): a REVISE verdict whose corrections are still owed is the review loop
+  mid-flight, and the executor's own pending steps already name that work on the card. Badging it would
+  mark routine revision abnormal — the same reasoning that quiets `merge-blocker`. RUFU-447 widened the state
+  to any pending step, and the quiet is now bounded rather than open-ended: the deferral expires at
+  `REVIEW_REVISION_PARK_DEFER_HORIZON_MS` (6h from the authored `REVISE` row), after which the card answers
+  `merge-blocker` again and that code's own alert path resumes. Suppressing the badge never suppressed the
+  alarm; it suppressed the badge only.
 
 The other codes (transient-merge-status-no-owner, merge-retries-exhausted, non-retryable-provider-error)
 still badge — they report genuinely stuck states needing an operator.
