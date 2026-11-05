@@ -198,6 +198,19 @@ export type LongTermMemoryMaintenanceOptions = {
   audit: LongTermMemoryAuditEmit;
   /** Backup factory covering the memory tree; defaults to the configured `MemoryBackupManager`. */
   createBackup?: () => Promise<LongTermMemoryBackupReceipt>;
+  /*
+   * FNXC:MemorySnapshotRetention 2026-11-05-10:28 (RUFU-441):
+   * RUFU-279 made this path a snapshot producer but left its only eviction routine
+   * (`MemoryBackupManager.cleanupOldBackups`) reachable only from `runMemoryBackupCommand`, so on a
+   * default project — where `memoryBackupEnabled: false` means the scheduled backup is never even
+   * created — every snapshot this sweep took survived forever. A snapshot producer owns its eviction,
+   * so the seam carries the cleanup companion next to the create it bounds. It is entered only after a
+   * snapshot actually succeeded, and it runs best-effort: a rejection here cannot reject a maintenance
+   * pass that already did its work. An injected `createBackup` with NO companion performs no eviction —
+   * the injection then owns both halves — which is why every pre-existing single-field injection stays
+   * valid.
+   */
+  cleanupOldBackups?: () => Promise<number>;
   /** Settings used to resolve the operator's backup dir/retention/scope. */
   settings?: Partial<ProjectSettings>;
   budgetBytes?: number;
@@ -293,9 +306,12 @@ type PendingRewrite = {
  * switch, and it is the only code in the repo that rewrites a long-term memory file.
  *
  * Ordering is load-bearing: read → plan → (nothing to collapse: report only) → ONE backup of the whole
- * memory tree → re-verify each file still holds the bytes the plan was built from → write → read back.
+ * memory tree → evict that directory back to `memoryBackupRetention` → re-verify each file still holds
+ * the bytes the plan was built from → write → read back.
  * One backup per sweep covers every target because `MemoryBackupManager` archives `.fusion/memory` and
- * `.fusion/agent-memory` together, which avoids burning retention slots per file; the re-verify closes
+ * `.fusion/agent-memory` together, which avoids burning retention slots per file; the eviction that
+ * RUFU-441 wired in is scoped the same way, one entry per sweep rather than one per rewritten target, so
+ * the pass cannot grow the directory it just paid for. The re-verify closes
  * the window in which an append landing after the plan would otherwise be overwritten. If an operator
  * narrowed `memoryBackupScope`, an uncovered target is reported as a `backup-scope` failure and left
  * untouched rather than written without its backup.
@@ -396,7 +412,8 @@ export async function runLongTermMemoryMaintenance(
 
       if (bytes <= budgetBytes) {
         // Within budget: leave the file byte-identical. Consolidating a file that does not need it would
-        // burn backup retention and churn a file no reader is hurting on.
+        // burn backup retention (one snapshot per sweep, each taking a retention slot) and churn a file no
+        // reader is hurting on.
         result.withinBudget += 1;
         continue;
       }
@@ -428,11 +445,18 @@ export async function runLongTermMemoryMaintenance(
   if (pending.length === 0) return result;
 
   // No rewrite without a backup taken in this same sweep, after the planned bytes were read.
+  // The manager instance is held, not discarded, because the same object owns the eviction below.
   let receipt: LongTermMemoryBackupReceipt | null = null;
+  let evictSnapshots: (() => Promise<number>) | null = null;
   try {
-    receipt = options.createBackup
-      ? await options.createBackup()
-      : await createMemoryBackupManager(join(options.rootDir, ".fusion"), options.settings).createBackup();
+    if (options.createBackup) {
+      receipt = await options.createBackup();
+      evictSnapshots = options.cleanupOldBackups ?? null;
+    } else {
+      const manager = createMemoryBackupManager(join(options.rootDir, ".fusion"), withEvictableRetention(options.settings));
+      receipt = await manager.createBackup();
+      evictSnapshots = () => manager.cleanupOldBackups();
+    }
   } catch (error) {
     options.log?.warn?.(`long-term memory maintenance skipped ${pending.length} rewrite(s): backup failed (${describe(error)})`);
     receipt = null;
@@ -453,6 +477,37 @@ export async function runLongTermMemoryMaintenance(
       });
     }
     return result;
+  }
+
+  /*
+   * FNXC:MemorySnapshotRetention 2026-11-05-10:28 (RUFU-441):
+   * A snapshot that nothing ever evicts is an unbounded disk leak, not a safety net: this sweep runs at
+   * engine startup and in maintenance batch 1 with no cadence gate of its own, so its frequency is the
+   * maintenance tick — `settings.maintenanceIntervalMs`, whose shipped default is 300 000 (5 min ⇒ up to
+   * 288 passes a day; the engine's nullish fallback of 900 000 would be 96). Every pass with a pending
+   * rewrite leaves a full copy of both memory trees behind — including copies taken for rewrites that were
+   * later refused, because acquisition happens before the write. So the pass mirrors the
+   * create-then-cleanup pairing `fn memory-backup --create` already uses (`runMemoryBackupCommand`),
+   * scoped to the pass rather than to a target, and reads `memoryBackupRetention` through the same
+   * manager that read `memoryBackupDir`/`memoryBackupScope`.
+   *
+   * Two properties the rest of this block must not lose:
+   * 1. It runs only after a snapshot SUCCEEDED. A pass with nothing pending returns earlier and a failed
+   *    snapshot returns below, so neither ever scans or deletes the directory.
+   * 2. It is best-effort. `cleanupOldBackups()` already swallows its own listing and per-directory `rm`
+   *    errors, so a partial eviction returns quietly in production; an injected seam that rejects must
+   *    likewise neither reject this pass nor change its audit outcome. Losing the eviction is a disk cost,
+   *    failing the consolidation would be data loss.
+   */
+  if (evictSnapshots) {
+    try {
+      const evicted = await evictSnapshots();
+      if (evicted > 0) {
+        options.log?.debug?.(`long-term memory snapshot retention: evicted ${evicted} old memory backup(s).`);
+      }
+    } catch (error) {
+      options.log?.warn?.(`long-term memory snapshot retention sweep failed: ${describe(error)}`);
+    }
   }
 
   for (const item of pending) {
@@ -546,4 +601,23 @@ async function safeAudit(
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/*
+ * FNXC:MemorySnapshotRetention 2026-11-05-10:28 (RUFU-441):
+ * `memoryBackupRetention` reaches this module straight from project settings, and unlike
+ * `autoBackupRetention` it has no server-side range check on the settings write path (the route validates
+ * that DB-backup key through `validateBackupRetention`, which accepts 1-100; the memory key is unchecked,
+ * and the dashboard flags an out-of-range value in the form without the write path refusing it). Before
+ * RUFU-441 an out-of-range value was inert here because nothing on this path evicted; now that the pass
+ * reads its own retention, a count below 1 would make the eviction delete the snapshot this very pass
+ * took, breaking the "no backup, no write" guarantee one step after honoring it. The floor therefore
+ * belongs where the value is consumed: `cleanupOldBackups()` is shared with `fn memory-backup --create`
+ * and `packages/core/src/memory/memory-backup.ts` stays unmodified. An unset or valid value passes through
+ * untouched, so the manager's own constructor defaults remain the single source of truth.
+ */
+function withEvictableRetention(settings?: Partial<ProjectSettings>): Partial<ProjectSettings> | undefined {
+  const configured = settings?.memoryBackupRetention;
+  if (typeof configured !== "number" || configured >= 1) return settings;
+  return { ...settings, memoryBackupRetention: 1 };
 }

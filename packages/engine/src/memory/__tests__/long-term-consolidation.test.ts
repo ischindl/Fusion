@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -438,6 +438,267 @@ describe("runLongTermMemoryMaintenance", () => {
     expect(result.rewritten).toBe(1);
     expect(result.failures).toBe(1);
     expect(audit.rows.some((row) => row.metadata.stage === "read" && row.metadata.agentId === "agent-broken")).toBe(true);
+  });
+});
+
+/*
+ * FNXC:MemorySnapshotRetention 2026-11-05-10:28 (RUFU-441):
+ * RUFU-279 shipped only the create half of the create-then-cleanup pairing. The maintenance pass
+ * snapshotted `.fusion/memory` + `.fusion/agent-memory` whenever a rewrite was pending and nothing on
+ * that path ever evicted: `cleanupOldBackups()` was reachable only from `runMemoryBackupCommand`, whose
+ * automatic schedule `memoryBackupEnabled: false` (the default) never creates. The maintenance pass has no
+ * cadence gate of its own — it rides the maintenance tick, whose shipped default is
+ * `maintenanceIntervalMs: 300_000` — so that is up to 288 full copies of both memory trees a day that
+ * never disappear, and `memoryBackupRetention` reached the manager constructor unread.
+ * These cases own the three properties of
+ * the fix: the directory is bounded through the REAL `MemoryBackupManager` against the REAL backup dir (a
+ * mock-call assertion cannot prove a disk effect), eviction is entered once per pass rather than once per
+ * rewritten target, and a directory that needs no eviction keeps every entry — including names the
+ * listing regex rejects and a plain file wearing a valid snapshot name.
+ *
+ * Every case here runs against a `mkdtemp` project root: the backup directory is resolved relative to
+ * that root, so no case can reach the repo's own `.fusion/backups/memory` and delete real snapshots.
+ */
+describe("runLongTermMemoryMaintenance snapshot retention", () => {
+  const MEMORY_BACKUP_REL = join(".fusion", "backups", "memory");
+  /** The name pattern `MemoryBackupManager.listBackups()` recognizes. */
+  const SNAPSHOT_NAME = /^memory-\d{4}-\d{2}-\d{2}-\d{6}(?:-\d+)?$/;
+
+  /** Seed the backup directory with snapshots whose names the listing regex accepts. */
+  async function seedSnapshots(root: string, names: string[]): Promise<string> {
+    const dir = join(root, MEMORY_BACKUP_REL);
+    for (const name of names) {
+      await mkdir(join(dir, name, "project"), { recursive: true });
+      await writeFile(join(dir, name, "project", "MEMORY.md"), `seeded copy of ${name}\n`);
+    }
+    return dir;
+  }
+
+  it("evicts the snapshot directory down to memoryBackupRetention through the real manager", async () => {
+    const root = await makeTempProject();
+    await writeProjectMemory(root, memoryContent(6, { duplicateOf: 3 }));
+    const seeded = [
+      "memory-2026-09-01-000000",
+      "memory-2026-09-02-000000",
+      "memory-2026-09-03-000000",
+      "memory-2026-09-04-000000",
+      "memory-2026-09-05-000000",
+      "memory-2026-09-06-000000",
+    ];
+    const dir = await seedSnapshots(root, seeded);
+
+    // No injected seam: retention must reach the real manager and the real backup directory.
+    const result = await runLongTermMemoryMaintenance({
+      rootDir: root,
+      budgetBytes: 200,
+      settings: { memoryBackupRetention: 3 },
+      audit: collectAudit().emit,
+    });
+
+    expect(result.rewritten).toBe(1);
+    const survivors = await readdir(dir);
+    const recognized = survivors.filter((name) => SNAPSHOT_NAME.test(name));
+    expect(recognized.length).toBeLessThanOrEqual(3);
+    // Newest wins: the two most recent seeded copies and this pass's own snapshot remain.
+    expect(survivors.filter((name) => seeded.includes(name))).toEqual([
+      "memory-2026-09-05-000000",
+      "memory-2026-09-06-000000",
+    ]);
+    const fresh = recognized.filter((name) => !seeded.includes(name));
+    expect(fresh).toHaveLength(1);
+    for (const name of ["memory-2026-09-01-000000", "memory-2026-09-02-000000", "memory-2026-09-03-000000", "memory-2026-09-04-000000"]) {
+      expect(survivors).not.toContain(name);
+    }
+  });
+
+  /*
+   * FNXC:MemorySnapshotRetention 2026-11-05-10:28 (RUFU-441):
+   * `memoryBackupRetention` has no server-side range check on the settings write path (the route validates
+   * `autoBackupRetention` through `validateBackupRetention`, the memory key is unchecked), and this pass
+   * now reads it for eviction. A stored value below 1 would therefore delete the snapshot that authorized
+   * this very rewrite — the "no backup, no write" guarantee broken one step after being honored. The floor
+   * keeps the copy this pass produced, and only that one.
+   */
+  it("never evicts the snapshot that authorized this pass, even at a retention below one", async () => {
+    const root = await makeTempProject();
+    await writeProjectMemory(root, memoryContent(6, { duplicateOf: 3 }));
+    const seeded = ["memory-2026-09-01-000000", "memory-2026-09-02-000000", "memory-2026-09-03-000000"];
+    const dir = await seedSnapshots(root, seeded);
+
+    const result = await runLongTermMemoryMaintenance({
+      rootDir: root,
+      budgetBytes: 200,
+      settings: { memoryBackupRetention: 0 },
+      audit: collectAudit().emit,
+    });
+
+    expect(result.rewritten).toBe(1);
+    const survivors = (await readdir(dir)).filter((name) => SNAPSHOT_NAME.test(name));
+    expect(survivors).toHaveLength(1);
+    expect(seeded).not.toContain(survivors[0]);
+  });
+
+  it("deletes nothing when the snapshot directory is already within retention", async () => {
+    const root = await makeTempProject();
+    await writeProjectMemory(root, memoryContent(6, { duplicateOf: 3 }));
+    // Two recognized snapshots + this pass's own = exactly retention, so nothing may be evicted. The
+    // rest guards the other direction: a fix must not "bound" the directory by deleting anything.
+    const dir = await seedSnapshots(root, ["memory-2026-09-01-000000", "memory-2026-09-02-000000"]);
+    await mkdir(join(dir, "notes"), { recursive: true });
+    await writeFile(join(dir, "notes", "keep.txt"), "not a snapshot\n");
+    await writeFile(join(dir, "README.txt"), "not a snapshot\n");
+    await writeFile(join(dir, "memory-2026-08-31-235959"), "a file wearing a valid snapshot name\n");
+
+    const result = await runLongTermMemoryMaintenance({
+      rootDir: root,
+      budgetBytes: 200,
+      settings: { memoryBackupRetention: 3 },
+      audit: collectAudit().emit,
+    });
+
+    expect(result.rewritten).toBe(1);
+    const survivors = await readdir(dir);
+    expect(survivors).toContain("memory-2026-09-01-000000");
+    expect(survivors).toContain("memory-2026-09-02-000000");
+    expect(survivors).toContain("memory-2026-08-31-235959");
+    expect(survivors).toContain("notes");
+    expect(survivors).toContain("README.txt");
+  });
+
+  it("enters the snapshot and the eviction seam once per pass, not once per rewritten target", async () => {
+    const root = await makeTempProject();
+    await writeProjectMemory(root, memoryContent(6, { duplicateOf: 3 }));
+    await writeAgentMemory(root, "agent-1", memoryContent(6, { duplicateOf: 3 }));
+    const createBackup = vi.fn(async () => ({ scope: "all" }) satisfies LongTermMemoryBackupReceipt);
+    const cleanupOldBackups = vi.fn(async () => 0);
+
+    const result = await runLongTermMemoryMaintenance({
+      rootDir: root,
+      budgetBytes: 200,
+      audit: collectAudit().emit,
+      createBackup,
+      cleanupOldBackups,
+    });
+
+    expect(result.rewritten).toBe(2);
+    expect(createBackup).toHaveBeenCalledTimes(1);
+    // One snapshot spans the whole tree, so one eviction pass bounds it; per-target eviction would
+    // burn retention slots per file and multiply a destructive scan over the same directory.
+    expect(cleanupOldBackups).toHaveBeenCalledTimes(1);
+  });
+
+  /*
+   * FNXC:MemorySnapshotRetention 2026-11-05-10:28 (RUFU-441):
+   * Eviction is a disk-hygiene step bolted onto a job whose real product is a rewritten memory file, so
+   * the failure direction must stay one-way. `MemoryBackupManager.cleanupOldBackups()` swallows its own
+   * listing and per-directory `rm` errors, which means production can only ever under-evict quietly — the
+   * invariant "eviction cannot fail the pass" is therefore observable ONLY at the engine seam, which is
+   * why this case injects a rejecting seam instead of trying to make `rm` fail.
+   */
+  it("completes and still reports the consolidation when eviction rejects", async () => {
+    const root = await makeTempProject();
+    const path = await writeProjectMemory(root, memoryContent(6, { duplicateOf: 3 }));
+    const before = await readFile(path, "utf8");
+    const audit = collectAudit();
+
+    const result = await runLongTermMemoryMaintenance({
+      rootDir: root,
+      budgetBytes: 200,
+      audit: audit.emit,
+      createBackup: async () => ({ scope: "all" }) satisfies LongTermMemoryBackupReceipt,
+      cleanupOldBackups: async () => {
+        throw new Error("backup volume is read-only");
+      },
+    });
+
+    // The rewrite is the pass's actual product: it stands, and it is not counted as a failure.
+    expect(result).toMatchObject({ overBudget: 1, duplicateSectionsCollapsed: 3, rewritten: 1, failures: 0 });
+    const after = await readFile(path, "utf8");
+    expect(after).not.toBe(before);
+    expect(Buffer.byteLength(after, "utf8")).toBeLessThan(Buffer.byteLength(before, "utf8"));
+    for (let i = 0; i < 6; i++) expect(after).toContain(`Body ${i} —`);
+
+    // No forged failure counterpart, and the documented metadata key set is exactly what it was before
+    // this card — a snapshot eviction grows no audit surface.
+    expect(audit.rows.map((row) => row.event)).toEqual([
+      LONG_TERM_MEMORY_AUDIT_EVENTS.overBudget,
+      LONG_TERM_MEMORY_AUDIT_EVENTS.consolidated,
+    ]);
+    expect(Object.keys(audit.rows[1].metadata).sort()).toEqual(
+      [
+        "scope",
+        "bytesBefore",
+        "bytesAfter",
+        "budgetBytes",
+        "entryCountBefore",
+        "entryCountAfter",
+        "duplicateSectionsCollapsed",
+        "conflictsRetained",
+        "stillOverBudget",
+      ].sort(),
+    );
+    expect(audit.rows[1].metadata).toMatchObject({
+      scope: "project",
+      entryCountBefore: 9,
+      entryCountAfter: 6,
+      duplicateSectionsCollapsed: 3,
+      stillOverBudget: true,
+    });
+  });
+
+  it("does not evict on a pass that took no snapshot, even at retention zero", async () => {
+    /*
+     * FNXC:MemorySnapshotRetention 2026-11-05-10:28 (RUFU-441):
+     * Retention 0 makes any eviction maximally destructive, so an untouched directory is proof the scan
+     * never ran rather than proof it deleted nothing. A breach with all-unique entries plans no change,
+     * so this pass acquires no snapshot and owns no eviction — retention bounds the copies a pass
+     * produced, it is not a background janitor for history.
+     */
+    const root = await makeTempProject();
+    const path = await writeProjectMemory(root, memoryContent(6));
+    const before = await readFile(path, "utf8");
+    const dir = join(root, MEMORY_BACKUP_REL);
+    await seedSnapshots(root, ["memory-2026-09-01-000000", "memory-2026-09-02-000000"]);
+    const cleanupOldBackups = vi.fn(async () => 0);
+
+    const result = await runLongTermMemoryMaintenance({
+      rootDir: root,
+      budgetBytes: 200,
+      settings: { memoryBackupRetention: 0 },
+      audit: collectAudit().emit,
+      cleanupOldBackups,
+    });
+
+    expect(result).toMatchObject({ overBudget: 1, rewritten: 0, failures: 0 });
+    expect(await readFile(path, "utf8")).toBe(before);
+    expect(cleanupOldBackups).not.toHaveBeenCalled();
+    expect((await readdir(dir)).sort()).toEqual(["memory-2026-09-01-000000", "memory-2026-09-02-000000"]);
+  });
+
+  it("does not evict when the snapshot itself was refused", async () => {
+    // The refusal path already reports a `backup` failure per pending target; a directory scan on top of
+    // it would delete the very history a failed backup leaves the operator depending on.
+    const root = await makeTempProject();
+    const path = await writeProjectMemory(root, memoryContent(6, { duplicateOf: 3 }));
+    const before = await readFile(path, "utf8");
+    const audit = collectAudit();
+    const cleanupOldBackups = vi.fn(async () => 0);
+
+    const result = await runLongTermMemoryMaintenance({
+      rootDir: root,
+      budgetBytes: 200,
+      audit: audit.emit,
+      createBackup: async () => {
+        throw new Error("disk full");
+      },
+      cleanupOldBackups,
+    });
+
+    expect(result).toMatchObject({ rewritten: 0, failures: 1 });
+    expect(await readFile(path, "utf8")).toBe(before);
+    expect(cleanupOldBackups).not.toHaveBeenCalled();
+    expect(audit.rows.some((row) => row.metadata.stage === "backup")).toBe(true);
+    expect(audit.rows.some((row) => row.metadata.stage === "concurrent-write")).toBe(false);
   });
 });
 
