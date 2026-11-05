@@ -22,10 +22,35 @@
  * guard breaks the tool-result path for every agent on this provider, which is
  * why the logic below stays this small.
  *
- * Scope of what this changes: the `pi-claude-cli` provider surface, whose prompt
- * assembly lives in this repository. On direct OAuth and raw API key the
- * byte-to-content-block assembly is in the upstream `pi-ai` package, which
- * neither owned repository contains; marking here does not reach it.
+ * Why the payload is neutralised rather than merely framed: the frame and the
+ * assembler's role keys ARE the enforcement, so a payload that can write them
+ * carries authority over the prompt instead of content for it. Measured on trunk
+ * on 2026-11-05 (card STAS-389): a result holding `</untrusted_tool_output>` twice
+ * turned one authored close tag into three and put the text after it outside any
+ * frame, and a result holding a line-initial `USER:` produced a second key
+ * indistinguishable from the assembler's own — on the resumed-session delta that
+ * forged key was the only line-initial key present, so it read as a fresh user
+ * turn. Neutralising is one deterministic byte substitution per token, so one
+ * input always prints one output and a payload carrying neither token keeps its
+ * bytes.
+ *
+ * Why neutralising escapes instead of throwing: this repository's own source
+ * contains these literals, so `cat` or `grep` of this very guard is an ordinary
+ * tool result that carries them. Refusing such a payload would break a routine
+ * read for every agent on this provider, which is a defect of the guard, not of
+ * the tool. Escaping the opening `<` of a frame delimiter and the terminating `:`
+ * of a role key keeps the text readable and reversible — `&lt;` and `&#58;` name
+ * exactly what was changed and nothing else — while leaving the payload unable to
+ * address the envelope or a role.
+ *
+ * Which lanes this reaches, stated rather than left to be inferred: lane 1, the
+ * `pi-claude-cli` provider surface, whose prompt assembly lives in this
+ * repository and is enforced here. Lane 2, direct OAuth and raw API key, turns
+ * tool-result bytes into model content in the upstream `pi-ai` package at
+ * `dist/api/anthropic-messages.js`, function `convertToolResult`, which emits a
+ * structured `tool_result` block; that package is an installed peer dependency
+ * with no tracked source, no vendored copy and no patch hook in either owned
+ * repository, so nothing here reaches it and lane 2 stays open on purpose.
  */
 
 /** Labels that make a payload read like a directive when one opens a line. */
@@ -39,6 +64,25 @@ const DIRECTIVE_LABELS = [
 
 const ENVELOPE_OPEN = "<untrusted_tool_output";
 const ENVELOPE_CLOSE = "</untrusted_tool_output>";
+
+/**
+ * The frame's own delimiters as a payload can write them. Only the leading `<`
+ * of a match is replaced, so a payload can neither close the envelope it was
+ * delivered in nor open a second one, while the tag stays legible to a reader.
+ */
+const ENVELOPE_DELIMITER = /<(\/?)untrusted_tool_output/g;
+const NEUTRALISED_DELIMITER = "&lt;$1untrusted_tool_output";
+
+/**
+ * The keys `prompt-builder` puts at a line start, as a payload can write them:
+ * `USER:`, `ASSISTANT:` and `TOOL RESULT (<name>):`. Only the `:` that makes the
+ * word a key is replaced, and only at a line start, because that is what makes a
+ * line readable as a turn boundary. Prose that mentions `USER:` mid-sentence is
+ * data and stays as it is, and the directive labels above are deliberately
+ * absent: they label severity and are not keys of this assembler.
+ */
+const ROLE_KEY = /^((?:USER|ASSISTANT|TOOL RESULT)(?: \([^)\n]*\))?):/gm;
+const NEUTRALISED_ROLE_KEY = "$1&#58;";
 
 /** A delivered payload of zero length says so, instead of rendering as silence. */
 const ZERO_BYTES_NOTICE =
@@ -99,11 +143,28 @@ function readToolResultText(content: string | unknown[]): string {
 }
 
 /**
+ * Says which structure tokens the payload tried to write, and returns it without
+ * them. A substitution is reported only when it actually changed bytes, so an
+ * ordinary payload is returned untouched and says nothing about itself.
+ */
+function neutraliseStructureTokens(text: string): { text: string; rewrote: string[] } {
+  const withoutFrameTokens = text.replace(ENVELOPE_DELIMITER, NEUTRALISED_DELIMITER);
+  const withoutRoleKeys = withoutFrameTokens.replace(ROLE_KEY, NEUTRALISED_ROLE_KEY);
+
+  const rewrote: string[] = [];
+  if (withoutFrameTokens !== text) rewrote.push("frame");
+  if (withoutRoleKeys !== withoutFrameTokens) rewrote.push("roles");
+
+  return { text: withoutRoleKeys, rewrote };
+}
+
+/**
  * Wraps one tool result as data for the model to read.
  *
  * Applied to every tool result on this provider's model-visible path, from the
  * single place where tool-result content becomes prompt text. The payload is
- * emitted verbatim between the tags; only the framing is authored here.
+ * emitted between the tags with its frame delimiters and line-initial role keys
+ * neutralised; the framing, that substitution and nothing else are authored here.
  */
 export function markToolResultAsUntrusted(content: string | unknown[]): string {
   const text = readToolResultText(content);
@@ -112,9 +173,15 @@ export function markToolResultAsUntrusted(content: string | unknown[]): string {
   if (text.length === 0) attributes.push('delivered="zero-bytes"');
   if (isDirectiveShaped(text)) attributes.push('shape="directive-shaped"');
 
+  const body = text.length === 0 ? ZERO_BYTES_NOTICE : text;
+  const neutralised = neutraliseStructureTokens(body);
+  if (neutralised.rewrote.length > 0) {
+    attributes.push(`neutralised="${neutralised.rewrote.join("+")}"`);
+  }
+
   return [
     `${ENVELOPE_OPEN} ${attributes.join(" ")}>`,
-    text.length === 0 ? ZERO_BYTES_NOTICE : text,
+    neutralised.text,
     ENVELOPE_CLOSE,
   ].join("\n");
 }
