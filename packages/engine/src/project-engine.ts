@@ -4140,9 +4140,16 @@ export class ProjectEngine {
     }
     const overseer = this.plannerOverseer;
     try {
+      /*
+      FNXC:LaneRoleReadLogProjection 2026-11-05-16:50 (RUFU-756):
+      This sweep observes stages. It reads `task.id` and the effective settings, and it is the single
+      most frequent whole-board read in the process (45 s cadence x one engine per project). No part of
+      the overseer/planner path reads `task.log`, so this pass opts out of the column that makes up 90 %
+      of the board's text; every other `listTasksInLaneRoles` consumer keeps today's log-bearing shape.
+      */
       const [inProgress, inReview] = await Promise.all([
-        this.listTasksInLaneRoles(store, ["countsTowardWip"]).catch(() => [] as Task[]),
-        this.listTasksInLaneRoles(store, REVIEW_ROLES).catch(() => [] as Task[]),
+        this.listTasksInLaneRoles(store, ["countsTowardWip"], { excludeLog: true }).catch(() => [] as Task[]),
+        this.listTasksInLaneRoles(store, REVIEW_ROLES, { excludeLog: true }).catch(() => [] as Task[]),
       ]);
       const inFlight = [...inProgress, ...inReview];
       const inFlightIds = new Set(inFlight.map((t) => t.id));
@@ -6940,14 +6947,34 @@ export class ProjectEngine {
   saving for an auto-heal that silently stops happening, which is the failure mode this task exists to
   remove. Consumers like this one are why `excludeLog` stays opt-in per call site.
   */
+  /*
+  FNXC:LaneRoleReadLogProjection 2026-11-05-16:50 (RUFU-756, measured on the deployed board):
+  The heap pile behind the ~2-hourly dashboard restarts is string text, not objects: a snapshot taken
+  AT the ceiling (96.2M nodes, 19.72 GiB of self_size) held 16.0 GiB of `string` nodes — 81 % of the
+  live heap — generated from only 102 MiB of unique text. The board's whole text payload is 154 MiB
+  and `log` alone is 139 MiB of it (90 %), so the heap was carrying roughly 90 simultaneous full
+  materialisations of the board's text (three independent estimates of the multiplicity: 86x by
+  occurrences, 104x by bytes, 121x by one sentence's node count).
+
+  This reader was the supply for the hottest of those materialisations: `listTasks({ column, derive:
+  false })` selects every wide column, and it is called per COLUMN, twice per pass, every 45 s, from
+  `pollPlannerOverseer` — inside a process that hosts one ProjectEngine+TaskStore per project.
+
+  `excludeLog` is therefore an opt-IN per consumer rather than a default: the merge-buffer lane-role
+  consumer pattern-matches log CONTENT, so narrowing it here would silently break it. A consumer that
+  provably never reads the column is what opts in, and the proof for the overseer sweep is that no
+  file under `engine/src/overseer`, `engine/src/planner`, or `core/src/planner` touches `task.log`.
+  */
   private async listTasksInLaneRoles(
     store: TaskStore,
     roles: Parameters<typeof resolveProjectColumnsForRoles>[1],
+    opts: { excludeLog?: boolean } = {},
   ): Promise<Task[]> {
     const columns = await resolveProjectColumnsForRoles(store, roles);
     const byId = new Map<string, Task>();
+    const excludeLog = opts.excludeLog === true;
     for (const column of columns) {
-      for (const task of await store.listTasks({ column, derive: false })) byId.set(task.id, task as Task);
+      for (const task of await store.listTasks({ column, derive: false, excludeLog })) byId.set(task.id, task as Task);
     }
     return [...byId.values()];
   }
@@ -6968,8 +6995,9 @@ export class ProjectEngine {
 
     Read shape follows every other startup read (see `FNXC:EngineStartupReadBudget`): `derive: false` +
     `excludeLog: true`, because this consumer reads `id` and `status` only. It therefore no longer goes
-    through `listTasksInLaneRoles`, which deliberately stays log-bearing for the merge-buffer lane-role
-    consumer that pattern-matches log CONTENT.
+    through `listTasksInLaneRoles`, whose default shape is still log-bearing for the merge-buffer
+    lane-role consumer that pattern-matches log CONTENT — callers that provably never read the column
+    opt out per call (see `FNXC:LaneRoleReadLogProjection` at the helper).
     */
     const staleRows = await store.listTasks({ derive: false, excludeLog: true });
     const cleared: Task[] = [];
