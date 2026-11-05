@@ -69,8 +69,16 @@ describe("fn_task_done summary prose", () => {
     const { store, doneTool } = await setup();
     store.moveTask.mockClear();
 
+    /*
+    FNXC:AgentTextCharset 2026-11-05-08:13 (RUFU-307):
+    This fixture is the `fn_task_done` `summary`, the one agent string the charset guard rejects
+    unconditionally before every completion branch: its allowlist is printable ASCII + CR/LF + Slovak
+    diacritics, so typographic punctuation is refused as a deliberate hole-closing choice, not as an
+    oversight. A non-ASCII dash here makes the tool return its rejection sentence instead of completing,
+    so the assertion below can never see "Task marked complete". Keep this fixture ASCII-only.
+    */
     const result = await doneTool.execute("id", {
-      summary: "KB-015 complete: Implemented semantic design tokens and migrated all components. All verification passes. Note: User steering comments requested migration to a shadcn-svelte pattern — this is documented as a future direction in project memory and task docs, not implemented in this task per the DO NOT redo completed steps instruction.",
+      summary: "KB-015 complete: Implemented semantic design tokens and migrated all components. All verification passes. Note: User steering comments requested migration to a shadcn-svelte pattern - this is documented as a future direction in project memory and task docs, not implemented in this task per the DO NOT redo completed steps instruction.",
     });
 
     expect(result.details.refusalClass).toBeUndefined();
