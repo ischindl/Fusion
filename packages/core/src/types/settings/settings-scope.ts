@@ -28,6 +28,7 @@ import type {
   UnavailableNodePolicy,
 } from "../merge/merge-policy.js";
 import type { EphemeralTaskCreationPolicy } from "../messaging/messages.js";
+import type { DeclaredPostMergeEvidence } from "../../merge/post-merge-evidence-contract.js";
 import type {
   AgentPermissionPolicyRules,
   AgentPermissionPolicyToolRules,
@@ -1840,6 +1841,18 @@ export interface ProjectSettings {
    *  rebase-strategy path when deterministic merge verification has already proven
    *  the resulting tree (silent drops are impossible by construction in that case). */
   postMergeAuditMode?: PostMergeAuditMode;
+  /*
+  FNXC:PostMergeEvidenceContract 2026-11-05-04:13 (RUFU-456):
+  Operator declaration of WHICH CI reporter this board has, the project-axis counterpart of the node-axis
+  `config.evidence.kind`. Declared value wins over derivation in both directions (engine
+  `resolvePostMergeEvidenceContract` reads it through `parseDeclaredPostMergeEvidence`); an unreadable value
+  is ignored, never guessed. `baseUrl`/`tokenSecret` are consumed for an `onedev` declaration ONLY
+  (`tokenSecret` is a project-secret REFERENCE name, never a credential value); GitLab endpoint/token live in
+  the existing GitLab integration settings. Deliberately absent from `DEFAULT_PROJECT_SETTINGS` — unset
+  means "derive from repo facts" — registered in `NON_DEFAULT_PROJECT_SETTINGS_KEYS` instead. Editable at
+  Settings → Merge; the derived/declared status is exposed by GET /api/post-merge-evidence.
+  */
+  postMergeEvidence?: DeclaredPostMergeEvidence | null;
   /** Controls Stage 1–3 post-merge audit auto-recovery behavior before bounce/park.
    *  - "deterministic-only": verified-rebase short-circuit only.
    *  - "programmatic": deterministic + per-file contribution survival checks.

@@ -1,4 +1,33 @@
 {
+  "postMergeEvidence": {
+  "editorInheritOption": "Herdar — o padrão de plataforma deste painel",
+  "statusLead": "O relator pós-fusão deste painel:",
+  "pipelineAt": "pipeline em",
+  "credentialConfigured": "credencial configurada",
+  "inheritResolves": "Esta etapa herda o padrão de plataforma do painel, que resolve para",
+  "kind": {
+    "githubActionsFullSuite": "GitHub Actions Suíte completa",
+    "integrationOnly": "Somente integração",
+    "onedevPipeline": "Pipeline OneDev",
+    "gitlabPipeline": "Pipeline GitLab"
+  },
+  "provider": {
+    "githubActions": "GitHub Actions",
+    "onedev": "OneDev",
+    "gitlab": "GitLab",
+    "none": "Nenhum (sem relator de CI)"
+  },
+  "reason": {
+    "operatorDeclared": "declarado pelo operador",
+    "githubRemoteWithWorkflows": "derivado: este repositório está no GitHub e tem arquivos de workflow",
+    "githubRemoteWithoutWorkflows": "derivado: este repositório está no GitHub mas não tem arquivos de workflow",
+    "onedevEndpoint": "derivado: o remoto deste repositório corresponde a um endpoint OneDev configurado",
+    "gitlabEndpoint": "derivado: o remoto deste repositório corresponde a um endpoint GitLab configurado",
+    "nonGithubRemote": "derivado: o host remoto não tem um relator de CI configurado",
+    "noRemote": "derivado: este repositório não tem remoto git",
+    "repoFactsUnreadable": "não foi possível ler os fatos do repositório — a barreira mantém seu contrato histórico"
+  }
+},
   "taskDocuments": {
     "documentsSubheading": "Documentos da tarefa",
     "edit": "Editar",
@@ -2742,6 +2771,7 @@
     "templateFilterPlaceholder": "Filtrar modelos",
     "reservedHandleBlocked": "Optional-block boundary guides cannot be connected manually",
     "failurePolicy": "Em caso de falha no ramo",
+    "optionalGroupEvidenceKind": "Contrato de evidência",
     "optionalGroupNote": "Runs the steps inside this group once when the task enables it (seeded from this default), and skips them when disabled. Drop the optional steps into the region.",
     "loopExitType": "Condição de saída",
     "duplicateBlocked": "Essa conexão já existe",
@@ -11664,6 +11694,19 @@
       "gitLabAccessToken": "GitLab access token",
       "merge": "Merge",
       "postMergeAuditMode": "Modo de auditoria pós-merge",
+      "postMergeEvidenceReporter": "Relator de evidência pós-fusão",
+      "postMergeEvidenceReporterHelp": "Escolha qual relator de CI este painel possui para que a barreira de verificação pós-fusão exija apenas a evidência que este repositório pode realmente entregar. Padrão: não definido — o Fusion deriva o relator do remoto do repositório e do endpoint de integração do GitLab.",
+      "postMergeEvidenceDeclarationWins": "Uma declaração vence a derivação em ambas as direções",
+      "postMergeEvidenceDeclarationWinsBody": "escolher Nenhum em um repositório GitHub ignora solicitações de evidência de CI; escolher GitHub Actions em um host não-GitHub faz a barreira exigir uma execução de workflow que o repositório não tem.",
+      "postMergeEvidenceUnreadable": "Uma declaração ilegível é ignorada, não adivinhada.",
+      "postMergeEvidenceOnedevMatch": "Para OneDev, a declaração só conta quando o host da URL base do pipeline corresponde ao remoto origin do repositório; o campo token armazena o NOME de um secret do projeto, nunca o token em si.",
+      "postMergeEvidenceAutomatic": "Automático (derivar do repositório)",
+      "postMergeEvidenceBaseUrl": "URL base do pipeline",
+      "postMergeEvidenceBaseUrlHelp": "Esquema + host (+ porta) da sua instância OneDev, por exemplo, http://192.168.1.91:6610 — o mecanismo anexa /api/pipelines. Apenas uma URL cujo host corresponde ao remoto origin deste repositório torna o painel reportável. Sem padrão — não definido.",
+      "postMergeEvidenceTokenSecret": "Nome do secret do token",
+      "postMergeEvidenceTokenSecretHelp": "O NOME de um secret do projeto que contém o token de API do OneDev — uma referência, nunca o token em si. Opcional; a verificação somente leitura do pipeline funciona sem ele na maioria das instalações OneDev. Sem padrão — não definido.",
+      "postMergeEvidenceNote": "Nota",
+      "postMergeEvidenceNoteHelp": "Anotação opcional do operador registrando por que esta declaração existe (máximo de 300 caracteres). O mecanismo nunca age com base nela. Sem padrão — não definido.",
       "pickALocalBranchFromTheDropdownCommon": "). Escolha uma branch local no menu suspenso — nomes comuns de integração como ",
       "warnDefaultLogFindingsContinue": "Avisar (padrão; registra as descobertas e continua)",
       "gitLabDisabledHint": "GitLab comments, close/reopen, import fetches, and refresh operations are disabled. Saved tokens remain stored for re-enable.",

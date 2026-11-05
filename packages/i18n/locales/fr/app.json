@@ -1,4 +1,33 @@
 {
+  "postMergeEvidence": {
+  "editorInheritOption": "Hériter — la valeur par défaut de la plateforme pour ce tableau",
+  "statusLead": "Le rapporteur post-fusion de ce tableau :",
+  "pipelineAt": "pipeline à",
+  "credentialConfigured": "identifiant configuré",
+  "inheritResolves": "Cette étape hérite de la valeur par défaut de la plateforme du tableau, qui se résout à",
+  "kind": {
+    "githubActionsFullSuite": "GitHub Actions Suite complète",
+    "integrationOnly": "Intégration uniquement",
+    "onedevPipeline": "Pipeline OneDev",
+    "gitlabPipeline": "Pipeline GitLab"
+  },
+  "provider": {
+    "githubActions": "GitHub Actions",
+    "onedev": "OneDev",
+    "gitlab": "GitLab",
+    "none": "Aucun (pas de rapporteur CI)"
+  },
+  "reason": {
+    "operatorDeclared": "déclaré par l'opérateur",
+    "githubRemoteWithWorkflows": "dérivé : ce dépôt est sur GitHub et contient des fichiers de workflow",
+    "githubRemoteWithoutWorkflows": "dérivé : ce dépôt est sur GitHub mais n'a pas de fichiers de workflow",
+    "onedevEndpoint": "dérivé : la distance du dépôt correspond à un point de terminaison OneDev configuré",
+    "gitlabEndpoint": "dérivé : la distance du dépôt correspond à un point de terminaison GitLab configuré",
+    "nonGithubRemote": "dérivé : l'hôte distant n'a pas de rapporteur CI configuré",
+    "noRemote": "dérivé : ce dépôt n'a aucune distance git",
+    "repoFactsUnreadable": "impossible de lire les faits du dépôt — la porte conserve son contrat historique"
+  }
+},
   "taskDocuments": {
     "documentsSubheading": "Task documents",
     "edit": "Modifier",
@@ -2742,6 +2771,7 @@
     "templateFilterPlaceholder": "Filtrer les modèles",
     "reservedHandleBlocked": "Optional-block boundary guides cannot be connected manually",
     "failurePolicy": "En cas d’échec de branche",
+    "optionalGroupEvidenceKind": "Contrat de preuve",
     "optionalGroupNote": "Runs the steps inside this group once when the task enables it (seeded from this default), and skips them when disabled. Drop the optional steps into the region.",
     "loopExitType": "",
     "duplicateBlocked": "Cette connexion existe déjà",
@@ -11664,6 +11694,19 @@
       "gitLabAccessToken": "GitLab access token",
       "merge": "",
       "postMergeAuditMode": "",
+      "postMergeEvidenceReporter": "Rapporteur de preuve post-fusion",
+      "postMergeEvidenceReporterHelp": "Choisissez le rapporteur CI dont dispose ce tableau pour que la porte de vérification post-fusion exige uniquement les preuves que ce dépôt peut réellement fournir. Par défaut : non défini — Fusion dérive le rapporteur de la distance du dépôt et du point de terminaison d'intégration GitLab.",
+      "postMergeEvidenceDeclarationWins": "Une déclaration l'emporte sur la dérivation dans les deux sens",
+      "postMergeEvidenceDeclarationWinsBody": "choisir Aucun sur un dépôt GitHub ignore les demandes de preuve CI ; choisir GitHub Actions sur un hôte non-GitHub fait exiger à la porte une exécution de workflow que le dépôt n'a pas.",
+      "postMergeEvidenceUnreadable": "Une déclaration illisible est ignorée, pas devinée.",
+      "postMergeEvidenceOnedevMatch": "Pour OneDev, la déclaration ne compte que si l'hôte de l'URL de base du pipeline correspond à la distance d'origine du dépôt ; le champ token stocke le NOM d'un secret de projet, jamais le token lui-même.",
+      "postMergeEvidenceAutomatic": "Automatique (dérivé du dépôt)",
+      "postMergeEvidenceBaseUrl": "URL de base du pipeline",
+      "postMergeEvidenceBaseUrlHelp": "Schéma + hôte (+ port) de votre instance OneDev, par ex. http://192.168.1.91:6610 — le moteur ajoute /api/pipelines. Seule une URL dont l'hôte correspond à la distance d'origine de ce dépôt rend le tableau rapportable. Pas de défaut — non défini.",
+      "postMergeEvidenceTokenSecret": "Nom du secret de token",
+      "postMergeEvidenceTokenSecretHelp": "Le NOM d'un secret de projet contenant le token API OneDev — une référence, jamais le token lui-même. Facultatif ; la vérification en lecture seule du pipeline fonctionne sans lui dans la plupart des installations OneDev. Pas de défaut — non défini.",
+      "postMergeEvidenceNote": "Note",
+      "postMergeEvidenceNoteHelp": "Annotation d'opérateur facultative consignant la raison d'être de cette déclaration (300 caractères max). Le moteur n'en tient jamais compte. Pas de défaut — non défini.",
       "pickALocalBranchFromTheDropdownCommon": "",
       "warnDefaultLogFindingsContinue": "",
       "gitLabDisabledHint": "GitLab comments, close/reopen, import fetches, and refresh operations are disabled. Saved tokens remain stored for re-enable.",

@@ -861,20 +861,27 @@ where a CI reporter can produce it. This setting is the operator's answer to "wh
 It is deliberately a REFERENCE, never a credential: `tokenSecret` is the name of a secret, not its value, and
 only host[:port] plus a `credentialConfigured` boolean ever reach the audit row. There is no CI API client —
 the declaration only tells the reviewer which platform's own page to read.
+
+FNXC:PostMergeEvidenceContract 2026-11-05-06:34 (RUFU-456):
+The declaration now has its own Settings row in the Merge section instead of being raw project JSON, and it
+renders its provider list from the `@fusion/core` export. The row writes the SAME setting key, so the
+derivation rules below are unchanged; what changed is that an operator can see and set the answer where they
+read it, and that saving it takes effect without a daemon restart.
 -->
 
 The built-in `post-merge-verification` gate demands a post-landing CI delivery record whose shape depends on which CI the project has (see [Workflow steps → Which evidence a post-merge gate may demand](./workflow-steps.md#which-evidence-a-post-merge-gate-may-demand-rufu-430)). Fusion normally **derives** this from repo facts, but the operator can declare it to override the derivation in either direction.
 
 | Setting | Type | Default | Behavior |
 | --- | --- | --- | --- |
-| `postMergeEvidence` | object or bare string | `undefined` (derived) | Declares the post-merge evidence reporter. Shape: `{ "provider": "none" \| "github-actions" \| "onedev" \| "gitlab", "baseUrl"?, "tokenSecret"?, "note"? }`, or the bare provider string. A declaration wins over observed repo facts; an unreadable or unknown value is **ignored**, never guessed at (behavior falls back to derivation). |
+| `postMergeEvidence` | object or bare string | `undefined` (derived) | Declares the post-merge evidence reporter. Shape: `{ "provider": "none" \| "github-actions" \| "onedev" \| "gitlab", "baseUrl"?, "tokenSecret"?, "note"? }`, or the bare provider string. A declaration wins over observed repo facts; an unreadable or unknown value is **ignored**, never guessed at (behavior falls back to derivation). Editable at **Settings → Merge → Post-merge evidence reporter**. |
 
 - **`provider`** — which CI reporter the board has. `none` exempts the CI-shaped gate (`not-applicable`); `github-actions` requires the Full Suite shard contract; `onedev` / `gitlab` require their platform's pipeline record. `gitea` and `bitbucket` are **not** accepted — Fusion names only reporters it can point a reviewer at.
 - **`baseUrl`** (optional) — the reporter base URL, validated by the same rules as a GitLab instance URL: absolute `http(s)`, **no userinfo**. When its host (and port, when present) equals the origin the card was pushed to, the contract reports the endpoint-confirmed reason and carries `endpointHost` (`host`, plus a non-default port). The full URL, its path, and any userinfo never leave the derivation.
 - **`tokenSecret`** (optional) — the **name of a project secret** holding the reporter token, never the token itself. A value containing `@`, `/`, whitespace, or a scheme is rejected as a bad secret reference rather than stored. Setting it to a token is the same class of error as putting a PAT in `githubAuthToken`.
 - **GitLab needs no new setting.** The GitLab reporter is derived from the existing `gitlabInstanceUrl` / `gitlabApiBaseUrl` / `gitlabAuthToken` config already documented above: a self-managed instance is derived for free; `gitlab.com` requires the GitLab integration to be enabled, because a bare `github.com`-shaped remote is not proof of a GitLab project. A GitLab reporter is never derived from the remote alone (an `https://gitlab…` remote with the integration disabled or no URL configured stays `non-github-remote`).
-- **OneDev has no other settings surface**, so `baseUrl` is the only way to give it a reporter — there is no OneDev instance config elsewhere in Settings to reuse.
-- **Non-goal:** declaring a reporter does not make Fusion query that CI. It only selects which platform's own delivery page the reviewer reads; there is no HTTP client, polling, or retry. Exposing this declaration in the Settings UI / workflow editor is tracked separately (RUFU-456); today it is authored as a raw project setting.
+- **OneDev has no other settings surface**, so `baseUrl` is the only way to give it a reporter — there is no OneDev instance config elsewhere in Settings to reuse. The Settings row therefore reveals `baseUrl` and `tokenSecret` **only** while the OneDev declaration is selected, because the engine never reads those fields for another provider and the UI must not invite values it will ignore; selecting anything else strips them from the saved payload. A value typed with surrounding whitespace is stored trimmed, and `baseUrl` is normalized to its canonical origin form (`http://host:6610` and `http://host:6610/` are the same declaration), so a harmless trailing slash is never what turns the endpoint confirmation off.
+- **Non-goal:** declaring a reporter does not make Fusion query that CI. It only selects which platform's own delivery page the reviewer reads; there is no HTTP client, polling, or retry.
+- **The Settings row and the editor show the same measurement.** Settings → Merge prints the resolved contract and its reason (`derived: …` / `declared by operator`) plus the non-secret endpoint host and a credential-configured flag, read from `GET /api/post-merge-evidence`; the workflow editor's post-merge node prints the same reason together with which `evidence.kind` the gate will actually demand. Saving this row clears the resolver's per-root cache, so the next merge answers with the new declaration instead of the one cached at first read. See [Workflow steps → Editing the evidence contract from the UI](./workflow-steps.md#editing-the-evidence-contract-from-the-ui-rufu-456).
 
 ### Post-merge CI evidence repository
 
@@ -902,7 +909,7 @@ why there is no `origin` fallback.
   <!-- FNXC:PostMergeCiRepository 2026-10-11-04:12 (RUFU-375, Code Review finding P0): a named remedy has to move the card. -->
   That remedy works: the refusal is judged as evidence that never arrived, not as a review the card lost, so setting this key and using **Retry** (or the bounded automatic re-seed, three attempts) re-runs the gate against the repository you just named. A refusal a human already waived with the audited bypass is honored and never re-run over.
 - **Boards with no GitHub CI need nothing.** The `{{ciRepo}}` placeholder exists only in the GitHub-shaped Full Suite text, so a project whose evidence contract resolves to OneDev, GitLab, `integration-only`, or `none` never consults this setting and its gate behavior is unchanged.
-- **No Settings row yet**, and that is deliberate rather than unfinished: this task shipped no UI surface, so the setting is authored as raw project settings — the same route `postMergeEvidence` takes today (see [Post-merge CI evidence declaration](#post-merge-ci-evidence-declaration)).
+- **No Settings row yet**, and that is deliberate rather than unfinished: this task shipped no UI surface, so the setting is authored as raw project settings. (`postMergeEvidence` no longer takes that route — it has its own row in Settings → Merge since RUFU-456; see [Post-merge CI evidence declaration](#post-merge-ci-evidence-declaration).)
 - **A custom prompt that names the placeholder gets it filled too.** The substitution runs on whatever text is about to be dispatched, so an operator-authored prompt carrying `{{ciRepo}}` is resolved from this setting; if the setting is unset, that gate refuses the same way rather than handing a model a literal `{{ciRepo}}`.
 
 | `autoCreatePr` | `boolean` | `false` | Auto-create PRs for completed tasks. |

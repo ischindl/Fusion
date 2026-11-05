@@ -12,6 +12,15 @@ import type { SettingsSearchEntry } from "../search/types";
 
 export const mergeSearchEntries: SettingsSearchEntry[] = [
   {
+    sectionId: "merge",
+    key: "postMergeEvidence",
+    labelKey: "settings.merge.postMergeEvidenceReporter",
+    labelFallback: "Post-merge evidence reporter",
+    helpKey: "settings.merge.postMergeEvidenceReporterHelp",
+    helpFallback: "Choose which CI reporter this board has so the post-merge verification gate asks for evidence this repository can actually deliver. Default: unset — Fusion derives the reporter from the repository's remote and the GitLab integration endpoint.",
+    keywords: ["CI", "OneDev", "GitHub Actions", "GitLab", "post-merge", "pipeline"],
+  },
+  {
     sectionId: "merge", key: "requiredChecks", labelKey: "settings.merge.requiredChecks", labelFallback: "Required pull-request checks", helpKey: "settings.merge.requiredChecksHelp", helpFallback: "No default — unset. Comma-separated check names match GitHub exactly (case-sensitive). Leaving this empty uses GitHub required-status checks only; a named check that never reports blocks the merge.", keywords: ["CI", "status", "GitHub"],
   },
   {

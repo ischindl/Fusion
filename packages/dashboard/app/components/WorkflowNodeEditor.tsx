@@ -24,7 +24,8 @@ import {
 import { useTranslation } from "react-i18next";
 import { Plus, Trash2, Save, MessageSquare, Terminal, Shield, GitMerge, Loader2, HelpCircle, PauseCircle, Split, Merge, Repeat, ToggleRight, ClipboardCheck, ListChecks, Code2, Bell, LayoutGrid, Workflow, Download, Upload, ChevronDown, ChevronRight, Library, Sparkles, Maximize2, Minimize2, DoorOpen } from "lucide-react";
 import type { WorkflowDefinition, WorkflowIrColumn, TraitViolation, WorkflowStepTemplate, WorkflowIrNodeKind } from "@fusion/core";
-import { getErrorMessage, analyzeWorkflowLifecycle } from "@fusion/core";
+import { getErrorMessage, analyzeWorkflowLifecycle, authoredPostMergeEvidenceKindOf } from "@fusion/core";
+import { renderPostMergeEvidenceStatus, postMergeEvidenceKindOptions, usePostMergeEvidenceContract } from "./PostMergeEvidenceStatus";
 import type { WorkflowLifecycleWarning, WorkflowLifecycleWarningCode } from "@fusion/core";
 import {
   fetchWorkflows,
@@ -1924,6 +1925,14 @@ function InnerEditor({
     aiEditAbortRef.current?.abort();
     setAiEditBusy(false);
   }, []);
+
+  /*
+   * FNXC:PostMergeEvidenceContract 2026-11-05-04:13 (RUFU-456):
+   * The post-merge inspector's status line reads the board's evidence contract ONCE per editor session
+   * (one GET for the whole session, not per node-selection). A missing observation hides the line; the
+   * editor never writes the fetched contract into a node.
+   */
+  const postMergeEvidenceContract = usePostMergeEvidenceContract();
 
   const updateSelectedData = useCallback(
     (
@@ -5064,6 +5073,60 @@ function InnerEditor({
                         />
                         <span>{t("workflowNodes.optionalGroupMaxRevisionsUnbounded", "Unbounded")}</span>
                       </label>
+
+                      {/*
+                      FNXC:PostMergeEvidenceContract 2026-11-05-04:13 (RUFU-456):
+                      The post-merge group's evidence contract (`config.evidence.kind`) was previously editable
+                      only by hand-editing the stored IR. Display rules this row owns:
+                      - Absent kind shows "Inherit — platform default", NEVER a pre-selected Full Suite,
+                        because since RUFU-457 absent resolves per the board's reporter
+                        (`resolvePostMergeEvidenceKind`), and the status line names that effective contract.
+                      - Reverting to Inherit DELETES the `evidence` key (never persists `evidence: {}`), so an
+                        untouched IR keeps its byte-identical absent-means-inherit shape.
+                      - Selecting `github-actions-full-suite` IS an authored choice and persists — on a
+                        OneDev/GitLab board it is a real, different answer from inherit.
+                      - The write only ever touches `evidence`; the functional `config` updater preserves
+                        every other key (defaultOn, phase, template, maxRevisions).
+                      - The status line is display-only and NEVER auto-writes `config.evidence`.
+                      Options map over `POST_MERGE_EVIDENCE_KINDS` in the shared helper, so a future fifth
+                      kind cannot silently disappear from this editor.
+                      */}
+                      {selectedNode.data.config?.phase === "post-merge" ? (
+                        <>
+                          <label className="wf-field">
+                            <span>{t("workflowNodes.optionalGroupEvidenceKind", "Evidence contract")}</span>
+                            <select
+                              data-testid="wf-optional-group-evidence-kind"
+                              value={authoredPostMergeEvidenceKindOf(selectedNode.data.config as { evidence?: { kind?: unknown } } | undefined) ?? ""}
+                              onChange={(e) => {
+                                const kind = e.target.value;
+                                updateSelectedData({
+                                  config: (prev) => {
+                                    if (kind === "") {
+                                      const next = { ...prev };
+                                      delete next.evidence;
+                                      return next;
+                                    }
+                                    return { ...prev, evidence: { kind } };
+                                  },
+                                });
+                              }}
+                            >
+                              <option value="">{t("postMergeEvidence.editorInheritOption", "Inherit — platform default for this board")}</option>
+                              {postMergeEvidenceKindOptions(t).map((option) => (
+                                <option key={option.value} value={option.value}>{option.label}</option>
+                              ))}
+                            </select>
+                          </label>
+                          {postMergeEvidenceContract ? (
+                            <p className="wf-inspector-note wf-inspector-note--info" data-testid="wf-optional-group-evidence-status">
+                              {renderPostMergeEvidenceStatus(t, postMergeEvidenceContract, {
+                                nameInheritedResolution: authoredPostMergeEvidenceKindOf(selectedNode.data.config as { evidence?: { kind?: unknown } } | undefined) === undefined,
+                              })}
+                            </p>
+                          ) : null}
+                        </>
+                      ) : null}
 
                       <p className="wf-inspector-note wf-inspector-note--info">
                         {t(

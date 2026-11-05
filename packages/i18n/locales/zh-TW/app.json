@@ -1,4 +1,33 @@
 {
+  "postMergeEvidence": {
+  "editorInheritOption": "繼承——使用此儀表板的平台預設值",
+  "statusLead": "此儀表板的合併後證據報告器：",
+  "pipelineAt": "流水線位於",
+  "credentialConfigured": "已設定憑證",
+  "inheritResolves": "此步驟繼承儀表板的平台預設值，其解析為",
+  "kind": {
+    "githubActionsFullSuite": "GitHub Actions 完整測試套件",
+    "integrationOnly": "僅整合測試",
+    "onedevPipeline": "OneDev 流水線",
+    "gitlabPipeline": "GitLab 流水線"
+  },
+  "provider": {
+    "githubActions": "GitHub Actions",
+    "onedev": "OneDev",
+    "gitlab": "GitLab",
+    "none": "無（不使用 CI 報告器）"
+  },
+  "reason": {
+    "operatorDeclared": "由操作者宣告",
+    "githubRemoteWithWorkflows": "派生：此仓库位於 GitHub 且含有工作流程檔",
+    "githubRemoteWithoutWorkflows": "派生：此仓库位於 GitHub 但沒有工作流程檔",
+    "onedevEndpoint": "派生：此仓库的遠端與已設定的 OneDev 端點相符",
+    "gitlabEndpoint": "派生：此仓库的遠端與已設定的 GitLab 端點相符",
+    "nonGithubRemote": "派生：遠端主機沒有已設定的 CI 報告器",
+    "noRemote": "派生：此仓库沒有 git 遠端",
+    "repoFactsUnreadable": "無法讀取仓库事實——該閘門維持其歷史契約"
+  }
+},
   "taskDocuments": {
     "documentsSubheading": "Task documents",
     "edit": "編輯",
@@ -2742,6 +2771,7 @@
     "templateFilterPlaceholder": "篩選範本",
     "reservedHandleBlocked": "Optional-block boundary guides cannot be connected manually",
     "failurePolicy": "分支失敗時",
+    "optionalGroupEvidenceKind": "證據契約",
     "optionalGroupNote": "Runs the steps inside this group once when the task enables it (seeded from this default), and skips them when disabled. Drop the optional steps into the region.",
     "loopExitType": "",
     "duplicateBlocked": "該連接已存在",
@@ -11664,6 +11694,19 @@
       "gitLabAccessToken": "GitLab access token",
       "merge": "",
       "postMergeAuditMode": "",
+      "postMergeEvidenceReporter": "合併後證據報告器",
+      "postMergeEvidenceReporterHelp": "選擇此儀表板擁有的 CI 報告器，使合併後驗證閘門只要求此仓库實際能夠交付的證據。預設：未設定——Fusion 會根據仓库的遠端與 GitLab 整合端點派生報告器。",
+      "postMergeEvidenceDeclarationWins": "宣告在兩個方向上都優先於派生",
+      "postMergeEvidenceDeclarationWinsBody": "在 GitHub 仓库上選擇「無」會跳過 CI 證據請求；在非 GitHub 主機上選擇 GitHub Actions 會讓閘門要求该仓库並不存在的工作流程執行。",
+      "postMergeEvidenceUnreadable": "無法讀取的宣告會被忽略，而不會被猜測。",
+      "postMergeEvidenceOnedevMatch": "對於 OneDev，只有當流水線基址的主機与仓库的 origin 遠端相符時，宣告才會生效；token 欄位儲存的是專案密鑰的名稱，絕不是 token 本身。",
+      "postMergeEvidenceAutomatic": "自動（從仓库派生）",
+      "postMergeEvidenceBaseUrl": "流水線基址",
+      "postMergeEvidenceBaseUrlHelp": "OneDev 實例的協定 + 主機（+ 連接埠），例如 http://192.168.1.91:6610——引擎會追加 /api/pipelines。只有主機与此仓库 origin 遠端相符的 URL 才能使儀表板可報告。無預設——未設定。",
+      "postMergeEvidenceTokenSecret": "密鑰名稱",
+      "postMergeEvidenceTokenSecretHelp": "持有 OneDev API token 的專案密鑰的名稱——是一個引用，絕不是 token 本身。選配；在大多數 OneDev 部署中，唯讀流水線檢查無需它即可運作。無預設——未設定。",
+      "postMergeEvidenceNote": "備註",
+      "postMergeEvidenceNoteHelp": "記錄此宣告存在原因的選配操作者註解（最多 300 個字元）。引擎不會依據它採取行動。無預設——未設定。",
       "pickALocalBranchFromTheDropdownCommon": "",
       "warnDefaultLogFindingsContinue": "",
       "gitLabDisabledHint": "GitLab comments, close/reopen, import fetches, and refresh operations are disabled. Saved tokens remain stored for re-enable.",

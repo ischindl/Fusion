@@ -1,4 +1,33 @@
 {
+  "postMergeEvidence": {
+  "editorInheritOption": "Heredar — el valor predeterminado de la plataforma para este tablero",
+  "statusLead": "El reportero post-fusión de este tablero:",
+  "pipelineAt": "pipeline en",
+  "credentialConfigured": "credencial configurada",
+  "inheritResolves": "Este paso hereda el valor predeterminado de la plataforma del tablero, que se resuelve a",
+  "kind": {
+    "githubActionsFullSuite": "GitHub Actions Suite completa",
+    "integrationOnly": "Solo integración",
+    "onedevPipeline": "Pipeline de OneDev",
+    "gitlabPipeline": "Pipeline de GitLab"
+  },
+  "provider": {
+    "githubActions": "GitHub Actions",
+    "onedev": "OneDev",
+    "gitlab": "GitLab",
+    "none": "Ninguno (sin reportero CI)"
+  },
+  "reason": {
+    "operatorDeclared": "declarado por el operador",
+    "githubRemoteWithWorkflows": "derivado: este repositorio está en GitHub y tiene archivos de workflow",
+    "githubRemoteWithoutWorkflows": "derivado: este repositorio está en GitHub pero no tiene archivos de workflow",
+    "onedevEndpoint": "derivado: el remoto de este repositorio coincide con un endpoint de OneDev configurado",
+    "gitlabEndpoint": "derivado: el remoto de este repositorio coincide con un endpoint de GitLab configurado",
+    "nonGithubRemote": "derivado: el host remoto no tiene un reportero CI configurado",
+    "noRemote": "derivado: este repositorio no tiene remoto git",
+    "repoFactsUnreadable": "no se pudieron leer los datos del repositorio — la barrera mantiene su contrato histórico"
+  }
+},
   "taskDocuments": {
     "documentsSubheading": "Task documents",
     "edit": "Editar",
@@ -2742,6 +2771,7 @@
     "templateFilterPlaceholder": "Filtrar plantillas",
     "reservedHandleBlocked": "Optional-block boundary guides cannot be connected manually",
     "failurePolicy": "Al fallar una rama",
+    "optionalGroupEvidenceKind": "Contrato de evidencia",
     "optionalGroupNote": "Runs the steps inside this group once when the task enables it (seeded from this default), and skips them when disabled. Drop the optional steps into the region.",
     "loopExitType": "",
     "duplicateBlocked": "Esa conexión ya existe",
@@ -11664,6 +11694,19 @@
       "gitLabAccessToken": "GitLab access token",
       "merge": "",
       "postMergeAuditMode": "",
+      "postMergeEvidenceReporter": "Reportero de evidencia post-fusión",
+      "postMergeEvidenceReporterHelp": "Elige qué reportero CI tiene este tablero para que la barrera de verificación post-fusión pida solo la evidencia que este repositorio puede entregar realmente. Predeterminado: sin configurar — Fusion deriva el reportero del remoto del repositorio y del endpoint de integración de GitLab.",
+      "postMergeEvidenceDeclarationWins": "La declaración gana a la derivación en ambas direcciones",
+      "postMergeEvidenceDeclarationWinsBody": "elegir Ninguno en un repositorio de GitHub omite las solicitudes de evidencia CI; elegir GitHub Actions en un host no-GitHub hace que la barrera exija una ejecución de workflow que el repositorio no tiene.",
+      "postMergeEvidenceUnreadable": "Una declaración ilegible se ignora, no se adivina.",
+      "postMergeEvidenceOnedevMatch": "Para OneDev, la declaración solo cuenta cuando el host de la URL base del pipeline coincide con el remoto origin del repositorio; el campo token guarda el NOMBRE de un secret de proyecto, nunca el token en sí.",
+      "postMergeEvidenceAutomatic": "Automático (derivar del repositorio)",
+      "postMergeEvidenceBaseUrl": "URL base del pipeline",
+      "postMergeEvidenceBaseUrlHelp": "Esquema + host (+ puerto) de tu instancia de OneDev, p. ej. http://192.168.1.91:6610 — el motor añade /api/pipelines. Solo una URL cuyo host coincide con el remoto origin de este repositorio hace que el tablero sea reportable. Sin predeterminado — sin configurar.",
+      "postMergeEvidenceTokenSecret": "Nombre del secret del token",
+      "postMergeEvidenceTokenSecretHelp": "El NOMBRE de un secret de proyecto que contiene el token de API de OneDev — una referencia, nunca el token en sí. Opcional; la comprobación de pipeline de solo lectura funciona sin él en la mayoría de las instalaciones de OneDev. Sin predeterminado — sin configurar.",
+      "postMergeEvidenceNote": "Nota",
+      "postMergeEvidenceNoteHelp": "Anotación opcional del operador que registra por qué existe esta declaración (máximo 300 caracteres). El motor nunca actúa en base a ella. Sin predeterminado — sin configurar.",
       "pickALocalBranchFromTheDropdownCommon": "",
       "warnDefaultLogFindingsContinue": "",
       "gitLabDisabledHint": "GitLab comments, close/reopen, import fetches, and refresh operations are disabled. Saved tokens remain stored for re-enable.",

@@ -259,6 +259,7 @@ const SETTING_DESCRIPTION_KEYS: Record<string, string> = {
   mergeConflictStrategy: "merge.smartPreferMainOnFallbackFetchFfOrigin",
   mergeStrategyOverlapBehavior: "merge.flipOverlappingFilesToPreferTheTaskBranch",
   postMergeAuditMode: "merge.warnDefaultLogFindingsContinue",
+  postMergeEvidence: "merge.postMergeEvidenceReporterHelp",
   pushAfterMerge: "merge.whenEnabledTheMergedResultIsAutomaticallyPushed",
   pushRemote: "merge.gitRemoteToPushToEGOrigin",
   // NodeRouting / node sync covered above

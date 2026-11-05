@@ -14,6 +14,7 @@ import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   countGitHubWorkflowFiles,
+  invalidatePostMergeEvidenceContractCache,
   resetPostMergeEvidenceContractCacheForTest,
   resolveDefaultReporterEndpoints,
   resolvePostMergeEvidenceContract,
@@ -175,6 +176,66 @@ describe("resolvePostMergeEvidenceContract", () => {
       countGitHubWorkflowFiles: async () => 4,
     })).resolves.toBeUndefined();
     await expect(resolvePostMergeEvidenceContract(null, {})).resolves.toBeUndefined();
+  });
+
+  /*
+  FNXC:PostMergeEvidenceContract 2026-11-05-04:13 (RUFU-456):
+  The settings-save hook is only meaningful if the cache genuinely holds until invalidated — otherwise the
+  hook would be theater and a declaration would appear to take effect for the wrong reason. This test proves
+  both halves: (1) after the raw settings change, resolve STILL serves the cached contract; (2) after root
+  invalidation it re-derives from the new declaration AND the audit-dedup set was cleared for that root, so
+  the new reason lands a fresh row (a stale `auditedKeys` entry would suppress it forever).
+  Invalidation is root-scoped: another project's cached observation must survive.
+  */
+  it("serves the cached contract until invalidated for its root, then re-derives and re-audits", async () => {
+    const settings = { current: { postMergeEvidence: { provider: "github-actions" } } as Record<string, unknown> };
+    const recorded: Array<Record<string, unknown>> = [];
+    const store = {
+      getRootDir: () => ROOT,
+      readRawProjectSettings: async () => settings.current,
+      recordRunAuditEvent: (event: Record<string, unknown>) => { recorded.push(event); return Promise.resolve(); },
+    };
+    const readRemoteUrl = vi.fn(async () => "http://192.168.12.60:6610/saneca.git");
+    const deps = { readRemoteUrl, countGitHubWorkflowFiles: async () => 0, auditHost: store as never };
+
+    const declared = await resolvePostMergeEvidenceContract(store as never, deps);
+    expect(declared).toMatchObject({ provider: "github-actions", source: "declared", reason: "operator-declared" });
+
+    // Operator clears the declaration (null = no declaration). WITHOUT invalidation the cache must keep
+    // serving the old contract — this assertion is what proves the hook is load-bearing, not decorative.
+    settings.current = { postMergeEvidence: null };
+    const stale = await resolvePostMergeEvidenceContract(store as never, deps);
+    expect(stale).toMatchObject({ provider: "github-actions", source: "declared" });
+    expect(readRemoteUrl).toHaveBeenCalledTimes(1);
+
+    invalidatePostMergeEvidenceContractCache(ROOT);
+
+    const rederived = await resolvePostMergeEvidenceContract(store as never, deps);
+    expect(rederived).toMatchObject({ provider: "none", source: "derived", reason: "non-github-remote" });
+    expect(readRemoteUrl).toHaveBeenCalledTimes(2);
+    // The new reason got its row: auditedKeys was pruned for this root, so emitOnce is not suppressed.
+    expect(recorded).toHaveLength(2);
+    expect((recorded[1] as { metadata: Record<string, unknown> }).metadata).toMatchObject({ reason: "non-github-remote" });
+  });
+
+  it("invalidates only the named root, leaving another project's cached observation standing", async () => {
+    const otherRead = vi.fn(async () => "https://github.com/org/other.git");
+    const otherStore = {
+      getRootDir: () => "/repo/other",
+      readRawProjectSettings: async () => ({}),
+      recordRunAuditEvent: () => Promise.resolve(),
+    };
+    const otherDeps = { readRemoteUrl: otherRead, countGitHubWorkflowFiles: async () => 0 };
+
+    await resolvePostMergeEvidenceContract(otherStore as never, otherDeps);
+    const { store } = makeStore();
+    await resolvePostMergeEvidenceContract(store, { readRemoteUrl: async () => null, countGitHubWorkflowFiles: async () => 0 });
+
+    invalidatePostMergeEvidenceContractCache(ROOT);
+
+    await resolvePostMergeEvidenceContract(otherStore as never, otherDeps);
+    // The other root was never invalidated: its reader ran exactly once (cache still serving).
+    expect(otherRead).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -1,4 +1,33 @@
 {
+  "postMergeEvidence": {
+  "editorInheritOption": "Inherit — platform default for this board",
+  "statusLead": "This board's post-merge reporter:",
+  "pipelineAt": "pipeline at",
+  "credentialConfigured": "credential configured",
+  "inheritResolves": "This step inherits the board's platform default, which resolves to",
+  "kind": {
+    "githubActionsFullSuite": "GitHub Actions Full Suite",
+    "integrationOnly": "Integration-only",
+    "onedevPipeline": "OneDev pipeline",
+    "gitlabPipeline": "GitLab pipeline"
+  },
+  "provider": {
+    "githubActions": "GitHub Actions",
+    "onedev": "OneDev",
+    "gitlab": "GitLab",
+    "none": "None (no CI reporter)"
+  },
+  "reason": {
+    "operatorDeclared": "declared by operator",
+    "githubRemoteWithWorkflows": "derived: this repo is on GitHub and has workflow files",
+    "githubRemoteWithoutWorkflows": "derived: this repo is on GitHub but has no workflow files",
+    "onedevEndpoint": "derived: this repo's remote matches a configured OneDev endpoint",
+    "gitlabEndpoint": "derived: this repo's remote matches a configured GitLab endpoint",
+    "nonGithubRemote": "derived: the remote host has no configured CI reporter",
+    "noRemote": "derived: this repository has no git remote",
+    "repoFactsUnreadable": "repo facts could not be read — the gate keeps its historical contract"
+  }
+},
   "workflowSelector": {
     "loadFailed": "Failed to load workflows",
     "defaultSet": "Default workflow set",
@@ -2803,6 +2832,19 @@
       "smartConflictResolution": " Smart conflict resolution ",
       "smartPreferTask": "Smart, prefer task",
       "postMergeAuditMode": "Post-merge audit mode",
+      "postMergeEvidenceReporter": "Post-merge evidence reporter",
+      "postMergeEvidenceReporterHelp": "Choose which CI reporter this board has so the post-merge verification gate asks for evidence this repository can actually deliver. Default: unset — Fusion derives the reporter from the repository's remote and the GitLab integration endpoint.",
+      "postMergeEvidenceDeclarationWins": "A declaration wins over derivation in both directions",
+      "postMergeEvidenceDeclarationWinsBody": "choosing None on a GitHub repo skips CI evidence requests; choosing GitHub Actions on a non-GitHub host makes the gate demand a workflow run the repo does not have.",
+      "postMergeEvidenceUnreadable": "An unreadable declaration is ignored, not guessed.",
+      "postMergeEvidenceOnedevMatch": "For OneDev, the declaration counts only when the pipeline base URL's host matches the repository's origin remote; the token field stores the NAME of a project secret, never the token.",
+      "postMergeEvidenceAutomatic": "Automatic (derive from the repo)",
+      "postMergeEvidenceBaseUrl": "Pipeline base URL",
+      "postMergeEvidenceBaseUrlHelp": "Scheme + host (+ port) of your OneDev instance, e.g. http://192.168.1.91:6610 — the engine appends /api/pipelines. Only a URL whose host matches this repository's origin remote makes the board reportable. No default — unset.",
+      "postMergeEvidenceTokenSecret": "Token secret name",
+      "postMergeEvidenceTokenSecretHelp": "The NAME of a project secret holding the OneDev API token — a reference, never the token itself. Optional; the read-only pipeline check works without it in most OneDev setups. No default — unset.",
+      "postMergeEvidenceNote": "Note",
+      "postMergeEvidenceNoteHelp": "Optional operator annotation recording why this declaration exists (max 300 characters). The engine never acts on it. No default — unset.",
       "gitLabPersonalAccessToken": "Personal access token (default)",
       "gitLabTokenType": "GitLab token type",
       "whenUsingSmartPreferMainAutomaticallyPreferThe": " When using smart-prefer-main, automatically prefer the branch side for files that main has recently modified to avoid silently discarding branch work. ",
@@ -8062,6 +8104,7 @@
     "exitGateConditional": "Exit conditionally",
     "optionalGroupStepLabel": "Optional step",
     "conditionFailure": "failure",
+    "optionalGroupEvidenceKind": "Evidence contract",
     "optionalGroupNote": "Runs the steps inside this group once when the task enables it (seeded from this default), and skips them when disabled. Drop the optional steps into the region.",
     "foreachParallel": "Parallel",
     "foreachMode": "Mode",

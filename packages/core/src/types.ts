@@ -1786,6 +1786,18 @@ this browser-safe alias entry.
 */
 export { analyzeWorkflowLifecycle } from "./workflows/workflow-lifecycle-validation.js";
 export type { WorkflowLifecycleWarning, WorkflowLifecycleWarningCode } from "./workflows/workflow-lifecycle-validation.js";
+/*
+FNXC:PostMergeEvidenceContract 2026-11-05-05:39 (RUFU-456):
+The dashboard app aliases `@fusion/core` to this types.ts barrel (vite.config.ts), so the workflow editor's
+post-merge evidence inspector and the Settings → Merge reporter row need these runtime + type exports here,
+not just in index.ts: the vocabulary consts (rendered, never hand-copied), the parser the settings inputs
+round-trip through, and the kind resolvers the shared status renderer consumes. Node/CLI-only exports of the
+same module (derive/audit paths) deliberately stay out of this browser-safe surface.
+*/
+export { parseDeclaredPostMergeEvidence, POST_MERGE_EVIDENCE_PROVIDERS } from "./merge/post-merge-evidence-contract.js";
+export type { DeclaredPostMergeEvidence, PostMergeEvidenceContract, PostMergeEvidenceProvider, PostMergeEvidenceReason, PostMergeEvidenceSource } from "./merge/post-merge-evidence-contract.js";
+export { authoredPostMergeEvidenceKindOf, resolvePostMergeEvidenceKind, POST_MERGE_EVIDENCE_KINDS } from "./workflows/builtin-post-merge-group.js";
+export type { PostMergeEvidenceKind } from "./workflows/builtin-post-merge-group.js";
 export {
   completionSummaryNode,
   isCompletionSummaryNode,

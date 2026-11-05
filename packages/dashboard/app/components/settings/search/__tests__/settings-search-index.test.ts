@@ -29,6 +29,16 @@ const DYNAMIC_RENDERED_KEYS: Record<string, readonly string[]> = {
  * Also inventory bespoke SettingsFieldRow controls that anchor search via
  * `htmlFor` → `data-settings-key` (e.g. general.mobileNavPrimaryItems). Those
  * rows are indexed and jumpable but never use the descriptor={{ key }} shape.
+ *
+ * FNXC:PostMergeEvidenceContract 2026-11-05-07:20 (RUFU-456):
+ * And a bespoke row that carries the scroll anchor itself — a literal
+ * `data-settings-key="<key>"` on its wrapper (e.g. merge.postMergeEvidence, which stays bespoke
+ * because it composes ReactNode help plus an adjacent live status line no typed row has a slot for).
+ * This is the third spelling of the SAME invariant the search jump resolves
+ * (`[data-settings-key="<key>"]` in SettingsModal), so recognizing it makes the inventory more
+ * accurate in both directions: an indexed key with no anchor anywhere is still reported stale.
+ * Caveat for section authors: this scan reads raw source and does not strip comments, so spelling the
+ * idiom literally inside a section file's prose inventories that key as rendered.
  */
 function extractDescriptorKeys(source: string, filename?: string): string[] {
   const keys = new Set<string>();
@@ -36,6 +46,9 @@ function extractDescriptorKeys(source: string, filename?: string): string[] {
     keys.add(m[1]);
   }
   for (const m of source.matchAll(/<SettingsFieldRow\b[\s\S]*?\bhtmlFor="([^"]+)"/g)) {
+    keys.add(m[1]);
+  }
+  for (const m of source.matchAll(/\bdata-settings-key="([^"]+)"/g)) {
     keys.add(m[1]);
   }
   for (const key of filename ? DYNAMIC_RENDERED_KEYS[filename] ?? [] : []) {

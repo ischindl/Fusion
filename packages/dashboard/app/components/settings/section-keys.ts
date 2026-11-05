@@ -182,6 +182,7 @@ export const PROJECT_SECTION_KEYS: Readonly<Record<string, readonly string[]>> =
     "merger",
     "planApprovalMode",
     "postMergeAuditMode",
+    "postMergeEvidence",
     "pushAfterMerge",
     "pushRemote",
     "smartConflictResolution",

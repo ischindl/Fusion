@@ -33,8 +33,9 @@ reason ("not GitHub"), which both forgave boards that do have a pipeline and dem
 vocabulary from boards that could never produce it.
 
 Fusion still does not query any CI API. A reporter here means "a human reviewer can be told where to read
-the delivery record", exactly as for Actions; RUFU-456 owns surfacing this in the editor and Settings, and
-no HTTP client, polling loop, or UI is added by this module.
+the delivery record", exactly as for Actions; RUFU-456 surfaces this fact in the workflow editor and
+Settings (both render the exports below rather than their own lists), and no HTTP client, polling loop, or
+UI is added by this module.
 */
 
 import { normalizeHttpUrl } from "../git/gitlab-config.js";
@@ -139,6 +140,15 @@ Accepting a free-form string here would put a token in project settings and then
 const SECRET_REF_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/u;
 
 const DECLARED_PROVIDERS = ["none", "github-actions", "onedev", "gitlab"] as const;
+
+/*
+FNXC:PostMergeEvidenceContract 2026-11-05-04:13 (RUFU-456):
+The runtime provider list for UI surfaces. RUFU-456's vocabulary lock forbids the editor/Settings from
+hand-copying the provider vocabulary (the same drift class as the two-kind parse-error message), and
+`DECLARED_PROVIDERS` above is parse-ordered (`none` first) and module-private. This is the declaration-
+list projection the Settings → Merge select renders: additive const only, the derivation rule is untouched.
+*/
+export const POST_MERGE_EVIDENCE_PROVIDERS = ["github-actions", "onedev", "gitlab", "none"] as const satisfies readonly PostMergeEvidenceProvider[];
 
 function asDeclaredProvider(value: unknown): PostMergeEvidenceProvider | undefined {
   if (typeof value !== "string") return undefined;

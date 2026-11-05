@@ -445,6 +445,15 @@ export { buildHumanMergeCorrectionPrompt, collectHumanMergeCorrectionFiles, form
 export type { HumanMergeCorrectionMode, HumanMergeCorrectionPlan, HumanMergeCorrectionStep } from "./workflows/human-merge-feedback-planner.js";
 export type { HumanMergeBarrierDeps, HumanMergeBarrierOutcome, HumanMergeCreatePrResult } from "./workflows/human-merge-approval-boundary.js";
 export type { HumanMergeActionCapability, HumanMergeDecisionPoint, HumanMergeDecisionPointDeps } from "./merge/human-merge-approval.js";
+/*
+FNXC:PostMergeEvidenceContract 2026-11-05-04:13 (RUFU-456):
+First exports from the post-merge evidence contract module. The dashboard's GET /api/post-merge-evidence
+read route renders the same contract the merger consumes, and the settings-save route invalidates the
+resolver's process-lifetime cache when the operator's declaration changes — both cross the package boundary,
+so the pair must be public. `@fusion/*` imports are statically analyzable (named exports, no dynamic import).
+*/
+export { resolvePostMergeEvidenceContract, invalidatePostMergeEvidenceContractCache } from "./merge/post-merge-evidence-contract.js";
+export type { PostMergeContractStore, PostMergeContractResolverDeps } from "./merge/post-merge-evidence-contract.js";
 export { captureMergeContentDescriptor } from "./merge/merge-content-capture.js";
 export { runAiMerge } from "./merge/merger-ai.js";
 // STAS-292: the shared guarded ref lane. Recovery callers outside the merger (the CLI's

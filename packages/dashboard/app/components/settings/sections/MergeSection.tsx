@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { resolveRequiredCheckNames, type Settings } from "@fusion/core";
+import { resolveRequiredCheckNames, parseDeclaredPostMergeEvidence, POST_MERGE_EVIDENCE_PROVIDERS, type Settings } from "@fusion/core";
+import type { DeclaredPostMergeEvidence, PostMergeEvidenceProvider } from "@fusion/core";
+import { renderPostMergeEvidenceStatus, postMergeEvidenceProviderLabel, usePostMergeEvidenceContract } from "../../PostMergeEvidenceStatus";
 import { fetchGitRemoteBranches } from "../../../api";
 import { MovedSettingsStub } from "./MovedSettingsStub";
 import { SettingsSelectRow } from "../SettingsSelectRow";
@@ -33,6 +35,60 @@ export function composePushRemoteSetting(remote: string, branch: string): string
 function resolveMaxAutoMergeRetriesForMergeForm(value: unknown): number {
     const configured = Number(value);
     return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 3;
+}
+/*
+FNXC:PostMergeEvidenceContract 2026-11-05-04:13 (RUFU-456):
+Pure payload normalizers for the post-merge evidence reporter declaration. The stored value is
+"unset/null = no declaration (derive), object = declaration", and the shape tolerates whatever an operator
+hand-wrote into raw config — these read through core's `parseDeclaredPostMergeEvidence` so the form never
+re-endorses an unreadable declaration. Rules:
+- "Automatic" writes `null` (unset or stored null ⇒ the engine re-derives every tick).
+- Provider changes KEEP only the note; `baseUrl`/`tokenSecret` are OneDev-only fields and are STRIPPED
+  whenever the target provider is not `onedev` (a stale OneDev endpoint following a switch to GitLab
+  would be a declaration the engine silently ignores — worse than none because it looks configured).
+- Empty endpoint/note fields are stripped entirely, so a saved declaration stays minimal.
+- `tokenSecret` is the NAME of a project secret (a reference), never the token; the help copy says so.
+- GitLab needs NO fields here: its endpoint and token come from the GitLab integration settings.
+*/
+function postMergeEvidenceProviderOf(raw: unknown): PostMergeEvidenceProvider | "" {
+    return parseDeclaredPostMergeEvidence(raw)?.provider ?? "";
+}
+function withPostMergeEvidenceProvider(current: unknown, provider: PostMergeEvidenceProvider | ""): DeclaredPostMergeEvidence | null {
+    if (provider === "") return null;
+    const parsed = parseDeclaredPostMergeEvidence(current);
+    const next: DeclaredPostMergeEvidence = { provider };
+    if (parsed?.note) next.note = parsed.note;
+    if (provider === "onedev" && parsed) {
+        if (parsed.baseUrl) next.baseUrl = parsed.baseUrl;
+        if (parsed.tokenSecret) next.tokenSecret = parsed.tokenSecret;
+    }
+    return next;
+}
+function rawPostMergeEvidenceField(current: unknown, key: "baseUrl" | "tokenSecret" | "note"): string {
+  // Display values must round-trip the RAW typed string: core's parse normalizes note/baseUrl with
+  // trim(), so re-reading through it would erase a just-typed trailing space mid-keystroke (the same
+  // controlled-input defect the requiredChecks editor documents). Persistence still normalizes.
+  if (current && typeof current === "object" && "provider" in current) {
+    const value = (current as Record<string, unknown>)[key];
+    if (typeof value === "string") return value;
+  }
+  return "";
+}
+function withPostMergeEvidenceFields(current: unknown, fields: Partial<Pick<DeclaredPostMergeEvidence, "baseUrl" | "tokenSecret" | "note">>): DeclaredPostMergeEvidence | null {
+    const parsed = parseDeclaredPostMergeEvidence(current);
+    if (!parsed) return null;
+    const merged: DeclaredPostMergeEvidence = { provider: parsed.provider };
+    if (parsed.note) merged.note = parsed.note;
+    if (parsed.baseUrl) merged.baseUrl = parsed.baseUrl;
+    if (parsed.tokenSecret) merged.tokenSecret = parsed.tokenSecret;
+    for (const [key, value] of Object.entries(fields) as Array<[keyof Pick<DeclaredPostMergeEvidence, "baseUrl" | "tokenSecret" | "note">, string | undefined]>) {
+        // Keep the raw typed value while editing (only an empty string deletes the field). Trimming on
+        // every keystroke would erase a just-typed space from this controlled input — the same defect
+        // class the requiredChecks editor documents for its trailing comma.
+        if (value) merged[key] = value;
+        else delete merged[key];
+    }
+    return merged;
 }
 interface LegacyAutoMergeStampCandidate {
     taskId: string;
@@ -98,6 +154,14 @@ const legacyStampScanCache = new Map<string, LegacyAutoMergeStampCandidate[]>();
 
 export function MergeSection({ form, setForm, integrationBranchOptions, integrationBranchCustomMode, setIntegrationBranchCustomMode, onOpenWorkflowSettings, gitRemoteOptions = [], projectId, }: MergeSectionProps) {
     const { t } = useTranslation("app");
+    /*
+    FNXC:PostMergeEvidenceContract 2026-11-05-04:13 (RUFU-456):
+    The reporter row shows the SAME server-computed contract row the workflow editor's post-merge
+    inspector reads (one GET per Settings open). It is display-only — saving never writes it into any
+    node — and hides itself when the board cannot be observed, rather than fabricating a status.
+    */
+    const postMergeEvidenceContract = usePostMergeEvidenceContract();
+    const postMergeEvidenceProvider = postMergeEvidenceProviderOf(form.postMergeEvidence);
     const [requiredChecksInput, setRequiredChecksInput] = useState(() => (form.requiredChecks ?? []).join(", "));
     const emittedRequiredCheckNames = useRef(resolveRequiredCheckNames(form));
     useEffect(() => {
@@ -515,6 +579,97 @@ export function MergeSection({ form, setForm, integrationBranchOptions, integrat
         </select>
       </div>
       </>)}
+      {/*
+      FNXC:PostMergeEvidenceContract 2026-11-05-04:13 (RUFU-456):
+      The board-level half of the post-merge evidence contract (the node half is the workflow editor's
+      optional-group inspector). Declaration semantics this row must express, in order of precedence:
+      - Automatic (unset/null) ⇒ the engine DERIVES the reporter from the repo's remote and the GitLab
+        integration endpoint every tick; the derived answer is shown by the status line below.
+      - A declaration wins over derivation in BOTH directions: "None (no CI reporter)" on a GitHub repo
+        with workflow files is honest (the gate then asks for review evidence only, never for a CI
+        delivery record the repo won't produce), and "GitHub Actions" on a non-GitHub host forces the
+        Full Suite prompt an operator has to satisfy manually.
+      - An unreadable declaration is ignored, not guessed (core's tolerant parse).
+      - OneDev asks here (baseUrl + token-secret NAME = a reference to a project secret, never the
+        token); GitLab's endpoint and token live in the GitLab integration settings, so no GitLab
+        fields belong here. The OneDev host must match the repo's origin remote for the declaration to
+        make the board reportable.
+      Provider options render from core's POST_MERGE_EVIDENCE_PROVIDERS — never a hand-copied list.
+      */}
+      {/*
+      FNXC:PostMergeEvidenceContract 2026-11-05-07:20 (RUFU-456):
+      `data-settings-key` is load-bearing twice: it is what a settings-search result scrolls to
+      (SettingsModal resolves the jump by that attribute) and what the drift guard
+      inventories as an addressable control. This row stays bespoke rather than a typed descriptor row
+      because it composes ReactNode help plus an adjacent live status line — the same documented reason
+      `postMergeAuditMode` and `mergeConflictStrategy` stay bespoke — so it carries the anchor directly.
+      An indexed key without this attribute would be the FN-8855 defect again: the result renders, the
+      jump finds nothing, and search looks broken.
+      */}
+      <div className="form-group" data-settings-key="postMergeEvidence">
+        <div className="settings-field-label-row">
+          <label htmlFor="postMergeEvidenceProvider">{t("settings.merge.postMergeEvidenceReporter", "Post-merge evidence reporter")}</label>
+          <SettingsHelpTip settingKey="postMergeEvidence">{t("settings.merge.postMergeEvidenceReporterHelp", "Choose which CI reporter this board has so the post-merge verification gate asks for evidence this repository can actually deliver. Default: unset — Fusion derives the reporter from the repository's remote and the GitLab integration endpoint.")}{" "}<strong>{t("settings.merge.postMergeEvidenceDeclarationWins", "A declaration wins over derivation in both directions")}</strong>{" — "}{t("settings.merge.postMergeEvidenceDeclarationWinsBody", "choosing None on a GitHub repo skips CI evidence requests; choosing GitHub Actions on a non-GitHub host makes the gate demand a workflow run the repo does not have.")}{" "}{t("settings.merge.postMergeEvidenceUnreadable", "An unreadable declaration is ignored, not guessed.")}{" "}{t("settings.merge.postMergeEvidenceOnedevMatch", "For OneDev, the declaration counts only when the pipeline base URL's host matches the repository's origin remote; the token field stores the NAME of a project secret, never the token.")}</SettingsHelpTip>
+        </div>
+        <select
+          className="select"
+          id="postMergeEvidenceProvider"
+          data-testid="post-merge-evidence-provider"
+          value={postMergeEvidenceProvider}
+          onChange={(e) => setForm((f) => ({ ...f, postMergeEvidence: withPostMergeEvidenceProvider(f.postMergeEvidence, e.target.value as PostMergeEvidenceProvider | "") }))}
+        >
+          <option value="">{t("settings.merge.postMergeEvidenceAutomatic", "Automatic (derive from the repo)")}</option>
+          {POST_MERGE_EVIDENCE_PROVIDERS.map((provider) => (
+            <option key={provider} value={provider}>{postMergeEvidenceProviderLabel(t, provider)}</option>
+          ))}
+        </select>
+        {postMergeEvidenceProvider === "onedev" ? (
+          <>
+            <div className="settings-field-label-row" style={{ marginTop: "var(--space-sm)" }}>
+              <label htmlFor="postMergeEvidenceBaseUrl">{t("settings.merge.postMergeEvidenceBaseUrl", "Pipeline base URL")}</label>
+              <SettingsHelpTip settingKey="postMergeEvidenceBaseUrl">{t("settings.merge.postMergeEvidenceBaseUrlHelp", "Scheme + host (+ port) of your OneDev instance, e.g. http://192.168.1.91:6610 — the engine appends /api/pipelines. Only a URL whose host matches this repository's origin remote makes the board reportable. No default — unset.")}</SettingsHelpTip>
+            </div>
+            <input
+              id="postMergeEvidenceBaseUrl"
+              type="text"
+              placeholder="onedev.example:6610"
+              value={rawPostMergeEvidenceField(form.postMergeEvidence, "baseUrl")}
+              onChange={(e) => setForm((f) => ({ ...f, postMergeEvidence: withPostMergeEvidenceFields(f.postMergeEvidence, { baseUrl: e.target.value }) }))}
+            />
+            <div className="settings-field-label-row" style={{ marginTop: "var(--space-sm)" }}>
+              <label htmlFor="postMergeEvidenceTokenSecret">{t("settings.merge.postMergeEvidenceTokenSecret", "Token secret name")}</label>
+              <SettingsHelpTip settingKey="postMergeEvidenceTokenSecret">{t("settings.merge.postMergeEvidenceTokenSecretHelp", "The NAME of a project secret holding the OneDev API token — a reference, never the token itself. Optional; the read-only pipeline check works without it in most OneDev setups. No default — unset.")}</SettingsHelpTip>
+            </div>
+            <input
+              id="postMergeEvidenceTokenSecret"
+              type="text"
+              placeholder="ONEDEV_TOKEN"
+              value={rawPostMergeEvidenceField(form.postMergeEvidence, "tokenSecret")}
+              onChange={(e) => setForm((f) => ({ ...f, postMergeEvidence: withPostMergeEvidenceFields(f.postMergeEvidence, { tokenSecret: e.target.value }) }))}
+            />
+          </>
+        ) : null}
+        {postMergeEvidenceProvider !== "" ? (
+          <>
+            <div className="settings-field-label-row" style={{ marginTop: "var(--space-sm)" }}>
+              <label htmlFor="postMergeEvidenceNote">{t("settings.merge.postMergeEvidenceNote", "Note")}</label>
+              <SettingsHelpTip settingKey="postMergeEvidenceNote">{t("settings.merge.postMergeEvidenceNoteHelp", "Optional operator annotation recording why this declaration exists (max 300 characters). The engine never acts on it. No default — unset.")}</SettingsHelpTip>
+            </div>
+            <input
+              id="postMergeEvidenceNote"
+              type="text"
+              maxLength={300}
+              value={rawPostMergeEvidenceField(form.postMergeEvidence, "note")}
+              onChange={(e) => setForm((f) => ({ ...f, postMergeEvidence: withPostMergeEvidenceFields(f.postMergeEvidence, { note: e.target.value }) }))}
+            />
+          </>
+        ) : null}
+        {postMergeEvidenceContract ? (
+          <div className="form-hint" data-testid="post-merge-evidence-status">
+            {renderPostMergeEvidenceStatus(t, postMergeEvidenceContract)}
+          </div>
+        ) : null}
+      </div>
       <div className="form-group">
         <div className="settings-field-label-row">
           <label htmlFor="pushAfterMerge" className="checkbox-label">

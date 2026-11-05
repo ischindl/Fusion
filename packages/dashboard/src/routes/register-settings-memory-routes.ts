@@ -60,8 +60,10 @@ import {
   buildSessionSkillContextSync,
   createFnAgent as engineCreateFnAgent,
   getRemoteTunnelService,
+  invalidatePostMergeEvidenceContractCache,
   probeWorktrunk,
   remoteTunnelScopeKey,
+  resolvePostMergeEvidenceContract,
   resolveWorktrunkBinary,
   type RemoteTunnelService,
 } from "@fusion/engine";
@@ -627,6 +629,31 @@ export function registerSettingsMemoryRoutes(ctx: ApiRoutesContext, deps: Settin
     }
   });
 
+  /*
+  FNXC:PostMergeEvidenceContract 2026-11-05-04:13 (RUFU-456):
+  Read-only projection of the post-merge evidence contract for the workflow editor's node inspector and
+  Settings → Merge, so both surfaces answer "which reporter does this board have, and WHY" with one shared
+  honest measurement instead of each re-deriving it. The response is the contract AS-IS: `observedAt`,
+  `provider`, `source`, `reason`, plus `endpointHost`/`credentialConfigured` when an endpoint matched — the
+  `PostMergeEvidenceContract` type contains no URL, path, or secret BY CONSTRUCTION (the engine's emit notes
+  own that guarantee), and nothing from the raw settings or the git remote is ever appended here. `null`
+  means the resolver could not observe the project at all; the surfaces hide their status line then rather
+  than fabricate one. Emission of the contract's own run-audit row still belongs to the engine resolver
+  (`auditHost: scopedStore`), same as every other consumer.
+  */
+  router.get("/post-merge-evidence", async (req, res) => {
+    try {
+      const { store: scopedStore } = await getProjectContext(req);
+      const contract = await resolvePostMergeEvidenceContract(scopedStore, { auditHost: scopedStore });
+      res.json({ contract: contract ?? null });
+    } catch (err: unknown) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      rethrowAsApiError(err);
+    }
+  });
+
   router.put("/settings", async (req, res) => {
     try {
       const workflowEnablementPatch = Object.prototype.hasOwnProperty.call(req.body ?? {}, "enabledBuiltinWorkflowIds");
@@ -812,6 +839,22 @@ export function registerSettingsMemoryRoutes(ctx: ApiRoutesContext, deps: Settin
       }
 
       const settings = await scopedStore.updateSettings(clientSettings, resolveRequestActor(req));
+      /*
+      FNXC:PostMergeEvidenceContract 2026-11-05-04:13 (RUFU-456):
+      The engine resolver's contract cache is process-lifetime per project root, so without this hook a
+      freshly saved `postMergeEvidence` declaration would not take effect until a daemon restart — the exact
+      "edit JSON and hope" failure this card exists to close. Fires ONLY when the accepted patch carried the
+      key (unrelated settings writes must not churn a cache that exists to keep a `git remote` shellout out
+      of every finalize attempt), and stays best-effort: a store double without `getRootDir` simply skips it.
+      */
+      if (Object.prototype.hasOwnProperty.call(clientSettings, "postMergeEvidence")) {
+        try {
+          const rootDir = typeof scopedStore.getRootDir === "function" ? scopedStore.getRootDir() : undefined;
+          if (rootDir) invalidatePostMergeEvidenceContractCache(rootDir);
+        } catch {
+          // Cache invalidation is never a reason to fail a settings save.
+        }
+      }
       if (
         workflowEnablementPatch
         && previousWorkflowSettings

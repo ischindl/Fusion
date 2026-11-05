@@ -1823,7 +1823,7 @@ endpoint CANDIDATES (`PostMergeReporterEndpoint`) and `normalizePostMergeReporte
 validator a reporter URL must pass — the same rules a GitLab instance URL passes, so a declared OneDev URL
 and a configured GitLab instance URL cannot disagree about what a usable base URL is.
 */
-export { derivePostMergeEvidenceContract, parseDeclaredPostMergeEvidence, isPostMergeEvidenceUnreportable, normalizePostMergeReporterBaseUrl } from "./merge/post-merge-evidence-contract.js";
+export { derivePostMergeEvidenceContract, parseDeclaredPostMergeEvidence, isPostMergeEvidenceUnreportable, normalizePostMergeReporterBaseUrl, POST_MERGE_EVIDENCE_PROVIDERS } from "./merge/post-merge-evidence-contract.js";
 export type { PostMergeReporterEndpoint } from "./merge/post-merge-evidence-contract.js";
 /*
 FNXC:PostMergeEvidenceRequirement 2026-09-30-22:51 (RUFU-430):

@@ -149,6 +149,7 @@ describe("settings section-keys registry", () => {
         "merger",
         "planApprovalMode",
         "postMergeAuditMode",
+        "postMergeEvidence",
         "pushAfterMerge",
         "pushRemote",
         "smartConflictResolution",

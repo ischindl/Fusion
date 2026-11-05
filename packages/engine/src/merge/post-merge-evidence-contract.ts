@@ -384,3 +384,21 @@ export function resetPostMergeEvidenceContractCacheForTest(): void {
   contractCache.clear();
   auditedKeys.clear();
 }
+
+/*
+FNXC:PostMergeEvidenceContract 2026-11-05-04:13 (RUFU-456):
+Root-scoped invalidation for the operator-facing surface. Until now the ONLY way a changed
+`postMergeEvidence` declaration took effect was a daemon restart, because the process-lifetime cache keyed on
+the project root would keep serving the pre-declaration contract. The dashboard's settings-save route calls
+this after a write whose patch carried the `postMergeEvidence` key (unrelated settings writes must not
+invalidate — the cache exists to keep a `git remote` shellout out of every finalize attempt).
+It deletes BOTH maps' entries for that root, not just the contract: the audit-dedup set keys on
+`root:reason`, so leaving it standing would make one new declaration re-suppress its own derivation row
+forever whenever the reason repeats.
+*/
+export function invalidatePostMergeEvidenceContractCache(rootDir: string): void {
+  contractCache.delete(rootDir);
+  for (const key of auditedKeys) {
+    if (key.startsWith(`${rootDir}:`)) auditedKeys.delete(key);
+  }
+}

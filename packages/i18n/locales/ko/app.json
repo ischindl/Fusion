@@ -1,4 +1,33 @@
 {
+  "postMergeEvidence": {
+  "editorInheritOption": "상속 — 이 보드의 플랫폼 기본값",
+  "statusLead": "이 보드의 병합 후 리포터:",
+  "pipelineAt": "파이프라인 위치",
+  "credentialConfigured": "자격 증명 구성됨",
+  "inheritResolves": "이 단계는 보드의 플랫폼 기본값을 상속하며, 다음으로 해석됩니다:",
+  "kind": {
+    "githubActionsFullSuite": "GitHub Actions 전체 스위트",
+    "integrationOnly": "통합 테스트만",
+    "onedevPipeline": "OneDev 파이프라인",
+    "gitlabPipeline": "GitLab 파이프라인"
+  },
+  "provider": {
+    "githubActions": "GitHub Actions",
+    "onedev": "OneDev",
+    "gitlab": "GitLab",
+    "none": "없음 (CI 리포터 없음)"
+  },
+  "reason": {
+    "operatorDeclared": "운영자가 선언함",
+    "githubRemoteWithWorkflows": "파생: 이 저장소는 GitHub에 있고 워크플로 파일이 있습니다",
+    "githubRemoteWithoutWorkflows": "파생: 이 저장소는 GitHub에 있지만 워크플로 파일이 없습니다",
+    "onedevEndpoint": "파생: 이 저장소의 원격지가 구성된 OneDev 엔드포인트와 일치합니다",
+    "gitlabEndpoint": "파생: 이 저장소의 원격지가 구성된 GitLab 엔드포인트와 일치합니다",
+    "nonGithubRemote": "파생: 원격지에 구성된 CI 리포터가 없습니다",
+    "noRemote": "파생: 이 저장소에는 git 원격지가 없습니다",
+    "repoFactsUnreadable": "저장소 사실을 읽을 수 없습니다 — 게이트는 기존 계약을 유지합니다"
+  }
+},
   "taskDocuments": {
     "documentsSubheading": "Task documents",
     "edit": "편집",
@@ -2742,6 +2771,7 @@
     "templateFilterPlaceholder": "템플릿 필터",
     "reservedHandleBlocked": "Optional-block boundary guides cannot be connected manually",
     "failurePolicy": "분기 실패 시",
+    "optionalGroupEvidenceKind": "증거 계약",
     "optionalGroupNote": "Runs the steps inside this group once when the task enables it (seeded from this default), and skips them when disabled. Drop the optional steps into the region.",
     "loopExitType": "",
     "duplicateBlocked": "해당 연결이 이미 있습니다",
@@ -11664,6 +11694,19 @@
       "gitLabAccessToken": "GitLab access token",
       "merge": "",
       "postMergeAuditMode": "",
+      "postMergeEvidenceReporter": "병합 후 증거 리포터",
+      "postMergeEvidenceReporterHelp": "이 보드가 가진 CI 리포터를 선택하면 병합 후 검증 게이트가 이 저장소가 실제로 제공할 수 있는 증거만 요청합니다. 기본값: 미설정 — Fusion은 저장소의 원격지와 GitLab 통합 엔드포인트에서 리포터를 파생합니다.",
+      "postMergeEvidenceDeclarationWins": "선언은 두 방향 모두에서 파생보다 우선합니다",
+      "postMergeEvidenceDeclarationWinsBody": "GitHub 저장소에서없음을 선택하면 CI 증거 요청이 건너뛰어지고, 비GitHub 호스트에서 GitHub Actions를 선택하면 게이트가 저장소에 없는 워크플로 실행을 요구합니다.",
+      "postMergeEvidenceUnreadable": "읽을 수 없는 선언은 추측되지 않고 무시됩니다.",
+      "postMergeEvidenceOnedevMatch": "OneDev의 경우 파이프라인 기본 URL의 호스트가 저장소의 origin 원격지와 일치할 때만 선언이 유효합니다. 토큰 필드는 프로젝트 시크릿의 NAME을 저장하며, 토큰 자체는 절대 저장하지 않습니다.",
+      "postMergeEvidenceAutomatic": "자동 (저장소에서 파생)",
+      "postMergeEvidenceBaseUrl": "파이프라인 기본 URL",
+      "postMergeEvidenceBaseUrlHelp": "OneDev 인스턴스의 스킴 + 호스트(+ 포트), 예: http://192.168.1.91:6610 — 엔진이 /api/pipelines를 추가합니다. 이 저장소의 origin 원격지와 호스트가 일치하는 URL만 보드를 리포트 가능하게 합니다. 기본값 없음 — 미설정.",
+      "postMergeEvidenceTokenSecret": "토큰 시크릿 이름",
+      "postMergeEvidenceTokenSecretHelp": "OneDev API 토큰을 보유한 프로젝트 시크릿의 NAME — 참조일 뿐, 토큰 자체ではありません. 선택 항목; 대부분의 OneDev 설치에서 읽기 전용 파이프라인 검사는 이것 없이 동작합니다. 기본값 없음 — 미설정.",
+      "postMergeEvidenceNote": "노트",
+      "postMergeEvidenceNoteHelp": "이 선언이 존재하는 이유를 기록하는 선택적 운영자 노트 (최대 300자). 엔진은 이를 근거로 동작하지 않습니다. 기본값 없음 — 미설정.",
       "pickALocalBranchFromTheDropdownCommon": "",
       "warnDefaultLogFindingsContinue": "",
       "gitLabDisabledHint": "GitLab comments, close/reopen, import fetches, and refresh operations are disabled. Saved tokens remain stored for re-enable.",

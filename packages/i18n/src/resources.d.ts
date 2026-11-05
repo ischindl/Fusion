@@ -5929,6 +5929,35 @@ export default interface Resources {
       "version": "Version:",
       "viewUnavailable": "Plugin view unavailable"
     },
+    "postMergeEvidence": {
+      "credentialConfigured": "credential configured",
+      "editorInheritOption": "Inherit — platform default for this board",
+      "inheritResolves": "This step inherits the board's platform default, which resolves to",
+      "kind": {
+        "githubActionsFullSuite": "GitHub Actions Full Suite",
+        "gitlabPipeline": "GitLab pipeline",
+        "integrationOnly": "Integration-only",
+        "onedevPipeline": "OneDev pipeline"
+      },
+      "pipelineAt": "pipeline at",
+      "provider": {
+        "githubActions": "GitHub Actions",
+        "gitlab": "GitLab",
+        "none": "None (no CI reporter)",
+        "onedev": "OneDev"
+      },
+      "reason": {
+        "githubRemoteWithWorkflows": "derived: this repo is on GitHub and has workflow files",
+        "githubRemoteWithoutWorkflows": "derived: this repo is on GitHub but has no workflow files",
+        "gitlabEndpoint": "derived: this repo's remote matches a configured GitLab endpoint",
+        "noRemote": "derived: this repository has no git remote",
+        "nonGithubRemote": "derived: the remote host has no configured CI reporter",
+        "onedevEndpoint": "derived: this repo's remote matches a configured OneDev endpoint",
+        "operatorDeclared": "declared by operator",
+        "repoFactsUnreadable": "repo facts could not be read — the gate keeps its historical contract"
+      },
+      "statusLead": "This board's post-merge reporter:"
+    },
     "pr": {
       "assignees": "Assignees",
       "authFail": "Run gh auth login and try again.",
@@ -7831,6 +7860,19 @@ export default interface Resources {
         "planApprovalModeWorkflow": "Use workflow setting",
         "positiveIntegerRetryCapForAutoMergeConflict": "Positive integer retry cap for auto-merge conflict resolution before a task parks for human recovery. Default 3.",
         "postMergeAuditMode": "Post-merge audit mode",
+        "postMergeEvidenceAutomatic": "Automatic (derive from the repo)",
+        "postMergeEvidenceBaseUrl": "Pipeline base URL",
+        "postMergeEvidenceBaseUrlHelp": "Scheme + host (+ port) of your OneDev instance, e.g. http://192.168.1.91:6610 — the engine appends /api/pipelines. Only a URL whose host matches this repository's origin remote makes the board reportable. No default — unset.",
+        "postMergeEvidenceDeclarationWins": "A declaration wins over derivation in both directions",
+        "postMergeEvidenceDeclarationWinsBody": "choosing None on a GitHub repo skips CI evidence requests; choosing GitHub Actions on a non-GitHub host makes the gate demand a workflow run the repo does not have.",
+        "postMergeEvidenceNote": "Note",
+        "postMergeEvidenceNoteHelp": "Optional operator annotation recording why this declaration exists (max 300 characters). The engine never acts on it. No default — unset.",
+        "postMergeEvidenceOnedevMatch": "For OneDev, the declaration counts only when the pipeline base URL's host matches the repository's origin remote; the token field stores the NAME of a project secret, never the token.",
+        "postMergeEvidenceReporter": "Post-merge evidence reporter",
+        "postMergeEvidenceReporterHelp": "Choose which CI reporter this board has so the post-merge verification gate asks for evidence this repository can actually deliver. Default: unset — Fusion derives the reporter from the repository's remote and the GitLab integration endpoint.",
+        "postMergeEvidenceTokenSecret": "Token secret name",
+        "postMergeEvidenceTokenSecretHelp": "The NAME of a project secret holding the OneDev API token — a reference, never the token itself. Optional; the read-only pipeline check works without it in most OneDev setups. No default — unset.",
+        "postMergeEvidenceUnreadable": "An unreadable declaration is ignored, not guessed.",
         "pushRemote": "Push Remote",
         "pushTargetBranch": "Push target branch",
         "pushTargetBranchHelp": "Branch on the remote that merged results are pushed to. Leave on the default to push the integration branch to its same-named remote branch; pick a listed remote branch or choose Custom… to type one that doesn't exist on the remote yet (the push creates it).",
@@ -11717,6 +11759,7 @@ export default interface Resources {
       "optionalGroupDefaultOff": "default off",
       "optionalGroupDefaultOn": "default on",
       "optionalGroupEmptyHint": "Drag optional steps here",
+      "optionalGroupEvidenceKind": "Evidence contract",
       "optionalGroupMaxRevisions": "Max revisions",
       "optionalGroupMaxRevisionsPlaceholder": "Use global setting",
       "optionalGroupMaxRevisionsUnbounded": "Unbounded",

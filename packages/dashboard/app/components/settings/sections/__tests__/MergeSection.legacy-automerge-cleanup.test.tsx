@@ -15,6 +15,31 @@ function jsonResponse(body: unknown, ok = true): Response {
   } as Response;
 }
 
+/*
+FNXC:PostMergeEvidenceContract 2026-11-05-07:20 (RUFU-456):
+MergeSection now reads `GET /api/post-merge-evidence` once on mount to render the reporter status line.
+The previous fixtures chained `mockResolvedValueOnce`, so that mount read consumed the first queued
+maintenance response and the stamp-cleanup list rendered empty — the failure mode was invisible in the
+assertion text ("unable to find the apply button") and real in the harness (an order-dependent mock).
+Every case now routes by URL: the contract read answers `contract: null` (these cases are about the stamp
+row, not the status line) and each maintenance endpoint answers its own body. A route body may be a
+function so a state transition (scan → apply → re-scan empty) stays expressible without call ordering.
+*/
+function stubFetchByRoute(routes: Record<string, unknown | (() => unknown)>): ReturnType<typeof vi.fn> {
+  // Longest route first: `/…/apply` is a suffix-superstring of `/…/legacy-automerge-stamps`.
+  const ordered = Object.entries(routes).sort(([a], [b]) => b.length - a.length);
+  const mock = vi.fn(async (input: unknown) => {
+    const url = String(input);
+    if (url.startsWith("/api/post-merge-evidence")) return jsonResponse({ contract: null });
+    for (const [route, body] of ordered) {
+      if (url.includes(route)) return jsonResponse(typeof body === "function" ? (body as () => unknown)() : body);
+    }
+    throw new Error(`unexpected fetch in legacy-automerge-stamp harness: ${url}`);
+  });
+  vi.stubGlobal("fetch", mock);
+  return mock;
+}
+
 function makeProps(overrides: Partial<MergeSectionProps["form"]> = {}, projectId?: string): MergeSectionProps {
   return {
     form: {
@@ -43,7 +68,7 @@ describe("MergeSection legacy auto-merge stamp cleanup", () => {
   });
 
   it("renders and updates the project-scoped plan approval mode select", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ candidates: [], count: 0 })));
+    stubFetchByRoute({});
     const props = makeProps({ planApprovalMode: "require-all" });
 
     render(<MergeSection {...props} />);
@@ -62,20 +87,22 @@ describe("MergeSection legacy auto-merge stamp cleanup", () => {
   });
 
   it("renders the store-provided candidate list without client-side filtering", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
-      candidates: [
-        { taskId: "FN-101", column: "in-review", cleared: false },
-        { taskId: "FN-USER", column: "in-review", cleared: false },
-      ],
-      count: 2,
-    }));
-    vi.stubGlobal("fetch", fetchMock);
+    const fetchMock = stubFetchByRoute({
+      "/api/maintenance/legacy-automerge-stamps": {
+        candidates: [
+          { taskId: "FN-101", column: "in-review", cleared: false },
+          { taskId: "FN-USER", column: "in-review", cleared: false },
+        ],
+        count: 2,
+      },
+    });
 
     render(<MergeSection {...makeProps({}, "scan-list")} />);
 
-    // Opening the section must not reach the server at all: the scan is operator-triggered.
+    // Opening the section must not trigger a SCAN: cleanup is operator-triggered. (The section's only
+    // other mount read — the reporter contract — is not a maintenance call and is not what this guards.)
     expect(await screen.findByTestId("legacy-automerge-stamp-idle-state")).toBeInTheDocument();
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/api/maintenance"))).toEqual([]);
     fireEvent.click(screen.getByTestId("legacy-automerge-stamp-scan-button"));
 
     await waitFor(() => expect(screen.getByText("FN-101")).toBeInTheDocument());
@@ -86,7 +113,7 @@ describe("MergeSection legacy auto-merge stamp cleanup", () => {
   });
 
   it("renders an explicit empty state and no apply shell when there are zero candidates", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ candidates: [], count: 0 })));
+    stubFetchByRoute({ "/api/maintenance/legacy-automerge-stamps": { candidates: [], count: 0 } });
 
     render(<MergeSection {...makeProps({}, "scan-empty")} />);
 
@@ -98,17 +125,18 @@ describe("MergeSection legacy auto-merge stamp cleanup", () => {
   });
 
   it("requires confirmation, posts apply, and re-fetches to the empty state", async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({
-        candidates: [{ taskId: "FN-101", column: "in-review", cleared: false }],
-        count: 1,
-      }))
-      .mockResolvedValueOnce(jsonResponse({
+    // The scan route's own queue models the state transition the once-chain used to model by call order.
+    const scanQueue = [
+      { candidates: [{ taskId: "FN-101", column: "in-review", cleared: false }], count: 1 },
+      { candidates: [], count: 0 },
+    ];
+    const fetchMock = stubFetchByRoute({
+      "/api/maintenance/legacy-automerge-stamps/apply": {
         cleared: [{ taskId: "FN-101", column: "in-review", cleared: true }],
         count: 1,
-      }))
-      .mockResolvedValueOnce(jsonResponse({ candidates: [], count: 0 }));
-    vi.stubGlobal("fetch", fetchMock);
+      },
+      "/api/maintenance/legacy-automerge-stamps": () => scanQueue.shift() ?? { candidates: [], count: 0 },
+    });
 
     render(<MergeSection {...makeProps({}, "scan-apply")} />);
 
@@ -125,10 +153,12 @@ describe("MergeSection legacy auto-merge stamp cleanup", () => {
 
   it("is operable at a narrow mobile width", async () => {
     window.innerWidth = 390;
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({
-      candidates: [{ taskId: "FN-MOBILE", column: "in-review", cleared: false }],
-      count: 1,
-    })));
+    stubFetchByRoute({
+      "/api/maintenance/legacy-automerge-stamps": {
+        candidates: [{ taskId: "FN-MOBILE", column: "in-review", cleared: false }],
+        count: 1,
+      },
+    });
 
     render(<MergeSection {...makeProps({}, "scan-mobile")} />);
 

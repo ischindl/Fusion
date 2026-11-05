@@ -117,7 +117,13 @@ type MovedProjectSettingsKey =
   | "reviewArbitrationProvider"
   | "reviewArbitrationModelId";
 
-type NonDefaultProjectSettingsKey = "ephemeralAgentTaskCreationPolicy" | "selectedWorkflowModelLanes" | "heartbeatIdleBackoffCapMs";
+/*
+FNXC:PostMergeEvidenceContract 2026-11-05-04:13 (RUFU-456):
+`postMergeEvidence` follows the same no-default pattern: UNSET is a meaningful state ("derive the reporter
+from repo facts"), so it must not be materialized as a stored null that a settings rollback could disagree
+with. It is the project axis of the post-merge evidence contract; see settings-scope.ts.
+*/
+type NonDefaultProjectSettingsKey = "ephemeralAgentTaskCreationPolicy" | "selectedWorkflowModelLanes" | "heartbeatIdleBackoffCapMs" | "postMergeEvidence";
 type ProjectSettingsSchema = Omit<ProjectSettings, MovedProjectSettingsKey | NonDefaultProjectSettingsKey>;
 
 /**
@@ -1246,6 +1252,7 @@ settings rollback can silently disagree with.
 export const NON_DEFAULT_PROJECT_SETTINGS_KEYS = Object.freeze([
   "ephemeralAgentTaskCreationPolicy",
   "heartbeatIdleBackoffCapMs",
+  "postMergeEvidence",
 ] as const satisfies readonly NonDefaultProjectSettingsKey[]);
 
 /** Keys that belong to the project settings scope. */
