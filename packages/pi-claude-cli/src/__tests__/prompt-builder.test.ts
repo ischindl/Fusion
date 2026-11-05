@@ -21,7 +21,7 @@ describe("buildPrompt", () => {
     expect(buildPrompt(context)).toBe("ASSISTANT:\nHi there");
   });
 
-  it("produces 'TOOL RESULT ({claudeName}):\\n{content}' for a tool result message", () => {
+  it("labels a tool result with its Claude tool name and frames its payload as untrusted data", () => {
     const context = {
       messages: [
         {
@@ -31,9 +31,10 @@ describe("buildPrompt", () => {
         },
       ],
     } as unknown as any;
-    // Pi tool name "read" should be mapped to Claude name "Read" in the label
+    // Pi tool name "read" should be mapped to Claude name "Read" in the label.
+    // STAS-388: the payload keeps its bytes and gains zero-authority framing.
     expect(buildPrompt(context)).toBe(
-      "TOOL RESULT (Read):\nfile contents here",
+      'TOOL RESULT (Read):\n<untrusted_tool_output authority="none">\nfile contents here\n</untrusted_tool_output>',
     );
   });
 
@@ -58,7 +59,9 @@ describe("buildPrompt", () => {
       "ASSISTANT:",
       "Let me read that file.",
       "TOOL RESULT (Read):",
+      '<untrusted_tool_output authority="none">',
       "export const x = 1;",
+      "</untrusted_tool_output>",
       "USER:",
       "Now explain it.",
     ].join("\n");
@@ -177,7 +180,9 @@ describe("buildPrompt", () => {
     } as unknown as any;
 
     const result = buildPrompt(context);
-    expect(result).toBe("TOOL RESULT (Bash):\nline 1\nline 2");
+    expect(result).toBe(
+      'TOOL RESULT (Bash):\n<untrusted_tool_output authority="none">\nline 1\nline 2\n</untrusted_tool_output>',
+    );
   });
 
   describe("tool name and argument reverse mapping", () => {

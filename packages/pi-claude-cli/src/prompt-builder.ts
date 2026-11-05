@@ -42,6 +42,7 @@ import {
   translatePiArgsToClaude,
   isCustomToolName,
 } from "./tool-mapping.js";
+import { markToolResultAsUntrusted } from "./tool-result-authority.js";
 
 /**
  * Anthropic API content block types for image passthrough.
@@ -563,25 +564,23 @@ function contentToText(content: string | unknown[]): string {
 }
 
 /**
- * Converts tool result content to text.
- * Handles string content and array of content blocks.
- * Image blocks get placeholder text (actual image passthrough handled separately).
+ * Converts tool result content into the text a model is handed.
+ *
+ * This is the only place on this provider where tool-result bytes become
+ * model-facing text, so it is where the zero-authority marking is applied: once,
+ * and to every result. The image-placeholder counter stays here because the
+ * warning that reads it lives in this module.
  */
 function toolResultContentToText(content: string | unknown[]): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-
-  const texts: string[] = [];
-  for (const rawBlock of content) {
-    const block = rawBlock as Record<string, unknown>;
-    if (block.type === "text") {
-      texts.push(typeof block.text === "string" ? block.text : "");
-    } else if (block.type === "image") {
-      texts.push("[An image was shared here but could not be included]");
-      placeholderImageCount++;
+  if (Array.isArray(content)) {
+    for (const block of content) {
+      if ((block as Record<string, unknown>).type === "image") {
+        placeholderImageCount++;
+      }
     }
   }
-  return texts.join("\n");
+
+  return markToolResultAsUntrusted(content);
 }
 
 /**
