@@ -10921,76 +10921,110 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           // An operator park is authoritative; this sweep never reaches through it.
           if (task.userPaused === true) continue;
 
-          const fresh = await this.store.getTask(task.id);
-          if (!fresh || fresh.deletedAt) continue;
-          if (fresh.userPaused === true) continue;
-          // Consent and live ownership veto the repair, same predicate the atomic write re-applies.
-          if (!this.isReviewRevisionParkRepairAdmissible(fresh, settings, executingIds)) {
-            deferred++;
-            continue;
-          }
-          // Merge-queue ownership needs an await, so it is checked here rather than in the sync updater.
-          if (await this.isMergeLaneOwned(fresh.id)) {
-            deferred++;
-            continue;
-          }
-          // Re-derive both halves of the admission signature against the live row.
-          if (!isEngineAuthoredInReviewStallPark(fresh)) continue;
-          const revisionGateId = findAwaitingReviewRevisionGate(fresh);
-          if (!revisionGateId) continue;
+          /*
+          FNXC:ReviewRevisionParkPerCardIsolation 2026-11-05-01:24 (RUFU-448, finding 2 / AC2):
+          EVERY STORE CALL THIS CARD MAKES IS CONTAINED HERE. Under the previous shape one refusing
+          write on one card reached the pass-level catch, which ended the page loop and returned 0 — so
+          the healthy cards later on the page were never read, and the clears the pass had already
+          applied became invisible (a store whose log writer cannot boot is a live class, RUFU-275:
+          `fn extension TaskStore boot timed out after 30000ms`). One card's I/O failure is that card's
+          problem. The pass-level catch stays for what it actually covers: a settings or board read that
+          makes the whole sweep impossible.
+          */
+          try {
+            const fresh = await this.store.getTask(task.id);
+            if (!fresh || fresh.deletedAt) continue;
+            if (fresh.userPaused === true) continue;
+            // Consent and live ownership veto the repair, same predicate the atomic write re-applies.
+            if (!this.isReviewRevisionParkRepairAdmissible(fresh, settings, executingIds)) {
+              deferred++;
+              continue;
+            }
+            // Merge-queue ownership needs an await, so it is checked here rather than in the sync updater.
+            if (await this.isMergeLaneOwned(fresh.id)) {
+              deferred++;
+              continue;
+            }
+            // Re-derive both halves of the admission signature against the live row.
+            if (!isEngineAuthoredInReviewStallPark(fresh)) continue;
+            const revisionGateId = findAwaitingReviewRevisionGate(fresh);
+            if (!revisionGateId) continue;
 
-          let outcome: "cleared" | "signature-drift" = "signature-drift";
-          await this.store.updateTaskAtomic(fresh.id, (live) => {
-            if (live.deletedAt || live.userPaused === true) return null;
-            // Admission re-derives on the live row: consent withdrawn or a session started since the
-            // page read must refuse the write, not race it.
-            if (!this.isReviewRevisionParkRepairAdmissible(live, settings, executingIds)) return null;
-            if (!isEngineAuthoredInReviewStallPark(live)) return null;
-            if (!isAwaitingReviewRevision(live)) return null;
-            outcome = "cleared";
             /*
-            FNXC:ReviewRevisionWait 2026-09-30-06:21:
-            The four park fields are the exact inverse of the deadlock disposition's write; `mergeRetries`
-            is reset alongside them per the convention both sibling lifts of this park follow
-            (`routeUnrunGateParkBackToReview`, workspace-partial-land stall clear). Without it a repaired
-            card would re-queue against a retry budget its mis-park had already consumed, and
-            `canMergeTask` would hold it out of the merge queue until the cooldown escape hatch elapsed —
-            punishing the card for a stall the engine mis-read.
+            FNXC:ReviewRevisionParkLogOrder 2026-11-05-01:24 (RUFU-448, finding 2 / AC3):
+            THE OPERATOR'S EXPLANATION IS WRITTEN BEFORE THE PARK IS LIFTED, which makes
+            `cleared ⇒ logged` a property of the sweep instead of a race. The reverse order could not
+            repair itself: the clear drops `paused`, and `isEngineAuthoredInReviewStallPark` requires
+            `paused === true`, so a card whose `logEntry` rejected was no longer a candidate on the next
+            pass and its explanatory line was gone permanently — an unfrozen card whose only record of
+            why lived in the audit store. Written first, a failed log leaves the predicate match intact
+            and the next pass retries, landing line and clear together.
+
+            ACCEPTED COST, pinned by the drift case in `review-revision-stall-park.test.ts`: a guarded
+            write this pass refuses (the card's shape drifted) can leave the line on a card that is
+            still parked. That is the honest direction — a line on a card that will be retried is noise,
+            while a clear without its line is a loss the engine can never notice.
+
+            The audit emit stays AFTER the applied clear: its row means “a clear really happened”, and
+            `emitBoundedRunAudit` never rethrows, so it cannot strand the line it now follows.
             */
-            return {
-              paused: false,
-              pausedReason: null as unknown as Task["pausedReason"],
-              status: null,
-              error: null,
-              mergeRetries: 0,
-            };
-          });
+            await this.store.logEntry(
+              fresh.id,
+              `[pre-merge] Cleared the engine's in-review stall park: the latest review authored a REVISE verdict and this card still has unfinished remediation, so it is working, not stalled.`,
+            );
 
-          // Read through an explicit widening: the assignment happens inside the atomic updater, which
-          // control-flow analysis cannot see, so the narrowed literal would otherwise be `"signature-drift"`.
-          const finalOutcome = outcome as "cleared" | "signature-drift";
-          if (finalOutcome !== "cleared") continue;
-          cleared += 1;
+            let outcome: "cleared" | "signature-drift" = "signature-drift";
+            await this.store.updateTaskAtomic(fresh.id, (live) => {
+              if (live.deletedAt || live.userPaused === true) return null;
+              // Admission re-derives on the live row: consent withdrawn or a session started since the
+              // page read must refuse the write, not race it.
+              if (!this.isReviewRevisionParkRepairAdmissible(live, settings, executingIds)) return null;
+              if (!isEngineAuthoredInReviewStallPark(live)) return null;
+              if (!isAwaitingReviewRevision(live)) return null;
+              outcome = "cleared";
+              /*
+              FNXC:ReviewRevisionWait 2026-09-30-06:21:
+              The four park fields are the exact inverse of the deadlock disposition's write; `mergeRetries`
+              is reset alongside them per the convention both sibling lifts of this park follow
+              (`routeUnrunGateParkBackToReview`, workspace-partial-land stall clear). Without it a repaired
+              card would re-queue against a retry budget its mis-park had already consumed, and
+              `canMergeTask` would hold it out of the merge queue until the cooldown escape hatch elapsed —
+              punishing the card for a stall the engine mis-read.
+              */
+              return {
+                paused: false,
+                pausedReason: null as unknown as Task["pausedReason"],
+                status: null,
+                error: null,
+                mergeRetries: 0,
+              };
+            });
 
-          await emitBoundedRunAudit(this.store, {
-            taskId: fresh.id,
-            agentId: "self-healing",
-            runId: generateSyntheticRunId("self-healing", fresh.id),
-            domain: "database",
-            mutationType: "task:merge-review-revision-park-cleared",
-            target: fresh.id,
-            // ids/fixed outcomes only — never reviewer findings, verdicts, or blocker prose.
-            metadata: {
+            // Read through an explicit widening: the assignment happens inside the atomic updater, which
+            // control-flow analysis cannot see, so the narrowed literal would otherwise be `"signature-drift"`.
+            const finalOutcome = outcome as "cleared" | "signature-drift";
+            if (finalOutcome !== "cleared") continue;
+            cleared += 1;
+
+            await emitBoundedRunAudit(this.store, {
               taskId: fresh.id,
-              workflowStepId: revisionGateId,
-              source: "self-healing",
-              outcome: finalOutcome,
-            },
-          });
-          await this.store.logEntry(
-            fresh.id,
-            `[pre-merge] Cleared the engine's in-review stall park: the latest review authored a REVISE verdict and this card still has unfinished remediation, so it is working, not stalled.`,
-          );
+              agentId: "self-healing",
+              runId: generateSyntheticRunId("self-healing", fresh.id),
+              domain: "database",
+              mutationType: "task:merge-review-revision-park-cleared",
+              target: fresh.id,
+              // ids/fixed outcomes only — never reviewer findings, verdicts, or blocker prose.
+              metadata: {
+                taskId: fresh.id,
+                workflowStepId: revisionGateId,
+                source: "self-healing",
+                outcome: finalOutcome,
+              },
+            });
+          } catch (error) {
+            // Contained per card: this card keeps its park and stays a candidate for the next pass.
+            log.error(`reconcileReviewRevisionStallParks: repair failed for ${task.id}: ${error instanceof Error ? error.message : String(error)}`);
+          }
         }
         if (tasks.length < pageSize) break;
         offset += tasks.length;
