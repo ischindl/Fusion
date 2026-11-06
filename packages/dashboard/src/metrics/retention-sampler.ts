@@ -12,7 +12,7 @@
  *   - `fusion_retention_tracked_bytes`, `fusion_retention_heap_used_bytes`,
  *     `fusion_retention_heap_limit_bytes`, `fusion_retention_residual_bytes`,
  *     `fusion_retention_coverage_ratio`, `fusion_retention_probe_failures`,
- *     `fusion_retention_swept_entries`
+ *     `fusion_retention_swept_entries`, `fusion_retention_sources_refused`
  *   - `fusion_retention_op_total{source}` (`counter`) and
  *     `fusion_retention_op_latency_bucket{le}` — the bucket family is a GAUGE set with an `le`
  *     label because `prometheus-text.ts` supports only `gauge | counter`; this is the exact
@@ -157,10 +157,16 @@ function syncHostRetentionSources(): void {
     return;
   }
   for (const host of hosts) {
-    // No mirror bookkeeping here on purpose. A Set of already-mirrored ids would be one more module-scope
-    // collection whose cardinality grows with registrations — the exact class RUFU-257's ratchet exists to
-    // catch — and the census already answers a duplicate id with `false` and keeps the first probe, which is
-    // the same first-wins rule. Re-offering per tick costs one Map lookup per source and nothing else.
+    /*
+    FNXC:RetentionCensus 2026-11-06-13:02 (RUFU-871):
+    Membership is asked, not re-registered. The first version of this loop re-offered every host on every tick
+    and relied on `registerRetentionSource` returning `false` for a duplicate id; that was wrong in a way the
+    return value hides — a duplicate also pushes the id onto the census' `rejections` array, which is cleared only
+    by `resetForTests()`, so 32 hosts re-offered per 5 s tick wrote ~23 000 retained strings per hour into the
+    process this census is meant to diagnose. `hasSource()` is a membership test, so no per-tick record is
+    produced, no rejection log is polluted, and no mirror Set of my own has to be introduced and classified.
+    */
+    if (retentionCensus().hasSource(host.id)) continue;
     try {
       registerRetentionSource({
         id: host.id,
@@ -427,6 +433,26 @@ export function createRetentionSampler(init: RetentionSamplerInit = {}): Retenti
       help: "Entries deleted by the most recent census reclaim sweep",
       type: "gauge",
       samples: [{ value: snapshot.sweptEntries }],
+    });
+
+    /*
+    FNXC:RetentionCensus 2026-11-06-13:02 (RUFU-871):
+    Refused registrations get their own series because their absence was invisible, and invisibility is the
+    failure mode: with the ceiling at 64 the engine's host sources were refused and `/metrics` still looked like
+    a complete census, so coverage ratio read as a fact while its own inputs were truncated. A non-zero value here
+    means the attribution below is a partial view of the heap.
+    */
+    let refused = 0;
+    try {
+      refused = retentionCensus().registrationRejections().length;
+    } catch {
+      /* never let the refusal counter itself cost the scrape */
+    }
+    families.push({
+      name: "fusion_retention_sources_refused",
+      help: "Distinct retention registrations refused by the census (duplicate id, no probe, or registry full)",
+      type: "gauge",
+      samples: [{ value: refused }],
     });
 
     families.push({

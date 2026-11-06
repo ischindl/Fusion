@@ -164,8 +164,17 @@ names its ceiling, and the census must satisfy its own rule. `MAX_REGISTERED_SOU
 registry (the inventory this task ships registers ~20, so the ceiling is headroom, not a tuning
 knob); `RETENTION_OP_LATENCY_RING_CAP` bounds the latency ring the bucket family is built from.
 */
-/** Ceiling on distinct registered sources; a duplicate or 65th registration is refused. */
-export const MAX_REGISTERED_SOURCES = 64;
+/*
+FNXC:RetentionCensus 2026-11-06-13:02 (RUFU-871):
+64 was too small once the engine started registering its own collections. Dashboard sources register at module
+load and host sources are mirrored in afterwards, so the tail of the host list was refused at the ceiling and
+`/metrics` showed 64 sources with three `step_output_*` rows simply absent. A census that silently truncates
+attribution is worse than one with a bigger label set: the operator sees a complete-looking coverage ratio over an
+unexplained heap, which is the exact failure this instrument exists to remove. 128 leaves room for the engine's
+27 collections, the step-output producer set, and future hosts; each source costs a handful of series on a local
+scrape, not heap.
+*/
+export const MAX_REGISTERED_SOURCES = 128;
 /** Ceiling on distinct operation ids counted by {@link recordRetentionOp}. */
 export const MAX_RETENTION_OP_SOURCES = 64;
 /** Ring length for recent op latencies (mirrors `REQUEST_LATENCY_RING_CAP`'s role). */
@@ -261,6 +270,8 @@ export interface RetentionCensus {
   /** The op counters + latency ring for the sampler to render. */
   opsSnapshot(): RetentionOpsSnapshot;
   /** Registration refusals (duplicate id / registry overflow), for tests and diagnostics. */
+  /** True when this census already owns `id`; lets a bridge test membership instead of re-registering. */
+  hasSource(id: string): boolean;
   registrationRejections(): string[];
   /** Test-only: drop all registrations, counters, and rings. */
   resetForTests(): void;
@@ -284,7 +295,15 @@ export function createRetentionCensus(init: RetentionCensusInit = {}): Retention
       return false;
     }
     if (sources.has(id)) {
-      rejections.push(id);
+      /*
+      FNXC:RetentionCensus 2026-11-06-13:02 (RUFU-871):
+      A duplicate id is a real registration failure and stays reported, but once per id rather than once per
+      attempt: `rejections` is a plain array cleared only by `resetForTests()`, so an attempt-shaped record turns
+      a polling bridge into unbounded retention inside the very process this census diagnoses. The host bridge
+      now checks `hasSource()` first, so this path sees genuine collisions; recording once is what keeps it honest
+      if another caller ever polls.
+      */
+      if (!rejections.includes(id)) rejections.push(id);
       return false;
     }
     if (sources.size >= MAX_REGISTERED_SOURCES) {
@@ -447,6 +466,7 @@ export function createRetentionCensus(init: RetentionCensusInit = {}): Retention
     sweepAll,
     recordOp,
     opsSnapshot,
+    hasSource: (id: string): boolean => sources.has(id),
     registrationRejections: () => [...rejections],
     resetForTests,
   };

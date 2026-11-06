@@ -1,6 +1,10 @@
 import { describe, expect, it, beforeEach } from "vitest";
-import { HOST_RETENTION_ENTRY_OVERHEAD_BYTES, registerHostRetentionSource, resetHostRetentionRegistryForTests } from "@fusion/core";
-import { MAP_ENTRY_OVERHEAD_BYTES, retentionCensusSnapshot, resetRetentionCensusForTests } from "../../lib/retention-census.js";
+import { HOST_RETENTION_ENTRY_OVERHEAD_BYTES, listHostRetentionSources, registerHostRetentionSource, resetHostRetentionRegistryForTests } from "@fusion/core";
+
+function listHostRetentionSourcesForCapTest(): number {
+  return listHostRetentionSources().length;
+}
+import { MAX_REGISTERED_SOURCES, MAP_ENTRY_OVERHEAD_BYTES, retentionCensus, retentionCensusSnapshot, resetRetentionCensusForTests } from "../../lib/retention-census.js";
 import { createRetentionSampler } from "../retention-sampler.js";
 
 /*
@@ -53,6 +57,34 @@ describe("host sources folded into the dashboard census", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].entries).toBe(1);
     expect(afterFirst).toBeGreaterThan(0);
+    // The rejection log must stay empty across ticks. It used to grow per attempt, which turned a polling
+    // bridge into unbounded retention inside the process the census is diagnosing.
+    expect(retentionCensus().registrationRejections()).toEqual([]);
+  });
+
+  // Absent-vs-refused has to be distinguishable, or a truncated census reads as a complete one.
+  it("surfaces refused registrations instead of letting the census look whole", () => {
+    const census = retentionCensus();
+    expect(census.hasSource("bridge_probe")).toBe(false);
+    registerHostRetentionSource({ id: "bridge_missing_probe_shape", kind: "cache", read: () => 1 });
+    // A host mirrored twice must not be recorded as two failures.
+    census.register({ id: "dup_once", kind: "cache", keys: "load", probe: () => ({ entries: 1, approxBytes: 8, expiredEntries: 0 }) });
+    expect(census.register({ id: "dup_once", kind: "cache", keys: "load", probe: () => ({ entries: 1, approxBytes: 8, expiredEntries: 0 }) })).toBe(false);
+    expect(census.register({ id: "dup_once", kind: "cache", keys: "load", probe: () => ({ entries: 1, approxBytes: 8, expiredEntries: 0 }) })).toBe(false);
+    expect(census.registrationRejections().filter((r) => r === "dup_once")).toHaveLength(1);
+    expect(census.hasSource("dup_once")).toBe(true);
+
+    const families = createRetentionSampler().buildSnapshot();
+    const refused = families.find((f) => f.name === "fusion_retention_sources_refused");
+    expect(refused).toBeDefined();
+    expect(refused?.samples[0]?.value ?? 0).toBeGreaterThan(0);
+  });
+
+  // The engine registers 27 executor collections plus five step-output sources; the ceiling must not swallow them.
+  it("fits the engine host sources alongside the dashboard cache sources", async () => {
+    const { MAX_REGISTERED_SOURCES } = await import("../../lib/retention-census.js");
+    const hostIds = listHostRetentionSourcesForCapTest();
+    expect(MAX_REGISTERED_SOURCES).toBeGreaterThanOrEqual(hostIds + 40);
   });
 
   it("still renders the census when a host registry entry is hostile", () => {
