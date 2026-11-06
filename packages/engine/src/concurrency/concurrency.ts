@@ -6,6 +6,7 @@ import {
   isTaskExternallyBlocked,
   isWorktreeCapacityHolder,
   resolveMaxConcurrentSetting,
+  prefetchWorkflowSelections,
   resolveWorkflowIrForTask,
   taskHoldsUnmergedCheckout,
   type Task,
@@ -653,8 +654,26 @@ async function enrichedTopLevelAgentTasksFromStore(
   emptinessProof?: CapacityEmptinessProof,
 ) {
   const irCache = caches?.irCache ?? new Map();
+  /*
+  FNXC:WorkflowSelectionBatching 2026-11-06-20:42 (RUFU-871):
+  This loop resolved one workflow selection PER CARD, so a capacity sweep over a board cost one SELECT per
+  row per sweep: the read-attribution seam measured 63,210 `workflowSelection` reads in a 5-minute window on
+  a board with zero running cards, and the resolver's own memo counters showed the uncached branch taking
+  only ~28 % of them — the rest came from callers that DO own a pass cache and therefore correctly refuse to
+  reuse across passes. A pass cache is the right contract; the defect was only that filling it one card at a
+  time costs N queries instead of one. `prefetchWorkflowSelections` fills the SAME caller-owned cache in one
+  batched read, so the per-pass invalidation contract is untouched and the resolution loop now hits a warm
+  cache for every card.
+
+  When the caller supplied no cache the local one lives exactly this long — one pass — which is the same
+  lifetime it had when each card read its own selection, just one query instead of N.
+  */
+  const selectionCache: WorkflowSelectionCache = caches?.selectionCache ?? new Map();
+  if (tasks.length > 1) {
+    await prefetchWorkflowSelections(store, tasks.map((task) => task.id), selectionCache);
+  }
   const enriched = await Promise.all(tasks.map(async (task) => {
-    const ir = await resolveWorkflowIrForTask(store, task.id, irCache, caches?.selectionCache);
+    const ir = await resolveWorkflowIrForTask(store, task.id, irCache, selectionCache);
     return { ...enrichRunningAgentTaskShape(task, ir), planningIsLive: isPlanningLive(task.id) };
   }));
   /*
