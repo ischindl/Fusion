@@ -2521,11 +2521,44 @@ export class InProcessRuntime
           this.executor?.releasePreExecutionWorktree(taskId, reason) ?? Promise.resolve(false),
         recoverApprovedTriageTask: (task) => this.triageProcessor?.recoverApprovedTask(task) ?? Promise.resolve(false),
         getPlanningTaskIds: () => this.triageProcessor?.getPlanningTaskIds() ?? new Set<string>(),
+        // FNXC:AbandonedPlanningClaim 2026-11-06-04:15 (RUFU-470): the claim's AGE, so the abandoned-
+        // planning ceiling is measured on the planner's own clock instead of a wall guess.
+        getPlanningClaimStartedAt: () => this.triageProcessor?.getPlanningClaimStartedAt() ?? new Map<string, number>(),
         // FNXC:TaskTiming 2026-07-20-12:00: orphan planning recovery must defer
         // while executor-owned graph Plan Review holds the sole planning anchor.
         hasActivePlanningWorkflowSession: (taskId) => this.executor?.hasActivePlanningWorkflowSession(taskId) ?? false,
         reserveAdvancedTriageRecovery: (taskId) => this.triageProcessor?.tryReserveAdvancedRecovery(taskId),
         evictStaleTriageProcessing: () => this.triageProcessor?.evictStaleProcessing() ?? new Set<string>(),
+        /*
+        FNXC:AbandonedPlanningClaim 2026-11-06-03:30 (RUFU-470):
+        Two wires the abandoned-planning reclaim owner needs, both deliberately absent-safe.
+
+        `releaseAbandonedPlanningClaim` unwired means the sweep DECLINES and records `premise-held`,
+        never releases through a delete-only substitute — `evictStaleTriageProcessing` above is not an
+        acceptable fallback for this population, because its deletes are guarded by a retention check
+        this population is defined by failing.
+
+        `getPlanningSessionLastActivityAt` is the only reader that can see a planner whose session left
+        no canonical liveness footprint (FN-299: a worktree-less planner registers no active path, no
+        `executingTaskLock`, no executor-active). `getAgentLogs` returns the TAIL in file order, so the
+        newest row is the LAST element — scanning forward would measure the oldest row in the window and
+        reclaim a live planner. Any unreadable, empty, or unparseable answer is `undefined` = UNPROVABLE,
+        which the sweep refuses rather than reclaims (the RUFU-144/RUFU-350 rule).
+        */
+        releaseAbandonedPlanningClaim: (taskId, deps) =>
+          this.triageProcessor?.releaseAbandonedPlanningClaim(taskId, deps)
+            ?? Promise.resolve({ verdict: "retained-live", reason: "abort-unproven" } as const),
+        getPlanningSessionLastActivityAt: async (taskId: string) => {
+          const rows = await this.taskStore.getAgentLogs(taskId, { limit: 200 }).catch(() => null);
+          if (!rows || rows.length === 0) return undefined;
+          for (let index = rows.length - 1; index >= 0; index -= 1) {
+            const row = rows[index]!;
+            if (row.agent !== "triage") continue;
+            const at = Date.parse(row.timestamp);
+            return Number.isFinite(at) ? at : undefined;
+          }
+          return undefined;
+        },
         enqueueMerge: this.mergeEnqueuer ? (taskId: string) => this.mergeEnqueuer?.(taskId) ?? false : undefined,
         requeueForAutoMerge: this.mergeEnqueuer ? (taskId: string) => this.mergeEnqueuer?.(taskId) ?? false : undefined,
         isTaskActive: (taskId: string) => this.executor.isTaskActive(taskId),

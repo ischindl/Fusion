@@ -190,6 +190,18 @@ function harness(
     }),
     listTasks: async () => tasks,
     /*
+    FNXC:BoardReadEpochCache 2026-11-06-04:35 (RUFU-470, drift owned by RUFU-584):
+    The pass's shared workflow caches are epoch-guarded (`EpochedWorkflowSelectionCache` /
+    `EpochedWorkflowIrCache`, introduced by 58d561b1c1), so the sweep asks the store for
+    `workflowSelectionEpoch()` / `workflowDefinitionEpoch()` before reusing a cached entry. A fake that
+    omits them throws INSIDE the sweep's try/catch, which swallows it into `return 0` — so every case in
+    this file read "expected 0 to be 1" and the file was red while the sweep itself was healthy. Fixed at
+    this shared factory, not per case: the constant 0 means "no definition or selection write happened",
+    which is what a single-pass test board actually is.
+    */
+    workflowSelectionEpoch: () => 0,
+    workflowDefinitionEpoch: () => 0,
+    /*
     FNXC:PlanningAdmissionStall 2026-09-27-04:55 (RUFU-350):
     Record AND apply. The pre-RUFU-350 fake only recorded patches, so every case in this file fed the sweep
     a pristine row on every call and the sweep could stay green while erasing its own badge in production:

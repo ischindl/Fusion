@@ -1075,3 +1075,44 @@ and a process's memory ceiling is not a delivery-pipeline step, so this section 
 than as a table row. It is declared in `@fusion/core`'s `RunAuditMutationType` — the same placement as
 RUFU-259's dashboard-emitted `task:comment-delivery` pair — because the emitter reaches its sink through
 the core seam, not the engine's `DatabaseMutationType`.
+
+### The planning claim a dead turn left behind (RUFU-470)
+
+`task:reconcile-abandoned-planning` records one reclaim of a planning-lane card that was still wearing
+`status:"planning"` after the planner turn that wrote that status had died, and
+`task:reconcile-abandoned-planning-session-no-action` records one card the same pass examined and left
+alone. The sweep is `reconcileAbandonedPlanningSessions` (`packages/engine/src/self-healing.ts`), the only
+owner of that shape.
+
+The shape existed because three owners each waited on another. Triage's poll sweep clears every aged
+`planning` card, but is suppressed while the processor's `processing` claim is held; triage's re-discovery
+admits a `needs-replan` card only while no planner claim is held; and the in-memory eviction that could
+release the claim refuses whenever any planner bookkeeping is retained — which is exactly what a dead turn
+leaves behind. RUFU-467 sat in that deadlock for 73 minutes on a live engine, and was freed only when its
+own hung promise chain resumed. Nothing on the board could answer "why is this card still planning?",
+which is the question both rows exist to answer.
+
+Metadata is ids, counts, and fixed enums only — `taskId`, `column`, `claimAgeMs`, `sessionSilenceMs`,
+`ceilingMs`, `terminatedSessionCount`, `outcome` (`reclaimed` or `refused`), and `reason`. `claimAgeMs` is
+measured from the claim's own start stamp and `sessionSilenceMs` from the last planner-lane agent-log row;
+both are the measurement the decision rested on, and neither is `task.updatedAt`, which any writer bumps.
+`terminatedSessionCount` counts planner turns the reclaim proved cancelled and disposed, and it is present
+on a withheld signal too, because the termination really did happen even when the sweep stood down before
+writing the status. Spec text, prompt content, error prose, session identifiers, and paths never enter
+either row.
+
+`reason` is a closed vocabulary, and it is the whole diagnostic: `live-session` (one FN-8492 triple leg is
+positive, so the card is running), `abort-unproven` (the turn could not be proven cancelled, so nothing was
+cleared), `finalize-in-flight` (a Plan Review or finalize handoff owns the card — FN-1312),
+`triage-owned-unpinned` (aged but unclaimed, so triage's own poll sweep owns it within one poll),
+`continuation-active` (the graph owns the next move), `paused`, `human-review-deferred`, `premise-held`
+(the lane or one of the two bounds could not be measured), and `race-lost` (another writer moved the card
+under the lock). Refusals dedupe per `(taskId, reason)` for the life of the process and re-arm on a
+successful reclaim, so a sustained refusal stays countable without re-announcing every pass.
+
+Both arms go through the FN-9175 bounded seam (`emitBoundedRunAudit`, never `createRunAuditor`), so
+ telemetry can never become the reclaim's lifecycle dependency: an absent, throwing, rejecting, or hanging
+ sink leaves the release, the status write, and the History line identical. Like `task:planning-reseed-cycle`
+ and `task:planning-admission-stalled`, these two are deliberately outside the curated delivery-pipeline
+ catalogue — a stalled planning wait is not a step of the delivery pipeline — and are found by mutation
+ type.

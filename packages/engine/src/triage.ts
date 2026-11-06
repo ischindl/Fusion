@@ -256,7 +256,7 @@ import { emitApprovalMail } from "./agents/approval-mail.js";
 import { activeSessionRegistry } from "./agents/active-session-registry.js";
 import { isPlanningResetHoldClearingUpdate, PlanningResetFence } from "./planning-reset-fence.js";
 import { registerPlanningLivenessProbe } from "./agents/planning-liveness.js";
-import { isPlanningContinuationDispatchClaim } from "./agents/planning-execution-liveness.js";
+import { isPlanningContinuationDispatchClaim, type TaskLivenessSignal } from "./agents/planning-execution-liveness.js";
 import {
   resolveAgentInstructionParts,
   resolveAgentInstructionPartsWithRatings,
@@ -766,6 +766,64 @@ export function createGhostBugProbeExec(
       };
     }
   };
+}
+
+/**
+ * FNXC:AbandonedPlanningClaim 2026-11-06-03:02 (RUFU-470):
+ * The verdict vocabulary of {@link TriageProcessor.releaseAbandonedPlanningClaim}.
+ *
+ * `retained-live` carries a reason because the two refusal classes are different facts for the
+ * operator and for the caller's audit row: `abort-unproven` means a planner turn could not be
+ * cancelled (a possibly-streaming session, so the card stays pinned exactly as it was), while
+ * `finalize-in-flight` means a Plan Review / finalize handoff owns the card and this seam has no
+ * authority over it at all. Collapsing them would make a permanent structural refusal
+ * indistinguishable from a transient one.
+ */
+export type AbandonedPlanningRetentionReason =
+  | "liveness-signal"
+  | "finalize-in-flight"
+  | "abort-unproven";
+
+export type AbandonedPlanningClaimRelease =
+  | { verdict: "released"; terminatedSessionCount: number }
+  | { verdict: "retained-live"; reason: AbandonedPlanningRetentionReason }
+  | { verdict: "not-claimed" };
+
+/**
+ * FNXC:AbandonedPlanningClaim 2026-11-06-03:02 (RUFU-470):
+ * Await `abort()` with a wall-clock bound and report which of three things happened.
+ *
+ * The bound is the whole point: `AgentSession.abort()` is documented as "abort current operation
+ * and wait for agent to become idle", so a turn blocked inside a hung await can keep that await
+ * forever and `abort()` never settles. Without a bound, an awaiting caller inherits the hang —
+ * which is exactly the RUFU-467 shape this seam exists to reclaim. `timed-out` is therefore an
+ * answer, not a hang, and the caller treats it as "termination unproven".
+ *
+ * The returned promise never rejects: the inner completion catches, so a late rejection from an
+ * `abort()` that settles after the bound cannot surface as an unhandled rejection.
+ */
+async function settleAbortWithinBound(
+  abort: () => unknown,
+  boundMs: number,
+): Promise<"settled" | "rejected" | "timed-out"> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<"timed-out">((resolve) => {
+    timer = setTimeout(() => resolve("timed-out"), boundMs);
+    (timer as unknown as { unref?: () => void }).unref?.();
+  });
+  const completion = (async (): Promise<"settled" | "rejected"> => {
+    try {
+      await abort();
+      return "settled";
+    } catch {
+      return "rejected";
+    }
+  })();
+  try {
+    return await Promise.race([completion, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export class TriageProcessor {
@@ -1690,6 +1748,20 @@ export class TriageProcessor {
   }
 
   /**
+   * FNXC:AbandonedPlanningClaim 2026-11-06-04:15 (RUFU-470):
+   * Snapshot of when each `processing` claim was taken. `getPlanningTaskIds` reports WHETHER a planner
+   * claims a card; an reclaim owner that must wait for a bounded ceiling needs HOW LONG, and the two
+   * maps are written and cleared together, so this is the same claim's own clock rather than a second
+   * source of truth that could drift from it.
+   *
+   * A snapshot is returned rather than the live map: a board scan spans awaits, and handing out the
+   * mutable map would let one pass observe a claim it never raced.
+   */
+  getPlanningClaimStartedAt(): ReadonlyMap<string, number> {
+    return new Map(this.processingSince);
+  }
+
+  /**
    * Reserve a task for advanced-state recovery unless planning already owns it.
    * The check-and-add is synchronous, as is specifyTask's reciprocal guard, so
    * neither side can slip between ownership inspection and acquisition.
@@ -1790,6 +1862,156 @@ export class TriageProcessor {
     }
 
     return evicted;
+  }
+
+  /**
+   * Wall-clock bound on awaiting a planner session's `abort()` inside
+   * {@link releaseAbandonedPlanningClaim}. Five seconds is long enough for a session that is
+   * merely finishing a tool call and short enough that one stuck planner cannot stall a whole
+   * self-healing pass; a turn that does not quieten inside it is reported as unproven.
+   */
+  private static readonly PLANNING_ABORT_SETTLE_BOUND_MS = 5_000;
+
+  /**
+   * FNXC:AbandonedPlanningClaim 2026-11-06-03:20 (RUFU-470):
+   * Terminate a dead planner turn, then release the admission claims it left behind.
+   *
+   * WHY THIS EXISTS AND `evictStaleProcessing` CANNOT COVER IT. That eviction is delete-only and
+   * is sound ONLY because its retention guard (`hasLivePlanningWork`) has already excluded every
+   * card holding a live session handle — it deletes entries it has proved empty. The population
+   * this seam serves is defined by tolerating exactly the legs that eviction refuses: a planner
+   * whose turn fell silent with its handle still in `activeSessions`, which is precisely the card
+   * the poll sweep pins, the re-discovery refuses, and the eviction retains (RUFU-467: a planning
+   * card frozen on `status:"planning"` while its bound agent kept planning its siblings, freed only
+   * when the hung await happened to return 73 minutes later). Copying the deletes here would orphan
+   * a possibly-streaming planner and let a second planner start on the same card — the FN-1312
+   * double-planner. So the contract is TERMINATE, then RELEASE, then let the caller SIGNAL; never
+   * delete, never in another order.
+   *
+   * The three refusal halves, each with zero mutation of anything a later turn could misread:
+   * - any FN-8492 canonical-liveness leg named by `liveness` (`active-session`, `executing-lock`,
+   *   `task-active`) is absolute, enforced HERE and not only at the call site;
+   * - `finalizing` or a non-empty `activeSubagentSessions` means a Plan Review / finalize handoff is
+   *   in flight and its liveness is not provable from agent-log silence — a stuck-kill mid-finalize
+   *   destroyed an already-approved plan once (FN-1312, deferred at `handleStuckAbortRequeue`), so
+   *   this seam's termination surface is the MAIN planner handle only;
+   * - a handle with no `abort`, an `abort()` that rejects, or one that has not settled inside
+   *   {@link PLANNING_ABORT_SETTLE_BOUND_MS} is an unproven termination.
+   *
+   * WHY THE STUCK DETECTOR IS UNTRACKED EVEN ON A REFUSAL. `killAndRetry` disposes but never
+   * `abort()`s, so a turn hung in an await survives its own stuck kill (measured: 73 minutes of
+   * continued silence after three kills). If the detector kept watching after our abort failed, its
+   * next `markStuckAborted` would flip `hasLivePlanningWork` to false and hand the still-live handle
+   * to the delete-only eviction — the exact orphan this seam refuses to create. Untracking is
+   * therefore protective, on both paths.
+   *
+   * WHY `stuckAborted` AND NOT `pauseAborted`. `pauseAborted` schedules the catch branch that calls
+   * `restoreStatusAfterInterruptedTriageWork`, which writes `null` from the captured pre-revision row
+   * and would clobber the caller's re-drive. `stuckAborted` routes the late-settling turn to
+   * `handleStuckAbortRequeue` instead, which preserves a `needs-replan` rather than nulling it. The
+   * marker cannot re-pin the card once we release: `hasLivePlanningWork`'s only `stuckAborted`-relevant
+   * leg is `activeSessions`, which this same statement clears.
+   *
+   * Runs INSIDE the caller's `withPlanningLifecycleLock`, because triage's own claim path takes that
+   * same lock — releasing outside it lets a fresh claim interleave and get clobbered (FN-8923's lesson).
+   */
+  async releaseAbandonedPlanningClaim(
+    taskId: string,
+    deps: { liveness?: TaskLivenessSignal | undefined; abortSettleBoundMs?: number } = {},
+  ): Promise<AbandonedPlanningClaimRelease> {
+    /*
+    FNXC:AbandonedPlanningClaim 2026-11-06-03:20 (RUFU-470):
+    Canonical liveness is absolute. The triple is what FN-8492 proves a session behind, and a card
+    with any leg positive is running work, not abandoned work.
+    */
+    const liveness = deps.liveness;
+    if (liveness === "active-session" || liveness === "executing-lock" || liveness === "task-active") {
+      return { verdict: "retained-live", reason: "liveness-signal" };
+    }
+
+    /*
+    FNXC:AbandonedPlanningClaim 2026-11-06-03:20 (RUFU-470):
+    A Plan Review subagent or an in-flight `finalizeApprovedTask` owns the handoff. Its liveness does
+    not surface in the planner-lane agent log, so silence cannot prove it dead and terminating it is
+    not this seam's authority.
+    */
+    if (this.finalizing.has(taskId) || (this.activeSubagentSessions.get(taskId)?.size ?? 0) > 0) {
+      return { verdict: "retained-live", reason: "finalize-in-flight" };
+    }
+
+    const claimed = this.processing.has(taskId)
+      || this.processingSince.has(taskId)
+      || this.activeSessions.has(taskId)
+      || this.coordinatorAdmittedTaskIds.has(taskId);
+    if (!claimed) return { verdict: "not-claimed" };
+
+    let terminatedSessionCount = 0;
+    const handle = this.activeSessions.get(taskId);
+    if (handle) {
+      const abortable = handle as { abort?: () => unknown; dispose: () => void };
+      if (typeof abortable.abort !== "function") {
+        /*
+        FNXC:AbandonedPlanningClaim 2026-11-06-03:20 (RUFU-470):
+        A dispose-only handle exposes no cancellation at all, so termination is unprovable by
+        construction. `dispose()` alone is what the stuck detector already tried on RUFU-467 and it
+        did not stop the turn, so disposing here and clearing the claim would be the orphan.
+        */
+        return { verdict: "retained-live", reason: "abort-unproven" };
+      }
+
+      const markedStuckHere = !this.stuckAborted.has(taskId);
+      if (markedStuckHere) this.stuckAborted.add(taskId);
+      this.options.stuckTaskDetector?.untrackTask(taskId);
+      const settlement = await settleAbortWithinBound(
+        () => abortable.abort!(),
+        deps.abortSettleBoundMs ?? TriageProcessor.PLANNING_ABORT_SETTLE_BOUND_MS,
+      );
+      if (settlement !== "settled") {
+        /*
+        FNXC:AbandonedPlanningClaim 2026-11-06-03:20 (RUFU-470):
+        Roll the marker back. Leaving `stuckAborted` set would make `hasLivePlanningWork` report this
+        still-live handle as reclaimable, i.e. would license the delete-only eviction to drop the very
+        handle we just failed to cancel. No claim clear, no semaphore release, no status write.
+        */
+        if (markedStuckHere) this.stuckAborted.delete(taskId);
+        planLog.warn(`${taskId}: abandoned planning claim not released — abort ${settlement}`);
+        return { verdict: "retained-live", reason: "abort-unproven" };
+      }
+
+      /*
+      FNXC:AbandonedPlanningClaim 2026-11-06-03:20 (RUFU-470):
+      The turn is now provably cancelled, so the snapshot-then-dispose sequence is safe. Mirrors
+      `abortAndDisposePlanningSessionForTask`'s fail-soft shape deliberately WITHOUT reusing it: that
+      helper adds to `pauseAborted` and deletes `activeSessions` in its own `finally` regardless of
+      whether the abort settled, and this seam may do neither.
+      */
+      this.recordTriageSessionTokenUsageSoon(taskId, handle as AgentSession);
+      try {
+        abortable.dispose();
+      } catch (error) {
+        planLog.warn(`${taskId}: failed to dispose abandoned planning session: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      terminatedSessionCount = 1;
+    }
+
+    /*
+    FNXC:AbandonedPlanningClaim 2026-11-06-03:20 (RUFU-470):
+    Only now may entries be dropped, and only the FULL claim set — the same list
+    `evictStaleProcessing` clears (FNXC:ConcurrencyAdmission 2026-07-26-14:20). A partial release is
+    worse than none: `coordinatorAdmittedTaskIds` alone keeps the admission coordinator from ever
+    seeing the card, and a retained pre-held executor slot withholds a semaphore unit that the
+    stale-excess valve cannot touch for 600s. `stuckAborted` is left marked on purpose — see the
+    method note. `activeSubagentSessions` is only dropped when already empty, which is a precondition
+    of reaching this line rather than a termination.
+    */
+    this.processing.delete(taskId);
+    this.processingSince.delete(taskId);
+    this.activeSessions.delete(taskId);
+    this.finalizing.delete(taskId);
+    if (this.activeSubagentSessions.get(taskId)?.size === 0) this.activeSubagentSessions.delete(taskId);
+    this.coordinatorAdmittedTaskIds.delete(taskId);
+    if (dropPreHeldExecutorSlot(taskId)) this.options.semaphore?.release();
+    return { verdict: "released", terminatedSessionCount };
   }
 
   /**

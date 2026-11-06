@@ -273,7 +273,9 @@ import { activeSessionRegistry, executingTaskLock } from "./agents/active-sessio
 import {
   getTaskPlanningOrExecutionLivenessSignal,
   isTaskPlanningOrExecutionLive,
+  type TaskLivenessSignal,
 } from "./agents/planning-execution-liveness.js";
+import type { AbandonedPlanningClaimRelease } from "./triage.js";
 import { isTaskStillInPlanningStage } from "./execution/replan-target.js";
 import {
   classifyPersistedPlanHandoff,
@@ -845,6 +847,17 @@ export interface SelfHealingOptions {
    * Used to avoid recovering active triage sessions.
    */
   getPlanningTaskIds?: () => Set<string>;
+  /**
+   * FNXC:AbandonedPlanningClaim 2026-11-06-04:12 (RUFU-470):
+   * Per-task claim-start timestamps (epoch ms) for the triage processor's `processing` set, i.e. the
+   * planner's own claim clock — the only per-card evidence of how long a planner has owned a card.
+   *
+   * `reconcileAbandonedPlanningSessions` needs the AGE, not just membership: `getPlanningTaskIds`
+   * answers "is a planner claiming this?" but a claim held for 4 minutes and one held for 40 look
+   * identical through it. Returned as a snapshot, so a sweep cannot observe a mid-pass mutation as a
+   * claim change that never happened.
+   */
+  getPlanningClaimStartedAt?: () => ReadonlyMap<string, number>;
   /** True only while the executor owns a graph Plan Review session for this task. */
   hasActivePlanningWorkflowSession?: (taskId: string) => boolean;
   /** Atomically fence planner ownership while advanced triage recovery runs. */
@@ -855,6 +868,33 @@ export interface SelfHealingOptions {
    * Called before recovery checks so stale entries don't block recovery.
    */
   evictStaleTriageProcessing?: () => Set<string>;
+  /**
+   * FNXC:AbandonedPlanningClaim 2026-11-06-03:25 (RUFU-470):
+   * Terminate an abandoned planner turn and release the admission claims it retained, delegating to
+   * `TriageProcessor.releaseAbandonedPlanningClaim`. Called only from inside the planning lifecycle
+   * lock by `reconcileAbandonedPlanningSessions`.
+   *
+   * Deliberately distinct from {@link evictStaleTriageProcessing}: that seam deletes bookkeeping it
+   * has proved empty, this one cancels a session it cannot prove empty and refuses when the
+   * cancellation is unproven. Absent option means the reclaim owner declines and says so — it never
+   * releases blindly through a delete-only substitute.
+   */
+  releaseAbandonedPlanningClaim?: (
+    taskId: string,
+    deps: { liveness?: TaskLivenessSignal | undefined; abortSettleBoundMs?: number },
+  ) => Promise<AbandonedPlanningClaimRelease>;
+  /**
+   * FNXC:AbandonedPlanningClaim 2026-11-06-03:25 (RUFU-470):
+   * Last activity of this task's PLANNER-lane session, in epoch ms, read from the task's agent log.
+   * The only session-silence reader the abandoned-planning reclaim has: the FN-8492 liveness triple is
+   * blind to a planner that registered no worktree (FN-299).
+   *
+   * Must return `undefined` whenever the answer is unprovable — no seam, a throwing read, zero
+   * planner-lane rows, or an unparseable timestamp. Callers treat `undefined` as "never a candidate"
+   * (the RUFU-144/RUFU-350 rule), so a false absence here would strand a card and a fabricated
+   * timestamp would reclaim a live planner.
+   */
+  getPlanningSessionLastActivityAt?: (taskId: string) => Promise<number | undefined>;
   /**
    * Auto-revive an `in-review` task whose pre-merge workflow step failed.
    * Delegates to the executor, which injects the failure feedback into
@@ -1199,6 +1239,31 @@ Failed workspace tasks are routinely retried with their progress preserved. Term
 waits a full day, unlike short lease recovery floors, so a transient park cannot discard repo worktrees.
 */
 const TERMINAL_WORKSPACE_WORKTREE_TEARDOWN_MIN_IDLE_MS = 24 * 60 * 60 * 1000;
+/*
+FNXC:AbandonedPlanningClaim 2026-11-06-04:10 (RUFU-470):
+The CLOSED refusal vocabulary of `reconcile-abandoned-planning-session`, and the list the dedup memo
+iterates on a successful reclaim. A fixed enum is the contract: `reason` is the only way an operator
+can tell "why is this card still planning?" from one query, and prose in that field would make the
+ratio between recoveries and refusals uncountable.
+
+Mapping from the triage seam's verdicts, fixed by construction:
+- seam `retained-live` / `abort-unproven`      -> `abort-unproven`   (handle could not be cancelled)
+- seam `retained-live` / `finalize-in-flight`   -> `finalize-in-flight`
+- seam `retained-live` / `liveness-signal`      -> `live-session`
+- seam `not-claimed`                            -> `triage-owned-unpinned`
+- a triple leg seen by the sweep itself         -> `live-session`
+*/
+const ABANDONED_PLANNING_NO_ACTION_REASONS = [
+  "live-session",
+  "abort-unproven",
+  "finalize-in-flight",
+  "triage-owned-unpinned",
+  "continuation-active",
+  "paused",
+  "human-review-deferred",
+  "premise-held",
+  "race-lost",
+] as const;
 const DEADLOCK_RECOVERY_COOLDOWN_MS = 15 * 60_000;
 // DEFAULT_STALE_MERGING_STATUS_MIN_AGE_MS now lives in ./merge-active-status.js (imported above)
 // so the manual Retry gate and this sweep cannot drift apart (FN-8004 follow-up).
@@ -1573,6 +1638,15 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
    */
   private strandedHoldContinuationNoActionAudited = new Set<string>();
   private principalHeldPlanningNoActionAudited = new Set<string>();
+  /*
+  FNXC:AbandonedPlanningClaim 2026-11-06-04:05 (RUFU-470):
+  Bounds the `reconcile-abandoned-planning-session` no-action findings per (taskId, reason). Every
+  abandoned-shape candidate stays a candidate on every maintenance pass until it is reclaimed, so an
+  unbounded row per pass is a retry storm in audit form; a reason that CHANGES is new information and
+  gets its own row. A completed reclaim clears the card's whole key set, so a LATER abandonment of the
+  same card is reportable again.
+  */
+  private abandonedPlanningNoActionAudited = new Set<string>();
   /*
   FNXC:PlanningFenceRecovery 2026-10-02-01:20 (RUFU-288):
   Bounds the `reconcile-planning-fence-park` no-action findings per (taskId, outcome, requirement).
@@ -2899,6 +2973,20 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       */
       { name: "reconcile-planning-admission-stall", fn: () => this.reconcilePlanningAdmissionStalls(startupSurfacing()).then(() => undefined) },
       /*
+      FNXC:AbandonedPlanningClaim 2026-11-06-04:18 (RUFU-470):
+      An engine start is exactly when the previous run's abandoned planner turns become provably dead,
+      and the shape needs this pass even on a live engine — RUFU-467 sat for hours without ever
+      restarting, because its `processing` claim, its retained session handle, and `status:"planning"`
+      mutually suppressed every existing owner. Registered ADJACENT to `reconcile-planning-admission-stall`
+      and NOT merged with it: that pass is detect-only naming written through one metadata key, this one
+      terminates a session, releases a claim, and writes a lifecycle status. Partition rule restated here
+      because it is the sweep's whole safety case: the FN-8492 canonical triple is absolute, the
+      `finalizing`/subagent legs are never reclaimable (a stuck-kill mid-finalize destroyed an approved
+      plan once — FN-1312), the main planner claim is bounded evidence that lapses only after termination
+      is PROVEN, and `column` plus `status:"planning"` are never liveness evidence at all.
+      */
+      { name: "reconcile-abandoned-planning-sessions", fn: () => this.reconcileAbandonedPlanningSessions().then(() => undefined) },
+      /*
       FNXC:ProgressOwningRecovery 2026-10-06-15:13:
       Run the detector after all specialized recovery owners have had one chance.
       It remains non-mutating, but an unknown stranded shape is now surfaced on
@@ -4196,6 +4284,20 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           { name: "surface-stale-paused-todos", fn: () => this.surfaceStalePausedTodos(maintenanceSurfacing()) },
           // RUFU-273: shares the family's cycle; self-gates its git probing on the churn cadence.
           { name: "reconcile-planning-admission-stall", fn: () => this.reconcilePlanningAdmissionStalls(maintenanceSurfacing()) },
+          /*
+          FNXC:AbandonedPlanningClaim 2026-11-06-04:20 (RUFU-470):
+          The other cadence of the same owner, adjacent to `reconcile-planning-admission-stall`.
+
+          BATCH 2, NOT BATCH 1 — and the spec's "maintenance batch 1" wording is a premise error this
+          task records rather than follows. Batch 1 is `housekeeping (safe under pause: filesystem/db
+          cleanup only)`; this pass writes a task status, so batch 1 would break the file's own role
+          split. Batch 2 is `Task recovery`, which is where the whole planning-recovery family already
+          lives (`reconcile-principal-held-planning`, `reconcile-planning-fence-park`, RUFU-273, RUFU-280
+          — startup list and batch 2, never batch 1). Batch 2 is additionally skipped wholesale on
+          global/engine pause, which is the correct gate for a lifecycle writer and matches the guard
+          this sweep repeats internally.
+          */
+          { name: "reconcile-abandoned-planning-sessions", fn: () => this.reconcileAbandonedPlanningSessions() },
           { name: "surface-db-corruption", fn: () => this.surfaceDbCorruption() },
           { name: "audit-no-commits-expected-candidates", fn: () => this.auditNoCommitsExpectedCandidates() },
         ];
@@ -11847,6 +11949,346 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       log.warn(`reconcilePrincipalHeldPlanningContinuations failed: ${error instanceof Error ? error.message : String(error)}`);
       return 0;
     }
+  }
+
+  /**
+   * FNXC:AbandonedPlanningClaim 2026-11-06-03:55 (RUFU-470):
+   * The claim-age ceiling past which a planner's main claim stops being evidence of life.
+   *
+   * STRICTLY GREATER THAN every existing owner's clock, so each of them gets first crack at any card
+   * this sweep can name: the StuckTaskDetector kills at ~10 min of inactivity, triage's poll sweep
+   * clears an aged `planning` status at `STALE_PLANNING_STATUS_GRACE_MS` (20 min), and
+   * `evictStaleProcessing` reclaims at `STALE_PROCESSING_THRESHOLD_MS` (30 min). A card that has
+   * survived all three has already had three chances.
+   */
+  static readonly ABANDONED_PLANNING_CLAIM_CEILING_MS = 45 * 60_000;
+
+  /**
+   * FNXC:AbandonedPlanningClaim 2026-11-06-03:55 (RUFU-470):
+   * How long the PLANNER-lane agent log must have produced nothing before silence counts as
+   * abandonment. Required in addition to the claim ceiling because AC1 asks for a stated last-session
+   * row bound: claim age alone would name a planner that is still streaming a long tool chain.
+   */
+  static readonly ABANDONED_PLANNING_SESSION_SILENCE_MS = 40 * 60_000;
+
+  /**
+   * FNXC:AbandonedPlanningClaim 2026-11-06-03:55 (RUFU-470):
+   * Reclaim a planning card abandoned by a dead planner turn, and make the re-drive CONSUMABLE.
+   *
+   * THE SHAPE (RUFU-467, measured 2026-10-01). A planning-lane card on `status:"planning"` whose last
+   * planner-lane session row was a COMPLETED tool result, its bound agent alive and planning its
+   * siblings, no step-result row, no continuation, no pause — frozen for hours on a live engine. What
+   * freed it was neither a sweep nor a restart: the hung turn's own promise chain resumed 73 minutes
+   * later and its in-loop stuck check re-drove the card. A turn whose await never settles belongs to
+   * nobody, forever.
+   *
+   * WHY IT WAS UNOWNED — a three-way deadlock, not a missing sweep. (1) Triage's poll sweep
+   * `sweepStalePlanningStatuses` clears every aged `planning` card to null, but is suppressed while the
+   * processor's `processing` claim is held. (2) Triage's re-discovery admits `needs-replan` only when
+   * `processing` AND `hasLivePlanningWork` are both clear, so a reclaim that merely wrote the signal
+   * changed nothing observable. (3) `evictStaleProcessing` — the only thing that releases the claim —
+   * refuses whenever `hasLivePlanningWork` is true, which is exactly what a retained `activeSessions`
+   * handle means. A dead planner that left its handle behind therefore belongs to no lane. RUFU-273's
+   * naming pass never evaluated an outcome code for this shape either: its population filter excludes
+   * ANY non-empty `task.status` before its candidate ladder runs.
+   *
+   * THE PARTITION THIS SWEEP OWNS, and the rules it may never cross:
+   * - the FN-8492 canonical triple (`active-session`, `executing-lock`, `task-active`) is ABSOLUTE.
+   *   A planner with no worktree registers none of them (FN-299), which is why agent-log silence is
+   *   consulted at all — but a card with any leg positive is running, not abandoned.
+   * - `finalizing` and a non-empty `activeSubagentSessions` are NEVER ours: a Plan Review / finalize
+   *   handoff in flight owns the card, and a stuck-kill mid-finalize destroyed an already-approved
+   *   plan once (FN-1312).
+   * - the main planner claim is BOUNDED evidence that lapses only when its turn is provably silenced
+   *   AND its handle provably cancelled AND the claim is older than the ceiling.
+   * - `column` and `status:"planning"` are NEVER liveness evidence, in either direction.
+   * - an UNPINNED aged card is refused as `triage-owned-unpinned`, which is what keeps ownership
+   *   singular: triage's own poll sweep clears that shape within one poll.
+   *
+   * THE REPAIR IS THREE ORDERED HALVES, never a subset: terminate the dead turn, release its claim,
+   * then signal `needs-replan`. Signal-without-release is decorative (defect (2) above); release
+   * without termination orphans a possibly-streaming planner and starts a second one (FN-1312). All
+   * three run inside `withPlanningLifecycleLock` — the same lock triage's claim path takes — and the
+   * signal is written only after the settle window, because the aborted turn's own stuck-requeue
+   * handler is a legitimate competing re-drive owner. Mark or repair, never erase (FN-8492).
+   */
+  async reconcileAbandonedPlanningSessions(): Promise<number> {
+    const ceilingMs = SelfHealingManager.ABANDONED_PLANNING_CLAIM_CEILING_MS;
+    const silenceMs = SelfHealingManager.ABANDONED_PLANNING_SESSION_SILENCE_MS;
+    try {
+      const settings = await this.store.getSettings();
+      if (settings.globalPause === true || settings.enginePaused === true) return 0;
+      if (typeof this.store.listWorkflowWorkItemsForTask !== "function") return 0;
+      /*
+      An unwired release seam is a DECLINE, never a substitute. `evictStaleTriageProcessing` is not an
+      acceptable fallback for this population: its deletes are guarded by the very retention check this
+      population is defined by failing.
+      */
+      const release = this.options.releaseAbandonedPlanningClaim;
+      if (typeof release !== "function") return 0;
+      if (typeof this.options.getPlanningSessionLastActivityAt !== "function") return 0;
+
+      const livenessSignal = (taskId: string): TaskLivenessSignal | undefined =>
+        getTaskPlanningOrExecutionLivenessSignal(taskId, {
+          isTaskActive: this.options.isTaskActive,
+          getPlanningTaskIds: this.options.getPlanningTaskIds,
+        });
+
+      /*
+      The claim-age clock is `processingSince`, written and cleared together with `processing` and the
+      only per-card planner clock the processor exposes. Session silence comes from the planner-lane
+      agent log. BOTH must be provable: an unmeasurable age is never a candidate (RUFU-144 / RUFU-350),
+      and an absent reader seam means the whole sweep declines rather than guesses.
+      */
+      if (typeof this.options.getPlanningClaimStartedAt !== "function") return 0;
+      const claimAgeMs = (taskId: string): number | undefined => {
+        const since = this.options.getPlanningClaimStartedAt?.().get(taskId);
+        return typeof since === "number" && Number.isFinite(since) ? Date.now() - since : undefined;
+      };
+
+      let offset = 0;
+      let repaired = 0;
+      for (;;) {
+        const tasks = await this.store.listTasks({ slim: false, includeArchived: false, includeDeleted: false, limit: 500, offset, excludeLog: true });
+        const irCache = new Map<string, WorkflowIr>();
+        const selectionCache = await this.newSelectionCache(tasks.map((entry) => entry.id));
+        for (const snapshot of tasks) {
+          try {
+            const evaluated = await this.reconcileOneAbandonedPlanningSession(snapshot, {
+              ceilingMs, silenceMs, release, livenessSignal, claimAgeMs, irCache, selectionCache, settings,
+            });
+            if (evaluated) repaired += 1;
+          } catch (error) {
+            log.warn(`reconcileAbandonedPlanningSessions: failed for ${snapshot.id}: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+        if (tasks.length < 500) break;
+        offset += tasks.length;
+      }
+      if (repaired > 0) log.log(`Reclaimed ${repaired} task(s) abandoned by a dead planning session`);
+      return repaired;
+    } catch (error) {
+      log.warn(`reconcileAbandonedPlanningSessions failed: ${error instanceof Error ? error.message : String(error)}`);
+      return 0;
+    }
+  }
+
+  /**
+   * One card's candidacy ladder, refusal, and repair. Returns true only for a completed reclaim.
+   *
+   * GATE ORDER IS LOAD-BEARING. The cheap, in-memory age gates run before any IR resolution or log
+   * read, so a board of healthy planners — the overwhelmingly common case — costs nothing and emits
+   * nothing. Only a card that is already aged on BOTH clocks becomes an examined candidate, and only
+   * examined candidates can produce a `-no-action` row.
+   */
+  private async reconcileOneAbandonedPlanningSession(
+    snapshot: Task,
+    deps: {
+      ceilingMs: number;
+      silenceMs: number;
+      release: NonNullable<SelfHealingOptions["releaseAbandonedPlanningClaim"]>;
+      livenessSignal: (taskId: string) => TaskLivenessSignal | undefined;
+      claimAgeMs: (taskId: string) => number | undefined;
+      irCache: Map<string, WorkflowIr>;
+      selectionCache: WorkflowSelectionCache;
+      settings: Settings;
+    },
+  ): Promise<boolean> {
+    const task = snapshot;
+    // `status:"planning"` is the abandonment's only visible trace. It is NOT liveness evidence: a
+    // live planner and a dead one both wear it, which is the whole defect.
+    if (task.status !== "planning") return false;
+
+    const claimAge = deps.claimAgeMs(task.id);
+    // An UNPINNED aged card is triage's, not ours: its own poll sweep clears it within one poll.
+    // Refusing here is what keeps ownership singular instead of adding a second writer.
+    if (claimAge === undefined) {
+      await this.auditAbandonedPlanning(task, deps, { outcome: "refused", reason: "triage-owned-unpinned" });
+      return false;
+    }
+    if (claimAge < deps.ceilingMs) return false;
+
+    const lastActivityAt = await this.options.getPlanningSessionLastActivityAt?.(task.id);
+    if (lastActivityAt === undefined || !Number.isFinite(lastActivityAt)) {
+      /*
+      Unprovable silence is a refusal, never a reclaim: an absent reader, a throwing store read, zero
+      planner-lane rows, or an unparseable timestamp all mean "the measurement does not exist"
+      (RUFU-144 / RUFU-350). Reclaiming on an unmeasured silence would cancel a live planner.
+      */
+      await this.auditAbandonedPlanning(task, deps, { outcome: "refused", reason: "premise-held", claimAgeMs: claimAge });
+      return false;
+    }
+    const sessionSilenceMs = Date.now() - lastActivityAt;
+    if (sessionSilenceMs < deps.silenceMs) return false;
+
+    const auditFields = { claimAgeMs: claimAge, sessionSilenceMs };
+
+    if (task.userPaused === true || task.paused === true) {
+      await this.auditAbandonedPlanning(task, deps, { ...auditFields, outcome: "refused", reason: "paused" });
+      return false;
+    }
+
+    let laneIr: WorkflowIr | undefined;
+    try {
+      // A lane vocabulary that cannot be read is a refusal, never a guess — and the read must not be
+      // able to throw the card out of the pass, so it is contained here rather than chained.
+      laneIr = await resolveWorkflowIrForTask(this.store, task.id, deps.irCache, deps.selectionCache);
+    } catch {
+      laneIr = undefined;
+    }
+    const laneColumn = laneIr && "columns" in laneIr
+      ? laneIr.columns.find((entry) => entry.id === task.column)
+      : undefined;
+    const laneFlags = laneColumn ? resolveColumnFlags(laneColumn) : undefined;
+    // Trait-based planning-lane membership: the intake/hold pair triage itself discovers from, never a
+    // literal `todo`/`triage` id, so a renamed or merged planning column still resolves.
+    if (!laneFlags || !(laneFlags.hold || laneFlags.intake)) {
+      await this.auditAbandonedPlanning(task, deps, { ...auditFields, outcome: "refused", reason: "premise-held" });
+      return false;
+    }
+    if (!allowsAutoMergeProcessing(task, { autoMerge: resolveEffectiveAutoMerge(task, deps.settings) })) {
+      await this.auditAbandonedPlanning(task, deps, { ...auditFields, outcome: "refused", reason: "human-review-deferred" });
+      return false;
+    }
+
+    const items = await this.store.listWorkflowWorkItemsForTask(task.id);
+    const activeItems = items.filter((item) => ACTIVE_WORKFLOW_WORK_ITEM_STATES.includes(item.state));
+    if (activeItems.length > 0) {
+      // An active continuation of ANY state or role means the graph owns this card's next move.
+      await this.auditAbandonedPlanning(task, deps, { ...auditFields, outcome: "refused", reason: "continuation-active" });
+      return false;
+    }
+
+    const signal = deps.livenessSignal(task.id);
+    if (signal === "active-session" || signal === "executing-lock" || signal === "task-active") {
+      await this.auditAbandonedPlanning(task, deps, { ...auditFields, outcome: "refused", reason: "live-session" });
+      return false;
+    }
+    // `planning-processor` and `planning-probe` are the only two legs this population tolerates; they
+    // are precisely the planner's own bookkeeping, which is what the release seam is about to settle.
+
+    const repairUnderLifecycleLock = async (): Promise<boolean> => {
+      /*
+      Re-read the LIVE row and re-apply the whole candidacy predicate under the lock. FN-8923's clobber
+      lesson: triage claims a card by writing `status:"planning"`, and a claim landing between the scan
+      and the write would otherwise be overwritten with `needs-replan` — destroying a live session's
+      work. The lock serialises read and write because triage's claim path takes the same lock.
+      */
+      const fresh = await this.store.getTask(task.id);
+      if (!fresh || fresh.status !== "planning" || fresh.userPaused === true || fresh.paused === true) {
+        await this.auditAbandonedPlanning(fresh ?? task, deps, { ...auditFields, outcome: "refused", reason: "race-lost" });
+        return false;
+      }
+      const freshItems = await this.store.listWorkflowWorkItemsForTask(task.id);
+      if (freshItems.some((item) => ACTIVE_WORKFLOW_WORK_ITEM_STATES.includes(item.state))) {
+        await this.auditAbandonedPlanning(fresh, deps, { ...auditFields, outcome: "refused", reason: "race-lost" });
+        return false;
+      }
+      const freshSignal = deps.livenessSignal(task.id);
+      if (freshSignal === "active-session" || freshSignal === "executing-lock" || freshSignal === "task-active") {
+        await this.auditAbandonedPlanning(fresh, deps, { ...auditFields, outcome: "refused", reason: "live-session" });
+        return false;
+      }
+
+      const verdict = await deps.release(task.id, { liveness: freshSignal });
+      if (verdict.verdict === "not-claimed") {
+        await this.auditAbandonedPlanning(fresh, deps, { ...auditFields, outcome: "refused", reason: "triage-owned-unpinned" });
+        return false;
+      }
+      if (verdict.verdict === "retained-live") {
+        await this.auditAbandonedPlanning(fresh, deps, {
+          ...auditFields,
+          outcome: "refused",
+          reason: verdict.reason === "finalize-in-flight" ? "finalize-in-flight" : verdict.reason === "liveness-signal" ? "live-session" : "abort-unproven",
+        });
+        return false;
+      }
+
+      /*
+      The settle window has now passed, so the aborted turn's own catch branch may legally have reached
+      `handleStuckAbortRequeue` and re-driven or re-claimed the card. That handler is a legitimate
+      competing owner and it PRESERVES a `needs-replan` rather than nulling it, so standing down here
+      loses nothing — but writing over it would, and re-clearing a claim it just re-acquired would be
+      worse. Zero writes, and no second clear.
+      */
+      const afterSettle = await this.store.getTask(task.id);
+      if (!afterSettle || afterSettle.status !== "planning") {
+        await this.auditAbandonedPlanning(afterSettle ?? fresh, deps, {
+          ...auditFields,
+          outcome: "refused",
+          reason: "race-lost",
+          terminatedSessionCount: verdict.terminatedSessionCount,
+        });
+        return false;
+      }
+
+      await this.store.updateTask(task.id, { status: "needs-replan" });
+      await this.store.logEntry(
+        task.id,
+        `[recovery] planning re-queued — planner turn abandoned (silent ${Math.round(sessionSilenceMs / 60_000)}min, claim aged ${Math.round(claimAge / 60_000)}min) with no live session`,
+      );
+      await this.auditAbandonedPlanning(afterSettle, deps, {
+        ...auditFields,
+        outcome: "reclaimed",
+        terminatedSessionCount: verdict.terminatedSessionCount,
+      });
+      return true;
+    };
+
+    const lifecycleLock = (this.store as Partial<TaskStore>).withPlanningLifecycleLock;
+    const didRepair = lifecycleLock
+      ? await lifecycleLock.call(this.store, task.id, repairUnderLifecycleLock)
+      : await repairUnderLifecycleLock();
+    if (didRepair === true) {
+      // The episode is over; a future abandonment of the same card must be reportable again.
+      for (const reason of ABANDONED_PLANNING_NO_ACTION_REASONS) {
+        this.abandonedPlanningNoActionAudited.delete(`${task.id}:${reason}`);
+      }
+    }
+    return didRepair === true;
+  }
+
+  /**
+   * Both arms of the reclaim are named in run-audit, so "why is this card still planning?" is a query
+   * and not a guess. Metadata is ids/counts/fixed enums only — never spec text, prompt content, error
+   * prose, session identifiers, or paths. Emission is the FN-9175 bounded seam, so telemetry can
+   * never become the reclaim's lifecycle dependency.
+   */
+  private async auditAbandonedPlanning(
+    task: Task,
+    deps: { ceilingMs: number },
+    fields: {
+      outcome: "reclaimed" | "refused";
+      reason?: string;
+      claimAgeMs?: number;
+      sessionSilenceMs?: number;
+      terminatedSessionCount?: number;
+    },
+  ): Promise<void> {
+    const isNoAction = fields.outcome === "refused";
+    const key = `${task.id}:${fields.reason ?? "reclaimed"}`;
+    if (isNoAction && this.abandonedPlanningNoActionAudited.has(key)) return;
+    const metadata = {
+      taskId: task.id,
+      column: task.column,
+      ...(fields.claimAgeMs !== undefined ? { claimAgeMs: fields.claimAgeMs } : {}),
+      ...(fields.sessionSilenceMs !== undefined ? { sessionSilenceMs: fields.sessionSilenceMs } : {}),
+      ceilingMs: deps.ceilingMs,
+      ...(fields.terminatedSessionCount !== undefined ? { terminatedSessionCount: fields.terminatedSessionCount } : {}),
+      outcome: fields.outcome,
+      ...(fields.reason !== undefined ? { reason: fields.reason } : {}),
+    };
+    await emitBoundedRunAudit(this.store, {
+      taskId: task.id,
+      agentId: "self-healing",
+      taskLineageId: task.lineageId,
+      runId: generateSyntheticRunId("reconcile-abandoned-planning-sessions", task.id),
+      domain: "database",
+      mutationType: isNoAction ? "task:reconcile-abandoned-planning-session-no-action" : "task:reconcile-abandoned-planning",
+      target: task.id,
+      metadata,
+    });
+    if (isNoAction) this.abandonedPlanningNoActionAudited.add(key);
   }
 
   /*
