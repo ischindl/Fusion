@@ -4145,11 +4145,16 @@ export class ProjectEngine {
       This sweep observes stages. It reads `task.id` and the effective settings, and it is the single
       most frequent whole-board read in the process (45 s cadence x one engine per project). No part of
       the overseer/planner path reads `task.log`, so this pass opts out of the column that makes up 90 %
-      of the board's text; every other `listTasksInLaneRoles` consumer keeps today's log-bearing shape.
+      of the board's text.
+
+      FNXC:LaneRoleReadLogProjection 2026-11-06-01:34 (RUFU-584):
+      The two explicit `excludeLog: true` arguments that this comment used to require are gone, because
+      `listTasksInLaneRoles` now excludes the column unless a caller asks for it. This sweep remains the
+      consumer that most needed the narrowing; it is no longer the only one holding it.
       */
       const [inProgress, inReview] = await Promise.all([
-        this.listTasksInLaneRoles(store, ["countsTowardWip"], { excludeLog: true }).catch(() => [] as Task[]),
-        this.listTasksInLaneRoles(store, REVIEW_ROLES, { excludeLog: true }).catch(() => [] as Task[]),
+        this.listTasksInLaneRoles(store, ["countsTowardWip"]).catch(() => [] as Task[]),
+        this.listTasksInLaneRoles(store, REVIEW_ROLES).catch(() => [] as Task[]),
       ]);
       const inFlight = [...inProgress, ...inReview];
       const inFlightIds = new Set(inFlight.map((t) => t.id));
@@ -6965,14 +6970,36 @@ export class ProjectEngine {
   provably never reads the column is what opts in, and the proof for the overseer sweep is that no
   file under `engine/src/overseer`, `engine/src/planner`, or `core/src/planner` touches `task.log`.
   */
+    /*
+    FNXC:LaneRoleReadLogProjection 2026-11-06-01:34 (RUFU-584):
+    The DEFAULT is now the cheap shape and a consumer must ask for `log` by name. RUFU-756 made the
+    projection opt-in; this inverts it, because the opt-in turned out to be requested by exactly one of
+    five consumers while the default was paid by all of them.
+
+    Measured on production, two independent ways. Read attribution (`store:read-attribution-window`,
+    decoded stacks): `_ProjectEngine.listTasksInLaneRoles` is 71 % of this process's `listTasks` samples
+    over the current lifetime and 65 % over the whole log — the single most frequent whole-board reader.
+    The allocation sampler then names what that read costs: `listTasksImpl -> rowToTask` is 62 % of all
+    allocation in a 90 s sampling window, and `fromJson` + `parse` inside it is 214 of those 457 MiB, so
+    roughly two fifths of the process's entire allocation is parsing this table's JSON columns — of which
+    `log` is 139.1 of 154 MiB of board text, 90 %.
+
+    The safety half is the enumeration, not the volume. Every consumer of the log-bearing shape was read
+    to its closing brace and pattern-matched for `.log`: `resumeAfterUnpauseAndSweepInReview` (59 lines),
+    `enqueueEligibleInReviewTasks` (84 lines, the actual sink of the read at 7180), `startupMergeEnqueue`,
+    `scheduleMergeRetry`, `emitLegacyAutoMergeStampAdvisory` — zero reads each, alongside the overseer
+    sweep proven the same way in RUFU-756. A consumer that never reads the column cannot notice its
+    absence, which is what makes the narrowing safe and also what makes it invisible to behavioural
+    tests, so `lane-role-read-log-projection.test.ts` pins the shape and the empty opt-in list.
+    */
   private async listTasksInLaneRoles(
     store: TaskStore,
     roles: Parameters<typeof resolveProjectColumnsForRoles>[1],
-    opts: { excludeLog?: boolean } = {},
+    opts: { includeLog?: boolean } = {},
   ): Promise<Task[]> {
     const columns = await resolveProjectColumnsForRoles(store, roles);
     const byId = new Map<string, Task>();
-    const excludeLog = opts.excludeLog === true;
+    const excludeLog = opts.includeLog !== true;
     for (const column of columns) {
       for (const task of await store.listTasks({ column, derive: false, excludeLog })) byId.set(task.id, task as Task);
     }

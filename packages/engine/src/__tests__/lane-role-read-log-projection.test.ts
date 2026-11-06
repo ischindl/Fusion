@@ -84,25 +84,31 @@ describe("lane-role read log projection (RUFU-756)", () => {
     }
   });
 
-  it("defaults to the log-bearing shape so untouched consumers cannot change behaviour", () => {
-    expect(helperBody).toContain("opts: { excludeLog?: boolean } = {}");
-    expect(helperBody).toContain("const excludeLog = opts.excludeLog === true;");
+  it("defaults to the cheap shape: the log column is only fetched when a caller names it", () => {
+    expect(helperBody).toContain("opts: { includeLog?: boolean } = {}");
+    expect(helperBody).toContain("const excludeLog = opts.includeLog !== true;");
+    // The old default was the expensive one. Restoring it would be a silent performance regression that
+    // no behavioural test can see, so it must fail HERE.
+    expect(helperBody).not.toContain("const excludeLog = opts.excludeLog === true;");
   });
 
-  it("narrows exactly the overseer sweep's reads and nothing else in that pass", () => {
+  it("narrows the overseer sweep's reads, which now rely on the default", () => {
     const calls = laneRoleCalls(overseerBody);
     expect(calls.length).toBe(2);
-    for (const call of calls) expect(call).toContain("excludeLog: true");
+    for (const call of calls) {
+      expect(call).not.toContain("includeLog");
+      expect(call).not.toContain("excludeLog");
+    }
   });
 
-  it("keeps every other lane-role consumer log-bearing, with the allowlist stated explicitly", () => {
-    const outsideOverseer = laneRoleCalls(
-      SOURCE.replace(overseerBody, "").replace(helperBody, ""),
-    );
-    const narrowing = outsideOverseer.filter((call) => call.includes("excludeLog: true"));
-    // Today: none. A new narrowing must arrive with proof that the consumer never reads `task.log`,
-    // and that proof belongs in the call-site comment next to it.
-    expect(narrowing).toEqual([]);
-    expect(outsideOverseer.length).toBeGreaterThanOrEqual(4);
+  it("has no consumer that opts back into the log column, with the reason stated explicitly", () => {
+    const outsideHelper = SOURCE.replace(helperBody, "");
+    const optIns = laneRoleCalls(outsideHelper).filter((call) => call.includes("includeLog: true"));
+    // Today: none. Every consumer was read to its closing brace and pattern-matched for `.log` — see the
+    // enumeration in the `listTasksInLaneRoles` comment. A new opt-in must arrive with that same proof
+    // stated next to the call site, because a consumer that DOES read log content cannot fail a test by
+    // losing the column either.
+    expect(optIns).toEqual([]);
+    expect(laneRoleCalls(outsideHelper).length).toBeGreaterThanOrEqual(5);
   });
 });
