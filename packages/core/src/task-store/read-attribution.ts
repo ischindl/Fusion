@@ -57,7 +57,28 @@ So the signature is a short CHAIN of the first few surviving frames: the caller 
 small depth, no name list is needed, and the chain still distinguishes two call sites that share a
 wrapper. Depth is bounded because the signature is a Map key.
 */
-export const READ_ATTRIBUTION_STACK_DEPTH = 6;
+/*
+FNXC:ReadAttribution 2026-11-06-20:05 (RUFU-871):
+Depth 6 did NOT reach the caller in practice, so the claim above is corrected rather than repeated. On the
+running bundle the top signature was `getTaskWorkflowSelectionAsyncImpl@bin.js:94091 <
+_TaskStore.getTaskWorkflowSelectionAsync@bin.js:120232 < (anon)@bin.js:21419` — three frames, all of them
+the seam's own plumbing — and the other chains ended at `(anon)@bin.js:384913` and `(anon)@bin.js:200123`,
+where the business caller sat past the cut. In a bundled build every module shares `dist/bin.js` and this
+build emits no module banner comments, so a bundle line cannot be mapped back to a source file offline: the
+depth has to be raised where the stack is still honest.
+
+12 keeps the signature bounded (it is still a Map key) while covering the four-to-six wrapper frames a
+resolver or store call actually sits under. `FUSION_READ_ATTRIBUTION_DEPTH` overrides it when one call site
+needs to be chased further; a `0` clamps to 1 rather than disabling attribution.
+*/
+function readAttributionDepth(): number {
+  const raw = process.env.FUSION_READ_ATTRIBUTION_DEPTH;
+  if (raw === undefined || raw.trim() === "") return 12;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : 12;
+}
+
+export const READ_ATTRIBUTION_STACK_DEPTH = readAttributionDepth();
 
 /*
 FNXC:ReadAttribution 2026-10-21-14:45 (RUFU-756):

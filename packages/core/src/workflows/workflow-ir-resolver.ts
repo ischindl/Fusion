@@ -17,6 +17,7 @@
 import { getBuiltinWorkflow, isBuiltinWorkflowId, resolveDefaultWorkflowIr } from "./builtin-workflows.js";
 import { parseWorkflowIr, serializeWorkflowIr } from "./workflow-ir.js";
 import { applyPromptOverridesToIr } from "./workflow-prompt-overrides.js";
+import { registerHostRetentionSource } from "../retention-host-sources.js";
 import type { WorkflowIr } from "./workflow-ir-types.js";
 
 /*
@@ -320,6 +321,41 @@ export function selectionMemoSizeForStore(store: WorkflowIrResolverStore): numbe
   return selectionMemo.get(store)?.size ?? 0;
 }
 
+/*
+FNXC:WorkflowSelectionMemo 2026-11-06-20:05 (RUFU-871):
+Hit/miss counters, published as census sources rather than log lines. Without them the memo is unfalsifiable
+from outside: reads/second at the store seam stay high no matter what, because the cache-owning callers
+(the scheduler sweep, board hydration) never ask the memo — and the first deploy of this memo proved
+exactly that, 57,388 reads in the window after it landed versus 53,914 before. So `/metrics` now answers
+"is the uncached branch even hot?" directly (`fusion_retention_source_entries{source="selection_memo_*"}`),
+which is the question that decides whether to keep this bound or go after the cache-owning loops with
+`prefetchWorkflowSelections` instead. `bytesPerEntry: 0` keeps these rates out of `tracked_bytes`.
+*/
+const selectionMemoCounters = { hits: 0, misses: 0, staleEpoch: 0 };
+let memoRegistryRefused = false;
+
+/** Memo decisions taken so far (hits = served without a store read). */
+export function selectionMemoStats(): { hits: number; misses: number; staleEpoch: number } {
+  return { ...selectionMemoCounters };
+}
+
+for (const [id, read] of [
+  ["selection_memo_hits", () => selectionMemoCounters.hits],
+  ["selection_memo_misses", () => selectionMemoCounters.misses],
+  ["selection_memo_stale_epoch", () => selectionMemoCounters.staleEpoch],
+] as const) {
+  // A refused registration costs only observability — `false` means the id was already taken or the
+  // registry ceiling was hit, never that the bound itself is wrong.
+  if (!registerHostRetentionSource({ id, kind: "counter", bytesPerEntry: 0, read })) {
+    memoRegistryRefused = true;
+  }
+}
+
+/** True when the census refused to take a memo counter (registry ceiling or an id collision). */
+export function selectionMemoRegistryRefused(): boolean {
+  return memoRegistryRefused;
+}
+
 /**
  * Read one task's workflow selection for callers that own no per-pass cache, collapsing concurrent
  * duplicate reads onto one query and bounding how many distinct queries may be in flight at once.
@@ -334,10 +370,13 @@ async function readSelectionWithCoalescing(
     if (hit) {
       const staleEpoch = epoch >= 0 && hit.epoch !== epoch;
       if (!staleEpoch && Date.now() - hit.at < uncachedSelectionMemoTtlMs) {
+        selectionMemoCounters.hits += 1;
         return hit.selection;
       }
+      if (staleEpoch) selectionMemoCounters.staleEpoch += 1;
       selectionMemo.get(store)!.delete(taskId);
     }
+    selectionMemoCounters.misses += 1;
   }
   let pending = inflightUncachedSelectionReads.get(store);
   if (!pending) {

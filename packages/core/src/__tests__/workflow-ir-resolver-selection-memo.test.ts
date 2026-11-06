@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   resolveWorkflowIrForTaskWithProvenance,
+  selectionMemoRegistryRefused,
   selectionMemoSizeForStore,
+  selectionMemoStats,
   setSelectionMemoTtlMsForTests,
   UNCACHED_SELECTION_MEMO_MAX,
 } from "../workflows/workflow-ir-resolver.js";
@@ -143,5 +145,34 @@ describe("uncached selection-read memo (RUFU-871)", () => {
     expect(first.state.calls).toBe(1);
     expect(second.state.calls).toBe(1);
     expect(selectionMemoSizeForStore(second.store as never)).toBe(1);
+  });
+
+  it("publishes its own hit rate, because store-seam reads cannot show whether the memo was asked", async () => {
+    setSelectionMemoTtlMsForTests(DEFAULT_TTL_MS);
+    const before = selectionMemoStats();
+    const { store } = fakeStore();
+
+    await resolve(store);
+    await resolve(store);
+
+    const after = selectionMemoStats();
+    // One fresh read, one served from the memo.
+    expect(after.misses - before.misses).toBe(1);
+    expect(after.hits - before.hits).toBe(1);
+    // The counters must be visible on /metrics, not only in process memory.
+    expect(selectionMemoRegistryRefused()).toBe(false);
+  });
+
+  it("counts an entry dropped by a local selection write separately from a TTL lapse", async () => {
+    setSelectionMemoTtlMsForTests(60_000);
+    let epoch = 3;
+    const { store } = fakeStore({ epoch: () => epoch });
+    const before = selectionMemoStats();
+
+    await resolve(store);
+    epoch += 1;
+    await resolve(store);
+
+    expect(selectionMemoStats().staleEpoch - before.staleEpoch).toBe(1);
   });
 });
