@@ -16,6 +16,10 @@ import type {
   ApprovalRequestStore,
   WorkspaceConfig,
 } from "@fusion/core";
+import {
+  registerHostRetentionSource,
+  type HostRetentionSourceKind,
+} from "@fusion/core";
 import type { ImplementationExit } from "./implementation-exit.js";
 import type { ForeachActiveContext } from "../workflows/workflow-node-handlers.js";
 import { ModelRegistry, type AgentSession } from "@earendil-works/pi-coding-agent";
@@ -26,6 +30,13 @@ import type { PausedAbortProvenance } from "./paused-abort-provenance.js";
 import type { ActiveExecutorSessionState, TaskExecutorOptions } from "./task-executor-options.js";
 import type { WorkflowAgentCapacity } from "../agents/workflow-agent-capacity.js";
 import { invalidateWorkspaceConfigCache } from "./workspace-config-resolver.js";
+
+let retentionSourcesRegistered = false;
+let retentionExecutorHostsSkippedCount = 0;
+/** How many later hosts were skipped by the once-per-process registration above (0 in production). */
+export function readRetentionExecutorHostsSkipped(): number {
+  return retentionExecutorHostsSkippedCount;
+}
 
 export abstract class TaskExecutorState {
   /**
@@ -113,6 +124,93 @@ export abstract class TaskExecutorState {
   protected workflowRerunWatchdogs = new Map<string, ReturnType<typeof setTimeout>>();
   protected pendingEphemeralDeletions = new Set<string>();
   protected workspaceConfig: WorkspaceConfig | null | undefined = undefined;
+
+  /*
+  FNXC:RetentionCensus 2026-11-06-09:02 (RUFU-871): make the executor's own retained set measurable.
+  The dashboard's heap was being recycled every 1.8-3.3 h with `fusion_retention_coverage_ratio` at 7.5e-7:
+  2,756 B tracked against a 3.67 GiB residual, because every registered source lived in `packages/dashboard`
+  while the task-keyed structures that actually accumulate sit HERE. The census registry is now in
+  `@fusion/core` (see `packages/core/src/retention-census.ts`) so both halves of one process report into one
+  census, and these sources are the engine's half of that attribution.
+
+  What this is meant to answer, and what it is not: the question is cardinality, not weight. If one of these
+  collections keeps growing while the board is idle, it never released a finished task and its value — an
+  `AgentSession`, a `StepSessionExecutor`, a CLI session — is what pins the megabytes of step text the heap
+  snapshot showed (133k strings >= 4 KiB, 134 of them ~203 KiB each, all agent lane prose). Bytes are
+  therefore reported as `entries x MAP_ENTRY_OVERHEAD_BYTES`, the documented floor, and deliberately NOT as a
+  walk of the held objects: the probe contract in the census module is cheap and O(1), and summing transcript
+  lengths would be an O(live sessions x transcript) prose walk on the scrape path. A source whose entry count
+  climbs while its byte line stays a straight multiple of the overhead is the honest signal that the weight
+  lives inside the values, which is the finding this instrument exists to produce.
+
+  Registration is once per process, bound to the FIRST TaskExecutor host, because the source id is a metric
+  label and two hosts publishing the same id would make `..._bytes{source}` meaningless. Production builds
+  exactly one TaskExecutor, so the guard is a lie-proofing measure rather than a feature; a second host's
+  maps are simply not reported, and `retentionExecutorHostsSkipped` counts how often that happened.
+  */
+  protected registerExecutorRetentionSources(): void {
+    if (retentionSourcesRegistered) {
+      retentionExecutorHostsSkippedCount += 1;
+      return;
+    }
+    retentionSourcesRegistered = true;
+    const entries = (coll: { size: number } | undefined): number => coll?.size ?? 0;
+    const source = (id: string, kind: HostRetentionSourceKind, read: () => number): void => {
+      registerHostRetentionSource({ id, kind, read });
+    };
+    source("executor_active_sessions", "session", () => entries(this.activeSessions));
+    source("executor_step_executors", "registry", () => entries(this.activeStepExecutors));
+    source(
+      "executor_step_executor_seen_steering",
+      "registry",
+      () => entries(this.activeStepExecutorSeenSteeringIds),
+    );
+    source(
+      "executor_workflow_step_sessions",
+      "session",
+      () => entries(this.activeWorkflowStepSessions),
+    );
+    source(
+      "executor_workflow_step_seen_steering",
+      "registry",
+      () => entries(this.activeWorkflowStepSessionSeenSteeringIds),
+    );
+    source("executor_planning_sessions", "session", () => entries(this.activePlanningWorkflowSessions));
+    source("executor_cli_task_sessions", "session", () => entries(this.activeCliTaskSessions));
+    source("executor_subagent_sessions", "session", () => entries(this.activeSubagentSessions));
+    source(
+      "executor_configured_command_controllers",
+      "registry",
+      () => entries(this.activeConfiguredCommandControllers),
+    );
+    source("executor_completed_watchdogs", "registry", () => entries(this.completedTaskWatchdogs));
+    source("executor_rerun_watchdogs", "registry", () => entries(this.workflowRerunWatchdogs));
+    source(
+      "executor_gate_activity_principals",
+      "registry",
+      () => entries(this.workflowGateActivityPrincipals),
+    );
+    source("executor_pending_disposals", "registry", () => entries(this.pendingTaskDisposals));
+    source("executor_token_usage_baselines", "counter", () => entries(this.tokenUsageBaselines));
+    source("executor_captured_memory_tasks", "registry", () => entries(this.capturedMemoryTaskIds));
+    source(
+      "executor_captured_reflection_tasks",
+      "registry",
+      () => entries(this.capturedReflectionTaskIds),
+    );
+    source("executor_completion_finalized", "registry", () => entries(this.completionFinalizedTaskIds));
+    source("executor_graph_execute_requeued", "registry", () => entries(this.graphExecuteSelfRequeued));
+    source("executor_loop_recovery_state", "registry", () => entries(this.loopRecoveryState));
+    source("executor_spawned_agents", "registry", () => entries(this.spawnedAgents));
+    source("executor_user_canceled_tasks", "registry", () => entries(this.userCanceledTaskIds));
+    source("executor_paused_aborted", "registry", () => entries(this.pausedAborted));
+    source("executor_dep_aborted", "registry", () => entries(this.depAborted));
+    source("executor_stuck_aborted", "registry", () => entries(this.stuckAborted));
+    source("executor_branch_conflict_errors", "registry", () => entries(this.branchConflictErrorCount));
+    source("executor_executing", "registry", () => entries(this.executing));
+    source("executor_pending_ephemeral_deletions", "registry", () => entries(this.pendingEphemeralDeletions));
+  }
+
   /** Workspace mode is memoized per executor host; a real settings transition must refresh it live. */
   public invalidateWorkspaceConfig(): void {
     this.workspaceConfig = undefined;

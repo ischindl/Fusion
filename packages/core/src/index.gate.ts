@@ -3179,3 +3179,23 @@ export type {
   TempFsStatfsLike,
   TempFsDiagnosticDeps,
 } from "./temp-fs-diagnostics.js";
+
+/*
+FNXC:RetentionCensus 2026-11-06-09:08 (RUFU-871): the gate barrel must re-export the host retention registry,
+because `TaskExecutorState.registerExecutorRetentionSources` imports it from `@fusion/core` and this barrel is
+what the `engine-core` merge-gate project aliases that specifier to. Omitting it produces
+`registerHostRetentionSource is not a function` inside every gate test that constructs a TaskExecutor — the
+bundle is built from this entrypoint alone, so an export missing here does not exist in the gate at all.
+*/
+export {
+  HOST_RETENTION_ENTRY_OVERHEAD_BYTES,
+  registerHostRetentionSource,
+  listHostRetentionSources,
+  hostRetentionRegistrySize,
+  resetHostRetentionRegistryForTests,
+} from "./retention-host-sources.js";
+export type {
+  HostRetentionSource,
+  HostRetentionSourceDescriptor,
+  HostRetentionSourceKind,
+} from "./retention-host-sources.js";

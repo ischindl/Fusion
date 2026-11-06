@@ -3907,3 +3907,12 @@ export type {
   TempFsStatfsLike,
   TempFsDiagnosticDeps,
 } from "./temp-fs-diagnostics.js";
+
+/*
+FNXC:RetentionCensus 2026-11-06-09:08 (RUFU-871): the host retention registry is exported through the index,
+NOT as a subpath, on purpose. A subpath would need a matching alias in dashboard vite/vitest configs and in the
+engine gate bundle (Vite aliases match by prefix, so the broad `@fusion/core` key rewrites `.../x` into
+`index.ts/x`); the index import already resolves in every one of those graphs. The module imports nothing, so
+widening the index with it cannot drag a Node-only dependency toward the browser bundle.
+*/
+export * from "./retention-host-sources.js";

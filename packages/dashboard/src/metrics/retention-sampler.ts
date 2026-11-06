@@ -37,6 +37,12 @@ import {
   retentionCensus,
 } from "../lib/retention-census.js";
 
+// FNXC:RetentionCensus 2026-11-06-09:08 (RUFU-871): the host registry is how `packages/engine` reports the
+// collections it owns. Importing it through the `@fusion/core` index (not a subpath) is deliberate; see the
+// note in `packages/core/src/retention-host-sources.ts`.
+import { listHostRetentionSources } from "@fusion/core";
+import { registerRetentionSource } from "../lib/retention-census.js";
+
 /** Why a pressure warning fired. Fixed enum — it labels a log line, never carries prose. */
 export type RetentionPressureReason = "heap-ratio" | "source-at-ceiling";
 
@@ -126,6 +132,52 @@ function defaultTimers(): NonNullable<RetentionSamplerInit["timers"]> {
 }
 
 /** Create a retention sampler. No side effects until {@link RetentionSampler.start}. */
+/*
+FNXC:RetentionCensus 2026-11-06-09:08 (RUFU-871): fold engine-owned collections into this census.
+
+The census has always been the dashboard's own accounting, which is why it could watch the process die anyway:
+`fusion_retention_coverage_ratio` read 7.5e-7 (2,756 B tracked against a 3.67 GiB residual) while ~30
+task-keyed Maps/Sets on the executor held the unattributed mass. Engine registers those into
+`@fusion/core`'s host registry, and this function mirrors each unseen id into the real census exactly once, so
+the host entries participate in every existing rule — `trackedBytes`, `residualBytes`, `coverageRatio`, the
+`atCeiling` streaks, and the pressure signal — instead of being rendered as a second, parallel family set that
+nothing else in the instrument would understand.
+
+First-wins per id, enforced by the census itself: `registerRetentionSource` returns false for an id it already
+has and keeps the original probe, so this loop may re-offer every tick without duplicating a metric label, and
+it never calls an owner's `read()` directly — only the census drives probes, once per sample.
+A registry that throws, or a census that refuses the source, degrades to "engine contributes nothing", which is
+the status quo rather than a lost `/metrics` body.
+*/
+function syncHostRetentionSources(): void {
+  let hosts: ReturnType<typeof listHostRetentionSources>;
+  try {
+    hosts = listHostRetentionSources();
+  } catch {
+    return;
+  }
+  for (const host of hosts) {
+    // No mirror bookkeeping here on purpose. A Set of already-mirrored ids would be one more module-scope
+    // collection whose cardinality grows with registrations — the exact class RUFU-257's ratchet exists to
+    // catch — and the census already answers a duplicate id with `false` and keeps the first probe, which is
+    // the same first-wins rule. Re-offering per tick costs one Map lookup per source and nothing else.
+    try {
+      registerRetentionSource({
+        id: host.id,
+        kind: host.kind,
+        keys: "load",
+        probe: () => ({
+          entries: host.entries(),
+          approxBytes: host.approxBytes(),
+          expiredEntries: 0,
+        }),
+      });
+    } catch {
+      /* one refused source must never cost the operator the whole scrape */
+    }
+  }
+}
+
 export function createRetentionSampler(init: RetentionSamplerInit = {}): RetentionSampler {
   const readCensus = init.census ?? retentionCensusSnapshot;
   const readOps = init.ops ?? (() => retentionCensus().opsSnapshot());
@@ -161,6 +213,9 @@ export function createRetentionSampler(init: RetentionSamplerInit = {}): Retenti
     // A hostile census degrades to an empty-but-well-formed snapshot rather than losing the
     // whole `/metrics` body: the scrape must always render the families it always rendered.
     let snapshot: RetentionCensusSnapshot;
+    // Host sources must be registered BEFORE the census is read, or the first sample of the process renders
+    // the engine as absent and the coverage ratio is wrong for one tick.
+    syncHostRetentionSources();
     try {
       snapshot = readCensus();
     } catch {
