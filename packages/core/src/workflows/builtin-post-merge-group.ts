@@ -118,9 +118,24 @@ export function describePostMergeEvidenceKinds(): string {
   return quoted.slice(0, -1).join(", ") + ", or " + quoted[quoted.length - 1];
 }
 
-/** The evidence contract a post-merge group node enforces; absent means `github-actions-full-suite`. */
+/*
+FNXC:PostMergeEvidenceContract 2026-11-06-05:21 (RUFU-464):
+Legacy single-argument reader, kept by operator ruling (its `index.ts` and `index.gate.ts` exports stay too).
+Its body used to be a two-way test on the literal `"integration-only"`, which meant both reporter kinds added
+by RUFU-457 (`onedev-pipeline`, `gitlab-pipeline`) read back as `github-actions-full-suite` -- the opposite of
+what `authoredPostMergeEvidenceKindOf` says about the same config, and the defect this card removes. It now
+delegates, and the redirect contract is:
+- A valid authored kind returns exactly the literal the author wrote, for all four kinds.
+- Absent or unrecognised config keeps the historical `github-actions-full-suite` reading, so a typo still does
+  not silently downgrade a delivery gate.
+- No provider fallback: this form cannot see the reporter, and an un-updated caller must not start resolving
+  platform defaults it never asked for. `provider: undefined` is therefore explicit, and with it the delegation
+  is provably behavior-preserving on every input this function ever accepted.
+The four-kind list now has exactly one enumeration (`POST_MERGE_EVIDENCE_KINDS`); this function names none.
+*/
+/** The evidence contract a post-merge group node enforces; authored kind wins, absent means `github-actions-full-suite`. */
 export function postMergeEvidenceKindOf(config: { evidence?: { kind?: unknown } } | undefined): PostMergeEvidenceKind {
-  return config?.evidence?.kind === "integration-only" ? "integration-only" : "github-actions-full-suite";
+  return resolvePostMergeEvidenceKind({ authored: authoredPostMergeEvidenceKindOf(config), provider: undefined });
 }
 
 /*

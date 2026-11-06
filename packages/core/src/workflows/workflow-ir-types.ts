@@ -49,6 +49,15 @@ export type WorkflowIrNodeKind =
 
 import type { ReviewBlockingSeverity, WorkflowReviewKind } from "../types/workflow/workflow-steps.js";
 
+/*
+FNXC:PostMergeEvidenceContract 2026-11-06-05:21 (RUFU-464):
+The IR vocabulary for post-merge evidence is owned by the module that owns the prompt builder, so this type is
+imported rather than re-enumerated here. Both sides of the reference are `import type` (this file is already
+type-imported BY `builtin-post-merge-group.ts`), so the reference is erased at emit and no runtime import cycle
+is created.
+*/
+import type { PostMergeEvidenceKind } from "./builtin-post-merge-group.js";
+
 /** Roles that may launch a durable workflow principal. */
 export type WorkflowAgentRole = "triage" | "executor" | "reviewer" | "merger";
 
@@ -293,8 +302,19 @@ export interface WorkflowOptionalGroupConfig {
   the operator was missing: a board whose trunk is OneDev, self-hosted GitLab, or a repo with no remote can
   now keep a post-merge gate and ask it for evidence that repo can actually produce, instead of choosing a
   workflow with no post-merge group at all and losing the integration review with it.
+
+  FNXC:PostMergeEvidenceContract 2026-11-06-05:21 (RUFU-464):
+  This field carried its own two-value enumeration, so it was the fourth hand-maintained copy of a list that
+  RUFU-457 had already made four values long everywhere else (`PostMergeEvidenceKind`,
+  `POST_MERGE_EVIDENCE_KINDS`, the `parseWorkflowIr` allow-list, `docs/workflow-steps.md`). Consequence of the
+  drift: a workflow authored in TypeScript could not write `"onedev-pipeline"` or `"gitlab-pipeline"` without a
+  type error, so "the authored choice wins" was reachable only from hand-edited JSON. The field now references
+  the shared union, which makes `POST_MERGE_EVIDENCE_KINDS` the single enumeration of this vocabulary; the
+  compile guard that keeps the two in step lives in
+  `packages/core/src/__tests__/post-merge-evidence-kind-fixtures.ts` (a non-`.test.ts` module, because the core
+  tsc program excludes test files and would never read a `satisfies` clause placed in one).
   */
-  evidence?: { kind: "github-actions-full-suite" | "integration-only" };
+  evidence?: { kind: PostMergeEvidenceKind };
   /*
   FNXC:ReportingOnlyGroup 2026-08-26-06:56:
   A REPORTING group observes accepted work and records what it found. It carries no approval and can

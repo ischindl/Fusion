@@ -19,6 +19,11 @@ import {
 } from "../workflows/builtin-post-merge-group.js";
 import { getPostMergeEvidenceGateStatuses } from "../merge/confirmed-merge-reconciliation.js";
 import { derivePostMergeEvidenceContract } from "../merge/post-merge-evidence-contract.js";
+import {
+  GITLAB_AUTHORED,
+  ONEDEV_AUTHORED,
+  TYPED_AUTHORED_EVIDENCE_FIXTURES,
+} from "./post-merge-evidence-kind-fixtures";
 import type { Task, WorkflowIr } from "../types.js";
 
 const GATE_ID = "post-merge-verification";
@@ -102,6 +107,48 @@ describe("post-merge evidence kind resolution", () => {
     expect(postMergeEvidenceKindOf({ evidence: { kind: "onedev" } })).toBe("github-actions-full-suite");
     expect(postMergeEvidenceDemandsCi("integration-only")).toBe(false);
     expect(postMergeEvidenceDemandsCi("github-actions-full-suite")).toBe(true);
+  });
+
+  /*
+  FNXC:PostMergeEvidenceContract 2026-11-06-05:21 (RUFU-464):
+  The half of the contract RUFU-457 left unpinned. The legacy single-argument reader answered
+  `github-actions-full-suite` for BOTH reporter kinds -- the opposite of what `authoredPostMergeEvidenceKindOf`
+  reports for the same input -- and the suite stayed green because the only kindOf literal pinned here was the
+  INVALID `"onedev"`. These are the valid literals; the historical pins above are what prove the redirect
+  changed nothing but the reporter-kind answer.
+  */
+  it("returns the authored reporter kind itself, not the historical GitHub default", () => {
+    expect(postMergeEvidenceKindOf({ evidence: { kind: "onedev-pipeline" } })).toBe("onedev-pipeline");
+    expect(postMergeEvidenceKindOf({ evidence: { kind: "gitlab-pipeline" } })).toBe("gitlab-pipeline");
+    // The authored reader must answer the same way for both reporter kinds, not just the OneDev one.
+    expect(authoredPostMergeEvidenceKindOf({ evidence: { kind: "onedev-pipeline" } })).toBe("onedev-pipeline");
+    expect(authoredPostMergeEvidenceKindOf({ evidence: { kind: "gitlab-pipeline" } })).toBe("gitlab-pipeline");
+    // A reporter contract demands a CI run on every reader path, so the redirect cannot downgrade the gate.
+    for (const kind of ["onedev-pipeline", "gitlab-pipeline"] as const) {
+      expect(postMergeEvidenceDemandsCi(postMergeEvidenceKindOf({ evidence: { kind } }))).toBe(true);
+    }
+  });
+
+  /*
+  FNXC:PostMergeEvidenceContract 2026-11-06-05:21 (RUFU-464):
+  Consumes the typed fixture module at runtime on purpose. Its `satisfies` clause is the compile guard for the
+  widened `evidence.kind` type, and a guard nobody imports can be deleted to make a build go green; reading the
+  authored literal back out of the same objects is what makes deleting it a test failure too.
+  */
+  it("reads back the literal each typed-authored fixture wrote", () => {
+    expect(TYPED_AUTHORED_EVIDENCE_FIXTURES.map((fixture) => fixture.kind)).toEqual([
+      "github-actions-full-suite",
+      "integration-only",
+      "onedev-pipeline",
+      "gitlab-pipeline",
+    ]);
+    for (const fixture of TYPED_AUTHORED_EVIDENCE_FIXTURES) {
+      expect(postMergeEvidenceKindOf(fixture.config)).toBe(fixture.kind);
+      expect(authoredPostMergeEvidenceKindOf(fixture.config)).toBe(fixture.kind);
+    }
+    // Named explicitly so the two reporter fixtures cannot be dropped from the list unnoticed.
+    expect(postMergeEvidenceKindOf(ONEDEV_AUTHORED)).toBe("onedev-pipeline");
+    expect(postMergeEvidenceKindOf(GITLAB_AUTHORED)).toBe("gitlab-pipeline");
   });
 
   it("persists the authored contract through IR parse and refuses a kind with no prompt text", () => {

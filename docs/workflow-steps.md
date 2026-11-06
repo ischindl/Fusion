@@ -522,7 +522,15 @@ Fast creation surfaces submit explicit `enabledWorkflowSteps: []` even before op
 
 Optional quality gates are authored directly in the workflow graph as `optional-group` **nodes**. An `optional-group` node is a container (mirroring `foreach`/`loop`) whose `template` subgraph the executor runs **once per enabled graph attempt**, and passes through (skips) when disabled. The template contains no internal iteration or rework edges (`validateOptionalGroup` rejects them), but the outer graph may re-enter the group for pre-merge fix/re-review remediation governed by `maxRevisions`.
 
-Node config (`WorkflowOptionalGroupConfig`): `{ name?, defaultOn?, reviewKind?, blockingSeverity?: "any" | "low" | "medium" | "high" | "critical", maxRevisions?: number | "unbounded", phase?: "pre-merge" | "post-merge", evidence?: { kind?: PostMergeEvidenceKind }, requiresCiRepository?: boolean, template: { nodes, edges } }`.
+Node config (`WorkflowOptionalGroupConfig`): `{ name?, defaultOn?, reviewKind?, blockingSeverity?: "any" | "low" | "medium" | "high" | "critical", maxRevisions?: number | "unbounded", phase?: "pre-merge" | "post-merge", evidence?: { kind: PostMergeEvidenceKind }, requiresCiRepository?: boolean, template: { nodes, edges } }`.
+
+<!--
+FNXC:PostMergeEvidenceContract 2026-11-06-05:21 (RUFU-464):
+The inner `kind` is REQUIRED, not optional, and this line used to say `kind?`. That matched neither the shipped
+type nor runtime: `parseWorkflowIr` refuses an `evidence` object whose `kind` is missing or unrecognised, and
+no producer ever writes a bare `evidence: {}` (the workflow editor deletes the whole key on "Inherit", and the
+built-in materializer emits `{ kind }`). An author who needs the inherited behaviour omits `evidence` entirely.
+-->
 
 #### Review blocking severity
 
