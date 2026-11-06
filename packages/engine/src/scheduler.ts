@@ -2285,6 +2285,16 @@ export class Scheduler {
        (the sweep is one poll pass). Must not outlive the pass — a selection write in a later poll
        is observed on that poll's OWN fresh cache — never a global/infinite LRU. */
     const escalationSelectionCache = new Map<string, { workflowId: string; stepIds: string[] } | undefined>();
+    /*
+    FNXC:WorkflowSelectionBatching 2026-11-06-21:05 (RUFU-871):
+    This sweep runs over EVERY unarchived card, and the loop below awaited one selection read per card, so a
+    sweep cost N SELECTs of `task_workflow_selection` — the read-attribution seam recorded 63,210
+    `workflowSelection` reads in one 5-minute window on a board with zero running cards. Filling the SAME
+    per-sweep cache in one batched read is the fix, and it is the same call this class already makes for the
+    scheduling pass 500 lines below; the per-sweep lifetime is untouched, so a selection written between
+    sweeps is still observed by the next sweep's own fresh cache.
+    */
+    await prefetchWorkflowSelections(this.store, tasks.map((task) => task.id), escalationSelectionCache);
     /* Per-task, keyed by id — see the `escalationClassify` note in blocker-fanout.ts. The flat set is
        still built alongside it as the legacy fallback for tasks whose workflow will not resolve. */
     const escalationByTaskId = new Map<string, boolean>();

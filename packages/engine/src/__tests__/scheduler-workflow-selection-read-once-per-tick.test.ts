@@ -70,6 +70,7 @@ function createStore(opts: { async?: boolean; tasks?: Record<string, unknown>[] 
     reads.push(taskId);
     return selection;
   });
+  const getTaskWorkflowSelectionsAsync = vi.fn(async (ids: string[]) => new Map(ids.map((id) => [id, selection])));
   const store = {
     on: vi.fn((event: string, listener: (payload: unknown) => void) => {
       const existing = listeners.get(event) ?? [];
@@ -88,7 +89,7 @@ function createStore(opts: { async?: boolean; tasks?: Record<string, unknown>[] 
     getCompletionHandoffAcceptedMarker: vi.fn().mockResolvedValue(null),
     getWorkflowDefinition: vi.fn(async () => ({ ir: codingIr() })),
     ...(useAsync
-      ? { getTaskWorkflowSelectionAsync, getTaskWorkflowSelectionsAsync: vi.fn(async () => new Map()) }
+      ? { getTaskWorkflowSelectionAsync, getTaskWorkflowSelectionsAsync }
       : { getTaskWorkflowSelection }),
   } as unknown as TaskStore;
 
@@ -96,7 +97,7 @@ function createStore(opts: { async?: boolean; tasks?: Record<string, unknown>[] 
     for (const l of listeners.get(event) ?? []) await l(payload);
   };
 
-  return { store, emit, reads, getTaskWorkflowSelection, getTaskWorkflowSelectionAsync };
+  return { store, emit, reads, getTaskWorkflowSelection, getTaskWorkflowSelectionAsync, getTaskWorkflowSelectionsAsync };
 }
 
 function task(id: string, over: Record<string, unknown> = {}) {
@@ -127,6 +128,21 @@ function createScheduler(store: TaskStore) {
 }
 
 describe("RUFU-073: workflow selection read at most once per scheduler tick", () => {
+  it("fills its board-wide fanout sweep in one batched read, not one per card (RUFU-871)", async () => {
+    // 12 cards: a sweep that resolves one selection per card would do 12 single reads here.
+    const board = Array.from({ length: 12 }, (_, i) => task(`FN-${i}`, { column: "in-progress" }));
+    const { store, getTaskWorkflowSelectionsAsync, getTaskWorkflowSelectionAsync } = createStore({ tasks: board });
+    const { scheduler } = createScheduler(store);
+
+    await (scheduler as unknown as { emitHighOverlapFanoutWarnings(tasks: unknown[]): Promise<void> })
+      .emitHighOverlapFanoutWarnings(board);
+
+    // One batched read warms the sweep's per-sweep pass cache and the per-card single reader stays unused.
+    // The cache still dies with the sweep, so a selection written between sweeps is observed by the next one.
+    expect(getTaskWorkflowSelectionsAsync.mock.calls).toHaveLength(1);
+    expect(getTaskWorkflowSelectionsAsync.mock.calls[0]?.[0]).toHaveLength(12);
+    expect(getTaskWorkflowSelectionAsync.mock.calls).toHaveLength(0);
+  });
   it("reads workflow_selection exactly once when one event clears unpause+planning+approval wakes for the same task", async () => {
     const { store, emit, reads } = createStore();
     createScheduler(store);
