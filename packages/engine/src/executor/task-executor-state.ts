@@ -149,6 +149,22 @@ export abstract class TaskExecutorState {
   maps are simply not reported, and `retentionExecutorHostsSkipped` counts how often that happened.
   */
   protected registerExecutorRetentionSources(): void {
+    /*
+    FNXC:SessionTranscriptMetering 2026-11-06-22:55 (RUFU-871):
+    Joined BEFORE the once-only guard: the guard makes the other 27 sources belong to whichever executor
+    constructed first, which on a multi-project dashboard prices one project's maps and reports another
+    project's live sessions as absent. Transcripts are the class the operator asked about (whole LLM history
+    held in RAM although `agent_runs` and `agent-log.jsonl` already persist it), so they publish per-instance
+    through a registry and the figure is the aggregate over every project.
+    */
+    registerTranscriptCollector(() => ({
+      bytes:
+        measureTranscriptBytes(() => this.activeSessions.values())
+        + measureTranscriptBytes(() => this.activeWorkflowStepSessions.values()),
+      messages:
+        measureTranscriptMessages(() => this.activeSessions.values())
+        + measureTranscriptMessages(() => this.activeWorkflowStepSessions.values()),
+    }));
     if (retentionSourcesRegistered) {
       retentionExecutorHostsSkippedCount += 1;
       return;
@@ -159,6 +175,37 @@ export abstract class TaskExecutorState {
       registerHostRetentionSource({ id, kind, read });
     };
     source("executor_active_sessions", "session", () => entries(this.activeSessions));
+    /*
+    FNXC:SessionTranscriptMetering 2026-11-06-22:55 (RUFU-871):
+    `bytesPerEntry: 1` because the read() value IS a byte figure — the default 96 B/entry overhead priced two
+    live sessions at 192 bytes no matter how much conversation they held, which is how the census came to
+    report 3.4 kB of a 5.9 GiB heap. The message count carries no bytes so it cannot double-count the same
+    transcript.
+    */
+    registerHostRetentionSource({
+      id: "executor_retained_transcript_bytes",
+      kind: "session",
+      bytesPerEntry: 1,
+      read: registeredTranscriptBytes,
+    });
+    registerHostRetentionSource({
+      id: "executor_retained_transcript_messages",
+      kind: "session",
+      bytesPerEntry: 0,
+      read: registeredTranscriptMessages,
+    });
+    registerHostRetentionSource({
+      id: "executor_retained_transcript_truncated",
+      kind: "counter",
+      bytesPerEntry: 0,
+      read: () => (transcriptScanWasTruncated() ? 1 : 0),
+    });
+    registerHostRetentionSource({
+      id: "executor_transcript_instances_refused",
+      kind: "counter",
+      bytesPerEntry: 0,
+      read: transcriptCollectorsRefusedCount,
+    });
     source("executor_step_executors", "registry", () => entries(this.activeStepExecutors));
     source(
       "executor_step_executor_seen_steering",
@@ -255,3 +302,12 @@ export abstract class TaskExecutorState {
   }
 }
 import { registerStepOutputRetentionSources } from "./step-output-retention.js";
+import {
+  measureTranscriptBytes,
+  measureTranscriptMessages,
+  registerTranscriptCollector,
+  registeredTranscriptBytes,
+  registeredTranscriptMessages,
+  transcriptCollectorsRefusedCount,
+  transcriptScanWasTruncated,
+} from "./session-transcript-retention.js";
