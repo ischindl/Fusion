@@ -18,14 +18,13 @@ import type {
   CentralCore,
   MessageStore,
   AgentLogEntry,
-  RunAuditEvent,
 } from "@fusion/core";
 import {
   AgentStore,
   ChatStore,
   cloudRedeemTicket,
+  getMergeAttemptPhaseCounts,
   loadCloudLinkState,
-  queryRunAuditEvents,
   resolveGlobalDir,
   resolveReboundTargetForTask,
   setRunningAgentCountSource,
@@ -95,9 +94,11 @@ import {
   fileScopeInvariantFailuresPerDay,
   inReviewDurationMetrics,
   inReviewFailureRate7d,
-  mergeAttemptsPerMergedTask,
   postMergeAuditFailuresPerDay,
   recoverAlreadyMergedReviewTasksRecoveriesPerDay,
+  mergeAttemptsFromPhaseCounts,
+  mergeAttemptPhaseCountsFromEvents,
+  type MergeAttemptPhaseCount,
   countEntriesInto,
   countBouncesOut,
   resolveReliabilityLanes,
@@ -2238,21 +2239,25 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
     const startIso = new Date(effectiveStartMs).toISOString();
     const endIso = new Date(nowMs).toISOString();
 
-    const auditFilter = { startTime: startIso, endTime: endIso, limit: 50_000 };
     const asyncLayer = scopedStore.getAsyncLayer();
     /*
     FNXC:ReliabilityHealth 2026-07-14-16:13:
     Backend-mode Reliability must use the authoritative async run-audit reader. The synchronous reader is a SQLite/test compatibility surface and intentionally degrades to an empty result under PostgreSQL.
+
+    FNXC:ReliabilityAggregate 2026-11-06-15:18 (RUFU-871):
+    The only live consumer of this read folded `metadata->>'phase'` values matching /^merge-attempt-/ per task.
+    It used to receive up to 50,000 fully hydrated audit rows (each carrying its `metadata` jsonb) per poll and
+    copy them again in `.map()`, which is the retained string mass the heap census named: 233k `action` /
+    `timestamp` / `source` field groups sitting in the dashboard heap while zero lanes ran. PostgreSQL now does
+    the grouping and returns one row per task that attempted a merge in the window. The SQLite layer keeps the
+    JS fold because it has no jsonb, and both routes feed the same `mergeAttemptsFromPhaseCounts`, so the
+    headline cannot drift between them.
     */
-    const runAuditEventsPromise: Promise<RunAuditEvent[]> = asyncLayer
-      ? queryRunAuditEvents(asyncLayer.db, auditFilter, asyncLayer.projectId).then((events) => events.map((event) => ({
-          ...event,
-          domain: event.domain as RunAuditEvent["domain"],
-          mutationType: event.mutationType as RunAuditEvent["mutationType"],
-          taskId: event.taskId ?? undefined,
-          metadata: event.metadata ?? undefined,
-        })))
-      : scopedStore.getRunAuditEventsAsync(auditFilter);
+    const mergeAttemptCountsPromise: Promise<MergeAttemptPhaseCount[]> = asyncLayer
+      ? getMergeAttemptPhaseCounts(asyncLayer.db, { since: startIso, until: endIso }, asyncLayer.projectId)
+      : scopedStore
+          .getRunAuditEventsAsync({ startTime: startIso, endTime: endIso, limit: 50_000 })
+          .then((events) => mergeAttemptPhaseCountsFromEvents(events, effectiveStartMs, nowMs));
     /*
     FNXC:WorkflowLifecycleColumns 2026-07-30-17:05:
     The Reliability headline was computed from two queries that name `in-review` and `in-progress`.
@@ -2270,22 +2275,28 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
     */
     const { review: reviewLanes, wip: wipLanes, complete: durationCompleteLanes } =
       await resolveReliabilityLanes(scopedStore);
-    const [runAuditEvents, enteredByDay, bouncedByDay, durationEvents, mergedTaskIds] = await Promise.all([
-      runAuditEventsPromise,
+    const [mergeAttemptCounts, enteredByDay, bouncedByDay, durationEvents, mergedTaskIds] = await Promise.all([
+      mergeAttemptCountsPromise,
       countEntriesInto(scopedStore, { since: startIso, until: endIso }, reviewLanes),
       countBouncesOut(scopedStore, { since: startIso, until: endIso }, reviewLanes, wipLanes),
       scopedStore.getInReviewDurationEvents({ since: startIso, until: endIso }),
       scopedStore.getTaskMergedTaskIds({ since: startIso, until: endIso }),
     ]);
 
-    const postMergeByDay = postMergeAuditFailuresPerDay(runAuditEvents, effectiveStartMs, nowMs);
-    const fileScopeByDay = fileScopeInvariantFailuresPerDay(runAuditEvents, effectiveStartMs, nowMs);
-    const recoveriesByDay = recoverAlreadyMergedReviewTasksRecoveriesPerDay(runAuditEvents, effectiveStartMs, nowMs);
+    /*
+    FNXC:ReliabilityAggregate 2026-11-06-15:18 (RUFU-871): these three headline series are the
+    `no-audit-coverage` stubs in reliability-metrics.ts — they ignore their argument and return null. They used
+    to be the reason 50,000 audit rows were hydrated; passing no rows keeps their reported value byte-identical
+    and documents that the read they once needed no longer exists.
+    */
+    const postMergeByDay = postMergeAuditFailuresPerDay([], effectiveStartMs, nowMs);
+    const fileScopeByDay = fileScopeInvariantFailuresPerDay([], effectiveStartMs, nowMs);
+    const recoveriesByDay = recoverAlreadyMergedReviewTasksRecoveriesPerDay([], effectiveStartMs, nowMs);
     const duration = inReviewDurationMetrics(durationEvents, effectiveStartMs, nowMs, {
       review: reviewLanes,
       complete: durationCompleteLanes,
     });
-    const mergeAttempts = mergeAttemptsPerMergedTask(runAuditEvents, mergedTaskIds, effectiveStartMs, nowMs);
+    const mergeAttempts = mergeAttemptsFromPhaseCounts(mergeAttemptCounts, mergedTaskIds);
     const headline = inReviewFailureRate7d(enteredByDay, bouncedByDay, nowMs);
 
     const perDay: Array<{

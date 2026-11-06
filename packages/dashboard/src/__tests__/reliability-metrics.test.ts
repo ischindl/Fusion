@@ -9,6 +9,8 @@ import {
   countMovesInto,
   dayHasSamples,
   fileScopeInvariantFailuresPerDay,
+  mergeAttemptPhaseCountsFromEvents,
+  mergeAttemptsFromPhaseCounts,
   inReviewDurationMetrics,
   inReviewFailureRate7d,
   mergeAttemptsPerMergedTask,
@@ -389,5 +391,64 @@ describe("inReviewDurationMetrics keys on the board's resolved lanes", () => {
     ]);
 
     expect(inReviewDurationMetrics(bounced, from, to, lanes).sampleCount).toBe(0);
+  });
+});
+
+/*
+FNXC:ReliabilityAggregate 2026-11-06-15:18 (RUFU-871):
+The PostgreSQL route now folds merge-attempt phases inside the database, while the SQLite route still folds the
+events in JS. Both must land on the same headline, and the aggregate route must not need the event rows at all —
+that absence is the memory fix, so it is what these tests pin.
+*/
+describe("merge-attempt phase counts (SQL aggregate route)", () => {
+  const startMs = Date.parse("2026-05-10T00:00:00.000Z");
+  const endMs = Date.parse("2026-05-11T00:00:00.000Z");
+
+  function attempt(taskId: string, phase: string, opts: { domain?: string; timestamp?: string } = {}): RunAuditEvent {
+    return {
+      id: `${taskId}-${phase}`,
+      timestamp: opts.timestamp ?? "2026-05-10T10:00:00.000Z",
+      taskId,
+      agentId: "a",
+      runId: "r",
+      domain: (opts.domain ?? "git") as RunAuditEvent["domain"],
+      mutationType: "merge:start" as RunAuditEvent["mutationType"],
+      target: taskId,
+      metadata: { phase },
+    };
+  }
+
+  it("counts DISTINCT phases per task and ignores rows the SQL predicate also rejects", () => {
+    const events = [
+      attempt("FN-1", "merge-attempt-1"),
+      attempt("FN-1", "merge-attempt-1"),
+      attempt("FN-1", "merge-attempt-2"),
+      attempt("FN-2", "merge-attempt-9", { domain: "task" as RunAuditEvent["domain"] }),
+      attempt("FN-3", "not-a-phase"),
+      attempt("FN-4", "merge-attempt-1", { timestamp: "2026-05-12T10:00:00.000Z" }),
+    ];
+
+    expect(mergeAttemptPhaseCountsFromEvents(events, startMs, endMs)).toEqual([{ taskId: "FN-1", phaseCount: 2 }]);
+  });
+
+  it("reports the same headline from counts as from events, and needs no events to report", () => {
+    const merged = new Set(["FN-1", "FN-2"]);
+    const counts = [
+      { taskId: "FN-1", phaseCount: 2 },
+      { taskId: "FN-2", phaseCount: 1 },
+    ];
+
+    expect(mergeAttemptsFromPhaseCounts(counts, merged)).toEqual({ mean: 1.5, max: 2, histogram: { "1": 1, "2": 1 } });
+    expect(mergeAttemptsFromPhaseCounts(counts.filter((c) => c.phaseCount > 5), new Set(["FN-1"]))).toEqual({
+      mean: null,
+      max: null,
+      histogram: {},
+      reason: "no-audit-coverage",
+    });
+    expect(mergeAttemptsFromPhaseCounts([{ taskId: "FN-9", phaseCount: 6 }], new Set(["FN-9"]))).toEqual({
+      mean: 6,
+      max: 6,
+      histogram: { ">5": 1 },
+    });
   });
 });

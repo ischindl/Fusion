@@ -204,7 +204,24 @@ export function inReviewDurationMetrics(
   };
 }
 
-export function mergeAttemptsPerMergedTask(events: RunAuditEvent[], mergedTaskIds: Set<string>, startMs: number, endMs: number): MergeAttemptsMetric {
+/**
+ * One task's DISTINCT `merge-attempt-*` phase count.
+ *
+ * FNXC:ReliabilityAggregate 2026-11-06-15:18 (RUFU-871): this is the shape the PostgreSQL aggregate returns
+ * (`getMergeAttemptPhaseCounts` in @fusion/core) and the shape the JS fold produces for the SQLite layer, so
+ * both producers converge on one consumer and the headline cannot drift between them.
+ */
+export interface MergeAttemptPhaseCount {
+  taskId: string;
+  phaseCount: number;
+}
+
+/** JS fold of the same rule the SQL aggregate applies — kept for the non-PostgreSQL layer and parity tests. */
+export function mergeAttemptPhaseCountsFromEvents(
+  events: RunAuditEvent[],
+  startMs: number,
+  endMs: number,
+): MergeAttemptPhaseCount[] {
   const phasesByTask = new Map<string, Set<string>>();
   for (const event of events) {
     if (event.domain !== "git" || !event.taskId || !inWindow(event.timestamp, startMs, endMs)) {
@@ -220,9 +237,15 @@ export function mergeAttemptsPerMergedTask(events: RunAuditEvent[], mergedTaskId
     phasesByTask.set(event.taskId, taskPhases);
   }
 
-  const attemptCounts = Array.from(phasesByTask.entries())
-    .filter(([taskId]) => mergedTaskIds.has(taskId))
-    .map(([, phases]) => phases.size);
+  return Array.from(phasesByTask.entries(), ([taskId, phases]) => ({ taskId, phaseCount: phases.size }));
+}
+
+/** Turns per-task phase counts into the headline metric. Same math the event-fold version produced. */
+export function mergeAttemptsFromPhaseCounts(
+  counts: MergeAttemptPhaseCount[],
+  mergedTaskIds: Set<string>,
+): MergeAttemptsMetric {
+  const attemptCounts = counts.filter((row) => mergedTaskIds.has(row.taskId)).map((row) => row.phaseCount);
 
   if (attemptCounts.length === 0) {
     return { mean: null, max: null, histogram: {}, reason: "no-audit-coverage" };
@@ -242,6 +265,10 @@ export function mergeAttemptsPerMergedTask(events: RunAuditEvent[], mergedTaskId
     max,
     histogram,
   };
+}
+
+export function mergeAttemptsPerMergedTask(events: RunAuditEvent[], mergedTaskIds: Set<string>, startMs: number, endMs: number): MergeAttemptsMetric {
+  return mergeAttemptsFromPhaseCounts(mergeAttemptPhaseCountsFromEvents(events, startMs, endMs), mergedTaskIds);
 }
 
 export function dayHasSamples(counts: ReliabilityPerDayCounts): boolean {

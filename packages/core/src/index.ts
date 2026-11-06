@@ -3688,6 +3688,9 @@ export { PLAN_REVIEW_COMPLETENESS_POLICY } from "./agents/planning-review-policy
 // FNXC:SqliteRemoval 2026-07-14: Export async audit reader so engine tests can
 // query run-audit events in backend mode (sync getRunAuditEvents returns [] in PG mode).
 export { queryRunAuditEvents } from "./task-store/async/async-audit.js";
+// FNXC:ReliabilityAggregate 2026-11-06-15:18 (RUFU-871): the Reliability headline's merge-attempt fold moved
+// into PostgreSQL; the dashboard consumes these counts instead of hydrating up to 50k audit rows.
+export { getMergeAttemptPhaseCounts, type MergeAttemptPhaseCount } from "./task-store/async/async-audit.js";
 
 /*
 FNXC:GitHubImportTranslate 2026-07-15-09:30:

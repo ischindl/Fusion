@@ -179,6 +179,52 @@ export async function countRunAuditEvents(
   return rows[0]?.value ?? 0;
 }
 
+/**
+ * Per-task count of DISTINCT merge-attempt phases, folded inside PostgreSQL.
+ *
+ * FNXC:ReliabilityAggregate 2026-11-06-15:18 (RUFU-871):
+ * The Reliability headline needs, per task, how many distinct `metadata->>'phase'` values matching
+ * `/^merge-attempt-/` appear in a time window. It used to get that by hydrating up to 50,000 complete
+ * run-audit rows — each with its `metadata` jsonb — into JavaScript and folding them there. On a table
+ * with 2.4 M rows that put hundreds of megabytes of fresh strings into the dashboard heap once per poll,
+ * which is the retained mass the heap census named. Grouping in PostgreSQL makes the transfer one row per
+ * task that attempted a merge in the window and hydrates no `metadata` at all.
+ * Window bounds stay inclusive on both ends so this matches `inWindow` in the dashboard's JS fold.
+ */
+export interface MergeAttemptPhaseCount {
+  taskId: string;
+  phaseCount: number;
+}
+
+export async function getMergeAttemptPhaseCounts(
+  db: AsyncDataLayer["db"] | DbTransaction,
+  window: { since: string; until: string },
+  projectId?: string,
+): Promise<MergeAttemptPhaseCount[]> {
+  const phaseColumn = sql`${schema.project.runAuditEvents.metadata}->>'phase'`;
+  const conditions = [
+    projectScopeFor(schema.project.runAuditEvents.projectId, projectId),
+    eq(schema.project.runAuditEvents.domain, "git"),
+    isNotNull(schema.project.runAuditEvents.taskId),
+    gte(schema.project.runAuditEvents.timestamp, window.since),
+    lte(schema.project.runAuditEvents.timestamp, window.until),
+    sql`${phaseColumn} ~ '^merge-attempt-'`,
+  ].filter((condition): condition is NonNullable<typeof condition> => condition !== undefined);
+
+  const rows = (await db
+    .select({
+      taskId: schema.project.runAuditEvents.taskId,
+      phaseCount: sql<number>`count(distinct ${phaseColumn})::int`,
+    })
+    .from(schema.project.runAuditEvents)
+    .where(and(...conditions))
+    .groupBy(schema.project.runAuditEvents.taskId)) as Array<{ taskId: string | null; phaseCount: number | string }>;
+
+  return rows
+    .filter((row): row is { taskId: string; phaseCount: number | string } => typeof row.taskId === "string" && row.taskId.length > 0)
+    .map((row) => ({ taskId: row.taskId, phaseCount: Number(row.phaseCount) }));
+}
+
 // ── Activity log ─────────────────────────────────────────────────────
 
 /**
