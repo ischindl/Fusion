@@ -43,6 +43,15 @@ describe("host retention registry", () => {
     expect(source.approxBytes()).toBe(3 * HOST_RETENTION_ENTRY_OVERHEAD_BYTES);
   });
 
+  // A counter reports volume through `entries` and must contribute no retained byte, or the census' own
+  // residual (heap - tracked) would be reduced by traffic that is no longer resident.
+  it("honours an explicit zero per-entry weight instead of defaulting to the overhead floor", () => {
+    registerHostRetentionSource({ id: "counter_zero", kind: "counter", read: () => 50_000, bytesPerEntry: 0 });
+    const [source] = listHostRetentionSources();
+    expect(source.entries()).toBe(50_000);
+    expect(source.approxBytes()).toBe(0);
+  });
+
   it("refuses a duplicate id instead of double-counting one metric label", () => {
     expect(registerHostRetentionSource({ id: "dup", kind: "registry", read: () => 1 })).toBe(true);
     expect(registerHostRetentionSource({ id: "dup", kind: "registry", read: () => 99 })).toBe(false);

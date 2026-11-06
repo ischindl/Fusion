@@ -74,6 +74,7 @@ import {
 } from "../execution/required-workflow-artifacts.js";
 import { accumulateSessionTokenUsage } from "../execution/session-token-usage.js";
 import { createAssistantStreamCapture } from "../execution/assistant-text-capture.js";
+import { beginStepOutputCapture } from "./step-output-retention.js";
 import { describeModel, formatModelMarkerDetails, promptWithFallback } from "../pi.js";
 import {
   detectExternalIntegrationEvidenceGaps,
@@ -1277,9 +1278,25 @@ CRITICAL SCOPING RULES — read before doing anything else:
 
       let output = "";
       let acceptSessionEvents = true;
+      /*
+      FNXC:RetentionCensus 2026-11-06-11:45 (RUFU-871):
+      `output` accumulates a whole step's assistant text in ONE string and is the only producer of the
+      100-220 KiB strings the heap snapshots named. This gauge reports how much of that text the process holds
+      right now and how much it has ever produced, onto `/metrics`.
+      `stopAcceptingText()` exists because `acceptSessionEvents = false` is the real invariant boundary: after
+      it no delta can reach `output` again, so it is exactly where live tracking must end. Setting the flag at
+      six sites and ending the gauge at six sites would let the two drift; one helper makes them one event. A
+      thrown path that reaches neither is recovered by the gauge's stale sweep, and `end()` is idempotent by
+      contract, so a second call is harmless.
+      */
+      const outputGauge = beginStepOutputCapture(`${task.id}:${workflowStep.id}`);
+      const stopAcceptingText = (): void => {
+        acceptSessionEvents = false;
+        outputGauge.end();
+      };
       /* FNXC:AssistantTextCapture 2026-09-08-14:13: Workflow verdict output must include terminal text blocks exactly once, even when providers omit deltas. */
       const capture = createAssistantStreamCapture({
-        onText: (delta) => { output += delta; agentLogger.onText(delta); },
+        onText: (delta) => { output += delta; outputGauge.add(delta.length); agentLogger.onText(delta); },
         onThinking: (delta) => agentLogger.onThinking(delta),
       });
       let detectedQuestion: string | null = null;
@@ -1334,14 +1351,14 @@ CRITICAL SCOPING RULES — read before doing anything else:
         ]);
 
         if (graphSignal?.aborted) {
-          acceptSessionEvents = false;
+          stopAcceptingText();
           try { session.dispose(); } catch { /* best-effort */ }
           await agentLogger.flush();
           return graphAbortedOutcome();
         }
 
         if (outcome === "await-input" && detectedQuestion) {
-          acceptSessionEvents = false;
+          stopAcceptingText();
           try { session.dispose(); } catch { /* best-effort */ }
           await agentLogger.flush();
           return {
@@ -1351,7 +1368,7 @@ CRITICAL SCOPING RULES — read before doing anything else:
         }
 
         if (outcome === "timeout") {
-          acceptSessionEvents = false;
+          stopAcceptingText();
           const timedOutAttemptLabel = attemptLabel(attempt);
           executorLog.warn(`${task.id}: workflow step '${workflowStep.name}' (${timedOutAttemptLabel}) timed out after ${timeoutMs}ms — disposing session`);
           await deps.store.logEntry(
@@ -1528,7 +1545,7 @@ CRITICAL SCOPING RULES — read before doing anything else:
           role: "executor",
           lane: "workflow-step",
         });
-        acceptSessionEvents = false;
+        stopAcceptingText();
         session.dispose();
         await agentLogger.flush();
         if (parsed.verdict) {
@@ -1701,7 +1718,7 @@ CRITICAL SCOPING RULES — read before doing anything else:
         }
         return { success: true, output: parsed.output };
       } catch (err: unknown) {
-        acceptSessionEvents = false;
+        stopAcceptingText();
         await agentLogger.flush();
         // Persist the delta before error disposal so graph-owned planning reviews
         // cannot disappear from operator cost totals.
@@ -1725,7 +1742,7 @@ CRITICAL SCOPING RULES — read before doing anything else:
         }
         return { success: false, error: errorMessage };
       } finally {
-        acceptSessionEvents = false;
+        stopAcceptingText();
         if (timeoutHandle) clearTimeout(timeoutHandle);
         if (ownsPlanningSegment) {
           try {

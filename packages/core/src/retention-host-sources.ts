@@ -78,8 +78,19 @@ export function registerHostRetentionSource(
   descriptor: HostRetentionSourceDescriptor,
 ): boolean {
   if (registered.has(descriptor.id)) return false;
+  /*
+  FNXC:RetentionCensus 2026-11-06-11:52 (RUFU-871):
+  An explicit 0 is a claim, not a missing value, and it must survive. Cumulative throughput sources
+  (`step_output_captured_chars_total` and friends) report their volume through `entries` and intend to contribute
+  NO retained bytes, because the dashboard census sums `approxBytes()` into `fusion_retention_tracked_bytes`
+  and derives `residualBytes = heap - tracked`. Under the previous `> 0` guard a declared 0 silently fell back to
+  the 96 B overhead, so one sample of a 50 000-character counter added 4.8 MB of fictional retention to the same
+  metric whose honesty is the reason this instrument exists — caught by `step-output-retention.test.ts`.
+  Anything that is not a finite non-negative number (undefined, NaN, negative, infinite) is still treated as
+  "owner gave me no weight" and gets the overhead floor.
+  */
   const bytesPerEntry =
-    Number.isFinite(descriptor.bytesPerEntry) && (descriptor.bytesPerEntry as number) > 0
+    Number.isFinite(descriptor.bytesPerEntry) && (descriptor.bytesPerEntry as number) >= 0
       ? (descriptor.bytesPerEntry as number)
       : HOST_RETENTION_ENTRY_OVERHEAD_BYTES;
   const source = {
