@@ -158,6 +158,33 @@ export interface PlannerRecoveryControllerOptions {
 
 const controllerLog = createLogger("planner-recovery-controller");
 
+/*
+FNXC:PlannerOversight 2026-11-06-17:30:
+RUFU-871: identical steering guidance is never re-posted inside this window.
+Measured in production: 7,898 of 8,082 `tasks.steering_comments` entries (97.7 %) were byte-identical
+`[planner-oversight] … — injecting steering guidance` rows spread over 476 tasks, one task carrying 681
+copies (128 kB in one jsonb array), and ONE such sentence was retained 117,305 times in the dashboard
+heap. Every append rewrites that whole array plus its `search_vector` GIN entries (~360 ms measured by
+FN-7577).
+
+Why this bounds the side effect and not the budget: FN-7577 fixed the reviewer stage by refusing to steer
+on a healthy signal, but the executor stage legitimately steers on `stuck`/`blocked`, and FN-7577 also
+clears `attempts` on any healthy signal — so a card whose signal oscillates (healthy, stuck, healthy …)
+resets its bounded budget every other tick and can never reach `PLANNER_RECOVERY_MAX_ATTEMPTS`. That reset
+must stay: the card's overseer badge is derived from `attemptCount > 0` (`derivePlannerOverseerState`), so
+delaying the clear would keep a genuinely healthy card badged "recovering". Guidance the agent already
+holds carries no new information, so a repeat is suppressed instead: nothing is posted, nothing is
+recorded, and no budget is burned — the same "intentional skip does not burn budget" semantics `retry_step`
+already returns.
+
+The window is deliberately TIME-only. Clearing these records on a healthy signal (the shape the `attempts`
+clear has) would re-open the exact flood this constant exists to stop, because the production oscillation
+IS healthy→stuck→healthy every tick. A new episode is expressed by the window elapsing.
+*/
+export const PLANNER_OVERSEER_GUIDANCE_DEDUPE_MS = 30 * 60 * 1000;
+/** FIFO cap on tracked `(taskId, stage, reason)` records; losing one costs a duplicate post, never correctness. */
+export const PLANNER_OVERSEER_GUIDANCE_DEDUPE_MAX = 512;
+
 function isSnapshotProvider(value: unknown): value is PlannerRecoverySnapshotProvider {
   return typeof (value as PlannerRecoverySnapshotProvider)?.getSnapshot === "function";
 }
@@ -215,6 +242,14 @@ export class PlannerRecoveryController {
    * inspection state — never read by `tick()`'s decision logic.
    */
   private readonly lastActions = new Map<string, { action: string; at: number }>();
+  /**
+   * RUFU-871: when a guidance text was last POSTED, keyed `(taskId, stage, reason)`.
+   * Insertion-ordered so the FIFO cap above evicts the oldest record. Read by `dispatch`
+   * only; never surfaced as board state.
+   */
+  private readonly guidancePostedAt = new Map<string, number>();
+  private guidanceSuppressedCount = 0;
+  private guidanceSuppressionLogAt = 0;
 
   constructor(options: PlannerRecoveryControllerOptions) {
     this.snapshotProvider = normalizeProvider(options.snapshotProvider);
@@ -224,6 +259,37 @@ export class PlannerRecoveryController {
 
   private attemptKey(taskId: string, stage: string): string {
     return `${taskId}::${stage}`;
+  }
+
+  /**
+   * RUFU-871: true when this exact guidance text was already posted for this stage inside
+   * `PLANNER_OVERSEER_GUIDANCE_DEDUPE_MS`. Read-only by contract. A duplicate never re-stamps the record:
+   * the window is measured from the last POST, and re-stamping on a hit would let a continuously
+   * oscillating card slide its own window forward forever and never admit a new episode (RUFU-442: "a
+   * bound whose key changed each cycle").
+   */
+  private isDuplicateGuidance(dedupeKey: string, nowMs: number): boolean {
+    const postedAt = this.guidancePostedAt.get(dedupeKey);
+    return postedAt !== undefined && nowMs - postedAt < PLANNER_OVERSEER_GUIDANCE_DEDUPE_MS;
+  }
+
+  /**
+   * RUFU-871: record a successful post. Only reached after the handler resolved, so a handler that threw
+   * leaves no record and the next tick may still steer. Re-insertion gives the FIFO cap its recency order.
+   */
+  private recordGuidancePost(dedupeKey: string, nowMs: number): void {
+    this.guidancePostedAt.delete(dedupeKey);
+    this.guidancePostedAt.set(dedupeKey, nowMs);
+    while (this.guidancePostedAt.size > PLANNER_OVERSEER_GUIDANCE_DEDUPE_MAX) {
+      const oldest = this.guidancePostedAt.keys().next();
+      if (oldest.done) break;
+      this.guidancePostedAt.delete(oldest.value);
+    }
+  }
+
+  /** Count of guidance injections suppressed as identical re-posts (RUFU-871). */
+  getSuppressedGuidanceCount(): number {
+    return this.guidanceSuppressedCount;
   }
 
   private nextRequestId(taskId: string): string {
@@ -332,9 +398,29 @@ export class PlannerRecoveryController {
 
   private async dispatch(decision: PlannerRecoveryDecision, task: Task, ctx: PlannerRecoveryContext): Promise<boolean> {
     try {
+      // RUFU-871: both steering actions post `decision.reason` verbatim to the agent, so an
+      // identical reason inside the window adds no information and is not posted.
+      const steeringAction = decision.action === "inject_guidance" || decision.action === "request_targeted_fix";
+      const nowMs = ctx.now?.() ?? Date.now();
+      const guidanceKey = steeringAction
+        ? `${this.attemptKey(task.id, decision.watchedStage ?? "executor")}::${decision.reason}`
+        : "";
+      if (steeringAction && this.isDuplicateGuidance(guidanceKey, nowMs)) {
+        this.guidanceSuppressedCount += 1;
+        // Rate-limited: a stalled card ticks every 45 s, so the counter is the record and
+        // the log line is only a periodic hint that the counter is moving.
+        if (nowMs - this.guidanceSuppressionLogAt >= PLANNER_OVERSEER_GUIDANCE_DEDUPE_MS) {
+          this.guidanceSuppressionLogAt = nowMs;
+          this.logger.debug(
+            `[planner-oversight] suppressed ${this.guidanceSuppressedCount} identical steering post(s) within ${PLANNER_OVERSEER_GUIDANCE_DEDUPE_MS}ms (last: ${task.id})`,
+          );
+        }
+        return false;
+      }
       if (decision.action === "inject_guidance") {
         if (!this.handlers.injectGuidance) return false;
         await this.handlers.injectGuidance(task, decision, ctx);
+        if (steeringAction) this.recordGuidancePost(guidanceKey, nowMs);
         return true;
       }
       if (decision.action === "retry_step") {
@@ -346,6 +432,7 @@ export class PlannerRecoveryController {
       if (decision.action === "request_targeted_fix") {
         if (!this.handlers.requestTargetedFix) return false;
         await this.handlers.requestTargetedFix(task, decision, ctx);
+        if (steeringAction) this.recordGuidancePost(guidanceKey, nowMs);
         return true;
       }
       return false;
