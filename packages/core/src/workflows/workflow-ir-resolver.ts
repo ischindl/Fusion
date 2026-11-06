@@ -240,6 +240,86 @@ function releaseSelectionReadSlot(store: WorkflowIrResolverStore): void {
   else queue.free += 1;
 }
 
+/*
+FNXC:WorkflowSelectionMemo 2026-11-06-18:35 (RUFU-871):
+The no-cache selection read was the hottest store read in the process by a wide margin. The read-attribution
+seam counter recorded 86,307 `workflowSelection` reads in ONE 5-minute production window (288 per second)
+on a board with zero in-progress cards, and 53 % of sampled stacks went through the resolver's own no-cache
+branch. Around 50 call sites legitimately own no pass cache — `self-healing.ts` alone has ten
+`resolveTaskLifecycleColumns(store, id)?.complete ?? "done"` sites inside recurring sweeps, plus the agent
+heartbeat, merger, notification service and both GitHub/GitLab trackers — so the coalescer and the
+concurrency bound cannot help them: those reads are distinct and sequential, and each one is a PostgreSQL
+round-trip that pins its caller's closure while it waits.
+
+The bound is a TTL, not an eviction policy, and that choice is the whole design. `EpochedWorkflowSelectionCache`
+(RUFU-584) invalidates on a selection write made THROUGH this store, but `workflowSelectionEpoch()` is a
+process-local instance counter (`store.ts` bumps a field), so a selection written by another process — an
+`fn` CLI planning a card, a second engine — is invisible to it. That cross-process blind spot is exactly
+why this module was documented as live-per-call. So the memo carries BOTH: an in-process write drops the
+entry immediately (per-entry epoch compare), and a cross-process write is observed once the TTL lapses.
+500 ms is a quarter of the 2-second `workflowContinuationTimer` tick and two orders of magnitude under the
+45-second engine tick, so no loop an operator can observe can read a selection this memo served stale.
+`FUSION_WORKFLOW_SELECTION_MEMO_MS=0` restores live-per-call exactly; a shorter value is available for any
+caller that needs fresher truth than the default.
+*/
+function readSelectionMemoTtlMs(): number {
+  const raw = process.env.FUSION_WORKFLOW_SELECTION_MEMO_MS;
+  if (raw === undefined || raw.trim() === "") return 500;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 500;
+}
+
+export const UNCACHED_SELECTION_MEMO_MAX = 4096;
+
+let uncachedSelectionMemoTtlMs = readSelectionMemoTtlMs();
+
+/** Test seam for the TTL; production never calls this. Passing 0 restores live-per-call reads. */
+export function setSelectionMemoTtlMsForTests(ms: number): void {
+  uncachedSelectionMemoTtlMs = Number.isFinite(ms) && ms >= 0 ? Math.floor(ms) : 0;
+}
+
+/** Current TTL in force (0 = memo disabled, every uncached read goes to the store). */
+export function selectionMemoTtlMs(): number {
+  return uncachedSelectionMemoTtlMs;
+}
+
+interface SelectionMemoEntry {
+  selection: WorkflowSelection | undefined;
+  /** Store epoch the value was read under; a local selection write makes it a miss. */
+  epoch: number;
+  at: number;
+}
+
+/** Keyed weakly by store so a per-test fake store can never read another store's selections. */
+const selectionMemo = new WeakMap<WorkflowIrResolverStore, Map<string, SelectionMemoEntry>>();
+
+/** -1 means the store does not expose an epoch, so the entry is bounded by TTL alone. */
+function selectionEpochOf(store: WorkflowIrResolverStore): number {
+  const epoch = (store as { workflowSelectionEpoch?: () => number }).workflowSelectionEpoch?.();
+  return typeof epoch === "number" ? epoch : -1;
+}
+
+function rememberSelection(store: WorkflowIrResolverStore, taskId: string, entry: SelectionMemoEntry): void {
+  let memo = selectionMemo.get(store);
+  if (!memo) {
+    memo = new Map<string, SelectionMemoEntry>();
+    selectionMemo.set(store, memo);
+  }
+  memo.set(taskId, entry);
+  // Insertion order is the eviction order: a board-sized key space fits, and one that does not loses the
+  // oldest entry rather than the whole memo.
+  while (memo.size > UNCACHED_SELECTION_MEMO_MAX) {
+    const oldest = memo.keys().next();
+    if (oldest.done) break;
+    memo.delete(oldest.value);
+  }
+}
+
+/** Entries currently held — an operator-facing debug signal, never a decision input. */
+export function selectionMemoSizeForStore(store: WorkflowIrResolverStore): number {
+  return selectionMemo.get(store)?.size ?? 0;
+}
+
 /**
  * Read one task's workflow selection for callers that own no per-pass cache, collapsing concurrent
  * duplicate reads onto one query and bounding how many distinct queries may be in flight at once.
@@ -248,6 +328,17 @@ async function readSelectionWithCoalescing(
   store: WorkflowIrResolverStore,
   taskId: string,
 ): Promise<WorkflowSelection | undefined> {
+  const epoch = selectionEpochOf(store);
+  if (uncachedSelectionMemoTtlMs > 0) {
+    const hit = selectionMemo.get(store)?.get(taskId);
+    if (hit) {
+      const staleEpoch = epoch >= 0 && hit.epoch !== epoch;
+      if (!staleEpoch && Date.now() - hit.at < uncachedSelectionMemoTtlMs) {
+        return hit.selection;
+      }
+      selectionMemo.get(store)!.delete(taskId);
+    }
+  }
   let pending = inflightUncachedSelectionReads.get(store);
   if (!pending) {
     pending = new Map<string, Promise<WorkflowSelection | undefined>>();
@@ -258,9 +349,15 @@ async function readSelectionWithCoalescing(
   const inFlight = (async (): Promise<WorkflowSelection | undefined> => {
     await acquireSelectionReadSlot(store);
     try {
-      return store.getTaskWorkflowSelectionAsync
+      const selection = store.getTaskWorkflowSelectionAsync
         ? await store.getTaskWorkflowSelectionAsync(taskId)
         : store.getTaskWorkflowSelection(taskId);
+      // Only a read that actually reached the store is remembered, and an absent selection is remembered
+      // too: an absent selection is the N+1 this memo exists for.
+      if (uncachedSelectionMemoTtlMs > 0) {
+        rememberSelection(store, taskId, { selection, epoch, at: Date.now() });
+      }
+      return selection;
     } finally {
       releaseSelectionReadSlot(store);
       // Bookkeeping is released with the query on BOTH paths, so the next pass is a real read.

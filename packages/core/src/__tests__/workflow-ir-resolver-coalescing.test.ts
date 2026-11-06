@@ -3,6 +3,7 @@ import {
   resolveWorkflowIrById,
   resolveWorkflowIrForTaskWithProvenance,
   SELECTION_READ_CONCURRENCY,
+  setSelectionMemoTtlMsForTests,
   type WorkflowDefinitionReadTally,
 } from "../workflows/workflow-ir-resolver.js";
 
@@ -64,6 +65,16 @@ describe("uncached selection-read coalescing (RUFU-588)", () => {
   });
 
   it("does not retain the selection after the read settles, so a later call still sees an edit", async () => {
+    /*
+    FNXC:WorkflowSelectionMemo 2026-11-06-18:35 (RUFU-871):
+    This case's subject is the COALESCER — that the in-flight entry is dropped when the query settles, so a
+    later call is not served a settled promise. RUFU-871 put a separate, TTL-bounded memo in front of that
+    seam, so a later call inside the window is now legitimately free. The memo is therefore disabled here:
+    asserting the coalescer's own non-retention must not silently depend on a different structure, and the
+    memo's own contract (invalidation on epoch move, TTL lapse, explicit disable) is pinned in
+    `workflow-ir-resolver-selection-memo.test.ts`.
+    */
+    setSelectionMemoTtlMsForTests(0);
     let current: { workflowId: string; stepIds: string[] } | undefined = codingSelection;
     const { store, state } = selectionStore(async () => current);
     await resolveWorkflowIrForTaskWithProvenance(store, "RUFU-1");
