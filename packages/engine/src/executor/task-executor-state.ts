@@ -209,7 +209,14 @@ export abstract class TaskExecutorState {
     source("executor_branch_conflict_errors", "registry", () => entries(this.branchConflictErrorCount));
     source("executor_executing", "registry", () => entries(this.executing));
     source("executor_pending_ephemeral_deletions", "registry", () => entries(this.pendingEphemeralDeletions));
-  }
+  
+    /*
+    FNXC:RetentionCensus 2026-11-06-12:36 (RUFU-871): the step-output producer sources are registered here too,
+    so they exist on `/metrics` from engine start. They are module-level, not per-host, and the registry refuses
+    a duplicate id, so this is a no-op for every executor after the first.
+    */
+    registerStepOutputRetentionSources();
+}
 
   /** Workspace mode is memoized per executor host; a real settings transition must refresh it live. */
   public invalidateWorkspaceConfig(): void {
@@ -247,3 +254,4 @@ export abstract class TaskExecutorState {
     return (this.constructor as typeof TaskExecutorState).processWideGraphRouting;
   }
 }
+import { registerStepOutputRetentionSources } from "./step-output-retention.js";

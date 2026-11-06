@@ -49,6 +49,23 @@ describe("TaskExecutorState retention sources", () => {
     }
   });
 
+  // An absent series and a zero series have to mean different things, or an idle board is indistinguishable
+  // from a dead instrument.
+  it("publishes the step-output producer sources at engine start, before any step has run", () => {
+    for (const id of [
+      "step_output_open_captures",
+      "step_output_live_chars",
+      "step_output_captures_total",
+      "step_output_captured_chars_total",
+      "step_output_largest_chars",
+    ]) {
+      const hit = listHostRetentionSources().find((source) => source.id === id);
+      expect(hit, id).toBeDefined();
+      expect(hit!.entries()).toBe(0);
+      expect(hit!.approxBytes()).toBe(0);
+    }
+  });
+
   // The whole point: the number must track the live map, not a snapshot taken at registration.
   it("reports the live size of the owning host", () => {
     const sessions = findSource("executor_active_sessions");

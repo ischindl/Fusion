@@ -98,6 +98,19 @@ function ensureRegistered(): void {
   });
 }
 
+/*
+FNXC:RetentionCensus 2026-11-06-12:36 (RUFU-871):
+Sources are registered eagerly at engine start rather than on the first capture. Lazy registration made the
+instrument unobservable on an idle board: 5 min after this deployed, `/metrics` had 27 `executor_*` lines and no
+`step_output_*` lines at all, because no workflow step had run — and an absent series is indistinguishable from
+"a producer that emits zero", which is the answer an operator needs when deciding whether a lane is starved.
+Registering at construction costs one Map insert and makes the counters read 0 from t=0, so the first non-zero
+sample is unambiguous evidence of production.
+*/
+export function registerStepOutputRetentionSources(): void {
+  ensureRegistered();
+}
+
 /** A live handle on one step's accumulating output text. */
 export interface StepOutputGauge {
   /** Called per streamed delta with the delta's character length. O(1). */
