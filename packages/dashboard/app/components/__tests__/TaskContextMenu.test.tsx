@@ -310,6 +310,16 @@ describe("TaskContextMenu shared task action model", () => {
   FN-417: merge completion is OPT-IN. Without `includeMergeCompletionAction` — the shape every task
   context menu host uses — an in-review card yields no review action at all; Task Detail opts in and
   gets the unchanged footer descriptor. The PR-flow verdicts are unaffected either way.
+
+  FNXC:TaskContextMenu 2026-11-06-02:36:
+  Upstream FN-9406 (3471d08566, "remove duplicate merge actions") replaced the manual-PR merged
+  verdict — `{ id: "merge", label: "Finish & Close", onSelect }` — with a DISABLED
+  `check-pr-status` note, because the engine now reconciles an externally merged PR itself, so a
+  manual completion command would re-command a landed delivery. That is why the two merged-PR cases
+  below assert an inert note that carries no `onSelect` rather than `undefined`: the intent this
+  case owns — a task context menu never offers a merge command — is now enforced by the descriptor
+  having no handler at all, which is stronger than an absent descriptor. RUFU-405 caught these two
+  assertions still encoding the pre-FN-9406 shape after the upstream integration landed.
   */
   it("withholds merge completion unless the host opts in", () => {
     // Auto-merge lane: "Merge & Close" is withheld.
@@ -319,14 +329,17 @@ describe("TaskContextMenu shared task action model", () => {
       onMerge: vi.fn(),
     }).reviewAction).toBeUndefined();
 
-    // Manual-PR lane with an already-merged PR: "Finish & Close" is withheld.
-    expect(buildTaskActionMenuModel({
+    // Manual-PR lane with an already-merged PR: inert "Pull request merged" note, no merge command.
+    const mergedWithoutOptIn = buildTaskActionMenuModel({
       task: makeTask({ column: "in-review", prInfo: { status: "merged" } as any }),
       t,
       mergeStrategy: "pull-request",
       autoMergeEnabled: false,
       onMerge: vi.fn(),
-    }).reviewAction).toBeUndefined();
+    }).reviewAction;
+    expect(mergedWithoutOptIn).toMatchObject({ id: "check-pr-status", label: "Pull request merged", disabled: true });
+    expect(mergedWithoutOptIn?.id).not.toBe("merge");
+    expect(mergedWithoutOptIn?.onSelect).toBeUndefined();
 
     expect(buildTaskActionMenuModel({
       task: makeTask({ column: "in-review" }),
@@ -334,13 +347,17 @@ describe("TaskContextMenu shared task action model", () => {
       includeMergeCompletionAction: true,
     }).reviewAction).toMatchObject({ id: "merge", label: "Merge & Close" });
 
-    expect(buildTaskActionMenuModel({
+    // Opting into merge completion does NOT resurrect a command for a PR git reports merged.
+    const mergedWithOptIn = buildTaskActionMenuModel({
       task: makeTask({ column: "in-review", prInfo: { status: "merged" } as any }),
       t,
       includeMergeCompletionAction: true,
       mergeStrategy: "pull-request",
       autoMergeEnabled: false,
-    }).reviewAction).toMatchObject({ id: "merge", label: "Finish & Close" });
+    }).reviewAction;
+    expect(mergedWithOptIn).toMatchObject({ id: "check-pr-status", label: "Pull request merged", disabled: true });
+    expect(mergedWithOptIn?.id).not.toBe("merge");
+    expect(mergedWithOptIn?.onSelect).toBeUndefined();
   });
 
   it("mirrors in-review manual PR status actions without opting into merge completion", () => {

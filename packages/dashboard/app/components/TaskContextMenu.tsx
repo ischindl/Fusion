@@ -309,6 +309,13 @@ export function getTaskReviewAction(
   must not offer the command; Task Detail opts in so its review footer button is unchanged for the
   rare projects that still merge by hand. Returning `undefined` rather than a disabled descriptor is
   deliberate — a disabled shell is the dead affordance this task removes.
+
+  FNXC:TaskContextMenu 2026-11-06-02:36:
+  Upstream FN-9406 (3471d08566) deleted the manual-PR "Finish & Close" member: a PR GitHub reports
+  merged is reconciled by the engine's external-merge sweep, so the branch above (`prStatus ===
+  "merged"`) returns the disabled note instead and never falls through here. "Merge & Close" is
+  therefore now the ONLY opt-in member, and `includeMergeCompletionAction` has no effect on a
+  merged-PR card in any host — including Task Detail, which still passes the flag for its footer.
   */
   return options.includeMergeCompletionAction
     ? { id: "merge", label: options.t("taskDetail.pr.mergeAndClose", "Merge & Close"), onSelect: options.onMerge }

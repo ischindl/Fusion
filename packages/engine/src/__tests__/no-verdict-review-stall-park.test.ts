@@ -90,6 +90,19 @@ function sweepStore(cards: Task[]): EventEmitter & Record<string, any> {
     /* Empty project definition list: the lane vocabulary falls back to its legacy review lane,
        which is what a board with one review column resolves to. */
     listWorkflowDefinitions: vi.fn(async () => []),
+    /*
+    FNXC:WorkflowPassCacheFixture 2026-11-06-02:36:
+    RUFU-584 (`58d561b1c1`) made `SelfHealingManager.batchWorkflowIrCache()` read
+    `store.workflowDefinitionEpoch()` unconditionally, so this hand-rolled fake threw on the first cache
+    read and `recoverReviewTasksWithFailedPreMergeSteps()`'s outer catch collapsed the whole pass into one
+    `log.warn` — all three cases here lost their reroute/seed assertion with no visible cause. Same drift
+    class this repo already stubs in `merge-not-run-gate-wedge.test.ts` and
+    `in-review-stall-deadlock-disposition.test.ts`: a product store read lands, the fakes do not. A
+    constant epoch is the correct fake because no case in this file writes a workflow selection or
+    definition mid-pass, so cache invalidation is never the subject.
+    */
+    workflowDefinitionEpoch: vi.fn(() => 0),
+    workflowSelectionEpoch: vi.fn(() => 0),
     logEntry: vi.fn(async () => undefined),
     getAgentLogs: vi.fn(async () => []),
     recordRunAuditEvent: vi.fn(async () => undefined),
