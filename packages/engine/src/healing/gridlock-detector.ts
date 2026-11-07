@@ -21,7 +21,7 @@ future cleanup revisits this, the question to ask is whether dependency and over
 deadlock are still possible — not whether capacity is simpler.
 */
 import type { AgentStore, MissionStore, Task, TaskStore, WorkflowIr } from "@fusion/core";
-import { compareTasksByQueueOrder, fileScopeLeaseBlocksCandidate, normalizeOverlapScopeForTask, resolveTaskLifecycleColumns, resolveWorkflowIrForTask, columnsWithFlag, taskHoldsUnmergedCheckout } from "@fusion/core";
+import { compareTasksByQueueOrder, fileScopeLeaseBlocksCandidate, normalizeOverlapScopeForTask, prefetchWorkflowSelections, resolveTaskLifecycleColumns, resolveWorkflowIrForTask, columnsWithFlag, taskHoldsUnmergedCheckout, type WorkflowSelectionCache } from "@fusion/core";
 import { createLogger } from "../logger.js";
 import { classifyFileScopeLease, filterPathsByIgnoreList, isCoordinationOnlyTask, pathsOverlap, resolveDependencySatisfactionColumns } from "../scheduler.js";
 import { proveDormantCheckoutEmptiness } from "../worktree/checkout-emptiness.js";
@@ -123,6 +123,22 @@ export class GridlockDetector {
     */
     const irCache = new Map<string, WorkflowIr>();
     /*
+    FNXC:WorkflowSelectionBatching 2026-11-07-10:35 (RUFU-871):
+    RUFU-201 collapsed the two resolution loops into one lifecycle map, which fixed resolving twice per card
+    but not reading once per card: neither loop passed a selection cache, so a pass over N cards still cost N
+    single `task_workflow_selection` SELECTs, and the production read-attribution seam measured
+    `workflowSelection` as the top seam at 72,309 reads in a 15-minute window (≈80/s) on a board with zero
+    running cards.
+
+    Filling the pass cache in one batched read is the fix, and the pass lifetime is the contract: this cache
+    must NOT outlive `detectGridlock`, because a selection written between passes has to be observed by the
+    next pass. That is why the pass cache is built here rather than as a long-lived LRU.
+    */
+    const selectionCache: WorkflowSelectionCache = new Map();
+    if (tasks.length > 1) {
+      await prefetchWorkflowSelections(this.store, tasks.map((task) => task.id), selectionCache);
+    }
+    /*
     FNXC:GridlockLifecycleResolution 2026-09-08-23:08 (RUFU-201):
     One lifecycle resolution per card per pass, keyed by id and read by BOTH classification loops.
     Resolving twice was not merely redundant: each uncached call re-issued a live workflow-selection
@@ -137,7 +153,7 @@ export class GridlockDetector {
     */
     const lifecycleByTask = new Map<string, Awaited<ReturnType<typeof resolveTaskLifecycleColumns>>>();
     for (const task of tasks) {
-      lifecycleByTask.set(task.id, await resolveTaskLifecycleColumns(this.store, task.id, irCache));
+      lifecycleByTask.set(task.id, await resolveTaskLifecycleColumns(this.store, task.id, irCache, selectionCache));
     }
     const schedulable = tasks.filter((task) => {
       const hold = lifecycleByTask.get(task.id)?.hold;
@@ -193,7 +209,7 @@ export class GridlockDetector {
     });
 
     const schedulingDependencyOptions = {
-      satisfactionColumnsByTaskId: await resolveDependencySatisfactionColumns(this.store, tasks, irCache),
+      satisfactionColumnsByTaskId: await resolveDependencySatisfactionColumns(this.store, tasks, irCache, selectionCache),
     };
     const classifications = new Map(
       tasks.map((task) => {
@@ -267,7 +283,7 @@ export class GridlockDetector {
     for (const task of tasks) {
       const columns = new Set<string>(["done", "in-review"]);
       try {
-        const ir = await resolveWorkflowIrForTask(this.store, task.id, irCache);
+        const ir = await resolveWorkflowIrForTask(this.store, task.id, irCache, selectionCache);
         if (ir) {
           for (const flag of ["complete", "mergeOrchestration", "mergeBlocker", "humanReview"] as const) {
             for (const id of columnsWithFlag(ir, flag)) columns.add(id);
