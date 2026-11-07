@@ -8,6 +8,7 @@ import {
   choosePreferredStoredCredential,
   GROK_API_BASE_URL,
   GROK_CLI_PROVIDER_ID,
+  isGhAuthenticatedAsync,
   readStoredCredentialsFromAuthFile,
 } from "@fusion/core";
 import { getAuthFileCandidates } from "./auth-paths.js";
@@ -2409,9 +2410,16 @@ async function fetchGitHubCopilotUsage(): Promise<ProviderUsage> {
     }
   }
 
-  try {
-    await execFileAsync("gh", ["auth", "status"], { encoding: "utf-8", timeout: 5000 });
-  } catch {
+  /*
+  FNXC:UsageGhProbe 2026-11-07-11:46 (RUFU-871):
+  This route used to spawn `gh auth status` on every poll. The Usage view polls every 30 s and the route is
+  reached from the board's background usage refresh too, so the spawn was one of the largest single CPU costs
+  in the process: a 15 s production CPU profile put `spawn @ (native)` at 59.9 % of CPU and made a 1 KB
+  `/api/health` answer take 2.2 s, because spawn cost is paid on the shared event loop, not per route.
+  The verdict now comes from the one cached, single-flight gh probe in `@fusion/core` (`gh-cli.ts`), so
+  concurrent polls join one child and a warm cache spawns nothing at all.
+  */
+  if (!(await isGhAuthenticatedAsync())) {
     usage.error = "GitHub CLI not authenticated — run 'gh auth login'";
     return usage;
   }

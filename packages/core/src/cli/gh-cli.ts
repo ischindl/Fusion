@@ -144,6 +144,77 @@ export function isGhAuthenticated(): boolean {
   return value;
 }
 
+/*
+FNXC:GhProbeShared 2026-11-07-11:46 (RUFU-871):
+The dashboard's usage route spawned its OWN `gh auth status` on every UI poll instead of using this module,
+because the TTL cache above was only reachable through the SYNC entry points and a request handler will not
+block the event loop on a 5 s CLI call. A 15 s CPU profile of the production process measured `spawn @ (native)`
+at 59.9 % of all CPU and `/api/health` — a 1 KB answer with no database work — at 2.2 s, so the cost of that
+one uncached probe was paid by every route in the process, not just the Usage view.
+
+The fix is ONE owner of the question "is gh installed / logged in", not a second cache in the caller: these
+async entry points read and fill the SAME `cachedAvailable` / `cachedAuthenticated` entries as the sync ones and
+add single-flight, so N concurrent polls start one child instead of N. Two TTLs for one probe would drift, so
+there is deliberately no separate async TTL, and the auth verdict keeps the existing stdout-content rule
+(`Logged in` / `Authenticated`) rather than the exit-code-only rule the usage route had been using.
+
+Both probes are time-bounded: a hung `gh` must never hold an in-flight promise that every later poll joins.
+*/
+const GH_PROBE_TIMEOUT_MS = 5_000;
+
+let availableInFlight: Promise<boolean> | undefined;
+let authenticatedInFlight: Promise<boolean> | undefined;
+
+function ghProbe(file: string, args: string[], acceptsStdout?: (stdout: string) => boolean): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile(
+      file,
+      args,
+      { encoding: "utf-8", timeout: GH_PROBE_TIMEOUT_MS },
+      (error: ExecFileException | null, stdout: string) => {
+        if (error) return resolve(false);
+        resolve(acceptsStdout ? acceptsStdout(String(stdout)) : true);
+      },
+    );
+  });
+}
+
+/** Async twin of `isGhAvailable()`: same cache entry, single-flight, bounded probe. */
+export function isGhAvailableAsync(): Promise<boolean> {
+  if (cachedAvailable && Date.now() - cachedAvailable.at < GH_CHECK_TTL_MS) {
+    return Promise.resolve(cachedAvailable.value);
+  }
+  if (!availableInFlight) {
+    availableInFlight = ghProbe("gh", ["--version"])
+      .then((value) => {
+        cachedAvailable = { value, at: Date.now() };
+        return value;
+      })
+      .finally(() => {
+        availableInFlight = undefined;
+      });
+  }
+  return availableInFlight;
+}
+
+/** Async twin of `isGhAuthenticated()`: same cache entry and the same stdout-content verdict. */
+export function isGhAuthenticatedAsync(): Promise<boolean> {
+  if (cachedAuthenticated && Date.now() - cachedAuthenticated.at < GH_CHECK_TTL_MS) {
+    return Promise.resolve(cachedAuthenticated.value);
+  }
+  if (!authenticatedInFlight) {
+    authenticatedInFlight = ghProbe("gh", ["auth", "status"], (stdout) => stdout.includes("Logged in") || stdout.includes("Authenticated"))
+      .then((value) => {
+        cachedAuthenticated = { value, at: Date.now() };
+        return value;
+      })
+      .finally(() => {
+        authenticatedInFlight = undefined;
+      });
+  }
+  return authenticatedInFlight;
+}
+
 /**
  * Execute a gh CLI command synchronously.
  * Throws GhError on failure with parsed error details.
