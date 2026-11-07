@@ -67,9 +67,15 @@ type ProjectRuntimeFlags = Record<string, boolean> | null;
 type RuntimeSettingsStore = { getSettingsFast?: () => Promise<{ runtimeEnabled?: boolean }> };
 
 /**
- * The single batched central read. Any failure shape — no seam, a throwing read, a non-object answer
- * — collapses to `null` so the caller takes the legacy path rather than rendering every project
- * `unknown` because one read broke.
+ * The single batched central read. Any failure shape — no seam, a throwing read, a `null` "could not
+ * answer", a non-object answer — collapses to `null` so the caller takes the legacy path rather than
+ * rendering every project `unknown` because one read broke.
+ *
+ * FNXC:ProjectRuntimeOff 2026-11-07-22:12 (RUFU-871): `null` is the ONLY shape that may reach the
+ * fallback, and the central read now produces it deliberately when it cannot obtain a cross-project
+ * view. A record is trusted as complete, so a record truncated to the reader's own project (the RLS
+ * defect this replaces) would silently win over the fallback — the read helper verifies its own
+ * privilege instead of returning a short record.
  */
 async function readRuntimeFlags(
   central: { getProjectRuntimeEnabledFlags?: () => Promise<ProjectRuntimeFlags> } | null | undefined,
@@ -123,7 +129,11 @@ async function withRuntimeProjection<T extends { id: string; runtimeEnabled?: un
   runtimeFlags: ProjectRuntimeFlags,
   openStoreFor: (projectId: string) => RuntimeSettingsStore | null | undefined,
   localProjectIds?: Set<string>,
+  noteFallback?: (projectCount: number) => void,
 ): Promise<Array<T & { runtimeEnabled: boolean; runtimeState: ProjectRuntimeReadState }>> {
+  // The store path is a logged exception, never a silent second primary: an operator reading `unknown`
+  // rows must be able to find out from the log that the authoritative read was unavailable.
+  if (runtimeFlags === null && projects.length > 0) noteFallback?.(projects.length);
   return Promise.all(
     projects.map(async (project) => {
       const isRemote = localProjectIds !== undefined && !localProjectIds.has(project.id);
@@ -156,6 +166,20 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
 
   /** The store this server already holds open for a project, if any. Never opens one. */
   const openStoreFor = (projectId: string) => options?.engineManager?.getStore(projectId) ?? null;
+
+  /*
+  FNXC:ProjectRuntimeOff 2026-11-07-22:12 (RUFU-871):
+  The per-project store read is retained ONLY as a fallback, and it is announced. It is the path whose
+  answer depends on which TaskStores this process happens to have opened — measured drifting
+  `12 unknown / 11 enabled / 2 disabled` to `11 unknown / 11 enabled / 3 disabled` 45 seconds apart on
+  the same database — so leaving it silent would let the warm-cache lie return unnoticed.
+  */
+  const noteRuntimeFallback = (scope: string) => (projectCount: number): void => {
+    runtimeLogger.child(scope).warn(
+      `${scope}: the batched central runtime-flag read could not answer for ${projectCount} project(s); ` +
+        `falling back to per-project store reads, which report "unknown" for any project this process has not already opened.`,
+    );
+  };
 
   async function withCentralCore<T>(
     run: (central: CentralCoreApi) => Promise<T>,
@@ -217,7 +241,7 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
       );
 
       // FNXC:ProjectRuntimeOff 2026-11-07-20:24 (RUFU-871): one central read, projected onto every row.
-      res.json(await withRuntimeProjection(projects, runtimeFlags, openStoreFor));
+      res.json(await withRuntimeProjection(projects, runtimeFlags, openStoreFor, undefined, noteRuntimeFallback("projects")));
     } catch (err: unknown) {
       if (err instanceof ApiError) {
         throw err;
@@ -278,7 +302,7 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
         const prioritizedProjects = prioritizeProjectsForCurrentDirectory(localProjects);
         // FNXC:ProjectRuntimeOff 2026-11-07-20:24 (RUFU-871): the combo reads this route, so the
         // local-only fast path carries the runtime field exactly like GET /projects.
-        res.json(await withRuntimeProjection(prioritizedProjects, runtimeFlags, openStoreFor));
+        res.json(await withRuntimeProjection(prioritizedProjects, runtimeFlags, openStoreFor, undefined, noteRuntimeFallback("projects:across-nodes")));
         return;
       }
 
@@ -372,6 +396,7 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
         runtimeFlags,
         openStoreFor,
         new Set(localProjects.map((project: { id: string }) => project.id)),
+        noteRuntimeFallback("projects:across-nodes"),
       ));
     } catch (err: unknown) {
       if (err instanceof ApiError) {

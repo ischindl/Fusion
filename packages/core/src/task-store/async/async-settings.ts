@@ -129,7 +129,7 @@ request. Doing that per project meant opening a TaskStore per project inside a G
 side-effecting `store:open` write in a read path — and it was wrong as well as expensive: measured in
 production, 14 of 25 projects answered `runtimeState: "unknown"` because their store would not open,
 while `project.config` held the real value for all 25. `project.config` is keyed per project since
-MultiProjectIsolation 2026-07-11, so the whole answer is ONE unscoped read over this table.
+MultiProjectIsolation 2026-07-11, so the whole answer is ONE read over this table.
 
 The flag is extracted in SQL (`settings ->> 'runtimeEnabled'`) rather than returning settings blobs:
 a project settings document carries prompt overrides and provider configuration, and a read route
@@ -140,7 +140,7 @@ so a row that exists but never wrote the flag answers `true`. A project with NO 
 absent from the result rather than defaulted: "no row" is not "the row says on", and the caller
 answers `unknown` for it.
 */
-export async function readProjectRuntimeEnabledFlags(
+export async function selectProjectRuntimeEnabledFlags(
   handle: AsyncDataLayer["db"] | DbTransaction,
 ): Promise<Record<string, boolean>> {
   const rows = await handle
@@ -157,6 +157,46 @@ export async function readProjectRuntimeEnabledFlags(
     flags[row.projectId] = row.runtimeEnabled !== "false";
   }
   return flags;
+}
+
+/*
+FNXC:ProjectRuntimeOff 2026-11-07-22:12 (RUFU-871): Warm-cache-is-not-truth — the batched read was
+silently RLS-truncated to the ONE project bound to its connection.
+
+The first version of this read handed `asyncLayer.db` straight to `selectProjectRuntimeEnabledFlags`.
+The call ran, returned rows, and was still wrong: `project.config` has FORCED row-level security
+(`relrowsecurity` and `relforcerowsecurity` both true, policy `fusion_project_isolation`) whose USING
+clause is `current_setting('fusion.project_bypass') = 'on' OR project_id = current_setting('fusion.project_id')`.
+Every pool a project TaskStore opens is bound at connection creation to one `fusion.project_id`
+(`createConnectionSet` in `postgres/connection.ts`), so the "read every project" SELECT answered for
+exactly one project — the one the dashboard's own cwd store is bound to. Measured against production
+2026-11-07 as `fusion_runtime`: 0 rows unbound, 1 row bound, 28 rows with the bypass on. The route
+therefore reported `24 unknown / 1 enabled / 0 disabled` against a database holding 6 disabled
+projects, and because a non-empty record is "answered", the per-store fallback never ran.
+
+`central.projects` carries NO RLS (`relrowsecurity = false`), which is why `listProjects()` returned all
+25 rows while this read returned 1 — the asymmetry is what made the truncated answer look like a real
+one rather than an obvious zero-row failure.
+
+The read is therefore privileged-by-intent and runs inside a TRANSACTION-LOCAL bypass
+(`set_config(..., true)`, never a session-level SET), the same sanctioned pattern the user-global
+configuration-revision partition uses in `async-configuration-revision-store.ts`. The bypass is
+verified by readback instead of assumed: if it did not take effect, this returns `null` ("I could not
+answer") so the caller falls back and logs, rather than returning a one-project record that the caller
+cannot distinguish from the truth. A truncated-but-plausible answer is the failure this event exists
+to remove, so it is unrepresentable here.
+*/
+export async function readProjectRuntimeEnabledFlags(
+  layer: AsyncDataLayer,
+): Promise<Record<string, boolean> | null> {
+  return layer.transactionImmediate(async (tx) => {
+    await tx.execute(sql`SELECT set_config('fusion.project_bypass', 'on', true)`);
+    const [probe] = await tx.execute(
+      sql`SELECT current_setting('fusion.project_bypass', true) AS bypass`,
+    ) as unknown as Array<{ bypass: string | null }>;
+    if (probe?.bypass !== "on") return null;
+    return selectProjectRuntimeEnabledFlags(tx);
+  });
 }
 
 /**

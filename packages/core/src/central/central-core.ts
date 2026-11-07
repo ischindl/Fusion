@@ -742,14 +742,23 @@ export class CentralCore extends EventEmitter<CentralCoreEvents> {
    * (`attachBackendLayer` adopts the TaskStore layer rather than opening a second one), so this adds
    * one SELECT to a request that is already talking to that database.
    *
-   * Returns null when this instance has no backend layer — that is "I could not answer", the honest
-   * signal that lets the caller fall back to the legacy per-store read. Returning `{}` would be a
-   * claim that every project was read, and every project would then render as `unknown`.
+   * Returns null when this instance has no backend layer, or when the batched read could not obtain
+   * the cross-project view it needs — "I could not answer", the honest signal that lets the caller
+   * fall back to the legacy per-store read and log that it did. Returning `{}` would be a claim that
+   * every project was read, and every project would then render as `unknown`.
+   *
+   * FNXC:ProjectRuntimeOff 2026-11-07-22:12 (RUFU-871): this instance's `asyncLayer` is NOT a central
+   * handle — the dashboard builds it from the cwd project's TaskStore
+   * (`dashboardLayer = store.getAsyncLayer()` in `commands/dashboard.ts`), so its pool carries that
+   * one project's `fusion.project_id` and forced RLS on `project.config` truncates an unprivileged
+   * read to one row. The layer is therefore passed whole so the read can take its own
+   * transaction-local bypass; handing over `this.asyncLayer.db` is precisely what produced the
+   * `24 unknown / 1 enabled / 0 disabled` reading this replaces.
    */
   async getProjectRuntimeEnabledFlags(): Promise<Record<string, boolean> | null> {
     this.ensureInitialized();
     if (!this.asyncLayer) return null;
-    return readProjectRuntimeEnabledFlags(this.asyncLayer.db);
+    return readProjectRuntimeEnabledFlags(this.asyncLayer);
   }
 
   /**
