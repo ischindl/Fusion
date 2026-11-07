@@ -91,6 +91,8 @@ function renderedItemOrder(): string[] {
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  // JSDOM does not implement scrollIntoView; the combo scrolls the keyboard highlight into view.
+  Element.prototype.scrollIntoView = vi.fn();
 });
 
 afterEach(cleanup);
