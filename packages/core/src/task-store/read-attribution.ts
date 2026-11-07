@@ -70,12 +70,22 @@ depth has to be raised where the stack is still honest.
 12 keeps the signature bounded (it is still a Map key) while covering the four-to-six wrapper frames a
 resolver or store call actually sits under. `FUSION_READ_ATTRIBUTION_DEPTH` overrides it when one call site
 needs to be chased further; a `0` clamps to 1 rather than disabling attribution.
+
+FNXC:ReadAttributionCost 2026-11-07-11:20 (RUFU-871):
+12 was a MEASURED NULL RESULT and it is not free. After it shipped, the caller chains still ended at the
+seam's own `(anon)` frame — depth cannot cross an `await`, and 46 % of samples had no business frame at all —
+so the extra frames named nothing. Meanwhile the dashboard's own latency histogram went to p50 1 056 ms and
+p95 25 800 ms, with a 1 KB `/api/health` taking 2.2 s and even a 401 rejection taking 1.3 s, which says the
+event loop is starved: this function runs `new Error().stack` plus a per-frame regex on EVERY attributed
+read, and the seam counted ≈90 reads/s. The default therefore returns to 6 — the depth the data actually
+differenced — and an operator chasing one call site raises it temporarily through the env override. Any
+further attribution depth must be justified by a measured p50 delta, not by a hoped-for caller name.
 */
 function readAttributionDepth(): number {
   const raw = process.env.FUSION_READ_ATTRIBUTION_DEPTH;
-  if (raw === undefined || raw.trim() === "") return 12;
+  if (raw === undefined || raw.trim() === "") return 6;
   const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : 12;
+  return Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : 6;
 }
 
 export const READ_ATTRIBUTION_STACK_DEPTH = readAttributionDepth();
