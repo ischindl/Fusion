@@ -13,6 +13,13 @@
  * the dashboard has ALREADY opened — never by opening a store, starting an
  * engine, or starting a watcher just to answer a scrape.
  *
+ * Pool occupancy (RUFU-483) answers the sibling question "is the board slow because it cannot get a
+ * database connection?". `fusion_postgres_pool_backends{project,role,state}` counts the Fusion-named
+ * backends visible in `pg_stat_activity` and `fusion_postgres_pool_max{project,role}` states the
+ * configured runtime ceiling, so saturation reads as `backends == max` beside elevated request latency
+ * — no profiler. The probe runs on each store's dedicated `max: 1` health session, never on the runtime
+ * pool it measures, and renders from pre-read state like every other family here.
+ *
  * Non-blocking by design, matching `runtime-sampler.ts`:
  *   - every read happens on a pre-read tick; `buildSnapshot` performs zero
  *     awaited I/O and only renders pre-read numeric state;
@@ -29,7 +36,7 @@
 
 import { drizzleSql } from "@fusion/core";
 import type { TaskListReadField } from "@fusion/core";
-import type { MetricFamily } from "./prometheus-text.js";
+import type { MetricFamily, MetricSample } from "./prometheus-text.js";
 
 const sql = drizzleSql;
 import { listRegisteredProjectStores, countRunningAgentsInStore } from "../project-store-resolver.js";
@@ -49,6 +56,77 @@ export type PgStats = PgDbStats[];
 
 /** Reads the per-database cumulative PG counters, or resolves `null` when no layer exists. */
 export type PgStatsReader = () => Promise<PgStats | null>;
+
+/*
+ * FNXC:PostgresPool 2026-11-06-21:23 (RUFU-483):
+ * Pool OCCUPANCY is the measurement that turns "the board takes 10-30 s to paint" into a number. The
+ * runtime pool ceiling was 3 until RUFU-483, so every dashboard HTTP read queued behind the engine's
+ * own lane queries; the ceiling alone was never visible on any board surface, and no client-side
+ * long-task profile showed it. These gauges make the constraint directly readable:
+ * saturation is `fusion_postgres_pool_backends == fusion_postgres_pool_max` beside elevated request
+ * latency, without a profiler.
+ *
+ * The read travels `pg_stat_activity` on each store's DEDICATED `max: 1` health session, never the
+ * runtime pool: a probe that queued behind the pool it is measuring would be blind exactly when it
+ * mattered (the same reasoning RUFU-301 put on the health transport). Only the three session classes
+ * Fusion itself names are rendered, so an arbitrary `application_name` from another client of a shared
+ * database can never inflate metric cardinality.
+ */
+/** One `pg_stat_activity` aggregate row: backends carrying one `application_name` in one state. */
+export interface PoolBackendRow {
+  /** Raw `pg_stat_activity.application_name` (e.g. `fusion-runtime:proj_a`). */
+  applicationName: string;
+  /** Raw `pg_stat_activity.state`; `null` for background workers, bucketed as `other`. */
+  state: string | null;
+  /** Backend count for that (application_name, state) pair. */
+  count: number;
+}
+
+/** One store's pool-occupancy read: the activity rows plus that store's configured runtime ceiling. */
+export interface PoolOccupancySample {
+  rows: PoolBackendRow[];
+  /** Resolved runtime pool ceiling from the store's async layer, when it exposes one. */
+  poolMax?: number;
+}
+
+/**
+ * Reads one registered store's pool occupancy. Resolves `null` when the store exposes no live async
+ * layer or the read failed (privilege-fenced role, pool error) so the sampler keeps the last-known
+ * values instead of throwing.
+ */
+export type PoolStatsReader = (store: unknown) => Promise<PoolOccupancySample | null>;
+
+/** The Fusion-owned session classes an `application_name` may carry; anything else is not rendered. */
+const POOL_SESSION_ROLES: readonly string[] = ["runtime", "health", "migration"];
+
+/** Label value for a Fusion session that carries no project partition (admin/test/unbound pools). */
+const UNBOUND_POOL_LABEL = "unbound";
+
+/**
+ * Parse a Fusion session `application_name` into its (role, project) label pair.
+ *
+ * Returns `null` for anything Fusion did not name: the role is a CLOSED set, because `application_name`
+ * is attacker-choosable by any client of a shared PostgreSQL database and an open-set label on the
+ * unauthenticated `/metrics` surface would be a cardinality and disclosure vector.
+ */
+export function parsePoolApplicationName(name: unknown): { role: string; project: string } | null {
+  if (typeof name !== "string" || !name.startsWith("fusion-")) return null;
+  const rest = name.slice("fusion-".length);
+  const colon = rest.indexOf(":");
+  const role = colon === -1 ? rest : rest.slice(0, colon);
+  if (!POOL_SESSION_ROLES.includes(role)) return null;
+  const project = colon === -1 ? "" : rest.slice(colon + 1);
+  return { role, project: project.length === 0 ? UNBOUND_POOL_LABEL : project };
+}
+
+/** Bucket a raw `pg_stat_activity.state` into the rendered state labels (closed set of three). */
+export function poolStateBucket(state: string | null | undefined): "active" | "idle" | "other" {
+  const normalized = typeof state === "string" ? state.trim().toLowerCase() : "";
+  if (normalized === "active") return "active";
+  if (normalized === "idle") return "idle";
+  // `idle in transaction`, `fast path function`, `disabled`, NULL (background workers).
+  return "other";
+}
 
 /**
  * A slim task view: only the column is needed to count cards per column.
@@ -71,6 +149,14 @@ export interface DomainSamplerState {
   runningAgentsByProject: Record<string, number>;
   /** columnId -> number of tasks in that column across all registered projects. */
   columnCounts: Record<string, number>;
+  /**
+   * projectId -> last SUCCESSFUL pool-occupancy rows for that store. A failed read keeps the previous
+   * rows (same degradation contract as the PG-rate baseline), and a store that has never been read
+   * simply contributes no rows rather than a zero that would claim an observed empty pool.
+   */
+  poolBackendsByProject: Record<string, PoolBackendRow[]>;
+  /** projectId -> that store's configured runtime pool ceiling (absent when the layer exposes none). */
+  poolMaxByProject: Record<string, number>;
 }
 
 /** Constructor options (all injectable). */
@@ -87,6 +173,11 @@ export interface DomainSamplerInit {
   listTasksInStore?: (store: unknown) => Promise<SlimTaskLike[]>;
   /** PG cumulative-counter reader (defaults to the store-layer `pg_stat_database` probe). */
   pgStatsReader?: PgStatsReader;
+  /**
+   * Per-store pool-occupancy reader (defaults to the `pg_stat_activity` probe on the store's dedicated
+   * health session). RUFU-483.
+   */
+  poolStatsReader?: PoolStatsReader;
   /** Tick cadences in ms (defaults: PG 5s / domain 5s). */
   tick?: { pgMs?: number; domainMs?: number };
   /** A fake-timer-friendly `setInterval`/`clearInterval` surface. */
@@ -114,6 +205,41 @@ export interface DomainSampler {
 
 /** Per-database cumulative counter baseline values (one entry per `pg_stat_database.datname`). */
 type PgBaseline = Map<string, { xactCommit: number; xactRollback: number }>;
+
+/**
+ * Fold the per-store occupancy reads into rendered samples.
+ *
+ * FNXC:PostgresPool 2026-11-06-21:23 (RUFU-483):
+ * N project stores sharing one PostgreSQL database each read the SAME cluster-wide `pg_stat_activity`
+ * rows, so a row is claimed by the first (application name, state bucket) that reports it and every
+ * sibling store's identical copy is dropped — otherwise a two-store deployment would double-count
+ * every backend. Unparseable names (any client Fusion does not own) contribute nothing.
+ */
+function collectPoolBackendSamples(
+  backendsByProject: Record<string, PoolBackendRow[]>,
+): MetricSample[] {
+  const claimed = new Set<string>();
+  const totals = new Map<string, { project: string; role: string; state: string; count: number }>();
+  for (const rows of Object.values(backendsByProject)) {
+    for (const row of rows ?? []) {
+      const parsed = parsePoolApplicationName(row?.applicationName);
+      if (!parsed) continue;
+      const bucket = poolStateBucket(row.state);
+      const claimKey = `${row.applicationName}\u0000${bucket}`;
+      if (claimed.has(claimKey)) continue;
+      claimed.add(claimKey);
+      const key = `${parsed.project}\u0000${parsed.role}\u0000${bucket}`;
+      const count = Number.isFinite(row.count) && row.count >= 0 ? row.count : 0;
+      const existing = totals.get(key);
+      if (existing) existing.count += count;
+      else totals.set(key, { project: parsed.project, role: parsed.role, state: bucket, count });
+    }
+  }
+  return [...totals.values()].map((entry) => ({
+    labelValues: [entry.project, entry.role, entry.state],
+    value: entry.count,
+  }));
+}
 
 /** Default timers from the global scope (fake-timer injectable). */
 function defaultTimers(): DomainSamplerInit["timers"] {
@@ -192,12 +318,58 @@ export function defaultPgStatsReader(): PgStatsReader {
   };
 }
 
+/**
+ * Default per-store pool-occupancy reader.
+ *
+ * FNXC:PostgresPool 2026-11-06-21:23 (RUFU-483):
+ * The probe runs on the store's **dedicated `max: 1` health session** (`layer.healthDb`), never on
+ * `layer.db`: the runtime pool is exactly the resource being measured, so measuring it from inside
+ * means the probe queues behind the saturation it exists to report. Best-effort like the pg-rate
+ * reader: a store with no live async layer, a privilege-fenced role (embedded PG from agent sessions),
+ * or a pool error resolves `null` so the sampler keeps last-known values and never throws.
+ */
+export function defaultPoolStatsReader(): PoolStatsReader {
+  return async (store): Promise<PoolOccupancySample | null> => {
+    const layer = (
+      store as {
+        getAsyncLayer?: () => {
+          healthDb?: { execute: (q: unknown) => Promise<unknown[]> };
+          poolMax?: number;
+        } | null;
+      }
+    ).getAsyncLayer?.();
+    if (!layer?.healthDb) return null;
+    try {
+      const rows = (await layer.healthDb.execute(
+        sql.raw(`
+          SELECT application_name, state, count(*)::int AS backend_count
+          FROM pg_stat_activity
+          WHERE application_name LIKE 'fusion-%'
+          GROUP BY 1, 2
+        `),
+      )) as Array<{ application_name?: string; state?: string | null; backend_count?: number | string }>;
+      return {
+        rows: (rows ?? []).map((row) => ({
+          applicationName: String(row?.application_name ?? ""),
+          state: row?.state == null ? null : String(row.state),
+          count: Number(row?.backend_count) || 0,
+        })),
+        poolMax: typeof layer.poolMax === "number" && Number.isFinite(layer.poolMax) ? layer.poolMax : undefined,
+      };
+    } catch {
+      // Privilege-fenced / transient — degrade to null (last-known retained), never throw.
+      return null;
+    }
+  };
+}
+
 /** Create a domain sampler. Timers are NOT started until {@link DomainSampler.start}. */
 export function createDomainSampler(init: DomainSamplerInit = {}): DomainSampler {
   const registry = init.registeredStores ?? defaultRegistry();
   const countAgents = init.countAgentsInStore ?? defaultCountAgents;
   const listTasks = init.listTasksInStore ?? defaultListTasks;
   const pgReader = init.pgStatsReader ?? defaultPgStatsReader();
+  const poolReader = init.poolStatsReader ?? defaultPoolStatsReader();
   const tick = { pgMs: init.tick?.pgMs ?? 5000, domainMs: init.tick?.domainMs ?? 5000 };
   const timers = init.timers ?? defaultTimers();
 
@@ -206,6 +378,8 @@ export function createDomainSampler(init: DomainSamplerInit = {}): DomainSampler
     projectCounts: { total: 0, active: 0, idle: 0 },
     runningAgentsByProject: {},
     columnCounts: {},
+    poolBackendsByProject: {},
+    poolMaxByProject: {},
   };
   let previousPg: PgBaseline | undefined;
   let previousPgAtMs: number | null = null;
@@ -323,6 +497,12 @@ export function createDomainSampler(init: DomainSamplerInit = {}): DomainSampler
     const projectIds = [...entries.keys()];
     const runningByProject: Record<string, number> = {};
     const columnCounts: Record<string, number> = {};
+    /*
+     * RUFU-483 pool occupancy, keyed per project so a failed read keeps THAT store's last-known rows
+     * and a store that left the registry contributes nothing (a closed store must never leave ghost
+     * backends behind).
+     */
+    const poolSamples = new Map<string, PoolOccupancySample | null>();
 
     await Promise.all(
       projectIds.map(async (projectId) => {
@@ -334,6 +514,14 @@ export function createDomainSampler(init: DomainSamplerInit = {}): DomainSampler
           running = 0;
         }
         runningByProject[projectId] = running;
+
+        let poolSample: PoolOccupancySample | null = null;
+        try {
+          poolSample = await poolReader(store);
+        } catch {
+          poolSample = null;
+        }
+        poolSamples.set(projectId, poolSample);
 
         let tasks: SlimTaskLike[] = [];
         try {
@@ -353,6 +541,35 @@ export function createDomainSampler(init: DomainSamplerInit = {}): DomainSampler
 
     // Restarted mid-sample: discard this read — its write would be stale (Greptile P1 review fix).
     if (gen !== sampleGeneration) return;
+
+    /*
+     * FNXC:PostgresPool 2026-11-06-21:23 (RUFU-483): the mirror of the pg-rate degradation contract —
+     * a failed occupancy read keeps the last-known rows for THAT store rather than zeroing them, so a
+     * transient privilege fence or pool error never renders "the pool emptied". A first-ever failure
+     * has nothing to retain, and that store simply renders no backend rows (never a malformed line).
+     */
+    const nextBackends: Record<string, PoolBackendRow[]> = {};
+    const nextMaxima: Record<string, number> = {};
+    for (const projectId of projectIds) {
+      const observed = poolSamples.get(projectId);
+      if (observed) {
+        nextBackends[projectId] = observed.rows;
+        if (typeof observed.poolMax === "number" && Number.isFinite(observed.poolMax)) {
+          nextMaxima[projectId] = observed.poolMax;
+        } else if (typeof state.poolMaxByProject[projectId] === "number") {
+          nextMaxima[projectId] = state.poolMaxByProject[projectId];
+        }
+        continue;
+      }
+      if (state.poolBackendsByProject[projectId]) {
+        nextBackends[projectId] = state.poolBackendsByProject[projectId];
+      }
+      if (typeof state.poolMaxByProject[projectId] === "number") {
+        nextMaxima[projectId] = state.poolMaxByProject[projectId];
+      }
+    }
+    state.poolBackendsByProject = nextBackends;
+    state.poolMaxByProject = nextMaxima;
 
     const total = projectIds.length;
     const active = projectIds.filter((id) => (runningByProject[id] ?? 0) > 0).length;
@@ -471,6 +688,32 @@ export function createDomainSampler(init: DomainSamplerInit = {}): DomainSampler
       type: "gauge",
       labels: ["column"],
       samples: columnSamples,
+    });
+
+    /*
+     * ── PostgreSQL pool occupancy (RUFU-483) ──────────────────────────────
+     * The measurement that answers "why is the board slow?" without a profiler: a runtime pool whose
+     * every slot is busy IS the reason a one-row dashboard read can be slower than a hundred-row one.
+     * Read = the observed backend buckets equal the configured ceiling, next to elevated request
+     * latency. Absence of a row is NOT headroom — see docs/diagnostics.md.
+     */
+    families.push({
+      name: "fusion_postgres_pool_backends",
+      help: "Fusion PostgreSQL backends in pg_stat_activity per session class and state (read on the dedicated health session; a read failure keeps the last-known values)",
+      type: "gauge",
+      labels: ["project", "role", "state"],
+      samples: collectPoolBackendSamples(state.poolBackendsByProject),
+    });
+    const poolMaxSamples = Object.entries(state.poolMaxByProject).map(([projectId, max]) => ({
+      labelValues: [projectId, "runtime"],
+      value: max,
+    }));
+    families.push({
+      name: "fusion_postgres_pool_max",
+      help: "Configured runtime pool ceiling per registered store (excludes the dedicated max-one health/migration sessions); a store refused at startup by a connection quota contributes no row",
+      type: "gauge",
+      labels: ["project", "role"],
+      samples: poolMaxSamples,
     });
 
     return families;

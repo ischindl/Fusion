@@ -159,6 +159,16 @@ export interface AsyncDataLayer {
   /** Backend descriptor retained for store-owned session advisory locks. */
   readonly backend?: ResolvedBackend;
   /**
+   * FNXC:PostgresPool 2026-11-06-21:23 (RUFU-483): Resolved ceiling of this
+   * layer's RUNTIME pool (the dedicated health/migration sessions are `max: 1`
+   * and are excluded). Additive to the stability contract below, so existing
+   * plugin consumers are unaffected. `/metrics` renders it as
+   * `fusion_postgres_pool_max` so an operator can read "pool is maxed out" as
+   * `backends == max` instead of profiling; a synthetic or test-supplied layer
+   * may omit it, which renders no ceiling row rather than a guessed one.
+   */
+  readonly poolMax?: number;
+  /**
    * Run an async callback inside a PostgreSQL transaction. All writes inside
    * the callback commit atomically; a thrown error rolls back every write
    * including audit rows. Concurrent transactions do not observe each other's
@@ -243,6 +253,7 @@ export function createAsyncDataLayer(
     healthDb,
     projectId: options?.projectId,
     backend: connections.backend,
+    poolMax: connections.poolMax,
     async transaction<T>(fn: (tx: DbTransaction) => Promise<T>, options?: TransactionOptions): Promise<T> {
       return runInTransaction(db, fn, options);
     },

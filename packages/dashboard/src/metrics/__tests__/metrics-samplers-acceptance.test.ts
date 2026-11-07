@@ -252,3 +252,106 @@ describe("spawn-count hook on the real child_process module", () => {
     }
   });
 });
+/*
+FNXC:PostgresPool 2026-11-06-21:23 (RUFU-483):
+Pool-occupancy acceptance through the orchestrator. The runtime pool used to be 3 connections shared by
+every engine lane, so a one-row dashboard read could queue behind lane queries — and no scrape surface
+showed the ceiling or the occupancy. These assertions pin the two properties that make the new gauges
+trustworthy: the read is paid on the 5 s domain tick (never on a scrape, which would itself have to
+acquire a connection from the pool it is measuring), and an unobserved pool renders its HELP/TYPE
+headers with NO value line rather than a fabricated zero, so "never measured" stays distinguishable
+from "measured empty". Injected reader — no database, no real waits.
+*/
+describe("pool occupancy gauges (RUFU-483)", () => {
+  /** Labels of one parsed sample as a `k=v` map-ish string for stable assertions. */
+  function labelMap(sample: { labels: Array<{ name: string; value: string }> }): Record<string, string> {
+    return Object.fromEntries(sample.labels.map((l) => [l.name, l.value]));
+  }
+
+  function poolSamples(parsed: ParsedMetrics, name: string) {
+    const family = parsed.families.find((f) => f.name === name);
+    return family?.samples ?? [];
+  }
+
+  it("declares both pool families before any tick, with no fabricated value", () => {
+    const sampler = createMetricsSampler({ runtime: inertRuntime() });
+    const body = sampler.render();
+
+    // Declared so a dashboard/alert can reference them unconditionally ...
+    expect(body).toContain("# TYPE fusion_postgres_pool_backends gauge");
+    expect(body).toContain("# TYPE fusion_postgres_pool_max gauge");
+    // ... but nothing is observed yet, so NO sample line may exist. An invented 0 would read as
+    // "the pool is empty" — the exact confusion RUFU-257 removed for retention series.
+    expect(body).not.toContain("fusion_postgres_pool_backends{");
+    expect(body).not.toContain("fusion_postgres_pool_max{");
+    expect(() => assertExpositionText(body)).not.toThrow();
+  });
+
+  it("renders occupancy from the tick's pre-read state and issues no probe during the scrape", async () => {
+    const poolProbe = vi.fn(async () => ({
+      rows: [
+        { applicationName: "fusion-runtime:proj_a", state: "active", count: 10 },
+        { applicationName: "fusion-runtime:proj_a", state: "idle", count: 0 },
+        { applicationName: "fusion-health:proj_a", state: "idle", count: 1 },
+        { applicationName: "fusion-migration", state: "active", count: 1 },
+      ],
+      poolMax: 10,
+    }));
+    const sampler = createMetricsSampler({
+      runtime: inertRuntime(),
+      domain: {
+        registeredStores: () => [{ projectId: "proj-a", store: {} }],
+        countAgentsInStore: async () => 0,
+        listTasksInStore: async () => [],
+        poolStatsReader: poolProbe,
+      },
+    });
+
+    await sampler.domain.sampleDomain();
+    expect(poolProbe).toHaveBeenCalledTimes(1);
+
+    const parsed = assertExpositionText(sampler.render());
+    // The scrape performed no additional read — measurement cost stays on the tick.
+    expect(poolProbe).toHaveBeenCalledTimes(1);
+
+    const backends = poolSamples(parsed, "fusion_postgres_pool_backends");
+    expect(backends.map((s) => [labelMap(s), s.value])).toEqual(
+      expect.arrayContaining([
+        [{ project: "proj_a", role: "runtime", state: "active" }, 10],
+        [{ project: "proj_a", role: "health", state: "idle" }, 1],
+        // A session class with no project partition carries the `unbound` label.
+        [{ project: "unbound", role: "migration", state: "active" }, 1],
+      ]),
+    );
+    const maxima = poolSamples(parsed, "fusion_postgres_pool_max");
+    expect(maxima.map((s) => [labelMap(s), s.value])).toEqual([
+      [{ project: "proj-a", role: "runtime" }, 10],
+    ]);
+
+    // The saturation reading an operator actually alerts on: every runtime slot busy against the
+    // configured ceiling. This is the pair that made "the board is slow" answerable at all.
+    const active = backends.find(
+      (s) => labelMap(s).role === "runtime" && labelMap(s).state === "active",
+    )!;
+    expect(active.value).toBe(maxima[0]!.value);
+  });
+
+  it("keeps a store with no observable pool out of the body instead of guessing its ceiling", async () => {
+    // The degradation path: a privilege-fenced role (embedded PG from an agent session) resolves null.
+    const sampler = createMetricsSampler({
+      runtime: inertRuntime(),
+      domain: {
+        registeredStores: () => [{ projectId: "proj-a", store: {} }],
+        countAgentsInStore: async () => 0,
+        listTasksInStore: async () => [],
+        poolStatsReader: async () => null,
+      },
+    });
+    await sampler.domain.sampleDomain();
+    const body = sampler.render();
+    expect(body).toContain("# TYPE fusion_postgres_pool_max gauge");
+    expect(body).not.toContain("fusion_postgres_pool_max{");
+    expect(body).not.toContain("fusion_postgres_pool_backends{");
+    expect(() => assertExpositionText(body)).not.toThrow();
+  });
+});
