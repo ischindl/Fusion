@@ -37,7 +37,7 @@ const {
 } = fsPromises;
 
 /**
- * FNXC:ProjectRuntimeOff 2026-11-07-17:41 (RUFU-871):
+ * FNXC:ProjectRuntimeOff 2026-11-07-20:24 (RUFU-871):
  * The ONE projection read for the operator's runtime unload switch.
  *
  * `GET /api/projects` answered 25 rows with no runtime field, so the project combo could not tell a
@@ -45,31 +45,55 @@ const {
  * `status` was NOT reused: production `status` reads `active` (11) / `paused` (14) and names the
  * project-row lifecycle, a different axis from the runtime gate.
  *
- * Cost contract: exactly ONE settings read per project per request — never per card, never inside a
- * loop over tasks. It prefers a store this server already holds open and only falls back to the
- * shared resolver for a project nobody has opened, the same read `ProjectEngine` performs at start,
- * so the projection can never disagree with the gate. Absent settings mean ENABLED, the same default
- * `isProjectRuntimeEnabled` applies.
+ * Cost and correctness contract: the flag comes from the PERSISTED central settings in ONE batched
+ * read per request, regardless of project count. The first version read it per project through
+ * `getOrCreateProjectStore`, which (a) opened a full TaskStore per row — a side-effecting
+ * `store:open` write inside a GET route — and (b) got the answer wrong, because a store that will not
+ * open is not evidence about the setting: 14 of 25 projects reported `runtimeState: "unknown"`, each
+ * wearing a "Runtime off" label the operator never applied, while `project.config.settings` held the
+ * true value for all 25. The per-store read survives only as the fallback for a deployment whose
+ * central read cannot answer at all.
  */
 export type ProjectRuntimeReadState = "enabled" | "disabled" | "unknown";
 
-async function resolveProjectRuntimeEnabled(
+/**
+ * Persisted runtime flags for every project the central database has a settings row for.
+ * `null` is not an empty result — it means the central read could not answer, which is the only
+ * condition that permits the legacy per-project store fallback.
+ */
+type ProjectRuntimeFlags = Record<string, boolean> | null;
+
+/** The store seam this route needs from a project store; narrow so a fake can satisfy it. */
+type RuntimeSettingsStore = { getSettingsFast?: () => Promise<{ runtimeEnabled?: boolean }> };
+
+/**
+ * The single batched central read. Any failure shape — no seam, a throwing read, a non-object answer
+ * — collapses to `null` so the caller takes the legacy path rather than rendering every project
+ * `unknown` because one read broke.
+ */
+async function readRuntimeFlags(
+  central: { getProjectRuntimeEnabledFlags?: () => Promise<ProjectRuntimeFlags> } | null | undefined,
+): Promise<ProjectRuntimeFlags> {
+  if (!central || typeof central.getProjectRuntimeEnabledFlags !== "function") return null;
+  try {
+    const flags = await central.getProjectRuntimeEnabledFlags();
+    return flags && typeof flags === "object" ? flags : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Legacy per-project fallback, reached ONLY when the central read could not answer. Kept honest in the
+ * same three steps the central read is: key present and false is `disabled`, a settings row without
+ * the key is `enabled` (the gate's own default, `isProjectRuntimeEnabled`), and an unreadable project
+ * is `unknown` — never `enabled`, because claiming a project is loaded is what made the original
+ * incident unanswerable.
+ */
+async function resolveRuntimeStateFromStore(
   projectId: string,
-  openStore: { getSettingsFast?: () => Promise<{ runtimeEnabled?: boolean }> } | null | undefined,
+  openStore: RuntimeSettingsStore | null | undefined,
 ): Promise<ProjectRuntimeReadState> {
-  /*
-  FNXC:ProjectRuntimeOff 2026-11-07-18:43 (RUFU-871):
-  The first version answered ENABLED whenever the settings read failed, reasoning that claiming a
-  project is unloaded would send the operator to turn on something already running. Measured in
-  production that reasoning was backwards for the question actually being asked: two projects
-  (`ai_architecture`, `codebase-memory-mcp`) persisted `runtimeEnabled=false` yet answered
-  `runtimeEnabled: true`, because their per-project store could not be opened and the catch turned an
-  unreadable into "loaded". The operator's question is "which projects are unloaded", and an
-  unreadable answered as loaded makes that question unanswerable in exactly the case where it matters
-  — a project nobody has opened. So an unreadable is now its own answer: `unknown`, and `runtimeEnabled`
-  is only true when the value was positively read. Absent settings still mean ENABLED, the gate's own
-  default (`isProjectRuntimeEnabled`), because "no key written" really is "never turned off".
-  */
   try {
     const store = openStore ?? await getOrCreateProjectStore(projectId);
     if (!store || typeof store.getSettingsFast !== "function") return "unknown";
@@ -82,19 +106,43 @@ async function resolveProjectRuntimeEnabled(
 }
 
 /**
- * Attach `runtimeEnabled` to every row of a project projection: one settings read per row, existing
- * keys unchanged, so a client built against the old shape keeps working.
+ * Attach `runtimeEnabled` + `runtimeState` to every row of a project projection.
+ *
+ * FNXC:ProjectRuntimeOff 2026-11-07-20:24 (RUFU-871):
+ * `runtimeFlags` is the ONE central read, so this performs no read of its own when it is present —
+ * the cost no longer scales with the number of projects. A project id the flags do not name has no
+ * persisted settings row, so it answers `unknown`; that is the absence of a read, not a failed one,
+ * and it must not fall back to opening a store while the central read is healthy and authoritative.
+ *
+ * A REMOTE row is not read here at all: it already carries its own node's answer from that node's
+ * `GET /api/projects`, and this server has no local settings row for it. Overwriting a running remote
+ * project with a local `unknown` would hand the UI a "Runtime off" label for work it is not running.
  */
-async function withRuntimeProjection<T extends { id: string }>(
+async function withRuntimeProjection<T extends { id: string; runtimeEnabled?: unknown }>(
   projects: T[],
-  openStoreFor: (projectId: string) => { getSettingsFast?: () => Promise<{ runtimeEnabled?: boolean }> } | null | undefined,
+  runtimeFlags: ProjectRuntimeFlags,
+  openStoreFor: (projectId: string) => RuntimeSettingsStore | null | undefined,
+  localProjectIds?: Set<string>,
 ): Promise<Array<T & { runtimeEnabled: boolean; runtimeState: ProjectRuntimeReadState }>> {
   return Promise.all(
     projects.map(async (project) => {
-      const runtimeState = await resolveProjectRuntimeEnabled(project.id, openStoreFor(project.id));
+      const isRemote = localProjectIds !== undefined && !localProjectIds.has(project.id);
+      const runtimeState: ProjectRuntimeReadState = isRemote
+        ? project.runtimeEnabled === true
+          ? "enabled"
+          : project.runtimeEnabled === false
+            ? "disabled"
+            : "unknown"
+        : runtimeFlags
+          ? runtimeFlags[project.id] === true
+            ? "enabled"
+            : runtimeFlags[project.id] === false
+              ? "disabled"
+              : "unknown"
+          : await resolveRuntimeStateFromStore(project.id, openStoreFor(project.id));
       return {
         ...project,
-        // `runtimeEnabled` keeps its boolean shape for existing clients, but it now means "positively
+        // `runtimeEnabled` keeps its boolean shape for existing clients, but it means "positively
         // known to be running": an unreadable project is false, and `runtimeState` says why.
         runtimeEnabled: runtimeState === "enabled",
         runtimeState,
@@ -144,23 +192,32 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
    */
   router.get("/projects", async (_req, res) => {
     try {
-      const projects = await withCentralCore(
+      const { projects, runtimeFlags } = await withCentralCore(
         async (central) => {
           // Reconcile stale "initializing" projects before listing so the
           // dashboard never shows permanent loading spinners for legacy records.
           await central.reconcileProjectStatuses();
-          return prioritizeProjectsForCurrentDirectory(await central.listProjects());
+          /*
+          FNXC:ProjectRuntimeOff 2026-11-07-20:24 (RUFU-871):
+          The one batched runtime-flag read, taken on the same already-open central handle that just
+          listed the projects — this request costs one extra SELECT whether there are 2 projects or 25.
+          */
+          const listed = prioritizeProjectsForCurrentDirectory(await central.listProjects());
+          return {
+            projects: listed,
+            runtimeFlags: await readRuntimeFlags(central),
+          };
         },
         (error) => {
           runtimeLogger.child("projects").warn(
             `Failed to list registered projects: ${error instanceof Error ? error.message : String(error)}`,
           );
-          return [];
+          return { projects: [], runtimeFlags: null as ProjectRuntimeFlags };
         },
       );
 
-      // FNXC:ProjectRuntimeOff 2026-11-07-17:41 (RUFU-871): one settings read per project, no more.
-      res.json(await withRuntimeProjection(projects, openStoreFor));
+      // FNXC:ProjectRuntimeOff 2026-11-07-20:24 (RUFU-871): one central read, projected onto every row.
+      res.json(await withRuntimeProjection(projects, runtimeFlags, openStoreFor));
     } catch (err: unknown) {
       if (err instanceof ApiError) {
         throw err;
@@ -177,24 +234,35 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
    */
   router.get("/projects/across-nodes", async (_req, res) => {
     try {
-      const { localProjects, allNodes } = await withCentralCore(
+      const { localProjects, allNodes, runtimeFlags } = await withCentralCore(
         async (central) => {
           // Reconcile stale "initializing" projects before listing
           await central.reconcileProjectStatuses();
 
-          // Get local projects and registered nodes in parallel
-          const [projects, nodes] = await Promise.all([
+          /*
+          FNXC:ProjectRuntimeOff 2026-11-07-20:24 (RUFU-871):
+          The runtime-flag read joins the reads this request already performs on the shared central
+          handle, so the route still costs exactly ONE central settings read for the whole board. It is
+          taken here rather than per branch so the local-only short circuit and the merged remote path
+          cannot diverge in cost or in truth.
+          */
+          const [projects, nodes, flags] = await Promise.all([
             central.listProjects(),
             central.listNodes(),
+            readRuntimeFlags(central),
           ]);
 
-          return { localProjects: projects, allNodes: nodes };
+          return { localProjects: projects, allNodes: nodes, runtimeFlags: flags };
         },
         (error) => {
           runtimeLogger.child("projects:across-nodes").warn(
             `Failed to load local project registry: ${error instanceof Error ? error.message : String(error)}`,
           );
-          return { localProjects: [], allNodes: [] };
+          return {
+            localProjects: [] as Awaited<ReturnType<CentralCoreApi["listProjects"]>>,
+            allNodes: [] as Awaited<ReturnType<CentralCoreApi["listNodes"]>>,
+            runtimeFlags: null as ProjectRuntimeFlags,
+          };
         },
       );
 
@@ -208,9 +276,9 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
       // no cross-node aggregation overhead.
       if (remoteNodes.length === 0) {
         const prioritizedProjects = prioritizeProjectsForCurrentDirectory(localProjects);
-        // FNXC:ProjectRuntimeOff 2026-11-07-17:41 (RUFU-871): the combo reads this route, so the
+        // FNXC:ProjectRuntimeOff 2026-11-07-20:24 (RUFU-871): the combo reads this route, so the
         // local-only fast path carries the runtime field exactly like GET /projects.
-        res.json(await withRuntimeProjection(prioritizedProjects, openStoreFor));
+        res.json(await withRuntimeProjection(prioritizedProjects, runtimeFlags, openStoreFor));
         return;
       }
 
@@ -291,14 +359,20 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
       const mergedProjects = [...localProjects, ...remoteProjects];
 
       /*
-      FNXC:ProjectRuntimeOff 2026-11-07-17:41 (RUFU-871):
-      Only LOCAL rows get the projection read. A remote row already carries its own node's
-      `runtimeEnabled` from that node's `GET /api/projects`, and this server has no business opening
-      another node's store to guess at it.
+      FNXC:ProjectRuntimeOff 2026-11-07-20:24 (RUFU-871):
+      LOCAL rows are answered from the one batched central read; a REMOTE row keeps the answer its own
+      node already gave on `GET /api/projects`. This server holds no `project.config` row for another
+      node's project, so reading locally would call "unknown" — and the UI renders that as "Runtime
+      off — unloaded, nothing runs" — on a project that is running on its own node.
       */
       const prioritizedProjects = prioritizeProjectsForCurrentDirectory(mergedProjects);
 
-      res.json(await withRuntimeProjection(prioritizedProjects, openStoreFor));
+      res.json(await withRuntimeProjection(
+        prioritizedProjects,
+        runtimeFlags,
+        openStoreFor,
+        new Set(localProjects.map((project: { id: string }) => project.id)),
+      ));
     } catch (err: unknown) {
       if (err instanceof ApiError) {
         throw err;

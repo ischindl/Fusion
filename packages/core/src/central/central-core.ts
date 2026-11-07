@@ -111,6 +111,7 @@ import type { IntegrationBranchReconciliation } from "../git/integration-branch-
  */
 import type { AsyncDataLayer } from "../postgres/data-layer.js";
 import * as asyncCentralCore from "../async-stores/async-central-core.js";
+import { readProjectRuntimeEnabledFlags } from "../task-store/async/async-settings.js";
 import {
   deriveRunningAgentCounts,
   getRunningAgentCountSource,
@@ -728,6 +729,28 @@ export class CentralCore extends EventEmitter<CentralCoreEvents> {
 
         return asyncCentralCore.listProjects(this.backendHandle);
 }
+
+  /**
+   * FNXC:ProjectRuntimeOff 2026-11-07-20:22 (RUFU-871):
+   * ONE batched read of every project's persisted `runtimeEnabled` flag, keyed by project id, for
+   * the projects projection. The dashboard route that lists projects used to answer the flag per row
+   * by opening each project's TaskStore, which both wrote `store:open` provenance from a GET route
+   * and got the answer wrong: 14 of 25 projects reported `runtimeState: "unknown"` while
+   * `project.config.settings` held the real value for all of them.
+   *
+   * CentralCore is the right owner because it already holds the shared pool
+   * (`attachBackendLayer` adopts the TaskStore layer rather than opening a second one), so this adds
+   * one SELECT to a request that is already talking to that database.
+   *
+   * Returns null when this instance has no backend layer — that is "I could not answer", the honest
+   * signal that lets the caller fall back to the legacy per-store read. Returning `{}` would be a
+   * claim that every project was read, and every project would then render as `unknown`.
+   */
+  async getProjectRuntimeEnabledFlags(): Promise<Record<string, boolean> | null> {
+    this.ensureInitialized();
+    if (!this.asyncLayer) return null;
+    return readProjectRuntimeEnabledFlags(this.asyncLayer.db);
+  }
 
   /**
    * Update a registered project's metadata.

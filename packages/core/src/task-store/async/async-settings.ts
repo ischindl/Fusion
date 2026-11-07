@@ -122,6 +122,43 @@ export async function readProjectSettings(
   return (row.settings as Record<string, unknown> | null) ?? null;
 }
 
+/*
+FNXC:ProjectRuntimeOff 2026-11-07-20:20 (RUFU-871):
+The projects projection needs the operator's runtime-unload flag for EVERY registered project in one
+request. Doing that per project meant opening a TaskStore per project inside a GET route — a
+side-effecting `store:open` write in a read path — and it was wrong as well as expensive: measured in
+production, 14 of 25 projects answered `runtimeState: "unknown"` because their store would not open,
+while `project.config` held the real value for all 25. `project.config` is keyed per project since
+MultiProjectIsolation 2026-07-11, so the whole answer is ONE unscoped read over this table.
+
+The flag is extracted in SQL (`settings ->> 'runtimeEnabled'`) rather than returning settings blobs:
+a project settings document carries prompt overrides and provider configuration, and a read route
+must not pull 25 of those into memory to project one boolean.
+
+Absent key means ENABLED, the gate's own default (`isProjectRuntimeEnabled` reads absent as enabled),
+so a row that exists but never wrote the flag answers `true`. A project with NO config row is
+absent from the result rather than defaulted: "no row" is not "the row says on", and the caller
+answers `unknown` for it.
+*/
+export async function readProjectRuntimeEnabledFlags(
+  handle: AsyncDataLayer["db"] | DbTransaction,
+): Promise<Record<string, boolean>> {
+  const rows = await handle
+    .select({
+      projectId: schema.project.config.projectId,
+      runtimeEnabled: sql<string | null>`${schema.project.config.settings} ->> 'runtimeEnabled'`,
+    })
+    .from(schema.project.config);
+
+  const flags: Record<string, boolean> = {};
+  for (const row of rows) {
+    // SQLite-parity writes leave `project_id` at the '' default; it names no registered project.
+    if (!row.projectId) continue;
+    flags[row.projectId] = row.runtimeEnabled !== "false";
+  }
+  return flags;
+}
+
 /**
  * FNXC:TaskStoreSettings 2026-06-24-15:15:
  * Write (upsert) the project config row. The config table is a singleton
