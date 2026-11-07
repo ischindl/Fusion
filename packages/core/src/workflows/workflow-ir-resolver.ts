@@ -496,6 +496,153 @@ export async function resolveTaskPlanningPrompt(
   return resolveTaskSeamPrompt(store, taskId, "planning", irCache);
 }
 
+/*
+FNXC:WorkflowPromptOverrideMemo 2026-11-07-15:50 (RUFU-871):
+The prompt-override read is the SECOND-hottest statement in the process. Sampling `pg_stat_activity`
+inside a single `/api/tasks/page` request saw 243 `task_workflow_selection` selects AND 69
+`select "overrides" from "project"."workflow_prompt_overrides"` — ~500 DB statements per second, across
+1107 scheduler passes averaging 50–183 s each. The shape that produces it: every resolution of a
+BUILT-IN workflow applies project-scoped overrides, and the override-applied IR is only memoized in
+the caller's `irCache`, so a caller that owns no pass cache (the same ~50 sites RUFU-871 measured for
+selections — self-healing sweeps, the agent heartbeat, the merger, notification service, trackers)
+paid one overrides SELECT per card. That is the N+1 the selection memo left behind one layer down.
+
+Deliberately NOT a second TTL. The memo reuses `uncachedSelectionMemoTtlMs` — the same
+`FUSION_WORKFLOW_SELECTION_MEMO_MS` knob and the same `setSelectionMemoTtlMsForTests` accessor — because
+the two memos guard one request path and an operator tuning it must not have to reason about two
+numbers, and `0` must disable both or neither. Two TTL sources is how a memo ends up serving stale text
+while its sibling is fresh.
+
+Epoch bound is `workflowDefinitionEpoch()`, NOT `workflowSelectionEpoch()`: an override map is a
+fact about the workflow definition, so the counter that moves when a definition (or an override) is
+written is the one that invalidates it. The store-side counterpart is `updateWorkflowPromptOverrides`
+bumping that epoch — without it this memo would just move the existing
+`EpochedWorkflowIrCache` staleness bug (override-applied built-in IRs keyed by
+`workflowId\u0000projectId`, invalidated only on create/update/deleteWorkflowDefinition, so an operator
+editing a prompt override left long-lived caches serving the previous text) one layer down.
+
+Only the ASYNC reader is memorized. The sync reader is the SQLite/embedder path where the value is
+already in-process, so wrapping it would add a bound with no saving; it stays byte-identical and
+live-per-call. A rejected read is never remembered — serving `{}` for a transient PostgreSQL failure
+would silently drop an operator's prompts for the whole TTL.
+*/
+
+/** Distinct (workflow, project) pairs held at once. The key space is workflows × projects, not cards,
+ *  so this ceiling is far above any real deployment and exists only to bound worst-case retention. */
+export const PROMPT_OVERRIDES_MEMO_MAX = 1024;
+
+/** The store surface `resolveWorkflowIrById` needs: one definition reader plus, for built-in workflows,
+ *  the project scope and its prompt-override readers. */
+export type WorkflowIrDefinitionStore =
+  Pick<WorkflowIrResolverStore, "getWorkflowDefinition">
+  & Partial<Pick<WorkflowIrResolverStore, "getWorkflowSettingsProjectId" | "getWorkflowPromptOverrides" | "getWorkflowPromptOverridesAsync">>;
+
+interface PromptOverridesMemoEntry {
+  overrides: Record<string, string>;
+  /** Definition epoch the map was read under; a local override/definition write makes it a miss. */
+  epoch: number;
+  at: number;
+}
+
+/** Keyed weakly by store, so a per-test fake can never read another store's overrides and a project
+ *  scope's map dies with its store. Entry values are handed out as-is: `applyPromptOverridesToIr`
+ *  reads the map and never mutates it. */
+const promptOverridesMemo = new WeakMap<WorkflowIrDefinitionStore, Map<string, PromptOverridesMemoEntry>>();
+
+/** -1 means the store exposes no definition epoch, so the entry is bounded by TTL alone. */
+function promptDefinitionEpochOf(store: WorkflowIrDefinitionStore): number {
+  const epoch = (store as { workflowDefinitionEpoch?: () => number }).workflowDefinitionEpoch?.();
+  return typeof epoch === "number" ? epoch : -1;
+}
+
+function rememberPromptOverrides(store: WorkflowIrDefinitionStore, key: string, entry: PromptOverridesMemoEntry): void {
+  let memo = promptOverridesMemo.get(store);
+  if (!memo) {
+    memo = new Map<string, PromptOverridesMemoEntry>();
+    promptOverridesMemo.set(store, memo);
+  }
+  memo.set(key, entry);
+  // Insertion order is the eviction order: losing the oldest project is cheaper than losing the memo.
+  while (memo.size > PROMPT_OVERRIDES_MEMO_MAX) {
+    const oldest = memo.keys().next();
+    if (oldest.done) break;
+    memo.delete(oldest.value);
+  }
+}
+
+/** Entries currently held — an operator-facing debug signal, never a decision input. */
+export function promptOverridesMemoSizeForStore(store: WorkflowIrDefinitionStore): number {
+  return promptOverridesMemo.get(store)?.size ?? 0;
+}
+
+/*
+FNXC:WorkflowPromptOverrideMemo 2026-11-07-15:50 (RUFU-871):
+Hit/miss counters published as census sources, for the reason RUFU-871 already learned twice: store-seam
+read counters cannot answer whether a memo was ever asked, because the cache-owning callers (board
+hydration, the scheduler sweep) never reach it. `/metrics` therefore answers
+"how often does the built-in branch actually go to PostgreSQL for overrides?" directly via
+`fusion_retention_source_entries{source="prompt_override_memo_*"}`. `bytesPerEntry: 0` keeps these rates
+out of `tracked_bytes`, since a counter is not a retained structure.
+*/
+const promptOverridesMemoCounters = { hits: 0, misses: 0, staleEpoch: 0 };
+let promptOverridesMemoCensusRefused = false;
+
+/** Memo decisions taken so far (hits = served without an overrides read). */
+export function promptOverridesMemoStats(): { hits: number; misses: number; staleEpoch: number } {
+  return { ...promptOverridesMemoCounters };
+}
+
+for (const [id, read] of [
+  ["prompt_override_memo_hits", () => promptOverridesMemoCounters.hits],
+  ["prompt_override_memo_misses", () => promptOverridesMemoCounters.misses],
+  ["prompt_override_memo_stale_epoch", () => promptOverridesMemoCounters.staleEpoch],
+] as const) {
+  // A refused registration costs only observability, never the bound itself.
+  if (!registerHostRetentionSource({ id, kind: "counter", bytesPerEntry: 0, read })) {
+    promptOverridesMemoCensusRefused = true;
+  }
+}
+
+/** True when the census refused to take a prompt-override counter (registry ceiling or id collision). */
+export function promptOverridesMemoRegistryRefused(): boolean {
+  return promptOverridesMemoCensusRefused;
+}
+
+/**
+ * One project-scoped prompt-override read, served from the memo while its TTL holds and its definition
+ * epoch is current. Falls straight through for the sync-only (SQLite/embedder) reader.
+ */
+async function readPromptOverridesWithMemo(
+  store: WorkflowIrDefinitionStore,
+  workflowId: string,
+  projectId: string,
+): Promise<Record<string, string>> {
+  const readAsync = store.getWorkflowPromptOverridesAsync;
+  if (!readAsync) return store.getWorkflowPromptOverrides?.(workflowId, projectId) ?? {};
+  if (uncachedSelectionMemoTtlMs <= 0) return readAsync.call(store, workflowId, projectId);
+
+  const key = `${workflowId}\u0000${projectId}`;
+  const epoch = promptDefinitionEpochOf(store);
+  const memo = promptOverridesMemo.get(store);
+  const hit = memo?.get(key);
+  if (hit) {
+    const staleEpoch = epoch >= 0 && hit.epoch !== epoch;
+    if (!staleEpoch && Date.now() - hit.at < uncachedSelectionMemoTtlMs) {
+      promptOverridesMemoCounters.hits += 1;
+      return hit.overrides;
+    }
+    // A write this process made, versus a TTL lapse, are reported separately: one is a missing bump,
+    // the other is the documented bound on a write made by another process.
+    if (staleEpoch) promptOverridesMemoCounters.staleEpoch += 1;
+    memo!.delete(key);
+  }
+  promptOverridesMemoCounters.misses += 1;
+  const overrides = await readAsync.call(store, workflowId, projectId);
+  // Reached only after the read resolved, so a failure is retried by the next caller, not memoized.
+  rememberPromptOverrides(store, key, { overrides, epoch, at: Date.now() });
+  return overrides;
+}
+
 /**
  * Resolve a workflow IR by its id (built-in or custom).
  *
@@ -504,7 +651,7 @@ export async function resolveTaskPlanningPrompt(
  *   sweep. Hits short-circuit before any builtin/db lookup.
  */
 export async function resolveWorkflowIrById(
-  store: Pick<WorkflowIrResolverStore, "getWorkflowDefinition"> & Partial<Pick<WorkflowIrResolverStore, "getWorkflowSettingsProjectId" | "getWorkflowPromptOverrides" | "getWorkflowPromptOverridesAsync">>,
+  store: WorkflowIrDefinitionStore,
   requestedWorkflowId: string,
   irCache?: Map<string, WorkflowIr>,
   definitionReadTally?: WorkflowDefinitionReadTally,
@@ -522,7 +669,13 @@ export async function resolveWorkflowIrById(
       const fellBackToDefault = !builtin?.ir;
       const ir = builtin?.ir ?? defaultCodingWorkflowIr();
       const resolved = typeof ir === "string" ? parseWorkflowIr(ir) : ir;
-      const overrides = projectId ? await (store.getWorkflowPromptOverridesAsync?.(workflowId, projectId) ?? store.getWorkflowPromptOverrides?.(workflowId, projectId)) : undefined;
+      /*
+      FNXC:WorkflowPromptOverrideMemo 2026-11-07-15:50 (RUFU-871):
+      Memoized here, on the `irCache`-miss branch, and nowhere else: a pass cache that holds the
+      override-applied IR short-circuits above this line, so a cache-owning caller never reaches the
+      memo and keeps its established live-per-call behaviour within one pass.
+      */
+      const overrides = projectId ? await readPromptOverridesWithMemo(store, workflowId, projectId) : undefined;
       const effective = applyPromptOverridesToIr(resolved, overrides);
       const answer = fellBackToDefault ? markFellBack(effective) : effective;
       irCache?.set(cacheKey, answer);

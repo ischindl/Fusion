@@ -2916,7 +2916,20 @@ updates: { title?: string; description?: string; prompt?: string; worktree?: str
 
 /** non-string, empty, or whitespace value deletes that nodeId override, which */
   async updateWorkflowPromptOverrides( workflowId: string, projectId: string, patch: Record<string, string | null | undefined>, ): Promise<Record<string, string>> {
-    return updateWorkflowPromptOverridesImpl(this, workflowId, projectId, patch);
+    /*
+    FNXC:WorkflowPromptOverrideMemo 2026-11-07-15:50 (RUFU-871):
+    An override write is a workflow-definition write. `EpochedWorkflowIrCache` (RUFU-584) keys
+    override-applied BUILT-IN IRs by `workflowId\u0000projectId` but was invalidated only on
+    create/update/deleteWorkflowDefinition, so an operator editing a prompt in the workflow editor left
+    the long-lived self-healing batch cache serving the PREVIOUS prompt text for the rest of its life —
+    a stale-cache defect, not merely a missing memo invalidation. Bumping the definition epoch here (the
+    same seam shape as `create/update/deleteWorkflowDefinition` above) closes both: the epoch-guarded IR
+    cache discards its entries, and the resolver's prompt-override memo drops its entry on the next read.
+    Bumped after the write settles, so a failed patch never invalidates a still-correct cache.
+    */
+    const next = await updateWorkflowPromptOverridesImpl(this, workflowId, projectId, patch);
+    this.bumpWorkflowDefinitionEpoch();
+    return next;
   }
   async updateWorkflowSettingValues( workflowId: string, projectId: string, patch: Record<string, unknown>, changedBy?: import("./types.js").ConfigChangedBy, ): Promise<Record<string, unknown>> {
     return updateWorkflowSettingValuesImpl(this, workflowId, projectId, patch, changedBy);
