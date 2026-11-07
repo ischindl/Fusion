@@ -75,7 +75,7 @@ export async function runPluginColumnTransitionHooksImpl(store: TaskStore, taskI
     const writeMarker = async (remainingHookIds: string[]): Promise<void> => {
       try {
         const marker = makeTransitionPending(toColumn, remainingHookIds, startedAt);
-                await writeTransitionPendingAsync(store.asyncLayer!.db, taskId, marker);
+                await writeTransitionPendingAsync(store.asyncLayer!.db, taskId, marker, store.asyncLayer?.projectId);
 
       } catch {
         // Marker bookkeeping is best-effort; proceed to run the hooks regardless.

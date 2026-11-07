@@ -1059,18 +1059,26 @@ export async function recoverStaleTransitionPendingImpl(store: TaskStore): Promi
      * and re-run logic below is backend-agnostic.
      */
     const backend = store.backendMode ? store.asyncLayer!.db : null;
+    /*
+    FNXC:TaskListReadProjectScope 2026-11-07-01:34 (RUFU-871):
+    `project.tasks` is one shared table and task ids are project-local, so an unscoped
+    marker scan handed this sweep every project's pending markers — it then re-ran the
+    foreign post-commit hooks and its clear nulled the foreign row's marker too. The
+    bound partition is threaded into each statement instead of relying on the caller.
+    */
+    const projectId = store.asyncLayer?.projectId;
     const readMarker = async (taskId: string) =>
-      backend ? readTransitionPendingAsync(backend, taskId) : readTransitionPending(store.db, taskId);
+      backend ? readTransitionPendingAsync(backend, taskId, projectId) : readTransitionPending(store.db, taskId);
     const clearMarker = async (taskId: string) => {
       if (backend) {
-        await clearTransitionPendingAsync(backend, taskId);
+        await clearTransitionPendingAsync(backend, taskId, projectId);
       } else {
         clearTransitionPending(store.db, taskId);
       }
     };
 
     const rows: Array<{ id: string }> = backend
-      ? (await listTransitionPendingTaskIdsAsync(backend)).map((id) => ({ id }))
+      ? (await listTransitionPendingTaskIdsAsync(backend, projectId)).map((id) => ({ id }))
       : store.db
         .prepare(
           `SELECT id FROM tasks WHERE transitionPending IS NOT NULL AND transitionPending != '' AND deletedAt IS NULL`,

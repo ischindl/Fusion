@@ -1497,6 +1497,9 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
           tx,
           id,
           makeTransitionPending(toColumn, ["default-workflow:postCommit"], Date.parse(movedAt) || Date.now()),
+          /* FNXC:TaskListReadProjectScope 2026-11-07-01:34 (RUFU-871): task ids repeat across
+             projects, so the marker write carries the partition this store is bound to. */
+          store.asyncLayer?.projectId,
         );
       }
 
@@ -1813,7 +1816,7 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
         }
       }
       try {
-                await clearTransitionPendingAsync(store.asyncLayer!.db, id);
+                await clearTransitionPendingAsync(store.asyncLayer!.db, id, store.asyncLayer?.projectId);
 
       } catch {
         // Clearing is best-effort; the marker recovery sweep is the backstop.

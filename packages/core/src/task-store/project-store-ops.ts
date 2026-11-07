@@ -26,7 +26,7 @@ import type {WorkflowMovePolicyInput} from "../workflows/workflow-extension-type
 import "../builtin-traits.js";
 import {normalizeWorkflowIcon, type WorkflowDefinition, type WorkflowDefinitionInput} from "../workflows/workflow-definition-types.js";
 import type {AsyncDataLayer, DbTransaction} from "../postgres/data-layer.js";
-import {projectScopeFor, recordRunAuditEventWithinTransaction} from "../postgres/data-layer.js";
+import {projectScopeFor, recordRunAuditEventWithinTransaction, taskProjectScope} from "../postgres/data-layer.js";
 import {EvalStore} from "../eval/eval-store.js";
 import {AsyncEvalStore} from "../async-stores/async-eval-store.js";
 import {BackwardCompat, ProjectRequiredError} from "../central/migration.js";
@@ -491,9 +491,18 @@ export async function listStrandedRefinementsImpl(store: TaskStore, options?: { 
       : defaultFreshnessThresholdMs;
 
     const layer = store.asyncLayer!;
+    /*
+    FNXC:TaskListReadProjectScope 2026-11-07-01:34 (RUFU-871):
+    This is a whole-table list read: it selected EVERY column of every `triage`-lane row and
+    hydrated each into a `Task`. On the shared `project.tasks` table that pulled other
+    projects' cards into this project's intake panel (and into this process's heap) — task ids
+    are project-local, so a foreign same-id row was indistinguishable from a real stranded
+    refinement. The bound partition belongs in the SELECT, not in the caller.
+    */
     const pgRows = await layer.db.select()
       .from(schema.project.tasks)
       .where(and(
+        taskProjectScope(layer),
         isNull(schema.project.tasks.deletedAt),
         eq(schema.project.tasks.sourceType, 'task_refine'),
         eq(schema.project.tasks.column, 'triage'),
@@ -1104,6 +1113,19 @@ export function countActiveInCapacitySlotSyncImpl(store: TaskStore, params: { ta
 export async function countActiveInCapacitySlotAsyncImpl(store: TaskStore, params: { tx: DbTransaction; targetColumn: string; workflowId: string; countPending: boolean; excludeTaskId: string; }): Promise<number> {
     const { tx, targetColumn, workflowId, countPending, excludeTaskId } = params;
     const requestedWorkflowId = resolveCapacityPoolId(workflowId);
+    /*
+    FNXC:TaskListReadProjectScope 2026-11-07-01:34 (RUFU-871):
+    This candidate scan is the WIP/capacity arbitration behind every column crossing, and it
+    carried no project predicate: on the shared `project.tasks` table another project's
+    occupants were counted against this project's slot, so a busy sibling could hold this
+    project's cards in `hold` forever. Both halves are fixed here:
+      - the task scan is scoped to the store's bound partition;
+      - the `task_workflow_selection` join is correlated on `project_id` as well as `task_id`
+        (selection identity is project-local, exactly as `readCompletedTaskPage` already joins),
+        so a foreign selection row can no longer answer for a local task's workflow.
+    An unbound layer keeps the pre-existing cross-project read (`projectScopeFor` no-ops).
+    */
+    const boundProjectId = store.asyncLayer?.projectId;
     const rows = await tx
       .select({
         id: schema.project.tasks.id,
@@ -1115,10 +1137,14 @@ export async function countActiveInCapacitySlotAsyncImpl(store: TaskStore, param
       .from(schema.project.tasks)
       .leftJoin(
         schema.project.taskWorkflowSelection,
-        eq(schema.project.taskWorkflowSelection.taskId, schema.project.tasks.id),
+        and(
+          eq(schema.project.taskWorkflowSelection.taskId, schema.project.tasks.id),
+          eq(schema.project.taskWorkflowSelection.projectId, schema.project.tasks.projectId),
+        ),
       )
       .where(
         and(
+          projectScopeFor(schema.project.tasks.projectId, boundProjectId),
           isNull(schema.project.tasks.deletedAt),
           ne(schema.project.tasks.id, excludeTaskId),
           or(
