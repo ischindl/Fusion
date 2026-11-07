@@ -1180,6 +1180,9 @@ export async function listTasksImpl(store: TaskStore, options?: ListTasksOptions
     const deriveFeed = deriveUiSignals
       ? await buildListDeriveFeed(store, filteredRows, options)
       : null;
+    /* FNXC:BoardCostBadge 2026-11-07-13:55 (RUFU-871): resolved ONCE for the pass, before the
+       per-row map, so a board feed never pays a settings lookup per card. */
+    const boardCostVisible = options?.compactBoardFeed ? await resolveBoardFeedCostVisibility(store) : false;
     /*
     FNXC:TaskLogSideTable 2026-11-01-19:25 (RUFU-312):
     A page whose rows were read without the log column still has to answer the log-derived signals (the stall
@@ -1384,7 +1387,7 @@ export async function listTasksImpl(store: TaskStore, options?: ListTasksOptions
         task.timedExecutionMs = logLoaded ? store.computeTimedExecutionMs(task.log) : timingTotalMs;
         task.log = [];
       }
-      if (options?.compactBoardFeed) compactBoardFeedRow(task);
+      if (options?.compactBoardFeed) compactBoardFeedRow(task, { includeTokenUsage: boardCostVisible });
       return finalizeSlimListTask(store, task, slim, stepsDeclared);
     }));
     // Sort by createdAt, then by numeric ID suffix for tie-breaking
@@ -1522,9 +1525,100 @@ function compactBoardStepResult(result: BoardStepResult): BoardStepResult {
   return carried;
 }
 
-function compactBoardFeedRow(task: Task): void {
+/*
+FNXC:BoardPayloadBudget 2026-11-07-13:55 (RUFU-871):
+Byte census of the measured board payload (authenticated `GET /api/tasks/page?limit=100` =
+18.4 s / 2 214 940 B) put 83 % of the first download in bodies a board row never renders:
+`description` 816 kB (40 %), `comments` 571 kB (28 %), `sourceMetadata` 317 kB (15.5 %),
+`stepReports` 84 kB, `tokenUsage` 47 kB, `retrySummary` 22 kB, `recommendations` 10 kB,
+`steeringComments` 10 kB. A `TaskCard` renders none of them: the spec body only seeds the
+inline editor, the comment / steering / step-report / recommendation bodies live in
+detail-modal tabs that issue their own reads (`fetchTaskComments`, `fetchTaskDetail`,
+`fetchTaskRecommendations`), and `retrySummary` renders only its `total` badge.
+
+`description` stays a BOUNDED PREVIEW rather than a drop or a silent truncation. `TaskCard`
+seeds its inline editor from `task.description` and re-seeds on prop change, so a card
+holding a cut-off spec would save the cut-off value straight back and destroy the real body.
+The list row therefore carries at most `BOARD_DESCRIPTION_PREVIEW_CHARS` characters plus
+`descriptionTruncated: true`; the editor fetches the full body from `GET /tasks/:id` and will
+not let a save through until that read landed.
+
+`tokenUsage` ships only when the RESOLVED project setting `showCostBadgeOnCards` is on —
+its one board consumer is the opt-in spend chip at `TaskCard`'s `cardCost`.
+*/
+
+/** Hard ceiling on the spec text a board row may carry. 400 chars ~ 1.2 kB worst case per card. */
+export const BOARD_DESCRIPTION_PREVIEW_CHARS = 400;
+
+/*
+FNXC:BoardSourceMetadataAllowlist 2026-11-07-13:55 (RUFU-871):
+`sourceMetadata` is an unbounded write-side junk drawer (15.5 % of the measured board
+payload), so the board feed keeps an allowlist instead of the whole blob. Every key below has
+a named board-side reader: badge/label text (`agentName`, `issueUrl`), duplicate/revert
+provenance the card links to (`nearDuplicateOf`, `nearDuplicateDismissed`, `duplicateSource`,
+`revertOf`, `revertedAt`, `restoredAt`), cross-project handoff labels (`handoffFrom`,
+`transferredTo`), the RUFU-393 WIP-admission stall chip (`wipAdmissionStall`), and
+`fusionBranchContext`, which `packages/core/src/task-store/serialization.ts` turns into
+`Task.branchContext` for the foreach branch row. Anything else is engine bookkeeping and is
+never rendered from a list row; the full blob stays on `GET /tasks/:id`.
+*/
+export const BOARD_SOURCE_METADATA_KEYS = [
+  "agentName",
+  "issueUrl",
+  "nearDuplicateOf",
+  "nearDuplicateDismissed",
+  "duplicateSource",
+  "revertOf",
+  "revertedAt",
+  "restoredAt",
+  "handoffFrom",
+  "transferredTo",
+  "wipAdmissionStall",
+  "fusionBranchContext",
+] as const;
+
+function projectBoardSourceMetadata(sourceMetadata: Task["sourceMetadata"]): Task["sourceMetadata"] {
+  if (!sourceMetadata || typeof sourceMetadata !== "object") return sourceMetadata;
+  const projected: Record<string, unknown> = {};
+  for (const key of BOARD_SOURCE_METADATA_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(sourceMetadata, key)) projected[key] = sourceMetadata[key];
+  }
+  return projected;
+}
+
+/*
+FNXC:BoardCostBadge 2026-11-07-13:55 (RUFU-871):
+One resolved-setting read per list pass, never per card: `getSettingsFast` answers from the
+store's merged settings cache, so the decision costs one lookup against the 47 kB it saves on
+the default (`showCostBadgeOnCards: false`) board feed. A store that cannot answer keeps the
+field, because a missing spend chip is a visible regression and a missing setting is not.
+*/
+export async function resolveBoardFeedCostVisibility(store: TaskStore): Promise<boolean> {
+  try {
+    const settings = await store.getSettingsFast();
+    return settings.showCostBadgeOnCards === true;
+  } catch {
+    return true;
+  }
+}
+
+export function compactBoardFeedRow(task: Task, options?: { includeTokenUsage?: boolean }): void {
   task.workflowStepResults = (task.workflowStepResults ?? []).map(compactBoardStepResult);
   task.summary = undefined;
+  const description = typeof task.description === "string" ? task.description : "";
+  if (description.length > BOARD_DESCRIPTION_PREVIEW_CHARS) {
+    task.description = description.slice(0, BOARD_DESCRIPTION_PREVIEW_CHARS);
+    task.descriptionTruncated = true;
+  }
+  task.comments = undefined;
+  task.steeringComments = undefined;
+  task.stepReports = undefined;
+  task.recommendations = undefined;
+  /* The board retry badge renders `total` alone; the twelve sub-counts are detail-modal
+     figures and 22 kB of the measured feed. */
+  if (task.retrySummary) task.retrySummary = { total: task.retrySummary.total };
+  task.sourceMetadata = projectBoardSourceMetadata(task.sourceMetadata);
+  if (options?.includeTokenUsage === false) task.tokenUsage = undefined;
 }
 
 export async function listCurrentTasksPageImpl(store: TaskStore, options: { limit?: number; cursor?: string; query?: string; columns?: readonly string[] } = {}): Promise<TaskListPage> {
@@ -1820,7 +1914,8 @@ export async function listCompletedTasksImpl(
   badges (`computeRetrySummary` counts `priorAttempts`) are computed from the real bodies first.
   Omitted means the full shape: engine consumers that read reviewer bodies keep getting them.
   */
-  if (options?.compactBoardFeed) for (const task of tasks) compactBoardFeedRow(task);
+  const doneFeedCostVisible = options?.compactBoardFeed ? await resolveBoardFeedCostVisibility(store) : false;
+  if (options?.compactBoardFeed) for (const task of tasks) compactBoardFeedRow(task, { includeTokenUsage: doneFeedCostVisible });
   const last = tasks.at(-1);
   const completionAt = last ? (last.columnMovedAt ?? last.updatedAt ?? last.createdAt) : undefined;
   const numericSuffix = last?.id.match(/-([0-9]+)$/)?.[1] ?? "0";
@@ -2095,6 +2190,10 @@ async function hydrateSearchTaskRows(
 ): Promise<Task[]> {
 const now = Date.now();
 const settings = await store.getSettingsFast();
+/* FNXC:BoardCostBadge 2026-11-07-13:55 (RUFU-871): this pass already read the merged settings
+   once for the stall signals; the spend-chip decision reuses that same read rather than adding
+   one per row. */
+const boardCostVisible = settings.showCostBadgeOnCards === true;
 const mergeQueuedTaskIds = await store.getMergeQueuedTaskIdsAsync();
 // Shared across the page so one workflow is read once, not once per hit.
 const searchPassIrCache = new Map<string, WorkflowIr>();
@@ -2179,7 +2278,7 @@ const searchRollups = logFreeRowIds.length > 0 && searchLayer
     task.log = [];
   }
   // FNXC:BoardFeedCompaction 2026-09-17-14:49: same post-derivation drop as the board lane path.
-  if (compactBoardFeed) compactBoardFeedRow(task);
+  if (compactBoardFeed) compactBoardFeedRow(task, { includeTokenUsage: boardCostVisible });
   if (task.steps.length > 0) {
     return task;
   }

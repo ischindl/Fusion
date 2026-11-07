@@ -1513,7 +1513,8 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         // shape as `GET /tasks/page`, which has compacted its feed since FNXC:BoardFeedCompaction
         // 2026-09-17-14:49. Measured live: this endpoint returned 10.02 MB for 327 RunFusion cards
         // in 21.7 s, of which 8.07 MB came from the Done lane and 4.6 MB of that was exactly the
-        // fields `compactBoardFeedRow` drops (`workflowStepResults` bodies 2.35 MB + `summary`
+        // fields `compactBoardFeedRow` (packages/core/src/task-store/reads.ts, the single owner of
+        // the board row projection) drops (`workflowStepResults` bodies 2.35 MB + `summary`
         // 2.26 MB). A caller that needs reviewer bodies asks for them on `GET /api/tasks/:id`.
         /*
         FNXC:TaskLogProjections 2026-10-10-20:15 (RUFU-615): `excludeLog` is what the comment above this

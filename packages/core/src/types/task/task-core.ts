@@ -2116,6 +2116,14 @@ export interface Task {
   summary?: string;
   /** Bounded out-of-scope suggestions accepted with successful completion only. */
   recommendations?: TaskRecommendation[];
+  /*
+  FNXC:BoardPayloadBudget 2026-11-07-13:55 (RUFU-871):
+  Set by the board feed projection when `description` is a truncated preview rather than the
+  stored spec body. It exists so a card can tell "the whole body" from "the first 400
+  characters" and refuse to save the short form back over the real spec; the full body is one
+  `GET /tasks/:id` away. Never written to the task row.
+  */
+  descriptionTruncated?: boolean;
   /** ISO-8601 timestamp of when the task last entered its current column.
    *  Used to sort cards within a column so that recently-moved cards appear at the top. */
   columnMovedAt?: string;
@@ -2245,18 +2253,25 @@ export function isWorkspaceTask(task: Pick<Task, "workspaceWorktrees">): boolean
   return !!worktrees && Object.keys(worktrees).length > 0;
 }
 
+/*
+FNXC:BoardPayloadBudget 2026-11-07-13:55 (RUFU-871):
+Only `total` is required. The board row renders the retry badge (`total`) alone and ships just
+that one figure; the per-source breakdown is a detail-modal read (`TaskDetailModal` already
+answers every absent sub-count with 0). A full `computeRetrySummary()` result still carries
+every field, so engine and detail consumers are unchanged.
+*/
 export type RetrySummary = {
-  stuckKill: number;
-  recovery: number;
-  taskDone: number;
-  worktreeSession: number;
-  workflowStep: number;
-  verification: number;
-  postReviewFix: number;
-  mergeConflict: number;
-  branchConflict: number;
-  reviewerContext: number;
-  reviewerFallback: number;
+  stuckKill?: number;
+  recovery?: number;
+  taskDone?: number;
+  worktreeSession?: number;
+  workflowStep?: number;
+  verification?: number;
+  postReviewFix?: number;
+  mergeConflict?: number;
+  branchConflict?: number;
+  reviewerContext?: number;
+  reviewerFallback?: number;
   total: number;
 };
 

@@ -1409,6 +1409,18 @@ function TaskCardComponent({
   const [isEditing, setIsEditing] = useState(false);
   const [editDescription, setEditDescription] = useState(task.description || "");
   /*
+  FNXC:BoardPayloadBudget 2026-11-07-13:55 (RUFU-871):
+  A board row's `description` may be a bounded preview (`task.descriptionTruncated`). These
+  three pieces of state keep the editor honest: `descriptionLoading` blocks typing while the
+  full body is fetched, `fullDescriptionLoaded` is the proof the draft holds the stored body,
+  and `fullDescriptionTaskIdRef` lets the re-seed effect tell "this card already has the full
+  body" from "a new card arrived".
+  */
+  const [descriptionLoading, setDescriptionLoading] = useState(false);
+  const [fullDescriptionLoaded, setFullDescriptionLoaded] = useState(!task.descriptionTruncated);
+  const descriptionLoadSeqRef = useRef(0);
+  const fullDescriptionTaskIdRef = useRef<string | null>(null);
+  /*
   FNXC:WorkflowResolvedColumns 2026-07-29-00:00 (U12 — R8 drift conversion):
   Column ROLES, resolved from this card's own workflow traits. Every `task.column ===
   "triage"` in this file previously asked "is this the planning lane?" by naming the
@@ -1600,7 +1612,15 @@ function TaskCardComponent({
   }, []);
 
   // Reset edit state when task changes
+  /*
+  FNXC:BoardPayloadBudget 2026-11-07-13:55 (RUFU-871):
+  A board row carries at most `BOARD_DESCRIPTION_PREVIEW_CHARS` of the spec plus
+  `descriptionTruncated`, so the prop is not always the stored body. Once this card has loaded
+  the full body for the current task id, a row refresh must not drop the draft back to the
+  preview - the next save would have written the cut-off text over the real spec.
+  */
   useEffect(() => {
+    if (fullDescriptionTaskIdRef.current === task.id) return;
     setEditDescription(task.description || "");
   }, [task.id, task.description]);
 
@@ -2825,12 +2845,45 @@ function TaskCardComponent({
     if (!canEdit || isSaving) return;
     setIsEditing(true);
     setEditDescription(task.description || "");
-  }, [canEdit, isSaving, task.description]);
+    if (!task.descriptionTruncated) {
+      setFullDescriptionLoaded(true);
+      return;
+    }
+    /*
+    FNXC:BoardPayloadBudget 2026-11-07-13:55 (RUFU-871):
+    The list row holds a bounded preview, so opening the editor issues the same single-task
+    detail read the detail modal uses and seeds the draft from the FULL body. While that read is
+    in flight the textarea is disabled - typing into a partial body would produce a draft that
+    cannot be saved honestly. A failed read leaves the editor showing the preview and refuses
+    the save (see `saveChanges`), so a truncated value can never reach the store.
+    */
+    setFullDescriptionLoaded(false);
+    setDescriptionLoading(true);
+    const seq = ++descriptionLoadSeqRef.current;
+    void fetchTaskDetail(task.id, projectId ?? undefined)
+      .then((detail) => {
+        if (seq !== descriptionLoadSeqRef.current) return;
+        setEditDescription(typeof detail.description === "string" ? detail.description : "");
+        fullDescriptionTaskIdRef.current = task.id;
+        setFullDescriptionLoaded(true);
+      })
+      .catch(() => {
+        if (seq !== descriptionLoadSeqRef.current) return;
+        addToast(t("tasks.descriptionLoadFailed", "Could not load the full description for {{taskId}}; retry", { taskId: task.id }), "error");
+      })
+      .finally(() => {
+        if (seq === descriptionLoadSeqRef.current) setDescriptionLoading(false);
+      });
+  }, [canEdit, isSaving, task.description, task.descriptionTruncated, task.id, projectId, addToast, t]);
 
   const exitEditMode = useCallback(() => {
+    descriptionLoadSeqRef.current += 1;
+    fullDescriptionTaskIdRef.current = null;
+    setDescriptionLoading(false);
+    setFullDescriptionLoaded(!task.descriptionTruncated);
     setIsEditing(false);
     setEditDescription(task.description || "");
-  }, [task.description]);
+  }, [task.description, task.descriptionTruncated]);
 
   const hasChanges = useCallback(() => {
     return editDescription !== (task.description || "");
@@ -2838,6 +2891,28 @@ function TaskCardComponent({
 
   const saveChanges = useCallback(async () => {
     if (!onUpdateTask || isSaving) return;
+    /*
+    FNXC:BoardPayloadBudget 2026-11-07-13:55 (RUFU-871):
+    Save is the last place a bounded preview could be written back over the stored spec, so the
+    write is gated on proof that the draft holds the full body. With nothing typed yet the save
+    loads the body into the editor and writes nothing; with a typed edit and no full body the
+    save refuses rather than shipping the preview.
+    */
+    if (task.descriptionTruncated && !fullDescriptionLoaded) {
+      if (editDescription !== (task.description || "")) {
+        addToast(t("tasks.descriptionEditWithoutFullBody", "The full description did not load, so this edit was not saved — retry to protect the spec", "The full description did not load, so this edit was not saved — retry to protect the spec"), "error");
+        return;
+      }
+      try {
+        const detail = await fetchTaskDetail(task.id, projectId ?? undefined);
+        fullDescriptionTaskIdRef.current = task.id;
+        setFullDescriptionLoaded(true);
+        setEditDescription(typeof detail.description === "string" ? detail.description : "");
+      } catch {
+        addToast(t("tasks.descriptionLoadFailed", "Could not load the full description for {{taskId}}; retry", { taskId: task.id }), "error");
+      }
+      return;
+    }
     if (!hasChanges()) {
       exitEditMode();
       return;
@@ -2849,14 +2924,13 @@ function TaskCardComponent({
         description: editDescription.trim() || undefined,
       });
       addToast(t("tasks.updated", "Updated {{taskId}}", { taskId: task.id }), "success");
-      setIsEditing(false);
-    } catch (err) {
+      setIsEditing(false);    } catch (err) {
       addToast(t("tasks.updateFailed", "Failed to update {{taskId}}: {{error}}", { taskId: task.id, error: getErrorMessage(err) }), "error");
       // Stay in edit mode on error so user can retry
     } finally {
       setIsSaving(false);
     }
-  }, [onUpdateTask, task.id, editDescription, isSaving, hasChanges, exitEditMode, addToast]);
+  }, [onUpdateTask, task.id, task.descriptionTruncated, projectId, editDescription, isSaving, fullDescriptionLoaded, hasChanges, exitEditMode, addToast, t]);
 
   const handleDescKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -4053,7 +4127,7 @@ function TaskCardComponent({
             onChange={handleDescChange}
             onKeyDown={handleDescKeyDown}
             onBlur={handleBlur}
-            disabled={isSaving}
+            disabled={isSaving || descriptionLoading}
             rows={4}
           />
           {isSaving && (
