@@ -289,7 +289,14 @@ describe("task-table list scans are registered project-scoped", () => {
   ] as const;
 
   const LIST_SCAN = /\.from\(schema\.project\.tasks\)/g;
-  const PROJECT_PREDICATE = /tasks\.projectId\b|taskProjectScope\s*\(|projectOwnershipPartition\s*\(|projectPartition\s*\(/;
+  /*
+  FNXC:TaskListReadProjectScope 2026-11-07-03:55 (RUFU-871 slice 2):
+  The watched list-read accessor counts as naming the partition because it IS
+  `taskProjectScope` behind the watcher. Widening the accepted spelling adds no leniency: the
+  operand still has to come from somewhere, and the watcher (`noteTaskListProjectScope`) is
+  deliberately NOT accepted here because it records a read without building a predicate.
+  */
+  const PROJECT_PREDICATE = /tasks\.projectId\b|taskProjectScope\s*\(|taskListProjectScope\s*\(|projectOwnershipPartition\s*\(|projectPartition\s*\(/;
   const BY_ID_EQUALITY = /eq\(\s*schema\.project\.tasks\.id\b/;
   const FUNCTION_HEADER = /^(?:export\s+)?(?:async\s+)?function\s+(\w+)/gm;
 

@@ -39,6 +39,10 @@ import {reconcileTaskIdStateAsync} from "../task-store/async/async-allocator.js"
 import {ACTIVE_TASK_FILTER, insertTaskRowInTransaction, isTaskIdConflictError as isPgTaskIdConflictError, readTaskRow} from "./async/async-persistence.js";
 import {resolveWorkflowIrForTask} from "../workflows/workflow-ir-resolver.js";
 import {recordRunAuditEventWithinTransaction} from "../postgres/data-layer.js";
+/* FNXC:TaskListReadProjectScope 2026-11-07-05:20 (RUFU-871 slice 2): the pending-marker sweep
+ * is a whole-table LIST read; the watcher records it because the helper below takes a bare
+ * query handle and cannot see the layer binding itself. */
+import {noteTaskListProjectScope} from "../postgres/task-list-read-scope.js";
 import * as schema from "../postgres/schema/index.js";
 import {diffSettingsForActivity, formatSettingsActivity} from "./settings-activity.js";
 import {LIFECYCLE_ROLE_RANK} from "../workflows/workflow-lifecycle-direction.js";
@@ -1067,6 +1071,17 @@ export async function recoverStaleTransitionPendingImpl(store: TaskStore): Promi
     bound partition is threaded into each statement instead of relying on the caller.
     */
     const projectId = store.asyncLayer?.projectId;
+    /*
+    FNXC:TaskListReadProjectScope 2026-11-07-03:55 (RUFU-871 slice 2):
+    FNXC:TaskListReadProjectScope 2026-11-07-05:20 (RUFU-871 slice 2, staged): this site RECORDS the
+    illegal shape instead of refusing it — see TASK_LIST_READ_SCOPE_ENFORCEMENT in
+    packages/core/src/postgres/task-list-read-scope.ts for the promotion condition.
+    The marker scan below is a whole-table LIST read: unbound on a shared-PostgreSQL layer it
+    hands this sweep every project's pending markers and then clears them. Watched here rather
+    than inside the helper because the helper takes a bare query handle (a transaction has no
+    project binding to read); the SQLite branch is not watched and keeps its local scan.
+    */
+    noteTaskListProjectScope(store.asyncLayer, "listTransitionPendingTaskIds");
     const readMarker = async (taskId: string) =>
       backend ? readTransitionPendingAsync(backend, taskId, projectId) : readTransitionPending(store.db, taskId);
     const clearMarker = async (taskId: string) => {

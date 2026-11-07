@@ -156,6 +156,26 @@ export type RunAuditMutationType =
   lock-step guard compares against `DELIVERY_PIPELINE_RUN_AUDIT_EVENTS`.
   */
   | "runtime:heap-ceiling"
+  /*
+  FNXC:TaskListReadProjectScope 2026-11-07-05:20 (RUFU-871 slice 2, staged):
+  One row per violating READ SITE per 15-minute window when a task LIST read runs on a
+  shared-PostgreSQL layer with no bound project — the shape that pulled other projects'
+  task/log/steering strings into a one-project process (measured 84.6% of heap, 72 341 copies
+  of one foreign sentence). The row is the enumeration the promotion to a hard refusal needs:
+  until production traffic shows the violating call-site set empty or every site bound, the
+  guard records instead of throwing, because a throw with an unmeasurable blast radius on a
+  process that already gets watchdog-killed is a new outage class, not a diagnostic.
+  Metadata is `{ reader, backendMode, enforcement }` — a code-site name, two fixed enums — and
+  never a task id, row content, or payload text: the defect IS this read pulling other
+  projects' content, so a diagnostic that copied it into the audit store would double the leak
+  it reports. Emitted through the FN-9177 bounded core seam, so an absent, throwing, or
+  hanging sink cannot alter the read it is reporting.
+  Deliberately OUTSIDE the curated delivery-pipeline catalogue (RUFU-462's and RUFU-279's
+  exclusion): a read-path diagnostic is not a delivery-pipeline step, so `docs/run-audit.md`
+  documents it in prose and keeps it out of the tables locked to
+  `DELIVERY_PIPELINE_RUN_AUDIT_EVENTS`.
+  */
+  | "task:unbound-list-read"
   | (string & {});
 
 /** Input for recording a run-audit event. */

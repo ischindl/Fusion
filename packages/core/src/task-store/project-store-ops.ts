@@ -26,7 +26,11 @@ import type {WorkflowMovePolicyInput} from "../workflows/workflow-extension-type
 import "../builtin-traits.js";
 import {normalizeWorkflowIcon, type WorkflowDefinition, type WorkflowDefinitionInput} from "../workflows/workflow-definition-types.js";
 import type {AsyncDataLayer, DbTransaction} from "../postgres/data-layer.js";
-import {projectScopeFor, recordRunAuditEventWithinTransaction, taskProjectScope} from "../postgres/data-layer.js";
+import {projectScopeFor, recordRunAuditEventWithinTransaction} from "../postgres/data-layer.js";
+/* FNXC:TaskListReadProjectScope 2026-11-07-05:20 (RUFU-871 slice 2): both task LIST reads in
+ * this module are watched: the stranded-refinement scan takes its operand from the guarded
+ * accessor, the capacity scan notes itself and threads the partition into `projectScopeFor`. */
+import {noteTaskListProjectScope, taskListProjectScope} from "../postgres/task-list-read-scope.js";
 import {EvalStore} from "../eval/eval-store.js";
 import {AsyncEvalStore} from "../async-stores/async-eval-store.js";
 import {BackwardCompat, ProjectRequiredError} from "../central/migration.js";
@@ -502,7 +506,7 @@ export async function listStrandedRefinementsImpl(store: TaskStore, options?: { 
     const pgRows = await layer.db.select()
       .from(schema.project.tasks)
       .where(and(
-        taskProjectScope(layer),
+        taskListProjectScope(layer, 'listStrandedRefinements'),
         isNull(schema.project.tasks.deletedAt),
         eq(schema.project.tasks.sourceType, 'task_refine'),
         eq(schema.project.tasks.column, 'triage'),
@@ -1126,6 +1130,18 @@ export async function countActiveInCapacitySlotAsyncImpl(store: TaskStore, param
     An unbound layer keeps the pre-existing cross-project read (`projectScopeFor` no-ops).
     */
     const boundProjectId = store.asyncLayer?.projectId;
+    /*
+    FNXC:TaskListReadProjectScope 2026-11-07-03:55 (RUFU-871 slice 2):
+    FNXC:TaskListReadProjectScope 2026-11-07-05:20 (RUFU-871 slice 2, staged): this site RECORDS the
+    illegal shape instead of refusing it — see TASK_LIST_READ_SCOPE_ENFORCEMENT in
+    packages/core/src/postgres/task-list-read-scope.ts for the promotion condition.
+    Capacity arbitration is a whole-table candidate scan, so an unbound run of it counts every
+    project's occupants against this project's slot and reads foreign rows into the engine.
+    Watched here rather than through the operand builder because the partition is threaded into
+    `projectScopeFor` by this scan; a store with no async layer is the legacy SQLite backend
+    (isolated by file) and is not watched at all.
+    */
+    noteTaskListProjectScope(store.asyncLayer, 'countActiveInCapacitySlotAsync');
     const rows = await tx
       .select({
         id: schema.project.tasks.id,

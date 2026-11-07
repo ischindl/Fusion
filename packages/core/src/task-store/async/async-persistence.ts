@@ -35,6 +35,10 @@ import * as schema from "../../postgres/schema/index.js";
 import type { AsyncDataLayer, DbTransaction } from "../../postgres/data-layer.js";
 import { isPostgresUniqueError } from "../../db/postgres-errors.js";
 import { taskProjectScope } from "../../postgres/data-layer.js";
+/* FNXC:TaskListReadProjectScope 2026-11-07-05:20 (RUFU-871 slice 2): the LIST reads in this
+ * file take their project operand from the watched accessor, never from the plain no-op
+ * helper, so an unbound shared-PostgreSQL layer is visible in the audit store. */
+import { noteTaskListProjectScope, taskListProjectScope } from "../../postgres/task-list-read-scope.js";
 import {
   taskIntakeDisplayCursorPredicate,
   taskIntakeDisplayOrderBy,
@@ -607,8 +611,12 @@ export async function readTaskRowsBySourceLineage(
   ].filter((predicate): predicate is SQL => predicate !== undefined);
   if (predicates.length === 0) return [];
   /* FNXC:TaskRecommendations 2026-08-13-22:23: SQL pre-narrowing is equivalent to the
-   * existing JS filter; cold archives have no lineage fields and never matched old scans. */
-  const scope = taskProjectScope(layer);
+   * existing JS filter; cold archives have no lineage fields and never matched old scans.
+   *
+   * FNXC:TaskListReadProjectScope 2026-11-07-05:20 (RUFU-871 slice 2): this hydrates a ROW SET,
+   * so it takes its operand from the watched list-read accessor: on the shared task table an
+   * unbound lineage scan returns another project's cards under this project's ids. */
+  const scope = taskListProjectScope(layer, "readTaskRowsBySourceLineage");
   return layer.db.select({
     id: schema.project.tasks.id, title: schema.project.tasks.title, description: schema.project.tasks.description,
     column: schema.project.tasks.column, createdAt: schema.project.tasks.createdAt,
@@ -686,6 +694,17 @@ export async function readCompletedTaskPage(
   if (input.columns.length === 0) {
     return { rows: [], total: 0, counts: { byColumn: {}, byWorkflow: {} } };
   }
+  /*
+  FNXC:TaskListReadProjectScope 2026-11-07-03:55 (RUFU-871 slice 2):
+    FNXC:TaskListReadProjectScope 2026-11-07-05:20 (RUFU-871 slice 2, staged): this site RECORDS the
+    illegal shape instead of refusing it — see TASK_LIST_READ_SCOPE_ENFORCEMENT in
+    packages/core/src/postgres/task-list-read-scope.ts for the promotion condition.
+  The Complete lane is a paged LIST read plus its grouped counts, both over the shared
+  task table. Watched once here, before the read-only transaction opens, so the violating
+  call site is the thing named in the audit store — not the transaction that paged in every
+  project's completed cards.
+  */
+  noteTaskListProjectScope(layer, "readCompletedTaskPage");
   return layer.transaction(async (tx) => {
     const numericSuffix = sql`COALESCE(substring(${schema.project.tasks.id} from '-([0-9]+)$')::numeric, 0)`;
     const completionAt = sql`COALESCE(${schema.project.tasks.columnMovedAt}, ${schema.project.tasks.updatedAt}, ${schema.project.tasks.createdAt})`;
@@ -786,7 +805,18 @@ export async function readLiveTaskRows(
   // claiming/executing in the wrong repo — another project's tasks on the shared
   // embedded-PG cluster. `and(...)` drops undefined operands, so the scope
   // collapses to just the live filter when the layer is project-agnostic.
-  const projectScope = taskProjectScope(layer);
+  /*
+  FNXC:TaskListReadProjectScope 2026-11-07-03:55 (RUFU-871 slice 2):
+    FNXC:TaskListReadProjectScope 2026-11-07-05:20 (RUFU-871 slice 2, staged): this site RECORDS the
+    illegal shape instead of refusing it — see TASK_LIST_READ_SCOPE_ENFORCEMENT in
+    packages/core/src/postgres/task-list-read-scope.ts for the promotion condition.
+  This is THE board/engine list read (`store.listTasks()`), so it is the read whose unbound
+  shape must be visible: returning every project's rows is what retained foreign
+  task/log/steering strings in a one-project dashboard process. A layer with no backend
+  descriptor (legacy SQLite, which isolates by file) keeps the no-op cross-project read and
+  emits nothing.
+  */
+  const projectScope = taskListProjectScope(layer, "readLiveTaskRows");
   /*
   FNXC:TaskStoreReadsPerf 2026-07-11 (PR #1793 review):
   Push the board filters and pagination into SQL. The previous shape read the
@@ -903,10 +933,12 @@ export async function countLiveTasks(
       ? notInArray(schema.project.tasks.column, [...options.excludeColumns])
       : undefined;
   // FNXC:MultiProjectIsolation 2026-07-10: scope live counts to the bound project.
+  // FNXC:TaskListReadProjectScope 2026-11-07-03:55 (RUFU-871 slice 2): the count scans the
+  // same shared table, so an unbound shared-PostgreSQL layer must not answer it either.
   const rows = await layer.db
     .select({ count: sql<number>`count(*)::int` })
     .from(schema.project.tasks)
-    .where(and(ACTIVE_TASK_FILTER, taskProjectScope(layer), columnScope));
+    .where(and(ACTIVE_TASK_FILTER, taskListProjectScope(layer, "countLiveTasks"), columnScope));
   return rows[0]?.count ?? 0;
 }
 

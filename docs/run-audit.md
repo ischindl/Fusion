@@ -1076,6 +1076,47 @@ than as a table row. It is declared in `@fusion/core`'s `RunAuditMutationType` �
 RUFU-259's dashboard-emitted `task:comment-delivery` pair — because the emitter reaches its sink through
 the core seam, not the engine's `DatabaseMutationType`.
 
+### The task list read that was not bound to a project (RUFU-871 slice 2, staged)
+
+`task:unbound-list-read` records a task LIST read executed on a shared-PostgreSQL data layer that
+carries no bound project. `project.tasks` is one table partitioned by `project_id` and task identity is
+project-local, so that read returns every project's cards into a process that serves one — the measured
+mechanism behind a dashboard that grew with uptime at zero live execution (72 341 retained copies of one
+foreign project's sentence; strings were 84.6% of the heap). Slice 1 put the partition into the query of
+every list read it enumerated; this row is how the reads nobody enumerated yet get counted.
+
+It is a **record**, not a refusal, and that staging is the contract. `TASK_LIST_READ_SCOPE_ENFORCEMENT`
+in `packages/core/src/postgres/task-list-read-scope.ts` is the single flip point, and the promotion
+condition is written beside it: promote to `"throw"` only once production traffic shows the violating
+call-site set is empty or every site is bound. The violating set has been enumerated by hand for three
+reads (slice 1) and not for the rest; the PostgreSQL suite's own harness runs an unbound layer over a
+per-test cloned database — a legitimate own-database reader, and one this environment cannot run — so a
+throw today would be an unmeasured new outage class on a process that already gets watchdog-killed
+(RUFU-462), which is a worse outcome than one more diagnostic row.
+
+Metadata is `{ reader, backendMode, enforcement }`: the `module:export` that performed the read (the
+bindable site the row exists to name), a fixed backend-mode enum, and the enforcement level in force so a
+later flip stays distinguishable in the data. It carries no task id, no row content, and no payload text —
+the defect is precisely that this read pulls other projects' content, so a diagnostic that copied any of it
+into the audit store would double the leak it reports. One row per violating read **site** per 15-minute
+window (`UNBOUND_TASK_LIST_READ_NOTICE_FLOOR_MS`), never per call and never per row: RUFU-393's lesson is
+that a bound whose key grows each cycle is a row flood, so the window is the bound and the counter never
+enters the dedupe key. The same fact is written once as a warning line naming the remedy
+(`createTaskStoreForBackend({ rootDir, projectId })`), because the remedy has to reach someone who never
+queries the audit store.
+
+Emission goes through the FN-9177 bounded core seam (`emitBoundedRunAudit` over
+`recordRunAuditEvent(layer, …)`), so an absent, throwing, rejecting, or hanging sink cannot alter, delay,
+or fail the read that is being reported — the guard must never itself become a lifecycle dependency. The
+discriminator is the layer's existing `backend` descriptor (published only by `createAsyncDataLayer` from
+`PostgresConnections`), not a new configuration flag: a legacy SQLite store has no async layer at all and
+keeps `taskProjectScope`'s documented no-op cross-project read, emitting nothing.
+
+Like RUFU-462's `runtime:heap-ceiling`, this event is deliberately absent from the curated delivery-pipeline
+catalogue — a read-path diagnostic is not a delivery-pipeline step — so this section is prose rather than a
+table row, and it is declared in `@fusion/core`'s `RunAuditMutationType` because the emitter reaches its
+sink through the core seam, not the engine's `DatabaseMutationType`.
+
 ### The planning claim a dead turn left behind (RUFU-470)
 
 `task:reconcile-abandoned-planning` records one reclaim of a planning-lane card that was still wearing

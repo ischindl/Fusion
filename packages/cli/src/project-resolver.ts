@@ -438,9 +438,22 @@ export async function resolveProject(options: ResolveOptions = {}): Promise<Reso
  * instead of a legacy SQLite TaskStore whose runtime was removed under
  * VAL-REMOVAL-005. Shared by createResolvedProject and the onboarding init paths so
  * every `fn project`/`fn init` store construction stays backend-first.
+ *
+ * FNXC:TaskListReadProjectScope 2026-11-07-03:55 (RUFU-871 slice 2):
+ * `projectId` is now threaded through when the caller already knows the registry identity.
+ * `project.tasks` is ONE table partitioned by `project_id` on the shared PostgreSQL backend,
+ * and a boot that names only `rootDir` lets the factory re-derive the partition by path
+ * lookup with a `local-<hash>` fallback — a partition a registered project's own rows are not
+ * necessarily under. The two project-resolvable callers (createResolvedProject and the
+ * post-registration prefix writer) therefore pass `project.id` explicitly, exactly as the
+ * sibling boots in this file already do; the one pre-registration caller stays unbound and
+ * is documented at its call site.
  */
-async function createProjectStore(rootDir: string): Promise<TaskStore> {
-  const boot = await createTaskStoreForBackend({ rootDir });
+async function createProjectStore(rootDir: string, projectId?: string): Promise<TaskStore> {
+  const boot = await createTaskStoreForBackend({
+    rootDir,
+    ...(projectId ? { projectId } : {}),
+  });
   resolvedProjectStores.set(boot.taskStore, boot.shutdown);
   return boot.taskStore;
 }
@@ -453,7 +466,10 @@ async function createResolvedProject(project: RegisteredProject): Promise<Resolv
   // Initialize TaskStore for this project
   // FNXC:PostgresCutover 2026-07-04: boot PostgreSQL via createTaskStoreForBackend
   // instead of a legacy SQLite TaskStore whose runtime was removed (VAL-REMOVAL-005).
-  const store = await createProjectStore(project.path);
+  // FNXC:TaskListReadProjectScope 2026-11-07-03:55 (RUFU-871 slice 2): the registry id is
+  // already in hand here, so the store is bound to it — the resolved project's board reads
+  // must hit that project's partition, not whatever the path lookup happens to resolve.
+  const store = await createProjectStore(project.path, project.id);
 
   // Try to get runtime from ProjectManager if available
   let runtime: import("@fusion/engine").ProjectRuntime | undefined;
@@ -717,6 +733,16 @@ export async function registerProjectInteractive(
         // Initialize the project (create .fusion/)
         // FNXC:PostgresCutover 2026-07-04: initialize via the PostgreSQL backend
         // factory (createProjectStore) instead of a removed-SQLite-runtime TaskStore.
+        /*
+        FNXC:TaskListReadProjectScope 2026-11-07-03:55 (RUFU-871 slice 2):
+        THIS call site is the pre-project bootstrap case, so it stays unbound and that is
+        deliberate. How it was determined: the registry row does not exist yet at this point —
+        `central.ensureProjectForPath` runs later in this same function (below the `NOT_INITIALIZED`
+        throw), so there is no `project.id` to pass. The store opened here performs exactly one
+        operation, `store.updateSettings(...)` (plus the workspace-config write), i.e. a settings
+        write and no task LIST read, so the shared-table guard added in slice 2 has nothing to
+        reject and the pre-registration path keeps working.
+        */
         const store = await createProjectStore(absPath);
         try {
           if (detectedSubRepos) {
@@ -795,7 +821,9 @@ export async function registerProjectInteractive(
   {
     // FNXC:PostgresCutover 2026-07-04: persist prefix/workflow via a PostgreSQL
     // backend store (createProjectStore), not the removed SQLite runtime.
-    const store = await createProjectStore(absPath);
+    /* FNXC:TaskListReadProjectScope 2026-11-07-03:55 (RUFU-871 slice 2): registration has
+       completed by now, so `project.id` exists and the store binds to it. */
+    const store = await createProjectStore(absPath, project.id);
     try {
       let prefix = suggestTaskPrefix(name);
       if (interactive) {
