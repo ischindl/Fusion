@@ -45,6 +45,14 @@ export interface ProjectInfo {
   change, or a remote node that has not shipped it, reads as enabled — the gate's own default.
   */
   runtimeEnabled?: boolean;
+  /*
+  FNXC:ProjectRuntimeOff 2026-11-07-18:43 (RUFU-871):
+  Why `runtimeEnabled` alone cannot carry the answer: an unreadable project used to report `true`, so
+  "loaded" and "we could not read it" were the same byte on the wire. `runtimeState` separates them —
+  `enabled` and `disabled` are reads, `unknown` is the absence of one. Treat `runtimeEnabled: false`
+  with `runtimeState: "unknown"` as "not confirmed running", not as "turned off".
+  */
+  runtimeState?: "enabled" | "disabled" | "unknown";
 }
 
 /** Project health metrics */

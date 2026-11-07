@@ -51,20 +51,33 @@ const {
  * so the projection can never disagree with the gate. Absent settings mean ENABLED, the same default
  * `isProjectRuntimeEnabled` applies.
  */
+export type ProjectRuntimeReadState = "enabled" | "disabled" | "unknown";
+
 async function resolveProjectRuntimeEnabled(
   projectId: string,
   openStore: { getSettingsFast?: () => Promise<{ runtimeEnabled?: boolean }> } | null | undefined,
-): Promise<boolean> {
+): Promise<ProjectRuntimeReadState> {
+  /*
+  FNXC:ProjectRuntimeOff 2026-11-07-18:43 (RUFU-871):
+  The first version answered ENABLED whenever the settings read failed, reasoning that claiming a
+  project is unloaded would send the operator to turn on something already running. Measured in
+  production that reasoning was backwards for the question actually being asked: two projects
+  (`ai_architecture`, `codebase-memory-mcp`) persisted `runtimeEnabled=false` yet answered
+  `runtimeEnabled: true`, because their per-project store could not be opened and the catch turned an
+  unreadable into "loaded". The operator's question is "which projects are unloaded", and an
+  unreadable answered as loaded makes that question unanswerable in exactly the case where it matters
+  — a project nobody has opened. So an unreadable is now its own answer: `unknown`, and `runtimeEnabled`
+  is only true when the value was positively read. Absent settings still mean ENABLED, the gate's own
+  default (`isProjectRuntimeEnabled`), because "no key written" really is "never turned off".
+  */
   try {
     const store = openStore ?? await getOrCreateProjectStore(projectId);
-    const settings = typeof store?.getSettingsFast === "function"
-      ? await store.getSettingsFast()
-      : null;
-    return settings?.runtimeEnabled !== false;
+    if (!store || typeof store.getSettingsFast !== "function") return "unknown";
+    const settings = await store.getSettingsFast();
+    if (!settings) return "unknown";
+    return settings.runtimeEnabled === false ? "disabled" : "enabled";
   } catch {
-    // A project whose settings cannot be read reports ENABLED: claiming it is unloaded would send the
-    // operator to turn on something that is already running.
-    return true;
+    return "unknown";
   }
 }
 
@@ -75,12 +88,18 @@ async function resolveProjectRuntimeEnabled(
 async function withRuntimeProjection<T extends { id: string }>(
   projects: T[],
   openStoreFor: (projectId: string) => { getSettingsFast?: () => Promise<{ runtimeEnabled?: boolean }> } | null | undefined,
-): Promise<Array<T & { runtimeEnabled: boolean }>> {
+): Promise<Array<T & { runtimeEnabled: boolean; runtimeState: ProjectRuntimeReadState }>> {
   return Promise.all(
-    projects.map(async (project) => ({
-      ...project,
-      runtimeEnabled: await resolveProjectRuntimeEnabled(project.id, openStoreFor(project.id)),
-    })),
+    projects.map(async (project) => {
+      const runtimeState = await resolveProjectRuntimeEnabled(project.id, openStoreFor(project.id));
+      return {
+        ...project,
+        // `runtimeEnabled` keeps its boolean shape for existing clients, but it now means "positively
+        // known to be running": an unreadable project is false, and `runtimeState` says why.
+        runtimeEnabled: runtimeState === "enabled",
+        runtimeState,
+      };
+    }),
   );
 }
 

@@ -113,7 +113,7 @@ describe("GET /api/projects runtime projection", () => {
     for (const expected of PROJECT_ROWS) {
       const row = rows.find((candidate) => candidate.id === expected.id);
       expect(row).toMatchObject(expected);
-      expect(Object.keys(row!)).toEqual([...Object.keys(expected), "runtimeEnabled"]);
+      expect(Object.keys(row!)).toEqual([...Object.keys(expected), "runtimeEnabled", "runtimeState"]);
     }
   });
 
@@ -133,5 +133,34 @@ describe("GET /api/projects runtime projection", () => {
 
     expect(rows.find((row) => row.id === "p-off")?.runtimeEnabled).toBe(false);
     expect(rows.find((row) => row.id === "p-live")?.runtimeEnabled).toBe(true);
+  });
+
+  /*
+  FNXC:ProjectRuntimeOff 2026-11-07-18:43 (RUFU-871):
+  The regression these two cases exist for: the shipped projection answered `runtimeEnabled: true` for
+  two production projects whose persisted value is false, because their per-project store could not be
+  opened and the read failure fell through to "enabled". Both shapes of unreadable are pinned — a store
+  that throws, and a store that cannot answer the question at all — and both must come back as
+  `unknown`, never as loaded.
+  */
+  it("never reports a project as loaded when its settings read throws", async () => {
+    const stores = storesByProject({ "p-live": {}, "p-off": { runtimeEnabled: false } });
+    stores["p-live"].getSettingsFast = vi.fn(async () => {
+      throw new Error("project store unavailable");
+    });
+    const rows = await getJson(buildApp(stores), "/api/projects");
+
+    expect(rows.find((row) => row.id === "p-live")?.runtimeEnabled).toBe(false);
+    expect(rows.find((row) => row.id === "p-live")?.runtimeState).toBe("unknown");
+  });
+
+  it("never reports a project as loaded when its store cannot answer the runtime question", async () => {
+    const stores = storesByProject({ "p-live": {}, "p-off": { runtimeEnabled: false } });
+    delete (stores["p-off"] as Partial<typeof stores["p-off"]>).getSettingsFast;
+    const rows = await getJson(buildApp(stores), "/api/projects");
+
+    expect(rows.find((row) => row.id === "p-off")?.runtimeEnabled).toBe(false);
+    expect(rows.find((row) => row.id === "p-off")?.runtimeState).toBe("unknown");
+    expect(rows.find((row) => row.id === "p-live")?.runtimeState).toBe("enabled");
   });
 });
