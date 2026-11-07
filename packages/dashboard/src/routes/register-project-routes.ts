@@ -15,6 +15,7 @@ import {
   resolveTaskLifecycleColumns,
   isTerminalColumnRole,
   resolveEffectiveConcurrency,
+  emitBoundedRunAudit,
 } from "@fusion/core";
 import type { CentralCore as CentralCoreApi, WorkflowIr } from "@fusion/core";
 import {
@@ -1130,6 +1131,58 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
         return await computeCodebaseMetrics(project.path);
       });
       res.json(metrics);
+    } catch (err: unknown) {
+      if (err instanceof ApiError) throw err;
+      rethrowAsApiError(err);
+    }
+  });
+
+  /**
+   * POST /api/projects/:id/runtime
+   *
+   * FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+   * The operator toggle for a project's RUNTIME UNLOAD switch (`settings.runtimeEnabled`), the
+   * one control that actually stops the minute-long engine passes starving `/api/tasks/page`.
+   * It is deliberately NOT `pause`/`resume`: those write `globalPause`/`enginePaused`, which the
+   * scheduler consults only at the END of a pass, so the pass and all its DB reads keep running.
+   *
+   * Writing the setting is the whole contract: the persisted value is what a restart reads, and
+   * `ProjectEngine`'s settings listener applies it to the live engine — disarming lanes, never
+   * aborting a pass already in flight. Reads are untouched, so the board stays browsable.
+   */
+  router.post("/projects/:id/runtime", async (req, res) => {
+    try {
+      const projectId = req.params.id;
+      const enabled = (req.body as { enabled?: unknown } | undefined)?.enabled;
+      if (typeof enabled !== "boolean") {
+        throw badRequest("`enabled` must be a boolean");
+      }
+
+      const engine = options?.engineManager?.getEngine(projectId);
+      const store = options?.engineManager?.getStore(projectId) ?? await getOrCreateProjectStore(projectId);
+      const prior = (await store.getSettings()).runtimeEnabled !== false;
+      await store.updateSettings({ runtimeEnabled: enabled });
+      // In-process immediacy: a running engine applies the switch without waiting for its own
+      // settings event, and re-applying the current value changes nothing.
+      if (engine) await engine.applyRuntimeGate(enabled);
+
+      // One row per operator switch, ids and fixed values only — never prose. Best-effort through
+      // the bounded core seam: telemetry cannot fail the switch it reports.
+      void emitBoundedRunAudit(store, {
+        agentId: "dashboard",
+        runId: `project-runtime-toggle:${projectId}:${Date.now()}`,
+        domain: "database",
+        mutationType: "project:runtime-toggled",
+        target: projectId,
+        metadata: {
+          projectId,
+          priorRuntimeEnabled: prior,
+          runtimeEnabled: enabled,
+          source: req.get("x-fusion-surface") === "engine-control-menu" ? "operator-ui" : "operator-api",
+        },
+      });
+
+      res.json({ projectId, runtimeEnabled: enabled, priorRuntimeEnabled: prior });
     } catch (err: unknown) {
       if (err instanceof ApiError) throw err;
       rethrowAsApiError(err);

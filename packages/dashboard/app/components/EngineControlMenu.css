@@ -278,3 +278,28 @@ FN-8007 defines both desktop pseudo-thumbs locally with the marker's shared size
     justify-content: flex-end;
   }
 }
+
+/*
+FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+The unloaded-runtime indicator is an ADORNMENT of the existing trigger, never a parallel button or
+card variant: a project that silently does nothing is indistinguishable from a dead engine, so the
+state has to be readable wherever the engine control already lives (footer, left sidebar, mobile
+action bar — all three hosts share this one component). It is `pointer-events: none` and inert
+markup so the trigger's click target stays byte-identical to what it was before the switch existed.
+Tokens only: the warning hue carries it because an unloaded project is a deliberate state the
+operator should see, not an error.
+*/
+.engine-control-menu__runtime-off {
+  position: absolute;
+  top: calc(var(--space-xs) * -0.5);
+  right: calc(var(--space-xs) * -0.5);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: var(--space-md);
+  block-size: var(--space-md);
+  border-radius: var(--radius-pill);
+  color: var(--bg);
+  background: var(--color-warning);
+  pointer-events: none;
+}

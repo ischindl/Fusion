@@ -1496,7 +1496,14 @@ export class ProjectEngine {
     replay below. One extra settings read at boot is the price of a gate that precedes every read.
     */
     this.laneGate.apply(isProjectRuntimeEnabled(await store.getSettings()));
-    this.runtime.setRuntimeEnabled(this.laneGate.isEnabled());
+    /*
+    FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+    Pushed to the runtime so ONE decision governs both lane registries. Reached as an optional call
+    for the same reason `getExecutor?.()?.setOnExecutorLogFlushed?.()` already is: the engine binds a
+    runtime built by a host that may predate the method, and a duck-typed runtime shim must not turn a
+    telemetry/lifecycle handoff into a startup crash. A real `InProcessRuntime` always answers.
+    */
+    this.runtime.setRuntimeEnabled?.(this.laneGate.isEnabled());
     /*
     FNXC:SpecDrift 2026-08-10-09:36:
     The startup and live-event reconciler must receive the shared store repository rather than an
@@ -1703,7 +1710,7 @@ export class ProjectEngine {
       this.laneGate.register({
         name: "pr-reconciler",
         arm: () => this.prReconciler?.start(),
-        disarm: () => this.prReconciler?.stop(),
+        disarm: () => this.prReconciler?.stopAll(),
       });
     }
 

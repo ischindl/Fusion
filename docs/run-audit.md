@@ -1157,3 +1157,34 @@ Both arms go through the FN-9175 bounded seam (`emitBoundedRunAudit`, never `cre
  and `task:planning-admission-stalled`, these two are deliberately outside the curated delivery-pipeline
  catalogue — a stalled planning wait is not a step of the delivery pipeline — and are found by mutation
  type.
+
+### Project runtime unload (RUFU-871)
+
+`project:runtime-toggled` records one operator switch of a project's runtime unload switch, in either
+direction. `runtimeEnabled: false` unloads the project's engine runtime: no scheduler pass, no triage
+poll, no self-healing maintenance, no heartbeat dispatch, no planner-overseer poll, no
+workflow-continuation pump, no cron or maintenance sweep. It is not `globalPause` or `enginePaused` —
+those are consulted at the END of a scheduler pass, so the pass and every read it performs keep
+running; measured, passes ran 51–183 s per project (max 584 s) across ~25 projects in one process at
+~435 DB transactions/second with zero UI requests, which is what held `/api/tasks/page` at 11–26 s
+against `/api/health` at 0.09 s. The row exists because the switch has no observable live effect: a
+project that silently does nothing is indistinguishable from a dead engine, and the UI badge only
+proves what the browser that set it believes.
+
+Metadata is the closed set `projectId`, `priorRuntimeEnabled`, `runtimeEnabled`, `source` — ids, two
+booleans, and one fixed enum (`operator-api` | `operator-ui` | `settings-write`), where `source` is
+declared by the transport that wrote the switch and never inferred from prose. No project name, no
+reason text, no disarmed-lane list. `target` is the project id and `runId` is
+`project-runtime-toggle:<projectId>:<timestamp>`, so one switch is one row and a row is attributable
+without carrying who typed it. Emission uses the FN-9177 bounded core seam from the dashboard route
+(`POST /api/projects/:id/runtime`), so an absent, throwing, rejecting, or hanging sink cannot fail the
+switch it reports — the setting write is the durable act, and it lands first.
+
+Disarming never aborts anything: a scheduler pass already in flight finishes normally, which is the
+no-data-corruption condition behind the switch. Read paths are never gated, so the project's board,
+cards, and history keep answering through the same `TaskStore` while its lanes stand down.
+
+Like `runtime:heap-ceiling`, this event is deliberately absent from the curated delivery-pipeline
+catalogue: an operator unloading a project is not a step of the delivery pipeline, so this section is
+prose and not a table row. It is declared in `@fusion/core`'s `RunAuditMutationType` because the emitter
+reaches its sink through the core seam, not the engine's `DatabaseMutationType`.

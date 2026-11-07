@@ -1023,6 +1023,7 @@ export {
   removeProjectPathMapping,
   replaceDockerNodeConfig,
   resumeProject,
+  setProjectRuntime,
   startDiscovery,
   stopDiscovery,
   unregisterNode,

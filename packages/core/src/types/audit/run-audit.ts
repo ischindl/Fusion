@@ -157,6 +157,20 @@ export type RunAuditMutationType =
   */
   | "runtime:heap-ceiling"
   /*
+  FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+  One row per OPERATOR switch of a project's runtime unload switch (`settings.runtimeEnabled`), in
+  both directions. The row exists because the switch has no live effect the operator can see: a
+  project that silently does nothing is indistinguishable from a dead engine, and the UI badge only
+  proves what the browser that set it believes. Metadata is the closed set `projectId`,
+  `priorRuntimeEnabled`, `runtimeEnabled`, `source` (fixed enum `operator-api` | `operator-ui` |
+  `settings-write`) — ids and fixed booleans/enums only. No project name, no reason text, no lane
+  list, and it is emitted through the FN-9177 bounded core seam so an absent or hostile audit sink
+  cannot fail the switch it reports. Deliberately OUTSIDE the curated delivery-pipeline catalogue,
+  the same exclusion `runtime:heap-ceiling` carries: an operator unloading a project is not a
+  delivery-pipeline step. See `docs/run-audit.md` → Project runtime unload.
+  */
+  | "project:runtime-toggled"
+  /*
   FNXC:TaskListReadProjectScope 2026-11-07-05:20 (RUFU-871 slice 2, staged):
   One row per violating READ SITE per 15-minute window when a task LIST read runs on a
   shared-PostgreSQL layer with no bound project — the shape that pulled other projects'

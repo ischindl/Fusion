@@ -895,6 +895,42 @@ export function resumeProject(id: string): Promise<ProjectInfo> {
   });
 }
 
+/*
+FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+Operator toggle for the RUNTIME UNLOAD switch. `false` disarms the project's engine lanes — the
+scheduler pass, triage poll, self-healing maintenance, heartbeat dispatch, planner-overseer poll
+and maintenance sweeps — which is what stops the minute-long passes that made `/api/tasks/page`
+take 11–26 s while the board sat idle. This is NOT `pauseProject`: `globalPause`/`enginePaused`
+stop dispatch only at the END of a pass, so the pass and every read it performs keep running.
+The project's board, cards, and history stay readable either way, and an in-flight pass is never
+aborted — skipping starts with the next one.
+*/
+export interface ProjectRuntimeState {
+  projectId: string;
+  runtimeEnabled: boolean;
+  priorRuntimeEnabled: boolean;
+}
+
+export function setProjectRuntime(id: string, enabled: boolean): Promise<ProjectRuntimeState> {
+  return api<ProjectRuntimeState>(`/projects/${encodeURIComponent(id)}/runtime`, {
+    method: "POST",
+    // Names the surface that wrote the switch, so the run-audit row can say `operator-ui` without
+    // ever receiving the operator's prose. The route defaults to `operator-api` when absent.
+    headers: { "x-fusion-surface": "engine-control-menu" },
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+/** Fetch first run status to detect if user needs setup wizard */
+
+/**
+ * FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+ * Switch a project's engine runtime on or off. Off unloads the engine lanes (scheduler pass,
+ * triage, self-healing, heartbeat, overseer, maintenance) so the project stops issuing engine
+ * database work; the board, cards, and history stay readable. It is NOT `pauseProject`, which
+ * stops dispatch only at the end of a pass and leaves the pass itself running.
+ */
+
 /** Fetch first run status to detect if user needs setup wizard */
 export function fetchFirstRunStatus(): Promise<FirstRunStatus> {
   return api<FirstRunStatus>("/first-run-status");

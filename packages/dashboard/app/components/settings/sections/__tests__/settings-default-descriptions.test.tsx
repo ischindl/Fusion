@@ -526,6 +526,14 @@ const NOT_SURFACED_ALLOWLIST: Record<string, string> = {
   globalPause: "engine-managed pause flag, not a plain description field",
   globalPauseReason: "engine-managed pause flag, not a plain description field",
   enginePaused: "engine-managed pause flag, not a plain description field",
+  /*
+  FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+  The runtime unload switch is surfaced on the PROJECT surface (the Engine control menu, beside the
+  two pauses it is deliberately not) rather than in `settings/sections/`, because it is an operator
+  action with a live effect — it POSTs to its own route, which also records the `project:runtime-toggled`
+  audit row — not a value typed into a settings form. Its default is `true` (absent = enabled).
+  */
+  runtimeEnabled: "runtime unload switch; surfaced in the project Engine control menu, not a Settings section field",
   engineLastActiveAt: "internal engine bookkeeping timestamp",
   engineActiveSinceMs: "internal engine bookkeeping timestamp",
   engineActivationGraceMs: "internal engine tuning constant, no UI field",

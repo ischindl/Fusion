@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchConfig, fetchSettings, updateSettings } from "../api";
+import { fetchConfig, fetchSettings, setProjectRuntime, updateSettings } from "../api";
 import { DEFAULT_PROJECT_SETTINGS, type GlobalSettings, type ProjectSettings } from "@fusion/core";
 import { resolveMobileNavPrimaryItems } from "../../../core/src/board/mobile-nav-primary-items";
 import type { ModelPricingOverrides } from "../../../core/src/ai/model-pricing";
@@ -49,6 +49,16 @@ export interface UseAppSettingsResult {
   isTestMode: boolean;
   globalPaused: boolean;
   enginePaused: boolean;
+  /**
+   * FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+   * False while the project's engine runtime is unloaded: no scheduler pass, no triage poll, no
+   * self-healing maintenance, no heartbeat dispatch, no overseer poll, no maintenance sweep. Reads
+   * are unaffected — the board, cards, and history still render. Distinct from `enginePaused`,
+   * which only stops dispatch at the END of a pass while the pass and its DB reads keep running.
+   */
+  runtimeEnabled: boolean;
+  /** Flip the runtime unload switch (persisted; recorded as one `project:runtime-toggled` row). */
+  toggleProjectRuntime: () => Promise<void>;
   taskStuckTimeoutMs: number | undefined;
   staleHighFanoutBlockerAgeThresholdMs: number;
   capacityRiskBannerEnabled: boolean;
@@ -126,6 +136,13 @@ export function useAppSettings(projectId?: string): UseAppSettingsResult {
   const [isTestMode, setIsTestMode] = useState(false);
   const [globalPaused, setGlobalPaused] = useState(false);
   const [enginePaused, setEnginePaused] = useState(false);
+  /*
+  FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+  The project's RUNTIME UNLOAD switch. Pre-hydration it is `true` because that is the persisted
+  default (absent = enabled), so an unloaded project never flashes a false "running" state while
+  settings are in flight — the badge appears when the value arrives, not after a stale beat.
+  */
+  const [runtimeEnabled, setRuntimeEnabled] = useState(true);
   const [taskStuckTimeoutMs, setTaskStuckTimeoutMs] = useState<number | undefined>(undefined);
   const [staleHighFanoutBlockerAgeThresholdMs, setStaleHighFanoutBlockerAgeThresholdMs] = useState(2 * 60 * 60 * 1000);
   const [capacityRiskBannerEnabled, setCapacityRiskBannerEnabled] = useState(false);
@@ -204,6 +221,7 @@ export function useAppSettings(projectId?: string): UseAppSettingsResult {
       setIsTestMode(nextIsTestMode);
       setGlobalPaused(Boolean(settings.globalPause));
       setEnginePaused(Boolean(settings.enginePaused));
+      setRuntimeEnabled(settings.runtimeEnabled !== false);
       setPrAuthAvailable(Boolean(settings.prAuthAvailable));
       setTaskStuckTimeoutMs(settings.taskStuckTimeoutMs);
       setStaleHighFanoutBlockerAgeThresholdMs(
@@ -349,6 +367,24 @@ export function useAppSettings(projectId?: string): UseAppSettingsResult {
     }
   }, [enginePaused, projectId]);
 
+  /*
+  FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+  Unloads/reloads the project's engine runtime through the dedicated route, NOT by patching
+  settings from the client: the route is the one place that records the `project:runtime-toggled`
+  audit row and applies the switch to a live engine. Optimistic flip, rollback on failure, so the
+  badge always matches what the server agreed to.
+  */
+  const toggleProjectRuntime = useCallback(async () => {
+    const next = !runtimeEnabled;
+    setRuntimeEnabled(next);
+    try {
+      const result = await setProjectRuntime(projectId ?? "", next);
+      setRuntimeEnabled(result.runtimeEnabled);
+    } catch {
+      setRuntimeEnabled(!next);
+    }
+  }, [runtimeEnabled, projectId]);
+
   const setChatMessageLayoutImmediate = useCallback((layout: ChatMessageLayout) => {
     /*
     FNXC:LiveAppearanceSettings 2026-08-19-18:07:
@@ -419,6 +455,8 @@ export function useAppSettings(projectId?: string): UseAppSettingsResult {
     isTestMode,
     globalPaused,
     enginePaused,
+    runtimeEnabled,
+    toggleProjectRuntime,
     taskStuckTimeoutMs,
     staleHighFanoutBlockerAgeThresholdMs,
     capacityRiskBannerEnabled,

@@ -3,7 +3,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useSta
 import { useTranslation } from "react-i18next";
 import { DEFAULT_PROJECT_SETTINGS } from "@fusion/core";
 import { resolveEffectiveConcurrency } from "../../../core/src/workflows/workflow-capacity.js";
-import { Pause, Play, SlidersHorizontal, Square, X } from "lucide-react";
+import { Pause, Play, Power, PowerOff, SlidersHorizontal, Square, X } from "lucide-react";
 import { fetchSettings, updateSettings } from "../api/legacy";
 import { useAppSettings } from "../hooks/useAppSettings";
 import { useConfirm } from "../hooks/useConfirm";
@@ -119,7 +119,7 @@ export const EngineControlMenu = forwardRef<EngineControlMenuHandle, EngineContr
   const { confirm } = useConfirm();
   const menuRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
-  const { globalPaused, enginePaused, toggleGlobalPause, toggleEnginePause, refresh } = useAppSettings(projectId);
+  const { globalPaused, enginePaused, toggleGlobalPause, toggleEnginePause, runtimeEnabled, toggleProjectRuntime, refresh } = useAppSettings(projectId);
   const [concurrencyState, setConcurrencyState] = useState<AsyncState<ConcurrencyValues>>({ status: "idle", data: null, error: null });
   const [concurrencyDirty, setConcurrencyDirty] = useState(false);
   const [concurrencySaveState, setConcurrencySaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
@@ -363,8 +363,27 @@ export const EngineControlMenu = forwardRef<EngineControlMenuHandle, EngineContr
         aria-haspopup="menu"
         aria-expanded={open}
         data-testid="engine-control-menu-trigger"
+        data-runtime-off={runtimeEnabled ? undefined : "true"}
       >
         {triggerContent ?? <SlidersHorizontal size={14} aria-hidden="true" />}
+        {/*
+        FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+        A project that silently does nothing is indistinguishable from a dead engine, so the
+        unloaded state rides on the one control that is always visible for the project. It is an
+        adornment of the EXISTING trigger (no parallel button variant), and it is inert markup —
+        the toggle lives in the popover, so the trigger's click target never changes.
+        */}
+        {!runtimeEnabled && (
+          <span
+            className="engine-control-menu__runtime-off"
+            role="status"
+            data-testid="engine-control-runtime-off-badge"
+            title={t("header.runtimeOffBadge", "Engine runtime unloaded — board reads only")}
+          >
+            <PowerOff size={10} aria-hidden="true" />
+            <span className="visually-hidden">{t("header.runtimeOffBadge", "Engine runtime unloaded — board reads only")}</span>
+          </span>
+        )}
       </button>
 
       {open && (
@@ -404,6 +423,26 @@ export const EngineControlMenu = forwardRef<EngineControlMenuHandle, EngineContr
             >
               {enginePaused ? <Play size={16} aria-hidden="true" /> : <Pause size={16} aria-hidden="true" />}
               <span>{enginePaused ? t("header.resumeScheduling", "Resume scheduling") : t("header.pauseTriage", "Pause triage")}</span>
+            </button>
+            {/*
+            FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+            The runtime unload switch, kept next to the two pauses so an operator can see that it
+            is a third, different thing: pausing stops dispatch at the END of a scheduler pass and
+            the pass with its board reads keeps running (measured 51–183 s per pass, which is what
+            starved /api/tasks/page to 11–26 s); unloading the runtime never enters the pass. The
+            board, cards, and history keep rendering either way and a pass already running is
+            allowed to finish, so nothing is left half-written.
+            */}
+            <button
+              type="button"
+              className="btn btn-secondary engine-control-menu__action"
+              onClick={() => void toggleProjectRuntime()}
+              role="menuitem"
+              title={t("header.runtimeOffToggleHelp", "Unloads this project's engine passes entirely; its board stays readable. A pass already running finishes first.")}
+              data-testid="engine-control-runtime-toggle-btn"
+            >
+              {runtimeEnabled ? <PowerOff size={16} aria-hidden="true" /> : <Power size={16} aria-hidden="true" />}
+              <span>{runtimeEnabled ? t("header.runtimeOffToggle", "Unload engine runtime") : t("header.runtimeOnToggle", "Load engine runtime")}</span>
             </button>
           </div>
 
