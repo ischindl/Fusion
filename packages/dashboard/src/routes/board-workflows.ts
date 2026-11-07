@@ -24,6 +24,7 @@ import {
   getBuiltinWorkflow,
   isBuiltinWorkflowId,
   parseWorkflowIr,
+  type WorkflowDefinition,
   resolveAllowedColumns,
   resolveColumnFlags,
   resolveWorkflowIrById,
@@ -223,15 +224,45 @@ async function mapWithLimit<T, R>(items: T[], limit: number, worker: (item: T) =
   return results;
 }
 
+/*
+FNXC:BoardWorkflows 2026-11-07-12:41 (RUFU-871):
+`catalogRow` is the definition the caller already holds from its ONE
+`listWorkflowDefinitions()` read. When it is present the workflow is described from it and ZERO
+further reads happen.
+
+Dropping the per-workflow read for a BUILT-IN is not a behaviour change, and this is why: the only
+thing `resolveWorkflowIrById` adds over the catalog row is `applyPromptOverridesToIr`, and that
+function rewrites `nodes[].config.prompt` and nothing else (`workflow-prompt-overrides.ts`).
+Everything this payload carries about a workflow comes from `ir.columns` (id, name, description,
+resolved trait flags, and `resolveAllowedColumns` adjacency, which derives from column ids, traits
+and declared order) plus `ir.fields`. Neither half reads a node prompt, so an override cannot reach
+the wire and the read bought nothing. `board-workflows-read-cost.test.ts` asserts that identity.
+
+The catalog row is deliberately not trusted for a workflow it does not list: a card can still select
+a deleted custom workflow, and the pre-existing fallback (read the definition, else the catalog
+default IR) must keep describing it. A missing row therefore keeps the read path — and so does a row
+that carries no usable IR, because a listing row is allowed to be an id/kind stub.
+*/
+function definitionIr(definition: WorkflowDefinition): WorkflowIr | undefined {
+  const raw = definition.ir as string | WorkflowIr | undefined | null;
+  if (raw === undefined || raw === null) return undefined;
+  try {
+    return typeof raw === "string" ? parseWorkflowIr(raw) : raw;
+  } catch {
+    return undefined;
+  }
+}
+
 async function describeWorkflow(
   store: Pick<TaskStore, "getWorkflowDefinition">,
   workflowId: string,
   selectable: boolean,
+  catalogRow?: WorkflowDefinition,
 ): Promise<BoardWorkflowDefinition> {
   // The display name comes from the persisted definition when available,
   // otherwise the IR's own name (default workflow).
   if (isBuiltinWorkflowId(workflowId)) {
-    const ir = await resolveWorkflowIrById(store, workflowId);
+    const ir = (catalogRow ? definitionIr(catalogRow) : undefined) ?? await resolveWorkflowIrById(store, workflowId);
     const name = getBuiltinWorkflow(workflowId)?.name ?? ir.name;
     const fields = describeFields(ir);
     return { id: workflowId, name, selectable, columns: describeColumns(ir, true), ...(fields ? { fields } : {}) };
@@ -249,15 +280,22 @@ async function describeWorkflow(
   let ir: WorkflowIr = resolveDefaultWorkflowIr();
   let name = ir.name;
   let icon: string | undefined;
-  try {
-    const def = await store.getWorkflowDefinition(workflowId);
-    if (def) {
-      ir = typeof def.ir === "string" ? parseWorkflowIr(def.ir) : def.ir;
-      name = def.name || ir.name;
-      icon = def.icon;
+  const catalogIr = catalogRow ? definitionIr(catalogRow) : undefined;
+  if (catalogRow && catalogIr) {
+    ir = catalogIr;
+    name = catalogRow.name || ir.name;
+    icon = catalogRow.icon;
+  } else {
+    try {
+      const def = await store.getWorkflowDefinition(workflowId);
+      if (def) {
+        ir = typeof def.ir === "string" ? parseWorkflowIr(def.ir) : def.ir;
+        name = def.name || ir.name;
+        icon = def.icon;
+      }
+    } catch {
+      // fall through to the default IR/name
     }
-  } catch {
-    // fall through to the default IR/name
   }
   const fields = describeFields(ir);
   return { id: workflowId, name, selectable, ...(icon ? { icon } : {}), columns: describeColumns(ir), ...(fields ? { fields } : {}) };
@@ -281,6 +319,14 @@ export async function buildBoardWorkflowsPayload(
     Partial<Pick<TaskStore, "getTaskWorkflowSelectionAsync" | "getTaskWorkflowSelectionsAsync">>,
   taskIds: string[],
   settingsOverride?: Pick<Settings, "experimentalFeatures">,
+  /*
+  FNXC:BoardWorkflows 2026-11-07-12:41 (RUFU-871):
+  A caller that already read the workflow catalog for this request hands it over instead of paying a
+  second `listWorkflowDefinitions()`. The board route needs the project lane vocabulary from these
+  same rows and was issuing its own read for them. Passing the catalog is also what makes the
+  per-workflow reads removable: these rows already describe every workflow they list.
+  */
+  workflowCatalog?: readonly WorkflowDefinition[],
 ): Promise<BoardWorkflowsPayload> {
   /*
   FNXC:WorkflowColumns 2026-07-27-09:50 (U2 / R9):
@@ -381,18 +427,25 @@ export async function buildBoardWorkflowsPayload(
   // resolves it and the client has one authoritative selectable lane.
   referenced.add(defaultWorkflowId);
 
-  try {
-    const definitions = await store.listWorkflowDefinitions();
-    for (const definition of definitions) {
-      if (definition.kind === "fragment") continue;
-      selectableWorkflowIds.add(definition.id);
-      referenced.add(definition.id);
+  let catalog: readonly WorkflowDefinition[] = workflowCatalog ?? [];
+  if (workflowCatalog === undefined) {
+    try {
+      catalog = await store.listWorkflowDefinitions();
+    } catch (err) {
+      // Older/partial test stores may not expose definition listing; the referenced
+      // workflow set above is still sufficient for task rendering. Production
+      // failures are logged so empty workflow definitions do not disappear silently.
+      severityAuditLog.warn("[board-workflows] listWorkflowDefinitions failed; using referenced workflows only", err);
+      catalog = [];
     }
-  } catch (err) {
-    // Older/partial test stores may not expose definition listing; the referenced
-    // workflow set above is still sufficient for task rendering. Production
-    // failures are logged so empty workflow definitions do not disappear silently.
-    severityAuditLog.warn("[board-workflows] listWorkflowDefinitions failed; using referenced workflows only", err);
+  }
+
+  const catalogById = new Map<string, WorkflowDefinition>();
+  for (const definition of catalog) {
+    if (definition.kind === "fragment") continue;
+    selectableWorkflowIds.add(definition.id);
+    referenced.add(definition.id);
+    catalogById.set(definition.id, definition);
   }
 
   /*
@@ -406,11 +459,25 @@ export async function buildBoardWorkflowsPayload(
   overrides are project-scoped and a stale IR would silently render wrong lanes,
   so the invalidation seam belongs at the definition-write path, not at this
   read path.
+
+  FNXC:BoardWorkflows 2026-11-07-12:41 (RUFU-871):
+  The concurrency bound stays, but it is no longer what keeps this off the critical path.
+  Describing from the catalog row means the fan-out issues ZERO reads for every workflow the catalog
+  listed, so the request stops paying one round trip per workflow. Measured live, the 11 described
+  workflows cost 11 of the route's ~20 awaited reads (9 single-row `getWorkflowPromptOverridesAsync`
+  plus 2 `getWorkflowDefinition`), and with the process's 3-connection pool saturated that is most
+  of the request. `mapWithLimit` now only wraps the workflows a card selected that the catalog does
+  NOT list (a deleted custom workflow), which is where one read per workflow is still honest.
   */
   const workflows = await mapWithLimit(
     [...referenced],
     WORKFLOW_DESCRIBE_CONCURRENCY,
-    (workflowId) => describeWorkflow(store, workflowId, selectableWorkflowIds.has(workflowId)),
+    (workflowId) => describeWorkflow(
+      store,
+      workflowId,
+      selectableWorkflowIds.has(workflowId),
+      catalogById.get(workflowId),
+    ),
   );
 
   return {

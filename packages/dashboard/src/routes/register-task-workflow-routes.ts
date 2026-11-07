@@ -198,6 +198,23 @@ function isTaskMessageWithinBounds(value: string): boolean {
 }
 
 /*
+FNXC:BoardWorkflows 2026-11-07-12:41 (RUFU-871):
+Reads the project's workflow definitions ONCE for a request that needs them twice.
+
+Returns `undefined` rather than `[]` on failure, because both consumers already degrade differently
+when the catalog is unreadable: the complete-lane vocabulary falls back to the legacy `done` id, and
+the payload builder falls back to describing only the workflows the cards reference. Collapsing a
+failure into `[]` would silently make every workflow unselectable on the board.
+*/
+async function readWorkflowCatalogOnce(store: TaskStore): Promise<Awaited<ReturnType<TaskStore["listWorkflowDefinitions"]>> | undefined> {
+  try {
+    return await store.listWorkflowDefinitions();
+  } catch {
+    return undefined;
+  }
+}
+
+/*
 FNXC:WorkflowResolvedColumns 2026-07-31-13:45 (fleet — inline fallback arms):
 DELIBERATE-LITERAL — the no-resolution fallbacks for the already-converted guards below.
 
@@ -1736,6 +1753,17 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       that caller to partial scope is then a client-side change, not a server-semantics change.
       */
       const partialScope = requestedTaskIds.length > 0 && req.query.partial === "1";
+
+      /*
+      FNXC:BoardWorkflows 2026-11-07-12:41 (RUFU-871):
+      ONE workflow-catalog read serves the whole request. The complete-lane vocabulary resolution and
+      `buildBoardWorkflowsPayload` each called `listWorkflowDefinitions()` themselves — and each of
+      those internally re-reads settings and re-runs the plugin gate — so an unparameterized board load
+      paid for the same six rows twice. A failed read stays `undefined` so both consumers keep their own
+      fail-soft path rather than this one becoming a new hard dependency.
+      */
+      const workflowCatalog = await readWorkflowCatalogOnce(scopedStore);
+
       let taskIds: string[];
       if (partialScope) {
         taskIds = [...new Set(requestedTaskIds)];
@@ -1743,12 +1771,39 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         // Mirror the board's bounded data shape: all current work plus only the newest Done page.
         let completeColumns: string[];
         try {
-          completeColumns = [...await resolveProjectColumnsForRoles(scopedStore, ["complete"])];
+          completeColumns = [...await resolveProjectColumnsForRoles(
+            workflowCatalog ? { listWorkflowDefinitions: async () => workflowCatalog } : scopedStore,
+            ["complete"],
+          )];
         } catch {
           completeColumns = ["done"];
         }
+        /*
+        FNXC:BoardWorkflows 2026-11-07-12:41 (RUFU-871):
+        This enumeration exists ONLY to collect `task.id`, and it was fetching whole board rows to get
+        them. `slim` sheds the `log` column and nothing else, so for this deployment's 613 current rows
+        the SELECT still shipped ~10.8 MB per request — 3.9 MB `workflow_step_results`, 2.7 MB
+        `description`, 2.4 MB `comments`/`steering_comments`, 1.4 MB `source_*`, 304 KB `steps`, 52 KB
+        `summary` — and `rowToTask` then parsed and hydrated all of it. Measured offline, one fully
+        hydrated board of this shape is the ~0.58 GiB allocation recorded on the RUFU-627 heap profile,
+        which is why a board load showed GC at 12-19% of CPU samples.
+
+        `fields: []` declares "none of the wide fields", so the SELECT stops sending them; it also skips
+        the per-card PROMPT.md re-parse `slim` performs for any card whose persisted `steps` is empty.
+        `derive: false` skips the nine per-row UI derivations and their pass-level feeders (settings,
+        merge-queue ids, per-pass IR cache, workflow-selection prefetch, page-local column map).
+        Neither is a scope cut: the only `Task` member this branch reads is `id`, so the response is
+        byte-identical. `GET /tasks/board-workflows` is the only issuer of this read shape, so losing
+        the in-flight coalescing join costs nothing — there was no partner to join.
+        */
         const [currentTasks, completedPage] = await Promise.all([
-          scopedStore.listTasks({ slim: true, includeArchived: false, excludeColumns: completeColumns }),
+          scopedStore.listTasks({
+            slim: true,
+            includeArchived: false,
+            excludeColumns: completeColumns,
+            fields: [],
+            derive: false,
+          }),
           scopedStore.listCompletedTasks({ limit: 50, slim: true }),
         ]);
         taskIds = [...new Set([
@@ -1757,7 +1812,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
           ...requestedTaskIds,
         ])];
       }
-      const payload = await buildBoardWorkflowsPayload(scopedStore, taskIds, settings);
+      const payload = await buildBoardWorkflowsPayload(scopedStore, taskIds, settings, workflowCatalog);
       res.json(payload);
     } catch (err: unknown) {
       if (err instanceof ApiError) {
