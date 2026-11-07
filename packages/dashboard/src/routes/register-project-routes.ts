@@ -36,8 +36,59 @@ const {
   rm,
 } = fsPromises;
 
+/**
+ * FNXC:ProjectRuntimeOff 2026-11-07-17:41 (RUFU-871):
+ * The ONE projection read for the operator's runtime unload switch.
+ *
+ * `GET /api/projects` answered 25 rows with no runtime field, so the project combo could not tell a
+ * loaded project from an unloaded one, and a turned-off project was indistinguishable from a live one.
+ * `status` was NOT reused: production `status` reads `active` (11) / `paused` (14) and names the
+ * project-row lifecycle, a different axis from the runtime gate.
+ *
+ * Cost contract: exactly ONE settings read per project per request — never per card, never inside a
+ * loop over tasks. It prefers a store this server already holds open and only falls back to the
+ * shared resolver for a project nobody has opened, the same read `ProjectEngine` performs at start,
+ * so the projection can never disagree with the gate. Absent settings mean ENABLED, the same default
+ * `isProjectRuntimeEnabled` applies.
+ */
+async function resolveProjectRuntimeEnabled(
+  projectId: string,
+  openStore: { getSettingsFast?: () => Promise<{ runtimeEnabled?: boolean }> } | null,
+): Promise<boolean> {
+  try {
+    const store = openStore ?? await getOrCreateProjectStore(projectId);
+    const settings = typeof store?.getSettingsFast === "function"
+      ? await store.getSettingsFast()
+      : null;
+    return settings?.runtimeEnabled !== false;
+  } catch {
+    // A project whose settings cannot be read reports ENABLED: claiming it is unloaded would send the
+    // operator to turn on something that is already running.
+    return true;
+  }
+}
+
+/**
+ * Attach `runtimeEnabled` to every row of a project projection: one settings read per row, existing
+ * keys unchanged, so a client built against the old shape keeps working.
+ */
+async function withRuntimeProjection<T extends { id: string }>(
+  projects: T[],
+  openStoreFor: (projectId: string) => { getSettingsFast?: () => Promise<{ runtimeEnabled?: boolean }> } | null | undefined,
+): Promise<Array<T & { runtimeEnabled: boolean }>> {
+  return Promise.all(
+    projects.map(async (project) => ({
+      ...project,
+      runtimeEnabled: await resolveProjectRuntimeEnabled(project.id, openStoreFor(project.id)),
+    })),
+  );
+}
+
 export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
   const { router, options, runtimeLogger, prioritizeProjectsForCurrentDirectory, rethrowAsApiError } = ctx;
+
+  /** The store this server already holds open for a project, if any. Never opens one. */
+  const openStoreFor = (projectId: string) => options?.engineManager?.getStore(projectId) ?? null;
 
   async function withCentralCore<T>(
     run: (central: CentralCoreApi) => Promise<T>,
@@ -89,7 +140,8 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
         },
       );
 
-      res.json(projects);
+      // FNXC:ProjectRuntimeOff 2026-11-07-17:41 (RUFU-871): one settings read per project, no more.
+      res.json(await withRuntimeProjection(projects, openStoreFor));
     } catch (err: unknown) {
       if (err instanceof ApiError) {
         throw err;
@@ -137,7 +189,9 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
       // no cross-node aggregation overhead.
       if (remoteNodes.length === 0) {
         const prioritizedProjects = prioritizeProjectsForCurrentDirectory(localProjects);
-        res.json(prioritizedProjects);
+        // FNXC:ProjectRuntimeOff 2026-11-07-17:41 (RUFU-871): the combo reads this route, so the
+        // local-only fast path carries the runtime field exactly like GET /projects.
+        res.json(await withRuntimeProjection(prioritizedProjects, openStoreFor));
         return;
       }
 
@@ -169,6 +223,8 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
               createdAt: string;
               updatedAt: string;
               lastActivityAt?: string;
+              /** That node's own runtime gate; absent on a node predating RUFU-871 = enabled. */
+              runtimeEnabled?: boolean;
             }>;
 
             // Tag each remote project with the source node info
@@ -195,6 +251,8 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
         createdAt: string;
         updatedAt: string;
         lastActivityAt?: string;
+        /** That node's own runtime gate; absent on a node predating RUFU-871 = enabled. */
+        runtimeEnabled?: boolean;
       };
       const remoteProjects = remoteProjectArrays
         .filter((result): result is PromiseFulfilledResult<RemoteProject[]> => result.status === "fulfilled")
@@ -213,10 +271,15 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
       // Merge local and remote projects
       const mergedProjects = [...localProjects, ...remoteProjects];
 
-      // Apply directory prioritization
+      /*
+      FNXC:ProjectRuntimeOff 2026-11-07-17:41 (RUFU-871):
+      Only LOCAL rows get the projection read. A remote row already carries its own node's
+      `runtimeEnabled` from that node's `GET /api/projects`, and this server has no business opening
+      another node's store to guess at it.
+      */
       const prioritizedProjects = prioritizeProjectsForCurrentDirectory(mergedProjects);
 
-      res.json(prioritizedProjects);
+      res.json(await withRuntimeProjection(prioritizedProjects, openStoreFor));
     } catch (err: unknown) {
       if (err instanceof ApiError) {
         throw err;
@@ -1162,6 +1225,12 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
       const store = options?.engineManager?.getStore(projectId) ?? await getOrCreateProjectStore(projectId);
       const prior = (await store.getSettings()).runtimeEnabled !== false;
       await store.updateSettings({ runtimeEnabled: enabled });
+      /*
+      FNXC:ProjectRuntimeOff 2026-11-07-17:41 (RUFU-871):
+      The switch is now authored from two operator surfaces: the footer engine menu of the open
+      project, and the project card of a turned-off project in the projects list. Any declared
+      surface is a human clicking something; only an undeclared call is a bare API client.
+      */
       // In-process immediacy: a running engine applies the switch without waiting for its own
       // settings event, and re-applying the current value changes nothing.
       if (engine) await engine.applyRuntimeGate(enabled);
@@ -1178,7 +1247,7 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
           projectId,
           priorRuntimeEnabled: prior,
           runtimeEnabled: enabled,
-          source: req.get("x-fusion-surface") === "engine-control-menu" ? "operator-ui" : "operator-api",
+          source: req.get("x-fusion-surface") ? "operator-ui" : "operator-api",
         },
       });
 

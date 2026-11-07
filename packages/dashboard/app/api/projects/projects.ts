@@ -37,6 +37,14 @@ export interface ProjectInfo {
   createdAt: string;
   updatedAt: string;
   lastActivityAt?: string;
+  /*
+  FNXC:ProjectRuntimeOff 2026-11-07-17:41 (RUFU-871):
+  A SECOND AXIS, never folded into `status`. `runtimeEnabled: false` means the operator unloaded this
+  project's engine runtime, so it does no engine work until they turn it back on; `status` keeps its
+  own meaning (production reads `active` 11 / `paused` 14). Optional so a server older than this
+  change, or a remote node that has not shipped it, reads as enabled — the gate's own default.
+  */
+  runtimeEnabled?: boolean;
 }
 
 /** Project health metrics */
@@ -911,12 +919,20 @@ export interface ProjectRuntimeState {
   priorRuntimeEnabled: boolean;
 }
 
-export function setProjectRuntime(id: string, enabled: boolean): Promise<ProjectRuntimeState> {
+export function setProjectRuntime(
+  id: string,
+  enabled: boolean,
+  /*
+  FNXC:ProjectRuntimeOff 2026-11-07-17:41 (RUFU-871):
+  Names the surface that wrote the switch so the run-audit row can say `operator-ui` without ever
+  receiving the operator's prose. Every declared surface is a human click; omitting the header would
+  file a dashboard button as a bare API call.
+  */
+  surface: "engine-control-menu" | "project-card" = "engine-control-menu",
+): Promise<ProjectRuntimeState> {
   return api<ProjectRuntimeState>(`/projects/${encodeURIComponent(id)}/runtime`, {
     method: "POST",
-    // Names the surface that wrote the switch, so the run-audit row can say `operator-ui` without
-    // ever receiving the operator's prose. The route defaults to `operator-api` when absent.
-    headers: { "x-fusion-surface": "engine-control-menu" },
+    headers: { "x-fusion-surface": surface },
     body: JSON.stringify({ enabled }),
   });
 }
