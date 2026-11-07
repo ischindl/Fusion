@@ -94,6 +94,7 @@ import { resolvePostMergeProducerSurface } from "./merge/post-merge-producer-sur
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { InProcessRuntime } from "./runtimes/in-process-runtime.js";
+import { isProjectRuntimeEnabled, RuntimeLaneGate } from "./runtime-lane-gate.js";
 import { createStoreSpecDriftRepository, SpecDriftReconciler } from "./spec-drift-reconciler.js";
 import { publishPersistedMissionFeatureAlignment } from "./missions/mission-feature-sync.js";
 import type { ProjectRuntimeConfig, RuntimeStopOptions } from "./project/project-runtime.js";
@@ -748,6 +749,15 @@ export class ProjectEngine {
   private readonly prMergeRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private autostashSweepTimer: ReturnType<typeof setTimeout> | null = null;
   private mergeActiveReconcileTimer: ReturnType<typeof setInterval> | null = null;
+  /**
+   * FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+   * Gate over the periodic drivers ProjectEngine owns directly (planner overseer poll, merge
+   * retry, merge-active reconcile, autostash sweep, gridlock detector, deferred startup work).
+   * The runtime owns scheduler/triage/self-healing/heartbeat on its own gate instance; both
+   * apply the one `runtimeEnabled` setting, so `runtimeOff` projects stop all engine work from
+   * the next pass onward while still serving reads. Off does not abort a running pass.
+   */
+  private readonly laneGate = new RuntimeLaneGate(true);
 
   /*
   FNXC:Workspace 2026-08-15-08:19:
@@ -1480,6 +1490,14 @@ export class ProjectEngine {
 
     const store = this.runtime.getTaskStore();
     /*
+    FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+    First act after the TaskStore exists: resolve the persisted runtime gate and push it into the
+    runtime, so a disabled project never arms a lane and this engine never runs the startup board
+    replay below. One extra settings read at boot is the price of a gate that precedes every read.
+    */
+    this.laneGate.apply(isProjectRuntimeEnabled(await store.getSettings()));
+    this.runtime.setRuntimeEnabled(this.laneGate.isEnabled());
+    /*
     FNXC:SpecDrift 2026-08-10-09:36:
     The startup and live-event reconciler must receive the shared store repository rather than an
     inline latest-report snapshot. Full append-only history preserves re-locked divergence, while
@@ -1512,10 +1530,22 @@ export class ProjectEngine {
     every supervised restart. Derivation is off and the column is dropped, which is exactly what a
     id-only consumer should ask for.
     */
-    for (const task of await store.listTasks({ slim: true, derive: false, excludeLog: true })) {
-      this.specDriftReconciler.enqueue(task.id);
+    /*
+    FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+    The startup replay is a whole-board read, so it stays behind the runtime gate. An operator who
+    switches the runtime back on re-arms it through `applyRuntimeGate`.
+    */
+    if (this.laneGate.isEnabled()) {
+      for (const task of await store.listTasks({ slim: true, derive: false, excludeLog: true })) {
+        this.specDriftReconciler.enqueue(task.id);
+      }
     }
     const cwd = this.config.workingDirectory;
+    /*
+    FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+    The gate was already resolved (and pushed into the runtime) directly after the TaskStore
+    appeared; this is the settings object the rest of startup consumes.
+    */
     const settings = await store.getSettings();
     const migrationNotice = settings.sqliteMigrationNotice;
     void deliverPostgresMigrationCompleteNoticeIfNeeded({
@@ -1578,7 +1608,11 @@ export class ProjectEngine {
           store: researchStore,
           orchestrator: this.researchOrchestrator,
         });
-        this.researchDispatcher.start();
+        this.laneGate.register({
+          name: "research-dispatcher",
+          arm: () => this.researchDispatcher?.start(),
+          disarm: () => this.researchDispatcher?.stop(),
+        });
       } catch (rsErr) {
         runtimeLog.warn(
           `Research subsystem unavailable (${
@@ -1630,7 +1664,11 @@ export class ProjectEngine {
     } catch {
       /* executor may not expose the setter on older shims */
     }
-    this.startPlannerOverseerPoll(store);
+    this.laneGate.register({
+      name: "planner-overseer-poll",
+      arm: () => this.startPlannerOverseerPoll(store),
+      disarm: () => this.stopPlannerOverseerPoll(),
+    });
 
     // 2. Initialize PrMonitor + PrCommentHandler
     this.prMonitor = new PrMonitor();
@@ -1662,7 +1700,11 @@ export class ProjectEngine {
       this.runtime.getSelfHealingManager()?.setFreshExternalPrReconciler(async () =>
         (await this.prReconciler?.reconcileAllOnce() ?? []).length,
       );
-      this.prReconciler.start();
+      this.laneGate.register({
+        name: "pr-reconciler",
+        arm: () => this.prReconciler?.start(),
+        disarm: () => this.prReconciler?.stop(),
+      });
     }
 
     /*
@@ -1712,7 +1754,11 @@ export class ProjectEngine {
       onGridlock: (event) => this.notifier?.notifyGridlock(event),
       onGridlockCleared: () => this.notifier?.notifyGridlock(null),
     });
-    this.gridlockDetector.start();
+    this.laneGate.register({
+      name: "gridlock-detector",
+      arm: () => this.gridlockDetector?.start(),
+      disarm: () => this.gridlockDetector?.stop(),
+    });
 
     // 4. Initialize AutomationStore + CronRunner (syncs deferred)
     this.setAutomationSubsystemHealth(
@@ -1808,19 +1854,49 @@ export class ProjectEngine {
 
     // 7–9. Deferred: notifiers/OAuth (ordered), automation syncs, merge enqueue
     const deferredGeneration = this.startupGeneration;
-    void this.startDeferredStartupWork(store, coreAutomationModule, deferredGeneration).catch((err) => {
-      if (this.shuttingDown || this.startupGeneration !== deferredGeneration) return;
-      const message = err instanceof Error ? err.message : String(err);
-      runtimeLog.error(`Deferred ProjectEngine startup work failed: ${message}`);
+    this.laneGate.register({
+      name: "deferred-startup-work",
+      arm: () => {
+        void this.startDeferredStartupWork(store, coreAutomationModule, deferredGeneration).catch((err) => {
+          if (this.shuttingDown || this.startupGeneration !== deferredGeneration) return;
+          const message = err instanceof Error ? err.message : String(err);
+          runtimeLog.error(`Deferred ProjectEngine startup work failed: ${message}`);
+        });
+      },
+      // Deferred work is a one-shot startup pass; it has nothing to unwind.
+      disarm: () => undefined,
     });
 
     // 8. Start periodic merge retry sweep (does not require merge enqueue to have finished)
-    this.scheduleMergeRetry(store);
-    this.scheduleMergeActiveReconciliation(settings.maintenanceIntervalMs ?? 900_000);
+    this.laneGate.register({
+      name: "merge-retry-sweep",
+      arm: () => this.scheduleMergeRetry(store),
+      disarm: () => {
+        if (this.mergeRetryTimer) clearTimeout(this.mergeRetryTimer);
+        this.mergeRetryTimer = null;
+      },
+    });
+    this.laneGate.register({
+      name: "merge-active-reconcile",
+      arm: () => this.scheduleMergeActiveReconciliation(settings.maintenanceIntervalMs ?? 900_000),
+      disarm: () => {
+        if (this.mergeActiveReconcileTimer) clearInterval(this.mergeActiveReconcileTimer);
+        this.mergeActiveReconcileTimer = null;
+      },
+    });
 
     // 9. Startup + periodic stale autostash sweeps (independent of autoMerge)
-    void this.runStaleAutostashSweep(store, "startup");
-    this.scheduleStaleAutostashSweep(store);
+    this.laneGate.register({
+      name: "stale-autostash-sweep",
+      arm: () => {
+        void this.runStaleAutostashSweep(store, "startup");
+        this.scheduleStaleAutostashSweep(store);
+      },
+      disarm: () => {
+        if (this.autostashSweepTimer) clearTimeout(this.autostashSweepTimer);
+        this.autostashSweepTimer = null;
+      },
+    });
 
     this.started = true;
     runtimeLog.log(
@@ -2167,6 +2243,32 @@ export class ProjectEngine {
   }
 
   // ── Public accessors ──
+
+  /**
+   * FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+   * Whether this project's engine runtime is loaded. Dashboard READ routes never consult it:
+   * the TaskStore behind `getTaskStore()` serves board, card, and history reads either way.
+   */
+  isRuntimeEnabled(): boolean {
+    return this.laneGate.isEnabled();
+  }
+
+  /**
+   * FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+   * Apply the runtime switch to the live engine. Off ⇒ every registered lane is disarmed and the
+   * scheduler stops polling, so the project does no work and is never woken from the NEXT pass on;
+   * on ⇒ the same lanes re-arm. No abort, cancel, or session kill happens here — a pass already in
+   * flight finishes normally.
+   */
+  async applyRuntimeGate(enabled: boolean): Promise<void> {
+    const moved = this.laneGate.apply(enabled);
+    this.runtime.setRuntimeEnabled(enabled);
+    runtimeLog.log(
+      `Project runtime ${enabled ? "loaded" : "unloaded"} (${this.config.projectId})`
+      + `${moved.disarmed.length ? ` — disarmed ${moved.disarmed.length} lane(s)` : ""}`
+      + `${moved.armed.length ? ` — armed ${moved.armed.length} lane(s)` : ""}`,
+    );
+  }
 
   /** Get the underlying InProcessRuntime. */
   getRuntime(): InProcessRuntime {
@@ -7253,6 +7355,30 @@ export class ProjectEngine {
         );
       }
     };
+
+    /*
+    FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+    The runtime switch is the one settings change that reconfigures the live engine instead of
+    waiting for the next restart, because waiting is what the operator is asking us to stop paying
+    for. Off disarms every registered lane (interval + LISTEN wake) and makes the scheduler's next
+    pass return before its first read; on re-arms them. Neither direction aborts anything: a pass
+    already in flight settles normally, which is the operator's stated no-data-corruption condition.
+    A same-value write (every settings update re-asserts `runtimeEnabled`) is therefore a no-op.
+    */
+    const onRuntimeGateTransition = async ({
+      settings: s,
+      previous: prev,
+    }: {
+      settings: Settings;
+      previous: Settings;
+    }) => {
+      const wasEnabled = isProjectRuntimeEnabled(prev);
+      const isEnabled = isProjectRuntimeEnabled(s);
+      if (wasEnabled === isEnabled) return;
+      await this.applyRuntimeGate(isEnabled);
+    };
+    store.on("settings:updated", onRuntimeGateTransition);
+    this.settingsHandlers.push(onRuntimeGateTransition);
 
     // 1. Unified pause lifecycle — detector only resumes once BOTH pause sources
     // are clear, and pauses when either source engages.

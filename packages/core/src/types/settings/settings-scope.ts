@@ -1275,6 +1275,29 @@ export interface ProjectSettings {
    *  covers everything). */
   enginePaused?: boolean;
   /**
+   * FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+   * RUNTIME UNLOAD switch, not a dispatch pause. When false the project's engine
+   * runtime is unloaded: the scheduler pass, triage poll, self-healing sweeps,
+   * heartbeat dispatch, planner-overseer poll, workflow-continuation pump, cron and
+   * every maintenance arm stay disarmed, so the project issues no database reads for
+   * engine work. Absent means true, so the state is opt-out and survives restart
+   * (it is a persisted project setting, not process state).
+   *
+   * Contrast with {@link enginePaused}: `enginePaused` is consulted only at the END
+   * of a scheduler pass, so the pass and all of its board reads still run — measured
+   * 51–183 s per pass with ~25 projects in one process, which is what starved
+   * `/api/tasks/page` (11–26 s) behind minute-long passes while `/api/health` answered
+   * in 0.09 s. `runtimeEnabled: false` never enters the pass at all.
+   * {@link globalPause} is likewise untouched: it stays the hard stop that aborts live
+   * agent sessions. Turning this switch off performs NO abort — a pass already in
+   * flight finishes normally so nothing is left half-written; skipping starts with the
+   * NEXT pass.
+   *
+   * Read paths are never gated: the dashboard keeps serving this project's board,
+   * cards and history from the TaskStore while the runtime is unloaded.
+   */
+  runtimeEnabled?: boolean;
+  /**
    * FNXC:TaskTiming 2026-06-25-00:00:
    * Records the last time the engine process proved it was alive so startup recovery can exclude process-down wall-clock time from active task duration without changing firstExecutionAt.
    */

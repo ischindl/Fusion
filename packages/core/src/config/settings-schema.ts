@@ -595,6 +595,13 @@ export const DEFAULT_PROJECT_SETTINGS = {
   approvedWorkflowCliCommands: undefined,
   approvedCliAutonomyAdapters: undefined,
   enginePaused: false,
+  /*
+  FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+  The project runtime is loaded by default; `false` unloads the engine lanes (see
+  ProjectSettings.runtimeEnabled). Absent rows from before this setting behave the same
+  as `true`, so no migration is needed.
+  */
+  runtimeEnabled: true,
   engineLastActiveAt: undefined,
   /*
   FNXC:CapacityModel 2026-09-01-14:49:

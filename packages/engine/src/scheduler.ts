@@ -1226,6 +1226,13 @@ export function clearBlockedStatusOnly(dependent: Pick<Task, "status">): { statu
 
 export class Scheduler {
   private running = false;
+  /**
+   * FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+   * Mirrors the owning project's runtime gate. It is pushed in from the runtime rather than
+   * read from settings here, because reading it inside `schedule()` would itself be the store
+   * read this gate exists to eliminate.
+   */
+  private runtimeGateOpen = true;
   private scheduling = false;
   private schedulingSince = 0;
   /*
@@ -2157,6 +2164,17 @@ export class Scheduler {
     schedulerLog.log("Stopped");
   }
 
+  /**
+   * FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+   * Push the project's runtime gate into the scheduler. Closing it stops the poll interval, so
+   * the project neither does work nor wakes; an already-running pass is left to finish. Opening
+   * it does not restart polling by itself — the runtime lane registry owns arming.
+   */
+  setRuntimeGate(open: boolean): void {
+    this.runtimeGateOpen = open;
+    if (!open) this.stop();
+  }
+
   private clearDispatchQueuedReasonMemo(taskId: string): void {
     for (const key of this.wasDispatchQueuedReasonLogged) {
       if (key.startsWith(`${taskId}:`)) {
@@ -2650,6 +2668,16 @@ export class Scheduler {
 
   async schedule(): Promise<void> {
     if (!this.running) return;
+    /*
+    FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+    The pass entry is the enforcement boundary for a project whose runtime was unloaded while
+    the process stayed up: the NEXT pass returns here before its first store read, while a pass
+    already inside the body is never interrupted (the `scheduling` guard is what keeps this
+    re-entrance-safe, and no cancel/abort is performed anywhere). `start()` already cleared the
+    poll interval when the gate closed, so this is the belt for event-driven wakes, not the
+    source of wakeups.
+    */
+    if (!this.runtimeGateOpen) return;
     if (this.scheduling) {
       /* FNXC:PumpWatchdog 2026-08-01-02:00: one hung pass leaves the guard closed forever and every later tick/wake drops SILENTLY (the triage-poll death, 00769fad7c/e51ebff381). Past the threshold, warn with the stuck duration and force the guard open; the hung pass's own finally re-clearing it later is harmless. Dispatch prep runs real git work per candidate, so the threshold is generous. */
       const stuckMs = this.schedulingSince > 0 ? Date.now() - this.schedulingSince : 0;

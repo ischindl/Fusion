@@ -34,6 +34,7 @@ import {
 /* FNXC:HumanMergeApproval 2026-09-17-22:32: FN-514 classifies the parked marker family it owns. */
 import { isHumanMergeAdmissionHold } from "../executor/workflow-admission-hold.js";
 import { Scheduler } from "../scheduler.js";
+import { isProjectRuntimeEnabled, RuntimeLaneGate } from "../runtime-lane-gate.js";
 import { registerDefaultAgentPluginRunner, unregisterDefaultAgentPluginRunner } from "../pi.js";
 import type { PrMonitor, PrComment } from "../merge/pr-monitor.js";
 import type { PrInfo } from "@fusion/core";
@@ -1531,6 +1532,14 @@ export class InProcessRuntime
   private failedNoVerdictPreMergeReviewRerouter?: (task: import("@fusion/core").Task) => Promise<"rerouted" | "pending" | "changed" | "unavailable" | "not-applicable">;
   /** Tracks whether startup recovery was intentionally deferred due to pause state. */
   private startupRecoveryDeferred = false;
+  /**
+   * FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+   * The project's runtime gate. Starts open so construction order stays irrelevant; it is
+   * narrowed from the persisted `runtimeEnabled` setting once the TaskStore is up, BEFORE any
+   * lane registers itself. A gated-off project gets a read-only runtime: the TaskStore stays
+   * live so the dashboard keeps serving board/cards/history reads.
+   */
+  private readonly laneGate = new RuntimeLaneGate(true);
   /** Prevent duplicate unpause recovery dispatches from racing each other. */
   private resumeAfterUnpauseRunning = false;
   private restartRecoveryCoordinator?: RestartRecoveryCoordinator;
@@ -1730,6 +1739,14 @@ export class InProcessRuntime
       // This recovery is independent of the retired recycle pool.
       const { reapOrphanWorktrees } = await import("../worktree/worktree-pool.js");
       const settings = await this.taskStore.getSettings();
+      /*
+      FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+      Resolve the runtime gate here — the first point in startup that owns project settings and
+      the last point before any periodic lane registers itself. A disabled project therefore
+      never arms a timer, opens a LISTEN wake, or runs a sweep, while its TaskStore stays live
+      for the dashboard read routes.
+      */
+      this.laneGate.apply(isProjectRuntimeEnabled(settings));
       try {
         const reaped = await reapOrphanWorktrees(this.config.workingDirectory, settings);
         if (reaped > 0) {
@@ -2224,7 +2241,18 @@ export class InProcessRuntime
             this.recordTaskCompletion(taskId, false);
           },
         });
-        this.heartbeatMonitor.start();
+        /*
+        FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+        Every periodic engine driver registers its arm/disarm pair with the ONE runtime gate
+        instead of guarding its own callback. With `settings.runtimeEnabled === false` the
+        gate never armed this lane and never clears a live interval either, because there is
+        no interval to clear — the project gets no work and no wakeups.
+        */
+        this.laneGate.register({
+          name: "heartbeat-monitor",
+          arm: () => this.heartbeatMonitor?.start(),
+          disarm: () => this.heartbeatMonitor?.stop(),
+        });
       }
 
       // 6a. Initialize HeartbeatTriggerScheduler (only if agentStore is available)
@@ -2283,7 +2311,11 @@ export class InProcessRuntime
               : { suppress: false },
           },
         );
-        this.triggerScheduler.start();
+        this.laneGate.register({
+          name: "heartbeat-trigger-scheduler",
+          arm: () => this.triggerScheduler?.start(),
+          disarm: () => this.triggerScheduler?.stop(),
+        });
 
         // STAS-205: a card in review must get reviewer work from persisted state, not from
         // whichever reviewer patrol happens to look. Needs both the agent roster and the
@@ -2294,7 +2326,11 @@ export class InProcessRuntime
             agentStore: this.agentStore,
             heartbeatMonitor: this.heartbeatMonitor,
           });
-          this.reviewDispatchSweep.start();
+          this.laneGate.register({
+            name: "review-dispatch-sweep",
+            arm: () => this.reviewDispatchSweep?.start(),
+            disarm: () => this.reviewDispatchSweep?.stop(),
+          });
         }
 
         // Startup bootstrap for already-persisted agents. Ongoing lifecycle
@@ -2457,7 +2493,11 @@ export class InProcessRuntime
               pollIntervalMs: 60000,
               scope: "project", // Project-scoped execution — global routines run separately
             });
-            this.routineScheduler.start();
+            this.laneGate.register({
+              name: "routine-scheduler",
+              arm: () => this.routineScheduler?.start(),
+              disarm: () => this.routineScheduler?.stop(),
+            });
             runtimeLog.log("RoutineScheduler initialized and started");
           }
         } else {
@@ -2619,8 +2659,16 @@ export class InProcessRuntime
       production perf collapse where pausing every project failed to cut CPU because maintenance ran at
       the task-store/runtime level, not per-agent. The listener re-arms the timer on unpause.
       */
-      this.selfHealingManager.start();
-      this.stuckTaskDetector.start();
+      this.laneGate.register({
+        name: "self-healing-maintenance",
+        arm: () => this.selfHealingManager?.start(),
+        disarm: () => this.selfHealingManager?.stop(),
+      });
+      this.laneGate.register({
+        name: "stuck-task-detector",
+        arm: () => this.stuckTaskDetector?.start(),
+        disarm: () => this.stuckTaskDetector?.stop(),
+      });
       this.detachAgentLinkSync = attachAgentLinkSync({
         store: this.taskStore,
         agentStore: this.agentStore!,
@@ -2644,7 +2692,14 @@ export class InProcessRuntime
       await this.taskStore.startTaskDeletedOutboxConsumer();
 
       const startupSettings = await this.taskStore.getSettings();
-      if (startupSettings.globalPause || startupSettings.enginePaused) {
+      /*
+      FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+      A runtime-off project defers the startup recovery sequence exactly like a paused one —
+      it is a whole-board read plus git work, and the gate's claim is that an unloaded project
+      issues none of those. `resumeStartupRecoverySequence` re-checks the gate, so a flip that
+      happens while the sequence is queued stops it before it reads.
+      */
+      if (startupSettings.globalPause || startupSettings.enginePaused || !this.laneGate.isEnabled()) {
         this.startupRecoveryDeferred = true;
         runtimeLog.log(
           `Startup recovery deferred — ${
@@ -2664,13 +2719,35 @@ export class InProcessRuntime
       }
 
       // 11. Start scheduler and triage processor
-      this.scheduler.start();
-      this.triageProcessor?.start();
+      /*
+      FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+      The scheduler pass is the minute-long read storm this gate exists to stop, and the
+      triage poll is the other whole-board reader. Both stay unarmed while the project's
+      runtime is off; `Scheduler.schedule()` additionally checks the gate at entry so a flip
+      that lands mid-process stops the NEXT pass without touching the one in flight.
+      */
+      this.laneGate.register({
+        name: "scheduler",
+        arm: () => {
+          this.scheduler?.setRuntimeGate(this.laneGate.isEnabled());
+          this.scheduler?.start();
+        },
+        disarm: () => this.scheduler?.stop(),
+      });
+      this.laneGate.register({
+        name: "triage-processor",
+        arm: () => this.triageProcessor?.start(),
+        disarm: () => this.triageProcessor?.stop(),
+      });
 
       // 12. Start MissionExecutionLoop for validation cycle handling
       this.missionExecutionLoop = missionExecutionLoop;
       if (missionExecutionLoop) {
-        missionExecutionLoop.start();
+        this.laneGate.register({
+          name: "mission-execution-loop",
+          arm: () => this.missionExecutionLoop?.start(),
+          disarm: () => this.missionExecutionLoop?.stop(),
+        });
         // Recover active missions to re-enqueue pending validations
         void missionExecutionLoop.recoverActiveMissions().catch((err) => {
           runtimeLog.error("Failed to recover active missions:", err);
@@ -2715,7 +2792,11 @@ export class InProcessRuntime
       }
 
       // 14. Start MissionAutopilot background polling
-      this.missionAutopilot?.start();
+      this.laneGate.register({
+        name: "mission-autopilot",
+        arm: () => this.missionAutopilot?.start(),
+        disarm: () => this.missionAutopilot?.stop(),
+      });
 
       try {
         await this.taskStore.updateSettings({ engineActiveSinceMs: Date.now() });
@@ -2750,11 +2831,29 @@ export class InProcessRuntime
       from the wakes wired just below; the timer is what recovers a lost NOTIFY, a reconnection
       window, or a crash. Removing it would trade an explained wait for an unrecoverable stall.
       */
-      this.workflowContinuationTimer = setInterval(() => {
-        this.kickWorkflowContinuationProcessor();
-      }, WORKFLOW_CONTINUATION_POLL_MS);
-      this.workflowContinuationTimer.unref?.();
-      await this.startDispatchWakes();
+      this.laneGate.register({
+        name: "workflow-continuation-pump",
+        arm: () => {
+          this.workflowContinuationTimer = setInterval(() => {
+            this.kickWorkflowContinuationProcessor();
+          }, WORKFLOW_CONTINUATION_POLL_MS);
+          this.workflowContinuationTimer.unref?.();
+        },
+        disarm: () => {
+          if (this.workflowContinuationTimer) clearInterval(this.workflowContinuationTimer);
+          this.workflowContinuationTimer = undefined;
+        },
+      });
+      /*
+      FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+      Dispatch wakes are LISTEN connections that wake the continuation processor on NOTIFY —
+      an event wakeup is still a wakeup, so a runtime-off project holds none of them open.
+      */
+      this.laneGate.register({
+        name: "dispatch-wakes",
+        arm: () => void this.startDispatchWakes(),
+        disarm: () => void this.stopDispatchWakes(),
+      });
       this.kickWorkflowContinuationProcessor();
       runtimeLog.log(`InProcessRuntime started for project ${this.config.projectId}`);
     } catch (error) {
@@ -3209,7 +3308,45 @@ export class InProcessRuntime
     }
   }
 
+  /**
+   * FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+   * Whether this project's engine runtime is currently loaded. Read path callers never
+   * consult it — the TaskStore serves reads either way.
+   */
+  isRuntimeEnabled(): boolean {
+    return this.laneGate.isEnabled();
+  }
+
+  /**
+   * FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+   * Apply a runtime on/off change to the live runtime: off disarms every registered lane
+   * (intervals and LISTEN wakes included, so the project stops doing work AND stops being
+   * woken); on re-arms exactly those lanes. Nothing here cancels or aborts a pass that is
+   * already in flight — an in-flight pass finishes normally, which is the operator's stated
+   * data-safety condition. Returns the lane names the change actually moved.
+   */
+  setRuntimeEnabled(enabled: boolean): { disarmed: string[]; armed: string[] } {
+    const result = this.laneGate.apply(enabled);
+    this.scheduler?.setRuntimeGate(enabled);
+    runtimeLog.log(
+      `Project runtime ${enabled ? "loaded" : "unloaded"} for ${this.config.projectId}`
+      + `${result.disarmed.length ? ` (disarmed: ${result.disarmed.join(", ")})` : ""}`
+      + `${result.armed.length ? ` (armed: ${result.armed.join(", ")})` : ""}`,
+    );
+    return result;
+  }
+
   private async resumeStartupRecoverySequence(): Promise<void> {
+    /*
+    FNXC:ProjectRuntimeOff 2026-11-07-15:56:
+    The sequence is queued (not armed), so a gate that closed while it sat in the microtask
+    queue must stop it before its first read. No in-flight recovery is ever cancelled — this
+    check runs before the sequence touches the store.
+    */
+    if (!this.laneGate.isEnabled()) {
+      runtimeLog.log("Startup recovery sequence skipped — project runtime is off");
+      return;
+    }
     // Restart recovery decides when interrupted runs can safely resume versus
     // when they must be reset to todo for a clean retry.
     await this.restartRecoveryCoordinator!.recoverInterruptedRuns();
