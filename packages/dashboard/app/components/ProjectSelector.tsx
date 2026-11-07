@@ -10,6 +10,10 @@ import {
   Clock,
   Star,
   X,
+  Play,
+  Pause,
+  Square,
+  HelpCircle,
 } from "lucide-react";
 import type { ProjectInfo } from "../api";
 import type { ProjectStatus } from "@fusion/core";
@@ -51,6 +55,143 @@ function renderProjectStateLine(project: ProjectInfo, t: (key: string, fallback:
       data-testid={`project-state-${project.id}`}
     >
       {label}
+    </span>
+  );
+}
+
+/*
+FNXC:ProjectRuntimeVisibility 2026-11-07-20:23 (RUFU-871):
+The text state line tells an operator who reads it; the ICON lets them see it without reading.
+Module scope, and a lowercase render function returning elements rather than a component, for the
+same reason as `renderProjectStateLine` above — a component declared inside the selector would be a
+new element type every render and would remount the row under the search input (FN-8606).
+
+MAPPING RULE — the four colours and why each one is honest:
+- `off` (RED stop) wins over everything. `runtimeState: "disabled"`, or the legacy
+  `runtimeEnabled === false` when `runtimeState` is absent, means the operator unloaded this
+  project's engine runtime: an `active` project in that shape does no engine work, and green there
+  would be a lie.
+- `unknown` (NEUTRAL, dimmed) is the absence of a reading, never a state. Measured 2026-11-07:
+  14 of 25 projects answered `unknown` only because their settings could not be read. Painting
+  those red produced a UI where a merely paused project showed "Engine start" beside "Runtime off"
+  at the same time. Colour must never claim what nobody read.
+- `paused` (YELLOW) only for a loaded runtime whose project row is paused.
+- `running` (GREEN play) for everything else: runtime loaded, row not paused.
+
+`errored` / `initializing` / unrecognised `status` values keep their dedicated status icon: they
+carry information this runtime axis does not have, and a green play over an errored project would be
+the same class of lie as green over an unloaded one.
+*/
+type ProjectStateIndicator = "running" | "paused" | "off" | "unknown";
+
+/*
+Copy per indicator, keyed by state. Labels are short (the accessible name); titles explain (the
+tooltip). Glyphs resolve lazily in `renderProjectStateGlyph` rather than sitting here as component
+references: a host module that mocks `lucide-react` with a partial factory makes an eager module-level
+dereference throw while the string table alone stays harmless, and the icon is never needed until a
+row actually renders.
+*/
+const PROJECT_STATE_COPY: Record<
+  ProjectStateIndicator,
+  { labelKey: string; labelDefault: string; titleKey: string; titleDefault: string }
+> = {
+  running: {
+    labelKey: "projectSelector.stateRunning",
+    labelDefault: "Running",
+    titleKey: "projectSelector.stateRunningTitle",
+    titleDefault: "Engine runtime loaded — this project runs",
+  },
+  paused: {
+    labelKey: "projectSelector.statePaused",
+    labelDefault: "Paused",
+    titleKey: "projectSelector.statePausedTitle",
+    titleDefault: "Project paused — dispatch is held",
+  },
+  off: {
+    labelKey: "projectSelector.stateOff",
+    labelDefault: "Runtime off",
+    titleKey: "projectSelector.stateOffTitle",
+    titleDefault: "Engine runtime unloaded — this project does no engine work",
+  },
+  unknown: {
+    labelKey: "projectSelector.stateUnknown",
+    labelDefault: "State unknown",
+    titleKey: "projectSelector.stateUnknownTitle",
+    titleDefault: "Runtime state could not be read",
+  },
+};
+
+/**
+ * Glyph per state, reusing the dashboard's existing engine vocabulary: `Play`/`Pause` as the project
+ * status and executor badge already use them, `Square` is the stop-rectangle the stopped engine and
+ * the engine-control menu both show, and `HelpCircle` is the established "not known" mark.
+ */
+function renderProjectStateGlyph(indicator: ProjectStateIndicator) {
+  switch (indicator) {
+    case "running":
+      return <Play size={14} aria-hidden="true" />;
+    case "paused":
+      return <Pause size={14} aria-hidden="true" />;
+    case "off":
+      return <Square size={14} aria-hidden="true" />;
+    case "unknown":
+    default:
+      return <HelpCircle size={14} aria-hidden="true" />;
+  }
+}
+
+/**
+ * Classify one project for its leading icon. Returns `null` when `status` carries a state this axis
+ * does not speak to (`errored`, `initializing`, anything unrecognised), so the caller keeps the
+ * status icon instead of overriding it.
+ */
+function projectStateIndicator(project: ProjectInfo): ProjectStateIndicator | null {
+  if (project.status !== "active" && project.status !== "paused") return null;
+  if (project.runtimeState === "disabled") return "off";
+  if (project.runtimeState === undefined && project.runtimeEnabled === false) return "off";
+  if (project.runtimeState === "unknown") return "unknown";
+  if (project.status === "paused") return "paused";
+  return "running";
+}
+
+/** Leading status/lifecycle icon — the fallback when the runtime axis has nothing to say. */
+function renderProjectStatusIcon(status: ProjectStatus) {
+  const config = getProjectStatusConfig(status);
+  const Icon = config.icon;
+  return <Icon size={14} style={{ color: config.color }} className={isInitializingStatus(status) ? "animate-spin" : ""} />;
+}
+
+/**
+ * The row's state indicator. Colour is never the only carrier: the wrapper is a labelled `img` role
+ * with a tooltip, and the icon itself is `aria-hidden`. Rendered for every entry, including a
+ * running one — "nothing to report" is still an answer the operator is owed at a glance.
+ */
+function renderProjectStateIcon(project: ProjectInfo, t: (key: string, fallback: string) => string) {
+  const indicator = projectStateIndicator(project);
+  if (!indicator) {
+    return (
+      <span
+        className="project-selector__item-state-icon project-selector__item-state-icon--status"
+        data-project-state-icon="status"
+        data-testid={`project-state-icon-${project.id}`}
+      >
+        {renderProjectStatusIcon(project.status)}
+      </span>
+    );
+  }
+
+  const { labelKey, labelDefault, titleKey, titleDefault } = PROJECT_STATE_COPY[indicator];
+  const label = t(labelKey, labelDefault);
+  return (
+    <span
+      className={`project-selector__item-state-icon project-selector__item-state-icon--${indicator}`}
+      role="img"
+      aria-label={label}
+      title={t(titleKey, titleDefault)}
+      data-project-state-icon={indicator}
+      data-testid={`project-state-icon-${project.id}`}
+    >
+      {renderProjectStateGlyph(indicator)}
     </span>
   );
 }
@@ -464,19 +605,6 @@ export function ProjectSelector({
     });
   }, []);
 
-  // Render status icon
-  const renderStatusIcon = (status: ProjectStatus) => {
-    const config = getProjectStatusConfig(status);
-    const Icon = config.icon;
-    return (
-      <Icon
-        size={14}
-        style={{ color: config.color }}
-        className={isInitializingStatus(status) ? "animate-spin" : ""}
-      />
-    );
-  };
-
   // Render bookmark star toggle (span to avoid nested <button> inside listbox items)
   const renderBookmarkToggle = (projectId: string) => {
     const bookmarked = isBookmarked(projectId);
@@ -597,7 +725,7 @@ export function ProjectSelector({
                   role="option"
                   aria-selected={currentProject?.id === project.id}
                 >
-                  {renderStatusIcon(project.status)}
+                  {renderProjectStateIcon(project, t)}
                   <span className="project-selector__item-name">
                     {project.name}
                   </span>
@@ -633,7 +761,7 @@ export function ProjectSelector({
                     role="option"
                     aria-selected={currentProject?.id === project.id}
                   >
-                    {renderStatusIcon(project.status)}
+                    {renderProjectStateIcon(project, t)}
                     <span className="project-selector__item-name">
                       {project.name}
                     </span>
@@ -698,7 +826,7 @@ export function ProjectSelector({
                     aria-selected={currentProject?.id === project.id}
                     data-testid={`project-selector-item-${project.id}`}
                   >
-                    {renderStatusIcon(project.status)}
+                    {renderProjectStateIcon(project, t)}
                     <div className="project-selector__item-info">
                       <span className="project-selector__item-name">
                         <HighlightMatch text={project.name} query={searchQuery} />

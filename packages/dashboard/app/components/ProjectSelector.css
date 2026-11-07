@@ -828,3 +828,38 @@ legible in every theme because it tints an existing semantic colour rather than 
   color: var(--text-muted);
   background: color-mix(in srgb, var(--text-muted) 14%, transparent);
 }
+
+/*
+FNXC:ProjectRuntimeVisibility 2026-11-07-20:23 (RUFU-871):
+The per-entry state icon in the combo — the at-a-glance twin of `.project-selector__item-state`
+above, so state is readable without reading text. Colour comes from the existing semantic status
+tokens (success / warning / error) and `--text-dim` for the state nobody could read, which is
+deliberately dimmer than `--text-muted` and never red or green. The `--status` modifier carries no
+colour: that branch keeps the inline token colour from `getProjectStatusConfig`, so an errored or
+initialising project never gets recoloured by the runtime axis. No new badge or button variant —
+just the slot the row already had.
+*/
+.project-selector__item-state-icon {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  transition: color var(--duration-fast) ease;
+}
+
+.project-selector__item-state-icon--running {
+  color: var(--color-success);
+}
+
+.project-selector__item-state-icon--paused {
+  color: var(--color-warning);
+}
+
+.project-selector__item-state-icon--off {
+  color: var(--color-error);
+}
+
+.project-selector__item-state-icon--unknown {
+  color: var(--text-dim);
+}
