@@ -2900,7 +2900,7 @@ function TaskCardComponent({
     */
     if (task.descriptionTruncated && !fullDescriptionLoaded) {
       if (editDescription !== (task.description || "")) {
-        addToast(t("tasks.descriptionEditWithoutFullBody", "The full description did not load, so this edit was not saved — retry to protect the spec", "The full description did not load, so this edit was not saved — retry to protect the spec"), "error");
+        addToast(t("tasks.descriptionEditWithoutFullBody", "The full description did not load, so this edit was not saved - retry to protect the spec"), "error");
         return;
       }
       try {
