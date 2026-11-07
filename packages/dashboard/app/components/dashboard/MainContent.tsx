@@ -352,6 +352,7 @@ export function MainContent(props: MainContentProps) {
   handleAddProject,
   handlePauseProject,
   handleResumeProject,
+  handleEnableProjectRuntime,
   handleRemoveProject,
   nodes,
   graphPluginTaskView,
@@ -712,6 +713,7 @@ export function MainContent(props: MainContentProps) {
           onPauseProject={handlePauseProject}
           onResumeProject={handleResumeProject}
           onRemoveProject={handleRemoveProject}
+          onEnableProjectRuntime={handleEnableProjectRuntime}
           nodes={nodes}
         />
       </PageErrorBoundary>

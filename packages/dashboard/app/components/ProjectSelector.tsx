@@ -15,6 +15,7 @@ import type { ProjectInfo } from "../api";
 import type { ProjectStatus } from "@fusion/core";
 import { getTrailingPath } from "../utils/pathDisplay";
 import { getProjectStatusConfig, isInitializingStatus } from "../utils/projectStatusConfig";
+import { projectStateGroup, sortProjectsByStateThenName } from "../utils/projectDisplayOrder";
 import { useProjectBookmarks } from "../hooks/useProjectBookmarks";
 
 /*
@@ -27,6 +28,32 @@ auto-highlight effect whose `[isOpen, searchQuery, displayProjects]` deps then r
 memo inputs referentially stable so the highlight a host's re-render must NOT touch, survives.
 */
 const NO_RECENT_IDS = Object.freeze<string[]>([]) as string[];
+
+/*
+FNXC:ProjectRuntimeOff 2026-11-07-17:41 (RUFU-871):
+Module scope, not inside the component: a component declared in another component's render is a new
+element type every render, which remounts the row and destroys typing in the search box above it
+(FN-8606's exact failure). This is plain markup, so it returns elements with no element type.
+
+The sentence names WHY the row does nothing. A project whose runtime the operator unloaded otherwise
+looks identical to a running one, and "unloaded" is the word that explains the absence of work.
+*/
+function renderProjectStateLine(project: ProjectInfo, t: (key: string, fallback: string) => string) {
+  const group = projectStateGroup(project);
+  if (group === "live") return null;
+  const label = group === "off"
+    ? t("projectSelector.runtimeOffState", "Runtime off — unloaded, nothing runs")
+    : t("projectSelector.pausedState", "Paused");
+  return (
+    <span
+      className={`project-selector__item-state project-selector__item-state--${group}`}
+      data-project-state={group}
+      data-testid={`project-state-${project.id}`}
+    >
+      {label}
+    </span>
+  );
+}
 
 export interface ProjectSelectorProps {
   projects: ProjectInfo[];
@@ -212,14 +239,25 @@ export function ProjectSelector({
   }, [recentProjectIds, projects, currentProject, getDisabledReason]);
 
   // Filter projects based on search
+  /*
+  FNXC:ProjectRuntimeOff 2026-11-07-17:41 (RUFU-871):
+  Every registered project is listed, including the ones whose runtime the operator turned off — they
+  could not be told apart before because the flag was absent from the projection entirely. Order is
+  the pure LIVE → PAUSED → TURNED OFF grouping with names alphabetical inside a group, so "what is
+  actually running" is answered by position. Inside the combo this replaces the server's directory
+  prioritization on purpose: the operator asked for state-first ordering, and the current project is
+  still marked by its check and stays selectable in every group.
+  */
   const filteredProjects = useMemo(() => {
-    if (!searchQuery.trim()) return projects;
-    const query = searchQuery.toLowerCase();
-    return projects.filter(
-      (p) =>
-        p.name.toLowerCase().includes(query) ||
-        p.path.toLowerCase().includes(query)
-    );
+    const query = searchQuery.trim().toLowerCase();
+    const matched = query
+      ? projects.filter(
+          (p) =>
+            p.name.toLowerCase().includes(query) ||
+            p.path.toLowerCase().includes(query),
+        )
+      : projects;
+    return sortProjectsByStateThenName(matched);
   }, [projects, searchQuery]);
 
   // Detect exact match (case-insensitive name match)
@@ -673,6 +711,7 @@ export function ProjectSelector({
                           />
                         </span>
                       )}
+                      {renderProjectStateLine(project, t)}
                     </div>
                     {isExactMatch && (
                       <span className="project-selector__exact-badge">

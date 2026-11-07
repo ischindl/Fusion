@@ -19,6 +19,12 @@ export interface ProjectOverviewProps {
   onPauseProject: (project: ProjectInfo) => void;
   onResumeProject: (project: ProjectInfo) => void;
   onRemoveProject: (project: ProjectInfo) => void;
+  /*
+  FNXC:ProjectRuntimeOff 2026-11-07-17:41 (RUFU-871):
+  Re-arms a project whose engine runtime the operator turned off. Without it the projects list can name
+  the state but cannot leave it, which is the half that made a turned-off project feel stuck.
+  */
+  onEnableProjectRuntime?: (project: ProjectInfo) => void;
   onViewAllProjects?: () => void;
   nodes?: NodeInfo[];
 }
@@ -53,6 +59,7 @@ export function ProjectOverview({
   onPauseProject,
   onResumeProject,
   onRemoveProject,
+  onEnableProjectRuntime,
   nodes = [],
 }: ProjectOverviewProps) {
   const { t } = useTranslation("app");
@@ -453,6 +460,7 @@ export function ProjectOverview({
               onPause={onPauseProject}
               onResume={onResumeProject}
               onRemove={onRemoveProject}
+              onEnableRuntime={onEnableProjectRuntime}
             />
           );
         })}

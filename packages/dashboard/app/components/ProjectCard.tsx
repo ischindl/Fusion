@@ -1,20 +1,37 @@
 import { memo, useCallback, useState } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
-import { Play, Square, Trash2, Folder, ArrowRight } from "lucide-react";
+import { Play, Power, Square, Trash2, Folder, ArrowRight, PowerOff } from "lucide-react";
 import "./ProjectCard.css";
 import type { RegisteredProject, ProjectHealth } from "@fusion/core";
 import type { ProjectNodeAvailability } from "../api";
 import { getProjectStatusConfig, isInitializingStatus } from "../utils/projectStatusConfig";
 import { getRelativeTimeBucket } from "../utils/relativeTimeAgo";
 
+/*
+FNXC:ProjectRuntimeOff 2026-11-07-17:41 (RUFU-871):
+The projects projection gained `runtimeEnabled` beside `status`; the core registry row predates it, so
+the card widens the type locally instead of pushing a route projection into the domain model.
+Absent means enabled, which is `isProjectRuntimeEnabled`'s own default.
+*/
+export type ProjectCardEntry = RegisteredProject & { runtimeEnabled?: boolean };
+
 export interface ProjectCardProps {
-  project: RegisteredProject;
+  project: ProjectCardEntry;
   health: ProjectHealth | null;
-  onSelect: (project: RegisteredProject) => void;
-  onPause: (project: RegisteredProject) => void;
-  onResume: (project: RegisteredProject) => void;
-  onRemove: (project: RegisteredProject) => void;
+  onSelect: (project: ProjectCardEntry) => void;
+  onPause: (project: ProjectCardEntry) => void;
+  onResume: (project: ProjectCardEntry) => void;
+  onRemove: (project: ProjectCardEntry) => void;
+  /**
+   * Re-arms a project whose engine runtime the operator turned off.
+   *
+   * FNXC:ProjectRuntimeOff 2026-11-07-17:41 (RUFU-871):
+   * Optional so every existing host compiles unchanged, but it is the reason a turned-off project is
+   * still listed anywhere: without a turn-on affordance on the surface that names the state, the only
+   * way back on was the footer menu of the project you were already inside.
+   */
+  onEnableRuntime?: (project: ProjectCardEntry) => void;
   availabilityMappings?: Array<ProjectNodeAvailability & { displayName: string }>;
   /** Health is being fetched, while project navigation and controls remain available. */
   healthLoading?: boolean;
@@ -63,6 +80,13 @@ function areProjectCardPropsEqual(previous: ProjectCardProps, next: ProjectCardP
   if (previous.project.name !== next.project.name) return false;
   if (previous.project.path !== next.project.path) return false;
   if (previous.project.lastActivityAt !== next.project.lastActivityAt) return false;
+  /*
+  FNXC:ProjectRuntimeOff 2026-11-07-17:41 (RUFU-871):
+  The runtime gate is its own comparison on purpose. This memo comparator is why a card can keep
+  showing a stale label: turning the runtime back on changes ONLY this field, and without this line
+  the memo would swallow the refresh and the operator would still see "Runtime off".
+  */
+  if (previous.project.runtimeEnabled !== next.project.runtimeEnabled) return false;
   if (previous.isLoading !== next.isLoading) return false;
   if (previous.healthLoading !== next.healthLoading) return false;
 
@@ -103,6 +127,7 @@ function ProjectCardInner({
   onPause,
   onResume,
   onRemove,
+  onEnableRuntime,
   availabilityMappings = [],
   healthLoading = false,
   isLoading = false,
@@ -136,6 +161,20 @@ function ProjectCardInner({
     onRemove(project);
     setRemoveArmed(false);
   }, [removeArmed, onRemove, project]);
+
+  const handleEnableRuntime = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    onEnableRuntime?.(project);
+  }, [onEnableRuntime, project]);
+
+  /*
+   * FNXC:ProjectRuntimeOff 2026-11-07-17:41 (RUFU-871):
+   * The runtime gate is a SECOND axis beside `status`. `status: "paused"` means the operator paused the
+   * project row; `runtimeEnabled: false` means they unloaded the engine runtime so the project does no
+   * engine work at all — the switch that stops the minute-long passes. Production had 5 of 25 projects
+   * in that state with nothing on any list surface saying so.
+   */
+  const isRuntimeOff = project.runtimeEnabled === false;
 
   const isPaused = project.status === "paused";
   const isErrored = project.status === "errored";
@@ -188,6 +227,24 @@ function ProjectCardInner({
           <StatusIcon size={12} className={isInitializing ? "animate-spin" : ""} />
           <span>{statusConfig.label}</span>
         </div>
+        {/*
+         * FNXC:ProjectRuntimeOff 2026-11-07-17:41 (RUFU-871):
+         * A second instance of the SAME badge primitive (`.project-card-status-badge`), tinted with the
+         * muted text token rather than a new badge class, so the runtime axis is readable at a glance
+         * without forking a parallel style. Absent for a loaded project: silence means running here.
+         */}
+        {isRuntimeOff && (
+          <div
+            className="project-card-status-badge"
+            style={{ color: "var(--text-muted)", borderColor: "var(--text-muted)" }}
+            title={t("projectCard.runtimeOffTitle", "Engine runtime unloaded — this project does no engine work")}
+            data-project-state="off"
+            data-testid="project-runtime-state"
+          >
+            <PowerOff size={12} />
+            <span>{t("projectCard.runtimeOff", "Runtime off")}</span>
+          </div>
+        )}
       </div>
 
       <div className="project-card-health">
@@ -227,6 +284,26 @@ function ProjectCardInner({
         </div>
 
         <div className="project-card-actions">
+          {/*
+           * FNXC:ProjectRuntimeOff 2026-11-07-17:41 (RUFU-871):
+           * The way back on. It appears only on a card that is actually unloaded and only when the host
+           * can act, and it reuses the card's existing action-button classes — no new button variant.
+           * The action name says RUNTIME, never "start engine": the pause control below is a different
+           * switch and the two must not be confusable.
+           */}
+          {isRuntimeOff && onEnableRuntime && (
+            <button
+              className="project-card-action project-card-action-resume"
+              onClick={handleEnableRuntime}
+              disabled={isLoading}
+              title={t("projectCard.enableRuntime", "Turn runtime on")}
+              aria-label={t("projectCard.enableRuntime", "Turn runtime on")}
+              data-testid="project-runtime-enable"
+            >
+              <Power size={14} />
+              <span>{t("projectCard.enableRuntime", "Turn runtime on")}</span>
+            </button>
+          )}
           {/*
            * FNXC:ProjectCardEngineControls 2026-06-27-00:00:
            * ProjectEngineManager.pauseProject already calls engine.stop(), so the card action names the engine-lifecycle action as Stop engine/Start engine while preserving the active/paused project status model and pauseProject/resumeProject wiring.

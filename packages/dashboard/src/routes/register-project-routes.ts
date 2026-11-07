@@ -53,7 +53,7 @@ const {
  */
 async function resolveProjectRuntimeEnabled(
   projectId: string,
-  openStore: { getSettingsFast?: () => Promise<{ runtimeEnabled?: boolean }> } | null,
+  openStore: { getSettingsFast?: () => Promise<{ runtimeEnabled?: boolean }> } | null | undefined,
 ): Promise<boolean> {
   try {
     const store = openStore ?? await getOrCreateProjectStore(projectId);

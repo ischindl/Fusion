@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import { useTranslation } from "react-i18next";
-import { pauseProject, resumeProject, unregisterProject } from "../api";
+import { pauseProject, resumeProject, setProjectRuntime, unregisterProject } from "../api";
 import type { ProjectInfo } from "../api";
 import { replaceProjectIdInUrl } from "../utils/projectUrlState";
 import type { ViewMode, TaskView } from "./useViewState";
@@ -48,6 +48,13 @@ export interface UseProjectActionsResult {
   handleModelOnboardingComplete: (outcome?: OnboardingCompletionOutcome) => void;
   handlePauseProject: (project: ProjectInfo) => Promise<void>;
   handleResumeProject: (project: ProjectInfo) => Promise<void>;
+  /**
+   * FNXC:ProjectRuntimeOff 2026-11-07-17:41 (RUFU-871):
+   * Re-arms a project whose engine runtime the operator turned off. Distinct from
+   * `handleResumeProject`: resume starts a PAUSED project row, this one reloads the engine runtime of
+   * a project whose lanes were unloaded, and the two are different switches on the same card.
+   */
+  handleEnableProjectRuntime: (project: ProjectInfo) => Promise<void>;
   handleRemoveProject: (project: ProjectInfo) => Promise<void>;
   handleToggleFavorite: (provider: string) => Promise<void>;
   handleToggleModelFavorite: (modelId: string) => Promise<void>;
@@ -144,6 +151,22 @@ export function useProjectActions(options: UseProjectActionsOptions): UseProject
     }
   }, [addToast, refreshProjects, t]);
 
+  /*
+  FNXC:ProjectRuntimeOff 2026-11-07-17:41 (RUFU-871):
+  Turning the runtime back on has to be reflected where the operator read the state, so the switch is
+  followed by the same awaited `refreshProjects()` the pause/resume actions use — the card and the
+  combo re-render from the fresh projection instead of waiting for a page reload.
+  */
+  const handleEnableProjectRuntime = useCallback(async (project: ProjectInfo) => {
+    try {
+      await setProjectRuntime(project.id, true, "project-card");
+      addToast(t("projects.actions.runtimeOnSuccess", "Project {{name}} runtime turned on", { name: project.name }), "success");
+      await refreshProjects();
+    } catch {
+      addToast(t("projects.actions.runtimeOnError", "Failed to turn on the runtime of project {{name}}", { name: project.name }), "error");
+    }
+  }, [addToast, refreshProjects, t]);
+
   const handleRemoveProject = useCallback(async (project: ProjectInfo) => {
     try {
       if (currentProject?.id === project.id && requestCloseProjectScopedUi && !await requestCloseProjectScopedUi()) return;
@@ -187,6 +210,7 @@ export function useProjectActions(options: UseProjectActionsOptions): UseProject
     handleModelOnboardingComplete,
     handlePauseProject,
     handleResumeProject,
+    handleEnableProjectRuntime,
     handleRemoveProject,
     handleToggleFavorite,
     handleToggleModelFavorite,

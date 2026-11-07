@@ -123,6 +123,13 @@ export interface MainContentProps {
   handleAddProject: () => void;
   handlePauseProject: (project: ProjectInfo) => Promise<void>;
   handleResumeProject: (project: ProjectInfo) => Promise<void>;
+  /**
+   * FNXC:ProjectRuntimeOff 2026-11-07-17:41 (RUFU-871):
+   * Re-arms a project whose engine runtime the operator turned off, from the project card on the
+   * projects overview. Optional so hosts that do not surface the runtime axis keep compiling; without
+   * it the card names the state but offers no way back on.
+   */
+  handleEnableProjectRuntime?: (project: ProjectInfo) => Promise<void>;
   handleRemoveProject: (project: ProjectInfo) => Promise<void>;
   nodes: NodeInfo[];
   graphPluginTaskView: PluginTaskView | null;

@@ -802,3 +802,29 @@ html:is([data-viewport-mode="mobile"], [data-viewport-mode="tablet"]) .project-c
 html[data-viewport-mode="mobile"] .project-selector {
   display: none;
 }
+
+/*
+FNXC:ProjectRuntimeOff 2026-11-07-17:41 (RUFU-871):
+The state line inside a combo row. A project whose engine runtime the operator unloaded used to be
+indistinguishable from a running one; the row now says so in its own muted type. Only state tokens
+and a color-mix wash — no new badge primitive, no hardcoded px/hex — and the `off` variant stays
+legible in every theme because it tints an existing semantic colour rather than inventing one.
+*/
+.project-selector__item-state {
+  align-self: flex-start;
+  font-size: var(--font-size-xs);
+  line-height: 1.3;
+  padding: var(--space-3xs) var(--space-xs);
+  border-radius: var(--radius-sm);
+  transition: color var(--duration-fast) ease;
+}
+
+.project-selector__item-state--paused {
+  color: var(--color-warning);
+  background: color-mix(in srgb, var(--color-warning) 12%, transparent);
+}
+
+.project-selector__item-state--off {
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-muted) 14%, transparent);
+}

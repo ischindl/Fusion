@@ -1593,6 +1593,7 @@ const { tasks, isStale, isBoardRefreshInFlight, createTask, moveTask, boostTask,
     handleModelOnboardingComplete,
     handlePauseProject,
     handleResumeProject,
+    handleEnableProjectRuntime,
     handleRemoveProject,
     handleToggleFavorite,
     handleToggleModelFavorite,
@@ -2523,6 +2524,7 @@ const { tasks, isStale, isBoardRefreshInFlight, createTask, moveTask, boostTask,
     handleAddProject,
     handlePauseProject,
     handleResumeProject,
+    handleEnableProjectRuntime,
     handleRemoveProject,
     nodes,
     graphPluginTaskView,
@@ -2987,6 +2989,7 @@ const { tasks, isStale, isBoardRefreshInFlight, createTask, moveTask, boostTask,
                 onPauseProject={handlePauseProject}
                 onResumeProject={handleResumeProject}
                 onRemoveProject={handleRemoveProject}
+                onEnableProjectRuntime={handleEnableProjectRuntime}
                 nodes={nodes}
               />
             </ProjectsDrawer>
