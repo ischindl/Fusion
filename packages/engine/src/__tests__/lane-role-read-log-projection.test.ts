@@ -85,7 +85,8 @@ describe("lane-role read log projection (RUFU-756)", () => {
   });
 
   it("defaults to the cheap shape: the log column is only fetched when a caller names it", () => {
-    expect(helperBody).toContain("opts: { includeLog?: boolean } = {}");
+    // RUFU-871 added `includeComments` beside it; `includeLog` must stay opt-IN for the log column.
+    expect(helperBody).toContain("opts: { includeLog?: boolean; includeComments?: boolean } = {}");
     expect(helperBody).toContain("const excludeLog = opts.includeLog !== true;");
     // The old default was the expensive one. Restoring it would be a silent performance regression that
     // no behavioural test can see, so it must fail HERE.

@@ -16,6 +16,7 @@ import type {
   PlannerOverseerRuntimeSnapshot,
   PlannerInterventionSourceLink,
   PlannerOversightStage,
+  TaskListReadField,
 } from "@fusion/core";
 import {
   computeWorkflowIrPin,
@@ -6992,16 +6993,40 @@ export class ProjectEngine {
     absence, which is what makes the narrowing safe and also what makes it invisible to behavioural
     tests, so `lane-role-read-log-projection.test.ts` pins the shape and the empty opt-in list.
     */
+  /*
+  FNXC:LaneRoleReadCommentProjection 2026-11-07-09:13 (RUFU-871):
+  This read is the process's hottest whole-board reader (read attribution: 71 % of `listTasks` samples), and
+  the heap snapshot names what it costs. After RUFU-584 dropped `log`, the retained mass moved to the comment
+  pair: the retainer walk found 5,821 `comments` and 5,810 `steeringComments` properties on ~5.8k hydrated
+  Task rows, versus only 89 `log` edges, and 84.6 % of the whole heap was string nodes — the comment bodies.
+  So the comment pair is now dropped from this read by the same mechanism RUFU-883 made declarable, and the
+  declaration is written as "everything wide except comments" rather than `fields: []` because these
+  consumers do need `workflowStepResults`, `source` (branch provenance) and `steps`.
+
+  Safety is the enumeration, not the volume: all five consumers of this shape were read for comment access —
+  `resumeAfterUnpauseAndSweepInReview` (3777), the WIP/review pair (4156/4157), and the review-lane readers
+  (7055, 7127, 7207) — and none reads `.comments` or `.steeringComments`. The engine's only comment readers
+  are fed a single hydrated task, never a list row: `wire-executor-lifecycle.ts:701/719` and
+  `execute-workflow-step.ts:1264` take the session's own task, and `run-implementation.ts:1577` passes
+  `detail` from a `getTask`. Narrowing is therefore invisible to behaviour and must stay pinned by a shape
+  test (`lane-role-read-comment-projection.test.ts`). A consumer that genuinely needs comments opts in.
+  */
   private async listTasksInLaneRoles(
     store: TaskStore,
     roles: Parameters<typeof resolveProjectColumnsForRoles>[1],
-    opts: { includeLog?: boolean } = {},
+    opts: { includeLog?: boolean; includeComments?: boolean } = {},
   ): Promise<Task[]> {
     const columns = await resolveProjectColumnsForRoles(store, roles);
     const byId = new Map<string, Task>();
     const excludeLog = opts.includeLog !== true;
+    // A declared read-set is a strict subset of today's row: naming every wide member except `comments`
+    // removes exactly the comment columns and changes nothing else. `undefined` keeps today's shape
+    // byte-for-byte, which is what the comment opt-in means.
+    const fields: readonly TaskListReadField[] | undefined = opts.includeComments === true
+      ? undefined
+      : ["description", "summary", "steps", "attachments", "workflowStepResults", "source"];
     for (const column of columns) {
-      for (const task of await store.listTasks({ column, derive: false, excludeLog })) byId.set(task.id, task as Task);
+      for (const task of await store.listTasks({ column, derive: false, excludeLog, fields })) byId.set(task.id, task as Task);
     }
     return [...byId.values()];
   }
