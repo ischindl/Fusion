@@ -196,6 +196,16 @@
   cursor: not-allowed;
 }
 
+/*
+FNXC:ProjectRuntimeOff 2026-11-07-20:31 (RUFU-871):
+The card's runtime toggle is disabled while its own request is in flight. That window must read as
+"working", not as the base disabled "you may not press this", so it keeps a progress cursor. Scoped to
+the pending attribute rather than :disabled so every other disabled card action keeps its meaning.
+*/
+.project-card-action:disabled[data-runtime-pending="true"] {
+  cursor: progress;
+}
+
 .project-card-action-resume {
   color: var(--color-success);
 }

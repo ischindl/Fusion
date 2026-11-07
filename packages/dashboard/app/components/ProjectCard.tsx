@@ -24,14 +24,23 @@ export interface ProjectCardProps {
   onResume: (project: ProjectCardEntry) => void;
   onRemove: (project: ProjectCardEntry) => void;
   /**
-   * Re-arms a project whose engine runtime the operator turned off.
+   * Writes the project's engine-runtime switch to the requested state.
    *
    * FNXC:ProjectRuntimeOff 2026-11-07-17:41 (RUFU-871):
    * Optional so every existing host compiles unchanged, but it is the reason a turned-off project is
    * still listed anywhere: without a turn-on affordance on the surface that names the state, the only
    * way back on was the footer menu of the project you were already inside.
+   *
+   * FNXC:ProjectRuntimeOff 2026-11-07-20:31 (RUFU-871):
+   * The card control is a real TOGGLE now: `enabled` carries the desired state, `false` unloads the
+   * runtime and `true` re-arms it. It stays ONE callback rather than a second disable pipeline, so the
+   * card cannot hold two owners that disagree about which request a press sends. `enabled` is optional
+   * (and defaults to `true` in the handler) only so a host written before the toggle era keeps its
+   * meaning; this card always passes an explicit direction. The name keeps the historical
+   * `onEnableRuntime` spelling because the host-side prop names (`onEnableProjectRuntime`) are owned
+   * outside this slice.
    */
-  onEnableRuntime?: (project: ProjectCardEntry) => void;
+  onEnableRuntime?: (project: ProjectCardEntry, enabled?: boolean) => void | Promise<void>;
   availabilityMappings?: Array<ProjectNodeAvailability & { displayName: string }>;
   /** Health is being fetched, while project navigation and controls remain available. */
   healthLoading?: boolean;
@@ -134,6 +143,15 @@ function ProjectCardInner({
 }: ProjectCardProps) {
   const { t } = useTranslation("app");
   const [removeArmed, setRemoveArmed] = useState(false);
+  /*
+   * FNXC:ProjectRuntimeOff 2026-11-07-20:31 (RUFU-871):
+   * Which direction the in-flight runtime request is heading, or null when none is. It is a direction
+   * rather than a boolean because the pending label must read "Turning runtime off…" on the off-
+   * affordance and "…on…" on the on-affordance, and the card must never show a spinner on a control
+   * the operator did not press. Cleared when the host's promise settles; the refreshed `runtimeEnabled`
+   * prop is what actually changes the card, this only covers the window before it arrives.
+   */
+  const [runtimePending, setRuntimePending] = useState<"on" | "off" | null>(null);
   const statusConfig = getProjectStatusConfig(project.status);
   const StatusIcon = statusConfig.icon;
 
@@ -162,9 +180,23 @@ function ProjectCardInner({
     setRemoveArmed(false);
   }, [removeArmed, onRemove, project]);
 
-  const handleEnableRuntime = useCallback((e: React.MouseEvent) => {
+  /*
+   * FNXC:ProjectRuntimeOff 2026-11-07-20:31 (RUFU-871):
+   * One press, one direction, one request. The runtime toggle never routes through `onPause` /
+   * `onResume`: `status` (paused/active) and `runtimeEnabled` (loaded/unloaded) are different axes and
+   * unloading an engine must not pause the project row. The pending flag is set only for hosts that
+   * actually report a promise, so a synchronous host leaves no stuck spinner.
+   */
+  const requestRuntimeState = useCallback((e: React.MouseEvent, enabled: boolean) => {
     e.stopPropagation();
-    onEnableRuntime?.(project);
+    if (!onEnableRuntime) return;
+    const outcome = onEnableRuntime(project, enabled);
+    if (!outcome || typeof outcome.then !== "function") return;
+    setRuntimePending(enabled ? "on" : "off");
+    void outcome.then(
+      () => setRuntimePending(null),
+      () => setRuntimePending(null),
+    );
   }, [onEnableRuntime, project]);
 
   /*
@@ -175,6 +207,25 @@ function ProjectCardInner({
    * in that state with nothing on any list surface saying so.
    */
   const isRuntimeOff = project.runtimeEnabled === false;
+
+  /*
+   * FNXC:ProjectRuntimeOff 2026-11-07-20:31 (RUFU-871):
+   * The affordance is the exact inverse of the badge condition above, so the label and the state can
+   * never disagree: an unloaded card offers to load, a loaded card offers to unload. Pressing always
+   * requests the opposite of what the card shows. `runtimeState: "unknown"` is not treated as off here,
+   * because nothing on this surface may claim to unload a runtime it never confirmed running — it reads
+   * as enabled, which is the gate's own default.
+   */
+  const requestedRuntimeState = isRuntimeOff;
+  const runtimePendingHere = runtimePending !== null && runtimePending === (isRuntimeOff ? "on" : "off");
+  /* The pressed control relabels itself; label and accessible name must be the same words. */
+  const runtimeLabel = runtimePendingHere
+    ? (isRuntimeOff
+      ? t("projectCard.runtimeEnabling", "Turning runtime on…")
+      : t("projectCard.runtimeDisabling", "Turning runtime off…"))
+    : (isRuntimeOff
+      ? t("projectCard.enableRuntime", "Turn runtime on")
+      : t("projectCard.disableRuntime", "Turn runtime off"));
 
   const isPaused = project.status === "paused";
   const isErrored = project.status === "errored";
@@ -286,22 +337,37 @@ function ProjectCardInner({
         <div className="project-card-actions">
           {/*
            * FNXC:ProjectRuntimeOff 2026-11-07-17:41 (RUFU-871):
-           * The way back on. It appears only on a card that is actually unloaded and only when the host
-           * can act, and it reuses the card's existing action-button classes — no new button variant.
-           * The action name says RUNTIME, never "start engine": the pause control below is a different
-           * switch and the two must not be confusable.
+           * It appears only when the host can act, and it reuses the card's existing action-button
+           * classes — no new button variant. The action name says RUNTIME, never "start engine": the
+           * pause control below is a different switch and the two must not be confusable.
+           *
+           * FNXC:ProjectRuntimeOff 2026-11-07-20:31 (RUFU-871):
+           * The same control now runs BOTH ways, which is what the measured gap was: the operator could
+           * read "Runtime off" and re-arm a project from the card, but unloading one meant leaving the
+           * card and finding the footer engine menu of the project you were already inside. One button,
+           * one request shape, direction carried by `requestedRuntimeState`. The off direction is
+           * deliberately NOT armed behind a confirmation and is NOT styled as destructive: unloading the
+           * runtime stops engine work from the next pass, aborts nothing, and leaves board, cards and
+           * history readable, so it keeps the neutral base colour rather than the remove/pause tints.
+           * While its own request is in flight it is disabled and announces `aria-busy` with a pending
+           * label, so the press is never double-fired and never looks ignored.
            */}
-          {isRuntimeOff && onEnableRuntime && (
+          {onEnableRuntime && (
             <button
-              className="project-card-action project-card-action-resume"
-              onClick={handleEnableRuntime}
-              disabled={isLoading}
-              title={t("projectCard.enableRuntime", "Turn runtime on")}
-              aria-label={t("projectCard.enableRuntime", "Turn runtime on")}
-              data-testid="project-runtime-enable"
+              className={`project-card-action ${isRuntimeOff ? "project-card-action-resume" : ""}`}
+              onClick={(e) => requestRuntimeState(e, requestedRuntimeState)}
+              disabled={isLoading || runtimePendingHere}
+              aria-busy={runtimePendingHere || undefined}
+              data-runtime-pending={runtimePendingHere ? "true" : undefined}
+              data-runtime-direction={isRuntimeOff ? "on" : "off"}
+              title={isRuntimeOff
+                ? t("projectCard.enableRuntime", "Turn runtime on")
+                : t("projectCard.disableRuntimeTitle", "Turn runtime off: the engine stops working on this project from the next pass. Nothing is aborted, and the board, cards and history stay readable.")}
+              aria-label={runtimeLabel}
+              data-testid={isRuntimeOff ? "project-runtime-enable" : "project-runtime-disable"}
             >
-              <Power size={14} />
-              <span>{t("projectCard.enableRuntime", "Turn runtime on")}</span>
+              {isRuntimeOff ? <Power size={14} /> : <PowerOff size={14} />}
+              <span>{runtimeLabel}</span>
             </button>
           )}
           {/*

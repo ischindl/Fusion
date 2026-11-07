@@ -50,11 +50,20 @@ export interface UseProjectActionsResult {
   handleResumeProject: (project: ProjectInfo) => Promise<void>;
   /**
    * FNXC:ProjectRuntimeOff 2026-11-07-17:41 (RUFU-871):
-   * Re-arms a project whose engine runtime the operator turned off. Distinct from
-   * `handleResumeProject`: resume starts a PAUSED project row, this one reloads the engine runtime of
-   * a project whose lanes were unloaded, and the two are different switches on the same card.
+   * Writes a project's engine-runtime switch from the project card. Distinct from
+   * `handleResumeProject`: resume starts a PAUSED project row, this one loads or unloads the engine
+   * runtime, and the two are different switches on the same card.
+   *
+   * FNXC:ProjectRuntimeOff 2026-11-07-20:31 (RUFU-871):
+   * `enabled` carries the DESIRED state, so the card's toggle has one owner for the request instead of
+   * a second disable pipeline beside this one. `false` unloads the runtime — the engine stops working on
+   * the project from the next pass, an in-flight pass finishes, nothing is aborted, and board/cards/
+   * history remain readable; it never touches `status`. The parameter is optional and defaults to `true`
+   * only so pre-toggle hosts keep their meaning; the card always passes it explicitly. The
+   * `handleEnableProjectRuntime` spelling stays because the host-side prop names live outside this
+   * slice's file scope.
    */
-  handleEnableProjectRuntime: (project: ProjectInfo) => Promise<void>;
+  handleEnableProjectRuntime: (project: ProjectInfo, enabled?: boolean) => Promise<void>;
   handleRemoveProject: (project: ProjectInfo) => Promise<void>;
   handleToggleFavorite: (provider: string) => Promise<void>;
   handleToggleModelFavorite: (modelId: string) => Promise<void>;
@@ -153,17 +162,33 @@ export function useProjectActions(options: UseProjectActionsOptions): UseProject
 
   /*
   FNXC:ProjectRuntimeOff 2026-11-07-17:41 (RUFU-871):
-  Turning the runtime back on has to be reflected where the operator read the state, so the switch is
-  followed by the same awaited `refreshProjects()` the pause/resume actions use — the card and the
-  combo re-render from the fresh projection instead of waiting for a page reload.
+  Turning the runtime has to be reflected where the operator read the state, so the switch is followed
+  by the same awaited `refreshProjects()` the pause/resume actions use — the card and the combo
+  re-render from the fresh projection instead of waiting for a page reload.
+
+  FNXC:ProjectRuntimeOff 2026-11-07-20:31 (RUFU-871):
+  Both directions now come through here. The success copy for the off direction states what actually
+  happens (engine work stops from the next pass, nothing is aborted, the board stays readable) because
+  the operator-facing alternative — a bare "turned off" — reads like the project was deleted or paused,
+  which it was not: `status` is a different axis and this call never writes it.
   */
-  const handleEnableProjectRuntime = useCallback(async (project: ProjectInfo) => {
+  const handleEnableProjectRuntime = useCallback(async (project: ProjectInfo, enabled = true) => {
     try {
-      await setProjectRuntime(project.id, true, "project-card");
-      addToast(t("projects.actions.runtimeOnSuccess", "Project {{name}} runtime turned on", { name: project.name }), "success");
+      await setProjectRuntime(project.id, enabled, "project-card");
+      addToast(
+        enabled
+          ? t("projects.actions.runtimeOnSuccess", "Project {{name}} runtime turned on", { name: project.name })
+          : t("projects.actions.runtimeOffSuccess", "Project {{name}} runtime turned off — the engine stops working on it from the next pass; the board, cards and history stay readable", { name: project.name }),
+        "success",
+      );
       await refreshProjects();
     } catch {
-      addToast(t("projects.actions.runtimeOnError", "Failed to turn on the runtime of project {{name}}", { name: project.name }), "error");
+      addToast(
+        enabled
+          ? t("projects.actions.runtimeOnError", "Failed to turn on the runtime of project {{name}}", { name: project.name })
+          : t("projects.actions.runtimeOffError", "Failed to turn off the runtime of project {{name}}", { name: project.name }),
+        "error",
+      );
     }
   }, [addToast, refreshProjects, t]);
 

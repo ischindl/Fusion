@@ -21,10 +21,15 @@ export interface ProjectOverviewProps {
   onRemoveProject: (project: ProjectInfo) => void;
   /*
   FNXC:ProjectRuntimeOff 2026-11-07-17:41 (RUFU-871):
-  Re-arms a project whose engine runtime the operator turned off. Without it the projects list can name
-  the state but cannot leave it, which is the half that made a turned-off project feel stuck.
+  Without it the projects list can name the runtime state but cannot leave it, which is the half that
+  made a turned-off project feel stuck.
+
+  FNXC:ProjectRuntimeOff 2026-11-07-20:31 (RUFU-871):
+  `enabled` is the state the card asked for: `false` unloads the engine runtime, `true` re-arms it. One
+  callback serves both directions, and the promise is forwarded so the card can hold its own pending
+  state for the length of the request. Optional so hosts that do not surface the runtime axis compile.
   */
-  onEnableProjectRuntime?: (project: ProjectInfo) => void;
+  onEnableProjectRuntime?: (project: ProjectInfo, enabled?: boolean) => void | Promise<void>;
   onViewAllProjects?: () => void;
   nodes?: NodeInfo[];
 }
