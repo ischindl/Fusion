@@ -4,7 +4,7 @@ import type { AsyncDataLayer } from "../../postgres/data-layer.js";
 import { project } from "../../postgres/schema/index.js";
 import { MemoryBackendError } from "../memory-backend.js";
 import { RECALL_DEDUP_CANDIDATE_LIMIT, classifyRecallDuplicate, recallContentHash, recallDedupLockKey, recallGraphNodeIdsLockKey } from "./recall-dedup.js";
-import { applyRecallVectorRanking, clampRecallSearchLimit, resolveRecallCapabilities, searchRecallKeyword, type RecallSearchOptions } from "./recall-search.js";
+import { applyRecallVectorRanking, clampRecallSearchLimit, RECALL_SEARCH_MAX_LIMIT, resolveRecallCapabilities, searchRecallKeyword, type RecallSearchOptions } from "./recall-search.js";
 import type { RecallAppendInput, RecallAppendResult, RecallRecord, RecallSearchResult } from "./recall-types.js";
 
 type RecallRow = typeof project.memoryRecallRecords.$inferSelect;
@@ -28,6 +28,34 @@ export function setRecallGraphNodeIdsTestHooksForTest(hooks: RecallGraphNodeIdsT
 
 const map = (row: RecallRow): RecallRecord => ({ ...row, kind: row.kind as RecallRecord["kind"], source: row.source as RecallRecord["source"], tags: row.tags as string[], graphNodeIds: row.graphNodeIds as string[] });
 function projectId(layer: AsyncDataLayer): string { if (!layer.projectId) throw new MemoryBackendError("BACKEND_UNAVAILABLE", "Recall requires AsyncDataLayer.projectId", "recall"); return layer.projectId; }
+
+/*
+FNXC:MemoryRecall 2026-11-07-09:47 (RUFU-871):
+The candidate read is now windowed IN SQL. It previously had no LIMIT at all: it selected every recall row of
+the project, mapped each row into a `RecallRecord`, and only then applied the caller's `limit` in JavaScript.
+Measured on this host, one project holds 32,578 rows / 14 MB of `content`, so a single `memory search` call
+hydrated 14 MB of text and 32,578 objects, and `searchRecallKeyword` then tokenized every one of those
+contents into a Set — per call, inside the dashboard process that also hosts every engine lane. That is
+allocation churn on the hot path of a process whose heap is the thing being stabilised, and it grows with the
+retention-free recall table (446 rows were written on 2026-11-03 alone).
+
+The trade-off is stated rather than hidden: keyword recall now searches the NEWEST `window` records, so a
+match older than the window is no longer reachable by keyword. Recall hits are capped at
+`RECALL_SEARCH_MAX_LIMIT` (50) by the clamp every hit path already shares, so the window is generous relative
+to what any caller can receive. The durable fix for full-corpus recall is a searchable index (tsvector/trigram)
+that ranks in Postgres instead of in JavaScript; until that exists, a bounded recent window is the honest
+shape, because the unbounded read was neither correct-by-design nor survivable at scale.
+*/
+export const RECALL_SEARCH_CANDIDATE_WINDOW_DEFAULT = 2_000;
+
+/** Candidate rows a single recall search may hydrate; never below what the limit clamp can request. */
+export function recallSearchCandidateWindow(): number {
+  const raw = process.env.FUSION_RECALL_CANDIDATE_WINDOW;
+  const parsed = raw === undefined ? RECALL_SEARCH_CANDIDATE_WINDOW_DEFAULT : Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0
+    ? Math.max(parsed, RECALL_SEARCH_MAX_LIMIT)
+    : RECALL_SEARCH_CANDIDATE_WINDOW_DEFAULT;
+}
 
 /*
 FNXC:MemoryRecall 2026-08-10-11:03:
@@ -81,4 +109,6 @@ export async function getRecallRecord(layer: AsyncDataLayer, id: string): Promis
 export async function listRecall(layer: AsyncDataLayer, options?: { kinds?: RecallRecord["kind"][]; limit?: number | null }): Promise<RecallRecord[]> { const pid=projectId(layer), t=project.memoryRecallRecords, limit=clampRecallSearchLimit(options?.limit); const rows=await layer.db.select().from(t).where(and(eq(t.projectId,pid), options?.kinds?.length ? inArray(t.kind, options.kinds) : undefined)).orderBy(desc(t.createdAt)).limit(limit); return rows.map(map); }
 export async function deleteRecallRecord(layer: AsyncDataLayer, id: string): Promise<boolean> { const pid=projectId(layer); const rows=await layer.db.delete(project.memoryRecallRecords).where(and(eq(project.memoryRecallRecords.projectId,pid),eq(project.memoryRecallRecords.id,id))).returning({ id: project.memoryRecallRecords.id }); return Boolean(rows[0]); }
 /* FNXC:MemoryRecall 2026-08-10-11:03: Vector providers only rank store-filtered candidates; failures degrade to deterministic keyword hits while the shared clamp remains authoritative after ranking. */
-export async function searchRecall(layer: AsyncDataLayer, query: string, options?: RecallSearchOptions): Promise<RecallSearchResult> { const pid=projectId(layer), t=project.memoryRecallRecords, limit=clampRecallSearchLimit(options?.limit); let rows=(await layer.db.select().from(t).where(and(eq(t.projectId,pid), options?.kinds?.length ? inArray(t.kind, [...options.kinds]) : undefined)).orderBy(desc(t.createdAt))).map(map); if(options?.tags?.length) rows=rows.filter((r)=>options.tags!.every((tag)=>r.tags.includes(tag))); const keyword=searchRecallKeyword(query,rows,limit), capabilities=resolveRecallCapabilities(options?.vector); if(!options?.vector) return {hits:keyword,mode:"keyword",capabilities}; try { const matches=await options.vector.search({query,candidates:rows,limit}); const hits=applyRecallVectorRanking(rows,matches,limit); return hits.length ? {hits,mode:"vector",capabilities} : {hits:keyword,mode:"keyword",capabilities}; } catch { return {hits:keyword,mode:"keyword",capabilities}; } }
+/* FNXC:MemoryRecall 2026-11-07-09:47 (RUFU-871): the candidate set is bounded by `recallSearchCandidateWindow()`
+   inside the SELECT — see that function for why the unbounded read was removed and what it trades away. */
+export async function searchRecall(layer: AsyncDataLayer, query: string, options?: RecallSearchOptions): Promise<RecallSearchResult> { const pid=projectId(layer), t=project.memoryRecallRecords, limit=clampRecallSearchLimit(options?.limit); let rows=(await layer.db.select().from(t).where(and(eq(t.projectId,pid), options?.kinds?.length ? inArray(t.kind, [...options.kinds]) : undefined)).orderBy(desc(t.createdAt)).limit(recallSearchCandidateWindow())).map(map); if(options?.tags?.length) rows=rows.filter((r)=>options.tags!.every((tag)=>r.tags.includes(tag))); const keyword=searchRecallKeyword(query,rows,limit), capabilities=resolveRecallCapabilities(options?.vector); if(!options?.vector) return {hits:keyword,mode:"keyword",capabilities}; try { const matches=await options.vector.search({query,candidates:rows,limit}); const hits=applyRecallVectorRanking(rows,matches,limit); return hits.length ? {hits,mode:"vector",capabilities} : {hits:keyword,mode:"keyword",capabilities}; } catch { return {hits:keyword,mode:"keyword",capabilities}; } }
