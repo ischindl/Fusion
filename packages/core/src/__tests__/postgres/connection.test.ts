@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, afterAll } from "vitest";
 import {
   createConnectionSet,
   createConnectionSetFromUrl,
@@ -10,6 +10,7 @@ import {
 } from "../../postgres/connection.js";
 import { resolveBackendWithOptions } from "../../postgres/backend-resolver.js";
 import { redactConnectionString } from "../../postgres/credential-redact.js";
+import { DEFAULT_PROJECT_SETTINGS } from "../../config/settings-schema.js";
 
 // FNXC:PgTestAuthFix 2026-07-14-07:35:
 // Use FUSION_PG_TEST_URL_BASE (which includes credentials on CI) instead of the
@@ -22,6 +23,22 @@ const PG_TEST_URL =
 const PG_AVAILABLE =
   process.env.FUSION_PG_TEST_SKIP !== "1" && Boolean(PG_TEST_URL);
 
+/*
+FNXC:PostgresPool 2026-11-06-21:23 (RUFU-483):
+`resolvePoolMax` deliberately falls through to `process.env` when `options.env` does not carry the key
+(`options.env?.[KEY] ?? process.env[KEY]`), so every assertion in this file about the SHIPPED default is
+only meaningful with an ambient value out of the way. A deployment that already exports
+`FUSION_PG_POOL_MAX` — the production RunFusion host does, at 8 — would otherwise turn "no override
+resolves to the default" into "no override resolves to whatever this operator happened to set", which is
+exactly the vacuous-guard shape RUFU-483's regression must not inherit. Snapshot, clear for this file,
+restore in `afterAll` so no sibling file inherits the mutation.
+*/
+const AMBIENT_POOL_MAX = process.env.FUSION_PG_POOL_MAX;
+delete process.env.FUSION_PG_POOL_MAX;
+afterAll(() => {
+  if (AMBIENT_POOL_MAX !== undefined) process.env.FUSION_PG_POOL_MAX = AMBIENT_POOL_MAX;
+});
+
 /**
  * Helper: skip tests when no PostgreSQL is reachable. The existing Homebrew
  * instance on localhost:5432 is the default; set FUSION_PG_TEST_URL to point
@@ -30,6 +47,42 @@ const PG_AVAILABLE =
 const pgDescribe = PG_AVAILABLE ? describe : describe.skip;
 
 describe("connection: runtime pool configuration", () => {
+  /*
+   * FNXC:PostgresPool 2026-11-06-21:23 (RUFU-483): the shipped default used to be 3, which put every
+   * dashboard HTTP read in the same three-connection queue the engine lanes occupy. The production
+   * measurement is in `connection.ts`; this is the part of it that must NEVER depend on PostgreSQL,
+   * because a pg-only guard is skipped into vacuity wherever the pg suite is skipped. The headroom
+   * bound is derived from the settings-schema executor default plus the four documented extra lane
+   * families, so raising `maxConcurrent` widens the requirement instead of silently invalidating it.
+   */
+  it("ships a default above the legacy 3 and above the documented engine-lane footprint", () => {
+    /** The value that caused the 10.8-17.1 s / 26-32 s board paints reported in RUFU-483. */
+    const LEGACY_DEFAULT_POOL_MAX = 3;
+    // (a) the constant really moved off the buggy value.
+    expect(DEFAULT_POOL_MAX).toBeGreaterThan(LEGACY_DEFAULT_POOL_MAX);
+    // (b) at least 3 slots of dashboard-read headroom over the legacy ceiling — the margin the
+    // measured relief (limit=1 13.1 s -> 0.5-3.0 s) is attributable to.
+    expect(DEFAULT_POOL_MAX).toBeGreaterThanOrEqual(LEGACY_DEFAULT_POOL_MAX + 3);
+    // (c) the default covers the documented lane footprint it was sized against:
+    //   - `maxConcurrent` executor lanes (settings-schema default 2),
+    //   - the planning lane,
+    //   - the plan-review lane,
+    //   - the code-review lane,
+    //   - the merge lane,
+    //   - scheduler + heartbeat housekeeping queries.
+    const documentedLaneFootprint =
+      DEFAULT_PROJECT_SETTINGS.maxConcurrent /* executor lanes */ +
+      1 /* planning */ +
+      1 /* plan-review */ +
+      1 /* code-review */ +
+      1 /* merge */ +
+      1 /* scheduler/heartbeat housekeeping */;
+    expect(DEFAULT_POOL_MAX).toBeGreaterThanOrEqual(documentedLaneFootprint + 3);
+    // The headroom is what the guard is about; state it so a future trim to the bare footprint
+    // (which reintroduces dashboard queueing) fails here rather than in a slow dashboard.
+    expect(DEFAULT_POOL_MAX - documentedLaneFootprint).toBeGreaterThanOrEqual(3);
+  });
+
   it("uses default, valid environment, and explicit override precedence", () => {
     expect(resolvePoolMax({ env: {} })).toBe(DEFAULT_POOL_MAX);
     expect(resolvePoolMax({ env: { FUSION_PG_POOL_MAX: "12" } })).toBe(12);
@@ -182,6 +235,31 @@ pgDescribe("connection: external PostgreSQL integration (VAL-CONN-002)", () => {
     connections = await createConnectionSetFromUrl(backend, { poolMax: 1, connectTimeoutSeconds: 5 });
     await connections.close();
     connections = null; // prevent double-close in afterEach
+  });
+
+  it("exposes the resolved runtime pool ceiling on the connection set (RUFU-483)", async () => {
+    /*
+     * FNXC:PostgresPool 2026-11-06-21:23 (RUFU-483): `/metrics` renders this number as
+     * `fusion_postgres_pool_max`, so the occupancy gauge's denominator comes from the pool that was
+     * actually built rather than from a re-derivation of the resolution order. The dedicated
+     * health/migration sessions stay `max: 1` and are excluded from it.
+     */
+    const backend: ResolvedBackend = {
+      mode: "external",
+      runtimeUrl: PG_TEST_URL,
+      migrationUrl: PG_TEST_URL,
+      migrationUrlOverridden: false,
+    };
+    connections = await createConnectionSetFromUrl(backend, { connectTimeoutSeconds: 5 });
+    expect(connections.poolMax).toBe(DEFAULT_POOL_MAX);
+    await connections.close();
+    connections = null;
+
+    connections = await createConnectionSetFromUrl(backend, {
+      env: { FUSION_PG_POOL_MAX: "4" },
+      connectTimeoutSeconds: 5,
+    });
+    expect(connections.poolMax).toBe(4);
   });
 
   it("binds runtime sessions to one project while migration sessions retain explicit bypass", async () => {

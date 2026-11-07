@@ -37,9 +37,30 @@ Fusion stores multi-project and multi-node coordination state in **PostgreSQL**:
 
 ## PostgreSQL runtime pool capacity
 
-`FUSION_PG_POOL_MAX` sets the normal runtime-query pool capacity for each Fusion store. It accepts only an integer from `1` through `500`; the default is `3`. Resolution is explicit startup `poolMax` option first, then `FUSION_PG_POOL_MAX`, then the default. Blank, fractional, non-numeric, zero, negative, and above-range environment values produce a safe warning and retain the default rather than being coerced or clamped.
+`FUSION_PG_POOL_MAX` sets the normal runtime-query pool capacity for each Fusion store. It accepts only an integer from `1` through `500`; the default is `10`. Resolution is explicit startup `poolMax` option first, then `FUSION_PG_POOL_MAX`, then the default. Blank, fractional, non-numeric, zero, negative, and above-range environment values produce a safe warning and retain the default rather than being coerced or clamped.
 
 Restart Fusion after changing this setting. Each store uses the configured runtime pool plus one dedicated migration session and one dedicated health session, so account for `FUSION_PG_POOL_MAX + 2` potential connections per active store when sizing a shared external PostgreSQL deployment. Raising the pool can help scheduler bursts only when the PostgreSQL server and pooler have sufficient capacity; it does not replace database connection limits or pooler configuration.
+
+<!--
+FNXC:PostgresPool 2026-11-06-22:55 (RUFU-483):
+The default moved 3 -> 10 because one shared three-connection pool made every dashboard HTTP read queue behind
+the engine's own lane queries (measured: a 100-card board 10.8-17.1 s, `limit=1` SLOWER than `limit=100`, raw
+SQL for the same page 0.110 s). The multiplier below is why 10 was chosen over the better-measuring 20, and why
+the refusal symptom has to be written down next to it.
+-->
+
+**Capacity math.** The ceiling is **per store**, so N project runtimes multiply it: `N × (poolMax + 2)` backends before the session-scoped advisory-lock and dispatch-wake sessions. At the default 10 that is 12 per store — roughly **72 backends for 6 stores** — and the arithmetic has to land under whichever bound applies to the deployment:
+
+| Bound | Value | Stores that fit at the default `10` | Stores that fit at `20` |
+|---|---:|---:|---:|
+| Embedded `max_connections`, win32 default | `150` | 12 | 6 |
+| Embedded `max_connections`, non-win32 default | `500` | 41 | 22 |
+| `embeddedPostgresMaxConnections`, minimum clamp | `32` | 2 | 1 |
+| `embeddedPostgresMaxConnections`, maximum clamp | `2000` | 166 | 90 |
+
+The minimum clamp is the shape that bites: at `20` per store, two stores need 44 slots against a 32-slot floor, which is why the shipped default is 10 and not the value that measured fastest. These constants (`DEFAULT_EMBEDDED_MAX_CONNECTIONS`, `DEFAULT_EMBEDDED_MAX_CONNECTIONS_WIN32`, and the `32..2000` clamp) are **not** changed by raising the pool default; lower `FUSION_PG_POOL_MAX` per store instead of raising the clamp, unless the server really has the connections.
+
+**What exceeding the quota now looks like.** A deployment whose server role or database quota is smaller than `stores × (poolMax + 2)` no longer merely runs slowly: PostgreSQL refuses the connection at startup (`FATAL: sorry, too many connections for connection pool`, a reserved-slot refusal, or a role-connection-limit refusal) and the store fails to open. Before the default was raised, that same server was slow instead of refusing — the old small default was the protection. The remedy is one environment value: set `FUSION_PG_POOL_MAX` low enough that `stores × (poolMax + 2)` fits the quota. The resolved ceiling is printed on each runtime's external-mode startup line (`… runtimePoolMax=N`) so a refusal names its own cause, and `fusion_postgres_pool_backends` / `fusion_postgres_pool_max` on `/metrics` show occupancy per store while the process is up (`docs/diagnostics.md`).
 
 Core `central` tables (names as exposed by the data layer; SQL uses snake_case):
 

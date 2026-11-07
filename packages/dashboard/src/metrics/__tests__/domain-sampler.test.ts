@@ -5,6 +5,7 @@ import { afterEach, describe, it, expect, vi } from "vitest";
 import {
   createDomainSampler,
   defaultPgStatsReader,
+  defaultPoolStatsReader,
   type PgStats,
   type DomainSamplerInit,
   type SlimTaskLike,
@@ -571,5 +572,225 @@ describe("default task read shape", () => {
 
     const board = sampleByName(sampler.buildSnapshot(), "fusion_domain_board_tasks")!;
     expect(board.samples.reduce((sum, s) => sum + s.value, 0)).toBe(3);
+  });
+});
+
+/*
+FNXC:PostgresPool 2026-11-06-21:23 (RUFU-483):
+Pool-occupancy gauges. The shipped runtime pool used to be 3 connections shared by every engine lane,
+so a one-row dashboard read could queue behind lane queries and paint slower than a 100-row read — a
+constraint no surface showed. These tests pin the observability contract: the buckets are rendered from
+pre-read state, degradation never fabricates a value, and shared-database sibling stores are counted
+once. No real database and no real waits — the reader is injected and fake timers drive the ticks.
+*/
+describe("pool occupancy gauges (RUFU-483)", () => {
+  function labelsOf(family: MetricFamily) {
+    return family.samples.map((s) => ({ key: (s.labelValues ?? []).join("|"), value: s.value }));
+  }
+
+  it("renders per-project / per-role / per-state backend buckets beside the configured ceiling", async () => {
+    const sampler = helper({
+      registeredStores: () => [{ projectId: "proj-a", store: {} }],
+      countAgentsInStore: async () => 0,
+      listTasksInStore: async () => [],
+      poolStatsReader: async () => ({
+        rows: [
+          { applicationName: "fusion-runtime:proj_a", state: "active", count: 2 },
+          { applicationName: "fusion-runtime:proj_a", state: "idle", count: 5 },
+          // `idle in transaction` is neither active nor idle -> the `other` bucket.
+          { applicationName: "fusion-health:proj_a", state: "idle in transaction", count: 1 },
+        ],
+        poolMax: 10,
+      }),
+    });
+    await sampler.sampleDomain();
+    const families = sampler.buildSnapshot();
+
+    const backends = sampleByName(families, "fusion_postgres_pool_backends")!;
+    expect(backends.type).toBe("gauge");
+    expect(backends.labels).toEqual(["project", "role", "state"]);
+    expect(labelsOf(backends)).toEqual(
+      expect.arrayContaining([
+        { key: "proj_a|runtime|active", value: 2 },
+        { key: "proj_a|runtime|idle", value: 5 },
+        { key: "proj_a|health|other", value: 1 },
+      ]),
+    );
+    expect(backends.samples).toHaveLength(3);
+
+    const maxima = sampleByName(families, "fusion_postgres_pool_max")!;
+    expect(maxima.type).toBe("gauge");
+    expect(labelsOf(maxima)).toEqual([{ key: "proj-a|runtime", value: 10 }]);
+  });
+
+  it("renders well-formed empty families for an empty registry (no malformed lines)", async () => {
+    const sampler = helper({ registeredStores: () => [] });
+    await sampler.sampleDomain();
+    const families = sampler.buildSnapshot();
+    expect(sampleByName(families, "fusion_postgres_pool_backends")!.samples).toEqual([]);
+    expect(sampleByName(families, "fusion_postgres_pool_max")!.samples).toEqual([]);
+  });
+
+  it("keeps last-known occupancy when a later read returns null or throws", async () => {
+    let mode: "ok" | "null" | "throw" = "ok";
+    const sampler = helper({
+      registeredStores: () => [{ projectId: "proj-a", store: {} }],
+      countAgentsInStore: async () => 0,
+      listTasksInStore: async () => [],
+      poolStatsReader: async () => {
+        if (mode === "throw") throw new Error("privilege-fenced");
+        if (mode === "null") return null;
+        return {
+          rows: [{ applicationName: "fusion-runtime:proj_a", state: "active", count: 7 }],
+          poolMax: 10,
+        };
+      },
+    });
+
+    await sampler.sampleDomain();
+    const first = labelsOf(sampleByName(sampler.buildSnapshot(), "fusion_postgres_pool_backends")!);
+    expect(first).toEqual([{ key: "proj_a|runtime|active", value: 7 }]);
+
+    // A failed read must not zero the gauge: a transient fence is not evidence that the pool emptied.
+    mode = "null";
+    await sampler.sampleDomain();
+    expect(labelsOf(sampleByName(sampler.buildSnapshot(), "fusion_postgres_pool_backends")!)).toEqual(first);
+    expect(labelsOf(sampleByName(sampler.buildSnapshot(), "fusion_postgres_pool_max")!)).toEqual([
+      { key: "proj-a|runtime", value: 10 },
+    ]);
+
+    mode = "throw";
+    await sampler.sampleDomain();
+    expect(labelsOf(sampleByName(sampler.buildSnapshot(), "fusion_postgres_pool_backends")!)).toEqual(first);
+  });
+
+  it("counts a shared database once across sibling stores instead of doubling every backend", async () => {
+    // Two project runtimes on ONE PostgreSQL database: each store's health session reads the SAME
+    // cluster-wide pg_stat_activity rows, so the second copy must contribute nothing.
+    const shared = [
+      { applicationName: "fusion-runtime:proj_a", state: "active", count: 3 },
+      { applicationName: "fusion-runtime:proj_b", state: "idle", count: 1 },
+    ];
+    const sampler = helper({
+      registeredStores: () => [
+        { projectId: "proj-a", store: {} },
+        { projectId: "proj-b", store: {} },
+      ],
+      countAgentsInStore: async () => 0,
+      listTasksInStore: async () => [],
+      poolStatsReader: async () => ({ rows: shared, poolMax: 10 }),
+    });
+    await sampler.sampleDomain();
+    const backends = sampleByName(sampler.buildSnapshot(), "fusion_postgres_pool_backends")!;
+    expect(backends.samples.reduce((sum, s) => sum + s.value, 0)).toBe(4);
+    expect(backends.samples).toHaveLength(2);
+  });
+
+  it("labels a pool with no project partition `unbound` and ignores names Fusion does not own", async () => {
+    const sampler = helper({
+      registeredStores: () => [{ projectId: "proj-a", store: {} }],
+      countAgentsInStore: async () => 0,
+      listTasksInStore: async () => [],
+      poolStatsReader: async () => ({
+        rows: [
+          { applicationName: "fusion-runtime", state: "idle", count: 1 },
+          { applicationName: "fusion-runtime:", state: "idle", count: 1 },
+          // Unknown Fusion-shaped names and foreign clients are a closed-set miss -> no line.
+          { applicationName: "fusion-mystery:proj_a", state: "idle", count: 9 },
+          { applicationName: "psql", state: "active", count: 4 },
+          { applicationName: "", state: null, count: 1 },
+        ],
+      }),
+    });
+    await sampler.sampleDomain();
+    const backends = sampleByName(sampler.buildSnapshot(), "fusion_postgres_pool_backends")!;
+    expect(labelsOf(backends)).toEqual([{ key: "unbound|runtime|idle", value: 2 }]);
+    // No ceiling observed -> the max family renders its TYPE header with no value line, never a guess.
+    expect(sampleByName(sampler.buildSnapshot(), "fusion_postgres_pool_max")!.samples).toEqual([]);
+  });
+
+  it("reads occupancy once per sample and performs zero awaited I/O during the scrape", async () => {
+    const reader = vi.fn(async () => ({
+      rows: [{ applicationName: "fusion-runtime:proj_a", state: "idle", count: 1 }],
+      poolMax: 10,
+    }));
+    const sampler = helper({
+      registeredStores: () => [{ projectId: "proj-a", store: {} }],
+      countAgentsInStore: async () => 0,
+      listTasksInStore: async () => [],
+      poolStatsReader: reader,
+    });
+
+    await sampler.sampleDomain();
+    expect(reader).toHaveBeenCalledTimes(1);
+    // The scrape is a synchronous render of pre-read state: repeated renders must not re-probe.
+    sampler.buildSnapshot();
+    sampler.buildSnapshot();
+    expect(reader).toHaveBeenCalledTimes(1);
+  });
+
+  describe("defaultPoolStatsReader", () => {
+    it("resolves null for a store with no live async layer", async () => {
+      await expect(defaultPoolStatsReader()({})).resolves.toBeNull();
+    });
+
+    it("queries pg_stat_activity on the health session and carries the store's poolMax", async () => {
+      const executed: string[] = [];
+      const store = {
+        getAsyncLayer: () => ({
+          healthDb: {
+            execute: async (q: unknown) => {
+              executed.push(String((q as { sql?: string })?.sql ?? JSON.stringify(q)));
+              return [{ application_name: "fusion-runtime:proj_a", state: "active", backend_count: "2" }];
+            },
+          },
+          poolMax: 10,
+        }),
+      };
+      const sample = await defaultPoolStatsReader()(store);
+      expect(sample?.poolMax).toBe(10);
+      expect(executed).toHaveLength(1);
+      expect(executed[0]).toContain("pg_stat_activity");
+      expect(executed[0]).toContain("fusion-%");
+      // The runtime pool must never be the transport of this read.
+      expect(sample?.rows).toEqual([{ applicationName: "fusion-runtime:proj_a", state: "active", count: 2 }]);
+    });
+
+    it("degrades to null instead of throwing when the role cannot read pg_stat_activity", async () => {
+      const store = {
+        getAsyncLayer: () => ({
+          healthDb: {
+            execute: async () => {
+              throw new Error("permission denied for view pg_stat_activity");
+            },
+          },
+          poolMax: 10,
+        }),
+      };
+      await expect(defaultPoolStatsReader()(store)).resolves.toBeNull();
+    });
+
+    it("sends the pg_stat_activity probe to the health session, never the runtime pool", async () => {
+      const seen: string[] = [];
+      const store = {
+        getAsyncLayer: () => ({
+          healthDb: {
+            execute: async () => {
+              seen.push("health");
+              return [];
+            },
+          },
+          db: {
+            execute: async () => {
+              seen.push("runtime");
+              return [];
+            },
+          },
+          poolMax: 10,
+        }),
+      };
+      await defaultPoolStatsReader()(store);
+      expect(seen).toEqual(["health"]);
+    });
   });
 });

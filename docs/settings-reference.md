@@ -29,9 +29,35 @@ The `Default` column below is the same source of truth (`DEFAULT_GLOBAL_SETTINGS
 
 | Environment variable | Default | Valid values | Resolution | Behavior |
 |---|---:|---|---|---|
-| `FUSION_PG_POOL_MAX` | `3` | Integer `1` through `500` | Explicit startup `poolMax` option → environment → default | Sets each store's normal runtime-query pool. Invalid blank, fractional, non-numeric, zero, negative, or above-range values warn safely and use the default. Restart Fusion after changing it. Account for the runtime pool plus one migration session and one independent health session per store when planning external PostgreSQL capacity. |
+| `FUSION_PG_POOL_MAX` | `10` | Integer `1` through `500` | Explicit startup `poolMax` option → environment → default | Sets each store's normal runtime-query pool. Invalid blank, fractional, non-numeric, zero, negative, or above-range values warn safely and use the default. Restart Fusion after changing it. Account for the runtime pool plus one migration session and one independent health session per store (`FUSION_PG_POOL_MAX + 2` potential connections per store) when planning external PostgreSQL capacity. |
 
 This setting does not contain credentials. Use it only after confirming that the PostgreSQL server and any pooler have enough connection capacity; it does not change those upstream limits.
+
+### Why the default is 10
+
+<!--
+FNXC:PostgresPool 2026-11-06-22:55 (RUFU-483):
+The default was 3 until RUFU-483, which put every dashboard HTTP read in the same three-connection queue the
+engine lanes occupy. Measured on a production board (same build, same data, restart only adding
+`FUSION_PG_POOL_MAX=20`): `GET /tasks/page?limit=100` 10.8-17.1 s -> 3.3-3.9 s, `GET /tasks/board-workflows`
+26-32 s -> 4.3-9.8 s. The wait was connection queueing, not query cost or row count: `limit=1` measured SLOWER
+than `limit=100`, the same page as raw SQL cost 0.110 s, and `/settings/global` answered in 0.01 s beside a
+still-running slow page request.
+-->
+
+One Fusion store owns a single runtime pool that every consumer shares: the executor lanes (`maxConcurrent` executors, default 2), the planning lane, the plan-review lane, the code-review lane, the merge lane, scheduler and heartbeat housekeeping — about 7 concurrent lane queries at the shipped defaults — plus every dashboard HTTP read. 10 covers that footprint and leaves at least 3 slots for board reads, which is the difference between a board that paints in seconds and one that waits for a lane to finish.
+
+The ceiling this value leaves room for is **10 concurrent executors**: a pool of 10 never caps the executor lane below 10 simultaneously running executors, so raising `maxConcurrent` from its default of 2 stays viable all the way up. What shrinks on the way there is dashboard headroom — the shipped lane footprint already sits at about 7 concurrent queries, so as `maxConcurrent` approaches 10 the engine lanes take every backend and board reads start queueing again; that is the point at which this value must be raised instead of the concurrency knob. A busy single-project server measured better at 20 and can set it; 20 is not the default because capacity multiplies per store, not per server (see `docs/multi-project.md`).
+
+Budget per store: `FUSION_PG_POOL_MAX` runtime connections **+ 1 migration session + 1 health session**. The dedicated sessions are `max: 1` each and are **not** part of the pool, which is why readiness and `/metrics` keep answering when the pool is fully occupied.
+
+### Low connection quota on shared servers
+
+**This is the failure mode the raised default trades away, and it is deliberate.** The old default of 3 was justified as protection for external databases that impose a low per-role or per-database connection quota. Raising it removes that protection: on a server whose quota is smaller than `stores × (FUSION_PG_POOL_MAX + 2)`, Fusion now asks for more backends than the server will hand out and PostgreSQL **refuses the connection outright** at startup — `FATAL: sorry, too many connections for connection pool`, a `remaining connection slots are reserved…` message, or a role-connection-limit refusal. That surfaces as store-open / startup failure, not as a slow dashboard: the previous behaviour on the same server was every query queueing slowly, so the symptom changes character rather than disappearing.
+
+**Remedy:** lower the value until `stores × (poolMax + 2)` fits the server's quota — the `1..500` range already allows it, and the default is only a default. The resolved ceiling is printed on the external-mode startup log line (`… runtimePoolMax=N`), so a refusal sitting next to it in the same output names the number that caused it.
+
+**Observability:** `GET /metrics` exposes `fusion_postgres_pool_backends{project,role,state}` and `fusion_postgres_pool_max{project,role}`, so saturation is readable as `backends == max` beside elevated request latency, without a profiler. See `docs/diagnostics.md` — including the caveat that a store refused at startup contributes **no** rows, so an absent series is not evidence of headroom.
 
 ## Agent working-directory environment variable
 

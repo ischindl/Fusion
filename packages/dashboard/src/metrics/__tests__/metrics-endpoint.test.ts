@@ -147,6 +147,19 @@ describe("GET /metrics (app-level route)", () => {
     expect(body).toContain("fusion_domain_postgres_queries_per_second 0\n");
     expect(body).toContain("# TYPE fusion_domain_projects_total gauge");
     expect(body).toContain("fusion_domain_projects_total 0\n");
+
+    /*
+     * Pool occupancy (RUFU-483): the families are declared on every scrape so a dashboard panel or
+     * alert rule can reference them unconditionally, but an un-observed pool contributes NO sample
+     * line. The route's store double exposes an async layer with no health session, so this is also
+     * the proof that a degraded occupancy read cannot emit a malformed line or a fake zero — the
+     * shape that would otherwise read as "the pool is empty" on a board where nothing was measured.
+     */
+    expect(body).toContain("# TYPE fusion_postgres_pool_backends gauge");
+    expect(body).toContain("# HELP fusion_postgres_pool_backends");
+    expect(body).toContain("# TYPE fusion_postgres_pool_max gauge");
+    expect(body).not.toContain("fusion_postgres_pool_backends{");
+    expect(body).not.toContain("fusion_postgres_pool_max{");
   });
 
   it("records a served request through the real pipeline and the latency quantiles reflect it", async () => {
