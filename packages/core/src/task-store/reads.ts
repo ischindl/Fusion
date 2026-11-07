@@ -1557,10 +1557,14 @@ payload), so the board feed keeps an allowlist instead of the whole blob. Every 
 a named board-side reader: badge/label text (`agentName`, `issueUrl`), duplicate/revert
 provenance the card links to (`nearDuplicateOf`, `nearDuplicateDismissed`, `duplicateSource`,
 `revertOf`, `revertedAt`, `restoredAt`), cross-project handoff labels (`handoffFrom`,
-`transferredTo`), the RUFU-393 WIP-admission stall chip (`wipAdmissionStall`), and
-`fusionBranchContext`, which `packages/core/src/task-store/serialization.ts` turns into
-`Task.branchContext` for the foreach branch row. Anything else is engine bookkeeping and is
-never rendered from a list row; the full blob stays on `GET /tasks/:id`.
+`transferredTo`), the RUFU-393 WIP-admission episode (`wipAdmissionStall`), and
+`fusionBranchContext`, which `packages/core/src/task-store/branch-context.ts` turns into
+`Task.branchContext` for the foreach branch row. Two of these have NO dashboard reader today:
+`handoffFrom` (a core handoff metadata key, `HANDOFF_FROM_METADATA_KEY`) and
+`wipAdmissionStall` (the stall chip derives from `Task.stallReason`, computed in the store, not
+from this key). They are carried because the board allowlist names them; removing them is its
+own decision, not a side effect of this projection. Every other key is engine bookkeeping and
+is never rendered from a list row; the full blob stays on `GET /tasks/:id`.
 */
 export const BOARD_SOURCE_METADATA_KEYS = [
   "agentName",
