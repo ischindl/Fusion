@@ -10,7 +10,8 @@ import type { Task, TaskStore, WorkflowStepResult as CoreWorkflowStepResult } fr
 import type { SendTaskBackForFixOutcome } from "./send-task-back-for-fix.js";
 import { hasPreMergeRemediationAutoMergeHold, resolveStepReopenPolicy, resolveWorkflowIrForTask } from "@fusion/core";
 import { executorLog } from "../logger.js";
-import type { EngineRunContext } from "../util/run-audit.js";
+import { generateSyntheticRunId, type EngineRunContext } from "../util/run-audit.js";
+import { emitBoundedRunAudit } from "./emit-bounded-run-audit.js";
 import type {
   AppendReviewRemediationOptions,
   AppendReviewRemediationOutcome,
@@ -21,6 +22,11 @@ import { routeReviewConvergenceLadder } from "./review-convergence-ladder.js";
 import { hasRepeatedUnchangedReview, reviewInputSignature, type RequestPreMergeOptionalStepFixInfo } from "./request-pre-merge-optional-step-fix.js";
 import { resolveReviewRemediationGate } from "./review-remediation-gate.js";
 import { resolveRemediationCheckout } from "./resolve-remediation-checkout.js";
+import {
+  reviewRemediationDeclineText,
+  type ReviewRemediationDeclineFacts,
+  type ReviewRemediationNarratedDecline,
+} from "./review-remediation-refusal-text.js";
 import { isDefiniteEmptyCodeReviewRevise } from "./review-empty-content-close.js";
 import {
   hasReviewRemediationAttemptForEpisode,
@@ -110,10 +116,34 @@ export function isRecoverFailedPreMergeStepScheduled(outcome: RecoverFailedPreMe
  * the store, rather than adding a check per branch, is what stops the next branch from reopening
  * the hole: supersession surfaces as a thrown sentinel and becomes a silent `superseded` outcome.
  */
+/**
+ * FNXC:ReviewRemediationDeclineNarration 2026-09-27-06:25 (RUFU-351):
+ * A caller that owns a fallback explanation needs to know whether this recovery already put a
+ * sentence on the card. `narrationWitness.narrated` flips to true only after a decline entry is
+ * durably written, so the self-healing revival sweep can suppress its own fallback without ever
+ * leaving the card mute. Omitted by every other caller, which keeps their control flow and text
+ * byte-identical.
+ *
+ * FNXC:ReviewRemediationDeclineNarration 2026-11-06-17:41 (RUFU-351 code review):
+ * The witness is NOT a log of this function's own sentences — it is the fact that the card is
+ * already explained. Two DELEGATED owners write their own durable card line and then hand back a
+ * `skipped` outcome: the empty-review close (`No reviewable content — terminal park recorded for
+ * <step>`) and the convergence ladder's human-escalation rungs (`Review convergence exhausted —
+ * awaiting operator action` / `Review convergence stopped — no pending remediation work`). A hand-off
+ * to either marks the witness; a hand-off that narrated nothing (the ladder's `"declined"`) must
+ * not, so a genuinely mute decline still speaks.
+ */
+export type ReviewRemediationNarrationWitness = { narrated: boolean };
+
+export type RecoverFailedPreMergeStepCallOptions = {
+  claim?: ReviewRemediationAttemptDescriptor;
+  narrationWitness?: ReviewRemediationNarrationWitness;
+};
+
 export async function recoverFailedPreMergeWorkflowStepDetailed(
   rawDeps: RecoverFailedPreMergeStepDeps,
   task: Task,
-  options: { claim?: ReviewRemediationAttemptDescriptor } = {},
+  options: RecoverFailedPreMergeStepCallOptions = {},
 ): Promise<RecoverFailedPreMergeStepOutcome> {
   const deps: RecoverFailedPreMergeStepDeps = options.claim
     ? { ...rawDeps, store: fenceStoreForClaim(rawDeps.store, task.id, options.claim) }
@@ -141,15 +171,63 @@ export async function recoverFailedPreMergeWorkflowStepDetailed(
       return { kind: "skipped" };
     }
 
+    /*
+    FNXC:ReviewRemediationDeclineNarration 2026-09-27-06:25 (RUFU-351):
+    One seam for every narrated decline, so (a) `review-remediation-refusal-text.ts` is the only place
+    these sentences are spelled and (b) the witness records that the card is already explained. The
+    witness is set only AFTER the write lands: a failed write means the card is still mute, and the
+    caller's fallback must then fire rather than be suppressed by a claim nobody can read.
+    */
+    const narrateDecline = async (
+      decline: ReviewRemediationNarratedDecline,
+      facts: ReviewRemediationDeclineFacts,
+    ): Promise<void> => {
+      const text = reviewRemediationDeclineText(decline, facts);
+      await deps.store.logEntry(liveTask.id, text.action, text.outcome, deps.getRunContextFor?.(liveTask.id));
+      if (options.narrationWitness) options.narrationWitness.narrated = true;
+      /*
+      FNXC:ReviewRemediationDeclineNarration 2026-09-27-07:12 (RUFU-351):
+      One narrated decline = one audit row, written by whichever owner narrated it. The recovery helper
+      narrates its own admission declines for every caller (self-healing sweep, retry router,
+      in-process runtime), so crediting `executor` here is what keeps the invariant true for declines
+      the revival sweep never reaches. Ids/column/gate only — the sentence lives on the card, refusal
+      prose and error text never enter the row. Bounded and best-effort: telemetry cannot delay or
+      alter the decline it describes.
+      */
+      await emitBoundedRunAudit(deps.store, {
+        taskId: liveTask.id,
+        agentId: "executor",
+        runId: generateSyntheticRunId("review-remediation-declined", liveTask.id),
+        domain: "database",
+        mutationType: "task:review-remediation-declined",
+        target: liveTask.id,
+        metadata: {
+          taskId: liveTask.id,
+          column: liveTask.column,
+          code: decline,
+          gate: facts.gate ?? facts.stepName ?? "unknown",
+        },
+      });
+    };
+
+    /*
+    FNXC:ReviewRemediationDeclineNarration 2026-11-06-17:41 (RUFU-351 code review):
+    The second half of the witness contract. `narrateDecline` covers the sentences THIS function
+    writes; this covers the sentences a delegated owner writes before handing the card back with a
+    `skipped` outcome. Without it the caller reads "admitted, nothing scheduled, card mute" and
+    appends its own fallback — two operator lines for one decline, and the fallback is false on both
+    counts (an explanation exists, and the card is terminal-parked or operator-parked, not left
+    awaiting a re-run). Only hand-offs whose owner provably narrated may mark it: the ladder's
+    `"declined"` returns stay unmarked so a real silence is still narrated by the caller.
+    */
+    const markDelegatedNarration = (): void => {
+      if (options.narrationWitness) options.narrationWitness.narrated = true;
+    };
+
     if (hasPreMergeRemediationAutoMergeHold(liveTask, await deps.store.getSettings())) {
       const reason = "operator-authored task-level auto-merge Off holds failed-step recovery";
       executorLog.warn(`${liveTask.id}: failed pre-merge step recovery NOT scheduled — ${reason}. Card left parked.`);
-      await deps.store.logEntry(
-        liveTask.id,
-        "Failed pre-merge step recovery not scheduled — operator task hold",
-        `Reason: ${reason}`,
-        deps.getRunContextFor?.(liveTask.id),
-      );
+      await narrateDecline("operator-task-hold", { reason });
       return { kind: "skipped" };
     }
 
@@ -158,12 +236,7 @@ export async function recoverFailedPreMergeWorkflowStepDetailed(
     const checkout = resolveRemediationCheckout(liveTask, target);
     if (!checkout) {
       executorLog.warn(`${liveTask.id}: failed pre-merge step recovery NOT scheduled for "${stepName}" — no remediation checkout is available. Card left parked.`);
-      await deps.store.logEntry(
-        liveTask.id,
-        "Failed pre-merge step recovery not scheduled — checkout unavailable",
-        `Step: ${stepName}\nNo singular worktree or acquired workspace repository worktree is available. Retry after restoring the task checkout, or use the privileged review bypass when the failed review is known to be non-blocking.`,
-        deps.getRunContextFor?.(liveTask.id),
-      );
+      await narrateDecline("checkout-unavailable", { stepName });
       return { kind: "skipped" };
     }
 
@@ -215,7 +288,15 @@ export async function recoverFailedPreMergeWorkflowStepDetailed(
       });
       return outcome === "empty-content-terminalized";
     };
-    if (!producesRemediation && await closeEmptyReviewContent()) return { kind: "skipped" };
+    /*
+    FNXC:ReviewRemediationDeclineNarration 2026-11-06-17:41 (RUFU-351 code review):
+    `true` here means `terminalizeEmptyReviewContent` CAS-parked the card AND wrote its own card
+    sentence, so the caller must not narrate this decline a second time.
+    */
+    if (!producesRemediation && await closeEmptyReviewContent()) {
+      markDelegatedNarration();
+      return { kind: "skipped" };
+    }
 
     const budget = await deps.resolveFailedPreMergeWorkflowStepBudget(liveTask, target);
     const episodeIdentity = reviewRemediationEpisodeIdentity(target);
@@ -230,12 +311,7 @@ export async function recoverFailedPreMergeWorkflowStepDetailed(
       && (liveTask.steps ?? []).some((step) => step.status === "pending");
     if (!resumesCommittedRemediation && (!Number.isFinite(budget.max) || budget.max <= 0)) {
       executorLog.warn(`${liveTask.id}: failed pre-merge step recovery NOT scheduled for "${stepName}" — revision budget is zero/invalid (attempts=${budget.attempts}, max=${String(budget.max)}). Card left parked.`);
-      await deps.store.logEntry(
-        liveTask.id,
-        "Failed pre-merge step recovery not scheduled — revision budget zero/invalid",
-        `Step: ${stepName}\nAttempts: ${budget.attempts}\nMax: ${String(budget.max)}`,
-        deps.getRunContextFor?.(liveTask.id),
-      );
+      await narrateDecline("revision-budget-zero-or-invalid", { stepName, attempts: budget.attempts, max: budget.max });
       return { kind: "skipped" };
     }
 
@@ -256,9 +332,16 @@ export async function recoverFailedPreMergeWorkflowStepDetailed(
         feedback, findings: target.findings, attempt: budget.attempts,
         max: budget.max,
       });
-      return outcome === "escalated" || outcome === "arbitrated"
-        ? { kind: "convergence" }
-        : { kind: "skipped" };
+      if (outcome === "escalated" || outcome === "arbitrated") return { kind: "convergence" };
+      /*
+      FNXC:ReviewRemediationDeclineNarration 2026-11-06-17:41 (RUFU-351 code review):
+      `human-escalated` is returned ONLY from rungs that parked the card `awaiting-approval` after
+      writing their own card sentence, so the ladder is the narrator of this decline and the outcome
+      union stays unchanged (`skipped`, never a new kind). `"declined"` — a ladder that refused
+      without saying anything on the card — deliberately leaves the witness alone.
+      */
+      if (outcome === "human-escalated") markDelegatedNarration();
+      return { kind: "skipped" };
     }
     if (!resumesCommittedRemediation && budget.attempts >= budget.max) {
       const outcome = await routeReviewConvergenceLadder({
@@ -270,7 +353,7 @@ export async function recoverFailedPreMergeWorkflowStepDetailed(
       });
       if (outcome === "escalated" || outcome === "arbitrated") return { kind: "convergence" };
       executorLog.warn(`${liveTask.id}: failed pre-merge step recovery NOT scheduled for "${stepName}" — revision budget exhausted (attempts=${budget.attempts}, max=${String(budget.max)}). Card left parked.`);
-      await deps.store.logEntry(liveTask.id, "Failed pre-merge step recovery not scheduled — revision budget exhausted", `Step: ${stepName}\nAttempts: ${budget.attempts}\nMax: ${String(budget.max)}`, deps.getRunContextFor?.(liveTask.id));
+      await narrateDecline("revision-budget-exhausted", { stepName, attempts: budget.attempts, max: budget.max });
       return { kind: "skipped" };
     }
 
@@ -314,7 +397,11 @@ export async function recoverFailedPreMergeWorkflowStepDetailed(
       });
       if (appenderOutcome === "appended") return { kind: "scheduled", producer: "named" };
       /* The producer genuinely declined; only now may a provably empty round close terminally. */
-      if (await closeEmptyReviewContent()) return { kind: "skipped" };
+      if (await closeEmptyReviewContent()) {
+        // Same delegated-narration fact as the pre-budget close above: the empty-content park spoke for itself.
+        markDelegatedNarration();
+        return { kind: "skipped" };
+      }
       return { kind: "refused", reason: refusalFromAppender(appenderOutcome), gate: gate ?? stepName };
     }
     if (stepReopenPolicy !== "reopen-trailing") {
@@ -367,6 +454,12 @@ export async function recoverFailedPreMergeWorkflowStepDetailed(
 /**
  * Compatibility entry point for existing non-claim callers. New owner-scoped recovery uses the
  * detailed outcome so a durable refusal, transient skip, and supersession remain distinguishable.
+ *
+ * FNXC:ReviewRemediationDeclineNarration 2026-11-06-18:10 (RUFU-351 code review):
+ * This wrapper takes no call options: a boolean "was work scheduled?" answer cannot report a
+ * narration event either, so the narration witness lives on the typed {@link
+ * recoverFailedPreMergeWorkflowStepDetailed} lane — the lane production wires. A caller that needs to
+ * know a decline was already explained calls the detailed entry point.
  */
 export async function recoverFailedPreMergeWorkflowStep(
   deps: RecoverFailedPreMergeStepDeps,

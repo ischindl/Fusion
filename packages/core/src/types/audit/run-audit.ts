@@ -95,6 +95,18 @@ export type RunAuditMutationType =
   */
   | "task:comment-delivery"
   | "task:comment-delivery-unowned"
+  /*
+  FNXC:ReviewRemediationDeclineNarration 2026-09-27-06:25 (RUFU-351):
+  One row per declined review remediation that a card was narrated for. RUFU-274 sat blocked in review
+  with a failed Code Review gate while the revival sweep silently declined to schedule its fix: the
+  decline existed nowhere an operator could read it. `code` names the class from a fixed enum
+  (`checkout-unavailable`, `revision-budget-zero-or-invalid`, `skipped-without-narration`,
+  `recovery-threw`), `gate` is the failed gate's identifier, and `column` is the card's column at
+  decline time. Metadata is ids/counts/fixed enums only — `taskId`, `column`, `code`, `gate`,
+  `scannedCount`; refusal sentences, findings, reviewer prose, and exception text never enter this row.
+  A `superseded` probe emits NO row: a newer round owns the row, so nothing was declined.
+  */
+  | "task:review-remediation-declined"
   | "task:vanished-approved-work"
   | "task:row-purged-for-resurrection"
   /*

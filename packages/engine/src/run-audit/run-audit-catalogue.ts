@@ -91,6 +91,13 @@ export const DELIVERY_PIPELINE_RUN_AUDIT_EVENTS_LITERALS = [
   "task:reconcile-stranded-completed-no-action",
   "task:reconcile-legacy-adoption",
   "task:reconcile-archived-into-done",
+  /*
+  FNXC:ReviewRemediationDeclineNarration 2026-11-06-17:03 (RUFU-351):
+  A declined review remediation used to be an `executorLog` line only, so a card could hold its
+  branch, worktree and file-scope lease for days with no durable trace of why nothing was
+  scheduled. This is the reconciliation-side record of that refusal: one row per narrated decline.
+  */
+  "task:review-remediation-declined",
 
   /* ── 3. Durable-agent error-state ──────────────────────────────────────── */
   "agent:auto-recover-error-state",
@@ -201,6 +208,8 @@ export const DELIVERY_PIPELINE_RUN_AUDIT_EVENT_NOTES: Readonly<Record<DeliveryPi
     "Self-healing startup adopts a pre-cutover legacy task row through the KTD-8 adoption table.",
   "task:reconcile-archived-into-done":
     "Self-healing moves or restores one historical archived task into its workflow completion lane.",
+  "task:review-remediation-declined":
+    "A review-lane remediation was admitted and then refused (unavailable checkout, exhausted revision budget, operator hold, or a recovery owner that produced no outcome); one row per narrated decline, and none for a round that scheduled work.",
 
   /* ── 3. Durable-agent error-state ──────────────────────────────────────── */
   "agent:auto-recover-error-state":

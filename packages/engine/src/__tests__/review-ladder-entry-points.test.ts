@@ -951,6 +951,18 @@ describe("FN-225 definite empty review entry points", () => {
     };
     const resolveBudget = vi.fn(async () => ({ unbounded: false, max: 0, attempts: 0, label: "0", key: "code-review" }));
     const sendTaskBackForFix = vi.fn(async () => undefined);
+    /*
+    FNXC:ReviewRemediationDeclineNarration 2026-11-06-18:10 (RUFU-351 code review):
+    This case drives the LEGACY boolean callback, which carries no narration witness: the sweep
+    cannot learn that the close already narrated its own terminal park, so this card does end up
+    with the mute-decline fallback line under the close's sentence. That is the measured, accepted
+    shape of a witness-less lane — the alternative is muteness, which is the defect RUFU-351 exists
+    to close — and production never reaches it: `in-process-runtime.ts` wires the typed recovery and
+    the sweep prefers it. The one-sentence rule for the empty close on the wired lane is therefore
+    pinned with the REAL helper through the REAL sweep in
+    `self-healing-review-remediation-declined.test.ts`; the lines below record what THIS lane does
+    and does not promise, so nobody later reads "exactly once" here as the card's line count.
+    */
     const recoverFailedPreMergeStep = vi.fn(async (task: any) => recoverFailedPreMergeWorkflowStep({
       store: store as any,
       getRunContextFor: () => undefined,
@@ -972,6 +984,11 @@ describe("FN-225 definite empty review entry points", () => {
       expect(digestRow.error).toBeUndefined();
       expect(resolveBudget).not.toHaveBeenCalled();
       expect(sendTaskBackForFix).not.toHaveBeenCalled();
+      // The close's own park sentence lands first; the second line is the witness-less fallback above.
+      expect(emptyRow.log.map((entry: any) => entry.action)).toEqual([
+        "No reviewable content — terminal park recorded for Code Review",
+        "Failed pre-merge step remediation not produced — card left in review",
+      ]);
 
       await expect(manager.recoverReviewTasksWithFailedPreMergeSteps()).resolves.toBe(0);
       expect(recoverFailedPreMergeStep).toHaveBeenCalledTimes(1);

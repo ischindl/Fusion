@@ -616,9 +616,16 @@ import {
 } from "./executor/optional-step-revision.js";
 
 import type {
+  RecoverFailedPreMergeStepCallOptions,
   RecoverFailedPreMergeStepOutcome,
-  ReviewRemediationAttemptDescriptor,
+  ReviewRemediationNarrationWitness,
 } from "./executor/recover-failed-pre-merge-step.js";
+import {
+  reviewRemediationDeclineText,
+  type ReviewRemediationAdmissionDecline,
+  type ReviewRemediationDeclineFacts,
+  type ReviewRemediationNarratedDecline,
+} from "./executor/review-remediation-refusal-text.js";
 
 export {
   extractTaskIdFromTempMergeDir,
@@ -901,6 +908,14 @@ export interface SelfHealingOptions {
    * `PROMPT.md`, resets steps, and schedules todo → in-progress.
    *
    * Should return true if the task was successfully sent back, false otherwise.
+   *
+   * FNXC:ReviewRemediationDeclineNarration 2026-11-06-18:10 (RUFU-351 code review):
+   * This lane takes no call options, so it has no narration-witness channel: a decline it hides is
+   * narrated by the sweep's fallback and records `skipped-without-narration`. Widening this signature
+   * to pass the witness was measured and rejected — the boolean return cannot report a narration
+   * event, and the witness only means anything to a recovery that can set it. The typed
+   * {@link SelfHealingOptions.recoverFailedPreMergeStepDetailed} lane below is what production wires
+   * and the sweep prefers, and that is where the witness lives.
    */
   recoverFailedPreMergeStep?: (task: Task) => Promise<boolean>;
   /**
@@ -922,7 +937,7 @@ export interface SelfHealingOptions {
   */
   recoverFailedPreMergeStepDetailed?: (
     task: Task,
-    options?: { claim?: ReviewRemediationAttemptDescriptor },
+    options?: RecoverFailedPreMergeStepCallOptions,
   ) => Promise<RecoverFailedPreMergeStepOutcome>;
   /**
    * Uses ProjectEngine's queue-admission fence to re-seed a failed no-verdict review.
@@ -15433,11 +15448,20 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
         return { ...fallbackBudget, key: "pre-merge-optional-step", attempts: 0, resumesCommittedRemediation: false, label: fallbackBudget.unbounded ? "unbounded" : String(fallbackBudget.max) };
       };
 
-      const candidates = tasks.filter((task) => {
-        /* Precomputed above, so this filter stays synchronous. */
-        if (!(reviewLanesByTask.get(task.id) ?? new Set(["in-review"])).has(task.column)) return false;
-        if (!allowsAutoMergeProcessing(task, settings)) return false;
-        if (task.paused) return false;
+      /*
+      FNXC:ReviewRemediationDeclineNarration 2026-09-27-06:25 (RUFU-351):
+      This is a CLASSIFIER, not a filter. RUFU-274 sat blocked in review with a failed Code Review gate
+      and nothing on the card said why: the revival sweep declined it here, so the recovery helper — the
+      only owner that ever narrated a decline — never ran. Every rejection now names its class, and the
+      classes no other surface narrates get a durable card line plus a `task:review-remediation-declined`
+      audit row. Predicate order is unchanged, so classification precedence equals the old first-false-wins
+      filter exactly.
+      */
+      const classifyRevivalAdmission = (task: Task): ReviewRemediationAdmissionDecline | undefined => {
+        /* Precomputed above, so this classification stays synchronous. */
+        if (!(reviewLanesByTask.get(task.id) ?? new Set(["in-review"])).has(task.column)) return "lane-mismatch";
+        if (!allowsAutoMergeProcessing(task, settings)) return "auto-merge-ineligible";
+        if (task.paused) return "paused";
         /*
          * FNXC:WorkflowRemediation 2026-07-03-20:10:
          * Retryable Code Review remediation can park as `status:"failed"` when the
@@ -15446,14 +15470,14 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
          * other failed review rows remain terminal/operator-actionable.
          */
         const parkedRemediationFailure = isRetryableParkedRemediationFailure(task);
-        if (task.status && !parkedRemediationFailure) return false;
-        if (executingIds.has(task.id)) return false;
+        if (task.status && !parkedRemediationFailure) return "terminal-status";
+        if (executingIds.has(task.id)) return "executing";
         /*
         FNXC:NoVerdictReviewRecovery 2026-09-24-06:03:
         A restart orphan is re-dispatched above, never converted into remediation in the same sweep.
         Its failed evidence remains until the replacement verdict arrives, so the ordinary merge door stays closed.
         */
-        if (noVerdictReviewTaskIds.has(task.id)) return false;
+        if (noVerdictReviewTaskIds.has(task.id)) return "no-verdict-owned";
         const budget = revisionBudgetFor(task.id);
         /*
         FNXC:ReviewEmptyContent 2026-08-28-13:14:
@@ -15465,17 +15489,25 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
         */
         const definiteEmptyReview = isDefiniteEmptyCodeReviewRevise(latestFailedPreMergeStep(task));
         if (!definiteEmptyReview
-          && (!Number.isFinite(budget.max) || budget.max <= 0)) return false;
+          && (!Number.isFinite(budget.max) || budget.max <= 0)) return "revision-budget-zero-or-invalid";
         // FNXC:ReviewConvergence 2026-08-22-06:05: exhausted failures must reach the
         // shared ladder in recoverFailedPreMergeWorkflowStep; filtering them here recreates
         // the terminal human-only park FN-149 removes.
+        /*
+        FNXC:ReviewRemediationDeclineNarration 2026-09-27-06:25 (RUFU-351):
+        Classified `convergence-ladder-owned`, NOT `revision-budget-exhausted`. At stage 3 the ladder has
+        already parked the card with its own operator explanation, so this predicate would only be the
+        SECOND narrator. The helper's `revision-budget-exhausted` sentence stays the single card-level
+        explanation for an admitted card whose budget is exhausted below stage 3.
+        */
         if (!budget.resumesCommittedRemediation
-          && budget.attempts >= budget.max && (task.reviewConvergenceStage ?? 0) >= 3) return false;
+          && budget.attempts >= budget.max && (task.reviewConvergenceStage ?? 0) >= 3) return "convergence-ladder-owned";
 
         // Must have a failed pre-merge result and either its singular checkout or the acquired
         // workspace repository checkout selected by structured review evidence.
         const failedStep = latestFailedPreMergeStep(task);
-        if (!failedStep || !resolveRemediationCheckout(task, failedStep)) return false;
+        if (!failedStep) return "no-failed-step";
+        if (!resolveRemediationCheckout(task, failedStep)) return "checkout-unavailable";
 
         /*
         FNXC:ReviewRemediation 2026-08-31-09:00:
@@ -15525,10 +15557,81 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
         if (!parkedRemediationFailure
           && !budget.resumesCommittedRemediation
           && !(isPreMergeGateFailedBlocker(blocker)
-            && (parsePreMergeGateApprovalBlocker(blocker) === undefined || hasFailedPreMergeWorkflowStepRow(task)))) return false;
+            && (parsePreMergeGateApprovalBlocker(blocker) === undefined || hasFailedPreMergeWorkflowStepRow(task)))) return "blocker-family-mismatch";
 
-        return true;
-      });
+        return undefined;
+      };
+
+      const candidates: Task[] = [];
+      const admissionDeclines: Array<{ task: Task; decline: ReviewRemediationAdmissionDecline }> = [];
+      for (const task of tasks) {
+        const decline = classifyRevivalAdmission(task);
+        if (decline) admissionDeclines.push({ task, decline });
+        else candidates.push(task);
+      }
+
+      /*
+      FNXC:ReviewRemediationDeclineNarration 2026-09-27-06:25 (RUFU-351):
+      Of the admission-decline classes, only these two are the recovery owner's OWN mute declines: no
+      other surface writes a card-level sentence for them, because the helper that would have narrated
+      its own refusal never ran. Every other class is already narrated elsewhere (the convergence ladder
+      at stage 3, the no-verdict reseed lane, the live executing session, RUFU-180's stall notice for a
+      non-gate blocker) or is a plain "not ours" lane/liveness fact where a card entry would be spam.
+      Repetition per sweep is the same trade FN-270/FN-273 made when the claim-based "explained once"
+      suppression was removed: a card that keeps saying why it cannot proceed beats one that says it
+      once and then looks identical to a dead engine.
+      */
+      const isCardNarratedAdmissionDecline = (
+        decline: ReviewRemediationAdmissionDecline,
+      ): decline is "checkout-unavailable" | "revision-budget-zero-or-invalid" =>
+        decline === "checkout-unavailable" || decline === "revision-budget-zero-or-invalid";
+
+      const narrateReviewRemediationDecline = async (
+        declinedTask: Task,
+        code: ReviewRemediationNarratedDecline,
+        facts: ReviewRemediationDeclineFacts,
+      ): Promise<void> => {
+        const text = reviewRemediationDeclineText(code, facts);
+        try {
+          await this.store.logEntry(declinedTask.id, text.action, text.outcome);
+        } catch (err: unknown) {
+          // Fail-soft by contract: an unwritable card log must not cost the operator the audit row and
+          // must not abort the sweep for the remaining candidates.
+          log.warn(`Failed to narrate review-remediation decline (${code}) for ${declinedTask.id}: ${getErrorMessage(err)}`);
+        }
+        await emitBoundedRunAudit(this.store, {
+          taskId: declinedTask.id,
+          agentId: "self-healing",
+          runId: generateSyntheticRunId("review-remediation-declined", declinedTask.id),
+          domain: "database",
+          // Ids/counts/fixed enums only: decline class and gate identifier, never prose or error text.
+          mutationType: "task:review-remediation-declined",
+          target: declinedTask.id,
+          metadata: {
+            taskId: declinedTask.id,
+            column: declinedTask.column,
+            code,
+            gate: facts.gate ?? facts.stepName ?? "unknown",
+            scannedCount: tasks.length,
+          },
+        });
+      };
+
+      for (const { task: declinedTask, decline } of admissionDeclines) {
+        if (!isCardNarratedAdmissionDecline(decline)) {
+          log.debug(`Review-remediation revival declined for ${declinedTask.id} (${decline}) — engine log only, another owner narrates this class`);
+          continue;
+        }
+        const failedStep = latestFailedPreMergeStep(declinedTask);
+        const stepName = failedStep?.workflowStepName || failedStep?.workflowStepId || "Unknown";
+        const declineBudget = revisionBudgetFor(declinedTask.id);
+        await narrateReviewRemediationDecline(declinedTask, decline, {
+          stepName,
+          gate: failedStep?.workflowStepId ?? stepName,
+          attempts: declineBudget.attempts,
+          max: declineBudget.max,
+        });
+      }
 
       if (candidates.length === 0) return 0;
 
@@ -15569,6 +15672,23 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
         */
         const admittedTask = hydratedRevisionTaskById.get(task.id) ?? task;
         const budget = revisionBudgetFor(task.id);
+        /*
+        FNXC:ReviewRemediationDeclineNarration 2026-09-27-06:25 (RUFU-351):
+        One witness per delegated recovery, declared BEFORE the `try` so the `catch` can read it. The
+        recovery helper narrates its OWN declines onto the card; the witness is how this sweep learns
+        that happened, so the fallbacks below stay silent instead of writing a second sentence for the
+        same decline. The boolean compatibility callback has no witness channel, so a decline it hides
+        surfaces as `skipped-without-narration` — fail-visible, which is the point of the task.
+
+        FNXC:ReviewRemediationDeclineNarration 2026-11-06-16:41 (RUFU-351):
+        This is the ONE witness object for the candidate. An earlier revision also declared a second
+        `const narrationWitness` INSIDE the `try`, which shadowed this one: the helper was handed the
+        inner object and the `skipped` arm read the inner one, while the `catch` resolved this outer
+        declaration that nothing ever set — so the anti-duplication guard for `recovery-threw` was
+        structurally inert and a recovery that narrated its own decline and then unwound would have
+        written a second sentence for the same decline. Do not re-declare it in the `try`.
+        */
+        const narrationWitness: ReviewRemediationNarrationWitness = { narrated: false };
         try {
           /*
           FNXC:ReviewRemediationBudget 2026-09-08-01:02:
@@ -15591,10 +15711,18 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
           */
           const detailedRecoverFn = this.options.recoverFailedPreMergeStepDetailed;
           const outcome: RecoverFailedPreMergeStepOutcome = detailedRecoverFn
-            ? await detailedRecoverFn(admittedTask, {})
+            ? await detailedRecoverFn(admittedTask, { narrationWitness })
             : (await recoverFn(admittedTask)) ? { kind: "scheduled", producer: "named" } : { kind: "skipped" };
 
           if (outcome.kind === "superseded") {
+            /*
+            FNXC:ReviewRemediationDeclineNarration 2026-09-27-06:25 (RUFU-351):
+            `superseded` stays SILENT by deliberate decision, and that is not the gap RUFU-351 closes.
+            A superseded probe is not a decline of the card: a NEWER round already owns the row, and the
+            supersession is a recorded fact of that round's ownership, not a reason this card cannot
+            move. Durable card narration belongs to the newer round's own owner. Engine log is the right
+            altitude here, and `task:review-remediation-declined` deliberately has no such code.
+            */
             log.log(`Revival of ${task.id} was superseded by a newer review result — leaving the newer round untouched`);
             continue;
           }
@@ -15611,13 +15739,18 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             newer round is re-admitted on its own signature.
             */
             log.warn(`Revival of ${task.id} refused — no remediation could be produced for gate "${outcome.gate}" (${outcome.reason})`);
-            const refusalEntry = {
-              action: "Failed pre-merge step remediation not produced — card left in review",
-              outcome: `Step: ${budget.stepName ?? budget.key}\nGate: ${outcome.gate}\nReason: ${outcome.reason}\n`
-                + "This review is not retried until its findings change. Re-run the review after addressing it manually, "
-                + "or use the privileged review bypass when the failed review is known to be non-blocking.",
-            };
-            await this.store.logEntry(task.id, refusalEntry.action, refusalEntry.outcome);
+            /*
+            FNXC:ReviewRemediationDeclineNarration 2026-09-27-07:16 (RUFU-351):
+            The refusal goes through the ONE narrated-decline seam rather than a bare `logEntry`, so the
+            refused round also gets its `task:review-remediation-declined` row: "one narrated decline =
+            one audit row" holds for every narrated class, including the producer's own refusal. The
+            rendered sentence is byte-identical to what this arm wrote before the seam existed.
+            */
+            await narrateReviewRemediationDecline(task, "producer-refused", {
+              stepName: budget.stepName ?? budget.key,
+              gate: outcome.gate,
+              reason: outcome.reason,
+            });
             continue;
           }
           if (outcome.kind === "scheduled") {
@@ -15625,12 +15758,43 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             recovered++;
           } else if (outcome.kind === "convergence") {
             log.log(`Revival of ${task.id} advanced through review convergence without consuming remediation budget`);
+          } else if (!narrationWitness.narrated) {
+            /*
+            FNXC:ReviewRemediationDeclineNarration 2026-09-27-06:25 (RUFU-351):
+            This is the exact hole RUFU-351 was filed for: the recovery owner reported `skipped`, had
+            written nothing to the card, and the sweep only said so in a log line that is persisted
+            nowhere the operator reads. The card now carries the decline in the same
+            "remediation not produced" family the refused round already uses — no new sentence family,
+            just the reason line naming the class.
+
+            FNXC:ReviewRemediationDeclineNarration 2026-11-06-17:41 (RUFU-351 code review):
+            "The owner narrated" includes sentences the recovery helper DELEGATED: its empty-review
+            close and the convergence ladder's human-escalation rungs each write their own durable
+            card line and still return `skipped`. The helper marks this same witness at those
+            hand-offs, because a fallback sentence here over an owner's real one is both a duplicate
+            and a false claim ("card left in review" on a card the owner just terminal-parked or
+            parked for the operator). This fallback therefore fires only for a genuinely mute decline.
+            */
+            log.warn(`Revival of ${task.id} was skipped by executor without a card explanation — narrating the decline`);
+            await narrateReviewRemediationDecline(task, "skipped-without-narration", {
+              stepName: budget.stepName ?? target?.workflowStepName ?? budget.key,
+              gate: target?.workflowStepId ?? budget.key,
+              reason: "The recovery owner declined without a card-level explanation and no remediation budget was consumed.",
+            });
           } else {
             log.warn(`Revival of ${task.id} was skipped by executor — no remediation budget was consumed`);
           }
         } catch (err: unknown) {
           const errorMessage = err instanceof Error ? err.message : String(err);
           log.error(`Failed to revive ${task.id}: ${errorMessage}`);
+          if (!narrationWitness.narrated) {
+            // The exception sentence stays in the engine log; the card only learns that recovery threw.
+            await narrateReviewRemediationDecline(task, "recovery-threw", {
+              stepName: budget.stepName ?? target?.workflowStepName ?? budget.key,
+              gate: target?.workflowStepId ?? budget.key,
+              reason: "The recovery owner threw before producing an outcome; the engine log carries the exception.",
+            });
+          }
         }
       }
 

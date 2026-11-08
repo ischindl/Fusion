@@ -1479,7 +1479,20 @@ export type DatabaseMutationType =
    * Metadata (ids/outcomes-only): { reason; branch; integrationBranch; lane:
    * "ai-empty-merge"; executorSignal?; executorSignalObservedAt? }
    */
-  | "overseer:no-op-finalize-vetoed-failed-executor";
+  | "overseer:no-op-finalize-vetoed-failed-executor"
+  /*
+  FNXC:ReviewRemediationDeclineNarration 2026-11-06-17:03 (RUFU-351):
+  One row per narrated refusal to schedule a fix round for a failed pre-merge review gate. RUFU-274
+  sat in review for days with a failed Code Review gate while nothing on the card said the revival
+  sweep had declined it; the decline now names its class on the card and here. Declared in the
+  engine's emit-side vocabulary because the emitter is the engine's own self-healing sweep — the
+  curated delivery-pipeline catalogue admits only literals this union declares
+  (`run-audit-catalogue.test.ts`), so an engine-emitted event that lives only in core's
+  `RunAuditMutationType` cannot be catalogued. Metadata (ids/counts/fixed enums only): { taskId;
+  column; code; gate; scannedCount } — refusal sentences, findings and error text never enter it.
+  A round that scheduled work emits nothing, so absence means remediation is running.
+  */
+  | "task:review-remediation-declined";
 
 // ── Filesystem mutation types ─────────────────────────────────────────────────
 
