@@ -52,6 +52,14 @@ const actualUseChatModule = await vi.importActual<typeof import("../../hooks/use
 
 installChatViewEnv();
 
+/*
+FNXC:ChatThreadPagination 2026-11-08-12:36 (RUFU-871 slice A):
+Opening a thread now asks for the bounded 20-row window (`CHAT_THREAD_WINDOW`) instead of 50, so both
+restore-and-select assertions below state the new window here once. A literal, not an import of the
+production constant, so a silent widening of the window fails loudly in the file that pinned it.
+*/
+const THREAD_WINDOW = 20;
+
 interface ObservedIntersection {
   callback: IntersectionObserverCallback;
   targets: Set<Element>;
@@ -308,7 +316,7 @@ describe("ChatView transcript virtualization", () => {
 
     await waitFor(() => expect(apiMocks.fetchChatMessages).toHaveBeenCalledWith(
       restoredSession.id,
-      expect.objectContaining({ limit: 50, order: "desc" }),
+      expect.objectContaining({ limit: THREAD_WINDOW, order: "desc" }),
       "project",
     ));
     const restoredTranscript = await waitFor(() => {
@@ -335,7 +343,7 @@ describe("ChatView transcript virtualization", () => {
     fireEvent.click(await screen.findByTestId(`chat-session-${selectedSession.id}`));
     await waitFor(() => expect(apiMocks.fetchChatMessages).toHaveBeenCalledWith(
       selectedSession.id,
-      expect.objectContaining({ limit: 50, order: "desc" }),
+      expect.objectContaining({ limit: THREAD_WINDOW, order: "desc" }),
       "project",
     ));
     const selectedTranscript = await waitFor(() => {
