@@ -1756,6 +1756,25 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       const partialScope = requestedTaskIds.length > 0 && req.query.partial === "1";
 
       /*
+      FNXC:BoardBootRequestSet 2026-11-08-03:34 (RUFU-493):
+      `scope=lanes` is the other half of the same bargain: it names no ids because the consumer HAS no
+      ids - a workflow switcher renders the lane vocabulary, never a per-card mapping. Answering it from
+      the enumeration made every mounted switcher pay a whole current-task scan plus the newest Done
+      page for rows it will never read, and the deployed board had several of those consumers alive at
+      once (the footer slot, Board, and a header slot), each re-paying the 30.0 s / 17.4 s mount read.
+
+      The lane vocabulary does not come from tasks: it comes from the ONE workflow-catalog read this
+      route already takes (`readWorkflowCatalogOnce`), which contributes every workflow it lists to the
+      referenced set inside `buildBoardWorkflowsPayload`. An empty id list therefore describes every lane
+      and maps nothing - `taskWorkflowIds: {}` - which is the complete and honest answer to a question
+      about lanes. Zero task-table reads, zero Done reads, zero selection reads.
+
+      It is gated on `requestedTaskIds.length === 0` on purpose: naming ids is a request for a MAPPING,
+      and a vocabulary answer cannot satisfy one. A caller that sends both gets the mapping it asked for.
+      */
+      const lanesOnlyScope = req.query.scope === "lanes" && requestedTaskIds.length === 0;
+
+      /*
       FNXC:BoardWorkflows 2026-11-07-12:41 (RUFU-871):
       ONE workflow-catalog read serves the whole request. The complete-lane vocabulary resolution and
       `buildBoardWorkflowsPayload` each called `listWorkflowDefinitions()` themselves — and each of
@@ -1768,6 +1787,8 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       let taskIds: string[];
       if (partialScope) {
         taskIds = [...new Set(requestedTaskIds)];
+      } else if (lanesOnlyScope) {
+        taskIds = [];
       } else {
         // Mirror the board's bounded data shape: all current work plus only the newest Done page.
         let completeColumns: string[];

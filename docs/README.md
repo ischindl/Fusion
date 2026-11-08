@@ -132,6 +132,7 @@ FN-7088 links previously-unlinked first-class testing and baseline docs here so 
 | [spawn_agent Approval Evaluation (FN-3973)](./spawn-agent-approval-evaluation.md) | Decision to keep fn_spawn_agent under generic action-gate governance rather than durable agent provisioning policy |
 | [Task Lineage Reconciliation Notes](./task-lineage-reconciliation.md) | Historical task-ID reuse patterns, confidence semantics for commit attribution, and reconciliation methodology (FN-3953, FN-3998) |
 | [Dashboard Load Performance (historical)](./performance/dashboard-load.md) | Pre-cutover SQLite index analysis retained for performance archaeology |
+| [Board Boot Request Set](./performance/board-boot-request-set.md) | Test-enforced contract for which requests a board mount may issue: usage/agent-stats/per-card reads on demand, `board-workflows` scoping, and viewport/visibility-bound diff polling (RUFU-493) |
 | [CLI Printing Press Plugin Design](./design/cli-printing-press-plugin.md) | Architecture design for the CLI printing press bundled plugin (FN-3762) |
 | [CLI Printing Press Research](./research/cli-printing-press.md) | Upstream `cli-printing-press` analysis and Fusion integration mapping (FN-3761) |
 | [Research vs Experiment Session Naming Decision](./research/naming-decision-2026-05.md) | Naming decision record: hybrid approach retaining `research_*` for cited-search/synthesis and adding `experiment_session_*` for upstream parity (FN-4223) |

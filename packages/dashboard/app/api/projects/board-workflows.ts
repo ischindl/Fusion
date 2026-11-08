@@ -123,15 +123,35 @@ export function updateTaskCustomFields(
  */
 export function fetchBoardWorkflows(
   projectId?: string,
-  options?: FetchOptions & { taskIds?: readonly string[]; partial?: boolean },
+  options?: FetchOptions & { taskIds?: readonly string[]; partial?: boolean; scope?: "lanes" },
 ): Promise<BoardWorkflowsPayload> {
   const basePath = withProjectId("/tasks/board-workflows", projectId);
   const separator = basePath.includes("?") ? "&" : "?";
+  /*
+  FNXC:BoardBootRequestSet 2026-11-08-03:34 (RUFU-493): `scope=lanes` asks for the lane vocabulary only,
+  which is the whole question a workflow switcher asks. It is legal ONLY without ids - the server ignores
+  it when ids are named, because a caller that names ids wants a mapping, not a vocabulary.
+
+  FNXC:BoardBootRequestSet 2026-11-08-05:30 (RUFU-493 code review, P0):
+  Every parameter is appended as a LIST ITEM joined by `&` after the ONE separator, because a query
+  string is not a chain of separators. The first cut of the lanes scope rewrote its own leading `&` into
+  a `?` and emitted `/tasks/board-workflows?projectId=X?scope=lanes`, which a URL parser reads as
+  `projectId="X?scope=lanes"` with `scope` absent. Two failures followed from one character: the server's
+  lane-only branch never fired (so the switcher still paid the whole current-task scan the scope exists to
+  avoid), and project resolution asked for a project literally named `X?scope=lanes`, so the switcher's
+  read answered nothing and the lane drop-down silently disappeared. A test could not see it: the route
+  test builds its own URL, the switcher tests mock this function, and a substring check on `scope=lanes`
+  matches the corrupted line. Hence the shape is asserted on PARSED `searchParams`, never on a substring.
+  */
   const taskIds = [...new Set(options?.taskIds ?? [])].sort();
-  const partialSuffix = options?.partial && taskIds.length > 0 ? "&partial=1" : "";
-  const path = taskIds.length > 0
-    ? `${basePath}${separator}taskIds=${encodeURIComponent(taskIds.join(","))}${partialSuffix}`
-    : basePath;
+  const params: string[] = [];
+  if (taskIds.length > 0) {
+    params.push(`taskIds=${encodeURIComponent(taskIds.join(","))}`);
+    if (options?.partial) params.push("partial=1");
+  } else if (options?.scope === "lanes") {
+    params.push("scope=lanes");
+  }
+  const path = params.length > 0 ? `${basePath}${separator}${params.join("&")}` : basePath;
   return dedupe(path, () => api<BoardWorkflowsPayload>(path), options);
 }
 

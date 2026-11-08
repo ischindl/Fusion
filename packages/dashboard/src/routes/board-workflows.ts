@@ -378,7 +378,13 @@ export async function buildBoardWorkflowsPayload(
   degrades every card to the default instead of failing the board load.
   */
   let batchedSelections: Map<string, { workflowId: string }> | undefined;
-  if (store.getTaskWorkflowSelectionsAsync) {
+  /*
+  FNXC:BoardBootRequestSet 2026-11-08-05:05 (RUFU-493):
+  Zero ids means zero selections to resolve, so the batched read is skipped rather than issued as an
+  `IN ()` over an empty list. This is what makes a lane-only request (`?scope=lanes`, which enumerates no
+  card) spend no task read at all instead of one ceremonial one.
+  */
+  if (store.getTaskWorkflowSelectionsAsync && taskIds.length > 0) {
     try {
       batchedSelections = await store.getTaskWorkflowSelectionsAsync(taskIds);
     } catch {

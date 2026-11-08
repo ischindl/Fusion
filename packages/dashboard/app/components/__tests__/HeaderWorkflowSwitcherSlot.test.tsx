@@ -203,7 +203,13 @@ describe("HeaderWorkflowSwitcherSlot", () => {
   it("renders no toolbar shell when workflow mode is off, empty, or only one workflow exists", async () => {
     fetchBoardWorkflowsMock.mockResolvedValueOnce(workflowPayload({ flagEnabled: false, workflows: [] }));
     const { unmount } = renderWithHeader(<HeaderWorkflowSwitcherSlot projectId="project-off" />);
-    await waitFor(() => expect(fetchBoardWorkflowsMock).toHaveBeenCalledWith("project-off"));
+    /*
+    FNXC:BoardBootRequestSet 2026-11-08-05:06 (RUFU-493):
+    The slot now asks for the lane vocabulary only — it renders the drop-down and reads no per-card
+    mapping, so it must never buy the whole-task enumeration the unbounded read costs. The scope is part
+    of this slot's contract, so it is asserted here rather than discovered by a future failure.
+    */
+    await waitFor(() => expect(fetchBoardWorkflowsMock).toHaveBeenCalledWith("project-off", { scope: "lanes" }));
     expect(screen.queryByTestId("workflow-switcher")).toBeNull();
     expect(screen.getByTestId("header-workflow-slot")).toBeEmptyDOMElement();
 
@@ -211,7 +217,7 @@ describe("HeaderWorkflowSwitcherSlot", () => {
     sessionStorage.clear();
     fetchBoardWorkflowsMock.mockResolvedValueOnce(workflowPayload({ workflows: [] }));
     const empty = renderWithHeader(<HeaderWorkflowSwitcherSlot projectId="project-empty" />);
-    await waitFor(() => expect(fetchBoardWorkflowsMock).toHaveBeenCalledWith("project-empty"));
+    await waitFor(() => expect(fetchBoardWorkflowsMock).toHaveBeenCalledWith("project-empty", { scope: "lanes" }));
     expect(screen.queryByTestId("workflow-switcher")).toBeNull();
     expect(screen.getByTestId("header-workflow-slot")).toBeEmptyDOMElement();
 
@@ -219,7 +225,7 @@ describe("HeaderWorkflowSwitcherSlot", () => {
     sessionStorage.clear();
     fetchBoardWorkflowsMock.mockResolvedValueOnce(workflowPayload({ workflows: [DEFAULT_WORKFLOW] }));
     renderWithHeader(<HeaderWorkflowSwitcherSlot projectId="project-one" />);
-    await waitFor(() => expect(fetchBoardWorkflowsMock).toHaveBeenCalledWith("project-one"));
+    await waitFor(() => expect(fetchBoardWorkflowsMock).toHaveBeenCalledWith("project-one", { scope: "lanes" }));
     expect(screen.queryByTestId("workflow-switcher")).toBeNull();
     expect(screen.getByTestId("header-workflow-slot")).toBeEmptyDOMElement();
   });
@@ -264,7 +270,7 @@ describe("HeaderWorkflowSwitcherSlot", () => {
   it("renders no toolbar shell when the header slot is absent", async () => {
     render(<HeaderWorkflowSwitcherSlot projectId="project-mobile" />);
 
-    await waitFor(() => expect(fetchBoardWorkflowsMock).toHaveBeenCalledWith("project-mobile"));
+    await waitFor(() => expect(fetchBoardWorkflowsMock).toHaveBeenCalledWith("project-mobile", { scope: "lanes" }));
     expect(screen.queryByTestId("workflow-switcher")).toBeNull();
   });
 });

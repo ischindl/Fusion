@@ -48,7 +48,15 @@ export function HeaderWorkflowSwitcherSlot({
     isAllWorkflowsSelected,
     setSelectedWorkflowId,
     refreshBoardWorkflows,
-  } = useBoardWorkflows({ projectId });
+    /*
+    FNXC:BoardBootRequestSet 2026-11-08-04:05 (RUFU-493):
+    This slot renders the lane DROP-DOWN and never reads `taskWorkflowIds`, so it asks for lanes only.
+    Without the scope it paid the same whole-current-task-table + newest-Done-page enumeration the board
+    pays — one of the duplicate 30.0 s / 17.4 s mount reads measured on the deployed node — for rows it
+    discards. `useUnmappedWorkflowRefetch` (owned by Board/List, which DO read the mapping) stays the
+    repair seam for any card whose lane is unknown.
+    */
+  } = useBoardWorkflows({ projectId, scope: "lanes" });
   /*
   FNXC:MissionWorkflows 2026-06-25-00:00:
   Missions shares Planning's header workflow dropdown because mission triage creates tasks. The header slot can be absent on mobile or during layout swaps, so poll only briefly and re-resolve on viewport changes to avoid an empty toolbar shell or an unbounded timer.

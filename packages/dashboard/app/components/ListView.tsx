@@ -448,6 +448,13 @@ export function ListView({
   const longPressStartRef = useRef<{ x: number; y: number; pointerId: number } | null>(null);
   const suppressNextRowClickRef = useRef(false);
   /*
+  FNXC:BoardBootRequestSet 2026-11-08-05:11 (RUFU-493):
+  The list renders `tasks`, so the refreshes that only re-map rows — tab focus, visibility, an unmapped-card
+  repair — name those ids and the server answers from the ids alone. The MOUNT still asks whole-board: that
+  read is the one that learns which lanes exist, and a patch cannot say "a lane went away".
+  */
+  const listWorkflowTaskIds = useMemo(() => tasks.map((task) => task.id), [tasks]);
+  /*
   FNXC:BoardWorkflowSelection 2026-06-29-12:35:
   ListView must use the same project-scoped durable workflow selection invariant as Board/Header/Graph so task refreshes, respecification route returns, and remounts do not reset operators from a custom workflow back to the default workflow. Keep this separate from list task-selection storage keys.
 
@@ -464,7 +471,7 @@ export function ListView({
     isAllWorkflowsSelected,
     setSelectedWorkflowId,
     refreshBoardWorkflows,
-  } = useBoardWorkflows({ projectId });
+  } = useBoardWorkflows({ projectId, taskIds: listWorkflowTaskIds });
   /*
   FNXC:StallReason 2026-09-02-22:06 (RUFU-177):
   The list rows now hand the owning agent to the stall classifier, so the `agent-approval` code RUFU-175

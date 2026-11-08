@@ -191,6 +191,42 @@ describe("useBoardWorkflows", () => {
     expect(deps.writeBoardWorkflowsCache).toHaveBeenLastCalledWith("p1", payload);
   });
 
+  /*
+  FNXC:BoardBootRequestSet 2026-11-08-05:42 (RUFU-493 code review, P2):
+  A `scope:"lanes"` answer maps NOTHING, by contract - it was asked about lanes, not about cards. Publishing
+  one to the per-project cache as though it were a whole payload emptied the card-to-lane mapping for every
+  other consumer of that project, and the switcher's lanes read races the board's mount read, so when the
+  lanes answer landed LAST the session cache was left with an empty mapping and the next hydrating mount
+  painted every card on the default lane until its own unbounded read answered (measured 17-30 s).
+  */
+  it("keeps a vocabulary-only answer out of the shared mapping cache", async () => {
+    const deps = makeDeps(() => Promise.resolve(makePayload({ taskWorkflowIds: {} })));
+    const { result } = renderHook(() => useBoardWorkflows({ projectId: "p1", scope: "lanes", ...deps }));
+
+    await waitFor(() => expect(result.current.workflowOptions.length).toBe(2));
+    // The consumer is not starved by the gate: it asked for lanes and it renders every one of them.
+    expect(result.current.workflowMode).toBe(true);
+    expect(deps.fetchBoardWorkflows).toHaveBeenCalledWith("p1", { scope: "lanes" });
+    // An empty mapping never overwrites a real one held by another consumer.
+    expect(deps.writeBoardWorkflowsCache).not.toHaveBeenCalled();
+  });
+
+  /*
+  The other half, pinned so the fix above cannot be mistaken for "never cache a lanes answer": once the
+  vocabulary has somewhere to merge into, the merged payload carries the mapping and belongs in the cache.
+  */
+  it("publishes a lanes answer once it has merged over the held mapping", async () => {
+    const held = makePayload({ taskWorkflowIds: { "RUFU-1": "wf-b" } });
+    const deps = makeDeps(() => Promise.resolve(makePayload({ taskWorkflowIds: {} })));
+    deps.readBoardWorkflowsCache = vi.fn(() => held);
+    const { result } = renderHook(() => useBoardWorkflows({ projectId: "p1", scope: "lanes", ...deps }));
+
+    await waitFor(() => expect(result.current.workflowOptions.length).toBe(2));
+    await waitFor(() => expect(deps.writeBoardWorkflowsCache).toHaveBeenCalled());
+    const [, published] = vi.mocked(deps.writeBoardWorkflowsCache).mock.calls.at(-1) ?? [];
+    expect((published as BoardWorkflowsPayload).taskWorkflowIds).toEqual({ "RUFU-1": "wf-b" });
+  });
+
   it("bridges authoritative oversight setting SSE once across duplicate consumers", async () => {
     const deps = makeDeps(() => Promise.resolve(makePayload()));
     renderHook(() => useBoardWorkflows({ projectId: "p1", ...deps }));

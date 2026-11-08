@@ -39,6 +39,14 @@ export const SWR_CACHE_KEYS = {
   MAILBOX_INBOX_PREFIX: "kb-dashboard-mailbox-inbox-cache:",
   MAILBOX_OUTBOX_PREFIX: "kb-dashboard-mailbox-outbox-cache:",
   MAILBOX_UNREAD_COUNT_PREFIX: "kb-dashboard-mailbox-unread-cache:",
+  /*
+  FNXC:UsageFetchGating 2026-11-08-03:34 (RUFU-493):
+  The Usage surface's own snapshot. `GET /api/usage` measured 61-82 s on the deployed board, so an
+  open -> close -> open cycle that re-reads on every open makes the operator pay for a slow endpoint
+  each time they look at it. See `USAGE_SNAPSHOT_MAX_AGE_MS` in `hooks/useUsageData.ts` for the TTL
+  and for which paths bypass it.
+  */
+  USAGE: "kb-dashboard-usage-cache",
 } as const;
 
 const DEFAULT_MAX_BYTES = 500_000;

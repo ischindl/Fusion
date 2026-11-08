@@ -412,6 +412,10 @@ function BoardContent({ tasks: providedTasks, projectId, maxConcurrent, maxWorkt
   FNXC:WorkflowColumns 2026-07-28-00:00 (U12 — R9):
   The `shouldHydrateCache` gate is DELETED. It read `workflowColumnsEnabled === true || settingsLoaded === false`, and every call site passed `workflowColumnsEnabled` as a literal `true` (`MainContent`), so the expression was unconditionally true — identical to the hook's default. Both props are gone with it; Board no longer needs settings loaded at all to decide what to render.
   */
+  const boardWorkflowTaskIds = useMemo(
+    () => (providedTasks ?? []).map((task) => task.id),
+    [providedTasks],
+  );
   const {
     boardWorkflows,
     workflowMode,
@@ -422,7 +426,14 @@ function BoardContent({ tasks: providedTasks, projectId, maxConcurrent, maxWorkt
     setSelectedWorkflowId,
     refreshBoardWorkflows,
     setBoardWorkflowsState,
-  } = useBoardWorkflows({ projectId });
+    /*
+    FNXC:BoardBootRequestSet 2026-11-08-05:11 (RUFU-493):
+    The board renders `providedTasks`, so the refreshes that only re-map rows — tab focus, visibility, an
+    unmapped-card repair — name those ids and the server answers from the ids alone, spending zero
+    whole-task-table reads. The mount read stays whole-board on purpose: it is the one answer that can say
+    which lanes exist, and a patch cannot express a lane that went away.
+    */
+  } = useBoardWorkflows({ projectId, taskIds: boardWorkflowTaskIds });
 
   /*
   FNXC:TaskQueueOrder 2026-09-17-13:51:

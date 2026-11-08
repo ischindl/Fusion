@@ -58,6 +58,36 @@ export interface UseBoardWorkflowsParams {
    * `refinementTaskWorkflowId`. Injectable like the other deps to keep the hook testable.
    */
   persistBoardWorkflowSelection?: typeof defaultPersistBoardWorkflowSelection;
+  /*
+  FNXC:BoardBootRequestSet 2026-11-08-03:34 (RUFU-493):
+  Which cards THIS consumer renders. Every board-workflows read a consumer with ids issues after its
+  first answer is then bounded to `?taskIds=…&partial=1` — the named-id route answers from the ids alone
+  and spends zero whole-table reads, while the unbounded enumeration materialises the whole current-task
+  table plus the newest Done page (measured 30.0 s then 17.4 s on the deployed node for one mount).
+  Passing ids is what makes a mid-session refresh (tab focus, visibility, SSE reconnect) cheap; the
+  unbounded read stays for the one request that must first learn which lanes exist at all.
+  */
+  taskIds?: readonly string[];
+  /**
+   * A vocabulary-only consumer (the header workflow switcher): it renders the lane list and never reads
+   * `taskWorkflowIds`, so `"lanes"` asks the server for exactly that — the one catalog read plus lane
+   * descriptions, with no task-table and no Done-page read behind it.
+   */
+  scope?: "lanes";
+}
+
+/**
+ * Options one board-workflows read may carry. Declared once so the hook's internal default scope and the
+ * public `refreshBoardWorkflows` signature cannot drift apart — the default IS one of these shapes.
+ *
+ * FNXC:BoardBootRequestSet 2026-11-08-05:09 (RUFU-493).
+ */
+export interface BoardWorkflowsRefreshOptions {
+  forceFresh?: boolean;
+  taskIds?: readonly string[];
+  partial?: boolean;
+  /** Vocabulary-only read: lane definitions and default, no per-task mapping. */
+  scope?: "lanes";
 }
 
 export interface UseBoardWorkflowsResult {
@@ -77,7 +107,7 @@ export interface UseBoardWorkflowsResult {
    *  task missing from `taskWorkflowIds`, since task→workflow assignment emits no workflow SSE).
    *  Resolves when the fetch has SETTLED — it never rejects, since a failed fetch is
    *  non-authoritative — so a caller that must not overlap attempts can await it. */
-  refreshBoardWorkflows: (options?: { forceFresh?: boolean; taskIds?: readonly string[]; partial?: boolean }) => Promise<void>;
+  refreshBoardWorkflows: (options?: BoardWorkflowsRefreshOptions) => Promise<void>;
   /**
    * Raw state setter, exposed so Board can apply optimistic task→workflow assignment.
    * Planning does not use this.
@@ -106,6 +136,17 @@ export function mergePartialBoardWorkflows(
   if (!partial.flagEnabled || !current.flagEnabled) return partial;
   const byId = new Map(current.workflows.map((workflow) => [workflow.id, workflow]));
   for (const workflow of partial.workflows) byId.set(workflow.id, workflow);
+  /*
+  FNXC:BoardBootRequestSet 2026-11-08-05:07 (RUFU-493):
+  A bounded (`?taskIds=…&partial=1`) answer is a PATCH and this merge stays a pure union, including for
+  the ids the request itself named. Dropping named-but-unanswered ids looks stricter and is wrong twice
+  over: the server answers a card only when it holds a selection ROW, so an omitted card is one that
+  inherits the default workflow and has nothing to keep; and a payload answering a subset of the board's
+  cards would strip the mapping of every card the caller did not name — the same shrinkage that kept the
+  named-id path asking for everything (14.2 s measured to answer 241 cards when ONE was asked). The one
+  mutation that bulk-removes selections is deleting a workflow, and that emits `workflow:deleted`, whose
+  refresh is unbounded and REPLACES the payload — so no stale mapping survives it.
+  */
   return {
     flagEnabled: true,
     defaultWorkflowId: partial.defaultWorkflowId || current.defaultWorkflowId,
@@ -123,6 +164,8 @@ export function useBoardWorkflows(params: UseBoardWorkflowsParams): UseBoardWork
     writeBoardWorkflowsCache = defaultWriteBoardWorkflowsCache,
     clearBoardWorkflowsCache = defaultClearBoardWorkflowsCache,
     persistBoardWorkflowSelection = defaultPersistBoardWorkflowSelection,
+    taskIds,
+    scope,
   } = params;
 
   const [boardWorkflowsState, setBoardWorkflowsState] = useState<{ projectId?: string; payload: BoardWorkflowsPayload } | null>(() => {
@@ -254,44 +297,128 @@ export function useBoardWorkflows(params: UseBoardWorkflowsParams): UseBoardWork
   promise never rejects — a failed fetch stays non-authoritative — so awaiting it is
   safe for every caller.
   */
-  const refreshBoardWorkflows = useCallback((options?: { forceFresh?: boolean; taskIds?: readonly string[]; partial?: boolean }): Promise<void> => {
+  /*
+  FNXC:BoardBootRequestSet 2026-11-08-03:34 (RUFU-493):
+  Ids and scope are read through refs, not captured in the callback's deps: `refreshBoardWorkflows` is a
+  dependency of the SSE/visibility effect below, and a task-id array is a fresh object on every render —
+  capturing it would re-subscribe the event stream on every board paint.
+  */
+  const taskIdsRef = useRef<readonly string[]>(taskIds ?? []);
+  const scopeRef = useRef(scope);
+  useEffect(() => {
+    taskIdsRef.current = taskIds ?? [];
+    scopeRef.current = scope;
+  }, [taskIds, scope]);
+
+  /*
+  FNXC:BoardBootRequestSet 2026-11-08-05:10 (RUFU-493):
+  Two different questions, two different scopes — and the difference is not an optimisation, it is what a
+  response is ALLOWED to say.
+
+  A MOUNT asks "which lanes exist, and what does the board map?". Only the whole-board answer can express
+  that vocabulary, because a patch cannot: an answer that names no lane does not mean the lane set shrank,
+  and a patch merged over a held payload keeps a lane or a default workflow the server has just stopped
+  reporting. Measured against the App composition suite, scoping a mount to ids did exactly that — the
+  switcher kept announcing a workflow the current payload no longer contained. So a mount stays whole-board
+  for anyone who reads the mapping, and `scope=lanes` serves the consumer that reads only the vocabulary.
+
+  A REFRESH caused by the tab coming back asks a narrower question: "do the cards I am showing still map to
+  the same lanes?" Nothing about the vocabulary changed in the background — a lane that appeared, changed, or
+  disappeared arrives on the `workflow:*` stream, whose refresh remains unbounded. So a focus/visibility
+  refresh names its own ids and takes the patch, which is the read a laptop pays dozens of times a day.
+  */
+  const mountRefreshScope = useCallback((): BoardWorkflowsRefreshOptions | undefined => {
+    return scopeRef.current === "lanes" ? { scope: "lanes" } : undefined;
+  }, []);
+
+  const mappingRefreshScope = useCallback((): BoardWorkflowsRefreshOptions | undefined => {
+    if (scopeRef.current === "lanes") return { scope: "lanes" };
+    const ids = taskIdsRef.current;
+    if (ids.length > 0 && boardWorkflowsHeldRef.current?.projectId === projectId) {
+      return { taskIds: ids, partial: true };
+    }
+    return undefined;
+  }, [projectId]);
+
+  const refreshBoardWorkflows = useCallback((options?: BoardWorkflowsRefreshOptions): Promise<void> => {
     const seq = ++boardWorkflowsFetchSeqRef.current;
+    const effective = options ?? mountRefreshScope();
+    const isPatch = Boolean(effective?.partial) || effective?.scope === "lanes";
     /*
     FNXC:BoardWorkflows 2026-10-01-21:51:
     A partial answer MERGES into the held payload, so clearing the cache first would throw away precisely
     the lane set the merge exists to preserve. Unbounded refreshes keep clearing (they answer the whole
     board and must not inherit a stale mapping for a card that moved workflow).
     */
-    if (options?.forceFresh && !options?.partial) {
+    if (effective?.forceFresh && !effective?.partial) {
       clearBoardWorkflowsCache(projectId);
     }
-    const fetchPromise = options === undefined
+    /*
+    FNXC:BoardBootRequestSet 2026-11-08-05:08 (RUFU-493):
+    An unscoped read is issued with the arity it had before this change — one argument, no options object —
+    so a consumer that must enumerate stays literally the same request it always was.
+    */
+    const fetchPromise = effective === undefined
       ? fetchBoardWorkflows(projectId)
-      : fetchBoardWorkflows(projectId, options);
+      : fetchBoardWorkflows(projectId, effective);
     return fetchPromise
       .then((payload) => {
         if (seq !== boardWorkflowsFetchSeqRef.current) return;
         const held = boardWorkflowsHeldRef.current;
-        const next = options?.partial && held && held.projectId === projectId
+        /*
+        FNXC:BoardBootRequestSet 2026-11-08-04:05 (RUFU-493):
+        The ids this request named are authoritative for THIS answer: a card whose selection was reset to
+        the default answers with no row for itself, and a plain union would keep showing the lane it left
+        until some later unbounded refresh. Names are only ever a subset of what the caller renders, so
+        dropping the omitted ones cannot hide a lane — the lane set still only grows.
+        */
+        const heldSameProject = Boolean(held && held.projectId === projectId);
+        const next = isPatch && heldSameProject && held
           ? mergePartialBoardWorkflows(held.payload, payload)
           : payload;
         boardWorkflowsHeldRef.current = { projectId, payload: next };
         setBoardWorkflowsState({ projectId, payload: next });
-        writeBoardWorkflowsCache(projectId, next);
+        /*
+        FNXC:BoardBootRequestSet 2026-11-08-05:42 (RUFU-493 code review, P2):
+        A patch merged over NOTHING is not a mapping, and the per-project cache is the one place the card-to-
+        lane mapping lives. A `scope:"lanes"` answer carries `taskWorkflowIds: {}` by contract - it was asked
+        about lanes, not cards - so publishing it as though it were complete emptied the shared mapping for
+        every other consumer of that project. The switcher's lanes read and the board's mount read race, and
+        when the lanes answer landed LAST the session cache was left with an empty mapping, so the next
+        hydrating mount painted every card on the default lane until its own unbounded read answered
+        (measured 17-30 s). A patch may only be published over the payload it was merged with; a consumer
+        that holds nothing keeps its answer in its own state, where a vocabulary cannot masquerade as a map.
+        */
+        if (!isPatch || heldSameProject) {
+          writeBoardWorkflowsCache(projectId, next);
+        }
       })
       .catch(() => {
         // Fetch failures are non-authoritative: keep the current/cache-hydrated payload so the cleanup effect does not erase durable selection.
       });
-  }, [projectId, fetchBoardWorkflows, writeBoardWorkflowsCache, clearBoardWorkflowsCache]);
+  }, [projectId, mountRefreshScope, fetchBoardWorkflows, writeBoardWorkflowsCache, clearBoardWorkflowsCache]);
 
   useEffect(() => {
     refreshBoardWorkflows();
     const onVisible = () => {
-      if (typeof document === "undefined" || document.visibilityState === "visible") refreshBoardWorkflows();
+      /*
+      FNXC:BoardBootRequestSet 2026-11-08-05:10 (RUFU-493): the tab returning is a MAPPING refresh, so it
+      names this consumer's cards when it has them; `{}` keeps the whole-board answer for a consumer that
+      has no ids to name.
+      */
+      if (typeof document === "undefined" || document.visibilityState === "visible") {
+        refreshBoardWorkflows(mappingRefreshScope() ?? {});
+      }
     };
     if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisible);
     if (typeof window !== "undefined") window.addEventListener("focus", onVisible);
     const query = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
+    /*
+    FNXC:BoardBootRequestSet 2026-11-08-03:34 (RUFU-493):
+    A workflow mutation must still be answered FRESH, but "fresh" is about not reusing a cached answer —
+    it never meant "enumerate every task again". The force is combined with this consumer's scope so a
+    switcher keeps asking for lanes and a board keeps asking for its own cards.
+    */
     const forceRefreshBoardWorkflows = () => refreshBoardWorkflows({ forceFresh: true });
     /*
     FNXC:BoardWorkflows 2026-07-26-15:14:
@@ -321,7 +448,7 @@ export function useBoardWorkflows(params: UseBoardWorkflowsParams): UseBoardWork
       if (typeof window !== "undefined") window.removeEventListener("focus", onVisible);
       unsubscribe();
     };
-  }, [projectId, refreshBoardWorkflows, subscribeSse]);
+  }, [projectId, refreshBoardWorkflows, mappingRefreshScope, subscribeSse]);
 
   /*
   FNXC:WorkflowColumns 2026-07-28-00:00 (U12 — R9):

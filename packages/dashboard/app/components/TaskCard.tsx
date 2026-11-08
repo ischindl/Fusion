@@ -116,24 +116,41 @@ function getTaskCardEntityCacheKey(id: string, projectId?: string): string {
 }
 
 const missionTitleCache = new Map<string, string>();
+/*
+FNXC:BoardBootRequestSet 2026-11-08-03:34 (RUFU-493):
+In-flight coalescing, mirroring `getAgentName` below. A board where eight cards share one mission used
+to miss the value cache eight times in the same tick and issue eight identical `GET /api/missions/:id`
+reads - the per-mission burst a cold mount measured before this change. The value cache only ever
+helped the second MOUNT; within one mount it deduped nothing.
+*/
+const missionTitleInflight = new Map<string, Promise<string>>();
 
 /** @internal Test helper to reset the mission title cache between tests */
 export function __test_clearMissionTitleCache(): void {
   missionTitleCache.clear();
+  missionTitleInflight.clear();
 }
 
 async function getMissionTitle(missionId: string, projectId?: string): Promise<string> {
   const cacheKey = getTaskCardEntityCacheKey(missionId, projectId);
   const cached = missionTitleCache.get(cacheKey);
   if (cached) return cached;
+  const existing = missionTitleInflight.get(cacheKey);
+  if (existing) return existing;
 
-  try {
-    const mission = await fetchMission(missionId, projectId);
-    missionTitleCache.set(cacheKey, mission.title);
-    return mission.title;
-  } catch {
-    return missionId;
-  }
+  const request = (async () => {
+    try {
+      const mission = await fetchMission(missionId, projectId);
+      missionTitleCache.set(cacheKey, mission.title);
+      return mission.title;
+    } catch {
+      return missionId;
+    }
+  })().finally(() => {
+    missionTitleInflight.delete(cacheKey);
+  });
+  missionTitleInflight.set(cacheKey, request);
+  return request;
 }
 
 const MAX_MISSION_TITLE_LENGTH = 12;
@@ -1633,9 +1650,17 @@ function TaskCardComponent({
       ?? (missionTitleResolution?.key === missionResolutionKey ? missionTitleResolution?.title ?? null : null)
     : null;
 
+  /*
+  FNXC:BoardBootRequestSet 2026-11-08-03:34 (RUFU-493):
+  A mission label is card chrome, and a cold board mounts every card on it. Off-screen cards now read
+  nothing; the same `isInViewport` signal the diff poll and the GitHub badge already use gates this
+  effect, so a card scrolled into view fetches its label then and renders it as before. A card that never
+  scrolls into view never needed the label in the first place.
+  */
   // Fetch mission title when missionId is set. The keyed result cannot leak across project A → B → A switches.
   useEffect(() => {
     if (isSearchResult) return;
+    if (!isInViewport) return;
     if (!task.missionId || !missionResolutionKey || missionTitleCache.has(missionResolutionKey)) return;
 
     const key = missionResolutionKey;
@@ -1644,7 +1669,7 @@ function TaskCardComponent({
       if (!cancelled) setMissionTitleResolution({ key, title });
     });
     return () => { cancelled = true; };
-  }, [task.missionId, missionResolutionKey, projectId, isSearchResult]);
+  }, [task.missionId, missionResolutionKey, projectId, isSearchResult, isInViewport]);
 
   const agentResolutionKey = task.assignedAgentId
     ? getTaskCardEntityCacheKey(task.assignedAgentId, projectId)
@@ -1652,6 +1677,12 @@ function TaskCardComponent({
   // Fetch assigned agent name when assignedAgentId is set. Render-time cache reads preserve first-paint labels.
   useEffect(() => {
     if (isSearchResult) return;
+    /*
+    FNXC:BoardBootRequestSet 2026-11-08-03:34 (RUFU-493):
+    Same gate as the mission label above. A card below the fold needs no assignee name yet, and the
+    shared-map shortcut below still answers a card that scrolls in with no read at all.
+    */
+    if (!isInViewport) return;
     if (!task.assignedAgentId || !agentResolutionKey || !isAgentsMapCurrent) return;
 
     const cachedFromMap = getResolvedAgentNameFromMap(task.assignedAgentId, agentsMapForCurrentProject);
@@ -1672,7 +1703,7 @@ function TaskCardComponent({
       if (!cancelled) setAgentNameResolution({ key, name });
     });
     return () => { cancelled = true; };
-  }, [agentsMapForCurrentProject, isAgentsMapCurrent, task.assignedAgentId, agentResolutionKey, projectId, isSearchResult]);
+  }, [agentsMapForCurrentProject, isAgentsMapCurrent, task.assignedAgentId, agentResolutionKey, projectId, isSearchResult, isInViewport]);
 
   /*
    * FNXC:PlannerOversight 2026-07-17-15:50:

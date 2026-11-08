@@ -2,12 +2,24 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { useUsageData } from "../useUsageData";
 import * as api from "../../api";
+import { SWR_CACHE_KEYS, clearCache } from "../../utils/swrCache";
+
+/*
+FNXC:UsageFetchGating 2026-11-08-03:34 (RUFU-493):
+`useUsageData` now answers an open from the session snapshot inside `USAGE_SNAPSHOT_MAX_AGE_MS`, so a
+fixture that leaves a snapshot behind in one case silently changes the next case from "fetch" to
+"hydrate". Every case here starts from an uncached session; the snapshot has its own cases below.
+*/
+beforeEach(() => {
+  clearCache(SWR_CACHE_KEYS.USAGE);
+});
 
 describe("useUsageData", () => {
   const mockFetchUsageData = vi.spyOn(api, "fetchUsageData");
 
   beforeEach(() => {
     mockFetchUsageData.mockReset();
+    clearCache(SWR_CACHE_KEYS.USAGE);
   });
 
   it("fetches data on initial mount", async () => {
@@ -51,6 +63,12 @@ describe("useUsageData", () => {
     expect(result.current.hasFetched).toBe(true);
   });
 
+  /*
+  FNXC:UsageFetchGating 2026-11-08-03:34 (RUFU-493):
+  The operator-facing contract "the Refresh button gets new numbers" moved to `refreshNow()`. Calling
+  `refresh()` here would assert the wrong half of the split: `refresh()` is the open-transition path and
+  is now snapshot-respecting by design.
+  */
   it("manual refresh fetches new data", async () => {
     const mockData1 = {
       providers: [{ name: "Claude", icon: "🟠", status: "ok" as const, windows: [] }],
@@ -70,7 +88,7 @@ describe("useUsageData", () => {
     expect(result.current.hasFetched).toBe(true);
 
     await act(async () => {
-      await result.current.refresh();
+      await result.current.refreshNow();
     });
 
     await waitFor(() => expect(result.current.providers).toEqual(mockData2.providers));
@@ -91,7 +109,7 @@ describe("useUsageData", () => {
     expect(result.current.hasFetched).toBe(true);
 
     await act(async () => {
-      await result.current.refresh();
+      await result.current.refreshNow();
     });
 
     await waitFor(() => expect(result.current.error).toBeNull());
@@ -128,6 +146,59 @@ describe("useUsageData", () => {
     expect(result.current.lastUpdated).toBeNull();
     expect(result.current.hasFetched).toBe(false);
     expect(typeof result.current.refresh).toBe("function");
+    expect(typeof result.current.refreshNow).toBe("function");
+  });
+});
+
+/*
+FNXC:UsageFetchGating 2026-11-08-03:34 (RUFU-493):
+GET /api/usage measured 61.8 s and 81.7 s on the deployed board, and the surface re-read it on every
+single open. These cases pin the snapshot window: a young snapshot answers an open with no network read,
+and the button still always reads.
+*/
+describe("useUsageData snapshot window", () => {
+  const mockFetch = vi.spyOn(api, "fetchUsageData");
+
+  beforeEach(() => {
+    mockFetch.mockReset();
+    clearCache(SWR_CACHE_KEYS.USAGE);
+  });
+
+  it("answers a reopened view from the snapshot with no second read", async () => {
+    mockFetch.mockResolvedValue({ providers: [{ name: "Claude", icon: "🟠", status: "ok" as const, windows: [] }] });
+
+    const { result, rerender } = renderHook(
+      ({ open }: { open: boolean }) => useUsageData({ enabled: open, autoRefresh: false }),
+      { initialProps: { open: true } },
+    );
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(result.current.hasFetched).toBe(true));
+
+    rerender({ open: false });
+    rerender({ open: true });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(result.current.providers).toHaveLength(1);
+    // A hydrating snapshot never shows a spinner for a request that will not be made.
+    expect(result.current.loading).toBe(false);
+  });
+
+  it("refresh() inside the snapshot window reads nothing; refreshNow() always reads", async () => {
+    mockFetch.mockResolvedValue({ providers: [{ name: "Claude", icon: "🟠", status: "ok" as const, windows: [] }] });
+
+    const { result } = renderHook(() => useUsageData({ autoRefresh: false }));
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      await result.current.refresh();
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await result.current.refreshNow();
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -143,6 +214,7 @@ describe("useUsageData fetch gating", () => {
 
   beforeEach(() => {
     mockFetch.mockReset();
+    clearCache(SWR_CACHE_KEYS.USAGE);
   });
 
   it("reads nothing while the view is closed, and reads as soon as it opens", async () => {

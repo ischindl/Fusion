@@ -590,7 +590,7 @@ function UsageSkeleton() {
 export function UsageIndicator({ isOpen, onClose, projectId, anchorRect, presentation = "modal" }: UsageIndicatorProps) {
   const { t } = useTranslation("app");
   const isEmbedded = presentation === "embedded";
-  const { providers, loading, error, lastUpdated, hasFetched, refresh } = useUsageData({
+  const { providers, loading, error, lastUpdated, hasFetched, refreshNow } = useUsageData({
     // FNXC:UsageFetchGating 2026-10-02-11:05 (RUFU-493): `autoRefresh` alone never stopped the boot fetch — the view
     // is mounted closed. Both the first read and the poll are gated on the view actually being open.
     autoRefresh: isOpen,
@@ -615,7 +615,6 @@ export function UsageIndicator({ isOpen, onClose, projectId, anchorRect, present
   const [dragOverPosition, setDragOverPosition] = useState<"before" | "after" | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
-  const wasOpenRef = useRef(isOpen);
   const [savedSize, setSavedSize] = useState<ModalSize | null>(() => getSavedModalSize(projectId));
 
   useEffect(() => {
@@ -672,19 +671,15 @@ export function UsageIndicator({ isOpen, onClose, projectId, anchorRect, present
     };
   }, []);
 
-  // Trigger refresh when modal opens (isOpen transitions from false to true)
-  useEffect(() => {
-    // Only refresh when transitioning from closed to open
-    if (!wasOpenRef.current && isOpen) {
-      // Skip if data is fresh (within 5 seconds) to avoid duplicate requests
-      if (!lastUpdated || Date.now() - lastUpdated.getTime() > 5000) {
-        refresh();
-      }
-    }
-
-    // Update ref for next render
-    wasOpenRef.current = isOpen;
-  }, [isOpen, lastUpdated, refresh]);
+  /*
+  FNXC:UsageFetchGating 2026-11-08-03:34 (RUFU-493):
+  The closed -> open refresh is GONE, and the open still loads its data. `enabled: isOpen` above is the
+  same transition seen from the hook's side, so the hook already fetches the moment the view opens. Two
+  dispatchers on one transition meant the component's refresh ran while the hook's read was still in
+  flight — the snapshot was not written yet, so nothing short-circuited it — and `fetchData` aborts the
+  in-flight controller before dispatching: the operator waited through a cancelled read and a second one
+  of a 61-82 s endpoint for a single open. One transition, one dispatcher, one read.
+  */
 
   // Load view mode preference from localStorage on mount
   useEffect(() => {
@@ -845,12 +840,13 @@ export function UsageIndicator({ isOpen, onClose, projectId, anchorRect, present
     setProviderOrderState(nextOrder);
   }, [projectId, providers, reorderProviders]);
 
-  // Handle manual refresh
+  // Handle manual refresh. `refreshNow` is deliberate: an explicit click is the one path that must
+  // always pay the network read, never answer from the snapshot window.
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
-    await refresh();
+    await refreshNow();
     setIsRefreshing(false);
-  }, [refresh]);
+  }, [refreshNow]);
 
   /* FNXC:FloatingWindowDialogHosts 2026-09-14-22:36: resolved before the Escape effect so that effect can tell the anchored popover from the hosted window without a temporal dead zone. */
   const showDesktopPopover = Boolean(anchorRect && isDesktopViewport);

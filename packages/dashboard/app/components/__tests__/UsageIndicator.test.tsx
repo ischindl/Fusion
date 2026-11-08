@@ -24,6 +24,10 @@ function createUsageDataState(overrides: Partial<MockUsageDataState> = {}): Mock
     lastUpdated: null,
     hasFetched: true,
     refresh: vi.fn(),
+    // FNXC:UsageFetchGating 2026-11-08-03:34 (RUFU-493): the Refresh button moved to `refreshNow()`,
+    // the one path that must always pay the network read; `refresh()` is the snapshot-respecting
+    // open-transition path. Declared here so every fixture in this file has both.
+    refreshNow: vi.fn(),
     ...overrides,
   };
 }
@@ -436,14 +440,14 @@ describe("UsageIndicator", () => {
     expect(document.querySelector(".usage-skeleton")).not.toBeInTheDocument();
   });
 
-  it("calls refresh when refresh button clicked", async () => {
+  it("calls refreshNow when refresh button clicked", async () => {
     mockRefresh.mockResolvedValue(undefined);
     mockUseUsageData.mockReturnValue(createUsageDataState({
       providers: mockProviders,
       loading: false,
       error: null,
       lastUpdated: new Date(),
-      refresh: mockRefresh,
+      refreshNow: mockRefresh,
     }));
 
     render(<UsageIndicator isOpen={true} onClose={mockOnClose} projectId={TEST_PROJECT_ID} />);
@@ -2025,26 +2029,51 @@ describe("UsageIndicator", () => {
     expect(paceRow).toHaveTextContent("20% over pace");
   });
 
-  // Refresh-on-open behavior tests
-  it("calls refresh when isOpen transitions from false to true", () => {
+  /*
+  FNXC:UsageFetchGating 2026-11-08-03:34 (RUFU-493):
+  Three earlier cases here — "calls refresh when isOpen transitions from false to true", "calls refresh
+  when modal opens if data is stale (older than 5 seconds)", and "calls refresh again when modal reopens
+  after being closed" — asserted a component-side dispatch on the open transition that no longer exists.
+  They asserted a removed contract, and the only way to satisfy them was to put the duplicate dispatcher
+  back: the hook already fetches on `enabled`, so both fired, `fetchData` aborted the in-flight read, and
+  one open of a 61-82 s endpoint cost two. The cases below state the new truth instead.
+  */
+  it("tells the hook which reads the view's state authorizes, so opening loads data without a second dispatcher", () => {
     mockUseUsageData.mockReturnValue(createUsageDataState({
       providers: mockProviders,
       loading: false,
       error: null,
-      lastUpdated: null, // No recent update, should refresh
+      lastUpdated: null,
       refresh: mockRefresh,
+      refreshNow: mockRefresh,
     }));
 
     const { rerender } = render(<UsageIndicator isOpen={false} onClose={mockOnClose} projectId={TEST_PROJECT_ID} />);
+    expect(mockUseUsageData.mock.lastCall?.[0]).toMatchObject({ enabled: false, autoRefresh: false });
 
-    // Initially isOpen is false, refresh should not be called
+    rerender(<UsageIndicator isOpen={true} onClose={mockOnClose} projectId={TEST_PROJECT_ID} />);
+    // The open transition reaches the hook as `enabled: true` — that flag is what loads the data.
+    expect(mockUseUsageData.mock.lastCall?.[0]).toMatchObject({ enabled: true, autoRefresh: true });
+    // And the component adds no read of its own on top of it.
     expect(mockRefresh).not.toHaveBeenCalled();
+  });
 
-    // Open the modal - isOpen transitions to true
+  it("adds no read of its own when the modal reopens", () => {
+    mockUseUsageData.mockReturnValue(createUsageDataState({
+      providers: mockProviders,
+      loading: false,
+      error: null,
+      lastUpdated: null,
+      refresh: mockRefresh,
+      refreshNow: mockRefresh,
+    }));
+
+    const { rerender } = render(<UsageIndicator isOpen={false} onClose={mockOnClose} projectId={TEST_PROJECT_ID} />);
+    rerender(<UsageIndicator isOpen={true} onClose={mockOnClose} projectId={TEST_PROJECT_ID} />);
+    rerender(<UsageIndicator isOpen={false} onClose={mockOnClose} projectId={TEST_PROJECT_ID} />);
     rerender(<UsageIndicator isOpen={true} onClose={mockOnClose} projectId={TEST_PROJECT_ID} />);
 
-    // refresh should be called when modal opens
-    expect(mockRefresh).toHaveBeenCalledTimes(1);
+    expect(mockRefresh).not.toHaveBeenCalled();
   });
 
   it("does not call refresh when isOpen is already true on mount", () => {
@@ -2085,78 +2114,13 @@ describe("UsageIndicator", () => {
     expect(mockRefresh).not.toHaveBeenCalled();
   });
 
-  it("skips refresh if data was updated within last 5 seconds", () => {
-    // Data was just updated (within 5 seconds)
-    const recentUpdate = new Date(Date.now() - 2000); // 2 seconds ago
-
-    mockUseUsageData.mockReturnValue(createUsageDataState({
-      providers: mockProviders,
-      loading: false,
-      error: null,
-      lastUpdated: recentUpdate,
-      refresh: mockRefresh,
-    }));
-
-    const { rerender } = render(<UsageIndicator isOpen={false} onClose={mockOnClose} projectId={TEST_PROJECT_ID} />);
-
-    // Clear any calls from initial render
-    mockRefresh.mockClear();
-
-    // Open the modal
-    rerender(<UsageIndicator isOpen={true} onClose={mockOnClose} projectId={TEST_PROJECT_ID} />);
-
-    // refresh should NOT be called because data is fresh (within 5 seconds)
-    expect(mockRefresh).not.toHaveBeenCalled();
-  });
-
-  it("calls refresh when modal opens if data is stale (older than 5 seconds)", () => {
-    // Data was updated 10 seconds ago (stale)
-    const staleUpdate = new Date(Date.now() - 10000); // 10 seconds ago
-
-    mockUseUsageData.mockReturnValue(createUsageDataState({
-      providers: mockProviders,
-      loading: false,
-      error: null,
-      lastUpdated: staleUpdate,
-      refresh: mockRefresh,
-    }));
-
-    const { rerender } = render(<UsageIndicator isOpen={false} onClose={mockOnClose} projectId={TEST_PROJECT_ID} />);
-
-    // Clear any calls from initial render
-    mockRefresh.mockClear();
-
-    // Open the modal
-    rerender(<UsageIndicator isOpen={true} onClose={mockOnClose} projectId={TEST_PROJECT_ID} />);
-
-    // refresh should be called because data is stale (older than 5 seconds)
-    expect(mockRefresh).toHaveBeenCalledTimes(1);
-  });
-
-  it("calls refresh again when modal reopens after being closed", () => {
-    mockUseUsageData.mockReturnValue(createUsageDataState({
-      providers: mockProviders,
-      loading: false,
-      error: null,
-      lastUpdated: null,
-      refresh: mockRefresh,
-    }));
-
-    const { rerender } = render(<UsageIndicator isOpen={false} onClose={mockOnClose} projectId={TEST_PROJECT_ID} />);
-
-    // Open the modal first time
-    rerender(<UsageIndicator isOpen={true} onClose={mockOnClose} projectId={TEST_PROJECT_ID} />);
-    expect(mockRefresh).toHaveBeenCalledTimes(1);
-
-    // Close the modal
-    rerender(<UsageIndicator isOpen={false} onClose={mockOnClose} projectId={TEST_PROJECT_ID} />);
-
-    // Reopen the modal
-    rerender(<UsageIndicator isOpen={true} onClose={mockOnClose} projectId={TEST_PROJECT_ID} />);
-
-    // refresh should be called again on reopen
-    expect(mockRefresh).toHaveBeenCalledTimes(2);
-  });
+  /*
+  FNXC:UsageFetchGating 2026-11-08-03:34 (RUFU-493):
+  The "skips refresh if data was updated within last 5 seconds" case is gone with its subject: that 5 s
+  window was the component-side guard on its own duplicate dispatch, and the duplicate dispatcher is
+  gone. Freshness is now one policy in one place — `USAGE_SNAPSHOT_MAX_AGE_MS` — pinned behaviorally in
+  `app/hooks/__tests__/useUsageData.test.ts` against a real snapshot rather than against a mock.
+  */
 
   // Initial loading state tests
   it("shows skeleton when modal opens with no cached data", () => {

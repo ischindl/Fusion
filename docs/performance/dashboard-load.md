@@ -2,6 +2,8 @@
 
 > Historical pre-cutover analysis: the SQLite query plans below do not describe the current PostgreSQL runtime. Retained for performance archaeology and regression context.
 
+For the current, test-enforced rule about which requests a board mount may issue, see [Board boot request set](board-boot-request-set.md).
+
 **Date:** 2026-04-10
 **Task:** FN-1532
 

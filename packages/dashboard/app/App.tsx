@@ -53,6 +53,7 @@ import { useBoardWorkflows } from "./hooks/useBoardWorkflows";
 import type { ExecutorColumnFlags } from "./hooks/useExecutorStats";
 import { useProjects } from "./hooks/useProjects";
 import { useAgents } from "./hooks/useAgents";
+import { useBoardChromeReady } from "./hooks/useBoardChromeReady";
 import { useNodes } from "./hooks/useNodes";
 import { useCurrentProject } from "./hooks/useCurrentProject";
 import { I18nextProvider } from "react-i18next";
@@ -1266,7 +1267,29 @@ const { tasks, isStale, isBoardRefreshInFlight, createTask, moveTask, boostTask,
     [rawPluginDashboardViews],
   );
 
-  const { stats: agentStats } = useAgents(currentProject?.id);
+  /*
+  FNXC:BoardBootRequestSet 2026-11-08-05:38 (RUFU-493 code review, P1):
+  This was the boot-path read the acceptance invariant was written against and the gate never reached:
+  the call carried no `enabled`, so `GET /api/agents` plus `GET /api/agents/stats` (measured 11.8 s) still
+  mounted on a cold board and took a slot of the four-slot client read queue (`MAX_CONCURRENT_READS = 4`)
+  while the board payload itself waited 22.0 s. Its ONLY consumer here is the dismissible capacity-risk
+  banner, and that setting ships DISABLED (`DEFAULT_PROJECT_SETTINGS.capacityRiskBannerEnabled === false`),
+  so the default deployment paid two reads for a banner that can never render.
+
+  Two honest conditions, both observable state, no timer:
+  - the operator switched the banner on (before settings hydrate the value is `undefined`, so this also
+    covers "do not read before the decision is known"); and
+  - the board's own read has answered, through `useTasks`' `lastFetchTimeMs` - a state value the board
+    publishes, not a `setTimeout`/`requestIdleCallback` guess, because a board still waiting for its first
+    page is not idle and a clock cannot tell those two situations apart.
+  Surfaces that RENDER agent data (`AgentsView`, `FleetDashboardView`) leave `enabled` at its default `true`
+  and fetch eagerly; the SSE-driven refresh and `refreshAgents()` below the gate are untouched, so a surface
+  that enables the banner still sees live agent state the moment it does.
+  */
+  const boardChromeReady = useBoardChromeReady(lastFetchTimeMs);
+  const { stats: agentStats } = useAgents(currentProject?.id, {
+    enabled: boardChromeReady && capacityRiskBannerEnabled === true,
+  });
 
   const inProgressCount = useMemo(
     () => boardSourceTasks.filter((task) => task.column === "in-progress").length,

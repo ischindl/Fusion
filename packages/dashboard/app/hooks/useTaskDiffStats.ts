@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fetchTaskDiff } from "../api";
+import { useVisibilityAwarePoll } from "./visibilitySuspension";
 import type { ColumnRoleFlags } from "../utils/columnRoles";
 import { isCompleteColumnRole, isReviewColumnRole, isWipColumnRole } from "../utils/columnRoles";
 
@@ -157,6 +158,13 @@ export function useTaskDiffStats(
     loading: false,
   }));
 
+  /*
+  FNXC:BoardBootRequestSet 2026-11-08-04:48 (RUFU-493):
+  The poll driver lives outside this effect, so the effect publishes its own force-refresh through a ref
+  rather than owning a timer. Everything about WHAT is fetched stays here; only the arming moved.
+  */
+  const forceRefreshRef = useRef<() => void>(() => {});
+
   useEffect(() => {
     // Disabled state: return stable empty state without fetching
     if (!enabled || !taskId || (!shouldFetchDoneTask && !shouldFetchActiveTask)) {
@@ -218,22 +226,35 @@ export function useTaskDiffStats(
     // Initial fetch
     void load();
 
-    // Set up polling for active columns
-    let timer: ReturnType<typeof setInterval> | undefined;
-    if (pollIntervalMs && shouldFetchActiveTask) {
-      timer = setInterval(() => {
-        // Force refresh on poll - bypass cache
-        void load(true);
-      }, pollIntervalMs);
-    }
+    // The shared visibility gate drives the cadence below; this effect owns only the initial load.
+    forceRefreshRef.current = () => {
+      // Force refresh on poll - bypass cache
+      void load(true);
+    };
 
     return () => {
       cancelled = true;
-      if (timer) {
-        clearInterval(timer);
-      }
+      forceRefreshRef.current = () => {};
     };
   }, [taskId, column, commitSha, projectId, enabled, worktree, stepVersion, snapshotVersion, mergeSignature, pollIntervalMs, shouldFetchDoneTask, shouldFetchActiveTask, requestKey, activeWorktree, cacheVersion, mode]);
+
+  /*
+  FNXC:BoardBootRequestSet 2026-11-08-04:48 (RUFU-493):
+  THE ACTIVE-COLUMN POLL GOES THROUGH THE ONE SHARED VISIBILITY GATE. This was the last raw `setInterval`
+  poller on the board: a board with ~25 cards whose timers kept firing against a hidden tab, which is the
+  exact shape `visibilitySuspension.ts` exists to remove — a backgrounded mobile page that never registers
+  as idle gets reclaimed (white-splash reload), and a desktop tab returning to 25 simultaneously armed
+  diff polls exhausts the 6-connections-per-origin cap. The gate tears the interval down while hidden and,
+  on the hidden -> visible edge, fires exactly one refresh per card through the shared deterministic stagger
+  before re-arming, so cadence and cache-bypassing semantics are unchanged while the hidden page does no
+  work and the restore path does not burst. `enabled` carries the caller's viewport gate (TaskCard passes
+  `isInViewport && !isSearchResult`), so a card scrolled off-screen holds no armed timer at all.
+  */
+  useVisibilityAwarePoll(
+    () => forceRefreshRef.current(),
+    pollIntervalMs ?? 0,
+    { enabled: enabled && shouldFetchActiveTask && Boolean(pollIntervalMs) },
+  );
 
   if (state.key !== requestKey) {
     return { stats: synchronouslyCachedStats, loading: false };

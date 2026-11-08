@@ -9,6 +9,16 @@ import { useProjectContextGuard } from "./useProjectContextGuard";
 interface UseAgentsOptions {
   filterState?: AgentState | "all";
   showSystemAgents?: boolean;
+  /*
+  FNXC:BoardBootRequestSet 2026-11-08-03:34 (RUFU-493):
+  `GET /api/agents` and `GET /api/agents/stats` are background chrome. `App` mounts `useAgents` for
+  exactly one consumer - the dismissible capacity-risk banner - and the unbounded board read measured
+  22.0 s on the deployed dashboard, so a stats read issued at mount was queued behind, and competing
+  with, the payload the operator actually came to read. `enabled` lets a caller say when its own surface
+  is reachable. Default `true` leaves every view that mounts this hook to RENDER agent data fetching
+  eagerly and unchanged.
+  */
+  enabled?: boolean;
 }
 
 interface AgentFilter {
@@ -130,10 +140,16 @@ export function useAgents(projectId?: string, options?: UseAgentsOptions) {
     }
   }, [capture, projectId, statsCacheKey]);
 
+  /*
+  FNXC:BoardBootRequestSet 2026-11-08-03:34 (RUFU-493):
+  One gate on the mount effect, covering both reads. A disabled caller still gets cached hydration from
+  the initializers above, so a surface that later enables itself paints its last known numbers first.
+  */
   useEffect(() => {
+    if (options?.enabled === false) return;
     void loadAgents();
     void loadStats();
-  }, [loadAgents, loadStats]);
+  }, [loadAgents, loadStats, options?.enabled]);
 
   // SSE subscription for agent events. SSE events fire AFTER the backend
   // commits the mutation, so we want the post-mutation snapshot. Refresh is

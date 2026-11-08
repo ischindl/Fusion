@@ -114,4 +114,73 @@ describe("board-workflows named-id scope", () => {
     expect(store.listTasks).toHaveBeenCalledTimes(1);
     expect(store.listCompletedTasks).toHaveBeenCalledTimes(1);
   });
+
+  /*
+  FNXC:BoardBootRequestSet 2026-11-08-04:15 (RUFU-493):
+  A workflow switcher mounts on the board's boot path and reads only the lane list — never
+  `taskWorkflowIds` — yet its request was the same whole-current-task-table + newest-Done-page
+  enumeration the board pays (measured as two of the 30.0 s / 17.4 s mount reads for one cold board).
+  `scope=lanes` is the answer to the question that consumer actually asks: which lanes exist, and what
+  are they called. The vocabulary comes from the ONE catalog read this route already takes, so the scope
+  must spend ZERO task reads while still naming every lane — an empty or shrunken drop-down is the
+  regression this test exists to catch, which is why it asserts the lane NAMES and not just the counts.
+  */
+  it("answers scope=lanes from the catalog alone: every lane named, zero task reads", async () => {
+    store.listWorkflowDefinitions.mockResolvedValue([
+      { id: "builtin:coding", name: "Coding", kind: "workflow" },
+      { id: "custom:research", name: "Research", kind: "workflow" },
+    ]);
+    server = await startServer(store);
+    const res = await fetch(server.url("/api/tasks/board-workflows?scope=lanes"));
+    expect(res.status).toBe(200);
+    const payload = await res.json();
+
+    // The whole point of the scope: no task-table materialisation, no Done page, no per-task selection read.
+    expect(store.listTasks).not.toHaveBeenCalled();
+    expect(store.listCompletedTasks).not.toHaveBeenCalled();
+    expect(store.getTaskWorkflowSelectionsAsync).not.toHaveBeenCalled();
+
+    // Nothing the consumer needs is missing: both lanes are described and the default is named.
+    expect(payload.workflows.map((workflow: { id: string }) => workflow.id).sort())
+      .toEqual(["builtin:coding", "custom:research"]);
+    expect(payload.defaultWorkflowId).toBe("builtin:coding");
+    expect(payload.flagEnabled).toBe(true);
+    // And it maps nothing, because it was asked about no card.
+    expect(payload.taskWorkflowIds).toEqual({});
+  });
+
+  /*
+  FNXC:BoardBootRequestSet 2026-11-08-05:30 (RUFU-493 code review, P0):
+  Every other case here builds its own URL, so none of them ever carried the `projectId` the real client
+  always sends alongside a scope. That is the coverage gap that let the malformed client line survive: the
+  request the switcher actually issued was `?projectId=X?scope=lanes`, which Express parses as a project
+  named `X?scope=lanes` with NO scope parameter, so the branch below was never reached in production while
+  its own test stayed green. This case pins the server against the exact production shape - project id and
+  lane scope as two separate parameters - so a lane branch that only fires on a bare query cannot ship.
+  */
+  it("answers the production request shape (projectId AND scope) from the catalog alone", async () => {
+    store.listWorkflowDefinitions.mockResolvedValue([
+      { id: "builtin:coding", name: "Coding", kind: "workflow" },
+    ]);
+    server = await startServer(store);
+    const res = await fetch(server.url("/api/tasks/board-workflows?projectId=proj-boot&scope=lanes"));
+    expect(res.status).toBe(200);
+    const payload = await res.json();
+
+    expect(store.listTasks).not.toHaveBeenCalled();
+    expect(store.listCompletedTasks).not.toHaveBeenCalled();
+    expect(payload.workflows.map((workflow: { id: string }) => workflow.id)).toEqual(["builtin:coding"]);
+    expect(payload.taskWorkflowIds).toEqual({});
+  });
+
+  it("keeps the enumeration when a caller names ids without partial, even alongside scope=lanes", async () => {
+    server = await startServer(store);
+    const res = await fetch(server.url("/api/tasks/board-workflows?taskIds=RUFU-1&scope=lanes"));
+    expect(res.status).toBe(200);
+    const payload = await res.json();
+
+    // Naming ids is a request for a MAPPING, which a vocabulary-only answer cannot satisfy.
+    expect(store.listTasks).toHaveBeenCalledTimes(1);
+    expect(payload.taskWorkflowIds["RUFU-1"]).toBe("builtin:coding");
+  });
 });
