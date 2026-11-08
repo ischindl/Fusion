@@ -231,7 +231,7 @@ import {
   resetHeartbeatErrorRecoveryMetadata,
   resolveErrorRecoveryLimit,
 } from "./agent-heartbeat.js";
-import { classifyForeignOnlyContamination, deriveTaskIdFromFusionBranch, inspectBranchConflict, listUniqueBranchCommits, taskWorktreeCheckoutIsClean } from "./execution/branch-conflicts.js";
+import { classifyForeignOnlyContamination, deriveTaskIdFromFusionBranch, inspectBranchConflict, listUniqueBranchCommits } from "./execution/branch-conflicts.js";
 import { preserveWorktreeChanges, preserveWorktreeChangesIncludingUntracked } from "./execution/worktree-change-preservation.js";
 import { createRunAuditor, generateSyntheticRunId, type DatabaseMutationType, type RunAuditor } from "./util/run-audit.js";
 import {
@@ -354,7 +354,7 @@ door cannot disagree about which repositories a card owes proof about — the di
 SANE-509 bug.
 */
 import { workspaceObligationRepositories } from "./merge/workspace-merge-readiness.js";
-import { measureAheadCommitCount } from "./worktree/worktree-backend.js";
+import { measureAheadCommitCount, taskWorktreeCheckoutIsClean } from "./worktree/worktree-backend.js";
 import { resolveWorkspaceRootMembership } from "./worktree/workspace-root-member.js";
 import { resolveBranchGroupMergeRouting } from "./merge/group-merge-coordinator.js";
 import type { OwnedLandedClassification } from "./merger.js";
@@ -7849,8 +7849,12 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             /*
             FNXC:WorktreeCleanup 2026-08-29-01:19:
             This post-move fan-out is the convergence backstop for worktrees leaked before FN-251,
-            not the ordering gate. Only durable landing proof permits ignored-only content removal;
-            preserved outcomes retain the pointer and are retried on later terminal transitions.
+            not the ordering gate. STAS-397 retired the sentence that used to sit here saying only
+            durable landing proof permits ignored-only content removal: that gate refused an
+            already-merged checkout over a virtualenv and could never be satisfied by the sweep that
+            runs it, so ignored content now releases and the discard names what it threw away, while
+            the proof still only says which landing produced it. Preserved outcomes still retain the
+            pointer and are retried on later terminal transitions.
 
 /*
             FNXC:WorktreeCleanup 2026-08-29-01:50:

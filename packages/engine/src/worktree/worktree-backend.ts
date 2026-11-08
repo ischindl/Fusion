@@ -1,6 +1,6 @@
 import { exec, execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { access, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { Settings, WorktreeContentClassification } from "@fusion/core";
@@ -1252,59 +1252,32 @@ export class WorktreeContentPreservationError extends Error {
 }
 
 /*
-FNXC:WorktreeCleanup 2026-09-01-06:09:
-FN-9233 permits automatic cleanup of only well-known regenerable dependency and build directories.
-Ignored paths outside this narrow allowlist can contain operator-owned local content and retain FN-251's
-proof gate; quoted porcelain paths are deliberately unparseable and therefore fail closed.
+STAS-397: a checkout release decides from OCCUPANCY, and git does not count an ignored path as
+occupying a checkout. Occupancy is a tracked modification, a staged change, or an untracked path —
+including one whose name git prints quoted, which is refused because the release could not name it
+back to an operator, not because its name is unparseable. Ignored content is still read and still
+named in the release's own audit record, so a discard is never silent, but it is never a reason to
+refuse either.
+
+The rule this replaces (FN-9233's basename allowlist plus FN-251's durable-landing-proof gate) asked
+which build tool produced a directory, which is not the question a release has to answer. It listed
+`.venv` but no `*.egg-info` shape, so a checkout created by the documented dependency-install
+procedure of the very repository it runs against refused forever, and the refusal was unappealable:
+the proof that unlocked it was admitted for one removal reason that the sweep hitting it every half
+hour does not carry. Seven board cards held exactly that checkout.
 */
-/** Directory basenames whose ignored contents are reproducible project output. */
-export const REGENERABLE_IGNORED_DIR_NAMES = new Set([
-  "node_modules", "dist", "build", "out", "target", "bin", "obj", "coverage",
-  ".next", ".nuxt", ".turbo", ".svelte-kit", ".parcel-cache", ".pytest_cache",
-  ".mypy_cache", "__pycache__", ".gradle", ".venv", "venv",
-]);
+export type WorktreeRemovalContentClassification = "clean" | "ignored-only" | "deliverable";
 
-export type WorktreeRemovalContentClassification = "clean" | "regenerable-ignored" | "ignored-only" | "deliverable";
-
-/*
-FNXC:WorktreeCleanup 2026-09-08-06:13:
-pnpm build writes .fusion/cache/plugin-build-cache.json, which made built task worktrees permanently
-unreclaimable. Scratch is top-level and child-probed rather than basename-allowlisted because .fusion
-can hold authoritative operator board state and nested .fusion directories are never project scratch.
-*/
-export const FUSION_SCRATCH_REGENERABLE_CHILDREN: ReadonlyMap<string, ReadonlySet<string>> = new Map([
-  [".fusion", new Set(["cache"])],
-]);
-
-/** Return true only for a known scratch root whose immediate children are all regenerable. */
-export function isRegenerableScratchDirectory(entryName: string, childNames: readonly string[]): boolean {
-  const allowedChildren = FUSION_SCRATCH_REGENERABLE_CHILDREN.get(entryName);
-  return allowedChildren !== undefined && childNames.every((childName) => allowedChildren.has(childName));
-}
-
-function isTopLevelUnquotedDirectoryEntry(entry: string, entryName: string): boolean {
-  return entry === `!! ${entryName}/`;
-}
-
-function isRegenerableIgnoredPorcelainEntry(entry: string, provenScratchRootEntries?: ReadonlySet<string>): boolean {
-  const path = entry.slice(3).replace(/\/$/, "");
-  if (!path || path.startsWith('"')) return false;
-  if (provenScratchRootEntries?.has(path) && isTopLevelUnquotedDirectoryEntry(entry, path)) return true;
-  const lastSegment = path.split("/").at(-1);
-  return lastSegment !== undefined && REGENERABLE_IGNORED_DIR_NAMES.has(lastSegment);
-}
-
-/** Classify porcelain output without allowing ignored entries to mask deliverable content. */
-export function classifyWorktreeRemovalContent(
-  porcelain: string,
-  options?: { provenScratchRootEntries?: ReadonlySet<string> },
-): WorktreeRemovalContentClassification {
+/**
+ * Classify a porcelain read into the three answers a release can act on. No ignored entry can reach
+ * `deliverable`, and no ignored name can change the verdict: `ignored-only` means only that there is
+ * ignored content to record, never that there is content to preserve.
+ */
+export function classifyWorktreeRemovalContent(porcelain: string): WorktreeRemovalContentClassification {
   const entries = porcelain.split(/\r?\n/).filter((line) => line.trim().length > 0);
   if (entries.length === 0) return "clean";
   if (entries.some((line) => !line.startsWith("!! "))) return "deliverable";
-  return entries.every((entry) => isRegenerableIgnoredPorcelainEntry(entry, options?.provenScratchRootEntries))
-    ? "regenerable-ignored"
-    : "ignored-only";
+  return "ignored-only";
 }
 
 export interface DefensiveRemovalContentProbe {
@@ -1331,6 +1304,13 @@ export interface DefensiveRemovalContentProbe {
   */
   modifiedCount: number;
   untrackedCount: number;
+  /*
+  STAS-397: the ignored paths behind an `ignored-only` classification, so the release that discards
+  them can NAME them. `entryCount` already told an operator how much was thrown away; the whole point
+  of recording a discard instead of blocking on it is that the record says what was thrown away.
+  Capped for the same reason `uncommittedPaths` is — the row stays readable on a huge tree.
+  */
+  ignoredPaths: string[];
 }
 
 /** Cap on paths a refusal may name, so a huge tree cannot make the row unreadable. */
@@ -1364,7 +1344,7 @@ function porcelainEntryPath(entry: string): string {
 export async function probeWorktreeRemovalContent(worktreePath: string): Promise<DefensiveRemovalContentProbe> {
   // Nothing on disk means nothing to preserve — stale registrations prune normally below.
   if (!existsSync(worktreePath)) {
-    return { classification: "clean", entryCount: 0, uncommittedPaths: [], status: "path-absent", modifiedCount: 0, untrackedCount: 0 };
+    return { classification: "clean", entryCount: 0, uncommittedPaths: [], status: "path-absent", modifiedCount: 0, untrackedCount: 0, ignoredPaths: [] };
   }
   let stdout: string;
   try {
@@ -1382,21 +1362,12 @@ export async function probeWorktreeRemovalContent(worktreePath: string): Promise
       status: "probe-failed",
       modifiedCount: 0,
       untrackedCount: 0,
+      ignoredPaths: [],
       probeError: error instanceof Error ? error.message : String(error),
     };
   }
-  const provenScratchRootEntries = new Set<string>();
   const entries = stdout.split(/\r?\n/).filter((line) => line.trim().length > 0);
-  await Promise.all([...FUSION_SCRATCH_REGENERABLE_CHILDREN.keys()].map(async (entryName) => {
-    if (!entries.includes(`!! ${entryName}/`)) return;
-    try {
-      const childNames = await readdir(resolve(worktreePath, entryName));
-      if (isRegenerableScratchDirectory(entryName, childNames)) provenScratchRootEntries.add(entryName);
-    } catch {
-      // An unreadable scratch directory is operator content until proven otherwise.
-    }
-  }));
-  const classification = classifyWorktreeRemovalContent(stdout, { provenScratchRootEntries });
+  const classification = classifyWorktreeRemovalContent(stdout);
   /*
   FNXC:WorktreeCleanup 2026-09-29-22:04 (fusion/rufu-274 squash merge):
   RUFU-278's typed `WorktreeContentPreservationError` refusal for a `deliverable` tree lives in
@@ -1404,6 +1375,7 @@ export async function probeWorktreeRemovalContent(worktreePath: string): Promise
   finalization lanes can read the classification of a dirty tree instead of catching a refusal.
   */
   const deliverableEntries = entries.filter((line) => !line.startsWith("!! "));
+  const ignoredEntries = entries.filter((line) => line.startsWith("!! "));
   return {
     classification,
     entryCount: entries.length,
@@ -1417,7 +1389,29 @@ export async function probeWorktreeRemovalContent(worktreePath: string): Promise
     */
     modifiedCount: deliverableEntries.filter((line) => !line.startsWith("?? ")).length,
     untrackedCount: deliverableEntries.filter((line) => line.startsWith("?? ")).length,
+    ignoredPaths: ignoredEntries.slice(0, MAX_REPORTED_UNCOMMITTED_PATHS).map(porcelainEntryPath).filter(Boolean),
   };
+}
+
+/*
+FNXC:OccupancyOnlyRelease 2026-11-08 (STAS-397):
+The one question the conflict doors ask about a live checkout — does it hold work that must be
+preserved before it is released? — now derives from `probeWorktreeRemovalContent` instead of running
+its own `git status --porcelain`. The helper used to live in `execution/branch-conflicts.ts` with a
+bare read of its own, and two command vectors over one tree is exactly how an already-merged checkout
+came to answer "clean" to the door and "uncommitted or ignored content present" to the removal gate in
+the same sweep. Every answer is unchanged: a clean or ignored-only tree is still free of occupancy,
+and a deliverable tree, an unreadable tree and an absent path all still fail closed. What changed is
+that all four answers come from one observation, so they cannot disagree again.
+It stays a named helper rather than four inline `classification === …` tests because three of those
+call sites ask the identical conjunction; RUFU-329's ban is on a boolean that re-decides a *removal*,
+and this function decides nothing — it reads one classification.
+*/
+export async function taskWorktreeCheckoutIsClean(worktreePath: string): Promise<boolean> {
+  const content = await probeWorktreeRemovalContent(worktreePath);
+  // An unreadable or absent tree proves no absence of work, so it is never reported as clean.
+  if (content.status !== "classified") return false;
+  return content.classification !== "deliverable";
 }
 
 /*
@@ -1463,8 +1457,6 @@ export function worktreeContentClassificationFromProbe(
   switch (probe.classification) {
     case "clean":
       return { state: "clean" };
-    case "regenerable-ignored":
-      return { state: "regenerable-ignored", scratchEntryCount: probe.entryCount };
     case "ignored-only":
       return { state: "ignored-only", entryCount: probe.entryCount };
     case "deliverable":
@@ -1687,7 +1679,7 @@ export async function removeWorktree(input: {
   reason: RemovalReason;
   taskId?: string;
   audit?: RunAuditor;
-  /** Durable landing proof permits ignored-only content, never force removal. */
+  /** Durable landing proof, carried onto the discard record so a release names the proof behind it. */
   postLandingProof?: { landedSha?: string; source: string };
   force?: boolean;
   timeout?: number;
@@ -1711,18 +1703,21 @@ export async function removeWorktree(input: {
   const requiresCleanWorktree = DEFENSIVE_REMOVAL_REASONS.has(input.reason);
 
   /*
-  FNXC:WorktreeCleanup 2026-09-01-06:09:
-  FN-9233 lets all defensive sweeps discard only allowlisted regenerable ignored output, while
-  non-allowlisted ignored content retains FN-251's durable landing-proof gate. Deliverable,
-  unverifiable, and live-session content remain fail-closed for every caller.
+  STAS-397: the content gate asks one question — does this checkout hold occupancy? A `deliverable`
+  tree and an unreadable tree are refused here and stay preserved; the project root checkout is
+  refused by `assertCleanForDefensiveRemoval` itself. Ignored content is captured on the way through
+  so the successful removal below can record what it discarded. Deliverable, unverifiable, and
+  live-session content remain fail-closed for every caller, exactly as before this change.
   */
   let contentClassification: WorktreeRemovalContentClassification | undefined;
   let contentEntryCount = 0;
+  let discardedIgnoredPaths: string[] = [];
   if (requiresCleanWorktree) {
     try {
       const contentProbe = await assertCleanForDefensiveRemoval(input.rootDir, input.worktreePath);
       contentClassification = contentProbe.classification;
       contentEntryCount = contentProbe.entryCount;
+      discardedIgnoredPaths = contentProbe.ignoredPaths;
     } catch (error) {
       const classification = error instanceof Error && error.message.includes(": status probe failed (")
         ? "unverifiable"
@@ -1740,47 +1735,27 @@ export async function removeWorktree(input: {
       }).catch(() => undefined);
       throw error;
     }
-    if (contentClassification === "ignored-only" && !input.postLandingProof) {
-      await input.audit?.git({
-        type: "worktree:removal-preserved",
-        target: input.worktreePath,
-        metadata: {
-          taskId: input.taskId,
-          reason: input.reason,
-          source: undefined,
-          classification: "ignored-only",
-          hasPostLandingProof: false,
-        },
-      }).catch(() => undefined);
-      throw new WorktreeContentPreservationError(input.worktreePath);
-    }
   }
 
-  const recordIgnoredOnlyDiscard = async (): Promise<void> => {
-    if (contentClassification !== "ignored-only" || !input.postLandingProof) return;
+  /*
+  STAS-397: one discard record, emitted only after the removal actually happened. A defensive sweep
+  that discards ignored content owes the operator a row naming it; that record is the whole
+  substitute for the refusal, so it carries the paths rather than a count alone.
+  */
+  const recordIgnoredContentDiscard = async (): Promise<void> => {
+    if (contentClassification !== "ignored-only" || discardedIgnoredPaths.length === 0) return;
     try {
       await input.audit?.git({
-        type: "worktree:post-landing-ignored-content-discarded",
+        type: "worktree:removal-discarded-ignored-content",
         target: input.worktreePath,
         metadata: {
           taskId: input.taskId,
           reason: input.reason,
-          source: input.postLandingProof.source,
-          landedSha: input.postLandingProof.landedSha,
+          entryCount: contentEntryCount,
+          discardedIgnoredPaths,
+          landingProofSource: input.postLandingProof?.source,
+          landedSha: input.postLandingProof?.landedSha,
         },
-      });
-    } catch {
-      // Audit persistence must not change worktree cleanup outcomes.
-    }
-  };
-
-  const recordRegenerableDiscard = async (): Promise<void> => {
-    if (contentClassification !== "regenerable-ignored") return;
-    try {
-      await input.audit?.git({
-        type: "worktree:removal-discarded-regenerable-content",
-        target: input.worktreePath,
-        metadata: { taskId: input.taskId, reason: input.reason, entryCount: contentEntryCount },
       });
     } catch {
       // Audit persistence must not change worktree cleanup outcomes.
@@ -1851,8 +1826,7 @@ export async function removeWorktree(input: {
 
   try {
     await backend.remove(removeInput);
-    await recordIgnoredOnlyDiscard();
-    await recordRegenerableDiscard();
+    await recordIgnoredContentDiscard();
     if (input.audit) {
       await input.audit.git({
         type: backend.kind === "worktrunk" ? "worktree:worktrunk-remove" : "worktree:remove",
@@ -1883,8 +1857,7 @@ export async function removeWorktree(input: {
     const native = new NativeWorktreeBackend({ logger, settings: input.settings });
     try {
       await native.remove(removeInput);
-      await recordIgnoredOnlyDiscard();
-      await recordRegenerableDiscard();
+      await recordIgnoredContentDiscard();
       await input.audit?.git({ type: "worktree:remove", target: input.worktreePath });
       return { removed: true, classification: "removed" };
     } catch (nativeError) {

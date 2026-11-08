@@ -50,10 +50,12 @@ FNXC:OverlapAcquisitionPark 2026-11-04-01:35 (RUFU-373):
 The registration a refused acquisition leaves behind is the re-arm half of the wedge. SANE-436 kept its
 worktree pointer through the failure, and `reconcile-dependency-blocking-lease` (RUFU-200) rebounds the
 HOLDER for a dormant lease — so the waiter's own dead checkout could block the very predecessor it waits on.
-The release reuses the proof-gated defensive path (registry guard + `git status --porcelain` + allowlist +
-`WorktreeContentPreservationError`), so it can never destroy task-authored content: a checkout that is not
+The release reuses the proof-gated defensive path (registry guard + the one occupancy probe +
+`WorktreeContentPreservationError` for a deliverable tree), so it can never destroy task-authored content: a checkout that is not
 provably empty keeps both the checkout AND its pointers, which is what makes a release safe to attempt
-before execution has ever started.
+before execution has ever started. STAS-397 removed the ignored-name allowlist from that path, so the
+question this release asks is now exactly "does the checkout hold work", not "does it hold anything git
+does not recognise as a build artifact".
 */
 export async function releaseRefusedAcquisitionRegistration(input: {
   store: TaskStore;

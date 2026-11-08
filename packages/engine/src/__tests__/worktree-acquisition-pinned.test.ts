@@ -111,6 +111,7 @@ function probe(classification: DefensiveRemovalContentProbe["classification"], e
     uncommittedPaths: classification === "deliverable" ? ["wip.ts"] : [],
     modifiedCount: 0,
     untrackedCount: classification === "deliverable" ? 1 : 0,
+    ignoredPaths: classification === "deliverable" ? [] : ["generated/"],
     status: "classified",
     ...over,
   };
@@ -418,7 +419,8 @@ describe("acquireTaskWorktree — task-pinned mode", () => {
 
     it.each([
       { name: "clean", entryCount: 0 },
-      { name: "regenerable-ignored", entryCount: 1 },
+      // STAS-397 dropped the `regenerable-ignored` row: the class no longer exists, so no probe can
+      // arrive with it. Acquisition's own choice is unchanged - `ignored-only` still preserves aside below.
     ])("removes $name in place instead of preserving it", async ({ name, entryCount }) => {
       vi.mocked(probeWorktreeRemovalContent).mockResolvedValue(probe(name as DefensiveRemovalContentProbe["classification"], entryCount));
 

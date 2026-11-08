@@ -1269,7 +1269,7 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
           /*
            * FNXC:WorktreeCleanup 2026-10-02-15:56:
            * RUFU-298: the preserve-vs-remove choice now DECIDES from the FN-9233 classification instead of
-           * asking a boolean whether removal would refuse. `clean`/`regenerable-ignored` take the ordinary
+           * asking a boolean whether removal would refuse. `clean` takes the ordinary
            * PoolPrune removal — same call site, same `audit: undefined` suppression of the removal-side
            * FN-9233 rows as before this change; `ignored-only`/`deliverable` take the preserve-rename aside (RUFU-278's
            * non-terminal third outcome, now reached by every surface through the shared probe rather than only

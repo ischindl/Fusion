@@ -225,8 +225,14 @@ describe("worktree audit attribution prose (RUFU-329)", () => {
 
     it("the deletion did not disturb the removal-side event it must not rename", () => {
       const backend = read(REMOVAL_BACKEND);
-      expect(countOccurrences(backend, "worktree:removal-preserved")).toBeGreaterThanOrEqual(2);
-      // Both emitters still derive a real class, which is why the corrected prose is true.
+      /*
+      STAS-397 reconciliation: this floor was 2 because two branches emitted the event - the refusal
+      branch and the ignored-only branch. STAS-397 deleted the ignored-only refusal, so one branch emits
+      it and still derives a real class from the probe. The claim this guard exists to protect is that the
+      EVENT survives with a real classification behind it, not how many branches reach it.
+      */
+      expect(countOccurrences(backend, "worktree:removal-preserved")).toBeGreaterThanOrEqual(1);
+      // The emitter still derives a real class, which is what makes the corrected prose true of it.
       expect(backend).toContain("unverifiable");
       expect(backend).toContain("ignored-only");
     });

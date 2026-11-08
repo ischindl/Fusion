@@ -1527,26 +1527,14 @@ export async function inspectBareBranchCollision(
   };
 }
 
-/**
- * Proof that a checkout holds nothing uncommitted: an empty `git status --porcelain`
- * (untracked files included, ignored excluded). Any doubt — a failing read, a dirty tree —
- * returns false, because a checkout release must never destroy work it cannot prove absent.
- * RUFU-231: required before releasing a checkout whose landedness was only proven against
- * the remote-tracking identity (`landedVia: "remote-tracking"`).
- */
-export async function taskWorktreeCheckoutIsClean(worktreePath: string): Promise<boolean> {
-  try {
-    const { stdout } = await execAsync("git status --porcelain", {
-      cwd: worktreePath,
-      encoding: "utf-8",
-      timeout: GIT_TIMEOUT_MS,
-      maxBuffer: GIT_MAX_BUFFER,
-    });
-    return stdout.trim() === "";
-  } catch {
-    return false;
-  }
-}
+/*
+FNXC:OccupancyOnlyRelease 2026-11-08 (STAS-397):
+`taskWorktreeCheckoutIsClean` used to be defined here. It read its own `git status --porcelain` — a
+second cleanliness predicate over the same tree the removal gate probes — and the two disagreed about
+an already-merged checkout holding only ignored build artifacts, which is the wedge STAS-397 fixes.
+It now derives from `probeWorktreeRemovalContent` and lives beside that predicate in
+`worktree/worktree-backend.ts`; its four callers import it from there.
+*/
 
 export async function inspectBranchConflict(
   input: InspectBranchConflictInput,
