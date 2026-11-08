@@ -646,7 +646,39 @@ export class ReviewDispatchSweep {
     move to the detail fetch instead of the 15 s sweep.
     */
     // FNXC:ListTasksExcludeLog 2026-10-12-16:20 (RUFU-615 tranche 4): this scan never reads task log or markers (no non-logger `.log` token in the file), so `slim` must not pay for hydrating the whole board's log. See list-tasks-slim-excludes-log.test.ts.
-    const tasks = await this.options.store.listTasks({ slim: true, derive: false, includeArchived: false, excludeLog: true });
+    /*
+    FNXC:ReviewSweepReadColumnProjection 2026-11-08-07:55 (RUFU-871):
+    `log` was only one column of this read. Allocation sampling over 60 s of ordinary production traffic
+    measured 788 MB allocated, 90 % of it inside the PostgreSQL driver — `DataRow` 417 MB (53 %) for whole
+    materialized rows and `fromJson` 276 MB (35 %) for their jsonb columns — against 66 MB (8 %) for
+    `rowToTask`. This sweep is a whole-board, unfiltered read on a 15 s tick, so after `log` the remaining
+    transfer is the rest of the heavy set, and none of it is consumed here.
+
+    The declaration names `workflowStepResults` — the one wide member this file genuinely reads, via
+    `review-verdict-state.ts`'s three predicates — and therefore drops `comments`/`steeringComments`,
+    `description`, `summary`, `steps`, `attachments` and the thirteen-column `source` family (including
+    `sourceMetadata`). On the shaped fixture in
+    `packages/core/src/task-store/__tests__/read-column-cost.test.ts` that is 4 094 B/row of jsonb plus
+    1 204 B/row of description/summary text, per card, every 15 s.
+
+    Consumer enumeration (the safety half, and the reason `steps` is droppable too): this file
+    dereferences `column`, `id`, `updatedAt`, `paused`, `pausedReason`, `userPaused`; `classifyReviewCard`
+    adds nothing; `review-verdict-state.ts` adds `reviewLevel`, `enabledWorkflowSteps`,
+    `noCommitsExpected` and `workflowStepResults`. Of those, only `workflowStepResults` is declarable — the
+    rest stay in every projection whatever a caller names. `steps` has ZERO dereferences in this file, so
+    the `slim` PROMPT.md re-parse (`finalizeSlimListTask`, gated on the declaration) now also stops
+    running per card here; that re-parse existed to fill a field this sweep never reads.
+
+    No write consumes these rows: `dispatch` persists only `task.id` into the reviewer-run ledger and the
+    heartbeat wake, so no read-modify-write path can lose a column this SELECT stops sending.
+    */
+    const tasks = await this.options.store.listTasks({
+      slim: true,
+      derive: false,
+      includeArchived: false,
+      excludeLog: true,
+      fields: ["workflowStepResults"],
+    });
     /*
     FNXC:ReviewSweepSelectionBatch 2026-11-05-22:33 (RUFU-584):
     `selectionCache` is keyed per TASK, so an empty cache still means one `task_workflow_selection` read

@@ -318,8 +318,49 @@ export function listRegisteredProjectStores(): Array<{ projectId: string; store:
  * FNXC:GlobalConcurrencyControls 2026-06-26-18:20:
  * The live running-agent count must include every top-level slot holder: in-progress executors, active triage planners, and active in-review reviewer/merger/fix agents. Delegate to the shared core predicate so the footer and Command Center cannot under-count in-review work.
  */
+/*
+FNXC:RunningAgentCountReadProjection 2026-11-08-07:55 (RUFU-871):
+The footer/Command-Center running-agent count is the process's second whole-board reader: the read
+attribution windows show `countRunningAgentsInStore < defaultCountAgents < sampleDomain` inside the
+top five `listTasks` callers in every window, once per registered project every 5 s, plus every
+footer request. Allocation sampling over 60 s of ordinary traffic put 90 % of the process's 788 MB in
+the PostgreSQL driver itself — `DataRow` 417 MB (53 %) for whole materialized rows and `fromJson`
+276 MB (35 %) for their jsonb columns — so what this read SELECTs is the cost, not what it does after.
+
+It now declares `workflowStepResults` as the ONLY wide member it reads, which takes
+`comments`/`steeringComments`, `description`, `summary`, `steps`, `attachments` and the thirteen-column
+`source` family (including `sourceMetadata`) out of the SELECT. Measured on the shaped fixture row in
+`packages/core/src/task-store/__tests__/read-column-cost.test.ts`: 4 998 B/row of jsonb plus 1 204
+B/row of description/summary text becomes 904 B/row.
+
+The consumer enumeration is the safety half, and it is short because the function returns a NUMBER — no
+Task escapes it. `resolveWorkflowIrForTask` dereferences `task.id`; `enrichRunningAgentTaskShape`
+dereferences `task.column`; `countRunningAgentTasks` → `isRunningAgentTask` dereferences
+`column`, `status`, `paused`, `userPaused`, `checkedOutBy`, `externalBlock`, `columnTerminalKind`,
+`planningIsLive`, `checkoutProvenEmpty` and the four enrich flags, plus `workflowStepResults` for the
+pending-step-lease arm — the one wide member kept. `externalBlock`, `checkedOutBy`,
+`enabledWorkflowSteps` and `dependencies` are not declarable at all, so they stay selected whatever a
+caller declares and the external-block and dependency arms answer from real data.
+
+`derive: false` is load-bearing here, not a bonus. The board-badge derivations are NOT a pure post-pass
+over fields they do not consume: `hydrateTaskStallReason` reads `task.sourceMetadata`, and
+`getTaskAgeStalenessSignal` reads `task.mergeDetails`. Under a declared read-set that drops
+`sourceMetadata`, leaving derivation ON would not fail — it would silently derive a different badge from
+missing input. `derive: false` is the honest half: RUFU-201's contract is that every PERSISTED field
+stays byte-identical and derived fields stay undefined by construction, which is exactly the shape this
+consumer wants because it reads no derived field at all — `isRunningAgentTask` answers from
+`column`/`status`/`paused`/`userPaused`/`checkedOutBy`/`externalBlock`/`workflowStepResults` plus the
+enrich flags, never a badge. It also stops this 5 s reader funding the derivation prelude's own
+`task_workflow_selection` and `workflow_prompt_overrides` reads (RUFU-201).
+
+One last measured detail: an absent `description` column hydrates to `undefined` where a SQL NULL one
+hydrates to `null`, and `description` is the ONLY droppable field where absent and NULL differ (every
+other droppable field hydrates the same either way — `steps` -> [], `sourceIssue` -> {}, the rest ->
+undefined). No consumer here dereferences `description`, and that whole absent-shape table is pinned at
+`packages/core/src/task-store/__tests__/read-column-projection-parity.test.ts`.
+*/
 export async function countRunningAgentsInStore(store: TaskStore): Promise<number> {
-  const tasks = await store.listTasks({ slim: true });
+  const tasks = await store.listTasks({ slim: true, derive: false, fields: ["workflowStepResults"] });
   const irCache = new Map();
   /*
   FNXC:ConcurrencyIndicators 2026-08-03-12:00:

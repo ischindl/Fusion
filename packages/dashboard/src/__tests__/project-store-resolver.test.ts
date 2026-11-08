@@ -509,6 +509,17 @@ describe("countRunningAgentsInRegisteredProjectStores", () => {
     sessionFile?: string;
   };
 
+  /*
+  FNXC:RunningAgentCountReadProjection 2026-11-08-07:55 (RUFU-871): these assertions used to read
+  `toHaveBeenCalledWith({ slim: true })`. The count read now declares the one wide member its predicate
+  dereferences and opts out of the board-badge derivations, because 90 % of the process's allocation
+  (788 MB per 60 s: `DataRow` 417 MB, `fromJson` 276 MB, `rowToTask` only 66 MB) is this driver
+  materializing columns nobody here reads. The enumerated consumers and the byte figures sit at
+  `countRunningAgentsInStore` itself; `running-agent-count-read-projection.test.ts` proves the count is
+  unchanged when the dropped columns never arrive. Restore this assertion to `{ slim: true }` only
+  together with that pair, never on its own.
+  */
+
   function installTaskList(store: TaskStore, seedTasks: Array<string | SeedTask>) {
     const tasks = seedTasks.map((seedTask, index) => (
       typeof seedTask === "string"
@@ -532,7 +543,7 @@ describe("countRunningAgentsInRegisteredProjectStores", () => {
     const counts = await countRunningAgentsInRegisteredProjectStores(["proj_open", "proj_unopened"]);
 
     expect(counts).toEqual({ proj_open: 2 });
-    expect(listTasks).toHaveBeenCalledWith({ slim: true });
+    expect(listTasks).toHaveBeenCalledWith({ slim: true, derive: false, fields: ["workflowStepResults"] });
     expect(createdStores).toHaveLength(1);
     expect(openEntry?.watchMock).not.toHaveBeenCalled();
   });
@@ -549,7 +560,7 @@ describe("countRunningAgentsInRegisteredProjectStores", () => {
     const counts = await countRunningAgentsInRegisteredProjectStores(["proj_zero", "proj_unopened"]);
 
     expect(counts).toEqual({ proj_zero: 0 });
-    expect(zeroListTasks).toHaveBeenCalledWith({ slim: true });
+    expect(zeroListTasks).toHaveBeenCalledWith({ slim: true, derive: false, fields: ["workflowStepResults"] });
     expect(ignoredListTasks).not.toHaveBeenCalled();
     expect(createdStores).toHaveLength(2);
     expect(zeroEntry?.watchMock).not.toHaveBeenCalled();
@@ -566,8 +577,8 @@ describe("countRunningAgentsInRegisteredProjectStores", () => {
     const counts = await countRunningAgentsInRegisteredProjectStores(["proj_a", "proj_b"]);
 
     expect(counts).toEqual({ proj_a: 1, proj_b: 2 });
-    expect(listTasksA).toHaveBeenCalledWith({ slim: true });
-    expect(listTasksB).toHaveBeenCalledWith({ slim: true });
+    expect(listTasksA).toHaveBeenCalledWith({ slim: true, derive: false, fields: ["workflowStepResults"] });
+    expect(listTasksB).toHaveBeenCalledWith({ slim: true, derive: false, fields: ["workflowStepResults"] });
     expect(createdStores).toHaveLength(2);
   });
 
@@ -579,7 +590,7 @@ describe("countRunningAgentsInRegisteredProjectStores", () => {
     ]);
 
     await expect(countRunningAgentsInStore(store)).resolves.toBe(1);
-    expect(listTasks).toHaveBeenCalledWith({ slim: true });
+    expect(listTasks).toHaveBeenCalledWith({ slim: true, derive: false, fields: ["workflowStepResults"] });
   });
 
   it("sums in-progress executors, active triage agents, and active in-review agents while excluding inactive states", async () => {
@@ -626,8 +637,8 @@ describe("countRunningAgentsInRegisteredProjectStores", () => {
 
     expect(counts).toEqual({ proj_triage_a: 2, proj_triage_b: 4 });
     expect(Object.values(counts).reduce((sum, count) => sum + count, 0)).toBe(6);
-    expect(listTasksA).toHaveBeenCalledWith({ slim: true });
-    expect(listTasksB).toHaveBeenCalledWith({ slim: true });
+    expect(listTasksA).toHaveBeenCalledWith({ slim: true, derive: false, fields: ["workflowStepResults"] });
+    expect(listTasksB).toHaveBeenCalledWith({ slim: true, derive: false, fields: ["workflowStepResults"] });
     expect(createdStores).toHaveLength(2);
   });
 });
