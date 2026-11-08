@@ -118,6 +118,41 @@ describe("resolveTrustedIntegrationRefs", () => {
     expect(__trustedIntegrationRefsGitCalls()).toBe(coldCalls + 2);
   });
 
+  /*
+  FNXC:GitProofForkAccounting 2026-11-08-02:02 (RUFU-871):
+  The memo absorbs a SEQUENTIAL repeat, but it is filled only after the probe settles, so it cannot
+  absorb a concurrent one. Inside `CheckoutEmptinessProver` that concurrent burst is exactly the batch's
+  `concurrency` workers, which is why a 4-card pass forked 8 identity processes where it needs 2.
+  Asserted here against the existing subprocess counter rather than a timing window: K concurrent cold
+  calls must spend the same 2 subprocesses one cold call spends, and must all receive the same identity
+  set — sharing the subprocess may not share a different answer.
+  */
+  it("shares one in-flight probe across concurrent cold callers instead of forking one per caller", async () => {
+    __resetTrustedIntegrationRefsForTests();
+
+    const burst = await Promise.all([
+      resolveTrustedIntegrationRefs(repoDir, "main"),
+      resolveTrustedIntegrationRefs(repoDir, "main"),
+      resolveTrustedIntegrationRefs(repoDir, "main"),
+      resolveTrustedIntegrationRefs(repoDir, "main"),
+    ]);
+
+    // BEFORE: 8 (2 x K). AFTER: 2 — one `git remote`, one `refs/remotes` listing, shared by all four.
+    expect(__trustedIntegrationRefsGitCalls()).toBe(2);
+    const [first, ...rest] = burst;
+    expect(first[0]).toBe("main");
+    for (const refs of rest) expect(refs).toEqual(first);
+
+    // A different ref is still a different identity: single-flight must not widen the key.
+    __resetTrustedIntegrationRefsForTests();
+    const mixed = await Promise.all([
+      resolveTrustedIntegrationRefs(repoDir, "main"),
+      resolveTrustedIntegrationRefs(repoDir, "layer/main"),
+    ]);
+    expect(__trustedIntegrationRefsGitCalls()).toBe(4);
+    expect(mixed[0]).not.toEqual(mixed[1]);
+  });
+
   it("re-probes after the memo is dropped rather than serving a removed identity", async () => {
     __resetTrustedIntegrationRefsForTests();
     const first = await resolveTrustedIntegrationRefs(repoDir, "main");

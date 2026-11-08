@@ -193,6 +193,27 @@ const TRUSTED_INTEGRATION_REFS_MAX = 64;
 // retention-allowlist: bounded by TRUSTED_INTEGRATION_REFS_MAX with a TRUSTED_INTEGRATION_REFS_TTL_MS expiry;
 // the value is a short ref-name array, never task content.
 const trustedIntegrationRefsMemo = new Map<string, { refs: string[]; expiresAt: number }>();
+/*
+FNXC:GitProofForkAccounting 2026-11-08-02:02 (RUFU-871):
+One in-flight probe per key, so concurrent resolvers SHARE a subprocess instead of each forking their
+own. The memo alone could not do this: it is filled only AFTER `probeTrustedIntegrationRefs` settles,
+so a burst of callers that arrive in the same tick all miss it. Measured by
+`src/worktree/__tests__/git-proof-fork-count.test.ts` with a counting seam at the `node:child_process`
+boundary, four concurrent cold calls forked EIGHT git processes (2 x K) for one answer, and inside
+`CheckoutEmptinessProver` that burst is the batch's `concurrency` workers, so a 4-card pass paid 8
+where it needs 2. The profile that started this attributed 2 380 / 2 378 inclusive samples to
+`probeTrustedIntegrationRefs` -> `trustedRefsGit` -> `runGit`, and 3 813 / 3 811 to
+`CheckoutEmptinessProver.execImpl` -> `runGit` -> `runProof`.
+
+What may be shared here is narrow by construction: the value is a per-(repository, integration-ref)
+identity set derived only from `git remote` and the local `refs/remotes` listing. It takes no task,
+no worktree and no verdict input, so two callers on one key cannot want different answers, and a
+shared promise cannot leak one caller's outcome into another's decision. Verdicts stay byte-identical;
+only the number of subprocesses moves. The existing memo already handed every warm caller the same
+array instance, and no consumer mutates the result (they only iterate it), so sharing is not a new
+aliasing exposure either.
+*/
+const trustedIntegrationRefsInFlight = new Map<string, Promise<string[]>>();
 let trustedIntegrationRefsGitCalls = 0;
 
 async function trustedRefsGit(repoDir: string, command: string): Promise<string> {
@@ -212,6 +233,7 @@ export function __trustedIntegrationRefsGitCalls(): number {
 
 export function __resetTrustedIntegrationRefsForTests(): void {
   trustedIntegrationRefsMemo.clear();
+  trustedIntegrationRefsInFlight.clear();
   trustedIntegrationRefsGitCalls = 0;
 }
 
@@ -277,13 +299,31 @@ export async function resolveTrustedIntegrationRefs(repoDir: string, integration
     if (cached.expiresAt > now) return cached.refs;
     trustedIntegrationRefsMemo.delete(key);
   }
-  const refs = await probeTrustedIntegrationRefs(repoDir, integrationRef);
-  if (trustedIntegrationRefsMemo.size >= TRUSTED_INTEGRATION_REFS_MAX) {
-    const oldest = trustedIntegrationRefsMemo.keys().next().value;
-    if (oldest !== undefined) trustedIntegrationRefsMemo.delete(oldest);
+  const pending = trustedIntegrationRefsInFlight.get(key);
+  if (pending) return await pending;
+  const flight = rememberTrustedRefs(key, repoDir, integrationRef);
+  trustedIntegrationRefsInFlight.set(key, flight);
+  return await flight;
+}
+
+/*
+Kept separate from `resolveTrustedIntegrationRefs` so the promise stored in
+`trustedIntegrationRefsInFlight` is already the shared, remembered one — an in-flight entry that only
+resolved the value would let every joiner re-do the retention write, and a writer that throws after
+the map entry is gone would strand the key.
+*/
+async function rememberTrustedRefs(key: string, repoDir: string, integrationRef: string): Promise<string[]> {
+  try {
+    const refs = await probeTrustedIntegrationRefs(repoDir, integrationRef);
+    if (trustedIntegrationRefsMemo.size >= TRUSTED_INTEGRATION_REFS_MAX) {
+      const oldest = trustedIntegrationRefsMemo.keys().next().value;
+      if (oldest !== undefined) trustedIntegrationRefsMemo.delete(oldest);
+    }
+    trustedIntegrationRefsMemo.set(key, { refs, expiresAt: Date.now() + TRUSTED_INTEGRATION_REFS_TTL_MS });
+    return refs;
+  } finally {
+    trustedIntegrationRefsInFlight.delete(key);
   }
-  trustedIntegrationRefsMemo.set(key, { refs, expiresAt: now + TRUSTED_INTEGRATION_REFS_TTL_MS });
-  return refs;
 }
 
 export type TipLandedVia = "local" | "remote-tracking";

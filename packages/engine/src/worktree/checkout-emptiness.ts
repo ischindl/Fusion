@@ -291,6 +291,19 @@ export class CheckoutEmptinessProver {
     across a changed identity set.
     */
     const chainAnchor = (await this.defaultBaseRef()) ?? baseRef;
+    /*
+    FNXC:GitProofForkAccounting 2026-11-08-02:02 (RUFU-871):
+    This line is the join between the two call sites a raw CDP profile named: `CheckoutEmptinessProver.execImpl`
+    -> `runGit` -> `runProof` (3 813 / 3 811 inclusive samples on the `exec` / `execFile` paths) and
+    `probeTrustedIntegrationRefs` -> `trustedRefsGit` -> `runGit` (2 380 / 2 378). The profile's ~28 %
+    `onStreamRead` + `Readable.push` + `addChunk` and ~17 % `buffer.concat` shares were the stdout of these
+    same subprocesses.
+
+    It runs once per entry, and the entry cannot change its answer: the chain depends only on
+    (rootDir, chainAnchor). `resolveTrustedIntegrationRefs` now shares one in-flight probe per key, so the
+    `concurrency` workers of one pass fork the identity pair ONCE instead of once per worker — measured
+    24 -> 18 git processes for a 4-card pass and for an 8-card pass, with every verdict unchanged.
+    */
     const trusted = await resolveTrustedIntegrationRefs(this.rootDir, chainAnchor).catch((): string[] => []);
     const baseRefs = [...new Set([baseRef, chainAnchor, ...trusted])];
     const cacheKey = proofCacheKey(entry.path, baseRefs.join("\u0001"), entry.branchRef);

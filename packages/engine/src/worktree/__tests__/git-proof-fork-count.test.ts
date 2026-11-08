@@ -24,6 +24,10 @@ so no log parsing and no assumption about which helper forked is involved.
 
 The expected numbers are the measured BEFORE counts. They are the ratchet: a change that reduces the
 forks of a trigger must move the number DOWN, and one that raises a trigger must fail here.
+
+MEASURED BEFORE -> AFTER (git forks per trigger): a 4-card pass 24 -> 18, an 8-card pass 24 -> 18, a
+cold burst of 4 trusted-ref resolutions 8 -> 2. Single-card triggers stay at 4/6 and the warm repeat
+pass stays at 0, because both were already at their floor — see the `2 -> 2` and `0 -> 0` cases below.
 */
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -215,7 +219,7 @@ afterEach(async () => {
 
 
 /*
-FNXC:GitProofForkAccounting 2026-11-08-03:30 (RUFU-871):
+FNXC:GitProofForkAccounting 2026-11-08-02:20 (RUFU-871):
 Every expectation below is a subprocess COUNT, never a duration. `TRUSTED_REF_FORKS` is the count of
 `git remote` + `git for-each-ref refs/remotes` a trigger spends discovering the trusted integration
 identities, and `PROOF_FORKS` is what it spends on the proofs themselves (`git status` + the
@@ -287,7 +291,7 @@ describe("STEP 1 — measured git fork count per trigger", () => {
     expect(seam.gitCount()).toBe(6);
   }, 60_000);
 
-  it("BEFORE: a 4-card pass forks 24 — the pass pays the trusted-ref pair once per WORKER, not once per pass", async () => {
+  it("a 4-card pass forks 18, down from the measured 24: the trusted-ref pair is forked once per pass", async () => {
     const fx = await setupFixture("batch4");
     const { emptiness } = await loadProduct();
     const batch = await cards("RUFU-B", 4, "rebased-onto-origin", fx);
@@ -295,15 +299,18 @@ describe("STEP 1 — measured git fork count per trigger", () => {
     const prover = new emptiness.CheckoutEmptinessProver({ rootDir: fx.rootDir, settings: { integrationBranch: "main" }, concurrency: 4 });
     const proofs = await prover.proveTasks(batch);
 
+    // Every key answers exactly what the un-shared run answered (the parity case below proves the
+    // equality more broadly); the only thing that moved is the subprocess count.
     for (const task of batch) expect(proofs.get(task.id ?? "")?.get("")).toBe("empty");
-    // 4 workers all enter `proveEntry` before any identity probe lands, and the memo is filled only
-    // AFTER the probe settles, so each of them forks its own pair: 8 where the pass needs 2.
-    expect(seam.countMatching(TRUSTED_REF_PREFIXES)).toBe(8);
+    // BEFORE: 8 — the 4 workers all entered `proveEntry` before any identity probe landed, and the memo
+    // fills only AFTER the probe settles, so each forked its own pair.
+    // AFTER: 2 — one shared in-flight probe per (repoDir, integrationRef) key.
+    expect(seam.countMatching(TRUSTED_REF_PREFIXES)).toBe(2);
     expect(seam.countMatching(PROOF_PREFIXES)).toBe(16);
-    expect(seam.gitCount()).toBe(24);
+    expect(seam.gitCount()).toBe(18);
   }, 60_000);
 
-  it("BEFORE: an 8-card pass also forks 24 — 8 trusted-ref + 2 irreducible proof forks per card", async () => {
+  it("an 8-card pass forks 18, down from the measured 24 — 2 trusted-ref + 2 irreducible proof forks per card", async () => {
     const fx = await setupFixture("batch8");
     const { emptiness } = await loadProduct();
     const batch = await cards("RUFU-C", 8, "at-base", fx);
@@ -312,9 +319,11 @@ describe("STEP 1 — measured git fork count per trigger", () => {
     const proofs = await prover.proveTasks(batch);
 
     for (const task of batch) expect(proofs.get(task.id ?? "")?.get("")).toBe("empty");
-    expect(seam.countMatching(TRUSTED_REF_PREFIXES)).toBe(8);
+    // Proof work is irreducible per distinct checkout: one `git status --porcelain` (the tree state is
+    // the thing being proven, so no cache or batch can answer it) plus the first matching `rev-list`.
+    expect(seam.countMatching(TRUSTED_REF_PREFIXES)).toBe(2);
     expect(seam.countMatching(PROOF_PREFIXES)).toBe(16);
-    expect(seam.gitCount()).toBe(24);
+    expect(seam.gitCount()).toBe(18);
   }, 60_000);
 
   it("a repeat pass inside the 10 s proof TTL already forks 0 — the emptiness cache is not the repetition", async () => {
@@ -352,7 +361,7 @@ describe("STEP 1 — measured git fork count per trigger", () => {
     expect(warm).toEqual(["git symbolic-ref --short refs/remotes/origin/HEAD"]);
   }, 60_000);
 
-  it("trusted-ref resolution: 2 forks cold, 0 warm, but 8 for a cold burst of 4 (no single-flight)", async () => {
+  it("trusted-ref resolution: 2 forks cold, 0 warm, and 2 for a cold burst of 4 (was 8)", async () => {
     const fx = await setupFixture("single-flight");
     const { conflicts } = await loadProduct();
 
@@ -368,9 +377,11 @@ describe("STEP 1 — measured git fork count per trigger", () => {
     const coldBurst = await Promise.all(Array.from({ length: 4 }, () => conflicts.resolveTrustedIntegrationRefs(fx.rootDir, "main")));
 
     expect(cold).toEqual(["main", "origin/main"]);
-    // BEFORE: 4 callers, one answer, eight subprocesses. Every burst member still resolved the same set,
-    // so seven of those forks bought nothing.
-    expect(seam.gitCount()).toBe(8);
+    // BEFORE: 4 callers, one answer, eight subprocesses (2 x K), and every burst member still resolved
+    // the SAME set — seven of those forks bought nothing.
+    // AFTER: one shared probe. The equality assertion is the half that matters: sharing the subprocess
+    // may not share a DIFFERENT answer, so every joiner must still see the cold identity set.
+    expect(seam.gitCount()).toBe(2);
     for (const refs of [...warmBurst, ...coldBurst]) expect(refs).toEqual(cold);
   }, 60_000);
 
@@ -398,5 +409,60 @@ describe("STEP 1 — measured git fork count per trigger", () => {
     for (const task of batch) {
       expect(proofs.get(task.id ?? "")?.get(""), task.id).toBe(perCard.get(task.id ?? ""));
     }
+  }, 60_000);
+});
+
+/*
+FNXC:GitProofForkAccounting 2026-11-08-02:20 (RUFU-871):
+The freshness contract this fork reduction deliberately did NOT touch, pinned so it cannot drift
+silently while subprocess counts are being argued about.
+
+The emptiness cache is keyed by (checkout path, trusted identity set, branch ref) with a 10 000 ms TTL,
+and it holds no tip SHA and no tree fingerprint. Adding either is not free: the key is what a lookup is
+computed FROM, so a tip-secure key needs a `git rev-parse` on every read — a fork on the path the whole
+change exists to empty. What the design actually guarantees is narrower and must stay written down:
+`empty` is downgrade-only, and `invalidateEmptinessProofsForTask` is the seam that attributes a lifecycle
+mutation to the checkouts it can dirty and drops exactly those verdicts. Between a bare working-tree edit
+and the next pass, the bound on staleness is the TTL — and when in doubt this lane re-proves rather than
+serves, because a missing verdict keeps a blocker blocking while a wrong `empty` can release live work.
+*/
+describe("proof-cache freshness contract (unchanged by the fork reduction)", () => {
+  it("a dirtied or advanced checkout is re-proved, never served the cached `empty` it had before", async () => {
+    const fx = await setupFixture("freshness");
+    const { emptiness } = await loadProduct();
+    const card = await fx.makeCard("RUFU-FRESH", "at-base");
+    const prover = emptiness.checkoutEmptinessProverFor(fx.rootDir, { settings: { integrationBranch: "main" } });
+
+    expect((await prover.proveTask(card)).get("")).toBe("empty");
+
+    // The branch moves ahead AND the tree gains an untracked file: both are work a `dormant -> none`
+    // downgrade would have released.
+    await run("echo work > work.txt && git add work.txt && git commit -q -m 'feat: new tip' && echo scratch > scratch.txt", card.worktree!);
+    emptiness.invalidateEmptinessProofsForTask(fx.rootDir, card);
+    seam.reset();
+
+    const afterMutation = await prover.proveTask(card);
+
+    expect(afterMutation.get("")).toBe("occupied");
+    // The invalidation cost exactly ONE fork. A dirty tree is decided by `git status --porcelain` alone
+    // — non-empty output returns `occupied` before the identity loop is ever entered — so the safe
+    // direction is also the cheap one, and no cached verdict is consulted on the way there.
+    expect(seam.countMatching(PROOF_PREFIXES)).toBe(1);
+  }, 60_000);
+
+  it("the reverse direction is re-proved too: an `occupied` verdict is never laundered into a cached `empty`", async () => {
+    const fx = await setupFixture("direction");
+    const { emptiness } = await loadProduct();
+    const card = await fx.makeCard("RUFU-DIRTY", "ahead");
+    const prover = emptiness.checkoutEmptinessProverFor(fx.rootDir, { settings: { integrationBranch: "main" } });
+
+    expect((await prover.proveTask(card)).get("")).toBe("occupied");
+
+    await run("git reset --hard main && git clean -fd", card.worktree!);
+    prover.invalidatePath(card.worktree!);
+    seam.reset();
+
+    expect((await prover.proveTask(card)).get("")).toBe("empty");
+    expect(seam.countMatching(PROOF_PREFIXES)).toBeGreaterThan(0);
   }, 60_000);
 });
