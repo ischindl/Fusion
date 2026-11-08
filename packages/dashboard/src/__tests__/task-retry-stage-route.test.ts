@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
+  DETERMINISTIC_SPEC_REJECTION_METADATA_KEY,
   getTaskMergeBlocker,
   PRE_MERGE_STEPS_NOT_RUN_BLOCKER,
   registerTaskResetDisposer,
@@ -12,7 +13,11 @@ import {
   type Task,
   type TaskStore,
 } from "@fusion/core";
-import { verdictlessGateEpisodeResetMarker } from "@fusion/engine";
+import {
+  buildDeterministicSpecExhaustedError,
+  isDeterministicSpecValidationParkError,
+  verdictlessGateEpisodeResetMarker,
+} from "@fusion/engine";
 import { createApiRoutes } from "../routes.js";
 import { request as performRequest } from "../test-request.js";
 
@@ -92,6 +97,28 @@ function createApp(store: TaskStore) {
   return app;
 }
 
+/*
+FNXC:DeterministicSpecRejection 2026-11-08-04:15 (RUFU-485):
+The harness merged every patch with a blind `Object.assign`, so a `sourceMetadataPatch` writer landed as
+a junk row field and the episode it names survived the write. Any assertion about an episode being
+cleared would then have been an assertion about the patch shape rather than about the row the next lane
+reads - the exact drift the real store's key-level merge exists to prevent. Both writers now fold
+`sourceMetadataPatch` into `sourceMetadata` (a null value deletes that key) before the rest of the patch
+is assigned, which is `TaskStore`'s contract.
+*/
+function applyRowPatch(row: Task, patch: Record<string, unknown>): void {
+  const { sourceMetadataPatch, ...rest } = patch as { sourceMetadataPatch?: Record<string, unknown> | null };
+  if (sourceMetadataPatch) {
+    const merged: Record<string, unknown> = { ...(row.sourceMetadata ?? {}) };
+    for (const [key, value] of Object.entries(sourceMetadataPatch)) {
+      if (value === null) delete merged[key];
+      else merged[key] = value;
+    }
+    row.sourceMetadata = merged as Task["sourceMetadata"];
+  }
+  Object.assign(row, rest);
+}
+
 function createRestartStore(root: string, row: Task, options: { failAt?: "cancel" | "patch" | "replace"; moveOnSecondRead?: boolean; mergeOnFence?: boolean; ir?: unknown } = {}) {
   const calls: string[] = [];
   const items: Array<Record<string, unknown>> = [{ id: "old", taskId: row.id, kind: "task", nodeId: "old-node", state: "running" }];
@@ -117,7 +144,7 @@ function createRestartStore(root: string, row: Task, options: { failAt?: "cancel
         row.updatedAt = new Date().toISOString();
       }
       const patch = await updater(structuredClone(row));
-      if (patch) Object.assign(row, patch);
+      if (patch) applyRowPatch(row, patch as Record<string, unknown>);
       return structuredClone(row);
     }),
     pauseTask: vi.fn(async (_id: string, paused: boolean, _context?: unknown, pauseOptions?: { pausedReason?: string }) => {
@@ -146,7 +173,7 @@ function createRestartStore(root: string, row: Task, options: { failAt?: "cancel
     updateTask: vi.fn(async (_id: string, patch: Partial<Task>) => {
       calls.push("patch");
       if (options.failAt === "patch") throw new Error("patch failed");
-      Object.assign(row, patch);
+      applyRowPatch(row, patch as Record<string, unknown>);
       return row;
     }),
     moveTask: vi.fn(async (_id: string, column: Task["column"]) => {
@@ -755,5 +782,89 @@ describe("POST /tasks/:id/retry", () => {
     const { store } = createRestartStore(root, taskFixture());
     const response = await performRequest(createApp(store), "POST", "/api/tasks/FN-204/restart-stage");
     expect(response.status).toBe(404);
+  });
+
+  /*
+  FNXC:DeterministicSpecRejection 2026-11-08-04:15 (RUFU-485):
+  RUFU-395's lesson in a new lane: a Retry that clears the disposition but not the refusal register is
+  worse than no Retry, because it looks like it worked. This lane's park reads TWO things - the sentinel
+  error and the `escalation: "park"` episode - so an operator Retry that cleared only the error would
+  leave a card whose episode still says "park": the owner sweep would keep re-probing a card nobody
+  parked, and the next planning refusal would re-park it instantly. The clear therefore has to be
+  observable on the ROW, which is why this drives the real HTTP route and reads the row back rather than
+  inspecting a patch.
+  */
+  function deterministicSpecParkRow(overrides: Partial<Task> = {}): Task {
+    return taskFixture({
+      status: "failed",
+      error: buildDeterministicSpecExhaustedError({
+        attempts: 2,
+        diagnostic: "REVISE - Dangling task-document references in PROMPT.md:\n- .fusion/tasks/FN-204/notes/retry-branch-audit.md",
+      }),
+      // The exhausted park nulls both borrowed counters, which is exactly why the recovery-owner read
+      // reports "no owner" and the wedge alert has to fire.
+      recoveryRetryCount: null,
+      nextRecoveryAt: null,
+      sourceMetadata: {
+        [DETERMINISTIC_SPEC_REJECTION_METADATA_KEY]: {
+          rejectionIdentity: "a1b2c3",
+          specFingerprint: "d4e5f6",
+          rejectionCount: 2,
+          escalation: "park",
+          firstAt: "2026-11-08T03:00:00.000Z",
+          lastAt: "2026-11-08T03:20:00.000Z",
+          parkedAt: "2026-11-08T03:20:00.000Z",
+        },
+        // Provenance that a Retry has no business touching: the clear is key-level by contract.
+        duplicateOfTaskIds: ["FN-198"],
+      },
+      ...overrides,
+    });
+  }
+
+  it("lifts a deterministic-spec park through the planning stage restart, clearing the episode key-level", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fusion-retry-deterministic-spec-plan-"));
+    const prompt = await createPrompt(root);
+    const row = deterministicSpecParkRow();
+    const { store } = createRestartStore(root, row);
+
+    const response = await postRetry(createApp(store));
+
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    // Both halves of the park are gone: the disposition AND the register.
+    expect(row.status).toBe("needs-replan");
+    expect(isDeterministicSpecValidationParkError(row.error ?? null)).toBe(false);
+    expect(row.sourceMetadata).not.toHaveProperty(DETERMINISTIC_SPEC_REJECTION_METADATA_KEY);
+    // ...and the clear is key-level: unrelated provenance survives the same write.
+    expect(row.sourceMetadata).toHaveProperty("duplicateOfTaskIds", ["FN-198"]);
+    // The counters the park nulled are re-armed, so the next refusal is counted as a first refusal.
+    expect(row.recoveryRetryCount).toBe(0);
+    expect(row.nextRecoveryAt).toBeNull();
+    // The stage restart discards the refused spec, so the re-plan authors from the description instead of
+    // regenerating the bytes the deterministic checker refused - the premise the owner sweep waits on.
+    await expect(readFile(prompt, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    // The spent generic-terminal budget is reset, so a later park can alert again.
+    expect(store.resetTerminalFailureAutoRecoveryBudget).toHaveBeenCalledWith("FN-204");
+  });
+
+  it("clears the deterministic-spec episode on the v1 legacy fallback branch too, not only the stage restart", async () => {
+    /*
+    The stage restart is the modern branch, but the route keeps legacy branches behind it for shapes it
+    refuses (a v1 IR answers nothing about columns, so the restart refuses with `no-column-model`). A
+    `failed` card still passes the retryability gate and lands on the legacy rebound write. Every branch
+    has to reach the one shared reset builder - a single hand-rolled reset would leave this card parked
+    behind a register nobody else can clear, which is the RUFU-395 defect with a new name.
+    */
+    const root = await mkdtemp(join(tmpdir(), "fusion-retry-deterministic-spec-v1-"));
+    const row = deterministicSpecParkRow();
+    const { store } = createRestartStore(root, row, { ir: LEGACY_V1_IR });
+
+    const response = await postRetry(createApp(store));
+
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(isDeterministicSpecValidationParkError(row.error ?? null)).toBe(false);
+    expect(row.sourceMetadata).not.toHaveProperty(DETERMINISTIC_SPEC_REJECTION_METADATA_KEY);
+    expect(row.sourceMetadata).toHaveProperty("duplicateOfTaskIds", ["FN-198"]);
+    expect(row.recoveryRetryCount).toBe(0);
   });
 });

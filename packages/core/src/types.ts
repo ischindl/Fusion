@@ -621,6 +621,7 @@ import {
   TRANSFERRED_TO_METADATA_KEY,
   PLAN_PREMISE_REJECTION_METADATA_KEY,
   PLAN_ADMISSION_STALL_METADATA_KEY,
+  DETERMINISTIC_SPEC_REJECTION_METADATA_KEY,
   WIP_ADMISSION_STALL_METADATA_KEY,
   BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY,
   WEDGE_RENOTIFY_COOLDOWN_MS,
@@ -635,12 +636,14 @@ export {
   TRANSFERRED_TO_METADATA_KEY,
   PLAN_PREMISE_REJECTION_METADATA_KEY,
   PLAN_ADMISSION_STALL_METADATA_KEY,
+  DETERMINISTIC_SPEC_REJECTION_METADATA_KEY,
   WIP_ADMISSION_STALL_METADATA_KEY,
   BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY,
   WEDGE_RENOTIFY_COOLDOWN_MS,
 };
 export type { PlanPremiseRejectionEpisode } from "./types/task/task-core.js";
 export type { TaskPlanAdmissionStallCode, TaskPlanAdmissionStallEpisode } from "./types/task/task-core.js";
+export type { TaskDeterministicSpecRejectionEpisode } from "./types/task/task-core.js";
 export type { TaskWipAdmissionStallCode, TaskWipAdmissionStallEpisode } from "./types/task/task-core.js";
 export type { TaskBranchConflictRecoveryEpisode } from "./types/task/task-core.js";
 

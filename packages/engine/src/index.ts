@@ -2,6 +2,18 @@ export { AgentLogger, type AgentLoggerOptions, summarizeToolArgs } from "./agent
 export { storeErrorResult, STORE_RETRY_GUIDANCE } from "./tool-store-errors.js";
 export { clearWorktreeDependencyDeterministicStop } from "./worktree/worktree-dependency-install.js";
 export { isPlanningResetHoldClearingUpdate, PlanningResetFence, PLANNING_RESET_HOLD_MS } from "./planning-reset-fence.js";
+/*
+FNXC:DeterministicSpecRejection 2026-11-08-04:15 (RUFU-485):
+The deterministic-spec park's discriminator is exported so every surface that must recognise the park -
+the authoring lane, the owner sweep, the wedge descriptor, and a retry route that has to clear it -
+reads ONE prefix. A second copy of the string is how a card ends up parked, owned, and silent at the
+same time.
+*/
+export {
+  DETERMINISTIC_SPEC_VALIDATION_EXHAUSTED,
+  buildDeterministicSpecExhaustedError,
+  isDeterministicSpecValidationParkError,
+} from "./healing/deterministic-spec-rejection.js";
 export { reconcileTaskResetSessionRoot, removeTaskResetWorktree, ResetWorktreeForeignSessionError } from "./worktree/remove-reset-worktree.js";
 export {
   deleteTaskResetBranches,

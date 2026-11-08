@@ -3713,7 +3713,12 @@ describe("runTaskRetry", () => {
       statement must empty it. A patch that zeroed the value instead of deleting the key would leave
       the episode present, which is the state the lift must not produce.
       */
-      sourceMetadataPatch: { planPremiseRejection: null, planAdmissionStall: null, branchConflictRecoveryEpisode: null },
+      /*
+      FNXC:DeterministicSpecRejection 2026-11-08-04:47 (RUFU-485):
+      Fourth key-level clear: the deterministic-spec refusal episode counts the identical verdicts that
+      author the park, so a Retry that left the count standing would re-park on the next refusal.
+      */
+      sourceMetadataPatch: { planPremiseRejection: null, planAdmissionStall: null, branchConflictRecoveryEpisode: null, deterministicSpecRejection: null },
     });
     // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): the CLI retry re-queue must state release intent — without parkOnHold:false the rebound parks the card it was asked to run.
     expect(mockMoveTask).toHaveBeenCalledWith("FN-001", "todo", { parkOnHold: false });
@@ -3821,7 +3826,12 @@ describe("runTaskRetry", () => {
       Third key-level clear on the stuck-killed path too — the same patch builder backs both retry
       statuses, so both assertions track it.
       */
-      sourceMetadataPatch: { planPremiseRejection: null, planAdmissionStall: null, branchConflictRecoveryEpisode: null },
+      /*
+      FNXC:DeterministicSpecRejection 2026-11-08-04:47 (RUFU-485):
+      And the fourth, on this path for the same reason: the whole-patch assertion tracks the builder,
+      so the deterministic-spec episode key has to appear here too.
+      */
+      sourceMetadataPatch: { planPremiseRejection: null, planAdmissionStall: null, branchConflictRecoveryEpisode: null, deterministicSpecRejection: null },
     });
     // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): release intent pinned on the retry move args.
     expect(mockMoveTask).toHaveBeenCalledWith("FN-001", "todo", { parkOnHold: false });

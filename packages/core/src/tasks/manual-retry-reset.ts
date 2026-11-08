@@ -1,4 +1,4 @@
-import { BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY, PLAN_ADMISSION_STALL_METADATA_KEY, PLAN_PREMISE_REJECTION_METADATA_KEY, type Task } from "../types.js";
+import { BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY, DETERMINISTIC_SPEC_REJECTION_METADATA_KEY, PLAN_ADMISSION_STALL_METADATA_KEY, PLAN_PREMISE_REJECTION_METADATA_KEY, type Task } from "../types.js";
 import type { TaskStore } from "../store.js";
 
 export const IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON = "in-review-stall-deadlock";
@@ -133,10 +133,24 @@ export function buildManualRetryResetPatch(options?: { resetMergeRetries?: boole
     Withheld hold→WIP crossing invariant), and RUFU-273's precedent does not generalise to an episode
     whose writer is a capacity gate rather than a refusal the operator is overruling.
     */
+    /*
+    FNXC:DeterministicSpecRejection 2026-11-08-03:20 (RUFU-485):
+    And to the deterministic-spec-rejection episode. RUFU-485's short-circuit parks on the SECOND
+    identical refusal, so a Retry that left the episode behind would be a no-op by construction: the
+    next planning attempt recomputes the same identity over the same bytes, reads `escalation: "hold"`
+    is false because it is a fresh refusal against a surviving identical identity, and re-parks the card
+    the operator just released - the exact RUFU-395 shape in a new lane. This is the fourth key in the
+    same statement, so all four lifts still land in one Retry.
+
+    `planningReseedCycles` is deliberately NOT cleared here. That marker is RUFU-768's tested surface
+    (reset only on a clean planning handoff) and clearing it belongs to a separate finding; mixing it
+    into this card's patch would silently change the re-seed ceiling's behavior.
+    */
     sourceMetadataPatch: {
       [PLAN_PREMISE_REJECTION_METADATA_KEY]: null,
       [PLAN_ADMISSION_STALL_METADATA_KEY]: null,
       [BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY]: null,
+      [DETERMINISTIC_SPEC_REJECTION_METADATA_KEY]: null,
     },
     nextRecoveryAt: null as unknown as Task["nextRecoveryAt"],
     sessionContentionWaitReason: null as unknown as Task["sessionContentionWaitReason"],

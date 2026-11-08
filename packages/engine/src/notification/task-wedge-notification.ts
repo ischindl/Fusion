@@ -11,6 +11,13 @@ import {
 import { hasTransientMergeRecoveryOwner } from "../errors/transient-merge-error-classifier.js";
 import { NO_PROGRESS_REQUEUE_BUDGET_EXHAUSTED_PREFIX } from "../healing/no-progress-requeue-budget.js";
 import { describeWorkflowPrincipalFenceRequirement, getPlanningFencePark } from "../planning-handoff-recovery.js";
+/*
+FNXC:DeterministicSpecRejection 2026-11-08-04:20 (RUFU-485):
+The park predicate and the sentinel come from the lane's own leaf module, not from a copy of the string:
+the writer, the owner sweep, and this alert must agree on one prefix or a card can be parked, owned, and
+silent at the same time.
+*/
+import { isDeterministicSpecValidationParkError } from "../healing/deterministic-spec-rejection.js";
 
 /** A bounded, operator-safe description of a task that cannot make progress. */
 export interface TaskWedgeDescriptor {
@@ -274,6 +281,37 @@ export function describeTaskWedge(task: Task): TaskWedgeDescriptor | null {
         detail: fencePark.detail,
       })}), so the spec was never written.`,
       action: "Restore database availability for this project; self-healing re-probes the fence (reconcile-planning-fence-park) and retry forces one now.",
+    };
+  }
+  /*
+  FNXC:DeterministicSpecRejection 2026-11-08-04:20 (RUFU-485):
+  The deterministic-spec park, named for the same two reasons RUFU-288 named the fence park - and neither
+  is cosmetic. RUFU-482's card fell through every matcher above into the generic `terminal-failed`
+  descriptor, and each half of that cost was measured:
+  - the operator read "terminal failed, inspect the task error" for a condition whose remedy is one deleted
+    sentence in the card's own spec, and whose recovery is automatic once that happens; the generic copy
+    names no remedy at all, which is exactly the dead-end phrasing this park's error sentence was written
+    to avoid;
+  - because `classifyTerminalFailureAutoRecoveryForTask` derives `isGenericTerminalFailure` from exactly
+    this reason key, automatic recovery claimed a card it can never advance (a retry regenerates the same
+    spec and earns the same verdict), so `shouldWithholdWedgeAlertForAutoRecovery` withheld the one alert
+    that would have told anyone the card was waiting on a spec edit.
+
+  The key is its own (`deterministic-spec-validation-exhausted`), not `stall:`-prefixed: this is a terminal
+  planning park, and the stall ladder has no code for it. It is deliberately NOT folded into
+  `planning-fence-unavailable` even though both are planning parks - the fence park's remedy is database
+  availability and this one's is the specification, and merging them is how RUFU-482's deterministic
+  refusal got read as infrastructure in the first place.
+
+  The recovery-owner veto is preserved exactly as the fence arm has it: a card that still carries live
+  retry counters stays silent, and an exhausted park nulls both fields precisely so this alert CAN fire.
+  */
+  if (isDeterministicSpecValidationParkError(error)) {
+    if (describeTaskRecoveryOwner(task)) return null;
+    return {
+      reasonKey: "deterministic-spec-validation-exhausted",
+      reason: "Spec planning stopped after the same deterministic defect was refused twice: the planner rewrote the specification and reproduced the cited text, so re-planning cannot pass.",
+      action: "Edit this card's PROMPT.md (or its description) to remove the cited text - self-healing re-queues planning automatically once the spec changes (reconcile-deterministic-spec-rejection-park); retry forces one now.",
     };
   }
   /*

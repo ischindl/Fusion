@@ -187,7 +187,7 @@ describe("buildManualRetryResetPatch", () => {
   planning-admission clear: the object is still pinned literally, so a constant rename that would orphan
   persisted episodes is still caught, and the whole-field wipe guard below is unchanged.
   */
-  it("clears the plan-premise, planning-admission and branch-conflict-refusal episodes at the key level, never the whole field", () => {
+  it("clears the plan-premise, planning-admission, deterministic-spec and branch-conflict-refusal episodes at the key level, never the whole field", () => {
     /*
     FNXC:BranchConflictRecovery 2026-11-04-14:36 (RUFU-395):
     The third key is this family's own refusal register. RUFU-395 made `refusalCount` the sole
@@ -196,9 +196,37 @@ describe("buildManualRetryResetPatch", () => {
     the operator just released. The literal stays pinned on purpose — a constant rename that would
     orphan a persisted episode is still caught here rather than in production.
     */
-    expect(buildManualRetryResetPatch().sourceMetadataPatch).toEqual({ planPremiseRejection: null, planAdmissionStall: null, branchConflictRecoveryEpisode: null });
-    expect(buildManualRetryResetPatch({ resetMergeRetries: true }).sourceMetadataPatch).toEqual({ planPremiseRejection: null, planAdmissionStall: null, branchConflictRecoveryEpisode: null });
+    expect(buildManualRetryResetPatch().sourceMetadataPatch).toEqual({ planPremiseRejection: null, planAdmissionStall: null, deterministicSpecRejection: null, branchConflictRecoveryEpisode: null });
+    expect(buildManualRetryResetPatch({ resetMergeRetries: true }).sourceMetadataPatch).toEqual({ planPremiseRejection: null, planAdmissionStall: null, deterministicSpecRejection: null, branchConflictRecoveryEpisode: null });
     expect(buildManualRetryResetPatch()).not.toHaveProperty("sourceMetadata");
+  });
+
+  /*
+  FNXC:DeterministicSpecRejection 2026-11-08-03:20 (RUFU-485):
+  RUFU-485's short-circuit parks on the SECOND identical deterministic refusal, so these cases are what
+  make an operator Retry a real door rather than a no-op: the identity the park reads must be gone, the
+  unrelated provenance keys sharing the same JSONB carrier must not be collateral damage, and the
+  borrowed dispatch counter must still reset through the shared list so a re-planned card can consume
+  its full cadence again.
+  */
+  it("clears the deterministic-spec episode at the key level while unrelated provenance keys survive", () => {
+    const patch = buildManualRetryResetPatch();
+    expect(patch.sourceMetadataPatch).toMatchObject({ deterministicSpecRejection: null });
+    // Key-level only: the Retry never claims the whole `sourceMetadata` field, so `duplicateOfTaskIds`,
+    // `handoffFrom` and `contentFingerprint` written by other lanes survive a Retry.
+    expect(patch).not.toHaveProperty("sourceMetadata");
+    // And the cadence the hold arm borrowed is zeroed by the same statement (RUFU-395's pairing rule).
+    expect(patch.recoveryRetryCount).toBe(0);
+    expect(MANUAL_RETRY_RESET_COUNTER_KEYS).toContain("recoveryRetryCount");
+  });
+
+  it("leaves RUFU-768's re-seed marker and RUFU-393's capacity episode out of this card's clear list", () => {
+    // Scope boundary: the re-seed ceiling is a different lane's tested surface and resets only on a
+    // clean planning handoff, and the WIP-admission episode's release owner is the hold/release sweep.
+    // An accidental clear here would silently raise that ceiling or overrule a capacity gate.
+    const keys = Object.keys(buildManualRetryResetPatch().sourceMetadataPatch ?? {});
+    expect(keys).not.toContain("planningReseedCycles");
+    expect(keys).not.toContain("wipAdmissionStall");
   });
 
   it("lifts the recovery park AND empties its register in one patch, so a Retry is not a no-op", () => {

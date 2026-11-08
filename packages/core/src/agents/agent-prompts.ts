@@ -328,14 +328,14 @@ For bug-class/bug-fix tasks only; feature/docs/non-bug tasks do not need this se
 Keep the project default workflow (usually \`builtin:coding\`) unless the user explicitly requested a specific workflow for this task, or you created that task yourself. When you create a task via \`fn_task_create\`, you may pass \`workflow_id\` after calling \`fn_workflow_list\`; otherwise do not move a task you did not create unless the user asked. Do NOT call \`fn_workflow_select\` or pass \`workflow_id\` for the task being specified just because it seems lightweight. If the user explicitly asks for a workflow change, use \`fn_workflow_list\` then \`fn_workflow_select\` or \`workflow_id\` deliberately and document it.
 
 ## Task Artifact Location
-For forensic, reconciliation, or recovery tasks targeting another task ID, tell agents to inspect the real project root artifacts: \`<rootDir>/.fusion/tasks/{TARGET_ID}/\` for PROMPT.md/task.json/logs/attachments and use \`TaskStore\` APIs for the authoritative PostgreSQL task store. A legacy \`<rootDir>/.fusion/fusion.db\` is migration evidence only. Do not cite non-existent task-local paths under the new task; project root matters.
+For forensic, reconciliation, or recovery tasks targeting another task ID, tell agents to inspect the real project root artifacts: \`<rootDir>/.fusion/tasks/{TARGET_ID}/\` for PROMPT.md/task.json/logs/attachments and use \`TaskStore\` APIs for the authoritative PostgreSQL task store. A legacy \`<rootDir>/.fusion/fusion.db\` is migration evidence only.
 
 ## Decision-only specs
 If the requested outcome is only to decide, route, or coordinate work, include \`**No commits expected:** true\` and make the steps operational routing/coordination only. Examples: \`Decide whether FN-XYZ needs a fix\`; \`Assign ready implementation task to active owner, or record no-route state\`. Do not mark no-commit when wording says \`Investigate FN-XYZ and fix if needed\` or \`Investigate and fix routing if needed\`.
 
 ## Safety rules
 - Never kill port 4040; use a random/free port for test servers.
-- Do not cite task-local \`.fusion/tasks/<id>/<file>\` paths unless the file exists, is PROMPT.md/task.json/attachments for a sibling task, or the spec creates it. Save scratch notes with \`fn_task_document_write\`.
+- In the two scanned sections (\`## Context to Read First\`, \`## Steps\`), cite \`.fusion/tasks/<id>/<file>\` only if it exists, is a sibling \`PROMPT.md\`/\`task.json\`/\`attachments/*\`, or your own \`(new)\`/File Scope entry; folder notes: \`<TARGET_ID>\`.
 - Do not expand scope, skip tests, weaken acceptance, or delete/gut unrelated modules/features.
 
 ## Output
@@ -346,6 +346,19 @@ FNXC:PlanValidation 2026-08-28-22:15:
 FN-243 showed that Plan Review could approve a required verification whose runtime did not exist on
 its host. Standard planning must treat the injected capability inventory as authoring truth, choose
 a runnable substitute, and keep impossible ideal checks explicitly non-blocking.
+*/
+/*
+FNXC:PlannerDanglingReferenceRule 2026-11-08-03:06 (RUFU-485):
+One rule, shared with the checker. The planner used to be told "Context, Steps, or File Scope" is
+scanned and that a `(new)` marker anywhere exempts a path. Neither is what
+`detectDanglingTaskDocReferences` does: it scans ONLY `## Context to Read First` and `## Steps`; the
+`(new)` / File Scope exemptions apply only to THIS card's own paths; and the only cross-task allowance
+is the three sibling artifact names. A rule that approximates the checker is how RUFU-482 lost three
+planning sessions: the planner followed its instructions, the checker applied a different contract, and
+each actor waited on the other. The prompt text below states the checker's contract, and the same three
+facts appear in `FAST_TRIAGE_PROMPT_TEXT`'s safety rule and the Plan Review dangling-reference
+criterion. Do not fork a fourth variant or tighten one lane beyond the checker - a reviewer refusing
+text the checker tolerates reproduces the same burn from the other side.
 */
 const TRIAGE_PROMPT_TEXT = `You are a task specification agent for "fn", an AI-orchestrated task board.
 
@@ -706,7 +719,7 @@ Workflow Plan Review is the single optional plan quality gate before execution. 
 - Bad: generic wording, vague steps ("implement feature"), missing tests, or file scope that cannot realistically satisfy requested behavior.
 - Good file scope estimation includes likely touched tests, config, and integration files — not only the obvious implementation file.
 
-Never reference a \`.fusion/tasks/<id>/<file>\` artifact in Context, Steps, or File Scope unless (a) the file already exists, (b) the step explicitly creates it (listed as \`(new)\` under Artifacts), or (c) it is \`PROMPT.md\` / \`task.json\` / \`attachments/*\` for a sibling task. Save planning scratch as task documents via \`fn_task_document_write\`, not as files on disk.
+Cite a \`.fusion/tasks/<id>/<file>\` artifact only where the deterministic checker actually looks: it scans exactly \`## Context to Read First\` and \`## Steps\`, never \`## File Scope\` (which is an exemption list, not a scanned section). Every such citation in those two sections must either (a) already exist on disk, (b) name another card's sibling artifact - \`PROMPT.md\`, \`task.json\`, or anything under \`attachments/\`, which is the only cross-task allowance and \`(new)\` does not extend it, or (c) be THIS card's own path that the spec declares by marking it \`(new)\` under an \`**Artifacts:**\` line or listing it in \`## File Scope\`. A note that points at a task *directory* rather than a file is not a citation the checker can satisfy: write it with a non-capturable placeholder id such as \`.fusion/tasks/<TARGET_ID>/\`, never a literal task id followed by a pseudo-filename or an ellipsis. Save planning scratch as task documents via \`fn_task_document_write\`, not as files on disk.
 
 ## Output
 Write the PROMPT.md directly using the write tool and stop. The workflow graph owns plan review and execution routing.
@@ -857,7 +870,7 @@ ${REVIEWER_JSON_VERDICT_CONTRACT}
 - **Surface enumeration:** [For bug-fix specs and UI-affordance add/remove specs, is \`## Surface Enumeration\` present and does it enumerate the relevant providers/bridges/execution paths, desktop + mobile breakpoints/platforms, empty/undefined/duplicate/populated states, and shared hooks/components/modules/helpers? For UI-affordance add/remove tasks, also verify: (a) the spec searches for ALL components rendering the affordance, not just the one the user pointed at; (b) the spec explicitly addresses leftover shells after removal across desktop and mobile breakpoints. Missing or incomplete coverage is a blocking REVISE.]
 - **Symptom verification:** [For bug-class/bug-fix specs only, is \`## Symptom Verification\` present and complete with **Original symptom**, **Exact reproduction**, and **Assertion it is gone**? A bug-class spec whose final verification only checks green build/tests without reproducing the original failure and asserting it no longer occurs is a blocking REVISE under FN-5893. Missing, empty, or incomplete \`## Symptom Verification\` is a blocking REVISE for bug-class specs; feature/docs/non-bug specs are not required to carry it.]
 - **Documentation completeness:** [Must Update / Check If Affected sections present?]
-- **Dangling task-document references:** [No \`.fusion/tasks/<id>/<file>\` path is cited in Context, Steps, or File Scope unless the file exists or is explicitly created as a \`(new)\` artifact in this spec. References to nonexistent task-local artifacts are a blocking REVISE.]
+- **Dangling task-document references:** [The deterministic checker scans exactly \`## Context to Read First\` and \`## Steps\` - never \`## File Scope\`, which is an exemption list. A \`.fusion/tasks/<id>/<file>\` citation in those two sections is a blocking REVISE unless it already exists, is another card's sibling \`PROMPT.md\` / \`task.json\` / \`attachments/*\`, or is this card's own path declared \`(new)\` under an \`**Artifacts:**\` line or listed in \`## File Scope\`. Do NOT REVISE beyond that contract: a note naming a task directory in a non-capturable placeholder form (\`.fusion/tasks/<TARGET_ID>/\`) is legal, and refusing text the checker tolerates is the defect that burns repeated planning sessions (RUFU-482).]
 - **Sizing & review level:** [Size and review level appropriate for the work?]
 - **User comment coverage:** [Were all user comments addressed? Every user comment must be reflected in the spec — missing coverage is a blocking REVISE]
 

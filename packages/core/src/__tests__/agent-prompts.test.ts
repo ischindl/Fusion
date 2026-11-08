@@ -454,6 +454,39 @@ describe("resolveAgentPrompt", () => {
     }
   });
 
+  /*
+   * FNXC:PlannerDanglingReferenceRule 2026-11-08-03:06 (RUFU-485):
+   * The planner prompt, the fast-triage safety rule, and the Plan Review criterion are three
+   * renderings of ONE contract - the one `detectDanglingTaskDocReferences` enforces. RUFU-482 burned
+   * three planning sessions because the prompt taught an approximation ("Context, Steps, or File
+   * Scope", "`(new)` anywhere exempts") while the checker scanned two sections and limited cross-task
+   * cites to three sibling artifact names. This guard fails if any site drifts from the scan scope,
+   * the sibling allowlist, or the non-capturable folder-note form, and fails if the old overstatement
+   * comes back. Keep the wording compressed in sync with the fast-prompt size caps rather than raising
+   * a cap here.
+   */
+  it("states the dangling-reference contract identically across planner, fast-triage, and Plan Review", () => {
+    const sites = {
+      planner: resolveAgentPrompt("triage"),
+      fastTriage: builtinSeamPrompt("planning-fast"),
+      planReview: resolveAgentPrompt("reviewer"),
+    };
+
+    for (const [site, prompt] of Object.entries(sites)) {
+      // Fact 1: the checker scans exactly these two sections.
+      expect(prompt, site).toContain("Context to Read First");
+      expect(prompt, site).toContain("## Steps");
+      // Fact 2: a cross-task cite is limited to the three sibling artifact names.
+      expect(prompt, site).toContain("PROMPT.md");
+      expect(prompt, site).toContain("task.json");
+      expect(prompt, site).toContain("attachments/");
+      // Fact 3: a non-file note about a task folder takes the non-capturable placeholder id.
+      expect(prompt, site).toContain("<TARGET_ID>");
+      // The withdrawn overstatement must not return: File Scope is an exemption list, never scanned.
+      expect(prompt, site).not.toContain("Context, Steps, or File Scope");
+    }
+  });
+
   it("places the Before → After Transformation section at the top of the definition, ahead of Mission and Review Level (FN-7593)", () => {
     const standardPrompt = resolveAgentPrompt("triage");
     const fastPrompt = builtinSeamPrompt("planning-fast");

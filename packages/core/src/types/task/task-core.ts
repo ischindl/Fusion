@@ -719,6 +719,78 @@ export interface TaskPlanAdmissionStallEpisode {
 }
 
 /*
+FNXC:DeterministicSpecRejection 2026-11-08-03:20 (RUFU-485):
+Planning wrote a spec sentence that its own deterministic checker refuses, regenerated the identical
+sentence from the unchanged input, and burned the whole planning budget on copies of the same text.
+Measured on RUFU-482: three planner sessions (02:18Z, 02:39Z, 02:49Z) produced one note line and all
+three failed on the same dangling-reference diagnostic; after FN-9512 routed the exhaustion through the
+RUFU-768 re-seed seam the same unchanged input can spend `PLANNING_RESEED_CYCLE_LIMIT` x
+`MAX_RECOVERY_RETRIES` = 9 sessions before the park.
+
+The retry cadence cannot express "the next attempt will be byte-identical": `computeRecoveryDecision`
+counts attempts, and a fresh planning attempt is indistinguishable from a new one because nothing on the
+card records WHICH verdict was last refused OVER WHAT spec. This key carries exactly that residue - the
+refusal identity and the spec fingerprint it was computed against - so the second identical verdict is
+recognised before a session is spent rather than after a cadence and a whole re-seed cycle are.
+
+It is a `sourceMetadata` episode for the reasons RUFU-246 / RUFU-273 / RUFU-393 already established: no
+new `tasks` column, key-level writes through `updateTaskAtomic`'s `sourceMetadataPatch` so
+`duplicateOfTaskIds`/`handoffFrom`/`planAdmissionStall` survive, and the field sits in the slim row
+projection the self-healing sweeps already read candidates with.
+
+Unlike the two diagnostic-only planning episodes, this one DOES gate a decision (the short-circuit),
+which is precisely why the identity excludes `task.status`: RUFU-246 proved that keying a refusal
+episode on status makes the same broken refusal look like a new episode every time the escalation
+itself changes the status, restarting the count it exists to bound.
+
+The two hashes are NOT interchangeable and the split is load-bearing. `rejectionIdentity` is the
+verdict; `specFingerprint` is the input. A deterministic refusal is only reachable when the planner
+rewrote the artifact (`artifactChangedByAttempt` in `triage.ts` compares the artifact read immediately
+before the attempt against the artifact read after it), so folding the spec fingerprint into the
+identity would make every reachable refusal a new episode and the bound unreachable over exactly the
+shape it was written for - the planner that regenerates the same refused sentence while unrelated
+bytes move, which is RUFU-482's measured shape. So: the same verdict twice earns the park, while the
+fingerprint is what proves an input actually CHANGED - it resets a parked episode into the one earned
+attempt delivery 3 promises, and it is what the self-healing owner re-reads before re-admitting.
+
+Cleared at key level by `buildManualRetryResetPatch`, so one operator Retry returns the lane its full
+budget (RUFU-395's pairing rule).
+*/
+export const DETERMINISTIC_SPEC_REJECTION_METADATA_KEY = "deterministicSpecRejection" as const;
+
+/**
+ * Durable episode for repeated identical deterministic spec refusals (RUFU-485). Absent or `null`
+ * means "this card has never been refused by deterministic spec validation", the state a freshly
+ * created or Retry-ed card returns to. Ids, digests, counts and ISO instants only — never the
+ * diagnostic prose, which stays on the card's History line.
+ */
+export interface TaskDeterministicSpecRejectionEpisode {
+  /**
+   * sha256 over the refusal diagnostic alone: WHICH deterministic verdict this is. It is deliberately
+   * NOT keyed on the whole spec content, because a deterministic refusal is reached only when the
+   * planner rewrote the artifact (`artifactChangedByAttempt`, `triage.ts`), so a spec-wide hash inside
+   * the identity could never match a prior refusal and the bound would be unreachable over exactly the
+   * shape it exists for - a planner that regenerates the same refused sentence while other bytes move.
+   * Deliberately NOT keyed on `task.status` either (see the FNXC block above).
+   */
+  rejectionIdentity: string;
+  /** sha256 of the spec content the refusal was computed against, normalized by the single shared `computeSpecFingerprint`. This is the "did the input change" subject: it resets a parked episode into one earned attempt, and the self-healing owner re-reads the on-disk spec through that same helper and compares against this value and `staleSpecFingerprint`. */
+  specFingerprint: string;
+  /** Consecutive identical verdicts in this episode (1-based; resets to 1 when the verdict or the input changes). */
+  rejectionCount: number;
+  /** Where this refusal escalated the card: the retry hold (a further attempt is still allowed) or the terminal sentinel park. */
+  escalation: "hold" | "park";
+  /** ISO timestamp of the FIRST refusal in this episode; preserved across refreshes so the operator sees how long the episode has run. */
+  firstAt: string;
+  /** ISO timestamp of the most recent refusal. */
+  lastAt: string;
+  /** ISO timestamp of the terminal park. Present only with `escalation: "park"`. */
+  parkedAt?: string;
+  /** The spec fingerprint this park was already repaired for. The owner stamps it on its single re-admission so the SAME content can never re-admit a second time; a later fingerprint change is a new fact and may repair once more. */
+  staleSpecFingerprint?: string;
+}
+
+/*
 FNXC:WipAdmissionPark 2026-11-02-07:10 (RUFU-393):
 The execution lane had the same silence RUFU-273 closed for the planning lane. A card resting in a
 `hold` column whose graph run crosses into the first WIP column is refused there by rule — KTD-2 makes

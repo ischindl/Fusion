@@ -16,8 +16,30 @@ export interface DetectDanglingOptions {
 
 const TASK_PATH_REGEX = /\.fusion\/tasks\/[A-Z0-9]+(?:-[A-Z0-9]+)*\/[^\s`'"\]]+/g;
 
+/*
+FNXC:SpecValidationPathTail 2026-11-08-03:06 (RUFU-485):
+The tail class is terminal punctuation, not part of the cited file name. It already carried the ASCII
+spread (backtick, brackets, parens, braces, quotes, comma, dot, semicolon, colon, bang, question mark)
+because a spec sentence writes `` `…/notes.md`, `` and the trailing `.` of the sentence is not the file's.
+
+It did not carry U+2026, the single-character ellipsis, and that omission cost three identical planning
+refusals on RUFU-482: the planner wrote a scanned-section note pointing at the card's own task folder as
+`.fusion/tasks/RUFU-482/…`, the capture class accepts any non-space character after the last slash, so
+the "file part" of the token was the ellipsis itself — a token that cannot be read as a file name at all.
+It is not a whitelisted sibling artifact, it does not exist on disk, so the checker REVISEd a spec whose
+only sin was prose. Every planner regeneration produced the same sentence from the same input, so each of
+the three attempts burned a session and failed on the same diagnostic.
+
+The fix is the tail, exactly like the ASCII `...` that was always tolerated: strip a run of U+2026 and the
+token normalizes to its containing directory, which exists, so a directory note stops being a reference to
+a file. Deliberately NOT changed: `TASK_PATH_REGEX`, the sibling-name whitelist, the `(new)` artifact
+exception, and the two-section scan scope. An ellipsis INSIDE a path segment (`notes…list.md`) stays
+flagged — that token still claims to name a file, which is exactly what this checker exists to prove.
+*/
+const TERMINAL_PUNCTUATION_TAIL = /[`),.;:!?\]}'"\u2026]+$/;
+
 function normalizePathToken(token: string): string {
-  return token.replace(/^[`([{"']+/, "").replace(/[`),.;:!?\]}'"]+$/, "");
+  return token.replace(/^[`([{"']+/, "").replace(TERMINAL_PUNCTUATION_TAIL, "");
 }
 
 function collectTaskPaths(text: string): string[] {

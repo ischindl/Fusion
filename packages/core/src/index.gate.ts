@@ -1625,8 +1625,16 @@ The write-side helpers (`planAdmissionStallWrite`, `clearPlanAdmissionStallPatch
 sweep are separate writers of one key, and the refresh/firstAt/stallCount discipline must be decided in
 one place or the two lanes will disagree about what a sustained stall looks like.
 */
-export { PLAN_ADMISSION_STALL_METADATA_KEY, WIP_ADMISSION_STALL_METADATA_KEY, BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY } from "./types.js";
+/*
+FNXC:DeterministicSpecRejection 2026-11-08-03:20 (RUFU-485):
+The deterministic-spec-rejection episode joins this planning-lane group in BOTH barrels for the same
+reason RUFU-273 states above: the triage writer and the self-healing owner are separate lanes reading
+one key, and engine-core gate tests resolve `@fusion/core` to this file, so a key exported only from
+the full barrel would be unreadable from exactly the lane that must honour the short-circuit.
+*/
+export { PLAN_ADMISSION_STALL_METADATA_KEY, DETERMINISTIC_SPEC_REJECTION_METADATA_KEY, WIP_ADMISSION_STALL_METADATA_KEY, BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY } from "./types.js";
 export type { TaskPlanAdmissionStallCode, TaskPlanAdmissionStallEpisode } from "./types.js";
+export type { TaskDeterministicSpecRejectionEpisode } from "./types.js";
 export type { TaskWipAdmissionStallCode, TaskWipAdmissionStallEpisode } from "./types.js";
 export type { TaskBranchConflictRecoveryEpisode } from "./types.js";
 export {

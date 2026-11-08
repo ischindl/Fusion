@@ -692,6 +692,32 @@ export type DatabaseMutationType =
   * error prose are never recorded here.
   */
   | "task:plan-replan-session-failure-budget"
+  /*
+  FNXC:DeterministicSpecRejection 2026-11-08-03:20 (RUFU-485):
+  The planner's own output was refused for the same reason over provably unchanged bytes, so the card
+  parked at the second identical rejection instead of burning the filesystem-twin cadence and then the
+  whole re-seed-cycle budget (RUFU-482: three identical refusals, three clean sessions, a failed badge
+  naming only an on-disk edit, and no automated claimant). Deliberately OUTSIDE the curated
+  delivery-pipeline catalogue — the same precedent as `task:planning-reseed-cycle` and
+  `task:planning-admission-stalled` — so `docs/run-audit.md` documents it in prose and keeps it out of
+  the tables locked to `DELIVERY_PIPELINE_RUN_AUDIT_EVENTS`.
+  Metadata is ids/counts/fixed enums only: `{ taskId, rejectionCount, outcome: "parked" }`. The
+  diagnostic sentence, the spec fingerprint, and the rejected spec content never enter run-audit — they
+  live on the card's History line and its episode, which is where an operator reads them.
+  */
+  | "task:deterministic-spec-rejection-parked"
+  /*
+  FNXC:DeterministicSpecRejection 2026-11-08-04:05 (RUFU-485):
+  The owner half of the same park. `task:reconcile-deterministic-spec-rejection-parks` records the ONE
+  re-admission a changed spec earns; `-no-action` records why a candidate was left parked, so "why is
+  this card still failed?" is one query instead of a guess. Deliberately outside the curated
+  delivery-pipeline catalogue, like the park row above. Metadata is ids/column/fixed enums only:
+  `{ taskId, column, outcome, reason? }`. The on-disk fingerprint, the diagnostic sentence, and the spec
+  content never enter run-audit - the fingerprint lives on the card's episode, where an operator reads
+  it, and a digest in the audit store would still not tell anyone what changed.
+  */
+  | "task:reconcile-deterministic-spec-rejection-parks"
+  | "task:reconcile-deterministic-spec-rejection-parks-no-action"
   | "agent:auto-recover-error-state"
   | "agent:reset-error-state-on-startup"
   | "agent:error-retry-exhausted"

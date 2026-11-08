@@ -277,6 +277,20 @@ import {
 import { isOperatorActionableAgentError, isTransientError, isSilentTransientError } from "./errors/transient-error-detector.js";
 import { withRateLimitRetry } from "./errors/rate-limit-retry.js";
 import { computeRecoveryDecision, formatDelay, MAX_RECOVERY_RETRIES } from "./healing/recovery-policy.js";
+/*
+FNXC:DeterministicSpecRejection 2026-11-08-03:20 (RUFU-485):
+The rejection-identity episode shared with the self-healing sweep that owns this park. One rule, one
+identity function, one fingerprint normalization — the sweep re-derives "did the spec change?" from the
+same bytes this lane refused, so the two lanes cannot disagree about when a park is stale.
+*/
+import {
+  advanceDeterministicSpecRejectionEpisode,
+  buildDeterministicSpecExhaustedError,
+  deterministicSpecRejectionPatch,
+  emitDeterministicSpecRejectionParkAudit,
+  DETERMINISTIC_SPEC_PARK_HISTORY_WINDOW_MS,
+  DETERMINISTIC_SPEC_VALIDATION_EXHAUSTED,
+} from "./healing/deterministic-spec-rejection.js";
 import type { StuckTaskDetector } from "./healing/stuck-task-detector.js";
 /*
 */
@@ -4834,6 +4848,76 @@ export class TriageProcessor {
               && await this.parkIfPlanReviewSessionBudgetExhausted(task, settings, deterministicSpecFailure, triageRunContext)) {
               return;
             }
+
+            /*
+            FNXC:DeterministicSpecRejection 2026-11-08-03:20 (RUFU-485):
+            A deterministic verdict that is already on record has been answered. RUFU-482 measured the cost
+            of not knowing that: three planner sessions (02:18Z, 02:39Z, 02:49Z) produced the same refused
+            note line and all three died on the same dangling-reference diagnostic, then the cadence and -
+            since FN-9512 routed exhaustion through the shared RUFU-768 seam - up to a whole re-seed cycle
+            of further identical sessions were spent on input that cannot change by itself, ending in a
+            `failed` badge with no reader.
+
+            The ladder keys on the refusal's IDENTITY, which is the diagnostic (the checker's own statement
+            of what it refused), not on the whole spec: this branch is only reachable when the planner
+            rewrote the artifact (`artifactChangedByAttempt` compares the PROMPT.md read before the attempt
+            against the one read after it), so a spec-wide hash in the identity would make every reachable
+            refusal a new episode and this park unreachable over exactly the shape above. The measured
+            version of this comment first shipped the wider identity and the board test refused it; see the
+            core FNXC block on the episode key for the full reasoning.
+
+            Same verdict twice -> park, with a sentence whose remedies are reachable from the card. A
+            DIFFERENT verdict is a different defect and keeps the full cadence, so a legitimate replan is
+            never short-circuited. `task.status` is never part of the identity - RUFU-246 proved a
+            status-bearing key makes every repair look like a first failure.
+            */
+            const rejectionStep = advanceDeterministicSpecRejectionEpisode(task, {
+              diagnostic: deterministicSpecFailure,
+              specContent: written,
+            });
+            if (rejectionStep.identicalRejection) {
+              const parkError = buildDeterministicSpecExhaustedError({
+                attempts: rejectionStep.episode.rejectionCount,
+                diagnostic: deterministicSpecFailure,
+              });
+              const parked = deterministicSpecRejectionPatch(rejectionStep.episode);
+              planLog.warn(`${task.id} ${parkError}`);
+              const parkHistory = `Deterministic spec validation refused the same deterministic defect twice — parking stopped instead of re-planning. ${deterministicSpecFailure}`;
+              if (typeof this.store.logEntryOnce === "function") {
+                await this.store.logEntryOnce(task.id, {
+                  action: parkHistory,
+                  outcome: "parked",
+                  dedupeKey: `${DETERMINISTIC_SPEC_VALIDATION_EXHAUSTED}park:${rejectionStep.episode.rejectionIdentity}`,
+                  windowMs: DETERMINISTIC_SPEC_PARK_HISTORY_WINDOW_MS,
+                }).catch(() => undefined);
+              } else {
+                await this.store.logEntry(task.id, parkHistory).catch(() => undefined);
+              }
+              /*
+              FNXC:DeterministicSpecRejection 2026-11-08-03:20 (RUFU-485):
+              No `escalatePlanningReseed` call and no cadence increment: the terminal write IS the
+              disposition, so the card stops inside TWO sessions instead of nine and consumes no re-seed
+              cycle. The counter is cleared (not advanced) because the terminal verdict is now keyed by the
+              episode, and Manual Retry clears that episode - an inherited counter would leave the retried
+              card one refusal from the same park, which is the same defect RUFU-395 fixed for
+              `recoveryRetryCount` by borrowing it from four other owners.
+              */
+              await this.updatePlanningStateIfStillCurrent(task, {
+                status: "failed",
+                error: parkError,
+                recoveryRetryCount: null,
+                nextRecoveryAt: null,
+                ...parked,
+              });
+              await emitDeterministicSpecRejectionParkAudit(this.store, {
+                taskId: task.id,
+                runContext: triageRunContext,
+                rejectionCount: rejectionStep.episode.rejectionCount,
+                rejectionIdentity: rejectionStep.episode.rejectionIdentity,
+              });
+              return;
+            }
+
             const decision = computeRecoveryDecision({
               recoveryRetryCount: task.recoveryRetryCount,
               nextRecoveryAt: task.nextRecoveryAt,
@@ -4856,6 +4940,11 @@ export class TriageProcessor {
                 error: null,
                 recoveryRetryCount: decision.nextState.recoveryRetryCount,
                 nextRecoveryAt: decision.nextState.nextRecoveryAt,
+                // FNXC:DeterministicSpecRejection 2026-11-08-03:20 (RUFU-485): the first refusal of an
+                // identity is recorded on the SAME write that schedules the retry, so the next attempt
+                // can recognise its own predecessor. Key-level patch only — `sourceMetadata` is shared
+                // with four other markers and a whole-object write would clobber them.
+                ...deterministicSpecRejectionPatch(rejectionStep.episode),
               });
               return;
             }
@@ -4868,6 +4957,14 @@ export class TriageProcessor {
               message: `Specification validation exhausted its retry cadence; scheduling a fresh planning replan.`,
               warn: false,
             });
+            /*
+            FNXC:DeterministicSpecRejection 2026-11-08-03:20 (RUFU-485):
+            Reaching the re-seed seam means the verdict CHANGED, so this is a different defect: stamp the
+            fresh episode beside the escalation (key-level, no lifecycle write) because the escalation
+            clears the cadence counter, and a later refusal of THIS verdict must park instead of paying
+            three more sessions.
+            */
+            await this.updatePlanningStateIfStillCurrent(task, deterministicSpecRejectionPatch(rejectionStep.episode));
             return;
           }
 

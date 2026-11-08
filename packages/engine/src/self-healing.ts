@@ -448,6 +448,18 @@ import {
   type UnrunGateParkRefusalReason,
 } from "./notification/unrun-gate-park-notice.js";
 import { computeRecoveryDecision, formatDelay, MAX_RECOVERY_RETRIES } from "./healing/recovery-policy.js";
+/*
+FNXC:DeterministicSpecRejection 2026-11-08-04:05 (RUFU-485):
+The deterministic-spec park's owner reads the SAME three primitives the authoring lane wrote: the park
+predicate, the one fingerprint normalization, and the repair patch. A second opinion on any of them is
+how a park becomes unfixable - here the sweep would either re-admit a card whose refused defect is still
+in the spec or refuse one an operator already repaired.
+*/
+import {
+  computeSpecFingerprint,
+  deterministicSpecRepairPatch,
+  readDeterministicSpecRejectionPark,
+} from "./healing/deterministic-spec-rejection.js";
 
 type FileScopeLeaseTaskRoles = {
   isWipColumn: boolean;
@@ -1671,6 +1683,15 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   */
   private planningFenceNoActionAudited = new Set<string>();
   /*
+  FNXC:DeterministicSpecRejection 2026-11-08-04:05 (RUFU-485):
+  Bounds the `reconcile-deterministic-spec-rejection-parks` no-action findings per (taskId, outcome).
+  An unedited parked card is a candidate on EVERY pass - its premise is the absence of a content change -
+  so an unbounded row would restate one fact per maintenance tick forever, which is the RUFU-442 failure
+  shape. A changed outcome (or a successful repair, which drops the card's memos below) is new
+  information and gets its own row.
+  */
+  private deterministicSpecParkNoActionAudited = new Set<string>();
+  /*
   FNXC:StrandedContinuationReclaim 2026-09-22-14:21 (RUFU-263):
   Two memos bound the stranded-reclaim noise per (taskId, nodeId, state, blockedReason) CONDITION, keyed
   through `strandedHoldConditionKey`, instead of per maintenance pass:
@@ -2838,6 +2859,16 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       // retry owner — triage discovery excludes `status:"failed"` — and a restart is exactly when a store
       // availability refusal has most often cleared.
       { name: "reconcile-planning-fence-park", fn: () => this.reconcilePlanningFenceParks().then(() => undefined) },
+      /*
+      FNXC:DeterministicSpecRejection 2026-11-08-04:05 (RUFU-485):
+      The owner of the deterministic-spec park, registered in BOTH startup recovery and maintenance batch 1
+      for the same structural reason: `status:"failed"` has no planning claimant at all (triage discovery
+      excludes it, FN-8592 answers `retry-owned`, and two null retry fields give `describeTaskRecoveryOwner`
+      nothing to report), so a card left in this park is invisible until a pass names it. Startup is the
+      highest-yield moment because an operator very often restarts the engine after reading a failed badge;
+      steady state is what catches the edit made without one.
+      */
+      { name: "reconcile-deterministic-spec-rejection-park", fn: () => this.reconcileDeterministicSpecRejectionParks().then(() => undefined) },
       /*
       FNXC:StrandedContinuationReclaim 2026-08-11-09:12:
       Runs AFTER the two narrow continuation sweeps above and before any step that classifies a card as
@@ -4215,6 +4246,10 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           // a fence can recover without a restart, and the grace window plus the live re-probe keep the
           // repair to cards the fence itself admits are reachable again.
           { name: "reconcile-planning-fence-park", fn: () => this.reconcilePlanningFenceParks() },
+          // FNXC:DeterministicSpecRejection 2026-11-08-04:05 (RUFU-485): steady-state half of the startup
+          // sweep above - an operator usually edits the spec without restarting anything, and the premise
+          // is the file content, not the engine's uptime.
+          { name: "reconcile-deterministic-spec-rejection-park", fn: () => this.reconcileDeterministicSpecRejectionParks() },
           // FNXC:StrandedContinuationReclaim 2026-08-11-09:12: steady-state half of the startup sweep —
           // a session can die mid-run without a restart, and the grace window keeps live work untouched.
           { name: "reconcile-stranded-workflow-continuations", fn: () => this.reconcileStrandedWorkflowContinuations() },
@@ -12532,6 +12567,243 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     } catch (error) {
       log.warn(`reconcilePlanningFenceParks failed: ${error instanceof Error ? error.message : String(error)}`);
       return 0;
+    }
+  }
+
+  /**
+   * FNXC:DeterministicSpecRejection 2026-11-08-04:05 (RUFU-485):
+   * The owner of a deterministic-spec-exhaustion park: the card triage stopped after it refused the SAME
+   * deterministic verdict twice (`DETERMINISTIC_SPEC_VALIDATION_EXHAUSTED:`).
+   *
+   * Why an owner had to exist at all is the RUFU-482 measurement: after the park the card carried
+   * `status:"failed"` with `recoveryRetryCount:null` and `nextRecoveryAt:null`, so nothing named a
+   * claimant. Triage discovery excludes `failed`, FN-8592's stranded-hold sweep answers `retry-owned` for
+   * any `failed` card (that bail stays exactly as it was - this sweep takes the sentinel class and widens
+   * nothing), and `describeTaskRecoveryOwner` can only report "no owner" from two nulls. The author and the
+   * reviewer each waited for the other while the single fix was one deleted sentence.
+   *
+   * The premise is CONTENT, not elapsed time. A deterministic checker is a function of the spec, so an
+   * unchanged spec guarantees the same verdict and a re-admission would burn a session to relearn nothing -
+   * the exact loop this park exists to stop. The only fact that licenses a repair is that the bytes the
+   * verdict was computed over are no longer the bytes on disk, which is why candidacy re-reads the
+   * authoritative PROMPT.md through the same `getPromptPath` the planning-premise gate uses and fingerprints
+   * it with the same `computeSpecFingerprint` the refusal was recorded against.
+   *
+   * Exactly ONE re-admission per distinct content: the repair stamps `staleSpecFingerprint` with the bytes
+   * that earned it, so a card whose spec has not moved since can never be re-admitted again by this sweep.
+   * Without that stamp the repair oscillates (re-admit, planner reproduces the same verdict, park,
+   * re-admit) and spends one planner session per maintenance pass on a defect that stays put. A later,
+   * genuinely different edit is a new fact and earns one more attempt - the bound is per content, not per
+   * card, which is what makes it safe to leave the `rejectionCount` intact (a re-refusal then parks after
+   * a single session instead of two).
+   *
+   * Lane separation is load-bearing, not cosmetic: `PLANNING_RESEED_CYCLE_EXHAUSTED:` (RUFU-768) and
+   * `PLANNING_FENCE_UNAVAILABLE:` / legacy `PLANNING_FAILED_EXHAUSTED:` (RUFU-287/288) parks are NOT
+   * candidates here - the first is the honest disposition for a *drifting* failure and the second is
+   * infrastructure whose repair is a fence re-probe, not a spec edit. Absorbing either into this shape
+   * would re-create the mis-read that made RUFU-482 look like an infrastructure failure.
+   *
+   * In place, always: the repair writes `status:"needs-replan"` and touches no column, so lifecycle
+   * containment holds (a planning re-queue, never a backward move out of a terminal lane).
+   */
+  async reconcileDeterministicSpecRejectionParks(): Promise<number> {
+    try {
+      // A park is terminal, so the only writers worth waiting out are triage's trailing work on the same
+      // card and an operator Retry. One minute is enough to not race either; a longer grace would only
+      // postpone a repair whose premise is already proven by content.
+      const graceMs = 60_000;
+      const settings = await this.store.getSettings();
+      if (settings.globalPause === true || settings.enginePaused === true) return 0;
+      const live = (taskId: string) => isTaskPlanningOrExecutionLive(taskId, {
+        isTaskActive: this.options.isTaskActive,
+        getPlanningTaskIds: this.options.getPlanningTaskIds,
+      });
+      let offset = 0;
+      let repaired = 0;
+      for (;;) {
+        const tasks = await this.store.listTasks({ slim: false, includeArchived: false, includeDeleted: false, limit: 500, offset, excludeLog: true });
+        // Page-scoped caches, discarded before the next page: a selection write during the sweep must
+        // never be judged against a selection read from before it (RUFU-312's shape).
+        const specParkIrCache = new Map<string, WorkflowIr>();
+        const specParkSelectionCache = await this.newSelectionCache(tasks.map((entry) => entry.id));
+        for (const snapshot of tasks) {
+          try {
+            const snapshotEpisode = readDeterministicSpecRejectionPark(snapshot);
+            if (!snapshotEpisode) continue;
+            // Age comes from the park's own stamp, never from the row clock: `updatedAt` is bumped by
+            // every writer, which is what made RUFU-350's age-based retract erase its own findings.
+            const parkedAt = Date.parse(snapshotEpisode.parkedAt ?? snapshotEpisode.lastAt);
+            if (!Number.isFinite(parkedAt)) continue;
+            const withheldAgeMs = Math.max(0, Date.now() - parkedAt);
+            if (withheldAgeMs < graceMs) continue;
+
+            const task = await this.store.getTask(snapshot.id);
+            const episode = task ? readDeterministicSpecRejectionPark(task) : null;
+            if (!task || !episode) continue;
+
+            /*
+            The fixed no-action vocabulary, so a refusal is always greppable and never becomes prose:
+            `live-session` (planning or execution owns the card), `operator-held` (a pause outranks an
+            automatic repair), `auto-merge-off` (the human-review terminal contract defers triage work),
+            `workflow-unresolvable` / `lane-vocabulary-unreadable` / `left-planning-lane` (the planning
+            lane cannot be proven, so writing its signal could strand the card in a lane that never
+            re-plans; `workflow-unresolvable` is the defensive arm - `resolveWorkflowIrForTask` substitutes
+            the built-in IR for a missing or faulting definition, so only the lane arms are reachable and
+            only they are tested, exactly as the fence sweep's identical ladder is), `spec-unreadable` (the
+            premise cannot be read - never park deeper on a failed read), `spec-unchanged` (the refused
+            bytes are still there), `already-repaired` (this exact content already spent its one
+            re-admission), and `raced`.
+            */
+            type DeterministicSpecParkOutcome =
+              | "re-admitted"
+              | "live-session"
+              | "operator-held"
+              | "auto-merge-off"
+              | "workflow-unresolvable"
+              | "lane-vocabulary-unreadable"
+              | "left-planning-lane"
+              | "spec-unreadable"
+              | "spec-unchanged"
+              | "already-repaired"
+              | "raced";
+            const audit = async (outcome: DeterministicSpecParkOutcome) => {
+              const key = `${task.id}:${outcome}`;
+              if (outcome !== "re-admitted") {
+                if (this.deterministicSpecParkNoActionAudited.has(key)) return;
+                this.deterministicSpecParkNoActionAudited.add(key);
+              }
+              await emitBoundedRunAudit(this.store, {
+                taskId: task.id,
+                agentId: "self-healing",
+                runId: generateSyntheticRunId("reconcile-deterministic-spec-rejection-parks", task.id),
+                domain: "database",
+                mutationType: outcome === "re-admitted"
+                  ? "task:reconcile-deterministic-spec-rejection-parks"
+                  : "task:reconcile-deterministic-spec-rejection-parks-no-action",
+                target: task.id,
+                // ids / column / counts / fixed enum only. The on-disk fingerprint, the diagnostic
+                // sentence, and the spec content stay on the card, where an operator reads them.
+                metadata: {
+                  taskId: task.id,
+                  column: task.column,
+                  rejectionCount: episode.rejectionCount,
+                  withheldAgeMs,
+                  outcome,
+                },
+              }, { log });
+            };
+
+            if (live(task.id)) { await audit("live-session"); continue; }
+            if (task.userPaused === true || task.paused === true) { await audit("operator-held"); continue; }
+            // Re-admission is planning work, so it defers to the same human-review terminal contract the
+            // fence sweep honors: an engine pass that un-freezes a card its operator's own switch held
+            // manufactures motion the consent says is not the engine's to make.
+            if (!allowsAutoMergeProcessing(task, { autoMerge: resolveEffectiveAutoMerge(task, settings) })) {
+              await audit("auto-merge-off");
+              continue;
+            }
+            /*
+            `needs-replan` means something only while the card still sits in a lane whose role owns
+            planning, so the lane is proven before the write rather than guessed - the same three refusals
+            `reconcilePlanningFenceParks` records, for the same reason: a graph that declares no column
+            model cannot PROVE the lane, and the safe direction for a lane-shaped write is to leave the
+            card parked.
+            */
+            const laneIr = await resolveWorkflowIrForTask(this.store, task.id, specParkIrCache, specParkSelectionCache).catch(() => undefined);
+            if (!laneIr) { await audit("workflow-unresolvable"); continue; }
+            const planningLanes = resolvePlanningLanes(laneIr);
+            if (!planningLanes) { await audit("lane-vocabulary-unreadable"); continue; }
+            if (!planningLanes.has(task.column)) { await audit("left-planning-lane"); continue; }
+
+            // Cheap pre-filter of the premise. The authoritative decision is re-derived under the
+            // planning lifecycle lock below, because the file is the premise and it can move in between.
+            const preFingerprint = await this.readDeterministicSpecFingerprint(task.id);
+            if (preFingerprint === null) { await audit("spec-unreadable"); continue; }
+            if (preFingerprint === episode.specFingerprint) { await audit("spec-unchanged"); continue; }
+            if (preFingerprint === episode.staleSpecFingerprint) { await audit("already-repaired"); continue; }
+
+            const repairUnderLifecycleLock = async (): Promise<boolean> => {
+              // Re-read the premise INSIDE the lock, immediately before the write.
+              const currentFingerprint = await this.readDeterministicSpecFingerprint(task.id);
+              if (currentFingerprint === null) { await audit("spec-unreadable"); return false; }
+              const fresh = await this.store.getTask(task.id);
+              const freshEpisode = fresh ? readDeterministicSpecRejectionPark(fresh) : null;
+              if (!fresh || !freshEpisode || fresh.userPaused === true || fresh.paused === true) {
+                await audit("raced");
+                return false;
+              }
+              if (currentFingerprint === freshEpisode.specFingerprint) { await audit("spec-unchanged"); return false; }
+              if (currentFingerprint === freshEpisode.staleSpecFingerprint) { await audit("already-repaired"); return false; }
+
+              const wrote = await this.store.updateTaskAtomic(task.id, (row) => {
+                // The park must still be the live truth at write time: a Retry, an operator pause, or a
+                // lane move in this window owns the card instead.
+                const liveEpisode = readDeterministicSpecRejectionPark(row);
+                if (!liveEpisode || row.paused === true || row.userPaused === true) return null;
+                return {
+                  status: "needs-replan",
+                  error: null,
+                  recoveryRetryCount: null,
+                  nextRecoveryAt: null,
+                  // Key-level: `duplicateOfTaskIds`, `handoffFrom` and the sibling planning episodes all
+                  // live in the same jsonb and must survive this write.
+                  ...deterministicSpecRepairPatch(liveEpisode, currentFingerprint),
+                };
+              });
+              // An aborted updater returns the unchanged row, so a still-parked result is the race.
+              if (readDeterministicSpecRejectionPark(wrote)) { await audit("raced"); return false; }
+              await this.store.logEntry(
+                task.id,
+                `[recovery] deterministic-spec park lifted — the spec on disk differs from the bytes this verdict refused; planning re-queued (one re-admission per content change)`,
+              ).catch(() => undefined);
+              await audit("re-admitted");
+              return true;
+            };
+            const lifecycleLock = (this.store as Partial<TaskStore>).withPlanningLifecycleLock;
+            const didRepair = lifecycleLock
+              ? await lifecycleLock.call(this.store, task.id, repairUnderLifecycleLock) as unknown as boolean
+              : await repairUnderLifecycleLock();
+            if (!didRepair) continue;
+            // A repair ends the episode, so every withheld outcome for this card becomes stale: the next
+            // park must be able to report a fresh refusal even if the same code was already announced.
+            for (const memoKey of this.deterministicSpecParkNoActionAudited) {
+              if (memoKey.startsWith(`${task.id}:`)) this.deterministicSpecParkNoActionAudited.delete(memoKey);
+            }
+            repaired += 1;
+          } catch (error) {
+            // Contained per card: this card keeps its park and stays a candidate for the next pass.
+            log.warn(`reconcileDeterministicSpecRejectionParks: failed for ${snapshot.id}: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+        if (tasks.length < 500) break;
+        offset += tasks.length;
+      }
+      if (repaired > 0) log.log(`Re-queued planning for ${repaired} task(s) parked on an identical deterministic spec refusal`);
+      return repaired;
+    } catch (error) {
+      log.warn(`reconcileDeterministicSpecRejectionParks failed: ${error instanceof Error ? error.message : String(error)}`);
+      return 0;
+    }
+  }
+
+  /**
+   * FNXC:DeterministicSpecRejection 2026-11-08-04:05 (RUFU-485):
+   * The premise read for one card: the fingerprint of the authoritative PROMPT.md, or `null` when it
+   * cannot be read at all. A missing store task directory, an absent file, an EACCES, and a file that is
+   * empty after trimming all collapse to the same `null`, because for this sweep every one of them means
+   * "the premise cannot be established" - and a repair must never be granted on an unestablished
+   * premise. Empty content is in that set deliberately: an empty spec is not evidence that the refused
+   * defect was removed, only that the file was truncated, and re-admitting on it would trade a parked
+   * card for a session that cannot plan from nothing.
+   */
+  private async readDeterministicSpecFingerprint(taskId: string): Promise<string | null> {
+    if (typeof this.store.getTasksDir !== "function") return null;
+    try {
+      const content = await readFile(getPromptPath(this.store.getTasksDir(), taskId), "utf8");
+      if (content.trim() === "") return null;
+      return computeSpecFingerprint(content);
+    } catch {
+      return null;
     }
   }
 
