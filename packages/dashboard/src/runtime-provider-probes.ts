@@ -75,6 +75,12 @@ import {
   type PaperclipConnectionStatus,
 } from "@fusion-plugin-examples/paperclip-runtime";
 
+import {
+  binaryPathFromProbeKey,
+  cliProbeKey,
+  createCliProbeCache,
+} from "./cli-probe-cache.js";
+
 export type {
   HermesBinaryStatus,
   HermesProfileSummary,
@@ -94,12 +100,12 @@ export type {
 export { mintAgentApiKeyViaCli };
 
 export async function probeCursorCliProvider(opts?: { binaryPath?: string }): Promise<CursorBinaryStatus> {
-  return probeCursorBinary(opts);
+  return cursorCliProbeCache(cliProbeKey(opts?.binaryPath));
 }
 
 /** FNXC:AntigravityProvider 2026-09-20-18:32: Dashboard probes share the runtime binary override, preserving a single readiness authority. */
 export async function probeAntigravityCliProvider(opts?: { binaryPath?: string }): Promise<AntigravityBinaryStatus> {
-  return probeAntigravityBinary(opts);
+  return antigravityCliProbeCache(cliProbeKey(opts?.binaryPath));
 }
 
 export async function discoverAntigravityCliModels(opts?: { binaryPath?: string; timeoutMs?: number }) {
@@ -107,11 +113,61 @@ export async function discoverAntigravityCliModels(opts?: { binaryPath?: string;
 }
 
 export async function probeGrokCliProvider(opts?: { binaryPath?: string }): Promise<GrokBinaryStatus> {
-  return probeGrokBinary(opts);
+  return grokCliProbeCache(cliProbeKey(opts?.binaryPath));
 }
 
 export async function probeClaudeCliProvider(opts?: { binaryPath?: string }): Promise<ClaudeBinaryStatus> {
-  return probeClaudeBinary(opts);
+  return claudeCliProbeCache(cliProbeKey(opts?.binaryPath));
+}
+
+/*
+FNXC:DashboardCliProbeMemo 2026-11-08-00:55:
+Every presence probe below is a `spawn` of a real CLI. `GET /api/auth/status` awaits cursor,
+antigravity, grok, omp and claude in sequence and measured 9,39 s / 10,92 s for a 9 219 B body, while
+a profile of a 155 s event-loop stall attributed ~24 % of samples to `node:child_process` spawn
+machinery. Each probe is now memoized per configured binary path (see `cli-probe-cache.ts` for the
+reasoning and the gh-cli precedent), so the ~25 endpoints the UI fires on first load share one child
+process per CLI instead of forking five.
+
+The cache key is the configured binary path: a save that points at a NEW path is a cache miss by
+construction, so it can never be answered from the old path's truth. A save that re-probes the SAME
+path invalidates explicitly — see `invalidateRuntimeCliProbeCaches`.
+*/
+const cursorCliProbeCache = createCliProbeCache<CursorBinaryStatus>(
+  (key) => probeCursorBinary({ binaryPath: binaryPathFromProbeKey(key) }),
+  { isFailure: (result) => (result as CursorBinaryStatus).available !== true },
+);
+const antigravityCliProbeCache = createCliProbeCache<AntigravityBinaryStatus>(
+  (key) => probeAntigravityBinary({ binaryPath: binaryPathFromProbeKey(key) }),
+  { isFailure: (result) => (result as AntigravityBinaryStatus).available !== true },
+);
+const grokCliProbeCache = createCliProbeCache<GrokBinaryStatus>(
+  (key) => probeGrokBinary({ binaryPath: binaryPathFromProbeKey(key) }),
+  { isFailure: (result) => (result as GrokBinaryStatus).available !== true },
+);
+const claudeCliProbeCache = createCliProbeCache<ClaudeBinaryStatus>(
+  (key) => probeClaudeBinary({ binaryPath: binaryPathFromProbeKey(key) }),
+  { isFailure: (result) => (result as ClaudeBinaryStatus).available !== true },
+);
+const ompCliProbeCache = createCliProbeCache<OmpBinaryStatus>(
+  (key) => probeOmpBinary({ binaryPath: binaryPathFromProbeKey(key) }),
+  { isFailure: (result) => (result as OmpBinaryStatus).available !== true },
+);
+
+/**
+ * Drop every memoized CLI presence answer so the next probe forks again.
+ *
+ * FNXC:DashboardCliProbeMemo 2026-11-08-00:55: the explicit invalidation path, mirroring
+ * `resetGhAvailabilityCache` in `packages/core/src/cli/gh-cli.ts`. Wire it wherever CLI/provider
+ * settings change or where a route is answering "is this usable right now" (a save-time validation
+ * probe or an operator's Test / Refresh action) — neither may have to wait out the TTL.
+ */
+export function invalidateRuntimeCliProbeCaches(): void {
+  cursorCliProbeCache.invalidate();
+  antigravityCliProbeCache.invalidate();
+  grokCliProbeCache.invalidate();
+  claudeCliProbeCache.invalidate();
+  ompCliProbeCache.invalidate();
 }
 
 export type ClaudeModelDiscoveryResult = {
@@ -131,7 +187,7 @@ Oh My Pi (omp) ACP runtime probe façade — same boundary pattern as Grok/Curso
 route handlers and tests mock here without importing the plugin package directly.
 */
 export async function probeOmpCliProvider(opts?: { binaryPath?: string }): Promise<OmpBinaryStatus> {
-  return probeOmpBinary(opts);
+  return ompCliProbeCache(cliProbeKey(opts?.binaryPath));
 }
 
 export async function discoverOmpCliModels(opts?: { binaryPath?: string; timeoutMs?: number }) {

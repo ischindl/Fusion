@@ -13,6 +13,7 @@
 import { spawn } from "node:child_process";
 import {
   detectFnBinary,
+  resetFnBinaryDetectionCache,
   FN_INSTALL_CURL,
   FN_INSTALL_NPM,
   FN_NPM_PACKAGE,
@@ -233,6 +234,11 @@ export const registerFnBinaryRoutes: ApiRouteRegistrar = (ctx) => {
       const installResult = await runNpmInstall();
       // Re-probe even on failure — the binary may already exist from a
       // previous attempt and we want the UI to reflect reality.
+      //
+      // FNXC:DashboardCliProbeMemo 2026-11-08-00:55: "re-probe" now has to be explicit — detection
+      // is memoized, so without this reset the sentence above would silently serve the pre-install
+      // answer for up to the TTL. This is the operator-action invalidation path gh-cli has.
+      resetFnBinaryDetectionCache();
       const binary = await detectFnBinary();
       const expectedVersion = getCliPackageVersion();
       const status = buildStatusPayload(binary, expectedVersion);

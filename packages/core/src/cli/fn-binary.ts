@@ -280,8 +280,59 @@ async function probeVersion(binary: string): Promise<string | undefined> {
  *
  * Never throws — on any error it falls through to the npx fallback so
  * callers can rely on `invocation` always being usable.
+ *
+ * FNXC:DashboardCliProbeMemo 2026-11-08-00:55: `GET /api/system/fn-binary/status` measured
+ * 14,33 s and 9,02 s for a 310 B body on production :4040, because every request forked
+ * `which`/`where` (and sometimes `--version`) per candidate. This is the same TTL cache
+ * `gh-cli.ts` applies to `isGhAvailable`/`isGhAuthenticated`, with single-flight so the ~25
+ * endpoints the UI fires on first load share one probe, and a shorter TTL on a "not installed"
+ * answer so an install is noticed without a restart — gh-cli's "callers still notice if the user
+ * runs `gh auth login` mid-session" reasoning, applied to installation.
  */
-export async function detectFnBinary(): Promise<FnBinaryStatus> {
+const FN_BINARY_TTL_MS = 60_000;
+const FN_BINARY_FAILURE_TTL_MS = 5_000;
+
+interface FnBinaryCacheEntry {
+  value: FnBinaryStatus;
+  at: number;
+  failed: boolean;
+}
+
+let cachedFnBinary: FnBinaryCacheEntry | undefined;
+let fnBinaryFlight: { promise: Promise<FnBinaryStatus>; startedAt: number } | undefined;
+
+/**
+ * Reset the in-memory detection cache. Call after an operation that legitimately changes the
+ * install state (`POST /system/fn-binary/install`) so the next status read observes it without
+ * waiting for the TTL. Mirrors `resetGhAvailabilityCache`.
+ */
+export function resetFnBinaryDetectionCache(): void {
+  cachedFnBinary = undefined;
+  fnBinaryFlight = undefined;
+}
+
+export function detectFnBinary(): Promise<FnBinaryStatus> {
+  const now = Date.now();
+  if (cachedFnBinary && now - cachedFnBinary.at < (cachedFnBinary.failed ? FN_BINARY_FAILURE_TTL_MS : FN_BINARY_TTL_MS)) {
+    return Promise.resolve(cachedFnBinary.value);
+  }
+  // Past the failure window an unsettled flight is not shared any more: one wedged `which`
+  // child must not pin the endpoint forever.
+  if (fnBinaryFlight && now - fnBinaryFlight.startedAt < FN_BINARY_FAILURE_TTL_MS) {
+    return fnBinaryFlight.promise;
+  }
+  const flight = { promise: undefined as unknown as Promise<FnBinaryStatus>, startedAt: now };
+  fnBinaryFlight = flight;
+  flight.promise = (async () => {
+    const value = await runDetectFnBinary();
+    if (fnBinaryFlight === flight) fnBinaryFlight = undefined;
+    cachedFnBinary = { value, at: Date.now(), failed: value.installed !== true };
+    return value;
+  })();
+  return flight.promise;
+}
+
+async function runDetectFnBinary(): Promise<FnBinaryStatus> {
   for (const candidate of CANDIDATES) {
     try {
       const resolvedPath = await whichBinary(candidate);

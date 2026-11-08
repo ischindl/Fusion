@@ -6,9 +6,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { GIT_INSTALL_URL, isGhAvailable, isGhAuthenticated, probeGitCliStatus } from "@fusion/core";
-import { probeClaudeCli } from "../claude-cli-probe.js";
+import { invalidateClaudeCliProbeCache, probeClaudeCli } from "../claude-cli-probe.js";
 import { probeDroidCli } from "../droid-cli-probe.js";
-import { probeAntigravityCliProvider, probeCursorCliProvider, probeGrokCliProvider, probeOmpCliProvider } from "../runtime-provider-probes.js";
+import { invalidateRuntimeCliProbeCaches, probeAntigravityCliProvider, probeCursorCliProvider, probeGrokCliProvider, probeOmpCliProvider } from "../runtime-provider-probes.js";
 import { probeLlamaCpp } from "../llama-cpp-probe.js";
 import { ApiError, badRequest, conflict } from "../api-error.js";
 import { clearUsageCache } from "../usage.js";
@@ -1135,6 +1135,8 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
       }
 
       if (enabled) {
+        /* FNXC:DashboardCliProbeMemo 2026-11-08-00:55: a save/Test must observe the new state now, not after the TTL — mirrors resetGhAvailabilityCache. */
+        invalidateClaudeCliProbeCache();
         const binary = await probeClaudeCli();
         if (!binary.available) {
           throw new ApiError(
@@ -1383,6 +1385,7 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
         : currentBinaryPath;
 
       if (hasBinaryPathPatch && nextBinaryPath) {
+        invalidateRuntimeCliProbeCaches();
         const binary = await probeCursorCliProvider({ binaryPath: nextBinaryPath });
         if (!binary.available || !binary.usingConfiguredBinaryPath) {
           throw new ApiError(400, `Cannot save Cursor CLI binary path: ${binary.reason ?? "configured binary not available"}`);
@@ -1465,6 +1468,7 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
       const currentBinaryPath = normalizeAntigravityCliBinaryPath((currentSettings as Record<string, unknown>).antigravityCliBinaryPath);
       const nextBinaryPath = hasBinaryPathPatch ? normalizeAntigravityCliBinaryPath(requestedBinaryPath) : currentBinaryPath;
       if (hasBinaryPathPatch && nextBinaryPath) {
+        invalidateRuntimeCliProbeCaches();
         const binary = await probeAntigravityCliProvider({ binaryPath: nextBinaryPath });
         if (!binary.available || !binary.usingConfiguredBinaryPath) {
           throw new ApiError(400, `Cannot save Antigravity CLI binary path: ${binary.reason ?? "configured binary not available"}`);
@@ -1530,6 +1534,7 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
         : currentBinaryPath;
 
       if (hasBinaryPathPatch && nextBinaryPath) {
+        invalidateRuntimeCliProbeCaches();
         const binary = await probeGrokCliProvider({ binaryPath: nextBinaryPath });
         if (!binary.available || !binary.usingConfiguredBinaryPath) {
           throw new ApiError(400, `Cannot save Grok CLI binary path: ${binary.reason ?? "configured binary not available"}`);
@@ -1614,6 +1619,7 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
         : currentBinaryPath;
 
       if (hasBinaryPathPatch && nextBinaryPath) {
+        invalidateRuntimeCliProbeCaches();
         const binary = await probeOmpCliProvider({ binaryPath: nextBinaryPath });
         if (!binary.available || !binary.usingConfiguredBinaryPath) {
           throw new ApiError(400, `Cannot save OMP CLI binary path: ${binary.reason ?? "configured binary not available"}`);

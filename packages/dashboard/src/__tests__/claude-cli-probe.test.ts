@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { probeClaudeCli } from "../claude-cli-probe.js";
+import { beforeEach, describe, expect, it } from "vitest";
+import { invalidateClaudeCliProbeCache, probeClaudeCli } from "../claude-cli-probe.js";
 
 /**
  * These tests exercise the real probe — we deliberately do NOT mock
@@ -14,8 +14,18 @@ import { probeClaudeCli } from "../claude-cli-probe.js";
  *
  * If you need mocked probe behavior for a higher-level route test, spy
  * on `probeClaudeCli` at the import boundary rather than shimming spawn.
+ *
+ * FNXC:DashboardCliProbeMemo 2026-11-08-00:55: the probe answer is now memoized per timeout
+ * budget, so each case drops the cache first — these two cases must stay independent of each
+ * other and of execution order. The spawn-count contract lives in `cli-probe-memo.test.ts`;
+ * this file stays about the probe's own reported shape and timeout behavior.
  */
 describe("probeClaudeCli", () => {
+  beforeEach(() => {
+    invalidateClaudeCliProbeCache();
+  });
+
+
   it("returns a well-formed result whether or not claude is installed", async () => {
     const result = await probeClaudeCli();
     expect(typeof result.available).toBe("boolean");

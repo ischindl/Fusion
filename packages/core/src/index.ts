@@ -2070,6 +2070,7 @@ export type {
 export { ExperimentSessionStore } from "./eval/experiment-session-store.js";
 export {
   detectFnBinary,
+  resetFnBinaryDetectionCache,
   FN_NPM_PACKAGE,
   FN_INSTALL_NPM,
   FN_INSTALL_CURL,
