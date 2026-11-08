@@ -28,6 +28,18 @@ import {
 
 vi.mock("../../hooks/useChat");
 vi.mock("../../hooks/useChatRooms");
+/*
+FNXC:ChatThreadPagination 2026-11-08-11:53 (RUFU-871):
+`useChatUnread` and `CustomModelDropdown` must stay mocked here, exactly as every other ChatView test mocks
+them (see `ChatView.active-gating.test.tsx:16-22`). Without the unread mock the component subscribes to a
+live unread feed that never settles under jsdom, and the file hung for 420 s producing zero test results
+while the sibling hook-level window test finished in 8,94 s on the same host — so the hang was the missing
+mock, not host load. `CustomModelDropdown` is mocked only to keep the module graph off the test path.
+*/
+vi.mock("../../hooks/useChatUnread", () => ({
+  useChatUnread: () => ({ isUnread: () => false, markRead: vi.fn() }),
+}));
+vi.mock("../CustomModelDropdown", () => ({ CustomModelDropdown: () => null }));
 vi.mock("../../hooks/useNavigationHistory", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../hooks/useNavigationHistory")>();
   return { ...actual, useNavigationHistoryContext: () => ({ pushNav: vi.fn(), replaceCurrent: vi.fn(), removeNav: vi.fn() }) };
@@ -41,6 +53,25 @@ vi.mock("../../api", async (importOriginal) => ({
   fetchTasks: vi.fn().mockResolvedValue([]),
   searchFiles: vi.fn().mockResolvedValue({ files: [] }),
 }));
+
+/*
+FNXC:ChatThreadPagination 2026-11-08-11:55 (RUFU-871):
+jsdom ships no `IntersectionObserver`, and the load-older sentinel in `ChatView.tsx:1356` constructs one
+whenever `hasMoreMessages && !messagesLoading`, so every test in this file died with
+`ReferenceError: IntersectionObserver is not defined` until the global was stubbed. The stub is deliberately
+inert: these tests drive the affordance by clicking it, which is the keyboard-accessible path a user takes,
+and asserting on a synthetic observer callback would test the stub instead of the component.
+*/
+const inertIntersectionObserver = {
+  observe: vi.fn(),
+  unobserve: vi.fn(),
+  disconnect: vi.fn(),
+  takeRecords: () => [],
+  root: null,
+  rootMargin: "",
+  thresholds: [],
+};
+vi.stubGlobal("IntersectionObserver", vi.fn(function () { return inertIntersectionObserver; }));
 
 installChatViewEnv();
 
