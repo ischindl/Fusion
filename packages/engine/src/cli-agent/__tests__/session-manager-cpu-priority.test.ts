@@ -1,8 +1,10 @@
 /**
  * Agent-lane CPU priority at the one seam where every lane child is born (RUFU-901).
  *
- * Measured on a 24-core fleet host at load average 16-40 with 113 event-loop-stall episodes in a day: agent
- * lanes sat at 118 % and 113 % CPU against a 124 % dashboard. The operator chose to lower lane CPU priority
+ * Measured on a 24-core fleet host at load average 16-27 with 113 event-loop-stall episodes in a day: a lane
+ * sat at 118 % CPU against a 124 % dashboard, while the two largest tenants were not Fusion at all (`java`
+ * 382 %, `kasm` 133 % / 111 %) — the goal is that Fusion's own batch work stops queuing ahead of the UI, not
+ * that this knob fixes the host. The operator chose to lower lane CPU priority
  * while keeping lane concurrency, so the contract here is three-sided:
  *
  *   1. with the opt-in set, an automatic lane child is demoted — asserted through the real wiring, by
@@ -12,7 +14,7 @@
  *   3. WITHOUT the opt-in nothing happens at all — the ratchet that keeps every existing deployment
  *      byte-identical after upgrade.
  *
- * FNXC:AgentCpuPriority 2026-11-08-18:29 (RUFU-901):
+ * FNXC:AgentCpuPriority 2026-11-08-17:31 (RUFU-901):
  * The fake PTY reports the pid of a REAL short-lived child, so the demotion the manager performs is a real
  * `setpriority()` and `getPriority` answers what the kernel recorded rather than what a mock remembers. Two
  * consequences of that choice are load-bearing: every PTY pid used here is a child this test owns (the
@@ -179,9 +181,10 @@ function spawnOptions(purpose: CliSessionPurpose, overrides: Record<string, unkn
 }
 
 /*
-FNXC:AgentCpuPriority 2026-11-08-18:31 (RUFU-901):
-The baseline is MEASURED, never assumed to be 0. Verification runs the suite under `nice -n 10` (host load
-16-40), so the test worker already sits at niceness 10 and every `sleep` child it forks inherits that value.
+FNXC:AgentCpuPriority 2026-11-08-17:31 (RUFU-901):
+The baseline is MEASURED, never assumed to be 0. Verification runs the suite under `nice -n 10` (the fleet
+host carries load average 16-27 and far more while other runs overlap), so the test worker already sits at
+niceness 10 and every `sleep` child it forks inherits that value.
 Hardcoding `0` made the inert tests fail against a correct implementation AND made a "demoted to 10"
 assertion pass while the mechanism did nothing — a false positive in both directions. Every kernel-readback
 assertion therefore compares against this measured baseline, and the configured value is chosen relative to

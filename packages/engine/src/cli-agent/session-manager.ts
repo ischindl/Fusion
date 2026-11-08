@@ -694,8 +694,10 @@ export class CliSessionManager {
     This is the one place every agent lane child is born — `task-session.ts` (execute), `one-shot-session.ts`
     (planning/validator/ce), and `resume-coordinator.ts` (a recovered lane, which inherits the original
     purpose) all route through here, so the demotion is applied once instead of at four call sites. Measured
-    driver: fleet lanes at 118 % / 113 % CPU against a 124 % dashboard at load average 16-40, with 113
-    event-loop-stall episodes in a day.
+    driver: load average 16-27 with a lane at 118 % CPU against a 124 % dashboard; the larger tenants that
+    day were `java` (382 %) and `kasm` (133 % / 111 %), so this knob stops Fusion's own batch work joining the
+    pressure ahead of the UI — it does not repair an oversubscribed host. See
+    `packages/core/src/process/cpu-priority.ts` for the full measurement.
 
     Two deliberate exclusions:
     - `purpose === "chat"` is NOT demoted. It is a human typing; the interactive UI keeps its priority.

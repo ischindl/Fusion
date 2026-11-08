@@ -1,9 +1,11 @@
 /**
  * Agent-lane CPU-priority mechanism (RUFU-901).
  *
- * Measured on a 24-core fleet host at load average 16-40 with 113 event-loop-stall episodes in one day: the
- * agent lanes were among the largest CPU consumers (118 % and 113 % each) while the interactive dashboard
- * sat at 124 %. The operator's decision was to lower lane priority WITHOUT lowering lane concurrency, so the
+ * Measured on a 24-core fleet host at load average 16-27 with 113 event-loop-stall episodes in one day: a
+ * Fusion agent lane sat at 118 % CPU while the interactive dashboard sat at 124 % — and the two largest
+ * tenants that day were neither (`java` 382 %, `kasm` 133 % / 111 %), so this mechanism's job is to stop
+ * Fusion's own batch work adding to the pressure ahead of the UI, not to repair the host. The operator's
+ * decision was to lower lane priority WITHOUT lowering lane concurrency, so the
  * mechanism must (1) only ever lower priority, (2) never be able to demote the process hosting the UI, and
  * (3) be inert until an operator opts in.
  *
@@ -159,7 +161,7 @@ describe("applyAgentCpuPriority", () => {
 /**
  * Strip comments before a code-construct scan.
  *
- * FNXC:AgentCpuPriority 2026-11-08-18:12 (RUFU-901):
+ * FNXC:AgentCpuPriority 2026-11-08-17:31 (RUFU-901):
  * This module's own documentation names the mechanisms it rejected (`nice -n N`, `renice`, `execSync`) to
  * explain WHY they were rejected. Scanning raw source text therefore fails on prose, which is the failure
  * mode the repo's "tests never assert that a comment exists" rule exists to prevent. Comments are removed

@@ -2,11 +2,19 @@
  * CPU priority demotion for agent-lane children.
  *
  * FNXC:AgentCpuPriority 2026-11-08-17:22 (RUFU-901):
- * Measured on a 24-core fleet host at load average 16-40 with 113 event-loop-stall episodes in one day:
- * the largest CPU consumers were not the dashboard (124 %) but the agent lanes (118 % and 113 % each)
- * alongside unrelated tenants. The operator's decision was explicit — give the lanes lower CPU priority,
- * do NOT reduce their concurrency. This module is the mechanism for that decision, and it is deliberately
- * narrow: it can only LOWER priority, and only for a spawned lane child.
+ * Measured on a 24-core fleet host at load average 16-27 with 113 event-loop-stall episodes in one day.
+ * The operator's decision was explicit — give the agent lanes lower CPU priority, do NOT reduce their
+ * concurrency. This module is the mechanism for that decision, and it is deliberately narrow: it can only
+ * LOWER priority, and only for a spawned lane child.
+ *
+ * FNXC:AgentCpuPriority 2026-11-08-18:00 (RUFU-901):
+ * The measurement, stated honestly, because it bounds what this mechanism can achieve. Per-process CPU at
+ * the time of the decision: `java` 382 %, `kasm` 133 % and 111 % (two tenants), a Fusion agent lane 118 %,
+ * and the dashboard 124 %. The two largest consumers were therefore NEITHER Fusion's lanes NOR its dashboard.
+ * Demoting lanes cannot repair a host whose top tenants are other workloads — it only stops Fusion's own
+ * batch work from adding to the pressure, and stops it ahead of the UI. An earlier draft of this comment
+ * claimed the lanes were the largest consumers; that was wrong and the correction is what keeps a later
+ * reader from expecting this knob to move the load average.
  *
  * Why a post-spawn `setpriority` syscall rather than a `nice -n N` argv prefix:
  * `spawn`/`pty.spawn` have no niceness option, so the two candidate mechanisms are (a) prefix the launch
