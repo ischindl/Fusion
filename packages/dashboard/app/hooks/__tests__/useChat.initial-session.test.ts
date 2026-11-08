@@ -29,6 +29,15 @@ vi.mock("../../sse-bus", () => ({
 const fetchChatSessions = vi.mocked(api.fetchChatSessions);
 const fetchChatSession = vi.mocked(api.fetchChatSession);
 const fetchChatMessages = vi.mocked(api.fetchChatMessages);
+
+/*
+FNXC:ChatThreadPagination 2026-11-08-12:11 (RUFU-871 slice A):
+Opening a chat now asks for `CHAT_THREAD_WINDOW` = 20 rows instead of 50, so these call-contract
+assertions state the bounded window once, here. Deliberately a literal rather than an import of the
+production constant: a silent change to the window must fail loudly in the tests that pinned it,
+exactly as `useChat.thread-window.test.ts` pins `WINDOW_SIZE`.
+*/
+const THREAD_WINDOW = 20;
 const createChatSession = vi.mocked(api.createChatSession);
 const attachChatStream = vi.mocked(api.attachChatStream);
 const streamChatResponse = vi.mocked(api.streamChatResponse);
@@ -101,7 +110,7 @@ describe("useChat initial session isolation", () => {
     await act(async () => list.resolve({ sessions: [initial] }));
     await waitFor(() => {
       expect(fetchChatSession).toHaveBeenCalledWith(initial.id, PROJECT_ID);
-      expect(fetchChatMessages).toHaveBeenCalledWith(initial.id, { limit: 50, order: "desc" }, PROJECT_ID);
+      expect(fetchChatMessages).toHaveBeenCalledWith(initial.id, { limit: THREAD_WINDOW, order: "desc" }, PROJECT_ID);
     });
   });
 
@@ -115,7 +124,7 @@ describe("useChat initial session isolation", () => {
     await waitFor(() => expect(result.current.sessionsLoading).toBe(false));
     expect(result.current.activeSession?.id).toBe(initial.id);
     expect(fetchChatSession).toHaveBeenCalledWith(initial.id, PROJECT_ID);
-    expect(fetchChatMessages).toHaveBeenCalledWith(initial.id, { limit: 50, order: "desc" }, PROJECT_ID);
+    expect(fetchChatMessages).toHaveBeenCalledWith(initial.id, { limit: THREAD_WINDOW, order: "desc" }, PROJECT_ID);
   });
 
   it("keeps selection usable when project storage refuses the write", async () => {
@@ -164,7 +173,7 @@ describe("useChat initial session isolation", () => {
 
     await waitFor(() => expect(result.current.activeSession?.id).toBe(saved.id));
     expect(fetchChatSession).toHaveBeenCalledWith(saved.id, PROJECT_ID);
-    expect(fetchChatMessages).toHaveBeenCalledWith(saved.id, { limit: 50, order: "desc" }, PROJECT_ID);
+    expect(fetchChatMessages).toHaveBeenCalledWith(saved.id, { limit: THREAD_WINDOW, order: "desc" }, PROJECT_ID);
   });
 
   it("clears an absent or archived saved conversation after the active list loads", async () => {
@@ -242,7 +251,7 @@ describe("useChat initial session isolation", () => {
     expect(result.current.pendingMessages).toEqual([]);
     expect(retainedStream.close).toHaveBeenCalledTimes(1);
     expect(fetchChatSession).toHaveBeenCalledWith("selected-session", PROJECT_ID);
-    expect(fetchChatMessages).toHaveBeenCalledWith("selected-session", { limit: 50, order: "desc" }, PROJECT_ID);
+    expect(fetchChatMessages).toHaveBeenCalledWith("selected-session", { limit: THREAD_WINDOW, order: "desc" }, PROJECT_ID);
     expect(result.current.sessions.map((item) => item.id)).toEqual(expect.arrayContaining(["selected-session", "kept-session"]));
   });
 });

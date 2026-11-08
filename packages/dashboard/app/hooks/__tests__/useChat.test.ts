@@ -60,6 +60,15 @@ const mockFetchChatSession = vi.mocked(apiModule.fetchChatSession);
 const mockCreateChatSession = vi.mocked(apiModule.createChatSession);
 const mockHandoffChatSession = vi.mocked(apiModule.handoffChatSession);
 const mockFetchChatMessages = vi.mocked(apiModule.fetchChatMessages);
+
+/*
+FNXC:ChatThreadPagination 2026-11-08-12:11 (RUFU-871 slice A):
+Opening a chat now asks for `CHAT_THREAD_WINDOW` = 20 rows instead of 50, so these call-contract
+assertions state the bounded window once, here. Deliberately a literal rather than an import of the
+production constant: a silent change to the window must fail loudly in the tests that pinned it,
+exactly as `useChat.thread-window.test.ts` pins `WINDOW_SIZE`.
+*/
+const THREAD_WINDOW = 20;
 const mockUpdateChatSession = vi.mocked(apiModule.updateChatSession);
 const mockDeleteChatSession = vi.mocked(apiModule.deleteChatSession);
 const mockStreamChatResponse = vi.mocked(apiModule.streamChatResponse);
@@ -945,7 +954,7 @@ describe("useChat", () => {
     });
 
     await waitFor(() => {
-      expect(mockFetchChatMessages).toHaveBeenCalledWith("session-001", { limit: 50, order: "desc" }, undefined);
+      expect(mockFetchChatMessages).toHaveBeenCalledWith("session-001", { limit: THREAD_WINDOW, order: "desc" }, undefined);
     });
 
     await waitFor(() => {
@@ -1996,7 +2005,7 @@ describe("useChat", () => {
     await waitFor(() => {
       expect(result.current.isStreaming).toBe(false);
       expect(addToast).not.toHaveBeenCalledWith("Load failed", "error");
-      expect(mockFetchChatMessages).toHaveBeenCalledWith("session-001", { limit: 50, order: "desc" }, undefined);
+      expect(mockFetchChatMessages).toHaveBeenCalledWith("session-001", { limit: THREAD_WINDOW, order: "desc" }, undefined);
     });
   });
 
@@ -5710,7 +5719,7 @@ describe("useChat", () => {
 
       await waitFor(() => {
         expect(result.current.activeSession?.id).toBe(session.id);
-        expect(mockFetchChatMessages).toHaveBeenCalledWith(session.id, { limit: 50, order: "desc" }, "proj-123");
+        expect(mockFetchChatMessages).toHaveBeenCalledWith(session.id, { limit: THREAD_WINDOW, order: "desc" }, "proj-123");
       });
       expect(result.current.messages).toEqual([]);
 
@@ -6683,7 +6692,7 @@ describe("useChat", () => {
 
       // Verify messages were loaded
       await waitFor(() => {
-        expect(mockFetchChatMessages).toHaveBeenCalledWith("session-001", { limit: 50, order: "desc" }, "proj-123");
+        expect(mockFetchChatMessages).toHaveBeenCalledWith("session-001", { limit: THREAD_WINDOW, order: "desc" }, "proj-123");
       });
     });
 

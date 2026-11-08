@@ -7,7 +7,6 @@ import {
   createChatSession as apiCreateChatSession,
   handoffChatSession,
   fetchChatMessages,
-  CHAT_THREAD_WINDOW,
   updateChatSession,
   deleteChatSession,
   backfillChatSessionToStash,
@@ -23,6 +22,19 @@ import {
   type ChatStashBackfillResponse,
   type ChatStreamErrorMeta,
 } from "../api";
+/*
+FNXC:ChatThreadPagination 2026-11-08-12:20 (RUFU-871 slice A):
+`CHAT_THREAD_WINDOW` is imported from its defining module, NOT from the `../api` barrel. Six chat hook
+tests replace that barrel wholesale (`vi.mock("../../api", () => ({ ...enumerated fns... }))`) to keep
+accidental network calls out; a plain numeric constant is not a network function, so it was never in
+those lists, and every one of them silently fetched ZERO message pages once the window constant started
+arriving through the barrel (Vitest throws on an undefined mocked export, and `loadMessages` swallows it
+in its existing `catch {}`). Reading the constant where it is defined keeps the mock's contract to the
+fetch surface it is actually standing in for, and matches how sibling hooks import concrete api modules
+(`useTaskSearch`, `useTerminalSessions`, `useKnowledgeGraph`). The numeric window itself stays pinned
+against a real request URL in `__tests__/useChat.thread-window.test.ts`.
+*/
+import { CHAT_THREAD_WINDOW } from "../api/chat/chat";
 import { subscribeSse } from "../sse-bus";
 import { createResyncRetryRunner } from "./resyncRetry";
 import {
