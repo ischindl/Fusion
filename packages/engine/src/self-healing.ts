@@ -7849,8 +7849,12 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             /*
             FNXC:WorktreeCleanup 2026-08-29-01:19:
             This post-move fan-out is the convergence backstop for worktrees leaked before FN-251,
-            not the ordering gate. Only durable landing proof permits ignored-only content removal;
-            preserved outcomes retain the pointer and are retried on later terminal transitions.
+            not the ordering gate. STAS-397 retired the sentence that used to sit here saying only
+            durable landing proof permits ignored-only content removal: that gate refused an
+            already-merged checkout over a virtualenv and could never be satisfied by the sweep that
+            runs it, so ignored content now releases and the discard names what it threw away, while
+            the proof still only says which landing produced it. Preserved outcomes still retain the
+            pointer and are retried on later terminal transitions.
 
 /*
             FNXC:WorktreeCleanup 2026-08-29-01:50:
