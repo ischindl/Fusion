@@ -17,6 +17,8 @@ export interface UseEngineStatusResult {
   error: string | null;
   canStart: boolean;
   starting: boolean;
+  /** A paused project can be resumed; distinct from `canStart` because resuming is another action. */
+  canResume: boolean;
   refetch: () => Promise<void>;
   start: () => Promise<void>;
 }
@@ -100,8 +102,17 @@ export function useEngineStatus(projectId?: string): UseEngineStatusResult {
     status,
     loading,
     error,
-    canStart: Boolean(status?.canStart),
-    starting: Boolean(status?.starting || startInFlight),
+    /*
+    FNXC:EngineStatusTruth 2026-11-07-13:55 (RUFU-496):
+    The optimistic click state used to add `starting` on top of a server payload that still said
+    `canStart: true`, which is the exact contradictory triple this task exists to make impossible -
+    it just moved from the server into the browser. The in-flight click now WITHDRAWS the offer to
+    start instead of only adding a spinner, so the double-click guard keeps working while the panel
+    can never render "starting and free to start" at the same instant.
+    */
+    canStart: Boolean(status?.canStart) && !startInFlight,
+    canResume: Boolean(status?.canResume) && !startInFlight,
+    starting: Boolean(status?.starting) || startInFlight,
     refetch,
     start,
   }), [error, loading, refetch, start, startInFlight, status]);

@@ -2391,11 +2391,25 @@ On mobile, the compact footer hides stat names to preserve space. Tap a colored 
 
 ### Engine status banner
 
-When a project dashboard is open but no project engine is connected, Fusion shows a sticky **Engine disconnected** banner above the project content. This covers paused projects, failed or still-starting project engines, delayed reconciliation, and dashboard-only/dev launches where the UI is available before an engine manager is attached.
+<!-- FNXC:EngineStatusTruth 2026-11-07-14:05 (RUFU-496): the banner used to render one manager-handle lookup as "not connected", which reported a project driven by another process - or one whose lanes were provably running - as an outage with an enabled Start button. Document the per-state contract, because the states, not a single connected flag, are what an operator reads. -->
+When a project dashboard is open and the project engine is not proven live, Fusion shows a sticky **Engine disconnected** banner above the project content. The banner now names the state it is in, because "not connected" alone was not true: a project can be running work while this dashboard process holds no engine handle.
 
-If the server can start the current project engine, use **Start engine** in the banner to resume a paused project or call the project engine startup path without reloading the dashboard. While the start request is in flight the button is disabled and shows the starting state so repeated clicks cannot create duplicate startup attempts. The banner disappears as soon as the status endpoint reports the project engine is connected.
+| What the banner says | What it means | What you can do |
+|---|---|---|
+| **Engine is running in another Fusion process** | This project's engine is owned by a different process (for example a second `fn serve`, `fn desktop`, or `fn daemon`). Nothing is wrong here. | No start action — starting it again here would be refused. |
+| **Lanes are running without an engine handle here** | The project's agents have live top-level slots in an already-open store, so the project is doing work even though this process holds no handle. | No start action. |
+| **Starting the engine (started Ns ago · waiting on: `<stage>`)** | A real, tracked startup attempt is in flight. The phase name appears once the attempt passes a 30-second stall floor: `registry-read`, `working-directory`, `startup-concurrency`, `singleton-acquire`, `runtime-start`, `started-hook`, or `complete`. | The button shows the in-flight state and is disabled; repeated clicks cannot create duplicate attempts. |
+| **The engine start did not finish** | The attempt hit its ceiling (default 10 minutes, `FUSION_ENGINE_START_TIMEOUT_MS`, floor 10 seconds) and was abandoned, so the state cannot hide forever. Periodic reconciliation retries it under a capped backoff. | Retry with **Start engine**. |
+| **Last engine start failed (N ago): `<reason>`** | A start attempt rejected and the reason was recorded. Retries back off (30 s, doubling, capped at 15 minutes) and reset on a successful start. | Retry with **Start engine** once the backoff elapses. |
+| **Engine is paused for this project** | You (or a control) paused the project deliberately. | **Resume engine** — one click, as before. |
+| **No engine is running for this project** | Nothing owns it, nothing is in flight, and no lanes are active. This is the one state where starting is the right action. | **Start engine**. |
+| **Dashboard-only mode** | The UI is running without an engine manager attached (for example a dashboard-only/dev launch). | Start the full server with `fn serve`. |
 
-If the dashboard is running without engine management, the banner stays informational and disables the start action. Start the full server with `fn serve` to enable one-click engine startup and live task execution.
+The banner disappears as soon as the status endpoint reports the project connected. A project is reported connected when **any** of these is proven: this process holds the engine handle, another process owns it, or the project's lanes are running in a store this process already has open. To answer a status poll the server never opens a project store, starts a watcher, or starts an engine — so when no store is open, the count of running agents is deliberately **omitted** rather than reported as zero, and "unknown" is never shown as "idle".
+
+The same truth backs the start action: `POST /api/engine/start` answers the same status the banner renders and refuses a project that is already live, already starting, or owned by another process with a `409` and the reason, instead of launching a duplicate startup attempt. The deliberately contradictory state the old payload could produce — *not connected, currently starting, and free to start again* — cannot be represented at all now.
+
+If the dashboard is running without engine management, the banner stays informational and offers no start action. Start the full server with `fn serve` to enable one-click engine startup and live task execution.
 
 ### Identifying high-impact blockers
 

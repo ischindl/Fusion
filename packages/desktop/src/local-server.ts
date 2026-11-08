@@ -72,7 +72,7 @@ export class DesktopLocalServerManager {
       const { createTaskStoreForBackend, formatMigrationProgress } = await import("@fusion/core");
       const { CentralCore, PluginLoader, ensureBundledPluginInstalled, isBundledPluginId } = await import("@fusion/core");
       const { createServer } = await import("@fusion/dashboard");
-      const { ProjectEngineManager, createFusionAuthStorage, createFusionModelRegistry, seedDashboardProviders } = await import("@fusion/engine");
+      const { ProjectEngineManager, warmUpProjectEngine, createFusionAuthStorage, createFusionModelRegistry, seedDashboardProviders } = await import("@fusion/engine");
       // FNXC:BackendFlip 2026-06-26-14:40:
       // Consult the startup factory to boot a PostgreSQL-backed TaskStore.
       // Post default-flip: the factory boots embedded PG by default when
@@ -114,7 +114,19 @@ export class DesktopLocalServerManager {
       await engineManager.startAll();
       engineManager.startReconciliation();
       const rootProject = await resolveDesktopRuntimePrimaryProject(centralCore);
-      const primaryEngine = rootProject ? await engineManager.ensureEngine(rootProject.id) : undefined;
+      /*
+       * FNXC:EngineStatusTruth 2026-11-07-14:20 (RUFU-496):
+       * This awaited the raw `ensureEngine` inside the blocking server-construction path, so a cold start
+       * that threw aborted server creation before `listen()` and the desktop window never appeared. The
+       * warm-up now fails soft onto the host's own log channel while the manager keeps the named failure
+       * record, and the `startReconciliation()` above re-admits the project under its capped backoff.
+       */
+      const primaryEngine = rootProject
+        ? await warmUpProjectEngine(engineManager, rootProject.id, {
+          host: "desktop",
+          onWarning: (message) => console.warn(message),
+        })
+        : undefined;
       /*
        * FNXC:DesktopRuntime 2026-07-07-00:00:
        * FN-7622: this legacy path had the same truncated-provider-list gap as local-runtime.ts — wire

@@ -125,9 +125,26 @@ const mocks = vi.hoisted(() => {
     createTaskStoreForBackend: vi.fn(async () => ({ taskStore: store, shutdown: backendShutdown })),
     backendShutdown,
     CentralCore,
-    PluginLoader,
     ProjectEngineManager,
+    /*
+     * FNXC:EngineStatusTruth 2026-11-07-14:20 (RUFU-496):
+     * Honors the shared helper's contract: call `ensureEngine` with ONE argument, and turn a rejection
+     * into an undefined engine reported through the host's `onWarning` channel instead of throwing.
+     */
+    warmUpProjectEngine: vi.fn(async (
+      manager: { ensureEngine: (id: string) => Promise<unknown> },
+      projectId: string,
+      opts: { onWarning?: (message: string) => void },
+    ) => {
+      try {
+        return await manager.ensureEngine(projectId);
+      } catch (error) {
+        opts.onWarning?.(error instanceof Error ? error.message : String(error));
+        return undefined;
+      }
+    }),
     createServer,
+    PluginLoader,
     store,
     listen,
     centralCore,
@@ -158,6 +175,14 @@ vi.mock("../bundled-plugin-dirs.js", () => ({ resolveDesktopBundlePluginDirs: mo
 vi.mock("@fusion/dashboard", () => ({ createServer: mocks.createServer }));
 vi.mock("@fusion/engine", () => ({
   ProjectEngineManager: mocks.ProjectEngineManager,
+  /*
+   * FNXC:EngineStatusTruth 2026-11-07-14:20 (RUFU-496):
+   * The desktop suite mocks @fusion/engine wholesale, so the shared warm-up helper needs a stand-in
+   * that honors its contract (single-argument ensureEngine, soft failure onto onWarning, undefined
+   * result) without re-implementing the manager. The helper's own behavior is pinned in the engine
+   * suite; what this file proves is the host-level promise: a rejecting start still serves a dashboard.
+   */
+  warmUpProjectEngine: mocks.warmUpProjectEngine,
   createFusionAuthStorage: () => ({ reload: () => undefined, getOAuthProviders: () => [], hasAuth: () => false }),
   createFusionModelRegistry: () => ({ listModels: () => [], refresh: () => undefined }),
   // FN-7622: seedDashboardProviders is asserted directly in provider-registration.test.ts; this
@@ -193,6 +218,36 @@ describe("DesktopLocalServerManager", () => {
         centralCore: mocks.centralCore,
       }),
     );
+  });
+
+  /*
+   * FNXC:EngineStatusTruth 2026-11-07-14:20 (RUFU-496):
+   * The desktop host used to await the raw `ensureEngine` inside server construction, so an engine
+   * cold-start that threw killed `start()` and the dashboard never came up - the opposite failure of
+   * the lying payload this task fixes. The host-level promise: a failed warm-up costs you the engine,
+   * never the board.
+   */
+  it("still serves the dashboard when the project engine start rejects", async () => {
+    mocks.engineManager.ensureEngine.mockRejectedValueOnce(new Error("cold start exploded"));
+    const warnings: string[] = [];
+    const { DesktopLocalServerManager } = await import("../local-server.ts");
+    const manager = new DesktopLocalServerManager("/repo");
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const runtime = await manager.start();
+
+    expect(runtime.port).toBe(4545);
+    expect(manager.getState().status).toBe("ready");
+    // The host reached createServer with no engine rather than dying in the warm-up.
+    expect(mocks.createServer).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ engineManager: mocks.engineManager }),
+    );
+    expect(mocks.createServer.mock.calls[0]![1]).not.toHaveProperty("engine", expect.anything());
+    // The rejection reason is reported on the host's own channel, not swallowed.
+    warnSpy.mock.calls.forEach(([message]) => warnings.push(String(message)));
+    expect(warnings.join("\n")).toContain("cold start exploded");
+    warnSpy.mockRestore();
   });
 
   it("stops local runtime and resets state", async () => {

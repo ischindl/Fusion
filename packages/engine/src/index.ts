@@ -1180,7 +1180,19 @@ export {
 } from "./agents/agent-session-helpers.js";
 export { ProjectManager } from "./project/project-manager.js";
 export { ProjectEngine, type ProjectEngineOptions } from "./project-engine.js";
-export { ProjectEngineManager, type EngineManagerOptions } from "./project-engine-manager.js";
+export {
+  ProjectEngineManager,
+  warmUpProjectEngine,
+  EngineStartTimeoutError,
+  DEFAULT_ENGINE_START_TIMEOUT_MS,
+  MIN_ENGINE_START_TIMEOUT_MS,
+  ENGINE_START_TIMEOUT_ENV,
+  resolveEngineStartTimeoutMs,
+  type EngineManagerOptions,
+  type EngineStartStage,
+  type EngineStartAttemptInfo,
+  type EngineStartFailureRecord,
+} from "./project-engine-manager.js";
 export {
   acquireEngineSingleton,
   computeEngineLockFilePath,

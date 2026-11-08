@@ -117,6 +117,7 @@ import {
   asWakeSignalKind,
   type WakeContext,
   ProjectEngineManager,
+  warmUpProjectEngine,
   PeerExchangeService,
   HybridExecutor,
   shouldUseHybridExecutor,
@@ -2442,10 +2443,18 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
       ? await phaseTime(
           "engine: ensureEngine(cwd)",
           () =>
-            engineManager.ensureEngine(cwdRegistered.id).catch((err) => {
-              const message = err instanceof Error ? err.message : String(err);
-              logSink.warn(`Failed to warm cwd project engine: ${message}`, "engine");
-              return undefined;
+            /*
+             * FNXC:EngineStatusTruth 2026-11-07-14:20 (RUFU-496):
+             * `fn dashboard` must always reach `listen()`. A cold start that threw used to be swallowed
+             * here with only a log line, which left the host serving a board whose engine state could not
+             * be explained afterwards. The shared helper keeps the soft failure, logs on this host's own
+             * sink, and leaves the manager's attempt terminal with a named reason the status payload
+             * reports as `start-failed`; `engineManager.startAll()` above already armed reconciliation to
+             * retry the project under its capped backoff.
+             */
+            warmUpProjectEngine(engineManager, cwdRegistered.id, {
+              host: "dashboard",
+              onWarning: (message) => logSink.warn(message, "engine"),
             }),
           logPhase,
         )

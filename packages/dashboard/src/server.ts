@@ -30,6 +30,7 @@ import {
   setRunningAgentCountSource,
 } from "@fusion/core";
 import type { AuthStorageLike, ModelRegistryLike } from "./routes.js";
+import type { EngineStartStage } from "@fusion/engine";
 import { createHealthSnapshot } from "./health-snapshot.js";
 import { createApiRoutes } from "./routes.js";
 import { createSSE, disconnectSSEClient, markSSEClientAlive } from "./sse.js";
@@ -39,6 +40,7 @@ import {
   countRunningAgentsInRegisteredProjectStores,
   countRunningAgentsInStore,
   evictAllProjectStores,
+  listRegisteredProjectStores,
   setOnProjectFirstCreated,
 } from "./project-store-resolver.js";
 import { getOrCreateScopedChatManager, getOrCreateScopedChatStore, listLiveScopedChatStores, onScopedChatStoreCreated } from "./chat-project-services.js";
@@ -699,7 +701,32 @@ function hasDashboardEngine(options?: ServerOptions): boolean {
   return Boolean(engines && engines.size > 0);
 }
 
-export type EngineStatusReason = "dashboard-only" | "no-project";
+/*
+FNXC:EngineStatusTruth 2026-11-07-13:55 (RUFU-496):
+The reason vocabulary now names the states that actually exist. The old pair
+(`dashboard-only` | `no-project`) plus "no reason" collapsed five different situations into
+`{connected:false, starting:true, canStart:true}`, which is how a running project read as down.
+`live-without-handle` and `externally-owned` are the two states where the project IS working and
+this process simply does not own the engine; `starting` and `start-failed` are the two states where
+a start attempt exists and can be described (age + stage, or the recorded reason).
+*/
+export type EngineStatusReason =
+  | "dashboard-only"
+  | "no-project"
+  | "not-started"
+  | "starting"
+  | "start-failed"
+  | "externally-owned"
+  | "live-without-handle"
+  | "paused";
+
+/** Serialized form of {@link EngineStartFailureRecord} for the wire (ISO instant, not epoch). */
+export interface EngineStatusStartFailure {
+  at: string;
+  stage: EngineStartStage;
+  message: string;
+  timedOut: boolean;
+}
 
 export interface EngineStatusPayload {
   connected: boolean;
@@ -707,9 +734,100 @@ export interface EngineStatusPayload {
   canStart: boolean;
   reason?: EngineStatusReason;
   projectId?: string;
+  /**
+   * RUFU-496 additive: the raw `getEngine()` truth, kept distinct from `connected` so a reader can
+   * tell "this process holds the handle" from "this project's lanes are up".
+   */
+  engineHandle?: boolean;
+  /** RUFU-496 additive: another fusion process on this machine owns this project's engine. */
+  externallyOwned?: boolean;
+  /**
+   * RUFU-496 additive: running top-level agents from ALREADY-OPEN stores only.
+   * Deliberately ABSENT (never `0`) when no store is registered for the project, so "unknown"
+   * cannot be mistaken for "idle".
+   */
+  runningAgentCount?: number;
+  /** RUFU-496 additive: ISO instant when the in-flight start attempt began. */
+  startingSince?: string;
+  /** RUFU-496 additive: how long the in-flight start attempt has been running. */
+  startingAgeMs?: number;
+  /** RUFU-496 additive: the awaited boundary the in-flight start attempt is blocked on. */
+  startingStage?: EngineStartStage;
+  /** RUFU-496 additive: the last recorded start failure, so a failed start explains itself. */
+  lastStartFailure?: EngineStatusStartFailure;
+  /**
+   * RUFU-496 additive: a deliberately paused project whose lanes are down can be resumed. Kept
+   * separate from `canStart` because starting and resuming are different actions, and the
+   * existing one-click resume path (route + `resumeProject`) must not be lost by making
+   * `canStart` honest.
+   */
+  canResume?: boolean;
 }
 
-function buildEngineStatusPayload(projectId: string | undefined, options?: ServerOptions): EngineStatusPayload {
+/**
+ * Resolve the running top-level agent count for one project from ALREADY-OPEN stores only.
+ *
+ * FNXC:EngineStatusTruth 2026-11-07-13:55 (RUFU-496):
+ * Precedence mirrors the running-count source wired at `setRunningAgentCountSource` above (engine
+ * store -> registered store -> launch default by central id) so the banner and the footer/Command
+ * Center counters can never disagree about "running". The discipline that makes this safe on a
+ * 10-second status poll is the resolver's own documented invariant: it reads already-open stores and
+ * NEVER opens a project, starts a watcher, or starts an engine to answer a count. Returning
+ * `undefined` when nothing is open is what keeps "unknown" distinct from "zero".
+ */
+async function resolveRunningAgentCountFromOpenStores(
+  projectId: string,
+  options?: ServerOptions,
+  defaultStore?: TaskStore,
+): Promise<number | undefined> {
+  const engine = options?.engineManager?.getEngine(projectId);
+  const engineStore = engine?.getTaskStore?.();
+  if (engineStore) {
+    return await countRunningAgentsInStore(engineStore);
+  }
+
+  const registered = listRegisteredProjectStores().find((entry) => entry.projectId === projectId);
+  if (registered) {
+    return await countRunningAgentsInStore(registered.store);
+  }
+
+  const defaultProjectId = await options?.centralCore?.getDefaultProjectId?.();
+  if (defaultStore && defaultProjectId && defaultProjectId === projectId) {
+    return await countRunningAgentsInStore(defaultStore);
+  }
+
+  return undefined;
+}
+
+/**
+ * Build the project engine status.
+ *
+ * FNXC:EngineStatusTruth 2026-11-07-13:55 (RUFU-496):
+ * This builder used to answer three claims it had no evidence for: `connected` was one synchronous
+ * `getEngine()` lookup, `starting` was derived from a MANAGER-LOOKUP MISS rather than a startup, and
+ * `canStart` was the constant `true`. Together they reported a demonstrably working project as
+ * "disconnected, currently starting, and free to start again", and the reporter read that as an
+ * outage and filed a false alarm.
+ *
+ * The invariant this shape enforces by construction is that **`starting && canStart` is
+ * unrepresentable**: `starting` reads the manager's tracked attempt record, and an in-flight attempt
+ * is one of the conditions that makes `canStart` false. A project that is starting can never also be
+ * offered for another start.
+ *
+ * Source of proof per field, so no reader has to guess:
+ * - `engineHandle`      -> `engineManager.getEngine()`, this process only.
+ * - `externallyOwned`   -> the manager's singleton-lock evidence set (`getExternalEngineIds`).
+ * - `runningAgentCount` -> already-open stores only, {@link resolveRunningAgentCountFromOpenStores}.
+ * - `starting`          -> the tracked attempt record (`getStartAttempt`), never a lookup miss.
+ * - `paused`            -> the live CentralCore registry row, not a cached flag.
+ * - `connected`         -> handle OR external ownership OR lanes proven running. It is never derived
+ *                          false from an unopened store: an unknown count contributes no claim.
+ */
+export async function buildEngineStatusPayload(
+  projectId: string | undefined,
+  options?: ServerOptions,
+  defaultStore?: TaskStore,
+): Promise<EngineStatusPayload> {
   const engineManager = options?.engineManager;
   const base = projectId ? { projectId } : {};
 
@@ -718,6 +836,7 @@ function buildEngineStatusPayload(projectId: string | undefined, options?: Serve
       connected: false,
       starting: false,
       canStart: false,
+      canResume: false,
       reason: "dashboard-only",
       ...base,
     };
@@ -728,20 +847,85 @@ function buildEngineStatusPayload(projectId: string | undefined, options?: Serve
       connected: false,
       starting: false,
       canStart: false,
+      canResume: false,
       reason: "no-project",
     };
   }
 
-  const engine = engineManager.getEngine(projectId);
+  const engineHandle = Boolean(engineManager.getEngine(projectId));
+  const externallyOwned = engineManager.getExternalEngineIds?.().has(projectId) ?? false;
+  const runningAgentCount = await resolveRunningAgentCountFromOpenStores(projectId, options, defaultStore);
+  const lanesRunning = typeof runningAgentCount === "number" && runningAgentCount > 0;
+
+  const attempt = engineManager.getStartAttempt?.(projectId);
+  const failure = engineManager.getLastStartFailure?.(projectId);
+
+  let paused = false;
+  let projectExists = true;
+  try {
+    const project = await options?.centralCore?.getProject?.(projectId);
+    projectExists = Boolean(project);
+    paused = Boolean(project) && (project as { status?: string }).status === "paused";
+  } catch {
+    // An unreadable registry row must not become a claim about the engine: it only withholds the
+    // offer to start, because starting into a registry we cannot read is not a safe action.
+    projectExists = false;
+  }
+
+  const connected = engineHandle || externallyOwned || lanesRunning;
+  const starting = Boolean(attempt) && !engineHandle;
+
+  const attemptFields = attempt
+    ? {
+      startingSince: new Date(attempt.startedAt).toISOString(),
+      startingAgeMs: Math.max(0, Date.now() - attempt.startedAt),
+      startingStage: attempt.stage,
+    }
+    : {};
+  const failureField = failure && !engineHandle
+    ? { lastStartFailure: { at: new Date(failure.at).toISOString(), stage: failure.stage, message: failure.message, timedOut: failure.timedOut } }
+    : {};
+
   /*
-   * FNXC:EngineStatusBanner 2026-06-22-00:00:
-   * The dashboard needs a project-scoped distinction between a missing engine and an engine start already in flight. `has(projectId) && !getEngine(projectId)` mirrors ProjectEngineManager's transient starting map so the UI can disable duplicate Start engine attempts while reconciliation or a prior click is still creating the engine.
+   * Reason ladder. Ownership and liveness outrank a stale failure record: an engine owned by another
+   * process is positive proof of life, and a project whose lanes are running is working regardless of
+   * what this process' last attempt did.
+   *
+   * `reason` answers "why is the engine this dashboard expects to hold not there?", so the branches are
+   * only meaningful when this process holds NO handle. The handle branch exists to keep the ladder total
+   * and is masked at the return below, because with a handle the expectation is already met and an alarm
+   * word would be a lie.
    */
+  let reason: EngineStatusReason;
+  if (engineHandle) reason = "not-started"; // Masked at the return: a held handle is the healthy state.
+  else if (externallyOwned) reason = "externally-owned";
+  else if (lanesRunning) reason = "live-without-handle";
+  else if (paused) reason = "paused";
+  else if (starting) reason = "starting";
+  else if (failure) reason = "start-failed";
+  else reason = "not-started";
+
+  const canStart = projectExists
+    && !engineHandle
+    && !starting
+    && !externallyOwned
+    && !lanesRunning
+    && !paused;
+  const canResume = paused && !connected && !starting;
+
   return {
-    connected: Boolean(engine),
-    starting: Boolean(engineManager.has(projectId) && !engine),
-    canStart: true,
+    // A handle we hold is reported with no alarm reason: it is the ordinary healthy state.
+    connected,
+    starting,
+    canStart,
+    canResume,
+    reason: engineHandle ? undefined : reason,
     projectId,
+    engineHandle,
+    externallyOwned,
+    ...(runningAgentCount === undefined ? {} : { runningAgentCount }),
+    ...attemptFields,
+    ...failureField,
   };
 }
 
@@ -2165,9 +2349,9 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
     res.send(metricsSampler.render());
   });
 
-  app.get("/api/engine/status", (req, res) => {
+  app.get("/api/engine/status", async (req, res) => {
     const projectId = getProjectIdFromRequest(req);
-    res.json(buildEngineStatusPayload(projectId, options));
+    res.json(await buildEngineStatusPayload(projectId, options, store));
   });
 
   app.post("/api/engine/start", async (req, res) => {
@@ -2192,10 +2376,33 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
       const project = await options?.centralCore?.getProject(projectId);
       if (project && (project.status as string) === "paused") {
         await engineManager.resumeProject(projectId);
-      } else {
-        await engineManager.ensureEngine(projectId);
+        res.json(await buildEngineStatusPayload(projectId, options, store));
+        return;
       }
-      res.json(buildEngineStatusPayload(projectId, options));
+
+      /*
+       * FNXC:EngineStatusTruth 2026-11-07-13:55 (RUFU-496):
+       * A click used to fall straight into `ensureEngine` regardless of what was already true about
+       * the project, so the only way to avoid a duplicate attempt was the manager's internal dedupe -
+       * and the payload had already promised `canStart: true` for a project that was starting,
+       * externally owned, or simply working. The route now answers the same builder the banner reads
+       * and refuses with the reason instead of launching another attempt, so the endpoint and the
+       * panel cannot disagree about whether starting is possible.
+       */
+      const current = await buildEngineStatusPayload(projectId, options, store);
+      if (current.connected || current.starting) {
+        res.status(409).json({
+          error: current.connected
+            ? "This project's engine is already running, so no start was attempted"
+            : "An engine start for this project is already in flight, so no duplicate was started",
+          reason: current.reason ?? (current.connected ? "live-without-handle" : "starting"),
+          status: current,
+        });
+        return;
+      }
+
+      await engineManager.ensureEngine(projectId);
+      res.json(await buildEngineStatusPayload(projectId, options, store));
     } catch (error) {
       const message = getErrorMessage(error);
       const isPausedGuard = message === `Project ${projectId} is paused`;

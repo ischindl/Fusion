@@ -2917,7 +2917,20 @@
     "dashboardOnly": "This dashboard cannot start engines from the current process. Run `fn serve` for this project to enable task execution and live automation.",
     "dashboardOnlySuffix": "for this project to enable task execution and live automation.",
     "starting": "Starting…",
-    "body": "The engine for this project is not running, so task automation and live updates may be paused. Start it now to reconnect the dashboard."
+    "startingWithAge": "Starting for {{age}}… ({{stage}})",
+    "stalled": "Last start failed {{when}}: {{reason}}",
+    "stalledNoReason": "The last engine start did not complete, and no reason was recorded.",
+    "otherProcess": "Another fusion process is running this project's engine. This dashboard is connected to the API but does not own the engine.",
+    "paused": "This project is paused, so its engine is not running. Resume it to restore task automation.",
+    "startResume": "Resume engine",
+    "body": "The engine for this project is not running, so task automation and live updates may be paused. Start it now to reconnect the dashboard.",
+    "stageRegistryRead": "waiting to read the project registry",
+    "stageWorkingDirectory": "waiting for the project directory",
+    "stageStartupConcurrency": "waiting for a startup slot",
+    "stageSingletonAcquire": "waiting for the engine lock held by another process",
+    "stageRuntimeStart": "starting the engine runtime",
+    "stageStartedHook": "finishing engine startup hooks",
+    "stageComplete": "finishing engine startup"
   },
   "nativeStructure": {
     "previewUnavailable": "",

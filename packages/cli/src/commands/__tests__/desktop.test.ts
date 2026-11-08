@@ -191,6 +191,24 @@ vi.mock("@fusion/core", () => ({
 
 vi.mock("@fusion/engine", () => ({
   ProjectEngineManager: mocks.projectEngineManagerCtor,
+  /*
+   * FNXC:EngineStatusTruth 2026-11-07-14:20 (RUFU-496):
+   * Stands in for the shared warm-up helper with its real contract (one-argument `ensureEngine`, a
+   * rejection becomes an undefined engine reported on `onWarning`). The helper is pinned in the engine
+   * suite; this file keeps proving the `fusion desktop` command still reaches createServer.
+   */
+  warmUpProjectEngine: vi.fn(async (
+    manager: { ensureEngine: (id: string) => Promise<unknown> },
+    projectId: string,
+    opts: { onWarning?: (message: string) => void },
+  ) => {
+    try {
+      return await manager.ensureEngine(projectId);
+    } catch (error) {
+      opts.onWarning?.(error instanceof Error ? error.message : String(error));
+      return undefined;
+    }
+  }),
 }));
 
 vi.mock("../ensure-project-registered.js", () => ({

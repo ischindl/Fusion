@@ -120,12 +120,42 @@ export function refreshDashboardHealth(): Promise<DashboardHealthResponse> {
   return api<DashboardHealthResponse>("/health/refresh", { method: "POST" });
 }
 
+/*
+ * FNXC:EngineStatusTruth 2026-11-07-13:55 (RUFU-496):
+ * Mirrors the server payload field-for-field. `connected` is now true when this process holds the
+ * engine handle OR the project's lanes are proven running from already-open stores, so a project
+ * driven by another process no longer renders as an outage. `runningAgentCount` is ABSENT (not 0)
+ * when no store is open for the project, which is how "unknown" stays distinct from "idle".
+ * Every field beyond the original four is additive.
+ */
 export interface EngineStatusResponse {
   connected: boolean;
   starting: boolean;
   canStart: boolean;
-  reason?: "dashboard-only" | "no-project" | string;
+  reason?:
+    | "dashboard-only"
+    | "no-project"
+    | "not-started"
+    | "starting"
+    | "start-failed"
+    | "externally-owned"
+    | "live-without-handle"
+    | "paused"
+    | "unreachable"
+    | string;
   projectId?: string;
+  /** This process holds the engine handle for the project. */
+  engineHandle?: boolean;
+  /** Another fusion process on this machine owns this project's engine. */
+  externallyOwned?: boolean;
+  /** Absent when no store is open for the project; never a fabricated 0. */
+  runningAgentCount?: number;
+  startingSince?: string;
+  startingAgeMs?: number;
+  startingStage?: string;
+  lastStartFailure?: { at: string; stage: string; message: string; timedOut: boolean };
+  /** A deliberately paused project whose lanes are down can be resumed (distinct from starting). */
+  canResume?: boolean;
 }
 
 /*

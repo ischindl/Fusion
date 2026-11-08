@@ -58,9 +58,17 @@ describe("useEngineStatus", () => {
   });
 
   it("polls while disconnected and pauses polling once connected", async () => {
+    /*
+     * FNXC:EngineStatusTruth 2026-11-07-15:20 (RUFU-496):
+     * Fixtures state the payload invariant the server now enforces: `canStart` is computed from
+     * ownership, pause state and liveness, so a project that is `connected`, `starting`, externally
+     * owned or paused never also carries `canStart: true`. These fixtures previously paired
+     * `connected: true` with `canStart: true`, which is a shape `buildEngineStatusPayload` can no
+     * longer emit - it came from the old hard-coded `canStart: true`.
+     */
     mockFetchEngineStatus
       .mockResolvedValueOnce({ connected: false, starting: false, canStart: true, projectId: "project-a" })
-      .mockResolvedValueOnce({ connected: true, starting: false, canStart: true, projectId: "project-a" });
+      .mockResolvedValueOnce({ connected: true, starting: false, canStart: false, projectId: "project-a" });
 
     const { result } = renderHook(() => useEngineStatus("project-a"));
 
@@ -99,7 +107,7 @@ describe("useEngineStatus", () => {
   it("starts the engine, exposes local in-flight state, and immediately refetches", async () => {
     mockFetchEngineStatus
       .mockResolvedValueOnce({ connected: false, starting: false, canStart: true, projectId: "project-a" })
-      .mockResolvedValueOnce({ connected: true, starting: false, canStart: true, projectId: "project-a" });
+      .mockResolvedValueOnce({ connected: true, starting: false, canStart: false, projectId: "project-a" });
     let resolveStart!: (status: { connected: boolean; starting: boolean; canStart: boolean; projectId: string }) => void;
     mockStartEngine.mockReturnValueOnce(new Promise((resolve) => {
       resolveStart = resolve;
@@ -118,14 +126,16 @@ describe("useEngineStatus", () => {
     expect(result.current.starting).toBe(true);
 
     await act(async () => {
-      resolveStart({ connected: false, starting: true, canStart: true, projectId: "project-a" });
+      // An accepted start answers with the in-flight attempt: the server never offers a second start
+      // for a project whose attempt it is already running.
+      resolveStart({ connected: false, starting: true, canStart: false, projectId: "project-a" });
       await startPromise;
       await flushPromises();
     });
 
     expect(mockStartEngine).toHaveBeenCalledWith("project-a");
     expect(mockFetchEngineStatus).toHaveBeenCalledTimes(2);
-    expect(result.current.status).toEqual({ connected: true, starting: false, canStart: true, projectId: "project-a" });
+    expect(result.current.status).toEqual({ connected: true, starting: false, canStart: false, projectId: "project-a" });
     expect(result.current.starting).toBe(false);
   });
 
@@ -150,7 +160,7 @@ describe("useEngineStatus", () => {
   it("immediately refetches when the project changes", async () => {
     mockFetchEngineStatus
       .mockResolvedValueOnce({ connected: false, starting: false, canStart: true, projectId: "project-a" })
-      .mockResolvedValueOnce({ connected: true, starting: false, canStart: true, projectId: "project-b" });
+      .mockResolvedValueOnce({ connected: true, starting: false, canStart: false, projectId: "project-b" });
 
     const { result, rerender } = renderHook(({ projectId }) => useEngineStatus(projectId), {
       initialProps: { projectId: "project-a" },
@@ -166,6 +176,6 @@ describe("useEngineStatus", () => {
     });
 
     expect(mockFetchEngineStatus).toHaveBeenNthCalledWith(2, "project-b");
-    expect(result.current.status).toEqual({ connected: true, starting: false, canStart: true, projectId: "project-b" });
+    expect(result.current.status).toEqual({ connected: true, starting: false, canStart: false, projectId: "project-b" });
   });
 });

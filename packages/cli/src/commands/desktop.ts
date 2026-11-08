@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import * as os from "node:os";
 import { CentralCore, PluginLoader, createTaskStoreForBackend, type TaskStore } from "@fusion/core";
 import { createServer } from "@fusion/dashboard";
-import { ProjectEngineManager } from "@fusion/engine";
+import { ProjectEngineManager, warmUpProjectEngine } from "@fusion/engine";
 import { ensureCwdProjectRegistered } from "./ensure-project-registered.js";
 
 const require = createRequire(import.meta.url);
@@ -72,9 +72,16 @@ async function startDashboardRuntime(rootDir: string, paused: boolean, noAuth: b
     await engineManager.startAll();
     engineManager.startReconciliation();
     const cwdEngine = cwdRegistered
-      ? await engineManager.ensureEngine(cwdRegistered.id).catch((err) => {
-          console.warn(`[desktop] Failed to warm cwd project engine: ${err instanceof Error ? err.message : String(err)}`);
-          return undefined;
+      /*
+       * FNXC:EngineStatusTruth 2026-11-07-14:20 (RUFU-496):
+       * This site already failed soft; it now shares the one helper so the terminal attempt state, the
+       * named recorded reason, and the reconciliation re-arm behave identically across every process
+       * that merely hosts an engine manager. `fn serve`/`fn daemon` deliberately keep the raw awaited
+       * call: those hosts exist to run the engine, so a failed start stays fatal there by design.
+       */
+      ? await warmUpProjectEngine(engineManager, cwdRegistered.id, {
+          host: "desktop",
+          onWarning: (message) => console.warn(message),
         })
       : undefined;
 

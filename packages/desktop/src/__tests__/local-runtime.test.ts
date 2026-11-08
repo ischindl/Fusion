@@ -124,6 +124,24 @@ vi.mock("../bundled-plugin-dirs.js", () => ({ resolveDesktopBundlePluginDirs: en
 vi.mock("@fusion/dashboard", () => ({ createServer: engineMocks.createServer }));
 vi.mock("@fusion/engine", () => ({
   ProjectEngineManager: engineMocks.ProjectEngineManager,
+  /*
+   * FNXC:EngineStatusTruth 2026-11-07-14:20 (RUFU-496):
+   * Stands in for the shared warm-up helper with its real contract: one-argument `ensureEngine`, and a
+   * rejection becomes an undefined engine reported on `onWarning` instead of an exception escaping into
+   * server construction. The helper itself is pinned in the engine suite.
+   */
+  warmUpProjectEngine: vi.fn(async (
+    manager: { ensureEngine: (id: string) => Promise<unknown> },
+    projectId: string,
+    opts: { onWarning?: (message: string) => void },
+  ) => {
+    try {
+      return await manager.ensureEngine(projectId);
+    } catch (error) {
+      opts.onWarning?.(error instanceof Error ? error.message : String(error));
+      return undefined;
+    }
+  }),
   createFusionAuthStorage: () => ({ reload: () => undefined, getOAuthProviders: () => [], hasAuth: () => false }),
   createFusionModelRegistry: () => ({ listModels: () => [], refresh: () => undefined }),
   seedDashboardProviders: engineMocks.seedDashboardProviders,

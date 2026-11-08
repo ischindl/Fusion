@@ -2917,7 +2917,20 @@
     "dashboardOnly": "Este painel não pode iniciar motores a partir do processo atual. Execute `fn serve` neste projeto para habilitar a execução de tarefas e a automação em tempo real.",
     "dashboardOnlySuffix": "neste projeto para habilitar a execução de tarefas e a automação em tempo real.",
     "starting": "Iniciando…",
-    "body": "O motor deste projeto não está em execução, então a automação de tarefas e as atualizações em tempo real podem estar pausadas. Inicie-o agora para reconectar o painel."
+    "body": "O motor deste projeto não está em execução, então a automação de tarefas e as atualizações em tempo real podem estar pausadas. Inicie-o agora para reconectar o painel.",
+    "startingWithAge": "Iniciando há {{age}}… ({{stage}})",
+    "stalled": "A última inicialização falhou {{when}}: {{reason}}",
+    "stalledNoReason": "A última inicialização do motor não foi concluída e nenhum motivo foi registrado.",
+    "otherProcess": "Outro processo do fusion está executando o motor deste projeto. Este painel está conectado à API, mas não possui o motor.",
+    "paused": "Este projeto está pausado, então seu motor não está em execução. Retome-o para restaurar a automação de tarefas.",
+    "startResume": "Retomar motor",
+    "stageRegistryRead": "a ler o registo de projetos",
+    "stageWorkingDirectory": "a aguardar o diretório do projeto",
+    "stageStartupConcurrency": "à espera de uma vaga de iniciação",
+    "stageSingletonAcquire": "à espera do bloqueio do motor detido por outro processo",
+    "stageRuntimeStart": "a iniciar o runtime do motor",
+    "stageStartedHook": "a concluir as hooks de iniciação do motor",
+    "stageComplete": "a concluir a iniciação do motor"
   },
   "nativeStructure": {
     "previewUnavailable": "",

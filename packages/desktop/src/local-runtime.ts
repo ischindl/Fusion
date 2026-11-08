@@ -292,7 +292,7 @@ export async function resolveDesktopSystemControl(): Promise<
 async function createDashboardServerDefault(store: TaskStoreLike, rootDir: string): Promise<{ server: Server; cleanup: RuntimeCleanup }> {
   const { CentralCore, PluginLoader, ensureBundledPluginInstalled, isBundledPluginId } = await import("@fusion/core");
   const { createServer } = await import("@fusion/dashboard");
-  const { ProjectEngineManager, createFusionAuthStorage, createFusionModelRegistry, seedDashboardProviders } = await import("@fusion/engine");
+  const { ProjectEngineManager, warmUpProjectEngine, createFusionAuthStorage, createFusionModelRegistry, seedDashboardProviders } = await import("@fusion/engine");
 
   /*
    * FNXC:DesktopRuntime 2026-06-20-23:39:
@@ -326,7 +326,18 @@ async function createDashboardServerDefault(store: TaskStoreLike, rootDir: strin
     engineManager.startReconciliation();
     const rootProject = await resolveDesktopRuntimePrimaryProject(centralCore);
     strace(`createDashboardServer: primary project ${rootProject ? "resolved" : "absent"}`);
-    const primaryEngine = rootProject ? await engineManager.ensureEngine(rootProject.id) : undefined;
+    const primaryEngine = rootProject
+      /*
+       * FNXC:EngineStatusTruth 2026-11-07-14:20 (RUFU-496):
+       * Same contract as local-server.ts: an engine cold start that throws must not prevent the embedded
+       * dashboard from serving. The rejection lands in the persisted startup trace, the manager keeps the
+       * named failure record, and the reconciliation loop above retries the project under its backoff.
+       */
+      ? await warmUpProjectEngine(engineManager, rootProject.id, {
+        host: "desktop-runtime",
+        onWarning: strace,
+      })
+      : undefined;
     /*
      * FNXC:DesktopRuntime 2026-07-07-00:00:
      * FN-7622: wire an auth storage into the embedded server AND run it through the same

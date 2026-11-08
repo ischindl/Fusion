@@ -37,7 +37,14 @@ vi.mock("../project-engine.js", () => {
   };
 });
 
-import { ProjectEngineManager } from "../project-engine-manager.js";
+import {
+  ProjectEngineManager,
+  EngineStartTimeoutError,
+  DEFAULT_ENGINE_START_TIMEOUT_MS,
+  MIN_ENGINE_START_TIMEOUT_MS,
+  resolveEngineStartTimeoutMs,
+  warmUpProjectEngine,
+} from "../project-engine-manager.js";
 import { ProjectEngine } from "../project-engine.js";
 import {
   acquireEngineSingleton,
@@ -704,8 +711,24 @@ describe("ProjectEngineManager", () => {
       expect(manager.getEngine("proj_bbb")).toBeUndefined();
       expect(manager.getEngine("proj_ccc")).toBeUndefined();
 
-      // First scheduled tick (after 1000ms): should retry and succeed
+      // First scheduled tick (after 1000ms): does NOT retry - RUFU-496 armed a backoff.
+      /*
+      FNXC:EngineStartAttemptTruth 2026-11-07-13:20 (RUFU-496):
+      This case asserted that a failed start is retried on the very next reconciliation tick. RUFU-496
+      deliberately changed that: a recorded start failure now arms a capped exponential backoff so a
+      permanently blocked project cannot hot-loop the tick. The subject of the test is unchanged - a
+      failed project DOES re-enter the retry set - so the fix is to cross the backoff boundary rather
+      than to relax the assertion. The first failure backs off one reconciliation interval (30 s).
+      */
       await vi.advanceTimersByTimeAsync(1000);
+      await flushReconciliationWork();
+
+      expect(manager.getEngine("proj_aaa")).toBeUndefined();
+      expect(manager.getEngine("proj_bbb")).toBeUndefined();
+      expect(manager.getEngine("proj_ccc")).toBeUndefined();
+
+      // Once the backoff expires, the same tick retries and the engines come up.
+      await vi.advanceTimersByTimeAsync(31_000);
       await flushReconciliationWork();
 
       expect(manager.getEngine("proj_aaa")).toBeDefined();
@@ -1120,5 +1143,328 @@ describe("ProjectEngineManager remote tunnel ownership", () => {
 
     await expect(manager.stopAll()).resolves.toBeUndefined();
     expect(engine.stop).toHaveBeenCalledTimes(1);
+  });
+});
+
+/*
+FNXC:EngineStartAttemptTruth 2026-11-07-13:20 (RUFU-496):
+The card's second symptom-assertion half. A start that never settled used to keep `starting` true
+forever AND keep the project out of reconciliation forever, because `has()` is true for a pending
+entry and reconcile() filtered on `!this.has(p.id)`. These cases pin the bounded replacement: the
+attempt ends in a named failure, the pending entry is gone, a late settle cannot republish, and the
+project is re-admitted to the retry set once the capped backoff expires.
+*/
+describe("ProjectEngineManager startup attempt tracking", () => {
+  let previousTimeoutEnv: string | undefined;
+  let core: CentralCore;
+
+  /** Let every pending microtask chain (each `await` in the start path) settle. */
+  async function flushAsync(rounds = 8): Promise<void> {
+    for (let i = 0; i < rounds; i += 1) {
+      await vi.advanceTimersByTimeAsync(0);
+    }
+  }
+
+  /** Deferred so a test controls exactly when the underlying startup settles. */
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((res) => { resolve = res; });
+    return { promise, resolve };
+  }
+
+  /** Engine double whose start settles only when the test says so. */
+  function mockEngineWithControlledStart(control: { promise: Promise<void> }) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (ProjectEngine as unknown as ReturnType<typeof vi.fn>).mockImplementation(function (config: any) {
+      return {
+        start: vi.fn().mockImplementation(() => control.promise),
+        beginDrain: vi.fn(),
+        stop: vi.fn().mockResolvedValue(undefined),
+        shutdownRemoteTunnelForProcessExit: vi.fn().mockResolvedValue(undefined),
+        getTaskStore: vi.fn().mockReturnValue({ projectId: config.projectId }),
+        getWorkingDirectory: vi.fn().mockReturnValue(config.workingDirectory),
+        _config: config,
+      };
+    });
+  }
+
+  function resetEngineMock() {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (ProjectEngine as unknown as ReturnType<typeof vi.fn>).mockImplementation(function (config: any) {
+      return {
+        start: vi.fn().mockResolvedValue(undefined),
+        beginDrain: vi.fn(),
+        stop: vi.fn().mockResolvedValue(undefined),
+        shutdownRemoteTunnelForProcessExit: vi.fn().mockResolvedValue(undefined),
+        getTaskStore: vi.fn().mockReturnValue({ projectId: config.projectId }),
+        getWorkingDirectory: vi.fn().mockReturnValue(config.workingDirectory),
+        _config: config,
+      };
+    });
+  }
+
+  beforeEach(() => {
+    previousTimeoutEnv = process.env.FUSION_ENGINE_START_TIMEOUT_MS;
+    // The floor is 10s, which is the ceiling these fake-timer cases bound an attempt with.
+    process.env.FUSION_ENGINE_START_TIMEOUT_MS = "10000";
+    // Own fixtures so this block cannot inherit another case's mock overrides by ordering.
+    core = createMockCentralCore([
+      makeProject("proj_aaa", "Project A", "/tmp/a"),
+      makeProject("proj_bbb", "Project B", "/tmp/b"),
+    ]);
+    resetEngineMock();
+    (acquireEngineSingleton as ReturnType<typeof vi.fn>).mockReset().mockResolvedValue({
+      release: vi.fn().mockResolvedValue(undefined),
+      socketPath: "/tmp/test.sock",
+      lockFilePath: "/tmp/test.lock",
+    });
+  });
+
+  afterEach(() => {
+    if (previousTimeoutEnv === undefined) delete process.env.FUSION_ENGINE_START_TIMEOUT_MS;
+    else process.env.FUSION_ENGINE_START_TIMEOUT_MS = previousTimeoutEnv;
+    resetEngineMock();
+    vi.useRealTimers();
+  });
+
+  it("exposes the in-flight attempt with its age and the stage it is blocked on", async () => {
+    vi.useFakeTimers();
+    const control = deferred<void>();
+    mockEngineWithControlledStart(control);
+    const manager = new ProjectEngineManager(core);
+
+    const attempt = manager.ensureEngine("proj_aaa");
+    void attempt.catch(() => undefined);
+    await flushAsync();
+
+    expect(manager.getEngine("proj_aaa")).toBeUndefined();
+    const inFlight = manager.getStartAttempt("proj_aaa");
+    expect(inFlight).toBeDefined();
+    expect(inFlight!.stage).toBe("runtime-start");
+    expect(inFlight!.startedAt).toBeGreaterThan(0);
+
+    await vi.advanceTimersByTimeAsync(4_000);
+    const later = manager.getStartAttempt("proj_aaa");
+    expect(Date.now() - later!.startedAt).toBeGreaterThanOrEqual(4_000);
+
+    control.resolve();
+    await vi.advanceTimersByTimeAsync(6_500);
+    expect(manager.getEngine("proj_aaa")).toBeDefined();
+    expect(manager.getStartAttempt("proj_aaa")).toBeUndefined();
+  });
+
+  it("ends a never-settling start as a terminal named failure with the pending entry cleared", async () => {
+    vi.useFakeTimers();
+    const control = deferred<void>();
+    mockEngineWithControlledStart(control);
+    const manager = new ProjectEngineManager(core);
+
+    const attempt = manager.ensureEngine("proj_aaa");
+    const rejection = expect(attempt).rejects.toBeInstanceOf(EngineStartTimeoutError);
+
+    await vi.advanceTimersByTimeAsync(10_001);
+    await rejection;
+
+    // `starting:false` for the payload: no attempt is tracked, and has() stops claiming it.
+    expect(manager.getStartAttempt("proj_aaa")).toBeUndefined();
+    expect(manager.has("proj_aaa")).toBe(false);
+
+    const failure = manager.getLastStartFailure("proj_aaa");
+    expect(failure).toBeDefined();
+    expect(failure!.timedOut).toBe(true);
+    expect(failure!.stage).toBe("runtime-start");
+    expect(failure!.message).toContain("stuck at stage: runtime-start");
+  });
+
+  it("re-admits a project whose attempt timed out back into the reconciliation retry set", async () => {
+    vi.useFakeTimers();
+    const project = makeProject("proj_solo", "Solo", "/tmp/solo");
+    const soloCore = createMockCentralCore([project]);
+    const control = deferred<void>();
+    mockEngineWithControlledStart(control);
+
+    const manager = new ProjectEngineManager(soloCore);
+    manager.startReconciliation(1_000);
+    await flushAsync();
+
+    // One attempt is in flight; reconciliation must not stack a second one behind it.
+    expect(manager.getStartAttempt("proj_solo")).toBeDefined();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(manager.getStartAttempt("proj_solo")).toBeDefined();
+
+    // The deadline fires: the attempt ends and the capped backoff is armed.
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(manager.getStartAttempt("proj_solo")).toBeUndefined();
+    expect(manager.getLastStartFailure("proj_solo")).toBeDefined();
+    expect(manager.isStartEligibleAfterBackoff("proj_solo")).toBe(false);
+
+    // Past the capped backoff the project is eligible again, which is the half that
+    // `!this.has(p.id)` used to deny forever.
+    expect(manager.isStartEligibleAfterBackoff("proj_solo", Date.now() + 31_000)).toBe(true);
+    await vi.advanceTimersByTimeAsync(31_000);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushAsync();
+
+    expect(manager.getStartAttempt("proj_solo")).toBeDefined();
+    manager.stopReconciliation();
+    control.resolve();
+  });
+
+  it("warns once about a long in-flight start before the ceiling fires", async () => {
+    vi.useFakeTimers();
+    process.env.FUSION_ENGINE_START_TIMEOUT_MS = "100000";
+    const control = deferred<void>();
+    mockEngineWithControlledStart(control);
+    const warnSpy = vi.spyOn((await import("../logger.js")).runtimeLog, "warn");
+    const manager = new ProjectEngineManager(core);
+
+    const attempt = manager.ensureEngine("proj_aaa");
+    void attempt.catch(() => undefined);
+    await flushAsync();
+    await vi.advanceTimersByTimeAsync(90_000);
+
+    const stalls = warnSpy.mock.calls.filter(([msg]) => String(msg).includes("still in flight after"));
+    expect(stalls).toHaveLength(1);
+    expect(String(stalls[0][0])).toContain("proj_aaa");
+    expect(String(stalls[0][0])).toContain("stage: runtime-start");
+
+    await vi.advanceTimersByTimeAsync(110_000);
+    control.resolve();
+    warnSpy.mockRestore();
+  });
+
+  it("keeps an engine owned by another process out of the failure record and the backoff", async () => {
+    const manager = new ProjectEngineManager(core);
+    (acquireEngineSingleton as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new EngineAlreadyRunningError("proj_aaa", "socket"),
+    );
+
+    await expect(manager.ensureEngine("proj_aaa")).rejects.toBeInstanceOf(EngineAlreadyRunningError);
+
+    expect(manager.getExternalEngineIds().has("proj_aaa")).toBe(true);
+    expect(manager.getLastStartFailure("proj_aaa")).toBeUndefined();
+    expect(manager.isStartEligibleAfterBackoff("proj_aaa")).toBe(true);
+  });
+
+  it("refuses to publish an engine whose start finished after its own deadline", async () => {
+    vi.useFakeTimers();
+    const control = deferred<void>();
+    mockEngineWithControlledStart(control);
+    const manager = new ProjectEngineManager(core);
+
+    const attempt = manager.ensureEngine("proj_aaa");
+    const rejection = expect(attempt).rejects.toThrow(/did not settle/);
+    await vi.advanceTimersByTimeAsync(10_001);
+    await rejection;
+
+    // The wedged startup now finishes. It must tear itself down rather than republish.
+    control.resolve();
+    await flushAsync();
+
+    expect(manager.getEngine("proj_aaa")).toBeUndefined();
+    expect(manager.has("proj_aaa")).toBe(false);
+    expect(manager.getAllEngines().size).toBe(0);
+  });
+
+  it("resets the failure backoff once a later start succeeds", async () => {
+    let calls = 0;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (ProjectEngine as unknown as ReturnType<typeof vi.fn>).mockImplementation(function (config: any) {
+      calls += 1;
+      const fails = calls === 1;
+      return {
+        start: vi.fn().mockImplementation(async () => { if (fails) throw new Error("transient"); }),
+        beginDrain: vi.fn(),
+        stop: vi.fn().mockResolvedValue(undefined),
+        shutdownRemoteTunnelForProcessExit: vi.fn().mockResolvedValue(undefined),
+        getTaskStore: vi.fn().mockReturnValue({ projectId: config.projectId }),
+        getWorkingDirectory: vi.fn().mockReturnValue(config.workingDirectory),
+        _config: config,
+      };
+    });
+    const manager = new ProjectEngineManager(core);
+
+    await expect(manager.ensureEngine("proj_aaa")).rejects.toThrow("transient");
+    expect(manager.getLastStartFailure("proj_aaa")).toBeDefined();
+    expect(manager.isStartEligibleAfterBackoff("proj_aaa")).toBe(false);
+
+    await manager.ensureEngine("proj_aaa");
+    expect(manager.getLastStartFailure("proj_aaa")).toBeUndefined();
+    expect(manager.isStartEligibleAfterBackoff("proj_aaa")).toBe(true);
+  });
+
+  it("abandons a pending attempt on pause so a late success cannot publish an engine", async () => {
+    vi.useFakeTimers();
+    const control = deferred<void>();
+    mockEngineWithControlledStart(control);
+    const manager = new ProjectEngineManager(core);
+
+    const attempt = manager.ensureEngine("proj_aaa");
+    void attempt.catch(() => undefined);
+    await flushAsync();
+    expect(manager.getStartAttempt("proj_aaa")).toBeDefined();
+
+    await manager.pauseProject("proj_aaa");
+    expect(manager.getStartAttempt("proj_aaa")).toBeUndefined();
+
+    control.resolve();
+    await flushAsync();
+    expect(manager.getEngine("proj_aaa")).toBeUndefined();
+  });
+
+  it("resolves the startup ceiling from the environment with a floor", () => {
+    expect(resolveEngineStartTimeoutMs({})).toBe(DEFAULT_ENGINE_START_TIMEOUT_MS);
+    expect(resolveEngineStartTimeoutMs({ FUSION_ENGINE_START_TIMEOUT_MS: "999" })).toBe(MIN_ENGINE_START_TIMEOUT_MS);
+    expect(resolveEngineStartTimeoutMs({ FUSION_ENGINE_START_TIMEOUT_MS: "123456" })).toBe(123456);
+    expect(resolveEngineStartTimeoutMs({ FUSION_ENGINE_START_TIMEOUT_MS: "not-a-number" })).toBe(DEFAULT_ENGINE_START_TIMEOUT_MS);
+  });
+});
+
+/*
+FNXC:EngineStatusTruth 2026-11-07-14:20 (RUFU-496):
+The hosting processes (desktop embedded runtime, `fn dashboard`) must reach `listen()` even when an
+engine cold start throws. This helper is the single place that decision lives, so its two observable
+promises are pinned directly: the call shape stays single-argument, and a rejection becomes a named
+warning plus an absent engine rather than an exception that escapes into server construction.
+*/
+describe("warmUpProjectEngine", () => {
+  it("calls ensureEngine with exactly one argument and returns the engine", async () => {
+    const engine = { getProjectId: () => "proj_aaa" };
+    const manager = { ensureEngine: vi.fn(async () => engine) };
+    const onWarning = vi.fn();
+
+    const result = await warmUpProjectEngine(manager, "proj_aaa", { host: "desktop", onWarning });
+
+    expect(manager.ensureEngine).toHaveBeenCalledTimes(1);
+    expect(manager.ensureEngine).toHaveBeenCalledWith("proj_aaa");
+    expect(result).toBe(engine);
+    expect(onWarning).not.toHaveBeenCalled();
+  });
+
+  it("turns a rejecting start into a named warning and no engine, without throwing", async () => {
+    const manager = { ensureEngine: vi.fn(async () => { throw new Error("cold start exploded"); }) };
+    const warnings: string[] = [];
+
+    const result = await warmUpProjectEngine(manager, "proj_aaa", {
+      host: "desktop-runtime",
+      onWarning: (message) => warnings.push(message),
+    });
+
+    expect(result).toBeUndefined();
+    expect(warnings).toHaveLength(1);
+    // The host's own channel names both the host and the underlying reason.
+    expect(warnings[0]).toContain("desktop-runtime");
+    expect(warnings[0]).toContain("cold start exploded");
+  });
+
+  it("surfaces a non-Error rejection as its string form", async () => {
+    const manager = { ensureEngine: vi.fn(async () => { throw "plain string failure"; }) };
+    const onWarning = vi.fn();
+
+    await expect(
+      warmUpProjectEngine(manager, "proj_aaa", { host: "dashboard", onWarning }),
+    ).resolves.toBeUndefined();
+
+    expect(onWarning).toHaveBeenCalledWith(expect.stringContaining("plain string failure"));
   });
 });
