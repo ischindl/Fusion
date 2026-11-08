@@ -43,12 +43,38 @@ export function hasPriorLockDivergence(reports: readonly DriftReport[], latestLo
 
 const hash = (value: unknown): string => createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex");
 const normalizePath = (path: string): string => path.replace(/\\/g, "/").replace(/^\.\//, "");
-const matchesScope = (path: string, scope: string): boolean => {
+
+/**
+ * FNXC:SpecDriftScopeCost 2026-11-08-02:59 (RUFU-871):
+ * Compiles ONE declared file-scope pattern into its anchored matcher, so the compilation is a
+ * function of the pattern alone and is reusable across every modified path.
+ *
+ * This split is the whole point of the change. Production measured it: 25 independent 25-second CDP
+ * profiles taken during real dashboard event-loop stalls, and the worst window
+ * (`/home/schindler/prof/stall-20261108-024514.txt`) put `matchesScope` at 14 543 of 37 504 samples
+ * — 39 % of the entire window — reached as `appendSpecDriftReportWhilePlanningLocked` (15 172) ->
+ * `evaluateSpecDrift` (15 160) -> the `scope.some(...)` callback (14 549) -> `matchesScope`. A second
+ * window repeated the shape at 4 878 / 4 873 / 4 643 of 40 869. The old `matchesScope(path, scope)`
+ * compiled its RegExp inside the per-path loop, so one evaluation paid |modified files| x |scope
+ * patterns| dynamic RegExp compilations for |scope patterns| distinct patterns.
+ *
+ * Literal runs are accumulated and escaped in a single pass rather than running an escape `.replace`
+ * per character. `*` is the only character this loop consumes specially, so escaping a run and
+ * concatenating is byte-identical to escaping character by character.
+ */
+function compileScopeMatcher(scope: string): RegExp {
   // Preserve glob tokens while escaping literals: replacing `**` first and then `*` corrupts it.
   const glob = normalizePath(scope);
   let expression = "";
+  let literal = "";
+  const flushLiteral = (): void => {
+    if (literal.length === 0) return;
+    expression += literal.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+    literal = "";
+  };
   for (let index = 0; index < glob.length; index += 1) {
     if (glob[index] === "*" && glob[index + 1] === "*") {
+      flushLiteral();
       // `**/` admits files directly below the preceding segment as well as nested paths.
       if (glob[index + 2] === "/") {
         expression += "(?:.*/)?";
@@ -58,13 +84,26 @@ const matchesScope = (path: string, scope: string): boolean => {
         index += 1;
       }
     } else if (glob[index] === "*") {
+      flushLiteral();
       expression += "[^/]*";
     } else {
-      expression += glob[index]!.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+      literal += glob[index];
     }
   }
-  return new RegExp(`^${expression}$`).test(path);
-};
+  flushLiteral();
+  return new RegExp(`^${expression}$`);
+}
+
+/**
+ * FNXC:SpecDriftScopeCost 2026-11-08-02:59 (RUFU-871):
+ * Compiles the approved plan's declared File Scope once per evaluation. A spec lock is immutable,
+ * so its patterns are fixed for the whole call; compiling them here is what lets the file loop
+ * below reuse them. No pattern matcher survives this call — nothing is memoized across planning
+ * passes, because a drift report is a decision input and must never be served from a stale cache.
+ */
+function compileScopeMatchers(fileScopeCanonical: string): RegExp[] {
+  return fileScopeCanonical.split("\n").filter(Boolean).map(compileScopeMatcher);
+}
 
 /**
  * FNXC:SpecDrift 2026-08-09-07:06:
@@ -94,8 +133,8 @@ export function evaluateSpecDrift(input: { latestLock?: SpecLock; currentPlan?: 
     const expanded = isStructuralExpansion(key, prior.canonical, current.canonical);
     findings.push({ kind: expanded ? "silent-expansion" : "plan-deviation", category: key === "mission" ? "mission-statement" : key, priorHash: prior.hash, currentHash: current.hash });
   }
-  const scope = input.latestLock.plan.sections["file-scope"].canonical.split("\n").filter(Boolean);
-  for (const path of execution) if (scope.length > 0 && !scope.some((entry) => matchesScope(path, entry))) findings.push({ kind: "scope-creep", category: "file-scope", path });
+  const scopeMatchers = compileScopeMatchers(input.latestLock.plan.sections["file-scope"].canonical);
+  for (const path of execution) if (scopeMatchers.length > 0 && !scopeMatchers.some((matcher) => matcher.test(path))) findings.push({ kind: "scope-creep", category: "file-scope", path });
   const active = isSpecLockActive(input.latestLock, input.currentPlan, input.approvedPlanFingerprint);
   const alignment: DriftAlignment = findings.length > 0 ? "diverged-needs-review" : active ? (input.priorDivergence ? "diverged-relocked-approved" : "on-plan") : "unavailable";
   return report({ lockVersion: input.latestLock.version, currentPlanVersion: input.currentPlan.version, currentPlanHash: input.currentPlan.plan.contentHash, approvedPlanFingerprint: input.approvedPlanFingerprint?.trim() || undefined, status: "available", findings, alignment, executionHash });
