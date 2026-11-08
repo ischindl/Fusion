@@ -5772,6 +5772,7 @@
     "conversationRenamed": "",
     "failedToClearRoomConversation": "방 대화 초기화 실패",
     "loadingOlderMessages": "이전 메시지 로드 중…",
+    "loadOlderMessages": "이전 메시지 로드",
     "newChatModeModel": "모델",
     "noMessagesYet": "아직 메시지가 없습니다. 대화를 시작하세요!",
     "roomsGroupLabel": "방",

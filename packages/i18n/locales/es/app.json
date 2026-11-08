@@ -5772,6 +5772,7 @@
     "conversationRenamed": "",
     "failedToClearRoomConversation": "Error al limpiar la conversación del canal",
     "loadingOlderMessages": "Cargando mensajes anteriores…",
+    "loadOlderMessages": "Cargar mensajes anteriores",
     "newChatModeModel": "Modelo",
     "noMessagesYet": "Aún no hay mensajes. ¡Empieza la conversación!",
     "roomsGroupLabel": "Canales",

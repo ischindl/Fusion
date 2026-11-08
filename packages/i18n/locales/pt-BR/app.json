@@ -5772,6 +5772,7 @@
     "conversationRenamed": "Conversa renomeada",
     "failedToClearRoomConversation": "Falha ao limpar a conversa da sala",
     "loadingOlderMessages": "Carregando mensagens mais antigas…",
+    "loadOlderMessages": "Carregar mensagens mais antigas",
     "newChatModeModel": "Modelo",
     "noMessagesYet": "Ainda não há mensagens. Comece a conversa!",
     "roomsGroupLabel": "Salas",

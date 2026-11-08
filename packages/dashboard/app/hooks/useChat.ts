@@ -7,6 +7,7 @@ import {
   createChatSession as apiCreateChatSession,
   handoffChatSession,
   fetchChatMessages,
+  CHAT_THREAD_WINDOW,
   updateChatSession,
   deleteChatSession,
   backfillChatSessionToStash,
@@ -273,6 +274,13 @@ export interface UseChatReturn {
   forceSendPendingMessage?: (index: number) => void;
   loadMoreMessages: () => Promise<void>;
   hasMoreMessages: boolean;
+  /**
+   * RUFU-871 A.5 — id of the loaded row carrying the content-search `matchedMessagePreview`, or
+   * null. Present only after a window widened by a content-search hit actually loaded that row.
+   */
+  matchedSearchMessageId: string | null;
+  /** RUFU-871 A.5: loaded row that carries the content-search match preview, or null. */
+  matchedSearchMessageId: string | null;
   loadMoreSessions: (status?: "active" | "archived") => Promise<void>;
   hasMoreSessions: boolean;
   hasMoreArchivedSessions: boolean;
@@ -486,6 +494,80 @@ function sortChatMessagesChronologically(messages: ChatMessageInfo[]): ChatMessa
   return [...messages].sort(compareChatMessagesChronologically);
 }
 
+function mergeThreadPages(
+  previous: readonly ChatMessageInfo[],
+  page: readonly ChatMessageInfo[],
+): ChatMessageInfo[] {
+  const byId = new Map(previous.map((message) => [message.id, message]));
+  for (const message of page) byId.set(message.id, message);
+  return sortChatMessagesChronologically([...byId.values()]);
+}
+
+/*
+FNXC:ChatThreadPagination 2026-11-08-10:19:
+RUFU-871 A.4 — the cache/window merge contract.
+A bounded window (`limit=20&order=desc`) and the older pages the reader paged in are TWO facts
+about one transcript, and the old code kept only the first: every non-pagination `loadMessages`
+(a background `chat:session:updated` revalidation, an SSE reconnect, a cache hydrate) returned
+the newest-window array wholesale, so already-loaded older rows vanished from the visible thread
+AND from the per-session cache. A window may only speak for the rows it actually fetched, so:
+- rows the window returned are authoritative (content edits and server-side deletions inside the
+  newest 20 land exactly as before);
+- a previous row survives only when it provably sits OLDER than the window's oldest row — the
+  window never fetched it, so it cannot refute it;
+- a previous row that is inside/after the window's range but absent from the response is dropped,
+  which is exactly the pre-existing behavior for optimistic and server-deleted rows.
+An empty window fetches nothing and refutes nothing, so it returns `previous` untouched rather
+than blanking a populated transcript.
+*/
+function mergeThreadWindow(
+  previous: readonly ChatMessageInfo[],
+  window: readonly ChatMessageInfo[],
+  sessionId: string,
+): ChatMessageInfo[] {
+  if (window.length === 0) return [...previous];
+  const windowIds = new Set(window.map((message) => message.id));
+  let oldestWindowAt = window[0].createdAt;
+  for (const message of window) {
+    if (message.createdAt < oldestWindowAt) oldestWindowAt = message.createdAt;
+  }
+  const retainedOlder = previous.filter((message) => (
+    message.sessionId === sessionId
+    && !windowIds.has(message.id)
+    && message.createdAt < oldestWindowAt
+  ));
+  return retainedOlder.length > 0
+    ? sortChatMessagesChronologically([...retainedOlder, ...window])
+    : [...window];
+}
+
+/*
+FNXC:ChatThreadPagination 2026-11-08-10:19:
+RUFU-871 A.5 — a content-search hit must stay reachable after the window narrows.
+`GET /api/chat/sessions?q=…&titleOnly=false` answers with `matchedMessagePreview`: the first 101
+characters of the session's MOST RECENT matching message (async-chat-store.ts
+`searchChatSessionsByMessageContent`, `left(content, 101)`). Today opening that session performs no
+scroll at all — the preview only labels the sidebar row — and the in-thread Ctrl+F reader searches
+`messages` (loaded rows only), so a match outside the fetched window was already unreachable. The
+window narrowing (50 → 20) would widen that existing hole, so opening a session whose row carries a
+match preview keeps paging older rows with the existing `before`/`beforeId` cursor until the matched
+row is inside the loaded transcript, bounded to MATCH_WINDOW_EXPANSION_MAX_PAGES so a preview that
+no longer matches any row (edited/deleted content) cannot page the whole history.
+*/
+const MATCH_WINDOW_EXPANSION_MAX_PAGES = 10;
+
+function chatPreviewMatchKey(preview: string): string {
+  return preview.replace(/\u2026+$/, "").trim();
+}
+
+function findChatMessageByPreview(messages: readonly ChatMessageInfo[], key: string): string | null {
+  if (!key) return null;
+  for (const message of messages) {
+    if (typeof message.content === "string" && message.content.includes(key)) return message.id;
+  }
+  return null;
+}
+
 /*
 FNXC:MobileTabRetention 2026-07-26-11:15:
 Chat history is user-visible content the reader can still scroll to, so it is NOT capped — silently
@@ -647,6 +729,13 @@ export function useChat(
 
   // Pagination
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
+  /*
+  FNXC:ChatThreadPagination 2026-11-08-10:19:
+  RUFU-871 A.5 — id of the loaded row that carries the content-search match preview the session list
+  row announced. Surfaced so ChatView can bring the matched row into view once the widened window
+  actually contains it; null whenever the transcript holds no match.
+  */
+  const [matchedSearchMessageId, setMatchedSearchMessageId] = useState<string | null>(null);
   const sessionCursorRef = useRef<{ active: string | null; archived: string | null }>({ active: null, archived: null });
   const [hasMoreSessions, setHasMoreSessions] = useState(false);
   const [hasMoreArchivedSessions, setHasMoreArchivedSessions] = useState(false);
@@ -930,8 +1019,11 @@ export function useChat(
 
   // Load messages when active session changes
   const loadMessages = useCallback(
-    async (sessionId: string, opts?: { offset?: number; before?: string; beforeId?: string; commitForStreamingAttach?: boolean }) => {
+    async (sessionId: string, opts?: { offset?: number; before?: string; beforeId?: string; commitForStreamingAttach?: boolean; matchPreview?: string }) => {
       const isPaginationRequest = (typeof opts?.offset === "number" && opts.offset > 0) || typeof opts?.before === "string";
+      const offset = typeof opts?.offset === "number" ? opts.offset : undefined;
+      const before = typeof opts?.before === "string" ? opts.before : undefined;
+      const beforeId = typeof opts?.beforeId === "string" ? opts.beforeId : undefined;
       const cacheKey = getChatMessagesCacheKey(projectId, sessionId);
       const cachedMessages = !isPaginationRequest ? readCachedMessages(projectId, sessionId) : [];
       const hasCachedMessages = cachedMessages.length > 0;
@@ -952,20 +1044,73 @@ export function useChat(
       setMessagesLoading(isPaginationRequest || (!hasCachedMessages && !hasRetainedMessages));
 
       try {
-        const data = await fetchChatMessages(sessionId, { limit: 50, order: "desc", ...opts }, projectId);
+        const data = await fetchChatMessages(sessionId, {
+          limit: CHAT_THREAD_WINDOW,
+          order: "desc",
+          ...(offset !== undefined ? { offset } : {}),
+          ...(before !== undefined ? { before } : {}),
+          ...(before !== undefined && beforeId !== undefined ? { beforeId } : {}),
+        }, projectId);
         // API returns newest-first (order=desc); normalize display order instead of trusting
         // reversal alone so equal timestamps also use the canonical id tie-breaker.
-        const mappedMessages = sortChatMessagesChronologically(data.messages.map(mapChatMessageToInfo));
+        let mappedMessages = sortChatMessagesChronologically(data.messages.map(mapChatMessageToInfo));
+        let pageFilled = data.messages.length >= CHAT_THREAD_WINDOW;
+        /*
+        FNXC:ChatThreadPagination 2026-11-08-10:19:
+        Content-search hit only: keep paging older until the matched row is inside the loaded
+        transcript, so narrowing the opening window cannot make a search result unreachable.
+        */
+        const matchKey = !isPaginationRequest && opts?.matchPreview ? chatPreviewMatchKey(opts.matchPreview) : "";
+        if (matchKey) {
+          let expandedPages = 0;
+          let cursor = mappedMessages[0];
+          while (
+            !findChatMessageByPreview(mappedMessages, matchKey)
+            && pageFilled
+            && expandedPages < MATCH_WINDOW_EXPANSION_MAX_PAGES
+            && cursor?.createdAt
+            && cursor.id
+          ) {
+            const olderPage = await fetchChatMessages(sessionId, {
+              limit: CHAT_THREAD_WINDOW,
+              order: "desc",
+              before: cursor.createdAt,
+              beforeId: cursor.id,
+            }, projectId);
+            pageFilled = olderPage.messages.length >= CHAT_THREAD_WINDOW;
+            expandedPages += 1;
+            const mappedPage = olderPage.messages.map(mapChatMessageToInfo);
+            if (mappedPage.length === 0) break;
+            const oldestSoFar = mappedMessages[0];
+            mappedMessages = sortChatMessagesChronologically([
+              ...mappedMessages.filter((message) => !mappedPage.some((row) => row.id === message.id)),
+              ...mappedPage,
+            ]);
+            if (mappedMessages[0]?.id === oldestSoFar?.id) break;
+            cursor = mappedMessages[0];
+          }
+        }
         const shouldCommitMessages = activeSessionRef.current?.id === sessionId
           || (opts?.commitForStreamingAttach === true && lastAttachedGenerationRef.current?.sessionId === sessionId);
+        if (matchKey && shouldCommitMessages) {
+          setMatchedSearchMessageId(findChatMessageByPreview(mappedMessages, matchKey));
+        }
         if (isPaginationRequest) {
           if (shouldCommitMessages) {
-            setMessages((prev) => {
-              const byId = new Map(prev.map((message) => [message.id, message]));
-              for (const message of mappedMessages) byId.set(message.id, message);
-              return sortChatMessagesChronologically([...byId.values()]);
-            });
-            setHasMoreMessages(data.messages.length >= 50 && mappedMessages.some((message) => !messagesRef.current.some((current) => current.id === message.id)));
+            setMessages((prev) => mergeThreadPages(prev, mappedMessages));
+            setHasMoreMessages(pageFilled && mappedMessages.some((message) => !messagesRef.current.some((current) => current.id === message.id)));
+            /*
+            FNXC:ChatThreadPagination 2026-11-08-10:19:
+            RUFU-871 A.4 — an older page belongs in the per-session transcript cache too, or the
+            rows the reader paged in survive only until the tab reloads. The MERGED thread is
+            written, never the page: a page is not the tail of the thread, so caching it alone would
+            make the next cold open show the middle of a conversation. If the merged thread no
+            longer fits the 500 kB envelope the previous entry is left untouched — narrowing the
+            cache to the page would claim a window that was never fetched.
+            */
+            if (cacheKey) {
+              writeCache(cacheKey, mergeThreadPages(messagesRef.current, mappedMessages), { maxBytes: 500_000 });
+            }
           }
         } else {
           if (shouldCommitMessages) {
@@ -975,6 +1120,12 @@ export function useChat(
             const shouldPreserveActiveStreamingThread = isActiveStreamingSession
               && currentMessagesBelongToSession
               && (!responseBelongsToSession || mappedMessages.length === 0);
+            /*
+            FNXC:ChatThreadPagination 2026-11-08-10:19:
+            RUFU-871 A.4 — the fetched window replaces only the rows it fetched. See
+            `mergeThreadWindow`: previously this returned `mappedMessages` outright, so a
+            background revalidation deleted every older page the reader had already loaded.
+            */
             setMessages((prev) => {
               if (isActiveStreamingSession && prev.length > 0) {
                 const previousBelongsToSession = prev.every((message) => message.sessionId === sessionId);
@@ -987,22 +1138,35 @@ export function useChat(
                 }
 
                 if (previousBelongsToSession && mappedMessages.length > 0) {
-                  const merged = [...prev];
-                  const seen = new Set(prev.map((message) => message.id));
-                  for (const message of mappedMessages) {
-                    if (!seen.has(message.id)) {
-                      merged.push(message);
-                      seen.add(message.id);
-                    }
-                  }
-                  return sortChatMessagesChronologically(merged);
+                  return mergeThreadPages(prev, mappedMessages);
                 }
               }
 
-              return mappedMessages;
+              return mergeThreadWindow(prev, mappedMessages, sessionId);
             });
-            setHasMoreMessages(data.messages.length >= 50);
-            if (cacheKey && responseBelongsToSession && !shouldPreserveActiveStreamingThread) writeCache(cacheKey, mappedMessages, { maxBytes: 500_000 });
+            setHasMoreMessages(pageFilled);
+            /*
+            FNXC:ChatThreadPagination 2026-11-08-10:19:
+            RUFU-871 A.4 cache decision, stated once: the key stays `(projectId, sessionId)` and
+            deliberately does NOT include the window size. Keying by window would keep a 20-row and
+            a 50-row snapshot of one transcript alive side by side, and `hydrateMessagesFromCache`
+            (the streaming/reattach path) has no window to pick with — it would read whichever entry
+            happened to be written last. The single entry therefore holds the merged transcript, so
+            a re-open restores older pages too. The payload is computed here rather than from the
+            `setMessages` updater, which React does not run until the next render — reading it back
+            at this point would have written the un-merged window. Mid-turn the transcript is
+            knowingly incomplete, so that case keeps the previous window-only payload.
+            The 500 kB envelope bound stays honest: when the merged thread no longer fits, the
+            window alone is written instead of nothing, which is exactly what used to be stored.
+            */
+            if (cacheKey && responseBelongsToSession && !shouldPreserveActiveStreamingThread) {
+              const cachedThread = isActiveStreamingSession
+                ? mappedMessages
+                : mergeThreadWindow(messagesRef.current, mappedMessages, sessionId);
+              if (!writeCache(cacheKey, cachedThread, { maxBytes: 500_000 }) && cachedThread !== mappedMessages) {
+                writeCache(cacheKey, mappedMessages, { maxBytes: 500_000 });
+              }
+            }
           }
         }
       } catch {
@@ -1474,11 +1638,20 @@ export function useChat(
 
       resetTransientComposerState(Boolean(id && cancellationsInProgressRef.current.has(id)));
       setHasMoreMessages(false);
+      setMatchedSearchMessageId(null);
 
       // Load messages for this session while the authoritative request is pending.
       if (id) {
         hydrateMessagesFromCache(id);
-        loadMessages(id);
+        /*
+        FNXC:ChatThreadPagination 2026-11-08-10:19:
+        RUFU-871 A.5 — a row that got here through content search carries `matchedMessagePreview`.
+        Handing it to the opening load is what lets that load widen itself until the matched row is
+        actually loaded instead of being cut off behind a 20-row window.
+        */
+        loadMessages(id, session?.matchedMessagePreview
+          ? { matchPreview: session.matchedMessagePreview }
+          : undefined);
       } else {
         setMessages([]);
       }
@@ -1950,7 +2123,7 @@ export function useChat(
       setMessagesLoading(true);
       try {
         const data = await fetchChatMessages(sessionId, {
-          limit: 50,
+          limit: CHAT_THREAD_WINDOW,
           order: "desc",
           before: cursor.createdAt,
           beforeId: cursor.id,
@@ -1960,13 +2133,20 @@ export function useChat(
         const existingIds = new Set(messagesRef.current.map((message) => message.id));
         const added = mapped.filter((message) => !existingIds.has(message.id));
         if (added.length > 0) {
-          setMessages((current) => {
-            const byId = new Map(current.map((message) => [message.id, message]));
-            for (const message of mapped) byId.set(message.id, message);
-            return sortChatMessagesChronologically([...byId.values()]);
-          });
+          setMessages((current) => mergeThreadPages(current, mapped));
+          /*
+          FNXC:ChatThreadPagination 2026-11-08-10:19:
+          RUFU-871 A.4 — the older page is written to the per-session transcript cache as part of
+          the WHOLE thread, never as a page on its own: a page is not the tail of the conversation,
+          so caching it alone would make the next cold open render the middle of a chat. If the
+          merged thread no longer fits the 500 kB envelope the previous entry is left untouched.
+          */
+          const cacheKey = getChatMessagesCacheKey(projectId, sessionId);
+          if (cacheKey) {
+            writeCache(cacheKey, mergeThreadPages(messagesRef.current, mapped), { maxBytes: 500_000 });
+          }
         }
-        setHasMoreMessages(data.messages.length >= 50 && added.length > 0);
+        setHasMoreMessages(data.messages.length >= CHAT_THREAD_WINDOW && added.length > 0);
       } catch {
         // Keep the current page and cursor retryable after a transient read failure.
       } finally {
@@ -1979,7 +2159,7 @@ export function useChat(
     } finally {
       if (paginationInFlightRef.current.get(sessionId) === request) paginationInFlightRef.current.delete(sessionId);
     }
-  }, [activeSession, hasMoreMessages, projectId]);
+  }, [activeSession, getChatMessagesCacheKey, hasMoreMessages, projectId]);
 
   /*
   FNXC:ChatPendingQueue 2026-09-06-01:36:
@@ -2041,8 +2221,16 @@ export function useChat(
 
         let refreshedMessages: ChatMessageInfo[] | null = null;
         try {
-          const data = await fetchChatMessages(session.id, { limit: 50, order: "asc" }, projectId);
-          refreshedMessages = data.messages.map(mapChatMessageToInfo);
+          /*
+          FNXC:ChatThreadPagination 2026-11-08-10:19:
+          This reconciliation replaces the visible thread, so it must fetch the NEWEST window. The
+          old `order: "asc"` read the OLDEST 50 rows of the session and painted them over whatever
+          the reader was looking at — on a thread longer than the page that was already the wrong
+          end of the transcript, and with a 20-row window it would have become worse. Descending +
+          the canonical chronological sort keeps the tail, which is what a just-cancelled turn needs.
+          */
+          const data = await fetchChatMessages(session.id, { limit: CHAT_THREAD_WINDOW, order: "desc" }, projectId);
+          refreshedMessages = sortChatMessagesChronologically(data.messages.map(mapChatMessageToInfo));
         } catch {
           // The queue remains durable unless the cancel response itself proves the interrupted row.
         }
@@ -2464,7 +2652,7 @@ export function useChat(
           } else {
             addToast?.(failureInfo.summary, "error");
             if (acceptedByServer) {
-              void fetchChatMessages(activeSession.id, { limit: 50, order: "desc" }, projectId)
+              void fetchChatMessages(activeSession.id, { limit: CHAT_THREAD_WINDOW, order: "desc" }, projectId)
                 .then((data) => {
                   if (activeSessionRef.current?.id !== activeSession.id) return;
                   const refreshed = data.messages.slice().reverse().map(mapChatMessageToInfo);
@@ -2599,7 +2787,7 @@ export function useChat(
       let replacementTargetIndex = targetIndex;
       if (!isPersistedChatMessageId(messageId)) {
         try {
-          const data = await fetchChatMessages(sessionId, { limit: 50, order: "desc" }, projectId);
+          const data = await fetchChatMessages(sessionId, { limit: CHAT_THREAD_WINDOW, order: "desc" }, projectId);
           const authoritative = sortChatMessagesChronologically(data.messages.map(mapChatMessageToInfo));
           const realigned = authoritative[targetIndex];
           if (!realigned || realigned.role !== "user" || !isPersistedChatMessageId(realigned.id)) {
@@ -3235,6 +3423,7 @@ export function useChat(
     forceSendPendingMessage,
     loadMoreMessages,
     hasMoreMessages,
+    matchedSearchMessageId,
     loadMoreSessions,
     hasMoreSessions,
     hasMoreArchivedSessions,

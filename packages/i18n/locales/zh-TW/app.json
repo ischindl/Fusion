@@ -5772,6 +5772,7 @@
     "conversationRenamed": "",
     "failedToClearRoomConversation": "清除房間對話失敗",
     "loadingOlderMessages": "正在載入較早的訊息…",
+    "loadOlderMessages": "載入較早的訊息",
     "newChatModeModel": "模型",
     "noMessagesYet": "尚無訊息。開始對話吧！",
     "roomsGroupLabel": "頻道",

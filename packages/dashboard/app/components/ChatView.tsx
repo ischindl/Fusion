@@ -617,6 +617,7 @@ function ChatViewContent({ projectId, addToast, floating = false, compactLayout 
     forceSendPendingMessage,
     loadMoreMessages,
     hasMoreMessages,
+    matchedSearchMessageId,
     loadMoreSessions,
     hasMoreSessions,
     sessionsLoadingMore,
@@ -3265,6 +3266,20 @@ function ChatViewContent({ projectId, addToast, floating = false, compactLayout 
     virtualTranscript.scrollToKey(activeConversationMatchId, "center");
   }, [activeConversationMatchId, virtualTranscript.scrollToKey]);
 
+  /*
+   FNXC:ChatThreadPagination 2026-11-08-10:19:
+   RUFU-871 A.5 — opening a conversation from a content-search hit used to leave the matched row
+   wherever it was: the route only labels the sidebar row with `matchedMessagePreview`, and no
+   producer ever scrolled. With the widened opening window the match is now guaranteed to be inside
+   the loaded transcript when it is reachable at all, so bring it into view through the same
+   virtualizer seam the in-thread search uses. Fires on the id, not on every messages change, so a
+   reader who scrolls away is not dragged back.
+   */
+  useEffect(() => {
+    if (!matchedSearchMessageId) return;
+    virtualTranscript.scrollToKey(matchedSearchMessageId, "center");
+  }, [matchedSearchMessageId, virtualTranscript.scrollToKey]);
+
   useEffect(() => {
     const root = chatViewRef.current;
     if (!root) return;
@@ -3531,9 +3546,27 @@ function ChatViewContent({ projectId, addToast, floating = false, compactLayout 
   const renderSessionMessagesPane = () => (
     <div className="chat-messages" ref={messagesContainerRef} onScroll={() => { virtualTranscript.onScroll(); updateScrollState(); }}>
       <div ref={loadMoreSentinelRef} className="chat-load-more-sentinel">
-        {hasMoreMessages && messagesLoading && (
+        {hasMoreMessages && (messagesLoading ? (
           <div className="chat-loading-older">{t("chat.loadingOlderMessages", "Loading older messages…")}</div>
-        )}
+        ) : (
+          /*
+           FNXC:ChatThreadPagination 2026-11-08-10:19:
+           RUFU-871 A.2 — the opening window is now deliberately small (20 rows), so the older
+           history has to be an affordance the reader can see and press, not only the invisible
+           IntersectionObserver trigger. Same `loadMoreMessages()` cursor call, shared `btn btn-sm`
+           primitive, and it disappears with `hasMoreMessages`: an exhausted history renders nothing
+           rather than a button that loads forever.
+           */
+          <UiButton
+            type="button"
+            className="btn btn-sm chat-load-older"
+            data-testid="chat-load-older"
+            onClick={() => { void loadMoreMessages(); }}
+          >
+            <ChevronUp size={14} />
+            {t("chat.loadOlderMessages", "Load older messages")}
+          </UiButton>
+        ))}
       </div>
       {messagesLoading && messages.length === 0 && !isStreaming ? (
         <div className="chat-empty-state">{t("chat.loadingMessages", "Loading messages...")}</div>

@@ -5772,6 +5772,7 @@
     "conversationRenamed": "",
     "failedToClearRoomConversation": "Impossible d'effacer la conversation du salon",
     "loadingOlderMessages": "Chargement des messages plus anciens…",
+    "loadOlderMessages": "Charger les messages plus anciens",
     "newChatModeModel": "Modèle",
     "noMessagesYet": "Aucun message pour l'instant. Démarrez la conversation !",
     "roomsGroupLabel": "Canaux",

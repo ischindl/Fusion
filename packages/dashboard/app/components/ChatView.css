@@ -803,6 +803,17 @@ Center the Latest chip with inline margins rather than a positioning transform s
   z-index: 2;
 }
 
+/*
+FNXC:ChatThreadPagination 2026-11-08-10:19:
+RUFU-871 A.2 — the Load older messages control lives inside the transcript top sentinel, which is a
+flex-column child of `.chat-messages`; without `align-self` it stretches the full thread width.
+Layout only — padding, type, and press feedback come from the shared `btn btn-sm` primitive.
+*/
+.chat-load-older {
+  align-self: center;
+  margin-block: var(--space-sm);
+}
+
 .chat-message--user {
   align-self: flex-end;
   background: var(--accent);

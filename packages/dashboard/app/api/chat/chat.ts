@@ -319,6 +319,19 @@ export function backfillChatSessionToStash(id: string, projectId?: string): Prom
   );
 }
 
+/*
+FNXC:ChatThreadPagination 2026-11-08-10:19:
+RUFU-871 measured the production thread read: `GET /api/chat/sessions/<id>/messages` returned
+326 556 B for ONE session holding only 13 messages (0,81 s), i.e. ~25 kB per rendered assistant
+row (individual rows of 107 kB / 68 kB / 57 kB). The shipping client window was 50 rows, so a
+single dense thread could move ~1,26 MB on open. 20 rows keeps the same visible affordance
+(25 kB x 20 ≈ 502 kB ceiling, ~2.5x the measured whole-session transfer for a 13-row thread)
+while halving the dense-session cost; older rows stay reachable one page at a time through the
+`before`/`beforeId` cursor the route already serves. One constant covers the opening window and
+each older page so "page is full => more history exists" stays one comparison.
+*/
+export const CHAT_THREAD_WINDOW = 20;
+
 /** Fetch messages for a chat session */
 export function fetchChatMessages(
   sessionId: string,
