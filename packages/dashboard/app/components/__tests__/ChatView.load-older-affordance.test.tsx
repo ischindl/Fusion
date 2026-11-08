@@ -10,6 +10,20 @@ cannot catch this class of bug: `offsetTop`/`offsetHeight` are made live over th
 order, so a prepended page really does push every existing row down, and the test then requires the
 reader's anchor row to (a) still be the same DOM node and (b) sit at the same pixel offset from the
 viewport top it occupied before the page arrived.
+
+FNXC:ChatThreadPagination 2026-11-08-12:04 (RUFU-871, slice A review):
+The first test originally asserted `document.querySelectorAll(".chat-message").length >
+initialPage.length - 1`, i.e. that every loaded row is mounted. `.chat-messages` is virtualized
+(`useVirtualizedChatTranscript` -> `useVirtualizedList`: 640px viewport / 112px row estimate /
+1 viewport overscan), so it mounts only the viewport window — measured 12 rows for 50 loaded, and
+still 12 for 53. That assertion was therefore unsatisfiable by any correct product code AND blind:
+it returned 12 whether an older page prepends, replaces, or never merges, so it could not have
+caught the bug it was written for. It is replaced by the tail-window / duplicate-key / exact-growth
+assertions below, which are the observables that actually move when the merge or the prepend anchor
+breaks. The data-level merge contract (union by id, chronological order, no loss of loaded older
+rows) is asserted where that code runs — `hooks/__tests__/useChat.thread-window.test.ts` — and is
+deliberately not duplicated here, because this file automocks `useChat` and would only be asserting
+its own mock.
 */
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -149,6 +163,16 @@ async function renderThread() {
   return document.querySelector<HTMLElement>(".chat-messages")!;
 }
 
+/**
+ * The row ids actually mounted in the transcript right now. The virtualizer owns this window, so it
+ * is a tail slice of the loaded order, never the whole loaded thread.
+ */
+function mountedRowIds(): string[] {
+  return Array.from(
+    document.querySelectorAll<HTMLElement>(".chat-message[data-message-id]"),
+  ).map((row) => row.dataset.messageId ?? "");
+}
+
 function anchorRow(transcript: HTMLElement): HTMLElement {
   const rows = Array.from(transcript.querySelectorAll<HTMLElement>(".chat-message[data-message-id]"));
   const anchor = rows.find((row) => row.offsetTop + row.offsetHeight >= transcript.scrollTop) ?? rows[0];
@@ -174,10 +198,32 @@ describe("ChatView load-older affordance (RUFU-871 Slice A)", () => {
     expect(button.textContent).toContain("Load older messages");
     expect(button.className).toContain("btn");
 
+    const loadedBefore = [...renderedIds];
+    const mountedBefore = mountedRowIds();
+    expect(mountedBefore.length).toBeGreaterThan(0);
+    expect(mountedBefore).toEqual(loadedBefore.slice(-mountedBefore.length));
+
     await act(async () => { fireEvent.click(button); });
     expect(calls).toHaveLength(1);
     expect(calls[0]).toBe(initialPage[0].id);
-    await waitFor(() => expect(document.querySelectorAll(".chat-message").length).toBeGreaterThan(initialPage.length - 1));
+
+    await waitFor(() => expect(renderedIds).toHaveLength(loadedBefore.length + olderPage.length));
+    const mountedAfter = mountedRowIds();
+    /*
+    (a) The mounted window stays the tail of the loaded order. A page that REPLACED the loaded rows
+    breaks the equality because the mounted ids are no longer in `renderedIds` at all; a page that
+    landed behind the newest row, or a reversed transcript, moves the window off the tail.
+    */
+    expect(mountedAfter).toEqual(renderedIds.slice(-mountedAfter.length));
+    // (b) No duplicated row key in the DOM, whichever rows the window picked.
+    expect(new Set(mountedAfter).size).toBe(mountedAfter.length);
+    /*
+    (c) The loaded transcript grew by exactly the older page, in front, with nothing lost,
+    duplicated, or reordered.
+    */
+    expect(renderedIds).toEqual([...olderPage.map((message) => message.id), ...loadedBefore]);
+    // (d) The reader's window did not move: an older page arriving above must not change what is on screen.
+    expect(mountedAfter).toEqual(mountedBefore);
   });
 
   it("does not exist when there is no older history, and never sits there loading", async () => {
