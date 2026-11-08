@@ -63,6 +63,22 @@ export function pgRowToTaskRow<T extends TaskRow>(
 }
 
 export function rowToTask(row: TaskRow): Task {
+  /*
+  FNXC:RowHydrationCost 2026-11-08-01:38 (RUFU-871):
+  `sourceMetadata` and `prInfo` were each deserialized TWICE per row — once for their own
+  field and once again by the `branchContext` / `prInfos` readers. A CPU profile taken during
+  a 155 s event-loop stall attributed ~25 % of samples to row hydration under the list read
+  (`pgRowToTaskRow` 4 295 + `rowToTask` 3 917 of 33 289 samples), and this file's own
+  measurement (`FUSION_ROW_HYDRATION_BENCH=1`, median of 7 passes over 400 realistic rows)
+  puts full hydration at 229.6 us/row for a ~24 kB row, of which JSON re-parse of the jsonb
+  columns is the single largest group. Parsing one column into two local bindings is the same
+  value with one fewer parse; the board reads every row on every poll, so the removed parse is
+  removed from every row. Behavior is unchanged at the field level — the same parsed value
+  simply reaches both output fields.
+  */
+  const sourceMetadataValue = fromJson<Record<string, unknown>>(row.sourceMetadata) ?? undefined;
+  const branchContext = parseTaskBranchContextFromSourceMetadata(sourceMetadataValue);
+  const prInfoValue = fromJson<PrInfo>(row.prInfo);
   return {
     id: row.id,
     lineageId: row.lineageId || generateTaskLineageId(),
@@ -250,12 +266,11 @@ export function rowToTask(row: TaskRow): Task {
     review: fromJson<import("../types.js").TaskReview>(row.review) ?? undefined,
     reviewState: normalizeTaskReviewState(fromJson<import("../types.js").TaskReviewState>(row.reviewState) ?? undefined),
     workflowStepResults: (() => { const w = fromJson<import("../types.js").WorkflowStepResult[]>(row.workflowStepResults); return w && w.length > 0 ? w : undefined; })(),
-    prInfo: fromJson<import("../types.js").PrInfo>(row.prInfo),
+    prInfo: prInfoValue,
     prInfos: (() => {
-      const multi = fromJson<import("../types.js").PrInfo[]>(row.prInfos);
+      const multi = fromJson<PrInfo[]>(row.prInfos);
       if (multi && multi.length > 0) return multi;
-      const single = fromJson<PrInfo>(row.prInfo);
-      return single ? [single] : undefined;
+      return prInfoValue ? [prInfoValue] : undefined;
     })(),
     issueInfo: fromJson<import("../types.js").IssueInfo>(row.issueInfo),
     githubTracking: fromJson<import("../types.js").TaskGithubTracking>(row.githubTracking) ?? undefined,
@@ -311,14 +326,8 @@ export function rowToTask(row: TaskRow): Task {
     sourceMessageId: row.sourceMessageId || undefined,
     sourceParentTaskId: row.sourceParentTaskId || undefined,
     proposalClaimId: row.proposalClaimId || undefined,
-    sourceMetadata: (() => {
-      const parsed = fromJson<Record<string, unknown>>(row.sourceMetadata) ?? undefined;
-      return withTaskBranchContextInSourceMetadata(parsed, parseTaskBranchContextFromSourceMetadata(parsed));
-    })(),
-    branchContext: (() => {
-      const parsed = fromJson<Record<string, unknown>>(row.sourceMetadata) ?? undefined;
-      return parseTaskBranchContextFromSourceMetadata(parsed);
-    })(),
+    sourceMetadata: withTaskBranchContextInSourceMetadata(sourceMetadataValue, branchContext),
+    branchContext,
     checkedOutBy: row.checkedOutBy || undefined,
     checkedOutAt: row.checkedOutAt || undefined,
     checkoutNodeId: row.checkoutNodeId || undefined,

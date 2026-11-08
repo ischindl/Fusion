@@ -1,7 +1,7 @@
 /**
  * Row-hydration cost harness for the board list read (RUFU-871).
  *
- * FNXC:RowHydrationCost 2026-11-08-01:25:
+ * FNXC:RowHydrationCost 2026-11-08-01:08:
  * A CPU profile taken during a real 155 s event-loop stall attributed ~25 % of
  * samples (8 200 of 33 289) to task-row hydration under the list read, while
  * Postgres held only 189 of 500 connections — the cost is in the Node process.
@@ -20,6 +20,7 @@
  * count that proves the jsonb round-trip count did not grow.
  */
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import { pgRowToTaskRow, rowToTask } from "../serialization.js";
 import { TASK_JSONB_COLUMNS } from "../persistence.js";
 import type { TaskRow } from "../persistence.js";
@@ -32,6 +33,19 @@ const JSONB_GROUP_SIZES = [
   "sourceMetadata",
   "stepReports",
 ] as const;
+
+/*
+FNXC:RowHydrationCost 2026-11-08-01:38 (RUFU-871):
+Every jsonb column `rowToTask` deserializes that this fixture populates, one `JSON.parse` each:
+`dependencies`, `steps`, `stepReports`, `customFields`, `log`, `comments`, `steeringComments`,
+`attachments`, `workflowStepResults`, `enabledWorkflowSteps`, `modifiedFiles`, `declaredSymbols`,
+`sourceMetadata`, `tokenUsagePerModel`. Before the fix this row cost 15 parses because
+`sourceMetadata` was parsed twice (once for its own field, once for `branchContext`) and `prInfo`
+twice (once for its own field, once by the `prInfos` fallback); the one-parse test above exists
+so neither shape can come back. Adding a jsonb column to the
+fixture or to the mapper must update this list, and the update is visible in review.
+*/
+const PARSES_PER_FIXTURE_ROW = 14;
 
 /**
  * Builds one PostgreSQL-shaped task row. jsonb columns arrive ALREADY PARSED
@@ -280,6 +294,11 @@ function countJsonParses<T>(fn: () => T): { value: T; parses: number } {
   }
 }
 
+const GOLDEN_HYDRATION_SHA256_32 = "e0a6bba1ee71d31c03a15b3f91472106";
+const GOLDEN_HYDRATION_KEY_ORDER =
+  "id,lineageId,title,description,queueBoost,column,status,size,reviewLevel,currentStep,worktree,blockedBy,overlapBlockedBy,fileScopeLeaseRelease,queuedLogEpisodeSignature,paused,pausedReason,externalBlock,planningFailure,humanPlanApproval,humanMergeApproval,wedgeNotification,userPaused,baseBranch,executionStartBranch,branch,autoMerge,autoMergeProvenance,baseCommitSha,scopeOverride,scopeOverrideReason,scopeAutoWiden,modelPresetId,modelProvider,modelId,validatorModelProvider,validatorModelId,planningModelProvider,planningModelId,mergerModelProvider,mergerModelId,mergeRetries,aiMergeReviewReconciliation,workflowStepRetries,stuckKillCount,resumeLimboCount,graphResumeRetryCount,consecutiveToolFailureRetryCount,executorEscalationAttempted,toolFailureDetectorLogCursor,toolFailureRetryExhaustedAuditEmitted,resumeLimboTipSha,resumeLimboStepSignature,executeRequeueLoopCount,executeRequeueLoopSignature,postReviewFixCount,planReviewReplanCount,recoveryRetryCount,recoveryDisposition,sessionContentionHoldCount,sessionContentionWaitReason,taskDoneRetryCount,bulkCompletionRefusalAt,workflowIrPin,workflowIrPinNodeId,workflowIrPinColumnId,legacyAdoptedAt,worktreeSessionRetryCount,completionHandoffLimboRecoveryCount,verificationFailureCount,mergeConflictBounceCount,mergeAuditBounceCount,mergeTransientRetryCount,branchConflictRecoveryCount,reviewerContextRetryCount,reviewerFallbackRetryCount,reviewConvergenceStage,reviewConvergenceEscalationCount,nextRecoveryAt,error,summary,recommendations,thinkingLevel,validatorThinkingLevel,planningThinkingLevel,mergerThinkingLevel,executionMode,sessionAdvisorEnabled,createdAt,updatedAt,columnMovedAt,firstExecutionAt,cumulativeActiveMs,cumulativePlanningMs,planningStartedAt,cumulativePausedMs,pausedStartedAt,columnDwellMs,workflowTransitionNotification,plannerOversightLevel,awaitingApprovalReason,approvedPlanFingerprint,executionStartedAt,executionCompletedAt,dependencies,steps,stepReports,customFields,log,tokenBudgetSoftAlertedAt,tokenBudgetHardAlertedAt,tokenBudgetOverride,tokenUsage,attachments,steeringComments,comments,review,reviewState,workflowStepResults,prInfo,prInfos,issueInfo,githubTracking,gitlabTracking,sourceIssue,mergeDetails,workspaceWorktrees,repositoryScope,noCommitsExpected,enabledWorkflowSteps,modifiedFiles,declaredSymbols,missionId,sliceId,assignedAgentId,pausedByAgentId,assigneeUserId,nodeId,effectiveNodeId,effectiveNodeSource,sourceType,sourceAgentId,sourceRunId,sourceSessionId,sourceMessageId,sourceParentTaskId,proposalClaimId,sourceMetadata,branchContext,checkedOutBy,checkedOutAt,checkoutNodeId,checkoutRunId,checkoutLeaseRenewedAt,checkoutLeaseEpoch,deletedAt,allowResurrection";
+
+/** Median helper for the report block. */
 function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[Math.floor(sorted.length / 2)] ?? 0;
@@ -291,11 +310,26 @@ function round(n: number, digits = 3): number {
 }
 
 describe("task row hydration — golden shape invariant", () => {
-  it("hydrates the fixture row set to a stable, byte-identical shape", () => {
+  it("hydrates the fixture row set to a byte-identical shape", () => {
+    /*
+    FNXC:RowHydrationCost 2026-11-08-01:20 (RUFU-871):
+    This is the case where a golden check earns its keep: an optimisation must not change a
+    single value or key the board consumes. `*.snap` is gitignored repo-wide (.gitignore:32),
+    so a `toMatchSnapshot()` golden would never be committed and would silently re-baseline on
+    every fresh checkout — the digest below is the committed form of the same guarantee.
+    `serialized` is byte-exact, so any changed value, changed key order, added or removed field
+    changes it; `keySignature` is the readable half that names a structural change on failure.
+    Both constants were produced by the pre-optimisation mapper and pass unchanged afterwards.
+    */
     const hydrated = hydrateAll(goldenFixtureRows());
-    // This is the case where a snapshot earns its keep: an optimisation must
-    // not change a single value or key the board consumes.
-    expect(JSON.stringify(hydrated)).toMatchSnapshot();
+    const serialized = JSON.stringify(hydrated);
+    expect({
+      digest: createHash("sha256").update(serialized).digest("hex").slice(0, 32),
+      keySignature: Object.keys(hydrated[0] as Record<string, unknown>).join(","),
+    }).toEqual({
+      digest: GOLDEN_HYDRATION_SHA256_32,
+      keySignature: GOLDEN_HYDRATION_KEY_ORDER,
+    });
   });
 
   it("hydrates jsonb-as-object (pg) and jsonb-as-text (sqlite) rows to the same object", () => {
@@ -312,14 +346,40 @@ describe("task row hydration — golden shape invariant", () => {
     expect(fromText).toEqual(fromObject);
   });
 
-  it("parses each jsonb column at most once per row in the hydrated hot path", () => {
-    // Call-count assertion (never wall-clock): the round trip is
-    // stringify -> parse, so one parse per non-empty jsonb column is the floor
-    // for the columns `rowToTask` actually reads. `sourceMetadata` is the one
-    // column the mapper reads twice (sourceMetadata + branchContext); that
-    // doubling is pinned here so it cannot silently grow.
+  it("deserializes each single-source jsonb column exactly once per row", () => {
+    /*
+    FNXC:RowHydrationCost 2026-11-08-01:38 (RUFU-871): call-count assertion, never wall-clock.
+    `sourceMetadata` feeds two output fields (`sourceMetadata` and `branchContext`) and `prInfo`
+    feeds two (`prInfo` and the `prInfos` fallback); each used to run its own `JSON.parse`. These
+    two cases pin the one-parse shape directly, so a reintroduced duplicate parse fails here on
+    every surface that hydrates a row — not only on the reported board endpoint.
+    */
+    const onlyColumn = (column: string): Record<string, unknown> => {
+      const base = pgFixtureRow(1);
+      for (const jsonbColumn of TASK_JSONB_COLUMNS) {
+        if (jsonbColumn !== column) base[jsonbColumn] = null;
+      }
+      // `prInfo` is null in the base fixture; give the single-column case a real value
+      // so a zero-parse result cannot pass by having nothing to parse.
+      if (base[column] === null || base[column] === undefined) {
+        base[column] = { prNumber: 7, prUrl: "https://example.invalid/7", state: "open" };
+      }
+      return base;
+    };
+
+    for (const column of ["sourceMetadata", "prInfo"]) {
+      const { parses } = countJsonParses(() =>
+        rowToTask(pgRowToTaskRow<TaskRow>(onlyColumn(column), TASK_JSONB_COLUMNS)),
+      );
+      expect({ column, parses }).toEqual({ column, parses: 1 });
+    }
+  });
+
+  it("parses no more jsonb columns than the mapper actually reads", () => {
+    // Deterministic budget for the full fixture row: every jsonb column the mapper
+    // deserializes and that this fixture populates, counted once each.
     const { parses } = countJsonParses(() => hydrateAll(goldenFixtureRows()));
-    expect(parses).toMatchSnapshot();
+    expect(parses).toBe(4 * PARSES_PER_FIXTURE_ROW);
   });
 });
 

@@ -2035,10 +2035,19 @@ export async function listTasksModifiedSinceImpl(store: TaskStore, since: string
       const irCache = new Map<string, WorkflowIr>();
       for (const pgRow of pageRows) {
         const row = store.pgRowToTaskRow(pgRow);
+        /*
+        FNXC:RowHydrationCost 2026-11-08-01:38 (RUFU-871):
+        This row was hydrated TWICE — once as an argument to `resolveStallGateIdsForTask` and
+        once for the `.paused` test — and both results were thrown away, because the task the
+        board actually returns is built by the stall-reason prelude below. Measured per-row
+        hydration cost is 229.6 us for a ~24 kB row, so a 100-card page paid ~23 ms of pure
+        duplicate work per extra call. One hydration per row here, consumed by both readers.
+        */
+        const task = store.rowToTask(row);
         reviewColumnsByTaskId.set(row.id, await resolveReviewColumnsForTask(store, row.id, irCache, selectionCache));
-        stallGateIdsByTaskId.set(row.id, await resolveStallGateIdsForTask(store, store.rowToTask(row), irCache, selectionCache));
+        stallGateIdsByTaskId.set(row.id, await resolveStallGateIdsForTask(store, task, irCache, selectionCache));
         lifecycleByTaskId.set(row.id, await resolveTaskLifecycleColumns(store, row.id, irCache, selectionCache));
-        if (store.rowToTask(row).paused !== true) continue;
+        if (task.paused !== true) continue;
         holdColumnByTaskId.set(row.id, await resolveHoldColumnForTask(store, row.id, irCache, selectionCache));
       }
     }
