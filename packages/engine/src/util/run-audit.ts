@@ -182,12 +182,19 @@ export type GitMutationType =
   | "worktree:removal-forced-over-active-session"
   /*
   FNXC:WorktreeCleanup 2026-09-01-06:09:
-  FN-9233 records defensive preservation and regenerable-output discard outcomes without exposing
-  porcelain paths or making audit persistence a worktree-removal lifecycle gate.
+  FN-9233 records defensive preservation outcomes without making audit persistence a
+  worktree-removal lifecycle gate.
+
+  STAS-397:
+  `worktree:post-landing-ignored-content-discarded` and `worktree:removal-discarded-regenerable-content`
+  are retired with the classification classes they named. One discard event replaces them, and it names
+  the ignored paths it threw away: once ignored content stops blocking a removal, the record that lists
+  the discard is the only thing standing between an automatic sweep and a silent delete, so an entry that
+  counts entries only would be the weaker half of the bargain the refusal used to strike. Path naming
+  already ships on the refusal side (`uncommittedPaths`), so this stays inside the existing surface.
   */
-  | "worktree:post-landing-ignored-content-discarded"
-  | "worktree:removal-discarded-regenerable-content"
   | "worktree:removal-preserved"
+  | "worktree:removal-discarded-ignored-content"
   | "worktree:active-session-reconciled"
   | "worktree:stale-lock-detected"
   | "worktree:stale-lock-recovered"

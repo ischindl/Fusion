@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   ActiveSessionWorktreeRemovalError,
   classifyWorktreeRemovalContent,
-  isRegenerableScratchDirectory,
   InvalidPostLandingProofUsageError,
   NativeWorktreeBackend,
   probeWorktreeRemovalContent,
@@ -87,28 +86,37 @@ vi.mock("../worktree/worktree-prune.js", () => ({
   pruneWorktreeAdminEntries: pruneWorktreeAdminEntriesMock,
 }));
 
+/*
+STAS-397: the only question a release asks is whether git counts something here as occupying the
+checkout. Ignored entries separate `clean` from `ignored-only`, and that difference records a discard
+instead of blocking, so no ignored NAME can move a row. The rows that once turned on whether a
+directory was a known build output now all land on `ignored-only` - including the `.venv`, `dist` and
+`node_modules` names the retired allowlist knew, because "known build output" and "unlisted build
+output" now receive the same answer, which is the whole point of the change.
+The quoted-path row keeps its seat for the opposite reason it had before: it is no longer a
+fail-closed refusal, it is the case where git refused to print a name plainly, and the row proves a
+quoted ignored path still cannot smuggle an untracked file past `deliverable`.
+*/
 describe("classifyWorktreeRemovalContent", () => {
   it.each([
     { name: "classifies empty output as clean", porcelain: "", expected: "clean" },
     { name: "classifies whitespace-only output as clean", porcelain: "  \n\t\n", expected: "clean" },
-    { name: "classifies a regenerable dependency directory", porcelain: "!! node_modules/\n", expected: "regenerable-ignored" },
-    { name: "classifies ignored Python virtual environments and caches as regenerable", porcelain: "!! .venv/\n!! venv/\n!! .pytest_cache/\n", expected: "regenerable-ignored" },
-    { name: "classifies nested and root regenerable directories", porcelain: "!! packages/core/dist/\n!! node_modules/\n", expected: "regenerable-ignored" },
-    { name: "preserves ignored entries when one is non-regenerable", porcelain: "!! dist/\n!! .env\n", expected: "ignored-only" },
-    { name: "preserves a non-regenerable ignored file", porcelain: "!! .env\n", expected: "ignored-only" },
-    { name: "fails closed for a quoted ignored path", porcelain: '!! "generated output/"\n', expected: "ignored-only" },
+    { name: "records a dependency directory as ignored content, not as a blocker", porcelain: "!! node_modules/\n", expected: "ignored-only" },
+    { name: "records an ignored virtualenv beside an unlisted egg-info directory", porcelain: "!! .venv/\n!! stashai.egg-info/\n!! .pytest_cache/\n", expected: "ignored-only" },
+    { name: "records nested and root ignored directories alike", porcelain: "!! packages/core/dist/\n!! node_modules/\n", expected: "ignored-only" },
+    { name: "records a build directory and an ignored dotfile alike", porcelain: "!! dist/\n!! .env\n", expected: "ignored-only" },
+    { name: "records a lone ignored dotfile", porcelain: "!! .env\n", expected: "ignored-only" },
+    { name: "reports a quoted ignored path as ignored content", porcelain: '!! "generated output/"\n', expected: "ignored-only" },
+    { name: "reports Fusion scratch as ignored content like any other ignored path", porcelain: "!! .fusion/\n", expected: "ignored-only" },
+    { name: "reports nested Fusion scratch as ignored content", porcelain: "!! packages/core/.fusion/\n", expected: "ignored-only" },
     { name: "classifies an untracked file as deliverable", porcelain: "?? untracked.txt\n", expected: "deliverable" },
     { name: "classifies a modified tracked file as deliverable", porcelain: " M tracked.ts\n", expected: "deliverable" },
     { name: "does not let ignored entries mask an untracked file", porcelain: "!! node_modules/\n?? untracked.txt\n", expected: "deliverable" },
+    { name: "does not let ignored entries mask a quoted untracked file", porcelain: '!! .venv/\n?? "we\\"ird.txt"\n', expected: "deliverable" },
     { name: "classifies an unmerged file as deliverable", porcelain: "!! dist/\nUU conflicted.ts\n", expected: "deliverable" },
-    { name: "classifies proven top-level Fusion scratch as regenerable", porcelain: "!! .fusion/\n", options: { provenScratchRootEntries: new Set([".fusion"]) }, expected: "regenerable-ignored" },
-    { name: "preserves Fusion scratch without proof", porcelain: "!! .fusion/\n", expected: "ignored-only" },
-    { name: "preserves nested Fusion scratch even when root is proven", porcelain: "!! packages/core/.fusion/\n", options: { provenScratchRootEntries: new Set([".fusion"]) }, expected: "ignored-only" },
-    { name: "preserves quoted Fusion scratch", porcelain: '!! ".fusion/"\n', options: { provenScratchRootEntries: new Set([".fusion"]) }, expected: "ignored-only" },
-    { name: "preserves mixed proven scratch and env file", porcelain: "!! .fusion/\n!! .env\n", options: { provenScratchRootEntries: new Set([".fusion"]) }, expected: "ignored-only" },
-    { name: "does not let proven scratch mask an untracked file", porcelain: "!! .fusion/\n?? wip.txt\n", options: { provenScratchRootEntries: new Set([".fusion"]) }, expected: "deliverable" },
-  ])("$name", ({ porcelain, options, expected }) => {
-    expect(classifyWorktreeRemovalContent(porcelain, options)).toBe(expected);
+    { name: "does not let ignored Fusion scratch mask an untracked file", porcelain: "!! .fusion/\n?? wip.txt\n", expected: "deliverable" },
+  ])("$name", ({ porcelain, expected }) => {
+    expect(classifyWorktreeRemovalContent(porcelain)).toBe(expected);
   });
 });
 
@@ -139,11 +147,11 @@ describe("probeWorktreeRemovalContent", () => {
   });
 
   it.each([
-    { name: "reports a clean checkout", stdout: "", expected: "clean", entryCount: 0, uncommittedPaths: [] as string[] },
-    { name: "reports allowlisted ignored output as regenerable", stdout: "!! dist/\n", expected: "regenerable-ignored", entryCount: 1, uncommittedPaths: [] as string[] },
-    { name: "reports non-allowlisted ignored output as ignored-only", stdout: "!! .env\n", expected: "ignored-only", entryCount: 1, uncommittedPaths: [] as string[] },
-    { name: "reports an untracked file as deliverable without throwing", stdout: "?? wip.txt\n", expected: "deliverable", entryCount: 1, uncommittedPaths: ["wip.txt"] },
-  ])("$name", async ({ stdout, expected, entryCount, uncommittedPaths }) => {
+    { name: "reports a clean checkout", stdout: "", expected: "clean", entryCount: 0, uncommittedPaths: [] as string[], ignoredPaths: [] as string[] },
+    { name: "reports ignored output and names the path a discard will throw away", stdout: "!! dist/\n", expected: "ignored-only", entryCount: 1, uncommittedPaths: [] as string[], ignoredPaths: ["dist/"] },
+    { name: "reports an ignored dotfile and names it", stdout: "!! .env\n", expected: "ignored-only", entryCount: 1, uncommittedPaths: [] as string[], ignoredPaths: [".env"] },
+    { name: "reports an untracked file as deliverable without throwing", stdout: "?? wip.txt\n", expected: "deliverable", entryCount: 1, uncommittedPaths: ["wip.txt"], ignoredPaths: [] as string[] },
+  ])("$name", async ({ stdout, expected, entryCount, uncommittedPaths, ignoredPaths }) => {
     execFileMock.mockResolvedValueOnce({ stdout, stderr: "" });
 
     await expect(probeWorktreeRemovalContent("/repo/.worktrees/fn-298")).resolves.toEqual({
@@ -152,6 +160,7 @@ describe("probeWorktreeRemovalContent", () => {
       uncommittedPaths,
       modifiedCount: 0,
       untrackedCount: uncommittedPaths.length,
+      ignoredPaths,
       status: "classified",
     });
     expect(execFileMock).toHaveBeenCalledWith(
@@ -159,16 +168,6 @@ describe("probeWorktreeRemovalContent", () => {
       ["status", "--porcelain=v1", "--ignored=matching", "--untracked-files=normal"],
       expect.objectContaining({ cwd: "/repo/.worktrees/fn-298" }),
     );
-  });
-
-  it("reports proven Fusion scratch as regenerable from the child probe", async () => {
-    execFileMock.mockResolvedValueOnce({ stdout: "!! .fusion/\n", stderr: "" });
-    readdirMock.mockResolvedValueOnce(["cache"]);
-
-    await expect(probeWorktreeRemovalContent("/repo/.worktrees/fn-298")).resolves.toMatchObject({
-      classification: "regenerable-ignored",
-      status: "classified",
-    });
   });
 
   it("reports an unreadable tree as probe-failed rather than guessing a class", async () => {
@@ -192,6 +191,7 @@ describe("probeWorktreeRemovalContent", () => {
       uncommittedPaths: [],
       modifiedCount: 0,
       untrackedCount: 0,
+      ignoredPaths: [],
       status: "path-absent",
     });
     expect(execFileMock).not.toHaveBeenCalled();
@@ -223,18 +223,6 @@ describe("probeWorktreeRemovalContent", () => {
     // Unreadable tree: the probe never guesses, so only the throwing guard can fail closed.
     execFileMock.mockRejectedValueOnce(new Error("not a git repository"));
     await expect(defensiveRemoval("/repo/.worktrees/fn-298")).rejects.toThrow(/status probe failed/);
-  });
-});
-
-describe("isRegenerableScratchDirectory", () => {
-  it.each([
-    ["allows the build cache child", ".fusion", ["cache"], true],
-    ["refuses an unexpected child", ".fusion", ["tasks"], false],
-    ["refuses mixed children", ".fusion", ["cache", "tasks"], false],
-    ["allows an empty scratch directory", ".fusion", [], true],
-    ["refuses an unknown root", ".other", ["cache"], false],
-  ])("%s", (_name, entryName, childNames, expected) => {
-    expect(isRegenerableScratchDirectory(entryName, childNames)).toBe(expected);
   });
 });
 
@@ -1138,7 +1126,7 @@ describe("removeWorktree", () => {
     expect(audit.git).toHaveBeenCalledWith({ type: "worktree:remove", target: "/repo/.worktrees/fn-1" });
   });
 
-  it("permits non-regenerable ignored content after a proven landing without force", async () => {
+  it("releases ignored content without carrying a landing proof, naming the proof when one exists", async () => {
     execFileMock.mockResolvedValueOnce({ stdout: "!! .env\n", stderr: "" });
     execMock.mockResolvedValueOnce({ stdout: "", stderr: "" });
     const audit = { git: vi.fn().mockResolvedValue(undefined) } as any;
@@ -1163,12 +1151,14 @@ describe("removeWorktree", () => {
       expect.objectContaining({ cwd: "/repo", timeout: 60000 }),
     );
     expect(audit.git).toHaveBeenCalledWith({
-      type: "worktree:post-landing-ignored-content-discarded",
+      type: "worktree:removal-discarded-ignored-content",
       target: "/repo/.worktrees/fn-251",
       metadata: {
         taskId: "FN-251",
         reason: RemovalReason.CompletionLandedCleanup,
-        source: "ai-merge-finalize",
+        entryCount: 1,
+        discardedIgnoredPaths: [".env"],
+        landingProofSource: "ai-merge-finalize",
         landedSha: "abc123",
       },
     });
@@ -1188,7 +1178,13 @@ describe("removeWorktree", () => {
     expect(execMock).not.toHaveBeenCalled();
   });
 
-  it("removes regenerable ignored content during defensive cleanup and audits the discard", async () => {
+  /*
+  STAS-397: the pair below used to be three tests split by whether an ignored path's BASENAME was on a
+  list, and the third one - an unlisted `.env` with no landing proof - asserted the refusal that wedged
+  every checkout this repository's own documented setup produces. All three now state one rule from
+  different angles: ignored content releases, the discard is named, and occupancy still refuses.
+  */
+  it("releases ignored content during defensive cleanup and audits the discard by name", async () => {
     execFileMock.mockResolvedValueOnce({ stdout: "!! node_modules/\n", stderr: "" });
     execMock.mockResolvedValueOnce({ stdout: "", stderr: "" });
     const audit = { git: vi.fn().mockResolvedValue(undefined) } as any;
@@ -1203,15 +1199,22 @@ describe("removeWorktree", () => {
     })).resolves.toMatchObject({ removed: true });
 
     expect(audit.git).toHaveBeenCalledWith({
-      type: "worktree:removal-discarded-regenerable-content",
+      type: "worktree:removal-discarded-ignored-content",
       target: "/repo/.worktrees/fn-9233",
-      metadata: { taskId: "FN-9233", reason: RemovalReason.PoolPrune, entryCount: 1 },
+      metadata: {
+        taskId: "FN-9233",
+        reason: RemovalReason.PoolPrune,
+        entryCount: 1,
+        discardedIgnoredPaths: ["node_modules/"],
+        landingProofSource: undefined,
+        landedSha: undefined,
+      },
     });
+    expect(audit.git).not.toHaveBeenCalledWith(expect.objectContaining({ type: "worktree:removal-preserved" }));
   });
 
-  it("removes proven Fusion scratch and audits it as regenerable", async () => {
+  it("releases Fusion scratch as ordinary ignored content, probing no child directory", async () => {
     execFileMock.mockResolvedValueOnce({ stdout: "!! .fusion/\n", stderr: "" });
-    readdirMock.mockResolvedValueOnce(["cache"]);
     execMock.mockResolvedValueOnce({ stdout: "", stderr: "" });
     const audit = { git: vi.fn().mockResolvedValue(undefined) } as any;
 
@@ -1224,38 +1227,40 @@ describe("removeWorktree", () => {
       reason: RemovalReason.PoolPrune,
     })).resolves.toMatchObject({ removed: true });
 
-    expect(audit.git).toHaveBeenCalledWith({
-      type: "worktree:removal-discarded-regenerable-content",
-      target: "/repo/.worktrees/fn-9276",
-      metadata: { taskId: "FN-9276", reason: RemovalReason.PoolPrune, entryCount: 1 },
-    });
+    expect(audit.git).toHaveBeenCalledWith(expect.objectContaining({
+      type: "worktree:removal-discarded-ignored-content",
+      metadata: expect.objectContaining({
+        taskId: "FN-9276",
+        reason: RemovalReason.PoolPrune,
+        entryCount: 1,
+        discardedIgnoredPaths: [".fusion/"],
+      }),
+    }));
+    // The retired exception read a scratch directory's children to decide whether it was deletable.
+    // Nothing may re-introduce that read: the answer no longer depends on the name or the contents.
+    expect(readdirMock).not.toHaveBeenCalled();
     expect(audit.git).not.toHaveBeenCalledWith(expect.objectContaining({ type: "worktree:removal-preserved" }));
   });
 
-  it("preserves non-regenerable ignored content without landing proof and audits it", async () => {
-    execFileMock.mockResolvedValueOnce({ stdout: "!! .env\n", stderr: "" });
+  it("releases the wedged shape - a virtualenv beside an unlisted egg-info directory, no proof carried", async () => {
+    execFileMock.mockResolvedValueOnce({ stdout: "!! .venv/\n!! stashai.egg-info/\n", stderr: "" });
+    execMock.mockResolvedValueOnce({ stdout: "", stderr: "" });
     const audit = { git: vi.fn().mockResolvedValue(undefined) } as any;
 
     await expect(removeWorktree({
       rootDir: "/repo",
-      worktreePath: "/repo/.worktrees/fn-9233",
+      worktreePath: "/repo/.worktrees/stas-357",
       settings: {},
       audit,
-      taskId: "FN-9233",
-      reason: RemovalReason.PoolPrune,
-    })).rejects.toThrow(/preserving/);
+      taskId: "STAS-357",
+      // The reason the auto-recovery sweep passes: it carries no landing proof and never can.
+      reason: RemovalReason.SelfHealingBranchConflict,
+    })).resolves.toMatchObject({ removed: true });
 
-    expect(audit.git).toHaveBeenCalledWith({
-      type: "worktree:removal-preserved",
-      target: "/repo/.worktrees/fn-9233",
-      metadata: {
-        taskId: "FN-9233",
-        reason: RemovalReason.PoolPrune,
-        source: undefined,
-        classification: "ignored-only",
-        hasPostLandingProof: false,
-      },
-    });
+    expect(audit.git).toHaveBeenCalledWith(expect.objectContaining({
+      type: "worktree:removal-discarded-ignored-content",
+      metadata: expect.objectContaining({ discardedIgnoredPaths: [".venv/", "stashai.egg-info/"] }),
+    }));
   });
 
   it("records deliverable and unverifiable defensive refusals", async () => {
@@ -1284,7 +1289,7 @@ describe("removeWorktree", () => {
     });
   });
 
-  it("routes regenerable defensive removal through worktrunk without force", async () => {
+  it("routes ignored-content defensive removal through worktrunk without force", async () => {
     execFileMock.mockResolvedValueOnce({ stdout: "!! dist/\n", stderr: "" });
     execMock.mockResolvedValueOnce({ stdout: "", stderr: "" });
     const audit = { git: vi.fn().mockResolvedValue(undefined) } as any;
@@ -1303,7 +1308,7 @@ describe("removeWorktree", () => {
       expect.objectContaining({ cwd: "/repo" }),
     );
     expect(audit.git).toHaveBeenCalledWith(expect.objectContaining({
-      type: "worktree:removal-discarded-regenerable-content",
+      type: "worktree:removal-discarded-ignored-content",
     }));
   });
 
