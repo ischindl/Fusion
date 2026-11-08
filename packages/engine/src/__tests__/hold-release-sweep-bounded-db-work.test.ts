@@ -288,23 +288,44 @@ describe("hold-release bounded database work", () => {
     expect(result).toMatchObject({ released: [], held: [], budgetTruncated: true, unevaluatedCount: 2 });
   });
 
+  /*
+  FNXC:WorkflowIrHoist 2026-11-08-06:00 (RUFU-871):
+  This case used to exhaust the deadline inside `getWorkflowDefinition`, which RUFU-871 hoisted out of
+  the candidate loop — one concurrent read per DISTINCT workflow now runs BEFORE any card is evaluated,
+  so blowing the deadline there truncates the pass at card zero and the pass this test exists to
+  describe never happens. The trigger is now a read the dependency arm still performs per candidate,
+  and the assertions are the same ones (one card evaluated, the rest counted unevaluated, `H-2` never
+  reached). `getWorkflowDefinition` staying at 1 for a three-candidate board is now also part of the
+  claim: the hoist must not turn the definition read back into a per-card one.
+  */
   it("stops evaluating cards after the first post-deadline check", async () => {
     let now = 0;
-    const tasks = [task("H-1"), task("H-2"), task("H-3")];
-    const manualWorkflow = {
+    const dependencyWorkflow = {
       ...ir,
-      columns: [{ id: "todo", label: "Todo", traits: [{ trait: "hold", config: { release: "manual" } }] }],
+      columns: [
+        { id: "todo", label: "Todo", traits: [{ trait: "hold", config: { release: "dependency" } }] },
+        { id: "waiting", label: "Waiting", traits: [] },
+        { id: "in-progress", label: "In Progress", traits: [{ trait: "wip", config: { limit: 1 } }] },
+        { id: "done", label: "Done", traits: [{ trait: "complete" }] },
+      ],
     } as WorkflowIr;
+    const tasks = [task("H-1"), task("H-2"), task("H-3")];
+    for (const candidate of tasks) candidate.dependencies = ["DEP"];
+    // The blocker rests in a column with no `hold` trait, so the sweep skips it and evaluates no move.
+    const blocker = task("DEP");
+    blocker.column = "waiting";
+    tasks.push(blocker);
     const store = storeWith(tasks);
-    (store.getWorkflowDefinition as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+    (store.getWorkflowDefinition as ReturnType<typeof vi.fn>).mockResolvedValue({ ir: dependencyWorkflow });
+    (store.getCompletionHandoffAcceptedMarker as ReturnType<typeof vi.fn>).mockImplementation(async () => {
       now = 11;
-      return { ir: manualWorkflow };
+      return null;
     });
 
     const result = await runHoldReleaseSweep(store, { now: () => now, budgetMs: 10 });
 
     expect(store.getWorkflowDefinition).toHaveBeenCalledTimes(1);
-    expect(result.held).toEqual([{ taskId: "H-1", reason: "manual-only" }]);
+    expect(result.held).toEqual([{ taskId: "H-1", reason: "deps-unsatisfied" }]);
     expect(result).toMatchObject({ budgetTruncated: true, unevaluatedCount: 2 });
     expect(result.held.map((entry) => entry.taskId)).not.toContain("H-2");
   });

@@ -3501,6 +3501,16 @@ export class Scheduler {
         // FNXC:CapacitySlotCost 2026-10-29-12:02 (RUFU-698 Step 2): real clock in production; see `SchedulerOptions.holdReleaseClock`.
         now: this.options.holdReleaseClock ?? (() => Date.now()),
         selectionCache,
+        /*
+        FNXC:WorkflowIrHoist 2026-11-08-05:57 (RUFU-871):
+        Hand the sweep the IR cache this pass ALREADY filled. `columnFlagsByWorkflowId` above resolved
+        every distinct workflow on the board into `wipIrCache` through the same `resolveWorkflowIrById`
+        key, and `reserveSlot` below resolves through it again — so without this the sweep re-read every
+        `workflow_definitions` row the pass had just read, into a Map that dies with the pass. Same
+        scope, same key, same pass lifetime as the `selectionCache` sharing that already happens on the
+        line above.
+        */
+        irCache: wipIrCache,
         reserveSlot: async (task, _target, pass?: HoldReleasePass): Promise<SlotReservation | null> => {
           /*
           FNXC:HoldReleaseSlotAttribution 2026-10-16-17:19 (RUFU-698 Step 1):

@@ -194,7 +194,17 @@ describe("hold/release sweep instrumentation", () => {
 
     const lines = debug.mock.calls.map((call) => String(call[0]));
     expect(lines.some((line) => line.includes("selections=2") && line.includes("definitions=0"))).toBe(true);
-    expect(lines.some((line) => line.includes("selections=1") && line.includes("definitions=1"))).toBe(true);
+    /*
+    FNXC:WorkflowIrHoist 2026-11-08-06:00 (RUFU-871): the missing-definition count is now 2, and that is
+    the honest invocation count this test exists to pin, not a regression in it. RUFU-871 added one
+    up-front resolution per DISTINCT resolvable workflow; a definition that does not exist is
+    deliberately never written to `irCache` (`resolveWorkflowIrById` keeps its degrade-to-default fail-soft
+    uncached), so the card's own awaited resolution still runs. Before the hoist a board of K cards on an
+    unresolvable workflow cost K definition reads per pass; it now costs K + 1, and the hoist removes
+    235 sequential awaits to buy that. The counting rule under test — count invocations, never cache
+    growth — is unchanged, and a `definitions` figure that grew with board size would still fail here.
+    */
+    expect(lines.some((line) => line.includes("selections=1") && line.includes("definitions=2"))).toBe(true);
   });
 
   it("keeps a quiet sweep at debug so a full board does not bury real scheduler events", async () => {

@@ -13,11 +13,20 @@ These tests pin the fairness contract, not the perf:
    order — the priority inversion is bounded to one pass, by construction;
  - a deferred id that left the board shifts nothing but its own absence.
 Two fixture decisions make this deterministic rather than timing-dependent:
- - the cards sit in a `release: "manual"` hold column, so no card is ever released or moved and
-   `result.held` — pushed in evaluation order — IS the evaluation order, asserted on the result object;
- - the deadline is blown inside the first workflow-definition read (the technique
-   `hold-release-sweep-bounded-db-work.test.ts` uses), so exactly the card that triggered the read is
-   evaluated and every card behind it is the deferred tail.
+ - no card is ever released or moved by the blow-deadline fixtures, so `result.held` — pushed in
+   evaluation order — IS the evaluation order, asserted on the result object;
+ - the deadline is blown inside ONE CANDIDATE'S OWN evaluation, so exactly the card that triggered it
+   is evaluated and every card behind it is the deferred tail.
+
+FNXC:HoldReleaseTruncationRotation 2026-11-08-06:00 (RUFU-871):
+The blow point used to be the first `getWorkflowDefinition` read, which RUFU-871's IR hoist moved OUT of
+the candidate loop (one concurrent prefetch over the board's DISTINCT workflows now runs before it). A
+deadline blown there truncates at index 0, which would leave this file asserting a pass that evaluated
+nothing and a rotation of the whole board — a no-op ordering that proves nothing. So the trigger moved
+to a call that is genuinely per-candidate and still is: the `release: "dependency"` arm's
+`getCompletionHandoffAcceptedMarker` read, reached inside that one card's `release-config` evaluation.
+The fairness contract under test is unchanged and the assertions are byte-identical — one card
+evaluated, three deferred, the deferred tail served first on the next pass.
 */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Task, TaskStore, WorkflowIr } from "@fusion/core";
@@ -32,6 +41,16 @@ instances for one project's rows). Every fixture store here must therefore repor
 or each pass would rotate a different project's tail and the test would observe nothing.
 */
 const PROJECT_ID = "proj-rotation-test";
+
+/*
+FNXC:HoldReleaseTruncationRotation 2026-11-08-06:00 (RUFU-871): the deadline blow point. Every
+`release: "dependency"` candidate depends on this one card, which rests in a column that is neither
+`complete` nor a legacy terminal id, so the dependency is genuinely unmet and no candidate is ever
+released. Because the sweep memoises the verdict per DISTINCT dependency, its handoff-marker read
+happens exactly once per pass — inside the FIRST candidate's evaluation — which is the deterministic,
+per-candidate moment this file needs the budget to die.
+*/
+const BLOCKER_ID = "D-BLOCK";
 
 function task(id: string): Task {
   return {
@@ -56,19 +75,34 @@ function task(id: string): Task {
   } as Task;
 }
 
-/** `release: "manual"` holds every card in place, so evaluation order stays observable pass after pass. */
-function manualHoldIr(): WorkflowIr {
+/** A hold column released when its dependencies settle. */
+function dependencyHoldIr(): WorkflowIr {
   return {
     version: "v2",
     id: WF,
     nodes: [],
     edges: [],
     columns: [
-      { id: "todo", label: "Todo", traits: [{ trait: "hold", config: { release: "manual" } }] },
-      { id: "in-progress", label: "In Progress", traits: [{ trait: "wip", config: { limitSetting: "maxConcurrent" } }] },
+      { id: "todo", label: "Todo", traits: [{ trait: "hold", config: { release: "dependency" } }] },
+      { id: "waiting", label: "Waiting", traits: [] },
+      { id: "in-progress", label: "In Progress", traits: [{ trait: "wip", config: { limit: 10 } }] },
       { id: "done", label: "Done", traits: [{ trait: "complete" }] },
     ],
   } as unknown as WorkflowIr;
+}
+
+/** A `todo` hold card blocked on {@link BLOCKER_ID}, i.e. refused inside its own evaluation. */
+function dependentTask(id: string): Task {
+  const candidate = task(id);
+  candidate.dependencies = [BLOCKER_ID];
+  return candidate;
+}
+
+/** The blocker itself: not a hold card, so the sweep skips it and never holds or moves it. */
+function blockerTask(): Task {
+  const blocker = task(BLOCKER_ID);
+  blocker.column = "waiting";
+  return blocker;
 }
 
 /** A capacity hold with room to spare, so a refusal here is never a shortage. */
@@ -87,9 +121,10 @@ function capacityIr(): WorkflowIr {
 }
 
 /**
- * `blowDeadlineOnFirstDefinitionRead` advances the shared clock past the sweep budget during the first
- * definition read, which lands inside candidate 0's evaluation: candidate 0 completes, the next
- * top-of-loop deadline check truncates, and everything behind candidate 0 becomes the deferred tail.
+ * `blowDeadline` advances the shared clock past the sweep budget during the FIRST handoff-marker read,
+ * which the dependency arm performs inside the first candidate's own evaluation: that candidate is
+ * refused and counted, the next top-of-loop deadline check truncates, and everything behind it becomes
+ * the deferred tail.
  */
 function storeWith(
   tasks: Task[],
@@ -109,14 +144,14 @@ function storeWith(
     }),
     logEntry: vi.fn(async () => undefined),
     recordRunAuditEvent: vi.fn(async () => undefined),
-    getCompletionHandoffAcceptedMarker: vi.fn(async () => null),
-    getTaskWorkflowSelection: vi.fn(() => selection),
-    getTaskWorkflowSelectionAsync: vi.fn(async () => selection),
-    getWorkflowDefinition: vi.fn(async () => {
+    getCompletionHandoffAcceptedMarker: vi.fn(async () => {
       reads += 1;
       if (opts.blowDeadline && reads === 1) clock.t += 11;
-      return { ir: opts.ir ?? manualHoldIr() };
+      return null;
     }),
+    getTaskWorkflowSelection: vi.fn(() => selection),
+    getTaskWorkflowSelectionAsync: vi.fn(async () => selection),
+    getWorkflowDefinition: vi.fn(async () => ({ ir: opts.ir ?? dependencyHoldIr() })),
   } as unknown as TaskStore;
 }
 
@@ -132,12 +167,13 @@ describe("hold-release sweep truncation rotation (RUFU-698)", () => {
   it("evaluates the tail a truncated pass never reached first on the next pass", async () => {
     const debug = vi.spyOn(schedulerLog, "debug").mockImplementation(() => {});
     const warn = vi.spyOn(schedulerLog, "warn").mockImplementation(() => {});
-    // Equal createdAt everywhere → `sortTasksByQueueOrder` falls through to id, so A,B,C,D is plain queue order.
-    const tasks = [task("R-A"), task("R-B"), task("R-C"), task("R-D")];
+    // Equal createdAt everywhere → `sortTasksByQueueOrder` falls through to id. D-BLOCK sorts first and
+    // is skipped (its column carries no hold trait), so the candidates walk in R-A…R-D order.
+    const tasks = [blockerTask(), dependentTask("R-A"), dependentTask("R-B"), dependentTask("R-C"), dependentTask("R-D")];
     const clock = { t: 1_000 };
     const deps = { now: () => clock.t };
 
-    // Pass 1: the deadline dies inside R-A's definition read, so B/C/D are the deferred tail.
+    // Pass 1: the deadline dies inside R-A's dependency arm, so B/C/D are the deferred tail.
     const first = await runHoldReleaseSweep(storeWith(tasks, clock, { blowDeadline: true }), { ...deps, budgetMs: 10 });
     expect(first.budgetTruncated).toBe(true);
     expect(first.unevaluatedCount).toBe(3);
@@ -214,7 +250,7 @@ describe("hold-release sweep truncation rotation (RUFU-698)", () => {
   });
 
   it("a deferred id that left the board shifts nothing else", async () => {
-    const tasks = [task("S-A"), task("S-B"), task("S-C")];
+    const tasks = [blockerTask(), dependentTask("S-A"), dependentTask("S-B"), dependentTask("S-C")];
     const clock = { t: 1_000 };
     const store = storeWith(tasks, clock, { blowDeadline: true });
 

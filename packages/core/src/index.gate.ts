@@ -709,6 +709,7 @@ export {
   */
   prefetchWorkflowSelections,
   prefetchWorkflowIrs,
+  createCachedWorkflowIrReader,
   EpochedWorkflowIrCache,
   EpochedWorkflowSelectionCache,
   type WorkflowSelectionCache,

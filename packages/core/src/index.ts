@@ -853,6 +853,7 @@ export {
   resolveTaskPlanningPrompt,
   prefetchWorkflowSelections,
   prefetchWorkflowIrs,
+  createCachedWorkflowIrReader,
   hashWorkflowIr,
   computeWorkflowIrPin,
   detectWorkflowDrift,

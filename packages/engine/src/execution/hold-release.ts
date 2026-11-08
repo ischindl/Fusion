@@ -48,6 +48,8 @@ import {
   sortTasksByQueueOrder,
   TransitionRejectionError,
   resolveWorkflowIrForTask,
+  prefetchWorkflowIrs,
+  createCachedWorkflowIrReader,
   isUnplannedSeedPrompt,
   isDuplicateRedirectOnlyPrompt,
   isFastExecutionMode,
@@ -301,6 +303,18 @@ export interface HoldReleaseDeps {
   isTaskActive?: (taskId: string) => boolean;
   /** Caller-owned cache, valid for this scheduler pass only. */
   selectionCache?: WorkflowSelectionCache;
+  /*
+  FNXC:WorkflowIrHoist 2026-11-08-05:57 (RUFU-871):
+  A caller-owned IR cache, valid for this scheduler pass only, keyed exactly as `resolveWorkflowIrById`
+  keys it (`workflowId\u0000projectId`). The scheduler's `runHoldReleaseSweepPass` already resolves every
+  DISTINCT workflow on the board into its own `wipIrCache` before it calls here — for the WIP column-flag
+  map, the review/terminal role predicates, and the `reserveSlot` dispatch guard. Handing that same
+  warm map to the sweep is what stops one scheduler pass reading the same `workflow_definitions` rows
+  twice; without it the sweep re-resolves the whole board's workflow set into a cache that dies with the
+  pass. Same lifetime, same key, same project scope as the scheduler's own reads, so nothing new can be
+  served stale that the shared `selectionCache` was not already.
+  */
+  irCache?: Map<string, WorkflowIr>;
   /** Maximum sweep work budget; in-flight store operations cannot be cancelled. */
   budgetMs?: number;
 }
@@ -925,6 +939,8 @@ type SweepCtx = {
   resolverStore: WorkflowIrResolverStore;
   irCache: Map<string, WorkflowIr>;
   selectionCache: WorkflowSelectionCache;
+  /** The pass's synchronous IR cache reader — see `createCachedWorkflowIrReader` in `@fusion/core`. */
+  cachedWorkflowIr: (taskId: string) => WorkflowIr | undefined;
   handoffMemo: Map<string, boolean>;
   /**
    * RUFU-209: per-pass non-truncated verdict per dependency id. `handoffMemo` only de-duplicated the
@@ -954,7 +970,9 @@ async function dependencySatisfied(ctx: SweepCtx, dep: Task): Promise<Dependency
   */
   const memo = ctx.dependencyMemo.get(dep.id);
   if (memo) return memo;
-  const ir = await resolveWorkflowIrForTask(ctx.resolverStore, dep.id, ctx.irCache, ctx.selectionCache);
+  // Same hoist as the candidate loop: the dependency's IR is a cache read whenever the pass resolved its
+  // workflow, and the awaited resolver remains for every card the cache cannot answer.
+  const ir = ctx.cachedWorkflowIr(dep.id) ?? await resolveWorkflowIrForTask(ctx.resolverStore, dep.id, ctx.irCache, ctx.selectionCache);
   const column = findColumn(ir, dep.column);
   const completeFlag = column ? resolveColumnFlags(column).complete === true : false;
 
@@ -1202,6 +1220,27 @@ function trackHeld(taskId: string, reason: string, nowMs: number): number {
   return nowMs - existing.sinceMs;
 }
 
+/*
+FNXC:WorkflowIrHoist 2026-11-08-06:00 (RUFU-871):
+The gates that reject a card BEFORE its workflow IR is resolved, in ONE predicate, because the sweep now
+has two consumers of the answer: the candidate loop (which skipped these cards already) and the hoisted
+`prefetchWorkflowIrs` above it (which must not resolve a workflow the loop was never going to read).
+
+Keeping this as one function rather than two copies is what preserves RUFU-246's Step-4 guarantee — a
+terminally parked premise card draws NO IR read at all — after a change whose whole shape is "resolve
+the board's workflows up front". A drifted copy would quietly re-admit the parked card's workflow
+(`hold-release-premise-park-sweep.test.ts` is the red check) or quietly resolve a workflow the loop then
+skips, which is the cost this hoist exists to remove.
+
+Order is load-bearing: `nextRecoveryAt` is compared against the caller's clock, so a backoff card is
+skipped here and re-admitted by the next pass once its deadline passes.
+*/
+function sweepSkipsCardBeforeIrResolution(task: Task, nowMs: number): boolean {
+  if (task.paused || task.userPaused) return true;
+  if (task.nextRecoveryAt && Date.parse(task.nextRecoveryAt) > nowMs) return true;
+  return isPlanPremiseParkTerminal(task);
+}
+
 /** Exposed for tests: forget all held-since bookkeeping. */
 export function resetHoldReleaseInstrumentation(): void {
   heldSince.clear();
@@ -1242,14 +1281,13 @@ export async function runHoldReleaseSweep(
     */
     const capacityFactsByTaskId = new Map<string, { poolId: string; occupants: number; limit: number }>();
     const targetByTaskId = new Map<string, string>();
-    const irCache = new Map<string, WorkflowIr>();
+    const irCache = deps.irCache ?? new Map<string, WorkflowIr>();
     const selectionCache = deps.selectionCache ?? new Map<string, { workflowId: string; stepIds: string[] } | undefined>();
     const counters: SweepCounters = { settings: 0, tasks: 0, batchSelections: 0, selections: 0, definitions: 0, handoffMarkers: 0, prompts: 0, workItems: 0, evalSettings: 0, heldCandidates: 0 };
     const resolverStore = createCountingResolverStore(store, counters);
     // RUFU-209: one observation record per scheduler pass — phase timings + per-pass fact memos.
     // Never module-scoped: a cross-pass cache would serve stale prompt/settings reads.
     const pass = createHoldReleasePass(deps.now, counters);
-    const ctx: SweepCtx = { store, resolverStore, irCache, selectionCache, handoffMemo: new Map(), dependencyMemo: new Map(), counters, expired, pass };
     /*
     FNXC:HoldReleaseAttribution 2026-09-09-23:25 (RUFU-209):
     The phase buckets in the sweep summary, in one shared definition so BOTH summary sites
@@ -1405,6 +1443,53 @@ export async function runHoldReleaseSweep(
     if (expired()) return logPreambleTruncation(allTasks.length);
 
     /*
+    FNXC:WorkflowIrHoist 2026-11-08-05:57 (RUFU-871):
+    Everything below this line used to resolve each card's workflow IR inside the candidate loop — for
+    EVERY card, held or not — and that is what the field line charges to `ir-resolve`:
+
+        Hold-release sweep: project=proj_1849a8ac5d5842ac: 11733ms (prefetch 3430ms, ir-resolve 1464ms,
+        evaluate 6839ms over 235 tasks)
+
+    1 464 ms / 235 = 6.2 ms per card, and none of it was a query: the counting seam in
+    `hold-release-sweep-evaluate-cost.test.ts` measures zero per-task store reads and one definition read
+    per DISTINCT workflow. They were 235 SEQUENTIAL AWAITS on a loop already saturated by driver row
+    hydration (788 MB / 60 s, ~90 % `DataRow`/`fromJson`), paid also by the cards this sweep discards two
+    lines later for lacking a `hold` trait.
+
+    So: resolve the DISTINCT workflows concurrently once (`prefetchWorkflowIrs`, the shape the scheduler's
+    `runHoldReleaseSweepPass` already uses), then read each card's IR synchronously via
+    `createCachedWorkflowIrReader`. A card whose workflow is NOT cached — missing/malformed/throwing
+    definition, or a selection the batch never returned — still takes the original awaited resolve, so the
+    degrade-to-default fail-soft and its per-card retry are untouched. Charged to `irResolveMs`, the same
+    bucket as before, so a regression here shows up on the same token operators already read.
+    */
+    const irPrefetchStartedMs = deps.now();
+    if (!expired()) {
+      // Only the cards the candidate loop would actually evaluate: a paused, backed-off, or
+      // premise-parked card must draw no IR read at all (RUFU-246), and the same predicate decides both
+      // lists so the loop and the prefetch cannot disagree about who that covers.
+      const irCandidateIds = allTasks
+        .filter((task) => !sweepSkipsCardBeforeIrResolution(task, deps.now()))
+        .map((task) => task.id);
+      // `resolverStore` is the sweep's counting facade, so the definition reads this performs land in
+      // `reads(definitions=…)` rather than vanishing from the tally. No `definitionReadTally` is passed:
+      // the proxy already counts the call, and passing both would double-count it.
+      if (irCandidateIds.length > 0) {
+        await prefetchWorkflowIrs(resolverStore, irCandidateIds, irCache, selectionCache);
+      }
+    }
+    irResolveMs += deps.now() - irPrefetchStartedMs;
+    const cachedWorkflowIr = createCachedWorkflowIrReader(resolverStore, irCache, selectionCache);
+    /*
+    FNXC:WorkflowIrHoist 2026-11-08-05:57 (RUFU-871):
+    Built AFTER the hoisted prefetch because `dependencySatisfied` reads through the same synchronous
+    reader as the candidate loop: one cache, one reader, one answer per card. Constructing the pass
+    context here (rather than beside the other pass state) is what keeps `cachedWorkflowIr` a real
+    reader instead of a stub that silently degrades a dependency's IR lookup to the awaited path.
+    */
+    const ctx: SweepCtx = { store, resolverStore, irCache, selectionCache, cachedWorkflowIr, handoffMemo: new Map(), dependencyMemo: new Map(), counters, expired, pass };
+
+    /*
     FNXC:TaskDispatch 2026-08-09-21:04:
     Capacity and file-scope reservations are assigned in sweep evaluation order.
     After hard eligibility gates reject paused, dependency-blocked, or overlapping
@@ -1424,18 +1509,21 @@ export async function runHoldReleaseSweep(
     for (let index = 0; index < tasksForReleaseEvaluation.length; index += 1) {
       if (expired()) { breakIndex = index; break; }
       const task = tasksForReleaseEvaluation[index]!;
-      if (task.paused || task.userPaused || (task.nextRecoveryAt && Date.parse(task.nextRecoveryAt) > deps.now())) continue;
       /*
-      FNXC:PlanPremises 2026-09-16-04:08:
-      RUFU-246 — a premise-exhausted park is skipped here, at the top of the candidate loop and
-      before the per-task IR resolve: a parked card draws no PROMPT.md read (`reads(prompts=…)`
-      stays flat), no premise evaluation, no reservation, no refusal log, and no audit row on later
-      passes. Like the paused-skip above it is deliberately NOT marked evaluated — it was not.
+      FNXC:PlanPremises 2026-09-16-04:08 (RUFU-246) + FNXC:WorkflowIrHoist 2026-11-08-06:00 (RUFU-871):
+      Paused, backed-off, and premise-exhausted cards are skipped before any IR resolution — a parked card
+      draws no workflow read, no PROMPT.md read (`reads(prompts=…)` stays flat), no premise evaluation, no
+      reservation, no refusal log, and no audit row on later passes — and it is deliberately NOT marked
+      evaluated, because it was not. Those conditions now live in the ONE predicate the hoisted prefetch
+      also consults, which is what keeps the skip ahead of the IR read after resolution moved out of this
+      loop. The `expired()` check below stays where it was, so truncation still breaks at the same card.
       */
-      if (isPlanPremiseParkTerminal(task)) continue;
+      if (sweepSkipsCardBeforeIrResolution(task, deps.now())) continue;
       if (expired()) { breakIndex = index; break; }
       const irStartedMs = deps.now();
-      const ir = await resolveWorkflowIrForTask(resolverStore, task.id, irCache, selectionCache);
+      // Sync cache hit first (see the hoist above); the awaited resolver stays the fallback for every
+      // card the cache cannot answer, unchanged in both behaviour and attribution.
+      const ir = cachedWorkflowIr(task.id) ?? await resolveWorkflowIrForTask(resolverStore, task.id, irCache, selectionCache);
       irResolveMs += deps.now() - irStartedMs;
       if (!isHeldTask(ir, task)) { evaluatedTaskIds.add(task.id); continue; }
       /*

@@ -50,6 +50,7 @@ import { join } from "node:path";
 import {
   PLAN_REVIEW_GROUP_ID,
   buildBootstrapPrompt,
+  resolveWorkflowIrById,
   type Task,
   type TaskStore,
   type WorkflowIr,
@@ -314,13 +315,17 @@ describe("hold-release sweep evaluate cost (RUFU-871 Step 2 measurement)", () =>
     expect(pass1.listWorkflowWorkItemsForTask ?? 0).toBe(0);
     expect(pass1.getCompletionHandoffAcceptedMarker ?? 0).toBe(0);
 
-    // (3) MEASURED BEFORE: the per-task AWAIT witness. `resolveWorkflowIrForTask` was called once per
-    // card and reads the project scope inside itself, so a 24-card board issued 25 of these — one per
-    // card plus the sweep's own project key. This is the count behind `ir-resolve 1464ms / 235 tasks`
-    // = 6.2 ms of pure await per card, paid by every card on the board including the 16 that are not
-    // candidates at all. The hoist lowers it to one resolution per DISTINCT workflow.
-    expect(pass1.getWorkflowSettingsProjectId).toBe(25);
-    expect(pass2.getWorkflowSettingsProjectId).toBe(25);
+    // (3) The per-task AWAIT witness. `resolveWorkflowIrForTask` used to be called once per card and
+    // read the project scope inside itself, so a 24-card board issued 25 of these — one per card plus
+    // the sweep's own project key. That is the count behind `ir-resolve 1464ms / 235 tasks` = 6.2 ms of
+    // pure await per card, paid by every card including the 16 that are not candidates at all.
+    //
+    // MEASURED AFTER the hoist: 3 per pass — the sweep's own project key, the one inside the hoisted
+    // `prefetchWorkflowIrs` resolution, and the one inside `createCachedWorkflowIrReader`. It no longer
+    // contains the word "tasks", so any regression that puts a per-card IR resolution back grows this
+    // number and fails here rather than in the field.
+    expect(pass1.getWorkflowSettingsProjectId).toBe(3);
+    expect(pass2.getWorkflowSettingsProjectId).toBe(3);
 
     // (4) RUFU-393's refresh floor: pass 1 authors an episode per refused card; pass 2 sees the same
     // signature inside the floor and must write NOTHING.
@@ -364,5 +369,57 @@ describe("hold-release sweep evaluate cost (RUFU-871 Step 2 measurement)", () =>
     // Same refusal on pass 2, same floor-bound silence on the durable episode.
     expect(pass1.updateTask).toBe(4);
     expect(pass2.updateTask ?? 0).toBe(0);
+  });
+
+  /*
+  FNXC:WorkflowIrHoist 2026-11-08-05:57 (RUFU-871):
+  The scheduler's `runHoldReleaseSweepPass` resolves every distinct workflow on the board into
+  `wipIrCache` for its own WIP/review/terminal predicates BEFORE it calls the sweep, and now hands that
+  Map in as `deps.irCache`. This is the case that pins the sharing: a warm cache means the sweep reads
+  `workflow_definitions` ZERO times, and the release verdicts are unchanged.
+  */
+  it("reuses a caller-owned warm IR cache and reads no workflow definition at all", async () => {
+    const board = buildBoard(3, 1, 4);
+    const ir = boardIr(1);
+    const { store, reset, tally } = await makeCountingStore({ board, ir });
+    const irCache = new Map<string, WorkflowIr>();
+    // Warm it exactly the way the scheduler pass does, OUTSIDE the counted window.
+    await resolveWorkflowIrById(store, ir.id, irCache);
+
+    reset();
+    const first = await runHoldReleaseSweep(store, { now: () => Date.parse("2026-01-01T00:00:00.000Z"), irCache });
+    const pass = tally();
+
+    expect(first.held.map((held) => held.reason)).toEqual(Array(3).fill("downstream-full"));
+    expect(pass.getWorkflowDefinition ?? 0).toBe(0);
+    expect(pass.listTasks).toBe(1);
+    // Same board-size-independent constant as the first case: the project key, the resolution inside
+    // the hoisted prefetch, and the reader's own — three whether the board is 4 cards or 235.
+    expect(pass.getWorkflowSettingsProjectId).toBe(3);
+  });
+
+  /*
+  FNXC:WorkflowIrHoist 2026-11-08-05:57 (RUFU-871):
+  The constraint the whole optimisation must not violate: a slot that is free IN THIS PASS releases the
+  parked card IN THIS PASS. A cache that makes the first look at a card come back "not resolvable"
+  would delay every release by one sweep, and the sweep is the only thing that ever moves these cards.
+  Released here on a cold cache, on the first pass, with no prior episode and no warm IR cache.
+  */
+  it("releases into a free slot on the same pass the slot is free, cold cache and first pass", async () => {
+    const board = buildBoard(2, 0, 2);
+    const { store, reset, tally, columnOf } = await makeCountingStore({ board, ir: boardIr(4) });
+
+    reset();
+    const first = await runOnce(store);
+    const pass = tally();
+
+    expect(first.result.released.sort()).toEqual(["HOLD-0", "HOLD-1"]);
+    expect(first.result.held).toEqual([]);
+    expect(columnOf("HOLD-0")).toBe("wip");
+    expect(columnOf("HOLD-1")).toBe("wip");
+    // The move went through the fenced seam, once per released card — and nothing else touched a column
+    // (`updateTask` raises on a `column` patch, so a second mover fails this pass outright).
+    expect(pass.moveTaskIf).toBe(2);
+    expect(pass.updateTask ?? 0).toBe(0); // nothing was held, so the pass authored no episode
   });
 });

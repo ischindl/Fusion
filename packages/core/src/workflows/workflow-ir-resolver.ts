@@ -178,6 +178,68 @@ export type WorkflowSelectionReadTally = { batched: number; singles: number };
 export type WorkflowDefinitionReadTally = { definitions: number };
 
 /*
+FNXC:WorkflowIrHoist 2026-11-08-05:57 (RUFU-871):
+The workflow a card with no selection is governed by. THREE call sites spell it
+(`resolveWorkflowIrForTaskWithProvenance`'s absent-selection branch, `prefetchWorkflowIrs`, and the
+synchronous reader below), and they must agree exactly or the synchronous reader answers for a card
+the async resolver would have governed differently. One const so there is one spelling.
+*/
+export const FALLBACK_WORKFLOW_ID = "builtin:coding";
+
+/** The `irCache` key for one workflow id under a known project scope. `resolveWorkflowIrById` WRITES
+ *  this key and `createCachedWorkflowIrReader` READS it; sharing the derivation is the only thing
+ *  that keeps a cache hit from becoming a silent miss (a miss is merely slow, a wrong key shape that
+ *  collides would serve one project's graph to another). */
+function irCacheKey(workflowId: string, projectId: string | undefined): string {
+  return projectId ? `${workflowId}\u0000${projectId}` : workflowId;
+}
+
+/**
+ * Build a SYNCHRONOUS reader over an already-warm `irCache` for one caller-owned pass.
+ *
+ * The hot loops that resolve an IR per card (the hold/release sweep, board hydration) do not need a
+ * round trip per card — the IR is a function of the card's SELECTED WORKFLOW, of which a board has a
+ * handful. `prefetchWorkflowIrs` fills the cache once per distinct workflow; this reader then answers
+ * the rest from memory, so the per-card leg stops crossing the event loop at all. Measured field
+ * evidence for why that matters:
+ *
+ *     [scheduler] Hold-release sweep: project=proj_1849a8ac5d5842ac: 11733ms (prefetch 3430ms,
+ *     ir-resolve 1464ms, evaluate 6839ms over 235 tasks)
+ *
+ * 1 464 ms / 235 = 6.2 ms per card of pure await, on the same Node process that serves the UI, paid
+ * by every card including the ones that are not candidates for anything.
+ *
+ * It returns `undefined` — never a guess — in exactly the states where the cache cannot answer, and
+ * the caller must then run the async resolver as it always did:
+ * - the selection cache has no entry for the card. An absent ENTRY is not an absent SELECTION: the
+ *   async resolver would go read the store, and answering `builtin:coding` here would merge that
+ *   card into the default pool.
+ * - the workflow's IR is not cached. A missing, malformed, or throwing definition is deliberately
+ *   never written to `irCache` (see `resolveWorkflowIrById`), so this stays a miss and the async
+ *   path keeps its documented degrade-to-default behaviour.
+ *
+ * The project scope is read ONCE here, not once per card, which is what removes the per-card
+ * `getWorkflowSettingsProjectId` the sweep used to pay (25 calls for a 24-card board).
+ */
+export function createCachedWorkflowIrReader(
+  store: WorkflowIrDefinitionStore,
+  irCache: Map<string, WorkflowIr>,
+  selectionCache: WorkflowSelectionCache,
+): (taskId: string) => WorkflowIr | undefined {
+  let projectId: string | undefined;
+  try {
+    projectId = store.getWorkflowSettingsProjectId?.();
+  } catch {
+    projectId = undefined;
+  }
+  return (taskId: string): WorkflowIr | undefined => {
+    if (!selectionCache.has(taskId)) return undefined;
+    const workflowId = selectionCache.get(taskId)?.workflowId ?? FALLBACK_WORKFLOW_ID;
+    return irCache.get(irCacheKey(workflowId, projectId));
+  };
+}
+
+/*
 FNXC:WorkflowScheduling 2026-08-12-20:00 (RUFU-073):
 In-flight selection-read coalescing, keyed by the CALLER-OWNED per-pass cache object. Several
 `resolveTaskParkedColumns` wake closures can race on the same task in one scheduler event, and each
@@ -659,7 +721,7 @@ export async function resolveWorkflowIrById(
   const workflowId = requestedWorkflowId;
   let projectId: string | undefined;
   try { projectId = store.getWorkflowSettingsProjectId?.(); } catch { projectId = undefined; }
-  const cacheKey = projectId ? `${workflowId}\u0000${projectId}` : workflowId;
+  const cacheKey = irCacheKey(workflowId, projectId);
   const cached = irCache?.get(cacheKey);
   if (cached) return cached;
 
@@ -714,8 +776,13 @@ export async function prefetchWorkflowIrs(
   selectionCache: WorkflowSelectionCache,
   definitionReadTally?: WorkflowDefinitionReadTally,
 ): Promise<void> {
-  /* FNXC:WorkflowScheduling 2026-09-08-04:11: Delegating to the resolver keeps observed-read accounting at the store call site and isolates one broken definition from board hydration. */
-  const ids = new Set(taskIds.map((taskId) => selectionCache.get(taskId)?.workflowId ?? "builtin:coding"));
+  /* FNXC:WorkflowScheduling 2026-09-08-04:11: Delegating to the resolver keeps observed-read accounting at the store call site and isolates one broken definition from board hydration.
+  
+  FNXC:WorkflowIrHoist 2026-11-08-05:57 (RUFU-871): The mapped default MUST stay
+  `FALLBACK_WORKFLOW_ID`, the same rule `createCachedWorkflowIrReader` applies — a card this function
+  maps to a different workflow than the reader maps it to is a card the reader answers from the wrong
+  graph, or not at all. */
+  const ids = new Set(taskIds.map((taskId) => selectionCache.get(taskId)?.workflowId ?? FALLBACK_WORKFLOW_ID));
   await Promise.all([...ids].map(async (id) => {
     try { await resolveWorkflowIrById(store, id, irCache, definitionReadTally); } catch { /* fail-soft */ }
   }));
@@ -862,7 +929,7 @@ export async function resolveWorkflowIrForTaskWithProvenance(
     return { ir: defaultCodingWorkflowIr(), source: "default" };
   }
   if (!workflowId) {
-    return { ir: await resolveWorkflowIrById(store, "builtin:coding", irCache, definitionReadTally), source: "default", selectionAbsent: true };
+    return { ir: await resolveWorkflowIrById(store, FALLBACK_WORKFLOW_ID, irCache, definitionReadTally), source: "default", selectionAbsent: true };
   }
   /*
   FNXC:WorkflowLifecycleColumns 2026-07-30-13:20 (PR #2618 review — greptile P1):
