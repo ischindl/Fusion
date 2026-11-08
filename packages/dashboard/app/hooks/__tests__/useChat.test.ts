@@ -929,8 +929,19 @@ describe("useChat", () => {
     });
 
     const parsed = JSON.parse(localStorage.getItem(chatMessagesCacheKey(projectId, session.id)) ?? "null") as { data: ChatMessage[] };
-    expect(parsed.data).toHaveLength(50);
-    expect(parsed.data[0]?.id).toBe("msg-50");
+    /*
+    FNXC:ChatThreadPagination 2026-11-08-12:28 (RUFU-871 slice A):
+    The invariant this defends is unchanged — an older PAGE must never become the cached transcript,
+    because a page is not the tail of the conversation and the next cold open would render the middle
+    of the chat. What changed is that the page is now folded INTO the cached thread instead of being
+    dropped, so the cache holds the newest page plus the older row, oldest first. Asserting both halves
+    is strictly stronger than the pre-slice length: it still refuses a page-only cache write and now
+    also refuses one that loses the newest window.
+    */
+    expect(parsed.data).toHaveLength(51);
+    expect(parsed.data[0]?.id).toBe("msg-old");
+    expect(parsed.data.filter((row) => row.id !== "msg-old")).toHaveLength(50);
+    expect(parsed.data.at(-1)?.id).toBe("msg-1");
   });
 
   it("selects a session and loads its messages", async () => {
@@ -4123,8 +4134,19 @@ describe("useChat", () => {
     const cancellation = createDeferredPromise<{ success: boolean; interrupted: boolean }>();
     const reconciliation = createDeferredPromise<{ messages: ChatMessage[] }>();
     mockFetchChatSessions.mockResolvedValueOnce({ sessions: [session] });
+    /*
+    FNXC:ChatThreadPagination 2026-11-08-12:28 (RUFU-871 slice A):
+    The post-Stop reconciliation used to be the only `order: "asc"` read, which is what let this mock
+    single it out. Slice A made it `order: "desc"` — an ascending read took the OLDEST rows and painted
+    them over the thread the reader was looking at — so direction no longer distinguishes the
+    reconciliation from the opening load. Hold it open by PHASE instead: the flag flips after
+    `stopStreaming()` and before the cancellation resolves, so exactly the reconciliation fetch blocks.
+    The assertions below are unchanged; this test's subject (the queued follow-up waits for durable
+    reconciliation) is still what is being proven.
+    */
+    let holdReconciliationOpen = false;
     mockFetchChatMessages.mockImplementation(async (_sessionId, options) => (
-      options?.order === "asc" ? reconciliation.promise : { messages: [] }
+      options?.order === "desc" && holdReconciliationOpen ? reconciliation.promise : { messages: [] }
     ));
     mockCancelChatResponse.mockReturnValue(cancellation.promise);
     mockStreamChatResponse.mockReturnValue({ close: vi.fn(), isConnected: () => true });
@@ -4141,6 +4163,7 @@ describe("useChat", () => {
     });
 
     expect(mockStreamChatResponse).toHaveBeenCalledTimes(1);
+    holdReconciliationOpen = true;
     await act(async () => {
       cancellation.resolve({ success: true, interrupted: false });
       await Promise.resolve();
@@ -4866,10 +4889,19 @@ describe("useChat", () => {
     });
   });
 
-  it("walks a 125-message equal-timestamp history once with tuple cursors", async () => {
+  it("walks a 45-message equal-timestamp history once with tuple cursors", async () => {
     const session = makeSession({ id: "session-ties", agentId: "agent-001" });
     mockFetchChatSessions.mockResolvedValueOnce({ sessions: [session] });
-    const tied = Array.from({ length: 125 }, (_, index) => makeMessage({
+    /*
+    FNXC:ChatThreadPagination 2026-11-08-12:28 (RUFU-871 slice A):
+    The pages a fake messages route hands back must be the size the client now asks for. This fixture
+    walked a 125-row history over three 50-row pages; with the 20-row window a 25-row tail still means
+    "more history exists" (25 >= 20), so the old shape could never reach `hasMoreMessages: false` and
+    the test would have been proving an exhaustion the fixture never created. Re-cut to 45 rows across
+    pages of 20 / 20 / 5 so the final page is genuinely short. The subject is untouched: one
+    equal-timestamp tie-break across every row, walked once, with the tuple cursor naming each boundary.
+    */
+    const tied = Array.from({ length: 45 }, (_, index) => makeMessage({
       id: `tie-${String(index).padStart(3, "0")}`,
       sessionId: session.id,
       role: "user",
@@ -4877,21 +4909,21 @@ describe("useChat", () => {
       createdAt: "2026-09-06T12:00:00.000Z",
     }));
     mockFetchChatMessages
-      .mockResolvedValueOnce({ messages: tied.slice(75).reverse() })
-      .mockResolvedValueOnce({ messages: tied.slice(25, 75).reverse() })
-      .mockResolvedValueOnce({ messages: tied.slice(0, 25).reverse() });
+      .mockResolvedValueOnce({ messages: tied.slice(25).reverse() })
+      .mockResolvedValueOnce({ messages: tied.slice(5, 25).reverse() })
+      .mockResolvedValueOnce({ messages: tied.slice(0, 5).reverse() });
 
     const { result } = renderHook(() => useChat());
     await waitFor(() => expect(result.current.sessions).toHaveLength(1));
     act(() => result.current.selectSession(session.id));
-    await waitFor(() => expect(result.current.messages).toHaveLength(50));
+    await waitFor(() => expect(result.current.messages).toHaveLength(20));
     await act(async () => result.current.loadMoreMessages());
     await act(async () => result.current.loadMoreMessages());
 
     expect(result.current.messages.map((message) => message.id)).toEqual(tied.map((message) => message.id));
-    expect(new Set(result.current.messages.map((message) => message.id)).size).toBe(125);
-    expect(mockFetchChatMessages.mock.calls[1]?.[1]).toEqual(expect.objectContaining({ beforeId: "tie-075" }));
-    expect(mockFetchChatMessages.mock.calls[2]?.[1]).toEqual(expect.objectContaining({ beforeId: "tie-025" }));
+    expect(new Set(result.current.messages.map((message) => message.id)).size).toBe(45);
+    expect(mockFetchChatMessages.mock.calls[1]?.[1]).toEqual(expect.objectContaining({ beforeId: "tie-025" }));
+    expect(mockFetchChatMessages.mock.calls[2]?.[1]).toEqual(expect.objectContaining({ beforeId: "tie-005" }));
     expect(result.current.hasMoreMessages).toBe(false);
   });
 
