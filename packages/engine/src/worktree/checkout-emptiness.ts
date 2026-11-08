@@ -25,7 +25,7 @@ Design constraints that shaped this file:
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import type { CheckoutEmptinessProofMap, CheckoutEmptinessVerdict } from "@fusion/core";
-import { resolveIntegrationBranch, type IntegrationBranchSettings } from "../merge/integration-branch.js";
+import { resolveIntegrationBranch, resolveIntegrationBranchFromSettings, type IntegrationBranchSettings } from "../merge/integration-branch.js";
 /* RUFU-231: shared trusted-integration-identity chain (the same ordered identities the
    branch-conflict inspection and the sweep's foreign-tip rejection trust). */
 import { resolveTrustedIntegrationRefs } from "../execution/branch-conflicts.js";
@@ -475,6 +475,7 @@ export function invalidateEmptinessProofsForTask(
 export function resetCheckoutEmptinessProversForTesting(): void {
   for (const prover of proverByRootDir.values()) prover.invalidateAll();
   proverByRootDir.clear();
+  invalidateIntegrationBranchMemo();
 }
 
 /*
@@ -489,6 +490,96 @@ Callers pass ONLY tasks that would otherwise classify `dormant`. A proven `empty
  downgrade: an empty result map, a missing entry, or an `unknown`/`occupied` verdict all keep the
 dormant lease, so a prover failure cannot widen dispatch.
 */
+/*
+FNXC:GitProofForkAccounting 2026-11-08-03:49 (RUFU-871):
+The Git fork the shared helper still paid once PER CALL.
+
+`proveDormantCheckoutEmptiness` resolved the pass base ref itself, so the value reached the prover as the
+per-call `integrationBranch` override and never passed through the prover's own memo. Seven production
+call sites run it — `scheduler.ts:3313` (per admission pass), `executor/file-scope-lease-dispatch-gate.ts:156`
+(per dispatch), `concurrency/concurrency.ts:770`, `healing/gridlock-detector.ts:205`, and
+`self-healing.ts:549` / `:6116` (once per card) — and on the default deployment (`integrationBranch`
+and `baseBranch` both unset) every one of them forked `git symbolic-ref --short refs/remotes/origin/HEAD`.
+Measured before this change: `proveDormantCheckoutEmptiness, warm → 1` fork per call even when every
+proof verdict was already cached, pinned by the then-current case in
+`worktree/__tests__/git-proof-fork-count.test.ts`.
+
+Why this is a repository-level fact and not a per-card one: `refs/remotes/origin/HEAD` is a symbolic ref
+in the repository's own `.git`, written by `git remote set-head` / `git clone`. Nothing a card does to
+its checkout moves it, so it is the same answer for every candidate in a pass — exactly the shape the
+per-rootDir prover registry above already assumes.
+
+Staleness accepted: `CHECKOUT_EMPTINESS_PROOF_TTL_MS` (10 s), the SAME window this file already
+publishes and documents, not a new one. Two reasons that window is the honest bound rather than a
+convenience:
+- The value is already staler than that today. `CheckoutEmptinessProver.defaultBaseRef()` memoizes this
+  same resolution in a promise that is never expired, so the prover's own base ref has an UNBOUNDED
+  staleness window for the lifetime of the prover registry entry. A 10 s bound on the helper is a
+  tightening, never a widening.
+- The proof this feeds is downgrade-only and already tolerates a 10 s-old tree-cleanliness verdict, so a
+  base-ref fact carried the same way cannot make the merge-safety proof more permissive than the window
+  surrounding it already does. The proof cache key still includes the resolved base refs, so a re-pointed
+  `origin/HEAD` yields a NEW proof key rather than reusing a verdict proven against the old one.
+If an operator re-points `origin/HEAD` (`git remote set-head origin -a`), the accepted exposure is
+therefore ≤ 10 s on this path, and a settings save is never exposed at all — see the settings rung below.
+
+The settings rung is deliberately OUTSIDE the memo. `resolveIntegrationBranchFromSettings` answers from
+`integrationBranch` / `baseBranch` alone and forks nothing, so consulting it per call keeps an operator's
+explicit configuration live on every pass (the RUFU-200 requirement this helper was built to satisfy)
+while only the git-derived half is remembered. Single-flight mirrors `resolveTrustedIntegrationRefs`: N
+callers arriving before the first probe settles share one fork instead of N.
+*/
+interface IntegrationBranchMemoEntry {
+  /** When the resolution started; bounds both the settled value and an unsettled flight. */
+  at: number;
+  promise: Promise<string | null>;
+}
+
+const integrationBranchMemoByRootDir = new Map<string, IntegrationBranchMemoEntry>();
+
+/**
+ * Drop the memoized git-derived integration branch for one repository, or for every repository.
+ *
+ * Deliberately has NO lifecycle caller, unlike `invalidateEmptinessProofsForTask`: moving
+ * `refs/remotes/origin/HEAD` is `git remote set-head`, which Fusion never runs and observes no event
+ * for, so there is no mutation to attribute the way a checkout dirtying is attributable. The 10 s TTL
+ * above is what bounds an operator's re-point, and this seam exists for
+ * `resetCheckoutEmptinessProversForTesting` and for a future operator-facing refresh, mirroring
+ * `__resetTrustedIntegrationRefsForTests` — an exported test seam is not an unowned production hook.
+ */
+export function invalidateIntegrationBranchMemo(rootDir?: string): void {
+  if (rootDir === undefined) {
+    integrationBranchMemoByRootDir.clear();
+    return;
+  }
+  integrationBranchMemoByRootDir.delete(rootDir);
+}
+
+/**
+ * Resolve the base ref one proof pass should use: live settings first (free, never cached), then the
+ * per-repository git-derived answer behind the file's existing 10 s proof TTL.
+ */
+async function resolvePassIntegrationBranch(
+  rootDir: string,
+  settings: IntegrationBranchSettings,
+  now: () => number,
+): Promise<string | null> {
+  const fromSettings = normalizeRef(resolveIntegrationBranchFromSettings(settings));
+  if (fromSettings) return fromSettings;
+
+  const memo = integrationBranchMemoByRootDir.get(rootDir);
+  if (memo && now() - memo.at < CHECKOUT_EMPTINESS_PROOF_TTL_MS) return await memo.promise;
+
+  const entry: IntegrationBranchMemoEntry = { at: now(), promise: undefined as unknown as Promise<string | null> };
+  // The settings rung already proved empty, so this call takes the git path; pass `settings` unchanged
+  // rather than a stripped copy so the resolver's own ladder stays the single source of truth.
+  entry.promise = resolveIntegrationBranch(rootDir, settings)
+    .then((branch) => normalizeRef(branch))
+    .catch(() => null);
+  integrationBranchMemoByRootDir.set(rootDir, entry);
+  return await entry.promise;
+}
+
 export async function proveDormantCheckoutEmptiness(input: {
   /**
    * Resolved lazily: a pass with no candidate never touches the store. Test fakes and narrower callers
@@ -498,10 +589,15 @@ export async function proveDormantCheckoutEmptiness(input: {
   settings: IntegrationBranchSettings;
   candidates: readonly CheckoutEmptinessTaskShape[];
   prover?: CheckoutEmptinessProver;
+  /**
+   * Injectable clock for the per-repository base-ref memo, mirroring `CheckoutEmptinessProverOptions.now`,
+   * so the TTL boundary is testable by advancing a counter instead of waiting out 10 s.
+   */
+  now?: () => number;
 }): Promise<ReadonlyMap<string, CheckoutEmptinessProofMap>> {
   if (input.candidates.length === 0) return new Map<string, CheckoutEmptinessProofMap>();
   const rootDir = typeof input.rootDir === "function" ? input.rootDir() : input.rootDir;
   const prover = input.prover ?? checkoutEmptinessProverFor(rootDir);
-  const integrationBranch = await resolveIntegrationBranch(rootDir, input.settings).catch(() => null);
+  const integrationBranch = await resolvePassIntegrationBranch(rootDir, input.settings, input.now ?? Date.now);
   return await prover.proveTasks(input.candidates, { integrationBranch });
 }

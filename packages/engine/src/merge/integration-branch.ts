@@ -55,6 +55,19 @@ function resolveFromSettings(settings: IntegrationBranchSettings): string {
   return normalize((settings as { baseBranch?: unknown } | null | undefined)?.baseBranch);
 }
 
+/*
+FNXC:GitProofForkAccounting 2026-11-08-03:49 (RUFU-871):
+Exposes the settings rung of the ladder — and ONLY the settings rung — so a scheduling-hot-path caller
+can memoize just the git-derived half of `resolveIntegrationBranch` while keeping an operator-configured
+`integrationBranch`/`baseBranch` live on every call. Nothing may re-implement this predicate elsewhere:
+`normalize` trims and strips `refs/heads/`, `refs/remotes/origin/` and `origin/`, so a caller that
+instead tested "is the raw setting a non-empty string" would misclassify a whitespace-only value as
+configured, never fork, and answer a stale configured branch forever. No existing call site changes.
+*/
+export function resolveIntegrationBranchFromSettings(settings: IntegrationBranchSettings): string {
+  return resolveFromSettings(settings);
+}
+
 async function resolveFromOriginHead(rootDir: string): Promise<string> {
   try {
     const { stdout } = await execAsync("git symbolic-ref --short refs/remotes/origin/HEAD", {

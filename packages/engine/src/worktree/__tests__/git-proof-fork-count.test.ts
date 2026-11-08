@@ -28,6 +28,12 @@ forks of a trigger must move the number DOWN, and one that raises a trigger must
 MEASURED BEFORE -> AFTER (git forks per trigger): a 4-card pass 24 -> 18, an 8-card pass 24 -> 18, a
 cold burst of 4 trusted-ref resolutions 8 -> 2. Single-card triggers stay at 4/6 and the warm repeat
 pass stays at 0, because both were already at their floor — see the `2 -> 2` and `0 -> 0` cases below.
+
+FNXC:GitProofForkAccounting 2026-11-08-03:49 (RUFU-871, second slice): `proveDormantCheckoutEmptiness`
+went from ONE `git symbolic-ref --short refs/remotes/origin/HEAD` per call (unbounded — 7 production call
+sites, one per admission pass / dispatch / card) to one per repository per 10 s TTL window, with a
+settings-configured `integrationBranch` forking nothing at all. See the `helper*` cases below for the
+exact N-calls -> 1-fork, invalidate -> exactly 1 more, and TTL-boundary numbers.
 */
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -340,25 +346,134 @@ describe("STEP 1 — measured git fork count per trigger", () => {
     for (const task of batch) expect(second.get(task.id ?? "")?.get("")).toBe("empty");
   }, 60_000);
 
-  it("the shared helper forks one integration-branch lookup PER CALL, uncached, even when every proof is cached", async () => {
+  it("the shared helper forks ONE integration-branch lookup for N calls, down from N (was uncached per call)", async () => {
     const fx = await setupFixture("helper");
     const { emptiness } = await loadProduct();
     const card = await fx.makeCard("RUFU-HELP", "at-base");
     // Unconfigured `integrationBranch` is the default deployment shape: the resolver must ask git.
     const prover = new emptiness.CheckoutEmptinessProver({ rootDir: fx.rootDir, settings: {} });
+    const call = () => emptiness.proveDormantCheckoutEmptiness({
+      rootDir: fx.rootDir,
+      settings: {} as never,
+      candidates: [card],
+      prover,
+    });
 
-    await emptiness.proveDormantCheckoutEmptiness({ rootDir: fx.rootDir, settings: {} as never, candidates: [card], prover });
-    const cold = seam.gitCommands();
-    seam.reset();
-    await emptiness.proveDormantCheckoutEmptiness({ rootDir: fx.rootDir, settings: {} as never, candidates: [card], prover });
-    const warm = seam.gitCommands();
-    seam.reset();
-    await emptiness.proveDormantCheckoutEmptiness({ rootDir: fx.rootDir, settings: {} as never, candidates: [card], prover });
+    const cold = await call();
+    const coldForks = seam.gitCommands();
+    expect(cold.get(card.id ?? "")?.get("")).toBe("empty");
+    // 2, not 1: the helper's own lookup plus the prover's `defaultBaseRef()` for the trusted-identity
+    // chain anchor. Only the helper's half is this change's subject; the prover half is asserted below.
+    expect(coldForks.filter((c) => c.startsWith("git symbolic-ref"))).toHaveLength(2);
 
-    expect(cold.filter((c) => c.startsWith("git symbolic-ref"))).toHaveLength(2);
-    // Every subsequent call still forks one: the helper resolves the branch itself and the result is
-    // remembered nowhere. `self-healing.ts:549` and `:6116` call this helper once PER CARD.
-    expect(warm).toEqual(["git symbolic-ref --short refs/remotes/origin/HEAD"]);
+    /*
+    BEFORE (measured, and pinned by this file's previous case): every subsequent call forked one more
+    `git symbolic-ref --short refs/remotes/origin/HEAD`, even with every proof verdict cached, because
+    the helper resolved the pass base ref itself and the answer was remembered nowhere.
+    AFTER: four more calls, zero forks. The per-repository memo is the only thing that answered.
+    */
+    seam.reset();
+    for (let index = 0; index < 4; index += 1) {
+      const warm = await call();
+      expect(warm.get(card.id ?? "")?.get("")).toBe("empty");
+    }
+    expect(seam.gitCommands()).toEqual([]);
+    expect(seam.gitCount()).toBe(0);
+  }, 60_000);
+
+  it("the memo answers a cold concurrent burst with ONE fork, and every joiner gets the same verdict", async () => {
+    const fx = await setupFixture("helper-burst");
+    const { emptiness } = await loadProduct();
+    const card = await fx.makeCard("RUFU-BURST", "at-base");
+    const prover = new emptiness.CheckoutEmptinessProver({ rootDir: fx.rootDir, settings: {} });
+
+    await Promise.all(Array.from({ length: 4 }, () => emptiness.proveDormantCheckoutEmptiness({
+      rootDir: fx.rootDir,
+      settings: {} as never,
+      candidates: [card],
+      prover,
+    })));
+
+    // Single-flight, mirroring `resolveTrustedIntegrationRefs`: 4 callers, one answer, one lookup.
+    expect(seam.gitCommands().filter((c) => c.startsWith("git symbolic-ref"))).toHaveLength(2);
+  }, 60_000);
+
+  it("invalidating the base-ref memo costs exactly ONE more fork, not one per candidate", async () => {
+    const fx = await setupFixture("helper-invalidate");
+    const { emptiness } = await loadProduct();
+    const card = await fx.makeCard("RUFU-INVAL", "at-base");
+    const prover = new emptiness.CheckoutEmptinessProver({ rootDir: fx.rootDir, settings: {} });
+    const call = () => emptiness.proveDormantCheckoutEmptiness({
+      rootDir: fx.rootDir,
+      settings: {} as never,
+      candidates: [card],
+      prover,
+    });
+
+    await call();
+    seam.reset();
+    await call();
+    expect(seam.gitCount()).toBe(0);
+
+    emptiness.invalidateIntegrationBranchMemo(fx.rootDir);
+    seam.reset();
+    const afterInvalidation = await call();
+
+    // Exactly one more symbolic-ref: the helper's. The prover's own `defaultBaseRef()` promise is a
+    // separate, never-expiring memo and is deliberately NOT what invalidation here reaches.
+    expect(seam.gitCommands().filter((c) => c.startsWith("git symbolic-ref"))).toHaveLength(1);
+    expect(afterInvalidation.get(card.id ?? "")?.get("")).toBe("empty");
+
+    // And it is memoized again immediately — invalidation costs one fork, not a fork per call.
+    seam.reset();
+    await call();
+    expect(seam.gitCount()).toBe(0);
+  }, 60_000);
+
+  it("the base-ref memo expires on the file's existing 10 s proof TTL — exactly one fork past the bound", async () => {
+    const fx = await setupFixture("helper-ttl");
+    const { emptiness } = await loadProduct();
+    const card = await fx.makeCard("RUFU-TTL", "at-base");
+    const prover = new emptiness.CheckoutEmptinessProver({ rootDir: fx.rootDir, settings: {} });
+    let clock = 1_000_000;
+    const call = () => emptiness.proveDormantCheckoutEmptiness({
+      rootDir: fx.rootDir,
+      settings: {} as never,
+      candidates: [card],
+      prover,
+      now: () => clock,
+    });
+
+    await call();
+    seam.reset();
+
+    // One millisecond inside the bound still answers from the memo.
+    clock += emptiness.CHECKOUT_EMPTINESS_PROOF_TTL_MS - 1;
+    await call();
+    expect(seam.gitCommands().filter((c) => c.startsWith("git symbolic-ref"))).toHaveLength(0);
+
+    // One millisecond past it, the operator's re-pointed `origin/HEAD` is picked up: exactly one fork.
+    clock += 1;
+    await call();
+    expect(seam.gitCommands().filter((c) => c.startsWith("git symbolic-ref"))).toHaveLength(1);
+  }, 60_000);
+
+  it("a configured integrationBranch forks NOTHING and is never memoized, so a settings save is live", async () => {
+    const fx = await setupFixture("helper-settings");
+    const { emptiness } = await loadProduct();
+    const card = await fx.makeCard("RUFU-CFG", "at-base");
+    const prover = new emptiness.CheckoutEmptinessProver({ rootDir: fx.rootDir, settings: { integrationBranch: "main" } });
+
+    await emptiness.proveDormantCheckoutEmptiness({
+      rootDir: fx.rootDir,
+      settings: { integrationBranch: "main" } as never,
+      candidates: [card],
+      prover,
+    });
+
+    // The settings rung answers before any git call, and nothing about it is remembered: the
+    // configured branch is re-read from live settings on every pass (RUFU-200's requirement).
+    expect(seam.gitCommands().filter((c) => c.startsWith("git symbolic-ref"))).toHaveLength(0);
   }, 60_000);
 
   it("trusted-ref resolution: 2 forks cold, 0 warm, and 2 for a cold burst of 4 (was 8)", async () => {
