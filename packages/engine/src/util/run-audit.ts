@@ -631,6 +631,25 @@ export type DatabaseMutationType =
   /** Metadata: { taskId, artifactKeys, owner, source, action, attempt, maxAttempts, nodeId? } */
   | "task:required-artifact-missing"
   /*
+  FNXC:WakeDeltaPhantomIds 2026-11-05-07:18 (RUFU-455):
+  A heartbeat was about to publish an assigned-task row that the authoritative by-id lookup
+  (`getTask` -> `TaskNotFoundError`) cannot resolve, so the guard withheld it from the wake payload, the
+  wake gate, and the persisted `wakeCursor`. Measured 2026-09-30 (run `run-d5f354ac`, `agent-5683bf15`):
+  two such ids were named to the agent as `ready_todo (tier 1)` assignments with an owner, and an
+  operator issued a routing command against a third — before it existed. This row is the operator's
+  answer to "which id, which agent, why withheld, and which store binding refused it".
+
+  Metadata: { taskId, agentId, outcome, source, withheldCount, storeBound }.
+  `outcome` is the closed two-value enum `absent` | `tombstone` — the only two a presence read can
+  produce. There is deliberately NO `scope-mismatch` value: `Task` carries no project identity, so no
+  predicate can distinguish "foreign project's row" from "no row under this binding", and a value that
+  no test can produce from real rows would be a claim rather than a measurement. `storeBound` (whether
+  the emitting store's data layer was project-bound) is what lets an operator read those two causes
+  apart honestly: `false` names the binding, `true` names a read-shape/cache/timing divergence.
+  Withheld payload text, owner prose, steering text, and error strings never enter run-audit.
+  */
+  | "task:wake-delta-unresolvable-assignment"
+  /*
   FNXC:ReviewConvergence 2026-08-22-16:17:
   FN-149 records review convergence as bounded best-effort telemetry. These events contain only
   task/gate identifiers, counts, and fixed outcomes; reviewer feedback and dispute rationale stay in task records.

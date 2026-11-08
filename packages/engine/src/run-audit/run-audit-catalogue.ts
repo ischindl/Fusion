@@ -58,6 +58,15 @@ export const DELIVERY_PIPELINE_RUN_AUDIT_EVENTS_LITERALS = [
   delivery-pipeline finalization theme, so it belongs in the curated set rather than doc prose only.
   */
   "task:empty-land-contradiction-detected",
+  /*
+  FNXC:WakeDeltaPhantomIds 2026-11-05-07:18 (RUFU-455):
+  A wake surface named an assignment the by-id lookup could not resolve, so the guard withheld it. The
+  reported harm was not cosmetic — an agent was handed owner-bearing dispatchable ids it could never
+  open, and an operator routed work against one. It belongs in the curated delivery-pipeline set because
+  it is the record of withheld dispatchable work, and it is the only durable trace of a withheld id: no
+  History line may be written against a row that does not exist.
+  */
+  "task:wake-delta-unresolvable-assignment",
   "task:finalize-unproven-blocked",
   "task:merge-boundary-unproven-parked",
   "task:merge-boundary-evidence-recovered",
@@ -224,4 +233,6 @@ export const DELIVERY_PIPELINE_RUN_AUDIT_EVENT_NOTES: Readonly<Record<DeliveryPi
     "A heartbeat move races a soft-deleted task and is skipped without parking the durable agent.",
   "agent:unresponsive-recovery-cancelled":
     "An unresponsive-recovery episode, or the recovery wake it queued, stood down because run history proves the agent completed a later heartbeat run cleanly.",
+  "task:wake-delta-unresolvable-assignment":
+    "A heartbeat withheld an assigned-task id it could not resolve through the authoritative by-id predicate from the wake payload, the wake gate, and the persisted wake cursor.",
 };

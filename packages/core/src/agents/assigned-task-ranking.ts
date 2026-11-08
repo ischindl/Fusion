@@ -176,6 +176,15 @@ export function rankAssignedTasksForWakeDelta(
   },
 ): RankAssignedTasksForWakeDeltaResult {
   const cap = options.cap ?? WAKE_DELTA_ASSIGNED_TASKS_CAP;
+  /*
+  FNXC:WakeDeltaPhantomIds 2026-11-05-07:18 (RUFU-455):
+  This `deletedAt` exclusion stays as defense-in-depth for hand-built callers of the ranker. It is NOT the
+  wake surface's protection: the heartbeat's board-state path (`collectBoardSignal` -> `boardStateFrom`)
+  never reaches this function, and the inventory path is filtered upstream by `filterResolvableAssignedTasks`
+  in `packages/engine/src/heartbeat-wake-signals.ts`, which checks the by-id presence predicate rather than a
+  row field the caller could have reshaped. Do not read a green ranker test as evidence that a phantom id
+  cannot be published — the population that got published did not pass through here.
+  */
   const open = tasks.filter((t) => !t.deletedAt && !isTerminalColumn(t.column, options.flagsByColumnId));
 
   const titled: RankedAssignedTaskLine[] = [];

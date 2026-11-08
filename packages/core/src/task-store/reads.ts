@@ -156,7 +156,7 @@ function hasFreshAgentLogActivitySinceTaskUpdate(
 }
 
 import {__setTaskActivityLogLimitsForTesting} from "../task-store/comments.js";
-import {countLiveTasks, readCompletedTaskPage, readTaskRow, readLiveTaskRows, readTaskRowByProposalClaimId, readTaskRowsBySourceLineage, normalizeTaskListReadFields, TASK_SLIM_PROJECTION, type TaskListReadField} from "./async/async-persistence.js";
+import {countLiveTasks, readCompletedTaskPage, readTaskRow, readTaskPresenceRows, readLiveTaskRows, readTaskRowByProposalClaimId, readTaskRowsBySourceLineage, normalizeTaskListReadFields, TASK_SLIM_PROJECTION, type TaskListReadField, type TaskPresenceRow} from "./async/async-persistence.js";
 import {buildTaskSearchPredicate, isLiteralOnlySearchQuery, liveSearchPredicate, searchTasksTsvector, searchTasksLike} from "./async/async-search.js";
 import {
   getArchivedTask,
@@ -618,6 +618,21 @@ export async function getTaskImpl(store: TaskStore, id: string, options?: { acti
       return { ...task, prompt };
 });
   }
+
+/*
+FNXC:WakeDeltaPhantomIds 2026-11-05-07:18 (RUFU-455):
+The store-facing seam of the presence predicate documented on `readTaskPresenceRows`. It exists so a
+caller that is about to PUBLISH a set of task ids can ask whether each one resolves, in one round trip,
+without paying `getTask`'s per-row hydration.
+
+Deliberately NOT `getTask` in a loop, and not a `listTasks()` re-filter: `getTaskImpl` takes
+`withTaskLock` and hydrates History, settings, merge-queue state and stall reasons per call, and
+`listTasks()` cannot answer for a named id set. Both are wrong costs on a heartbeat cadence
+(RUFU-201/615/627/756). Like `getTaskImpl` this is a pure read: no lock, no derived field, no write.
+*/
+export async function getTaskPresenceImpl(store: TaskStore, ids: string[]): Promise<TaskPresenceRow[]> {
+  return readTaskPresenceRows(store.asyncLayer!, ids);
+}
 
 export interface ListTasksOptions {
   limit?: number;
@@ -1758,6 +1773,12 @@ cursor minted for another lane or another order would interleave two total order
 or repeat rows, so it is rejected rather than replayed.
 */
 export type TaskQueuePageOrder = "queue" | "intake";
+
+/*
+Re-exported so `store.ts` can type `getTaskPresence`'s public return without importing the persistence
+module directly, which is the layering every other read on this seam already keeps.
+*/
+export type { TaskPresenceRow } from "./async/async-persistence.js";
 
 export interface TaskQueuePageOptions {
   /** The lane scope: one or more column ids that share this order. */

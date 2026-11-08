@@ -214,7 +214,7 @@ import type { TaskDeleteAuditContext } from "./task-delete-attribution.js";
 import { updateSettingsImpl, updateGlobalSettingsImpl } from "./task-store/settings-ops.js";
 import { mutateScriptImpl, type MutateScriptInput, type ScriptCatalogEntry } from "./task-store/script-ops.js";
 import { createTaskBackendImpl, _createTaskInternalBackendImpl, createTaskImpl, createTaskWithReservedIdImpl, _createTaskInternalImpl, _resolveSameAgentDuplicateIntakeImpl } from "./task-store/task-creation.js";
-import { getTaskImpl, listCompletedTasksImpl, listCurrentTasksPageImpl, listTaskQueuePageImpl, listTasksImpl, searchTasksImpl, listTasksModifiedSinceImpl, getTaskVerificationRequestAsyncImpl, listTaskRecommendationsImpl, findTaskByProposalClaimIdImpl, listTasksBySourceLineageImpl, type CompletedTaskPage, type ListTasksOptions, type TaskListPage, type TaskQueuePageOptions } from "./task-store/reads.js";
+import { getTaskImpl, getTaskPresenceImpl, listCompletedTasksImpl, listCurrentTasksPageImpl, listTaskQueuePageImpl, listTasksImpl, searchTasksImpl, listTasksModifiedSinceImpl, getTaskVerificationRequestAsyncImpl, listTaskRecommendationsImpl, findTaskByProposalClaimIdImpl, listTasksBySourceLineageImpl, type CompletedTaskPage, type ListTasksOptions, type TaskListPage, type TaskQueuePageOptions, type TaskPresenceRow } from "./task-store/reads.js";
 import { drainArchivedTasksIntoDone, inspectArchivedTaskHistory, type ArchivedTaskHistoryInspection, type ArchivedTaskReintegrationResult } from "./task-store/archive-reintegration.js";
 import { supplementTaskHistoryFromEvidence, type SupplementTaskHistoryResult } from "./task-store/async/async-archive-lineage.js";
 import { updateTaskUnlockedImpl } from "./task-store/task-update.js";
@@ -1998,6 +1998,18 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   }
   async getTask(id: string, options?: { activityLogLimit?: number; includeDeleted?: boolean }): Promise<TaskDetail> {
     return getTaskImpl(this, id, options);
+  }
+
+  /**
+   * FNXC:WakeDeltaPhantomIds 2026-11-05-07:18 (RUFU-455):
+   * Set-form presence check whose predicate matches `getTask`'s resolution rule, for a caller that is
+   * about to PUBLISH ids and must not publish one that resolves to `TaskNotFoundError`. One round trip,
+   * no lock, no hydration; tombstones are returned rather than hidden so a caller can tell "deleted"
+   * apart from "never existed under this binding". See `readTaskPresenceRows` for the full contract and
+   * for why the result is scope-bound (and so agrees with the list read it validates).
+   */
+  async getTaskPresence(ids: string[]): Promise<TaskPresenceRow[]> {
+    return getTaskPresenceImpl(this, ids);
   }
 
   /**

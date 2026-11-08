@@ -1,0 +1,7 @@
+---
+"@runfusion/fusion": minor
+---
+
+summary: Heartbeat task lists no longer name cards that cannot be found; each withheld id is recorded with its reason.
+category: fix
+dev: The assigned-task population a heartbeat publishes is validated through one new narrow read, `TaskStore.getTaskPresence(ids)`, the set form of the same by-id predicate `fn_task_show` uses, so a row the authoritative lookup rejects is dropped from the wake trigger, the persisted `wakeCursor`, and the agent-facing inventory instead of being named as an owned, dispatchable assignment. Each withheld id records one `task:wake-delta-unresolvable-assignment` row per engine process (bounded per `(agentId, taskId, outcome)`, because the guard runs on every collection and retention can never prune a row whose id has no `tasks` row), with ids/counts only: `outcome` is the closed enum `absent`/`tombstone`, and `storeBound` says whether the emitting store was project-bound — the operator's discriminator between a store-binding defect and a read-shape, cache, or timing divergence. There is deliberately no `scope-mismatch` outcome: `Task` carries no project identity, so a foreign project's row and no row are one measurement. The guard fails open when the presence probe is missing, and the shared assignment read stays a pure read so the agent-deletion guard, the resume cascade, and the resume auto-unpause lane keep seeing their rows.

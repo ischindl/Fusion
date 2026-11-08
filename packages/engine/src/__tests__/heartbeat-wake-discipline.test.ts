@@ -158,6 +158,12 @@ function createHarness(opts: {
   roomEntries?: Array<{ id: string }>;
   taskComments?: Array<{ id: string }>;
   assignedTasks?: Array<{ id: string; column: string; assignedAgentId?: string; paused?: boolean; userPaused?: boolean }>;
+  /**
+   * FNXC:WakeDeltaPhantomIds 2026-11-05-09:30 (RUFU-455): ids the by-id presence read cannot resolve,
+   * so a test can put a phantom into the assigned population and watch what the durable cursor records.
+   * Every other id resolves live, which keeps every pre-existing case in this file byte-identical.
+   */
+  unresolvableTaskIds?: string[];
   boardTasks?: Array<Record<string, unknown>>;
   withMessageStore?: boolean;
 } = {}): Harness {
@@ -280,6 +286,16 @@ function createHarness(opts: {
         ...task,
         steeringComments: opts.taskComments ?? [],
       })),
+    ),
+    /*
+    FNXC:WakeDeltaPhantomIds 2026-11-05-09:30 (RUFU-455): the narrow presence predicate the wake guard
+    consults. Provided here rather than omitted on purpose — a fake WITHOUT it exercises the fail-open
+    arm, which would publish whatever the list read returned and make the phantom case vacuously green.
+    */
+    getTaskPresence: vi.fn(async (ids: string[]) =>
+      ids
+        .filter((id) => !(opts.unresolvableTaskIds ?? []).includes(id))
+        .map((id) => ({ id, deletedAt: null })),
     ),
     selectNextTaskForAgent: vi.fn().mockResolvedValue(null),
     logEntry: vi.fn().mockResolvedValue(undefined),
@@ -749,5 +765,144 @@ describe("(A)+(B) no re-derivable duplicate of the fixed mechanisms remains", ()
 
   it("the wake sources are read through one shared module, not re-derived per path", () => {
     expect(/from "\.\/heartbeat-wake-signals\.js"/.test(source)).toBe(true);
+  });
+});
+
+/*
+FNXC:WakeDeltaPhantomIds 2026-11-05-09:30 (RUFU-455):
+
+The cursor is the durable half of the phantom-id defect. In heartbeat run `run-d5f354ac` the wake delta
+named `RUFU-454`, `RUFU-455` and `RUFU-456` — ids `fn_task_show` answered "not found" for — and the
+acknowledgement that tick wrote persisted that same board population as what the agent had already seen.
+An acknowledged phantom is worse than a displayed one: the next tick compares against it, reads the board
+as unchanged, and the phantom becomes covered work rather than a row nobody validated. So the guard has to
+hold at the cursor, not only at the rendered inventory, and this is the only place a real tick drives the
+real producer and reads the persisted row back.
+*/
+describe("(RUFU-455) a phantom never reaches the durable wake cursor", () => {
+  const PHANTOM_ID = "RUFU-455";
+
+  function phantomHarness() {
+    const h = createHarness({
+      unreadTotal: 0,
+      taskComments: [],
+      assignedTasks: [
+        { id: TASK_ID, column: "in-progress", assignedAgentId: AGENT_ID },
+        { id: PHANTOM_ID, column: "todo", assignedAgentId: AGENT_ID },
+      ],
+      unresolvableTaskIds: [PHANTOM_ID],
+    });
+    h.session.prompt.mockImplementation(async () => {
+      await h.invokeTool("fn_heartbeat_done", { summary: "Nothing to do." });
+    });
+    return h;
+  }
+
+  it("persists only the rows the by-id presence read resolves", async () => {
+    const h = phantomHarness();
+
+    await h.monitor.executeHeartbeat({ agentId: AGENT_ID, source: "timer" });
+
+    const ackRow = [...h.savedRuns].reverse().find(
+      (run) => (run.resultJson as { wakeCursor?: unknown } | undefined)?.wakeCursor,
+    );
+    expect(ackRow, "an acknowledged tick must persist a wake cursor").toBeDefined();
+    const cursor = ackRow!.resultJson as { wakeCursor?: { boardState?: { assignedRows?: string[] } } };
+
+    expect(cursor.wakeCursor?.boardState?.assignedRows).toEqual([`${TASK_ID}:in-progress`]);
+    /*
+    Negative control, so this cannot go vacuously green on an empty harness: the list read really did hand
+    the surface both ids. The phantom's absence above is the guard removing it, not the fake declining to
+    offer it.
+    */
+    const rawRows = await h.taskStore.getTasksByAssignedAgent(AGENT_ID);
+    expect(rawRows.map((row) => row.id)).toContain(PHANTOM_ID);
+  });
+
+  /*
+  FNXC:WakeDeltaPhantomIds 2026-11-05-23:20 (RUFU-455):
+  PROMPT.md `## Symptom Verification` requires the phantom to be "absent from the payload with no owner
+  and no tier". The cursor case above covers the durable half; this covers the rendered half, and it is the
+  only test that drives a real tick far enough to render the multi-assign inventory with a phantom present.
+  It earns its place because the inventory filters at its OWN read site in `agent-heartbeat.ts`, not inside
+  the ranker: move that filter call or introduce a second assigned read and the tier-bearing
+  `[ready_todo]` line for a phantom returns while every other suite stays green — the exact regression the
+  reported incident was about.
+
+  The assertion is a DIFFERENCE, not a literal: a withheld phantom must be indistinguishable from a card
+  that was never assigned at all, so the section is compared byte-for-byte against the same tick with the
+  phantom simply absent. That survives any future reformat of the section while still refusing an
+  owner-bearing or tier-bearing line for the withheld id, which a hardcoded expected line would not.
+  */
+  function inventorySection(prompt: string): string[] {
+    const lines = prompt.split("\n");
+    const start = lines.findIndex((line) => line.startsWith("- your assigned tasks (coordination inventory"));
+    expect(start, "the tick rendered no assigned-task inventory").toBeGreaterThanOrEqual(0);
+    const section = [lines[start]!];
+    for (const line of lines.slice(start + 1)) {
+      if (!line.startsWith("  ") && !line.startsWith("- also assigned not actionable")) break;
+      section.push(line);
+    }
+    return section;
+  }
+
+  function inventoryTick(unresolvableTaskIds: string[], assigned: Array<{ id: string; column: string }>) {
+    const h = createHarness({
+      unreadTotal: 0,
+      taskComments: [],
+      assignedTasks: assigned.map((row) => ({ ...row, assignedAgentId: AGENT_ID })),
+      unresolvableTaskIds,
+    });
+    h.session.prompt.mockImplementation(async () => {
+      await h.invokeTool("fn_heartbeat_done", { summary: "Nothing to do." });
+    });
+    return h;
+  }
+
+  it("renders no line, owner label, or tier for the withheld id, and is byte-identical without it", async () => {
+    const SIBLING_ID = "RUFU-456";
+    const assigned = [
+      { id: TASK_ID, column: "in-progress" },
+      { id: SIBLING_ID, column: "todo" },
+    ];
+
+    const phantomTick = inventoryTick([PHANTOM_ID], [...assigned, { id: PHANTOM_ID, column: "todo" }]);
+    await phantomTick.monitor.executeHeartbeat({ agentId: AGENT_ID, source: "timer" });
+    const prompt = phantomTick.session.prompt.mock.calls[0]?.[0] as string;
+    expect(prompt, "a dispatched tick must render a prompt").toBeTruthy();
+
+    const cleanTick = inventoryTick([], assigned);
+    await cleanTick.monitor.executeHeartbeat({ agentId: AGENT_ID, source: "timer" });
+    const cleanPrompt = cleanTick.session.prompt.mock.calls[0]?.[0] as string;
+
+    /*
+    The id is absent from the WHOLE prompt, not only from the inventory: the guard withholds the row from
+    the population, so no other section can pick it up and re-attach an owner or a tier to it.
+    */
+    expect(prompt).not.toContain(PHANTOM_ID);
+    expect(inventorySection(prompt)).toEqual(inventorySection(cleanPrompt));
+    // Anti-vacuity: the compared section really carries the healthy sibling, so equality is not two empties.
+    expect(inventorySection(prompt).join("\n")).toContain(SIBLING_ID);
+    expect(inventorySection(prompt).length).toBeGreaterThan(1);
+  });
+
+  it("control: this harness does render a tier-bearing line for the same id once the guard resolves it", async () => {
+    /*
+    The negative half of the case above. Without it, "the phantom appears nowhere" could mean the harness
+    never renders assigned inventory at all, and a guard that stopped withholding would still pass. Here
+    the phantom is simply resolvable, so the same prompt must carry its `[ready_todo]` line — the exact
+    owner- and tier-bearing rendering the reported incident produced, reproduced on demand.
+    */
+    const tick = inventoryTick([], [
+      { id: TASK_ID, column: "in-progress" },
+      { id: "RUFU-456", column: "todo" },
+      { id: PHANTOM_ID, column: "todo" },
+    ]);
+    await tick.monitor.executeHeartbeat({ agentId: AGENT_ID, source: "timer" });
+    const prompt = tick.session.prompt.mock.calls[0]?.[0] as string;
+
+    const section = inventorySection(prompt).join("\n");
+    expect(section).toContain(PHANTOM_ID);
+    expect(section).toContain("[ready_todo]");
   });
 });

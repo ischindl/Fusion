@@ -1639,6 +1639,11 @@
       "reason": "reviewed public TaskStore operation; not a durable writer reached by this merge frontier"
     },
     {
+      "method": "getTaskPresence",
+      "kind": "non-writer",
+      "reason": "reads id/deletedAt presence for a named id set without mutation"
+    },
+    {
       "method": "getTaskRowCount",
       "kind": "non-writer",
       "reason": "reviewed public TaskStore operation; not a durable writer reached by this merge frontier"

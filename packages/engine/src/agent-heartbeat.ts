@@ -32,6 +32,7 @@ import {
   collectInboxSignal,
   collectRoomSignal,
   collectWakeSignals,
+  filterResolvableAssignedTasks,
   isIdleLadderEligibleWakeSignal,
   parseHeartbeatWakeCursor,
   type WakeRoomSignal,
@@ -5207,14 +5208,28 @@ export class HeartbeatMonitor {
           let multiAssignWakeDeltaLines: string[] = [];
           if (!isAgentEphemeral && this.taskStore && typeof this.taskStore.getTasksByAssignedAgent === "function") {
             try {
-              const assignedOpen = await this.taskStore.getTasksByAssignedAgent(agentId);
+              const assignedOpen = await filterResolvableAssignedTasks(
+                this.taskStore,
+                agentId,
+                await this.taskStore.getTasksByAssignedAgent(agentId),
+              );
               /*
               FNXC:WorkflowLifecycleColumns 2026-07-30-13:40:
               Pass the resolved lane flags so the ranking's terminal filter is not the literal pair.
 
               `rankAssignedTasksForWakeDelta` uses `flagsByColumnId` to keep workflow Complete rows out
-              of open assignment inventory. `getTasksByAssignedAgent` already reads the live task set,
-              so soft-deleted and historical-sentinel rows never enter this ranking.
+              of open assignment inventory.
+
+              FNXC:WakeDeltaPhantomIds 2026-11-05-07:18 (RUFU-455) CORRECTION:
+              This block previously asserted, in this exact position, that `getTasksByAssignedAgent`
+              "already reads the live task set, so soft-deleted and historical-sentinel rows never enter
+              this ranking". That claim was unverifiable where it sat and false for an unbound data layer,
+              where `taskProjectScope` no-ops and the read spans every project on the shared cluster —
+              and task ids collide across projects (RUFU-380 measured `RUFU-010` live in two projects at
+              once). The claim is replaced by the assertion above it: rows are filtered against the
+              by-id presence predicate before ranking, so nothing owner-bearing is rendered for an id
+              `fn_task_show` would refuse. See `filterResolvableAssignedTasks` for the invariant, the
+              store-instance boundary, and the fail-open rule.
 
               FNXC:WakeDeltaMultiAssign 2026-09-23-21:35 (RUFU-264):
               `assignedOpen` is passed VERBATIM, which is the threading contract for park flags:
@@ -5223,6 +5238,7 @@ export class HeartbeatMonitor {
               If this call site ever reshapes rows field-by-field, it must forward BOTH flags —
               dropping `userPaused` re-creates the tick where 7 operator-parked Move-Task cards
               were offered to the agent as actionable `[ready_todo]` work (measured 2026-09-22T00:55Z).
+              The filter above removes rows as a set and never reshapes one, so both flags survive it.
               */
               const wakeLaneFlags = new Map<string, { complete?: boolean }>();
               const wakeIrCache = new Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>();

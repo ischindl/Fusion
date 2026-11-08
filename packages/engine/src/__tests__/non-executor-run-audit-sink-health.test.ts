@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mergerAiAuditCapture = vi.hoisted(() => ({ fences: [] as Array<{ recordAudit?: (category: string, interaction: string, suppressedCount: number) => Promise<void> }> }));
 const projectEngineAuditCapture = vi.hoisted(() => ({ promotionOptions: [] as Array<{ recordAudit?: (event: Record<string, unknown>) => Promise<void> }> }));
@@ -36,6 +36,7 @@ import { createMergeAbortedError } from "../merge/merge-write-fence.js";
 import { PluginRunner } from "../plugins/plugin-runner.js";
 import { getWorkflowExtensionRegistry, workflowExtensionRegistryId } from "@fusion/core";
 import { RUN_AUDIT_EMIT_TIMEOUT_MS } from "../util/emit-bounded-run-audit.js";
+import { filterResolvableAssignedTasks, resetWakeDeltaWithholdReportsForTests } from "../heartbeat-wake-signals.js";
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -496,6 +497,45 @@ describe("FN-9175 non-executor audit sink health", () => {
       } finally {
         getWorkflowExtensionRegistry().unregister(registryId);
       }
+    });
+  });
+
+  /*
+  FNXC:WakeDeltaPhantomIds 2026-11-05-07:18 (RUFU-455):
+  The wake-delta withhold reports itself through `emitBoundedRunAudit`, and the emission is
+  fire-and-forget on a heartbeat cadence. That placement makes telemetry a potential gate on whether an
+  agent gets woken at all, so this lane belongs in the canonical FN-9175 matrix rather than only in its
+  own feature suite: the guard must withhold the same rows whether the audit sink is absent, throwing,
+  rejecting, stalled, or settles late in either direction. `late-reject` is the case this file exists for
+  — a rejected audit promise nobody awaits is an unhandled rejection, and `settleBounded` fails on one.
+  */
+  describe("heartbeat-wake-signals.ts assignment withhold", () => {
+    const assigned = [
+      { id: "FN-9175", column: "todo", assignedAgentId: "agent-9175" },
+      { id: "FN-9176", column: "todo", assignedAgentId: "agent-9176" },
+    ];
+
+    /*
+    FNXC:WakeDeltaPhantomIds 2026-11-05-23:20 (RUFU-455):
+    The lane's report is bounded to one emission per (agentId, taskId, outcome) per process, and this matrix
+    re-uses one phantom across every sink mode. Without a fresh episode register only the first mode would
+    ever reach its sink and `late-reject` — the case this file exists for — would pass having exercised
+    nothing. The register is reset per case and the sink call is asserted, so a suppressed emission fails
+    loudly instead of quietly narrowing the matrix.
+    */
+    beforeEach(() => resetWakeDeltaWithholdReportsForTests());
+
+    it.each(hostileModes)("withholds the unresolvable id identically with a %s sink", async (mode) => {
+      const sink = sinkFor(mode);
+      const taskStore = {
+        ...sink.host,
+        // Only the first id resolves; the second is the phantom the guard exists to withhold.
+        getTaskPresence: vi.fn(async () => [{ id: "FN-9175", deletedAt: null }]),
+      };
+      const published = await settleBounded(sink, () => filterResolvableAssignedTasks(taskStore as any, "agent-9175", assigned as any));
+      expect(published.map((task) => task.id)).toEqual(["FN-9175"]);
+      expect(taskStore.getTaskPresence).toHaveBeenCalledOnce();
+      if (mode !== "absent") expect(sink.recordRunAuditEvent).toHaveBeenCalledOnce();
     });
   });
 });

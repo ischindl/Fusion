@@ -564,6 +564,66 @@ export async function readTaskRow(
 }
 
 /**
+ * One row of {@link readTaskPresenceRows}: the id plus its soft-delete marker.
+ * `deletedAt === null` means the bound layer holds a LIVE row for this id; a non-null value means the
+ * row exists but is a tombstone; an id the layer holds in no state is simply absent from the result.
+ */
+export interface TaskPresenceRow {
+  id: string;
+  deletedAt: string | null;
+}
+
+/*
+FNXC:WakeDeltaPhantomIds 2026-11-05-07:18 (RUFU-455):
+A heartbeat wake delta published `RUFU-454`/`RUFU-455` as `ready_todo` assignments owned by
+`agent-5683bf15` while `fn_task_show` answered `Task RUFU-454 not found.` for both, and an operator
+issued a routing command against a third id (`RUFU-456`) that this surface named. The invariant that
+was missing is stated once, here at the read seam: a wake/ranking row is never dispatchable unless the
+authoritative by-id predicate resolves it. That predicate is `getTaskImpl` -> `readTaskRow` ->
+`TaskNotFoundError` — "no live, project-scoped row for this id exists" — and this function is its set
+form, deliberately NOT a loop over `getTask`:
+`getTaskImpl` hydrates the History side table, settings and merge-queue state per call
+(RUFU-201/615/627/756 read-storm history), which a heartbeat cadence cannot pay.
+
+The shape is load-bearing in three ways, and each one is why a plausible alternative was not used:
+- ONE round trip over `id IN (...)`, never one per row.
+- Deliberately WITHOUT `ACTIVE_TASK_FILTER`, unlike every other live reader here. Omitting it is what
+  lets a caller tell "row is a tombstone" apart from "row never existed under this binding"; with the
+  filter both collapse into one negative and the diagnosis is lost. Equivalence to the user-visible
+  lookup is preserved because `getTask` refuses BOTH shapes — a tombstone is hidden by the filter and
+  an absent id has no row — so returning `deletedAt` here adds a distinction the lookup never had to
+  make, and cannot contradict it.
+- No hydration, no `withTaskLock`, no derived fields: this answers existence, nothing else.
+- Not a reuse of `resolveTaskIdPresence`/`TaskIdPresence` (`task-id-integrity.ts`), which looks like the
+  ready-made answer and is the wrong predicate here. Its `rowExistsAnywhere` counts the warm and cold
+  ARCHIVE tables, and an archived card is exactly as unresolvable to `fn_task_show` as a phantom — so
+  that predicate would keep publishing assignments for archived cards and defeat the guard it was asked
+  to supply. It also spans more tables per call, which is the read cost this seam exists to avoid.
+  `TaskIdPresence` answers "may this id ever be reused?"; this answers "is this id on the board now?".
+
+Scope honesty, which the audit row surfaces as `storeBound`: the predicate reuses `taskProjectScope`,
+so an id held only under another `project_id` is reported absent. On an UNBOUND layer
+`taskProjectScope` no-ops and this read spans projects, exactly as the list read it validates does —
+so this function can never disagree with that read about scope. Task IDs collide across projects
+(RUFU-380 measured `RUFU-010` live in two projects at once), so the binding is the only thing that
+distinguishes "phantom" from "someone else's card", and it is reported rather than assumed.
+*/
+export async function readTaskPresenceRows(
+  layer: AsyncDataLayer,
+  ids: string[],
+): Promise<TaskPresenceRow[]> {
+  const unique = [...new Set(ids)];
+  if (unique.length === 0) return [];
+  const conditions = [inArray(schema.project.tasks.id, unique), taskProjectScope(layer)];
+  const rows = await layer.db
+    .select({ id: schema.project.tasks.id, deletedAt: schema.project.tasks.deletedAt })
+    .from(schema.project.tasks)
+    .where(and(...conditions));
+  // `deleted_at` is a text column, so no Date coercion is needed here.
+  return rows.map((row) => ({ id: row.id, deletedAt: row.deletedAt ?? null }));
+}
+
+/**
  * FNXC:TaskStoreArchiveLineage 2026-06-24-15:05:
  * Read a single task row by id INSIDE a shared transaction handle. This is
  * the transaction-aware variant of {@link readTaskRow} for composite

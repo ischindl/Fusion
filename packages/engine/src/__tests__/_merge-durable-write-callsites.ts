@@ -366,6 +366,16 @@ const STORE_METHOD_CLASSIFICATION: Record<string, Omit<SurfaceClassification, "m
   entry points do not issue it.
   */
   getProjectId: { kind: "non-writer", reason: "returns the bound project identity without persistence" },
+  /*
+  FNXC:WakeDeltaPhantomIds 2026-11-05-07:18 (RUFU-455):
+  `getTaskPresence` is the set-form of the by-id resolution predicate the heartbeat wake surface validates
+  against before publishing an assignment. It is one SELECT of `id, deleted_at` scoped by `taskProjectScope`,
+  with no hydration, no `withTaskLock`, and no derived field, so it persists nothing and stays a non-writer.
+  It is classified here deliberately: a new public TaskStore surface must not pass the writer census
+  unclassified, and a read this close to a dispatch decision is exactly the member a future merge call site
+  would want silently excluded from the frontier.
+  */
+  getTaskPresence: { kind: "non-writer", reason: "reads id/deletedAt presence for a named id set without mutation" },
   getStaleReviewCallbackWaiverReceipts: { kind: "non-writer", reason: "reads project-scoped stale review callback waiver receipts without mutation" },
   issueStaleReviewCallbackWaiver: { kind: "writer", reason: "issues or replaces an attested stale review callback waiver receipt" },
   listPatchnodeEntries: { kind: "writer", reason: "may reconcile and persist the patchnode ledger before reading" },
