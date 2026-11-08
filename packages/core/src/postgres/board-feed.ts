@@ -1,6 +1,5 @@
-import { is, sql, type SQL } from "drizzle-orm";
-import { Column, type PgColumn } from "drizzle-orm/pg-core";
-import { TASK_SLIM_PROJECTION } from "../task-store/async/async-persistence.js";
+import { Column, is, sql, type SQL } from "drizzle-orm";
+import type { PgColumn } from "drizzle-orm/pg-core";
 
 /**
  * The project-settings key whose 12 members the board feed is allowed to carry, and the ONLY keys the
@@ -47,36 +46,52 @@ export const BOARD_FEED_DROPPED_COLUMNS: readonly string[] = [
  * produces downstream anyway. The remaining six `tokenUsage*` columns are omitted outright because
  * the guard returns before they are ever read.
  */
-const TOKEN_USAGE_GUARD_COLUMNS: readonly string[] = [
+export const BOARD_FEED_TOKEN_USAGE_NULL_COLUMNS: readonly string[] = [
   "tokenUsageInputTokens",
   "tokenUsageOutputTokens",
   "tokenUsageCachedTokens",
   "tokenUsageTotalTokens",
 ];
 
-/** The jsonb key-allowlist projection, executed in PostgreSQL. See the RUFU-615 caution below. */
-function boardSourceMetadataSql(): SQL {
-  const removals = Object.keys(TASK_SLIM_PROJECTION)
-    ? BOARD_SOURCE_METADATA_KEYS.map((key) => sql`${key}`)
-    : [];
-  /*
-  FNXC:BoardFeedProjection 2026-11-08-18:07 (RUFU-902):
-  `jsonb_strip_nulls(coalesce(source_metadata, '{}'::jsonb)) - ALL(the 12 keys the board renders)`
-  is inverted — the allowlist has to be expressed as the keys to KEEP, so the set difference runs the
-  other way: build the keep-set, then subtract every key not in it. PostgreSQL has no jsonb
-  "intersect with array", so the honest spelling is `jsonb_build_object` over the keep-set, which
-  also preserves today's behaviour of emitting only keys the row actually holds — a `jsonb_build_object`
-  of a missing key yields JSON `null`, so each member is guarded with a `CASE ... THEN ... END` and
-  the whole object is passed through `jsonb_strip_nulls`.
-  */
-  const keeps = BOARD_SOURCE_METADATA_KEYS.map((key) => ({ key, value: sql`NULL::jsonb` }));
-  const pairs = keeps.flatMap((entry, index) => {
-    const previous = BOARD_SOURCE_METADATA_KEYS.slice(0, index).map((k) => sql`${k}`);
-    void previous; void removals;
-    return [sql.string(entry.key), sql`${entry.value}`];
-  });
-  void pairs;
-  return sql`'{}'::jsonb`;
+/**
+ * The board's `source_metadata` key allowlist, executed in PostgreSQL.
+ *
+ * FNXC:BoardFeedProjection 2026-11-08-18:52 (RUFU-902):
+ * Equivalent to `projectBoardSourceMetadata` in `task-store/reads.ts`, which keeps only the named
+ * keys a row actually holds. The three `CASE` arms exist because that function has three behaviours,
+ * not one, and collapsing them would break parity on states the board can actually meet:
+ *
+ *   * object  — aggregate the allowlisted members. Keys the row does not hold are ABSENT, never
+ *               JSON null, which is why this is an aggregate over `jsonb_each` and not
+ *               `jsonb_build_object`: the latter invents a null member for every key the row omits,
+ *               so `{}` would come back as 12 nulls and a card's chip would read a field that was
+ *               never written. A held-but-empty object stays `{}` in both implementations.
+ *   * array   — the JS version iterates only the 12 named keys, so a JSON array projects to `{}`.
+ *               `jsonb_each` over an array yields ordinal keys that match none of them, so the
+ *               aggregate is `{}` on its own; the explicit arm only makes that intent readable.
+ *   * else    — SQL NULL, JSON null, and scalars pass through untouched. This is the arm that keeps
+ *               a NULL column NULL: coercing it to `'{}'::jsonb` would hydrate `sourceMetadata`
+ *               as `{}` where today it is `undefined`, and `branchContext` is derived from it.
+ *
+ * `jsonb_typeof` returns NULL for SQL NULL, so `IS DISTINCT FROM 'object'` cannot be used to fold
+ * the arms — it would send a NULL column down the array arm.
+ */
+function boardSourceMetadataSql(column: PgColumn): SQL {
+  const allowlist = sql.join(
+    BOARD_SOURCE_METADATA_KEYS.map((key) => sql`${key}`),
+    sql`, `,
+  );
+  return sql`(
+    CASE
+      WHEN jsonb_typeof(${column}) = 'object' THEN (
+        SELECT coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb)
+        FROM jsonb_each(${column}) e
+        WHERE e.key IN (${allowlist})
+      )
+      WHEN jsonb_typeof(${column}) = 'array' THEN '{}'::jsonb
+      ELSE ${column}
+    END
+  )`;
 }
 
 /**
@@ -113,16 +128,34 @@ function boardSourceMetadataSql(): SQL {
  * column decompresses the whole thing. `source_metadata` is orders of magnitude smaller than `log`
  * (kilobytes, not megabytes), so the trade is expected to land the other way — but this slice
  * measures transferred bytes, not PostgreSQL CPU, and that measurement is named in the residual risks.
+ *
+ * FNXC:BoardFeedProjection 2026-11-08-20:54 (RUFU-902) — MEASURED RESULT, fixture-shaped row, from
+ * `FUSION_BOARD_FEED_BENCH=1`: the board page's current read (`TASK_SLIM_PROJECTION`, which is what
+ * `listTasks({ excludeLog: true })` sends) is 182 columns / 16 590 B per row. This projection is
+ * 171 columns / 8 588 B with the cost badge hidden and 177 / 8 684 with it visible — a 48,2 % cut in
+ * transferred bytes per card, i.e. 1 620 kB → 839 kB across a 100-card page. Two figures in the brief
+ * describe a DIFFERENT shape and must not be compared to these: the brief's 163-column / 929 B row is
+ * one hot engine read with a declared field set, not the board's slim read; and the brief's ~91 kB is
+ * the COMPRESSED HTTP payload after `compactBoardFeedRow`, whereas these are pre-parse wire bytes.
+ * The 24 467 B/hydrated-card figure is post-hydration in-Node size, also not the same quantity.
+ *
+ * `base` is the caller's slim projection, passed in rather than imported: `async-persistence.ts` is
+ * this module's only production caller and it owns `TASK_SLIM_PROJECTION`, so importing it from here
+ * would close an import cycle across the two files for no gain.
  */
-export function resolveBoardFeedProjection(options: { includeTokenUsage: boolean }): Record<string, PgColumn | SQL> {
+export function resolveBoardFeedProjection(
+  /** The slim projection this narrows — see the note above. */
+  base: Record<string, PgColumn>,
+  options: { includeTokenUsage: boolean },
+): Record<string, PgColumn | SQL> {
   const projection: Record<string, PgColumn | SQL> = {};
-  for (const [key, column] of Object.entries(TASK_SLIM_PROJECTION)) {
+  for (const [key, column] of Object.entries(base)) {
     if (BOARD_FEED_DROPPED_COLUMNS.includes(key)) continue;
     if (key === "sourceMetadata") {
-      projection.sourceMetadata = boardSourceMetadataSql();
+      projection.sourceMetadata = boardSourceMetadataSql(column as PgColumn);
       continue;
     }
-    if (TOKEN_USAGE_GUARD_COLUMNS.includes(key)) {
+    if (BOARD_FEED_TOKEN_USAGE_NULL_COLUMNS.includes(key)) {
       if (!options.includeTokenUsage) {
         projection[key] = sql`NULL::bigint`;
         continue;
