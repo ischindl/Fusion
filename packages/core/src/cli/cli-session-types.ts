@@ -91,6 +91,29 @@ export const CLI_SESSION_PURPOSES: readonly CliSessionPurpose[] = [
   "chat",
 ] as const;
 
+/**
+ * The purposes that are automatic agent lanes, as opposed to an interactive chat session.
+ *
+ * FNXC:AgentCpuPriority 2026-11-08-17:26 (RUFU-901):
+ * This is the discriminator the CPU-priority demotion keys on, so it is declared beside the purpose union
+ * rather than as a negation at the call site. `chat` is excluded on purpose: it is a human waiting on
+ * keystrokes, and demoting it would make the interface pay for batch work. A future purpose defaults to
+ * "not a lane" until someone puts it here, which is the safe direction for a priority demotion.
+ */
+export const AGENT_LANE_SESSION_PURPOSES: readonly CliSessionPurpose[] = [
+  "execute",
+  "planning",
+  "validator",
+  "ce",
+] as const;
+
+/** Whether a session purpose is an automatic agent lane (a demotion target) rather than an interactive chat. */
+export function isAgentLaneSessionPurpose(value: unknown): value is CliSessionPurpose {
+  return (AGENT_LANE_SESSION_PURPOSES as readonly string[]).includes(
+    typeof value === "string" ? value : "",
+  );
+}
+
 // ── Core Types ──────────────────────────────────────────────────────────
 
 /**

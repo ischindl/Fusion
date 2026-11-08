@@ -30,15 +30,54 @@
 
 import {
   CliSessionStore,
+  applyAgentCpuPriority,
   assertAgentCwdAllowed,
+  isAgentLaneSessionPurpose,
+  type AgentCpuPriorityOutcome,
   type CliAutonomyPosture,
   type CliSession,
   type CliSessionPurpose,
   type CliTerminationReason,
 } from "@fusion/core";
 import { loadPtyModule } from "../cli-runtime/pty-native.js";
+import { createLogger } from "../logger.js";
 import type { IPty } from "node-pty";
 import type { CliAdapterRegistry, CliAgentAdapter, CliLaunchSpec, CliReadinessDetector } from "./adapter.js";
+
+const log = createLogger("cli-agent");
+
+/*
+FNXC:AgentCpuPriority 2026-11-08-17:36 (RUFU-901):
+A refused demotion is an operator-visible configuration or platform fact, not a lane failure, and the same
+refusal repeats on every lane spawn. Warn once per distinct signature and downgrade the repeats to debug so
+a host where `setpriority` persistently answers EPERM cannot fill the log with one line per session.
+*/
+const warnedCpuPrioritySignatures = new Set<string>();
+const MAX_WARNED_CPU_PRIORITY_SIGNATURES = 32;
+
+function reportCpuPriorityOutcome(
+  purpose: CliSessionPurpose,
+  outcome: AgentCpuPriorityOutcome,
+): void {
+  if (outcome.applied) {
+    log.debug(
+      `Agent lane "${purpose}" pid ${outcome.pid} demoted to CPU niceness ${outcome.niceness}`,
+    );
+    return;
+  }
+  if (outcome.reason === "disabled") return;
+  const signature = `${outcome.reason}:${outcome.detail ?? ""}`;
+  if (warnedCpuPrioritySignatures.has(signature)) {
+    log.debug(`Agent lane "${purpose}" CPU priority not adjusted: ${signature}`);
+    return;
+  }
+  if (warnedCpuPrioritySignatures.size < MAX_WARNED_CPU_PRIORITY_SIGNATURES) {
+    warnedCpuPrioritySignatures.add(signature);
+  }
+  log.warn(
+    `Agent lane "${purpose}" CPU priority not adjusted (${outcome.reason}${outcome.detail ? `: ${outcome.detail}` : ""})`,
+  );
+}
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -422,6 +461,17 @@ export interface CliSessionManagerOptions {
    */
   loadPty?: typeof loadPtyModule;
   /**
+   * Test seam: apply (or observe) the agent-lane CPU-priority demotion. Defaults to
+   * `applyAgentCpuPriority` from `@fusion/core`.
+   *
+   * FNXC:AgentCpuPriority 2026-11-08-17:38 (RUFU-901):
+   * Threaded as a seam at the one lane-spawn site rather than read from the environment inside the manager,
+   * so a test can assert the exact (pid, niceness) pair handed to the kernel and can prove the no-opt-in
+   * path calls the mechanism zero times. Do not inline the core call at the call site: that erases the only
+   * place the behavior is observable.
+   */
+  applyCpuPriority?: (pid: number | undefined) => AgentCpuPriorityOutcome;
+  /**
    * Optional launch-settings provider (RUFU-128 per-turn chat recall).
    *
    * Called with the session RECORD id (the minted `cli-<uuid8>` row id on fresh
@@ -454,6 +504,7 @@ export class CliSessionManager {
   private readonly highWatermark: number;
   private readonly injectionQuietWindowMs: number;
   private readonly loadPty: typeof loadPtyModule;
+  private readonly applyCpuPriority: (pid: number | undefined) => AgentCpuPriorityOutcome;
   private readonly launchSettingsProvider?: (sessionId: string) => Promise<Record<string, unknown> | null>;
   private readonly onSessionTerminated?: (sessionId: string) => void;
 
@@ -472,6 +523,7 @@ export class CliSessionManager {
     this.highWatermark = options.highWatermark ?? DEFAULT_HIGH_WATERMARK;
     this.injectionQuietWindowMs = options.injectionQuietWindowMs ?? 0;
     this.loadPty = options.loadPty ?? loadPtyModule;
+    this.applyCpuPriority = options.applyCpuPriority ?? ((pid) => applyAgentCpuPriority(pid));
     this.launchSettingsProvider = options.launchSettingsProvider;
     this.onSessionTerminated = options.onSessionTerminated;
     this.installExitHook();
@@ -635,6 +687,30 @@ export class CliSessionManager {
         // Preserve the original PTY spawn failure.
       }
       throw err;
+    }
+
+    /*
+    FNXC:AgentCpuPriority 2026-11-08-17:41 (RUFU-901):
+    This is the one place every agent lane child is born — `task-session.ts` (execute), `one-shot-session.ts`
+    (planning/validator/ce), and `resume-coordinator.ts` (a recovered lane, which inherits the original
+    purpose) all route through here, so the demotion is applied once instead of at four call sites. Measured
+    driver: fleet lanes at 118 % / 113 % CPU against a 124 % dashboard at load average 16-40, with 113
+    event-loop-stall episodes in a day.
+
+    Two deliberate exclusions:
+    - `purpose === "chat"` is NOT demoted. It is a human typing; the interactive UI keeps its priority.
+    - The dashboard's own terminal surfaces never reach this method. They call `pty.spawn` directly
+      (`packages/dashboard/src/terminal-service.ts`, `usage.ts`), so no lane-only policy can reach them.
+
+    Placed after the spawn's try/catch and before the live-session record is built, so a lane that failed to
+    start is never reported as demoted. `applyAgentCpuPriority` cannot throw, and its outcome is logged
+    rather than thrown: a priority knob is not allowed to become a lane startup dependency.
+    */
+    if (isAgentLaneSessionPurpose(options.purpose)) {
+      reportCpuPriorityOutcome(
+        options.purpose,
+        this.applyCpuPriority(child.pid),
+      );
     }
 
     const live: LiveSession = {

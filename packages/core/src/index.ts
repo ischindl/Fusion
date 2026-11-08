@@ -1699,6 +1699,27 @@ export type {
   SupervisedChild,
   SupervisedExit,
 } from "./process/process-supervisor.js";
+/*
+FNXC:AgentCpuPriority 2026-11-08-17:31 (RUFU-901):
+The agent-lane CPU-priority seam is exported next to the process supervisor it complements. It is NOT
+threaded through `superviseSpawn`: agent lanes do not go through that seam at all — they launch on node-pty
+(`CliSessionManager.spawn`), so a priority option on `superviseSpawn` would reach verification commands and
+tunnels while every lane child stayed at inherited priority. Extending the single supervision seam would
+have been the wrong single seam.
+*/
+export {
+  AGENT_CPU_NICENESS_ENV,
+  AGENT_CPU_NICENESS_MIN,
+  AGENT_CPU_NICENESS_MAX,
+  resolveAgentCpuNiceness,
+  applyAgentCpuPriority,
+} from "./process/cpu-priority.js";
+export type {
+  AgentCpuPriorityOutcome,
+  AgentCpuPriorityReason,
+  AgentCpuNicenessConfig,
+  ApplyAgentCpuPriorityOptions,
+} from "./process/cpu-priority.js";
 export { DatabaseSync } from "./db/sqlite-adapter.js";
 export type { Statement, VacuumResult } from "./db/db.js";
 export type { ProjectIdentity } from "./central/project-identity.js";
@@ -3361,9 +3382,11 @@ export {
   CLI_AGENT_STATES,
   CLI_TERMINATION_REASONS,
   CLI_SESSION_PURPOSES,
+  AGENT_LANE_SESSION_PURPOSES,
   isCliAgentState,
   isCliTerminationReason,
   isCliSessionPurpose,
+  isAgentLaneSessionPurpose,
 } from "./cli/cli-session-types.js";
 export type {
   CliAgentState,
