@@ -14,6 +14,7 @@ import {
   type SharedPgTaskStoreHarness,
 } from "../../__test-utils__/pg-test-harness.js";
 import * as schema from "../../postgres/schema/index.js";
+import { TaskStore } from "../../store.js";
 import { applySchemaBaseline } from "../../postgres/schema-applier.js";
 import {
   getHumanMergeApprovalBlocker,
@@ -235,10 +236,21 @@ pgDescribe("TaskStore human merge approval persistence (PostgreSQL)", () => {
     The bound store reads only its own project's accord. The foreign row carries the SAME task ID and
     the SAME PR number with no accord at all, so a read that ignored project scope would hand this
     card a merge authorization that no operator on this project ever gave.
+
+    FNXC:TaskIdGlobalUniqueness 2026-11-08-10:42 (RUFU-320):
+    "Bound" is now literal: the harness store carries no project partition, and an unpartitioned read of
+    an id held by two projects is exactly the ambiguity that made `fn task show RUFU-003` open the wrong
+    card. Each card is therefore read through a store bound to its own partition, and the unpartitioned
+    read must refuse naming every holder rather than returning an arbitrary accord.
     */
-    const own = await store.getTask(created.id);
+    const bind = (projectId: string) => ({ ...h.layer(), projectId });
+    const ownStore = new TaskStore(h.rootDir(), undefined, { asyncLayer: bind(ownProjectId!) });
+    const foreignStore = new TaskStore(h.rootDir(), undefined, { asyncLayer: bind(foreignProjectId) });
+    const own = await ownStore.getTask(created.id);
     expect(own?.humanMergeApproval).toEqual(MERGE_DECISION);
     expect(hasCurrentHumanMergeApproval(own!)).toBe(true);
+    expect((await foreignStore.getTask(created.id))?.humanMergeApproval).toEqual({ enabled: true, generation: 1 });
+    await expect(store.getTask(created.id)).rejects.toThrow(/task-id-ambiguous-across-projects/);
     const foreign = await h.adminDb()
       .select({ humanMergeApproval: schema.project.tasks.humanMergeApproval })
       .from(schema.project.tasks)

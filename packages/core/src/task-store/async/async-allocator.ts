@@ -32,6 +32,7 @@ import { eq, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import * as schema from "../../postgres/schema/index.js";
 import type { AsyncDataLayer, DbTransaction } from "../../postgres/data-layer.js";
+import { projectOwnershipPartition } from "../../postgres/data-layer.js";
 import type {
   DistributedTaskIdAbortInput,
   DistributedTaskIdCommitInput,
@@ -42,6 +43,13 @@ import type { DistributedTaskIdAllocator } from "../../tasks/distributed-task-id
 
 const TASK_ID_PATTERN = /^([A-Z][A-Z0-9]*)-(\d+)$/u;
 const DEFAULT_RESERVATION_TTL_MS = 15 * 60 * 1000;
+/**
+ * FNXC:TaskIdGlobalUniqueness 2026-11-08-09:19 (RUFU-320):
+ * Upper bound on how many consecutive taken ids one reservation may skip. Real gaps are a handful (a
+ * sibling project's minted run), so reaching the bound means the registry is pathological rather than
+ * busy, and the honest outcome is a named failure instead of an unbounded scan.
+ */
+const MAX_CLAIM_SKIP_ATTEMPTS = 500;
 
 /** Parse a task id (e.g. "KB-012") into prefix + numeric sequence. */
 export function parseTaskIdForAllocator(
@@ -109,19 +117,16 @@ export async function getConfiguredPrefixAndLegacyNextId(
  * are embedded in the string id column, not a separate numeric column. This
  * mirrors the sync `getMaxTaskSequenceFromTable()` exactly.
  *
- * FNXC:CentralProjectIdentity 2026-07-13-22:40:
- * This scan is deliberately GLOBAL — filtered by prefix only, NEVER by
- * project_id — because task ids are a globally-unique namespace across the whole
- * embedded-PG cluster (`project.tasks.id` is a global PRIMARY KEY, shared by all
- * projects in the one `project` schema). Two projects that share a prefix (e.g.
- * both "KB") draw from ONE per-prefix sequence, so the high-water mark that
- * advances that shared sequence MUST observe every project's tasks. Adding a
- * `project_id` predicate here would compute a per-project floor that ignores a
- * sibling project's higher max suffix, letting the allocator mint an id another
- * project already owns — a tasks.id PK collision on insert and a merge_queue
- * (task_id PK) collision downstream. Do NOT scope this scan to a project to
- * "align" it with MultiProjectIsolation's per-project task reads; per-project
- * scoping belongs only on reporting/board reads, never on id-sequence advancement.
+ * FNXC:CentralProjectIdentity 2026-07-13-22:40 (CORRECTED 2026-11-08-09:19 by RUFU-320):
+ * The claim this comment used to make is FALSE and was the reasoning that hid the defect: there is no
+ * global `project.tasks.id` primary key. The key is the composite `(project_id, id)`
+ * (`postgres/schema/project.ts`), so one id string is legal in two projects, and the runtime session
+ * runs under forced RLS, so this scan can only ever observe the calling project's rows. DB-wide
+ * high-water therefore cannot come from this function; it comes from `getMaxClaimSequence()` over the
+ * unpartitioned `central.global_task_id_claim` registry.
+ * Keep the scan free of a `project_id` predicate anyway: that absence is what keeps a single project's
+ * own soft-deleted and archived ids reserved (VAL-DATA-008, FN-5105). RLS, not a predicate, is what
+ * bounds it to one partition.
  */
 async function getMaxTaskSequenceFromTable(
   db: AsyncDataLayer["db"] | DbTransaction,
@@ -174,19 +179,58 @@ async function getMaxReservationSequence(
 }
 
 /**
+ * Max sequence already CLAIMED for a prefix in `central.global_task_id_claim`.
+ *
+ * FNXC:TaskIdGlobalUniqueness 2026-11-08-09:19 (RUFU-320):
+ * The only high-water source that sees every project, and it exists because the row scans cannot:
+ * `project.tasks` is keyed `(project_id, id)` and forced RLS scopes a project session to its own
+ * partition, so a sibling project that advanced `FN-` to 500 is invisible from there. The claim
+ * registry is unpartitioned and keyed on the id string alone, so its maximum IS the DB-wide floor for
+ * the prefix — which is what lets a lagging project skip forward instead of re-minting a number
+ * another project already holds.
+ */
+async function getMaxClaimSequence(
+  db: AsyncDataLayer["db"] | DbTransaction,
+  prefix: string,
+): Promise<number> {
+  try {
+    const rows = await db
+      .select({ taskId: schema.central.globalTaskIdClaim.taskId })
+      .from(schema.central.globalTaskIdClaim)
+      .where(sql`${schema.central.globalTaskIdClaim.taskId} LIKE ${`${prefix}-%`}`);
+    let maxSequence = 0;
+    for (const row of rows) {
+      const parsed = parseTaskIdForAllocator(row.taskId);
+      if (parsed?.prefix === prefix && parsed.sequence > maxSequence) {
+        maxSequence = parsed.sequence;
+      }
+    }
+    return maxSequence;
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * FNXC:TaskStoreAllocator 2026-06-24-14:15:
  * Compute the next-sequence floor for a prefix:
- *   max(current, configured-legacy-nextId, max(task suffix)+1, max(archived suffix)+1, max(reservation)+1)
+ *   max(current, configured-legacy-nextId, max(task suffix)+1, max(archived suffix)+1, max(reservation)+1, max(claim)+1)
  *
  * This is the core of VAL-DATA-007. Every known prefix gets bumped to at least
  * one past the highest in-use suffix across tasks, archived tasks, and
  * reservations so a newly-allocated id never collides with an existing one.
  *
  * FNXC:ProjectTaskIdentity 2026-07-14-13:59:
- * The runtime session binds every scan here to one project through forced RLS.
- * Config floors, live tasks, archived tasks, reservations, and allocator state
- * therefore form one independent task-ID namespace per project; two projects
- * may both allocate FN-1 without sharing or advancing each other's counter.
+ * The runtime session binds the ROW scans here to one project through forced RLS, so each project
+ * keeps its own independent counter rather than drawing from one shared sequence.
+ *
+ * FNXC:TaskIdGlobalUniqueness 2026-11-08-09:19 (RUFU-320):
+ * "Independent counter" bounds the counter, not the address. The claim term is read from the
+ * unpartitioned registry and is deliberately NOT RLS-scoped, so a sibling project's claim at 500
+ * pushes this project past 500 instead of letting it re-mint a taken string. That inverts what
+ * `allocator-cross-project.test.ts` used to pin as a feature ("a sibling project's high suffix does
+ * not advance this project's floor"): independent counters may not become duplicate addresses, since
+ * a card that two projects can both be addressed by is unaddressable.
  */
 export async function computeNextSequenceFloor(
   db: AsyncDataLayer["db"] | DbTransaction,
@@ -201,7 +245,14 @@ export async function computeNextSequenceFloor(
   const taskHighWaterMark = (await getMaxTaskSequenceFromTable(db, "tasks", prefix)) + 1;
   const archivedHighWaterMark = (await getMaxTaskSequenceFromTable(db, "archived_tasks", prefix)) + 1;
   const reservationHighWaterMark = (await getMaxReservationSequence(db, prefix)) + 1;
-  return Math.max(nextSequence, taskHighWaterMark, archivedHighWaterMark, reservationHighWaterMark);
+  const claimHighWaterMark = (await getMaxClaimSequence(db, prefix)) + 1;
+  return Math.max(
+    nextSequence,
+    taskHighWaterMark,
+    archivedHighWaterMark,
+    reservationHighWaterMark,
+    claimHighWaterMark,
+  );
 }
 
 /**
@@ -365,15 +416,21 @@ function formatDistributedTaskId(prefix: string, sequence: number): string {
 
 /**
  * FNXC:RuntimeTaskOrchestrationAsync 2026-06-24-12:35:
- * Check whether a task ID already exists in the tasks or archived_tasks table.
- * Used by the async allocator reservation loop to skip past existing IDs.
+ * Check whether a task ID is already taken. Used by the async allocator reservation loop to skip past
+ * existing IDs.
  *
  * FNXC:ProjectTaskIdentity 2026-07-14-13:59:
- * The exact-ID predicate is intentionally simple because forced RLS supplies
- * the project predicate at the database boundary. It detects collisions only
- * within the allocator's current project-local namespace.
+ * The exact-ID predicate is intentionally simple because forced RLS supplies the project predicate at
+ * the database boundary — so against the ROW tables this sees only the allocator's own project-local
+ * namespace.
+ *
+ * FNXC:TaskIdGlobalUniqueness 2026-11-08-09:19 (RUFU-320):
+ * Project-local is no longer enough, which is why the unpartitioned claim registry is consulted here
+ * too: a number another project already holds must be SKIPPED, not re-minted and refused at insert.
+ * Skipping is what keeps the operator's rule honest — a creation never fails merely because a sibling
+ * project reached the number first.
  */
-async function taskIdExists(
+async function taskIdTaken(
   tx: DbTransaction,
   prefix: string,
   sequence: number,
@@ -390,23 +447,65 @@ async function taskIdExists(
     .from(schema.project.archivedTasks)
     .where(eq(schema.project.archivedTasks.id, taskId))
     .limit(1);
-  return archivedRows.length > 0;
+  if (archivedRows.length > 0) return true;
+  const claimRows = await tx
+    .select({ one: sql<number>`1` })
+    .from(schema.central.globalTaskIdClaim)
+    .where(eq(schema.central.globalTaskIdClaim.taskId, taskId))
+    .limit(1);
+  return claimRows.length > 0;
 }
 
 /**
  * FNXC:RuntimeTaskOrchestrationAsync 2026-06-24-12:40:
  * Expire stale reservations inside a transaction. Mirrors the sync
  * expireReservations but runs against the async data layer.
+ *
+ * FNXC:TaskIdGlobalUniqueness 2026-11-08-09:36 (RUFU-320):
+ * Expiry also releases the pending DB-wide claim the reservation wrote, otherwise a crashed create
+ * would burn its number forever. The delete is scoped to `project_id` on purpose: `project.*` rows are
+ * RLS-partitioned, so another project's live reservation is INVISIBLE from here, and an unscoped
+ * delete would conclude from that blindness that the reservation was gone and steal its claim. A stale
+ * claim of another project is released by that project's own next allocator pass; until then it merely
+ * makes a sibling skip a number, which costs nothing.
  */
 async function expireReservations(
   tx: DbTransaction,
   nowIso: string,
+  projectPartition: string,
 ): Promise<void> {
-  await tx
+  const expired = await tx
     .update(schema.project.distributedTaskIdReservations)
     .set({ status: "expired", reason: "expired", abortedAt: nowIso })
     .where(
       sql`${schema.project.distributedTaskIdReservations.status} = 'reserved' AND ${schema.project.distributedTaskIdReservations.expiresAt} <= ${nowIso}`,
+    )
+    .returning({ taskId: schema.project.distributedTaskIdReservations.taskId });
+  await releasePendingClaims(tx, projectPartition, expired.map((row) => row.taskId));
+}
+
+/*
+FNXC:TaskIdGlobalUniqueness 2026-11-08-09:36 (RUFU-320):
+Releases the PENDING half of a claim — the row a reservation wrote for a number it never got to use.
+Never touches a claim whose reservation_id is already NULL (a committed/inserted claim is permanent
+ownership) and never another project's row.
+*/
+async function releasePendingClaims(
+  tx: DbTransaction,
+  projectPartition: string,
+  taskIds: Array<string | null>,
+): Promise<void> {
+  const ids = taskIds.filter((value): value is string => typeof value === "string" && value.length > 0);
+  if (ids.length === 0) return;
+  await tx
+    .delete(schema.central.globalTaskIdClaim)
+    .where(
+      sql`${schema.central.globalTaskIdClaim.projectId} = ${projectPartition}
+        AND ${schema.central.globalTaskIdClaim.reservationId} IS NOT NULL
+        AND ${schema.central.globalTaskIdClaim.taskId} IN (${sql.join(
+          ids.map((id) => sql`${id}`),
+          sql`, `,
+        )})`,
     );
 }
 
@@ -458,11 +557,22 @@ export function createAsyncDistributedTaskIdAllocator(
         const expiresAt = new Date(now.getTime() + ttlMs).toISOString();
 
         return layer.transactionImmediate(async (tx) => {
-          await expireReservations(tx, nowIso);
+          await expireReservations(tx, nowIso, projectOwnershipPartition(layer.projectId));
           const prefix = input.prefix.trim().toUpperCase();
           if (!prefix) {
             throw new Error("prefix is required");
           }
+
+          /*
+          FNXC:TaskIdGlobalUniqueness 2026-11-08-09:19 (RUFU-320):
+          A transaction-scoped advisory lock over the NAMESPACE, not the project. Two projects sharing
+          one prefix live in different RLS partitions, so no row lock can serialize them: without this,
+          both read the same floor, both pick `FN-004`, and the loser's insert fails on its own claim
+          write. Advisory locks are cluster-wide and need no grants, so one lock per prefix makes the
+          "read floor, skip claimed numbers, reserve" sequence atomic DB-wide; it is released with the
+          transaction, so a crashed reservation cannot strand the namespace.
+          */
+          await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`fusion-task-id-namespace:${prefix}`})::bigint)`);
 
           // Ensure the state row exists with the correct floor.
           const floor = await computeNextSequenceFloor(tx, prefix, layer.projectId);
@@ -481,15 +591,48 @@ export function createAsyncDistributedTaskIdAllocator(
             throw new Error(`distributed_task_id_state row missing for prefix ${prefix}`);
           }
 
-          // Skip past any existing task IDs (defense-in-depth even though
-          // reconciliation should have set the floor correctly).
+          /*
+          FNXC:TaskIdGlobalUniqueness 2026-11-08-10:06 (RUFU-320):
+          The claim is taken HERE, in the reserving transaction, not only when the row is written. A
+          sibling project cannot see this reservation at all — `distributed_task_id_reservations` is
+          RLS-partitioned — so a claim row is the only thing that can tell a second project "that number
+          is spoken for" while this card is still merely reserved; without it both projects read a floor
+          of 1 and both hand out FN-001. The insert is the atomic gate (primary key on the id string),
+          so even racing past the advisory lock above, a contender LOSES BY SKIPPING and never by
+          double-issuing. `reservation_id` marks the claim pending: a create that never landed releases
+          it, so an id is never burned by a card that was never created.
+          */
+          const reservationId = randomUUID();
           let sequence = state.nextSequence;
-          while (await taskIdExists(tx, prefix, sequence)) {
-            sequence += 1;
+          let skipped = 0;
+          let claimed = false;
+          while (!claimed) {
+            const candidate = formatDistributedTaskId(prefix, sequence);
+            if (!(await taskIdTaken(tx, prefix, sequence))) {
+              const inserted = await tx
+                .insert(schema.central.globalTaskIdClaim)
+                .values({
+                  taskId: candidate,
+                  projectId: projectOwnershipPartition(layer.projectId),
+                  createdAt: nowIso,
+                  reservationId,
+                })
+                .onConflictDoNothing({ target: schema.central.globalTaskIdClaim.taskId })
+                .returning({ taskId: schema.central.globalTaskIdClaim.taskId });
+              claimed = inserted.length > 0;
+            }
+            if (!claimed) {
+              sequence += 1;
+              skipped += 1;
+              if (skipped >= MAX_CLAIM_SKIP_ATTEMPTS) {
+                throw new Error(
+                  `task-id allocator exhausted ${MAX_CLAIM_SKIP_ATTEMPTS} consecutive taken ids for prefix ${prefix} starting at ${formatDistributedTaskId(prefix, state.nextSequence)}`,
+                );
+              }
+            }
           }
 
           const taskId = formatDistributedTaskId(prefix, sequence);
-          const reservationId = randomUUID();
 
           await tx.insert(schema.project.distributedTaskIdReservations).values({
             reservationId,
@@ -523,7 +666,7 @@ export function createAsyncDistributedTaskIdAllocator(
       withLock(async () => {
         const nowIso = new Date().toISOString();
         return layer.transactionImmediate(async (tx) => {
-          await expireReservations(tx, nowIso);
+          await expireReservations(tx, nowIso, projectOwnershipPartition(layer.projectId));
           const rows = await tx
             .select()
             .from(schema.project.distributedTaskIdReservations)
@@ -547,6 +690,19 @@ export function createAsyncDistributedTaskIdAllocator(
             .update(schema.project.distributedTaskIdReservations)
             .set({ status: "committed", committedAt: nowIso, updatedAt: nowIso })
             .where(eq(schema.project.distributedTaskIdReservations.reservationId, row.reservationId));
+
+          /*
+          FNXC:TaskIdGlobalUniqueness 2026-11-08-10:05 (RUFU-320):
+          Committing makes the pending claim permanent by clearing its pending marker. A claim the
+          insert seam wrote instead (explicit id, or a create that inserted before committing) already
+          has reservation_id NULL and is left exactly as it is.
+          */
+          await tx
+            .update(schema.central.globalTaskIdClaim)
+            .set({ reservationId: null })
+            .where(
+              sql`${schema.central.globalTaskIdClaim.taskId} = ${row.taskId} AND ${schema.central.globalTaskIdClaim.projectId} = ${projectOwnershipPartition(layer.projectId)}`,
+            );
 
           // Ensure state row exists and bump committed count.
           const floor = await computeNextSequenceFloor(tx, row.prefix, layer.projectId);
@@ -580,7 +736,7 @@ export function createAsyncDistributedTaskIdAllocator(
       withLock(async () => {
         const nowIso = new Date().toISOString();
         return layer.transactionImmediate(async (tx) => {
-          await expireReservations(tx, nowIso);
+          await expireReservations(tx, nowIso, projectOwnershipPartition(layer.projectId));
           const rows = await tx
             .select()
             .from(schema.project.distributedTaskIdReservations)
@@ -604,6 +760,21 @@ export function createAsyncDistributedTaskIdAllocator(
               .where(eq(schema.project.distributedTaskIdReservations.reservationId, row.reservationId));
           }
 
+          /*
+          FNXC:TaskIdGlobalUniqueness 2026-11-08-10:05 (RUFU-320):
+          An aborted reservation hands its number back — but only its OWN pending claim, and only while
+          the id names no task row. A create that inserted the row and then failed to commit must keep
+          its claim, or the registry would call the string free while a live card answers to it.
+          */
+          await tx
+            .delete(schema.central.globalTaskIdClaim)
+            .where(
+              sql`${schema.central.globalTaskIdClaim.taskId} = ${row.taskId}
+                AND ${schema.central.globalTaskIdClaim.projectId} = ${projectOwnershipPartition(layer.projectId)}
+                AND ${schema.central.globalTaskIdClaim.reservationId} = ${row.reservationId}
+                AND NOT EXISTS (SELECT 1 FROM ${schema.project.tasks} t WHERE t.id = ${row.taskId})`,
+            );
+
           const floor = await computeNextSequenceFloor(tx, row.prefix, layer.projectId);
           await ensureStateRow(tx, row.prefix, floor, nowIso);
           const stateRows = await tx
@@ -626,7 +797,7 @@ export function createAsyncDistributedTaskIdAllocator(
       withLock(async () => {
         const nowIso = new Date().toISOString();
         return layer.transactionImmediate(async (tx) => {
-          await expireReservations(tx, nowIso);
+          await expireReservations(tx, nowIso, projectOwnershipPartition(layer.projectId));
           const prefix = input.prefix.trim().toUpperCase();
           if (!prefix) {
             throw new Error("prefix is required");

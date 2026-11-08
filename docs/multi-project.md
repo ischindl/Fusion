@@ -27,9 +27,24 @@ Fusion stores multi-project and multi-node coordination state in **PostgreSQL**:
 
 | Schema | Role |
 |---|---|
-| `central` | Project registry, nodes, path mappings, global concurrency, **task claims**, mesh topology helpers |
+| `central` | Project registry, nodes, path mappings, global concurrency, **task claims**, **the database-wide task-ID claim registry** (`global_task_id_claim`), mesh topology helpers |
 | `project` | Tasks, agents, settings, workflows, missions, distributed task IDs (row-isolated by `project_id` + RLS) |
 | `archive` | Cold archive storage |
+
+<!--
+FNXC:TaskIdGlobalUniqueness 2026-11-08-10:49 (RUFU-320):
+`project.tasks` is keyed `(project_id, id)`, so the same ID string is legal in two projects and both rows
+are live cards. `central.global_task_id_claim` is the one place keyed on the ID string ALONE, which is
+why it lives in `central` and not `project`: every project-schema table is required to carry `project_id`
+in its primary key (forced RLS plus the project-key guards in `schema-applier.test.ts`), and a composite
+claim key would permit exactly the duplicate state the table exists to forbid.
+-->
+
+Task IDs are therefore **unique per project for addressing and unique per database for ownership**: minting
+reads the target project's own `project.config` for its prefix and the DB-wide claim registry for numbers
+already handed to a sibling project, so a card created while another project is running never inherits
+that project's namespace. A bare ID that exists in more than one project - only possible for rows written
+before this registry existed - is refused by name rather than resolved to an arbitrary card.
 
 **Default (single machine):** unset `DATABASE_URL` → embedded Postgres under `~/.fusion/embedded-postgres/`. That data directory is **local to the host**. Two laptops each running embedded Postgres do **not** share a board.
 

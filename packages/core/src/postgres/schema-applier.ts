@@ -129,7 +129,12 @@ not "highest upstream number", and a number naming two migrations remains the on
  * marker against Number(SCHEMA_BASELINE_VERSION), so leaving it at 0094 would make every boot after this one
  * read the database this very binary migrated as newer and log the warn-only stale-binary warning. Slot 0095
  * was free: no bundled file and no open branch names it, and numbers are never reused. */
-export const SCHEMA_BASELINE_VERSION = "0095";
+/* FNXC:TaskIdGlobalUniqueness 2026-11-08-09:19 (RUFU-320): the ceiling follows the highest bundled file
+ * again (0096, `central.global_task_id_claim`). The stale-binary guard compares the DB's highest marker
+ * against Number(SCHEMA_BASELINE_VERSION), so leaving it at 0095 would make every boot after this one
+ * read the database this very binary migrated as newer and log the warn-only stale-binary warning.
+ * Slot 0096 was free: no bundled file names it, and slot numbers are never reused. */
+export const SCHEMA_BASELINE_VERSION = "0096";
 /** FNXC:SymbolLock 2026-07-20-10:00: upgrades need durable task declarations before admission resolves symbols. */
 export const TASK_DECLARED_SYMBOLS_VERSION = "0028";
 const INITIAL_SCHEMA_VERSION = "0000";
@@ -407,6 +412,15 @@ value and the .sql basename stay equal, and the file is registered below rather 
 unwired `.sql` in `migrations/` silently never runs (`migration-wiring-integrity.test.ts`).
 */
 export const WORKFLOW_DEFERRED_SINCE_VERSION = "0095";
+
+/*
+FNXC:TaskIdGlobalUniqueness 2026-11-08-09:19 (RUFU-320):
+Database-wide task-id claim registry in the unpartitioned `central` schema. Explicit registration — an
+unwired `.sql` in `migrations/` silently never runs (`migration-wiring-integrity.test.ts`) — and the
+table must exist before ANY create path mints an id, because the insert now writes its claim in the
+same transaction as the task row.
+*/
+export const GLOBAL_TASK_ID_CLAIM_VERSION = "0096";
 
 export const FILE_SCOPE_LEASE_RELEASE_VERSION = "0089";
 
@@ -742,6 +756,8 @@ const TASK_LOG_ENTRIES_MIGRATION_PATH = join(MIGRATIONS_DIR, "0093_rufu_312_task
 const TASK_SEARCH_VECTOR_SCOPE_MIGRATION_PATH = join(MIGRATIONS_DIR, "0094_rufu_312_search_vector_scope.sql");
 /* FNXC:StrandedContinuationDeferralHorizon 2026-11-02-12:27 (RUFU-299): explicit registration; see WORKFLOW_DEFERRED_SINCE_VERSION. */
 const WORKFLOW_DEFERRED_SINCE_MIGRATION_PATH = join(MIGRATIONS_DIR, "0095_rufu_299_workflow_work_items_deferred_since.sql");
+/* FNXC:TaskIdGlobalUniqueness 2026-11-08-09:19 (RUFU-320): explicit registration; see GLOBAL_TASK_ID_CLAIM_VERSION. */
+const GLOBAL_TASK_ID_CLAIM_MIGRATION_PATH = join(MIGRATIONS_DIR, "0096_rufu_320_global_task_id_claim.sql");
 
 /**
  * Ensure the migration bookkeeping table exists. Lives in the public schema so
@@ -906,6 +922,7 @@ export async function applySchemaBaseline(
     const taskLogEntriesAlreadyApplied = applied.includes(TASK_LOG_ENTRIES_VERSION);
     const searchVectorScopeAlreadyApplied = applied.includes(TASK_SEARCH_VECTOR_SCOPE_VERSION);
     const workflowDeferredSinceAlreadyApplied = applied.includes(WORKFLOW_DEFERRED_SINCE_VERSION);
+    const globalTaskIdClaimAlreadyApplied = applied.includes(GLOBAL_TASK_ID_CLAIM_VERSION);
     assertBinaryNotOlderThanDatabase(applied);
     let schemaChanged = false;
 
@@ -2304,6 +2321,32 @@ export async function applySchemaBaseline(
       const migrationSql = await readFile(WORKFLOW_DEFERRED_SINCE_MIGRATION_PATH, "utf8");
       await tx.execute(sql.raw(migrationSql));
       await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${WORKFLOW_DEFERRED_SINCE_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+    /*
+    FNXC:TaskIdGlobalUniqueness 2026-11-08-09:19 (RUFU-320):
+    The DB-wide task-id claim table plus its backfill.
+
+    Marker-only, with NO relation probe, and that absence is deliberate rather than an oversight of the
+    absent-relation invariant the neighbouring blocks pin (`runs every drift probe against an
+    absent-relation database`): a probe here could only answer "table missing", which on a
+    markers-recorded-but-relations-absent fixture database means the applier would CREATE a product
+    table that the fixture says is none of its business, report `applied: true`, and break that
+    invariant. Re-pairing a dropped table with its still-recorded marker is a question this table does
+    not need to ask: unlike the neighbours, nothing here can drift half-applied — the DDL is one
+    `CREATE TABLE IF NOT EXISTS`, the backfill is conflict-ignore, and it runs inside a DO block that
+    returns early when `project.tasks`/`archive.archived_tasks` do not exist, so an upgrade that crashed
+    between DDL and bookkeeping converges by simply running the script again.
+
+    A pre-existing cross-project duplicate id is recorded, never fatal (`rufu-320:cross-project-
+    duplicate-task-ids` in `central.__meta` plus the `cross_project_duplicate_id` integrity anomaly), so
+    an operator whose database already holds duplicates still finishes booting instead of being bricked
+    by historical damage.
+    */
+    if (!globalTaskIdClaimAlreadyApplied) {
+      const migrationSql = await readFile(GLOBAL_TASK_ID_CLAIM_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${GLOBAL_TASK_ID_CLAIM_VERSION}) ON CONFLICT (version) DO NOTHING`);
       schemaChanged = true;
     }
     return { applied: schemaChanged, pluginHooksRun: pluginHooks.length };

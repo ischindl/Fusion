@@ -18,7 +18,7 @@ import {randomUUID} from "node:crypto";
 import {and, eq, inArray, isNull} from "drizzle-orm";
 import {filterArchived as filterArchivedAsync} from "../async-stores/async-archive-db.js";
 import type {Task, TaskCreateInput, Column, ColumnId, TaskDocumentWithTask, RunMutationContext, TaskCommitAssociation, GoalCitation, GoalCitationInput, TaskBranchAssignmentMode, WorkflowWorkItem, WorkflowWorkItemDueFilter, WorkflowWorkItemKind} from "../types.js";
-import { resolveTaskPrefix } from "./task-prefix.js";
+/* RUFU-320: minting-prefix resolution moved to store.resolveTaskIdMinting (task-prefix.ts). */
 import {COLUMNS} from "../types.js";
 import {parseWorkflowIr, serializeWorkflowIr} from "../workflows/workflow-ir.js";
 import {resolveAllowedColumns, workflowHasColumn} from "../workflows/workflow-transitions.js";
@@ -174,9 +174,18 @@ export async function atomicWriteTaskJsonImpl2(
 }
 
 export async function createTaskWithDistributedReservationImpl(store: TaskStore, input: TaskCreateInput, options?: { onSummarize?: (description: string) => Promise<string | null>; settings?: { autoSummarizeTitles?: boolean }; createTaskWithId?: (taskId: string) => Promise<Task>; },): Promise<Task> {
-    const settings = await store.getSettingsFast();
-    // FNXC:MissionTaskPrefix 2026-07-26-12:00: prefer TaskCreateInput.taskPrefix (mission triage minting hint) over the project-wide settings.taskPrefix so a single mission can use e.g. ERR- while the board stays FN-.
-    const prefix = resolveTaskPrefix(input.taskPrefix, settings.taskPrefix, "FN");
+    /*
+    FNXC:TaskIdMintingPartition 2026-11-08-09:19 (RUFU-320):
+    Mint from the project partition the row will land in, not from the merged settings document.
+    The previous read (`store.getSettingsFast()`) layered the daemon-wide `settings.json` under the
+    project's own config, so a project without its own `taskPrefix` minted the launch project's
+    namespace onto a row stamped with its own project id — the reported `RUFU-002`/`RUFU-003` cards
+    that appeared on the `vllm-rocm` board. A create that states a destination it cannot prove
+    refuses with `task-id-minting-partition-mismatch` and reserves nothing.
+    FNXC:MissionTaskPrefix 2026-07-26-12:00: the per-mission `TaskCreateInput.taskPrefix` hint still
+    wins inside the minting project, so a mission can mint `ERR-` while the board stays `FN-`.
+    */
+    const { prefix } = await store.resolveTaskIdMinting(input, "FN");
     const allocator = store.getDistributedTaskIdAllocator();
     const nodeId = await store.resolveLocalNodeIdForTaskAllocation();
     const reservation = await allocator.reserveDistributedTaskId({

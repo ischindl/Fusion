@@ -11,6 +11,7 @@ import {
   pgDescribe,
   type SharedPgTaskStoreHarness,
 } from "../../__test-utils__/pg-test-harness.js";
+import { TaskStore } from "../../store.js";
 import * as schema from "../../postgres/schema/index.js";
 import { applySchemaBaseline } from "../../postgres/schema-applier.js";
 import type { HumanPlanApprovalDecision } from "../../types.js";
@@ -158,8 +159,19 @@ pgDescribe("TaskStore human plan approval persistence (PostgreSQL)", () => {
       humanPlanApproval: { enabled: true },
     } as never);
 
-    // The bound store must still read only its own project's decision.
-    expect((await store.getTask(created.id))?.humanPlanApproval).toEqual({ enabled: true, decision: DECISION });
+    /*
+    FNXC:TaskIdGlobalUniqueness 2026-11-08-10:41 (RUFU-320):
+    Both cards are read through stores BOUND to their own partition. The harness store itself has no
+    project partition, so reading this bare id through it used to return whichever copy the planner
+    happened to yield first -- the silent pick that made `fn task show RUFU-003` open the wrong card.
+    An unpartitioned read of a duplicated id must now name every holder instead of guessing.
+    */
+    const bind = (projectId: string) => ({ ...h.layer(), projectId });
+    const ownStore = new TaskStore(h.rootDir(), undefined, { asyncLayer: bind(ownProjectId!) });
+    const foreignStore = new TaskStore(h.rootDir(), undefined, { asyncLayer: bind(foreignProjectId) });
+    expect((await ownStore.getTask(created.id))?.humanPlanApproval).toEqual({ enabled: true, decision: DECISION });
+    expect((await foreignStore.getTask(created.id))?.humanPlanApproval).toEqual({ enabled: true });
+    await expect(store.getTask(created.id)).rejects.toThrow(/task-id-ambiguous-across-projects/);
     const foreign = await h.adminDb()
       .select({ humanPlanApproval: schema.project.tasks.humanPlanApproval })
       .from(schema.project.tasks)

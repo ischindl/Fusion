@@ -6,6 +6,7 @@ import * as schema from "../../postgres/schema/index.js";
 import {
   createSharedPgTaskStoreTestHarness,
   pgDescribe,
+  seedPreExistingTaskIdDuplicate,
   type SharedPgTaskStoreHarness,
 } from "../../__test-utils__/pg-test-harness.js";
 
@@ -144,10 +145,20 @@ pgDescribe("TaskStore in-review stall observation fence", () => {
       { description: "project A stall" },
       { taskId, applyDefaultWorkflowSteps: false },
     );
-    await storeB.createTaskWithReservedId(
-      { description: "project B stall" },
-      { taskId, applyDefaultWorkflowSteps: false },
-    );
+    /*
+    FNXC:TaskIdGlobalUniqueness 2026-11-08-10:38 (RUFU-320):
+    Project B's row is copied in through the admin connection instead of created. The DB-wide id claim
+    refuses a NEW second project's write of a claimed id, so the only cross-project collision left to
+    guard against is the one that PREDATES the claim table -- and RUFU-320 deliberately leaves those rows
+    in place, which is exactly why this fence must keep id-only locks and updates partition-scoped.
+    */
+    await seedPreExistingTaskIdDuplicate(h.adminDb(), {
+      taskId,
+      fromProjectId: "stall-project-a",
+      toProjectId: "stall-project-b",
+    });
+    // The copy starts byte-identical; B writing its own value proves the id-only update hit B's partition.
+    await storeB.updateTask(taskId, { description: "project B stall" });
 
     const [outcomeA, outcomeB] = await Promise.all([
       storeA.applyInReviewStallObservationFenced(taskId, () => ({ logEntry: entry("project A observation") })),

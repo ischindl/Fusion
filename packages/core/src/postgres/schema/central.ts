@@ -327,6 +327,54 @@ export const globalRoutines = centralSchema.table("global_routines", {
   updatedAt: text("updated_at").notNull(),
 });
 
+// ── Database-wide task-id claim registry ───────────────────────────
+/**
+ * One row per minted task-id STRING, owned by exactly one project.
+ *
+ * FNXC:TaskIdGlobalUniqueness 2026-11-08-09:19 (RUFU-320):
+ * `project.tasks` is keyed `(project_id, id)` on purpose — that per-project partition is deliberate
+ * design and stays. The consequence was that the id STRING was not a namespace: two live cards in
+ * two projects could carry `RUFU-003`, and bare-id addressing then resolved by whichever project the
+ * caller happened to be sitting in (the reported `fn task show RUFU-003` opening the wrong card).
+ * This table is the missing DB-wide claim: the primary key is `task_id` ALONE, so the database
+ * itself refuses to let a second project take a string that is already minted.
+ *
+ * Why the central schema and not the project schema: the project-schema isolation guards require a
+ * physical `project_id` column, forced RLS, and `project_id` inside every primary key, unique
+ * constraint, and unique index. Putting `project_id` into this key reinstates exactly the duplicate
+ * this table exists to prevent, and weakening those guards would punch a hole in the project
+ * data-isolation contract. The central schema is unpartitioned and already hosts cross-node
+ * coordination tables, so the claim needs no isolation relaxation to be correct.
+ *
+ * This is NOT `central.task_claims`: that table's `(project_id, task_id)` key is a per-project
+ * cross-node ownership LEASE over a card, the opposite shape of a DB-wide id claim, and reusing it
+ * would couple two unrelated lifecycles.
+ *
+ * No rows are ever deleted or reassigned: an id a project once held stays claimed even after the
+ * card is archived or soft-deleted, which is the same no-reuse rule the allocator already applies to
+ * sequences. A re-claim by the OWNING project stays legal (archive/restore, soft-deleted id reuse,
+ * tombstone resurrection).
+ */
+export const globalTaskIdClaim = centralSchema.table("global_task_id_claim", {
+  /** The minted id string, e.g. `RUFU-003`. Unique across the whole cluster. */
+  taskId: text("task_id").primaryKey(),
+  /** The project partition that owns the string; `__legacy_unscoped__` for an unbound store. */
+  projectId: text("project_id").notNull(),
+  createdAt: text("created_at").notNull(),
+  /*
+  Two-phase claim, so an id is never burned by a create that never happened:
+   - a reservation writes its claim in its own transaction and stamps `reservation_id` — the claim is
+     what makes the number invisible to every other project while the card is still only reserved
+     (`project.distributed_task_id_reservations` is RLS-partitioned, so reservations alone cannot
+     serialize two projects sharing a prefix);
+   - committing the reservation clears the column, making the claim permanent;
+   - aborting or expiring the reservation deletes the claim, unless a task row already carries that
+     id, so a rolled-back create leaves no claim behind (deletes are always scoped to `project_id`,
+     because a session cannot see another project's reservations and must not conclude they are gone).
+  */
+  reservationId: text("reservation_id"),
+});
+
 // ── Schema version meta ──────────────────────────────────────────────
 export const centralMeta = centralSchema.table("__meta", {
   key: text("key").primaryKey(),
@@ -342,5 +390,12 @@ export const centralTableNames = [
   "central_activity_log", "central_settings",
   "peer_nodes", "settings_sync_state", "managed_docker_nodes",
   "plugin_installs", "project_plugin_states", "mesh_shared_snapshots",
-  "mesh_write_queue", "secrets_global", "task_claims", "global_routines", "__meta",
+  "mesh_write_queue", "secrets_global", "task_claims", "global_routines",
+  /*
+  FNXC:TaskIdGlobalUniqueness 2026-11-08-09:19 (RUFU-320): the DB-wide task-id claim registry. It
+  must be listed here because this list is what the pg test harness truncates between cases; a
+  central table missing from it leaks its claim rows into every later test case, and unlike the
+  project schema there is no central registry drift ratchet to catch the omission.
+  */
+  "global_task_id_claim", "__meta",
 ] as const;

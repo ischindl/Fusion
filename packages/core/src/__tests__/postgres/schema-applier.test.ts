@@ -138,6 +138,7 @@ import {
   TASK_SEARCH_VECTOR_SCOPE_VERSION,
   FILE_SCOPE_LEASE_RELEASE_VERSION,
   WORKFLOW_DEFERRED_SINCE_VERSION,
+  GLOBAL_TASK_ID_CLAIM_VERSION,
 } from "../../postgres/schema-applier.js";
 import { ProjectPartitionRekeyError, rekeyFallbackProjectPartition } from "../../postgres/migration-stamping.js";
 import type { PluginSchemaInitHook } from "../../postgres/plugin-schema-hook.js";
@@ -258,8 +259,12 @@ describe("schema-applier: immutable migration identities", () => {
     (`workflow_work_items.deferred_since`). Same single-equality rule: this line and the file-level scan must
     agree, and a ceiling left at 0094 would make every boot read the database this very binary migrated as
     newer and log the warn-only stale-binary warning.
+
+    FNXC:TaskIdGlobalUniqueness 2026-11-08-10:31 (RUFU-320): the ceiling moves to 0096
+    (`central.global_task_id_claim`), the DB-wide task-id claim registry. Same rule, same reason: a ceiling
+    left at 0095 makes every boot read the database this binary just migrated as newer than the binary.
     */
-    expect(SCHEMA_BASELINE_VERSION).toBe("0095");
+    expect(SCHEMA_BASELINE_VERSION).toBe("0096");
 
       /*
       FNXC:MigrationRestack 2026-10-12-18:24: readiness keeps upstream's 0087 and the receipts keep 0086, so
@@ -946,7 +951,7 @@ pgDescribe("schema-applier: VAL-SCHEMA-001 final-schema parity (table counts)", 
     ctx = null;
   });
 
-  it("creates all 126 project tables, 17 central tables, 1 archive table", async () => {
+  it("creates all 126 project tables, 18 central tables, 1 archive table", async () => {
     ctx = await setupFreshDb();
     // FNXC:PostgresCutover 2026-07-05-15:55: apply the BASELINE only.
     // applySchemaBaseline now runs the plugin schema-init hooks by default,
@@ -1007,11 +1012,18 @@ pgDescribe("schema-applier: VAL-SCHEMA-001 final-schema parity (table counts)", 
     */
     expect(bySchema.project).toBe(126);    /*
     FNXC:CapacityModel 2026-07-29-08:10 (drop the cross-project cap — table half):
-    17, not 18: `central.global_concurrency` is dropped by migration 0037. A fresh
-    database still CREATEs it from the historical 0000 baseline and then drops it,
-    so fresh and upgraded databases converge on the same shape.
+    This number was 17, not 18, because `central.global_concurrency` is dropped by migration 0037 — a fresh
+    database still CREATEs it from the historical 0000 baseline and then drops it, so fresh and upgraded
+    databases converge on the same shape.
+
+    FNXC:TaskIdGlobalUniqueness 2026-11-08-10:24 (RUFU-320): it is 18 now for an unrelated reason — migration
+    0096 adds `central.global_task_id_claim`, the DB-wide task-id claim registry. It lives in `central`
+    because its primary key is the id STRING ALONE: every `project` table must carry `project_id` inside its
+    key (the project-ownership and forced-RLS guards in this file), and a key that included `project_id`
+    would permit exactly the two-projects-one-id state this table exists to forbid. Same-shape convergence
+    still holds: the DDL is `CREATE TABLE IF NOT EXISTS`, so fresh and upgraded databases land identically.
     */
-    expect(bySchema.central).toBe(17);
+    expect(bySchema.central).toBe(18);
     expect(bySchema.archive).toBe(1);
   });
 
@@ -2333,6 +2345,8 @@ FILE_SCOPE_LEASE_RELEASE_VERSION,
       TASK_SEARCH_VECTOR_SCOPE_VERSION,
       /* FNXC:StrandedContinuationDeferralHorizon 2026-11-02-12:27 (RUFU-299): the fork's tail grows by one slot. */
       WORKFLOW_DEFERRED_SINCE_VERSION,
+      /* FNXC:TaskIdGlobalUniqueness 2026-11-08-10:26 (RUFU-320): the DB-wide task-id claim registry grows the tail. */
+      GLOBAL_TASK_ID_CLAIM_VERSION,
       /* FNXC:MigrationCollisionRepair 2026-10-05-11:29: this fork records the non-numeric repair
       identity and ORDER BY version is TEXT, so it sorts after every numeric slot. Keep it last. */
       MIXED_0065_REPAIR_VERSION,
@@ -2786,6 +2800,8 @@ FILE_SCOPE_LEASE_RELEASE_VERSION,
       TASK_SEARCH_VECTOR_SCOPE_VERSION,
       /* FNXC:StrandedContinuationDeferralHorizon 2026-11-02-12:27 (RUFU-299): the fork's tail grows by one slot. */
       WORKFLOW_DEFERRED_SINCE_VERSION,
+      /* FNXC:TaskIdGlobalUniqueness 2026-11-08-10:26 (RUFU-320): the DB-wide task-id claim registry grows the tail. */
+      GLOBAL_TASK_ID_CLAIM_VERSION,
       /* keep the non-numeric repair identity last: ORDER BY version is TEXT */
       MIXED_0065_REPAIR_VERSION,
     ]);
@@ -2938,6 +2954,8 @@ FILE_SCOPE_LEASE_RELEASE_VERSION,
       TASK_SEARCH_VECTOR_SCOPE_VERSION,
       /* FNXC:StrandedContinuationDeferralHorizon 2026-11-02-12:27 (RUFU-299): the fork's tail grows by one slot. */
       WORKFLOW_DEFERRED_SINCE_VERSION,
+      /* FNXC:TaskIdGlobalUniqueness 2026-11-08-10:26 (RUFU-320): the DB-wide task-id claim registry grows the tail. */
+      GLOBAL_TASK_ID_CLAIM_VERSION,
       /* keep the non-numeric repair identity last: ORDER BY version is TEXT */
       MIXED_0065_REPAIR_VERSION,
     ]);

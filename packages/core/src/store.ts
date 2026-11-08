@@ -194,7 +194,7 @@ import type { WorkspaceLeaseHandle, WorkspaceLeaseKind, WorkspaceLeaseOwner } fr
 import { queryRunAuditEvents } from "./task-store/async/async-audit.js";
 import { isValidMergeRequestTransitionImpl, releaseMergeQueueLeaseImpl, collectMergeDetailsImpl, applyPrMergedTransitionImpl } from "./task-store/merge-queue-ops-2.js";
 import { upsertWorkflowWorkItemImpl, replaceActiveTaskWorkflowContinuationImpl, seedStrandedPlanReviewContinuationImpl, seedWorkspaceCodeReviewContinuationIfIdleImpl, transitionWorkflowWorkItemImpl, acquireWorkflowWorkItemLeaseImpl } from "./task-store/workflow-workitems-ops-2.js";
-import { getSettingsImpl, getSettingsFastImpl, getSettingsByScopeImpl, getSettingsByScopeFastImpl } from "./task-store/settings-ops-2.js";
+import { getSettingsImpl, getSettingsFastImpl, getSettingsByScopeImpl, getSettingsByScopeFastImpl, resolveTaskIdMintingImpl } from "./task-store/settings-ops-2.js";
 import { runPluginColumnTransitionHooksImpl, checkAndRecordUnplannedExecutionBlockImpl, logEntryImpl, logEntryOnceImpl, transitionQueuedEpisodeImpl, type QueuedEpisodeTransition } from "./task-store/audit-ops.js";
 import { reconcileTaskOverlapWaitsImpl, type OverlapWaitReconciliationOptions } from "./task-store/overlap-wait-reconciliation.js";
 import { claimTaskOverlapWaitImpl, completeTaskOverlapWaitImpl, listTaskOverlapWaitsImpl, publishTaskOverlapDeliveriesImpl } from "./task-store/overlap-wait-ops.js";
@@ -1629,6 +1629,21 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   }
   async getSettingsFast(): Promise<Settings> {
     return getSettingsFastImpl(this);
+  }
+  /**
+   * Resolve the project partition and namespace a new task id will be minted from.
+   *
+   * FNXC:TaskIdMintingPartition 2026-11-08-09:19 (RUFU-320): both backend create paths mint through
+   * this one seam so the prefix and the per-project counter come from the same project the row will
+   * land in. A create whose partitions disagree, or whose destination partition cannot be proven,
+   * throws `task-id-minting-partition-mismatch` instead of writing a card that carries another
+   * project's identity.
+   */
+  async resolveTaskIdMinting(
+    input: { taskPrefix?: string; targetProjectId?: string },
+    fallback: string,
+  ): Promise<import("./task-store/task-prefix.js").TaskIdMintingContext> {
+    return resolveTaskIdMintingImpl(this, input, fallback);
   }
   async getSettingsByScope(): Promise<{ global: GlobalSettings; project: Partial<ProjectSettings> }> {
     return getSettingsByScopeImpl(this);

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   createSharedPgTaskStoreTestHarness,
   pgDescribe,
+  seedPreExistingTaskIdDuplicate,
   type SharedPgTaskStoreHarness,
 } from "../../__test-utils__/pg-test-harness.js";
 import * as schema from "../../postgres/schema/index.js";
@@ -112,7 +113,18 @@ pgDescribe("queued episode transition", () => {
       const storeB = new TaskStore(rootB, undefined, { asyncLayer: layerB });
       const now = new Date().toISOString();
       const row = { id: "FN-SAME", description: "same id", column: "todo", currentStep: 0, createdAt: now, updatedAt: now };
-      await Promise.all([insertTaskRow(layerA, row, { lineageId: null }), insertTaskRow(layerB, row, { lineageId: null })]);
+      await insertTaskRow(layerA, row, { lineageId: null });
+      /*
+      FNXC:TaskIdGlobalUniqueness 2026-11-08-10:37 (RUFU-320):
+      The sibling row is copied in through the admin connection rather than created: the DB-wide id claim
+      now refuses a second project's write of a claimed id. This fixture models a duplicate that PREDATES
+      the claim table, which is the state whose partition isolation still has to be guarded.
+      */
+      await seedPreExistingTaskIdDuplicate(h.adminDb(), {
+        taskId: row.id,
+        fromProjectId: "project-a",
+        toProjectId: "project-b",
+      });
 
       await expect(Promise.all([
         storeA.transitionQueuedEpisode(row.id, overlap("FN-LOCK")),

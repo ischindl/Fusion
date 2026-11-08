@@ -2417,6 +2417,16 @@ export interface TaskCreateInput {
    * reservation (used by mission triage to honor a per-mission prefix). Not persisted.
    */
   taskPrefix?: string;
+  /**
+   * FNXC:TaskIdMintingPartition 2026-11-08-09:19 (RUFU-320):
+   * The project the caller wants this card to belong to, when the caller knows one (a cross-project
+   * create surface). A store can only write a row into its own partition, so a stated destination
+   * is a CHECK, not a routing instruction: it must equal the minting partition or the create throws
+   * `task-id-minting-partition-mismatch`. Not persisted — the row's project always comes from the
+   * partition it was inserted into. Carrying it silently is what let an agent-chat create mint the
+   * server default project's prefix for a card filed into another project.
+   */
+  targetProjectId?: string;
   /** Optional per-task auto-merge override. Undefined means no task-level override. */
   autoMerge?: boolean;
   /**

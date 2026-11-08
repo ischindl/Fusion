@@ -44,7 +44,7 @@ import {projectScopeFor, recordRunAuditEventWithinTransaction, taskProjectScope}
 import {withTaskWorkflowSerialization} from "./async/async-workflow-workitems.js";
 import * as schema from "../postgres/schema/index.js";
 import type {DbTransaction} from "../postgres/data-layer.js";
-import { resolveTaskPrefix } from "./task-prefix.js";
+/* RUFU-320: minting-prefix resolution moved to store.resolveTaskIdMinting (task-prefix.ts). */
 import {assertValidProviderInstanceId} from "../provider-instance.js";
 import {writePromptFileAtomic} from "./prompt-file.js";
 import {BranchWriteProvenanceError, validateTaskBranchName} from "../branch/branch-assignment.js";
@@ -488,9 +488,17 @@ export async function createTaskBackendImpl(store: TaskStore, input: TaskCreateI
     // PostgreSQL's distributed_task_id tables. On success it commits; on
     // failure it aborts the reservation so the sequence is not wasted.
     const allocator = store.getDistributedTaskIdAllocator();
-    const settings = await store.getSettingsFast();
-    // FNXC:MissionTaskPrefix 2026-07-26-12:00: backend task creation must honor the transient mission prefix hint before project settings and the KB fallback.
-    const prefix = resolveTaskPrefix(input.taskPrefix, settings.taskPrefix, "KB");
+    /*
+    FNXC:TaskIdMintingPartition 2026-11-08-09:19 (RUFU-320):
+    Backend task creation mints from the project partition the row will land in. Reading the merged
+    settings document (the previous behaviour) let the daemon-wide `settings.json` name a
+    partitioned project's namespace, which is how `RUFU-…` ids reached the `vllm-rocm` board while
+    RunFusion held its own `RUFU-002`/`RUFU-003`. A create whose stated destination disagrees with
+    its own partition now refuses with `task-id-minting-partition-mismatch` before reserving.
+    FNXC:MissionTaskPrefix 2026-07-26-12:00: the transient mission prefix hint still wins inside the
+    minting project, before the project's own config value and the KB fallback.
+    */
+    const { prefix } = await store.resolveTaskIdMinting(input, "KB");
     const nodeId = await store.resolveLocalNodeIdForTaskAllocation();
     const reservation = await allocator.reserveDistributedTaskId({
       prefix,

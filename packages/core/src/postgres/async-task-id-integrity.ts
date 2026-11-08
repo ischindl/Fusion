@@ -28,7 +28,7 @@ import {
   type TaskIdIntegrityAnomaly,
   type TaskIdIntegrityReport,
 } from "../tasks/task-id-integrity.js";
-import { PROJECT_SCHEMA } from "./schema/_shared.js";
+import { PROJECT_SCHEMA, ARCHIVE_SCHEMA } from "./schema/_shared.js";
 
 /*
 FNXC:TaskIdIntegrityCanary 2026-10-18-22:31 (RUFU-333):
@@ -208,6 +208,51 @@ export async function detectTaskIdIntegrityAnomaliesAsync(
                 : `Active task rows use prefix ${prefix}, which is not declared in distributed_task_id_state.`,
           });
         }
+      }
+    }
+
+    /*
+    6. A row whose id string belongs DB-wide to a DIFFERENT project partition.
+
+    FNXC:TaskIdGlobalUniqueness 2026-11-08-10:45 (RUFU-320):
+    `project.tasks` is keyed `(project_id, id)`, so none of the checks above can see a sibling project's
+    copy of the same address -- that is the state RUFU-320 fixed forward, and migration 0096 deliberately
+    never renumbers the rows it predates. `central.global_task_id_claim` is keyed on the id string alone,
+    so joining a partition's own rows to the claim names the owner exactly. The row whose owner is someone
+    else is the ambiguous card: `fn task show RUFU-003` can resolve to it while another project holds the
+    claim. The partition filter is written on the task side as well as the claim side so the answer is the
+    same whether this read runs under row-level security or on a bypassing admin connection.
+    */
+    if (projectId) {
+      const foreignOwnedRows = (await db.execute(
+        sql`SELECT t.id AS id, c.project_id AS owner FROM ${sql.raw(`${PROJECT_SCHEMA}.tasks`)} t
+              JOIN central.global_task_id_claim c ON c.task_id = t.id
+             WHERE t.project_id = ${projectId} AND c.project_id <> ${projectId}
+            UNION ALL
+            SELECT a.id AS id, c.project_id AS owner FROM ${sql.raw(`${ARCHIVE_SCHEMA}.archived_tasks`)} a
+              JOIN central.global_task_id_claim c ON c.task_id = a.id
+             WHERE a.project_id = ${projectId} AND c.project_id <> ${projectId}`,
+      )) as unknown as Array<{ id: string; owner: string }>;
+
+      const foreignByPrefix = new Map<string, { ids: string[]; owners: Set<string> }>();
+      for (const row of foreignOwnedRows) {
+        const taskId = String(row.id ?? "").trim();
+        if (!taskId) continue;
+        const prefix = parseTaskId(taskId)?.prefix ?? "unknown";
+        const bucket = foreignByPrefix.get(prefix) ?? { ids: [], owners: new Set<string>() };
+        bucket.ids.push(taskId);
+        bucket.owners.add(String(row.owner ?? "unknown"));
+        foreignByPrefix.set(prefix, bucket);
+      }
+      for (const [prefix, bucket] of foreignByPrefix) {
+        anomalies.push({
+          kind: "cross_project_duplicate_id",
+          prefix,
+          affectedIds: uniqueSorted(bucket.ids),
+          details:
+            `Task IDs in this project are claimed database-wide by another project (${[...bucket.owners].sort().join(", ")}). `
+            + `Rename the affected cards or archive the duplicate; Fusion never renumbers a task id automatically.`,
+        });
       }
     }
 

@@ -6,7 +6,17 @@ export type TaskIdIntegrityAnomalyKind =
   | "duplicate_active_id"
   | "id_in_active_and_archived"
   | "next_sequence_at_or_below_used"
-  | "task_row_outside_known_prefix";
+  | "task_row_outside_known_prefix"
+  /*
+  FNXC:TaskIdGlobalUniqueness 2026-11-08-10:43 (RUFU-320):
+  One task-id string held by two project partitions -- the reported state that made `fn task show
+  RUFU-003` ambiguous. `project.tasks` is keyed `(project_id, id)`, so no existing kind could name it:
+  `duplicate_active_id` counts rows WITHIN one partition and never sees a sibling project's copy. The
+  detector reports it from the side that does not own the DB-wide claim, so the card that is reachable
+  under a stolen address is the one that gets flagged. Migration 0096 never renumbers these rows; this
+  anomaly is the operator-facing view of them.
+  */
+  | "cross_project_duplicate_id";
 
 export interface TaskIdIntegrityAnomaly {
   kind: TaskIdIntegrityAnomalyKind;

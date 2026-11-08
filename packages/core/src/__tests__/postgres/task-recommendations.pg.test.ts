@@ -9,6 +9,7 @@ import { and, eq } from "drizzle-orm";
 import {
   createSharedPgTaskStoreTestHarness,
   pgDescribe,
+  seedPreExistingTaskIdDuplicate,
   type SharedPgTaskStoreHarness,
 } from "../../__test-utils__/pg-test-harness.js";
 import * as schema from "../../postgres/schema/index.js";
@@ -217,7 +218,17 @@ pgDescribe("TaskStore recommendation persistence (PostgreSQL)", () => {
     };
 
     await insertTaskRow(projectA, baseTask, { lineageId: "recommendations-a" });
-    await insertTaskRow(projectB, baseTask, { lineageId: "recommendations-b" });
+    /*
+    FNXC:TaskIdGlobalUniqueness 2026-11-08-10:40 (RUFU-320):
+    Project B's row is copied in through the admin connection rather than inserted. The DB-wide id claim
+    refuses a NEW second project's write of a claimed id, so the collision this test guards is now the one
+    that PREDATES the claim table -- the duplicates RUFU-320 surfaces and deliberately never renumbers.
+    */
+    await seedPreExistingTaskIdDuplicate(h.adminDb(), {
+      taskId,
+      fromProjectId: "recommendations-project-a",
+      toProjectId: "recommendations-project-b",
+    });
 
     const rows = await h.adminDb()
       .select({ projectId: schema.project.tasks.projectId, recommendations: schema.project.tasks.recommendations })

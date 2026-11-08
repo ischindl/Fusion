@@ -15,6 +15,7 @@ import {hasSyncPassphraseConfigured} from "../secrets/secrets-sync-passphrase.js
 import {__setTaskActivityLogLimitsForTesting} from "../task-store/comments.js";
 import {canonicalizeSettings} from "../task-store/settings-helpers.js";
 import {readProjectConfig as readProjectConfigAsync, readProjectSettings as readProjectSettingsAsync} from "../task-store/async/async-settings.js";
+import {resolveTaskIdMintingContext, type TaskIdMintingContext} from "../task-store/task-prefix.js";
 
 export async function getSettingsImpl(store: TaskStore): Promise<Settings> {
     /*
@@ -51,6 +52,41 @@ export async function getSettingsImpl(store: TaskStore): Promise<Settings> {
     store.settingsSyncCache = canonical;
     return canonical;
   }
+
+/**
+ * Resolve the namespace and partition a new task id will be minted from.
+ *
+ * FNXC:TaskIdMintingPartition 2026-11-08-09:19 (RUFU-320):
+ * The single minting read shared by both backend create paths. It deliberately does NOT hand the
+ * merged settings document to the minting site: `getSettingsFast()` layers the daemon-wide
+ * `settings.json` under the project's own `project.config`, and that shared tier named the
+ * `RUFU-…` ids that landed on the `vllm-rocm` board (RUFU-320). For a store bound to a project the
+ * namespace comes only from that project's own config row; the merged tier remains authoritative
+ * solely for a legacy unbound store, which has no partition to read.
+ */
+export async function resolveTaskIdMintingImpl(
+  store: TaskStore,
+  input: { taskPrefix?: string; targetProjectId?: string },
+  fallback: string,
+): Promise<TaskIdMintingContext> {
+  const layer = store.asyncLayer;
+  const mintingProjectId = layer?.projectId?.trim() || null;
+  const partitionSettings = layer ? await readProjectSettingsAsync(layer) : null;
+  const projectConfigPrefix = typeof partitionSettings?.taskPrefix === "string"
+    ? partitionSettings.taskPrefix
+    : null;
+  const unboundSettingsTaskPrefix = mintingProjectId
+    ? null
+    : (await store.getSettingsFast()).taskPrefix ?? null;
+  return resolveTaskIdMintingContext({
+    targetProjectId: input.targetProjectId,
+    mintingProjectId,
+    taskPrefixHint: input.taskPrefix,
+    projectConfigPrefix,
+    unboundSettingsTaskPrefix,
+    fallback,
+  });
+}
 
 export async function getSettingsFastImpl(store: TaskStore): Promise<Settings> {
     // FNXC:RuntimePersistenceAsync 2026-06-24-10:22:

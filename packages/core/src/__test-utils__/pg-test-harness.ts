@@ -60,7 +60,8 @@ import {
 import { describe as vitestDescribe, expect as vitestExpect } from "vitest";
 import postgres, { type Sql } from "postgres";
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import { sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
+import * as schema from "../postgres/schema/index.js";
 import type { ResolvedBackend } from "../postgres/backend-resolver.js";
 import { createConnectionSetFromUrl } from "../postgres/connection.js";
 import { applySchemaBaseline } from "../postgres/schema-applier.js";
@@ -1219,6 +1220,39 @@ export async function usePgTaskStore(
     await harness.teardown();
   });
   return harness;
+}
+
+/**
+ * FNXC:TaskIdGlobalUniqueness 2026-11-08-10:35 (RUFU-320):
+ * Materialises a PRE-EXISTING cross-project task-id duplicate by copying a committed row into a sibling
+ * partition through the admin connection, deliberately bypassing `central.global_task_id_claim`.
+ *
+ * Why this exists: from RUFU-320 on, a NEW duplicate cannot be written -- the claim seam refuses the
+ * second project. But the migration deliberately does NOT renumber the duplicates that already exist
+ * (they are operator data), so id-only reads, locks and updates still have to stay partition-scoped.
+ * Tests that guard that isolation use this helper to model the pre-existing state instead of creating it
+ * through a seam that now (correctly) refuses it. The copied row carries NO claim, exactly like a row
+ * that predates the claim table.
+ */
+export async function seedPreExistingTaskIdDuplicate(
+  adminDb: PostgresJsDatabase,
+  args: { readonly taskId: string; readonly fromProjectId: string; readonly toProjectId: string },
+): Promise<void> {
+  const [source] = await adminDb
+    .select()
+    .from(schema.project.tasks)
+    .where(
+      and(
+        eq(schema.project.tasks.id, args.taskId),
+        eq(schema.project.tasks.projectId, args.fromProjectId),
+      ),
+    );
+  if (!source) {
+    throw new Error(`seedPreExistingTaskIdDuplicate: no row ${args.taskId} in project ${args.fromProjectId}`);
+  }
+  // `search_vector` is GENERATED ALWAYS, so it is derived on insert and cannot be written.
+  const { searchVector: _generated, ...copyable } = source;
+  await adminDb.insert(schema.project.tasks).values({ ...copyable, projectId: args.toProjectId });
 }
 
 /**

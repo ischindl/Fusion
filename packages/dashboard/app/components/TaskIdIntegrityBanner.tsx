@@ -38,6 +38,8 @@ function getAnomalyLabel(kind: TaskIdIntegrityReport["anomalies"][number]["kind"
       return t("health.anomaly.sequenceOverlap", "Allocator next sequence overlaps an existing task ID");
     case "task_row_outside_known_prefix":
       return t("health.anomaly.unknownPrefix", "Task row uses a prefix outside allocator state");
+    case "cross_project_duplicate_id":
+      return t("health.anomaly.crossProjectDuplicateId", "Task ID is also owned by another project");
     default:
       return kind;
   }

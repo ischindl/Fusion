@@ -27,6 +27,7 @@ import type { AsyncDataLayer } from "../../postgres/data-layer.js";
 import {
   pgDescribe,
   createSharedPgTaskStoreTestHarness,
+  seedPreExistingTaskIdDuplicate,
   type SharedPgTaskStoreHarness,
 } from "../../__test-utils__/pg-test-harness.js";
 import * as schema from "../../postgres/schema/index.js";
@@ -117,6 +118,11 @@ pgDescribe("U12 taskstore-persistence (PostgreSQL)", () => {
    * FN-9514 requires the migration field to round-trip through project-bound TaskStore callers.
    * Colliding task ids must remain isolated because an id-only update could make one project's
    * recovery owner expose or overwrite another project's escalation disposition.
+   *
+   * FNXC:TaskIdGlobalUniqueness 2026-11-08-10:36 (RUFU-320):
+   * The sibling row is now copied in rather than created, because `central.global_task_id_claim` refuses
+   * a NEW second project's write of a claimed id. The isolation guard still has to hold for the
+   * duplicates that ALREADY exist -- RUFU-320 surfaces those and deliberately never renumbers them.
    */
   it("round-trips recovery disposition through project-scoped TaskStores with colliding task ids", async () => {
     const taskId = "FN-9514-RECOVERY-DISPOSITION";
@@ -126,7 +132,11 @@ pgDescribe("U12 taskstore-persistence (PostgreSQL)", () => {
     const storeB = new TaskStore(h.rootDir(), undefined, { asyncLayer: projectB });
 
     await insertTaskRow(projectA, makeMinimalTask(taskId), { lineageId: null });
-    await insertTaskRow(projectB, makeMinimalTask(taskId), { lineageId: null });
+    await seedPreExistingTaskIdDuplicate(h.adminDb(), {
+      taskId,
+      fromProjectId: "recovery-disposition-a",
+      toProjectId: "recovery-disposition-b",
+    });
 
     await storeA.updateTask(taskId, { recoveryDisposition: "escalated-reseed" });
     expect((await storeA.getTask(taskId))?.recoveryDisposition).toBe("escalated-reseed");

@@ -9,10 +9,10 @@ import type { AsyncDataLayer } from "../../postgres/data-layer.js";
 import {
   createSharedPgTaskStoreTestHarness,
   pgDescribe,
+  seedPreExistingTaskIdDuplicate,
   type SharedPgTaskStoreHarness,
 } from "../../__test-utils__/pg-test-harness.js";
 import { TaskStore } from "../../store.js";
-import { insertTaskRow } from "../../task-store/async/async-persistence.js";
 import { deriveStaleReviewCallbackAttemptId } from "../../workflows/workflow-step-results.js";
 import { hasValidStaleReviewCallbackWaiver } from "../../merge/pre-merge-approval.js";
 
@@ -78,15 +78,18 @@ pgDescribe("stale review callback waiver receipts (PostgreSQL)", () => {
 
     const layerFor = (projectId: string): AsyncDataLayer => ({ ...h.layer(), projectId });
     const storeB = new TaskStore(h.rootDir(), undefined, { asyncLayer: layerFor("project-b") });
-    await insertTaskRow(layerFor("project-b"), {
-      id: task.id,
-      description: "same task id in another project",
-      column: "todo",
-      currentStep: 0,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      workflowStepResults: persisted.workflowStepResults,
-    }, { lineageId: "project-b-lineage" });
+    /*
+    FNXC:TaskIdGlobalUniqueness 2026-11-08-10:41 (RUFU-320):
+    Project B's same-id row is copied in through the admin connection instead of inserted: the DB-wide id
+    claim now refuses a NEW second project's write of a claimed id. The receipt-replay guard this test
+    covers still has to hold for the duplicates that predate the claim table, which RUFU-320 leaves in
+    place for the operator to reconcile.
+    */
+    await seedPreExistingTaskIdDuplicate(h.adminDb(), {
+      taskId: task.id,
+      fromProjectId: "project-a",
+      toProjectId: "project-b",
+    });
 
     expect(await storeB.getStaleReviewCallbackWaiverReceipts(task.id)).toEqual([]);
     expect(hasValidStaleReviewCallbackWaiver(carrier!, {

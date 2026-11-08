@@ -355,6 +355,134 @@ export function buildTaskInsertValues(
 }
 
 /**
+ * Named refusal for writing a task id whose DB-wide claim belongs to a different project.
+ *
+ * @see claimTaskIdInTransaction
+ */
+export const TASK_ID_CLAIM_OWNED_BY_ANOTHER_PROJECT = "task-id-claim-owned-by-another-project";
+
+/** Raised when a project tries to write a task id that another project already owns. */
+export class TaskIdClaimOwnershipError extends Error {
+  readonly code = TASK_ID_CLAIM_OWNED_BY_ANOTHER_PROJECT;
+  readonly taskId: string;
+  readonly owningProjectId: string | null;
+  readonly requestingProjectId: string;
+  constructor(taskId: string, owningProjectId: string | null, requestingProjectId: string) {
+    super(
+      `${TASK_ID_CLAIM_OWNED_BY_ANOTHER_PROJECT}: task id "${taskId}" is claimed by project "${owningProjectId ?? "<unclaimed>"}" and cannot be written by project "${requestingProjectId}"`,
+    );
+    this.name = "TaskIdClaimOwnershipError";
+    this.taskId = taskId;
+    this.owningProjectId = owningProjectId;
+    this.requestingProjectId = requestingProjectId;
+  }
+}
+
+/**
+ * A bare task id resolved to live rows in more than one project partition, with nothing to choose between
+ * them. Named so an address surface can refuse honestly instead of returning an arbitrary card.
+ *
+ * @see readTaskRow
+ */
+export const TASK_ID_ADDRESS_AMBIGUOUS_ACROSS_PROJECTS = "task-id-ambiguous-across-projects";
+
+/*
+FNXC:TaskIdGlobalUniqueness 2026-11-08-10:47 (RUFU-320):
+The reported symptom was not the duplicate itself but the SILENT PICK: `fn task show RUFU-003` opened one
+of two live cards because the read that spans partitions returned `rows[0]`. New duplicates cannot be
+written (the DB-wide id claim refuses them) but migration 0096 deliberately never renumbers the ones that
+already exist, so an unpartitioned read still has an answer to give, and the honest answer is a refusal
+that names every holder. A store bound to a project never sees this: row-level security and the explicit
+partition filter leave exactly one candidate.
+*/
+export class TaskIdAddressAmbiguousError extends Error {
+  readonly code = TASK_ID_ADDRESS_AMBIGUOUS_ACROSS_PROJECTS;
+  readonly taskId: string;
+  readonly projectIds: string[];
+  constructor(taskId: string, projectIds: string[]) {
+    super(
+      `${TASK_ID_ADDRESS_AMBIGUOUS_ACROSS_PROJECTS}: task id "${taskId}" exists in ${projectIds.length} projects `
+      + `(${projectIds.join(", ")}); name the project instead of resolving the bare id`,
+    );
+    this.name = "TaskIdAddressAmbiguousError";
+    this.taskId = taskId;
+    this.projectIds = projectIds;
+  }
+}
+
+/**
+ * The partition the SESSION will stamp, read the same way `fusion_assign_project_id` reads it. Returns
+ * `""` when the session names no partition (admin/replica connections), which means "nothing to claim".
+ */
+async function readSessionOwnershipPartition(
+  handle: AsyncDataLayer["db"] | DbTransaction,
+): Promise<string> {
+  const rows = await handle.execute(sql.raw(
+    "SELECT coalesce(nullif(current_setting('fusion.project_id', true), ''), '') AS partition",
+  )) as unknown as Array<{ partition: string }>;
+  return rows[0]?.partition?.trim() ?? "";
+}
+
+/**
+ * Claim a task-id string for a project partition, in the caller's transaction.
+ *
+ * FNXC:TaskIdGlobalUniqueness 2026-11-08-09:19 (RUFU-320):
+ * `project.tasks` is keyed `(project_id, id)`, so the row table alone cannot stop two projects from
+ * holding `RUFU-003` at once — the reported state behind `fn task show RUFU-003` opening the wrong
+ * card. `central.global_task_id_claim` is keyed on the id string alone, so the first writer of a
+ * string wins DB-wide and a second project's write fails with a NAMED reason instead of silently
+ * creating a second card under the same address.
+ *
+ * Rules this seam owns:
+ *  - the claim is written in the SAME transaction as the task row, so a rolled-back create leaves no
+ *    half-consumed id behind;
+ *  - a re-claim by the OWNING project is a legal no-op (archive/restore, soft-deleted id reuse,
+ *    tombstone resurrection);
+ *  - a claim by a different project never overwrites: it raises, and the number itself is never
+ *    taken from its owner. Skipping past claimed numbers is the allocator's job (`async-allocator.ts`),
+ *    so an ordinary create never reaches this refusal at all.
+ *
+ * @param handle The transaction (or layer db) that writes the task row.
+ * @param projectId The writing partition as JavaScript knows it. When absent, the claim falls back to
+ *   the session's own `fusion.project_id`, which is the value the `fusion_assign_project_id` trigger
+ *   stamps onto the row; only a session that names NO partition at all writes unclaimed.
+ * @param taskId The id string being written.
+ */
+export async function claimTaskIdInTransaction(
+  handle: AsyncDataLayer["db"] | DbTransaction,
+  projectId: string | undefined,
+  taskId: string | null | undefined,
+): Promise<void> {
+  const id = taskId?.trim();
+  if (!id) return;
+  /*
+  FNXC:TaskIdGlobalUniqueness 2026-11-08-10:39 (RUFU-320):
+  The owner must be the partition the ROW will actually land in. A caller that leaves `projectId` unset
+  (a mid-flight unbind, or a store whose layer carries no id) still writes into the session's partition,
+  because `fusion_assign_project_id` rewrites a NULL project_id from the GUC. Claiming the
+  `__legacy_unscoped__` sentinel for such a write would accuse a project of stealing its own id, so the
+  session is asked instead. A session with no GUC at all (admin/replica mode) owns nothing it can prove,
+  and its rows stay unclaimed exactly like rows that predate this table.
+  */
+  const owner = projectId?.trim() || (await readSessionOwnershipPartition(handle));
+  if (!owner) return;
+  const inserted = await handle
+    .insert(schema.central.globalTaskIdClaim)
+    .values({ taskId: id, projectId: owner, createdAt: new Date().toISOString() })
+    .onConflictDoNothing({ target: schema.central.globalTaskIdClaim.taskId })
+    .returning({ taskId: schema.central.globalTaskIdClaim.taskId });
+  if (inserted.length > 0) return;
+  const rows = await handle
+    .select({ projectId: schema.central.globalTaskIdClaim.projectId })
+    .from(schema.central.globalTaskIdClaim)
+    .where(eq(schema.central.globalTaskIdClaim.taskId, id))
+    .limit(1);
+  const existingOwner = rows[0]?.projectId ?? null;
+  if (existingOwner === owner) return;
+  throw new TaskIdClaimOwnershipError(id, existingOwner, owner);
+}
+
+/**
  * FNXC:TaskStorePersistence 2026-06-24-13:10:
  * Non-destructive task insert (VAL-DATA-009). Create-class operations MUST use
  * this, not the upsert. A plain `INSERT` against a primary-key column raises a
@@ -372,7 +500,17 @@ export async function insertTaskRow(
   context: TaskPersistSerializationContext,
 ): Promise<void> {
   const values = buildTaskInsertValues(taskRecord, context, layer.projectId);
-  await layer.db.insert(schema.project.tasks).values(values as never);
+  /*
+  FNXC:TaskIdGlobalUniqueness 2026-11-08-09:19 (RUFU-320):
+  Row and claim commit or roll back together — one transaction, claim first, so a create that fails
+  on either write consumes nothing. The claim is taken BEFORE the row insert so a foreign-owned id
+  surfaces the named claim refusal rather than the row table's `(project_id, id)` unique violation,
+  which cannot see the other project's copy at all.
+  */
+  await layer.transactionImmediate(async (tx) => {
+    await claimTaskIdInTransaction(tx, layer.projectId, typeof values.id === "string" ? values.id : null);
+    await tx.insert(schema.project.tasks).values(values as never);
+  });
 }
 
 /**
@@ -387,6 +525,8 @@ export async function insertTaskRowInTransaction(
   projectId?: string,
 ): Promise<void> {
   const values = buildTaskInsertValues(taskRecord, context, projectId);
+  // FNXC:TaskIdGlobalUniqueness 2026-11-08-09:19 (RUFU-320): claim in the caller's transaction, see insertTaskRow.
+  await claimTaskIdInTransaction(tx, projectId, typeof values.id === "string" ? values.id : null);
   await tx.insert(schema.project.tasks).values(values as never);
 }
 
@@ -560,6 +700,19 @@ export async function readTaskRow(
     .select()
     .from(schema.project.tasks)
     .where(and(...conditions));
+  /*
+  FNXC:TaskIdGlobalUniqueness 2026-11-08-10:48 (RUFU-320):
+  With a partition filter the key `(project_id, id)` admits at most one row, so more than one candidate
+  means this read spanned projects -- and `rows[0]` would then be whichever copy the planner happened to
+  return first. That arbitrary pick was the reported failure (`fn task show RUFU-003` opened the wrong
+  card). Refuse by name instead; the caller either binds to a project or reconciles the duplicate.
+  */
+  if (!projectScope && rows.length > 1) {
+    throw new TaskIdAddressAmbiguousError(
+      id,
+      rows.map((row) => String((row as { projectId?: unknown }).projectId ?? "<unscoped>")).sort(),
+    );
+  }
   return rows[0];
 }
 
@@ -1031,6 +1184,14 @@ export async function upsertTaskRowInTransaction(
     if (key === "id" || key === "projectId") continue;
     updateValues[key] = value;
   }
+  /*
+  FNXC:TaskIdGlobalUniqueness 2026-11-08-09:19 (RUFU-320):
+  The upsert half of the same rule: a write that could materialise a row must hold its claim. For an
+  existing card the claim is the same-project no-op; for a resurrection it is the re-claim the owning
+  project is allowed; for a foreign id it refuses instead of filing a second card under a live
+  address.
+  */
+  await claimTaskIdInTransaction(tx, projectId, typeof values.id === "string" ? values.id : null);
   await tx
     .insert(schema.project.tasks)
     .values(values as never)
