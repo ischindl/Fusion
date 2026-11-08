@@ -291,8 +291,6 @@ export interface UseChatReturn {
    * null. Present only after a window widened by a content-search hit actually loaded that row.
    */
   matchedSearchMessageId: string | null;
-  /** RUFU-871 A.5: loaded row that carries the content-search match preview, or null. */
-  matchedSearchMessageId: string | null;
   loadMoreSessions: (status?: "active" | "archived") => Promise<void>;
   hasMoreSessions: boolean;
   hasMoreArchivedSessions: boolean;
