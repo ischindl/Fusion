@@ -231,7 +231,7 @@ import {
   resetHeartbeatErrorRecoveryMetadata,
   resolveErrorRecoveryLimit,
 } from "./agent-heartbeat.js";
-import { classifyForeignOnlyContamination, deriveTaskIdFromFusionBranch, inspectBranchConflict, listUniqueBranchCommits, taskWorktreeCheckoutIsClean } from "./execution/branch-conflicts.js";
+import { classifyForeignOnlyContamination, deriveTaskIdFromFusionBranch, inspectBranchConflict, listUniqueBranchCommits } from "./execution/branch-conflicts.js";
 import { preserveWorktreeChanges, preserveWorktreeChangesIncludingUntracked } from "./execution/worktree-change-preservation.js";
 import { createRunAuditor, generateSyntheticRunId, type DatabaseMutationType, type RunAuditor } from "./util/run-audit.js";
 import {
@@ -354,7 +354,7 @@ door cannot disagree about which repositories a card owes proof about — the di
 SANE-509 bug.
 */
 import { workspaceObligationRepositories } from "./merge/workspace-merge-readiness.js";
-import { measureAheadCommitCount } from "./worktree/worktree-backend.js";
+import { measureAheadCommitCount, taskWorktreeCheckoutIsClean } from "./worktree/worktree-backend.js";
 import { resolveWorkspaceRootMembership } from "./worktree/workspace-root-member.js";
 import { resolveBranchGroupMergeRouting } from "./merge/group-merge-coordinator.js";
 import type { OwnedLandedClassification } from "./merger.js";

@@ -1394,6 +1394,27 @@ export async function probeWorktreeRemovalContent(worktreePath: string): Promise
 }
 
 /*
+FNXC:OccupancyOnlyRelease 2026-11-08 (STAS-397):
+The one question the conflict doors ask about a live checkout — does it hold work that must be
+preserved before it is released? — now derives from `probeWorktreeRemovalContent` instead of running
+its own `git status --porcelain`. The helper used to live in `execution/branch-conflicts.ts` with a
+bare read of its own, and two command vectors over one tree is exactly how an already-merged checkout
+came to answer "clean" to the door and "uncommitted or ignored content present" to the removal gate in
+the same sweep. Every answer is unchanged: a clean or ignored-only tree is still free of occupancy,
+and a deliverable tree, an unreadable tree and an absent path all still fail closed. What changed is
+that all four answers come from one observation, so they cannot disagree again.
+It stays a named helper rather than four inline `classification === …` tests because three of those
+call sites ask the identical conjunction; RUFU-329's ban is on a boolean that re-decides a *removal*,
+and this function decides nothing — it reads one classification.
+*/
+export async function taskWorktreeCheckoutIsClean(worktreePath: string): Promise<boolean> {
+  const content = await probeWorktreeRemovalContent(worktreePath);
+  // An unreadable or absent tree proves no absence of work, so it is never reported as clean.
+  if (content.status !== "classified") return false;
+  return content.classification !== "deliverable";
+}
+
+/*
 FNXC:WorktreeCleanup 2026-10-09-13:10 (RUFU-329 — one seam decides, the other only reports):
 There is deliberately no "would this removal refuse?" boolean beside this guard. RUFU-278 shipped one for the
 pinned-worktree reclaim; RUFU-298 moved that caller onto `probeWorktreeRemovalContent`'s classification, which

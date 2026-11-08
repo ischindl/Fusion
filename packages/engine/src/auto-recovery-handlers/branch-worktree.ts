@@ -8,8 +8,8 @@ import {
   inspectBareBranchCollision,
   inspectBranchConflict,
   reanchorBranchToBase,
-  taskWorktreeCheckoutIsClean,
 } from "../execution/branch-conflicts.js";
+import { taskWorktreeCheckoutIsClean } from "../worktree/worktree-backend.js";
 import { recoverForeignOnlyContamination } from "../recovery/foreign-only-contamination.js";
 /*
 FNXC:BranchConflictRecovery 2026-09-13-02:50:

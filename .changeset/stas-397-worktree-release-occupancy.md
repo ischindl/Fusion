@@ -13,4 +13,8 @@ basename allowlist, the child-probed `FUSION_SCRATCH_REGENERABLE_CHILDREN` excep
 ignored content (proof is now metadata on the discard record, never a permission). The audit types
 `worktree:post-landing-ignored-content-discarded` and `worktree:removal-discarded-regenerable-content`
 are replaced by `worktree:removal-discarded-ignored-content`, which lists the discarded paths.
+The other cleanliness probe, `taskWorktreeCheckoutIsClean()`, no longer reads `git status` on its own —
+it derives from the same probe, so the four conflict doors and the release they lead to cannot answer
+differently about one tree. Its answers are unchanged: a deliverable, unreadable or absent checkout
+still fails closed.
 Deliverable, unreadable and project-root content still refuse, so no defensive sweep can destroy work.
