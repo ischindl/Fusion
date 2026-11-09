@@ -160,6 +160,11 @@ import {
   type LandedReviewReconcileResult,
 } from "@fusion/engine";
 import { buildBoardWorkflowsPayload, resolveBoardColumnFlags } from "./board-workflows.js";
+import {
+  boardWorkflowsRequestKey,
+  boardWorkflowsTtlMs,
+  createProjectListCoalescer,
+} from "./project-list-coalescer.js";
 import { resolveNativeStructurePreview } from "../native-structure-preview.js";
 import { isBackwardMoveBlockedByOpenPr, PR_OPEN_BLOCKS_MOVE_BACK_MESSAGE } from "./register-pull-requests-routes.js";
 import { allowsAutoMergeProcessing, computePlanApprovalFingerprint, isTaskAwaitingPlanning, isWorkspaceTask, resolveEffectiveAutoMerge, type RunAuditEventInput } from "@fusion/core";
@@ -1171,6 +1176,15 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
   } = deps;
   const TASK_DETAIL_ACTIVITY_LOG_LIMIT = taskDetailActivityLogLimit;
 
+  /*
+  FNXC:BoardWorkflowsCoalescing 2026-11-09-11:45 (RUFU-906):
+  One coalescer per registrar, exactly as `/projects/across-nodes` does (RUFU-905), so a second
+  `createApiRoutes` — a test, an embedded host — can never read another server's lane mapping. The TTL
+  comes from `FUSION_BOARD_WORKFLOWS_TTL_MS` (default 2 000 ms, clamped to one 5 s client poll, `0`
+  makes `run` a pass-through for a no-redeploy rollback).
+  */
+  const boardWorkflowsCoalescer = createProjectListCoalescer({ ttlMs: boardWorkflowsTtlMs() });
+
   /**
    * RUFU-259 Step 4: the payload every comment/steering write surface hands the delivery+wake helper.
    *
@@ -1723,7 +1737,12 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
   // task list payload stays byte-identical. Flag-OFF returns
   // { flagEnabled: false } and the client renders the legacy single-lane board.
   router.get("/tasks/board-workflows", async (req, res) => {
-    try {
+    /*
+    FNXC:BoardWorkflowsCoalescing 2026-11-09-11:45 (RUFU-906):
+    The computation is one function so the coalescer and the pass-through rollback share a body — there
+    is no second copy of this read to keep in step. Everything below is unchanged request logic.
+    */
+    const computeBoardWorkflows = async () => {
       const { store: scopedStore } = await getProjectContext(req);
       // FNXC:WorkflowColumns 2026-07-27-09:53 (U2 / R9): the flag-OFF
       // `{ flagEnabled: false }` short-circuit is deleted — unreachable behind a
@@ -1834,8 +1853,18 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
           ...requestedTaskIds,
         ])];
       }
-      const payload = await buildBoardWorkflowsPayload(scopedStore, taskIds, settings, workflowCatalog);
-      res.json(payload);
+      return await buildBoardWorkflowsPayload(scopedStore, taskIds, settings, workflowCatalog);
+    };
+    try {
+      /*
+      FNXC:BoardWorkflowsCoalescing 2026-11-09-11:45 (RUFU-906):
+      One computation per (principal, query) per TTL window replaces one per tab per poll. Eight tabs
+      open on one dashboard process poll this route every 5 s each, independently; with a computation
+      measured at up to 60 s, every later poll now joins the in-flight one instead of starting another
+      copy on the loop that is already choked. See `project-list-coalescer.ts` for the three rules this
+      relies on and `board-workflows-cost.test.ts` for what one computation actually costs.
+      */
+      res.json(await boardWorkflowsCoalescer.run(boardWorkflowsRequestKey(req), computeBoardWorkflows));
     } catch (err: unknown) {
       if (err instanceof ApiError) {
         throw err;

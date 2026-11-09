@@ -45,9 +45,19 @@ const MAX_ACROSS_NODES_ENTRIES = 64;
  * the staleness bound into a permanently stale board.
  */
 export function resolveAcrossNodesTtlMs(raw: string | undefined): number {
-  if (raw === undefined || raw.trim() === "") return DEFAULT_ACROSS_NODES_TTL_MS;
+  return parseTtlMs(raw, DEFAULT_ACROSS_NODES_TTL_MS);
+}
+
+/*
+FNXC:BoardWorkflowsCoalescing 2026-11-09-11:45 (RUFU-906):
+The parse/clamp is shared rather than copied, because the bound that makes a cached answer honest is the
+SAME bound for both routes: no coalesced dashboard read may be served staler than one client poll. The
+only thing that differs per route is the default and the env name.
+*/
+function parseTtlMs(raw: string | undefined, fallbackMs: number): number {
+  if (raw === undefined || raw.trim() === "") return fallbackMs;
   const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_ACROSS_NODES_TTL_MS;
+  if (!Number.isFinite(parsed) || parsed < 0) return fallbackMs;
   return Math.min(Math.floor(parsed), PROJECTS_POLL_INTERVAL_MS);
 }
 
@@ -249,4 +259,61 @@ export function requestScopingKey(req: KeyableRequest): string {
 /** Cache key: one entry per (authenticated principal, scoping params). */
 export function acrossNodesRequestKey(req: KeyableRequest): string {
   return `${requestPrincipalKey(req)}|${requestScopingKey(req)}`;
+}
+
+/*
+FNXC:BoardWorkflowsCoalescing 2026-11-09-11:45 (RUFU-906):
+`GET /api/tasks/board-workflows` is the other dashboard read that saturates this process, and it fails
+the same way for the same reason. Measured on the operator's production host on 2026-11-09 across 25
+projects: 1.95 / 2.43 / 4.07 / 4.79 / 9.34 / 24.7 / 35.6 / 57.3 / 59.5 s, three projects never answering
+inside a 60 s cap, and `proj_87bc5b3f35624449` (alfawise) not finishing in 120 s — while
+`pg_stat_activity` showed the DB's task queries parked on `wait_event = Client:ClientRead` (the database
+was IDLE, waiting for us) and the dashboard process held a steady 110 % CPU, i.e. one whole core. One
+loop, so every other tab queues behind it.
+
+It reuses this module rather than getting a second coalescer because the three rules that make it
+correct are already here and already tested: an expired entry is a genuine miss (UNKNOWN, never EMPTY),
+staleness is measured from COMPLETION, and an in-flight entry is joined however long it has been running
+— the last of these is what does the work here, since with a 60 s computation every poll from every tab
+arrives while one is already running.
+*/
+
+/** Environment knob for the board-workflows route. `0` disables coalescing entirely (no redeploy). */
+export const BOARD_WORKFLOWS_TTL_ENV_VAR = "FUSION_BOARD_WORKFLOWS_TTL_MS";
+
+/** Same default as the project list: two polls of slack, clamped to one poll. */
+const DEFAULT_BOARD_WORKFLOWS_TTL_MS = 2_000;
+
+/** Parse the board-workflows TTL. `0` is a real answer meaning "recompute per request". */
+export function resolveBoardWorkflowsTtlMs(raw: string | undefined): number {
+  return parseTtlMs(raw, DEFAULT_BOARD_WORKFLOWS_TTL_MS);
+}
+
+let currentBoardWorkflowsTtlMs = resolveBoardWorkflowsTtlMs(
+  typeof process !== "undefined" ? process.env[BOARD_WORKFLOWS_TTL_ENV_VAR] : undefined,
+);
+
+/** Test seam for the TTL; production never calls this. `0` restores per-request recompute. */
+export function setBoardWorkflowsTtlMsForTests(ms: number): void {
+  currentBoardWorkflowsTtlMs = Number.isFinite(ms) && ms >= 0 ? resolveBoardWorkflowsTtlMs(String(ms)) : 0;
+}
+
+/** The TTL currently in force for newly created board-workflows coalescers (0 = disabled). */
+export function boardWorkflowsTtlMs(): number {
+  return currentBoardWorkflowsTtlMs;
+}
+
+/**
+ * Cache key for one board-workflows request.
+ *
+ * FNXC:BoardWorkflowsCoalescing 2026-11-09-11:45 (RUFU-906):
+ * Identity is the SAME composed (principal, scoping params) string the project list uses — per-principal
+ * keying is not optional here, because project visibility is RLS-enforced and a shared payload would
+ * leak which workflows another principal's cards use. It is then digested, which the project list does
+ * not need: this route accepts up to 2 000 `taskIds`, so a raw key is a ~20 KB string held in the
+ * entry map, and retained state should not be sized by a query string. A digest of the full composed
+ * string is still exact identity — the key is only ever compared for equality, never decomposed.
+ */
+export function boardWorkflowsRequestKey(req: KeyableRequest): string {
+  return createHash("sha256").update(acrossNodesRequestKey(req)).digest("hex");
 }

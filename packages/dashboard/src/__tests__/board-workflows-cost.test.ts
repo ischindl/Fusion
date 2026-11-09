@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BUILTIN_CODING_WORKFLOW_IR, type WorkflowDefinition } from "@fusion/core";
+import { BUILTIN_CODING_WORKFLOW_IR, type WorkflowDefinition, type WorkflowSelectionCache } from "@fusion/core";
 import { buildBoardWorkflowsPayload } from "../routes/board-workflows.js";
 
 /*
@@ -70,12 +70,20 @@ function makeCardIds(count: number): string[] {
  * the per-card leg. Cards are spread across the catalog so the distinct-workflow count is realistic.
  */
 function makeBenchStore(cardCount: number, catalog: WorkflowDefinition[]) {
-  const calls = { selectionsAsync: 0, selectionAsync: 0, selectionSync: 0, workflowDefinition: 0 };
+  const calls = {
+    selectionsAsync: 0,
+    selectionAsync: 0,
+    selectionSync: 0,
+    workflowDefinition: 0,
+    /** The id list the ONE batched read was asked for — what a partly warm cache must shrink. */
+    selectionIds: [] as string[],
+  };
   const store = {
     getWorkflowSettingsProjectId: () => "proj_bench",
     getSettings: async () => ({ defaultWorkflowId: DEFAULT_WORKFLOW_ID }),
     getTaskWorkflowSelectionsAsync: async (taskIds: string[]) => {
       calls.selectionsAsync += 1;
+      calls.selectionIds = taskIds;
       const map = new Map<string, { workflowId: string; stepIds: string[] }>();
       for (const taskId of taskIds) {
         const index = Number(taskId.slice("RUFU-".length)) - 1;
@@ -192,6 +200,54 @@ describe("board-workflows payload — read shape (always-on, no timing)", () => 
     expect(large.calls.workflowDefinition).toBe(small.calls.workflowDefinition);
     expect(largePayload.workflows.map((w) => w.id).sort())
       .toEqual(smallPayload.workflows.map((w) => w.id).sort());
+  });
+
+  it("serves a caller that already resolved these cards without any selection read", async () => {
+    /*
+    FNXC:BoardWorkflowsCost 2026-11-09-11:35 (RUFU-906):
+    The seam half of the slice. Before it, `buildBoardWorkflowsPayload` owned its selection pass
+    entirely: a caller that had ALREADY resolved these ids — a board hydration pass, or the same card
+    set one poll later — could not hand what it had over, and every request re-read every id. The
+    caller-owned `WorkflowSelectionCache` is core's existing shape for exactly this, so the builder now
+    consumes it instead of re-deriving the fan-out. A warm cache must mean ZERO store reads.
+    */
+    const catalog = Array.from({ length: CATALOG_SIZE }, (_unused, index) => catalogEntry(index));
+    const ids = makeCardIds(200);
+    const warm: WorkflowSelectionCache = new Map();
+    for (const [index, taskId] of ids.entries()) {
+      warm.set(taskId, { workflowId: catalog[index % catalog.length]!.id, stepIds: [] });
+    }
+    const { store, calls } = makeBenchStore(200, catalog);
+    const payload = await buildBoardWorkflowsPayload(store, ids, undefined, catalog, warm);
+
+    expect(calls.selectionsAsync).toBe(0);
+    expect(calls.selectionSync).toBe(0);
+    // Warm must mean identical: the cache changes how the answer is obtained, never what it is.
+    const cold = makeBenchStore(200, catalog);
+    const coldPayload = await buildBoardWorkflowsPayload(cold.store, ids, undefined, catalog);
+    expect(payload.taskWorkflowIds).toEqual(coldPayload.taskWorkflowIds);
+    expect(cold.calls.selectionsAsync).toBe(1);
+  });
+
+  it("reads only the ids a partly warm cache is still missing", async () => {
+    /*
+    FNXC:BoardWorkflowsCost 2026-11-09-11:35 (RUFU-906):
+    Partial warmth is the common case — the route already resolved the board's current cards and the
+    newest Done page arrives as extra ids. The seam reads the gap, not the whole id list.
+    */
+    const catalog = Array.from({ length: CATALOG_SIZE }, (_unused, index) => catalogEntry(index));
+    const ids = makeCardIds(300);
+    const missing = ids.slice(250);
+    const warm: WorkflowSelectionCache = new Map();
+    for (const taskId of ids.slice(0, 250)) warm.set(taskId, { workflowId: DEFAULT_WORKFLOW_ID, stepIds: [] });
+    const { store, calls } = makeBenchStore(300, catalog);
+
+    await buildBoardWorkflowsPayload(store, ids, undefined, catalog, warm);
+
+    expect(calls.selectionsAsync).toBe(1);
+    // The read set is exactly the gap. Compared against the gap captured BEFORE the call, because the
+    // seam writes what it reads back into the same cache, so `warm.has(id)` is true for the new ids too.
+    expect([...calls.selectionIds].sort()).toEqual([...missing].sort());
   });
 
 });
