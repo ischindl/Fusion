@@ -1572,6 +1572,28 @@ export function SettingsModal({
   normalization logic. `showLoadingState` is false for post-reset refreshes so
   the whole modal doesn't flash back to the loading spinner.
   */
+  /*
+  FNXC:SettingsOpenLatency 2026-11-09-14:30 (RUFU-908):
+  This `Promise.all` is the render gate of Settings: `loading` only clears when both reads settle, and the
+  whole modal body is a spinner until then. Attributing the open cost measured on the operator's live host
+  (2026-11-09, loadavg 16-22, dashboard pid 3683522) across the three terms a lazily loaded surface has:
+  - CHUNK: not the term. `SettingsModal` pulls ~710 KB of chunks not already in the entry graph
+    (643,558 B for its own chunk + `ReportModal` 29,154 + `SecretsView` 15,804 + `AgentPermissionPolicyEditor`
+    10,134 + `PostMergeEvidenceStatus` 8,075 + 3 small), read from the built output in the live deploy, but
+    `prefetchSettingsModal()` in `AppModals.tsx` already warms that graph at idle, so it is off the click path.
+  - API: the dominant term. Medians over 20 interleaved GETs: `/api/settings/scopes` 1.78 s,
+    `/api/settings` 1.47 s, `/api/config` 1.33 s (the project-context floor both settings reads share),
+    `/api/health` 0.23 s. So this gate closes at the `scopes` number.
+  - WATERFALL: the fix. The two client reads are already parallel, so the chain was inside the handlers —
+    `scopes` issued its `workflow_settings` read only after the scoped-settings read settled (+0.43 s paired
+    per-round delta), and both settings readers awaited the one-boolean sync-passphrase `secrets` read only
+    after their own two reads settled. Each removed stage is a queue position, not CPU: the queries
+    themselves measured 15 ms and 14 ms against the database (13 ms baseline), on a pool capped at
+    `DEFAULT_POOL_MAX = 3`.
+  Per-section reads (`fetchModels`, `fetchBackups`, `fetchRemoteStatus`, git remotes, memory files) are
+  already gated on `activeSection`, and `fetchPlugins` / `fetchDashboardHealth` / `fetchSystemInfo` are not on
+  this gate, so none of them is on the click-to-content path.
+  */
   const refreshSettingsForm = useCallback((showLoadingState: boolean) => {
     // Load both merged and scoped settings to enable inheritance detection
     return Promise.all([fetchSettings(projectId), fetchSettingsByScope(projectId)])
