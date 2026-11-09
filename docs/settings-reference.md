@@ -123,6 +123,27 @@ Set it in the service environment (a systemd `Environment=` line, the launcher's
 
 Concurrency is untouched by design: the same number of lanes still run, they simply yield the CPU sooner. The operator-facing concurrency knobs remain `maxConcurrent` and `maxWorktrees` (both under **Project Settings** in this document) and the PTY pool ceiling `DEFAULT_CONCURRENCY_CEILING`; this variable moves none of them.
 
+<!--
+FNXC:ProjectListCoalescing 2026-11-09-10:18 (RUFU-905):
+Documents the rollback knob for the cross-project project-list coalescer. The measured driver: 8 dashboard
+tabs open for 8 projects against ONE dashboard process on ONE event loop, each polling
+`GET /api/projects/across-nodes` every 5 s, so the board's own loop took ~1.6 cross-project fan-outs per
+second while per-project reads measured 1.95 s to 59.5 s over 25 projects. The bound (one client poll) and
+the per-principal key rule live in `packages/dashboard/src/routes/project-list-coalescer.ts`.
+-->
+
+## Cross-project project-list cache environment variable
+
+| Environment variable | Default | Valid values | Resolution | Behavior |
+|---|---:|---|---|---|
+| `FUSION_PROJECTS_ACROSS_NODES_TTL_MS` | `2000` | Integer `0` through `5000` | Read from the dashboard process environment when the API routes are created; there is no settings row and no per-request override | How stale a computed cross-project project list may be. Concurrent identical requests always share one in-flight fan-out; this value additionally serves that same computed list to later requests for this window. `0` disables caching entirely — every request re-runs the fan-out, exactly the pre-coalescing behavior — so rollback needs a restart, not a redeploy. Values above `5000` are clamped to `5000`, never honored. |
+
+**Why the ceiling is 5000 ms.** The dashboard polls `GET /api/projects/across-nodes` every 5 seconds (`POLL_INTERVAL_MS` in `packages/dashboard/app/hooks/useProjects.ts`). A cached answer older than one poll would mean a tab waiting longer than it already believes the list is refreshed, so the staleness bound is capped at one client poll and no value can widen it — not the environment, not a test seam.
+
+**What is not cached.** Only the cross-project project list. Per-project board payloads, hydrated task rows, and every `/tasks*` read are untouched, and `GET /api/projects` is not cached at all. Entries are keyed by the authenticated principal (daemon bearer token, `fn_token` fallback, or remote-login session cookie — digested, never stored raw) plus the request's scoping parameters, so two principals can never receive each other's project list. An expired entry is a genuine miss that re-runs the read; a failed read is never retained.
+
+Set it in the service environment and restart Fusion — the value is read once when the API routes are constructed. An unset, blank, or unparseable value uses the `2000` default.
+
 ## Signal connector environment variables
 
 Command Center signal connectors are configured with process environment variables read by the dashboard/API server. These values are secrets and are never returned by the connectors-status endpoint; `GET /api/command-center/signals/connectors` reports only per-provider `configured` booleans.
