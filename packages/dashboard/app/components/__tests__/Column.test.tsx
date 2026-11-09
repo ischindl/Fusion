@@ -989,3 +989,118 @@ describe("Column header icon buttons stay on the canonical contract", () => {
     expect(container.querySelector(".column-menu")).toBeNull();
   });
 });
+
+/*
+FNXC:BoardLaneFailureNotEmpty 2026-11-09-14:38 (RUFU-907):
+SYMPTOM VERIFICATION. Reproduction of the reported failure: a cold project load issued 178 `/api/`
+calls and some lane reads rejected inside that burst, so the Done lane rendered `Done 0` for a project
+whose `GET /api/tasks/page?columns=done&limit=50` actually returned `tasks=50 total=100`. The lane body
+was byte-identical to a genuinely empty lane. These tests pin the invariant that a failed read and an
+empty result cannot produce the same DOM.
+*/
+describe("Column failed lane read is not an empty lane", () => {
+  const completeLane = { column: "done" as ColumnType, columnFlags: { complete: true } };
+
+  it("renders an unmistakable error state instead of the empty placeholder when the read failed", () => {
+    const { container } = render(
+      <Column
+        {...defaultProps}
+        {...completeLane}
+        tasks={[]}
+        serverPaginationError="request-failed"
+        onRetryServer={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+    expect(screen.getByTestId("column-load-error")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Tasks in this lane could not be loaded.");
+    expect(container.querySelector(".empty-column")).toBeNull();
+    expect(screen.queryByText("No tasks")).toBeNull();
+  });
+
+  it("cannot render the same DOM as a lane the project genuinely has nothing in", () => {
+    const failed = render(
+      <Column
+        {...defaultProps}
+        {...completeLane}
+        tasks={[]}
+        serverPaginationError="request-failed"
+        onRetryServer={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+    const failedHtml = failed.container.innerHTML;
+    const failedAlert = failed.container.querySelector("[role=alert]");
+    failed.unmount();
+
+    const empty = render(<Column {...defaultProps} {...completeLane} tasks={[]} />);
+    const emptyHtml = empty.container.innerHTML;
+
+    expect(failedHtml).not.toBe(emptyHtml);
+    expect(emptyHtml).toContain("empty-column");
+    expect(failedHtml).not.toContain("empty-column");
+    // The empty lane makes a positive claim with no alert; the failed lane alerts.
+    expect(empty.container.querySelector("[role=alert]")).toBeNull();
+    expect(failedAlert).not.toBeNull();
+  });
+
+  it("keeps the distinction across every failure code, including timeout", () => {
+    for (const code of ["timeout", "request-failed"] as const) {
+      const { container, unmount } = render(
+        <Column
+          {...defaultProps}
+          {...completeLane}
+          tasks={[]}
+          serverPaginationError={code}
+          onRetryServer={vi.fn().mockResolvedValue(undefined)}
+        />,
+      );
+      expect(container.querySelector(".empty-column")).toBeNull();
+      expect(screen.getByTestId("column-load-error")).toBeInTheDocument();
+      unmount();
+    }
+  });
+
+  it("replaces the worktree-grouped empty placeholder too, so no grouping mode escapes the rule", () => {
+    const { container } = render(
+      <Column
+        {...defaultProps}
+        column={"in-progress" as ColumnType}
+        showWorktreeGrouping
+        tasks={[]}
+        serverPaginationError="request-failed"
+        onRetryServer={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+    expect(container.querySelector(".empty-column")).toBeNull();
+    expect(screen.getByTestId("column-load-error")).toBeInTheDocument();
+  });
+
+  it("re-attempts the failed lane read from the error state", async () => {
+    const onRetryServer = vi.fn().mockResolvedValue(undefined);
+    render(
+      <Column
+        {...defaultProps}
+        {...completeLane}
+        tasks={[]}
+        serverPaginationError="request-failed"
+        onRetryServer={onRetryServer}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(onRetryServer).toHaveBeenCalledOnce());
+  });
+
+  it("does not double-report: with rows already on screen the older-pages footer keeps its own copy", () => {
+    render(
+      <Column
+        {...defaultProps}
+        {...completeLane}
+        tasks={[makeTask("KB-001")]}
+        serverPaginationError="request-failed"
+        onRetryServer={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+    expect(screen.getByTestId("task-KB-001")).toBeInTheDocument();
+    expect(screen.getByText("Older tasks could not be loaded.")).toBeInTheDocument();
+    expect(screen.queryByTestId("column-load-error")).toBeNull();
+  });
+});

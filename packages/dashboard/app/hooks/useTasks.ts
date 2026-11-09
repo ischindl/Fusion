@@ -15,6 +15,13 @@ import { clearCache, readCache, readCacheSavedAt, SWR_CACHE_KEYS, SWR_TASKS_MAX_
 import { pushTrace } from "../utils/dashboardTraceBuffer";
 import { recordResumeEvent } from "../utils/resumeInstrumentation";
 import { isLikelyTabSuspensionError } from "./visibilitySuspension";
+/*
+FNXC:BoardLaneFailureNotEmpty 2026-11-09-14:38 (RUFU-907):
+One retry ladder, imported rather than re-invented, per AGENTS.md "Reuse Components, Design Tokens,
+and Systems (No Drift)". The board's own failed refresh previously had NO retry owner at all: it set
+`lastRefreshErrorAt`, which has no production consumer, so the operator's only recovery was a reload.
+*/
+import { DEFAULT_RESYNC_RETRY_DELAYS_MS } from "./resyncRetry";
 import { isIntakeColumnRole, isHoldColumnRole, type ColumnRoleFlags } from "../utils/columnRoles";
 import { isForeignTaskEvent, readTaskEventProjectId, stripTaskEventProjectId } from "../utils/taskEventProjectScope";
 
@@ -1083,6 +1090,45 @@ export function useTasks(options?: UseTasksOptions) {
     }
   }, [abortPaginationOwners, projectId]);
   refreshTasksRef.current = refreshTasks;
+
+  /*
+  FNXC:BoardLaneFailureNotEmpty 2026-11-09-14:38 (RUFU-907):
+  A failed board refresh must not be terminal.
+
+  MEASURED SYMPTOM. A cold project load issued 178 `/api/` calls and accumulated 72,5 s of API time;
+  during that burst some lane reads rejected, and the board rendered a lane that looked exactly like a
+  project with nothing in it (`Done 0`) while `GET /api/tasks/page?columns=done&limit=50` for the same
+  project returned `tasks=50 total=100`. The `Retry` affordance was on screen and nothing re-attempted:
+  the failure path set `lastRefreshErrorAt`, which no production surface consumes.
+
+  WHY THE RETRY IS BOUNDED AND OWNED HERE. The refresh's own catch never rethrows — it resolves after
+  recording the error — so the ladder cannot key off a rejected promise; `lastRefreshErrorAt` is the
+  one signal that a refresh actually failed and reached the server (the non-server-reached early
+  return above deliberately leaves it alone for a suspension/offline rejection, which has its own
+  resume-signal owner). Advancing off the timestamp means each distinct failure gets at most one retry
+  per rung, a success clears the timestamp and re-arms the whole ladder, and a persistently broken
+  server stops at the end of the rung list instead of hammering — the same shape `resyncRetry` already
+  commits to for SSE resync handlers, so the delay vocabulary is shared, not copied.
+
+  The retry re-runs a PLAIN refresh (no `clearOnError`): by construction this path already has an
+  on-screen board or a retained snapshot to defend, and blanking it again is the defect being fixed.
+  */
+  const boardRefreshRetryRungRef = useRef(0);
+  useEffect(() => {
+    if (lastRefreshErrorAt === null) {
+      boardRefreshRetryRungRef.current = 0;
+      return;
+    }
+    const rung = boardRefreshRetryRungRef.current;
+    if (rung >= DEFAULT_RESYNC_RETRY_DELAYS_MS.length) {
+      return;
+    }
+    boardRefreshRetryRungRef.current = rung + 1;
+    const timer = window.setTimeout(() => {
+      void refreshTasksRef.current?.();
+    }, DEFAULT_RESYNC_RETRY_DELAYS_MS[rung]!);
+    return () => window.clearTimeout(timer);
+  }, [lastRefreshErrorAt]);
 
   /*
   FNXC:DashboardResume 2026-08-05-18:00:
