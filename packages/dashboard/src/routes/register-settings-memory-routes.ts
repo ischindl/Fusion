@@ -20,8 +20,8 @@ import {
   getMemoryBackendCapabilities,
   importSettings,
   installQmd,
-  isGhAuthenticated,
-  isGhAvailable,
+  isGhAuthenticatedAsync,
+  isGhAvailableAsync,
   isQmdAvailable,
   listMemoryBackendTypes,
   listProjectMemoryFiles,
@@ -605,7 +605,23 @@ export function registerSettingsMemoryRoutes(ctx: ApiRoutesContext, deps: Settin
     try {
       const { store: scopedStore } = await getProjectContext(req);
       const settings = await scopedStore.getSettingsFast();
-      const prAuthAvailable = (isGhAvailable() && isGhAuthenticated()) || Boolean(githubToken);
+      /*
+      FNXC:GhProbeShared 2026-11-09-15:13 (RUFU-909):
+      This line called the SYNC `isGhAvailable()` / `isGhAuthenticated()` pair, each of which is an
+      `execFileSync` on a 60 s TTL cache with NO single-flight. `gh auth status` is a network
+      round trip to GitHub — measured 655 ms on this host — and `execFileSync` parks the whole
+      event loop for its duration, so every other in-flight request in the process paid it too.
+      RUFU-871 killed this exact shape in the usage route (`spawn @ (native)` read 59.9 % of all
+      CPU in a 15 s profile of the live process) and shipped the async twins as the single owner of
+      the question; this route was simply never converted. The twins read and fill the SAME cache
+      entries, so there is still exactly one TTL for the probe.
+
+      The `|| Boolean(githubToken)` short-circuit is ordered first because a server-configured
+      token makes the answer `true` no matter what `gh` says — the probe's result cannot change the
+      response, so paying a spawn for it is pure waste. Byte-identical output either way.
+      */
+      const prAuthAvailable = Boolean(githubToken)
+        || ((await isGhAvailableAsync()) && (await isGhAuthenticatedAsync()));
       const trackingAuthResolution = resolveGithubTrackingAuth({
         projectSettings: {
           githubAuthMode: settings.githubAuthMode,
