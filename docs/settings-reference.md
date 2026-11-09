@@ -140,9 +140,28 @@ the per-principal key rule live in `packages/dashboard/src/routes/project-list-c
 
 **Why the ceiling is 5000 ms.** The dashboard polls `GET /api/projects/across-nodes` every 5 seconds (`POLL_INTERVAL_MS` in `packages/dashboard/app/hooks/useProjects.ts`). A cached answer older than one poll would mean a tab waiting longer than it already believes the list is refreshed, so the staleness bound is capped at one client poll and no value can widen it — not the environment, not a test seam.
 
-**What is not cached.** Only the cross-project project list. Per-project board payloads, hydrated task rows, and every `/tasks*` read are untouched, and `GET /api/projects` is not cached at all. Entries are keyed by the authenticated principal (daemon bearer token, `fn_token` fallback, or remote-login session cookie — digested, never stored raw) plus the request's scoping parameters, so two principals can never receive each other's project list. An expired entry is a genuine miss that re-runs the read; a failed read is never retained.
+**What is not cached.** Only the cross-project project list. Hydrated task rows and every `/tasks*` read except the one named in the next section are untouched, and `GET /api/projects` is not cached at all. Entries are keyed by the authenticated principal (daemon bearer token, `fn_token` fallback, or remote-login session cookie — digested, never stored raw) plus the request's scoping parameters, so two principals can never receive each other's project list. An expired entry is a genuine miss that re-runs the read; a failed read is never retained.
 
 Set it in the service environment and restart Fusion — the value is read once when the API routes are constructed. An unset, blank, or unparseable value uses the `2000` default.
+
+## Board-workflows cache environment variable
+
+<!--
+FNXC:BoardWorkflowsCoalescing 2026-11-09-11:45 (RUFU-906):
+Measured on the operator's production host: per-project latency of this one route was 1.95 / 2.43 /
+4.07 / 4.79 / 9.34 / 24.7 / 35.6 / 57.3 / 59.5 s across 25 projects, with three projects never
+answering inside a 60 s cap. `pg_stat_activity` showed the database's own task queries parked on
+`wait_event = Client:ClientRead` — idle, waiting for us — while the dashboard process held a steady
+110% CPU, i.e. one whole core. One loop, so every other UI read queues behind it.
+-->
+
+| Environment variable | Default | Valid values | Resolution | Behavior |
+|---|---:|---|---|---|
+| `FUSION_BOARD_WORKFLOWS_TTL_MS` | `2000` | Integer `0` through `5000` | Read from the dashboard process environment when the API routes are created; there is no settings row and no per-request override | How stale a computed `GET /api/tasks/board-workflows` payload may be. Concurrent identical requests always share one in-flight computation — this is the clause that matters, because the underlying read measured up to 60 s and so outlives any TTL; this value additionally serves that same payload to later requests for this window. `0` disables coalescing entirely — every request re-runs the read, exactly the pre-coalescing behavior — so rollback needs a restart, not a redeploy. Values above `5000` are clamped to `5000`, never honored. |
+
+**Why the ceiling is 5000 ms.** Same bound as the project list above: no coalesced dashboard read may be served staler than one client poll, and `5000` ms is that poll. A card's lane is derived from its workflow selection, so a cached payload can show a card one lane behind for up to this window; the entry is keyed per authenticated principal, so a card is never misplaced across credentials, and an expired entry always recomputes rather than serving a stale lane mapping.
+
+**What this cache does not cover.** Per-card workflow selections are resolved inside one computation through core's shared `prefetchWorkflowSelections` seam and the cache is request-scoped, never process-scoped: the epoch that would invalidate a long-lived selection cache is a process-local counter and cannot see a selection written by another process, so an unbounded lane mapping is avoided by construction. Everything else about the board — `GET /api/tasks`, task detail, Done pagination — is uncached.
 
 ## Signal connector environment variables
 

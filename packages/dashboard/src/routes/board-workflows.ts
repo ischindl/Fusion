@@ -28,6 +28,7 @@ import {
   resolveAllowedColumns,
   resolveColumnFlags,
   resolveWorkflowIrById,
+  prefetchWorkflowSelections,
   type Settings,
   type TaskStore,
   type TraitFlags,
@@ -35,6 +36,7 @@ import {
   type WorkflowIrV2,
   type WorkflowIrColumn,
   type WorkflowFieldDefinition,
+  type WorkflowSelectionCache,
 } from "@fusion/core";
 
 /** A workflow-defined custom task field as the board client needs it (U13/KTD-14).
@@ -327,6 +329,22 @@ export async function buildBoardWorkflowsPayload(
   per-workflow reads removable: these rows already describe every workflow they list.
   */
   workflowCatalog?: readonly WorkflowDefinition[],
+  /*
+  FNXC:BoardWorkflowsCost 2026-11-09-11:35 (RUFU-906):
+  A caller-owned workflow-selection pass cache — the same `WorkflowSelectionCache` every cache-owning
+  read pass in `@fusion/core` already threads (`listTasks`, `resolveWorkflowIrForTask`, the hold-release
+  sweep). Before this the builder owned its selection pass entirely, so a caller that had ALREADY
+  resolved these cards could not hand what it had over and every request re-read every id.
+
+  It is request-scoped by design, not process-scoped. `EpochedWorkflowSelectionCache` invalidates on
+  `workflowDefinitionEpoch()`/`workflowSelectionEpoch()`, which `store.ts` keeps as process-local
+  instance counters — a selection written by another process (an `fn` CLI planning a card, a second
+  engine) never moves them. Tolerable for a scheduler pass that re-runs in seconds; for the lane a card
+  renders under, an invalidation policy with no clock could pin a card in the wrong lane indefinitely.
+  Cross-request reuse therefore lives at the route, where the coalescer bounds staleness by a TTL an
+  operator can name (`FUSION_BOARD_WORKFLOWS_TTL_MS`) instead of by an epoch that can fail to move.
+  */
+  selectionCache?: WorkflowSelectionCache,
 ): Promise<BoardWorkflowsPayload> {
   /*
   FNXC:WorkflowColumns 2026-07-27-09:50 (U2 / R9):
@@ -369,64 +387,58 @@ export async function buildBoardWorkflowsPayload(
   That serial fan-out — amplified by GC pressure under heap saturation — is what
   made the board look unable to load at all.
 
-  `getTaskWorkflowSelectionsAsync` already resolves every id in a single
-  `inArray` query and canonicalizes retired builtin ids identically to the
-  singular reader, and `workflow-ir-resolver` uses the same batched-then-singles
-  shape, so it is reused rather than re-derived. Stores predating the batched
-  reader (and partial test stores) keep the per-task path. Ids absent from the
-  batch fall back to the effective default exactly as before, and a failed batch
-  degrades every card to the default instead of failing the board load.
+  FNXC:BoardWorkflowsCost 2026-11-09-11:35 (RUFU-906):
+  The per-card resolution now runs through core's own `prefetchWorkflowSelections` seam instead of a
+  dashboard-local copy of it. That seam is what every other multi-row read pass already uses
+  (`listTasks` hydration, `resolveWorkflowIrForTask`, the hold-release sweep): one `inArray` batch fills
+  the caller-owned cache, a card with NO selection row is cached as `undefined` — a cached absence is
+  what stops the N+1 — and ids already in the cache are not read again. After the prefetch the per-card
+  leg is a `Map.get` with zero awaits, the same property `createCachedWorkflowIrReader` exists for.
+
+  Measured at production shape (`board-workflows-cost.test.ts`, `FUSION_BOARD_WORKFLOWS_BENCH=1`): the
+  whole payload builder costs 8.07 / 0.67 / 0.53 us per card at 100 / 1 000 / 5 000 cards — 2.6 ms total
+  for 5 000 cards — with ONE batched selection read and ZERO per-workflow definition reads at every
+  size. Per-card resolution was already flat and is NOT what saturated the loop; request repetition
+  across 8 dashboard tabs and the whole-table id enumeration in front of this function are. That
+  measurement is why this slice reuses the seam rather than inventing a per-card fast path.
+
+  Zero ids still means zero selections to resolve (`scope=lanes`): the seam returns
+  `{ batched: 0, singles: 0 }` before touching the store, so no `IN ()` over an empty list is issued.
+  A failed batch or a store predating the batched reader returns `batched: 0, singles: N` and keeps the
+  pre-existing per-card fallback below; ids absent from the batch fall back to the effective default
+  exactly as before, so a degraded read degrades CARDS to the default rather than failing the board load.
   */
-  let batchedSelections: Map<string, { workflowId: string }> | undefined;
-  /*
-  FNXC:BoardBootRequestSet 2026-11-08-05:05 (RUFU-493):
-  Zero ids means zero selections to resolve, so the batched read is skipped rather than issued as an
-  `IN ()` over an empty list. This is what makes a lane-only request (`?scope=lanes`, which enumerates no
-  card) spend no task read at all instead of one ceremonial one.
-  */
-  if (store.getTaskWorkflowSelectionsAsync && taskIds.length > 0) {
-    try {
-      batchedSelections = await store.getTaskWorkflowSelectionsAsync(taskIds);
-    } catch {
-      batchedSelections = undefined;
-    }
-  }
-  /*
-  FNXC:BoardLoad 2026-10-06-18:55 (RUFU-585):
-  The degenerate branch awaited ONE selection read per card inside the loop, so a
-  board of N cards paid N serial round-trips on the request path. Characterized
-  against a counting store: 120 cards with no batched reader produced 120 awaited
-  selection reads. The batched reader is still preferred whenever the store
-  exposes it (that path stays exactly one query); this change only removes the
-  serial fan-out from the fallback, so an older/partial store degrades by read
-  COUNT, never by serial LATENCY.
-  */
-  if (batchedSelections) {
-    for (const taskId of taskIds) {
-      const workflowId = batchedSelections.get(taskId)?.workflowId ?? defaultWorkflowId;
-      taskWorkflowIds[taskId] = workflowId;
-      referenced.add(workflowId);
-    }
-  } else {
-    const resolvedWorkflowIds = await mapWithLimit(
-      taskIds,
-      SELECTION_READ_CONCURRENCY,
-      async (taskId): Promise<string> => {
-        try {
-          const selection = store.getTaskWorkflowSelectionAsync
-            ? await store.getTaskWorkflowSelectionAsync(taskId)
-            : store.getTaskWorkflowSelection(taskId);
-          return selection?.workflowId || defaultWorkflowId;
-        } catch {
-          return defaultWorkflowId;
-        }
-      },
-    );
-    taskIds.forEach((taskId, index) => {
-      const workflowId = resolvedWorkflowIds[index] ?? defaultWorkflowId;
-      taskWorkflowIds[taskId] = workflowId;
-      referenced.add(workflowId);
+  const passSelections: WorkflowSelectionCache = selectionCache ?? new Map();
+  const selectionReads = await prefetchWorkflowSelections(store, taskIds, passSelections);
+  if (selectionReads.batched === 0 && selectionReads.singles > 0) {
+    /*
+    FNXC:BoardLoad 2026-10-06-18:55 (RUFU-585):
+    The degenerate branch awaited ONE selection read per card inside the loop, so a
+    board of N cards paid N serial round-trips on the request path. Characterized
+    against a counting store: 120 cards with no batched reader produced 120 awaited
+    selection reads. The batched reader is still preferred whenever the store
+    exposes it (that path stays exactly one query); this change only removes the
+    serial fan-out from the fallback, so an older/partial store degrades by read
+    COUNT, never by serial LATENCY.
+    */
+    await mapWithLimit(taskIds, SELECTION_READ_CONCURRENCY, async (taskId): Promise<void> => {
+      if (passSelections.has(taskId)) return;
+      try {
+        const selection = store.getTaskWorkflowSelectionAsync
+          ? await store.getTaskWorkflowSelectionAsync(taskId)
+          : store.getTaskWorkflowSelection(taskId);
+        passSelections.set(taskId, selection ? { workflowId: selection.workflowId, stepIds: [] } : undefined);
+      } catch {
+        // An unreadable selection resolves to the effective default, as a failed batch always has.
+        passSelections.set(taskId, undefined);
+      }
     });
+  }
+
+  for (const taskId of taskIds) {
+    const workflowId = passSelections.get(taskId)?.workflowId ?? defaultWorkflowId;
+    taskWorkflowIds[taskId] = workflowId;
+    referenced.add(workflowId);
   }
 
   // The effective default is always describable so a no-task board still
