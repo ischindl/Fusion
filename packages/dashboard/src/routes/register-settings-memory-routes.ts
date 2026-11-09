@@ -2152,14 +2152,36 @@ export function registerSettingsMemoryRoutes(ctx: ApiRoutesContext, deps: Settin
    * GET /api/settings/scopes
    * Returns settings separated by scope: { global, project, workflowSettings }.
    * Useful for the UI to show which scope each setting comes from.
+   *
+   * FNXC:SettingsOpenLatency 2026-11-09-14:30 (RUFU-908):
+   * This route is the render gate for the Settings modal. `refreshSettingsForm` awaits
+   * `Promise.all([fetchSettings, fetchSettingsByScope])` and the whole form body stays a spinner until both
+   * land, so this handler's own critical path IS the operator-perceived Settings open time. Measured on the
+   * operator's production host 2026-11-09 (GET-only against the live :4040 daemon, 20 interleaved rounds,
+   * loadavg 16-22, dashboard pid 3683522 aged 1 h 27 m): `/api/settings/scopes` median 1.78 s against
+   * `/api/settings` median 1.47 s — a paired per-round delta of +0.43 s. That delta was not payload size
+   * (30 KB vs 22 KB); it was a SECOND, independent `workflow_settings` read that ran strictly after the
+   * settings read had already settled, on a pool capped at `DEFAULT_POOL_MAX = 3` where every queued round
+   * trip is visible to the client.
+   *
+   * The two reads are independent — the workflow row set is neither an input to nor a derivation of the
+   * scoped settings — so they start together. Response body, key order, and which error a failing request
+   * reports are all unchanged: `Promise.allSettled` plus an ordered rethrow reproduces the old precedence
+   * exactly (project-context error, then the settings error, then the workflow-settings error) instead of
+   * letting `Promise.all` surface whichever rejection happened to settle first.
    */
   router.get("/settings/scopes", async (req, res) => {
     try {
       const { store: scopedStore } = await getProjectContext(req);
-      const scopes = await scopedStore.getSettingsByScopeFast();
+      const [scopesResult, workflowSettingsResult] = await Promise.allSettled([
+        scopedStore.getSettingsByScopeFast(),
+        scopedStore.listWorkflowSettingValuesForProject(),
+      ]);
+      if (scopesResult.status === "rejected") throw scopesResult.reason;
+      if (workflowSettingsResult.status === "rejected") throw workflowSettingsResult.reason;
       res.json({
-        ...scopes,
-        workflowSettings: await scopedStore.listWorkflowSettingValuesForProject(),
+        ...scopesResult.value,
+        workflowSettings: workflowSettingsResult.value,
       });
     } catch (err: unknown) {
       if (err instanceof ApiError) {
