@@ -46,6 +46,17 @@ export type {
 } from "./retention-sampler.js";
 
 export { createDomainSampler, defaultPgStatsReader, defaultPoolStatsReader } from "./domain-sampler.js";
+
+export {
+  createServedProjectStoreRegistry,
+  createDashboardDomainRegistry,
+  type ServedProjectStore,
+  type ServedProjectStoreRegistryInit,
+  type ServedProjectEngineManager,
+  type DashboardDomainRegistryDeps,
+  type DefaultProjectIdResolver,
+} from "./served-project-stores.js";
+
 export type {
   DomainSampler,
   DomainSamplerInit,

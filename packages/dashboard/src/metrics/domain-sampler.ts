@@ -249,7 +249,18 @@ function defaultTimers(): DomainSamplerInit["timers"] {
   };
 }
 
-/** Default registry: the dashboard's already-open project-store cache. */
+/*
+FNXC:MetricsStoreFanOut 2026-11-09-18:19 (RUFU-911):
+This default registry is the line that reported ONE project where the operator could see 25.
+`storeCache` is the dashboard's SECONDARY project-store cache: it holds only projects that some
+project-scoped route happened to open. It never holds the default in-process store (by design) and
+never holds an engine-manager-owned store, so a sampler built on this registry alone sees a strictly
+smaller fleet than the dashboard serves, and it reports the projects it cannot see as ABSENT rather
+than as unknown. That is how `projects_total` came to read 1 against 25 visible projects while every
+agent gauge but one disappeared. The server now injects the union of every already-open store (see
+`createServedProjectStoreRegistry` in `server.ts`); this default remains for standalone/test
+constructions and for a headless boot with no engine manager.
+*/
 function defaultRegistry(): RegisteredStoreRegistry {
   return () => listRegisteredProjectStores() as Array<{ projectId: string; store: unknown }>;
 }
@@ -291,9 +302,20 @@ async function defaultListTasks(store: unknown): Promise<SlimTaskLike[]> {
  * privilege-fenced PG, or pool error resolves `null` so the sampler keeps the last-known rate
  * instead of throwing.
  */
-export function defaultPgStatsReader(): PgStatsReader {
+/*
+FNXC:MetricsStoreFanOut 2026-11-09-18:19 (RUFU-911):
+The PG-rate probe carried the SAME narrow binding as the domain fan-out, which is why
+`fusion_domain_postgres_queries_per_second` sat at exactly 0 while the database was provably busy:
+it picked the first store out of `listRegisteredProjectStores()`, found none, and resolved `null`
+forever, leaving the gauge registered and pinned at its initial 0. It now probes through the
+sampler's OWN registry, so the union the server injects is the set it reads. An injected
+`pgStatsReader` still wins.
+*/
+export function defaultPgStatsReader(
+  registry: RegisteredStoreRegistry = defaultRegistry(),
+): PgStatsReader {
   return async (): Promise<PgStats | null> => {
-    const stores = listRegisteredProjectStores();
+    const stores = registry();
     for (const { store } of stores) {
       const layer = (store as { getAsyncLayer?: () => { db: { execute: (q: unknown) => Promise<unknown[]> } } | null }).getAsyncLayer?.();
       if (!layer) continue;
@@ -368,7 +390,7 @@ export function createDomainSampler(init: DomainSamplerInit = {}): DomainSampler
   const registry = init.registeredStores ?? defaultRegistry();
   const countAgents = init.countAgentsInStore ?? defaultCountAgents;
   const listTasks = init.listTasksInStore ?? defaultListTasks;
-  const pgReader = init.pgStatsReader ?? defaultPgStatsReader();
+  const pgReader = init.pgStatsReader ?? defaultPgStatsReader(registry);
   const poolReader = init.poolStatsReader ?? defaultPoolStatsReader();
   const tick = { pgMs: init.tick?.pgMs ?? 5000, domainMs: init.tick?.domainMs ?? 5000 };
   const timers = init.timers ?? defaultTimers();
