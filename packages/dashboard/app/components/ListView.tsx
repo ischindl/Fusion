@@ -2500,9 +2500,24 @@ export function ListView({
             composers; a second Quick Entry inside the list competed with them for the same project-scoped draft.
             */}
         {filteredCount === 0 ? (
-          <div className="list-empty">
-            {searchQuery ? t("listView.noTasksMatch", "No tasks match your filter") : t("listView.noTasksYet", "No tasks yet")}
-          </div>
+          /*
+          FNXC:BoardLaneFailureNotEmpty 2026-11-09-14:38 (RUFU-907):
+          The list surface has the same failure as the board columns: a rejected first-page read rendered
+          `No tasks yet`, which is a claim about the project, not about the request. `currentTasksPaginationError`
+          is the list-wide signal, so the whole-list empty state is the only place it can be honoured
+          honestly — a per-section empty stays untouched, because a list-wide failure cannot be attributed
+          to one column's empty body.
+          */
+          currentTasksPaginationError ? (
+            <div className="list-load-error" role="alert" data-testid="list-load-error">
+              <span>{t("listView.loadError", "Tasks could not be loaded.")}</span>
+              <button type="button" className="btn btn-sm" onClick={() => void onRetryCurrentTasks?.()}>{t("common.retry", "Retry")}</button>
+            </div>
+          ) : (
+            <div className="list-empty">
+              {searchQuery ? t("listView.noTasksMatch", "No tasks match your filter") : t("listView.noTasksYet", "No tasks yet")}
+            </div>
+          )
         ) : useSinglePaneList ? (
           <div className="list-cards">
             <div aria-hidden="true" className="list-virtual-spacer" style={{ height: virtualList.topSpacerHeight }} />
@@ -3120,7 +3135,7 @@ export function ListView({
             </tbody>
           </table>
         )}
-          {(currentTasksHasMore || currentTasksPaginationError) ? (
+          {(currentTasksHasMore || (currentTasksPaginationError && filteredCount > 0)) ? (
             <div className="list-pagination-footer" ref={currentTasksHasMore ? autoPagination.sentinelRef : undefined} role="status" aria-live="polite" data-testid="list-auto-pagination-sentinel">
               {currentTasksLoadingMore ? t("column.loadMoreCompletedLoading", "Loading…") : null}
               {currentTasksPaginationError ? (

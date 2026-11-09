@@ -322,6 +322,38 @@ interface ColumnProps {
   onOpenHistory?: () => void;
 }
 
+/*
+FNXC:BoardLaneFailureNotEmpty 2026-11-09-14:38 (RUFU-907):
+A lane whose read FAILED must not render the lane's EMPTY markup.
+
+MEASURED SYMPTOM. A cold project load issued 178 `/api/` calls (72,5 s of accumulated API time); some
+lane reads rejected inside that burst and the board showed `Done 0` for a project whose
+`GET /api/tasks/page?columns=done&limit=50` answered `tasks=50 total=100`. The lane body rendered
+`<div class="empty-column">No tasks</div>` — byte-identical to a lane the project genuinely has nothing
+in — so the only contradiction was a small footer line about "Older tasks", whose copy names pagination
+rather than the first page, and whose Retry had no automatic partner.
+
+The invariant: an empty result and an unknown result are different claims, and the DOM must say which
+one it is. This is `TaskLaneCache`'s "a miss is UNKNOWN, never EMPTY" rule at the render seam.
+
+Authoring note: a lowercase render FUNCTION, not a component declared in here — a nested component
+definition would be a new element type on every Column render and would remount the Retry button
+(AGENTS.md "Never Declare A Component Inside Another Component").
+*/
+function renderLaneLoadFailure(
+  t: (key: string, fallback: string) => string,
+  onRetryServer: (() => Promise<void>) | undefined,
+) {
+  return (
+    <div className="column-load-error" role="alert" data-testid="column-load-error">
+      <span>{t("column.loadError", "Tasks in this lane could not be loaded.")}</span>
+      <UiButton type="button" className="btn btn-sm" onClick={() => void onRetryServer?.()}>
+        {t("common.retry", "Retry")}
+      </UiButton>
+    </div>
+  );
+}
+
 function ColumnComponent({ column, tasks, projectId, maxWorktrees, showWorktreeGrouping, onOpenHistory, onMoveTask, onBoostTask, onPauseTask, onUnpauseTask, onResetTask, onDuplicateTask, onMergeTask, onOpenDetail, onRefinementCreated, onOpenGroupModal, addToast, onQuickCreate, autoMerge, mergeStrategy = "direct", globalPaused, onUpdateTask, onRetryTask, onOpenChatWithPrefill, onRevertTask, onRestoreRevertTask, onDeleteTask, totalTaskCount, serverHasMore, serverLoadingMore, serverPaginationError, serverProgressKey, paginationCollectionKey, paginationActive = true, onLoadMoreServer, onRetryServer, allTasks, availableModels, onPlanningMode, onOpenDetailWithTab, favoriteProviders, favoriteModels, onToggleFavorite, onToggleModelFavorite, isSearchActive, onOpenMission, lastFetchTimeMs, taskCardFieldDefs, taskWorkflowBadges, blockerFanoutMap, prAuthAvailable, holdTaskIds, workflowMode, workflowId, workflowOptions, defaultWorkflowId, columnDisplayName, columnDescription, columnFlags, workflowContextMenuColumns, taskContextMenuColumnsByTaskId }: ColumnProps) {
   const { t } = useTranslation("app");
   // Anchor the board.rejection.* catalog keys for the i18next extractor (it
@@ -652,7 +684,9 @@ function ColumnComponent({ column, tasks, projectId, maxWorktrees, showWorktreeG
           )}
           {showWorktreeGroups ? (
             worktreeGroups.length === 0 ? (
-              <div className="empty-column">{t("column.noTasks", "No tasks")}</div>
+              serverPaginationError
+                ? renderLaneLoadFailure(t, onRetryServer)
+                : <div className="empty-column">{t("column.noTasks", "No tasks")}</div>
             ) : (
               worktreeGroups.map((group) => (
                 <WorktreeGroup
@@ -697,7 +731,9 @@ function ColumnComponent({ column, tasks, projectId, maxWorktrees, showWorktreeG
               ))
             )
           ) : tasks.length === 0 ? (
-            <div className="empty-column">{t("column.noTasks", "No tasks")}</div>
+            serverPaginationError
+              ? renderLaneLoadFailure(t, onRetryServer)
+              : <div className="empty-column">{t("column.noTasks", "No tasks")}</div>
           ) : (
             <div className="column-virtual-content">
               {virtualList.topSpacerHeight > 0 ? <div className="column-virtual-spacer" aria-hidden="true" style={{ height: virtualList.topSpacerHeight }} /> : null}
@@ -744,7 +780,7 @@ function ColumnComponent({ column, tasks, projectId, maxWorktrees, showWorktreeG
               {virtualList.bottomSpacerHeight > 0 ? <div className="column-virtual-spacer" aria-hidden="true" style={{ height: virtualList.bottomSpacerHeight }} /> : null}
             </div>
           )}
-          {(serverHasMore || serverPaginationError) ? (
+          {(serverHasMore || (serverPaginationError && tasks.length > 0)) ? (
             <div className="column-pagination-footer" ref={serverHasMore ? autoPagination.sentinelRef : undefined} role="status" aria-live="polite" data-testid="column-auto-pagination-sentinel">
               {serverLoadingMore ? t("column.loadMoreCompletedLoading", "Loading…") : null}
               {serverPaginationError ? (

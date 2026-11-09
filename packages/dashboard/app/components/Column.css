@@ -46,6 +46,23 @@ The floating desktop action bar does not reduce Board height. Add clearance only
 }
 
 /*
+FNXC:BoardLaneFailureNotEmpty 2026-11-09-14:38 (RUFU-907):
+The failed-lane state replaces `.empty-column` in the lane body rather than sitting under it, so it
+carries the body's own vertical rhythm. Same error colour and gap as `.column-pagination-error` — one
+failure vocabulary across both surfaces, no parallel variant.
+*/
+.column-load-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  padding-block: var(--space-xl);
+  color: var(--color-error);
+  text-align: center;
+}
+
+/*
 FNXC:NativeDensity 2026-09-11-00:30:
 Columns use a compact header/body rhythm and one subtle elevation without changing virtual rows, pagination extent, or scroll ownership. Virtual rows, pagination extent and scroll ownership are unchanged.
 */
