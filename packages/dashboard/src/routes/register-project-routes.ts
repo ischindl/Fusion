@@ -24,6 +24,11 @@ import {
 } from "@fusion/engine";
 import { ApiError, badRequest, notFound } from "../api-error.js";
 import { execFileAsync } from "../exec-file.js";
+import {
+  acrossNodesRequestKey,
+  acrossNodesTtlMs,
+  createProjectListCoalescer,
+} from "./project-list-coalescer.js";
 import { getOrCreateProjectStore, evictProjectStore } from "../project-store-resolver.js";
 import { computeCodebaseMetrics } from "../lib/codebase-metrics.js";
 import type { ApiRouteRegistrar } from "./types.js";
@@ -168,6 +173,14 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
   const openStoreFor = (projectId: string) => options?.engineManager?.getStore(projectId) ?? null;
 
   /*
+  FNXC:ProjectListCoalescing 2026-11-09-10:18 (RUFU-905):
+  One coalescer per registrar, so a second `createApiRoutes` (a test, an embedded host) can never read
+  another server's project list. The TTL is read at construction from `FUSION_PROJECTS_ACROSS_NODES_TTL_MS`
+  and is clamped to one client poll; `0` makes `run` a pass-through, which is the no-redeploy rollback.
+  */
+  const acrossNodesCoalescer = createProjectListCoalescer({ ttlMs: acrossNodesTtlMs() });
+
+  /*
   FNXC:ProjectRuntimeOff 2026-11-07-22:12 (RUFU-871):
   The per-project store read is retained ONLY as a fallback, and it is announced. It is the path whose
   answer depends on which TaskStores this process happens to have opened — measured drifting
@@ -256,7 +269,19 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
    * Fetches projects from online remote nodes and merges with local projects.
    * Returns: Array of projects with nodeId and _sourceNodeName for remote projects.
    */
-  router.get("/projects/across-nodes", async (_req, res) => {
+  /*
+  FNXC:ProjectListCoalescing 2026-11-09-10:18 (RUFU-905):
+  The fan-out is hoisted out of the request handler so concurrent identical requests can share one
+  computation. Measured on the operator's host 2026-11-09: EIGHT dashboard tabs open for eight projects
+  against ONE dashboard process on ONE event loop (`createServer`, single pid on :4040), each tab polling
+  this route every 5 s — ~1.6 full cross-project fan-outs per second on the loop that also serves the
+  board, with per-project reads of 1.95, 2.43, 4.07, 9.34, 24.7, 35.6, 57.3 and 59.5 s across 25 projects
+  and three more hitting a 60 s client cap. The body is unchanged below; only the `res.json(...)` sinks
+  became `return`s, so the payload this function produces is byte-identical to what the handler answered.
+  Error handling stays inside (normalized to `ApiError`) and is re-thrown to the caller's handler, so a
+  failed computation is shared by its joiners but never cached.
+  */
+  async function computeAcrossNodesProjects() {
     try {
       const { localProjects, allNodes, runtimeFlags } = await withCentralCore(
         async (central) => {
@@ -302,8 +327,9 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
         const prioritizedProjects = prioritizeProjectsForCurrentDirectory(localProjects);
         // FNXC:ProjectRuntimeOff 2026-11-07-20:24 (RUFU-871): the combo reads this route, so the
         // local-only fast path carries the runtime field exactly like GET /projects.
-        res.json(await withRuntimeProjection(prioritizedProjects, runtimeFlags, openStoreFor, undefined, noteRuntimeFallback("projects:across-nodes")));
-        return;
+        // FNXC:ProjectListCoalescing 2026-11-09-10:18 (RUFU-905): returned, not answered — the handler
+        // is the only thing that writes a response, so every joined request serializes its own.
+        return await withRuntimeProjection(prioritizedProjects, runtimeFlags, openStoreFor, undefined, noteRuntimeFallback("projects:across-nodes"));
       }
 
       // Fetch projects from all remote nodes in parallel
@@ -391,13 +417,32 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
       */
       const prioritizedProjects = prioritizeProjectsForCurrentDirectory(mergedProjects);
 
-      res.json(await withRuntimeProjection(
+      return await withRuntimeProjection(
         prioritizedProjects,
         runtimeFlags,
         openStoreFor,
         new Set(localProjects.map((project: { id: string }) => project.id)),
         noteRuntimeFallback("projects:across-nodes"),
-      ));
+      );
+    } catch (err: unknown) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      rethrowAsApiError(err);
+    }
+  }
+
+  /*
+  FNXC:ProjectListCoalescing 2026-11-09-10:18 (RUFU-905):
+  The handler now owns only the response. The cache key is (authenticated principal, scoping params),
+  because project visibility is per-principal and RLS-enforced — one computed board handed to a second
+  principal would leak which projects exist. The duplicated catch is deliberate: the computation
+  normalizes its own failures, and this one keeps the handler's error contract for anything the
+  coalescing seam itself throws.
+  */
+  router.get("/projects/across-nodes", async (req, res) => {
+    try {
+      res.json(await acrossNodesCoalescer.run(acrossNodesRequestKey(req), computeAcrossNodesProjects));
     } catch (err: unknown) {
       if (err instanceof ApiError) {
         throw err;
