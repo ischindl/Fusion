@@ -25,6 +25,7 @@ import { sql } from "drizzle-orm";
 import type { DrizzleDb } from "./data-layer.js";
 import {
   TaskIdIntegrityMeasurementError,
+  type TaskIdCrossProjectDuplicate,
   type TaskIdIntegrityAnomaly,
   type TaskIdIntegrityReport,
 } from "../tasks/task-id-integrity.js";
@@ -57,11 +58,17 @@ function uniqueSorted(values: Iterable<string>): string[] {
   return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b));
 }
 
-function buildReport(checkedAt: string, anomalies: TaskIdIntegrityAnomaly[]): TaskIdIntegrityReport {
+function buildReport(
+  checkedAt: string,
+  anomalies: TaskIdIntegrityAnomaly[],
+  crossProjectDuplicates?: TaskIdCrossProjectDuplicate[],
+): TaskIdIntegrityReport {
   return {
+    // An informational finding is not an anomaly: `status` stays the partition of the anomaly kinds only.
     status: anomalies.length > 0 ? "anomaly" : "ok",
     checkedAt,
     anomalies,
+    ...(crossProjectDuplicates && crossProjectDuplicates.length > 0 ? { crossProjectDuplicates } : {}),
   };
 }
 
@@ -212,16 +219,28 @@ export async function detectTaskIdIntegrityAnomaliesAsync(
     }
 
     /*
-    6. A row whose id string belongs DB-wide to a DIFFERENT project partition.
+    6. A row whose id string a SIBLING project also owns -- informational, never an anomaly.
 
     FNXC:TaskIdGlobalUniqueness 2026-11-08-10:45 (RUFU-320):
     `project.tasks` is keyed `(project_id, id)`, so none of the checks above can see a sibling project's
     copy of the same address -- that is the state RUFU-320 fixed forward, and migration 0096 deliberately
-    never renumbers the rows it predates. `central.global_task_id_claim` is keyed on the id string alone,
-    so joining a partition's own rows to the claim names the owner exactly. The row whose owner is someone
-    else is the ambiguous card: `fn task show RUFU-003` can resolve to it while another project holds the
-    claim. The partition filter is written on the task side as well as the claim side so the answer is the
-    same whether this read runs under row-level security or on a bypassing admin connection.
+    never renumbered the rows it predates. `central.global_task_id_claim` is keyed on the id string alone,
+    so joining a partition's own rows to the claim names the owner exactly. The partition filter is written
+    on the task side as well as the claim side so the answer is the same whether this read runs under
+    row-level security or on a bypassing admin connection.
+
+    FNXC:TaskIdClaimScope 2026-11-09-08:57 (RUFU-904):
+    RUFU-320 pushed this into `anomalies`, which made it a blocking operator-facing anomaly forever. That
+    was the wrong verdict: a claim asserted database-wide over (prefix, sequence) while id uniqueness is
+    per project means ANY second project minting its own `RUFU-001` trips it. Measured 2026-11-08: 74 such
+    ids, created 2026-07-04..2026-09-27, across RunFusion (proj_9326d74a133b421a), alfawise
+    (proj_87bc5b3f35624449) and vllm-rocm (proj_ab8b3ac6277e43a0) -- and `project.distributed_task_id_reservations`
+    holds three independent `RUFU-001` rows, i.e. each project minted its own sequence 1 honestly. Nothing
+    was overwritten and no bound-store read is confused, because forced RLS (`fusion_project_isolation`) is
+    what actually protects an id-only read -- not the claim registry. So this stays reported and becomes
+    `crossProjectDuplicates`, while `status: "anomaly"` is reserved for the same-partition classes above,
+    where a duplicate CAN alias a live card in the partition that mints it. No data was mutated to quiet
+    the count; only the verdict changed.
     */
     if (projectId) {
       const foreignOwnedRows = (await db.execute(
@@ -244,16 +263,27 @@ export async function detectTaskIdIntegrityAnomaliesAsync(
         bucket.owners.add(String(row.owner ?? "unknown"));
         foreignByPrefix.set(prefix, bucket);
       }
+      const crossProjectDuplicates: TaskIdCrossProjectDuplicate[] = [];
       for (const [prefix, bucket] of foreignByPrefix) {
-        anomalies.push({
-          kind: "cross_project_duplicate_id",
+        const ownerProjectIds = [...bucket.owners].sort();
+        crossProjectDuplicates.push({
           prefix,
           affectedIds: uniqueSorted(bucket.ids),
-          details:
-            `Task IDs in this project are claimed database-wide by another project (${[...bucket.owners].sort().join(", ")}). `
-            + `Rename the affected cards or archive the duplicate; Fusion never renumbers a task id automatically.`,
+          ownerProjectIds,
+          /*
+          FNXC:TaskIdClaimScope 2026-11-09-08:57 (RUFU-904):
+          The operator-facing sentence. The old copy read "Rename the affected cards or archive the
+          duplicate", which aimed the operator's repair at cards in projects that are not his and were
+          never wrong. Task ids are unique per project, so this is a coincidence of numbering, not damage:
+          the copy states the pair and stops there.
+          */
+          note:
+            `Task IDs in this project share their id strings with ${ownerProjectIds.join(", ")}. `
+            + `Task IDs are unique per project, so each card resolves inside its own project and nothing needs renaming.`,
         });
       }
+
+      return buildReport(checkedAt, anomalies, crossProjectDuplicates);
     }
 
     return buildReport(checkedAt, anomalies);

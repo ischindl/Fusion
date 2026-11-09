@@ -2,21 +2,26 @@ import type { Database } from "../db/db.js";
 
 const TASK_ID_PATTERN = /^([A-Z][A-Z0-9]*)-(\d+)$/;
 
+/*
+FNXC:TaskIdClaimScope 2026-11-09-08:57 (RUFU-904):
+`cross_project_duplicate_id` is REMOVED from this partition. RUFU-320 minted it for the state "one id
+string held by two project partitions", but `project.tasks` is keyed `(project_id, id)` and every runtime
+read path is RLS-bound (`fusion_project_isolation`, forced), so two projects each minting `RUFU-001` is
+what a per-project allocator is supposed to produce -- it overwrote nothing and aliases nothing a bound
+store can observe. Measured 2026-11-08 against production: 74 ids exist in more than one project, created
+2026-07-04..2026-09-27, i.e. every pair predates the RUFU-320 claim registry, spread over RunFusion
+(proj_9326d74a133b421a), alfawise (proj_87bc5b3f35624449) and vllm-rocm (proj_ab8b3ac6277e43a0).
+A duplicate is actionable only inside the partition that mints it, which is what the remaining kinds
+(`duplicate_active_id` and friends) all measure. The cross-project shape is history, not a fault, so it
+moved to `TaskIdIntegrityReport.crossProjectDuplicates` below. Do not re-add it as an anomaly kind: the
+banner's whole job is to name a state the operator must repair, and this one has no repair that does not
+destroy a working card in someone else's project.
+*/
 export type TaskIdIntegrityAnomalyKind =
   | "duplicate_active_id"
   | "id_in_active_and_archived"
   | "next_sequence_at_or_below_used"
-  | "task_row_outside_known_prefix"
-  /*
-  FNXC:TaskIdGlobalUniqueness 2026-11-08-10:43 (RUFU-320):
-  One task-id string held by two project partitions -- the reported state that made `fn task show
-  RUFU-003` ambiguous. `project.tasks` is keyed `(project_id, id)`, so no existing kind could name it:
-  `duplicate_active_id` counts rows WITHIN one partition and never sees a sibling project's copy. The
-  detector reports it from the side that does not own the DB-wide claim, so the card that is reachable
-  under a stolen address is the one that gets flagged. Migration 0096 never renumbers these rows; this
-  anomaly is the operator-facing view of them.
-  */
-  | "cross_project_duplicate_id";
+  | "task_row_outside_known_prefix";
 
 export interface TaskIdIntegrityAnomaly {
   kind: TaskIdIntegrityAnomalyKind;
@@ -25,10 +30,35 @@ export interface TaskIdIntegrityAnomaly {
   details: string;
 }
 
+/**
+ * One task id this project owns that a sibling project also owns.
+ *
+ * FNXC:TaskIdClaimScope 2026-11-09-08:57 (RUFU-904):
+ * Informational by construction: no `kind`, no verdict, and `note` states the fact without an action,
+ * because the remedy RUFU-320 offered ("rename the affected cards or archive the duplicate") instructs
+ * the operator to destroy live cards in unrelated projects to silence a warning about a string.
+ * `ownerProjectIds` names the sibling partitions so the pair can be checked without a DB query.
+ */
+export interface TaskIdCrossProjectDuplicate {
+  prefix: string;
+  affectedIds: string[];
+  ownerProjectIds: string[];
+  note: string;
+}
+
 export interface TaskIdIntegrityReport {
+  /**
+   * `"ok" | "anomaly"` is a CLOSED partition of completed scans (RUFU-301/RUFU-333) and is not widened
+   * by informational findings: a scan that only saw cross-project pairs answers `"ok"`.
+   */
   status: "ok" | "anomaly";
   checkedAt: string;
   anomalies: TaskIdIntegrityAnomaly[];
+  /**
+   * Additive since RUFU-904. Absent (not empty) means the detector could not name a sibling partition —
+   * a scan with no project scope has no "other project" to compare against.
+   */
+  crossProjectDuplicates?: TaskIdCrossProjectDuplicate[];
 }
 
 /**

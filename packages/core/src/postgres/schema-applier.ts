@@ -2339,9 +2339,9 @@ export async function applySchemaBaseline(
     between DDL and bookkeeping converges by simply running the script again.
 
     A pre-existing cross-project duplicate id is recorded, never fatal (`rufu-320:cross-project-
-    duplicate-task-ids` in `central.__meta` plus the `cross_project_duplicate_id` integrity anomaly), so
-    an operator whose database already holds duplicates still finishes booting instead of being bricked
-    by historical damage.
+    duplicate-task-ids` in `central.__meta` plus the informational `TaskIdIntegrityReport.crossProjectDuplicates`
+    listing since RUFU-904), so an operator whose database already holds duplicates still finishes booting
+    instead of being bricked by historical damage.
     */
     if (!globalTaskIdClaimAlreadyApplied) {
       const migrationSql = await readFile(GLOBAL_TASK_ID_CLAIM_MIGRATION_PATH, "utf8");
