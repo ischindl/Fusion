@@ -45,16 +45,26 @@ export type {
   RetentionPressureReason,
 } from "./retention-sampler.js";
 
-export { createDomainSampler, defaultPgStatsReader, defaultPoolStatsReader } from "./domain-sampler.js";
+export {
+  createDomainSampler,
+  defaultPgStatsReader,
+  defaultPoolStatsReader,
+  resolveProjectPopulation,
+  REGISTRY_CENSUS_BOUND_MS,
+} from "./domain-sampler.js";
 
 export {
   createServedProjectStoreRegistry,
   createDashboardDomainRegistry,
+  createRegisteredProjectIdReader,
   type ServedProjectStore,
   type ServedProjectStoreRegistryInit,
   type ServedProjectEngineManager,
   type DashboardDomainRegistryDeps,
   type DefaultProjectIdResolver,
+  type RegisteredProjectIdReader,
+  type RegisteredProjectLister,
+  type RegisteredProjectRow,
 } from "./served-project-stores.js";
 
 export type {
