@@ -29,6 +29,15 @@ both frozen fields are admission gates (`scheduler.ts`: `if (task.overlapBlocked
 The cases are DIFFERENTIAL on purpose: the same release against a vocabulary that resolves (`builtin:coding`)
 and one that does not (`traits: []`), plus a renamed complete lane so a surviving `"done"` literal cannot pass
 by luck, plus the fail-closed pairing (a predecessor still mid-flight must keep holding the marker).
+
+FNXC:OverlapWaitRelease 2026-11-04-09:07 (RUFU-469 — what "mid-flight" still means after this file shipped):
+One sentence above is now history rather than current contract: `"complete"` is no longer the only reason a
+LIVE predecessor can release — `overlapPredecessorRelease` also answers `"delivered"` for a holder whose work
+concretely landed and whose checkout is gone, in ANY non-WIP lane. The fail-closed pairing in this file still
+passes, but its reason changed, so read it as the WIP-lane guard it now is: that fixture seeds concrete
+`mergeDetails` AND `worktree: null`, so after RUFU-469 the ONLY thing keeping its marker held is the holder
+standing in a `countsTowardWip` lane. Do not "simplify" it to a review lane — that shape is now the releasing
+shape, and RUFU-469's own suite (`overlap-wait-release-delivered-faces.pg.test.ts`) owns it there.
 */
 
 import { sql } from "drizzle-orm";
@@ -307,6 +316,10 @@ pgDescribe("overlap wait released behind a predecessor whose lifecycle vocabular
   it("fails closed: an unresolved vocabulary must not release a predecessor that is still mid-flight", async () => {
     const workflowId = await seedTraitlessWorkflow();
     // The traitless board keeps the builtin ids, so the predecessor's mid-flight lane is `in-progress`.
+    // INTENT (RUFU-469): this holder also carries concrete `mergeDetails` and `worktree: null`, so the
+    // WIP lane is now the ONLY thing that can refuse the release here. Keep that lane — it is what makes
+    // this case the guard that `resolveTaskWipColumns`' legacy `in-progress` floor is honoured at the
+    // release predicate, and not merely a test of unresolved-lane vocabulary.
     const { blocker, victim } = await seedReleasedExemplar({
       blockerWorkflowId: workflowId,
       blockerColumn: "in-progress",

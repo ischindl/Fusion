@@ -4,7 +4,7 @@ import type { TaskStore } from "../store.js";
 import type { Task, TaskOverlapWait } from "../types.js";
 import type { WorkflowIr } from "../workflows/workflow-ir-types.js";
 import * as schema from "../postgres/schema/index.js";
-import { resolveTaskCompleteColumns } from "../workflows/workflow-lifecycle-traits.js";
+import { resolveTaskCompleteColumns, resolveTaskWipColumns } from "../workflows/workflow-lifecycle-traits.js";
 import { acquireTaskAdvisoryXactLock } from "./task-advisory-lock.js";
 import { readTaskRowInTransaction } from "./async/async-persistence.js";
 import { getTaskActivityLogEntryLimit } from "./comments.js";
@@ -40,20 +40,41 @@ export async function reconcileTaskOverlapWaitsImpl(
   const initial = await store.getTask(taskId);
   const refs = new Set([taskId, ...observed.map((episode) => episode.blockerTaskId), ...[initial.overlapBlockedBy, initial.blockedBy].filter((id): id is string => Boolean(id))]);
   const completeById = new Map<string, Set<string>>();
+  const wipById = new Map<string, Set<string>>();
   const irCache = new Map<string, WorkflowIr>();
   /*
   FNXC:OverlapWaitRelease 2026-10-18-18:02 (RUFU-341): this set is the ONLY test for "that predecessor is
   finished", so an empty answer must mean "this board declares no complete lane" and never "the board's
   vocabulary could not be read". It used to be built as `lanes?.complete ? [lanes.complete] : []`, which made
   a column-less (v1) or trait-less synthesized board answer empty, so a card resting in `done` was never
-  recognised as terminal: no reason, no cancel, no clear, on every pass, silently — while the scheduler's
+  recognised as terminal: no reason, no clear, on every pass, silently — while the scheduler's
   `isCompleteColumnRole` (which keeps a legacy `done` floor) called that same predecessor terminal. The card
   kept `overlapBlockedBy` plus `status="queued"`, both admission gates, and stayed unclaimable forever.
   `resolveTaskCompleteColumns` now owns that floor, so this seam and the scheduler cannot disagree.
+
+  FNXC:OverlapWaitRelease 2026-11-04-10:10 (RUFU-469): the WIP lanes are resolved for the SAME holder ids,
+  from the SAME cache, by the sibling resolver that keeps the same legacy floor. They are not optional
+  input: the `delivered` release face refuses while the holder stands in a WIP lane, so a caller that could
+  only supply complete lanes would answer "no WIP lane exists" for a board that has one — the same
+  silent-freeze class as the paragraph above, pointed at the opposite lane. Resolving both here keeps the
+  two answers unable to disagree about whose workflow they describe.
   */
   for (const id of refs) {
     completeById.set(id, new Set(await resolveTaskCompleteColumns(store, id, irCache)));
+    wipById.set(id, new Set(await resolveTaskWipColumns(store, id, irCache)));
   }
+  /*
+  FNXC:LaneWiring 2026-11-04-09:05 (RUFU-469):
+  Both release call sites below pass the lane bag as an INLINE OBJECT LITERAL, and must keep doing so.
+  Factoring it into a `lanesFor(id)` helper is the obvious readability move and it BREAKS the lane-wiring
+  ratchet: `scripts/lib/lane-wiring-census.mjs` is a source scan that scores a call site as wired by
+  finding a lane key inside an object literal in the argument position, so a helper call hides the very
+  argument the census exists to watch. Measured: with the helper, `check:lane-wiring` reported this file
+  at "2 unwired now, baseline allows 0" — and the only legal way to record a genuinely-wired site in that
+  baseline is to declare it known-UNWIRED, which would permanently blind the ratchet to a real regression
+  here. Writing the two lookups out twice is the price of the gate reading the truth off the call site.
+  */
+  const emptyLanes: ReadonlySet<string> = new Set<string>();
   const outcome = await layer.transactionImmediate(async (tx) => {
     await acquireTaskAdvisoryXactLock(tx, projectId, taskId);
     const raw = await readTaskRowInTransaction(tx, taskId, { includeDeleted: true }, projectId);
@@ -75,7 +96,10 @@ export async function reconcileTaskOverlapWaitsImpl(
     for (const row of rows) {
       const episode = { ...row, observation: row.observation ?? {} } as TaskOverlapWait;
       const blocker = blockers.get(row.blockerTaskId);
-      const reason = overlapPredecessorRelease(episode, blocker, completeById.get(row.blockerTaskId) ?? new Set());
+      const reason = overlapPredecessorRelease(episode, blocker, {
+        completeColumns: completeById.get(row.blockerTaskId) ?? emptyLanes,
+        wipColumns: wipById.get(row.blockerTaskId) ?? emptyLanes,
+      });
       if (reason) released.set(row.blockerTaskId, reason);
       else released.delete(row.blockerTaskId);
       if (row.phase === "cancelled" || row.phase === "delivered" || row.phase === "ready") continue;
@@ -111,7 +135,10 @@ export async function reconcileTaskOverlapWaitsImpl(
       const id = current[key];
       if (!id) continue;
       const blocker = blockers.get(id);
-      const reason = released.get(id) ?? overlapPredecessorRelease({ observedAt: now }, blocker, completeById.get(id) ?? new Set());
+      const reason = released.get(id) ?? overlapPredecessorRelease({ observedAt: now }, blocker, {
+        completeColumns: completeById.get(id) ?? emptyLanes,
+        wipColumns: wipById.get(id) ?? emptyLanes,
+      });
       // A declared dependency on a reset task is still real work, not a file-scope lease.
       if (ownComplete || (reason && !(key === "blockedBy" && reason === "reset" && current.dependencies?.includes(id)))) {
         values[key] = null;

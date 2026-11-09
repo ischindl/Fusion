@@ -39,7 +39,6 @@ than an inline id comparison repeated per call site.
 const LEGACY_INTAKE_COLUMN_ID = "triage";
 const LEGACY_PRE_IMPLEMENTATION_COLUMN_IDS: ReadonlySet<string> = new Set(["todo", "triage"]);
 const LEGACY_HOLD_COLUMN_ID = "todo";
-const LEGACY_WIP_COLUMN_ID = "in-progress";
 const LEGACY_REVIEW_COLUMN_ID = "in-review";
 /*
 FNXC:WorkflowResolvedColumns 2026-10-18-18:02 (RUFU-341):
@@ -49,6 +48,17 @@ board's lifecycle vocabulary cannot be read, so the overlap-wait release decisio
 cannot answer "is that predecessor finished?" differently — the disagreement that froze a released card.
 */
 export const LEGACY_COMPLETE_COLUMN_ID = "done";
+
+/*
+FNXC:WorkflowResolvedColumns 2026-11-04-09:40 (RUFU-469):
+Exported for the same reason `LEGACY_COMPLETE_COLUMN_ID` is: `resolveTaskWipColumns` in
+`workflows/workflow-lifecycle-traits.ts` must fall back to the SAME id `isWipColumnRole(undefined, id)`
+answers for a trait-less, column-less, or unreadable board. The overlap-wait release face added by
+RUFU-469 refuses itself while the holder stands in a WIP lane, so a degraded board whose WIP floor this
+consumer guessed differently would either release a live lease or freeze a delivered card — RUFU-341's
+disagreement class, on the other lane.
+*/
+export const LEGACY_WIP_COLUMN_ID = "in-progress";
 
 /** The subset of resolved trait flags these role questions read. */
 export type ColumnRoleTraitFlags = Pick<

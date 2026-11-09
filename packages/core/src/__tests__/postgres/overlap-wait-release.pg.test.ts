@@ -18,6 +18,14 @@ and enter the ordinary executor resume path. All IDs come from fixtures, never t
 Surface enumeration: reset/delete/complete/missing; real deliveries and workspace repositories; new
 wait generations; retained progress; repeated sweeps; pauses, human review, live work, foreign projects,
 failed publication and racing owners. No live daemon or application database participates.
+
+FNXC:OverlapWaitRelease 2026-11-04-09:08 (RUFU-469): the four dispositions named above are THIS file's cases,
+not the whole release vocabulary. `overlapPredecessorRelease` gained a fifth face, `"delivered"`, whose
+episode consequences differ (concrete delivery is required by construction, so its episode is never cancelled
+and it never writes `observation.releaseReason`) — it is covered in `overlap-wait-release-delivered.pg.test.ts`
+and `overlap-wait-release-delivered-faces.pg.test.ts` rather than by widening the `finish()` disposition union
+here, because a face with different episode consequences asserted through the cancellation table would prove
+nothing about either.
 */
 const h = createSharedPgTaskStoreTestHarness({ prefix: "fusion_overlap_release", projectId: "overlap-release-project" });
 const queue = (id: string) => ({ signature: `file-scope:${id}`, blockedBy: null, overlapBlockedBy: id, action: `queued behind ${id}` });

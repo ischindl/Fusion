@@ -616,6 +616,10 @@ export {
   isReviewColumnRole,
   isCompleteColumnRole,
   isTerminalColumnRole,
+  LEGACY_COMPLETE_COLUMN_ID,
+  /* FNXC:WorkflowResolvedColumns 2026-11-04-10:05 (RUFU-469): the WIP legacy floor is a shared floor, not a
+     local detail — `resolveTaskWipColumns` falls back to it and the overlap-wait release face refuses on it. */
+  LEGACY_WIP_COLUMN_ID,
 } from "./column-roles.js";
 export type { ColumnRoleTraitFlags } from "./column-roles.js";
 export {
@@ -711,7 +715,7 @@ export type { ImplementationExit } from "./types/workflow-events.js";
 export type { WorkflowEventBus, WorkflowEventSubscriber, WorkflowEventSubscription } from "./workflow-events.js";
 export { findWorkflowEventShapeViolations, isIdsOnlyWorkflowEvent, MAX_ID_VALUE_LENGTH } from "./types/workflow-events.js";
 export type { WorkflowLifecycleEvent, WorkflowLifecycleEventType, WorkflowLifecycleEventBase, TaskTransitionedEvent, NodeEnteredEvent, NodeCompletedEvent, RunSuspendedEvent, RunResumedEvent, WorkflowEventShapeViolation } from "./types/workflow-events.js";
-export { columnsWithFlag, columnHasFlag, resolveReboundTarget, resolveDependencyReplanTarget, resolveContainedBackwardTarget, resolveCompleteColumn, resolveMergeOrchestrationColumn, resolveLifecycleColumns, resolveTaskLifecycleColumns, declaresAnyLifecycleTrait, resolveReboundTargetForTask, resolveContainedBackwardTargetForTask, resolveReviewColumns, resolveTerminalColumns, resolveWipTargetForTask, toTaskMoveLanes, implementationColumns, resolveTaskImplementationColumns, LIFECYCLE_FALLBACK_IMPLEMENTATION_COLUMNS } from "./workflows/workflow-lifecycle-traits.js";
+export { columnsWithFlag, columnHasFlag, resolveReboundTarget, resolveDependencyReplanTarget, resolveContainedBackwardTarget, resolveCompleteColumn, resolveMergeOrchestrationColumn, resolveLifecycleColumns, resolveTaskLifecycleColumns, declaresAnyLifecycleTrait, resolveReboundTargetForTask, resolveContainedBackwardTargetForTask, resolveReviewColumns, resolveTerminalColumns, resolveWipTargetForTask, toTaskMoveLanes, implementationColumns, resolveTaskImplementationColumns, resolveTaskCompleteColumns, resolveTaskWipColumns, LIFECYCLE_FALLBACK_IMPLEMENTATION_COLUMNS } from "./workflows/workflow-lifecycle-traits.js";
 export type { LifecycleColumns, TaskMoveLanes } from "./workflows/workflow-lifecycle-traits.js";
 export { TaskLaneCache, type TaskLaneCacheOptions } from "./task-lane-cache.js";
 export { resolveReviewLevelSteps, applyReviewLevelPreset } from "./tasks/review-level-preset.js";

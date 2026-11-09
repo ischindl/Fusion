@@ -22,7 +22,7 @@ resolves to the same columns the old literals named):
 import type { WorkflowIr, WorkflowIrColumn } from "./workflow-ir-types.js";
 import type { TraitFlags } from "./trait-types.js";
 import { getTraitRegistry } from "./trait-registry.js";
-import { LEGACY_COMPLETE_COLUMN_ID } from "../column-roles.js";
+import { LEGACY_COMPLETE_COLUMN_ID, LEGACY_WIP_COLUMN_ID } from "../column-roles.js";
 import { resolveWorkflowIrForTask, type WorkflowIrResolverStore, type WorkflowSelectionCache } from "./workflow-ir-resolver.js";
 
 /** The v2 column list, or [] for a v1/column-less IR. */
@@ -593,6 +593,41 @@ export async function resolveTaskCompleteColumns(
     /* fall through to the legacy floor below */
   }
   return new Set([LEGACY_COMPLETE_COLUMN_ID]);
+}
+
+/*
+FNXC:OverlapWaitRelease 2026-11-04-09:45 (RUFU-469):
+The WIP sibling of `resolveTaskCompleteColumns`, with the SAME never-throws contract and the same legacy
+floor, because it answers the OTHER half of the same question. Releasing a file-scope wait now turns on
+"is that predecessor STILL HOLDING a lease", and a card standing in a WIP lane is treated as holding one
+whatever its checkout says: `acquireTaskCheckout` moves a card into WIP BEFORE the checkout row
+materializes, so the window in which a WIP card legitimately has no `worktree` value is exactly the
+window in which a checkout-shaped test would hand out a false release. Membership (every
+`countsTowardWip` lane), never a first match, for the same multi-lane reason `resolveTaskCompleteColumns`
+enumerates — and it stays separate from the capacity pool's `resolveWipColumn`, which reads a POOL's
+`work_items` count and answers a different question entirely.
+*/
+
+/**
+ * The WIP (active-execution) lanes for a task's workflow, WITH the legacy floor the raw lifecycle
+ * resolution omits — for consumers whose "otherwise" is releasing a live lease rather than a visible
+ * failure. Answers EVERY `countsTowardWip` lane, the empty set when the board declares lifecycle traits
+ * and names no WIP lane at all, and the legacy `in-progress` id for a trait-less, column-less, or
+ * unreadable board — matching what `isWipColumnRole(undefined, id)` answers. Never throws.
+ */
+export async function resolveTaskWipColumns(
+  store: WorkflowIrResolverStore,
+  taskId: string,
+  cache?: Map<string, WorkflowIr>,
+  selectionCache?: WorkflowSelectionCache,
+): Promise<ReadonlySet<string>> {
+  try {
+    const ir = await resolveWorkflowIrForTask(store, taskId, cache, selectionCache);
+    if (ir && declaresAnyLifecycleTrait(ir)) return new Set(columnsWithFlag(ir, "countsTowardWip"));
+  } catch {
+    /* fall through to the legacy floor below */
+  }
+  return new Set([LEGACY_WIP_COLUMN_ID]);
 }
 
 /*
