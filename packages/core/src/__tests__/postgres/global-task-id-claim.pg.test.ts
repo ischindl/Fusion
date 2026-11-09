@@ -258,11 +258,18 @@ pgDescribe("central.global_task_id_claim (RUFU-320)", () => {
   /*
   FNXC:TaskIdGlobalUniqueness 2026-11-08-10:46 (RUFU-320):
   Migration 0096 records how many cross-project duplicates it found and refuses to renumber them, so the
-  anomaly has to be visible from the card's own side as well: the partition whose row does NOT own the
-  DB-wide claim is the one whose address is ambiguous. `detectTaskIdIntegrityAnomaliesAsync` is the
+  state has to stay visible from the card's own side as well: the partition whose row does NOT own the
+  DB-wide claim is the one that sees the sibling's id string. `detectTaskIdIntegrityAnomaliesAsync` is the
   store-open/health surface the operator reads, so it is the assertion target.
+
+  FNXC:TaskIdClaimScope 2026-11-09-08:57 (RUFU-904):
+  This case asserted `status: "anomaly"` for that pair. Against production that verdict fires on 74 ids
+  created 2026-07-04..2026-09-27 across RunFusion (proj_9326d74a133b421a), alfawise (proj_87bc5b3f35624449)
+  and vllm-rocm (proj_ab8b3ac6277e43a0) — none of them damaged, because `project.tasks` is keyed
+  `(project_id, id)` and reads are RLS-bound. The pair is reported informationally now; both rows must still
+  be readable afterwards, which is the part of the old assertion that named a real invariant.
   */
-  it("names a foreign-owned id as a cross_project_duplicate_id integrity anomaly, and only for the non-owner", async () => {
+  it("reports a foreign-owned id informationally without disturbing either project's row", async () => {
     ctx = await setupCtx();
     const { layerA, layerB, adminDb } = ctx;
 
@@ -274,14 +281,18 @@ pgDescribe("central.global_task_id_claim (RUFU-320)", () => {
     });
 
     const reportB = await detectTaskIdIntegrityAnomaliesAsync(layerB.db, { projectId: "proj_b" });
-    const duplicateB = reportB.anomalies.find((anomaly) => anomaly.kind === "cross_project_duplicate_id");
+    const duplicateB = reportB.crossProjectDuplicates?.find((entry) => entry.prefix === "KB");
     expect(duplicateB?.affectedIds).toEqual(["KB-704"]);
-    expect(duplicateB?.prefix).toBe("KB");
-    expect(reportB.status).toBe("anomaly");
+    expect(duplicateB?.ownerProjectIds).toEqual(["proj_a"]);
+    expect(reportB.status).toBe("ok");
+    expect(reportB.anomalies).toEqual([]);
+    // Neither copy is lost: the pair is a coincidence of numbering, not an overwrite.
+    expect((await readTaskRow(layerB, "KB-704"))?.projectId).toBe("proj_b");
+    expect((await readTaskRow(layerA, "KB-704"))?.projectId).toBe("proj_a");
 
     // The owner is not told it has a problem: its row is the one the claim names.
     const reportA = await detectTaskIdIntegrityAnomaliesAsync(layerA.db, { projectId: "proj_a" });
-    expect(reportA.anomalies.filter((anomaly) => anomaly.kind === "cross_project_duplicate_id")).toEqual([]);
+    expect(reportA.crossProjectDuplicates ?? []).toEqual([]);
   });
 
   it("refuses a bare id that spans partitions instead of returning whichever copy came first", async () => {

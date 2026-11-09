@@ -38,9 +38,16 @@ function getAnomalyLabel(kind: TaskIdIntegrityReport["anomalies"][number]["kind"
       return t("health.anomaly.sequenceOverlap", "Allocator next sequence overlaps an existing task ID");
     case "task_row_outside_known_prefix":
       return t("health.anomaly.unknownPrefix", "Task row uses a prefix outside allocator state");
-    case "cross_project_duplicate_id":
-      return t("health.anomaly.crossProjectDuplicateId", "Task ID is also owned by another project");
     default:
+      /*
+      FNXC:TaskIdClaimScope 2026-11-09-08:57 (RUFU-904):
+      `cross_project_duplicate_id` had a label here ("Task ID is also owned by another project") and lost
+      it when RUFU-904 reclassified that state as informational — see
+      `TaskIdIntegrityAnomalyKind` in `@fusion/core`. This banner renders `report.anomalies` only, and the
+      dashboard gate (`DashboardBanners.showTaskIdIntegrityBanner`) fires on non-ok status, so informational
+      pairs deliberately produce no banner: an always-on notice about 74 pre-existing per-project mints is
+      the noise that made the operator treat the canary as broken.
+      */
       return kind;
   }
 }
