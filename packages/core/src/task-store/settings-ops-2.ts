@@ -17,6 +17,36 @@ import {canonicalizeSettings} from "../task-store/settings-helpers.js";
 import {readProjectConfig as readProjectConfigAsync, readProjectSettings as readProjectSettingsAsync} from "../task-store/async/async-settings.js";
 import {resolveTaskIdMintingContext, type TaskIdMintingContext} from "../task-store/task-prefix.js";
 
+/**
+ * Start the sync-passphrase probe without ever rejecting.
+ *
+ * FNXC:SettingsOpenLatency 2026-11-09-14:30 (RUFU-908):
+ * `secretsSyncPassphraseConfigured` is one boolean on the settings document, derived from a single
+ * `secrets` read (`hasSyncPassphraseConfigured` → `listSecrets("global")`). Both request-path settings
+ * readers used to await it AFTER the two settings reads had already settled, so every `GET /api/settings`
+ * and `GET /api/settings/scopes` paid three serial database round trips where the flag needs none of them:
+ * it is not an input to the merge and the merge is not an input to it. On the operator's loaded host each
+ * extra hop queues on a pool capped at `DEFAULT_POOL_MAX = 3` and is client-visible; this is the same
+ * serial-chain class the `/api/settings/scopes` route fix removes.
+ *
+ * Swallowing lives HERE rather than in a `try` around the await, because hoisting the probe in front of
+ * `Promise.all` would otherwise let a secrets failure surface as the settings read's error. The returned
+ * promise can therefore only fulfil, so the two settings reads keep their exact rejection precedence.
+ *
+ * Only the two `*Fast` request-path readers use this. The boot-path `getSettingsImpl` /
+ * `getSettingsByScopeImpl` keep their original order: they have no measured latency requirement, and
+ * leaving them untouched keeps the change's blast radius on the read that gates the Settings modal.
+ */
+function readSyncPassphraseFlagConcurrently(store: TaskStore): Promise<boolean> {
+  return (async () => {
+    try {
+      return await hasSyncPassphraseConfigured(await store.getSecretsStore());
+    } catch {
+      return false;
+    }
+  })();
+}
+
 export async function getSettingsImpl(store: TaskStore): Promise<Settings> {
     /*
     FNXC:SqliteDualPathCleanup 2026-07-26-14:20:
@@ -93,9 +123,13 @@ export async function getSettingsFastImpl(store: TaskStore): Promise<Settings> {
     // Backend-mode fast settings read: delegate to the async settings helper
     // (readProjectSettingsAsync), which reads only the jsonb `settings` column.
         const layer = store.asyncLayer!;
-    const [globalSettings, projectSettingsRaw] = await Promise.all([
+    // FNXC:SettingsOpenLatency 2026-11-09-14:30 (RUFU-908): the passphrase probe is a third independent
+    // read, not a step after the merge — it starts with the other two. See readSyncPassphraseFlagConcurrently().
+    const passphraseFlag = readSyncPassphraseFlagConcurrently(store);
+    const [globalSettings, projectSettingsRaw, secretsSyncPassphraseConfigured] = await Promise.all([
       store.globalSettingsStore.getSettings(),
       readProjectSettingsAsync(layer),
+      passphraseFlag,
     ]);
     const raw = projectSettingsRaw ?? undefined;
     const projectSettings: Partial<Settings> | undefined = raw
@@ -112,11 +146,7 @@ export async function getSettingsFastImpl(store: TaskStore): Promise<Settings> {
         projectSettings?.worktrunk,
       ),
     };
-    try {
-      merged.secretsSyncPassphraseConfigured = await hasSyncPassphraseConfigured(await store.getSecretsStore());
-    } catch {
-      merged.secretsSyncPassphraseConfigured = false;
-    }
+    merged.secretsSyncPassphraseConfigured = secretsSyncPassphraseConfigured;
     const canonical = canonicalizeSettings(merged);
     // FNXC:IncompletePgPorts 2026-07-26-20:40: feed getSettingsSync cache (fast path).
     store.settingsSyncCache = canonical;
@@ -159,20 +189,18 @@ export async function getSettingsByScopeFastImpl(store: TaskStore): Promise<{ gl
     // FNXC:RuntimePersistenceAsync 2026-06-24-10:24:
     // Backend-mode fast scoped read: delegate to async settings helper.
     const layer = store.asyncLayer!;
-    const [globalSettings, projectSettingsRaw] = await Promise.all([
+    // FNXC:SettingsOpenLatency 2026-11-09-14:30 (RUFU-908): started alongside the two settings reads
+    // rather than awaited after them — see readSyncPassphraseFlagConcurrently().
+    const passphraseFlag = readSyncPassphraseFlagConcurrently(store);
+    const [globalSettings, projectSettingsRaw, secretsSyncPassphraseConfigured] = await Promise.all([
       store.globalSettingsStore.getSettings(),
       readProjectSettingsAsync(layer),
+      passphraseFlag,
     ]);
     /*
     FNXC:SqliteDualPathCleanup 2026-07-26-15:00:
     Do not mutate GlobalSettingsStore cache; return a shallow copy with the request-time passphrase flag.
     */
-    let secretsSyncPassphraseConfigured = false;
-    try {
-      secretsSyncPassphraseConfigured = await hasSyncPassphraseConfigured(await store.getSecretsStore());
-    } catch {
-      secretsSyncPassphraseConfigured = false;
-    }
     const global = { ...globalSettings, secretsSyncPassphraseConfigured };
     const projectSettings = projectSettingsRaw ?? undefined;
     const projectScoped: Partial<ProjectSettings> = {};
