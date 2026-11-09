@@ -145,7 +145,13 @@ describe("GET /api/projects/across-nodes request coalescing", () => {
 
     // The measured failure: 8 tabs, 8 fan-outs. The fix: one.
     expect(reads.listProjects).toHaveBeenCalledTimes(1);
-    expect(reads.reconcile).toHaveBeenCalledTimes(1);
+    /*
+    FNXC:ProjectListReadCost 2026-11-09-17:02 (RUFU-910):
+    This asserted `toHaveBeenCalledTimes(1)`: the fan-out used to open a write transaction on every
+    recompute. The legacy `initializing` repair is now premise-gated on the listed rows, and every row
+    in this fixture is `active`, so a fan-out must perform no write at all.
+    */
+    expect(reads.reconcile).not.toHaveBeenCalled();
     expect(reads.runtimeFlags).toHaveBeenCalledTimes(1);
     // Coalescing the project list must not smuggle in a per-project store open.
     expect(reads.getStore).not.toHaveBeenCalled();
