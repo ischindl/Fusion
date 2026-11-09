@@ -8,9 +8,12 @@
  * tick. The baseline tracks counters PER DATABASE so a stats reset in one
  * database is detected even when the cross-database sum stays positive,
  * and a failed-probe gap invalidates the baseline so a reset that lands
- * inside the gap can never produce a cross-epoch (fabricated) rate. The Fusion-domain gauges answer the "how busy is the board" questions
- * (active/paused project split, running agents, tasks per column) from stores
- * the dashboard has ALREADY opened — never by opening a store, starting an
+ * inside the gap can never produce a cross-epoch (fabricated) rate. The
+ * Fusion-domain gauges answer the "how busy is the board" questions (project
+ * total/active/idle, running agents, tasks per column). The project POPULATION
+ * comes from the project registry, never from store warmth (RUFU-912), while the
+ * per-project measurement comes from stores the dashboard has ALREADY opened —
+ * never by opening a store, starting an
  * engine, or starting a watcher just to answer a scrape.
  *
  * Pool occupancy (RUFU-483) answers the sibling question "is the board slow because it cannot get a
@@ -40,6 +43,7 @@ import type { MetricFamily, MetricSample } from "./prometheus-text.js";
 
 const sql = drizzleSql;
 import { listRegisteredProjectStores, countRunningAgentsInStore } from "../project-store-resolver.js";
+import type { RegisteredProjectIdReader } from "./served-project-stores.js";
 
 /** Per-database cumulative counters for one `pg_stat_database` probe row. */
 export interface PgDbStats {
@@ -139,13 +143,43 @@ export interface SlimTaskLike {
 /** Registry that yields the already-open project stores (injectable). */
 export type RegisteredStoreRegistry = () => Array<{ projectId: string; store: unknown }>;
 
+/*
+FNXC:MetricsProjectPopulation 2026-11-09-21:52 (RUFU-912):
+This is the seam that separates "how many projects exist" from "how many stores this process happens
+to have opened". RUFU-911 widened the fan-out from the secondary store cache to every already-open
+store, which fixed the 1-vs-25 reading, but the population it widened to is still WARMING: stores open
+lazily as routes and engines touch a project. Measured live on pid 4107433 at HEAD a0f6fbc391,
+`fusion_domain_projects_total` read 3 at boot and 11 three minutes later while `central.projects`
+held 25 rows the entire time, and the per-project agent gauges grew from 3 to 11 series in step. A
+number that drifts toward the truth is worse than a missing one on an operator panel: it looks alive.
+So the total now comes from the project registry through this reader, and only the per-project
+measurement stays bound to open stores.
+*/
+/**
+ * Resolves every registered project id (the population the project gauges count), or `null` when the
+ * registry cannot be read. A measured EMPTY registry is `[]`, never `null`: "the registry has no
+ * projects" and "I could not ask the registry" are different answers.
+ *
+ * FNXC:MetricsProjectPopulation 2026-11-09-22:05 (RUFU-912):
+ * The type is declared once in `served-project-stores.ts` (with the factory that builds it) and
+ * re-exported here so the sampler's injectable surface and the server's wiring name it identically.
+ */
+export type { RegisteredProjectIdReader };
+
 /** The pre-read domain snapshot a `/metrics` render reflects. */
 export interface DomainSamplerState {
   /** Per-second transaction delta, or 0/last-known when unavailable. */
   pgQueriesPerSecond: number;
-  /** Registered-project split by running-agent activity. */
+  /**
+   * Registered-project split by running-agent activity, counted over the project-REGISTRY population
+   * (see `RegisteredProjectIdReader`), not over the open-store set. `total` is the registry census;
+   * `active` is the registered projects whose already-open store reports at least one running agent;
+   * `idle` is the remainder — `total - active` — so a registered project whose store is cold counts as
+   * idle because nothing is running for it in this process, which is a measurement claim about this
+   * process, not about the project.
+   */
   projectCounts: { total: number; active: number; idle: number };
-  /** projectId -> number of running agents in that project's open store. */
+  /** projectId -> number of running agents in that project's open store (served stores only). */
   runningAgentsByProject: Record<string, number>;
   /** columnId -> number of tasks in that column across all registered projects. */
   columnCounts: Record<string, number>;
@@ -163,6 +197,12 @@ export interface DomainSamplerState {
 export interface DomainSamplerInit {
   /** Source of already-open project stores (defaults to `listRegisteredProjectStores`). */
   registeredStores?: RegisteredStoreRegistry;
+  /**
+   * Source of the registered-project population for `projects_{total,active,idle}` (defaults to
+   * absent, which degrades the population to the served-store set — see `resolveProjectPopulation`).
+   * RUFU-912.
+   */
+  registeredProjectIds?: RegisteredProjectIdReader;
   /** Per-store running-agent counter (defaults to `countRunningAgentsInStore`). */
   countAgentsInStore?: (store: unknown) => Promise<number>;
   /**
@@ -385,9 +425,59 @@ export function defaultPoolStatsReader(): PoolStatsReader {
   };
 }
 
+/**
+ * Wall-clock bound on one registry census read (RUFU-912).
+ *
+ * FNXC:MetricsProjectPopulation 2026-11-09-22:05 (RUFU-912):
+ * The census is awaited inside the domain tick, so an unbounded read would let an unreachable central
+ * registry wedge the whole domain family: the sampler's in-flight guard skips a tick whose previous run
+ * is still awaiting, so a hung central read would silently freeze `projects_*`, the per-project agent
+ * gauges and `board_tasks` at their last values forever. That is metrics becoming a lifecycle
+ * dependency by the back door. Two seconds is generous for a 25-row registry SELECT and stays well
+ * inside the 5 s domain tick, and a census that misses the bound degrades to the retained population
+ * instead of stalling the tick.
+ */
+export const REGISTRY_CENSUS_BOUND_MS = 2_000;
+
+/**
+ * Resolve the population the project gauges count.
+ *
+ * FNXC:MetricsProjectPopulation 2026-11-09-21:52 (RUFU-912):
+ * Precedence is registry census, then the last census that succeeded, then — only for a boot that has
+ * never been able to ask a registry — the served-store set.
+ *  - A census that answers (even with `[]`) is the truth: the registry, not store warmth, decides how
+ *    many projects there are, so a cold process reports the whole fleet.
+ *  - A census that fails keeps the last-known population rather than collapsing to "projects with a
+ *    store open right now", which is the warming number this change exists to remove.
+ *  - With NO reader (embedded / no central registry) the served stores ARE the whole population, so
+ *    that fallback is the pre-RUFU-912 behaviour and never a worse answer than it was.
+ * A served store whose project is absent from the registry is deliberately not counted in the total —
+ * the registry is the stated source of truth for existence — and its agent activity stays visible on
+ * `fusion_domain_project_running_agents`, so nothing measured disappears, only the aggregate follows
+ * the registry.
+ */
+export function resolveProjectPopulation(
+  censusIds: readonly string[] | null,
+  retainedIds: readonly string[] | null,
+  servedIds: readonly string[],
+): string[] {
+  const source = censusIds ?? retainedIds ?? servedIds;
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const id of source) {
+    // Same malformed-id guard the store fan-out uses: a non-string or blank id can never render a
+    // well-formed metric line, so it is not a project as far as these gauges are concerned.
+    if (typeof id !== "string" || id.length === 0 || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
 /** Create a domain sampler. Timers are NOT started until {@link DomainSampler.start}. */
 export function createDomainSampler(init: DomainSamplerInit = {}): DomainSampler {
   const registry = init.registeredStores ?? defaultRegistry();
+  const registeredIdsReader = init.registeredProjectIds;
   const countAgents = init.countAgentsInStore ?? defaultCountAgents;
   const listTasks = init.listTasksInStore ?? defaultListTasks;
   const pgReader = init.pgStatsReader ?? defaultPgStatsReader(registry);
@@ -414,6 +504,57 @@ export function createDomainSampler(init: DomainSamplerInit = {}): DomainSampler
    */
   let pgBaselineStale = false;
   let pgEverBaselined = false;
+  /*
+   * FNXC:MetricsProjectPopulation 2026-11-09-21:52 (RUFU-912):
+   * Last SUCCESSFUL registry census, retained across ticks so one failed central read cannot make
+   * `projects_total` fall back to "projects with an open store right now". Mirrors the PG-rate
+   * baseline: only a successful read advances it, and it is never a lifecycle dependency.
+   */
+  let retainedRegisteredIds: string[] | null = null;
+  /*
+   * FNXC:MetricsProjectPopulation 2026-11-09-22:05 (RUFU-912):
+   * At most ONE census read is in flight at a time, and the slot is released only when the underlying
+   * read settles — not when the bound fires — so a registry that never answers costs one dangling
+   * promise for the process's lifetime rather than one per 5 s tick.
+   */
+  let censusInFlight: Promise<readonly string[] | null> | null = null;
+
+  /**
+   * Best-effort registry census: bounded, never rejects, and never piles up behind a slow registry.
+   * Resolves `null` ("could not ask") when there is no reader, when the read fails, or when it misses
+   * {@link REGISTRY_CENSUS_BOUND_MS}; the caller then keeps the retained population.
+   */
+  function readRegistryCensus(): Promise<readonly string[] | null> {
+    if (!registeredIdsReader) return Promise.resolve(null);
+    if (censusInFlight) return censusInFlight;
+    // ONE underlying read, shared by the guarded result and the in-flight release, so a tick can never
+    // pay twice for the census. `Promise.resolve().then(...)` also turns a reader that THROWS
+    // SYNCHRONOUSLY into an ordinary rejection, i.e. just a `null`.
+    const call = Promise.resolve().then(() => registeredIdsReader!());
+    const guarded = new Promise<readonly string[] | null>((resolve) => {
+      let settled = false;
+      const finish = (value: readonly string[] | null): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(bound);
+        resolve(value);
+      };
+      const bound = setTimeout(() => finish(null), REGISTRY_CENSUS_BOUND_MS);
+      (bound as unknown as { unref?: () => void }).unref?.();
+      void call.then(
+        (value) => finish(value ?? null),
+        () => finish(null),
+      );
+    });
+    censusInFlight = guarded;
+    // Release the in-flight slot only when the underlying read settles, not when the bound fires, so a
+    // registry that never answers costs ONE dangling read instead of one per tick.
+    const release = (): void => {
+      if (censusInFlight === guarded) censusInFlight = null;
+    };
+    void call.then(release, release);
+    return guarded;
+  }
   /*
    * FNXC:MetricsSampler 2026-08-18-04:20 (RUFU-081 Greptile P1, RUFU-106 review fix):
    * Restart fencing: stopTimers() bumps the generation, and a sample that started before the
@@ -526,40 +667,50 @@ export function createDomainSampler(init: DomainSamplerInit = {}): DomainSampler
      */
     const poolSamples = new Map<string, PoolOccupancySample | null>();
 
-    await Promise.all(
-      projectIds.map(async (projectId) => {
-        const { store } = entries.get(projectId)!;
-        let running = 0;
-        try {
-          running = await countAgents(store);
-        } catch {
-          running = 0;
-        }
-        runningByProject[projectId] = running;
+    /*
+     * FNXC:MetricsProjectPopulation 2026-11-09-22:05 (RUFU-912):
+     * The registry census is read INSIDE the tick and concurrently with the per-store fan-out, so it
+     * adds no serial latency and the FIRST tick already reports the registry count rather than a
+     * warming store count. It is bounded and best-effort (see `readRegistryCensus`): nothing here may
+     * throw into the tick, because metrics must never become a lifecycle dependency.
+     */
+    const [censusIds] = await Promise.all([
+      readRegistryCensus(),
+      Promise.all(
+        projectIds.map(async (projectId) => {
+          const { store } = entries.get(projectId)!;
+          let running = 0;
+          try {
+            running = await countAgents(store);
+          } catch {
+            running = 0;
+          }
+          runningByProject[projectId] = running;
 
-        let poolSample: PoolOccupancySample | null = null;
-        try {
-          poolSample = await poolReader(store);
-        } catch {
-          poolSample = null;
-        }
-        poolSamples.set(projectId, poolSample);
+          let poolSample: PoolOccupancySample | null = null;
+          try {
+            poolSample = await poolReader(store);
+          } catch {
+            poolSample = null;
+          }
+          poolSamples.set(projectId, poolSample);
 
-        let tasks: SlimTaskLike[] = [];
-        try {
-          tasks = await listTasks(store);
-        } catch {
-          tasks = [];
-        }
-        for (const task of tasks) {
-          // Each slim task row contributes one card to its column. Column ids
-          // are strings; guard against undefined/malformed rows.
-          const column = task?.column;
-          if (typeof column !== "string" || column.length === 0) continue;
-          columnCounts[column] = (columnCounts[column] ?? 0) + 1;
-        }
-      }),
-    );
+          let tasks: SlimTaskLike[] = [];
+          try {
+            tasks = await listTasks(store);
+          } catch {
+            tasks = [];
+          }
+          for (const task of tasks) {
+            // Each slim task row contributes one card to its column. Column ids
+            // are strings; guard against undefined/malformed rows.
+            const column = task?.column;
+            if (typeof column !== "string" || column.length === 0) continue;
+            columnCounts[column] = (columnCounts[column] ?? 0) + 1;
+          }
+        }),
+      ),
+    ]);
 
     // Restarted mid-sample: discard this read — its write would be stale (Greptile P1 review fix).
     if (gen !== sampleGeneration) return;
@@ -593,8 +744,21 @@ export function createDomainSampler(init: DomainSamplerInit = {}): DomainSampler
     state.poolBackendsByProject = nextBackends;
     state.poolMaxByProject = nextMaxima;
 
-    const total = projectIds.length;
-    const active = projectIds.filter((id) => (runningByProject[id] ?? 0) > 0).length;
+    /*
+     * FNXC:MetricsProjectPopulation 2026-11-09-21:52 (RUFU-912):
+     * All three project gauges are counted over ONE population — the registered projects — so
+     * `total == active + idle` by construction and `total` does not move when a store opens or closes.
+     * Before this, `total` was `projectIds.length`, i.e. the count of stores that happened to be open:
+     * live that read 3 at boot and 11 three minutes later against 25 registered projects.
+     */
+    const population = resolveProjectPopulation(censusIds, retainedRegisteredIds, projectIds);
+    if (censusIds) retainedRegisteredIds = population;
+
+    const total = population.length;
+    // active: a registered project is active only when its served store reports an agent; a cold
+    // registered project is idle (nothing is running for it HERE), never "unknown", and its agent
+    // series is simply absent — see the running-agents help text.
+    const active = population.filter((id) => (runningByProject[id] ?? 0) > 0).length;
     state.runningAgentsByProject = runningByProject;
     state.columnCounts = columnCounts;
     state.projectCounts = { total, active, idle: total - active };
@@ -669,21 +833,27 @@ export function createDomainSampler(init: DomainSamplerInit = {}): DomainSampler
     });
 
     // ── Project + running-agent counts ─────────────────────────────────────
+    /*
+     * FNXC:MetricsProjectPopulation 2026-11-09-21:52 (RUFU-912):
+     * The help lines are operator-facing contract, not decoration: each states WHICH population the
+     * gauge counts and what an absent per-project series means, so a cold-store project is never read
+     * as zero activity and `total` is never read as store warmth.
+     */
     families.push({
       name: "fusion_domain_projects_total",
-      help: "Registered open projects (already-open stores only)",
+      help: "Registered projects from the project registry, independent of store warmth (a boot that cannot read any registry falls back to projects with an already-open store)",
       type: "gauge",
       samples: [{ value: state.projectCounts.total }],
     });
     families.push({
       name: "fusion_domain_projects_active",
-      help: "Registered projects currently running at least one agent",
+      help: "Registered projects whose already-open store reports at least one running agent in this process",
       type: "gauge",
       samples: [{ value: state.projectCounts.active }],
     });
     families.push({
       name: "fusion_domain_projects_idle",
-      help: "Registered projects running zero agents (idle/unpaused park)",
+      help: "Registered projects running no agent in this process (total minus active); includes projects whose store is cold, so idle is not a statement that the project is parked",
       type: "gauge",
       samples: [{ value: state.projectCounts.idle }],
     });
@@ -693,7 +863,7 @@ export function createDomainSampler(init: DomainSamplerInit = {}): DomainSampler
     }));
     families.push({
       name: "fusion_domain_project_running_agents",
-      help: "Running agents per registered project",
+      help: "Running agents per project, emitted only for projects with an already-open store: a registered project with no series here was not measured, which is not the same claim as measuring zero agents",
       type: "gauge",
       labels: ["project"],
       samples: agentProjectSamples,

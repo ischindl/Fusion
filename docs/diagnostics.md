@@ -464,8 +464,8 @@ The dashboard HTTP server exposes **`GET /metrics`** — a plain-text Prometheus
 | `fusion_system_child_process_spawn_total_by_kind{kind="…"}` | counter | spawn hook | Per-kind cumulative spawn counts |
 | `fusion_system_git_child_processes` | gauge | ~15s `ps` | Live `git` children of the serving process (best-effort) |
 | `fusion_domain_postgres_queries_per_second` | gauge | ~5s tick | Derived PG xact rate from `pg_stat_database` deltas (best-effort) |
-| `fusion_domain_projects_total` / `…_active` / `…_idle` | gauge | ~5s tick | Registered open project split by running-agent activity |
-| `fusion_domain_project_running_agents{project="…"}` | gauge | ~5s tick | Running agents per registered project |
+| `fusion_domain_projects_total` / `…_active` / `…_idle` | gauge | ~5s tick | Registered projects from the project registry (`central.projects`), independent of store warmth; `active` = a registered project whose already-open store reports ≥1 agent, `idle` = `total − active`, so a project with a cold store counts idle (RUFU-912). Only the per-project measurement needs an open store; with no readable registry the population degrades to already-open stores |
+| `fusion_domain_project_running_agents{project="…"}` | gauge | ~5s tick | Running agents per project, rendered only for projects with an already-open store — a registered project with no series was **not measured**, which is not the claim "measured 0 agents" (RUFU-911 fan-out, RUFU-912 population) |
 | `fusion_domain_board_tasks{column="…"}` | gauge | ~5s tick | Tasks per board column across registered projects |
 | `fusion_postgres_pool_backends{project="…",role="…",state="…"}` | gauge | ~5s tick | Fusion backends visible in `pg_stat_activity` per session class (`runtime`/`health`/`migration`) and state bucket (`active`/`idle`/`other`) — read on each store's dedicated `max: 1` health session (RUFU-483) |
 | `fusion_postgres_pool_max{project="…",role="…"}` | gauge | ~5s tick | The runtime pool ceiling each registered store actually resolved (`FUSION_PG_POOL_MAX` or its override); excludes the dedicated `max: 1` sessions (RUFU-483) |

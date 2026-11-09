@@ -108,7 +108,7 @@ import {
 import { loadViewChunkManifest, type ViewChunkManifestEntry } from "./view-chunk-manifest.js";
 import { maybeStartOtelExporter, type OtelExporterHandle } from "./otel-exporter.js";
 import { createMetricsSampler } from "./metrics/index.js";
-import { createDashboardDomainRegistry } from "./metrics/served-project-stores.js";
+import { createDashboardDomainRegistry, createRegisteredProjectIdReader } from "./metrics/served-project-stores.js";
 import { requireAsyncLayer } from "./require-async-layer.js";
 import {
   evaluateDashboardPostgresHealth,
@@ -1368,6 +1368,18 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
   footer/Command-Center live count uses, so the two surfaces cannot disagree about which store answers
   for a project. It stays read-only: no store is opened, no watcher and no engine is started to answer
   a scrape, and a project with nothing open contributes no series rather than a fabricated zero.
+
+  FNXC:MetricsProjectPopulation 2026-11-09-22:05 (RUFU-912):
+  That union fixes WHICH store answers for a project; it cannot answer HOW MANY projects exist, because
+  stores warm lazily. Measured on the next deploy (pid 4107433, HEAD a0f6fbc391): `projects_total` read
+  3 right after start and 11 about three minutes later while `central.projects` held 25 rows the whole
+  time, and the per-project agent gauges grew 3 -> 11 series in step. A number that slowly drifts toward
+  the truth is the worst shape for an operator panel: it looks alive and is wrong. So the project
+  population is now read from the central project registry on each domain tick — concurrently with the
+  per-store fan-out, through the same typed read `GET /api/projects` uses — while the per-project
+  numbers keep using the union. A boot with no central registry, or a registry read that throws, or one
+  that hangs past the tick, degrades the population to the union count (the pre-RUFU-912 behaviour) and
+  can never fail, delay, or become a dependency of the tick.
   */
   const metricsSampler = createMetricsSampler({
     retention: { onPressure: retentionPressureNotifier },
@@ -1377,6 +1389,9 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
         listRegisteredStores: () => listRegisteredProjectStores(),
         defaultStore: store,
         resolveDefaultProjectId: async () => options?.centralCore?.getDefaultProjectId?.(),
+      }),
+      registeredProjectIds: createRegisteredProjectIdReader({
+        listProjects: async () => options?.centralCore?.listProjects?.(),
       }),
     },
   });

@@ -21,6 +21,12 @@
  * and never starts an engine to answer a scrape: a project with no already-open store contributes
  * nothing. That absence is the honest shape — the sampler must not invent a zero for a project it
  * cannot observe, because "not measured" and "measured idle" are different claims to an operator.
+ *
+ * RUFU-912 adds the SECOND, different question this module answers. The union above is which store
+ * answers FOR a project; it is not how many projects exist. Stores warm lazily, so measuring the fleet
+ * with the union gave a number that climbed while an operator watched it — 3 at boot, 11 three minutes
+ * later, against 25 registered projects. The project COUNT therefore comes from the registry
+ * (`createRegisteredProjectIdReader`), and only the per-project measurement stays bound to the union.
  */
 
 /** The store handle the fan-out reads. Structural, so no `@fusion/*` type cycle is introduced. */
@@ -57,6 +63,62 @@ export interface DashboardDomainRegistryDeps {
 export interface ServedProjectStore {
   projectId: string;
   store: ServedStoreHandle;
+}
+
+/*
+FNXC:MetricsProjectPopulation 2026-11-09-21:52 (RUFU-912):
+Row shape is structural (`{ id }`) rather than `RegisteredProject` so this metrics module stays free of
+a core type import for a read that only ever needs the identity.
+
+The census deliberately goes through the registry's own list API instead of a hand-written
+`SELECT id FROM central.projects`: `central.projects` carries NO RLS (see the `listProjects()` note in
+`packages/core/src/task-store/async/async-settings.ts`), so the existing typed read already answers
+"every registered project" from any project-scoped layer, it is what `GET /api/projects` uses to show
+the operator 25 projects on this deployment, and adding a second untyped SQL path to the same table
+would be a second opinion about what a project is. Measured cost here: 25 rows, every `settings` column
+NULL, once per 5 s tick.
+*/
+/** A registered-project row as far as the census cares: it reads the id and nothing else. */
+export interface RegisteredProjectRow {
+  id?: unknown;
+}
+
+/** The registry read the census is derived from; `undefined` when no central registry exists. */
+export type RegisteredProjectLister = () => Promise<readonly RegisteredProjectRow[] | null | undefined>;
+
+/** Resolves the registered project ids, or `null` when the registry could not be read. */
+export type RegisteredProjectIdReader = () => Promise<string[] | null>;
+
+/**
+ * Build the census reader that backs `fusion_domain_projects_{total,active,idle}`.
+ *
+ * The contract is the one the sampler needs: an ARRAY is a measurement (empty means a registry with no
+ * projects), `null` means "I could not ask". Every failure mode — no central registry, an uninitialized
+ * core, a thrown or rejected read — resolves `null`, so a metrics tick can never fail, block, or become
+ * a lifecycle dependency because the registry was unreachable.
+ */
+export function createRegisteredProjectIdReader(deps: {
+  listProjects?: RegisteredProjectLister;
+}): RegisteredProjectIdReader {
+  return async (): Promise<string[] | null> => {
+    const { listProjects } = deps;
+    if (!listProjects) return null;
+    try {
+      const rows = await listProjects();
+      if (!rows) return null;
+      const ids: string[] = [];
+      const seen = new Set<string>();
+      for (const row of rows) {
+        const id = typeof row?.id === "string" ? row.id.trim() : "";
+        if (id.length === 0 || seen.has(id)) continue;
+        seen.add(id);
+        ids.push(id);
+      }
+      return ids;
+    } catch {
+      return null;
+    }
+  };
 }
 
 /**
