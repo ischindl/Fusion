@@ -5,7 +5,7 @@ import type { Request } from "express";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
-import { GIT_INSTALL_URL, isGhAvailable, isGhAuthenticated, probeGitCliStatus } from "@fusion/core";
+import { GIT_INSTALL_URL, isGhAvailableAsync, isGhAuthenticatedAsync, probeGitCliStatus } from "@fusion/core";
 import { invalidateClaudeCliProbeCache, probeClaudeCli } from "../claude-cli-probe.js";
 import { probeDroidCli } from "../droid-cli-probe.js";
 import { invalidateRuntimeCliProbeCaches, probeAntigravityCliProvider, probeCursorCliProvider, probeGrokCliProvider, probeOmpCliProvider } from "../runtime-provider-probes.js";
@@ -1008,9 +1008,17 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
         });
       }
 
+      /*
+      FNXC:GhProbeShared 2026-11-09-15:13 (RUFU-909):
+      Same class as `GET /api/settings`: this provider-status read is polled, and the SYNC pair
+      `execFileSync`-spawned `gh --version` + `gh auth status` on a TTL expiry, blocking the event
+      loop for the whole network round trip. The async twins own the one shared cache entry and
+      single-flight concurrent polls into ONE spawn, which is what RUFU-871 established as the
+      contract for this probe.
+      */
       const ghCli = {
-        available: isGhAvailable(),
-        authenticated: isGhAuthenticated(),
+        available: await isGhAvailableAsync(),
+        authenticated: await isGhAuthenticatedAsync(),
       };
       let gitCli: Awaited<ReturnType<typeof probeGitCliStatus>>;
       try {
