@@ -108,6 +108,7 @@ import {
 import { loadViewChunkManifest, type ViewChunkManifestEntry } from "./view-chunk-manifest.js";
 import { maybeStartOtelExporter, type OtelExporterHandle } from "./otel-exporter.js";
 import { createMetricsSampler } from "./metrics/index.js";
+import { createServedProjectStoreRegistry } from "./metrics/served-project-stores.js";
 import { requireAsyncLayer } from "./require-async-layer.js";
 import {
   evaluateDashboardPostgresHealth,
@@ -1352,7 +1353,34 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
     logger: runtimeLogger.child("retention-pressure"),
     resolveMailbox: () => options?.engine?.getMessageStore(),
   });
-  const metricsSampler = createMetricsSampler({ retention: { onPressure: retentionPressureNotifier } });
+  /*
+  FNXC:MetricsStoreFanOut 2026-11-09-18:19 (RUFU-911):
+  The domain sampler used to fall through to its default registry, which enumerated the SECONDARY
+  project-store cache only. That cache holds neither the default in-process store nor an
+  engine-manager-owned store, so the whole domain family set was measuring a subset of the fleet and
+  reporting the rest as absent: live, `fusion_domain_projects_total` read 1 against 25 visible
+  projects, one agent series existed instead of one per project, and
+  `fusion_domain_postgres_queries_per_second` was pinned at 0 because its probe picked the first store
+  of that same short list and found none. A crash+respawn cycle hid this because the panel simply
+  looked quiet rather than broken.
+
+  The sampler is now given the union of every already-open store, at the same precedence the
+  footer/Command-Center live count uses, so the two surfaces cannot disagree about which store answers
+  for a project. It stays read-only: no store is opened, no watcher and no engine is started to answer
+  a scrape, and a project with nothing open contributes no series rather than a fabricated zero.
+  */
+  const metricsSampler = createMetricsSampler({
+    retention: { onPressure: retentionPressureNotifier },
+    domain: {
+      registeredStores: () =>
+        createServedProjectStoreRegistry({
+          engineManager: options?.engineManager,
+          listRegisteredStores: () => listRegisteredProjectStores(),
+          defaultStore: store,
+          resolveDefaultProjectId: () => options?.centralCore?.getDefaultProjectId?.(),
+        })(),
+    },
+  });
   const mutationRateLimit = rateLimit(RATE_LIMITS.mutation);
   const setupRateLimit = rateLimit(RATE_LIMITS.api);
   const setupReadRateLimit = rateLimit(RATE_LIMITS.api);
