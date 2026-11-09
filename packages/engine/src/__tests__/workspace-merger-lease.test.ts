@@ -144,6 +144,15 @@ const approveReviewAgent = async (): Promise<string> => "REVIEW_VERDICT: approve
 FNXC:RepositoryScope 2026-08-21-02:05:
 Lease scenarios must model the Code Review fingerprint that production requires before a
 scoped repository can land; confirmed membership and a file list alone are not approval.
+
+FNXC:WorkspaceMergeFixture 2026-11-09-15:41:
+RUFU-517 measured this pair as the REFERENCE merge-mechanics shape for workspace cards and
+deliberately did not extract it into a shared `_workspace-merge-ready.ts` module. Twelve other
+workspace files build `repositoryScope.reviewEvidence` inline on purpose: several of them state
+*wrong* or missing evidence to exercise a refusal (scope-gates, gate-repository-context, review
+findings), so one shared helper would erase the very deviation those scenarios test. Copy this
+shape when a scenario needs to be accepted by the land door; deviate from it deliberately when a
+scenario needs to be refused, and name the refusal in the comment.
 */
 function workspaceRepositoryScope(workspaceWorktrees: Task["workspaceWorktrees"]): Task["repositoryScope"] {
   return {

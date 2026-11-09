@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { TaskStore as CoreTaskStore } from "@fusion/core";
 import type { Settings, Task, TaskDetail, TaskStore, WorkflowIrNode, WorkspaceConfig } from "@fusion/core";
 import { prepareGraphNodeExecution } from "../executor/prepare-graph-node-execution.js";
 import { ensureGraphCustomNodeWorktree } from "../executor/ensure-graph-custom-node-worktree.js";
 import { blockOuterDispatchWhenFileScopeLeaseHeld } from "../executor/file-scope-lease-dispatch-gate.js";
+import { getPromptPath } from "../execution/spec-staleness.js";
 import { GridlockDetector } from "../healing/gridlock-detector.js";
 import { Scheduler } from "../scheduler.js";
 import { SelfHealingManager } from "../self-healing.js";
@@ -75,6 +79,22 @@ function overlapTask(id: string, overrides: Partial<Task> = {}): Task {
 
 function createOverlapStore(tasks: Task[], scopes: Record<string, string[]>): { store: TaskStore; byId: Map<string, Task> } {
   const byId = new Map(tasks.map((entry) => [entry.id, entry]));
+  /*
+  FNXC:PlanPremiseReleaseDoor 2026-11-09-07:55 (RUFU-517 fixture repair):
+  FN-375 moved `checkPlanPremises` INTO the hold->WIP release door, so a candidate with no readable
+  `PROMPT.md` is now refused at `plan-premise-unavailable` BEFORE the door ever asks the scheduler to
+  reserve a slot. That is why the overlap assertions here started failing while the overlap logic itself
+  was untouched: the candidate never reached the file-scope check that queues it. The fake therefore
+  carries the card tree a planned card always has. The spec names no premises, which the checker treats
+  as vacuously satisfied, so the release door opens on the same evidence a real planned card presents.
+  */
+  const root = mkdtempSync(join(tmpdir(), "rufu-517-overlap-"));
+  storeRoots.push(root);
+  const tasksDir = join(root, ".fusion", "tasks");
+  for (const entry of tasks) {
+    mkdirSync(join(tasksDir, entry.id), { recursive: true });
+    writeFileSync(getPromptPath(tasksDir, entry.id), `# ${entry.id}\n\n## What This Delivers\n\nOverlap parity fixture card.\n`, "utf8");
+  }
   const settings = { maxConcurrent: 10, maxWorktrees: 10, groupOverlappingFiles: true, globalPause: false, enginePaused: false } as Settings;
   const updateTask = vi.fn(async (id: string, patch: Partial<Task>) => {
     const current = byId.get(id);
@@ -100,6 +120,22 @@ function createOverlapStore(tasks: Task[], scopes: Record<string, string[]>): { 
   });
   const moveTask = vi.fn(async (id: string, column: Task["column"]) => updateTask(id, { column }));
   const store = {
+    /*
+    FNXC:WorkflowBatchCacheEpoch 2026-11-09-07:55 (RUFU-517 fixture repair):
+    RUFU-584 made `SelfHealingManager.batchWorkflowIrCache()` call `this.store.workflowDefinitionEpoch()`
+    UNGUARDED, so every sweep this file drives threw `TypeError: ... is not a function` before its first
+    decision and the repairs under test simply never happened — the assertions then read `status: "queued"`
+    where the sweep should have cleared the blocker. A constant epoch is the honest fake: this file never
+    writes a workflow definition, so a cache that never invalidates is exactly what the real store reports.
+    */
+    workflowDefinitionEpoch: () => 0,
+    /*
+    FNXC:SchedulerAdvisorySeam 2026-11-09-07:55 (RUFU-517 fixture repair):
+    `Scheduler.schedule()` also runs the unlinked-missions advisory, which reads `store.getMissionStore()`.
+    The real store always answers; this fake left it absent, so every pass logged a caught TypeError that
+    looked like product breakage in the run output. Empty mission population is the state under test.
+    */
+    getMissionStore: () => ({ listMissions: async () => [], listGoalIdsForMission: async () => [] }),
     getSettings: vi.fn(async () => settings),
     updateSettings: vi.fn(async () => settings),
     listTasks: vi.fn(async (options?: { column?: Task["column"] }) => {
@@ -118,8 +154,8 @@ function createOverlapStore(tasks: Task[], scopes: Record<string, string[]>): { 
     transitionQueuedEpisode,
     logEntry: vi.fn(async () => undefined),
     getCompletionHandoffAcceptedMarker: vi.fn(async () => null),
-    getRootDir: vi.fn(() => "/workspace"),
-    getTasksDir: vi.fn(() => "/workspace/.fusion/tasks"),
+    getRootDir: vi.fn(() => root),
+    getTasksDir: vi.fn(() => tasksDir),
     on: vi.fn(),
     off: vi.fn(),
     recordRunAuditEvent: vi.fn(async () => undefined),
@@ -158,10 +194,17 @@ async function repairWorkspaceOverlap(
   }).repairOverlapBlocker.call(self, subject.id, {});
 }
 
-afterEach(() => vi.clearAllMocks());
+const storeRoots: string[] = [];
+
+afterEach(() => {
+  vi.clearAllMocks();
+  while (storeRoots.length > 0) {
+    rmSync(storeRoots.pop()!, { recursive: true, force: true });
+  }
+});
 
 describe("workspace implementation base-refresh enablement", () => {
-  it("forwards refresh from write-capable code and skips read-only graph preparation", async () => {
+  it("acquires per the graph requirement and forwards refresh only from write-capable code", async () => {
     const live = task();
     const ensureGraphCustomNodeWorktree = vi.fn(async (value: TaskDetail) => value);
     const deps = {
@@ -196,8 +239,21 @@ describe("workspace implementation base-refresh enablement", () => {
       { requiresWorktree: false },
     );
 
-    expect(ensureGraphCustomNodeWorktree).toHaveBeenCalledOnce();
-    expect(ensureGraphCustomNodeWorktree).toHaveBeenCalledWith(live, settings, "implementation", true);
+    /*
+    FNXC:CheckoutDependentNode 2026-11-09-07:55 (RUFU-517 contract repair):
+    FN-282 briefly gated acquisition on the node's WRITE capability (`if (!workflowNodeRequiresWorktree(node))
+    return;`) and this test was rewritten to expect a single call. FN-288 reverted that product decision the
+    next day — a read-only Code Review node still inspects the task diff, so it needs a checkout — and moved
+    the gate back onto the graph's own preparation requirement. FN-288 changed the product but not this
+    assertion, so the file has been red on main ever since while the product stayed correct. The two halves
+    of the contract this test exists to pin are therefore: (1) `requirement.requiresWorktree` decides WHO
+    acquires, and (2) the refresh flag still travels only from write-capable code — a read-only node
+    reacquires without refreshing the base, and a node that names no checkout returns before any store read.
+    */
+    expect(ensureGraphCustomNodeWorktree).toHaveBeenCalledTimes(2);
+    expect(ensureGraphCustomNodeWorktree).toHaveBeenNthCalledWith(1, live, settings, "implementation", true);
+    expect(ensureGraphCustomNodeWorktree).toHaveBeenNthCalledWith(2, live, settings, "review", false);
+    expect(deps.store.getTask).toHaveBeenCalledTimes(2);
   });
 
   it("passes the graph refresh flag into workspace acquisition", async () => {

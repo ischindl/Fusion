@@ -289,6 +289,20 @@ export class MockAgentRuntime implements AgentRuntime {
     return {
       session: new MockAgentSession(options, sessionPurpose) as unknown as AgentSession,
       sessionFile: undefined,
+      /*
+      FNXC:WorkflowTestMode 2026-11-09-08:13:
+      The mock lane scripts ONE model and has no fallback-dispatch machinery, so its settlement
+      boundary is closed by construction — the same explicit guarantee DefaultPiRuntime states for
+      itself. Without it, FN-8728's planner-retry guard reads `typeof settleFallbackDispatch !==
+      "function"` as "this runtime never told me whether it fell back to another model", which it
+      treats as a session failure even when the attempt wrote a complete specification. Consequence
+      on the mock provider / test mode: every planned card was rebound to `needs-replan` on the
+      recovery cadence, the hold→WIP door withheld it as `awaiting-planning`, and no scripted
+      full-workflow run could ever reach execution. Plugin runtimes are deliberately NOT given this
+      default — an unknown third-party runtime genuinely cannot report its fallback lifecycle, and
+      failing closed there is the guard's purpose.
+      */
+      settleFallbackDispatch: async () => undefined,
     };
   }
 

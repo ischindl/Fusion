@@ -68,6 +68,10 @@ On Darwin, `pnpm pg:test:status` is supported for a manually provisioned local t
 
 The configured identity follows `postgres@3.4.9`: role is URL username, then `PGUSERNAME`, `PGUSER`, and the OS user; password is URL password then `PGPASSWORD`; database is URL path, then `PGDATABASE`, then the role name. A role-only repair therefore still fails when its role-named database is absent. The readiness gate runs configured login, PL/pgSQL, maintenance, and admin-DDL probes. A bare or CI-shaped probe is diagnostic-only unless its independently resolved role/database is one the script provisions; no harness connect dials a path-less base URL.
 
+<!-- FNXC:PgTestProbe 2026-11-09-10:03: RUFU-517 - a TCP-only probe classified a credential-refusing foreign server on the default port as available, so three pgDescribe files crashed mid-run instead of skipping. -->
+
+The `pgDescribe` auto-skip decides on wire evidence, not on a socket. `packages/core/src/__test-utils__/pg-startup-probe.ts` sends a real `StartupMessage` and reads the server's first reply, and it downgrades availability **only** on positive proof of refusal: `AuthenticationOk` means the URL works; a `SASL`/`MD5`/`cleartext` request arriving on a URL that carries no password, or an `ErrorResponse`, means this process can never connect. Everything indeterminate — timeout, EOF, a non-PostgreSQL listener, and **any** reply to a URL that does carry a password (CI's shape, whose SCRAM exchange the probe does not negotiate) — keeps the plain TCP verdict, so the probe can never newly silence a suite that previously ran. A proven refusal also warns once per process naming host, port and role (never a password) with the `FUSION_PG_TEST_URL_BASE` remedy, because an invisible skip is what made the workspace land/finalize files read as product defects while a foreign container squatted `localhost:5432`.
+
 `FUSION_PG_TEST_URL_BASE` is shared by `up`, `status`, and `down`; export the same non-default URL for all three. A path-bearing URL is provisionable but reports `harness-url-concat`, since `${PG_TEST_URL_BASE}/${dbName}` corrupts the 24 harness URL constructions. The script refuses URL/`--port` conflicts and `PGHOST`/`PGPORT` endpoint divergence. It reuses healthy servers, never mutates a foreign server's roles or databases, and requires a proven data-directory/PID ownership chain before `--replace` can stop a broken PostgreSQL server. `pg_ctl` daemonizes the postmaster, avoiding detached process spawning. A skipped `pgDescribe` block is not PostgreSQL verification evidence.
 
 ### PostgreSQL setup-boundary participation and measurement
@@ -100,6 +104,22 @@ pnpm --filter @fusion/engine exec vitest run src/__tests__/workspace-e2e.test.ts
 ```
 
 Do not replace this with a structural store that omits workspace lease APIs: that shape can hide remote fence and intent behavior.
+
+<!-- FNXC:WorkspaceLandBatchFanout 2026-11-09-18:44: RUFU-517 measured the batch's worker ceiling on a loaded 24-core host. -->
+
+### The workspace land/finalize batch needs a bounded fan-out
+
+The full land/finalize selection (`workspace*`, `zero-commit*`, `merger-merge*`, `confirmed-merge*`, excluding `*.slow.test.ts`) is spawn-bound: every case forks real Git processes and three of the files also drive one shared PostgreSQL server. Its two heaviest cases (`workspace-merger-lease.test.ts > rejects a predecessor's real repo-b push after a successor republished its dispatch fence`, `workspace-e2e.test.ts > workspace local-only PostgreSQL landing`) fit the 30 s ceiling in seconds when alone but exceed it when their own fork fan-out competes with them.
+
+Run the batch with `VITEST_MAX_WORKERS=2` on a host that is already loaded:
+
+```bash
+VITEST_MAX_WORKERS=2 pnpm --filter @fusion/engine exec vitest run src/__tests__/workspace-merger.test.ts src/__tests__/workspace-merger-lease.test.ts ... --silent=passed-only --reporter=dot
+```
+
+Measured 2026-11-09 on a 24-core host at load average 16-24 with a 1200 % CPU quota: at the CPU-derived default of 6 workers the batch went red in 6 of 7 attempts with `Test timed out in 30000ms` on those two cases, while sibling tests in the same file ran 3.5x-5x their solo duration (the disjoint-sub-repos case: 3.8 s alone, 13.2 s in the batch). Every one of the 5 attempts at `VITEST_MAX_WORKERS=2` passed all 131 tests at the same host load, and the aggregate `tests` cost fell from 566-905 s to 208-360 s while wall time stayed the same or improved (260-276 s). CI is unaffected either way: `computeMaxWorkers()` already resolves 2 workers on a 4-core runner, which is the shape that has been passing.
+
+This is a scheduling bound, not a timeout. The engine `testTimeout` stays 30 000 ms and the appeasement guard still forbids raising it to absorb contention.
 
 ## Weekly signal-per-second baseline
 

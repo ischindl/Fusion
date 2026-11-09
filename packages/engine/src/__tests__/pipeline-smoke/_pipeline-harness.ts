@@ -565,10 +565,39 @@ export class PipelineSmokeHarness {
   results. The task store writer preserves the same lock/evidence contract as triage.
   */
   private async publishPlannedPrompt(taskId: string): Promise<void> {
+    await this.store.updateTask(taskId, {
+      prompt: this.nextPlannedPromptText(taskId),
+      status: null,
+      error: null,
+    });
+  }
+
+  /*
+  FNXC:PipelineSmoke 2026-11-09-08:13:
+  The specification text one planner turn authors. It is the single content authority so the
+  harness's replan drive and the mock planner script can never disagree about what the plan says.
+  Every call advances the per-task revision, which is what makes each attempt's artifact differ
+  from its own baseline — see authorPlannedPrompt for why that has to be true.
+  */
+  private nextPlannedPromptText(taskId: string): string {
     const revision = (this.promptRevisions.get(taskId) ?? 0) + 1;
     this.promptRevisions.set(taskId, revision);
-    const plannedPrompt = `# ${taskId}\n\n## Mission\nExercise the deterministic local pipeline fixture from planning through merge (revision ${revision}).\n\n## File Scope\n- pipeline-smoke-output.txt\n\n## Steps\n### Step 0: Implement deterministic pipeline output\n- Make the local fixture change.\n\n## Completion Criteria\n- The local fixture change is committed and reviewable.\n\n## Do Not\n- Contact a network service.\n`;
-    await this.store.updateTask(taskId, { prompt: plannedPrompt, status: null, error: null });
+    return `# ${taskId}\n\n## Mission\nExercise the deterministic local pipeline fixture from planning through merge (revision ${revision}).\n\n## File Scope\n- pipeline-smoke-output.txt\n\n## Steps\n### Step 0: Implement deterministic pipeline output\n- Make the local fixture change.\n\n## Completion Criteria\n- The local fixture change is committed and reviewable.\n\n## Do Not\n- Contact a network service.\n`;
+  }
+
+  /*
+  FNXC:PipelineSmoke 2026-11-09-08:13:
+  FN-8728 made "the planner left PROMPT.md byte-identical to what this attempt started with" a
+  planner-session failure, charged to the bounded filesystem-twin recovery cadence. The fixture used
+  to pre-publish the specification and let the mock planner say it was done, so every scenario's
+  first planning attempt read as an unwritten plan: the card went `needs-replan` with a backoff,
+  the hold→WIP door withheld it as `awaiting-planning`, and the scenario died on a W5 quiescence
+  wedge instead of converging. So the mock PLANNER now authors the artifact inside its own attempt,
+  which is what a real planner does. Only the specification is written here — status and error stay
+  with the planning lane, which owns them for the rest of the turn.
+  */
+  private async authorPlannedPrompt(taskId: string): Promise<void> {
+    await this.store.updateTask(taskId, { prompt: this.nextPlannedPromptText(taskId) });
   }
 
   async requireTaskWorktree(taskId: string): Promise<string> {
@@ -839,6 +868,7 @@ export class PipelineSmokeHarness {
       state: entry.state,
       observeMockRuntime: () => this.guard.assertMockRuntime("mock/scripted"),
       readTaskSteps: async () => (await this.freshTask(taskId).catch(() => undefined))?.steps?.map((step) => step.status) ?? [],
+      authorPlannedPrompt: () => this.authorPlannedPrompt(taskId),
     });
   }
 

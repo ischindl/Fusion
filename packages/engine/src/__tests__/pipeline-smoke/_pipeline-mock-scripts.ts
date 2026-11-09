@@ -99,6 +99,17 @@ export function installPipelineMockScripts(input: {
   readonly observeMockRuntime: () => void;
   /** Current step statuses, read live so appended remediation work is completed too. */
   readonly readTaskSteps: () => Promise<string[]>;
+  /*
+  FNXC:PipelineSmoke 2026-11-09-08:13:
+  Authors this task's specification the way a real planner does: inside the planning attempt, as
+  the attempt's own artifact. FN-8728 made an attempt that leaves PROMPT.md byte-identical to its
+  own baseline a planner-session failure charged to the recovery cadence, and RUFU-251 folds that
+  verdict in even when the runtime reported no fallback dispatch — so a mock planner that merely
+  announces completion leaves every scenario's card in `needs-replan`, withheld from WIP as
+  `awaiting-planning`, until the scenario dies on a W5 quiescence wedge. Supplied by the harness so
+  the specification text and its durable writer stay in one place.
+  */
+  readonly authorPlannedPrompt: () => Promise<void>;
 }): void {
   const behavior = input.behavior ?? {};
   const state = input.state ?? { planReviewIndex: 0, codeReviewIndex: 0, implementationCommitted: false };
@@ -342,6 +353,7 @@ export function installPipelineMockScripts(input: {
         return;
       }
       input.observeMockRuntime();
+      await input.authorPlannedPrompt();
       context.options.onText?.("Mock triage completed the production planning step.");
     },
   };

@@ -40,11 +40,12 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { Worker } from "node:worker_threads";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { createPostgresDdlAdmissionGate } from "./pg-ddl-admission.js";
 import { tmpdir } from "node:os";
+import { parsePgProbeTarget, probePgUsable, type PgProbeTarget } from "./pg-startup-probe.js";
+
 import {
   createPgTimeoutBoundaryObserver,
   type PgTimeoutBoundaryObserver,
@@ -89,90 +90,16 @@ import {
 export const PG_TEST_URL_BASE =
   process.env.FUSION_PG_TEST_URL_BASE ?? "postgresql://localhost:5432";
 
-/**
- * FNXC:FixPgTestsAndCi 2026-06-26-09:00:
- * Parse the host/port out of PG_TEST_URL_BASE so a synchronous TCP probe can
- * detect whether the test PostgreSQL server is actually reachable. Returns a
- * sane default (localhost:5432) when the URL is malformed or has no port.
- */
-function parseProbeTarget(url: string): { host: string; port: number } {
-  try {
-    const parsed = new URL(url);
-    const host = parsed.hostname || "localhost";
-    const port = parsed.port ? Number.parseInt(parsed.port, 10) : 5432;
-    return { host, port: Number.isFinite(port) ? port : 5432 };
-  } catch {
-    return { host: "localhost", port: 5432 };
-  }
-}
+let pgProbeRefusalWarned = false;
 
-/**
- * FNXC:FixPgTestsAndCi 2026-06-26-09:00:
- * Synchronous TCP reachability probe. Returns true if a TCP connection to
- * (host, port) succeeds within a short timeout. This MUST be synchronous
- * because `PG_AVAILABLE` is consumed at module-load time by conditional
- * `describe` calls (vitest's describe is synchronous).
- *
- * Implementation: spawns a Worker thread that performs the async connect. The
- * worker writes the outcome (1=connected, 2=failed) into a SharedArrayBuffer
- * and calls Atomics.notify; the main thread blocks on Atomics.wait. This is
- * the only way to bridge async I/O into a synchronous result in Node without
- * a native blocking socket addon.
- *
- * Why not just check env vars? The prior probe was
- *   `process.env.FUSION_PG_TEST_SKIP !== "1" && Boolean(PG_TEST_URL_BASE)`
- * which is ALWAYS truthy because PG_TEST_URL_BASE defaults non-empty and
- * FUSION_PG_TEST_SKIP is never set in CI — so the 57 pgDescribe suites tried
- * to run in CI without PostgreSQL and failed with ECONNREFUSED, or were
- * silently dead. The real check must verify reachability.
- *
- * Why not the `pg_isready` binary via execSync? execSync is banned by
- * AGENTS.md for non-git-plumbing, and pg_isready may be absent from some CI
- * images. The worker-thread probe has no external binary dependency.
- */
-
-function probeTcpReachable(host: string, port: number, timeoutMs = 1500): boolean {
-  const shared = new SharedArrayBuffer(4);
-  const view = new Int32Array(shared);
-  view[0] = 0; // 0 = pending, 1 = connected, 2 = failed
-
-  let worker: Worker | null = null;
-  try {
-    // Spawn a worker that performs the async connect and signals the SAB.
-    // The worker source is inline (no temp file) and tiny.
-    const workerCode = `
-      const { parentPort } = require("node:worker_threads");
-      const { Socket } = require("node:net");
-      parentPort.on("message", (msg) => {
-        const { host, port, timeoutMs, buf } = msg;
-        const view = new Int32Array(buf);
-        const socket = new Socket();
-        socket.setTimeout(timeoutMs);
-        socket.once("connect", () => { view[0] = 1; Atomics.notify(view, 0); socket.destroy(); });
-        const fail = () => { if (view[0] === 0) { view[0] = 2; Atomics.notify(view, 0); } socket.destroy(); };
-        socket.once("error", fail);
-        socket.once("timeout", fail);
-        socket.connect(port, host);
-      });
-    `;
-    worker = new Worker(workerCode, { eval: true });
-    worker.postMessage({ host, port, timeoutMs, buf: shared });
-  } catch {
-    // If worker threads are unavailable (rare), treat as unreachable so the
-    // suite skips rather than hangs.
-    return false;
-  }
-
-  // Block until the worker signals or we exceed the deadline.
-  const deadline = Date.now() + timeoutMs + 500;
-  while (view[0] === 0 && Date.now() < deadline) {
-    Atomics.wait(view, 0, 0, 100);
-  }
-
-  // Tear down the worker asynchronously; don't block on it.
-  void worker.terminate().catch(() => {});
-
-  return view[0] === 1;
+function warnPgProbeRefused(target: PgProbeTarget): void {
+  if (pgProbeRefusalWarned) return;
+  pgProbeRefusalWarned = true;
+  console.warn(
+    `[pg-test-harness] PostgreSQL at ${target.host}:${target.port} refused the probe startup for role "${target.user}" ` +
+      "(the target URL carries no password), so pgDescribe suites will SKIP rather than crash mid-run. " +
+      "Point FUSION_PG_TEST_URL_BASE at a server this process can authenticate to (see docs/testing.md) to run them.",
+  );
 }
 
 /**
@@ -182,18 +109,28 @@ function probeTcpReachable(host: string, port: number, timeoutMs = 1500): boolea
  * A test suite is gated to run only when ALL of the following hold:
  *   1. FUSION_PG_TEST_SKIP is not "1" (explicit opt-out).
  *   2. PG_TEST_URL_BASE is set and non-empty (not disabled entirely).
- *   3. The target host:port is actually accepting TCP connections.
+ *   3. The target host:port is actually accepting TCP connections AND the
+ *      startup handshake does not prove the server refuses this URL's identity.
  *
  * The reachability probe (#3) is what was missing: previously PG_AVAILABLE
  * was always truthy because the URL default is non-empty and the skip flag is
  * never set in CI, so pgDescribe suites ran (and failed) in environments
  * without PostgreSQL. Now they correctly skip via describe.skip.
+ *
+ * FNXC:PgProbeAuth 2026-11-09-09:42 (RUFU-517):
+ * Condition #3 was still only half a contract. A server that accepts TCP but
+ * refuses authentication is unreachable *for this harness*, and it made three
+ * workspace land/finalize files fail mid-run on `password authentication failed`
+ * instead of skipping as documented. The handshake half is refusal-only, so an
+ * environment that can connect is never newly silenced.
  */
 function computePgAvailable(): boolean {
   if (process.env.FUSION_PG_TEST_SKIP === "1") return false;
   if (!PG_TEST_URL_BASE) return false;
-  const { host, port } = parseProbeTarget(PG_TEST_URL_BASE);
-  return probeTcpReachable(host, port);
+  const target = parsePgProbeTarget(PG_TEST_URL_BASE);
+  const { usable, refused } = probePgUsable(target);
+  if (refused) warnPgProbeRefused(target);
+  return usable;
 }
 
 export const PG_AVAILABLE = computePgAvailable();

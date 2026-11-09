@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { resolveWorkflowIrForTask, type Task, type TaskStore } from "@fusion/core";
+import { resolveWorkflowIrById, resolveWorkflowIrForTask, type Task, type TaskStore } from "@fusion/core";
 import { executingTaskLock } from "../agents/active-session-registry.js";
 
 import { finalizeProvenAutoMergeTask } from "../merge/auto-merge-finalization.js";
@@ -641,7 +641,22 @@ describe("missing post-merge continuation recovery", () => {
 
   it("resolves custom gate ids rather than hardcoding the builtin gate", async () => {
     const { task, store, items } = recoveryFixture();
-    const ir = structuredClone(await resolveWorkflowIrForTask(store, task.id));
+    /*
+    FNXC:WorkflowSelectionMemo 2026-11-09-09:05 (RUFU-517 fixture repair):
+    The base graph is read BY ID (`builtin:coding`, the resolver's own fallback id) instead of through the
+    task. Reading it through the task asked the resolver for THIS card's selection while the card still had
+    none, and RUFU-588's per-store selection memo deliberately remembers an ABSENT selection — that absence
+    is the N+1 the memo exists for (`readSelectionWithCoalescing`, packages/core/src/workflows/workflow-ir-resolver.ts).
+    The real store clears the entry because `workflowSelectionEpoch()` bumps on every selection write
+    (packages/core/src/store.ts:765); this fake exposes no epoch, so the entry stayed TTL-bound and every
+    later resolution in this case answered with the DEFAULT graph. The finalizer then saw a graph whose only
+    post-merge group is `post-merge-verification`, found it disabled by `enabledWorkflowSteps: ["delivery-evidence"]`,
+    treated the requirement as satisfied, and finalized the card to `done` — so the case failed on a memo the
+    fixture itself poisoned, not on the seam it exists to pin. Measured before the fix: the resolver's own
+    optional-group ids were `plan-review, browser-verification, code-review, post-merge-verification` while
+    the selection read answered `WF-custom`, and `finalizeProvenAutoMergeTask` returned `outcome: "done"`.
+    */
+    const ir = structuredClone(await resolveWorkflowIrById(store, "builtin:coding"));
     const gate = ir.nodes.find((node) => node.id === "post-merge-verification")!;
     gate.id = "delivery-evidence";
     for (const edge of ir.edges) {

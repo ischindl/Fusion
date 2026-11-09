@@ -208,6 +208,19 @@ describe("workspace review evidence writer structure", () => {
     for (const path of productionFiles) {
       const source = readFileSync(path, "utf8");
       writerDefinitions += source.match(/export\s+async\s+function\s+persistWorkspaceCodeReviewApproval\s*\(/g)?.length ?? 0;
+      /*
+      FNXC:TestCost 2026-11-09-11:15:
+      RUFU-517: this guard AST-parses every production .ts file under packages/core/src and
+      packages/engine/src (1445 files) inside ONE `it`, which measured ~25 s of pure CPU on an idle host
+      and blew the 30 s `testTimeout` on a loaded one — the shape of the third 30 s timeout the card's
+      baseline recorded. The parse is now gated on a text pre-filter instead of run unconditionally.
+      The filter is loss-free for this guard's semantics: updateCallCarriesRepositoryScope only ever
+      matches a PropertyAccessExpression whose name text is `updateTask` or `updateTaskAtomic`, so a
+      file whose text does not contain `updateTask` cannot hold an offending call. Measured effect:
+      157 of 1445 files parsed instead of 1445, assertions and their strength unchanged (no matcher
+      loosened, no timeout widened).
+      */
+      if (!source.includes("updateTask")) continue;
       const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
       const inspect = (node: ts.Node) => {
         if (ts.isCallExpression(node) && updateCallCarriesRepositoryScope(node)) offendingCalls.push(path);

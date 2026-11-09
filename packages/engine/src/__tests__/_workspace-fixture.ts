@@ -19,13 +19,29 @@ function git(repo: string, command: string): string {
 /** Initialize a real git repo at `repoDir` with one commit on `defaultBranch`. */
 export function initRepoWithCommit(repoDir: string, defaultBranch = "main"): void {
   mkdirSync(repoDir, { recursive: true });
-  git(repoDir, `git init -b ${defaultBranch}`);
-  git(repoDir, 'git config user.email "test@example.com"');
-  git(repoDir, 'git config user.name "Test"');
   writeFileSync(path.join(repoDir, "README.md"), `# ${path.basename(repoDir)}\n`, "utf-8");
-  git(repoDir, "git add README.md");
-  // FNXC:Workspace 2026-08-15-07:05: Fixture initialization predates task anchors, so completion guards can distinguish operator baseline commits from task-era bypass commits.
-  git(repoDir, "GIT_AUTHOR_DATE='2000-01-01T00:00:00Z' GIT_COMMITTER_DATE='2000-01-01T00:00:00Z' git commit -m 'init'");
+  /*
+  FNXC:WorkspaceFixtureBudget 2026-11-09-15:56:
+  Every git call here is a process spawn, and a workspace card pays it once per sub-repo on top of
+  the real pushes the land itself performs. RUFU-517 measured the heaviest workspace case at 13.1 s
+  against the engine project's 30 s ceiling — a 2.3x margin that a busy host (other lanes sharing the
+  box) turns into `Test timed out in 30000ms` on the same code that runs in 4.6 s when alone. The five
+  spawns are therefore collapsed into one `&&` chain through the existing shell helper: the resulting
+  repository state is byte-identical (repo-local identity config still persists, so later fixture
+  commits keep working, and the baseline commit keeps its 2000-01-01 stamps), while per-repo fixture
+  cost drops by four spawns. The timeout itself is deliberately NOT widened — a slower budget is what
+  made the flake survivable rather than fixed.
+
+  FNXC:Workspace 2026-08-15-07:05: Fixture initialization predates task anchors, so completion guards
+  can distinguish operator baseline commits from task-era bypass commits.
+  */
+  git(repoDir, [
+    `git init -b ${defaultBranch}`,
+    `git config user.email "test@example.com"`,
+    `git config user.name "Test"`,
+    `git add README.md`,
+    `GIT_AUTHOR_DATE='2000-01-01T00:00:00Z' GIT_COMMITTER_DATE='2000-01-01T00:00:00Z' git commit -m 'init'`,
+  ].join(" && "));
 }
 
 export interface WorkspaceFixture {
