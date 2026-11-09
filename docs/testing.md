@@ -216,6 +216,24 @@ Dashboard app tests that inspect CSS or TypeScript source must use `packages/das
 
 Mocks that simulate `updateTask` or `moveTask` server responses must return a task with a strictly newer `updatedAt`. In `TaskDetailModal` suites, use `makeUpdatedTask(current, patch)` rather than rebuilding a response with `makeTask({ ...current, ...patch })`. `mergeTaskSnapshot` intentionally permits equal-clock sparse payloads to fill only absent fields; a frozen response can therefore retain populated detail metadata and falsely make a control appear not to repaint.
 
+## Merge fixtures must answer production's current store surface
+
+<!-- FNXC:MergeFixtureStoreSurface 2026-11-08-21:54: RUFU-540 closed a six-case red report whose cause was a fixture store literal that had fallen behind production's store surface. The same drift was still live, unrepaired, in a second fixture, so the class and its repair order are written down here. -->
+
+A merge or self-healing test that hands `runAiMerge`, `aiMergeTask`, or `SelfHealingManager` a hand-rolled store object inherits a silent obligation: every store method production later adds becomes a fixture requirement. Three reads matter today — `getStaleReviewCallbackWaiverReceipts(taskId)` and `getProjectId()` at the merge door, and `workflowDefinitionEpoch()` (`SelfHealingManager`'s per-pass IR cache, RUFU-584).
+
+The failure modes are not equally loud, which is why the drift survives CI. A missing door read throws `store.getStaleReviewCallbackWaiverReceipts is not a function` deep inside the merge, naming itself. A missing `workflowDefinitionEpoch` aborts a self-healing pass inside that pass's own `catch`, so the audited row it should have written never appears and the test fails as a bare `expected false to be true` over an event list — a boolean mismatch with no cause in the assertion.
+
+Repair order, per the standing "fix at the shared fixture factory" rule:
+
+1. `packages/engine/src/__tests__/merger-test-helpers.ts` — the shared merge store factory, which already carries the door pair; a fix there repairs the family.
+2. The file's own local `makeStore` when the fixture hand-rolls a `TaskStore`-typed object deliberately (the real-git reliability fixtures do, and never import the shared factory).
+3. A per-test inline literal, last.
+
+Fixtures built on a real `TaskStore` (for example `reliability-interactions/_helpers.ts` constructing one over a PG layer) need nothing: the real store implements these surfaces, so they are immune to this class by construction.
+
+Two discipline notes, both learned on the fixture this section came from. First, repair only a fixture whose own file-scoped run is red — a fixture whose flow never reaches the door needs no mock, and adding one is noise. Second, when a file is red on more than one case, settle each missing method separately and re-run between them: one fixture can carry two independent drifts, and patching the door pair while a second missing method still aborts the pass re-creates exactly the trap this class describes.
+
 ## Fresh-worktree dist bootstrap
 
 `pnpm test` auto-runs `scripts/ensure-test-artifacts.mjs` to rebuild missing/stale dist artifacts. Dashboard and `dependency-graph` package lanes auto-bootstrap too. If you hit opaque `Failed to resolve import "./cli-spawn.js"` (or similar), treat it as bootstrap regression against FN-4605 — don't work around with a manual `pnpm build`.

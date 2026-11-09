@@ -29,6 +29,12 @@ function makeStore(task: Task, settings: Partial<Settings> = {}, events: unknown
   return Object.assign(emitter, {
     getSettings: vi.fn(async () => mergedSettings),
     getTask: vi.fn(async () => task),
+    /*
+    FNXC:StaleReviewCallbackWaiver 2026-11-08-20:10 (RUFU-540):
+    `aiMergeTask` reads the merge door (`store.getStaleReviewCallbackWaiverReceipts(task.id)` plus `store.getProjectId()`) before it captures merge content, so every store this fixture hands the merger must answer both reads or the call dies with `store.getStaleReviewCallbackWaiverReceipts is not a function` long before the no-op gate under test runs. The door was added 2026-10-01 (FNXC:StaleReviewCallbackWaiver 2026-10-01-04:24 in `merger.ts`); this real-git fixture predates it and went stale the same way `non-executor-run-audit-sink-health.test.ts` did. Empty receipts is the intended stance: no stale-callback waiver exists in these scenarios, so the door must not be able to grant one.
+    */
+    getStaleReviewCallbackWaiverReceipts: vi.fn(async () => []),
+    getProjectId: vi.fn(() => "test-project"),
     listTasks: vi.fn(async ({ column }: { column?: string } = {}) => (column ? [task].filter((t) => t.column === column) : [task])),
     updateTask: vi.fn(async (_id: string, updates: Partial<Task>) => Object.assign(task, updates)),
     moveTask: vi.fn(async (_id: string, column: Task["column"]) => {
@@ -45,6 +51,11 @@ function makeStore(task: Task, settings: Partial<Settings> = {}, events: unknown
     walCheckpoint: vi.fn(() => ({ busy: 0, log: 0, checkpointed: 0 })),
     mergeTask: vi.fn(async () => undefined),
     getRootDir: vi.fn(() => ""),
+    /*
+    FNXC:WorkflowPassCacheFixture 2026-11-08-20:10 (RUFU-540):
+    `SelfHealingManager` builds one epoch-guarded IR cache per pass from `store.workflowDefinitionEpoch()` (RUFU-584, `self-healing.ts:1588`), so a fixture store handed to it must answer that read or the whole pass aborts inside its own catch and emits none of the audit rows the assertions look for. The real store answers with a plain counter (`core/src/store.ts:767`); a frozen `0` is the correct fake here because these scenarios never sync a workflow definition mid-pass.
+    */
+    workflowDefinitionEpoch: vi.fn(() => 0),
   }) as unknown as TaskStore & EventEmitter;
 }
 
