@@ -166,8 +166,68 @@ async function withRuntimeProjection<T extends { id: string; runtimeEnabled?: un
   );
 }
 
+/*
+FNXC:ProjectListReadCost 2026-11-09-17:02 (RUFU-910):
+`reconcileProjectStatuses` repairs rows stuck in the pre-cutover `initializing` status. It is a WRITE
+sweep (a `transactionImmediate`, plus two UPDATEs per stale row) and it used to run on EVERY
+`GET /api/projects` and EVERY `across-nodes` recompute — a poll the dashboard fires every 5 s from
+every open tab (8 tabs measured on the operator's host on 2026-11-09 = ~1.6 write transactions per
+second on the event loop that also serves the board), to repair a population that production reports
+as empty: 25 registered projects read back `active` (11) / `paused` (14) and zero `initializing`.
+
+The repair stays, but its premise is read from data the request already paid for: `listProjects`
+returns every row's `status`, so the sweep runs only when the list itself names an `initializing`
+row. The premise is therefore re-derived from the authoritative table on every request (nothing is
+cached), and after a repair the list is re-read so the response still carries the repaired `status`
+byte-for-byte as before.
+
+THE STALENESS BOUND: a row that is still `initializing` after a sweep ran (another writer re-stamped
+it, or the update did not land) is repaired on the first list read at least
+`INITIALIZING_STATUS_RECONCILE_REARM_MS` after the last sweep, so a pathological row costs one write
+transaction per re-arm window per process instead of one per request. The bound is 60 s — four client
+polls — because every current registration path promotes to `active` immediately, so re-entering
+`initializing` is a defect case, not normal operation.
+*/
+const INITIALIZING_PROJECT_STATUS = "initializing";
+export const INITIALIZING_STATUS_RECONCILE_REARM_MS = 60_000;
+
+/** The sweep's own premise, read off rows the caller already fetched. */
+export function hasInitializingProjectStatus<T extends { status: string }>(projects: T[]): boolean {
+  return projects.some((project) => project.status === INITIALIZING_PROJECT_STATUS);
+}
+
+/** Freshness clock for the re-arm bound; production keeps `Date.now`, a test drives its own counter. */
+let statusReconcileClock: () => number = Date.now;
+
+/** Test seam for the re-arm clock, so the bound is proven by moving time rather than sleeping. */
+export function setProjectStatusReconcileClockForTests(now: () => number): void {
+  statusReconcileClock = now;
+}
+
 export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
   const { router, options, runtimeLogger, prioritizeProjectsForCurrentDirectory, rethrowAsApiError } = ctx;
+
+  /** When the last `initializing` sweep ran, in `statusReconcileClock` units. 0 = never. */
+  let initializingStatusSweptAt = 0;
+
+  /**
+   * List the registry, repairing a stale `initializing` row only when the fresh list proves one
+   * exists. See the `ProjectListReadCost` note above for the premise and the staleness bound.
+   */
+  async function listProjectsRepairingStaleStatus(
+    central: CentralCoreApi,
+  ): Promise<Awaited<ReturnType<CentralCoreApi["listProjects"]>>> {
+    const listed = await central.listProjects();
+    if (!hasInitializingProjectStatus(listed)) return listed;
+    const now = statusReconcileClock();
+    if (initializingStatusSweptAt && now - initializingStatusSweptAt < INITIALIZING_STATUS_RECONCILE_REARM_MS) {
+      return listed;
+    }
+    initializingStatusSweptAt = now;
+    await central.reconcileProjectStatuses();
+    // Re-read so the response reports the repaired status, exactly as the old read-after-sweep order did.
+    return await central.listProjects();
+  }
 
   /** The store this server already holds open for a project, if any. Never opens one. */
   const openStoreFor = (projectId: string) => options?.engineManager?.getStore(projectId) ?? null;
@@ -231,15 +291,16 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
     try {
       const { projects, runtimeFlags } = await withCentralCore(
         async (central) => {
-          // Reconcile stale "initializing" projects before listing so the
-          // dashboard never shows permanent loading spinners for legacy records.
-          await central.reconcileProjectStatuses();
           /*
+          FNXC:ProjectListReadCost 2026-11-09-17:02 (RUFU-910):
+          The legacy `initializing` repair is now premise-gated on the list itself, so a project-list
+          poll over healthy rows performs one SELECT and no write transaction.
+
           FNXC:ProjectRuntimeOff 2026-11-07-20:24 (RUFU-871):
           The one batched runtime-flag read, taken on the same already-open central handle that just
           listed the projects — this request costs one extra SELECT whether there are 2 projects or 25.
           */
-          const listed = prioritizeProjectsForCurrentDirectory(await central.listProjects());
+          const listed = prioritizeProjectsForCurrentDirectory(await listProjectsRepairingStaleStatus(central));
           return {
             projects: listed,
             runtimeFlags: await readRuntimeFlags(central),
@@ -285,18 +346,20 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
     try {
       const { localProjects, allNodes, runtimeFlags } = await withCentralCore(
         async (central) => {
-          // Reconcile stale "initializing" projects before listing
-          await central.reconcileProjectStatuses();
-
           /*
           FNXC:ProjectRuntimeOff 2026-11-07-20:24 (RUFU-871):
           The runtime-flag read joins the reads this request already performs on the shared central
           handle, so the route still costs exactly ONE central settings read for the whole board. It is
           taken here rather than per branch so the local-only short circuit and the merged remote path
           cannot diverge in cost or in truth.
+
+          FNXC:ProjectListReadCost 2026-11-09-17:02 (RUFU-910):
+          The unconditional `reconcileProjectStatuses()` write transaction is gone from this fan-out too,
+          for the same reason and with the same premise: the repair runs only when the freshly listed
+          rows name an `initializing` project.
           */
           const [projects, nodes, flags] = await Promise.all([
-            central.listProjects(),
+            listProjectsRepairingStaleStatus(central),
             central.listNodes(),
             readRuntimeFlags(central),
           ]);
