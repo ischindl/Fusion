@@ -1901,6 +1901,8 @@ providing a useful source-level stop before the universal per-result wrapper run
 The hint names the narrowing surface instead of silently tail-cutting an agent's context.
 */
 const SEMANTIC_TOOL_READ_MAX_CHARS = 12_000;
+/** Reserved room for the row-withholding notice so the assembled full-detail response still fits its budget. */
+const FULL_DETAIL_WITHHOLD_NOTICE_MIN_ROOM = 220;
 /** Maximum persisted tool-detail characters shown per row in normal agent log reads. */
 export const AGENT_LOG_READ_DETAIL_PREVIEW_MAX = 600;
 
@@ -2320,10 +2322,63 @@ is the single producer of the header line across all three registrations — no 
 export function buildTaskAgentLogReadText(entries: AgentLogEntry[], options: TaskAgentLogReadTextOptions): string {
   const filter = options.type ? `, type=${options.type}` : "";
   const header = `Agent log (${options.taskId}): ${entries.length}/${options.total} entries (limit=${options.limit}, offset=${options.offset}${filter})`;
+  /*
+   * FNXC:AgentLogDetailSpill 2026-11-06-00:46 (RUFU-340):
+   * `detail: "full"` is now a promise the storage layer can keep, so the pre-existing whole-response budget
+   * (FNXC:ToolOutputBudget 2026-08-03-06:41) may no longer cut a full-detail payload silently. The bound
+   * itself stays — an agent's context is not an unbounded sink — but what it gives up is now honest: WHOLE ROWS
+   * are withheld first (newest-first, matching how paging selects the tail) and counted, and only when a single
+   * newest row alone exceeds the budget does the response stop inside a payload, and then it names how many
+   * characters are missing and where the complete copy lives. Before this card the generic hint ("use a smaller
+   * limit, offset, or type filter for more") was the only text, and once one spilled payload passed the budget
+   * that advice could not be followed successfully at any limit.
+   */
+  if (options.detail === "full") {
+    return renderFullDetailWithinBudget(header, entries);
+  }
   const rendered = entries.length > 0
-    ? `${header}\n\n${renderAgentLogEntries(entries, options.detail === "full" ? undefined : { detailPreviewMax: AGENT_LOG_READ_DETAIL_PREVIEW_MAX })}`
+    ? `${header}\n\n${renderAgentLogEntries(entries, { detailPreviewMax: AGENT_LOG_READ_DETAIL_PREVIEW_MAX })}`
     : `${header}\n\n(no matching log entries)`;
   return trimSemanticToolRead(rendered, "use a smaller limit, offset, or type filter for more");
+}
+
+/**
+ * Assemble a `detail: "full"` response under the whole-response budget, honestly.
+ *
+ * FNXC:AgentLogDetailSpill 2026-11-06-00:46 (RUFU-340):
+ * Kept rows are the newest that fit, re-joined in chronology so a reader never sees a reordered log — the
+ * RUFU-233 per-row chronology rule still holds. Budget arithmetic includes the header and the notice.
+ */
+function renderFullDetailWithinBudget(header: string, entries: AgentLogEntry[]): string {
+  if (entries.length === 0) return `${header}\n\n(no matching log entries)`;
+
+  const blocks = entries.map((entry) => formatAgentLogBlock(entry, entry.text));
+  const kept: string[] = [];
+  let used = header.length + 2;
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const block = blocks[index]!;
+    const cost = kept.length === 0 ? block.length : block.length + 2;
+    if (kept.length > 0 && used + cost + FULL_DETAIL_WITHHOLD_NOTICE_MIN_ROOM > SEMANTIC_TOOL_READ_MAX_CHARS) break;
+    kept.unshift(block);
+    used += cost;
+  }
+
+  const withheld = blocks.length - kept.length;
+  if (withheld === 0 && used <= SEMANTIC_TOOL_READ_MAX_CHARS) return `${header}\n\n${kept.join("\n\n")}`;
+
+  let body = `${header}\n\n${kept.join("\n\n")}`;
+  const notices: string[] = [];
+  if (withheld > 0) {
+    notices.push(`${withheld} older row${withheld === 1 ? "" : "s"} withheld to stay within the ${SEMANTIC_TOOL_READ_MAX_CHARS}-character response budget — every returned row is complete. Re-read with a smaller limit or a larger offset for the rest.`);
+  }
+  if (body.length > SEMANTIC_TOOL_READ_MAX_CHARS) {
+    // One payload larger than the whole budget: the bound still applies, but the cut names its own size.
+    const shown = Math.max(0, SEMANTIC_TOOL_READ_MAX_CHARS - FULL_DETAIL_WITHHOLD_NOTICE_MIN_ROOM);
+    const missing = body.length - shown;
+    body = body.slice(0, shown);
+    notices.push(`${missing} characters of the newest row exceed this response budget and are not shown here. The stored row holds the payload complete — narrow with a type filter, or open the task's Raw Logs view.`);
+  }
+  return `${body}${notices.length > 0 ? `\n\n[${notices.join(" ")}]` : ""}`;
 }
 
 /*

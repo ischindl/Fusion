@@ -123,7 +123,16 @@ describe("fn_task_logs_read", () => {
     expect(text).toContain("Agent log (FN-8058): 1/1 entries");
     expect(text).not.toContain("Detail preview truncated:");
     expect(text.length).toBeLessThanOrEqual(12_000);
-    expect(text).toContain("smaller limit, offset, or type filter");
+    /*
+     * FNXC:AgentLogDetailSpill 2026-11-06-00:46 (RUFU-340):
+     * This assertion used to require the generic narrowing hint ("smaller limit, offset, or type filter") in
+     * full mode. That hint is advice the caller cannot follow once ONE payload exceeds the whole-response
+     * budget — `limit=1` is already the smallest limit and the row would still be cut — and RUFU-340 made such
+     * a row reachable for the first time, because full mode now retrieves genuinely long payloads. The budget
+     * stays; the wording now states what was withheld and where the complete copy lives.
+     */
+    expect(text).toContain("characters of the newest row exceed this response budget");
+    expect(text).toContain("holds the payload complete");
   });
 
   it("requires task_id in chat and shares the bounded payload builder", async () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { AgentLogger, summarizeToolArgs } from "../agents/agent-logger.js";
+import { AgentLogger, agentLogMemoryCeilingExceedances, resetAgentLogMemoryCeilingExceedances, summarizeToolArgs } from "../agents/agent-logger.js";
 import { createArtifactListTool, createTaskDocumentReadTool } from "../agent-tools.js";
 import { DEFAULT_GLOBAL_SETTINGS, type TaskStore } from "@fusion/core";
 
@@ -317,10 +317,10 @@ describe("AgentLogger", () => {
     expect(store.appendAgentLog).toHaveBeenNthCalledWith(3, "FN-004B", "Read", "tool_error", "err", undefined);
   });
 
-  it("persists bounded error detail for edit and Bash with default tool-output persistence", async () => {
+  it("hands long error detail to the sink intact for the spill seam", async () => {
     const store = createMockStore();
     const logger = new AgentLogger({ store, taskId: "FN-7995" });
-    const oversizedError = `Bash failed: ${"x".repeat(5_000)}`;
+    const oversizedError = `Bash failed: ${"chybova hlaska ".repeat(400)}`;
 
     logger.onToolStart("edit", { path: "src/file.ts" });
     logger.onToolEnd("edit", true, "edit failed: replacement text did not match");
@@ -333,9 +333,16 @@ describe("AgentLogger", () => {
     expect(calls[1]?.slice(0, 5)).toEqual(["FN-7995", "edit", "tool_error", "edit failed: replacement text did not match", undefined]);
     expect(calls[2]).toEqual(["FN-7995", "Bash", "tool", undefined, undefined]);
     expect(calls[3]?.[2]).toBe("tool_error");
-    expect(calls[3]?.[3]).toContain("Bash failed:");
-    expect(calls[3]?.[3]).toContain("[tool output truncated to keep dashboard log views responsive]");
-    expect(calls[3]?.[3].length).toBeLessThan(5_000);
+    /*
+     * FNXC:AgentLogDetailSpill 2026-11-06-00:46 (RUFU-340):
+     * This case used to require the emitted frame to be shorter than the payload and to carry the byte-budget
+     * sentence. That sentence was the loss: it was persisted inside `detail`, so the row recorded that a cut had
+     * happened while the cut-away bytes were gone forever. The producer now hands the whole payload down and the
+     * storage seam decides what the row holds (prefix + pointer) — covered by
+     * `agent-log-detail-spill.test.ts` and the run-log sink case.
+     */
+    expect(calls[3]?.[3]).toBe(oversizedError);
+    expect(calls[3]?.[3]).not.toContain("[tool output truncated");
   });
 
   it("omits absent error detail and preserves an empty error result without crashing", async () => {
@@ -719,7 +726,7 @@ describe("AgentLogger", () => {
     });
     const circular: Record<string, unknown> = {};
     circular.self = circular;
-    circular.payload = "x".repeat(20_000);
+    circular.payload = "hodnota riadku ".repeat(1_500);
 
     logger.onToolEnd("Search", false, circular);
     await vi.advanceTimersByTimeAsync(0);
@@ -728,10 +735,64 @@ describe("AgentLogger", () => {
     /*
      * FNXC:AgentLogging 2026-06-23-09:52:
      * Tool-result logging must bound structured previews before persistence while preserving truncation and circular-reference evidence for execution-memory regression coverage.
+     *
+     * FNXC:AgentLogDetailSpill 2026-11-06-00:46 (RUFU-340):
+     * The STRUCTURAL caps this note demands are intact and still asserted: the array/object item and key caps,
+     * and the `[Circular]` marker, which no size bound can replace - without it a cyclic graph is unloggable.
+     * What changed is what the preview is sized against: the inline row cap (4 096) is gone from this file, and
+     * with it the sentence that used to be pasted into `detail`. A preview under the memory ceiling is now handed
+     * down whole, so a 20 KB structured result keeps its content and spills instead of being cut here.
      */
-    expect(call[3].length).toBeLessThan(5_000);
-    expect(call[3]).toContain("[tool output truncated to keep dashboard log views responsive]");
     expect(call[3]).toContain("[Circular]");
+    expect(call[3].length).toBeGreaterThan(5_000);
+    expect(call[3]).toContain("hodnota riadku ".repeat(20));
+    expect(call[3]).not.toContain("[tool output truncated");
+  });
+
+  /*
+   * FNXC:AgentLogDetailSpill 2026-11-06-00:46 (RUFU-340):
+   * The producer-side memory ceiling is the one remaining place this file can give up bytes, so its two
+   * obligations are asserted here: the give-up must be COUNTED (an operator needs a number for bytes that never
+   * reached storage - `agentLogMemoryCeilingExceedances` plus a warn line), and it must never be ANNOTATED inside
+   * `detail`, because a persisted sentence about a cut is what made the old loss look like findings.
+   */
+  it("counts and warns about a structured preview that reaches the memory ceiling, without prose in detail", async () => {
+    resetAgentLogMemoryCeilingExceedances();
+    loggerWarnSpy.mockClear();
+    const store = createMockStore();
+    const logger = new AgentLogger({
+      store,
+      taskId: "FN-340-CEILING",
+      persistAgentToolOutput: true,
+    });
+
+    logger.onToolEnd("Search", false, { output: "vysledok prikazu ".repeat(20_000) });
+    await vi.advanceTimersByTimeAsync(0);
+
+    const call = (store.appendAgentLog as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(agentLogMemoryCeilingExceedances()).toBe(1);
+    expect(loggerWarnSpy).toHaveBeenCalled();
+    expect(call[3]).not.toContain("[tool output truncated");
+    expect(call[3]).not.toContain("[truncated]");
+  });
+
+  it("passes a plain string result through untouched even past the ceiling", async () => {
+    resetAgentLogMemoryCeilingExceedances();
+    const store = createMockStore();
+    const logger = new AgentLogger({
+      store,
+      taskId: "FN-340-STRING",
+      persistAgentToolOutput: true,
+    });
+    const huge = "vysledok prikazu ".repeat(20_000);
+
+    logger.onToolEnd("Bash", false, huge);
+    await vi.advanceTimersByTimeAsync(0);
+
+    const call = (store.appendAgentLog as ReturnType<typeof vi.fn>).mock.calls[0];
+    // A string is already materialised bytes: cutting it here would lose bytes the seam can store out-of-line.
+    expect(call[3]).toBe(huge);
+    expect(agentLogMemoryCeilingExceedances()).toBe(0);
   });
 
   it("handles undefined result in onToolEnd", async () => {

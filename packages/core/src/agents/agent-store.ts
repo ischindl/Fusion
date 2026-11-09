@@ -112,7 +112,8 @@ import {
   clearLastBlockedState as clearLastBlockedStateAsync,
 } from "../async-stores/async-agent-store.js";
 import { createLogger } from "../process/logger.js";
-import { truncateAgentLogDetail } from "./agent-log-constants.js";
+import { agentRunLogFileName } from "./agent-log-constants.js";
+import { agentLogRunSpillDir, agentLogSpillBaseFromAgentsDir, resolveAgentLogDetailsForRead, spillAgentLogDetail } from "./agent-log-detail-spill.js";
 import { FsWatchPollController } from "../process/fs-watch-poll-controller.js";
 import {
   BUILTIN_WORKFLOW_AGENT_BUNDLE_CONFIG,
@@ -3066,7 +3067,7 @@ export class AgentStore extends EventEmitter {
 
   /** Return the path to the JSONL run-log file for a given agent/run pair. */
   private runLogPath(agentId: string, runId: string): string {
-    return join(this.agentsDir, `${agentId}-runlogs-${runId}.jsonl`);
+    return join(this.agentsDir, agentRunLogFileName(agentId, runId));
   }
 
   /**
@@ -3085,13 +3086,27 @@ export class AgentStore extends EventEmitter {
   */
   async appendRunLog(agentId: string, runId: string, entry: AgentLogEntry): Promise<void> {
     const cap = AgentStore.RUN_LOG_ENTRY_MAX_BYTES;
-    const normalizedDetail = truncateAgentLogDetail(entry.detail, entry.type);
+    /*
+     * FNXC:AgentLogDetailSpill 2026-11-06-00:46 (RUFU-340):
+     * This sink used to cut `detail` to the inline bound and clamp any remainder with a prose
+     * `... (truncated, N chars)` suffix before writing its own JSONL, so a run log could not answer "what did
+     * the tool actually return" — and it did so INDEPENDENTLY of the task sink, which is why the two sinks
+     * disagreed by construction. `detail` is now this seam's own call: the entry's producer directory is
+     * derived from `agentsDir` (never from the task directory the entry names — Decision 2), so run bodies live
+     * under `run/<agentId>/<runId>/` and are reclaimed by scanning `getRunLogs` for that same run, with no
+     * referrer edge to forget. An entry whose pair the engine fan-out already resolved for THIS directory is
+     * reused instead of re-derived. The 64 KB `text` guard stays exactly as it was: `text` keeps its old
+     * contract and never spills.
+     */
+    const spilled = spillAgentLogDetail(
+      { detail: entry.detail, type: entry.type, ...(entry.detailSpill && { detailSpill: entry.detailSpill }) },
+      agentLogRunSpillDir(agentLogSpillBaseFromAgentsDir(this.agentsDir), agentId, runId),
+    );
     const safeEntry: AgentLogEntry = {
       ...entry,
       text: entry.text.length > cap ? `${entry.text.slice(0, cap)}\n\n... (truncated, ${entry.text.length} chars)` : entry.text,
-      ...(normalizedDetail !== undefined && {
-        detail: normalizedDetail.length > cap ? `${normalizedDetail.slice(0, cap)}\n\n... (truncated, ${normalizedDetail.length} chars)` : normalizedDetail,
-      }),
+      ...(spilled.detail !== undefined && { detail: spilled.detail }),
+      ...(spilled.spill !== undefined && { detailSpill: spilled.spill }),
     };
     const line = JSON.stringify(safeEntry) + "\n";
     await appendFile(this.runLogPath(agentId, runId), line, "utf-8");
@@ -3124,9 +3139,10 @@ export class AgentStore extends EventEmitter {
       }
     }
     if (opts?.limit !== undefined && entries.length > opts.limit) {
-      return entries.slice(entries.length - opts.limit);
+      // Read-surface resolution: a limited page resolves the rows it returns, not the whole file.
+      return resolveAgentLogDetailsForRead(entries.slice(entries.length - opts.limit));
     }
-    return entries;
+    return resolveAgentLogDetailsForRead(entries);
   }
 
   /**

@@ -921,6 +921,15 @@ Recovery/backfill guidance:
 - If both the active row and historical snapshot were overwritten, Fusion cannot reconstruct lost attachments/comments automatically; recreate them from git history, branch/worktree contents, screenshots, or external issue trackers.
 - Record the incident in the replacement task so future audits understand why the task ID and commit history diverge.
 
+### Copying or re-importing a task directory moves log pointers, not log bodies (RUFU-340)
+
+An agent-log row whose tool payload exceeded the inline bound stores only the first 4 096 characters in the row and keeps the whole payload in the spill pool, addressed by an **absolute** path in its `detailSpill.body` (`<rootDir>/.fusion/agent-log-detail-spill/task/<taskId>/<digest>.txt`). The body therefore lives **outside** `.fusion/tasks/<id>/`, which has two consequences anyone moving a card by hand must handle:
+
+- Copying, backing up, or restoring `.fusion/tasks/<id>/` alone carries rows that point outside the copied tree. Those rows still read — the reader returns the stored prefix and never throws, and invents no placeholder — but the full payload is simply absent on the target, so copy the matching pool subdirectory `.fusion/agent-log-detail-spill/task/<taskId>/` with the directory if the complete evidence must travel.
+- Forensic re-import under a **new** task ID does not rewrite those pointers: the pool keeps naming the original `<taskId>`, and reclamation resolves a producer directory to its referrer by path arithmetic alone (`task/<taskId>` to `.fusion/tasks/<taskId>/agent-log.jsonl`). While the original card directory still exists the bodies keep resolving from the new card's rows; once that original log is gone and the bodies age past the retention horizon, `pruneAgentLogFiles` correctly reads "the log that named these bodies is gone" and reclaims them, stranding the re-imported rows at their prefix. Move the pool directory to `task/<newId>/` alongside the re-imported log to keep the evidence owned.
+
+The same rule is why `run/` bodies are reclaimed only together with their run log: see [Storage](./storage.md) for the reclamation contract.
+
 ## Reverting completed tasks (git path + AI-undo fallback)
 
 - `POST /api/tasks/:id/revert` (FN-7523) reverts a completed task's landed work via git. Eligibility is resolved from the task's workflow Complete column; the source task's column/status is never mutated as a side effect.

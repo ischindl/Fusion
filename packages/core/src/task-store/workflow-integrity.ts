@@ -19,7 +19,7 @@ import {existsSync} from "node:fs";
 import type {AgentLogEntry, CommitAssociationDiffBackfillReport} from "../types.js";
 import "../builtin-traits.js";
 import {appendAgentLogEntriesSync} from "../agents/agent-log-file-store.js";
-import {truncateAgentLogDetail} from "../agents/agent-log-constants.js";
+import {agentLogTaskProducerDir, spillAgentLogDetail} from "../agents/agent-log-detail-spill.js";
 import {__setTaskActivityLogLimitsForTesting} from "../task-store/comments.js";
 import type {CommitAssociationDiffBackfillCandidateRow} from "../task-store/row-types.js";
 import {and, asc, eq, isNull, sql} from "drizzle-orm";
@@ -87,13 +87,25 @@ export async function markLegacyAutoMergeStampsOnceImpl(store: TaskStore): Promi
 
 export async function appendAgentLogImpl(store: TaskStore, taskId: string, text: string, type: AgentLogEntry["type"], detail?: string, agent?: AgentLogEntry["agent"], timing?: Pick<AgentLogEntry, "durationMs" | "timeToFirstTokenMs">,): Promise<void> {
     const timestamp = new Date().toISOString();
-    const normalizedDetail = truncateAgentLogDetail(detail, type);
+    /*
+    FNXC:AgentLogDetailSpill 2026-11-06-00:46 (RUFU-340):
+    Resolution happens HERE, synchronously, before the row is buffered AND before it is emitted, because the
+    `store.emit("agent:log", …)` below fires long before any flush. An async spill would mean a frame and a
+    buffered row that both already reference a body which does not exist yet, so a subscriber could not read
+    what it was told about. The buffer element and the emitted frame therefore carry the same prefix and the
+    same pointer the row on disk will hold.
+    */
+    const { detail: normalizedDetail, spill } = spillAgentLogDetail(
+      { detail, type },
+      agentLogTaskProducerDir(store.taskDir(taskId), taskId),
+    );
     const entry: AgentLogEntry = {
       timestamp,
       taskId,
       text,
       type,
       ...(normalizedDetail !== undefined && { detail: normalizedDetail }),
+      ...(spill !== undefined && { detailSpill: spill }),
       ...(agent !== undefined && { agent }),
       ...(timing?.durationMs !== undefined && { durationMs: timing.durationMs }),
       ...(timing?.timeToFirstTokenMs !== undefined && { timeToFirstTokenMs: timing.timeToFirstTokenMs }),
@@ -121,7 +133,14 @@ export async function appendAgentLogImpl(store: TaskStore, taskId: string, text:
       text,
       type,
       detail: normalizedDetail ?? null,
+      ...(spill !== undefined && { detailSpill: spill }),
       agent: agent ?? null,
+      /*
+      FNXC:AgentLogTiming 2026-11-06-00:46 (RUFU-340, observed not fixed):
+      The push literal hardcodes `null` for both timing fields while the entry emitted one line below carries
+      them, so a single-entry write loses duration/time-to-first-token to disk while still reporting them live.
+      Deliberately unchanged here: this card's diff is the spill, and the defect is filed as follow-up work.
+      */
       durationMs: null,
       timeToFirstTokenMs: null,
     });

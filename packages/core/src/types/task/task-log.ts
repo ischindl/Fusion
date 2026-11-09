@@ -181,6 +181,33 @@ export interface AgentLogEntry {
   durationMs?: number;
   /** Time to first visible model output in milliseconds. Absent after the first visible output and on legacy rows. */
   timeToFirstTokenMs?: number;
+  /**
+   * Out-of-line pointer for a `detail` too large to live in the JSONL row. `detail` then holds the
+   * inline prefix of the SAME redacted payload and `detailSpill.body` holds every byte of it.
+   *
+   * FNXC:AgentLogDetailSpill 2026-11-06-00:46:
+   * RUFU-340 replaced write-time detail truncation (which destroyed the excess in every copy and pasted a
+   * prose notice into the row) with an out-of-line body. The pointer is the only persisted representation
+   * of it: the resolved body is materialized solely by read surfaces and must never be written back, or
+   * the row regrows with the payload and the spill loses its purpose.
+   *
+   * A pointer belongs to exactly ONE producer directory (`task/<taskId>/` or `run/<agentId>/<runId>/`),
+   * which is what lets reclamation resolve its referrer log from path identity alone. Copying a task-side
+   * pointer into a run-log row would let a task-log prune delete a body a run log still points at.
+   */
+  detailSpill?: AgentLogDetailSpill;
+}
+
+/** Out-of-line body of an oversized tool `detail`, addressed by the digest of its exact bytes. */
+export interface AgentLogDetailSpill {
+  /** Absolute path of the spill body file. */
+  body: string;
+  /** Lowercase hex SHA-256 of the spill body bytes; also its file name. */
+  digest: string;
+  /** UTF-16 code units in the full redacted detail. */
+  chars: number;
+  /** UTF-8 bytes in the spill body file, measured with `Buffer.byteLength`. */
+  bytes: number;
 }
 
 /** How much of `.fusion/tasks/{ID}/agent.log` is copied into cold archive storage. */

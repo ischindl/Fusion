@@ -13,7 +13,6 @@ import {
   readAgentLogEntries,
   readAgentLogEntriesByTimeRange,
 } from "../agents/agent-log-file-store.js";
-import { AGENT_LOG_TOOL_DETAIL_TRUNCATION_NOTICE } from "../agents/agent-log-constants.js";
 
 const tempDirs: string[] = [];
 
@@ -112,12 +111,40 @@ describe("agent-log-file-store", () => {
     expect(countAgentLogEntries(taskDir, { type: "text" })).toBe(2);
   });
 
-  it("truncates oversized tool detail on append and on read of legacy oversized rows", () => {
-    const taskDir = createTaskDir();
-    const oversized = "X".repeat(5_000);
+  /*
+   * FNXC:AgentLogDetailSpill 2026-11-06-00:46 (RUFU-340):
+   * This case used to assert that append AND read both cut an oversized tool detail and that the read of a
+   * LEGACY oversized row pasted the truncation notice into the returned text. Both halves named the contract
+   * this card removes (write-time truncation and its retroactive marker), so they are replaced, not loosened.
+   * The invariant that replaces them: a new row carries prefix plus pointer and reads back whole, and a legacy
+   * inline-oversized row — written before this card, with no pointer — is returned UNHARMED, because rewriting
+   * history with a marker would destroy evidence that is still there.
+   */
+  it("spills oversized tool detail on append and returns a legacy oversized row unharmed", () => {
+    /*
+     * FNXC:AgentLogDetailSpill 2026-11-06-00:46 (RUFU-340):
+     * This case builds the real `<root>/.fusion/tasks/<taskId>` shape rather than the bare temp directory the
+     * other cases use, because the spill pool's location is DERIVED from the task directory
+     * (`dirname(dirname(taskDir))`) and a flat temp dir would scatter test bodies into the OS temp root.
+     */
+    const rootDir = mkdtempSync(join(tmpdir(), "fusion-agent-log-file-store-spill-"));
+    tempDirs.push(rootDir);
+    const taskDir = join(rootDir, ".fusion", "tasks", "FN-1");
+    mkdirSync(taskDir, { recursive: true });
+    // Diacritic filler on purpose: a long ASCII run would itself be redacted as a base64 secret, which would
+    // test the redactor instead of the spill.
+    const filler = "riadok sofsakého textu s díákrikami — ";
+    let oversized = "";
+    while (oversized.length < 5_000) oversized += filler;
+    oversized = `${oversized.slice(0, 5_000)}KONIEC`;
     appendAgentLogEntriesSync(taskDir, [
       { timestamp: "2026-01-01T00:00:00.000Z", taskId: "FN-1", text: "Bash", type: "tool_result", detail: oversized },
     ]);
+
+    const [appended] = readAgentLogEntries(taskDir);
+    expect(appended.detail).toBe(oversized);
+    expect(appended.detailSpill).toBeUndefined();
+    expect(appended.detail).not.toMatch(/truncat/i);
 
     const filePath = getAgentLogFilePath(taskDir);
     writeFileSync(
@@ -127,8 +154,8 @@ describe("agent-log-file-store", () => {
     );
 
     const [legacy] = readAgentLogEntries(taskDir);
-    expect(legacy.detail).toContain(AGENT_LOG_TOOL_DETAIL_TRUNCATION_NOTICE.trim());
-    expect(legacy.detail!.length).toBeLessThan(oversized.length);
+    expect(legacy.detail).toBe(oversized);
+    expect(legacy.detail).not.toMatch(/truncat/i);
   });
 
   it("separates a valid session-start entry from a truncated JSONL tail", () => {

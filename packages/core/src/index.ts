@@ -1099,6 +1099,32 @@ export {
   ColumnAgentBindingError,
 } from "./agents/column-agent-binding-validation.js";
 export { AgentStore, AmbiguousAgentNameError, DEFAULT_AGENT_HEARTBEAT_INTERVAL_MS, formatCurrentTaskLine } from "./agents/agent-store.js";
+// FNXC:AgentLogDetailSpill 2026-11-06-00:46 (RUFU-340): the out-of-line detail spill is storage, so every
+// producer lane and every read surface shares these helpers rather than re-implementing a second copy of a
+// rule that must agree across sinks (per-sink producer directories, one redaction, one resolver).
+export {
+  AGENT_LOG_DETAIL_SPILL_DIR,
+  AGENT_LOG_SPILL_FAMILY_RUN,
+  AGENT_LOG_SPILL_FAMILY_TASK,
+  agentLogRunSpillDir,
+  agentLogSpillBaseFromAgentsDir,
+  agentLogSpillBaseFromTaskDir,
+  agentLogSpillDigest,
+  agentLogSpillPoolRoot,
+  agentLogSpillReferrerLog,
+  agentLogTaskProducerDir,
+  agentLogTaskSpillDir,
+  isAgentLogSpillBodyFileName,
+  isAgentLogSpillPartialFileName,
+  isAgentLogToolDetailType,
+  listAgentLogSpillProducerDirs,
+  resolveAgentLogDetailForRead,
+  resolveAgentLogDetailsForRead,
+  spillAgentLogDetail,
+} from "./agents/agent-log-detail-spill.js";
+// FNXC:AgentLogDetailSpill 2026-11-06-00:46 (RUFU-340): the run-log file name is part of the spill referrer
+// algebra, so reclamation and the store must not hold two spellings of it.
+export { agentRunLogFileName } from "./agents/agent-log-constants.js";
 export type { AgentStoreEvents } from "./agents/agent-store.js";
 export {
   isImplementationTask,

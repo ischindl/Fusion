@@ -13,7 +13,7 @@ import {TaskStore} from "../store.js";
 import type {AgentLogEntry, GoalCitationInput} from "../types.js";
 import "../builtin-traits.js";
 import {appendAgentLogEntriesSync} from "../agents/agent-log-file-store.js";
-import {truncateAgentLogDetail} from "../agents/agent-log-constants.js";
+import {spillAgentLogDetail, agentLogTaskProducerDir} from "../agents/agent-log-detail-spill.js";
 import {__setTaskActivityLogLimitsForTesting} from "../task-store/comments.js";
 
 export function flushAgentLogBufferImpl(store: TaskStore): void {
@@ -116,7 +116,7 @@ export function flushAgentLogBufferImpl(store: TaskStore): void {
     }
   }
 
-export async function appendAgentLogBatchImpl(store: TaskStore, entries: Array<{ taskId: string; text: string; type: AgentLogEntry["type"]; detail?: string; agent?: AgentLogEntry["agent"]; durationMs?: number; timeToFirstTokenMs?: number }>,): Promise<void> {
+export async function appendAgentLogBatchImpl(store: TaskStore, entries: Array<{ taskId: string; text: string; type: AgentLogEntry["type"]; detail?: string; detailSpill?: AgentLogEntry["detailSpill"]; agent?: AgentLogEntry["agent"]; durationMs?: number; timeToFirstTokenMs?: number }>,): Promise<void> {
     /*
     FNXC:AgentLogging 2026-08-29-04:26:
     AgentLogger uses this batch path in production, so fields dropped here disappear from durable logs,
@@ -132,10 +132,24 @@ export async function appendAgentLogBatchImpl(store: TaskStore, entries: Array<{
     store.flushAgentLogBuffer();
 
     const timestamp = new Date().toISOString();
-    const normalizedEntries = entries.map((entry) => ({
-      ...entry,
-      detail: truncateAgentLogDetail(entry.detail, entry.type),
-    }));
+    /*
+    FNXC:AgentLogDetailSpill 2026-11-06-00:46 (RUFU-340):
+    This normalizer used to call `truncateAgentLogDetail`, i.e. the batch path destroyed the payload before
+    the append writer ever saw it. It now resolves this sink's own spill pair synchronously, so the row that
+    goes to disk and the frame emitted at the bottom of this function both carry prefix plus pointer.
+    A row already carrying a pointer for this producer directory passes through untouched.
+    */
+    const normalizedEntries = entries.map((entry) => {
+      const { detail, spill } = spillAgentLogDetail(
+        { detail: entry.detail, type: entry.type, ...(entry.detailSpill && { detailSpill: entry.detailSpill }) },
+        agentLogTaskProducerDir(store.taskDir(entry.taskId), entry.taskId),
+      );
+      return {
+        ...entry,
+        ...(detail !== undefined && { detail }),
+        ...(spill !== undefined && { detailSpill: spill }),
+      };
+    });
     // FNXC:PostgresBackend 2026-06-27-00:40:
     // PG backend mode: skip the sync SQLite deleted-task pre-filter (store.db
     // throws) — JSONL append below is the backend-independent durable write.
@@ -164,6 +178,8 @@ export async function appendAgentLogBatchImpl(store: TaskStore, entries: Array<{
           text: entry.text,
           type: entry.type,
           detail: entry.detail ?? null,
+          // The hand-written literal is where a field physically dies between buffer and disk.
+          ...(entry.detailSpill !== undefined && { detailSpill: entry.detailSpill }),
           agent: entry.agent ?? null,
           durationMs: entry.durationMs ?? null,
           timeToFirstTokenMs: entry.timeToFirstTokenMs ?? null,
@@ -207,12 +223,18 @@ export async function appendAgentLogBatchImpl(store: TaskStore, entries: Array<{
 
     for (const sourceEntry of normalizedEntries) {
       const entry: AgentLogEntry = persistedEntries.get(sourceEntry) ?? { timestamp, ...sourceEntry };
+      /*
+      FNXC:AgentLogDetailSpill 2026-11-06-00:46 (RUFU-340):
+      This emit is a hand-picked conditional key list, NOT a spread, so the pointer must be listed explicitly
+      or the live frame silently disagrees with the row the same call just wrote.
+      */
       store.emit("agent:log", {
         timestamp: entry.timestamp,
         taskId: entry.taskId,
         text: entry.text,
         type: entry.type,
         ...(entry.detail !== undefined && { detail: entry.detail }),
+        ...(entry.detailSpill !== undefined && { detailSpill: entry.detailSpill }),
         ...(entry.agent !== undefined && { agent: entry.agent }),
         ...(entry.durationMs !== undefined && { durationMs: entry.durationMs }),
         ...(entry.timeToFirstTokenMs !== undefined && { timeToFirstTokenMs: entry.timeToFirstTokenMs }),

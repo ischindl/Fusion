@@ -25,25 +25,93 @@ const FLUSH_SIZE_BYTES = 1024;
 /** Default timer interval (ms) for periodic flush of small writes. */
 const FLUSH_INTERVAL_MS = 500;
 const ENTRY_BATCH_SIZE = 50;
-const TOOL_RESULT_DETAIL_LIMIT = 4_096;
-const TOOL_RESULT_DETAIL_TRUNCATION_NOTICE = "\n\n[tool output truncated to keep dashboard log views responsive]";
+/*
+ * FNXC:AgentLogDetailSpill 2026-11-06-00:46 (RUFU-340):
+ * This constant used to be `TOOL_RESULT_DETAIL_LIMIT = 4_096` — the ENGINE's own inline cap, applied to
+ * `detail` before `writeEntry` was ever called. Because it ran upstream of the storage layer it destroyed the
+ * payload for every copy at once: no store row, no spill, no run log could recover what had been sliced away
+ * here, and `summarizeToolResultValue` re-cut every string in a structured result against a budget seeded at
+ * the same number — the mechanism that left section 4 of a six-section report with ~40 characters and a prose
+ * notice (the measured saneca SANE-435 loss this card removes).
+ *
+ * What has to survive is the memory guard from `FNXC:AgentLogging 2026-06-23-09:26` — building a bounded
+ * preview before JSON serialization so logging cannot materialize a multi-megabyte tool result — NOT the
+ * inline bound. So this is now explicitly a MEMORY CEILING, declared larger than the inline bound
+ * (`AGENT_LOG_TOOL_DETAIL_LIMIT`, 4 096) so ordinary overflow reaches the spill seam whole instead of being
+ * cut here. Bytes past the ceiling are a real producer-side loss, so exceeding it is counted and warned about
+ * (see `agentLogMemoryCeilingExceedances`); it never writes prose into `detail`. The value is 256 KiB of code units.
+ */
+const TOOL_RESULT_MEMORY_CEILING = 262_144;
 const TOOL_RESULT_MAX_ARRAY_ITEMS = 25;
 const TOOL_RESULT_MAX_OBJECT_KEYS = 50;
 
-function truncateToolResultDetail(value: string): string {
-  if (value.length <= TOOL_RESULT_DETAIL_LIMIT) return value;
-  return `${value.slice(0, TOOL_RESULT_DETAIL_LIMIT)}${TOOL_RESULT_DETAIL_TRUNCATION_NOTICE}`;
+/**
+ * Counted observability for payload the producer itself had to give up on.
+ *
+ * FNXC:AgentLogDetailSpill 2026-11-06-00:46 (RUFU-340):
+ * The operator's third requested bullet was "make truncation observable: a counter or warning row, not silent
+ * prose". Inline-bound overflow needs no counter — it spills, and the row's pointer already names the exact
+ * chars and bytes — but ceiling overflow is genuine loss and must be countable without reading row text.
+ * The counter is process-monotonic and exported so a diagnostic surface or test can read it; every increment
+ * is paired with a warning line, and nothing about it is written into `detail`.
+ */
+let memoryCeilingExceedances = 0;
+const ceilingLogger = createLogger("agent-logger");
+
+/** How many tool results this process has bounded at the memory ceiling (never reset by production code). */
+export function agentLogMemoryCeilingExceedances(): number {
+  return memoryCeilingExceedances;
 }
 
-function summarizeToolResultValue(value: unknown, state: { remainingChars: number; seen: WeakSet<object> }): unknown {
-  if (state.remainingChars <= 0) return "[truncated]";
+/** Test-only reset so a suite can assert a delta rather than a process-wide total. */
+export function resetAgentLogMemoryCeilingExceedances(): void {
+  memoryCeilingExceedances = 0;
+}
+
+/**
+ * Fold one ceiling breach into the counter and the warning stream.
+ *
+ * FNXC:AgentLogDetailSpill 2026-11-06-00:46 (RUFU-340):
+ * One call site, so every loss path is counted identically and none of them can reach a persisted row.
+ */
+function noteMemoryCeilingExceeded(context: string, droppedChars: number): void {
+  memoryCeilingExceedances += 1;
+  ceilingLogger.warn(
+    `Tool result exceeded the agent-log memory ceiling (${TOOL_RESULT_MEMORY_CEILING} code units); persisted detail for ${context} is missing about ${droppedChars} code units. This is producer-side loss, not a display clamp.`,
+  );
+}
+
+/**
+ * Build a memory-bounded preview of a structured tool result.
+ *
+ * FNXC:AgentLogDetailSpill 2026-11-06-00:46 (RUFU-340):
+ * Only the byte budget changed here. The item and key caps stay, and their count-bearing placeholders
+ * (`[N more items truncated]`, `__truncatedKeys`) stay with them: those describe the STRUCTURAL caps this
+ * preview has always had, not a size cut, and removing them would hide content that a reader cannot otherwise
+ * see is absent. What is gone is every sentence the byte budget used to paste — the notice constant and the
+ * bare `[truncated]` placeholder — because those were persisted inside `detail` and read as evidence.
+ * A byte-budget exhaustion now yields a structural `null` plus the counted warning above.
+ */
+interface PreviewBudget {
+  remainingChars: number;
+  seen: WeakSet<object>;
+  droppedChars: number;
+}
+
+/** One budget breach per preview, folded into the counted warning after the summary is built. */
+function summarizeToolResultValue(value: unknown, state: PreviewBudget): unknown {
+  if (state.remainingChars <= 0) {
+    state.droppedChars += 1;
+    return null;
+  }
   if (value === null || value === undefined) return value;
   if (typeof value === "string") {
-    const truncated = value.length > state.remainingChars
-      ? `${value.slice(0, state.remainingChars)}${TOOL_RESULT_DETAIL_TRUNCATION_NOTICE}`
-      : value;
+    if (value.length > state.remainingChars) {
+      state.droppedChars += value.length - state.remainingChars;
+    }
+    const clipped = value.length > state.remainingChars ? value.slice(0, state.remainingChars) : value;
     state.remainingChars -= Math.min(value.length, state.remainingChars);
-    return truncated;
+    return clipped;
   }
   if (typeof value === "number" || typeof value === "boolean") return value;
   if (typeof value === "bigint") return value.toString();
@@ -91,21 +159,42 @@ function summarizeToolResultValue(value: unknown, state: { remainingChars: numbe
   return summarized;
 }
 
+/**
+ * Serialize a tool result for `detail`, bounded only by the memory ceiling.
+ *
+ * FNXC:AgentLogDetailSpill 2026-11-06-00:46 (RUFU-340):
+ * A plain string result passes through UNTOUCHED — nothing here cuts it any more, so a large string result
+ * reaches the storage seam intact and spills. Structured results keep the pre-serialization preview, because
+ * that preview is what stops a 40 MB object from being materialized twice; the ceiling is what the preview is
+ * now sized against, and a preview that reached it is counted rather than annotated.
+ */
 function summarizeToolResultDetail(result: unknown): string | undefined {
   if (result === undefined || result === null) return undefined;
-  if (typeof result === "string") return truncateToolResultDetail(result);
+  if (typeof result === "string") return result;
   /*
    * FNXC:AgentLogging 2026-06-23-09:26:
-   * Execution memory can spike when tools return large structured payloads. Build a bounded preview before JSON serialization so logging cannot materialize multi-megabyte tool results after the dashboard-safe log detail limit would discard them anyway.
+   * Execution memory can spike when tools return large structured payloads. Build a bounded preview before
+   * JSON serialization so logging cannot materialize multi-megabyte tool results. RUFU-340 retargets that
+   * bound from the inline row cap to the memory ceiling, because the row cap no longer decides what is
+   * persisted — the spill seam does.
    */
   try {
-    const preview = summarizeToolResultValue(result, {
-      remainingChars: TOOL_RESULT_DETAIL_LIMIT,
+    const state: PreviewBudget = {
+      remainingChars: TOOL_RESULT_MEMORY_CEILING,
       seen: new WeakSet<object>(),
-    });
-    return truncateToolResultDetail(JSON.stringify(preview));
+      droppedChars: 0,
+    };
+    const preview = summarizeToolResultValue(result, state);
+    const serialized = JSON.stringify(preview);
+    if (state.droppedChars > 0) noteMemoryCeilingExceeded("structured tool result", state.droppedChars);
+    return serialized;
   } catch {
-    return truncateToolResultDetail(String(result));
+    const fallback = String(result);
+    if (fallback.length > TOOL_RESULT_MEMORY_CEILING) {
+      noteMemoryCeilingExceeded("unserializable tool result", fallback.length - TOOL_RESULT_MEMORY_CEILING);
+      return fallback.slice(0, TOOL_RESULT_MEMORY_CEILING);
+    }
+    return fallback;
   }
 }
 
@@ -648,11 +737,19 @@ export class AgentLogger {
       if (typeof (this.store as TaskStore & { appendAgentLogBatch?: unknown }).appendAgentLogBatch === "function") {
         await this.store
           .appendAgentLogBatch(
+            /*
+            FNXC:AgentLogDetailSpill 2026-11-06-00:46 (RUFU-340):
+            This hand-written 7-field literal builds NEW objects, which is exactly why the caller's entry object
+            survives intact for the run-log fan-out below (`appendLogCb` receives the ORIGINAL object). It must
+            therefore list the pointer explicitly, or the task-log row loses it while the run-log row keeps one
+            from a different producer directory.
+            */
             entries.map((entry) => ({
               taskId: entry.taskId,
               text: entry.text,
               type: entry.type,
               detail: entry.detail,
+              ...(entry.detailSpill !== undefined && { detailSpill: entry.detailSpill }),
               agent: entry.agent,
               ...(entry.durationMs !== undefined && { durationMs: entry.durationMs }),
               ...(entry.timeToFirstTokenMs !== undefined && { timeToFirstTokenMs: entry.timeToFirstTokenMs }),
@@ -662,6 +759,13 @@ export class AgentLogger {
             this.log.warn(`Failed to flush agent log batch for ${this.taskId}: ${err instanceof Error ? err.message : String(err)}`);
           });
       } else {
+        /*
+        FNXC:AgentLogDetailSpill 2026-11-06-00:46 (RUFU-340):
+        The positional fallback `appendAgentLog(taskId, text, type, detail, agent, timing)` has no pointer
+        slot, so this path cannot carry one — and does not need to: the pointer comes from the SINK's own seam
+        run inside `appendAgentLogImpl`, which redacts, spills, buffers, and emits the same pair. Passing an
+        already-resolved prefix here and a pointer there is precisely why the seam is per-sink.
+        */
         await Promise.all(
           entries.map((entry) => {
             const timing = entry.durationMs !== undefined || entry.timeToFirstTokenMs !== undefined

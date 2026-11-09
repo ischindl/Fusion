@@ -26,6 +26,9 @@ import {
   type SharedPgTaskStoreHarness,
 } from "../../__test-utils__/pg-test-harness.js";
 import { getAgentLogFilePath } from "../../agents/agent-log-file-store.js";
+import { AGENT_LOG_TOOL_DETAIL_LIMIT } from "../../agents/agent-log-constants.js";
+import { agentLogSpillDigest } from "../../agents/agent-log-detail-spill.js";
+import type { AgentLogDetailSpill } from "../../types.js";
 import { aggregateActivityAnalytics, aggregateMonitorMetrics } from "../../board/activity-analytics.js";
 import { sql } from "drizzle-orm";
 import * as schema from "../../postgres/schema/index.js";
@@ -126,6 +129,69 @@ pgTest("agent-log buffer + monitor metrics (PostgreSQL backend mode)", () => {
     expect(emitted[1]?.detail).toBe(entries[1]?.detail);
     expect(emitted[0]?.timeToFirstTokenMs).toBe(entries[0]?.timeToFirstTokenMs);
     expect(emitted[1]?.durationMs).toBe(entries[1]?.durationMs);
+  });
+
+  /*
+  FNXC:AgentLogDetailSpill 2026-11-06-01:44 (RUFU-340):
+  The parity above covers a detail that fits the row. This is the same three-way equality for a payload that
+  does NOT: agent logs persist to per-task JSONL on disk even in Postgres backend mode, so a spilled detail has
+  to survive the same backend — the emitted frame equals the RAW persisted row (pointer included, compared
+  before any read-side resolution), the body file holds the exact bytes the pointer names, and the reader hands
+  back the whole payload. It runs on the PG harness because the buffer flush that reaches the spill seam is the
+  path that used to crash this backend, and a storage fix that only worked on the SQLite-shaped tree would have
+  looked green here without this case.
+  */
+  it("keeps a spilled tool detail identical in the raw row, the emitted frame, and the read-back", async () => {
+    const store = h.store();
+    await store.createTaskWithReservedId(
+      { description: "spilled detail target", column: "todo" },
+      { taskId: "FN-LOG-SPILL-PG", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", applyDefaultWorkflowSteps: false },
+    );
+
+    const tail = "ODDELOK 4: konkretne blokujuci stav - chyba pristupovy token";
+    const filler = "riadok analyzy s diakritikou — " as const;
+    let detail = "";
+    while (detail.length < AGENT_LOG_TOOL_DETAIL_LIMIT * 2 - tail.length) detail += filler;
+    detail = `${detail.slice(0, AGENT_LOG_TOOL_DETAIL_LIMIT * 2 - tail.length)}${tail}`;
+
+    const emitted: Array<{ detail?: string; detailSpill?: AgentLogDetailSpill }> = [];
+    const onAgentLog = (entry: { detail?: string; detailSpill?: AgentLogDetailSpill }) => emitted.push(entry);
+    store.on("agent:log", onAgentLog);
+    try {
+      await store.appendAgentLogBatch([
+        { taskId: "FN-LOG-SPILL-PG", text: "bash", type: "tool_result", detail, agent: "executor", durationMs: 42 },
+      ]);
+    } finally {
+      store.off("agent:log", onAgentLog);
+    }
+
+    // The durable copy is the JSONL row: a bounded prefix plus a pointer, and no prose marker anywhere in it.
+    const rawLine = readFileSync(getAgentLogFilePath(store.taskDir("FN-LOG-SPILL-PG")), "utf8").trim();
+    expect(rawLine.toLowerCase()).not.toContain("truncat");
+    const persisted = JSON.parse(rawLine) as { detail?: string; detailSpill?: AgentLogDetailSpill };
+    expect(persisted.detail).toBe(detail.slice(0, AGENT_LOG_TOOL_DETAIL_LIMIT));
+    expect(persisted.detailSpill?.chars).toBe(detail.length);
+    expect(persisted.detailSpill?.bytes).toBe(Buffer.byteLength(detail, "utf8"));
+    // Diacritic-heavy payload: a byte count that merely repeated the char count would be a lie.
+    expect(persisted.detailSpill!.bytes).toBeGreaterThan(persisted.detailSpill!.chars);
+
+    // Emitted frame equals the persisted row, pointer included.
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]!.detail).toBe(persisted.detail);
+    expect(emitted[0]!.detailSpill).toEqual(persisted.detailSpill);
+
+    // The body file is exactly the bytes its own digest names.
+    const body = readFileSync(persisted.detailSpill!.body, "utf8");
+    expect(body).toBe(detail);
+    expect(agentLogSpillDigest(body)).toBe(persisted.detailSpill!.digest);
+    expect(Buffer.byteLength(body, "utf8")).toBe(persisted.detailSpill!.bytes);
+
+    // And the PG-backed reader returns the whole payload, tail section included, with nothing left to resolve.
+    const entries = await store.getAgentLogs("FN-LOG-SPILL-PG");
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.detail).toBe(detail);
+    expect((entries[0] as { detailSpill?: unknown }).detailSpill).toBeUndefined();
+    expect(entries[0]?.durationMs).toBe(42);
   });
 
   /*

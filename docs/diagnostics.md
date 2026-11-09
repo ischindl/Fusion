@@ -606,3 +606,43 @@ behaviour stays measurable without the corpus being reconstructable.
 therefore unfalsifiable; the diagnostics contract names one owning seam per lane so "no rows" is
 answerable, and states that `firstDivergenceOffset` is a previous-request comparison computed in-process.
 -->
+
+
+## Agent-log detail spill diagnostics (RUFU-340)
+
+A tool payload that does not fit the inline row bound is stored out-of-line, so the questions an operator asks
+about it have fixed answers. The pool lives at `<rootDir>/.fusion/agent-log-detail-spill/`, addressed per
+producer: `task/<taskId>/<digest>.txt` for card logs, `run/<agentId>/<runId>/<digest>.txt` for run logs. A row
+that spilled carries `detailSpill: { body, digest, chars, bytes }` next to a `detail` that holds exactly the
+first 4 096 characters.
+
+- **"Was anything lost?" is answered by the row alone.** A row with `detailSpill` lost nothing: `chars` and
+  `bytes` are the whole payload's counts and `digest` is the SHA-256 of the stored bytes. A row whose `detail`
+  is shorter than 4 096 characters was simply within the bound.
+- **A spill publish failure is the one remaining loss** and it is loud: `[agent-log-file-store] Failed to spill
+  agent-log detail into <dir>; persisting the inline prefix only`. The row then holds the prefix and has **no**
+  pointer, which is the only shape where bytes are gone with no count to quote. It warns rather than throwing
+  because a broken spill directory must not stop a log line.
+- **A foreign pointer is dropped, never honoured**: `[agent-log-file-store] Ignoring an agent-log detail pointer
+  from a foreign producer directory: <dir>`. Pointers are owned by the sink that wrote them, so honouring one
+  across producers is what would let a card-log prune delete bytes a run log still references. Seeing this line
+  names a producer that copied a pointer between sinks.
+- **The engine's memory ceiling is a counter, not a message inside the data.** `TOOL_RESULT_MEMORY_CEILING`
+  (262 144 code units) bounds what a structured-result preview may materialise; a breach is one `[agent-logger]`
+  warn plus `agentLogMemoryCeilingExceedances()` (`packages/engine/src/agents/agent-logger.ts`). A non-zero
+  counter means a *producer* gave up bytes on a huge structured result — the storage layer is not implicated,
+  and no prose was written into `detail` to say so.
+- **Reclamation reports itself through the prune result**: `spillDirsExamined`, `spillBodiesDeleted`,
+  `spillBytesFreed`, `spillDirsRemoved` from `pruneAgentLogFiles`. A body kept because its referrer could not be
+  read is a warn (`Skipped agent-log spill reclaim for <dir>; its referrer <path> could not be read`) — reclaim
+  fails closed, so unreadable means kept. Two bounds decide a deletion, and both are per FILE: the body's own mtime
+  must be past the retention horizon (a directory stamp is only the prefilter — another process can be publishing
+  into an old directory right now), and its digest must appear nowhere in the log it belongs to. References are
+  matched by digest, never by path string, because the writing process and the reclaiming process each spell the
+  pool root from their own project path.
+- **Reads resolve, counts do not.** `readAgentLogEntries` / `getAgentLogs*` / `getRunLogs` return the resolved
+  payload and strip `detailSpill`; `getAgentLogCount` never opens a body. Resolution happens **after** pagination,
+  so a bounded page opens exactly the bodies of the rows it returns — a limited page that resolved the whole file
+  first would re-import the whole-file read cost RUFU-208 removed (pinned by counted `node:fs` reads in
+  `agent-log-detail-spill.test.ts`). A surface that re-implemented resolution would be a second authority — the
+  store reader is the only one.

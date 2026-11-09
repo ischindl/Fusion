@@ -1,13 +1,23 @@
-import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import type { Stats } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
-import type { AgentLogEntry } from "../types.js";
+import type { AgentLogDetailSpill, AgentLogEntry } from "../types.js";
 import {
   AGENT_LOG_FILENAME,
   buildAgentLogSourceRef,
-  truncateAgentLogDetail,
 } from "./agent-log-constants.js";
+import {
+  agentLogSpillDigestFromFileName,
+  agentLogSpillReferrerLog,
+  agentLogTaskProducerDir,
+  isAgentLogSpillBodyFileName,
+  isAgentLogSpillDigest,
+  isAgentLogSpillPartialFileName,
+  listAgentLogSpillProducerDirs,
+  resolveAgentLogDetailsForRead,
+  spillAgentLogDetail,
+} from "./agent-log-detail-spill.js";
 import { createLogger } from "../process/logger.js";
 
 const log = createLogger("agent-log-file-store");
@@ -31,6 +41,13 @@ export interface AgentLogFileAppendInput {
   text: string;
   type: AgentLogEntry["type"];
   detail?: string | null;
+  /**
+   * FNXC:AgentLogDetailSpill 2026-11-06-00:46 (RUFU-340):
+   * The out-of-line pointer must exist on the APPEND input as well as on the row type: adding it to only one
+   * of the two silently drops it at the serialize boundary, so the row would carry a prefix that names no
+   * body and the spilled bytes would be unreachable.
+   */
+  detailSpill?: AgentLogDetailSpill;
   agent?: AgentLogEntry["agent"] | null;
   durationMs?: number | null;
   timeToFirstTokenMs?: number | null;
@@ -42,6 +59,8 @@ interface AgentLogJsonlRow {
   text: string;
   type: AgentLogEntry["type"];
   detail?: string;
+  /** Persisted pointer shape (RUFU-340). The resolved body is never a persisted field. */
+  detailSpill?: AgentLogDetailSpill;
   agent?: AgentLogEntry["agent"];
   durationMs?: number;
   timeToFirstTokenMs?: number;
@@ -57,6 +76,27 @@ export function appendAgentLogEntriesSync(
 ): StoredAgentLogEntry[] {
   if (entries.length === 0) return [];
 
+  /*
+   * FNXC:AgentLogDetailSpill 2026-11-06-00:46 (RUFU-340):
+   * The spill seam runs HERE, at the sole task-log append writer's entry, before serialization — not inside
+   * `serializeEntry`. That placement is load-bearing: the rows returned below are the very objects
+   * `appendAgentLogBatchImpl` emits `agent:log` from, so resolving during serialization would hand the
+   * emitted frame a full body while disk held prefix+pointer (the same defect, inverted), while resolving
+   * here makes emitted-equals-persisted true by construction. The returned rows therefore keep
+   * prefix+pointer as well; only a read surface resolves.
+   */
+  const resolvedEntries = entries.map((entry) => {
+    const { detail, spill } = spillAgentLogDetail(
+      { detail: entry.detail, type: entry.type, ...(entry.detailSpill && { detailSpill: entry.detailSpill }) },
+      agentLogTaskProducerDir(taskDir, entry.taskId),
+    );
+    return {
+      ...entry,
+      ...(detail !== undefined && { detail }),
+      ...(spill !== undefined && { detailSpill: spill }),
+    };
+  });
+
   const filePath = getAgentLogFilePath(taskDir);
   mkdirSync(dirname(filePath), { recursive: true });
   /*
@@ -66,7 +106,7 @@ export function appendAgentLogEntriesSync(
    * aligned with physical lines. This read-then-append tail check is intentionally not atomic across writers.
    */
   const { lineCount: startingLineNo, endsWithNewline } = inspectAgentLogTail(filePath);
-  const payload = `${startingLineNo > 0 && !endsWithNewline ? "\n" : ""}${entries
+  const payload = `${startingLineNo > 0 && !endsWithNewline ? "\n" : ""}${resolvedEntries
     .map((entry) => serializeEntry(entry))
     .join("")}`;
   appendFileSync(filePath, payload, "utf8");
@@ -78,7 +118,7 @@ export function appendAgentLogEntriesSync(
    */
   advanceNewlineTotalAfterAppend(filePath, payload);
 
-  return entries.map((entry, index) => materializeEntry(entry, startingLineNo + index + 1));
+  return resolvedEntries.map((entry, index) => materializeEntry(entry, startingLineNo + index + 1));
 }
 
 export function readAgentLogEntries(
@@ -87,19 +127,35 @@ export function readAgentLogEntries(
 ): StoredAgentLogEntry[] {
   const entries = readAllAgentLogEntries(taskDir, options);
   const offset = Math.max(0, options.offset ?? 0);
+  let window: StoredAgentLogEntry[];
   if (options.limit == null) {
-    return offset === 0 ? entries : entries.slice(0, Math.max(0, entries.length - offset));
+    window = offset === 0 ? entries : entries.slice(0, Math.max(0, entries.length - offset));
+  } else {
+    const limit = Math.max(0, options.limit);
+    const endExclusive = Math.max(0, entries.length - offset);
+    const startInclusive = Math.max(0, endExclusive - limit);
+    window = entries.slice(startInclusive, endExclusive);
   }
-  const limit = Math.max(0, options.limit);
-  const endExclusive = Math.max(0, entries.length - offset);
-  const startInclusive = Math.max(0, endExclusive - limit);
-  return entries.slice(startInclusive, endExclusive);
+  /*
+   * FNXC:AgentLogDetailSpill 2026-11-06-03:02 (RUFU-340):
+   * Resolution runs AFTER pagination, never inside `readAllAgentLogEntries`. This route serves one page of a
+   * card's log to `getAgentLogsImpl`, the dashboard Raw Logs view, and the task log stream; resolving before
+   * the slice would read and materialise EVERY spilled body in the file to answer a 50-row request — the
+   * whole-file read cost class RUFU-208 exists to police, reintroduced on a hot read surface. A limited page
+   * therefore resolves the rows it returns, which is the same ordering `getRunLogs` already uses for run logs.
+   */
+  return resolveAgentLogDetailsForRead(window);
 }
 
 export function countAgentLogEntries(
   taskDir: string,
   options: Omit<AgentLogFileStoreReadOptions, "limit" | "offset"> = {},
 ): number {
+  /*
+   * FNXC:AgentLogDetailSpill 2026-11-06-00:46 (RUFU-340):
+   * A count never returns a `detail`, and `readAllAgentLogEntries` no longer resolves at all, so counting costs
+   * one parse of the rows and zero spill-body reads.
+   */
   return readAllAgentLogEntries(taskDir, options).length;
 }
 
@@ -109,11 +165,12 @@ export function readAgentLogEntriesByTimeRange(
   endTime: string | null,
   options: Omit<AgentLogFileStoreReadOptions, "startTime" | "endTime"> = {},
 ): StoredAgentLogEntry[] {
-  return readAllAgentLogEntries(taskDir, {
+  // Same bound as `readAgentLogEntries`: only the rows this surface actually returns are resolved.
+  return resolveAgentLogDetailsForRead(readAllAgentLogEntries(taskDir, {
     ...options,
     startTime,
     endTime,
-  });
+  }));
 }
 
 function readAllAgentLogEntries(
@@ -173,6 +230,17 @@ function readAllAgentLogEntries(
     );
   }
 
+  /*
+   * FNXC:AgentLogDetailSpill 2026-11-06-03:02 (RUFU-340):
+   * This reader deliberately returns rows that are NOT body-resolved: it parses the whole file to answer a
+   * filtered/paged request, and a spill body may only be read for a row that is actually being returned (see
+   * `readAgentLogEntries`). It remains the only route that parses the file and it stays append-free (see
+   * `docs/solutions/logic-errors/agent-log-read-route-is-append-free.md`). Resolution belongs in neither this
+   * function nor `materializeEntry`, because the latter also builds the rows the append writer returns and
+   * emits — a resolve there would put the full body on a frame while disk held prefix+pointer. A legacy
+   * oversized row with no pointer is returned exactly as stored, marker invented or not: the VIEW clamps, the
+   * reader does not.
+   */
   return entries;
 }
 
@@ -183,8 +251,15 @@ function normalizeTimingMs(value: number | null | undefined): number | undefined
   return Math.round(value);
 }
 
+/*
+ * FNXC:AgentLogDetailSpill 2026-11-06-00:46 (RUFU-340):
+ * Both helpers below are pure (de)serializers: they neither truncate, nor redact, nor hash, nor touch the
+ * filesystem. Truncation used to live in exactly these two functions — which is why the loss happened twice,
+ * once into the row and again into every read of a legacy oversized row. Sizing is the seam's job
+ * (`appendAgentLogEntriesSync` resolves before either runs); keeping these pure is what lets an emitted
+ * frame and a persisted row be the same bytes.
+ */
 function serializeEntry(entry: AgentLogFileAppendInput): string {
-  const normalizedDetail = truncateAgentLogDetail(entry.detail, entry.type);
   const durationMs = normalizeTimingMs(entry.durationMs);
   const timeToFirstTokenMs = normalizeTimingMs(entry.timeToFirstTokenMs);
   const row: AgentLogJsonlRow = {
@@ -192,7 +267,8 @@ function serializeEntry(entry: AgentLogFileAppendInput): string {
     taskId: entry.taskId,
     text: entry.text,
     type: entry.type,
-    ...(normalizedDetail !== undefined && { detail: normalizedDetail }),
+    ...(entry.detail !== undefined && entry.detail !== null && { detail: entry.detail }),
+    ...(entry.detailSpill !== undefined && { detailSpill: entry.detailSpill }),
     ...(entry.agent != null && { agent: entry.agent }),
     ...(durationMs !== undefined && { durationMs }),
     ...(timeToFirstTokenMs !== undefined && { timeToFirstTokenMs }),
@@ -201,7 +277,6 @@ function serializeEntry(entry: AgentLogFileAppendInput): string {
 }
 
 function materializeEntry(entry: AgentLogFileAppendInput, lineNo: number): StoredAgentLogEntry {
-  const normalizedDetail = truncateAgentLogDetail(entry.detail, entry.type);
   const durationMs = normalizeTimingMs(entry.durationMs);
   const timeToFirstTokenMs = normalizeTimingMs(entry.timeToFirstTokenMs);
   return {
@@ -209,7 +284,8 @@ function materializeEntry(entry: AgentLogFileAppendInput, lineNo: number): Store
     taskId: entry.taskId,
     text: entry.text,
     type: entry.type,
-    ...(normalizedDetail !== undefined && { detail: normalizedDetail }),
+    ...(entry.detail !== undefined && entry.detail !== null && { detail: entry.detail }),
+    ...(entry.detailSpill !== undefined && { detailSpill: entry.detailSpill }),
     ...(entry.agent != null && { agent: entry.agent }),
     ...(durationMs !== undefined && { durationMs }),
     ...(timeToFirstTokenMs !== undefined && { timeToFirstTokenMs }),
@@ -508,12 +584,15 @@ export function pruneAgentLogFiles(
   tasksDir: string,
   retentionDays: number,
   scanTaskIds?: Set<string>,
-): { prunedFiles: number; prunedEntries: number; freedBytes: number } {
+): { prunedFiles: number; prunedEntries: number; freedBytes: number } & PruneAgentLogSpillCounts {
   if (!Number.isFinite(retentionDays) || retentionDays <= 0 || !existsSync(tasksDir)) {
-    return { prunedFiles: 0, prunedEntries: 0, freedBytes: 0 };
+    // A pass that never ran examined nothing, which is the honest zero for the spill counters too.
+    return { prunedFiles: 0, prunedEntries: 0, freedBytes: 0, spillDirsExamined: 0, spillBodiesDeleted: 0, spillBytesFreed: 0, spillDirsRemoved: 0 };
   }
 
   const cutoffIso = new Date(Date.now() - retentionDays * 86_400_000).toISOString();
+  const cutoffMs = Date.now() - retentionDays * 86_400_000;
+  const baseDir = baseDirOf(tasksDir);
   let prunedFiles = 0;
   let prunedEntries = 0;
   let freedBytes = 0;
@@ -572,5 +651,173 @@ export function pruneAgentLogFiles(
     }
   }
 
-  return { prunedFiles, prunedEntries, freedBytes };
+  return { prunedFiles, prunedEntries, freedBytes, ...reclaimAgentLogSpillBodies(baseDir, cutoffMs, scanTaskIds) };
+}
+
+/**
+ * The `.fusion` directory a `tasks`/`agents` sibling layout implies - the pool's base. Both writer sides derive
+ * the pool from this level (see `agentLogSpillBaseFromAgentsDir`), so reclaim enumerates from here and cannot
+ * address a different pool than the one the writers write into.
+ */
+function baseDirOf(tasksDir: string): string {
+  return dirname(tasksDir);
+}
+
+/** Counts contributed by the spill-body sweep of a prune pass (additive to the historical three fields). */
+export interface PruneAgentLogSpillCounts {
+  /** Producer directories whose mtime aged past the retention window and were therefore examined. */
+  spillDirsExamined: number;
+  /** Spill bodies deleted because no row of their own referrer log named them. */
+  spillBodiesDeleted: number;
+  spillBytesFreed: number;
+  /** Producer directories removed after their last body went (an empty directory is pure clutter). */
+  spillDirsRemoved: number;
+}
+
+/**
+ * Reclaim out-of-line agent-log detail bodies whose referrer log no longer references them.
+ *
+ * FNXC:AgentLogDetailSpill 2026-11-06-00:46 (RUFU-340):
+ * The invariant this function exists to honour: **a reclaim pass must not delete a spill body whose referencing
+ * log it did not examine.** The consequences are all load-bearing:
+ * - It is POOL-DRIVEN: producer directories are enumerated from the pool (`task/<taskId>`, `run/<agentId>/<runId>`)
+ *   and each one's referrer is derived by path arithmetic. It never iterates logs, and there is no reverse index
+ *   to drift out of date.
+ * - It covers BOTH families. A sweep that walked only `task/` would be exactly the bug this card removes, just
+ *   moved from write time to delete time.
+ * - It is BOUNDED: a directory younger than the retention window cannot have lost its referencing row in this
+ *   pass (rows only leave through a prune with the same cutoff), so its mtime alone licenses a SKIP. Deletion is
+ *   bounded per FILE: only a body whose own mtime is past the horizon is a candidate, because the directory stamp
+ *   is captured before the loop while another process may still be spilling into it. One referrer read per aged
+ *   directory, never one per body.
+ * - It matches references by DIGEST, the only identifier two processes can agree on about one file; a path from
+ *   the writer's own root is never compared to a path from this process's root.
+ * - It FAILS CLOSED: an unreadable referrer, an unreadable directory, or an unresolvable producer identity all
+ *   leave every byte in place. A missing referrer is the one readable verdict — a log that is gone references
+ *   nothing, which is also the shape left behind by the run above, where the last row of a task log pruned the
+ *   file away entirely.
+ * - It runs AFTER the JSONL rewrite above, so the references it collects are the KEPT rows, and a body whose last
+ *   referring row just aged out dies in the same pass it became unreachable.
+ * - `scanTaskIds` scopes the task family only: a task directory outside the set had no log re-read here, so its
+ *   bodies are out of scope, while run-family producers are always in scope because their referrer is read here.
+ */
+function reclaimAgentLogSpillBodies(baseDir: string, cutoffMs: number, scanTaskIds?: Set<string>): PruneAgentLogSpillCounts {
+  const counts: PruneAgentLogSpillCounts = { spillDirsExamined: 0, spillBodiesDeleted: 0, spillBytesFreed: 0, spillDirsRemoved: 0 };
+
+  for (const producer of listAgentLogSpillProducerDirs(baseDir)) {
+    if (producer.family === "task" && producer.taskId && scanTaskIds != null && !scanTaskIds.has(producer.taskId)) continue;
+    if (producer.mtimeMs >= cutoffMs) continue;
+
+    const referrer = agentLogSpillReferrerLog(baseDir, producer);
+    if (referrer == null) continue;
+    counts.spillDirsExamined += 1;
+
+    let referenced: Set<string>;
+    try {
+      referenced = existsSync(referrer) ? referencedSpillBodies(readFileSync(referrer, "utf8")) : new Set();
+    } catch (err) {
+      log.warn(`Skipped agent-log spill reclaim for ${producer.dir}; its referrer ${referrer} could not be read`, err);
+      continue;
+    }
+
+    let remaining: number;
+    try {
+      for (const name of readdirSync(producer.dir)) {
+        const bodyPath = join(producer.dir, name);
+        try {
+          const stat = statSync(bodyPath);
+          if (!stat.isFile()) continue;
+          const isPartial = isAgentLogSpillPartialFileName(name);
+          if (!isPartial && !isAgentLogSpillBodyFileName(name)) continue;
+          /*
+           * FNXC:AgentLogDetailSpill 2026-11-06-03:02 (RUFU-340):
+           * The AGE bound is per FILE and governs BOTH classes. The directory mtime licenses only the
+           * EXAMINATION — `listAgentLogSpillProducerDirs` captures every directory's stamp BEFORE this loop, and
+           * the loop then whole-file-reads each aged referrer (multi-MB per directory), while the writer is a
+           * DIFFERENT process: the dashboard daemon runs this maintenance pass while the engine and pi-CLI append
+           * agent logs into the same pool. A payload spilled into a directory whose captured stamp is aged — a
+           * resumed task, a long-lived run — is therefore young, and deleting it would leave its just-written row
+           * pointing at nothing and silently degrade it to the 4 096-char prefix. That is Decision 8's "only AGED
+           * files" clause and the protection Decision 11 claims for a row still sitting in the buffer; the stamp
+           * that decides is the file's own.
+           */
+          if (stat.mtimeMs >= cutoffMs) continue;
+          if (!isPartial) {
+            /*
+             * FNXC:AgentLogDetailSpill 2026-11-06-03:02 (RUFU-340):
+             * Membership is tested on the DIGEST the file is named for, never on a path string. The writer and
+             * this reclaimer derive the pool from their own `rootDir`, so one real directory spelled two ways (a
+             * symlinked project root, the macOS `/private` class) used to make every body in the pool look
+             * unreferenced. `bodyPath` stays only as the location to unlink. See
+             * `agentLogSpillDigestFromFileName` for the full reasoning.
+             */
+            const digest = agentLogSpillDigestFromFileName(name);
+            if (digest === null || referenced.has(digest)) continue;
+          }
+          // Aged and unaddressed: an unreferenced body, or a publish that never renamed (a publish in flight is
+          // younger than the window, so the age check above already spared it).
+          unlinkSync(bodyPath);
+          counts.spillBodiesDeleted += 1;
+          counts.spillBytesFreed += stat.size;
+        } catch (err) {
+          log.warn(`Failed to reclaim agent-log spill file ${bodyPath}`, err);
+        }
+      }
+    } catch (err) {
+      log.warn(`Failed to list agent-log spill directory ${producer.dir}`, err);
+      continue;
+    }
+
+    try {
+      remaining = readdirSync(producer.dir).length;
+      if (remaining === 0) {
+        rmdirSync(producer.dir);
+        counts.spillDirsRemoved += 1;
+      }
+    } catch {
+      // An empty-directory race (a fresh spill published into it) is a normal outcome and costs nothing.
+    }
+  }
+
+  return counts;
+}
+
+/**
+ * Every spill body a JSONL row still points at, as the DIGEST the body file is named for.
+ *
+ * FNXC:AgentLogDetailSpill 2026-11-06-03:02 (RUFU-340):
+ * The set is keyed by digest, not by path, because a pointer's `body` string belongs to the process that wrote
+ * it: engine/CLI derive the pool from `process.cwd()` while the dashboard resolves the project path from
+ * settings, and `resolve()` keeps two spellings of one real directory apart. A path-keyed set therefore reported
+ * every body in the pool as unreferenced the moment a project root was symlinked or aliased, and an aged pass
+ * unlinked evidence its rows still named. A digest is content-addressed and root-independent, so it is the only
+ * key that can be compared across processes.
+ */
+function referencedSpillBodies(content: string): Set<string> {
+  const referenced = new Set<string>();
+  for (const line of content.split("\n")) {
+    if (!line) continue;
+    try {
+      const parsed = JSON.parse(line) as { detailSpill?: { digest?: unknown; body?: unknown } };
+      const spill = parsed?.detailSpill;
+      if (!spill) continue;
+      if (isAgentLogSpillDigest(spill.digest)) {
+        referenced.add(spill.digest);
+        continue;
+      }
+      /*
+       * A pointer whose `digest` field is absent or malformed still names a body FILE, so its basename is taken —
+       * validated by the same predicate, and never the path, whose spelling is the writer's business. Keeping a
+       * byte some row mentions is the conservative direction; deleting it on a malformed field is not.
+       */
+      if (typeof spill.body === "string" && spill.body.length > 0) {
+        const digest = agentLogSpillDigestFromFileName(basename(spill.body));
+        if (digest !== null) referenced.add(digest);
+      }
+    } catch {
+      // A malformed row is kept by the prune above, so it may still reference a body. Ignoring its pointer is
+      // the conservative direction only for THAT line, and every other line of the file is still consulted.
+    }
+  }
+  return referenced;
 }
