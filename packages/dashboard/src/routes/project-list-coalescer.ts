@@ -65,6 +65,26 @@ export function acrossNodesTtlMs(): number {
   return currentAcrossNodesTtlMs;
 }
 
+/*
+FNXC:ProjectListCoalescing 2026-11-09-10:18 (RUFU-905):
+The freshness clock is a seam for the same reason the TTL is: expiry must be proven by moving time,
+never by sleeping (this repo forbids real time waits in tests, and a 2 s sleep would only ever prove
+that the machine was slow). Production keeps `Date.now`; a test installs its own counter and drives
+it past the bound. It is a module-level seam rather than a constructor argument because the route
+constructs its coalescer at registration time, before any test could hold a reference to it.
+*/
+let currentClock: () => number = Date.now;
+
+/** Test seam for the freshness clock; production keeps the real `Date.now`. */
+export function setAcrossNodesClockForTests(now: () => number): void {
+  currentClock = now;
+}
+
+/** The clock every newly created coalescer reads. */
+export function acrossNodesNow(): number {
+  return currentClock();
+}
+
 interface CoalescerEntry {
   promise: Promise<unknown>;
   /** Freshness base: start time while in flight, completion time once settled. */
@@ -78,10 +98,6 @@ export interface ProjectListCoalescer {
    * run `work`. With TTL `0` this is a plain pass-through — no join, no entry, every caller works.
    */
   run<T>(key: string, work: () => Promise<T>): Promise<T>;
-  /** Entries retained (in flight plus fresh). A debug signal, never a decision input. */
-  size(): number;
-  /** Drop every entry — used by tests and by any future explicit invalidation need. */
-  clear(): void;
 }
 
 /**
@@ -98,17 +114,19 @@ export interface ProjectListCoalescer {
  * staleness from the start would serve data that was already stale the moment it arrived.
  *
  * A rejection IS shared with the callers that joined the in-flight computation (they are waiting on
- * that exact computation); it is only never *cached*.
+ * that exact computation); it is only never *cached*. And the TTL bounds how long a SETTLED answer may
+ * be served, never how long a caller may join a computation that is still running: starting a second
+ * copy of a read the loop is already choking on is the opposite of why this seam exists.
  */
 export function createProjectListCoalescer(options: {
   ttlMs: number;
   maxSize?: number;
-  /** Injectable clock, so expiry is tested by moving time, never by sleeping. */
+  /** Injectable clock, so expiry is tested by moving time, never by sleeping. Defaults to the module seam. */
   now?: () => number;
 } = { ttlMs: DEFAULT_ACROSS_NODES_TTL_MS }): ProjectListCoalescer {
   const ttlMs = Number.isFinite(options.ttlMs) && options.ttlMs >= 0 ? Math.floor(options.ttlMs) : 0;
   const maxSize = options.maxSize ?? MAX_ACROSS_NODES_ENTRIES;
-  const now = options.now ?? Date.now;
+  const now = options.now ?? acrossNodesNow;
   const entries = new Map<string, CoalescerEntry>();
 
   return {
@@ -118,12 +136,16 @@ export function createProjectListCoalescer(options: {
 
       const live = entries.get(key);
       if (live) {
-        if (live.settled && now() - live.at < ttlMs) {
+        // Still running: join it, however long it has been running (see the note above).
+        if (!live.settled) return (await live.promise) as T;
+        if (now() - live.at < ttlMs) {
           // Refresh insertion order without touching the recorded time, as TaskLaneCache does.
           entries.delete(key);
           entries.set(key, live);
           return (await live.promise) as T;
         }
+        // Expired: a genuine miss, so the work runs again. A miss is never answered with the stale
+        // value, and never with an empty stand-in for one.
         entries.delete(key);
       }
 
@@ -145,8 +167,6 @@ export function createProjectListCoalescer(options: {
         throw error;
       }
     },
-    size: () => entries.size,
-    clear: () => entries.clear(),
   };
 }
 
