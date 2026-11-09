@@ -45,10 +45,36 @@ export interface ServedProjectStoreRegistryInit {
   resolveDefaultProjectId?: DefaultProjectIdResolver;
 }
 
+/** The server dependencies the domain registry is assembled from; each stays injectable for tests. */
+export interface DashboardDomainRegistryDeps {
+  engineManager?: unknown;
+  listRegisteredStores?: () => Array<{ projectId: string; store: ServedStoreHandle }>;
+  defaultStore?: ServedStoreHandle | null;
+  resolveDefaultProjectId?: DefaultProjectIdResolver;
+}
+
 /** One entry of the fan-out: the project id plus the store that answers for it. */
 export interface ServedProjectStore {
   projectId: string;
   store: ServedStoreHandle;
+}
+
+/**
+ * Build the dashboard's domain-metrics registry from its live server dependencies.
+ *
+ * FNXC:MetricsStoreFanOut 2026-11-09-18:19 (RUFU-911):
+ * `server.ts` and the width test go through THIS function, never two copies of the wiring. The bug it
+ * guards was purely a wiring gap: the sampler was constructed with only a `retention` init, so it fell
+ * back to the secondary-store-cache default and measured 1 project on a 25-project board. Asserting
+ * the assembly here is what makes that omission a test failure rather than a silently quiet panel.
+ */
+export function createDashboardDomainRegistry(deps: DashboardDomainRegistryDeps): () => ServedProjectStore[] {
+  return createServedProjectStoreRegistry({
+    engineManager: deps.engineManager as ServedProjectEngineManager | null | undefined,
+    listRegisteredStores: deps.listRegisteredStores,
+    defaultStore: deps.defaultStore,
+    resolveDefaultProjectId: deps.resolveDefaultProjectId,
+  });
 }
 
 /**

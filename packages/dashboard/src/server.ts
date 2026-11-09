@@ -108,7 +108,7 @@ import {
 import { loadViewChunkManifest, type ViewChunkManifestEntry } from "./view-chunk-manifest.js";
 import { maybeStartOtelExporter, type OtelExporterHandle } from "./otel-exporter.js";
 import { createMetricsSampler } from "./metrics/index.js";
-import { createServedProjectStoreRegistry } from "./metrics/served-project-stores.js";
+import { createDashboardDomainRegistry } from "./metrics/served-project-stores.js";
 import { requireAsyncLayer } from "./require-async-layer.js";
 import {
   evaluateDashboardPostgresHealth,
@@ -1372,13 +1372,12 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
   const metricsSampler = createMetricsSampler({
     retention: { onPressure: retentionPressureNotifier },
     domain: {
-      registeredStores: () =>
-        createServedProjectStoreRegistry({
-          engineManager: options?.engineManager,
-          listRegisteredStores: () => listRegisteredProjectStores(),
-          defaultStore: store,
-          resolveDefaultProjectId: () => options?.centralCore?.getDefaultProjectId?.(),
-        })(),
+      registeredStores: createDashboardDomainRegistry({
+        engineManager: options?.engineManager,
+        listRegisteredStores: () => listRegisteredProjectStores(),
+        defaultStore: store,
+        resolveDefaultProjectId: async () => options?.centralCore?.getDefaultProjectId?.(),
+      }),
     },
   });
   const mutationRateLimit = rateLimit(RATE_LIMITS.mutation);
