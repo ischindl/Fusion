@@ -95,6 +95,34 @@ The session fails to start with `ProtectedCheckoutError`, naming the refused dir
 
 The lane-side rule — every agent lane passes an explicit working directory instead of defaulting to the process directory — is in `docs/agents.md`; `packages/engine/src/__tests__/agent-cwd-ratchet.test.ts` names every exempt site.
 
+## Agent CPU priority environment variable
+
+<!--
+FNXC:AgentCpuPriority 2026-11-08-17:57 (RUFU-901):
+Documents the only operator knob over how much CPU an agent lane may take when the machine is oversubscribed.
+The measured driver: a 24-core fleet host at load average 16-40 whose largest CPU consumers were the agent
+lanes (118 % and 113 %) beside a 124 % interactive dashboard, with 113 event-loop-stall episodes in one day.
+The operator's decision was explicit — lower lane CPU priority, do NOT lower lane concurrency — so this
+variable is a priority knob and nothing else. It changes no concurrency, capacity, WIP, or pool limit.
+-->
+
+| Environment variable | Default | Valid values | Resolution | Behavior |
+|---|---:|---|---|---|
+| `FUSION_AGENT_CPU_NICENESS` | unset — demotion disabled | Integer `0` through `19` | Read from the dashboard/engine process environment at each lane spawn; there is no settings row and no per-task override | Lowers the CPU priority of each freshly-spawned agent-lane child to this niceness. Unset leaves every spawn exactly as it was, so upgrading Fusion changes nothing. |
+
+Set it in the service environment (a systemd `Environment=` line, the launcher's `.env`, or the shell that starts Fusion) and restart Fusion — the value is read from the process environment, so a running process cannot adopt a new value.
+
+**What it covers**
+
+- The demotion targets the automatic lanes only: `execute`, `planning`, `validator`, and `ce`. An interactive **chat** session is never demoted — it is a human waiting on keystrokes, and demoting it would make the interface pay for batch work.
+- The mechanism is one in-process `setpriority()` syscall against the child pid (Node's `os.setPriority`), not a `nice`/`renice` subprocess. The child's own niceness is inherited across fork/exec, so the tools a lane later starts — git, ripgrep, a language server — are covered without naming them.
+- There is deliberately no `nice -n N` launch prefix. The lane's argv is the process identity that autonomy-posture resolution and provenance attribution read (`resolveEffectivePosture` scans the exact argv the child receives for elevation markers), so a prefix would make the audited argv disagree with the argv that ran.
+- **The process hosting the dashboard is never demoted.** Refusing this process's own pid is structural, not a convention, and the dashboard's own terminal surfaces spawn shells directly rather than through the lane session manager, so no lane-only policy can reach them.
+- Values outside `0..19` — including every negative value — are refused as invalid rather than coerced, and an invalid value leaves the mechanism inert. A negative niceness would *promote* a lane above the interactive UI, which is the inverse of the requirement.
+- A refusal (invalid value, an unavailable setter, or the kernel answering `EPERM`/`ESRCH`) never fails a lane spawn. The lane simply keeps the priority it was born with, and the reason is logged once per distinct signature.
+
+Concurrency is untouched by design: the same number of lanes still run, they simply yield the CPU sooner. The operator-facing concurrency knobs remain `maxConcurrent` and `maxWorktrees` (both under **Project Settings** in this document) and the PTY pool ceiling `DEFAULT_CONCURRENCY_CEILING`; this variable moves none of them.
+
 ## Signal connector environment variables
 
 Command Center signal connectors are configured with process environment variables read by the dashboard/API server. These values are secrets and are never returned by the connectors-status endpoint; `GET /api/command-center/signals/connectors` reports only per-provider `configured` booleans.

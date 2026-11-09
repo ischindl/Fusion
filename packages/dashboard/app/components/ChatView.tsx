@@ -3281,8 +3281,23 @@ function ChatViewContent({ projectId, addToast, floating = false, compactLayout 
   }, [matchedSearchMessageId, virtualTranscript.scrollToKey]);
 
   useEffect(() => {
-    const root = chatViewRef.current;
-    if (!root) return;
+    const body = chatViewRef.current;
+    if (!body) return;
+    /*
+    FNXC:ChatFind 2026-11-08-19:47 (RUFU-901):
+    Find ownership belongs to the whole chat host, not to the body pane. FN-110 (294e826ea0) authored this
+    effect with `chatViewRef` on the element carrying the `chat-view` class, so both ownership halves worked:
+    a `pointerdown` anywhere in the host activated it, and `target.closest(".chat-view") === root` was true
+    for any keydown inside it. FN-379 (e6c7d6fdb7) moved the `chat-view` class onto the `ViewLayout` shell and
+    left the ref on the inner `.chat-view__body`, which made that comparison permanently false and moved the
+    activation listeners out of reach of anything outside the body — a sidebar-row click no longer activated
+    the host either. Ctrl+F then fell through unclaimed (not even `preventDefault`ed), so the browser's own
+    Find ran over the whole page instead of the thread, and thread Find could not be opened at all without a
+    prior pointer event inside the body. Resolve the shell the selector names instead of assuming the ref is
+    the shell; `chatViewRef` stays on the body because the floating-narrow measurement above needs the pane
+    width, not the shell width.
+    */
+    const root = body.closest<HTMLElement>(".chat-view") ?? body;
     if (!findActive) {
       if (activeChatFindOwner === root) activeChatFindOwner = null;
       return;
