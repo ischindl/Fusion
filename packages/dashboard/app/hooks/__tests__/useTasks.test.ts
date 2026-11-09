@@ -305,6 +305,68 @@ describe("useTasks", () => {
     expect(result.current.lastRefreshErrorAt).toBeNull();
   });
 
+  /*
+  FNXC:BoardLaneFailureNotEmpty 2026-11-09-15:05 (RUFU-907):
+  SYMPTOM VERIFICATION. The reported failure: a cold board load issued 178 /api/ calls, one lane read
+  rejected inside that burst, and the board stayed on an empty lane with a Retry button nobody pressed.
+  The failure path recorded `lastRefreshErrorAt` and stopped — that field had no production consumer —
+  so a transient rejection was terminal until the operator reloaded.
+  */
+  it("re-attempts a failed board refresh on the bounded ladder without a manual Retry", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    // A message the server actually produced: a transport-level suspension rejection has its own
+    // resume-signal owner and must NOT consume the ladder.
+    mockFetchTasks.mockRejectedValueOnce(new Error("HTTP 500"));
+    mockFetchTasks.mockResolvedValueOnce([createMockTask({ id: "FN-AUTO-RETRY" })]);
+
+    const { result } = renderHook(() => useTasks({ projectId: "proj-1", sseEnabled: false }));
+
+    await waitFor(() => expect(result.current.lastRefreshErrorAt).toEqual(expect.any(Number)));
+    expect(mockFetchTasks).toHaveBeenCalledTimes(1);
+    // Nothing happened on its own YET — the ladder is armed, not fired.
+    expect(result.current.tasks).toHaveLength(0);
+
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+      await flushPromises();
+    });
+
+    await waitFor(() => expect(result.current.tasks.map(({ id }) => id)).toContain("FN-AUTO-RETRY"));
+    expect(mockFetchTasks).toHaveBeenCalledTimes(2);
+    expect(result.current.lastRefreshErrorAt).toBeNull();
+    vi.useRealTimers();
+  });
+
+  it("stops the board refresh ladder after its last rung instead of hammering a failing server", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mockFetchTasks.mockRejectedValue(new Error("HTTP 500"));
+
+    const { result } = renderHook(() => useTasks({ projectId: "proj-1", sseEnabled: false }));
+
+    await waitFor(() => expect(result.current.lastRefreshErrorAt).toEqual(expect.any(Number)));
+    expect(mockFetchTasks).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+      await flushPromises();
+    });
+    await waitFor(() => expect(mockFetchTasks).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      vi.advanceTimersByTime(8_000);
+      await flushPromises();
+    });
+    await waitFor(() => expect(mockFetchTasks).toHaveBeenCalledTimes(3));
+
+    // The ladder is two rungs long; a still-failing server gets no fourth attempt.
+    await act(async () => {
+      vi.advanceTimersByTime(120_000);
+      await flushPromises();
+    });
+    expect(mockFetchTasks).toHaveBeenCalledTimes(3);
+    vi.useRealTimers();
+  });
+
   it("initial clearOnError path clears tasks", async () => {
     mockReadCache.mockReturnValueOnce([createMockTask({ id: "FN-CACHED" })]);
     mockFetchTasks.mockRejectedValueOnce(new Error("offline"));

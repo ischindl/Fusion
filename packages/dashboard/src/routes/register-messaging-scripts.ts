@@ -6,6 +6,42 @@ import { getTerminalService } from "../terminal-service.js";
 import type { ApiRoutesContext } from "./types.js";
 import { requireAsyncLayer } from "../require-async-layer.js";
 
+/*
+FNXC:DashboardRequestOverhead 2026-11-09-15:12 (RUFU-907):
+The measured per-request cost of this file's two badge routes, and the hypothesis that was killed
+getting here, both belong in the file that pays the cost.
+
+REPORTED. Loading ONE project cold issued 178 `/api/` calls from a single tab and accumulated 72,5 s
+of API time; the slowest named reads were 8,8 s / 5,8 s / 5,5 s / 4,9 s / 4,4 s and two of them
+transferred 0 KB, so payload was ruled out and ~0,7 s of SHARED per-authenticated-request cost was the
+working theory (178 x 0,7 s explains the freeze on its own).
+
+KILLED, WITH NUMBERS. The shared cost is real but it is ~0,07-0,12 s, not 0,7 s, and it is not store
+acquisition:
+- `openStoreFor(projectId)` is `engineManager.getStore(projectId)`, a map read; the project store lives
+  behind `getOrCreateProjectStore`'s `storeCache` + `pendingCreations` single-flight, so it is opened
+  once per project for the process's lifetime, not per request.
+- An authenticated, pure in-memory endpoint answered in 0,07 s median and an authenticated 22 KB
+  central-store read in 0,12 s median, while `/api/health` (NO auth, NO store) took 0,18 s — auth and
+  store acquisition are not what the 0,7 s was.
+- The process's own `/metrics` over 10 323 requests said p50 51 ms / p95 3 844 ms. 72,5 s / 178 calls
+  is a MEAN over a concurrent burst; it is tail-weighted queueing, not a per-request floor.
+- The queueing is process-wide: `/` (cached static HTML, no auth, no store) and an unmatched
+  `/api/<nope>` 404 showed the same 0,14-0,86 s distribution as store-backed reads, while `top` put the
+  dashboard at 90-113 % CPU with 1,77 GB heap in use and 221 PostgreSQL queries/s. A cold board load
+  does not pay 178 x 0,7 s of setup; it queues 178 requests behind a process with no idle thread.
+
+WHAT WAS FIXED HERE INSTEAD: the handler-internal term that IS self-inflicted. This file's two routes
+returned 119 bytes and 764 bytes for four and three serially-awaited round trips respectively
+(`messages/unread-count` measured 1,56 s median / 1,08 min / 3,68 max on an idle-ish engine).
+
+STILL OPEN, NAMED NOT FIXED: `/api/plugins/dashboard-views` measures 1,94 s median for a 0 KB body —
+it awaits `getProjectPluginLoader` then `getPluginDashboardViews` and is the next dominant handler.
+And the process CPU sink (25 904 `execFile` invocations in 1 h 02 m, ~7/s, with 1,77 GB heap live) is
+outside any dashboard route; it needs a profile, which the live-process constraints on this slice
+forbade taking.
+*/
+
 export function registerMessagingScriptRoutes(ctx: ApiRoutesContext): void {
   const { router, options, getProjectContext, rethrowAsApiError, runtimeLogger } = ctx;
 
@@ -232,6 +268,20 @@ export function registerMessagingScriptRoutes(ctx: ApiRoutesContext): void {
     return undefined;
   }
 
+  /*
+  FNXC:MailboxBadgeReadFanout 2026-11-09-14:25 (RUFU-907):
+  These three mailbox aggregates are independent, but the routes that render them awaited them one
+  after another. `GET /messages/unread-count` returns 119 bytes and measured a 1,56 s median (min
+  1,14 / max 2,60) against a 0,07 s authenticated in-memory endpoint and a 51 ms process-wide p50, so
+  the response is not the cost — four serially-awaited PostgreSQL round trips are, each of which
+  re-enters the same saturated connection pool and event loop (production /metrics: 221 queries/s,
+  request p95 3,8 s, process pinned at ~100 % CPU). Issuing them concurrently turns four queue
+  waits into one; the response shape is byte-identical because each field comes from the same reader.
+
+  `resolveCategoryUnreadCounts` keeps its swallow-into-`undefined` contract, and the approval count
+  keeps its swallow-into-`0` contract, so a failing arm degrades exactly as it did serially — a
+  rejection can no longer be produced by concurrency that was not already possible in sequence.
+  */
   async function resolveCategoryUnreadCounts(
     msgStore: MessageStore,
   ): Promise<Record<DashboardInboxCategory, number> | undefined> {
@@ -256,9 +306,12 @@ export function registerMessagingScriptRoutes(ctx: ApiRoutesContext): void {
         type: req.query.type as MessageType | undefined,
         ...(category ? { category } : {}),
       };
-      const messages = await msgStore.getInbox(DASHBOARD_USER_ID, "user", filter);
-      const mailbox = await msgStore.getMailbox(DASHBOARD_USER_ID, "user");
-      const categoryUnreadCounts = await resolveCategoryUnreadCounts(msgStore);
+      // FNXC:MailboxBadgeReadFanout 2026-11-09-14:25 (RUFU-907): three independent aggregates, one wave.
+      const [messages, mailbox, categoryUnreadCounts] = await Promise.all([
+        msgStore.getInbox(DASHBOARD_USER_ID, "user", filter),
+        msgStore.getMailbox(DASHBOARD_USER_ID, "user"),
+        resolveCategoryUnreadCounts(msgStore),
+      ]);
       res.json({
         messages,
         total: messages.length,
@@ -296,16 +349,20 @@ export function registerMessagingScriptRoutes(ctx: ApiRoutesContext): void {
     try {
       const msgStore = await getMessageStore(req);
       const { store: scopedStore } = await getProjectContext(req);
-      const mailbox = await msgStore.getMailbox(DASHBOARD_USER_ID, "user");
-      let pendingApprovalCount = 0;
-      try {
-        const layer = requireAsyncLayer(scopedStore, "Messaging approval store");
-        const approvalStore = new ApprovalRequestStore(null, { asyncLayer: layer });
-        pendingApprovalCount = (await approvalStore.list({ status: "pending", limit: Number.MAX_SAFE_INTEGER, offset: 0 })).length;
-      } catch {
-        pendingApprovalCount = 0;
-      }
-      const categoryUnreadCounts = await resolveCategoryUnreadCounts(msgStore);
+      // FNXC:MailboxBadgeReadFanout 2026-11-09-14:25 (RUFU-907): three independent aggregates, one wave.
+      const [mailbox, pendingApprovalCount, categoryUnreadCounts] = await Promise.all([
+        msgStore.getMailbox(DASHBOARD_USER_ID, "user"),
+        (async () => {
+          try {
+            const layer = requireAsyncLayer(scopedStore, "Messaging approval store");
+            const approvalStore = new ApprovalRequestStore(null, { asyncLayer: layer });
+            return (await approvalStore.list({ status: "pending", limit: Number.MAX_SAFE_INTEGER, offset: 0 })).length;
+          } catch {
+            return 0;
+          }
+        })(),
+        resolveCategoryUnreadCounts(msgStore),
+      ]);
       res.json({
         unreadCount: mailbox.unreadCount,
         pendingApprovalCount,
