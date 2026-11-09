@@ -39,6 +39,7 @@ import { taskProjectScope } from "../../postgres/data-layer.js";
  * file take their project operand from the watched accessor, never from the plain no-op
  * helper, so an unbound shared-PostgreSQL layer is visible in the audit store. */
 import { noteTaskListProjectScope, taskListProjectScope } from "../../postgres/task-list-read-scope.js";
+import { resolveBoardFeedProjection } from "../../postgres/board-feed.js";
 import {
   taskIntakeDisplayCursorPredicate,
   taskIntakeDisplayOrderBy,
@@ -978,6 +979,15 @@ export interface ReadLiveTaskRowsOptions {
   `excludeLog` is set. See `TaskListReadField` for what each member owns and why the union is closed.
   */
   fields?: readonly TaskListReadField[];
+  /*
+  FNXC:BoardFeedProjection 2026-11-08-20:54 (RUFU-902):
+  Ask for the board-feed column set instead of the slim one: the same keys minus the payloads
+  `compactBoardFeedRow` discards, with `source_metadata` narrowed to the board allowlist in SQL. The
+  caller has already decided the row is board-shaped — `reads.ts` only sets this beside its own
+  `compactBoardFeed: true` — and passes the one settings decision the projection needs, so this layer
+  never reads settings itself. See `postgres/board-feed.ts` for the equivalence contract.
+  */
+  boardFeed?: { includeTokenUsage: boolean };
   includeDeleted?: boolean;
   column?: string;
   columns?: readonly string[];
@@ -1103,7 +1113,9 @@ export async function readLiveTaskRows(
     if (offset > 0) q = q.offset(offset);
     return q;
   };
-  const projection = resolveLiveTaskRowProjection(options);
+  const projection = options?.boardFeed
+    ? resolveBoardFeedProjection(TASK_SLIM_PROJECTION, options.boardFeed)
+    : resolveLiveTaskRowProjection(options);
   /*
   FNXC:ListReadFieldDeclaration 2026-10-25-23:31 (RUFU-627):
   One query path for all three shapes. Until now `excludeLog` had its own branch and the default had

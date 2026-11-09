@@ -7,6 +7,7 @@
  * instance as its first parameter and performs byte-identical work.
  */
 import {TaskStore, storeLog} from "../store.js";
+import { BOARD_SOURCE_METADATA_KEYS, isBoardFeedProjectionEnabled } from "../postgres/board-feed.js";
 import { recordReadCall } from "./read-attribution.js";
 import { shouldWarnPromptParseFailure } from "./task-artifacts-ops.js";
 import {readFile} from "node:fs/promises";
@@ -948,6 +949,15 @@ export function listReadShapeKey(options?: ListTasksOptions): string {
     (options?.slim ?? false) ? "slim" : "full",
     (options?.excludeLog === true || (options?.slim ?? false)) ? "nolog" : "log",
     options?.compactBoardFeed ? "compact" : "wide",
+    /*
+    FNXC:BoardFeedProjection 2026-11-08-20:54 (RUFU-902):
+    The board-feed projection is a fifth row shape, and the memo and the in-flight map must never
+    serve one shape for another — that is the defect RUFU-627 added this key to close. The flag is
+    read from the environment, which is process-constant, but the segment is still derived from the
+    EFFECTIVE decision rather than from the flag alone: a caller that never asked for a compact feed
+    must key exactly as it does today, so the flag being ON cannot perturb a non-board caller's key.
+    */
+    options?.compactBoardFeed && isBoardFeedProjectionEnabled() ? "feedproj" : "feedwide",
     normalizeTaskListReadFields(options?.fields),
   ].join(":");
 }
@@ -1152,8 +1162,24 @@ export async function listTasksImpl(store: TaskStore, options?: ListTasksOptions
     taken since RUFU-615 — so omitting the column is row-shape-neutral and removes the parse cost instead.
     */
     const effectiveExcludeLog = options?.excludeLog === true || slim;
+    /*
+    FNXC:BoardFeedProjection 2026-11-08-20:54 (RUFU-902):
+    The cost-badge decision was resolved here already, just BELOW the query, so hoisting it above is
+    value-identical: `resolveBoardFeedCostVisibility` answers from the store's merged settings cache
+    and reads no row. It has to be hoisted because the projection needs the decision before it can
+    choose the column set — the badge columns are dropped in the SELECT rather than after hydration.
+    One resolution per pass either way, never one per card.
+    */
+    const boardCostVisible = options?.compactBoardFeed ? await resolveBoardFeedCostVisibility(store) : false;
+    const boardFeedProjection = options?.compactBoardFeed === true && isBoardFeedProjectionEnabled();
     const filteredRows = await readLiveTaskRows(layer, {
       ...(effectiveExcludeLog ? { excludeLog: true } : {}),
+      /*
+      FNXC:BoardFeedProjection 2026-11-08-20:54 (RUFU-902):
+      Spread-guarded exactly like `fields` above, so with the flag OFF — the default on every
+      deployment — the options object sent to the reader is the one it receives today, byte for byte.
+      */
+      ...(boardFeedProjection ? { boardFeed: { includeTokenUsage: boardCostVisible } } : {}),
       /*
       FNXC:ListReadFieldDeclaration 2026-10-25-23:31 (RUFU-627):
       Passed through verbatim: this layer decides the column set, and the row→Task decode below needs
@@ -1196,8 +1222,8 @@ export async function listTasksImpl(store: TaskStore, options?: ListTasksOptions
       ? await buildListDeriveFeed(store, filteredRows, options)
       : null;
     /* FNXC:BoardCostBadge 2026-11-07-13:55 (RUFU-871): resolved ONCE for the pass, before the
-       per-row map, so a board feed never pays a settings lookup per card. */
-    const boardCostVisible = options?.compactBoardFeed ? await resolveBoardFeedCostVisibility(store) : false;
+       per-row map, so a board feed never pays a settings lookup per card. Hoisted above the query by
+       RUFU-902 (see `boardCostVisible` above); the value and the once-per-pass rule are unchanged. */
     /*
     FNXC:TaskLogSideTable 2026-11-01-19:25 (RUFU-312):
     A page whose rows were read without the log column still has to answer the log-derived signals (the stall
@@ -1580,23 +1606,20 @@ provenance the card links to (`nearDuplicateOf`, `nearDuplicateDismissed`, `dupl
 from this key). They are carried because the board allowlist names them; removing them is its
 own decision, not a side effect of this projection. Every other key is engine bookkeeping and
 is never rendered from a list row; the full blob stays on `GET /tasks/:id`.
-*/
-export const BOARD_SOURCE_METADATA_KEYS = [
-  "agentName",
-  "issueUrl",
-  "nearDuplicateOf",
-  "nearDuplicateDismissed",
-  "duplicateSource",
-  "revertOf",
-  "revertedAt",
-  "restoredAt",
-  "handoffFrom",
-  "transferredTo",
-  "wipAdmissionStall",
-  "fusionBranchContext",
-] as const;
 
-function projectBoardSourceMetadata(sourceMetadata: Task["sourceMetadata"]): Task["sourceMetadata"] {
+FNXC:BoardFeedProjection 2026-11-08-18:52 (RUFU-902):
+Definition moved to `postgres/board-feed.ts`, which is where the SAME allowlist is now also spelled
+as a PostgreSQL expression. A second copy here would let the compaction allowlist and the SQL
+allowlist drift, and the two must agree row-for-row or a card's chip depends on which path read it.
+Re-exported so `board-feed-payload-projection.test.ts` and every other importer keeps the old path.
+*/
+export { BOARD_SOURCE_METADATA_KEYS } from "../postgres/board-feed.js";
+
+/**
+ * Exported because RUFU-902's PostgreSQL key-allowlist projection must be proven equal to THIS
+ * function row-for-row, not to a copy of it. See `postgres/__tests__/board-feed.test.ts`.
+ */
+export function projectBoardSourceMetadata(sourceMetadata: Task["sourceMetadata"]): Task["sourceMetadata"] {
   if (!sourceMetadata || typeof sourceMetadata !== "object") return sourceMetadata;
   const projected: Record<string, unknown> = {};
   for (const key of BOARD_SOURCE_METADATA_KEYS) {
