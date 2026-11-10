@@ -794,3 +794,60 @@ describe("pool occupancy gauges (RUFU-483)", () => {
     });
   });
 });
+
+/*
+FNXC:DomainSamplerCadence 2026-11-10-05:15 (RUFU-1046):
+The domain arm's interval is now a launch flag, and a flag nobody asserts is a flag that rots. The
+cost that motivated it (measured on a live dashboard with a raw CDP profile): `listTasksImpl` is
+39,2 % of process CPU inclusive, and the sampler's own chain (`(anon) -> defaultListTasks` 27,4 %,
+`(anon) -> sampleDomain` 11,6 %) is most of that — it hydrates cards only to tally `task.column`,
+on the same single thread that answers `/api/health`.
+*/
+describe("domain arm cadence — FUSION_METRICS_DOMAIN_INTERVAL_MS", () => {
+  const FLAG = "FUSION_METRICS_DOMAIN_INTERVAL_MS";
+  const saved = process.env[FLAG];
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env[FLAG];
+    else process.env[FLAG] = saved;
+  });
+
+  /** The intervals both arms actually armed, captured through the injectable timer surface. */
+  function armedIntervals(overrides: Partial<DomainSamplerInit> = {}): number[] {
+    const intervals: number[] = [];
+    const sampler = createDomainSampler({
+      tick: { pgMs: 1111 }, // a distinctive pg interval, so the domain arm's number cannot be confused with it
+      timers: {
+        setInterval: (_fn, ms) => {
+          intervals.push(ms);
+          return {};
+        },
+        clearInterval: () => {},
+      },
+      ...overrides,
+    });
+    sampler.start();
+    sampler.stopTimers();
+    return intervals.sort((a, b) => a - b);
+  }
+
+  it("arms the domain arm at the flagged interval instead of the 5 s default", () => {
+    process.env[FLAG] = "15000";
+    expect(armedIntervals()).toEqual([1111, 15000]);
+  });
+
+  it("keeps the shipped 5 s default when the flag is unset, and when it is not a usable interval", () => {
+    // A typo must not install a 0 ms or NaN walk: the floor and the fallback exist for that.
+    delete process.env[FLAG];
+    expect(armedIntervals()).toEqual([1111, 5000]);
+    for (const unusable of ["", "abc", "0", "-4000", "500"]) {
+      process.env[FLAG] = unusable;
+      expect({ unusable, intervals: armedIntervals() }).toEqual({ unusable, intervals: [1111, 5000] });
+    }
+  });
+
+  it("lets an injected tick win over the flag, because tests and embedding hosts inject it", () => {
+    process.env[FLAG] = "15000";
+    expect(armedIntervals({ tick: { pgMs: 1111, domainMs: 7000 } })).toEqual([1111, 7000]);
+  });
+});

@@ -474,6 +474,39 @@ export function resolveProjectPopulation(
   return out;
 }
 
+/** Floor for the env override: a sub-second domain walk is never the answer to a busy main thread. */
+const DOMAIN_INTERVAL_FLOOR_MS = 1_000;
+const DOMAIN_INTERVAL_DEFAULT_MS = 5_000;
+
+/*
+FNXC:DomainSamplerCadence 2026-11-10-05:15 (RUFU-1046):
+The domain arm walked EVERY registered project's board every 5 s, and a raw CDP profile taken on a live
+dashboard says what that costs: `listTasksImpl` is 39,2 % of process CPU inclusive, and the arms' own
+chain (`(anon) -> defaultListTasks` 27,4 %, `(anon) -> sampleDomain` 11,6 %) is most of it — the sampler
+hydrates cards it then reduces to `task.column` to publish a per-column count gauge.
+
+Nothing consumes 5 s granularity: Prometheus scrapes this endpoint every 15 s, so two of every three
+walks are discarded before anyone can read them, while the walk itself competes with the UI for the one
+thread that also serves `/api/health` (the watchdog restarts the process after 8 unanswered probes).
+
+The interval is now a launch flag rather than an edit: `FUSION_METRICS_DOMAIN_INTERVAL_MS`. An explicit
+`init.tick.domainMs` still wins, because tests and embedding hosts inject it. The shipped default is
+unchanged at 5 s — matching the consumer's granularity is a deployment decision, and this box opts into
+15 s in the watchdog's env block.
+
+Deliberately NOT done here: making the walk lazy (compute on `/metrics` render instead of on a timer).
+That is the right end state and is tracked separately; it changes when reads may run.
+*/
+function resolveDomainIntervalMs(explicit: number | undefined): number {
+  if (explicit !== undefined && Number.isFinite(explicit) && explicit > 0) return explicit;
+  const raw = process.env.FUSION_METRICS_DOMAIN_INTERVAL_MS?.trim();
+  if (!raw) return DOMAIN_INTERVAL_DEFAULT_MS;
+  const parsed = Number(raw);
+  // A typo'd flag must not silently install a 0 ms or NaN interval: fall back to the shipped default.
+  if (!Number.isFinite(parsed) || parsed < DOMAIN_INTERVAL_FLOOR_MS) return DOMAIN_INTERVAL_DEFAULT_MS;
+  return parsed;
+}
+
 /** Create a domain sampler. Timers are NOT started until {@link DomainSampler.start}. */
 export function createDomainSampler(init: DomainSamplerInit = {}): DomainSampler {
   const registry = init.registeredStores ?? defaultRegistry();
@@ -482,7 +515,7 @@ export function createDomainSampler(init: DomainSamplerInit = {}): DomainSampler
   const listTasks = init.listTasksInStore ?? defaultListTasks;
   const pgReader = init.pgStatsReader ?? defaultPgStatsReader(registry);
   const poolReader = init.poolStatsReader ?? defaultPoolStatsReader();
-  const tick = { pgMs: init.tick?.pgMs ?? 5000, domainMs: init.tick?.domainMs ?? 5000 };
+  const tick = { pgMs: init.tick?.pgMs ?? 5000, domainMs: resolveDomainIntervalMs(init.tick?.domainMs) };
   const timers = init.timers ?? defaultTimers();
 
   const state: DomainSamplerState = {
