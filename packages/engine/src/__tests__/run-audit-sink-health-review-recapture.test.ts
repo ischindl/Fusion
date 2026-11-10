@@ -134,6 +134,18 @@ describe("FN-9234 review-recapture audit sink health", () => {
       createSpawnAgentTool: () => undefined, sharedWorkerTools: {}, deleteActiveWorkflowStepSession: () => undefined,
       getAssignedAgentRuntimeConfig: () => undefined, getAuthoritativeAssignedAgent: async () => undefined,
       readTaskArtifact: async () => "# Task", resolveInstructionsForRole: async () => "", resolveMcpServers: async () => [], setActiveWorkflowStepSession: () => undefined,
+      /*
+      FNXC:PromptByteStability 2026-11-08-15:14 (RUFU-522):
+      RUFU-267 gave the executor lane the parts-form sibling of `resolveInstructionsForRole` and made this
+      step's `runOnce` await it (`execute-workflow-step.ts:956`) so the agent's memory bodies and rating
+      summary ride the step request instead of invalidating the cached step system prompt. This hand-rolled
+      deps bag carried only the pre-RUFU-267 collapsed seam, so every hostile-sink mode died before the
+      audit emit: the three non-timer modes on `deps.resolveInstructionPartsForRole is not a function`, and
+      the three fake-timer modes on the harness await for `sink.started`, which an aborted step never
+      reaches. The three empty parts are the neutral value production itself returns for a role with no
+      configured agent, which is what this fixture's `options: {}` (no agentStore) models.
+      */
+      resolveInstructionPartsForRole: async () => ({ configTime: "", memorySection: "", performanceFeedback: "" }),
     } as any, task, {
       id: "code-review", name: "Code Review", description: "Review", mode: "prompt", phase: "pre-merge", gateMode: "gate", prompt: "Review", toolMode: "readonly", enabled: true, optionalGroupId: "code-review", reviewKind: "code",
     } as any, repo.directory, {}));
