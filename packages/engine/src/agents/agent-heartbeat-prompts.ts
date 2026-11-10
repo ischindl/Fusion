@@ -7,6 +7,30 @@ import {
   TRIAGE_HEARTBEAT_PATROL_DISABLED_INSTRUCTION,
 } from "@fusion/core";
 
+/*
+FNXC:HeartbeatMessageAck 2026-11-10-03:15 (RUFU-348):
+Every inbox-handling surface quotes ONE sentence, declared here, naming the only two ways a message
+stops being pending. The heartbeat re-advertises every unread row on every tick, so a lane that was
+never told how consumption happens can only answer (costing a reply it did not owe) or stay silent and
+be woken again. One shared constant rather than per-variant prose: the idle and task-scoped procedure
+variants demonstrably drifted before, and a rule that exists in two wordings is a rule that gets fixed
+in one of them.
+*/
+export const MESSAGE_CONSUMPTION_RULE =
+  "A message stops being pending only when you consume it: answer with reply_to_message_id, or call "
+  + "fn_ack_messages with its id when no reply is due. Reads never consume, so a turn that failed "
+  + "before consuming still gets the message delivered again.";
+
+/*
+FNXC:HeartbeatMessageAck 2026-11-10-03:15 (RUFU-348):
+The short form quoted under the rendered "Pending Messages:" list, which is the surface an agent
+actually reads while the wake is happening. Same two exits as MESSAGE_CONSUMPTION_RULE, stated once here
+so the block and the procedure cannot disagree about what ends the wake.
+*/
+export const PENDING_MESSAGES_ACK_HINT =
+  "Answer one with reply_to_message_id, or call fn_ack_messages with its id when no reply is due - "
+  + "an unread row is re-advertised on every tick until it is consumed.";
+
 export const HEARTBEAT_CRITICAL_RULES = `## Critical Rules
 
 - ONE concrete coordination action per tick, then call fn_heartbeat_done (or an explicit no-op with reason).
@@ -65,7 +89,7 @@ Examples of ONE useful coordination action:
 
 Keep work lightweight — this is a single-pass coordination check, not an implementation run.
 You have workspace read tools (for context gathering) plus fn_task_create, fn_task_log, fn_task_document tools,
-fn_send_message, fn_read_messages, fn_post_room_message, fn_list_agents, fn_delegate_task, workflow discovery/authoring, task promotion, bounded research, fn_ask_question, and memory tools.
+fn_send_message, fn_read_messages, fn_ack_messages, fn_post_room_message, fn_list_agents, fn_delegate_task, workflow discovery/authoring, task promotion, bounded research, fn_ask_question, and memory tools.
 
 **Task Documents:** Save important findings with fn_task_document_write(key="...", content="...").
 Documents persist across sessions and are visible in the dashboard's Documents tab.
@@ -109,9 +133,10 @@ When you are woken by an incoming message (source includes "wake-on-message"), y
 3. Take one concrete action per actionable message:
    - If the message requires a response, use fn_send_message to reply.
    - When replying, include 'reply_to_message_id' and set 'to_id' to the exact [from: type:id] ID from fn_read_messages (including cli). Omit 'to_id' only to use the safe reply-to-parent default for a message addressed to you.
-   - If the message is informational, acknowledge it by logging with fn_task_log.
+   - If the message is informational, consume it with fn_ack_messages. Logging context with fn_task_log is optional alongside that, but a log entry on its own does not consume the message.
    - If the message requests net-new work, first check whether an open task already covers it; idle/no-task heartbeats may create focused ordinary tasks without mission lineage.
    - If ownership is clear and an agent is available, delegate the focused work using fn_delegate_task.
+${MESSAGE_CONSUMPTION_RULE}
 4. If a Pending Room Messages section is present, review it too:
    - Use fn_post_room_message only when the room content is relevant to your role, soul, or identity.
    - If a Room Ambiguity Notices section is present, follow it exactly: echo resolved referents before acting, and under clarification notices do not create tasks.
@@ -175,7 +200,7 @@ You have coding-capable workspace tools (read/write/edit/bash within worktree bo
 - fn_web_fetch
 - fn_memory_search, fn_memory_get, and fn_memory_append
 - fn_heartbeat_done
-- fn_send_message, fn_read_messages, and fn_post_room_message when messaging/room tools are enabled for this run (they may not always be available)
+- fn_send_message, fn_read_messages, fn_ack_messages, and fn_post_room_message when messaging/room tools are enabled for this run (they may not always be available)
 
 ## Triage and Routing Decisions
 
@@ -212,9 +237,10 @@ When you are woken by an incoming message (source includes "wake-on-message"), y
 2. Review each message and determine the appropriate action:
    - If the message requires a response and fn_send_message is available, use fn_send_message to reply.
    - When replying, include 'reply_to_message_id' and set 'to_id' to the exact [from: type:id] ID from fn_read_messages (including cli). Omit 'to_id' only to use the safe reply-to-parent default for a message addressed to you.
-   - If the message is informational, acknowledge it and respond via fn_send_message when appropriate.
+   - If the message is informational, consume it with fn_ack_messages (respond via fn_send_message only when a reply is actually due).
    - If the message requests work, check whether an open task already covers it; only create a follow-up with fn_task_create when no existing open task matches.
    - If the request has a clear owner and fn_delegate_task is available, delegate it directly.
+${MESSAGE_CONSUMPTION_RULE}
 3. If a Pending Room Messages section is present, review it too and use fn_post_room_message only when the room content is relevant to your role or identity; if Room Ambiguity Notices are present, follow their resolve/clarify branch instructions exactly. If a Room Coordination Notices section is present, follow its claim/defer branch exactly: under "claim" post a one-line claim before calling fn_task_create; under "defer-suggested" do NOT call fn_task_create and instead acknowledge the prior claim via fn_post_room_message.
 4. After processing messages, continue with your ambient work.
 
@@ -298,6 +324,7 @@ export const HEARTBEAT_PROCEDURE_STRICT = `## Heartbeat Procedure (run every tic
    a one-line claim before calling fn_task_create; under "defer-suggested" do
    NOT call fn_task_create and instead acknowledge the prior claim via
    fn_post_room_message.
+   ${MESSAGE_CONSUMPTION_RULE}
 3. **Wake delta** — read the Wake Delta block above. The wake reason is the
    highest-priority change for this heartbeat. If you were woken by a comment
    or a message, acknowledge it before doing anything else.
@@ -361,6 +388,7 @@ export const HEARTBEAT_PROCEDURE_LITE = `## Heartbeat Procedure (run every tick,
 2. **Inbox** — when fn_read_messages is available, call it immediately and
    process unread/pending messages before any other action; reply with
    reply_to_message_id when answering.
+   ${MESSAGE_CONSUMPTION_RULE}
 3. **Wake delta** — read the Wake Delta block above. The wake reason is the
    highest-priority change for this heartbeat. If you were woken by a comment
    or a message, acknowledge it before doing anything else.
@@ -392,6 +420,7 @@ export const HEARTBEAT_PROCEDURE_OFF = `## Heartbeat Procedure (run every tick, 
 
 1. **Identity & context** — review the **Identity Snapshot** at the top of this prompt.
 2. **Inbox** — when fn_read_messages is available, call it immediately and process unread/pending messages.
+   ${MESSAGE_CONSUMPTION_RULE}
 3. **Wake delta** — read the Wake Delta block above and handle the highest-priority change first.
 4. **Pick one concrete action** — do exactly one useful thing this tick. Never retry checkout/claim conflicts. Same-blocker no news → no-op with reason.
 5. **Persist progress** — record the action via available task/memory tools.
@@ -423,6 +452,7 @@ export const HEARTBEAT_NO_TASK_PROCEDURE_STRICT = `## Heartbeat Procedure (run e
    a one-line claim before calling fn_task_create; under "defer-suggested" do
    NOT call fn_task_create and instead acknowledge the prior claim via
    fn_post_room_message.
+   ${MESSAGE_CONSUMPTION_RULE}
 3. **Wake delta** — read the Wake Delta block above. The wake reason is the
    highest-priority change for this heartbeat. If you were woken by a comment
    or a message, acknowledge it before doing anything else.
@@ -463,6 +493,7 @@ export const HEARTBEAT_NO_TASK_PROCEDURE_LITE = `## Heartbeat Procedure (run eve
 2. **Inbox** — when fn_read_messages is available, call it immediately and
    process unread/pending messages before any other action; reply with
    reply_to_message_id when answering.
+   ${MESSAGE_CONSUMPTION_RULE}
 3. **Wake delta** — read the Wake Delta block above. The wake reason is the
    highest-priority change for this heartbeat. If you were woken by a comment
    or a message, acknowledge it before doing anything else.
@@ -490,6 +521,7 @@ export const HEARTBEAT_NO_TASK_PROCEDURE_OFF = `## Heartbeat Procedure (run ever
 
 1. **Identity & context** — review the **Identity Snapshot** at the top of this prompt.
 2. **Inbox** — when fn_read_messages is available, call it immediately and process unread/pending messages.
+   ${MESSAGE_CONSUMPTION_RULE}
 3. **Wake delta** — read the Wake Delta block above and handle the highest-priority change first.
 4. **Pick one concrete action** — do exactly one useful thing this tick. Never retry checkout/claim conflicts.
 5. **Persist progress** — use available ambient tools only.

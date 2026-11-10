@@ -102,6 +102,11 @@ vi.mock("@fusion/engine", () => ({
   buildSessionSkillContextSync: vi.fn(() => ({ skillSelectionContext: undefined, resolvedSkillNames: [], skillSource: "none" as const })),
   createSendMessageTool: vi.fn(() => ({})),
   createReadMessagesTool: vi.fn(() => ({})),
+  // RUFU-348: the chat lane now gets the inbox consumption writer alongside its read surface, so this
+  // explicit factory has to name it. `check-mock-completeness.mjs` fails the merge gate when a source
+  // import from @fusion/engine is absent from a vi.mock factory, because such an import resolves to
+  // undefined under the mock and the lane would silently lose the tool instead of failing loudly.
+  createAckMessagesTool: vi.fn(() => ({})),
   createAskQuestionTool: vi.fn(() => ({})),
   createChatArtifactTools: vi.fn(() => []),
   createChatTaskDocumentTools: vi.fn(() => []),

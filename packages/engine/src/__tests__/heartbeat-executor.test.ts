@@ -7,8 +7,11 @@ import {
   HEARTBEAT_SYSTEM_PROMPT,
   HEARTBEAT_NO_TASK_SYSTEM_PROMPT,
   HEARTBEAT_PROCEDURE,
+  HEARTBEAT_PROCEDURE_LITE,
   HEARTBEAT_PROCEDURE_OFF,
   HEARTBEAT_NO_TASK_PROCEDURE,
+  HEARTBEAT_NO_TASK_PROCEDURE_LITE,
+  HEARTBEAT_NO_TASK_PROCEDURE_OFF,
   getAgentSoulWords,
 } from "../agent-heartbeat.js";
 import { AgentLogger } from "../agents/agent-logger.js";
@@ -2327,6 +2330,9 @@ describe("executeHeartbeat", () => {
       // Should have messaging tools when messageStore is available
       expect(toolNames).toContain("fn_send_message");
       expect(toolNames).toContain("fn_read_messages");
+      // RUFU-348: the ack surface must sit on the same lane as the read surface. A lane that can be woken
+      // by an unread row but cannot consume it can only answer or be woken again.
+      expect(toolNames).toContain("fn_ack_messages");
     });
 
     it("identity agent without task does NOT include messaging tools when messageStore is unavailable", async () => {
@@ -2345,6 +2351,7 @@ describe("executeHeartbeat", () => {
       // Should NOT have messaging tools when messageStore is not available
       expect(toolNames).not.toContain("fn_send_message");
       expect(toolNames).not.toContain("fn_read_messages");
+      expect(toolNames).not.toContain("fn_ack_messages");
     });
 
     it("identity agent without task fetches messages and includes them in prompt for timer trigger", async () => {
@@ -3406,6 +3413,39 @@ describe("executeHeartbeat", () => {
       expect(HEARTBEAT_NO_TASK_SYSTEM_PROMPT).toContain("fn_memory_get");
       expect(HEARTBEAT_NO_TASK_SYSTEM_PROMPT).toContain("fn_memory_append");
       expect(HEARTBEAT_NO_TASK_SYSTEM_PROMPT).toContain("fn_heartbeat_done");
+    });
+
+    /*
+    FNXC:HeartbeatMessageAck 2026-11-10-03:15 (RUFU-348):
+    Every inbox-handling surface has to name BOTH exits from a pending message: a threaded reply, or an
+    explicit ack when no reply is owed. The lane that was taught only the reply exit answered mail it did
+    not owe, and a lane taught neither kept getting re-woken by a message a previous tick had already
+    handled — the pending list is rebuilt from unread rows every tick. Asserted across all eight surfaces
+    because the idle and task-scoped variants demonstrably drift when only one is written.
+    */
+    it("every inbox-handling prompt surface names both ways a message stops being pending", () => {
+      const procedures: Array<[string, string]> = [
+        ["HEARTBEAT_PROCEDURE_STRICT", HEARTBEAT_PROCEDURE],
+        ["HEARTBEAT_PROCEDURE_LITE", HEARTBEAT_PROCEDURE_LITE],
+        ["HEARTBEAT_PROCEDURE_OFF", HEARTBEAT_PROCEDURE_OFF],
+        ["HEARTBEAT_NO_TASK_PROCEDURE_STRICT", HEARTBEAT_NO_TASK_PROCEDURE],
+        ["HEARTBEAT_NO_TASK_PROCEDURE_LITE", HEARTBEAT_NO_TASK_PROCEDURE_LITE],
+        ["HEARTBEAT_NO_TASK_PROCEDURE_OFF", HEARTBEAT_NO_TASK_PROCEDURE_OFF],
+      ];
+      for (const [name, text] of procedures) {
+        expect(text, name).toContain("**Inbox**");
+        expect(text, name).toContain("reply_to_message_id");
+        expect(text, name).toContain("fn_ack_messages");
+      }
+
+      for (const [name, text] of [
+        ["HEARTBEAT_SYSTEM_PROMPT", HEARTBEAT_SYSTEM_PROMPT],
+        ["HEARTBEAT_NO_TASK_SYSTEM_PROMPT", HEARTBEAT_NO_TASK_SYSTEM_PROMPT],
+      ] as Array<[string, string]>) {
+        expect(text, name).toContain("## Processing Messages");
+        expect(text, name).toContain("reply_to_message_id");
+        expect(text, name).toContain("fn_ack_messages");
+      }
     });
 
     it("no-task heartbeat procedure aligns with ambient tools", () => {

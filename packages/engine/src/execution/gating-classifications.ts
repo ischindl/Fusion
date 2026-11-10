@@ -239,6 +239,16 @@ export const READONLY_FN_TOOLS: ReadonlySet<string> = new Set([
   "fn_ask_question",
   "fn_send_message",
   "fn_read_messages",
+  /*
+  FNXC:HeartbeatMessageAck 2026-11-10-02:58 (RUFU-348):
+  Acknowledging one's own inbox is coordination over the agent's own message state, the same trust class
+  as `fn_send_message`: it writes the single `read` flag on rows already addressed to the caller, moves no
+  task, and is idempotent. It matches neither the `/^fn_(?:list|show|get|read|browse)_/` auto-readonly
+  regex in permanent-agent-gating.ts nor any existing entry, so an unclassified `fn_ack_messages` fails
+  safe to require-approval and the wake loop this tool exists to end could never be ended under an
+  approval policy. Membership here and in COORDINATION_EXEMPT_TOOLS is therefore load-bearing, not cosmetic.
+  */
+  "fn_ack_messages",
   "fn_post_room_message",
   "fn_update_identity",
   "fn_reflect_on_performance",
@@ -285,6 +295,13 @@ export const COORDINATION_EXEMPT_TOOLS = [
   "fn_memory_search",
   "fn_memory_get",
   "fn_read_messages",
+  /*
+  FNXC:HeartbeatMessageAck 2026-11-10-02:58 (RUFU-348):
+  Paired with the READONLY_FN_TOOLS entry: the action gate recognizes coordination exemptions directly, so
+  without this line `fn_ack_messages` would silently fall through to the unknown-tool default instead of
+  being an exempt coordination write. Recipient-scoped, idempotent, and it moves no task board state.
+  */
+  "fn_ack_messages",
   "fn_heartbeat_done",
   "fn_goal_list",
   "fn_goal_show",

@@ -743,6 +743,9 @@ describe("wake-on-message", () => {
 
       expect(toolNames).toContain("fn_send_message");
       expect(toolNames).toContain("fn_read_messages");
+      // RUFU-348: ack is registered with the read surface, never on a lane of its own — the lane that gets
+      // woken by an unread row must be the lane that can consume it.
+      expect(toolNames).toContain("fn_ack_messages");
     });
 
     it("does not include message tools when messageStore is not provided", () => {
@@ -757,6 +760,7 @@ describe("wake-on-message", () => {
 
       expect(toolNames).not.toContain("fn_send_message");
       expect(toolNames).not.toContain("fn_read_messages");
+      expect(toolNames).not.toContain("fn_ack_messages");
     });
 
     it("does not include message tools when messageStore is undefined even if other params are passed", () => {
@@ -778,6 +782,7 @@ describe("wake-on-message", () => {
 
       expect(toolNames).not.toContain("fn_send_message");
       expect(toolNames).not.toContain("fn_read_messages");
+      expect(toolNames).not.toContain("fn_ack_messages");
     });
   });
 });

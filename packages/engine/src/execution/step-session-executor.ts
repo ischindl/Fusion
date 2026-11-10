@@ -69,6 +69,7 @@ import { isContextLimitError } from "../errors/context-limit-detector.js";
 import { checkSessionError, isUsageLimitError } from "../errors/usage-limit-detector.js";
 import {
   createTaskAssignTool,
+  createAckMessagesTool,
   createListAgentsTool,
   createMemoryTools,
   createWebFetchTool,
@@ -1733,6 +1734,9 @@ export class StepSessionExecutor {
               ? [
                   createSendMessageTool(this.options.messageStore, taskDetail.assignedAgentId, { autoRecovery: settings.autoRecovery, taskStore: this.options.store!, settings, agentStore: this.options.agentStore }),
                   createReadMessagesTool(this.options.messageStore, taskDetail.assignedAgentId),
+                  // FNXC:HeartbeatMessageAck 2026-11-10-02:58 (RUFU-348): step sessions share the inbox with the
+                  // heartbeat lane; a read-only surface there would leave a handled message pending forever.
+                  createAckMessagesTool(this.options.messageStore, taskDetail.assignedAgentId),
                 ]
               : [];
 

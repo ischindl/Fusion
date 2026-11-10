@@ -144,6 +144,7 @@ describe("gating-classifications parity", () => {
     expect([...COORDINATION_EXEMPT_TOOLS].sort()).toMatchInlineSnapshot(`
       [
         "find",
+        "fn_ack_messages",
         "fn_agent_org_chart",
         "fn_agent_read_evaluations",
         "fn_agent_show",
@@ -207,6 +208,28 @@ describe("gating-classifications parity", () => {
       agentId: "a1",
       toolName: "fn_task_prompt_write",
       args: { content: "# Plan" },
+      permissionPolicy: approvalRequiredPolicy,
+    })).toMatchObject({ category: "exempt", disposition: "allow" });
+  });
+
+  it("classifies fn_ack_messages as coordination-exempt so stopping a re-wake is never approval-gated", () => {
+    /*
+    FNXC:HeartbeatMessageAck 2026-11-10-02:58 (RUFU-348):
+    The ack tool is the only agent-reachable writer of the `read` flag on its own inbox. If either gate
+    failed to recognize it, an approval-required policy would park the very call that ends the repeated
+    heartbeat wake, so membership is asserted in both paths rather than inherited from the loop below.
+    */
+    expect(READONLY_FN_TOOLS.has("fn_ack_messages")).toBe(true);
+    expect((COORDINATION_EXEMPT_TOOLS as readonly string[]).includes("fn_ack_messages")).toBe(true);
+    expect(classifyPermanentAgentToolCall("fn_ack_messages")).toEqual({ category: "none", recognized: true });
+    expect(resolvePermanentAgentToolDecision({
+      toolName: "fn_ack_messages",
+      gating: { permissionPolicy: approvalRequiredPolicy },
+    })).toMatchObject({ category: "none", disposition: "allow", recognized: true });
+    expect(evaluateAgentActionGate({
+      agentId: "a1",
+      toolName: "fn_ack_messages",
+      args: { message_ids: ["msg-1"] },
       permissionPolicy: approvalRequiredPolicy,
     })).toMatchObject({ category: "exempt", disposition: "allow" });
   });

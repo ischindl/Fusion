@@ -120,6 +120,7 @@ export {
   renderAgentLogEntries,
   createSendMessageTool,
   createReadMessagesTool,
+  createAckMessagesTool,
   createAskQuestionTool,
   createWorkflowListTool,
   createWorkflowGetTool,

@@ -92,6 +92,7 @@ import {
   createWorkflowValidateTool,
 } from "./shared-worker-tools.js";
 import {
+  createAckMessagesTool,
   createAgentCreateTool,
   createAgentDeleteTool,
   createGetAgentConfigTool,
@@ -2338,6 +2339,9 @@ export async function runImplementation(
         ...(deps.options.messageStore && assignedAgentId ? [
           createSendMessageTool(deps.options.messageStore, assignedAgentId, { autoRecovery: settings.autoRecovery, runAudit: audit, taskStore: deps.store, settings, agentStore: deps.options.agentStore }),
           createReadMessagesTool(deps.options.messageStore, assignedAgentId),
+          // FNXC:HeartbeatMessageAck 2026-11-10-02:58 (RUFU-348): the executor lane has no post-run inbox sweep,
+          // so before this tool its only way to consume an addressed message was to owe a threaded reply.
+          createAckMessagesTool(deps.options.messageStore, assignedAgentId),
         ] : []),
         // Add plugin tools from PluginRunner
         ...getEnabledPluginTools(deps.options.pluginRunner),

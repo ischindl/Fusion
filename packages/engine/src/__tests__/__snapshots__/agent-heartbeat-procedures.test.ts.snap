@@ -11,6 +11,7 @@ exports[`agent-heartbeat procedure templates > keeps lite no-task procedure stab
 2. **Inbox** — when fn_read_messages is available, call it immediately and
    process unread/pending messages before any other action; reply with
    reply_to_message_id when answering.
+   A message stops being pending only when you consume it: answer with reply_to_message_id, or call fn_ack_messages with its id when no reply is due. Reads never consume, so a turn that failed before consuming still gets the message delivered again.
 3. **Wake delta** — read the Wake Delta block above. The wake reason is the
    highest-priority change for this heartbeat. If you were woken by a comment
    or a message, acknowledge it before doing anything else.
@@ -46,6 +47,7 @@ exports[`agent-heartbeat procedure templates > keeps lite task procedure stable 
 2. **Inbox** — when fn_read_messages is available, call it immediately and
    process unread/pending messages before any other action; reply with
    reply_to_message_id when answering.
+   A message stops being pending only when you consume it: answer with reply_to_message_id, or call fn_ack_messages with its id when no reply is due. Reads never consume, so a turn that failed before consuming still gets the message delivered again.
 3. **Wake delta** — read the Wake Delta block above. The wake reason is the
    highest-priority change for this heartbeat. If you were woken by a comment
    or a message, acknowledge it before doing anything else.
@@ -79,6 +81,7 @@ exports[`agent-heartbeat procedure templates > keeps off no-task procedure stabl
 
 1. **Identity & context** — review the **Identity Snapshot** at the top of this prompt.
 2. **Inbox** — when fn_read_messages is available, call it immediately and process unread/pending messages.
+   A message stops being pending only when you consume it: answer with reply_to_message_id, or call fn_ack_messages with its id when no reply is due. Reads never consume, so a turn that failed before consuming still gets the message delivered again.
 3. **Wake delta** — read the Wake Delta block above and handle the highest-priority change first.
 4. **Pick one concrete action** — do exactly one useful thing this tick. Never retry checkout/claim conflicts.
 5. **Persist progress** — use available ambient tools only.
@@ -92,6 +95,7 @@ exports[`agent-heartbeat procedure templates > keeps off task procedure stable 1
 
 1. **Identity & context** — review the **Identity Snapshot** at the top of this prompt.
 2. **Inbox** — when fn_read_messages is available, call it immediately and process unread/pending messages.
+   A message stops being pending only when you consume it: answer with reply_to_message_id, or call fn_ack_messages with its id when no reply is due. Reads never consume, so a turn that failed before consuming still gets the message delivered again.
 3. **Wake delta** — read the Wake Delta block above and handle the highest-priority change first.
 4. **Pick one concrete action** — do exactly one useful thing this tick. Never retry checkout/claim conflicts. Same-blocker no news → no-op with reason.
 5. **Persist progress** — record the action via available task/memory tools.
@@ -118,6 +122,7 @@ exports[`agent-heartbeat procedure templates > keeps strict no-task procedure st
    a one-line claim before calling fn_task_create; under "defer-suggested" do
    NOT call fn_task_create and instead acknowledge the prior claim via
    fn_post_room_message.
+   A message stops being pending only when you consume it: answer with reply_to_message_id, or call fn_ack_messages with its id when no reply is due. Reads never consume, so a turn that failed before consuming still gets the message delivered again.
 3. **Wake delta** — read the Wake Delta block above. The wake reason is the
    highest-priority change for this heartbeat. If you were woken by a comment
    or a message, acknowledge it before doing anything else.
@@ -167,6 +172,7 @@ exports[`agent-heartbeat procedure templates > keeps strict task procedure stabl
    a one-line claim before calling fn_task_create; under "defer-suggested" do
    NOT call fn_task_create and instead acknowledge the prior claim via
    fn_post_room_message.
+   A message stops being pending only when you consume it: answer with reply_to_message_id, or call fn_ack_messages with its id when no reply is due. Reads never consume, so a turn that failed before consuming still gets the message delivered again.
 3. **Wake delta** — read the Wake Delta block above. The wake reason is the
    highest-priority change for this heartbeat. If you were woken by a comment
    or a message, acknowledge it before doing anything else.

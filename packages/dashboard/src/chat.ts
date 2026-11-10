@@ -94,6 +94,7 @@ import {
   buildSessionSkillContextSync,
   createSendMessageTool,
   createReadMessagesTool,
+  createAckMessagesTool,
   createAskQuestionTool,
   createChatArtifactTools,
   createChatTaskDocumentTools,
@@ -4155,6 +4156,9 @@ export class ChatManager {
         ? [
             createSendMessageTool(this.messageStore, agent.id, { agentStore: this.agentStore }),
             createReadMessagesTool(this.messageStore, agent.id),
+            // FNXC:HeartbeatMessageAck 2026-11-10-02:58 (RUFU-348): chat shares the agent inbox with the
+            // heartbeat lane, so the chat lane gets the same consumption writer as its read surface.
+            createAckMessagesTool(this.messageStore, agent.id),
           ]
         : [];
 

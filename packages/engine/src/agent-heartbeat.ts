@@ -84,7 +84,7 @@ import {
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "@earendil-works/pi-ai";
 import { createHash } from "node:crypto";
-import { createTaskCreateTool, createTaskLogToolWithContext, createTaskLogsReadTool, createTaskDocumentWriteTool, createTaskDocumentReadTool, createTaskReadTools, createArtifactRegisterTool, createArtifactListTool, createArtifactViewTool, createListAgentsTool, createDelegateTaskTool, createTaskAssignTool, createGetAgentConfigTool, createUpdateAgentConfigTool, createAgentCreateTool, createAgentDeleteTool, createSendMessageTool, createReadMessagesTool, createPostRoomMessageTool, createMemoryTools, createGoalRetrievalTools, createMissionTools, createIdeationTools, createReadEvaluationsTool, createUpdateIdentityTool, createReflectOnPerformanceTool, createWebFetchTool, createWorkflowListTool, createWorkflowGetTool, createWorkflowValidateTool, createWorkflowSelectTool, createTaskPromoteTool, createWorkflowCreateTool, createWorkflowUpdateTool, createWorkflowDeleteTool, createWorkflowSettingsTool, createTraitListTool, createAskQuestionTool, createResearchTools, readAgentMemoryWorkspaceLongTerm, taskCreateParams } from "./agent-tools.js";
+import { createTaskCreateTool, createTaskLogToolWithContext, createTaskLogsReadTool, createTaskDocumentWriteTool, createTaskDocumentReadTool, createTaskReadTools, createArtifactRegisterTool, createArtifactListTool, createArtifactViewTool, createListAgentsTool, createDelegateTaskTool, createTaskAssignTool, createGetAgentConfigTool, createUpdateAgentConfigTool, createAgentCreateTool, createAgentDeleteTool, createSendMessageTool, createReadMessagesTool, createAckMessagesTool, createPostRoomMessageTool, createMemoryTools, createGoalRetrievalTools, createMissionTools, createIdeationTools, createReadEvaluationsTool, createUpdateIdentityTool, createReflectOnPerformanceTool, createWebFetchTool, createWorkflowListTool, createWorkflowGetTool, createWorkflowValidateTool, createWorkflowSelectTool, createTaskPromoteTool, createWorkflowCreateTool, createWorkflowUpdateTool, createWorkflowDeleteTool, createWorkflowSettingsTool, createTraitListTool, createAskQuestionTool, createResearchTools, readAgentMemoryWorkspaceLongTerm, taskCreateParams } from "./agent-tools.js";
 import { AgentLogger } from "./agents/agent-logger.js";
 import { isTaskPlanningOrExecutionLive } from "./agents/planning-execution-liveness.js";
 /*
@@ -764,6 +764,7 @@ import {
   HEARTBEAT_NO_TASK_PROCEDURE_OFF,
   renderHeartbeatNoTaskProcedure,
   renderHeartbeatNoTaskSystemPrompt,
+  PENDING_MESSAGES_ACK_HINT,
 } from "./agents/agent-heartbeat-prompts.js";
 
 /* FNXC:AgentHeartbeat 2026-07-15-13:25: Keep recovery exports here so existing engine consumers retain the legacy public API after the extraction. */
@@ -4306,6 +4307,10 @@ export class HeartbeatMonitor {
           if (this.messageStore) {
             heartbeatTools.push(createSendMessageTool(this.messageStore, agentId, { agentStore: this.store }));
             heartbeatTools.push(createReadMessagesTool(this.messageStore, agentId));
+            // FNXC:HeartbeatMessageAck 2026-11-10-02:58 (RUFU-348): the read tool is deliberately read-only, so the
+            // lane needs its own consumption writer. Without it a tick that handled a message but did not owe a
+            // reply, or answered and then failed, re-advertised the same id every tick.
+            heartbeatTools.push(createAckMessagesTool(this.messageStore, agentId));
           }
           if (this.chatStore) {
             heartbeatTools.push(createPostRoomMessageTool(this.chatStore, agentId));
@@ -5317,6 +5322,12 @@ export class HeartbeatMonitor {
           if (isNoTaskRun) {
             // No-task heartbeat: agent has identity but no assigned task
             // Build pending messages section
+            /*
+            FNXC:HeartbeatMessageAck 2026-11-10-03:15 (RUFU-348):
+            This list is rendered from unread rows, so any id still unread next tick appears again. The
+            hint line names the two ways out at the point of decision; without it the only exit the prompt
+            offered was to answer, which cost the agent a reply it did not owe.
+            */
             const pendingMessagesLines: string[] = [];
             if (pendingMessages.length > 0) {
               pendingMessagesLines.push(
@@ -5326,6 +5337,7 @@ export class HeartbeatMonitor {
                   const timestamp = new Date(msg.createdAt).toLocaleString();
                   return `- [id: ${msg.id}] [from: ${msg.fromType}:${msg.fromId}] ${msg.content} (${timestamp})`;
                 }),
+                PENDING_MESSAGES_ACK_HINT,
               );
             }
 
@@ -5527,6 +5539,7 @@ export class HeartbeatMonitor {
                   const timestamp = new Date(msg.createdAt).toLocaleString();
                   return `- [id: ${msg.id}] [from: ${msg.fromType}:${msg.fromId}] ${msg.content} (${timestamp})`;
                 }),
+                PENDING_MESSAGES_ACK_HINT,
               );
             }
 
@@ -6318,6 +6331,9 @@ export class HeartbeatMonitor {
     if (messageStore) {
       tools.push(createSendMessageTool(messageStore, agentId, { agentStore: this.store }));
       tools.push(createReadMessagesTool(messageStore, agentId));
+      // FNXC:HeartbeatMessageAck 2026-11-10-02:58 (RUFU-348): parity with the idle lane — every lane that can
+      // read its inbox can also consume it, so no lane is left with the post-run sweep as its only writer.
+      tools.push(createAckMessagesTool(messageStore, agentId));
     }
     if (this.chatStore) {
       tools.push(createPostRoomMessageTool(this.chatStore, agentId));

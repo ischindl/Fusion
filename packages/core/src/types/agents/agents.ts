@@ -203,6 +203,9 @@ export const AGENT_PERMISSION_POLICY_EXEMPT_TOOL_EXAMPLES: readonly string[] = [
   "fn_send_message",
   "fn_post_room_message",
   "fn_read_messages",
+  /* FNXC:HeartbeatMessageAck 2026-11-10-02:58: Agent-side consumption of one's own inbox is coordination over
+     the caller's own message state, recipient-scoped and idempotent. Must stay a subset of COORDINATION_EXEMPT_TOOLS. */
+  "fn_ack_messages",
   "fn_task_log",
   "fn_task_logs_read",
   "fn_task_done",

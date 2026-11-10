@@ -17,7 +17,7 @@ import type { Agent, AgentState, AgentCapability, AgentUpdateInput, AgentLogEntr
 import { listTraits, isBuiltinWorkflowId, isTaskNotFoundError, renderTaskCommentSection, AgentStore, validateColumnAgentBindings, ColumnAgentBindingError, stripApprovalBypassFlags, WorkflowSettingRejectionError, resolveEffectiveSettingsById, resolveWorkflowIrById, findOrphanedSettingValues, BUILTIN_WORKFLOW_SETTINGS, MAX_TASK_LIST_TEXT_CHARS, TASK_BOARD_READ_CAVEAT, formatCurrentTaskLine, normalizeWorkflowIcon, parseWorkflowIr, WorkflowIrError, assertColumnTraitsValid, ColumnTraitValidationError } from "@fusion/core";
 import { promoteHeldTask } from "./execution/hold-release.js";
 import { emitBoundedRunAudit } from "./util/emit-bounded-run-audit.js";
-import { stepLifecycleNoopResult, storeErrorResult, storeWriteFailure } from "./tool-store-errors.js";
+import { STORE_RETRY_GUIDANCE, stepLifecycleNoopResult, storeErrorResult, storeWriteFailure } from "./tool-store-errors.js";
 import { computeCrossParentDiagnosticClaim, computeCrossParentDiagnosticClaimId, computeParentIntentClaimId, DASHBOARD_USER_ID, dailyMemoryPath, ensureOpenClawMemoryFiles, evaluateImplementationTaskBind, extractAgentProvisioningRequest, findSameAgentDuplicates, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, normalizeMessageParticipant, reconcileDeterministicDuplicate, resolveAgentProvisioningPolicy, resolveMemoryBackend, resolveMemorySearchTopic, resolveResearchSettings, resolveTaskGithubTracking, runDeterministicDuplicateGuard, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh, AgentTextCharsetError, assertAgentTextAllowed } from "@fusion/core";
 import { formatLongTermMemoryAppendReport, formatMemorySize, measureLongTermMemory, type LongTermMemoryScope } from "./memory/memory-budget.js";
 import { ResearchOrchestrator } from "./research/research-orchestrator.js";
@@ -637,6 +637,23 @@ export const sendMessageParams = Type.Object({
 export const readMessagesParams = Type.Object({
   unread_only: Type.Optional(Type.Boolean({ description: "Only return unread messages (default: true)" })),
   limit: Type.Optional(Type.Number({ description: "Max messages to return (default: 20)" })),
+});
+
+/*
+FNXC:HeartbeatMessageAck 2026-11-10-02:46 (RUFU-348):
+There is deliberately no `all` / bulk flag here. The engine's own post-run sweep consumes exactly the
+ids a run surfaced (agent-heartbeat.ts:5805), because measuring the live run store found a blanket
+`markAllAsRead` sweeping 162 messages read that agents had never been shown (STAS-300). A bulk ack
+reachable from the tool would reintroduce that over-clear from the other side: mail that arrived while
+the current run was in flight was never in its prompt, and an id-list-only surface is what keeps
+consumption provable against what the agent actually read.
+*/
+export const ackMessagesParams = Type.Object({
+  message_ids: Type.Array(Type.String({ description: "One inbox message id you have finished handling" }), {
+    minItems: 1,
+    maxItems: 50,
+    description: "Ids of YOUR OWN inbox messages to mark as handled. Ids addressed to anyone else are refused.",
+  }),
 });
 
 export const postRoomMessageParams = Type.Object({
@@ -6828,6 +6845,56 @@ export function createAskQuestionTool(): ToolDefinition {
 }
 
 /**
+ * Consume one message on behalf of its recipient, writing the store's single `read` flag.
+ *
+ * Shared by `fn_send_message`'s reply-time acknowledgement and `fn_ack_messages` so the two writers
+ * of that fact cannot disagree about what "handled" means, what counts as already consumed, or how a
+ * hostile store is reported.
+ *
+ * @returns `acknowledged` when this call flipped the flag, `alreadyRead` when the row was already
+ * consumed (idempotent repeat), `notRecipient` when the row is not this agent's unread inbox row,
+ * `missing` when no such row exists, and `failed` when the store threw or rejected.
+ */
+async function acknowledgeMessageAsHandled(
+  messageStore: MessageStore,
+  agentId: string,
+  messageId: string,
+): Promise<AcknowledgementResult> {
+  let consumed: string[];
+  try {
+    // Scoped at the store, not here: `markInboxAsRead` only flips a row whose `toId`/`toType` is this
+    // recipient, so a caller cannot ack another participant's mail by naming its id.
+    consumed = await messageStore.markInboxAsRead(agentId, "agent", [messageId]);
+  } catch (error) {
+    // A throwing or rejecting store is a lifecycle failure of the ACK only. Callers must keep their
+    // primary result (a persisted reply, an ack of a sibling id) and report this separately.
+    return { outcome: "failed", error };
+  }
+  if (consumed.includes(messageId)) return { outcome: "acknowledged" };
+  try {
+    const message = await messageStore.getMessage(messageId);
+    if (!message) return { outcome: "missing" };
+    if (message.read) return { outcome: "alreadyRead" };
+    return { outcome: "notRecipient" };
+  } catch (error) {
+    return { outcome: "failed", error };
+  }
+}
+
+type AcknowledgementOutcome = "acknowledged" | "alreadyRead" | "notRecipient" | "missing" | "failed";
+
+/**
+ * What `acknowledgeMessageAsHandled` decided, plus the store error behind a `failed` outcome.
+ *
+ * FNXC:HeartbeatMessageAck 2026-11-10-03:05 (RUFU-348):
+ * The error travels because STAS-258 requires a handler that awaited a refused store write to answer in
+ * the shared store-failure shape — `AgentLogger` records `tool_error` only when the result carries
+ * `isError`, so an ack that swallowed the outage into prose would let a stalled message store look like
+ * a successful no-op. The reply path needs only the verdict; the ack tool composes the shape.
+ */
+type AcknowledgementResult = { outcome: AcknowledgementOutcome; error?: unknown };
+
+/**
  * Create a `fn_send_message` tool that sends a message to another agent or user.
  *
  * @param messageStore - MessageStore for message persistence
@@ -7022,12 +7089,57 @@ export function createSendMessageTool(
           return storeWriteFailure("message delivery", result.error.message);
         }
 
+        /*
+        FNXC:HeartbeatMessageAck 2026-11-10-02:46 (RUFU-348):
+        A reply IN THE THREAD of a message addressed to this agent IS the acknowledgement of that
+        message, so it consumes it. Before this, "the agent handled this message" was written
+        nowhere: `read` had exactly one writer on an agent lane — the heartbeat's post-run
+        `markInboxAsRead` (agent-heartbeat.ts:5809) — and that writer is gated on a SUCCESSFUL run
+        (kept that way on purpose by `heartbeat-executor.test.ts` "does not mark messages as read on
+        failed heartbeat execution"), so a tick that answered a message and then failed re-advertised
+        it forever. Measured on RUFU-344: five `fn_read_messages` rows for `msg-43f502e9` between
+        22:16:34Z and 22:25:43Z on 2026-09-26, the first answered by `msg-fc1de5f0` at 22:17:05Z, and
+        each re-advertisement cost a full heartbeat session.
+
+        Decision (RUFU-348 Step 0 M5): BOTH a reply-time ack and the explicit `fn_ack_messages`
+        surface, writing the SAME single `read` flag. One state, not a second lifecycle column: the
+        flag already means "consumed by its recipient", every unread reader (`getInbox`, `getMailbox`,
+        `getDashboardInboxCategoryCounts`) scopes it by `toId`/`toType`, and a second column would
+        add a second truth for all of them to reconcile. The ack tool is still required because a
+        reply is not always due (an acknowledgement-only ruling like the RUFU-281 decision is answered
+        once and later ticks must not re-report it), and because the post-run sweep only consumes the
+        `limit: 10` preview while `fn_read_messages` defaults to 20 rows.
+
+        Two invariants this write must not break: it is scoped by the store's own recipient check
+        (`markInboxAsRead` refuses a row whose `toId` is not this agent, so a parent addressed to a
+        third party is never consumed here — the same `parentWasAddressedToSender` proof that already
+        gates reply routing), and it is best-effort AFTER the send persisted, so an ack that throws
+        or rejects cannot fail or duplicate a delivered message. `read` is one bit per row, so a
+        recipient ack also flips the sender's `getOutbox({ read: false })` view; it does not move the
+        operator's badge, which reads under `DASHBOARD_USER_ID`/`"user"`
+        (register-messaging-scripts.ts:291).
+        */
+        const parentAck = parentWasAddressedToSender && replyToMessageId
+          ? await acknowledgeMessageAsHandled(messageStore, fromAgentId, replyToMessageId)
+          : null;
+        const parentAcknowledgement = parentAck?.outcome ?? null;
+        const acknowledgementNote = parentAcknowledgement === "acknowledged"
+          ? ` Parent ${replyToMessageId} acknowledged as handled: it no longer counts as a pending message.`
+          : parentAcknowledgement === "alreadyRead"
+            ? ` Parent ${replyToMessageId} was already acknowledged; nothing to consume.`
+            : parentAcknowledgement === "failed"
+              ? ` WARNING: the reply persisted but parent ${replyToMessageId} could NOT be acknowledged as handled, so it may be re-advertised; ack it with fn_ack_messages.`
+              : "";
+
         return {
           content: [{
             type: "text" as const,
-            text: `Message sent to ${recipient.id} (ID: ${result.value.id})`,
+            text: `Message sent to ${recipient.id} (ID: ${result.value.id})${acknowledgementNote}`,
           }],
-          details: { messageId: result.value.id },
+          details: {
+            messageId: result.value.id,
+            ...(parentAcknowledgement ? { parentAcknowledgement, parentMessageId: replyToMessageId } : {}),
+          },
         };
       } catch (err) {
         return storeWriteFailure("message delivery", err);
@@ -7510,6 +7622,129 @@ export function createReadMessagesTool(messageStore: MessageStore, agentId: stri
         is what makes the agent log say tool_error. "No messages" stays unflagged — that half is a fact. */
         return storeErrorResult("your inbox messages", err);
       }
+    },
+  };
+}
+
+/**
+ * Create a `fn_ack_messages` tool: the agent-reachable way to consume one's own inbox messages.
+ *
+ * FNXC:HeartbeatMessageAck 2026-11-10-02:46 (RUFU-348):
+ * The heartbeat re-advertises every unread row on every tick (the pending-message snapshot reads
+ * `getInbox({ read: false })`), and until now the only writer of that flag on an agent lane was the
+ * post-run sweep, which is gated on a SUCCESSFUL run and covers only the surfaced `limit: 10` preview.
+ * An agent that handled a message without owing a further reply, or whose tick answered and then
+ * failed, therefore had no way to stop the re-wake: measured on RUFU-344, one answered message produced
+ * five reads and four wasted sessions. This tool closes that by letting the recipient record the
+ * consumption itself.
+ *
+ * Contract this surface must keep:
+ * - Recipient-scoped. The store primitive used here (`markInboxAsRead`) only flips a row whose
+ *   `toId`/`toType` names this agent, so naming another participant's id refuses rather than eats it.
+ * - Idempotent. A repeat reports `alreadyRead`, never an error, so an agent that acked before a crash
+ *   is not told it did something wrong.
+ * - Never throws. A rejecting store is reported per id, because a store stall must not turn a
+ *   coordination tool into a thrown turn, but it is flagged: a refused write answers in the shared
+ *   store-failure shape (`code: STORE_UNAVAILABLE` plus `isError`), because `AgentLogger` records
+ *   `tool_error` only for a flagged result and a swallowed outage reads as a completed call.
+ * - `fn_read_messages` stays read-only. Turning a read into an ack would break the deliberate
+ *   at-least-once rule that a failed tick still gets to deliver the message again.
+ *
+ * @param messageStore - MessageStore owning the single `read` flag
+ * @param agentId - The agent whose inbox may be consumed
+ * @returns ToolDefinition for the `fn_ack_messages` tool
+ */
+export function createAckMessagesTool(messageStore: MessageStore, agentId: string): ToolDefinition {
+  return {
+    name: "fn_ack_messages",
+    label: "Acknowledge Messages",
+    description:
+      "Mark your own inbox messages as handled so the heartbeat stops waking you for them. Use it when " +
+      "a message needs no reply; a reply sent with `reply_to_message_id` acknowledges its parent by itself. " +
+      "Only messages addressed to you are consumed; other ids are refused. Reads never consume: a failed " +
+      "turn must still get the message delivered again.",
+    parameters: ackMessagesParams,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    execute: async (_id: string, params: Static<typeof ackMessagesParams>, _signal?: any, _onUpdate?: any, _ctx?: any) => {
+      const ids = (Array.isArray(params.message_ids) ? params.message_ids : [])
+        .map((id) => (typeof id === "string" ? id.trim() : ""))
+        .filter((id) => id.length > 0);
+      if (ids.length === 0) {
+        return {
+          content: [{ type: "text" as const, text: "ERROR: message_ids must contain at least one non-empty message id" }],
+          details: { acknowledged: 0, alreadyRead: 0, refused: 0, failed: 0 },
+        };
+      }
+
+      const acknowledged: string[] = [];
+      const alreadyRead: string[] = [];
+      const refused: string[] = [];
+      const failed: string[] = [];
+      let firstStoreError: unknown;
+      // One id per store call, so one refusing row cannot take its siblings down with it. A duplicate
+      // inside the same call lands in alreadyRead, which is the honest report, not a phantom consume.
+      for (const messageId of ids) {
+        const result = await acknowledgeMessageAsHandled(messageStore, agentId, messageId);
+        if (result.outcome === "acknowledged") acknowledged.push(messageId);
+        else if (result.outcome === "alreadyRead") alreadyRead.push(messageId);
+        else if (result.outcome === "failed") {
+          failed.push(messageId);
+          if (firstStoreError === undefined) firstStoreError = result.error;
+        } else refused.push(messageId);
+      }
+
+      /*
+      FNXC:SharedStoreErrorShape 2026-11-10-03:05 (RUFU-348):
+      A store that refused the acknowledgement write must arrive as the shared store-failure shape, not as
+      prose: `AgentLogger` logs `tool_error` only for a result carrying `isError`, so an ack that swallowed
+      the outage would be recorded as a completed call (STAS-251's "the tool said nothing and the agent
+      assumed it landed"). When part of the batch still consumed, the counts stay in the same result — the
+      agent needs to know which ids moved — but the shape and its retry guidance are the composer's.
+      */
+      if (failed.length > 0 && acknowledged.length === 0 && alreadyRead.length === 0) {
+        const composed = storeErrorResult(`the acknowledgement of ${failed.join(", ")}`, firstStoreError, "write");
+        return {
+          ...composed,
+          details: {
+            ...composed.details,
+            acknowledged: 0,
+            alreadyRead: 0,
+            refused: refused.length,
+            failed: failed.length,
+            refusedIds: refused,
+            failedIds: failed,
+          },
+        };
+      }
+
+      const summary = `Acknowledged ${acknowledged.length}, already handled ${alreadyRead.length}, `
+        + `refused ${refused.length}, store-failed ${failed.length}.`;
+      const notes: string[] = [];
+      if (refused.length > 0) {
+        notes.push(`Refused, not an unread inbox message addressed to you: ${refused.join(", ")}`);
+      }
+      if (failed.length > 0) {
+        notes.push(`Store refused the acknowledgement write for: ${failed.join(", ")}. ${STORE_RETRY_GUIDANCE}`);
+      }
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: notes.length > 0 ? `${summary}\n${notes.join("\n")}` : summary,
+        }],
+        // A partial store refusal is still a refusal: flagged, so the log records a tool_error row.
+        ...(failed.length > 0 ? { isError: true as const } : {}),
+        details: {
+          acknowledged: acknowledged.length,
+          alreadyRead: alreadyRead.length,
+          refused: refused.length,
+          failed: failed.length,
+          acknowledgedIds: acknowledged,
+          alreadyReadIds: alreadyRead,
+          refusedIds: refused,
+          failedIds: failed,
+        },
+      };
     },
   };
 }

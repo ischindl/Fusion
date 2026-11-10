@@ -31,6 +31,7 @@ export {
   createGetAgentConfigTool,
   createListAgentsTool,
   createReadMessagesTool,
+  createAckMessagesTool,
   createUpdateAgentConfigTool,
   createSendMessageTool,
   createTaskCreateTool,

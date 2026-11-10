@@ -17,7 +17,31 @@ function createMessageStoreHarness(parent?: Record<string, unknown> | null) {
     }
     return { id: "msg-1" };
   });
-  return { messageStore: { getMessage, sendMessage }, getMessage, sendMessage, wakeSpy };
+  /*
+  FNXC:HeartbeatMessageAck 2026-11-10-02:46 (RUFU-348):
+  The reply path now consumes the parent through the store's own recipient-scoped primitive, so the
+  harness models the two things that primitive decides: whether the named row is this recipient's
+  unread row, and the flipped flag itself. A harness that only counted calls could not tell an ack of
+  my own mail from an ack of somebody else's.
+  */
+  const markInboxAsRead = vi.fn(async (ownerId: unknown, ownerType: unknown, messageIds: unknown) => {
+    const ids = (messageIds as string[]) ?? [];
+    if (!parent) return [];
+    return ids.filter((id) => {
+      const owned = parent["id"] === id && parent["toId"] === ownerId && parent["toType"] === ownerType;
+      if (!owned || parent["read"] === true) return false;
+      parent["read"] = true;
+      return true;
+    });
+  });
+  return { messageStore: { getMessage, sendMessage, markInboxAsRead }, getMessage, sendMessage, wakeSpy, markInboxAsRead };
+}
+
+/** Same harness with a store whose acknowledgement write rejects, for the best-effort contract. */
+function createRejectingAckHarness(parent: Record<string, unknown>) {
+  const harness = createMessageStoreHarness(parent);
+  harness.markInboxAsRead.mockRejectedValue(new Error("message store unavailable"));
+  return harness;
 }
 
 async function executeSend(
@@ -26,6 +50,107 @@ async function executeSend(
 ) {
   return tool.execute("1", params as never, undefined, undefined, {});
 }
+
+/*
+FNXC:HeartbeatMessageAck 2026-11-10-02:46 (RUFU-348):
+A reply in the thread of a message addressed to this agent is the acknowledgement the heartbeat wake
+loop was missing, so these cases pin the four outcomes that decision has: my own parent is consumed,
+someone else's parent never is, a store that refuses the write cannot undo the delivered reply, and
+repeating the ack is a no-op that still reports success.
+*/
+describe("createSendMessageTool reply-time acknowledgement", () => {
+  it("consumes a parent that was addressed to this agent", async () => {
+    const parent = {
+      id: "msg-parent-mine",
+      fromId: "agent-c",
+      fromType: "agent",
+      toId: "agent-a",
+      toType: "agent",
+      content: "a decision I must not re-report",
+      read: false,
+    };
+    const { messageStore, markInboxAsRead, sendMessage } = createMessageStoreHarness(parent);
+    const tool = createSendMessageTool(messageStore as never, "agent-a");
+
+    const result = await executeSend(tool, { content: "acknowledged", reply_to_message_id: "msg-parent-mine" });
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(markInboxAsRead).toHaveBeenCalledWith("agent-a", "agent", ["msg-parent-mine"]);
+    expect(firstText(result as never)).toContain("Message sent to agent-c");
+    expect(firstText(result as never)).toContain("msg-parent-mine acknowledged as handled");
+    // The row's own flag moved, which is what the next tick's unread snapshot reads.
+    expect(parent.read).toBe(true);
+    expect((result.details as Record<string, unknown>).parentAcknowledgement).toBe("acknowledged");
+  });
+
+  it("never consumes a parent addressed to a third party", async () => {
+    const foreignParent = {
+      id: "msg-parent-foreign",
+      fromId: "agent-c",
+      fromType: "agent",
+      toId: "agent-b",
+      toType: "agent",
+      content: "not my mail",
+      read: false,
+    };
+    const { messageStore, markInboxAsRead, sendMessage } = createMessageStoreHarness(foreignParent);
+    const tool = createSendMessageTool(messageStore as never, "agent-a");
+
+    // An explicit recipient makes this an intentional forward over a foreign thread, which is legal.
+    const result = await executeSend(tool, { content: "forwarding", reply_to_message_id: "msg-parent-foreign", to_id: "agent-c" });
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(markInboxAsRead).not.toHaveBeenCalled();
+    expect(foreignParent.read).toBe(false);
+    expect(firstText(result as never)).not.toContain("acknowledged as handled");
+  });
+
+  it("keeps the delivered reply and reports the failure when the acknowledgement store rejects", async () => {
+    const parent = {
+      id: "msg-parent-hostile",
+      fromId: "agent-c",
+      fromType: "agent",
+      toId: "agent-a",
+      toType: "agent",
+      content: "decision",
+      read: false,
+    };
+    const harness = createRejectingAckHarness(parent);
+    const tool = createSendMessageTool(harness.messageStore as never, "agent-a");
+
+    const result = await executeSend(tool, { content: "acknowledged", reply_to_message_id: "msg-parent-hostile" });
+
+    // The reply is durable: a failed ack must never fail or duplicate the send.
+    expect(harness.sendMessage).toHaveBeenCalledTimes(1);
+    expect(result.isError).toBeFalsy();
+    expect(firstText(result as never)).toContain("Message sent to agent-c");
+    expect(firstText(result as never)).toContain("could NOT be acknowledged as handled");
+    expect((result.details as Record<string, unknown>).parentAcknowledgement).toBe("failed");
+  });
+
+  it("treats acking an already-consumed parent as a successful no-op", async () => {
+    const parent = {
+      id: "msg-parent-read",
+      fromId: "agent-c",
+      fromType: "agent",
+      toId: "agent-a",
+      toType: "agent",
+      content: "decision",
+      read: true,
+    };
+    const { messageStore, markInboxAsRead, sendMessage } = createMessageStoreHarness(parent);
+    const tool = createSendMessageTool(messageStore as never, "agent-a");
+
+    const result = await executeSend(tool, { content: "acknowledged again", reply_to_message_id: "msg-parent-read" });
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(markInboxAsRead).toHaveBeenCalledTimes(1);
+    expect(result.isError).toBeFalsy();
+    expect(firstText(result as never)).toContain("Message sent to agent-c");
+    expect(firstText(result as never)).toContain("already acknowledged");
+    expect((result.details as Record<string, unknown>).parentAcknowledgement).toBe("alreadyRead");
+  });
+});
 
 describe("createSendMessageTool recipient validation", () => {
   it("rejects a missing agent before persistence or wake", async () => {

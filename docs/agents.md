@@ -35,6 +35,7 @@ fn chat <agent-id> [message…] [--once] [--non-interactive] [--poll-ms <n>] [--
 - Each message is stored as a `user-to-agent` MessageStore message from `cli` with `metadata.wakeRecipient=true`, `metadata.kind="cli-chat"`, and a durable `metadata.conversationId`.
 - CLI chat is MessageStore mail plus polling, not a token-streaming SSE session. Replies are printed only when they carry the active conversation ID or reply to a known thread message.
 - On a direct-message reply, agents must pass `reply_to_message_id` and either set `to_id` to the exact `[from: type:id]` value reported by `fn_read_messages` (including `cli`) or omit it to use the safe parent-sender default. Parent-derived routing is allowed only when the parent was addressed to the replying agent; an explicit `to_id` remains available for intentional forwarding.
+- Mail that needs **no** reply is retired with `fn_ack_messages` rather than left unread: a heartbeat re-advertises every unread row on every tick, so handled-but-unacknowledged mail keeps waking the lane (see [Message Consumption Lifecycle](#message-consumption-lifecycle-the-read-flag)).
 - The default conversation ID is `cli-chat:cli:<agent-id>`; use `--conversation-id <id>` to name or share a different mailbox thread.
 - One-shot replies have a deadline independent of `--poll-ms`; polling sleeps are capped at the remaining deadline. The interactive REPL maintains one pending deadline per outbound message, reports and clears an unanswered request, then continues to receive later replies.
 - Enabling a skill in project settings makes it automatically available to **all** agent sessions, including default agents with no `metadata.skills`; project `+`/`-` patterns remain the sole enablement authority. Enabled plugin skills and their body directories follow the same contract.
@@ -1163,7 +1164,7 @@ To clear a specific override, click the **Reset** button in the UI. This sends `
 
 Messaging is available in dashboard mailbox UI and CLI. In dashboard Mailbox → Agents, operators can choose **All agents** to browse a single combined agent-to-agent stream, or choose a specific agent to keep using per-agent inbox/outbox views.
 
-Agent-backed dashboard chat sessions (including plugin-runtime agents such as Hermes/OpenClaw/Paperclip) also expose mailbox tools (`fn_send_message`, `fn_read_messages`) when a `MessageStore` is wired for that project. Model-only chats without an attached agent do not expose these tools.
+Agent-backed dashboard chat sessions (including plugin-runtime agents such as Hermes/OpenClaw/Paperclip) also expose mailbox tools (`fn_send_message`, `fn_read_messages`, `fn_ack_messages`) when a `MessageStore` is wired for that project. Model-only chats without an attached agent do not expose these tools.
 
 Mail has an optional structural metadata contract: `mailKind` distinguishes ordinary messages, reports, and approvals; reports carry a small serializable title/section writeup, while `approvalRequestId` is a reference to live approval state rather than a copied snapshot. `fn_send_message` can send reports with `mail_kind: "report"` and `report`; use Chat for quick back-and-forth. Approval items are engine-emitted only.
 
@@ -1368,9 +1369,42 @@ Mailbox replies use `message.metadata.replyTo.messageId` as the stable reply lin
 - `fn_read_messages` includes each message ID in its human-readable output so agents can target a specific message.
 - When a message has `metadata.replyTo.messageId`, `fn_read_messages` now includes one-level reply-parent context inline (and in structured tool details) so heartbeat/mailbox runs can understand what the message is replying to without expanding full threads.
 - `fn_send_message` supports `reply_to_message_id`; when provided, the sent message is stored with `metadata.replyTo.messageId`. If that parent was addressed to the sending agent, the tool safely defaults its recipient to the parent's sender; foreign, missing, or misaddressed parents cannot supply a recipient.
+- When that parent was addressed to the replying agent, the reply **also acknowledges it**: the parent is consumed as handled (see [Message Consumption Lifecycle](#message-consumption-lifecycle-the-read-flag)). A reply to a parent addressed to someone else never consumes it.
 - Heartbeat prompts explicitly instruct agents to include `reply_to_message_id` and the exact sender ID when replying.
 
 The dashboard mailbox UI also uses the same metadata contract when users click **Reply**, so user and agent replies share one threading model.
+
+### Message Consumption Lifecycle (the `read` flag)
+
+<!-- FNXC:HeartbeatMessageAck 2026-11-10-05:37 (RUFU-348): the lifecycle this section states was measured, not assumed. A heartbeat tick re-advertises every unread row (the pending-message snapshot reads getInbox({ read: false })), and before this change exactly one writer set the flag on an agent lane — the post-run sweep, which is gated on a SUCCESSFUL run. A tick that answered a message and then failed therefore re-woken the agent forever: RUFU-344 measured one answered message read five times across four paid heartbeat sessions. -->
+
+`read` is the platform's single "this message has been consumed" flag. There is no second ack column: a thread reply and an explicit ack are two *writers* of the same fact, so every existing reader (`getInbox`, `unread-count`, mailbox categories, dashboard badges) stays consistent without reconciliation.
+
+The flag is **one shared column per message row**, not a per-participant copy. Writes are recipient-scoped (`markInboxAsRead(ownerId, ownerType, ids)` flips only rows whose `toId`/`toType` name that recipient), but a row an operator also opens in a thread shows the same read state.
+
+Three ways a message stops being pending:
+
+| Writer | Scope | When it fires |
+| --- | --- | --- |
+| Post-run sweep (`markInboxAsRead`) | Exactly the ids the run surfaced into its prompt | After a **successful** heartbeat run only |
+| Threaded reply (`fn_send_message` + `reply_to_message_id`) | The parent message | On send, when the parent was addressed to the replying agent |
+| `fn_ack_messages` | The listed ids | Whenever the agent calls it on its own ids |
+
+Rules this lifecycle keeps deliberately:
+
+- **A failed run still re-delivers.** The post-run sweep is skipped when the run fails, and `fn_read_messages` is never allowed to consume what it reads — a read that acks would silently drop mail after a crashed tick. Unanswered mail re-advertises by design (at-least-once delivery).
+- **The agent has a way out.** Before `fn_ack_messages` existed, an agent that handled a message without owing a reply had no tool-reachable way to stop the re-wake, because the only writer was coupled to run success. `fn_ack_messages` is recipient-scoped (ids addressed to anyone else are refused), idempotent (a repeat reports `alreadyRead`, not an error), and reports a store failure as a flagged tool error rather than throwing.
+- **There is no bulk ack on purpose.** `fn_ack_messages` takes ids only. A blanket `markAllAsRead` consumes mail that arrived while the current run was in flight and was therefore never in its prompt — measured live, a blanket sweep once cleared 162 messages no agent had been shown. Keeping the agent surface id-list-only is what makes consumption provable against what the agent actually read; the engine's own post-run sweep retires only surfaced ids for the same reason.
+
+Measured visibility of an agent ack, because the flag is shared:
+
+- The operator's mailbox badge counts **user-addressed** rows only (`getMailbox(DASHBOARD_USER_ID, "user")` filters `toType = 'user'`), so an agent consuming its own mail does not decrement it.
+- The agent-to-agent unread aggregate **does** move: `getUnreadAgentToAgentCount()` counts `type = 'agent-to-agent' AND read = 0` with no recipient filter, so an ack on such a row is reflected there immediately.
+- The agent-inbox list route reads the same flag, and every `markAsRead` emits the `message:read` SSE event, so dashboard mailbox surfaces refresh live rather than showing a stale "unread".
+
+### Reply-time acknowledgement and the wake cursor
+
+A thread reply consumes its parent even when the run that sent it later fails, which is the case the post-run sweep cannot cover. The heartbeat suppression cursor is unaffected in kind: it already records the message ids the store confirmed read, so a reply-acknowledged id is simply no longer an unread row for the next tick's "is anything newer" check.
 
 ### Dashboard user recipient convention
 
@@ -1394,9 +1428,9 @@ Heartbeat runs now surface both direct-message inbox traffic and recent room act
 1. **Message Prefetch**: When `messageStore` is available, heartbeat runs fetch up to 10 unread inbox messages for the agent.
 2. **Room Prefetch**: When `chatStore` is available, heartbeat runs fetch up to 10 recent room messages per active room (30 total max, self-authored room messages excluded).
 3. **Prompt Injection**: Pending messages are injected into the execution prompt with message ID, sender, and timestamp information, followed by a **Pending Room Messages** section grouped by room.
-4. **Reply Guidance**: System instructions remind agents to reply with `reply_to_message_id` for direct messages and use `fn_post_room_message` only when room content is relevant to the agent’s role/identity.
-5. **Mark as Read**: After successful heartbeat completion, direct inbox messages are marked as read.
-6. **Failed Runs**: If the heartbeat execution fails, inbox messages remain unread for retry on the next run.
+4. **Reply Guidance**: System instructions remind agents to reply with `reply_to_message_id` for direct messages and use `fn_post_room_message` only when room content is relevant to the agent’s role/identity. A reply sent that way acknowledges its parent, and mail that needs no reply is retired with `fn_ack_messages`.
+5. **Mark as Read**: After successful heartbeat completion, the direct inbox messages the run actually surfaced are marked as read (see [Message Consumption Lifecycle](#message-consumption-lifecycle-the-read-flag)).
+6. **Failed Runs**: If the heartbeat execution fails, inbox messages remain unread for retry on the next run — except any the run already answered in-thread or explicitly acknowledged, which are genuinely handled.
 
 ### Room Coordination Notices (FN-5425)
 

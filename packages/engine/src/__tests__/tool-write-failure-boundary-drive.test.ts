@@ -131,8 +131,16 @@ describe("every registered handler that reports a store write failure answers in
     it exercised at all. Both stay exact so a fixture that stops reaching the store — or a registration surface that
     stops enumerating — fails loudly instead of leaving this file asserting nothing.
     */
+    /*
+    FNXC:WriteFailureSurfacing 2026-11-10-03:10 (RUFU-348):
+    RUFU-348 registers `fn_ack_messages`, so the drive now constructs and calls it and its reach pin moves by
+    one. The tool lands in `exercisedTools` only: the drive synthesises an EMPTY array for every array-typed
+    parameter, which stops at the tool's argument guard before any store call, so neither `reachedTools` nor
+    the shared-shape list gains it. Its refused-write path is covered per-site in
+    `agent-tools-ack-messages.test.ts` instead, exactly where `read-path-store-failure.test.ts` pins the read lane.
+    */
     expect(reachedTools(driven).length).toBe(27);
-    expect(exercisedTools(driven).length).toBe(88);
+    expect(exercisedTools(driven).length).toBe(89);
 
     /*
     FNXC:WriteFailureSurfacing 2026-09-24:
