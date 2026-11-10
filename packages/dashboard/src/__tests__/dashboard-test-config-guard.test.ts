@@ -270,4 +270,29 @@ describe("dashboard test config guard", () => {
     expect(boardSpecSource).toContain("port: 0");
     expect(boardSpecSource).not.toContain("4040");
   });
+
+  /*
+  FNXC:ExternalBlockUx 2026-11-09-10:07 (RUFU-492):
+  The blocked-card containment proof joins the same browser lane. It must be collected exactly once,
+  must request an OS-selected port, and must never name the reserved production port — the same three
+  contracts the board-scroll case pins for its own spec.
+  */
+  it("collects the external-block card geometry browser proof exactly once in the touch lane", () => {
+    const geometrySpec = "src/__tests__/external-block-card-geometry-browser.test.ts";
+    const touchProject = dashboardQualityProjectGlobs["dashboard-browser-touch"];
+
+    expect(expandDashboardGlobs(touchProject.include)).toContain(geometrySpec);
+
+    const collectingProjects = Object.entries(dashboardQualityProjectGlobs)
+      .filter(([projectName]) => projectName !== "dashboard-api-quality-backfill")
+      .filter(([, project]) => expandDashboardGlobs(project.include).has(geometrySpec))
+      .filter(([, project]) => !expandDashboardGlobs(project.exclude).has(geometrySpec))
+      .map(([projectName]) => projectName);
+    expect(collectingProjects).toEqual(["dashboard-browser-touch"]);
+    expect(expandProjectFiles("dashboard-api-quality-backfill")).not.toContain(geometrySpec);
+
+    const geometrySpecSource = readFileSync(join(dashboardRoot, geometrySpec), "utf8");
+    expect(geometrySpecSource).toContain("port: 0");
+    expect(geometrySpecSource).not.toContain("4040");
+  });
 });

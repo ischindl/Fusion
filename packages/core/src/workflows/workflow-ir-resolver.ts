@@ -324,9 +324,20 @@ entry immediately (per-entry epoch compare), and a cross-process write is observ
 45-second engine tick, so no loop an operator can observe can read a selection this memo served stale.
 `FUSION_WORKFLOW_SELECTION_MEMO_MS=0` restores live-per-call exactly; a shorter value is available for any
 caller that needs fresher truth than the default.
+
+FNXC:DashboardBrowserSafeCore 2026-11-09-10:42 (RUFU-492):
+This module reaches the dashboard browser graph (TaskCard.tsx -> core/src/merge/task-merge.ts -> the
+required-pre-merge-steps chain), and the eager module-scope call below made the bare `process.env` read a
+top-level `ReferenceError: process is not defined` in browser-ESM (vite dev serves untransformed source via
+@fs, which defines no `process` global). Measured 2026-11-09: EVERY dashboard-browser-touch fixture died at
+page load, including the shipped board-scroll spec, because `app/board-scroll-e2e-fixture.tsx` reaches this
+module through the same TaskCard chain. Use the repo's established browser-safe env-read shape — the same
+`typeof process !== "undefined" ? process.env?.X : undefined` guard `types/agents/agents.ts` applies to
+`FUSION_APPROVAL_GRANT_TTL_MS`. Node behavior is byte-identical; a browser has no process environment, so
+the documented 500 ms default applies there exactly as an unset variable does on Node.
 */
 function readSelectionMemoTtlMs(): number {
-  const raw = process.env.FUSION_WORKFLOW_SELECTION_MEMO_MS;
+  const raw = typeof process !== "undefined" ? process.env?.FUSION_WORKFLOW_SELECTION_MEMO_MS : undefined;
   if (raw === undefined || raw.trim() === "") return 500;
   const parsed = Number(raw);
   return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 500;

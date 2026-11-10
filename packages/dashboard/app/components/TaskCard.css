@@ -833,8 +833,74 @@ FNXC:ExternalBlockUx 2026-08-28-04:56:
 The card notice covers ordinary card state while preserving the card's footprint and responsive
 layout. Shared notice paint uses semantic tokens; mobile only changes flow and touch sizing.
 */
+/*
+FNXC:ExternalBlockUx 2026-11-09-10:07 (RUFU-492):
+Both ceilings of a blocked card are DECLARED here instead of being a side effect of the reason clamp.
+Without them, the next edit to the clamp or to the hidden-sibling rule below can silently unbound the card
+again — the original defect (project `stash`, STAS-285) was an ~70-line agent-authored reason painting past
+the card and the virtualized row drawing the next card inside it.
+
+The card's height is the two identity rows (`.card-header`, `.card-title` — kept in layout by the
+hidden-sibling rule) plus the notice plus the card's own padding and border. The ceiling is therefore that
+sum, term by term, in named tokens only: no px literal is honest here because the card padding token
+`--ui-density-md` itself differs across the UI style axis (ui-style-tokens.css:33 vs :123).
+`--ui-border-width` stands for the card's 1px border edges; themes that thicken it only loosen the ceiling,
+never tighten it below the paint. The actions-row term is `max()` of its two declared floors (the desktop
+`--space-xl` floor and the mobile touch floor `--touch-target-min-size`) so one declaration covers both
+breakpoints without a media override.
+
+Ceiling only — never `height` or `min-height`: a fixed frame would make the geometric containment proofs
+vacuous, and the card must stay `overflow: visible` so the identity rows are never clipped.
+*/
+/*
+FNXC:ExternalBlockUx 2026-11-09-18:16 (RUFU-492 code review P0):
+A ceiling is only a ceiling while EVERY term it budgets is bounded. The first version of the card ceiling
+budgeted ONE header chip row and ONE title line, but both identity inputs grow: `.card-title` is
+`word-break: break-word` with no clamp (only the `--bounded-description` modifier clamps) and
+`.card-header-badges` is `flex-wrap: wrap` with `row-gap: var(--space-xs)`, while a blocked/paused card
+always carries the paused chip plus status/PR chips. `.card` is `display: block` with `overflow: visible`
+by deliberate contract, so unbudgeted identity height pushed the notice's own box BELOW the card's border
+box and the red panel painted into the next virtual row — the operator's original symptom, reintroduced by
+the rule meant to bound it (the code review measured ~11 px of overshoot at desktop and ~24 px at mobile for
+a two-line title plus one wrapped badge row).
+The fix is to bound the two inputs at their declared worst case, in the SAME token derivation the ceiling
+sums: `--blocked-card-header-rows` is the single source of truth the header group clips to AND the ceiling
+budgets, so they cannot drift, and the title clamps to the same 2 lines `.card-stall-reason` spends.
+Bounding the BOX (max-height + overflow on the badge group) is what makes the sum provable: whatever a
+chip's intrinsic height turns out to be under a theme, the group cannot contribute more than that term.
+The full title stays reachable — `.card-title` already carries `title={titleDisplay.fullText}`
+(TaskCard.tsx), so the clamp costs no information the operator cannot read.
+*/
+/*
+FNXC:ExternalBlockUx 2026-11-09-11:01 (RUFU-492):
+Measurement relationship between the blocked card and the virtualized row that hosts it. The row wraps only
+the card (Column.tsx `measureRow(task.id)`), but `.column-virtual-row` (Column.css:21-24) is
+`box-sizing: border-box` with `padding-block-end: var(--space-xs)`, so the row's own rect LEGITIMATELY
+exceeds the card's rect by its computed in-block insets. The containment invariant is therefore stated and
+asserted as a DELTA (row.height - card.height <= rowInsetPx + rounding, with rowInsetPx read from
+getComputedStyle, never the literal 4) and never as an equality — an equality would fail on a correct
+render. Column.css is out of this task's scope precisely because that padding is the spec's measuring stick.
+*/
 .card.external-blocked {
+  --external-block-notice-ceiling: calc(
+    var(--line-height-normal) * var(--font-size-xs) * 3 /* the clamped reason: exactly 3 line boxes */
+    + var(--line-height-normal) * var(--font-size-md) /* the notice title line */
+    + 2 * var(--space-md) /* the notice's own vertical padding */
+    + 2 * var(--space-xs) /* the two gaps between title, reason, and actions */
+    + max(var(--space-xl), var(--touch-target-min-size)) /* the actions row's tallest declared floor */
+    + var(--space-md) /* slack for theme font metrics */
+  );
+  /* One derivation for BOTH the badge group's own clip and the ceiling term that budgets it (P0 above). */
+  --blocked-card-header-rows: calc(2 * var(--card-chip-height) + var(--space-xs));
   border-color: var(--color-error);
+  max-height: calc(
+    var(--external-block-notice-ceiling)
+    + 2 * var(--ui-density-md) /* the card's own vertical padding */
+    + 2 * var(--ui-border-width) /* the card's border edges (border-box) */
+    + var(--blocked-card-header-rows) /* identity row 1: the two chip rows the header group clips to */
+    + var(--space-xs) /* the header's margin-bottom */
+    + var(--line-height-normal) * var(--font-size-sm) * 2 /* identity row 2: the title's two clamped lines */
+  );
 }
 
 .external-block-notice {
@@ -871,6 +937,17 @@ the virtualized row measurement can no longer disagree with what is painted.
   box-shadow: var(--shadow-md);
   background: color-mix(in srgb, var(--color-error) 14%, var(--card));
   overflow: hidden;
+  /*
+  FNXC:ExternalBlockUx 2026-11-09-10:07 (RUFU-492):
+  The panel's own ceiling, derived on the parent card above. It is the card-scoped half of the invariant
+  "a card overlay is never taller than the card it covers": `overflow: hidden` clips only if a box is
+  bounded, and before this the bound existed only as a side effect of the reason clamp. The custom property
+  resolves from `.card.external-blocked`, the only host that renders this variant (`ExternalBlockNotice`
+  returns null for a non-blocked task and the card root adds `external-blocked` under the same predicate);
+  on any other host the undefined property leaves this box unbounded, i.e. the pre-task behaviour, rather
+  than crushing it to zero.
+  */
+  max-height: var(--external-block-notice-ceiling);
 }
 
 /*
@@ -884,6 +961,35 @@ footer, agent rows) leaves the layout.
   display: none; /* a blocked card shows who it is and why it is stuck, not the work it cannot do */
 }
 
+/*
+FNXC:ExternalBlockUx 2026-11-09-18:16 (RUFU-492 code review P0):
+The two bounded identity inputs behind the ceiling derivation above. The badge group clips at the SAME
+`--blocked-card-header-rows` the ceiling budgets, so a third wrapped badge row cannot lengthen the header
+past the card; `--card-chip-height` is the desktop chip (measured chips paint at 16-22 px inside it) and
+mobile paints at the smaller `--card-chip-height-mobile`, so the budget is never under-estimated at either
+breakpoint. The accepted cost of a bound is that badges beyond the second row are cut — deliberate: the
+alternative is the notice (the only surface carrying the Explain/Retry recovery actions) sliding below the
+card's border box, and the complete chip set stays readable in Task Detail. The title clamps with the same
+mechanism `.card-stall-reason` uses — all five properties together, because `-webkit-line-clamp` binds only
+on a `-webkit-box` — and `.card-title` already carries `title={titleDisplay.fullText}`, so no title text is
+lost by its clamp.
+*/
+.card.external-blocked .card-header-badges {
+  max-height: var(--blocked-card-header-rows);
+  overflow: hidden;
+  /* Stack the wrapped rows from the top so whatever exceeds the bound is cut at the BOTTOM edge of the
+     group (the notice side) and never shifts the row that identifies the card. */
+  align-content: flex-start;
+}
+
+.card.external-blocked .card-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
 .external-block-notice__title {
   color: var(--color-error);
   font-size: var(--font-size-md);
@@ -892,12 +998,23 @@ footer, agent rows) leaves the layout.
 /*
 FNXC:ExternalBlockUx 2026-10-02-10:51 (RUFU-492):
 The obstacle reason is agent-authored prose of arbitrary length (measured live: ~70 rendered lines) and on
-the card face it sits inside the absolutely-positioned `--card` overlay. Unclamped it grew past the card,
-and because the card lives in `column-virtual-row` — whose height was measured before the overlay grew — the
-virtual list painted the NEXT card inside this one, so text overlapped text. Every sibling face-visible
-long-text box already clamps (`.card-stall-reason`, 2 lines); this one clamps to three and keeps the full
-sentence reachable through `title`. `min-height: 0` is required: a flex child otherwise refuses to shrink
-below its content and the clamp never binds.
+the card face it grew past the card, and because the card lives in `column-virtual-row` — whose height was
+measured before the box grew — the virtual list painted the NEXT card inside this one, so text overlapped
+text. Every sibling face-visible long-text box already clamps (`.card-stall-reason`, 2 lines); the card face
+clamps to three and keeps the full sentence reachable through `title`. `min-height: 0` is required: a flex
+child otherwise refuses to shrink below its content and the clamp never binds.
+
+FNXC:ExternalBlockUx 2026-11-09-10:07 (RUFU-492):
+This base rule is SHARED by all three variants (`--card`, `--list`, `--detail`) and no variant-scoped rule
+existed for the other two, so the clamp mechanism living here truncated the obstacle report on the very
+surfaces whose job is to read it whole — the Task Detail panel and both ListView branches. Only the board
+card face may clamp. The mechanism (`display: -webkit-box`, `-webkit-box-orient: vertical`,
+`overflow: hidden`, `-webkit-line-clamp`, `line-clamp`) therefore moved to
+`.external-block-notice--card .external-block-notice__reason` below, and ALL FIVE properties move together:
+`-webkit-line-clamp` binds only on a `-webkit-box`, so a clamp left on a plain block is decorative, and a
+base rule that keeps the box type still clamps the variants. This rule keeps paint/wrap properties only.
+`white-space: pre-wrap` is deliberately absent: it was never here and would change how newline-joined
+reasons wrap on all three surfaces.
 */
 /* the id is the identity of the panel, so it reads as part of the title line */
 .external-block-notice__task-id {
@@ -915,9 +1032,23 @@ below its content and the clamp never binds.
   font-size: var(--font-size-xs);
   line-height: var(--line-height-normal);
   overflow-wrap: anywhere;
-  overflow: hidden;
+}
+
+/*
+FNXC:ExternalBlockUx 2026-11-09-10:07 (RUFU-492):
+Card-face-only clamp: the board shows a card, not the operator's full obstacle report, so three lines plus
+the `title` tooltip is the depth the board face may spend. `--list` and `--detail` paint the entire reason
+(their surfaces exist to explain the block). `min-height: 0` is repeated here because the mechanism now
+lives on this rule: a flex child that cannot shrink below its content is the classic way a clamp silently
+stops binding. The measured depth bound in the browser spec derives one line box from
+`--line-height-normal * --font-size-xs` — `--line-height-normal` is UNITLESS, so a naive parseFloat of the
+computed `line-height` yields a scalar, not pixels (see app/utils/chatInputAutosize.ts).
+*/
+.external-block-notice--card .external-block-notice__reason {
+  min-height: 0;
   display: -webkit-box;
   -webkit-box-orient: vertical;
+  overflow: hidden;
   -webkit-line-clamp: 3;
   line-clamp: 3;
 }

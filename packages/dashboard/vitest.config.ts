@@ -442,6 +442,14 @@ const browserTouchTests = [
   le prouver. Collectée une seule fois dans cette lane, avec auto-clôture sur la présence d'un Chromium local.
   */
   "src/__tests__/board-return-browser.test.ts",
+  /*
+  FNXC:ExternalBlockUx 2026-11-09-10:07 (RUFU-492):
+  The blocked-card containment proof (notice inside the card, row inside its own computed insets,
+  the next card never painted inside this one, and `--list`/`--detail` painting the whole reason) is
+  RENDERED geometry; jsdom computes none of it, which is why the shipped guard could only read the
+  CSS file as text. Collected once in this lane, self-gating on the presence of a local Chromium.
+  */
+  "src/__tests__/external-block-card-geometry-browser.test.ts",
 ];
 
 const qualityApiTests = [

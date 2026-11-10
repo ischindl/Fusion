@@ -59,13 +59,36 @@ function ruleBody(source: string, selector: string): string {
 }
 
 describe("external-block notice stays inside its card", () => {
-  it("clamps the reason to a bounded number of lines", () => {
-    const body = ruleBody(css(), ".external-block-notice__reason");
+  it("clamps the reason to a bounded number of lines on the card face", () => {
+    // The mechanism moved off the shared rule onto the card-scoped one, because `--list` and `--detail`
+    // must paint the whole obstacle report. `-webkit-line-clamp` binds only on a `-webkit-box`, so the
+    // case asserts the whole mechanism travels together, `min-height: 0` included.
+    const body = ruleBody(css(), ".external-block-notice--card .external-block-notice__reason");
+    expect(body).toMatch(/display:\s*-webkit-box/);
+    expect(body).toMatch(/-webkit-box-orient:\s*vertical/);
     expect(body).toMatch(/-webkit-line-clamp:\s*\d+/);
     expect(body).toMatch(/line-clamp:\s*\d+/);
     expect(body).toMatch(/overflow:\s*hidden/);
     // A flex child that may not shrink below its content is the classic way a clamp silently stops binding.
     expect(body).toMatch(/min-height:\s*0/);
+  });
+
+  /*
+  FNXC:ExternalBlockUx 2026-11-09-10:07 (RUFU-492):
+  The negative half of the scoping. The shared `__reason` rule is what made the board card's truncation
+  leak into Task Detail and both ListView branches — the surfaces whose purpose is to read the whole
+  reason. If the mechanism ever moves back onto the shared rule, this case fails at the moment of the
+  edit instead of re-truncating the operator's obstacle report on the reading surfaces.
+  */
+  it("keeps the shared reason rule unclamped so --list and --detail paint the whole reason", () => {
+    const base = ruleBody(css(), ".external-block-notice__reason");
+    expect(base).not.toMatch(/line-clamp/);
+    expect(base).not.toMatch(/display:\s*-webkit-box/);
+    expect(base).not.toMatch(/-webkit-box-orient/);
+    expect(base).not.toMatch(/overflow:\s*hidden/);
+    // The base rule keeps its paint/wrap properties, and the flex-shrink floor with them.
+    expect(base).toMatch(/overflow-wrap:\s*anywhere/);
+    expect(base).toMatch(/min-height:\s*0/);
   });
 
   it("clips the notice, keeps its actions, and does not float over hidden content", () => {
@@ -75,11 +98,77 @@ describe("external-block notice stays inside its card", () => {
     // height of content nobody can see (measured 432 px on the live board).
     expect(overlay).toMatch(/position:\s*static/);
     expect(overlay).not.toMatch(/position:\s*absolute/);
+    // The ceiling is a ceiling: a height or min-height on the panel would make every geometric
+    // containment assertion trivially true (RUFU-492 measurement-honesty requirement).
+    expect(overlay).not.toMatch(/(^|[^-])\bheight:/m);
+    expect(overlay).not.toMatch(/min-height:/);
     expect(ruleBody(css(), ".external-block-notice__actions")).toMatch(/flex:\s*0 0 auto/);
     // Hidden siblings must leave the layout, or the card stays tall around the notice — but the header
     // (task id) and the title must survive it: hiding them made the blocked card unidentifiable.
     const hidden = ruleBody(css(), ".card.external-blocked > :not(.external-block-notice):not(.card-header):not(.card-title)");
     expect(hidden).toMatch(/display:\s*none/);
+  });
+
+  /*
+  FNXC:ExternalBlockUx 2026-11-09-10:07 (RUFU-492):
+  Cause 2 of the report: the blocked card's height was bounded only as a side effect of the reason clamp.
+  Both ceilings are now declared as calc() sums over named tokens — the card's padding token differs
+  across the UI style axis, so any px figure would be a lie. A bare px literal (except 0) in these two
+  declarations fails this case; the real bound is proven by the browser spec on the
+  `dashboard-browser-touch` lane.
+  */
+  it("declares token-only ceilings on the blocked card and the card-face notice", () => {
+    const blockedCard = ruleBody(css(), ".card.external-blocked");
+    expect(blockedCard).toMatch(/max-height:\s*calc\(/);
+    // Ceiling, never a frame: a declared height or min-height would crush the card into a fixed box.
+    expect(blockedCard).not.toMatch(/(^|\s)height:/m);
+    expect(blockedCard).not.toMatch(/min-height:/);
+    // No px literal may stand inside the two ceiling derivations (0 is the only allowed bare length).
+    for (const selector of [".card.external-blocked", ".external-block-notice--card"]) {
+      const body = ruleBody(css(), selector);
+      const maxHeights = body.match(/max-height:[^;]+;/g) ?? [];
+      expect(maxHeights.length).toBeGreaterThan(0);
+      for (const declaration of maxHeights) {
+        expect(declaration, `px literal in ${selector}: ${declaration}`).not.toMatch(/\b\d+px/);
+      }
+    }
+    // The ceiling reaches the panel through the custom property declared on the card, so one derivation
+    // rules both boxes and the two cannot drift.
+    expect(blockedCard).toMatch(/--external-block-notice-ceiling:/);
+    expect(ruleBody(css(), ".external-block-notice--card")).toMatch(/max-height:\s*var\(--external-block-notice-ceiling\)/);
+  });
+
+  /*
+  FNXC:ExternalBlockUx 2026-11-09-18:16 (RUFU-492 code review P0):
+  A ceiling is only a ceiling while every term it budgets is bounded. `.card-title` carries no clamp of its
+  own and `.card-header-badges` wraps (`flex-wrap: wrap` + `row-gap`), so both identity rows could grow
+  past the terms the card ceiling sums — and because `.card` is `display: block` with `overflow: visible`
+  by contract, the excess pushed the red notice BELOW the card's border box, which is the operator's
+  original symptom. Both rows are therefore bounded here, from ONE custom property so the badge clip and
+  the ceiling term cannot drift apart, and the title clamps to exactly the two lines the ceiling budgets.
+  The measured proof of the same invariant (against a card whose badges really do wrap) is the
+  `dashboard-browser-touch` spec `external-block-card-geometry-browser.test.ts`.
+  */
+  it("bounds the two identity rows the blocked-card ceiling budgets", () => {
+    const source = css();
+    const blockedCard = ruleBody(source, ".card.external-blocked");
+    // One derivation rules both the badge group's clip and the ceiling term that budgets it.
+    expect(blockedCard).toMatch(/--blocked-card-header-rows:\s*calc\(\s*2 \* var\(--card-chip-height\)\s*\+\s*var\(--space-xs\)\s*\)/);
+    expect(blockedCard).toMatch(/var\(--blocked-card-header-rows\)/);
+    // The title term is TWO line boxes, matching the clamp below — one line would re-open the P0.
+    expect(blockedCard).toMatch(/var\(--line-height-normal\) \* var\(--font-size-sm\) \* 2/);
+
+    const badges = ruleBody(source, ".card.external-blocked .card-header-badges");
+    expect(badges).toMatch(/max-height:\s*var\(--blocked-card-header-rows\)/);
+    expect(badges).toMatch(/overflow:\s*hidden/);
+
+    // The mechanism travels together: -webkit-line-clamp binds only on a -webkit-box.
+    const title = ruleBody(source, ".card.external-blocked .card-title");
+    expect(title).toMatch(/display:\s*-webkit-box/);
+    expect(title).toMatch(/-webkit-box-orient:\s*vertical/);
+    expect(title).toMatch(/-webkit-line-clamp:\s*2/);
+    expect(title).toMatch(/line-clamp:\s*2/);
+    expect(title).toMatch(/overflow:\s*hidden/);
   });
 
   it("keeps the whole obstacle text available even though it renders clamped", () => {
