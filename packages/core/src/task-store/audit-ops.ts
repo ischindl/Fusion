@@ -237,9 +237,25 @@ FNXC:QueuedTaskLogging 2026-08-04-18:03:
 Dependency and file-scope producers share this full-signature transition so queue activity is
 edge-triggered across schedulers, executors, self-healing, and process restarts. Acquire the
 project/task advisory transaction lock before reading or updating the row; atomically persist the
-marker, queue fields, and sole log entry. A matching signature suppresses only an already queued
-row with matching blocker fields, so recovery/non-queued state and any blocker-kind/full-set change
+marker, queue fields, and sole log entry. A matching signature suppresses an already queued row
+whose blocker fields also match, so recovery/non-queued state and any blocker-kind/full-set change
 re-arm reporting. Do not call public TaskStore mutation methods in this transaction.
+
+FNXC:QueuedTaskLogging 2026-11-10-17:25 (RUFU-412):
+The edge now gates the *write*, not only the log row. When none of the four fields this transition
+owns (`status`, `blockedBy`, `overlapBlockedBy`, `queuedLogEpisodeSignature`, all `?? null`
+normalized) differs, the pass performs no `tasks` UPDATE, no `task.json` mirror rewrite, and no
+`task:updated` emit, and returns the row it read. Before this, only the visible log entry was
+suppressed while the invisible cost was paid in full: one measured pass re-stamped 44 cards waiting
+behind one stationary file-scope lease holder every few minutes, so `updatedAt` stopped meaning
+"last change" (starving every staleness measured from it, the failure RUFU-350 had to work around on
+the planning side) and the mirror/event churn was pure noise. The predicate is deliberately a
+four-field comparison, never a signature-only match, so a single field corrected by another writer
+still persists. Two things do NOT move with the skip: the in-transaction
+`observeOverlapWaitTransitionInTransaction` call above it, which writes only
+`project.task_overlap_waits` and must keep recording both edges on every pass, and the meaning of
+`appended`, which self-healing reads as its recovery signal and which stays "a queue edge fired",
+not "a row was written".
 */
 export async function transitionQueuedEpisodeImpl(
   store: TaskStore,
@@ -259,12 +275,20 @@ export async function transitionQueuedEpisodeImpl(
     const current = rows[0];
     if (!current) throw new Error(`Task ${id} not found or deleted while queuing`);
 
-    const appended = !(
+    /*
+    FNXC:QueuedTaskLogging 2026-11-10-17:25 (RUFU-412):
+    ONE comparison decides both questions this seam asks, so the log row and the row write can never
+    disagree about whether anything changed. `noWriteFieldDiffers` names exactly the four columns
+    below write; `appended` is its negation and keeps its published meaning (a queue edge fired),
+    which the self-healing recovery paths consume as their recovery signal.
+    */
+    const noWriteFieldDiffers = (
       current.status === "queued"
       && (current.blockedBy ?? null) === transition.blockedBy
       && (current.overlapBlockedBy ?? null) === transition.overlapBlockedBy
       && (current.queuedLogEpisodeSignature ?? null) === transition.signature
     );
+    const appended = !noWriteFieldDiffers;
     /*
     FNXC:OverlapWaitSynchronization 2026-09-17-00:10:
     A queued-episode transition is exactly where `task.overlapBlockedBy` changes (set/replaced/
@@ -285,6 +309,18 @@ export async function transitionQueuedEpisodeImpl(
       observedAt: now,
       newLeaseObservation: true,
     });
+    /*
+    FNXC:QueuedTaskLogging 2026-11-10-17:25 (RUFU-412):
+    The no-op arm returns from INSIDE the transaction, deliberately below the observation above and
+    above every write. The transaction still commits (the wait table may have taken a new edge or a
+    Reset-stamp re-arm on this very pass), and the caller still gets the row as it read it — with its
+    own untouched `updatedAt` — plus `wrote: false`, which is what tells the post-commit half below
+    to skip the mirror and the event. Skipping the whole transaction instead would drop the
+    overlap-wait evidence, which is a different defect than the one being fixed.
+    */
+    if (noWriteFieldDiffers) {
+      return { appended: false, task: current, entry: null, wrote: false };
+    }
     const log = Array.isArray(current.log) ? [...current.log as TaskLogEntry[]] : [];
     const queuedEntry: TaskLogEntry | null = appended ? {
       timestamp: now,
@@ -295,10 +331,14 @@ export async function transitionQueuedEpisodeImpl(
     if (queuedEntry) log.push(queuedEntry);
     /*
     FNXC:TaskLogSideTable 2026-11-01-18:10 (RUFU-312):
-    This transition's task-row write carries queue state (status, blockers, episode signature) and always
-    rewrites the row, so it keeps that write — but the log entry leaves with it. The queue edge is the
-    mutation; the log line is a passenger, and a passenger may not make a card pay a fresh copy of its own
-    history. In the same transaction, so the entry and the state it describes commit together.
+    This transition's task-row write carries queue state (status, blockers, episode signature), so it
+    keeps that write — but the log entry leaves with it. The queue edge is the mutation; the log line is
+    a passenger, and a passenger may not make a card pay a fresh copy of its own history. In the same
+    transaction, so the entry and the state it describes commit together.
+
+    FNXC:QueuedTaskLogging 2026-11-10-17:25 (RUFU-412): "carries queue state, so it keeps that write"
+    is now conditional in exactly one case: reached only past the no-write arm above, this UPDATE runs
+    precisely when a queue edge fired. An unchanged episode never gets here at all.
     */
     const updated = await tx.update(schema.project.tasks).set({
       status: "queued",
@@ -319,13 +359,20 @@ export async function transitionQueuedEpisodeImpl(
         legacyLog: log,
       });
     }
-    return { appended, task: updated[0]!, entry: queuedEntry };
+    return { appended, task: updated[0]!, entry: queuedEntry, wrote: true };
   });
   const task = store.rowToTask(store.pgRowToTaskRow(result.task as unknown as Record<string, unknown>));
   /*
   FNXC:TaskLogSideTable 2026-11-01-18:12 (RUFU-312):
   The row this write returned predates the entry by construction, so the mirror and the `task:updated`
   payload carry the merged log — the same answer `getTask` gives a reader that asks immediately after.
+
+  FNXC:QueuedTaskLogging 2026-11-10-17:25 (RUFU-412):
+  The log hydration stays on BOTH arms: it is a read, and the returned Task must answer exactly what
+  `getTask` would answer for the row that was read. The two write-bearing side effects do not — the
+  mirror rewrite and the `task:updated` emission belong to a row change, so a skipped UPDATE skips
+  them together. The in-memory cache refresh stays unconditional: it costs nothing, and a board
+  watching the cache should still hold the row it just observed.
   */
   task.log = await hydrateTaskLogEntries({
     client: store.asyncLayer!.db,
@@ -333,9 +380,9 @@ export async function transitionQueuedEpisodeImpl(
     taskId: id,
     legacyLog: Array.isArray((result.task as unknown as Record<string, unknown>).log) ? ((result.task as unknown as Record<string, unknown>).log as TaskLogEntry[]) : [],
   });
-  await store.writeTaskJsonFile(store.taskDir(id), task);
+  if (result.wrote) await store.writeTaskJsonFile(store.taskDir(id), task);
   if (store.isWatching) store.taskCache.set(id, { ...task });
-  store.emitTaskLifecycleEventSafely("task:updated", [task]);
+  if (result.wrote) store.emitTaskLifecycleEventSafely("task:updated", [task]);
   return { appended: result.appended, task };
 }
 

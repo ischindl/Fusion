@@ -1,6 +1,6 @@
-import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -31,10 +31,51 @@ const overlap = (id: string) => ({
   action: `queued — waiting for active file-scope lease ${id}`,
 });
 
+/*
+FNXC:QueuedTaskLogging 2026-11-10-17:50 (RUFU-412):
+The reported defect was invisible churn: the log row was already suppressed while the row write, the
+`task.json` mirror rewrite, and the `task:updated` emit ran on every pass. A green log assertion
+therefore proves nothing about the fix, so these cases measure the three write surfaces directly:
+`updatedAt` read straight off the `tasks` row through the admin connection (never through a store read
+that could itself write), the mirror's mtime (`writeTaskJsonFile` writes a tmp file and renames it, so
+any rewrite moves it), and call counts on the two public store methods the seam calls. The admin read
+keeps the observation side-effect-free: a reader that wrote the mirror would make the mtime signal
+measure the observation instead of the transition.
+*/
+const readQueueRow = (taskId: string) => h.adminDb().select({
+  status: schema.project.tasks.status,
+  blockedBy: schema.project.tasks.blockedBy,
+  overlapBlockedBy: schema.project.tasks.overlapBlockedBy,
+  queuedLogEpisodeSignature: schema.project.tasks.queuedLogEpisodeSignature,
+  updatedAt: schema.project.tasks.updatedAt,
+}).from(schema.project.tasks).where(and(
+  eq(schema.project.tasks.projectId, "__legacy_unscoped__"),
+  eq(schema.project.tasks.id, taskId),
+)).then((rows) => rows[0]!);
+
+const queueWriteSpies = (store: TaskStore) => ({
+  mirror: vi.spyOn(store, "writeTaskJsonFile"),
+  emit: vi.spyOn(store, "emitTaskLifecycleEventSafely"),
+  cleared() {
+    this.mirror.mockClear();
+    this.emit.mockClear();
+  },
+});
+
+const mirrorMtimeMs = async (taskId: string) => (await stat(join(h.store().taskDir(taskId), "task.json"))).mtimeMs;
+
+const queuedLogLines = async (taskId: string) => {
+  const task = await h.store().getTask(taskId);
+  return (task?.log ?? []).filter((entry) => entry.action.startsWith("queued —")).length;
+};
+
 pgDescribe("queued episode transition", () => {
   beforeAll(h.beforeAll);
   afterAll(h.afterAll);
-  afterEach(h.afterEach);
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await h.afterEach();
+  });
 
   it("logs once for an unchanged full dependency episode and again when its full set changes", async () => {
     const task = await h.store().createTask({ description: "queued task" });
@@ -166,5 +207,179 @@ pgDescribe("queued episode transition", () => {
       `));
     }
     expect((await h.store().transitionQueuedEpisode(task.id, overlap("FN-LOCK"))).appended).toBe(true);
+  });
+
+  /*
+  FNXC:QueuedTaskLogging 2026-11-10-17:50 (RUFU-412):
+  Symptom verification. Reported 2026-09-29: 44 cards waiting behind one stationary file-scope lease
+  holder had `updatedAt` advanced across one scheduler pass (13:19:31.361Z to 13:22:27.713Z) and their
+  `task.json` mtimes matched those stamps, while their log carried no new entry, which proved the
+  append guard was already false. The pre-fix build fails every case below whose name says "writes
+  nothing": the row's `updatedAt` moves, the mirror mtime moves, and both spies record a call.
+  */
+  it("writes nothing on a repeated identical episode: no row update, no mirror rewrite, no event", async () => {
+    const store = h.store();
+    const task = await store.createTask({ description: "queue pass N+1" });
+    expect((await store.transitionQueuedEpisode(task.id, overlap("FN-LOCK"))).appended).toBe(true);
+
+    const firstRow = await readQueueRow(task.id);
+    const firstMtime = await mirrorMtimeMs(task.id);
+    const firstLines = await queuedLogLines(task.id);
+    const spies = queueWriteSpies(store);
+
+    expect((await store.transitionQueuedEpisode(task.id, overlap("FN-LOCK"))).appended).toBe(false);
+
+    const afterRow = await readQueueRow(task.id);
+    expect(afterRow.updatedAt).toBe(firstRow.updatedAt);
+    expect(await mirrorMtimeMs(task.id)).toBe(firstMtime);
+    expect(await queuedLogLines(task.id)).toBe(firstLines);
+    expect(spies.mirror).not.toHaveBeenCalled();
+    expect(spies.emit).not.toHaveBeenCalled();
+    // The public return still answers for the card as the row stands, log included.
+    const returned = await store.transitionQueuedEpisode(task.id, overlap("FN-LOCK"));
+    expect(returned.appended).toBe(false);
+    expect(returned.task.status).toBe("queued");
+    expect(returned.task.updatedAt).toBe(firstRow.updatedAt);
+    expect((returned.task.log ?? []).filter((entry) => entry.action.startsWith("queued —"))).toHaveLength(firstLines);
+  });
+
+  it("writes again when only the blocker changes under an unchanged signature", async () => {
+    const store = h.store();
+    const task = await store.createTask({ description: "blocker correction" });
+    const episode = {
+      signature: "dependency:FN-A,FN-B",
+      blockedBy: "FN-A",
+      overlapBlockedBy: null,
+      action: "queued — unmet dependencies: FN-A, FN-B",
+    };
+    await store.transitionQueuedEpisode(task.id, episode);
+    const before = await readQueueRow(task.id);
+    const spies = queueWriteSpies(store);
+
+    expect((await store.transitionQueuedEpisode(task.id, { ...episode, blockedBy: "FN-B" })).appended).toBe(true);
+
+    const after = await readQueueRow(task.id);
+    expect(after.blockedBy).toBe("FN-B");
+    // A signature-only match must never authorize the skip: the signature deliberately did not move.
+    expect(after.queuedLogEpisodeSignature).toBe(episode.signature);
+    expect(after.updatedAt).not.toBe(before.updatedAt);
+    expect(spies.mirror).toHaveBeenCalledTimes(1);
+    expect(spies.emit).toHaveBeenCalledTimes(1);
+    expect(await queuedLogLines(task.id)).toBe(2);
+  });
+
+  it("writes again on a queue-kind switch and on a re-arm after a cleared state", async () => {
+    const store = h.store();
+    const task = await store.createTask({ description: "kind switch writes" });
+    await store.transitionQueuedEpisode(task.id, dependency(["FN-A"]));
+    const spies = queueWriteSpies(store);
+
+    expect((await store.transitionQueuedEpisode(task.id, overlap("FN-LOCK"))).appended).toBe(true);
+    expect(spies.mirror).toHaveBeenCalledTimes(1);
+    expect(spies.emit).toHaveBeenCalledTimes(1);
+    expect((await readQueueRow(task.id)).overlapBlockedBy).toBe("FN-LOCK");
+
+    spies.cleared();
+    await store.updateTask(task.id, { status: null, blockedBy: null, overlapBlockedBy: null });
+    spies.cleared();
+    expect((await store.transitionQueuedEpisode(task.id, overlap("FN-LOCK"))).appended).toBe(true);
+    expect(spies.mirror).toHaveBeenCalledTimes(1);
+    expect(spies.emit).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats null blocker columns as matching an explicit null, and still writes a real change", async () => {
+    const store = h.store();
+    const task = await store.createTask({ description: "null normalization" });
+    // A queued card whose blocker columns are SQL NULL and whose signature already matches: the `?? null`
+    // normalization must read that as no change, or every waiting card would be re-stamped forever.
+    await h.layer().db.execute(sql`UPDATE project.tasks SET status='queued', blocked_by=NULL, overlap_blocked_by=NULL,
+      queued_log_episode_signature='file-scope:FN-LOCK' WHERE id=${task.id}`);
+    const before = await readQueueRow(task.id);
+    expect(before.blockedBy).toBeNull();
+    const spies = queueWriteSpies(store);
+
+    expect((await store.transitionQueuedEpisode(task.id, {
+      signature: "file-scope:FN-LOCK",
+      blockedBy: null,
+      overlapBlockedBy: null,
+      action: "queued — waiting for active file-scope lease FN-LOCK",
+    })).appended).toBe(false);
+    expect(spies.mirror).not.toHaveBeenCalled();
+    expect(spies.emit).not.toHaveBeenCalled();
+    expect((await readQueueRow(task.id)).updatedAt).toBe(before.updatedAt);
+
+    // The same card gaining a real blocker is a real edge and must never be swallowed by normalization.
+    expect((await store.transitionQueuedEpisode(task.id, overlap("FN-OTHER"))).appended).toBe(true);
+    expect(spies.mirror).toHaveBeenCalledTimes(1);
+    expect(spies.emit).toHaveBeenCalledTimes(1);
+    const after = await readQueueRow(task.id);
+    expect(after.overlapBlockedBy).toBe("FN-OTHER");
+    expect(after.updatedAt).not.toBe(before.updatedAt);
+  });
+
+  it("leaves every waiting card untouched on a second full pass behind one holder", async () => {
+    const store = h.store();
+    const holder = await store.createTask({ description: "stationary lease holder" });
+    const waiters = await Promise.all([1, 2, 3].map((index) => store.createTask({ description: `waiter ${index}` })));
+    for (const waiter of waiters) {
+      expect((await store.transitionQueuedEpisode(waiter.id, overlap(holder.id))).appended).toBe(true);
+    }
+    const before = await Promise.all(waiters.map((waiter) => readQueueRow(waiter.id)));
+    const mtimes = await Promise.all(waiters.map((waiter) => mirrorMtimeMs(waiter.id)));
+    const lines = await Promise.all(waiters.map((waiter) => queuedLogLines(waiter.id)));
+    const spies = queueWriteSpies(store);
+
+    for (const waiter of waiters) {
+      expect((await store.transitionQueuedEpisode(waiter.id, overlap(holder.id))).appended).toBe(false);
+    }
+
+    expect(spies.mirror).not.toHaveBeenCalled();
+    expect(spies.emit).not.toHaveBeenCalled();
+    for (const [index, waiter] of waiters.entries()) {
+      expect((await readQueueRow(waiter.id)).updatedAt).toBe(before[index]!.updatedAt);
+      expect(await mirrorMtimeMs(waiter.id)).toBe(mtimes[index]);
+      expect(await queuedLogLines(waiter.id)).toBe(lines[index]);
+    }
+  });
+
+  it("keeps observing overlap-wait evidence on the pass that writes nothing", async () => {
+    const store = h.store();
+    const blocker = await store.createTask({ description: "predecessor" });
+    const waiter = await store.createTask({ description: "waiter" });
+    await store.transitionQueuedEpisode(waiter.id, overlap(blocker.id));
+    const observed = (await store.listTaskOverlapWaits(waiter.id, { pendingOnly: true }))[0]!;
+    expect(observed).toMatchObject({ blockerTaskId: blocker.id, phase: "observed" });
+    const rowBefore = await readQueueRow(waiter.id);
+    const spies = queueWriteSpies(store);
+
+    expect((await store.transitionQueuedEpisode(waiter.id, overlap(blocker.id))).appended).toBe(false);
+    expect(spies.mirror).not.toHaveBeenCalled();
+    expect((await readQueueRow(waiter.id)).updatedAt).toBe(rowBefore.updatedAt);
+    expect((await store.listTaskOverlapWaits(waiter.id, { pendingOnly: true })).map((wait) => wait.blockerTaskId))
+      .toContain(blocker.id);
+
+    /*
+    FNXC:QueuedTaskLogging 2026-11-10-17:50 (RUFU-412):
+    The re-arm half is the proof that returning before the UPDATE did not return before the
+    observation: Reset stamps the wait, and the next otherwise-identical episode must still re-arm it
+    while the tasks row stays byte-identical. `overlap-wait-release.pg.test.ts` covers the same
+    re-arm from the release side; it belongs here too because the skip and the observation share
+    this one transaction.
+    */
+    await store.resetTaskPublication(blocker.id, "todo");
+    spies.cleared();
+    const stamped = (await store.listTaskOverlapWaits(waiter.id, { pendingOnly: true }))[0]!;
+    expect(stamped.observation.blockerResetAt).toEqual(expect.any(String));
+    const rowBeforeRequeue = await readQueueRow(waiter.id);
+
+    expect((await store.transitionQueuedEpisode(waiter.id, overlap(blocker.id))).appended).toBe(false);
+
+    const rearmed = (await store.listTaskOverlapWaits(waiter.id, { pendingOnly: true }))[0]!;
+    expect(rearmed.revision).toBeGreaterThan(stamped.revision);
+    expect(rearmed.observation.previousBlockerResetAt).toEqual(expect.any(String));
+    expect(rearmed.observation.blockerResetAt).toBeUndefined();
+    expect((await readQueueRow(waiter.id)).updatedAt).toBe(rowBeforeRequeue.updatedAt);
+    expect(spies.mirror).not.toHaveBeenCalled();
+    expect(spies.emit).not.toHaveBeenCalled();
   });
 });
