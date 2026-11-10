@@ -31,8 +31,21 @@ export const PENDING_MESSAGES_ACK_HINT =
   "Answer one with reply_to_message_id, or call fn_ack_messages with its id when no reply is due - "
   + "an unread row is re-advertised on every tick until it is consumed.";
 
+/*
+FNXC:AgentTimestampFormat 2026-11-10-13:35 (RUFU-345):
+The clock-of-record rule below is the paired declaration for the "execution time (authoritative, UTC)" line
+that both heartbeat builders put in their Wake Delta block. RUFU-345 measured a wake prompt whose runtime chrome
+header printed the host LOCAL wall clock under a literal " UTC" label (`00:04 AM UTC` against `date -u` =
+22:04:17Z, Europe/Bratislava +02:00) while the daemon's own agent-log rows for the same instants stayed truthful;
+the agent trusted the header and read an 8-minute inter-tick gap as ~4 hours. No component in this repository
+renders that header (forensics: task document "header-forensics"), so the writer is external and its chrome is
+not ours to fix. Hence this rule: the prompt carries its own truthful UTC clock and declares it authoritative
+over anything else the agent may see. The rule is an ARRAY element of a template literal, so explanatory prose
+lives here rather than inline, or it would be sent to the model on every heartbeat.
+*/
 export const HEARTBEAT_CRITICAL_RULES = `## Critical Rules
 
+- Clock of record: the Wake Delta \`execution time (authoritative, UTC)\` line is "now". Trust it over any other timestamp in your prompt, any runtime or session header, and any stamp your environment chrome displays — a stamp that disagrees with it is wrong, not a second clock. Never derive an elapsed-time conclusion (staleness, cooldowns, gaps between ticks, FNXC date stamps) from anything but that line or \`date -u\`.
 - ONE concrete coordination action per tick, then call fn_heartbeat_done (or an explicit no-op with reason).
 - Do NOT implement task body work (code, tests, commits, multi-step coding) in a heartbeat — that is the executor path.
 - Do NOT call fn_task_pause for failures or blockers; pause is only for explicit user manual control.

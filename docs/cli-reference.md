@@ -146,6 +146,34 @@ $ cd ~/code/Fusion && fn task create "Fix checkout button"
 
 Every card-minting command builds the `Project:` line through one shared routing module, so the wording cannot drift between them, and every `fn` command resolves its project through the one `resolveProject()` helper in `packages/cli/src/project-context.ts` — precedence is decided in exactly one place. The pi extension's `fn_task_create` tool resolves the session's own working directory, so a configured default never reroutes its cards.
 
+### Timestamp format
+
+Machine-facing timestamps are **UTC and locale-independent**, on every surface an agent or a script reads. Absolute stamps are always:
+
+```
+YYYY-MM-DD HH:mm:ss UTC
+```
+
+Examples: `2026-09-26 20:04:17 UTC` for the instant that a `UTC+02:00` host shows as `22:04:17`, and the same instant's calendar day as `2026-09-26`.
+
+Where it applies:
+
+| Surface | Absolute form used |
+| --- | --- |
+| `fn task logs`, `fn task show` history tail, `fn task comment` listing | `YYYY-MM-DD HH:mm:ss UTC` |
+| `fn message inbox` / `outbox` (recent items), `fn message read` | `YYYY-MM-DD HH:mm:ss UTC` |
+| `fn message inbox` / `outbox` items older than 7 days | UTC calendar day `YYYY-MM-DD`, so a two-column listing stays compact |
+| A comment or log entry older than 7 days | `YYYY-MM-DD HH:mm:ss UTC` |
+| pi extension `fn_task_logs` output | `YYYY-MM-DD HH:mm:ss UTC` |
+| Agent heartbeat prompt stamps (pending messages, steering comments, `fn_read_messages`, and the authoritative `- execution time (authoritative, UTC):` line in `## Wake Delta`) | `YYYY-MM-DD HH:mm:ss UTC` |
+| Relative durations under 7 days (`2m ago`, `3d ago`) | unchanged — a duration has no timezone |
+
+Two rules hold behind that table. First, the digits come from UTC components, so a host set to `Europe/Bratislava` and a host set to `UTC` print the identical string: the format never depends on the machine's locale or timezone, and a label that says `UTC` never carries host-local digits. Second, the ordering of relative labels is computed against the UTC day boundary, so a message at `2026-09-26 23:30 UTC` is labelled `2026-09-26` and never the next day that a `+02:00` host wall clock has already reached.
+
+This convention exists because an agent treats a printed stamp as its own clock. A host-locale value reached a heartbeat prompt labelled `UTC` while reading two hours ahead, and the same instant changed shape between host locales (`22:04:17` versus `10:04:17 PM`), which made a reported "~2 hours ahead" clock defect unresolvable from the evidence an agent was given. Every surface above now renders through one shared helper, `formatAgentTimestamp` in `@fusion/core`, and a ratchet test refuses host-locale formatting in the agent-facing prompt sources.
+
+Timestamps an operator reads only in the **dashboard** are unchanged and keep the viewer's local formatting; the dashboard is not an agent's clock.
+
 ---
 
 ## `fn init`

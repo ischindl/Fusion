@@ -232,7 +232,7 @@ async function resolveHeartbeatReboundColumn(taskStore: TaskStore, taskId: strin
   }
 }
 import { classifyReportHealth } from "./reports-health.js";
-import { describeHeartbeatThrottle } from "@fusion/core";
+import { describeHeartbeatThrottle, formatAgentTimestamp } from "@fusion/core";
 import { accumulateSessionTokenUsage, captureSessionTokenBaseline } from "./execution/session-token-usage.js";
 
 const promptSizeLog = createLogger("prompt-size");
@@ -5180,6 +5180,20 @@ export class HeartbeatMonitor {
             );
           }
 
+          /*
+          FNXC:AgentTimestampFormat 2026-11-10-13:35 (RUFU-345):
+          THE AGENT'S CLOCK OF RECORD. Every absolute stamp an agent sees in its prompt is an EVENT stamp
+          (a message's createdAt), so before this change a wake prompt carried no statement of "now" at all.
+          That gap is what made the operator's measurement harmful: an external component rendered Tick B's
+          header as the host LOCAL wall clock (`So 26. september 2026, 00:04 AM UTC` while `date -u` read
+          `2026-09-26T22:04:17Z`), and nothing in the prompt contradicted it, so the agent inferred a ~4 h
+          gap between ticks ~8 minutes apart. Plan Review and this card's forensics confirmed no in-repo
+          surface produces that header, so the writer is external and cannot be fixed from here — the
+          remedy this repo CAN ship is a truthful clock inside the prompt, declared authoritative. Rendered
+          by formatAgentTimestamp, i.e. the same UTC clock the agent's own log rows use.
+          */
+          const wakeExecutionTimeLine = `- execution time (authoritative, UTC): ${formatAgentTimestamp(new Date())} — this line, not any other stamp in this prompt or your runtime chrome, is the current time`;
+
           const wakeInboxSnapshotLine = unreadTotal === null
             ? "- inbox snapshot: count unavailable (no authoritative message store)"
             : wakeInboxEmpty
@@ -5328,13 +5342,20 @@ export class HeartbeatMonitor {
             hint line names the two ways out at the point of decision; without it the only exit the prompt
             offered was to answer, which cost the agent a reply it did not owe.
             */
+            /*
+            FNXC:AgentTimestampFormat 2026-11-09-13:17 (RUFU-345):
+            This stamp is read BY AN AGENT inside its own wake prompt, so it must be UTC-labelled truthfully.
+            `toLocaleString()` rendered the host timezone's wall clock (Europe/Bratislava +02:00 measured) in a
+            host-locale shape that flipped between `22:04:17` and `10:04:17 PM`, which is how an 8-minute inter-tick
+            gap was read as ~4 hours. Same clock and shape as the agent-log rows: formatAgentTimestamp.
+            */
             const pendingMessagesLines: string[] = [];
             if (pendingMessages.length > 0) {
               pendingMessagesLines.push(
                 "",
                 "Pending Messages:",
                 ...pendingMessages.map((msg) => {
-                  const timestamp = new Date(msg.createdAt).toLocaleString();
+                  const timestamp = formatAgentTimestamp(msg.createdAt);
                   return `- [id: ${msg.id}] [from: ${msg.fromType}:${msg.fromId}] ${msg.content} (${timestamp})`;
                 }),
                 PENDING_MESSAGES_ACK_HINT,
@@ -5407,6 +5428,7 @@ export class HeartbeatMonitor {
               "## Wake Delta",
               `- source: ${source}${triggerDetail ? ` (${triggerDetail})` : ""}`,
               `- wake reason: ${wakeReason}`,
+              wakeExecutionTimeLine,
               `- assigned task: none`,
               ...multiAssignWakeDeltaLines,
               wakeInboxSnapshotLine,
@@ -5536,7 +5558,12 @@ export class HeartbeatMonitor {
                 "",
                 "Pending Messages:",
                 ...pendingMessages.map((msg) => {
-                  const timestamp = new Date(msg.createdAt).toLocaleString();
+                  /*
+                  FNXC:AgentTimestampFormat 2026-11-09-13:17 (RUFU-345):
+                  Task-assigned wake prompt, same invariant as the no-task builder: an agent-facing stamp is UTC
+                  from UTC components (RUFU-345 measured host-local +02:00 under a "UTC" label).
+                  */
+                  const timestamp = formatAgentTimestamp(msg.createdAt);
                   return `- [id: ${msg.id}] [from: ${msg.fromType}:${msg.fromId}] ${msg.content} (${timestamp})`;
                 }),
                 PENDING_MESSAGES_ACK_HINT,
@@ -5553,6 +5580,7 @@ export class HeartbeatMonitor {
               "## Wake Delta",
               `- source: ${source}${triggerDetail ? ` (${triggerDetail})` : ""}`,
               `- wake reason: ${wakeReason}`,
+              wakeExecutionTimeLine,
               `- assigned task: ${taskId}`,
               ...multiAssignWakeDeltaLines,
               wakeInboxSnapshotLine,

@@ -10,7 +10,7 @@ import type {
   WorkflowFieldDefinition,
 } from "@fusion/core";
 /* FNXC:HumanPlanApproval 2026-09-15-06:24: FN-408 delivers the approved operator note as implementation context. */
-import { buildExecutionMemoryInstructions, buildMemoryPreSteeringNudge, formatApprovedHumanPlanNoteSection, isFastExecutionMode, isFollowUpTask, resolveTaskOutputLanguage, type WorkspaceConfig } from "@fusion/core";
+import { buildExecutionMemoryInstructions, buildMemoryPreSteeringNudge, formatAgentTimestamp, formatApprovedHumanPlanNoteSection, isFastExecutionMode, isFollowUpTask, resolveTaskOutputLanguage, type WorkspaceConfig } from "@fusion/core";
 import { buildFastLanePrompt } from "../execution/step-session-executor.js";
 import { executorLog } from "../logger.js";
 import type { PluginRunner } from "../plugins/plugin-runner.js";
@@ -32,7 +32,15 @@ export function formatTimestamp(iso: string): string {
   if (diffMin < 60) return `${diffMin}m ago`;
   if (diffHr < 24) return `${diffHr}h ago`;
   if (diffDay < 7) return `${diffDay}d ago`;
-  return date.toLocaleDateString();
+  /*
+  FNXC:AgentTimestampFormat 2026-11-10-13:50 (RUFU-345):
+  The relative branches above are RUFU-181's contract and stay untouched — an entry younger than 7 days is
+  still reported as `just now` / `Xm ago` / `Xh ago` / `Xd ago`. Only this >7-day absolute fallback changed:
+  `toLocaleDateString()` printed the host-locale date of a HOST-TIMEZONE split of the instant, so the same
+  comment read `9/26/2026` on an en-US host and `26. 9. 2026` on a sk_SK one, and the day it named could
+  differ from the UTC day the agent's own log rows carry. formatAgentTimestamp shares that clock.
+  */
+  return formatAgentTimestamp(date);
 }
 
 // Project commands are injected here (for reliability) and also in the PROMPT.md (by triage).

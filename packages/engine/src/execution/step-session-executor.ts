@@ -41,7 +41,7 @@ Upstream FN-293 renamed the Patchnode heading tools to history tools and added
 `matchStepHeadings`; the union import keeps RUFU-132's recall cue beside it.
 */
 /* FNXC:HumanPlanApproval 2026-09-15-06:24: FN-408 shares one note formatter across the standard, Fast, per-step, and reduced-step prompts. */
-import { buildPerTurnMemoryRecallCue, formatApprovedHumanPlanNoteSection, isFastExecutionMode, isValidProviderInstanceId, resolvePersistAgentThinkingLog, resolveExecutorFallbackModel, resolveTrailingVerificationStepIndex, resolveAuthoredStepHeadingOffset, matchStepHeadings } from "@fusion/core";
+import { buildPerTurnMemoryRecallCue, formatApprovedHumanPlanNoteSection, isFastExecutionMode, isValidProviderInstanceId, resolvePersistAgentThinkingLog, resolveExecutorFallbackModel, resolveTrailingVerificationStepIndex, resolveAuthoredStepHeadingOffset, matchStepHeadings, formatAgentTimestamp } from "@fusion/core";
 export { resolveAuthoredStepHeadingOffset };
 
 import {
@@ -701,7 +701,13 @@ function buildStepSteeringCommentsSection(comments: SteeringComment[] | undefine
     "",
   ];
   for (const comment of recentComments) {
-    lines.push(`**${comment.author}** — ${new Date(comment.createdAt).toLocaleString()}`);
+    /*
+    FNXC:AgentTimestampFormat 2026-11-09-13:17 (RUFU-345):
+    Steering comments are injected INTO the step-execution prompt, and the executor quotes these stamps when it
+    decides whether feedback is fresh. Host-locale formatting printed the host timezone's wall clock (measured
+    +02:00, Europe/Bratislava), so the prompt carried one clock and the agent log another.
+    */
+    lines.push(`**${comment.author}** — ${formatAgentTimestamp(comment.createdAt)}`);
     lines.push(`> ${comment.text}`);
     lines.push("");
   }

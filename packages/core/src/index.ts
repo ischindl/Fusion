@@ -20,6 +20,7 @@ export type {
   ReconcileStaleSymbolLocksResult,
 } from "./tasks/symbol-lock-types.js";
 export { resolveEngineNodeId, resolveEngineIncarnationId } from "./engine-node-identity.js";
+export { formatAgentTimestamp, AGENT_TIMESTAMP_UNKNOWN } from "./agent-timestamp.js";
 export { isTerminalWorkspaceLeaseOwner } from "./tasks/workspace-lease-types.js";
 export type { WorkspaceLeaseKind, WorkspaceLeaseStatus, WorkspaceLeaseOwner, WorkspaceLeaseHandle, WorkspaceLease, WorkspaceLeaseConflict, WorkspaceLeaseClaimOutcome, WorkspaceLeaseFenceOutcome, WorkspaceLandIntent, WorkspaceLandIntentResolution, WorkspaceLandIntentResolveOutcome, WorkspaceLeaseReclaimOutcome, AcquireWorkspaceLeaseResult } from "./tasks/workspace-lease-types.js";
 export {

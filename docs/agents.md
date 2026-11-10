@@ -1226,11 +1226,32 @@ Heartbeat runs are composed from multiple prompt layers so each wake has full id
 3. **Execution prompt framing**
    - `Identity Snapshot` block (agent ID/role + loaded soul/instructions/memory preview; `memory: loaded` when either inline memory or workspace `MEMORY.md` is present)
    - `Wake Delta` block (source, trigger detail, wake reason, assignment/comments/messages)
+   - `Wake Delta` carries an authoritative clock line as its second entry: `- execution time (authoritative, UTC): YYYY-MM-DD HH:mm:ss UTC — this line, not any other stamp in this prompt or your runtime chrome, is the current time`. It is emitted by **both** builders (the no-task builder and the task-assigned builder), so an agent that receives a Wake Delta block always receives exactly one authoritative time. The stamp is rendered from UTC components, so it is the identical string on a `UTC` host and a `Europe/Bratislava` host.
    - Optional multi-assign inventory under Wake Delta (`your assigned tasks (coordination inventory…)`) ranked from `assignedAgentId` rows (cap 8); not an implement-from-heartbeat queue
    - Heartbeat procedure block (task-scoped or no-task variant, plus optional per-agent procedure override file)
    - System prompts always include **Critical Rules** (one action, no implement-from-heartbeat, checkout no-retry, blocked dedup) so custom `HEARTBEAT.md` cannot erase them
 
 This structure ensures every run re-anchors on identity, wake reason, and current context before taking action.
+
+#### Clock of record in heartbeat prompts
+
+<!--
+FNXC:AgentTimestampUTC 2026-11-10-15:20 (RUFU-345):
+Documents the invariant the fix established: the authoritative execution-time line is the only clock an agent
+is told to trust, and every agent-facing stamp is UTC-rendered. Kept with the heartbeat prompt structure
+because that is where a reader looks for what a wake prompt contains.
+-->
+
+An agent has no trustworthy clock of its own. Its runtime chrome can show any timezone, `TZ` is not injected into an agent's shell environment, and a stamp rendered with host-locale formatting shows the HOST's wall clock while reading as a time in UTC. RUFU-345 measured exactly that: a header rendered `So 26. september 2026, 00:04 AM UTC` while `date -u` read `22:04:17 UTC`, a two-hour gap that was charged to the platform because the label said `UTC`.
+
+The contract now enforced by tests:
+
+- **One authoritative line.** `- execution time (authoritative, UTC): <stamp>` in `## Wake Delta` is the current time. The Critical Rules block tells the agent to use it and nothing else, and to derive elapsed time from it or from `date -u`, never from assuming a displayed time is UTC.
+- **Both builders or none.** The no-task builder and the task-assigned builder must both carry it; a prompt with no authoritative stamp is the shape that produced the original defect.
+- **Every other agent-facing stamp is UTC-rendered** through `formatAgentTimestamp` in `@fusion/core` (`YYYY-MM-DD HH:mm:ss UTC`): pending-message and steering-comment lines, `fn_read_messages` rows, the executor's `## Steering Comments` render, and the CLI agent-log/comment/message surfaces.
+- **A ratchet keeps it that way.** `packages/engine/src/__tests__/agent-prompt-timestamp-ratchet.test.ts` refuses host-locale date formatting and hand-rolled `UTC` suffixes in the agent-facing prompt sources, and the CLI suite scans its own three surfaces.
+
+What is deliberately NOT changed: the runtime header written by the model runtime's own prompt-assembly chrome (not this repository's source) and the dashboard's operator-facing relative timestamps.
 
 **Heartbeat skill policy:** heartbeat sessions automatically receive every project-enabled and enabled-plugin skill. The waking agent’s `metadata.skills` are additive forced-reading requests: only skills that resolve and remain enabled are instructed before work starts; disabled or missing requests are reported. There is **no** role fallback to the published `fusion` operator skill on the heartbeat lane.
 

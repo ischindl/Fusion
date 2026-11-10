@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import * as fusionCore from "@fusion/core";
 import type { Agent, AgentState, AgentCapability, AgentUpdateInput, AgentLogEntry, Artifact, ArtifactCreateInput, ArtifactWithTask, Task, TaskDocument, TaskDocumentCreateInput, TaskStore, RunMutationContext, MessageStore, Message, SourceType, Settings, ResearchRun, ResearchRunStatus, TaskCreateInput, ReflectionStore, ApprovalRequestStore, ProjectSettings, ChatStore, WorkflowSettingDefinition, GoalStatus, WorkflowIrNode, IdeationCandidate, MissionWithHierarchy, DbTransaction } from "@fusion/core";
-import { listTraits, isBuiltinWorkflowId, isTaskNotFoundError, renderTaskCommentSection, AgentStore, validateColumnAgentBindings, ColumnAgentBindingError, stripApprovalBypassFlags, WorkflowSettingRejectionError, resolveEffectiveSettingsById, resolveWorkflowIrById, findOrphanedSettingValues, BUILTIN_WORKFLOW_SETTINGS, MAX_TASK_LIST_TEXT_CHARS, TASK_BOARD_READ_CAVEAT, formatCurrentTaskLine, normalizeWorkflowIcon, parseWorkflowIr, WorkflowIrError, assertColumnTraitsValid, ColumnTraitValidationError } from "@fusion/core";
+import { listTraits, isBuiltinWorkflowId, isTaskNotFoundError, renderTaskCommentSection, AgentStore, validateColumnAgentBindings, ColumnAgentBindingError, stripApprovalBypassFlags, WorkflowSettingRejectionError, resolveEffectiveSettingsById, resolveWorkflowIrById, findOrphanedSettingValues, BUILTIN_WORKFLOW_SETTINGS, MAX_TASK_LIST_TEXT_CHARS, TASK_BOARD_READ_CAVEAT, formatCurrentTaskLine, normalizeWorkflowIcon, parseWorkflowIr, WorkflowIrError, assertColumnTraitsValid, ColumnTraitValidationError, formatAgentTimestamp } from "@fusion/core";
 import { promoteHeldTask } from "./execution/hold-release.js";
 import { emitBoundedRunAudit } from "./util/emit-bounded-run-audit.js";
 import { STORE_RETRY_GUIDANCE, stepLifecycleNoopResult, storeErrorResult, storeWriteFailure } from "./tool-store-errors.js";
@@ -7578,7 +7578,13 @@ export function createReadMessagesTool(messageStore: MessageStore, agentId: stri
         }));
 
         const lines = messageEntries.map(({ message, replyContext }) => {
-          const timestamp = new Date(message.createdAt).toLocaleString();
+          /*
+          FNXC:AgentTimestampFormat 2026-11-09-13:17 (RUFU-345):
+          `fn_read_messages` output is an agent-facing surface: the agent quotes these stamps when it reasons
+          about message age. A host-locale `toLocaleString()` value is the host timezone's wall clock, so the
+          same inbox line disagreed with the agent's own ISO agent-log rows (RUFU-345, Europe/Bratislava +02:00).
+          */
+          const timestamp = formatAgentTimestamp(message.createdAt);
           const readStatus = message.read ? "[read] " : "[unread] ";
           /*
           FNXC:CliChatConversation 2026-07-20-12:00:

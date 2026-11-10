@@ -54,6 +54,7 @@ import {
   resolveWorkflowIrForTask,
   resolveReviewColumns,
   describeHeartbeatThrottle,
+  formatAgentTimestamp,
 } from "@fusion/core";
 import {
   getGhErrorMessage,
@@ -2787,7 +2788,10 @@ export default function kbExtension(pi: ExtensionAPI) {
         const recent = task.log.slice(-5);
         lines.push(`Log (last ${recent.length}):`);
         for (const l of recent) {
-          const ts = new Date(l.timestamp).toLocaleTimeString();
+          /* FNXC:AgentTimestampFormat 2026-11-10-13:55 (RUFU-345): the pi-extension log tail is read by the
+             agent itself, so it must carry the same UTC clock as the agent-log rows it is tailing.
+             `toLocaleTimeString()` rendered host-timezone hours and flipped shape with the host locale. */
+          const ts = formatAgentTimestamp(l.timestamp);
           lines.push(
             `  ${ts}  ${l.action}${l.outcome ? ` → ${l.outcome}` : ""}`,
           );

@@ -1,4 +1,4 @@
-import { DASHBOARD_USER_ID, MessageStore } from "@fusion/core";
+import { AGENT_TIMESTAMP_UNKNOWN, DASHBOARD_USER_ID, MessageStore, formatAgentTimestamp } from "@fusion/core";
 import type { ParticipantType } from "@fusion/core";
 import { resolveAgentStoreBase } from "../project-context.js";
 
@@ -137,7 +137,15 @@ export async function runMessageRead(id: string, projectName?: string): Promise<
 
     const fromLabel = formatParticipant(message.fromId, message.fromType);
     const toLabel = formatParticipant(message.toId, message.toType);
-    const timeStr = new Date(message.createdAt).toLocaleString();
+    /*
+    FNXC:AgentTimestampFormat 2026-11-10-13:55 (RUFU-345):
+    `fn task browse-messages` / `fn message show` output is read by agents as well as people (the card's own
+    tool contract lists it among the machine-facing surfaces), so the stamp must not depend on the host
+    locale or print a host-timezone wall clock. `toLocaleString()` did both: its shape flipped between
+    `22:04:17` and `10:04:17 PM` across locales and its digits were local, so a quoted message time could
+    not be reconciled with the ISO stamps in the agent log. One UTC shape now: formatAgentTimestamp.
+    */
+    const timeStr = formatAgentTimestamp(message.createdAt);
 
     console.log();
     console.log(`  Message: ${message.id}`);
@@ -225,5 +233,16 @@ export function formatTime(ts: string): string {
   if (diffHours < 24) return `${diffHours}h ago`;
   if (diffDays < 7) return `${diffDays}d ago`;
 
-  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  /*
+  FNXC:AgentTimestampFormat 2026-11-10-13:55 (RUFU-345):
+  JUDGMENT POINT recorded per the card: this is the >7-day fallback of a RELATIVE list label, so the compact
+  month/day form is kept (a full `YYYY-MM-DD HH:mm:ss UTC` stamp here would widen every row of the message
+  list for no benefit, and the label carries no time-of-day claim to mislabel). What changed is its clock and
+  its locale: `toLocaleDateString(undefined, {month:"short",day:"numeric"})` picked the HOST-locale shape
+  (`Sep 26` vs `26. 9.`) and, worse, the host-timezone DAY, so a message sent 23:30 UTC on the 26th was
+  labelled the 27th on a +02:00 host. The first 10 characters of the shared UTC stamp are the ISO calendar day
+  in UTC, which is both locale-independent and chronologically sortable.
+  */
+  const utcStamp = formatAgentTimestamp(date);
+  return utcStamp === AGENT_TIMESTAMP_UNKNOWN ? utcStamp : utcStamp.slice(0, 10);
 }

@@ -8,7 +8,7 @@ Import union for this line: ours adds `isFollowUpTask`, `resolveWorkflowIrForTas
 but the merged body has no call site, so keeping them would be dead references. Engine side keeps ours
 (`admitTaskToWip`/`isFirstPlanningToWipAdmission`/`planTaskWorktreePath`) and `SelfHealingManager`, which both lines need.
 */
-import { TaskStore, COLUMNS, COLUMN_LABELS, deriveTaskLabelFromDescription, describeTaskTitleRejection, isFollowUpTask, MAX_TASK_MESSAGE_LENGTH, resolveProjectColumnsForRoles, TERMINAL_ROLES, resolveReviewColumns, resolveTaskLifecycleColumns, resolveWorkflowIrForTask, resolvePreMergeGateForTask, resolveWorkflowIrForTaskWithProvenance, workflowHasColumn, columnHasFlag, resolveEffectiveAutoMerge, CentralCore, buildAutoPauseClearPatch, buildManualRetryResetPatch, buildManualRetryResetPatchIfCurrent, buildStrandedGateRetryPatch, classifyStrandedGateRetry, extractIntentSignature, findNearDuplicates, getTaskDuplicateLineage, isValidRepoSlug, isWorkspaceTask, reconcileDeterministicDuplicate, resolveTaskGithubTracking, runDeterministicDuplicateGuard, deliverTaskCommentFromStore, describeTaskCommentDelivery, type Settings, type Column, type ColumnId, type StepStatus, type AgentLogType, type AgentLogEntry, type IntentSignature, type NearDuplicateCandidate, type NearDuplicateMatch, type TaskDependencyMutation } from "@fusion/core";
+import { TaskStore, COLUMNS, COLUMN_LABELS, deriveTaskLabelFromDescription, describeTaskTitleRejection, isFollowUpTask, MAX_TASK_MESSAGE_LENGTH, resolveProjectColumnsForRoles, TERMINAL_ROLES, resolveReviewColumns, resolveTaskLifecycleColumns, resolveWorkflowIrForTask, resolvePreMergeGateForTask, resolveWorkflowIrForTaskWithProvenance, workflowHasColumn, columnHasFlag, resolveEffectiveAutoMerge, CentralCore, buildAutoPauseClearPatch, buildManualRetryResetPatch, buildManualRetryResetPatchIfCurrent, buildStrandedGateRetryPatch, classifyStrandedGateRetry, extractIntentSignature, findNearDuplicates, getTaskDuplicateLineage, isValidRepoSlug, isWorkspaceTask, reconcileDeterministicDuplicate, resolveTaskGithubTracking, runDeterministicDuplicateGuard, deliverTaskCommentFromStore, describeTaskCommentDelivery, formatAgentTimestamp, type Settings, type Column, type ColumnId, type StepStatus, type AgentLogType, type AgentLogEntry, type IntentSignature, type NearDuplicateCandidate, type NearDuplicateMatch, type TaskDependencyMutation } from "@fusion/core";
 import { isFailedNoVerdictPreMergeReviewResult, admitTaskToWip, isFirstPlanningToWipAdmission, isInReviewMissingWorktreeSessionStartFailure, planTaskWorktreePath, runAiMerge, landWorkspaceTask, withWorkspaceMergeDispatchLease, clearOwnedMergeStamp, reconcileUnownedStaleMergeStamp, SelfHealingManager } from "@fusion/engine";
 import { createInterface } from "node:readline/promises";
 import type { PlanningQuestion, PlanningSummary } from "@fusion/core";
@@ -1084,10 +1084,17 @@ const ANSI = {
 const CLI_INLINE_DETAIL_MAX = 120;
 
 /**
- * Format a timestamp for display (locale time string)
+ * Format a timestamp for display (UTC, shared agent stamp).
+ *
+ * FNXC:AgentTimestampFormat 2026-11-10-13:55 (RUFU-345):
+ * This is the stamp on every line of `fn task logs`, which an agent quotes verbatim in its reports and which
+ * must line up with the `toISOString()` stamps the daemon writes into the same log. `toLocaleTimeString()`
+ * printed host-timezone hours in a host-locale shape, so the CLI tail of a log disagreed with the log file by
+ * the host offset (measured +02:00, Europe/Bratislava) and changed shape between locales. A date is now
+ * included as well: a session log spans days, and a bare local time cannot be placed on a timeline.
  */
 function formatTimestamp(timestamp: string): string {
-  return new Date(timestamp).toLocaleTimeString();
+  return formatAgentTimestamp(timestamp);
 }
 
 function formatToolDetail(detail: string | undefined): string {
@@ -1417,7 +1424,9 @@ async function runTaskShowWithStore(id: string, store: TaskStore) {
     const recent = task.log.slice(-5);
     console.log(`  Log (last ${recent.length}):`);
     for (const l of recent) {
-      const ts = new Date(l.timestamp).toLocaleTimeString();
+      /* FNXC:AgentTimestampFormat 2026-11-10-13:55 (RUFU-345): same invariant as formatTimestamp above — the
+         `fn task show` log tail is machine-read and must share the agent log's UTC clock. */
+      const ts = formatAgentTimestamp(l.timestamp);
       console.log(`    ${ts}  ${l.action}${l.outcome ? ` → ${l.outcome}` : ""}`);
     }
     console.log();
@@ -2770,7 +2779,9 @@ export async function runTaskComments(id: string, projectName?: string) {
 
     console.log(`  Comments for ${id}:`);
     for (const comment of comments) {
-      console.log(`    ${comment.id} · ${comment.author} · ${new Date(comment.updatedAt || comment.createdAt).toLocaleString()}`);
+      /* FNXC:AgentTimestampFormat 2026-11-10-13:55 (RUFU-345): comment listings are quoted by agents via
+         `fn task comments`; the stamp must be the shared UTC clock, not a host-locale rendering. */
+      console.log(`    ${comment.id} · ${comment.author} · ${formatAgentTimestamp(comment.updatedAt || comment.createdAt)}`);
       console.log(`    ${comment.text}`);
     }
     console.log();
