@@ -112,3 +112,51 @@ describe("analyzeWorkflowLifecycle", () => {
     expect(warnings).toEqual([]);
   });
 });
+
+/*
+FNXC:CompleteLaneBoundary 2026-11-08-15:16 (RUFU-349, Code Review finding P2):
+The save-time refusal is only advice if the author learns of the shape BEFORE the save, so the analyzer
+that feeds the editor carries the same rule. These legs pin it to the SAME predicate and the SAME code
+string the refusal uses: an editor keying its copy off a drifted literal would warn about a shape it never
+refuses, or stay silent on the one shape it does.
+*/
+describe("analyzeWorkflowLifecycle: the post-merge-in-complete-column advisory", () => {
+  /** The same graph drawn twice: the terminal column carries the `complete` trait, the review column does not. */
+  function irWithPostMergeGateIn(columnId: string): WorkflowIr {
+    return {
+      version: "v2",
+      name: "lifecycle-advisory-test",
+      columns: [
+        { id: "todo", name: "Todo", traits: [] },
+        { id: "in-review", name: "In review", traits: [{ trait: "review" }] },
+        { id: "done", name: "Done", traits: [{ trait: "complete" }] },
+      ],
+      nodes: [
+        { id: "start", kind: "start", column: "todo" },
+        { id: "merge", kind: "merge-gate", column: "in-review" },
+        { id: "post-merge-verification", kind: "optional-group", column: columnId, config: { phase: "post-merge" } },
+        { id: "end", kind: "end", column: "done" },
+      ],
+      edges: [
+        { from: "start", to: "merge" },
+        { from: "merge", to: "post-merge-verification", condition: "success" },
+        { from: "post-merge-verification", to: "end", condition: "success" },
+      ],
+    };
+  }
+
+  it("names the node, the complete column, and the consequence", () => {
+    const warnings = analyzeWorkflowLifecycle(irWithPostMergeGateIn("done"));
+    const advisory = warnings.find((warning) => warning.code === "post-merge-node-in-complete-column");
+    expect(advisory).toBeDefined();
+    expect(advisory!.nodeId).toBe("post-merge-verification");
+    // The copy must state the consequence and the remedy, not just re-state the config key.
+    expect(advisory!.message).toContain("'done'");
+    expect(advisory!.message).toMatch(/refused|refuse/i);
+  });
+
+  it("stays silent on the shape the rule permits: the same gate drawn into the review column", () => {
+    const warnings = analyzeWorkflowLifecycle(irWithPostMergeGateIn("in-review"));
+    expect(warnings.map((warning) => warning.code)).not.toContain("post-merge-node-in-complete-column");
+  });
+});

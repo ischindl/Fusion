@@ -511,13 +511,21 @@ function withCompletionSummaryNode(nodes: BuiltinSpec["nodes"]): BuiltinSpec["no
   ];
 }
 
+/*
+FNXC:CompleteLaneBoundary 2026-11-08-13:36 (RUFU-349):
+Inserted into `in-review`, beside the merge seam — not into `done`. This inline builder is what gave
+five linear built-ins (quick-fix, review-heavy, compound-engineering, design, brainstorming) the same
+illegal shape the named coding IRs authored by hand: a post-merge gate inside the complete column, whose
+node entry moved the card to `done` before the gate had a verdict. `withCompletionSummaryNode` one block
+above already anchors on `in-review`, so both seam-adjacent inserts now agree.
+*/
 function withPostMergeVerificationNode(nodes: BuiltinSpec["nodes"]): BuiltinSpec["nodes"] {
   if (nodes.some((node) => node.id === "post-merge-verification")) return nodes;
   const mergeIndex = nodes.findIndex((node) => node.config?.seam === "merge" || node.id === "merge");
   if (mergeIndex < 0) return nodes;
   return [
     ...nodes.slice(0, mergeIndex + 1),
-    postMergeVerificationOptionalGroupNode("done"),
+    postMergeVerificationOptionalGroupNode("in-review"),
     ...nodes.slice(mergeIndex + 1),
   ];
 }

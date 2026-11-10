@@ -32,6 +32,7 @@ import { AsyncResearchStore } from "../async-stores/async-research-store.js";
 import { createRecallCaptureWriter } from "../memory/recall-capture.js";
 import { createLogger } from "../process/logger.js";
 import { assertColumnTraitsValid } from "../workflows/trait-registry.js";
+import { assertPostMergeNodesNotInCompleteColumn } from "../workflows/complete-column-post-merge-authoring.js";
 import { BoardConfig, BranchGroup, MergeRequestRecord, Task, WorkflowStepTemplate, WorkflowWorkItem, WorkflowWorkItemKind } from "../types.js";
 import { WorkflowFieldDefinition, WorkflowIr, WorkflowIrColumn } from "../workflows/workflow-ir-types.js";
 import { applyPromptOverridesToIr } from "../workflows/workflow-prompt-overrides.js";
@@ -351,6 +352,17 @@ export function assertWorkflowIrTraitsValidImpl(store: TaskStore, ir: WorkflowIr
     if (Array.isArray(columns) && columns.length > 0) {
       assertColumnTraitsValid(columns);
     }
+    /*
+    FNXC:CompleteLaneBoundary 2026-11-08-13:36 (RUFU-349):
+    The second authoring rule in this seam, mounted here because this assertion is the AUTHORING path —
+    reached by workflow create and workflow update and by nothing on the read path. That distinction is
+    the whole design: a `config.phase: "post-merge"` node in a complete-trait column must be refused when
+    it is drawn, but a custom workflow persisted with that shape before the rule existed still has to
+    parse, or an operator could not open it to repair it. The runtime boundary makes a persisted offender
+    inert (it refuses the forward crossing and runs the node in place), so the save rule closes the door
+    without bricking anything already inside the room.
+    */
+    assertPostMergeNodesNotInCompleteColumn(ir);
 }
 
 export function applyBuiltInPromptOverridesSyncImpl(store: TaskStore, workflowId: string, ir: WorkflowIr): WorkflowIr {

@@ -1,6 +1,6 @@
 import type { WorkflowDefinition, WorkflowDefinitionKind, WorkflowIr, WorkflowIrNode, WorkflowSettingDefinition, TaskStore } from "@fusion/core";
 import { resolveRequestActor } from "../request-actor.js";
-import { ColumnTraitValidationError, OccupiedColumnsError, InvalidRehomeTargetError, WorkflowIrError, ColumnAgentBindingError, WorkflowSettingRejectionError, SCHEMA_VERSION, assertColumnTraitsValid, layoutForIr, listTraits, listStepParsers, parseWorkflowIr, resolvePlanningSettingsModel, stripApprovalBypassFlags, resolveWorkflowIrById, resolveEffectiveSettingValues, findOrphanedSettingValues, isBuiltinWorkflowId, getBuiltinWorkflow, BUILTIN_WORKFLOW_SETTINGS, AgentStore, validateColumnAgentBindings, resolveWorkflowOptionalSteps, enumeratePromptBearingWorkflowNodes, normalizeWorkflowIcon, WorkflowSwitchRehomeFailedError, validateProjectDefaultWorkflowRef } from "@fusion/core";
+import { ColumnTraitValidationError, OccupiedColumnsError, InvalidRehomeTargetError, WorkflowIrError, PostMergeCompleteColumnAuthoringError, ColumnAgentBindingError, WorkflowSettingRejectionError, SCHEMA_VERSION, assertColumnTraitsValid, layoutForIr, listTraits, listStepParsers, parseWorkflowIr, resolvePlanningSettingsModel, stripApprovalBypassFlags, resolveWorkflowIrById, resolveEffectiveSettingValues, findOrphanedSettingValues, isBuiltinWorkflowId, getBuiltinWorkflow, BUILTIN_WORKFLOW_SETTINGS, AgentStore, validateColumnAgentBindings, resolveWorkflowOptionalSteps, enumeratePromptBearingWorkflowNodes, normalizeWorkflowIcon, WorkflowSwitchRehomeFailedError, validateProjectDefaultWorkflowRef } from "@fusion/core";
 import { buildSessionSkillContextSync, createFnAgent as engineCreateFnAgent, validateCodeNodeSources, validateWorkflowIrDryRun } from "@fusion/engine";
 import { ApiError, badRequest, conflict, notFound, rateLimited } from "../api-error.js";
 // FNXC:TaskLookup404 2026-07-26-11:40: shared task-miss -> 404 mapping seam.
@@ -384,6 +384,17 @@ export function registerWorkflowRoutes(ctx: ApiRoutesContext): void {
       res.status(201).json(created);
     } catch (err: unknown) {
       if (err instanceof ApiError) throw err;
+      /*
+      FNXC:CompleteLaneBoundary 2026-11-08-15:16 (RUFU-349, Code Review finding P1):
+      Ordered BEFORE the generic `WorkflowIrError` arm so the structured `code`/`offenders` survive: the
+      subclass alone would already answer 400 through that arm, but the body would carry only the sentence,
+      which is how the editor re-derives advice from prose. A 5xx here was the shipped defect — the rule
+      threw a bare `Error` and every arm below keys on typed errors, so the author saw "internal server
+      error" for a graph they can fix. Same mapping in the update handler below.
+      */
+      if (err instanceof PostMergeCompleteColumnAuthoringError) {
+        throw badRequest(err.message, { code: err.code, offenders: err.offenders });
+      }
       if (err instanceof WorkflowIrError) throw badRequest(err.message);
       // Residual A: server-side trait composition conflict → 400 with the
       // structured violations (consistent with the IR-error 4xx mapping).
@@ -477,6 +488,12 @@ export function registerWorkflowRoutes(ctx: ApiRoutesContext): void {
       // not a 409 conflict.
       if (err instanceof InvalidRehomeTargetError) {
         throw badRequest(err.message, { workflowId: err.workflowId, rehomeTo: err.rehomeTo });
+      }
+      /* FNXC:CompleteLaneBoundary 2026-11-08-15:16 (RUFU-349, P1): before the generic IR arm, for the same
+         reason as the create handler — an edit that moves a post-merge gate into a complete-trait column is
+         the author's mistake, not a server failure, and the body must carry the stable code. */
+      if (err instanceof PostMergeCompleteColumnAuthoringError) {
+        throw badRequest(err.message, { code: err.code, offenders: err.offenders });
       }
       if (err instanceof WorkflowIrError) throw badRequest(err.message);
       if (err instanceof ColumnTraitValidationError) {

@@ -414,7 +414,20 @@ export function postMergeOptionalGroupNode(spec: PostMergeOptionalGroupSpec): Wo
   };
 }
 
-export function postMergeVerificationOptionalGroupNode(column = "done"): WorkflowIrNode {
+/*
+FNXC:CompleteLaneBoundary 2026-11-08-13:36 (RUFU-349):
+The default flipped from `"done"` to `"in-review"`. A post-merge gate drawn in the COMPLETE column made
+graph node entry the mover that completed the card: `onNodeEntry` writes the node's column under
+`bypassGuards: true`, so the store's complete-boundary checks were skipped and the write landed BEFORE
+any verdict existed. Measured 2026-09-27: 21 of the 23 default-workflow cards that enabled
+`post-merge-verification` stood in `done` with that gate reporting `failed/REVISE` or carrying no result
+row at all. Sitting in the gate's own review column makes node entry a same-column, in-place run, so the
+verdict goes durable while the card is still in review and only merge-confirmed finalization crosses into
+the complete lane. The default is what closes this for the NEXT built-in: an author who omits the column
+must not be able to author the illegal shape by accident. `builtin:marketing` passes its own review
+column (`editorial-review`) rather than this literal, since its lanes are marketing-named.
+*/
+export function postMergeVerificationOptionalGroupNode(column = "in-review"): WorkflowIrNode {
   return postMergeOptionalGroupNode({
     id: POST_MERGE_VERIFICATION_GROUP_ID,
     name: "Post-merge verification",

@@ -91,7 +91,7 @@ const RAW_BUILTIN_MARKETING_WORKFLOW_IR: WorkflowIr = {
       config: { capability: "task-merge", reworkRegion: true, maxReworkCycles: 3 },
     },
     { id: "recovery-router", kind: "recovery-router", column: "editorial-review", config: { surfaces: ["merge", "retry"] } },
-    postMergeVerificationOptionalGroupNode("published"),
+    postMergeVerificationOptionalGroupNode("editorial-review"),
     { id: "end", kind: "end", column: "published" },
   ],
   edges: [

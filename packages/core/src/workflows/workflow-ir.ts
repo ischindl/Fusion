@@ -26,7 +26,19 @@ depends only on `workflow-ir-types.ts`, so this adds no cycle.
 import { authoredPostMergeEvidenceKindOf, describePostMergeEvidenceKinds } from "./builtin-post-merge-group.js";
 import { getWorkflowExtensionRegistry } from "./workflow-extension-registry.js";
 import type { WorkflowExtensionConfigField } from "./workflow-extension-types.js";
-import { THINKING_LEVELS } from "../types.js";
+/*
+FNXC:ImportCycleBoardLeaf 2026-11-10-11:06 (RUFU-349):
+`THINKING_LEVELS` is taken from the `types/board/board.ts` LEAF, not from the `../types.js` barrel.
+`types.ts` re-exports `analyzeWorkflowLifecycle` from `workflow-lifecycle-validation.ts` to keep the
+browser-safe alias entry complete, and RUFU-349 gave that analyzer a real rule (the post-merge /
+complete-column advisory), so the barrel now reaches `workflow-ir.ts` transitively. Importing the barrel
+back from here closed the loop `workflow-ir -> types -> workflow-lifecycle-validation -> workflow-ir`, and
+`WorkflowIrError` was still uninitialized when `complete-column-post-merge-authoring.ts` evaluated
+`class PostMergeCompleteColumnAuthoringError extends WorkflowIrError` — a hard
+"Class extends value undefined" at module load, not a test-only artifact. `board.ts` imports nothing, so
+this edge is strictly lighter than the barrel and carries the identical constant.
+*/
+import { THINKING_LEVELS } from "../types/board/board.js";
 import { resolveColumnFlags } from "./trait-registry.js";
 import { isValidProviderInstanceId } from "../provider-instance.js";
 import { isReviewBlockingSeverity } from "./review-severity-gate.js";

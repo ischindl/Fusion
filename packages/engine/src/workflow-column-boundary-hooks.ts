@@ -145,10 +145,27 @@ export function createExecutorColumnBoundaryHooks(
         domain: "database",
         mutationType: event.type,
         target: event.taskId,
-        metadata:
-          event.type === "task:column-transition"
-            ? { taskId: event.taskId, workflowId: event.workflowId, fromColumn: event.fromColumn, toColumn: event.toColumn, nodeId: event.nodeId, irHash: event.irHash }
-            : { taskId: event.taskId, workflowId: event.workflowId, pinnedNodeId: event.pinnedNodeId, reason: event.reason },
+        metadata: (() => {
+          /*
+          FNXC:CompleteLaneBoundary 2026-11-08-13:36 (RUFU-349):
+          A two-arm ternary here would silently fold the new refusal into the drift arm and drop its
+          `fromColumn`/`toColumn`/`code`, because the ternary's `else` was written when only two event
+          shapes existed. An exhaustive switch makes adding a fourth arm a compile error at the `never`
+          check rather than a quiet metadata loss.
+          */
+          switch (event.type) {
+            case "task:column-transition":
+              return { taskId: event.taskId, workflowId: event.workflowId, fromColumn: event.fromColumn, toColumn: event.toColumn, nodeId: event.nodeId, irHash: event.irHash };
+            case "task:column-entry-refused-complete-column":
+              return { taskId: event.taskId, workflowId: event.workflowId, nodeId: event.nodeId, fromColumn: event.fromColumn, toColumn: event.toColumn, code: event.code };
+            case "task:reconcile-workflow-drift":
+              return { taskId: event.taskId, workflowId: event.workflowId, pinnedNodeId: event.pinnedNodeId, reason: event.reason };
+            default: {
+              const exhaustive: never = event;
+              return exhaustive;
+            }
+          }
+        })(),
       });
     },
     onWarn: (message, detail) => {

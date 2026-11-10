@@ -294,7 +294,7 @@ const RAW_BUILTIN_STEPWISE_CODING_WORKFLOW_IR: WorkflowIr = {
       config: { capability: "task-merge", reworkRegion: true, maxReworkCycles: 3 },
     },
     { id: "recovery-router", kind: "recovery-router", column: "in-review", config: { surfaces: ["merge", "retry"] } },
-    postMergeVerificationOptionalGroupNode("done"),
+    postMergeVerificationOptionalGroupNode("in-review"),
     { id: "end", kind: "end", column: "done" },
   ],
   edges: [

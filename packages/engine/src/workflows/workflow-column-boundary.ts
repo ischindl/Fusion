@@ -39,12 +39,14 @@ import {
   classifyLifecycleDirection,
   classifyLifecycleRole,
   findWorkflowColumn,
+  CompleteColumnGateEvidenceRejectionError,
   type CapacityRejectionFacts,
   isHoldToWipBoundary,
   isReviewGateNode,
   resolveColumnFlags,
   TransitionRejectionError,
   emitWorkflowLifecycleEvent,
+  COMPLETE_COLUMN_POST_MERGE_RULE,
   type TaskWipAdmissionStallCode,
 } from "@fusion/core";
 /* FNXC:CapacityGateFacts 2026-11-02-19:56 (RUFU-372): suspended-arm payload type for the gate facts. */
@@ -77,6 +79,23 @@ export type WorkflowColumnBoundaryAuditEvent =
       workflowId: string;
       pinnedNodeId: string;
       reason: string;
+    }
+  /*
+  FNXC:CompleteLaneBoundary 2026-11-08-13:36 (RUFU-349):
+  The refusal arm of the boundary's audit vocabulary. Node entry was the one mover that could put a
+  card in the complete lane with no evidence behind it, because it writes the node's column BEFORE any
+  verdict exists and does so under `bypassGuards: true`. A refusal therefore gets its own row rather
+  than silence: `task:column-transition` stays reserved for crossings that actually happened, so a
+  monitor counting completed transitions cannot be inflated by a move that was declined.
+  */
+  | {
+      type: "task:column-entry-refused-complete-column";
+      taskId: string;
+      workflowId: string;
+      nodeId: string;
+      fromColumn: string;
+      toColumn: string;
+      code: typeof COMPLETE_COLUMN_NODE_ENTRY_REFUSAL;
     };
 
 /** The single store move seam. Wired to `store.moveTask(id, toColumn, {
@@ -247,6 +266,43 @@ export interface WipAdmissionParkFacts {
   */
   holderIds?: string[];
   oldestHolderAgeMs?: number;
+}
+
+/*
+FNXC:CompleteLaneBoundary 2026-11-08-13:36 (RUFU-349):
+The complete lane has exactly two sanctioned doorkeepers: merge-confirmed finalization
+(`finalizeProvenAutoMergeTask`, which re-reads gate evidence under a row fence) and the no-merge
+completer (`advanceNoMergeWorkflowToCompleteColumn`, for a workflow with no merge region at all).
+Graph node entry is not one of them, and it was doing it anyway: `onNodeEntry` writes the node's
+column with `bypassGuards: true`, so the complete-boundary checks in `moves.ts` are skipped, and the
+built-ins drew their post-merge gate INSIDE the complete column
+(`postMergeVerificationOptionalGroupNode(column = "done")`), which made node entry the mechanism that
+completed the card. Measured 2026-09-27: 21 of 23 default-workflow cards that enabled
+`post-merge-verification` stood in `done` with that gate reporting `failed/REVISE` or carrying no
+result row at all. The hole is self-concealing — once the card is in the complete lane the finalizer
+short-circuits, and a re-seed cannot reach it because re-dispatch stops short of the complete lane.
+
+So forward node entry into a complete-trait column is refused here, structurally, and the node runs
+IN PLACE exactly the way a backward review gate already does — the gate gets to run, its verdict goes
+durable, and the sanctioned doorkeeper performs the crossing afterwards. The refusal deliberately does
+NOT consult the gate-evidence classifier: it is about which mover may cross, not about what the
+gates said, which is why its audit row carries no finding count.
+
+`end` is exempt by construction: it names the complete column but KTD-1 forbids it from ever being a
+move destination, so refusing it would change nothing while adding a row that lies about a move.
+*/
+/** The single fixed code this refusal emits, shared by the audit row and its tests. */
+export const COMPLETE_COLUMN_NODE_ENTRY_REFUSAL = "complete-column-node-entry-refused" as const;
+
+/** Does this node entry move the card FORWARD into a complete-trait column? Pure so the invariant is
+ *  assertable without a store: `end` never moves, and only `forward` may be refused (a backward or
+ *  lateral crossing is governed by lifecycle containment, not by this invariant). */
+export function isForwardNodeEntryIntoCompleteColumn(params: {
+  kind: WorkflowIrNode["kind"];
+  direction: "forward" | "backward" | "lateral" | "unknown";
+  targetComplete: boolean;
+}): boolean {
+  return params.kind !== "end" && params.direction === "forward" && params.targetComplete === true;
 }
 
 /** Fixed vocabulary for what made a graph run suspend at a column boundary. */
@@ -569,6 +625,50 @@ export function createWorkflowColumnBoundary(
         return { kind: "entered" };
       }
 
+      /*
+      FNXC:CompleteLaneBoundary 2026-11-08-13:36 (RUFU-349):
+      The complete lane is entered only by merge-confirmed finalization or the no-merge completer, so a
+      node that would drag the card into it forward is refused and RUNS IN PLACE instead. Returning
+      `entered` without advancing `column` is what makes this a repair rather than a stall: the post-merge
+      gate still executes and still records its verdict, and the sanctioned doorkeeper performs the
+      crossing once that evidence exists. This is the same in-place posture the backward review gate one
+      block above already uses, so no new lifecycle authority is invented here — and unlike a `suspended`
+      result it writes no continuation, because nothing is waiting on a resource: the card is already
+      where it should be.
+      */
+      if (
+        isForwardNodeEntryIntoCompleteColumn({
+          kind: node.kind,
+          direction,
+          targetComplete: flagsFor(toColumn).complete === true,
+        })
+      ) {
+        warn(
+          "node entry into the complete lane refused — only merge-confirmed finalization or the no-merge "
+          + `completer may enter it (node runs in place). Authoring rule: ${COMPLETE_COLUMN_POST_MERGE_RULE}; `
+          + "move this node into a review column so its verdict can report before the card is completed",
+          { fromColumn, toColumn, nodeId: node.id },
+        );
+        try {
+          await deps.emitAudit?.({
+            type: "task:column-entry-refused-complete-column",
+            taskId: deps.taskId,
+            workflowId: deps.workflowId,
+            nodeId: node.id,
+            fromColumn,
+            toColumn,
+            code: COMPLETE_COLUMN_NODE_ENTRY_REFUSAL,
+          });
+        } catch (err) {
+          warn("complete-column refusal audit emit failed", {
+            fromColumn,
+            toColumn,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+        return { kind: "entered" };
+      }
+
       // KTD-2: never graph-move a hold→wip boundary — the scheduler is the sole
       // mover there; the card parks at the ready-for-release seam (U4 performs the
       // actual release). Record the seam but perform no move here.
@@ -769,6 +869,45 @@ export function createWorkflowColumnBoundary(
               toColumn,
             });
             return suspension;
+          }
+          /*
+          FNXC:CompleteLaneBoundary 2026-11-08-13:36 (RUFU-349):
+          The store's complete-column gate-EVIDENCE guard now also applies to node-entry moves even under
+          `bypassGuards: true`, so this call can come back refusing. Rethrowing that refusal would be the
+          worst available outcome: the boundary's non-capacity fallthrough propagates, the graph run
+          terminalizes `failed`, and a card whose only defect is an unapproved post-merge gate is parked
+          as a failure while still standing in review. Handle it as the in-place posture the structural
+          branch above already uses — no `column` advance, no `task:column-transition`, no failure — and
+          record the boundary's own structural refusal. The store separately wrote the evidence-conditional
+          `task:move-refused-complete-column-gate-evidence` row that names WHICH gate refused; this row
+          answers the orthogonal question of which MOVER was declined, which is the question the
+          complete-lane invariant is stated in.
+          */
+          if (err instanceof CompleteColumnGateEvidenceRejectionError) {
+            warn("node entry into the complete lane refused by the store's gate-evidence guard (node runs in place)", {
+              fromColumn,
+              toColumn,
+              nodeId: node.id,
+              rejectionCode: err.rejection.code,
+            });
+            try {
+              await deps.emitAudit?.({
+                type: "task:column-entry-refused-complete-column",
+                taskId: deps.taskId,
+                workflowId: deps.workflowId,
+                nodeId: node.id,
+                fromColumn,
+                toColumn,
+                code: COMPLETE_COLUMN_NODE_ENTRY_REFUSAL,
+              });
+            } catch (auditErr) {
+              warn("complete-column refusal audit emit failed", {
+                fromColumn,
+                toColumn,
+                error: auditErr instanceof Error ? auditErr.message : String(auditErr),
+              });
+            }
+            return { kind: "entered" };
           }
           // A rejected move (invariant) leaves the card in its current column;
           // routing/parking is U4/U5. Do not advance `column` and do not emit a

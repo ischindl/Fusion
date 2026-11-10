@@ -1525,6 +1525,18 @@ export async function runTaskReconcile(id: string, projectName?: string) {
         await closeBoardContextAndExit(context, 1);
         return;
       }
+      /*
+      FNXC:CompleteLaneBoundary 2026-11-08-15:16 (RUFU-349, Code Review finding P2):
+      The bare code would read as a tool bug: this refusal means the card is ALREADY in its terminal column
+      and a gate its own workflow requires still owes a result there, so reconciliation refuses rather than
+      haul it backward — the movement lifecycle containment forbids, not a fence this command could open.
+      Name the column so the operator goes to the card instead of retrying the command.
+      */
+      if (result.reason === "complete-lane-gate-evidence") {
+        console.error(`Cannot reconcile ${id}: the card already sits in its complete column while a gate its workflow requires has no approving evidence there. Reconcile never moves a card backward out of a terminal lane and never fabricates a verdict — run the gate (or record an audited bypass), and see this task's History for the finding.`);
+        await closeBoardContextAndExit(context, 1);
+        return;
+      }
       console.error(`Cannot reconcile ${id}: ${result.reason}${repoClause}${live ? "; something is still working on this task" : ""}.`);
     }
     await closeBoardContextAndExit(context, 1);

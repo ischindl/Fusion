@@ -1,6 +1,7 @@
 import type { WorkflowDefinitionKind } from "./workflow-definition-types.js";
 import type { WorkflowIr, WorkflowIrEdge, WorkflowIrNode } from "./workflow-ir-types.js";
 import { isCompletionSummaryNode } from "./builtin-completion-summary-node.js";
+import { findPostMergeNodesInCompleteColumn } from "./complete-column-post-merge-authoring.js";
 
 /**
  * FNXC:WorkflowLifecycle 2026-07-01-00:00:
@@ -25,7 +26,11 @@ export type WorkflowLifecycleWarningCode =
   | "unsafe-terminal-before-merge"
   | "optional-group-after-execution"
   | "review-gate-without-failure-route"
-  | "write-capable-node-after-code-review";
+  | "write-capable-node-after-code-review"
+  /** Mirrors the save-time refusal in `complete-column-post-merge-authoring.ts`. Shares that rule's code
+   *  string verbatim (`POST_MERGE_COMPLETE_COLUMN_RULE_CODE`) so an editor surface that keys its copy off
+   *  the code needs one literal for both the advisory and the refusal. */
+  | "post-merge-node-in-complete-column";
 
 export interface WorkflowLifecycleWarning {
   code: WorkflowLifecycleWarningCode;
@@ -98,6 +103,15 @@ advanced graph into a hard parse failure. Emit warnings for missing summary,
 missing merge proof regions, unsafe terminal paths, misplaced optional gates, and
 review gates with no failure route; engine/store merge-proof guards remain the
 hard invariant that prevents unsafe done.
+
+FNXC:CompleteLaneBoundary 2026-11-08-15:16 (RUFU-349, Code Review finding P2):
+That closing sentence was no longer the whole truth: a card could stand in `done` over a required
+post-merge gate with zero result rows while every merge-proof guard below stayed silent, because none of
+them consulted POST-MERGE gate EVIDENCE — the RUFU-349 measurement was 21 such cards. The invariant is now
+held in three places, and this analyzer is the earliest of them: an ADVISORY here (before the save), the
+save-time refusal (`assertPostMergeNodesNotInCompleteColumn`), and the runtime boundary that makes an
+already-persisted offender inert. Advisory rather than a parse failure, per the rule above: a graph drawn
+this way before the rule existed must stay loadable so an operator can open it and repair it.
 */
 export function analyzeWorkflowLifecycle(
   ir: WorkflowIr,
@@ -189,6 +203,20 @@ export function analyzeWorkflowLifecycle(
         message: `Write-capable node '${node.id}' follows Code Review '${reviewNode.id}'. Move it before review or add an explicit re-review route.`,
       });
     }
+  }
+
+  /*
+  FNXC:CompleteLaneBoundary 2026-11-08-15:16 (RUFU-349, Code Review finding P2):
+  The editor must see the illegal shape before the save, not as a refusal after it. The hit list comes from
+  the SAME predicate the save-time assertion uses, so an advisory that drifts from the refusal would teach
+  authors to distrust both.
+  */
+  for (const hit of findPostMergeNodesInCompleteColumn(ir)) {
+    warnings.push({
+      code: "post-merge-node-in-complete-column",
+      nodeId: hit.nodeId,
+      message: `Node '${hit.nodeId}' declares config.phase "post-merge" inside complete-trait column '${hit.column}'. Entering it would move the card into the terminal lane before the gate reports, and nothing downstream can retract that — saving this workflow is refused. Move the node into the review column holding the merge seam.`,
+    });
   }
 
   return warnings;

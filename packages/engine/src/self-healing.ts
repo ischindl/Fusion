@@ -239,6 +239,11 @@ import {
   detectVanishedTaskDirs,
   type VanishedTaskDetectionSummary,
 } from "./notification/vanished-task-detection.js";
+import {
+  COMPLETE_LANE_EVIDENCE_SWEEP_NAME,
+  reconcileCompleteLaneGateEvidence as reconcileCompleteLaneGateEvidenceFindings,
+} from "./notification/complete-lane-evidence-detection.js";
+import { createCompleteLaneEvidenceNoticeSender } from "./notification/complete-lane-evidence-notice.js";
 import { finalizeProvenAutoMergeTask, validateWorkflowDoneMergeProof } from "./merge/auto-merge-finalization.js";
 import { noteFinalizationPass } from "./merge/finalization-refusal-notice.js";
 import { diagnosticSignature, logDiagnosticOnce } from "./util/durable-diagnostic-log.js";
@@ -1463,7 +1468,7 @@ export type LandedReviewReconcileResult =
   no surface has to collapse the verdict to one opaque word. The four `workspace-*` / shared-group
   reasons name the arm-level gates that refused BEFORE any per-repo proof could speak.
   */
-  | { outcome: "ineligible"; reason: "workspace" | "not-in-review" | "paused" | "user-paused" | "executing" | "live-session" | "checkout-leased" | "auto-merge-off" | "no-branch-recorded" | "branch-present" | "branch-has-unlanded-content" | "foreign-ownership" | "workflow-approval-blocked" | "engine-paused" | "post-merge-evidence-pending" | "awaiting-finalization" | "workspace-scope-unresolved" | "workspace-obligations-empty" | "workspace-obligation-free-unproven" | "workspace-probe-unavailable" | "workspace-base-unresolvable" | "shared-branch-group"; repos?: LandedReviewWorkspaceRepoDetail[] };
+  | { outcome: "ineligible"; reason: "workspace" | "not-in-review" | "complete-lane-gate-evidence" | "paused" | "user-paused" | "executing" | "live-session" | "checkout-leased" | "auto-merge-off" | "no-branch-recorded" | "branch-present" | "branch-has-unlanded-content" | "foreign-ownership" | "workflow-approval-blocked" | "engine-paused" | "post-merge-evidence-pending" | "awaiting-finalization" | "workspace-scope-unresolved" | "workspace-obligations-empty" | "workspace-obligation-free-unproven" | "workspace-probe-unavailable" | "workspace-base-unresolvable" | "shared-branch-group"; repos?: LandedReviewWorkspaceRepoDetail[] };
 
 /*
 FNXC:WorkspaceLandedReconcile 2026-11-01-08:27 (RUFU-357):
@@ -2826,6 +2831,16 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       `globalPause || enginePaused`), which is why the body carries no pause gate of its own.
       */
       { name: "reconcile-terminal-branch-conflict-parks", fn: () => this.reconcileTerminalBranchConflictParks().then(() => undefined) },
+      /*
+      FNXC:CompleteLaneBoundary 2026-11-08-13:36 (RUFU-349):
+      REPORT-ONLY enumeration of cards already miscompleted into a complete-trait column without approving
+      gate evidence. Registered beside the terminal-lane sweep above because that one is the only other
+      reader of those lanes, and lifecycle containment binds this one just as hard: it writes no column,
+      no status, no pause, no step result and no continuation. It is the sweep that replaces the false
+      `fn task reconcile` answer for the owed class ("not-in-review") with a durable, per-card statement of what is missing.
+      No ordering dependency: it reads the board and the step results only.
+      */
+      { name: COMPLETE_LANE_EVIDENCE_SWEEP_NAME, fn: () => this.reconcileCompleteLaneGateEvidence().then(() => undefined) },
       /*
       FNXC:ReviewRevisionWait 2026-09-29-14:12 (RUFU-280):
       Un-freezes a card a pre-fix build parked while its reviewer was waiting for corrections. Runs
@@ -4212,6 +4227,14 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           shape only; no ordering dependency inside this batch.
           */
           { name: "reconcile-terminal-branch-conflict-parks", fn: () => this.reconcileTerminalBranchConflictParks() },
+          /*
+          FNXC:CompleteLaneBoundary 2026-11-08-13:36 (RUFU-349):
+          Steady-state twin of the startup registration. A card can be miscompleted entirely between
+          restarts, and its state is not self-clearing: nothing else reads these lanes for evidence. The
+          per-card episode on `sourceMetadata.completeLaneEvidenceEpisode` is what bounds the cadence, so a
+          sustained finding stays countable without becoming one row per pass.
+          */
+          { name: COMPLETE_LANE_EVIDENCE_SWEEP_NAME, fn: () => this.reconcileCompleteLaneGateEvidence() },
           // FNXC:ReviewRevisionWait 2026-09-29-14:12 (RUFU-280): steady-state twin of the startup
           // registration above — a card can be parked by the pre-fix classifier without a restart, and
           // the same ordering applies (frees the card before the revival lanes classify it).
@@ -10830,6 +10853,46 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   Metadata: { taskId, column, priorStatus, outcome } — ids, the lane it stayed in, the cleared status,
   and one fixed outcome; never a branch name, the park's error sentence, a path, or task prose.
   */
+
+  /*
+  FNXC:CompleteLaneBoundary 2026-11-08-13:36 (RUFU-349):
+  Report-only pass over cards ALREADY miscompleted into a complete-trait column without approving gate
+  evidence. It delegates to the detection module, which reuses the ONE shipped classifier instead of
+  restating what a refusal means. Returns the number of cards recorded this pass.
+  Lifecycle containment binds this sweep absolutely: no column move, no status, pause, step result, or
+  continuation write, and no fabricated verdict, because the only legitimate exit for these cards is an
+  operator decision. It is also the sweep that replaces a false answer: reconcileLandedReviewTask replies
+  with a not-in-review refusal to exactly these cards, which names nothing true.
+  */
+  async reconcileCompleteLaneGateEvidence(): Promise<number> {
+    try {
+      const summary = await reconcileCompleteLaneGateEvidenceFindings(this.store, {
+        /*
+        FNXC:CompleteLaneBoundary 2026-11-08-15:16 (RUFU-349, Code Review finding P2):
+        The mailbox is passed, not the task store. The sender used to read `store.getMessageStore?.()`, a
+        method `TaskStore` does not have — the mailbox is a runtime object this manager already holds as
+        `options.messageStore` (line ~1043) — so the duck-type was always undefined and the notice could
+        never reach an operator. The sweep's audit row and History line still wrote, which is precisely why
+        no test caught it: the report looked delivered from the board and was silent in the Mailbox.
+        */
+        noticeFor: createCompleteLaneEvidenceNoticeSender(this.options.messageStore),
+      });
+      if (summary.findings > 0) {
+        log.warn(
+          COMPLETE_LANE_EVIDENCE_SWEEP_NAME + " findings=" + summary.findings
+            + " recorded=" + summary.recorded + " suppressed=" + summary.suppressed,
+        );
+      }
+      return summary.recorded;
+    } catch (error) {
+      log.warn(
+        COMPLETE_LANE_EVIDENCE_SWEEP_NAME + " failed: "
+          + (error instanceof Error ? error.message : String(error)),
+      );
+      return 0;
+    }
+  }
+
   async reconcileTerminalBranchConflictParks(): Promise<number> {
     try {
       /*
@@ -20615,17 +20678,26 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
       FNXC:PostMergeProducerSurface 2026-11-02-18:16 (RUFU-450):
       "This card is already complete" is only true if nothing is still owed on it, and this predicate is the
       one `fn task reconcile` answers with — so it asks the same delivery-surface question every other lane
-      asks. A card whose ref is gone with a durable landing and no producer left is complete; a divergent ref
-      or an unreadable probe keeps answering `not-in-review` exactly as it does today.
+      asks. A card whose ref is gone with a durable landing and no producer left is complete.
+
+      FNXC:CompleteLaneBoundary 2026-11-08-15:16 (RUFU-349, Code Review finding P2):
+      The owed half of that predicate answered `not-in-review`, which is the sentence this whole task exists
+      to retire: the RUFU-349 measurement was 21 cards sitting in `done` with a required post-merge gate
+      that owed a result, and every `fn task reconcile` against them claimed the card was in no review lane
+      at all — a refusal that names nothing true, and the reason the operator had no durable answer to
+      "which cards are wrongly in Done?". The refusal is now named for its cause, and it stays a REFUSAL:
+      lifecycle containment forbids an automatic backward move out of a terminal lane, and reconciliation
+      that hauled a card back to review would be exactly the move the invariant rules out. A divergent ref
+      or an unreadable probe keeps answering `not-in-review` unchanged, because for those the honest answer
+      is that this fence cannot tell.
       */
-      return task.column === completeLane && task.mergeDetails?.mergeConfirmed
-        && !await getRequiredPostMergeEvidenceBlocker(
-          this.store,
-          task,
-          undefined,
-          await resolvePostMergeProducerSurface(this.store, task),
-        )
-        ? { outcome: "already-complete" } : { outcome: "ineligible", reason: "not-in-review" };
+      if (task.column === completeLane && task.mergeDetails?.mergeConfirmed) {
+        const producerSurface = await resolvePostMergeProducerSurface(this.store, task);
+        const owed = await getRequiredPostMergeEvidenceBlocker(this.store, task, undefined, producerSurface);
+        if (owed) return { outcome: "ineligible", reason: "complete-lane-gate-evidence" };
+        return { outcome: "already-complete" };
+      }
+      return { outcome: "ineligible", reason: "not-in-review" };
     }
     /*
     FNXC:LandedReviewReconciliation 2026-09-20-03:09:

@@ -871,11 +871,13 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
         trait: the completion boundary was trait-bound while `requiredPreMergeStepIds` is lane-bound,
         so the evidence check only ever ran from the review lane. This closes that half for EVERY
         operator-intent move into a `complete` column, from any source column.
-        BINDING: the target's `complete` TRAIT (never a column-name literal), operator intent only (the
+        BINDING: the target's `complete` TRAIT (never a column-name literal), and EITHER operator intent only (the
         RESOLVED source, so `"user"` alone — an option-less call resolves to the emitted `"engine"` default,
         and `engine`/`scheduler` are the merge finalizer, scheduler placement, and recovery rehoming, whose
-        legitimate sequencing must not gain a new refusal), and not under `bypassGuards` (KTD-9, whose own contract already names
-        trait guards and abort-on-exit effects as what it suppresses). `bypassGuards` is unreachable
+        legitimate sequencing must not gain a new refusal) and not under `bypassGuards` (KTD-9, whose own contract already names
+        trait guards and abort-on-exit effects as what it suppresses), OR the graph's node-entry mover, keyed
+        on `lifecycleReason: "workflow-graph-node-column"` — see the second arm's note below for why that key
+        and not the shared `workflowMoveSource` token. `bypassGuards` is unreachable
         from the HTTP and CLI surfaces, so an agent cannot widen its own authority to dodge this.
         IT DELIBERATELY DOES NOT READ: merge-content staleness or unprovability — those need the merge
         diff and belong to `evaluatePreMergeApprovals`, which stays the stricter authority and will
@@ -888,7 +890,43 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
         The refusal is a typed rejection with a deterministic sentence naming each silent gate, so the
         agent's next action is running that gate rather than retrying the move.
         */
-        if (isCompleteColumn(toFacts.flags) && !bypassGuards && isOperatorInitiatedMoveSource(moveSource)) {
+        if (
+          isCompleteColumn(toFacts.flags)
+          && (
+            (!bypassGuards && isOperatorInitiatedMoveSource(moveSource))
+            /*
+            FNXC:CompleteLaneBoundary 2026-11-08-13:36 (RUFU-349):
+            The SECOND arm: the graph's node-entry mover. It carries the operator-intent arm's two
+            exemptions in its own options — `moveSource: "engine"` and `bypassGuards: true` — so without
+            this disjunct the classifier RUFU-406 shipped stayed blind to the one mover that produced the
+            21 miscompleted cards. Measured before this disjunct existed: a card whose
+            `post-merge-verification` row read `failed / REVISE` moved `in-progress -> done` through the
+            node-entry option shape and LANDED, with the whole refusal reduced to nothing observable.
+
+            WHY THE KEY IS `lifecycleReason` AND NOT `workflowMoveSource: "workflow-graph"`. That token is
+            the obvious discriminator and it is a trap: FIVE production movers send it, and one of them,
+            `advanceNoMergeWorkflowToCompleteColumn`, completes a merge-less workflow into its own Done
+            column under `bypassGuards: true` and wraps the call in a catch that reduces a refusal to an
+            `executorLog.warn` plus `return`. Keying on the shared token would therefore have stranded a
+            merge-less card in its last pre-complete lane forever, writing nothing on the card and no
+            run-audit row — reproducing RUFU-318's invisible-refusal defect on the one completer this task
+            must not disturb. It is not arguable from vacuity either: that mover's own note justifies
+            `bypassGuards` for merge-blocker ADJACENCY only, and merge-blocker vacuity says nothing about
+            gate evidence, which `resolveRequiredPreMergeStepIds` can resolve non-empty for a merge-less
+            IR. So the exemption is claimed from a field with exactly ONE production producer —
+            `workflow-column-boundary-hooks.ts` — and proven in both directions against the real store in
+            `workflow-transition-policy-post-merge-evidence.test.ts`, which replays all four foreign
+            shared-token shapes and asserts they still land.
+
+            The disjunct deliberately does NOT re-test `bypassGuards`: the whole point is that node entry
+            reaches this classifier WHILE bypassing the other guards, and re-adding the test here would
+            make the arm unreachable by construction. Nor does it test `moveSource`: the mover's
+            `moveSource: "engine"` is the shared provenance of the merge finalizer, scheduler placement,
+            and recovery rehoming, which RUFU-406 keeps exempt on purpose.
+            */
+            || options?.lifecycleReason === "workflow-graph-node-column"
+          )
+        ) {
           const gateEvidence = resolveCompleteColumnGateEvidence({ ir: workflowIr, task });
           if (gateEvidence.refuse) {
             throw new CompleteColumnGateEvidenceRejectionError(

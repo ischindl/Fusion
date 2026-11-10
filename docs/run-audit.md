@@ -1211,3 +1211,66 @@ Like `runtime:heap-ceiling`, this event is deliberately absent from the curated 
 catalogue: an operator unloading a project is not a step of the delivery pipeline, so this section is
 prose and not a table row. It is declared in `@fusion/core`'s `RunAuditMutationType` because the emitter
 reaches its sink through the core seam, not the engine's `DatabaseMutationType`.
+
+### Complete-lane boundary refusals and findings (RUFU-349)
+
+Two rows belong to the invariant "a card enters a complete-trait column only through
+merge-confirmed finalization or the no-merge mover". Both are declared in
+`@fusion/core`'s `RunAuditMutationType` and both are deliberately absent from the curated
+delivery-pipeline catalogue, which is locked table-for-table against the curated rows above.
+
+`task:column-entry-refused-complete-column` records the graph refusing, at node entry, to move a
+card forward into a complete-trait column. Node entry is a column-boundary write under
+`bypassGuards: true`, so before this refusal existed a node drawn inside the Done column completed
+the card BEFORE its gate had produced a verdict, and once the card stood in the terminal lane the
+finalizer's evidence fences short-circuited and a later REVISE could never retract the move. The
+node is not skipped: it runs in place, so its verdict still goes durable and the repair path stays
+reachable. Metadata is `taskId`, `workflowId`, `nodeId`, `fromColumn`, `toColumn`, and a fixed
+`code` (`complete-column-node-entry-refused`) - ids, lanes, and one enum. It carries no gate-finding
+count on purpose: this refusal is structural and consults no evidence, so a count would claim a
+measurement the code never takes. Emission is the FN-9175 bounded seam; a hostile or absent sink
+cannot alter the refusal it reports. The authoring counterpart refuses the same shape at save time
+(`store.assertWorkflowIrTraitsValid`), naming the offending node, while LOAD stays tolerant so an
+already-persisted workflow can still be opened and repaired.
+
+`task:complete-lane-gate-evidence-finding` records one report-only pass over a card ALREADY standing
+in a complete-trait column whose required gate evidence refuses or is absent. It is the operator's
+only durable answer to "which cards are wrongly in Done?": `fn task reconcile` refuses those cards
+(now under the named reason `complete-lane-gate-evidence`, previously the meaningless `not-in-review`)
+and lifecycle containment forbids hauling them backward, so visibility is the only repair available.
+Metadata is `taskId`, `column`,
+`workflowId`, `lane`, `state`, `gateCount`, `recordCount`, and a fixed `outcome` (`reported`) - ids,
+counts, and two closed enums drawn from the shipped classifier's own vocabulary. Gate findings, verdict
+text, reviewer prose, and the refusal sentence never enter this row; the sentence lives on the card's
+History line and the mailbox notice.
+
+The two lanes reach that row by different authorities, which is the distinction that made the sweep
+worth having. The **refusing-row** half (`failed`/`REVISE`, a `skipped` with no waiver, an in-flight row
+that never settled) comes from the move-side classifier, the same one that refuses a crossing. The
+**still-owed** half - gate enabled and ZERO result rows - cannot come from that classifier at all, because
+its post-merge `missing` is deliberately never a refusal (at move time the gate has not had its chance to
+run, and `getTaskMergeBlocker` already refuses delivery for that shape). So the sweep asks
+`getRequiredPostMergeEvidenceDecision` instead - the same requirement authority the merge door consults -
+and maps its outcome onto the row's `state` (`resumable` -> `missing`, blocked `pending` -> `in-flight`,
+blocked `skipped` -> `unwaived-skip`, blocked `failed`/`not-approved`/`duplicate` -> `not-approved`). Two
+consequences follow from reusing that authority rather than re-deriving it, and both are load-bearing: a
+card is a candidate only with `mergeDetails.mergeConfirmed === true` (an unlanded card in `done` is the
+move guard's population, and two authorities announcing one card is how a report becomes noise), and the
+board-level exemptions stay silent - no CI evidence reporter, a delivery shape with no post-merge phase, a
+verdict that precedes the contract, or a producer that can never run again (RUFU-430 / RUFU-450). Without
+those exemptions the sweep would name every landed card on a reporter-less board, which is precisely the
+~700-notices-a-day defect RUFU-283 recorded.
+
+Both rows are bounded, and in two different places, which is the distinction worth keeping: the
+refusal row is naturally rare because a compliant graph never attempts the crossing, while the finding
+row would otherwise fire once per maintenance tick forever on a card whose state is not self-clearing.
+The finding's bound lives on the card, in the key-level `sourceMetadata.completeLaneEvidenceEpisode`,
+and is honoured before every emission - an episode write that was refused is not followed by a row. Its
+signature carries the lane, gate ids, and state and deliberately excludes every counter, because a bound
+whose identity changes each cycle is not a bound. The cadence floor is 15 minutes, so a sustained finding
+is at most four records per hour per card, and `recordCount` is how an operator sees a standing condition
+age rather than disappear. The mailbox notice is bounded by a DIFFERENT window on purpose - one message per
+`(card, lane + state, UTC day)` through the idempotent `sendMessageOnce` seam, on the day bucket of the
+sweep's own clock - so the durable record can keep ageing while the alarming surface stays at one message a
+day; a `sendMessageOnce` outage leaves the row and the card's History line intact and writes no row of its
+own, because "nobody was paged" and "nothing was recorded" must stay distinguishable.

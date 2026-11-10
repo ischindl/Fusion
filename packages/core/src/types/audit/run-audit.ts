@@ -46,6 +46,51 @@ export type RunAuditMutationType =
   bounded seam, so an absent, throwing, or hanging sink cannot change the refusal.
   */
   | "task:move-refused-complete-column-gate-evidence"
+  /*
+  FNXC:CompleteLaneBoundary 2026-11-08-13:36 (RUFU-349):
+  `task:column-entry-refused-complete-column` is emitted by the graph's column boundary once per node
+  entry that would have moved a card FORWARD into a complete-trait column. That move was the mechanism
+  behind 21 `done` cards whose required post-merge gate reported `failed/REVISE` or had no result row:
+  node entry writes the node's column before any verdict exists, and once the card stands in the
+  complete lane the finalizer's evidence fences short-circuit, so a later REVISE cannot retract it.
+  The refusal is STRUCTURAL and never consults the gate-evidence classifier, so this row deliberately
+  carries NO gate-finding count — an evidence count here would be an unbacked field. Deliberately
+  outside the curated delivery-pipeline catalogue (`docs/run-audit.md` documents it in prose, as
+  RUFU-338/RUFU-346/RUFU-768 do).
+
+  FNXC:CompleteLaneBoundary 2026-11-08-15:16 (RUFU-349, Code Review finding P2):
+  Metadata: { taskId, workflowId, nodeId, fromColumn, toColumn, code } — one card, one graph, two columns,
+  and the fixed code `complete-column-node-entry-refusal`. An earlier revision of this block promised
+  `targetColumnTrait`, `phase`, `moveSource`, and `lifecycleReason`, which the emitter never writes: a
+  documented field nobody writes is worse than an undocumented one, because the next operator queries it,
+  gets zero rows, and concludes the refusal never happened. `code` is a constant here — its value is the
+  point, since it distinguishes this structural refusal from the evidence refusal a mover gets — and the
+  node's `config.phase` and the target's trait are readable from the graph the row already names.
+  Never IR text, node config, prompts, gate findings, or the refusal sentence.
+  */
+  | "task:column-entry-refused-complete-column"
+  /*
+  FNXC:CompleteLaneBoundary 2026-11-08-13:36 (RUFU-349):
+  `task:complete-lane-gate-evidence-finding` is emitted by the report-only
+  `reconcile-complete-lane-gate-evidence` sweep for a merge-confirmed card ALREADY in a complete-trait
+  column whose required gate evidence refuses or is still owed. Lifecycle containment forbids moving
+  those cards backward and no verdict may be fabricated, so the repair is operator visibility, and
+  before this sweep `fn task reconcile` answered them with `not-in-review`, which names nothing true.
+  Deliberately outside the curated catalogue; documented as prose in `docs/run-audit.md`.
+
+  FNXC:CompleteLaneBoundary 2026-11-08-15:16 (RUFU-349, Code Review finding P2):
+  Metadata: { taskId, column, workflowId, lane, state, gateCount, recordCount, outcome } — ids, counts,
+  and two closed enums taken from the shipped classifier's own vocabulary (`lane` pre-merge/post-merge,
+  `state` missing/in-flight/not-approved/unwaived-skip). The row is NOT unconditional: it is emitted only
+  for a pass whose key-level `sourceMetadata.completeLaneEvidenceEpisode` write was accepted, because that
+  episode is what bounds the row and a bound that can be bypassed by a refused write is decorative (the
+  RUFU-393 rule). `recordCount` is how a standing condition is seen ageing rather than vanishing. The
+  mailbox notice is a separate, per-(card, state, UTC-day) write and is deliberately not reported back
+  into this row — a mailbox outage must not change what was recorded, so `noticeDelivered` is not a field.
+  Gate findings, verdict text, reviewer prose, and the refusal sentence never enter this row; the sentence
+  lives on the card's History line and the notice.
+  */
+  | "task:complete-lane-gate-evidence-finding"
   | "overseer:intervention"
   /*
   FNXC:VanishedTaskDetection 2026-09-24-00:40 (RUFU-283):

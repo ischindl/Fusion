@@ -920,6 +920,21 @@ export {
   type CompleteColumnGateLane,
   type CompleteColumnGateTask,
 } from "./workflows/complete-column-gate-evidence.js";
+/*
+FNXC:CompleteLaneBoundary 2026-11-08-13:36 (RUFU-349):
+The authoring rule and its sentence are exported so the runtime boundary can repeat the SAME advice an
+operator sees at save time. A refusal that names only the symptom ("not allowed here") sends the operator
+to the board to redraw a graph that was never the problem; naming the rule points at the node to move.
+*/
+export {
+  COMPLETE_COLUMN_POST_MERGE_RULE,
+  POST_MERGE_COMPLETE_COLUMN_RULE_CODE,
+  PostMergeCompleteColumnAuthoringError,
+  assertPostMergeNodesNotInCompleteColumn,
+  describePostMergeCompleteColumnViolations,
+  findPostMergeNodesInCompleteColumn,
+  type PostMergeCompleteColumnHit,
+} from "./workflows/complete-column-post-merge-authoring.js";
 export {
   resolveEffectiveSettings,
   resolveEffectiveSettingsDetailed,
