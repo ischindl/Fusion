@@ -21,7 +21,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
-import { pgRowToTaskRow, rowToTask } from "../serialization.js";
+import { pgRowToTaskRow, rowToTask, setJsonbReadPassthroughForTests } from "../serialization.js";
 import { TASK_JSONB_COLUMNS } from "../persistence.js";
 import type { TaskRow } from "../persistence.js";
 
@@ -41,11 +41,30 @@ Every jsonb column `rowToTask` deserializes that this fixture populates, one `JS
 `attachments`, `workflowStepResults`, `enabledWorkflowSteps`, `modifiedFiles`, `declaredSymbols`,
 `sourceMetadata`, `tokenUsagePerModel`. Before the fix this row cost 15 parses because
 `sourceMetadata` was parsed twice (once for its own field, once for `branchContext`) and `prInfo`
-twice (once for its own field, once by the `prInfos` fallback); the one-parse test above exists
+twice (once for its own field, once by the `prInfos` fallback); the one-parse test below exists
 so neither shape can come back. Adding a jsonb column to the
 fixture or to the mapper must update this list, and the update is visible in review.
+
+FNXC:RowHydrationCost 2026-11-10-02:50 (RUFU-1046):
+`PARSES_PER_FIXTURE_ROW` now describes the SQLITE shape only. A PostgreSQL-shaped row arrives with
+jsonb already parsed, and `pgRowToTaskRow` no longer re-stringifies it, so the PG path performs
+`PARSES_PER_FIXTURE_ROW_PG` = 0 parses. Both numbers are asserted below, because the budget that
+matters is per-backend: a reintroduced read-side stringify would silently put 14 parses per row back
+onto the production backend while every SQLite test stayed green.
 */
 const PARSES_PER_FIXTURE_ROW = 14;
+const PARSES_PER_FIXTURE_ROW_PG = 0;
+
+/** SQLite-shaped copy of a pg-shaped fixture row: every jsonb column arrives as TEXT. */
+function asSqliteTextRow(row: Record<string, unknown>): Record<string, unknown> {
+  const textRow: Record<string, unknown> = { ...row };
+  for (const column of TASK_JSONB_COLUMNS) {
+    if (textRow[column] !== null && textRow[column] !== undefined && typeof textRow[column] !== "string") {
+      textRow[column] = JSON.stringify(textRow[column]);
+    }
+  }
+  return textRow;
+}
 
 /**
  * Builds one PostgreSQL-shaped task row. jsonb columns arrive ALREADY PARSED
@@ -336,13 +355,7 @@ describe("task row hydration — golden shape invariant", () => {
     const row = pgFixtureRow(7, 2);
     const fromObject = rowToTask(pgRowToTaskRow<TaskRow>({ ...row }, TASK_JSONB_COLUMNS));
     // A sqlite-shaped row arrives with jsonb already text; the result must match.
-    const textRow: Record<string, unknown> = { ...row };
-    for (const column of TASK_JSONB_COLUMNS) {
-      if (textRow[column] !== null && textRow[column] !== undefined && typeof textRow[column] !== "string") {
-        textRow[column] = JSON.stringify(textRow[column]);
-      }
-    }
-    const fromText = rowToTask(pgRowToTaskRow<TaskRow>(textRow, TASK_JSONB_COLUMNS));
+    const fromText = rowToTask(pgRowToTaskRow<TaskRow>(asSqliteTextRow(row), TASK_JSONB_COLUMNS));
     expect(fromText).toEqual(fromObject);
   });
 
@@ -353,6 +366,10 @@ describe("task row hydration — golden shape invariant", () => {
     feeds two (`prInfo` and the `prInfos` fallback); each used to run its own `JSON.parse`. These
     two cases pin the one-parse shape directly, so a reintroduced duplicate parse fails here on
     every surface that hydrates a row — not only on the reported board endpoint.
+
+    FNXC:RowHydrationCost 2026-11-10-02:50 (RUFU-1046): asserted per backend. The pg shape performs
+    no parse at all (the value is already parsed), the text shape exactly one; a duplicate parse on
+    either backend still fails the case, which is the invariant this test was written for.
     */
     const onlyColumn = (column: string): Record<string, unknown> => {
       const base = pgFixtureRow(1);
@@ -368,10 +385,14 @@ describe("task row hydration — golden shape invariant", () => {
     };
 
     for (const column of ["sourceMetadata", "prInfo"]) {
-      const { parses } = countJsonParses(() =>
+      const pg = countJsonParses(() =>
         rowToTask(pgRowToTaskRow<TaskRow>(onlyColumn(column), TASK_JSONB_COLUMNS)),
       );
-      expect({ column, parses }).toEqual({ column, parses: 1 });
+      const text = countJsonParses(() =>
+        rowToTask(pgRowToTaskRow<TaskRow>(asSqliteTextRow(onlyColumn(column)), TASK_JSONB_COLUMNS)),
+      );
+      expect({ column, backend: "pg", parses: pg.parses }).toEqual({ column, backend: "pg", parses: 0 });
+      expect({ column, backend: "sqlite", parses: text.parses }).toEqual({ column, backend: "sqlite", parses: 1 });
     }
   });
 
@@ -379,7 +400,35 @@ describe("task row hydration — golden shape invariant", () => {
     // Deterministic budget for the full fixture row: every jsonb column the mapper
     // deserializes and that this fixture populates, counted once each.
     const { parses } = countJsonParses(() => hydrateAll(goldenFixtureRows()));
-    expect(parses).toBe(4 * PARSES_PER_FIXTURE_ROW);
+    expect(parses).toBe(4 * PARSES_PER_FIXTURE_ROW_PG);
+    /*
+    FNXC:RowHydrationCost 2026-11-10-02:50 (RUFU-1046): the SQLite budget is still a budget. The pg
+    number above is only correct because the driver hands us parsed jsonb; the text backend still
+    pays one parse per populated column, and a regression that re-stringified on read would show up
+    here as 4 x 14 on the pg case, not here.
+    */
+    const textRows = goldenFixtureRows().map(asSqliteTextRow);
+    const text = countJsonParses(() => hydrateAll(textRows));
+    expect(text.parses).toBe(4 * PARSES_PER_FIXTURE_ROW);
+  });
+
+  it("hydrates the same object whether the read-side round trip is on or restored", () => {
+    /*
+    FNXC:RowHydrationCost 2026-11-10-02:50 (RUFU-1046): the kill switch
+    (`FUSION_JSONB_READ_PASSTHROUGH=0`) exists so production can be rolled back without a rebuild,
+    which makes it a shipped behavior, so it is tested: both switch positions must produce the same
+    hydrated board. A caller that only worked with string-shaped jsonb would fail here rather than
+    on the first request after a rollback.
+    */
+    const rows = goldenFixtureRows();
+    const fast = hydrateAll(rows.map((row) => ({ ...row })));
+    setJsonbReadPassthroughForTests(false);
+    try {
+      expect(hydrateAll(rows.map((row) => ({ ...row })))).toEqual(fast);
+    } finally {
+      setJsonbReadPassthroughForTests(true);
+    }
+    expect(hydrateAll(rows.map((row) => ({ ...row })))).toEqual(fast);
   });
 });
 
@@ -405,10 +454,20 @@ describe.skipIf(!process.env.FUSION_ROW_HYDRATION_BENCH)(
       };
 
       const full = perRow(() => hydrateAll(pgRows));
+      /*
+      FNXC:RowHydrationCost 2026-11-10-02:50 (RUFU-1046): the pre-fix shape is measured in the same
+      run, so the reported saving is attributable to this change rather than to machine state. The
+      switch only selects whether `pgRowToTaskRow` re-stringifies, and it stringifies the copy, so
+      `pgRows` stay pristine between the two measurements.
+      */
+      setJsonbReadPassthroughForTests(false);
+      const roundTrip = perRow(() => hydrateAll(pgRows));
+      const roundTripTaskRows = pgRows.map((row) => pgRowToTaskRow<TaskRow>(row, TASK_JSONB_COLUMNS));
+      setJsonbReadPassthroughForTests(true);
       const shapeOnly = perRow(() => taskRows.map((row) => rowToTask(row)));
       const reparseOnly = perRow(() => pgRows.map((row) => pgRowToTaskRow<TaskRow>(row, TASK_JSONB_COLUMNS)));
       const parseCost = perRow(() => {
-        for (const row of taskRows) {
+        for (const row of roundTripTaskRows) {
           for (const column of JSONB_GROUP_SIZES) {
             const raw = (row as Record<string, unknown>)[column];
             if (typeof raw === "string") JSON.parse(raw);
@@ -430,10 +489,11 @@ describe.skipIf(!process.env.FUSION_ROW_HYDRATION_BENCH)(
         "=== ROW HYDRATION COST (median of " + REPEATS + " passes, " + ROWS + " rows) ===",
         `row bytes (avg)                 ${round(bytes / ROWS, 1)} B`,
         `full pgRowToTaskRow+rowToTask   ${round(full * 1000, 1)} us/row   (${round((bytes / ROWS) / full, 0)} B/us)`,
+        `  with old read-side stringify  ${round(roundTrip * 1000, 1)} us/row  (${round(roundTrip / full, 2)}x of current)`,
         `  rowToTask alone               ${round(shapeOnly * 1000, 1)} us/row  (${round((shapeOnly / full) * 100, 1)}% of full)`,
         `  pgRowToTaskRow alone          ${round(reparseOnly * 1000, 1)} us/row  (${round((reparseOnly / full) * 100, 1)}% of full)`,
         `  JSON.stringify all jsonb      ${round(stringifyCost * 1000, 1)} us/row`,
-        `  JSON.parse 5 heaviest jsonb   ${round(parseCost * 1000, 1)} us/row`,
+        `  JSON.parse 5 heaviest jsonb   ${round(parseCost * 1000, 1)} us/row  (sqlite/round-trip shape)`,
         `  JSON.parse calls per row      ${round(parses / ROWS, 2)}`,
         `  100-row board page            ${round(full * 100, 1)} ms`,
         "",

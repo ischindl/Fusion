@@ -43,17 +43,45 @@ const ARCHIVE_AGENT_LOG_SNAPSHOT_LIMIT = 25;
 const ARCHIVE_AGENT_LOG_SNIPPET_LIMIT = 160;
 
 /**
- * Re-serialize jsonb values to strings so the SQLite-oriented rowToTask()
- * deserializer (which calls fromJson()) works unchanged across both backends.
+ * Normalize a PostgreSQL-shaped task row into the `TaskRow` shape `rowToTask()` consumes.
  *
- * PostgreSQL jsonb columns arrive already-parsed (VAL-SCHEMA-004); SQLite
- * stores them as TEXT requiring fromJson().
+ * PostgreSQL jsonb columns arrive already-parsed (VAL-SCHEMA-004); SQLite stores them as TEXT.
+ *
+ * FNXC:RowHydrationCost 2026-11-10-02:50 (RUFU-1046): this function no longer re-serializes jsonb.
+ * It used to `JSON.stringify` every jsonb column of every row so `rowToTask`'s `fromJson()` could
+ * parse it straight back, i.e. a serialize/parse round trip paid on every row of every board poll.
+ * The measured shape: 135,6 us/row of hydration total, 70,1 us/row (51,7 %) of it in this function
+ * alone, on a board hydrated ~11x/second (`FUSION_ROW_HYDRATION_BENCH=1`, median of 7 passes over
+ * 400 realistic 24 kB rows). A CPU profile taken on production attributes 15,5 % of the main thread
+ * to the collector and 7,4 % to this function, both under `listTasksImpl`.
+ * `fromJson()` now accepts an already-parsed value, so the value reaches its output field directly.
+ * The SQLite text branch is untouched, and `row-hydration-cost.test.ts` pins that both shapes still
+ * hydrate to the same object with a byte-identical golden digest.
+ *
+ * Reversibility on the hot path, same reason the ceilings in the watchdog are env-flagged: restart
+ * with `FUSION_JSONB_READ_PASSTHROUGH=0` to restore the round trip without rebuilding.
  */
+let jsonbReadPassthrough = readJsonbReadPassthrough();
+
+function readJsonbReadPassthrough(): boolean {
+  const raw = process.env.FUSION_JSONB_READ_PASSTHROUGH;
+  // Anything but an explicit 0/false/off keeps the fast path; an unset variable is the default.
+  return raw === undefined || !/^(0|false|off)$/i.test(raw.trim());
+}
+
+/** Test seam only; production never calls this. Passing false restores the stringify round trip. */
+export function setJsonbReadPassthroughForTests(enabled: boolean): void {
+  jsonbReadPassthrough = enabled;
+}
+
 export function pgRowToTaskRow<T extends TaskRow>(
   row: Record<string, unknown>,
   pgJsonbTaskColumns: ReadonlySet<string> | readonly string[],
 ): T {
+  // The copy stays: callers mutate the returned row (`preserveDurableTaskWedgeInvariants` writes
+  // through it), and one shallow copy per row is what separates that from the driver's own result.
   const result: Record<string, unknown> = { ...row };
+  if (jsonbReadPassthrough) return result as unknown as T;
   for (const column of pgJsonbTaskColumns) {
     if (result[column] !== undefined && result[column] !== null && typeof result[column] !== "string") {
       result[column] = JSON.stringify(result[column]);

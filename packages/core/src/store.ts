@@ -677,8 +677,10 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   public static readonly ACTIVE_TASKS_WHERE = '"deletedAt" IS NULL';
   /**
    * FNXC:RuntimePersistenceAsync 2026-06-24-10:42: Task-table columns stored as jsonb in PostgreSQL.
-   * pgRowToTaskRow() re-serializes them to strings so rowToTask() works unchanged across both backends.
-   * The shared persistence registry is the canonical read/write list for both PostgreSQL conversion paths.
+   * The list is the canonical read/write jsonb census for both PostgreSQL conversion paths.
+   * FNXC:RowHydrationCost 2026-11-10-02:50 (RUFU-1046): pgRowToTaskRow() no longer re-serializes them;
+   * `fromJson()` accepts an already-parsed value, so the write path (which must hand Drizzle a JS value)
+   * and the read path (which receives one) now share the shape without a round trip.
    */
   public static readonly PG_JSONB_TASK_COLUMNS: ReadonlySet<string> = TASK_JSONB_COLUMNS;
   /** All tasks share one per-column capacity pool (KTD-10). */
@@ -1146,7 +1148,10 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   /**
    * FNXC:RuntimePersistenceAsync 2026-06-24-10:40: Convert a PostgreSQL Drizzle row to the TaskRow shape so rowToTask() can deserialize it.
    * PostgreSQL jsonb columns come back as already-parsed JS values (VAL-SCHEMA-004); SQLite stores them as TEXT requiring fromJson().
-   * This helper re-serializes jsonb values to strings so the existing rowToTask() deserializer works unchanged across both backends.
+   * FNXC:RowHydrationCost 2026-11-10-02:50 (RUFU-1046): this helper used to re-serialize jsonb to strings so the
+   * existing deserializer worked unchanged across both backends. It no longer does — `fromJson()` accepts both shapes,
+   * because the re-serialize/parse round trip measured 51,7 % of per-row hydration cost on the board read path.
+   * It remains a per-row copy, which is what separates caller mutation of the hydrated row from the driver's result.
    */
   public pgRowToTaskRow(row: Record<string, unknown>): TaskRow {
     return pgRowToTaskRowExternal<TaskRow>(row, TaskStore.PG_JSONB_TASK_COLUMNS);
