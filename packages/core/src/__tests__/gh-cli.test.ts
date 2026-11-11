@@ -22,6 +22,7 @@ import {
   runGhJsonAsync,
   type GhErrorCode,
 } from "../cli/gh-cli.js";
+import type { PrConflictState } from "../types/task/task-tracking.js";
 
 // Tests for pure functions (no child_process dependency)
 describe("classifyGhError", () => {
@@ -57,7 +58,27 @@ describe("classifyGhError", () => {
     expect(result.retryAfterMs).toBe(3000);
   });
 
-  it("uses refreshed BLOCKED state to name a required review", () => {
+  /*
+  FNXC:GitHubPrMerge 2026-11-10-22:55 (RUFU-473):
+  Every fixture below feeds the exact value a production caller sends. Both context-ful callers pass
+  `PrConflictState` (`PrMergeStatus.mergeable` from the dashboard route, `PrInfo.mergeable` from the CLI
+  lifecycle), so a test that fed a GitHub REST spelling would pin a contract production cannot exercise —
+  that masking is what let the unreachable "DIRTY" disjunct survive. The table is the authority: only
+  "conflicting" diagnoses a conflict and only "blocked" a policy blocker; "clean"/"behind"/"unknown" are
+  deliberately unmapped and stay retryable `unknown`.
+  */
+  it.each<{ state: PrConflictState; expectedCode: GhErrorCode }>([
+    { state: "conflicting", expectedCode: "merge-conflict" },
+    { state: "blocked", expectedCode: "merge-blocked-by-policy" },
+    { state: "clean", expectedCode: "unknown" },
+    { state: "behind", expectedCode: "unknown" },
+    { state: "unknown", expectedCode: "unknown" },
+  ])("classifies refreshed $state as $expectedCode from the value production sends", ({ state, expectedCode }) => {
+    const result = classifyGhError(new Error("pull request is not mergeable"), { mergeable: state });
+    expect(result.code).toBe(expectedCode);
+  });
+
+  it("names a required review when a refreshed blocked state policy-blocks the merge", () => {
     const result = classifyGhError(new Error("pull request is not mergeable"), {
       mergeable: "blocked",
       reviewDecision: "REVIEW_REQUIRED",
@@ -69,7 +90,7 @@ describe("classifyGhError", () => {
 
   it("uses deterministic unique check blockers when policy blocks a merge", () => {
     const result = classifyGhError(new Error("pull request is not mergeable"), {
-      mergeable: "BLOCKED",
+      mergeable: "blocked",
       blockingReasons: ["required checks not successful: ci (pending)", "required checks not successful: ci (pending)"],
     });
     expect(result).toMatchObject({ code: "merge-blocked-by-policy", retryable: false });
@@ -78,7 +99,7 @@ describe("classifyGhError", () => {
 
   it("keeps all normalized policy blockers in deterministic order", () => {
     const result = classifyGhError(new Error("pull request is not mergeable"), {
-      mergeable: "BLOCKED",
+      mergeable: "blocked",
       reviewDecision: "review_required",
       blockingReasons: ["zebra check (failed)", "  alpha check (pending) ", "ZEBRA check (failed)"],
     });
@@ -87,8 +108,30 @@ describe("classifyGhError", () => {
     );
   });
 
-  it("uses refreshed conflict state but preserves context-free not mergeable errors", () => {
-    expect(classifyGhError(new Error("pull request is not mergeable"), { mergeable: "DIRTY" }).code).toBe("merge-conflict");
+  it("tolerates a legacy upper-cased state from an untyped caller without contracting it", () => {
+    // Cast is deliberate: the uppercase spelling is NOT part of the PrConflictState contract, so it can
+    // only arrive from an untyped call site. The lower-casing normalization absorbs it defensively; the
+    // branches themselves are keyed on the contract values, never on this spelling.
+    const result = classifyGhError(new Error("pull request is not mergeable"), {
+      mergeable: "BLOCKED" as unknown as PrConflictState,
+      reviewDecision: "REVIEW_REQUIRED",
+    });
+    expect(result.code).toBe("merge-blocked-by-policy");
+  });
+
+  it("does not diagnose a conflict from a state no producer can emit", () => {
+    // RUFU-473's observable proof that the deleted DIRTY disjunct was dead code. GitHub's raw
+    // mergeStateStatus DIRTY is folded into "conflicting" upstream by mapPrConflictState, so a caller
+    // can never send it; this cast constructs the unproducible value to pin that it classifies as
+    // retryable unknown rather than inventing a conflict verdict. Pre-fix this returned "merge-conflict".
+    const result = classifyGhError(new Error("pull request is not mergeable"), {
+      mergeable: "DIRTY" as unknown as PrConflictState,
+    });
+    expect(result.code).toBe("unknown");
+    expect(result.retryable).toBe(true);
+  });
+
+  it("preserves context-free not mergeable errors as retryable unknown", () => {
     const unknown = classifyGhError(new Error("pull request is not mergeable"));
     expect(unknown.code).toBe("unknown");
     expect(unknown.message).toBe("pull request is not mergeable");
@@ -98,6 +141,17 @@ describe("classifyGhError", () => {
 describe("getGhErrorMessage", () => {
   it("delegates to classifyGhError", () => {
     expect(getGhErrorMessage(new Error("404 Not Found"))).toBe(classifyGhError(new Error("404 Not Found")).message);
+  });
+
+  it("passes the refreshed PR state context through so the message names the blocker", () => {
+    // RUFU-473: the operator-facing merge guidance reaches most users through this delegating helper, so
+    // it must forward the classification context rather than only the error text — otherwise the
+    // state-based policy diagnosis is unreachable for every getGhErrorMessage call site. The reason
+    // carries no trailing period because the classifier owns sentence-final punctuation.
+    expect(getGhErrorMessage(new Error("pull request is not mergeable"), {
+      mergeable: "blocked",
+      blockingReasons: ["Required status check \"ci\" is failing"],
+    })).toBe("Pull request is blocked by branch protection: Required status check \"ci\" is failing.");
   });
 
   it("handles non-Error values", () => {

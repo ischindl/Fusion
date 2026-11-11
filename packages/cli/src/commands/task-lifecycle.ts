@@ -1819,8 +1819,13 @@ export async function processPullRequestMergeTask(
     /*
     FNXC:GitHubPrMerge 2026-08-09-01:02:
     Preserve merge → one refresh → persist → merged reconciliation ordering. A
-    refreshed BLOCKED state explains ambiguous gh "not mergeable" output as
-    branch policy, while DIRTY/CONFLICTING remain the only state-based conflict.
+    refreshed blocked state explains ambiguous gh "not mergeable" output as
+    branch policy, while the refreshed conflict state is the only state-based conflict.
+
+    FNXC:GitHubPrMerge 2026-11-10-22:55 (RUFU-473):
+    The state passed here is the core-owned `PrConflictState` display enum (`PrInfo.mergeable`), which is
+    the classifier's declared contract; GitHub's raw DIRTY spelling is folded into "conflicting" upstream
+    by `mapPrConflictState`, so this call site never needed to name an API spelling.
     */
     const diagnosis = classifyGhError(err, {
       mergeable: refreshedStatus.prInfo.mergeable,

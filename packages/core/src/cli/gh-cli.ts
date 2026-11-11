@@ -1,5 +1,6 @@
 import { execFileSync, execFile } from "node:child_process";
 import type { ExecFileException } from "node:child_process";
+import type { PrConflictState } from "../types/task/task-tracking.js";
 
 export interface GhError extends Error {
   code: string | number | null;
@@ -21,8 +22,18 @@ export type GhErrorCode =
   | "unknown";
 
 export interface GhErrorClassificationContext {
-  /** Merge state supplied by a post-failure GitHub refresh; dashboard types stay out of core. */
-  mergeable?: string;
+  /**
+   * Merge state supplied by a post-failure GitHub refresh.
+   *
+   * FNXC:GitHubPrMerge 2026-11-10-22:55:
+   * The type is the core-owned `PrConflictState` display enum, because that IS the value every
+   * production caller passes: `register-git-github.ts` supplies `PrMergeStatus.mergeable` and
+   * `task-lifecycle.ts` supplies `PrInfo.mergeable`, both declared `PrConflictState` in core. An
+   * untyped `string` here let the classifier compare against GitHub REST spellings no caller can
+   * emit (RUFU-473), so the enum is now the compile-time contract and no dashboard type crosses
+   * into core.
+   */
+  mergeable?: PrConflictState;
   /** GitHub's review decision when it explains a protected-branch block. */
   reviewDecision?: string | null;
   /** Safe, operator-facing reasons returned by GitHub for a blocked merge. */
@@ -481,16 +492,30 @@ export function classifyGhError(
     });
   }
 
-  const mergeable = context.mergeable?.toUpperCase();
+  // Defensive casing normalization: `PrConflictState` is the declared contract and its members are
+  // lowercase, so lowercasing still tolerates an untyped legacy caller that sends an API spelling —
+  // but the API spellings are no longer what any branch is keyed on (RUFU-473).
+  const mergeable = context.mergeable?.toLowerCase();
   const hasExplicitConflict = haystack.includes("merge conflict") || haystack.includes("cannot be cleanly created");
 
   /*
   FNXC:GitHubPrMerge 2026-08-09-01:02:
-  GitHub CLI's "not mergeable" text is ambiguous: branch protection emits it too.
-  Only explicit conflict text or refreshed DIRTY/CONFLICTING state may diagnose a
-  conflict; refreshed BLOCKED state must preserve the operator's policy blocker.
+  GitHub CLI's "not mergeable" text is ambiguous: branch protection emits it too, so ambiguous text
+  alone may never diagnose a conflict, and a refreshed blocked state must preserve the operator's
+  policy blocker. (Its original state vocabulary — DIRTY/CONFLICTING/BLOCKED — was superseded by the
+  2026-11-10 entry below; the invariant that survives unchanged is "text alone is not enough".)
+
+  FNXC:GitHubPrMerge 2026-11-10-22:55 (RUFU-473):
+  The state comparison keys on the caller's `PrConflictState` enum, not GitHub's REST spelling, because
+  that enum is what both context-ful callers actually pass. A conflict is diagnosed from explicit gh
+  conflict text or `"conflicting"`; the retired `"DIRTY"` disjunct was unreachable ghost code — no
+  producer can emit it, because GitHub's raw `mergeStateStatus: "DIRTY"` is already folded into
+  `"conflicting"` upstream by `mapPrConflictState` (packages/dashboard/src/github.ts). `"blocked"`
+  still preserves the operator's policy blocker. `"behind"`, `"clean"` and `"unknown"` are deliberately
+  unmapped: gh's own stderr explains a needs-sync PR, so the verdict stays `unknown`/retryable rather
+  than inventing a classification the callers never asked for.
   */
-  if (hasExplicitConflict || mergeable === "DIRTY" || mergeable === "CONFLICTING") {
+  if (hasExplicitConflict || mergeable === "conflicting") {
     return withCause({
       code: "merge-conflict",
       message: "Pull request cannot be merged due to conflicts.",
@@ -498,7 +523,7 @@ export function classifyGhError(
     });
   }
 
-  if (mergeable === "BLOCKED") {
+  if (mergeable === "blocked") {
     const uniqueReasons = new Map<string, string>();
     for (const reason of context.blockingReasons ?? []) {
       const normalized = reason.trim().replace(/\s+/g, " ");

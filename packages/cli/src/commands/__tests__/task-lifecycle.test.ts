@@ -1654,8 +1654,14 @@ describe("processPullRequestMergeTask", () => {
       mergePr: vi.fn(async () => { throw new Error("Pull request is not mergeable"); }),
     };
 
-    await expect(processPullRequestMergeTask(store as never, "/repo", task.id, github as never, () => undefined))
-      .rejects.toThrow("blocked by branch protection: review approval is required");
+    const failure = await processPullRequestMergeTask(store as never, "/repo", task.id, github as never, () => undefined)
+      .then(() => null)
+      .catch((error: unknown) => error as Error & { code?: string });
+    // RUFU-473 asserts the structured code, not merely the sentence: the code is what the route status
+    // mapping and merge-error-recovery consume, and this boundary is what proves the state-based policy
+    // branch is reachable from a production-shaped PrConflictState refresh (`mergeable: "blocked"`).
+    expect(failure?.message).toContain("blocked by branch protection: review approval is required");
+    expect(failure?.code).toBe("merge-blocked-by-policy");
     expect(store.updatePrInfo).toHaveBeenLastCalledWith(task.id, expect.objectContaining({ status: "open" }));
     expect(store.moveTask).not.toHaveBeenCalled();
   });
@@ -1685,8 +1691,41 @@ describe("processPullRequestMergeTask", () => {
       mergePr: vi.fn(async () => { throw new Error("Pull request is not mergeable"); }),
     };
 
-    await expect(processPullRequestMergeTask(store as never, "/repo", task.id, github as never, () => undefined))
-      .rejects.toThrow("blocked by branch protection: required checks not successful: ci (pending)");
+    const failure = await processPullRequestMergeTask(store as never, "/repo", task.id, github as never, () => undefined)
+      .then(() => null)
+      .catch((error: unknown) => error as Error & { code?: string });
+    // RUFU-473: the code is the contract this caller hands upward, so it is asserted alongside the text.
+    expect(failure?.message).toContain("blocked by branch protection: required checks not successful: ci (pending)");
+    expect(failure?.code).toBe("merge-blocked-by-policy");
+    expect(store.moveTask).not.toHaveBeenCalled();
+  });
+
+  it("reports a refreshed conflicting state as a conflict at the diagnosis seam", async () => {
+    // RUFU-473 sibling case: the conflict branch must be reachable from the same caller boundary, with
+    // the state arriving as the lowercase PrConflictState member production sends.
+    const task: MockTask = {
+      id: "FN-9105-conflict",
+      title: "test",
+      description: "desc",
+      column: "in-review",
+      prInfo: { number: 127, url: "https://github.com/x/y/pull/127", status: "open", headBranch: "fusion/fn-9105", baseBranch: "main" },
+    };
+    const store = makeStore(task);
+    const openPr = { ...task.prInfo };
+    const github = {
+      findPrForBranch: vi.fn(),
+      createPr: vi.fn(),
+      getPrMergeStatus: vi.fn()
+        .mockResolvedValueOnce({ prInfo: openPr, reviewDecision: "APPROVED", checks: [], mergeReady: true, blockingReasons: [] })
+        .mockResolvedValueOnce({ prInfo: { ...openPr, mergeable: "conflicting" }, reviewDecision: "APPROVED", checks: [], mergeReady: false, blockingReasons: [] }),
+      mergePr: vi.fn(async () => { throw new Error("Pull request is not mergeable"); }),
+    };
+
+    const failure = await processPullRequestMergeTask(store as never, "/repo", task.id, github as never, () => undefined)
+      .then(() => null)
+      .catch((error: unknown) => error as Error & { code?: string });
+    expect(failure?.message).toBe("Pull request cannot be merged due to conflicts.");
+    expect(failure?.code).toBe("merge-conflict");
     expect(store.moveTask).not.toHaveBeenCalled();
   });
 
