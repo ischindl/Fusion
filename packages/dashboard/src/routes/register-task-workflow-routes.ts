@@ -6849,6 +6849,23 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
    * FNXC:ArtifactRegistry 2026-06-21-04:46:
    * Documents view needs a cross-agent registry read surface for all artifact media classes. Keep query validation aligned with `/documents` so dashboard tabs share bounded pagination behavior while rejecting unknown artifact types before store access.
    */
+  /*
+  FNXC:ArtifactRetraction 2026-11-11-12:27 (RUFU-433): `includeRetracted` is opt-in and strictly parsed.
+  Anything that is not an explicit truthy token counts as false, so a malformed or absent flag can never
+  widen the default-hidden view - the harm being removed is a false review artifact being findable by an
+  ordinary browse of the gallery, and `?includeRetracted=0` or `?includeRetracted=yes` must not accidentally
+  reveal tombstones.
+  */
+  const INCLUDE_RETRACTED_TRUE = new Set(["1", "true", "yes", "on"]);
+  const INCLUDE_RETRACTED_FALSE = new Set(["0", "false", "no", "off", ""]);
+  function parseIncludeRetracted(raw: string | undefined): boolean {
+    if (raw === undefined) return false;
+    const token = raw.trim().toLowerCase();
+    if (INCLUDE_RETRACTED_TRUE.has(token)) return true;
+    if (INCLUDE_RETRACTED_FALSE.has(token)) return false;
+    throw badRequest("includeRetracted must be a boolean ('true' or 'false')");
+  }
+
   router.get("/artifacts", async (req, res) => {
     try {
       const { store: scopedStore } = await getProjectContext(req);
@@ -6859,6 +6876,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         q,
         limit: limitStr,
         offset: offsetStr,
+        includeRetracted,
       } = req.query as Record<string, string | undefined>;
 
       let type: ArtifactType | undefined;
@@ -6894,6 +6912,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         search: q,
         limit,
         offset,
+        includeRetracted: parseIncludeRetracted(includeRetracted),
       });
 
       res.json(artifacts);
@@ -6915,6 +6934,19 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       const artifact = await scopedStore.getArtifact(req.params.id);
       if (!artifact) {
         throw notFound("Artifact not found");
+      }
+
+      /*
+      FNXC:ArtifactRetraction 2026-11-11-12:27 (RUFU-433): a retracted artifact's bytes are refused here, and
+      this is the load-bearing one. Every other VOID answer can be bypassed by a client that never consulted
+      it - an <img>/<video> src, a <a href>, or a Range request from a player that cached the URL all reach
+      this route directly - so serving media for a tombstone would leave the withdrawn evidence fully viewable
+      while the gallery tile said VOID. 410 Gone rather than 404: the resource existed and was deliberately
+      withdrawn, which is the fact a client and an operator both need, and it stops a browser revalidating a
+      URL it will never see again.
+      */
+      if (artifact.retractedAt) {
+        throw new ApiError(410, `Artifact ${req.params.id} was retracted on ${artifact.retractedAt} and its media is not served`);
       }
 
       if (!artifact.uri) {
@@ -7010,12 +7042,108 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       if (!artifact) {
         throw notFound("Artifact not found");
       }
+      /*
+      FNXC:ArtifactRetraction 2026-11-11-12:27 (RUFU-433): the detail read answers with the tombstone and NO
+      body. This route deliberately INCLUDES inline content for the document viewer, which is exactly what a
+      VOID artifact must not hand back - an old bookmark or a still-open detail modal would otherwise read the
+      withdrawn claim in full. `content` is nulled rather than the row hidden, because the gallery's VOID tile
+      and its reason come from this same response.
+      */
+      if (artifact.retractedAt) {
+        res.json({ ...artifact, content: null, retracted: true });
+        return;
+      }
       res.json(artifact);
     } catch (err: unknown) {
       if (err instanceof ApiError) {
         throw err;
       }
       throw new ApiError(500, err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  /*
+  FNXC:ArtifactRetraction 2026-11-11-12:27 (RUFU-433): the operator half of the retraction surface. The brief
+  splits the permission two ways - an agent may retract only its own artifact, an operator may retract any -
+  and this route is the operator half, so it passes `actorType: "user"` with a server-derived actor id.
+  Attribution follows the rule `bypass-review` already established in this file: the daemon bearer token is one
+  shared operator secret, so a body-supplied `actor` is client-claimed and stays advisory display metadata that
+  can never replace the recorded attribution. Restore is here too because it is deliberately OPERATOR-ONLY -
+  an agent able to un-retract its own retraction could launder a claim back into the gallery once the reason
+  for withdrawing it had been read - and this is the only surface an operator actually has.
+
+  Both write the same store seam the tool uses, so the audit row and the card History line appear identically
+  whoever acted, and neither route moves a card: the response is the artifact row, never a task.
+  */
+  router.post("/artifacts/:id/retract", async (req, res) => {
+    try {
+      const { store: scopedStore } = await getProjectContext(req);
+      const { reason, actor } = (req.body ?? {}) as { reason?: unknown; actor?: unknown };
+      if (typeof reason !== "string" || reason.trim().length === 0) {
+        throw badRequest("reason is required to retract an artifact");
+      }
+      const advisoryName = typeof actor === "string" && actor.trim().length > 0 ? actor.trim() : undefined;
+      const resolvedActor = advisoryName && advisoryName !== "dashboard-operator"
+        ? `dashboard-operator (as ${JSON.stringify(advisoryName)})`
+        : "dashboard-operator";
+      const retracted = await scopedStore.retractArtifact(req.params.id, {
+        reason: reason.trim(),
+        actorId: resolvedActor,
+        actorType: "user",
+      });
+      res.json({ ...retracted, content: null, retracted: true });
+    } catch (err: unknown) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      /*
+      FNXC:ArtifactRetraction 2026-11-11-12:27 (RUFU-433): the store seam's refusal sentences are mapped to
+      statuses here, the same way `bypass-review` maps its own - the route layer has no error codes to switch on.
+      A missing row is 404 and a refusal to write (blank reason, missing actor) is 400, because both are facts
+      about the request that a retry cannot change. Retracting an already-VOID artifact is NOT an error: the
+      seam is idempotent and returns the existing tombstone, so a retried call reports the truth. A row that is
+      not retracted is 410 on restore - the tombstone the restore needs is gone - not 404, because the artifact
+      itself still exists and answering 404 would make a live artifact look deleted.
+      */
+      if (message.includes("not found")) {
+        throw notFound(message);
+      }
+      if (message.includes("requires a non-empty reason") || message.includes("requires an actor id")) {
+        throw badRequest(message);
+      }
+      if (message.includes("is not retracted")) {
+        throw new ApiError(410, message);
+      }
+      rethrowAsApiError(err);
+    }
+  });
+
+  router.post("/artifacts/:id/restore", async (req, res) => {
+    try {
+      const { store: scopedStore } = await getProjectContext(req);
+      const { actor } = (req.body ?? {}) as { actor?: unknown };
+      const advisoryName = typeof actor === "string" && actor.trim().length > 0 ? actor.trim() : undefined;
+      const resolvedActor = advisoryName && advisoryName !== "dashboard-operator"
+        ? `dashboard-operator (as ${JSON.stringify(advisoryName)})`
+        : "dashboard-operator";
+      const restored = await scopedStore.restoreArtifact(req.params.id, {
+        actorId: resolvedActor,
+        actorType: "user",
+      });
+      res.json(restored);
+    } catch (err: unknown) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("not found")) {
+        throw notFound(message);
+      }
+      if (message.includes("is not retracted")) {
+        throw conflict(message);
+      }
+      rethrowAsApiError(err);
     }
   });
 

@@ -1505,6 +1505,22 @@ export const artifacts = projectSchema.table("artifacts", {
   metadata: jsonb("metadata"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
+  /*
+  FNXC:ArtifactRetraction 2026-11-11-11:50 (RUFU-433):
+  Tombstone columns for a retracted artifact. A review artifact is merge-grade input that executors,
+  reviewers and the operator read before merging, and the registry had a rich path in and no path out:
+  the only remedy for a false or mis-attached artifact was to publish ANOTHER artifact, which thickens
+  the layer the false evidence sits in. These three columns are that way out, and they are a tombstone,
+  never a delete — the row, its file on disk and its card trace all survive so the evidence trail stays.
+
+  All three are nullable and there is no backfill: a row written before this column existed reports
+  "never retracted", which is the truth, and every read surface treats NULL as valid. `retract_reason`
+  is mandatory at the write surface (a retraction nobody can explain is not an audit trail) but nullable
+  in the database because the column must accept the pre-existing rows it cannot retroactively explain.
+  */
+  retractedAt: text("retracted_at"),
+  retractedBy: text("retracted_by"),
+  retractReason: text("retract_reason"),
 }, (t) => [
   primaryKey({ columns: [t.projectId, t.id] }),
   foreignKey({ name: "artifacts_task_id_fkey", columns: [t.projectId, t.taskId], foreignColumns: [tasks.projectId, tasks.id] }).onDelete("cascade"),

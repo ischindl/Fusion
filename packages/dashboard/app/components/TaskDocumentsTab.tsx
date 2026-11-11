@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { FileText, ChevronDown, ChevronUp, Plus, Trash2, History } from "lucide-react";
 import "./DocumentsView.css";
 import "./TaskDocumentsTab.css";
@@ -83,10 +84,58 @@ interface TaskArtifactCardProps {
 
 function TaskArtifactCard({ artifact, projectId, onExpandImage }: TaskArtifactCardProps) {
   const { t } = useTranslation("app");
-  const mediaUrl = artifactMediaUrlWithToken(artifact.id, projectId);
-  const typeLabel = getArtifactTypeLabel(t, artifact.type);
-  const preview = artifact.content ? getContentPreview(artifact.content, 320) : artifact.description;
   const title = artifact.title || t("documents.untitledArtifact", "Untitled artifact");
+
+  const typeLabel = getArtifactTypeLabel(t, artifact.type);
+
+  /*
+  FNXC:ArtifactRetraction 2026-11-11-12:27 (RUFU-433): a retracted artifact renders as a VOID tile, and the
+  tile deliberately renders LESS than a live one.
+
+  - No media element and no media URL at all. The URL helper is called BELOW this branch rather than above it:
+    computing it here would hand a tokenized URL for the withdrawn bytes to a component that only declines to
+    use it, and that URL is exactly the artifact of this feature - reachable, cacheable, and screencappable.
+    A broken `img` would also read as a rendering bug rather than a withdrawal.
+  - The `description` is NOT shown. For a review artifact the description is claim text - the same kind of text
+    that got the artifact retracted - and a VOID label is a thin defence against reading it as live evidence. The
+    author is required to supply a reason, so the reason replaces the claim rather than sitting beside it. This
+    matches what the agent-facing VOID view returns: header, reason, nothing else.
+  - The retract line names the artifact's own author, not the retracting principal. The operator may retract any
+    artifact, so "retracted by" would often name someone other than the party that withdrew the claim, which is
+    the fact an operator is trying to read.
+
+  The tile stays in the grid rather than disappearing, because the operator turned the filter on precisely to find
+  tombstones: a VOID tile that rendered nothing would be indistinguishable from the hiding applied by default.
+  */
+  if (artifact.retractedAt) {
+    return (
+      <article
+        className="document-card documents-artifact-card documents-artifact-card--void"
+        aria-label={t("documents.voidArtifactLabel", "Retracted artifact {{title}}", { title })}
+      >
+        <div className="documents-artifact-preview documents-artifact-preview--void" aria-hidden="true">
+          <span className="documents-artifact-void-mark">{t("documents.voidBadge", "VOID")}</span>
+        </div>
+        <div className="documents-artifact-body">
+          <div className="documents-artifact-header">
+            <span className="documents-artifact-void-badge">{t("documents.voidBadge", "VOID")}</span>
+            <span className="documents-artifact-author">{artifact.authorId}</span>
+          </div>
+          <h5 className="documents-artifact-title documents-artifact-title--void">{title}</h5>
+          <p className="documents-artifact-void-reason">
+            {artifact.retractReason || t("documents.voidReasonMissing", "Retracted, with no reason recorded.")}
+          </p>
+          <div className="documents-artifact-meta">
+            <span>{t("documents.voidRetractedOn", "Retracted {{when}}", { when: formatTimestamp(artifact.retractedAt) })}</span>
+            <span>{typeLabel}</span>
+          </div>
+        </div>
+      </article>
+    );
+  }
+
+  const mediaUrl = artifactMediaUrlWithToken(artifact.id, projectId);
+  const preview = artifact.content ? getContentPreview(artifact.content, 320) : artifact.description;
 
   return (
     <article className="document-card documents-artifact-card" aria-label={t("documents.artifactCardLabel", "Artifact {{title}}", { title })}>
@@ -118,6 +167,36 @@ function TaskArtifactCard({ artifact, projectId, onExpandImage }: TaskArtifactCa
         </div>
       </div>
     </article>
+  );
+}
+
+interface RetractionFilterProps {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  t: TFunction<"app">;
+}
+
+/*
+FNXC:ArtifactRetraction 2026-11-11-12:27 (RUFU-433): the retraction filter, hoisted to module scope because it is
+rendered from two places - the artifacts section header, and the state where there is no artifacts section at all.
+
+The second placement is what makes a tombstone discoverable on the card that most needs it: the card whose only
+artifact was retracted has an empty visible list, so a control that lived only inside a list-populated section
+would be unreachable exactly when the operator is wondering where an artifact went. Default-hidden must not
+quietly become undiscoverable.
+
+It is a component rather than duplicated markup, and it is module-scope rather than nested, because a component
+declared inside the render would remount this checkbox on every parent update and lose focus mid-interaction.
+
+A real checkbox, not a chip: the filter's state has to be legible to screen readers and keyboard users, and the
+label repeats the word the tile carries (VOID) so control and badge tie together on wording alone.
+*/
+function RetractionFilter({ checked, onChange, t }: RetractionFilterProps) {
+  return (
+    <label className="task-artifacts-show-retracted">
+      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      <span>{t("taskDocuments.showRetracted", "Show retracted (VOID)")}</span>
+    </label>
   );
 }
 
@@ -163,9 +242,16 @@ export function TaskDocumentsTab({
    * Task detail image artifacts must be viewable in-place from the task modal. Keep the expand target image-only so document, audio, video, and generic cards retain their current non-lightbox behavior without empty controls.
    */
   const [lightboxArtifact, setLightboxArtifact] = useState<ArtifactWithTask | null>(null);
+  /*
+  FNXC:ArtifactRetraction 2026-11-11-12:27 (RUFU-433): the gallery's retraction filter, deliberately OFF by
+  default and deliberately not remembered between mounts. A retracted review artifact is merge-grade input that
+  executors, reviewers and the operator read before deciding to merge, so the safe default is the one that hides
+  it, and persisting an opted-in view would carry findable tombstones into the next session's merge decision.
+  */
+  const [showRetracted, setShowRetracted] = useState(false);
   const loadedTaskIdRef = useRef(taskId);
   const documentKeysRef = useRef<Set<string>>(new Set());
-  const { artifacts, loading: artifactsLoading, error: artifactsError } = useArtifacts({ projectId, taskId });
+  const { artifacts, loading: artifactsLoading, error: artifactsError } = useArtifacts({ projectId, taskId, includeRetracted: showRetracted });
 
   const loadDocuments = useCallback(async () => {
     try {
@@ -391,29 +477,54 @@ export function TaskDocumentsTab({
     );
   }
 
-  const isEmpty = documents.length === 0 && artifacts.length === 0 && !showCreateForm;
+  /*
+  FNXC:ArtifactRetraction 2026-11-11-12:27 (RUFU-433): `!showRetracted` keeps the generic "nothing yet" line out
+  of the way once the operator has asked to look for tombstones. With the filter on, an empty result is an answer
+  to the question they just asked ("this card has no withdrawn artifacts"), and the generic line would answer a
+  different question while looking like it answered that one.
+  */
+  const isEmpty = documents.length === 0 && artifacts.length === 0 && !showCreateForm && !showRetracted;
 
   return (
     <div className="detail-section">
       <h4>{t("taskDocuments.heading", "Artifacts")}</h4>
 
       {isEmpty && (
-        <div className="detail-log-empty">
-          {t("taskDocuments.noDocuments", "No documents or artifacts yet.")}
+        <div className="detail-log-empty task-documents-empty-state">
+          <span>{t("taskDocuments.noDocuments", "No documents or artifacts yet.")}</span>
+          <RetractionFilter checked={showRetracted} onChange={setShowRetracted} t={t} />
         </div>
       )}
 
       {/*
        * FNXC:ArtifactRegistry 2026-06-21-21:44:
        * The per-task Artifacts tab must surface both traditional task documents and agent-created media artifacts so users can inspect all task-scoped outputs without leaving the task modal.
+       *
+       * FNXC:ArtifactRetraction 2026-11-11-12:27 (RUFU-433): the section stays gated on having something to
+       * show - an empty "Media artifacts" block on every documents-only card would be noise - and the retraction
+       * filter reaches that card through the empty state above instead, so hiding the section never hides the
+       * control.
        */}
-      {artifacts.length > 0 && (
+      {(artifacts.length > 0 || showRetracted) && (
         <section className="task-artifacts-section" aria-labelledby="task-artifacts-heading">
           <div className="task-artifacts-section-header">
             <h5 id="task-artifacts-heading">{t("taskDocuments.artifactsSubheading", "Media artifacts")}</h5>
-            <span className="task-artifacts-section-count">{t("taskDocuments.artifactCount", "{{count}} artifact{{plural}}", { count: artifacts.length, plural: artifacts.length === 1 ? "" : "s" })}</span>
+            <div className="task-artifacts-section-tools">
+              <span className="task-artifacts-section-count">{t("taskDocuments.artifactCount", "{{count}} artifact{{plural}}", { count: artifacts.length, plural: artifacts.length === 1 ? "" : "s" })}</span>
+              <RetractionFilter checked={showRetracted} onChange={setShowRetracted} t={t} />
+            </div>
           </div>
           <div className="documents-artifact-gallery documents-artifact-gallery--mobile task-artifacts-gallery">
+            {/*
+            FNXC:ArtifactRetraction 2026-11-11-12:27 (RUFU-433): the section only renders with a populated list or
+            with the filter on, so an empty list here always means "looked, found none" - and the line says that
+            rather than the generic "nothing yet", which would erase the retraction the operator just asked about.
+            */}
+            {artifacts.length === 0 && (
+              <div className="detail-log-empty">
+                {t("taskDocuments.noRetractedArtifacts", "No retracted artifacts on this task.")}
+              </div>
+            )}
             {artifacts.map((artifact) => (
               <TaskArtifactCard key={artifact.id} artifact={artifact} projectId={projectId} onExpandImage={handleExpandArtifactImage} />
             ))}

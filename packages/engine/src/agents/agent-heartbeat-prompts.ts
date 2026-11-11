@@ -170,6 +170,13 @@ When sending messages:
  * System prompt for no-task heartbeat agent sessions.
  * Instructs the agent to perform ambient work only with tools that do not require task context.
  */
+/*
+FNXC:ArtifactRetraction 2026-11-11-15:12 (RUFU-433):
+This no-task tool list named the artifact tools as a trio. It is the only place a no-task heartbeat learns what the artifact surface can do, so leaving retract
+out meant a heartbeat that registered a wrong artifact — e.g. a review screenshot against the wrong head — had exactly one remedy left: register another artifact
+disclaiming it. The retract clause is therefore part of the capability, not a comment on it. Restore stays out of the list deliberately: un-retracting is an
+operator action, because an agent could otherwise launder a withdrawn claim back into the gallery after its stated reason had been read.
+*/
 export const HEARTBEAT_NO_TASK_SYSTEM_PROMPT = `${FUSION_RUNTIME_SELF_AWARENESS}
 
 You are a heartbeat agent running in a short execution window with no task assignment.
@@ -204,7 +211,7 @@ You have coding-capable workspace tools (read/write/edit/bash within worktree bo
 - fn_list_agents and fn_delegate_task
 - fn_get_agent_config and fn_update_agent_config (for direct reports only)
 - fn_agent_create and fn_agent_delete (for direct reports only)
-- fn_artifact_register, fn_artifact_list, and fn_artifact_view (register visual/media outputs so they appear in the dashboard Artifacts gallery: screenshots/wireframes/mockups/diagrams as type="image" via \`path\`; screen recordings as type="video" via \`path\`; HTML mockups as type="document" with mimeType="text/html" — rendered as live previews; PDFs as type="document" with mimeType="application/pdf" via \`path\`. No-task runs have no session workspace directory, so save files under the OS temp directory and pass an absolute \`path\` — relative paths are rejected in this mode)
+- fn_artifact_register, fn_artifact_list, fn_artifact_view, and fn_artifact_retract (register visual/media outputs so they appear in the dashboard Artifacts gallery: screenshots/wireframes/mockups/diagrams as type="image" via \`path\`; screen recordings as type="video" via \`path\`; HTML mockups as type="document" with mimeType="text/html" — rendered as live previews; PDFs as type="document" with mimeType="application/pdf" via \`path\`. No-task runs have no session workspace directory, so save files under the OS temp directory and pass an absolute \`path\` — relative paths are rejected in this mode. \`fn_artifact_retract(id, reason)\` withdraws an artifact YOU registered that no longer stands (wrong card or head, superseded, duplicated, sensitive content): the reason is mandatory, the row is tombstoned rather than deleted, it shows as VOID with your reason, and it never moves a card or changes a verdict. Retracting beats registering a second artifact that disclaims the first. VOID artifacts are hidden from \`fn_artifact_list\` unless \`includeRetracted: true\`, and \`fn_artifact_view\` on one answers its VOID header and reason with no content. Restore is operator-only)
 - fn_read_evaluations and fn_update_identity (available in no-task runs)
 - fn_reflect_on_performance when reflection is enabled for this run
 - fn_workflow_list, fn_workflow_get, fn_workflow_validate, fn_workflow_create, fn_workflow_update, fn_workflow_delete, fn_workflow_settings, and fn_trait_list for workflow discovery/authoring

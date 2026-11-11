@@ -556,3 +556,80 @@ FN-379: the shared header owns the viewer title and action cluster; only the gra
     padding: var(--space-sm);
   }
 }
+
+/*
+FNXC:ArtifactRetraction 2026-11-11-12:27 (RUFU-433): VOID rendering for a retracted artifact in the gallery.
+
+Appended after the mobile block on purpose - these rules are breakpoint-neutral, so inheriting the 768px overrides
+above would make the desktop and mobile tombstones look different for no reason. One `VoidEntry` renderer covers
+every category, so a single set of rules covers images, video, documents, audio and files alike.
+
+The badge takes the existing failure token rather than a bespoke grey: a tombstone that wears the same colours as
+a live tile is the exact misreading this feature exists to prevent. Nothing here renders media, so there is no
+asset geometry to size.
+*/
+.artifacts-gallery-void-entry {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  padding: var(--space-sm);
+  border: thin solid color-mix(in srgb, var(--color-error) 45%, var(--border));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-error) 5%, var(--card));
+}
+
+.artifacts-gallery-void-badge {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  border: thin solid color-mix(in srgb, var(--color-error) 55%, var(--border));
+  border-radius: var(--radius-pill);
+  padding: var(--space-xs) var(--space-sm);
+  color: var(--color-error);
+  background: color-mix(in srgb, var(--color-error) 12%, transparent);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.artifacts-gallery-void-body {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.artifacts-gallery-void-title {
+  color: var(--text-muted);
+  font-weight: 600;
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--color-error) 60%, transparent);
+  overflow-wrap: anywhere;
+}
+
+.artifacts-gallery-void-reason {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.artifacts-gallery-void-meta,
+.artifacts-gallery-void-viewer-meta {
+  color: var(--text-dim);
+  font-size: 0.75rem;
+}
+
+.artifacts-gallery-void-viewer {
+  display: flex;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+}
+
+.artifacts-gallery-void-viewer-lead {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.5;
+}

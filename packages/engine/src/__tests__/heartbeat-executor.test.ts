@@ -3583,7 +3583,12 @@ describe("executeHeartbeat", () => {
       // FN-8948 added fn_mission_reconcile and the feature-validation repair surface added fn_feature_repair_validation. Count rose 66→68; keep exact so new tools fail loudly.
       // RUFU-110 added fn_feature_repoint_task and fn_feature_unlink_task to the mission surface. Count rose 68→70; keep exact so new tools fail loudly.
       // FN-9474 adds a task-scoped durable handoff tool. Count rose 70→71; keep exact so new tools fail loudly.
-      expect(callArgs.customTools).toHaveLength(71);
+      /*
+      FNXC:ArtifactRetraction 2026-11-11-15:12 (RUFU-433): RUFU-433 adds fn_artifact_retract immediately after
+      fn_artifact_view, bound to the same author id, so an agent that can publish merge-grade evidence can also
+      withdraw it. Count rose 71→72; keep exact so new tools fail loudly.
+      */
+      expect(callArgs.customTools).toHaveLength(72);
       expect(callArgs.customTools!.map((tool) => tool.name)).toEqual([
         "fn_task_create",
         "fn_task_log",
@@ -3593,6 +3598,7 @@ describe("executeHeartbeat", () => {
         "fn_artifact_register",
         "fn_artifact_list",
         "fn_artifact_view",
+        "fn_artifact_retract",
         "fn_list_agents",
         "fn_delegate_task",
         "fn_task_assign",

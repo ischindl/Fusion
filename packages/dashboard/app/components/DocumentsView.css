@@ -871,6 +871,83 @@ The artifacts tab is a thumbnail-first responsive media gallery for agent-create
   font-weight: 600;
 }
 
+/*
+FNXC:ArtifactRetraction 2026-11-11-12:27 (RUFU-433): VOID rendering for a retracted artifact's gallery tile.
+
+The tile must never be misread as a live one, so it takes the existing failure token rather than a bespoke muted
+grey - a tombstone wearing the same colours as its neighbours is precisely the failure this feature exists to
+close. Every rule is a modifier layered on the live classes, so a VOID tile keeps the live card's geometry
+(including its 16/10 preview box) and needs no breakpoint override: it carries strictly less content than a live
+card, so the narrower 768px gallery rule cannot overflow it.
+
+The striped preview stands in for the media the tile refuses to render, which keeps the grid aligned instead of
+collapsing the row - a tile that shrank would read as a rendering bug rather than as a withdrawal.
+*/
+.documents-artifact-card--void {
+  border-color: color-mix(in srgb, var(--color-error) 45%, var(--border));
+  background: color-mix(in srgb, var(--color-error) 5%, var(--card));
+}
+
+.documents-artifact-preview--void {
+  border-bottom-color: color-mix(in srgb, var(--color-error) 30%, var(--border));
+  background: repeating-linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--color-error) 8%, var(--surface)),
+    color-mix(in srgb, var(--color-error) 8%, var(--surface)) var(--space-md),
+    var(--surface) var(--space-md),
+    var(--surface) var(--space-lg)
+  );
+}
+
+.documents-artifact-void-mark {
+  color: color-mix(in srgb, var(--color-error) 65%, var(--text-muted));
+  font-family: var(--font-mono);
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.documents-artifact-void-badge {
+  display: inline-flex;
+  align-items: center;
+  border: thin solid color-mix(in srgb, var(--color-error) 55%, var(--border));
+  border-radius: var(--radius-pill);
+  padding: var(--space-xs) var(--space-sm);
+  color: var(--color-error);
+  background: color-mix(in srgb, var(--color-error) 12%, transparent);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.documents-artifact-title--void {
+  color: var(--text-muted);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--color-error) 60%, transparent);
+}
+
+.documents-artifact-void-reason {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+/* The section header now carries a count AND a filter, so they are grouped instead of one node pinned right. */
+.task-artifacts-section-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.task-artifacts-show-retracted {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
 .documents-artifact-author {
   min-width: 0;
   font-family: var(--font-mono);

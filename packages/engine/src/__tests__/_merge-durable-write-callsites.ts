@@ -238,6 +238,16 @@ const STORE_METHOD_CLASSIFICATION: Record<string, Omit<SurfaceClassification, "m
   recoverStaleTransitionPending: { kind: "writer", reason: "persists or mutates TaskStore state" },
   refreshTaskIdIntegrityReport: { kind: "writer", reason: "persists or mutates TaskStore state" },
   registerArtifact: { kind: "writer", reason: "persists or mutates TaskStore state" },
+  /*
+  FNXC:ArtifactRetraction 2026-11-11-12:27 (RUFU-433): the retraction pair. Both are durable writers on the
+  `artifacts` row, and each also writes a task History line for an artifact attached to a card - so neither is
+  classifiable as a read or a cache write. They are listed separately from `registerArtifact` because their
+  lifecycle consequence is the one this card had to pin: retract writes the tombstone that makes every default
+  read hide the row, and restore clears all three tombstone fields in one write. Neither touches a task row's
+  column, status, gate verdict, or pause, which is why they are artifact-scope writers rather than board writers.
+  */
+  retractArtifact: { kind: "writer", reason: "persists the artifact tombstone (retractedAt/retractedBy/retractReason), its card History line, and its audit row" },
+  restoreArtifact: { kind: "writer", reason: "clears all three artifact tombstone fields in one write and records the operator restore" },
   rehomeOccupant: { kind: "writer", reason: "persists or mutates TaskStore state" },
   releaseMergeQueueLease: { kind: "writer", reason: "persists or mutates TaskStore state" },
   releaseSymbolLocks: { kind: "writer", reason: "persists or mutates TaskStore state" },
@@ -415,6 +425,23 @@ const STORE_METHOD_CLASSIFICATION: Record<string, Omit<SurfaceClassification, "m
      reached only from the project-scoped Boost route, so it contributes no merge-reachable call
      site to the inventory below. */
   boostTask: { kind: "writer", reason: "persists the durable task queue rank (queue_boost) under the task advisory lock" },
+  /*
+  FNXC:RunAuditSink 2026-11-11-14:20 (RUFU-433 remediation):
+  RUFU-453 landed the buffered audit sink drain and left its three writing public TaskStore surfaces
+  unclassified, which is the state `assertInventoryRegenerationInputs` refuses outright - an unclassified
+  method does not merely fail its own row, it blocks the whole inventory regeneration (the same mechanism
+  the RUFU-584 epoch-pair comment above records). All three insert into `runAuditEvents`: `recordRunAuditEventBuffered`
+  accepts a best-effort row into the per-store drain that batch-inserts it, `flushRunAuditSink` drains that
+  queue to durability, and `replayRunAuditSinkDeadLetter` re-inserts rows the database refused from the
+  spill file. They are writers because an orphaned merge body reaching any of them would still be writing
+  rows after its abort, and under-classifying a writer is the blind spot this ratchet exists to close.
+  The three read-only companions of the same family (`getRunAuditSinkStats`, `getRunAuditSinkDeadLetterStats`,
+  `readRunAuditSinkDeadLetter`) plus RUFU-320's `resolveTaskIdMinting` are listed as non-writers below:
+  each answers a question and persists nothing.
+  */
+  flushRunAuditSink: { kind: "writer", reason: "drains the per-store run-audit sink, batch-inserting accepted rows into runAuditEvents" },
+  recordRunAuditEventBuffered: { kind: "writer", reason: "accepts a best-effort run-audit row into the per-store sink drain that batch-inserts it" },
+  replayRunAuditSinkDeadLetter: { kind: "writer", reason: "re-inserts spilled run-audit dead-letter rows so they become durable again" },
 };
 const NON_WRITER_REASONS: Record<string, string> = Object.fromEntries([
   "__invokeHandoffMergeQueueFailureInjectorForTesting",
@@ -937,6 +964,18 @@ const NON_WRITER_REASONS: Record<string, string> = Object.fromEntries([
   "walCheckpoint",
   "watch",
   "withConfigLock",
+  /*
+  FNXC:RunAuditSink 2026-11-11-14:20 (RUFU-433 remediation):
+  The read half of RUFU-453's sink family plus RUFU-320's minting resolver. Each is a pure read - the two
+  stats getters project in-process counters, `readRunAuditSinkDeadLetter` reads the spill file, and
+  `resolveTaskIdMinting` reads project settings and throws on a partition mismatch without writing - so none
+  is a durable writer. They are still named here because an unnamed public method is what refuses the
+  regeneration of the whole durable-write inventory.
+  */
+  "getRunAuditSinkStats",
+  "getRunAuditSinkDeadLetterStats",
+  "readRunAuditSinkDeadLetter",
+  "resolveTaskIdMinting",
   "withPlanningLifecycleLock",
   "withPlanningLifecycleLocks",
   "withTaskLock",

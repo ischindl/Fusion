@@ -272,10 +272,38 @@ export const artifactListParams = Type.Object({
   search: Type.Optional(Type.String({ description: "Search artifact titles, descriptions, content, and task metadata." })),
   limit: Type.Optional(Type.Number({ description: "Maximum number of artifacts to return." })),
   offset: Type.Optional(Type.Number({ description: "Number of artifacts to skip." })),
+  /*
+  FNXC:ArtifactRetraction 2026-11-11-12:18 (RUFU-433): retracted (VOID) artifacts are hidden from the
+  default listing, because the harm being removed is a false review artifact being *findable* by an
+  ordinary browse of the registry. Seeing one therefore has to be an explicit opt-in, so this is an
+  opt-in flag rather than a filter an agent can satisfy by accident while looking for something else.
+  */
+  includeRetracted: Type.Optional(Type.Boolean({ description: "Include retracted (VOID) artifacts, which are hidden by default. A VOID row is labelled as such and its content is not readable." })),
 });
 
 export const artifactViewParams = Type.Object({
   id: Type.String({ description: "Artifact ID to view." }),
+});
+
+/*
+FNXC:ArtifactRetraction 2026-11-11-12:18 (RUFU-433):
+The registry's first way out. A review artifact is merge-grade input that executors, reviewers, and the
+operator read before deciding to merge, and until now the surface only ever ADDED: a false, mis-attached,
+stale, duplicated, or sensitive-leaking artifact could only be countered by registering ANOTHER artifact
+disclaiming it, which thickens the very layer the false evidence sits in.
+
+`reason` is a REQUIRED parameter and is deliberately a plain required string rather than an optional field
+validated downstream: an unexplained retraction is indistinguishable from the same mistake being repeated,
+and the reason is the only thing a VOID tile or a VOID tool answer can show. It is stored on the artifact
+and written to the History line of the card the artifact was attached to; it never enters run-audit
+metadata, which carries ids/counts/fixed enums only.
+
+There is no `fn_artifact_restore`: restoring is operator-only, because an agent that could un-retract its
+own retraction could launder a claim back into the gallery after the reason for withdrawing it was read.
+*/
+export const artifactRetractParams = Type.Object({
+  id: Type.String({ description: "Artifact ID to retract. Only an artifact this agent itself registered can be retracted." }),
+  reason: Type.String({ description: "Required short sentence explaining why the artifact no longer stands (e.g. registered against the wrong head or card, superseded, duplicated, contains sensitive data). Recorded on the artifact and on the card it was attached to." }),
 });
 
 export const chatArtifactRegisterParams = Type.Object({
@@ -297,6 +325,13 @@ export const chatArtifactListParams = Type.Object({
   search: Type.Optional(Type.String({ description: "Search artifact titles, descriptions, content, and task metadata." })),
   limit: Type.Optional(Type.Number({ description: "Maximum number of artifacts to return." })),
   offset: Type.Optional(Type.Number({ description: "Number of artifacts to skip." })),
+  /*
+  FNXC:ArtifactRetraction 2026-11-11-15:12 (RUFU-433): the chat lane's list description already told the planner
+  that VOID rows are hidden unless `includeRetracted` is set, while this schema did not declare the field — so the
+  one lane that authored artifacts of its own could read its own tool description and be refused by its own
+  schema. Declaring it here keeps the promise and the parameters one fact.
+  */
+  includeRetracted: Type.Optional(Type.Boolean({ description: "Include retracted (VOID) artifacts, which are hidden by default. A VOID row is labelled as such and its content is not readable." })),
 });
 
 export const workflowListParams = Type.Object({});
@@ -3188,15 +3223,43 @@ export function createArtifactListTool(store: TaskStore): ToolDefinition {
 /**
  * FNXC:ArtifactRegistry 2026-06-21-06:50:
  * Agents need to inspect artifact metadata plus inline content or URI references without relying on dashboard UI. Render binary media as references so tool output remains lightweight and safe for agent contexts.
+ *
+ * FNXC:ArtifactRetraction 2026-11-11-12:19 (RUFU-433): a retracted artifact answers with a VOID header and
+ * the reason instead of its body. An old link, a pasted id, or a re-read from an agent's own earlier turn
+ * all reach this path, and silently returning the tombstoned text there would make the retraction a
+ * cosmetic gallery change rather than a real withdrawal of merge-grade input.
  */
 export function createArtifactViewTool(store: TaskStore): ToolDefinition {
   return {
     name: "fn_artifact_view",
     label: "View Artifact",
     description:
-      "View a registered artifact by id, including metadata and inline content when present or the uri/path reference for media artifacts.",
+      "View a registered artifact by id, including metadata and inline content when present or the uri/path reference for media artifacts. A retracted artifact returns a VOID header with its reason and no content.",
     parameters: artifactViewParams,
     execute: async (_id: string, params: Static<typeof artifactViewParams>) => viewArtifactForAgent(store, params.id),
+  };
+}
+
+/*
+FNXC:ArtifactRetraction 2026-11-11-12:19 (RUFU-433):
+The author-bound retract tool. `authorId` is the CALLING agent's own id, passed by each lane's wiring
+exactly as `createArtifactRegisterTool` receives it, because authorship is what the permission is bound to:
+the store seam refuses a blank reason and a foreign actor is refused HERE, before any write, so a
+mis-claimed retract attempt cannot even rewrite another agent's tombstone attribution. A foreign author
+gets a loud refusal naming the real author rather than a silent no-op, because the agent needs to know
+whether it is looking at the wrong id or the wrong artifact.
+*/
+export function createArtifactRetractTool(store: TaskStore, authorId: string): ToolDefinition {
+  return {
+    name: "fn_artifact_retract",
+    label: "Retract Artifact",
+    description:
+      "Withdraw an artifact you registered earlier when it no longer stands (wrong task or head, superseded by a remediation, duplicated, or containing data it should not carry). " +
+      "A mandatory short `reason` is required and is recorded on the artifact and on the card it was attached to. " +
+      "The artifact is NOT deleted: it becomes a VOID record that every default read and the gallery hide, so the evidence that a claim was made survives while the claim itself stops presenting as live input. " +
+      "Only your own artifacts; retraction moves no card and changes no review verdict; restoring a retracted artifact is operator-only.",
+    parameters: artifactRetractParams,
+    execute: async (_id: string, params: Static<typeof artifactRetractParams>) => retractArtifactForAgent(store, authorId, params),
   };
 }
 
@@ -3234,7 +3297,7 @@ export function createChatArtifactTools(store: TaskStore, messageStore?: Message
       name: "fn_artifact_list",
       label: "List Artifacts",
       description:
-        "List registered artifacts for a specific task. Supports filters for type, authorId, search, limit, and offset. Requires task_id.",
+        "List registered artifacts for a specific task. Supports filters for type, authorId, search, limit, and offset. Requires task_id. Retracted (VOID) artifacts are hidden unless includeRetracted is set.",
       parameters: chatArtifactListParams,
       execute: async (_id: string, params: Static<typeof chatArtifactListParams>) => listArtifactsForAgent(store, {
         type: params.type,
@@ -3243,9 +3306,17 @@ export function createChatArtifactTools(store: TaskStore, messageStore?: Message
         search: params.search,
         limit: params.limit,
         offset: params.offset,
+        includeRetracted: params.includeRetracted,
       }),
     },
     createArtifactViewTool(store),
+    /*
+    FNXC:ArtifactRetraction 2026-11-11-12:22 (RUFU-433): the chat/planning lane registers artifacts under
+    the fixed `dashboard-chat` author id, so it must hold retract too - a chat-authored mistake would
+    otherwise be the one artifact class with no way out. `chatAuthorId` is passed as the bound author, so
+    the same authorship rule applies: this lane can withdraw what that lane registered and nothing else.
+    */
+    createArtifactRetractTool(store, chatAuthorId),
   ];
 }
 
@@ -3608,6 +3679,7 @@ async function listArtifactsForAgent(store: TaskStore, params: Static<typeof art
       search: params.search,
       limit: params.limit,
       offset: params.offset,
+      includeRetracted: params.includeRetracted,
     });
 
     if (artifacts.length === 0) {
@@ -3617,8 +3689,18 @@ async function listArtifactsForAgent(store: TaskStore, params: Static<typeof art
       };
     }
 
+    /*
+    FNXC:ArtifactRetraction 2026-11-11-12:20 (RUFU-433): a row that only appears under
+    `includeRetracted: true` must announce itself as VOID on the same line, with its reason. A bare title
+    in the list would let an agent quote a withdrawn claim straight back into a verdict, which is the
+    invariant this card exists to hold; the reason is included because "VOID" alone tells an agent nothing
+    about whether the claim was wrong or merely superseded.
+    */
     const lines = artifacts.map((artifact) => {
       const task = artifact.taskId ? `${artifact.taskId}${artifact.taskTitle ? ` (${artifact.taskTitle})` : ""}` : "no task";
+      if (artifact.retractedAt) {
+        return `- [VOID] ${artifact.id} [${artifact.type}] ${artifact.title} - retracted by ${artifact.retractedBy ?? "unknown"} at ${artifact.retractedAt}; reason: ${artifact.retractReason ?? "not recorded"}; task: ${task}`;
+      }
       return `- ${artifact.id} [${artifact.type}] ${artifact.title} — author: ${artifact.authorId}; task: ${task}`;
     });
     return {
@@ -3641,6 +3723,33 @@ async function viewArtifactForAgent(store: TaskStore, id: string) {
       return {
         content: [{ type: "text" as const, text: `Artifact "${id}" not found.` }],
         details: {},
+      };
+    }
+
+    /*
+    FNXC:ArtifactRetraction 2026-11-11-12:21 (RUFU-433): the VOID answer returns header lines plus the
+    reason and NOTHING else - not `content`, not `uri`, not a media path. Every one of those three is a way
+    for a withdrawn claim to be read as live: `content` is the false text itself, `uri` is re-readable by
+    any file tool, and a media path is fetchable by a client that never consulted this tool at all. The
+    details payload carries `retracted: true` so a structured consumer cannot mistake the answer for a
+    successful read of live evidence, and the tombstone stays queryable via `fn_artifact_list` with
+    `includeRetracted` - visibility of the withdrawal, invisibility of the claim.
+    */
+    if (artifact.retractedAt) {
+      const voidLines = [
+        "VOID - this artifact was retracted and its content is intentionally not returned.",
+        `Artifact: ${artifact.title}`,
+        `ID: ${artifact.id}`,
+        `Original author: ${artifact.authorId} (${artifact.authorType})`,
+        `Retracted: ${artifact.retractedAt}`,
+        `Retracted by: ${artifact.retractedBy ?? "unknown"}`,
+        `Reason: ${artifact.retractReason ?? "not recorded"}`,
+      ];
+      if (artifact.taskId) voidLines.push(`Task: ${artifact.taskId}`);
+      voidLines.push("", "Treat any claim from this artifact as withdrawn. Restoring it is an operator action.");
+      return {
+        content: [{ type: "text" as const, text: voidLines.join("\n") }],
+        details: { artifactId: artifact.id, retracted: true },
       };
     }
 
@@ -3669,6 +3778,88 @@ async function viewArtifactForAgent(store: TaskStore, id: string) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } catch (err: any) {
     return storeErrorResult(`the artifact "${id}"`, err);
+  }
+}
+
+/*
+FNXC:ArtifactRetraction 2026-11-11-12:22 (RUFU-433):
+The author-bound retract handler, and the reason it is not a thin call into the store. The store seam
+(`retractArtifactImpl`) already refuses a blank reason and a foreign retractor, but a refusal that arrives
+as a thrown Error reaches the agent as a generic store failure, which is how an agent learns to retry or to
+work around the tool. Each refusal is therefore named HERE, before anything is written, with the fact the
+agent needs next:
+1. A blank/whitespace reason refuses first, naming `reason` as the missing parameter. The reason is the only
+   thing a VOID tile can show; an unexplained withdrawal is indistinguishable from the mistake repeating.
+2. An unknown id refuses, so "retracted" can never be reported for an artifact that was never registered.
+3. A FOREIGN author refuses loudly and names who really authored it, writing zero bytes. Authorship is the
+   whole permission: without it any agent could silence another agent's evidence, and overwriting the
+   attribution would destroy the provenance a tombstone exists to preserve.
+4. An already-VOID artifact answers with the existing tombstone rather than an error, so retrying a
+   half-delivered call reports the truth instead of a second failure.
+
+A success answer names the artifact, states that the row was kept rather than deleted, and says whether a
+card History line was written - an artifact with no `taskId` has no card to trace, and silently omitting
+that line would make the retraction look like it lost its audit trail. Nothing here moves a card, touches a
+workflow step result, or clears a pause: a withdrawn claim is not a verdict about the work.
+*/
+async function retractArtifactForAgent(store: TaskStore, authorId: string, params: Static<typeof artifactRetractParams>) {
+  const reason = params.reason?.trim() ?? "";
+  if (reason === "") {
+    return {
+      content: [{
+        type: "text" as const,
+        text: "Refused: retracting an artifact requires a non-empty `reason` explaining why it no longer stands. Nothing was written.",
+      }],
+      details: { refused: "reason-required" },
+    };
+  }
+
+  try {
+    const existing: Artifact | null = await store.getArtifact(params.id);
+    if (!existing) {
+      return {
+        content: [{ type: "text" as const, text: `Artifact "${params.id}" not found; nothing was retracted.` }],
+        details: { refused: "not-found" },
+      };
+    }
+
+    if (existing.authorId !== authorId) {
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Refused: artifact "${params.id}" was registered by ${existing.authorId}, not by ${authorId}. An agent may retract only its own artifacts, so nothing was written. Ask the author to retract it, or leave it to an operator.`,
+        }],
+        details: { refused: "not-the-author", artifactId: params.id, authorId: existing.authorId },
+      };
+    }
+
+    if (existing.retractedAt) {
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Artifact "${params.id}" is already VOID (retracted by ${existing.retractedBy ?? "unknown"} at ${existing.retractedAt}; reason: ${existing.retractReason ?? "not recorded"}). Nothing was written again.`,
+        }],
+        details: { artifactId: params.id, retracted: true, alreadyRetracted: true },
+      };
+    }
+
+    const artifact = await store.retractArtifact(params.id, { reason, actorId: authorId, actorType: "agent" });
+    return {
+      content: [{
+        type: "text" as const,
+        text: [
+          `Retracted artifact "${artifact.title}" (${artifact.id}). It is now a VOID record: hidden from every default read and from the gallery, while the row, its file, and its reason are kept.`,
+          artifact.taskId
+            ? `Card trace: a History line naming the title, you, and the reason was written on ${artifact.taskId}.`
+            : "This artifact had no parent card, so there was no History line to write; the audit row still records the withdrawal.",
+          "Nothing was deleted, no card moved, and no review verdict changed. Restoring a retracted artifact is an operator action.",
+        ].join("\n"),
+      }],
+      details: { artifactId: artifact.id, retracted: true, taskId: artifact.taskId ?? null },
+    };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } catch (err: any) {
+    return storeWriteFailure(`retracting the artifact "${params.id}"`, err);
   }
 }
 

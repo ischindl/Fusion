@@ -134,7 +134,13 @@ not "highest upstream number", and a number naming two migrations remains the on
  * against Number(SCHEMA_BASELINE_VERSION), so leaving it at 0095 would make every boot after this one
  * read the database this very binary migrated as newer and log the warn-only stale-binary warning.
  * Slot 0096 was free: no bundled file names it, and slot numbers are never reused. */
-export const SCHEMA_BASELINE_VERSION = "0096";
+/* FNXC:ArtifactRetraction 2026-11-11-11:55 (RUFU-433): the ceiling follows the highest bundled file
+ * again (0097, the `project.artifacts` tombstone columns). The stale-binary guard compares the DB's
+ * highest marker against Number(SCHEMA_BASELINE_VERSION), so leaving it at 0096 would make every boot
+ * after this one read the database this very binary migrated as newer and log the warn-only
+ * stale-binary warning. Slot 0097 was free: no bundled file names it and no branch claims it, and
+ * slot numbers are never reused. */
+export const SCHEMA_BASELINE_VERSION = "0097";
 /** FNXC:SymbolLock 2026-07-20-10:00: upgrades need durable task declarations before admission resolves symbols. */
 export const TASK_DECLARED_SYMBOLS_VERSION = "0028";
 const INITIAL_SCHEMA_VERSION = "0000";
@@ -421,6 +427,16 @@ table must exist before ANY create path mints an id, because the insert now writ
 same transaction as the task row.
 */
 export const GLOBAL_TASK_ID_CLAIM_VERSION = "0096";
+
+/*
+FNXC:ArtifactRetraction 2026-11-11-11:55 (RUFU-433):
+`project.artifacts` tombstone columns (`retracted_at` / `retracted_by` / `retract_reason`) — the only
+way out of a registry that had only a way in. The marker value and the .sql basename stay equal, and the
+file is registered below rather than left to a scan — an unwired `.sql` in `migrations/` silently never
+runs (`migration-wiring-integrity.test.ts`). The columns must exist before any read surface can filter on
+them, because `listArtifacts` names them in a metadata-only select.
+*/
+export const ARTIFACT_RETRACTION_VERSION = "0097";
 
 export const FILE_SCOPE_LEASE_RELEASE_VERSION = "0089";
 
@@ -758,6 +774,8 @@ const TASK_SEARCH_VECTOR_SCOPE_MIGRATION_PATH = join(MIGRATIONS_DIR, "0094_rufu_
 const WORKFLOW_DEFERRED_SINCE_MIGRATION_PATH = join(MIGRATIONS_DIR, "0095_rufu_299_workflow_work_items_deferred_since.sql");
 /* FNXC:TaskIdGlobalUniqueness 2026-11-08-09:19 (RUFU-320): explicit registration; see GLOBAL_TASK_ID_CLAIM_VERSION. */
 const GLOBAL_TASK_ID_CLAIM_MIGRATION_PATH = join(MIGRATIONS_DIR, "0096_rufu_320_global_task_id_claim.sql");
+/* FNXC:ArtifactRetraction 2026-11-11-11:55 (RUFU-433): explicit registration; see ARTIFACT_RETRACTION_VERSION. */
+const ARTIFACT_RETRACTION_MIGRATION_PATH = join(MIGRATIONS_DIR, "0097_rufu_433_artifact_retraction.sql");
 
 /**
  * Ensure the migration bookkeeping table exists. Lives in the public schema so
@@ -923,6 +941,7 @@ export async function applySchemaBaseline(
     const searchVectorScopeAlreadyApplied = applied.includes(TASK_SEARCH_VECTOR_SCOPE_VERSION);
     const workflowDeferredSinceAlreadyApplied = applied.includes(WORKFLOW_DEFERRED_SINCE_VERSION);
     const globalTaskIdClaimAlreadyApplied = applied.includes(GLOBAL_TASK_ID_CLAIM_VERSION);
+    const artifactRetractionAlreadyApplied = applied.includes(ARTIFACT_RETRACTION_VERSION);
     assertBinaryNotOlderThanDatabase(applied);
     let schemaChanged = false;
 
@@ -2347,6 +2366,41 @@ export async function applySchemaBaseline(
       const migrationSql = await readFile(GLOBAL_TASK_ID_CLAIM_MIGRATION_PATH, "utf8");
       await tx.execute(sql.raw(migrationSql));
       await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${GLOBAL_TASK_ID_CLAIM_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+    /*
+    FNXC:ArtifactRetraction 2026-11-11-11:55 (RUFU-433):
+    Additive nullable tombstone columns on `project.artifacts`. The probe copies the absent-relation
+    invariant the 0095 neighbour pins — a database with no `project.artifacts` at all answers "nothing to
+    drift" instead of handing `ALTER TABLE` a 42P01 inside `applySchemaBaseline` — and a relation that
+    exists but lacks the column re-applies the idempotent DDL. A half-applied marker is a real shape here
+    (three separate ALTERs, so a crash between the first and the third leaves the relation present with
+    two of three columns), which is exactly why this block probes the column rather than trusting the
+    marker alone the way the marker-only 0096 block above may.
+    */
+    const artifactRetractionExists = ((await tx.execute(sql`
+      SELECT (
+        to_regclass('project.artifacts') IS NULL
+        OR (
+          EXISTS (
+            SELECT 1 FROM information_schema.columns
+             WHERE table_schema = 'project' AND table_name = 'artifacts' AND column_name = 'retracted_at'
+          )
+          AND EXISTS (
+            SELECT 1 FROM information_schema.columns
+             WHERE table_schema = 'project' AND table_name = 'artifacts' AND column_name = 'retracted_by'
+          )
+          AND EXISTS (
+            SELECT 1 FROM information_schema.columns
+             WHERE table_schema = 'project' AND table_name = 'artifacts' AND column_name = 'retract_reason'
+          )
+        )
+      ) AS present
+    `)) as unknown as Array<{ present: boolean }>)[0]?.present === true;
+    if (!artifactRetractionAlreadyApplied || !artifactRetractionExists) {
+      const migrationSql = await readFile(ARTIFACT_RETRACTION_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${ARTIFACT_RETRACTION_VERSION}) ON CONFLICT (version) DO NOTHING`);
       schemaChanged = true;
     }
     return { applied: schemaChanged, pluginHooksRun: pluginHooks.length };

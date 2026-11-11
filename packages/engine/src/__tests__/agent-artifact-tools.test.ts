@@ -764,10 +764,17 @@ describe("chat artifact tools", () => {
   it("exposes canonical artifact tool names for chat agents", () => {
     const { store } = createMockStore();
 
+    /*
+    FNXC:ArtifactRetraction 2026-11-11-12:26 (RUFU-433): `fn_artifact_retract` joins this inventory because
+    the chat lane registers artifacts under the fixed `dashboard-chat` author id, and a lane that can publish
+    a claim but not withdraw it is the defect RUFU-433 removes. The list stays an exact inventory on purpose:
+    a chat tool added or dropped without updating it is a change to what the dashboard chat surface can do.
+    */
     expect(createChatArtifactTools(store).map((tool) => tool.name)).toEqual([
       "fn_artifact_register",
       "fn_artifact_list",
       "fn_artifact_view",
+      "fn_artifact_retract",
     ]);
   });
 

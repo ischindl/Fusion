@@ -981,6 +981,20 @@ export function createSSE(
       send(`event: artifact:updated\ndata: ${JSON.stringify(artifact)}\n\n`);
     };
 
+    /*
+    FNXC:ArtifactRetraction 2026-11-11-15:12 (RUFU-433): the withdrawal has to cross this seam or it never
+    reaches anybody. The store publishes `artifact:retracted` and `useArtifacts` subscribes to it, but this
+    file subscribes event-by-event rather than broadcasting the whole bus, so an unregistered event is
+    silently dropped and the hook's subscription is a dead control. The consequence is the exact failure the
+    retraction exists to remove: a reviewer or operator with the gallery already open keeps seeing a retracted
+    review artifact as a live tile — i.e. as live merge-grade input — until someone reloads the view. A
+    retraction cannot piggyback on `task:updated` either, because it deliberately moves no card, writes no
+    task row and changes no verdict, so this is the only automated notice it ever gets.
+    */
+    const onArtifactRetracted = (artifact: unknown) => {
+      send(`event: artifact:retracted\ndata: ${JSON.stringify(artifact)}\n\n`);
+    };
+
     const onResearchRunCreated = (run: unknown) => {
       send(`event: research:run:created\ndata: ${JSON.stringify(run)}\n\n`);
     };
@@ -1305,6 +1319,7 @@ export function createSSE(
       store.off("task:merged", onMerged);
       store.off("agent:log", onAgentLog);
       store.off("artifact:registered", onArtifactRegistered);
+      store.off("artifact:retracted", onArtifactRetracted);
       store.off("artifact:updated", onArtifactUpdated);
       store.off("workflow:setting-values-updated", onWorkflowSettingValuesUpdated);
       if (missionStore) {
@@ -1428,6 +1443,7 @@ export function createSSE(
     store.on("agent:activity", onAgentActivityNudge);
     void initializeAgentActivityTail();
     store.on("artifact:registered", onArtifactRegistered);
+    store.on("artifact:retracted", onArtifactRetracted);
     store.on("artifact:updated", onArtifactUpdated);
     store.on("workflow:setting-values-updated", onWorkflowSettingValuesUpdated);
 

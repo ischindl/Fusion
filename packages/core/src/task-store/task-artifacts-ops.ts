@@ -28,7 +28,7 @@ import { runCommandAsync } from "../process/run-command.js";
 import { getStepParser } from "../tasks/step-parsers.js";
 import { getTaskMergeBlocker } from "../merge/task-merge.js";
 import { resolveRequiredPreMergeStepIds } from "../merge/required-pre-merge-steps.js";
-import { deleteTaskDocument as deleteTaskDocumentAsync, getArtifact as getArtifactAsync, getArtifacts as getArtifactsAsync, getLiveTaskColumn, getTaskDocument as getTaskDocumentAsync, getTaskDocumentRevisions as getTaskDocumentRevisionsAsync, listTaskDocuments as listTaskDocumentsAsync, updateArtifactRow as updateArtifactRowAsync } from "./async/async-comments-attachments.js";
+import { deleteTaskDocument as deleteTaskDocumentAsync, getArtifact as getArtifactAsync, getArtifacts as getArtifactsAsync, getLiveTaskColumn, getTaskDocument as getTaskDocumentAsync, getTaskDocumentRevisions as getTaskDocumentRevisionsAsync, listTaskDocuments as listTaskDocumentsAsync, retractArtifactRow as retractArtifactRowAsync, updateArtifactRow as updateArtifactRowAsync } from "./async/async-comments-attachments.js";
 import { emitUsageEvent as emitUsageEventAsync, recordPluginActivation as recordPluginActivationAsync } from "./async/async-events.js";
 import { enqueueMergeQueue as enqueueMergeQueueAsync, peekMergeQueue as peekMergeQueueAsync, peekMergeQueueHead as peekMergeQueueHeadAsync } from "./async/async-merge-coordination.js";
 import { clearCompletionHandoffMarker as clearCompletionHandoffMarkerAsync, getCompletionHandoffMarker as getCompletionHandoffMarkerAsync } from "./async/async-workflow-workitems.js";
@@ -1066,9 +1066,83 @@ export async function updateArtifactImpl(store: TaskStore, id: string, updates: 
     return updated;
 }
 
-export async function getArtifactsImpl(store: TaskStore, taskId: string): Promise<Artifact[]> {
+export async function getArtifactsImpl(store: TaskStore, taskId: string, options?: { includeRetracted?: boolean }): Promise<Artifact[]> {
         const layer = store.asyncLayer!;
-    return getArtifactsAsync(layer.db, taskId, layer.projectId, ARCHIVED_SENTINEL_LANES);
+    return getArtifactsAsync(layer.db, taskId, layer.projectId, ARCHIVED_SENTINEL_LANES, options);
+}
+
+/*
+FNXC:ArtifactRetraction 2026-11-11-12:05 (RUFU-433):
+The ONE seam that retracts or restores an artifact, and therefore the one place the two side-effects a
+retraction owes are attached. Both read surfaces (the `fn_artifact_*` tool lane and the dashboard HTTP
+route) reach it through `store.retractArtifact` / `store.restoreArtifact`, so neither can emit the audit
+row twice nor skip it.
+
+What a retraction does and does not do:
+- It writes the tombstone (via `retractArtifactRow`, the sole column writer) and nothing else in the
+  database: no task row, no workflow step result, no column move, no pause. Withdrawing a claim is not a
+  verdict about the card it was attached to.
+- It records one History line on the parent card through `logEntry`, deliberately NOT `addTaskComment`.
+  A comment write is an authority path whose author semantics can trigger refinement or re-triage, which
+  would move the card — exactly the lifecycle effect the invariant forbids. An artifact with no `taskId`
+  has no card to trace and gets the audit row alone.
+- It emits `artifact:retracted` through the FN-9177 bounded core seam with ids/counts/fixed enums only.
+  The reason sentence stays on the tombstone and on the History line.
+- It publishes `artifact:retracted` on the store event bus so an already-open gallery stops rendering the
+  false content without a reload; a live gallery that kept showing it would defeat the whole invariant.
+- An idempotent repeat (the same actor re-retracting) writes no row, no History line, no audit row, and no
+  event, so retrying a half-delivered tool call cannot drift the tombstone clock or double-narrate.
+*/
+export async function retractArtifactImpl(
+  store: TaskStore,
+  id: string,
+  options: {
+    action: "retract" | "restore";
+    reason?: string;
+    actorId: string;
+    actorType: "agent" | "user" | "system";
+  },
+): Promise<Artifact> {
+  const layer = store.asyncLayer!;
+  const { artifact, alreadyRetracted } = await retractArtifactRowAsync(layer, id, options);
+  if (alreadyRetracted) return artifact;
+
+  if (artifact.taskId) {
+    /*
+    FNXC:ArtifactRetraction 2026-11-11-12:25 (RUFU-433): the line names VOID explicitly, the same word the
+    gallery tile and the `fn_artifact_view` answer lead with. An operator who opens a card after seeing a
+    VOID tile must be able to tie the two together on the wording alone; "Retracted artifact" on its own
+    reads like a bookkeeping change and hides that a claim was withdrawn from under a verdict.
+    */
+    const line = options.action === "retract"
+      ? `Retracted artifact "${artifact.title}" (${artifact.id}) to VOID by ${options.actorId} — ${options.reason?.trim() ?? ""}`
+      : `Restored artifact "${artifact.title}" (${artifact.id}) by ${options.actorId}`;
+    /*
+    The History line is best-effort by design: a card whose log write fails must not roll back a tombstone
+    that is already durable, because the safer failure is a retraction that is missing an explanation on
+    one surface rather than a false artifact that is still live. The audit row below still answers it.
+    */
+    await store.logEntry(artifact.taskId, line).catch(() => undefined);
+  }
+
+  void emitBoundedRunAudit(store, {
+    taskId: artifact.taskId,
+    agentId: options.actorId,
+    runId: `artifact-retraction:${artifact.id}:${options.action}`,
+    domain: "database",
+    mutationType: "artifact:retracted",
+    target: artifact.id,
+    metadata: {
+      artifactId: artifact.id,
+      outcome: options.action === "retract" ? "retracted" : "restored",
+      actorType: options.actorType,
+      reasonChars: options.reason?.trim().length ?? 0,
+      ...(artifact.taskId ? { taskId: artifact.taskId } : {}),
+    },
+  });
+
+  store.emit("artifact:retracted", artifact);
+  return artifact;
 }
 
 export async function getTaskDocumentsImpl(store: TaskStore, taskId: string): Promise<TaskDocument[]> {

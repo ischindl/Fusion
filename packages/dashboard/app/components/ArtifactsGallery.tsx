@@ -247,12 +247,46 @@ interface CategoryGridProps {
   onOpenTask: (taskId: string) => void;
 }
 
+/**
+ * FNXC:ArtifactRetraction 2026-11-11-12:27 (RUFU-433): the single interception point for a retracted artifact.
+ *
+ * Every gallery renderer in this file - VisualTile, DocCard, AudioRow, FileRow - puts a media URL on screen
+ * (`img`/`video` src, `audio` src, or a download `href`). Diverting once here, where an item is dispatched to its
+ * renderer, means a future fifth renderer inherits the rule instead of having to remember it, which is the same
+ * reason the store hides by default rather than each caller filtering.
+ *
+ * Why this matters even though every current caller leaves retracted artifacts hidden: the hide lives in the
+ * fetch, so any surface that later passes `includeRetracted` - or any stale list still in an open view when a
+ * retraction arrives over SSE - would otherwise hand a withdrawn screenshot's URL straight to an `img` tag. The
+ * server refuses with 410, so the claim would not leak, but the surface would show a broken asset where a
+ * labelled VOID record belongs.
+ */
+function VoidEntry({ artifact, t }: { artifact: ArtifactWithTask; t: TFunction<"app"> }) {
+  const title = artifact.title || t("documents.untitledArtifact", "Untitled artifact");
+  return (
+    <div className="artifacts-gallery-void-entry" aria-label={t("documents.voidArtifactLabel", "Retracted artifact {{title}}", { title })}>
+      <span className="artifacts-gallery-void-badge">{t("documents.voidBadge", "VOID")}</span>
+      <div className="artifacts-gallery-void-body">
+        <span className="artifacts-gallery-void-title">{title}</span>
+        <span className="artifacts-gallery-void-reason">
+          {artifact.retractReason || t("documents.voidReasonMissing", "Retracted, with no reason recorded.")}
+        </span>
+        <span className="artifacts-gallery-void-meta">
+          {t("documents.voidRetractedOn", "Retracted {{when}}", { when: formatTimestamp(artifact.retractedAt) })}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function CategoryGrid({ category, items, projectId, isMobile, t, onOpen, onOpenTask }: CategoryGridProps) {
   if (category === "audio") {
     return (
       <div className="artifacts-gallery-rows">
         {items.map((artifact) => (
-          <AudioRow key={artifact.id} artifact={artifact} projectId={projectId} t={t} onOpenTask={onOpenTask} />
+          artifact.retractedAt
+            ? <VoidEntry key={artifact.id} artifact={artifact} t={t} />
+            : <AudioRow key={artifact.id} artifact={artifact} projectId={projectId} t={t} onOpenTask={onOpenTask} />
         ))}
       </div>
     );
@@ -262,7 +296,9 @@ function CategoryGrid({ category, items, projectId, isMobile, t, onOpen, onOpenT
     return (
       <div className="artifacts-gallery-rows">
         {items.map((artifact) => (
-          <FileRow key={artifact.id} artifact={artifact} projectId={projectId} t={t} onOpenTask={onOpenTask} />
+          artifact.retractedAt
+            ? <VoidEntry key={artifact.id} artifact={artifact} t={t} />
+            : <FileRow key={artifact.id} artifact={artifact} projectId={projectId} t={t} onOpenTask={onOpenTask} />
         ))}
       </div>
     );
@@ -275,9 +311,13 @@ function CategoryGrid({ category, items, projectId, isMobile, t, onOpen, onOpenT
   return (
     <div className={`${gridClass}${isMobile ? " artifacts-gallery-grid--mobile" : ""}`}>
       {items.map((artifact) => (
-        category === "image" || category === "video"
-          ? <VisualTile key={artifact.id} artifact={artifact} category={category} projectId={projectId} t={t} onOpen={onOpen} />
-          : <DocCard key={artifact.id} artifact={artifact} category={category} t={t} onOpen={onOpen} onOpenTask={onOpenTask} />
+        artifact.retractedAt
+          ? <VoidEntry key={artifact.id} artifact={artifact} t={t} />
+          : (
+            category === "image" || category === "video"
+              ? <VisualTile key={artifact.id} artifact={artifact} category={category} projectId={projectId} t={t} onOpen={onOpen} />
+              : <DocCard key={artifact.id} artifact={artifact} category={category} t={t} onOpen={onOpen} onOpenTask={onOpenTask} />
+          )
       ))}
     </div>
   );
@@ -653,7 +693,7 @@ function DocViewer({ artifact, projectId, t, addToast, onClose, onOpenTask, onAr
   const isHtml = (detail?.mimeType ?? artifact.mimeType)?.toLowerCase().split(";", 1)[0] === "text/html";
 
   useEffect(() => {
-    if (!detail?.uri || !isHtml || !renderMarkdown) {
+    if (!detail?.uri || !isHtml || !renderMarkdown || detail.retractedAt) {
       setHtmlPreviewUrl(null);
       setHtmlPreviewError(null);
       return;
@@ -688,6 +728,41 @@ function DocViewer({ artifact, projectId, t, addToast, onClose, onOpenTask, onAr
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [artifact.id, detail?.uri, isHtml, projectId, renderMarkdown]);
+
+  /*
+  FNXC:ArtifactRetraction 2026-11-11-12:27 (RUFU-433): a retracted artifact opens as a VOID notice, never as an
+  empty document. This viewer fetches by id and the server answers a tombstone with its header and `content: null`,
+  so without this branch the viewer would render a blank file and - because `editable` is `!detail.uri`, which is
+  true for an inline doc - offer an Edit affordance on a withdrawn record whose save the store refuses. Neither
+  leaks the content, but both misrepresent what happened, and this is the one surface reachable from a stale
+  bookmark rather than only from a filtered list. Placed after every hook so hook order stays stable either way.
+  */
+  if (detail?.retractedAt || artifact.retractedAt) {
+    const voidReason = detail?.retractReason ?? artifact.retractReason;
+    const voidWhen = detail?.retractedAt ?? artifact.retractedAt;
+    return (
+      <OverlayShell label={t("documents.voidArtifactLabel", "Retracted artifact {{title}}", { title })} onClose={onClose} closeRef={closeRef} windowKey={`artifact-void-${artifact.id}`}>
+        <ViewerHeader title={title} onClose={onClose} t={t} closeRef={closeRef} />
+        <div className="artifacts-gallery-void-viewer">
+          <span className="artifacts-gallery-void-badge">{t("documents.voidBadge", "VOID")}</span>
+          <p className="artifacts-gallery-void-viewer-lead">
+            {t("documents.voidViewerLead", "This artifact was retracted and its content is no longer available.")}
+          </p>
+          <p className="artifacts-gallery-void-reason">
+            {voidReason || t("documents.voidReasonMissing", "Retracted, with no reason recorded.")}
+          </p>
+          <p className="artifacts-gallery-void-meta">
+            {t("documents.voidRetractedOn", "Retracted {{when}}", { when: formatTimestamp(voidWhen) })}
+          </p>
+          {artifact.taskId && (
+            <button type="button" className="btn btn-sm" onClick={() => onOpenTask(artifact.taskId!)}>
+              {t("documents.openTask", "Open task")}
+            </button>
+          )}
+        </div>
+      </OverlayShell>
+    );
+  }
 
   const startEditing = () => {
     setDraft(content);

@@ -104,6 +104,15 @@ function rowToArtifact(row: ArtifactRow): Artifact {
     metadata: metadata ?? undefined,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+    /*
+    FNXC:ArtifactRetraction 2026-11-11-12:00 (RUFU-433): map the tombstone. `listArtifacts` builds a
+    partial row (no `content`), so a missing key here is the difference between "live" and "unknown" —
+    the three columns are listed explicitly in that select, and `undefined` keeps meaning "never
+    retracted" for a row that legitimately has no tombstone.
+    */
+    ...(row.retractedAt != null ? { retractedAt: row.retractedAt } : {}),
+    ...(row.retractedBy != null ? { retractedBy: row.retractedBy } : {}),
+    ...(row.retractReason != null ? { retractReason: row.retractReason } : {}),
   };
 }
 
@@ -574,6 +583,17 @@ export async function updateArtifactRow(
     if (updates.content !== undefined && existing.uri) {
       throw new Error(`Artifact ${id} stores a binary payload; its content is not editable`);
     }
+    /*
+    FNXC:ArtifactRetraction 2026-11-11-12:00 (RUFU-433): a retracted row is not a live editing surface.
+    Editing a VOID artifact would silently rewrite the tombstoned claim while its tombstone — and the
+    History line that names it — stay attached to the OLD content, so the card would carry a reason for a
+    sentence that no longer exists. The refusal is named rather than a silent no-op because the dashboard
+    PATCH route has to answer with a reason an operator can act on. This does not weaken any existing
+    read-only rule: the archived-task gate and the binary-content gate above still run first.
+    */
+    if (existing.retractedAt) {
+      throw new Error(`Artifact ${id} was retracted${existing.retractReason ? ` (${existing.retractReason})` : ""} — it is a VOID record and is not editable`);
+    }
 
     const now = new Date().toISOString();
     await tx
@@ -594,6 +614,91 @@ export async function updateArtifactRow(
       throw new Error(`Failed to update artifact ${id}`);
     }
     return updated;
+  });
+}
+
+/*
+FNXC:ArtifactRetraction 2026-11-11-12:00 (RUFU-433):
+The single write seam for an artifact tombstone. This is where the retract/restore decision lands, and it
+is the ONLY place these columns are written, so the tool lane, the HTTP route, and the chat lane cannot
+double-apply or skip the rules below.
+
+Why a tombstone and not a DELETE: an artifact can be the backdrop of a review or of merge evidence, so a
+silent hard delete would destroy the record that a claim was ever made — and the row's file on disk and
+its card History line survive alongside it.
+
+Rules that are this helper's job (not the callers', which is why they live here):
+- A missing row refuses. "Retracted" must never be reported for an id that was never registered.
+- A retraction without a non-blank reason refuses. An unexplained retraction is indistinguishable from
+  the same mistake being repeated, and the reason is the only thing the VOID tile can show.
+- Idempotence is per-actor: the same actor re-retracting refreshes nothing and is reported as already
+  retracted, so a retry of a half-delivered tool call cannot re-write `retractedAt` into a new instant
+  and make the tombstone clock drift. A DIFFERENT actor is refused rather than silently overwriting the
+  first retractors attribution.
+- `restore` clears all three columns together. Leaving a `retractedAt` behind with a cleared reason would
+  render a VOID tile with no explanation, which is the exact unreadable-tombstone state the brief forbids.
+
+Writes no task row, no workflow step result, no column, and no pause — a retraction has no lifecycle
+effect, and a claim being withdrawn is not a verdict about the card.
+*/
+export async function retractArtifactRow(
+  layer: AsyncDataLayer,
+  id: string,
+  options: {
+    action: "retract" | "restore";
+    reason?: string;
+    actorId: string;
+    actorType: "agent" | "user" | "system";
+  },
+): Promise<{ artifact: Artifact; alreadyRetracted: boolean }> {
+  const reason = options.reason?.trim() ?? "";
+  if (options.action === "retract" && reason === "") {
+    throw new Error("Retracting an artifact requires a non-empty reason");
+  }
+  if (!options.actorId.trim()) {
+    throw new Error("Retracting an artifact requires an actor id");
+  }
+
+  return layer.transactionImmediate(async (tx) => {
+    const existing = await getArtifact(tx, id, layer.projectId);
+    if (!existing) {
+      throw new Error(`Artifact ${id} not found`);
+    }
+
+    const now = new Date().toISOString();
+    if (options.action === "restore") {
+      if (!existing.retractedAt) {
+        throw new Error(`Artifact ${id} is not retracted — nothing to restore`);
+      }
+      await tx
+        .update(schema.project.artifacts)
+        .set({ retractedAt: null, retractedBy: null, retractReason: null, updatedAt: now })
+        .where(and(
+          eq(schema.project.artifacts.id, id),
+          projectScopeFor(schema.project.artifacts.projectId, layer.projectId),
+        ));
+      const restored = await getArtifact(tx, id, layer.projectId);
+      if (!restored) throw new Error(`Failed to restore artifact ${id}`);
+      return { artifact: restored, alreadyRetracted: false };
+    }
+
+    if (existing.retractedAt) {
+      if (existing.retractedBy === options.actorId) {
+        return { artifact: existing, alreadyRetracted: true };
+      }
+      throw new Error(`Artifact ${id} was already retracted by ${existing.retractedBy ?? "another actor"}`);
+    }
+
+    await tx
+      .update(schema.project.artifacts)
+      .set({ retractedAt: now, retractedBy: options.actorId, retractReason: reason, updatedAt: now })
+      .where(and(
+        eq(schema.project.artifacts.id, id),
+        projectScopeFor(schema.project.artifacts.projectId, layer.projectId),
+      ));
+    const retracted = await getArtifact(tx, id, layer.projectId);
+    if (!retracted) throw new Error(`Failed to retract artifact ${id}`);
+    return { artifact: retracted, alreadyRetracted: false };
   });
 }
 
@@ -630,7 +735,8 @@ export async function getArtifacts(
   taskId: string,
   projectId?: string,
 
-  historicalSentinelColumns?: ReadonlySet<string>,): Promise<Artifact[]> {
+  historicalSentinelColumns?: ReadonlySet<string>,
+  options?: { includeRetracted?: boolean },): Promise<Artifact[]> {
   const column = await getLiveTaskColumn(db, taskId, projectId, historicalSentinelColumns);
   /*
   FNXC:LifecycleColumnCensus 2026-07-30-21:10 DELIBERATE-LITERAL: a SENTINEL, not a board lane.
@@ -647,13 +753,25 @@ export async function getArtifacts(
   */
   if (column === null || column === "archived") return [];
 
+  /*
+  FNXC:ArtifactRetraction 2026-11-11-12:00 (RUFU-433): the per-task artifact read hides a retracted
+  artifact by default. This is the surface behind the card's Documents and Review tabs, and a false
+  review artifact still rendering there is the original defect one layer down — the reviewer would keep
+  seeing the claim they just retracted. Widening is explicit-only, so no caller can widen by accident,
+  and the row itself stays readable by id so the VOID header can be served (`getArtifact`).
+  */
+  const conditions = [
+    eq(schema.project.artifacts.taskId, taskId),
+    projectScopeFor(schema.project.artifacts.projectId, projectId),
+  ];
+  if (!options?.includeRetracted) {
+    conditions.push(isNull(schema.project.artifacts.retractedAt));
+  }
+
   const rows = await db
     .select()
     .from(schema.project.artifacts)
-    .where(and(
-      eq(schema.project.artifacts.taskId, taskId),
-      projectScopeFor(schema.project.artifacts.projectId, projectId),
-    ))
+    .where(and(...conditions))
     .orderBy(desc(schema.project.artifacts.createdAt));
   return (rows as ArtifactRow[]).map((row) => rowToArtifact(row));
 }
@@ -687,6 +805,8 @@ export async function listArtifacts(
     limit?: number;
     offset?: number;
     search?: string;
+    /** FNXC:ArtifactRetraction 2026-11-11-12:00 (RUFU-433): explicit opt-in to see VOID rows; default hides them. */
+    includeRetracted?: boolean;
   },
   projectId?: string,
 ): Promise<ArtifactWithTask[]> {
@@ -694,6 +814,17 @@ export async function listArtifacts(
   const offset = Math.max(0, options?.offset ?? 0);
 
   const conditions = [projectScopeFor(schema.project.artifacts.projectId, projectId)];
+  /*
+  FNXC:ArtifactRetraction 2026-11-11-12:00 (RUFU-433): retracted rows are hidden from the default list.
+  This is the surface the brief named as the actual harm — "the false input must not be findable by an
+  ordinary browse of the gallery" — so the DEFAULT is the safety property, and `includeRetracted` is the
+  only way to see a VOID row. Deliberately not `retractedAt IS NULL OR ...` on a caller-built filter:
+  one shared predicate here is what keeps the tool lane, the HTTP route, and the gallery from each
+  inventing their own (weaker) rule.
+  */
+  if (!options?.includeRetracted) {
+    conditions.push(isNull(schema.project.artifacts.retractedAt));
+  }
   if (options?.type) {
     conditions.push(eq(schema.project.artifacts.type, options.type));
   }
@@ -732,6 +863,16 @@ export async function listArtifacts(
       metadata: schema.project.artifacts.metadata,
       createdAt: schema.project.artifacts.createdAt,
       updatedAt: schema.project.artifacts.updatedAt,
+      /*
+      FNXC:ArtifactRetraction 2026-11-11-12:00 (RUFU-433): this select is metadata-only and names its
+      columns, so a new column is invisible to it unless listed. Omitting the tombstone would make every
+      VOID row read as live under `includeRetracted: true` — the filter would return rows it cannot label,
+      which is worse than returning nothing, because the caller has no way to tell a retracted row from a
+      pre-0097 one.
+      */
+      retractedAt: schema.project.artifacts.retractedAt,
+      retractedBy: schema.project.artifacts.retractedBy,
+      retractReason: schema.project.artifacts.retractReason,
       taskTitle: schema.project.tasks.title,
       taskDescription: schema.project.tasks.description,
       taskColumn: schema.project.tasks.column,

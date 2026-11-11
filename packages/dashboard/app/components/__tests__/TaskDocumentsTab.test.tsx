@@ -263,7 +263,13 @@ describe("TaskDocumentsTab", () => {
     expect(screen.getByText("agent-image")).toBeInTheDocument();
     expect(screen.getByText("2.0 KB")).toBeInTheDocument();
     expect(document.querySelector(".documents-artifact-gallery--mobile")).not.toBeNull();
-    expect(mockUseArtifacts).toHaveBeenCalledWith({ projectId: "project-1", taskId: "KB-001" });
+    /*
+    FNXC:ArtifactRetraction 2026-11-11-12:27 (RUFU-433): the call now names `includeRetracted: false` explicitly
+    rather than omitting it. This is the gallery's default-hidden promise, and an assertion that leaves it out
+    would stay green if the default ever flipped to true - the one regression that would put a withdrawn review
+    artifact back in front of an operator.
+    */
+    expect(mockUseArtifacts).toHaveBeenCalledWith({ projectId: "project-1", taskId: "KB-001", includeRetracted: false });
     expect(mockArtifactMediaUrlWithToken).toHaveBeenCalledWith("artifact-image", "project-1");
   });
 

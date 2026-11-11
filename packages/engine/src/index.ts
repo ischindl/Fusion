@@ -116,6 +116,7 @@ export {
   createResearchTools,
   createArtifactListTool,
   createArtifactRegisterTool,
+  createArtifactRetractTool,
   createArtifactViewTool,
   createChatArtifactTools,
   createChatTaskDocumentTools,

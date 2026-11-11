@@ -31,9 +31,26 @@ export function useArtifacts(options?: {
   taskId?: string;
   /** Search query for artifact title/description */
   searchQuery?: string;
+  /*
+  FNXC:ArtifactRetraction 2026-11-11-12:27 (RUFU-433): the retraction filter is carried here rather than
+  resolved inside the gallery, because every surface that lists artifacts needs the same answer and the store is
+  the single authority on hiding. Two things are load-bearing in the wiring:
+
+  1. It joins `filterKey`, so the SWR cache cannot serve a previously cached hide-only list to a caller that
+     asked for tombstones, or the other way round. Sharing one cache key across the two views would make the
+     toggle appear to do nothing whenever a cached list was still fresh.
+  2. Default is false, matching the server. A hook that defaulted to true would quietly undo the hiding on
+     whichever surface forgot to pass it, which is the exact findability harm retraction exists to remove.
+  */
+  includeRetracted?: boolean;
 }): UseArtifactsResult {
-  const { projectId, type, authorId, taskId, searchQuery } = options ?? {};
-  const filterKey = JSON.stringify({ type: type ?? null, authorId: authorId ?? null, taskId: taskId ?? null });
+  const { projectId, type, authorId, taskId, searchQuery, includeRetracted } = options ?? {};
+  const filterKey = JSON.stringify({
+    type: type ?? null,
+    authorId: authorId ?? null,
+    taskId: taskId ?? null,
+    includeRetracted: includeRetracted ?? false,
+  });
   const projectScopeKey = projectId ?? "__default__";
   const cacheKey = `${SWR_CACHE_KEYS.ARTIFACTS_PREFIX}${projectScopeKey}:${filterKey}`;
   const [artifacts, setArtifacts] = useState<ArtifactWithTask[]>(() => {
@@ -75,6 +92,9 @@ export function useArtifacts(options?: {
         authorId,
         taskId,
         q: searchQuery,
+        // Normalised here, not left undefined: the hook owns the default-hidden promise, and a call that reads
+        // `includeRetracted: undefined` records the absence of a decision rather than the decision itself.
+        includeRetracted: includeRetracted ?? false,
       }, projectId);
 
       if (requestController.signal.aborted || context.isStale()) {
@@ -102,7 +122,7 @@ export function useArtifacts(options?: {
         setLoading(false);
       }
     }
-  }, [authorId, cacheKey, capture, projectId, searchQuery, taskId, type]);
+  }, [authorId, cacheKey, capture, includeRetracted, projectId, searchQuery, taskId, type]);
 
   useEffect(() => {
     refreshRef.current = refresh;
@@ -201,6 +221,15 @@ export function useArtifacts(options?: {
       onReconnect: resyncArtifacts,
       events: {
         "artifact:registered": handleAuthoritativeArtifact,
+        /*
+        FNXC:ArtifactRetraction 2026-11-11-12:27 (RUFU-433): the retraction has to reach an already-open gallery
+        on the same debounced path as a registration, or the withdrawal is invisible until someone reloads the
+        view - and an operator deciding whether to merge is reading what is on screen, not what is in the
+        database. This is the only automated notice a retraction gets, because a card that is not moved, not
+        re-planned and not re-verdicted produces no `task:updated` to piggyback on. The store emits the same
+        event for a restore, so restoring reappears the tile without a reload either.
+        */
+        "artifact:retracted": handleAuthoritativeArtifact,
         // FNXC:ArtifactRegistry 2026-07-10-15:20: in-place doc edits from the Artifacts viewer emit artifact:updated; open galleries refresh through the same debounced path as registrations.
         "artifact:updated": handleAuthoritativeArtifact,
         "message:received": handleArtifactMessage,

@@ -57,7 +57,7 @@ const loadInitialArtifacts = async () => {
 };
 
 const fireArtifactRegistration = async (
-  eventName: "artifact:registered" | "message:received" | "message:sent",
+  eventName: "artifact:registered" | "artifact:retracted" | "message:received" | "message:sent",
   payload: object,
 ) => {
   act(() => {
@@ -95,7 +95,32 @@ describe("useArtifacts", () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.error).toBeNull();
     expect(result.current.artifacts).toEqual(mockArtifacts);
-    expect(mockFetchArtifacts).toHaveBeenCalledWith({ q: undefined }, "project-1");
+    expect(mockFetchArtifacts).toHaveBeenCalledWith({ q: undefined, includeRetracted: false }, "project-1");
+  });
+
+  /*
+  FNXC:ArtifactRetraction 2026-11-11-12:27 (RUFU-433): the two assertions above now state `includeRetracted: false`
+  rather than omitting it, because the default IS the behaviour worth pinning: a hook that silently defaulted to
+  true would undo the hiding on whichever surface forgot to pass it. This test pins the opted-in direction and the
+  cache separation, which is the part that fails silently - sharing one cache key across the two views makes the
+  toggle look broken whenever a cached list is still fresh.
+  */
+  it("carries includeRetracted to the fetch and keeps the opted-in view off the hidden view's cache key", async () => {
+    const { result, rerender } = renderHook(
+      ({ includeRetracted }) => useArtifacts({ projectId: "project-9", includeRetracted }),
+      { initialProps: { includeRetracted: false } },
+    );
+
+    await loadInitialArtifacts();
+    expect(mockFetchArtifacts).toHaveBeenLastCalledWith({ q: undefined, includeRetracted: false }, "project-9");
+
+    rerender({ includeRetracted: true });
+    await loadInitialArtifacts();
+
+    await waitFor(() => {
+      expect(mockFetchArtifacts).toHaveBeenLastCalledWith({ q: undefined, includeRetracted: true }, "project-9");
+    });
+    expect(result.current.loading).toBe(false);
   });
 
   it("propagates filter parameters to fetchArtifacts", async () => {
@@ -114,6 +139,7 @@ describe("useArtifacts", () => {
       authorId: "agent-video",
       taskId: "FN-2",
       q: "demo",
+      includeRetracted: false,
     }, "project-2");
   });
 
@@ -138,7 +164,7 @@ describe("useArtifacts", () => {
     });
 
     await waitFor(() => {
-      expect(mockFetchArtifacts).toHaveBeenCalledWith({ q: "alpha" }, "project-3");
+      expect(mockFetchArtifacts).toHaveBeenCalledWith({ q: "alpha", includeRetracted: false }, "project-3");
     });
   });
 
@@ -169,7 +195,7 @@ describe("useArtifacts", () => {
     });
 
     expect(mockFetchArtifacts).toHaveBeenCalledTimes(1);
-    expect(mockFetchArtifacts).toHaveBeenCalledWith({ q: undefined }, "project-5");
+    expect(mockFetchArtifacts).toHaveBeenCalledWith({ q: undefined, includeRetracted: false }, "project-5");
   });
 
   it("refreshes task-scoped artifacts when a matching artifact registration arrives", async () => {
@@ -187,7 +213,7 @@ describe("useArtifacts", () => {
     });
 
     await waitFor(() => expect(mockFetchArtifacts).toHaveBeenCalledTimes(1));
-    expect(mockFetchArtifacts).toHaveBeenCalledWith({ taskId: "FN-1", q: undefined }, "project-6");
+    expect(mockFetchArtifacts).toHaveBeenCalledWith({ taskId: "FN-1", q: undefined, includeRetracted: false }, "project-6");
     await waitFor(() => expect(result.current.artifacts).toEqual([newTaskArtifact]));
   });
 
@@ -220,7 +246,7 @@ describe("useArtifacts", () => {
     });
 
     await waitFor(() => expect(mockFetchArtifacts).toHaveBeenCalledTimes(1));
-    expect(mockFetchArtifacts).toHaveBeenCalledWith({ taskId: "FN-1", q: undefined }, "project-8a");
+    expect(mockFetchArtifacts).toHaveBeenCalledWith({ taskId: "FN-1", q: undefined, includeRetracted: false }, "project-8a");
     await waitFor(() => expect(result.current.artifacts).toEqual([newTaskArtifact]));
   });
 
@@ -240,7 +266,7 @@ describe("useArtifacts", () => {
     });
 
     await waitFor(() => expect(mockFetchArtifacts).toHaveBeenCalledTimes(1));
-    expect(mockFetchArtifacts).toHaveBeenCalledWith({ q: undefined }, "project-8");
+    expect(mockFetchArtifacts).toHaveBeenCalledWith({ q: undefined, includeRetracted: false }, "project-8");
     await waitFor(() => expect(result.current.artifacts).toEqual(updatedArtifacts));
   });
 
@@ -357,6 +383,13 @@ describe("useArtifacts", () => {
     expect(mockSubscribeSse).toHaveBeenCalledWith("/api/events?projectId=project-13", {
       events: expect.objectContaining({
         "artifact:registered": expect.any(Function),
+        /*
+         * FNXC:ArtifactRetraction 2026-11-11-15:12 (RUFU-433): the subscription has to be asserted, not just
+         * written. The retraction shipped once with the store emitting the event and this hook listening for
+         * it while `sse.ts` never forwarded it, which left the listener a dead control - so the shape
+         * assertion here is what keeps the client half of that three-layer wire from silently disappearing.
+         */
+        "artifact:retracted": expect.any(Function),
         "message:received": expect.any(Function),
         "message:sent": expect.any(Function),
       }),
@@ -383,7 +416,7 @@ describe("useArtifacts", () => {
 
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.artifacts).toEqual(mockArtifacts);
-    expect(mockFetchArtifacts).toHaveBeenCalledWith({ q: undefined }, undefined);
+    expect(mockFetchArtifacts).toHaveBeenCalledWith({ q: undefined, includeRetracted: false }, undefined);
     expect(mockSubscribeSse).toHaveBeenCalledWith("/api/events", {
       events: expect.objectContaining({
         "artifact:registered": expect.any(Function),
@@ -412,7 +445,35 @@ describe("useArtifacts", () => {
     });
 
     await waitFor(() => expect(mockFetchArtifacts).toHaveBeenCalledTimes(1));
-    expect(mockFetchArtifacts).toHaveBeenCalledWith({ q: undefined }, undefined);
+    expect(mockFetchArtifacts).toHaveBeenCalledWith({ q: undefined, includeRetracted: false }, undefined);
     await waitFor(() => expect(result.current.artifacts).toEqual(updatedArtifacts));
+  });
+
+  /*
+   * FNXC:ArtifactRetraction 2026-11-11-15:12 (RUFU-433): the symptom this case owns is an operator reading a
+   * gallery that no longer matches the registry. A retraction moves no card, writes no task row and changes no
+   * verdict, so there is no `task:updated` for the view to piggyback on: the retraction event is the only
+   * automated notice it ever gets. Without a listener the false review artifact stays on screen as a live tile
+   * - i.e. as live merge-grade input for whoever is deciding the merge - until somebody reloads the page.
+   */
+  it("drops a retracted artifact from an already-open gallery without a reload", async () => {
+    const { result } = renderHook(() => useArtifacts());
+
+    await loadInitialArtifacts();
+    await waitFor(() => expect(result.current.artifacts).toEqual(mockArtifacts));
+
+    mockFetchArtifacts.mockClear();
+    // The default read hides VOID rows, so the post-retraction list is empty rather than tombstoned.
+    mockFetchArtifacts.mockResolvedValue([]);
+
+    await fireArtifactRegistration("artifact:retracted", {
+      id: "artifact-1",
+      taskId: "FN-1",
+      retractedAt: "2026-11-11T15:00:00.000Z",
+    });
+
+    await waitFor(() => expect(mockFetchArtifacts).toHaveBeenCalledTimes(1));
+    expect(mockFetchArtifacts).toHaveBeenCalledWith({ q: undefined, includeRetracted: false }, undefined);
+    await waitFor(() => expect(result.current.artifacts).toEqual([]));
   });
 });

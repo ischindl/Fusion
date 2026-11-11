@@ -158,7 +158,7 @@ import { recordGoalCitationsImpl, insertTaskWithFtsRecoveryImpl2, assertTaskIdAv
 import { applyLegacyWorkflowStepOverridesImpl, assertNoDependencyCycleImpl, atomicCreateTaskJsonImpl, buildActiveTaskDependencyLookupImpl, buildArchivedAgentLogFieldsImpl, buildTaskIdIntegrityFallbackReportImpl, createBranchGroupImpl, dbImpl, detectAndCacheTaskIdIntegrityReportImpl, findLiveDependentsImpl, findLiveLineageChildrenImpl, getLegacyWorkflowStepSnapshotImpl, getMalformedTaskMetadataReasonImpl, getMergeQueuedTaskIdsAsyncImpl, insertRunAuditEventRowImpl, insertTaskImpl, invokeTaskCreatedHookImpl, isTaskIdPresentInArchivedTasksTableAsyncImpl, isTaskIdPresentInArchivedTasksTableImpl, logTaskCreateConflictImpl, maybeResolveTombstonedTaskIdImpl, mergeTaskIdIntegrityReportsImpl, optionalGroupIdSetImpl, patchTaskRowInTransactionImpl, readConfigFastImpl, readConfigImpl, readPromptForArchiveImpl, readTaskFromDbImpl, reconcileDistributedTaskIdStateOnOpenImpl, recordActivityFromListenerImpl, recordDependencyCycleRejectedAuditImpl, refreshTaskIdIntegrityReportImpl, resolveLocalNodeIdForTaskAllocationImpl, runTaskFtsWriteWithRecoveryImpl, scanAndRecordCitationsImpl, resolveTaskIdPresenceForIdsImpl, resolveTaskIdPresenceImpl, taskIdExistsAnywhereImpl, type TaskIdPresence, throwSoftDeletedWriteBlockedImpl, toBuiltInWorkflowStepImpl, trackDeferredTaskCreatedWorkImpl, upsertTaskImpl, withConfigLockImpl, withTaskLockImpl, withWorktreeAllocationLockImpl } from "./task-store/task-id-integrity.js";
 /* FNXC:PullRequestReadiness 2026-10-05-08:52 (merge origin/main): upstream FN-9439 adds these three PR-readiness impls. The archive impls sharing this import block stay dropped — task archiving was retired by FN-9187, so re-importing them would resurrect a deleted surface. */
 import { updatePrReadinessImpl, updatePrReadinessAndAwaitChecksIfBlockedImpl, releaseAwaitingPrChecksIfCurrentHeadImpl, claimNextToolFailureRetryImpl, createTaskVerificationRequestImpl, claimTaskVerificationRequestImpl, finishTaskVerificationRequestImpl, clearNearDuplicateReferencesToFailSoftImpl, clearWorkflowRunStepInstancesAsyncImpl, clearWorkflowRunStepInstancesImpl, computeMovedSettingsTargetWorkflowIdsImpl, ensureBranchGroupForSourceImpl, ensurePrEntityForSourceImpl, findRecentTasksByContentFingerprintImpl, getActiveMergingTaskImpl, getActivePrEntityBySourceImpl, getBranchGroupByBranchNameImpl, getBranchGroupBySourceImpl, getBranchGroupImpl, getBranchProgressByTaskImpl, getMutationsForRunImpl, getPrEntityByNumberImpl, getPrEntityImpl, getPrThreadStateImpl, getTasksByAssignedAgentImpl, getWorkflowPromptOverridesAsyncImpl, getWorkflowSettingValuesAsyncImpl, getWorkflowSettingValuesImpl, getWorkflowSettingsProjectIdImpl, getWorkflowWorkItemImpl, insertCompletionHandoffWorkflowWorkAuditImpl, listActivePrEntitiesImpl, listBranchGroupsImpl, listPrThreadStatesImpl, listTasksByBranchGroupImpl, listWorkflowSettingValuesForProjectImpl, loadWorkflowRunBranchesImpl, hasWorkflowRunStepInstancesForTaskImpl, loadWorkflowRunStepInstancesAsyncImpl, loadWorkflowRunStepInstancesImpl, markToolFailureRetryExhaustedAuditImpl, mergeCustomFieldPatchImpl, normalizeMergeRequestStateImpl, normalizeWorkflowWorkItemKindImpl, normalizeWorkflowWorkItemStateImpl, parseWorkflowPromptOverrideJsonImpl, recordPrThreadOutcomeImpl, resetAllStepsToPendingImpl, resetPromptCheckboxesImpl, resolveWorkflowMoveActorImpl, resolveWorkflowSettingDeclarationsImpl, saveWorkflowRunStepInstanceAsyncImpl, saveWorkflowRunStepInstanceImpl, transitionMergeRequestStateImpl, transitionWorkflowWorkItemSyncImpl, updateTaskImpl, updateWorkflowPromptOverridesImpl, upsertMergeRequestRecordImpl, workflowStateForMergeRequestStateImpl } from "./task-store/branch-and-pr-entities.js";
-import { addPrInfoImpl, addSteeringCommentImpl, cleanupStaleMergeQueueRowsImpl, clearCompletionHandoffAcceptedMarkerImpl, clearDoneTransientFieldsImpl, clearStaleExecutionStartBranchReferencesImpl, deleteTaskCommentImpl, deleteTaskDocumentImpl, emitUsageEventImpl, enqueueMergeQueueImpl, getAgentLogCountImpl, getAgentLogsImpl, getArtifactImpl, getArtifactsImpl, getAttachmentImpl, getCompletionHandoffAcceptedMarkerImpl, getTaskDocumentImpl, getTaskDocumentRevisionsImpl, getTaskDocumentsImpl, insertArtifactRowImpl, linkGithubIssueImpl, listWorkflowWorkItemsForTaskSyncImpl, moveToDoneImpl, parseDependenciesFromPromptImpl, parseFileScopeFromPromptImpl, parseStepsFromPromptImpl, peekMergeQueueHeadImpl, peekMergeQueueImpl, recordPluginActivationImpl, recordRunAuditEventBackendImpl, removePrInfoByNumberImpl, resolvePrimaryPrInfoImpl, rewriteLineageChildrenForRemovalImpl, runGitCommandImpl, stopWatchingImpl, syncAgentTaskLinkOnReassignmentImpl, updateArtifactImpl, updateGithubTrackingImpl, updatePrInfoByNumberImpl, updateTaskCommentImpl, upsertPrInfoByNumberImpl, writeArtifactDataImpl } from "./task-store/task-artifacts-ops.js";
+import { addPrInfoImpl, addSteeringCommentImpl, cleanupStaleMergeQueueRowsImpl, clearCompletionHandoffAcceptedMarkerImpl, clearDoneTransientFieldsImpl, clearStaleExecutionStartBranchReferencesImpl, deleteTaskCommentImpl, deleteTaskDocumentImpl, emitUsageEventImpl, enqueueMergeQueueImpl, getAgentLogCountImpl, getAgentLogsImpl, getArtifactImpl, getArtifactsImpl, getAttachmentImpl, getCompletionHandoffAcceptedMarkerImpl, getTaskDocumentImpl, getTaskDocumentRevisionsImpl, getTaskDocumentsImpl, insertArtifactRowImpl, retractArtifactImpl, linkGithubIssueImpl, listWorkflowWorkItemsForTaskSyncImpl, moveToDoneImpl, parseDependenciesFromPromptImpl, parseFileScopeFromPromptImpl, parseStepsFromPromptImpl, peekMergeQueueHeadImpl, peekMergeQueueImpl, recordPluginActivationImpl, recordRunAuditEventBackendImpl, removePrInfoByNumberImpl, resolvePrimaryPrInfoImpl, rewriteLineageChildrenForRemovalImpl, runGitCommandImpl, stopWatchingImpl, syncAgentTaskLinkOnReassignmentImpl, updateArtifactImpl, updateGithubTrackingImpl, updatePrInfoByNumberImpl, updateTaskCommentImpl, upsertPrInfoByNumberImpl, writeArtifactDataImpl } from "./task-store/task-artifacts-ops.js";
 import { approveCliAutonomyImpl, approveWorkflowCliCommandImpl, cleanupOrphanedMaterializedStepsImpl, consumePluginGateVerdictsImpl, getAgentLogsByTimeRangeImpl, getDatabaseHealthImpl, getDistributedTaskIdAllocatorImpl, getExperimentSessionStoreImpl, getInReviewDurationEventsImpl, getMissionStoreImpl, getIdeationStoreImpl, getPluginStoreImpl, getSecretsStoreImpl, getSettingsSyncImpl, getTaskMergedTaskIdsImpl, getTaskWorkflowSelectionImpl, getImportTranslationImpl, recordImportTranslationImpl, pruneImportTranslationsImpl, type ImportTranslationCacheKey, type ImportTranslationCacheEntry, getVerificationCacheHitImpl, getWorkflowDefinitionImpl, healthCheckImpl, importLegacyAgentLogsOnceImpl, insertWorkflowDefinitionSyncImpl, isCliAutonomyApprovedImpl, isPluginInstalledImpl, isWorkflowCliCommandApprovedImpl, listWorkflowDefinitionsImpl, materializeExplicitWorkflowStepsImpl, materializeWorkflowStepsImpl, nextWorkflowDefinitionIdImpl, occupantsByColumnForWorkflowImpl, parseWorkflowLayoutImpl, pruneAgentLogFilesImpl, purgeTaskWorkflowSelectionRowsImpl, readAllWorkflowDefinitionsImpl, readRawProjectSettingsImpl, recordPluginGateVerdictImpl, recordVerificationCachePassImpl, removeMaterializedSelectionImpl, resolvePluginWorkflowStepImpl, resolveTaskWorkflowIrSyncImpl, revokeCliAutonomyImpl, selectTaskWorkflowAndReconcileImpl, writeTaskWorkflowSelectionImpl, getTaskWorkflowSelectionAsyncImpl, getTaskWorkflowSelectionsAsyncImpl,  } from "./task-store/workflow-definitions.js";
 import { getTaskCommitAssociationsByLineageIdImpl, replaceLegacyTaskCommitAssociationsImpl } from "./task-store/task-commit-associations.js";
 import { findRecentTasksBySourceParentTaskIdImpl } from "./task-store/branch-and-pr-entities.js";
@@ -346,6 +346,13 @@ export interface TaskStoreEvents {
     mutationId: string;
   }];
   "artifact:registered": [artifact: Artifact];
+  /*
+  FNXC:ArtifactRetraction 2026-11-11-12:05 (RUFU-433): published when an artifact's tombstone is written
+  or cleared. Without this the already-open gallery would keep rendering a retracted review artifact — and
+  therefore keep offering it as live merge-grade input — until a manual reload, which is the exact failure
+  the retraction exists to remove. SSE forwards it, and `useArtifacts` refetches on it.
+  */
+  "artifact:retracted": [artifact: Artifact];
   "artifact:updated": [artifact: Artifact];
   "agent:log": [entry: AgentLogEntry];
   "merger:autostashOrphans": [data: {
@@ -4436,14 +4443,47 @@ updates: { title?: string; description?: string; prompt?: string; worktree?: str
 
   /**
    * FNXC:ArtifactRegistry 2026-06-19-22:04:
+   *
+   * FNXC:ArtifactRetraction 2026-11-11-12:12 (RUFU-433): the per-task read hides a retracted artifact by
+   * default, so the card's Documents and Review tabs stop offering a withdrawn claim as live input without
+   * either surface having to remember a filter. `includeRetracted` is carried as an explicit option rather
+   * than left unwired in the impl: an option no public caller can pass is a dead control, and the per-task
+   * VOID rendering needs exactly this opt-in to draw the tombstone it is supposed to show.
    */
-  async getArtifacts(taskId: string): Promise<Artifact[]> {
-    return getArtifactsImpl(this, taskId);
+  async getArtifacts(taskId: string, options?: { includeRetracted?: boolean; }): Promise<Artifact[]> {
+    return getArtifactsImpl(this, taskId, options);
   }
 
   /** FNXC:ArtifactRegistry 2026-06-19-22:04: FNXC:ArtifactRegistry 2026-06-23-12:48: */
-  async listArtifacts(options?: { type?: ArtifactType; authorId?: string; taskId?: string; limit?: number; offset?: number; search?: string; }): Promise<ArtifactWithTask[]> {
+  async listArtifacts(options?: { type?: ArtifactType; authorId?: string; taskId?: string; limit?: number; offset?: number; search?: string; includeRetracted?: boolean; }): Promise<ArtifactWithTask[]> {
     return listArtifactsImpl(this, options);
+  }
+
+  /*
+  FNXC:ArtifactRetraction 2026-11-11-12:05 (RUFU-433):
+  Retract an artifact — the registry's first non-destructive way out. A review artifact is merge-grade
+  input that executors, reviewers and the operator read before deciding to merge, and until now the only
+  remedy for a false or mis-attached one was to publish ANOTHER artifact disclaiming it, which thickens the
+  layer the false evidence sits in.
+
+  Nothing here moves a card, writes a task row, touches a workflow step result, or clears a pause: a
+  withdrawn claim is not a verdict about the work. The reason is mandatory and reaches the tombstone plus
+  the parent card's History line, never run-audit metadata. See `retractArtifactImpl` for the seam that
+  attaches the audit row and the History line, and `retractArtifactRow` for the column write itself.
+  */
+  async retractArtifact(id: string, input: { reason: string; actorId: string; actorType: "agent" | "user" | "system" }): Promise<Artifact> {
+    return retractArtifactImpl(this, id, { action: "retract", ...input });
+  }
+
+  /*
+  FNXC:ArtifactRetraction 2026-11-11-12:05 (RUFU-433):
+  Operator-only return of a retracted artifact to the live set, clearing all three tombstone columns at
+  once. It is a separate method rather than an `action` flag on the tool surface because agents must never
+  hold it: an agent that could un-retract its own retraction could launder a claim back into the gallery
+  after the reason for withdrawing it had been read. Only the dashboard route (session user) calls it.
+  */
+  async restoreArtifact(id: string, input: { actorId: string; actorType: "agent" | "user" | "system" }): Promise<Artifact> {
+    return retractArtifactImpl(this, id, { action: "restore", actorId: input.actorId, actorType: input.actorType });
   }
   async getTaskDocuments(taskId: string): Promise<TaskDocument[]> {
     return getTaskDocumentsImpl(this, taskId);

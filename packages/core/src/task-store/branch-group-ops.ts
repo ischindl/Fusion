@@ -440,11 +440,19 @@ export function clearLinkedAgentTaskIdsImpl(store: TaskStore, taskId: string, up
     `).run(updatedAt, updatedAt, taskId);
   }
 
-export async function listArtifactsImpl(store: TaskStore, options?: { type?: ArtifactType; authorId?: string; taskId?: string; limit?: number; offset?: number; search?: string; }): Promise<ArtifactWithTask[]> {
+export async function listArtifactsImpl(store: TaskStore, options?: { type?: ArtifactType; authorId?: string; taskId?: string; limit?: number; offset?: number; search?: string; includeRetracted?: boolean; }): Promise<ArtifactWithTask[]> {
     // FNXC:Artifacts 2026-06-27-12:10:
     // PG backend mode: delegate to the AsyncDataLayer helper. The sync path
     // below dereferences store.db (no SQLite handle in backend mode) and 500'd
     // the dashboard /api/artifacts list.
+    //
+    /*
+    FNXC:ArtifactRetraction 2026-11-11-12:05 (RUFU-433): pure delegation, verified — this entry point owns
+    no filter of its own, so `includeRetracted` passes straight through to the single hide-by-default
+    predicate in `listArtifacts`. Had this file re-implemented the selection, the tombstone filter would
+    have needed a second copy here, and the two copies are exactly how a read surface ends up leaking a
+    VOID row while the other one hides it.
+    */
         return listArtifactsAsync(store.asyncLayer!.db, options, store.asyncLayer!.projectId);
 }
 

@@ -150,6 +150,7 @@ describe("gating-classifications parity", () => {
         "fn_agent_show",
         "fn_artifact_list",
         "fn_artifact_register",
+        "fn_artifact_retract",
         "fn_artifact_view",
         "fn_ask_question",
         "fn_goal_list",

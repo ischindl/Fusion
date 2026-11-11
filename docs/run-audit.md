@@ -1274,3 +1274,36 @@ age rather than disappear. The mailbox notice is bounded by a DIFFERENT window o
 sweep's own clock - so the durable record can keep ageing while the alarming surface stays at one message a
 day; a `sendMessageOnce` outage leaves the row and the card's History line intact and writes no row of its
 own, because "nobody was paged" and "nothing was recorded" must stay distinguishable.
+
+### Retracting an artifact the registry already accepted (RUFU-433)
+
+`artifact:retracted` records one artifact retraction and one operator restore. It is declared in
+`@fusion/core`'s `RunAuditMutationType` and is deliberately absent from the curated delivery-pipeline
+catalogue: an artifact-registry correction is not a delivery-pipeline step, so this section is prose rather
+than a table row, following the RUFU-462 and RUFU-279 precedent.
+
+The event exists because a retraction is deliberately invisible everywhere else. A review artifact is
+merge-grade input that executors, reviewers, and the operator read before deciding to merge; withdrawing
+one moves no card, changes no gate verdict, clears no pause, and deletes nothing — not the row, not its
+file on disk, not the History line it leaves on the parent card. Without this row the artifact simply
+stops appearing in every default read, which is indistinguishable from it never having been registered.
+The row is what makes "a claim was made here and then withdrawn" answerable after the fact.
+
+One seam writes it: `retractArtifactImpl` (`packages/core/src/task-store/task-artifacts-ops.ts`), reached
+through `store.retractArtifact` and `store.restoreArtifact`. Both the `fn_artifact_*` tool lane and the
+dashboard HTTP route call that seam rather than writing the tombstone columns themselves, so neither can
+emit the row twice nor skip it. Emission is the FN-9177 bounded core seam (`emitBoundedRunAudit`), so an
+absent, throwing, rejecting, or hanging audit sink cannot alter, delay, or fail the retraction it reports.
+
+Metadata is the closed set `artifactId`, `outcome` (fixed enum `retracted` | `restored`), `actorType`
+(fixed enum `agent` | `user` | `system`), `reasonChars` (a count), and `taskId` when the artifact has a
+parent card. Ids, one count, and fixed enums only. The reason **sentence** never enters metadata: it is
+operator-facing prose, and it lives on the tombstone columns and on the parent card's History line, which
+is the surface a reader of that card actually consults. `reasonChars` is what lets a query ask "were
+retractions explained substantively or with filler?" without any text reaching the audit store at all.
+
+An idempotent repeat emits nothing. When the same actor re-retracts an already-retracted artifact, nothing
+changed, so the seam writes no tombstone, no History line, no audit row, and publishes no event — a retry
+of a half-delivered tool call therefore cannot drift the tombstone clock or double-narrate the withdrawal.
+`runId` is `artifact-retraction:<artifactId>:<action>`, which resolves both halves of one artifact's trail
+without putting the artifact's title or content into a lookup key.

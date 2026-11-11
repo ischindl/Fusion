@@ -74,6 +74,7 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import {
   createArtifactListTool,
   createArtifactRegisterTool,
+  createArtifactRetractTool,
   createArtifactViewTool,
   createTaskDocumentReadTool,
   createTaskDocumentWriteTool,
@@ -2284,6 +2285,14 @@ export async function runImplementation(
         expose it, attributing ephemeral runs to the established "executor" fallback author.
         */
         createArtifactRegisterTool(tools, assignedAgentId ?? "executor", task.id, worktreePath),
+        /*
+        FNXC:ArtifactRetraction 2026-11-11-12:23 (RUFU-433): the executor lane holds retract with the SAME
+        author binding it used to register, so an executor that posted a wrong screenshot or a superseded
+        report can withdraw it instead of stacking a disclaiming artifact on top. The fallback author is
+        reused deliberately: an ephemeral run registers as "executor", and retracting with a different id
+        would make its own artifacts un-retractable by it, reproducing the defect this card removes.
+        */
+        createArtifactRetractTool(tools, assignedAgentId ?? "executor"),
         createWorkflowListTool(tools),
         createWorkflowGetTool(tools),
         createWorkflowValidateTool(tools),

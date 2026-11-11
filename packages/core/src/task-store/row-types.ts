@@ -114,6 +114,14 @@ export interface ArtifactRow {
   metadata: string | null;
   createdAt: string;
   updatedAt: string;
+  /*
+  FNXC:ArtifactRetraction 2026-11-11-12:00 (RUFU-433): tombstone columns from migration 0097. Nullable
+  rather than defaulted because every pre-0097 row must read as "never retracted"; a row that cannot
+  answer these three questions is a live artifact, not a missing-tombstone one.
+  */
+  retractedAt: string | null;
+  retractedBy: string | null;
+  retractReason: string | null;
 }
 
 /** Database row shape for the task_document_revisions table. */

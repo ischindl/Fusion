@@ -247,6 +247,26 @@ export type RunAuditMutationType =
   `DELIVERY_PIPELINE_RUN_AUDIT_EVENTS`.
   */
   | "task:unbound-list-read"
+  /*
+  FNXC:ArtifactRetraction 2026-11-11-12:05 (RUFU-433):
+  One row per artifact retraction and per operator restore, written at the ONE store seam that touches
+  the tombstone columns (`retractArtifactImpl`), so the tool lane, the HTTP route, and the chat lane can
+  neither double-emit nor skip it. The event exists because a retraction is deliberately invisible in the
+  lifecycle: it moves no card, changes no gate verdict, and deletes nothing, so without this row the
+  withdrawal of merge-grade evidence would leave no queryable trace at all — the artifact simply stops
+  appearing, which is indistinguishable from it never having been registered.
+
+  Metadata is the closed set `artifactId`, `outcome` (fixed enum `retracted` | `restored`), `actorType`
+  (fixed enum `agent` | `user` | `system`), `reasonChars` (a count), and optional `taskId`. Ids, one
+  count, and fixed enums only. The reason SENTENCE never enters metadata: it is operator prose and lives
+  on the tombstone row and on the parent card's History line. An idempotent repeat (the same actor
+  re-retracting) emits no row, because nothing changed.
+
+  Deliberately OUTSIDE the curated delivery-pipeline catalogue (RUFU-462's and RUFU-279's exclusion):
+  an artifact registry correction is not a delivery-pipeline step, so `docs/run-audit.md` documents it in
+  prose and keeps it out of the tables locked to `DELIVERY_PIPELINE_RUN_AUDIT_EVENTS`.
+  */
+  | "artifact:retracted"
   | (string & {});
 
 /** Input for recording a run-audit event. */

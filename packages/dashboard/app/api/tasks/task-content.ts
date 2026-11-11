@@ -174,6 +174,12 @@ export interface FetchArtifactsOptions {
   q?: string;
   limit?: number;
   offset?: number;
+  /*
+  FNXC:ArtifactRetraction 2026-11-11-12:27 (RUFU-433): opt-in only, and the request is built so that only a
+  true ever reaches the wire. Sending `includeRetracted=false` would put this client in charge of the default
+  that the store owns, and a stale client could then widen the view of a server that changed its default.
+  */
+  includeRetracted?: boolean;
 }
 
 export async function fetchArtifacts(
@@ -187,6 +193,7 @@ export async function fetchArtifacts(
   if (options?.q) params.set("q", options.q);
   if (options?.limit !== undefined) params.set("limit", String(options.limit));
   if (options?.offset !== undefined) params.set("offset", String(options.offset));
+  if (options?.includeRetracted === true) params.set("includeRetracted", "true");
   const queryString = params.toString();
   const path = `/artifacts${queryString ? `?${queryString}` : ""}`;
   return api<ArtifactWithTask[]>(withProjectId(path, projectId));

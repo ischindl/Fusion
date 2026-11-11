@@ -84,7 +84,7 @@ import {
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "@earendil-works/pi-ai";
 import { createHash } from "node:crypto";
-import { createTaskCreateTool, createTaskLogToolWithContext, createTaskLogsReadTool, createTaskDocumentWriteTool, createTaskDocumentReadTool, createTaskReadTools, createArtifactRegisterTool, createArtifactListTool, createArtifactViewTool, createListAgentsTool, createDelegateTaskTool, createTaskAssignTool, createGetAgentConfigTool, createUpdateAgentConfigTool, createAgentCreateTool, createAgentDeleteTool, createSendMessageTool, createReadMessagesTool, createAckMessagesTool, createPostRoomMessageTool, createMemoryTools, createGoalRetrievalTools, createMissionTools, createIdeationTools, createReadEvaluationsTool, createUpdateIdentityTool, createReflectOnPerformanceTool, createWebFetchTool, createWorkflowListTool, createWorkflowGetTool, createWorkflowValidateTool, createWorkflowSelectTool, createTaskPromoteTool, createWorkflowCreateTool, createWorkflowUpdateTool, createWorkflowDeleteTool, createWorkflowSettingsTool, createTraitListTool, createAskQuestionTool, createResearchTools, readAgentMemoryWorkspaceLongTerm, taskCreateParams } from "./agent-tools.js";
+import { createTaskCreateTool, createTaskLogToolWithContext, createTaskLogsReadTool, createTaskDocumentWriteTool, createTaskDocumentReadTool, createTaskReadTools, createArtifactRegisterTool, createArtifactListTool, createArtifactRetractTool, createArtifactViewTool, createListAgentsTool, createDelegateTaskTool, createTaskAssignTool, createGetAgentConfigTool, createUpdateAgentConfigTool, createAgentCreateTool, createAgentDeleteTool, createSendMessageTool, createReadMessagesTool, createAckMessagesTool, createPostRoomMessageTool, createMemoryTools, createGoalRetrievalTools, createMissionTools, createIdeationTools, createReadEvaluationsTool, createUpdateIdentityTool, createReflectOnPerformanceTool, createWebFetchTool, createWorkflowListTool, createWorkflowGetTool, createWorkflowValidateTool, createWorkflowSelectTool, createTaskPromoteTool, createWorkflowCreateTool, createWorkflowUpdateTool, createWorkflowDeleteTool, createWorkflowSettingsTool, createTraitListTool, createAskQuestionTool, createResearchTools, readAgentMemoryWorkspaceLongTerm, taskCreateParams } from "./agent-tools.js";
 import { AgentLogger } from "./agents/agent-logger.js";
 import { isTaskPlanningOrExecutionLive } from "./agents/planning-execution-liveness.js";
 /*
@@ -4316,6 +4316,13 @@ export class HeartbeatMonitor {
           heartbeatTools.push(createArtifactRegisterTool(taskStore, agentId, this.messageStore));
           heartbeatTools.push(createArtifactListTool(taskStore));
           heartbeatTools.push(createArtifactViewTool(taskStore));
+          /*
+          FNXC:ArtifactRetraction 2026-11-11-12:23 (RUFU-433): the retract tool goes where the register tool
+          already is, bound to the SAME author id, because authorship is the permission. A reviewer or
+          executor that could publish merge-grade evidence but not withdraw it is the exact shape that left
+          the motivating false artifact in the gallery with only "register another artifact" as a remedy.
+          */
+          heartbeatTools.push(createArtifactRetractTool(taskStore, agentId));
 
           // Agent delegation tools
           heartbeatTools.push(createListAgentsTool(this.store));
@@ -6372,6 +6379,12 @@ export class HeartbeatMonitor {
     tools.push(createArtifactRegisterTool(taskStore, agentId, messageStore, { defaultTaskId: taskId }));
     tools.push(createArtifactListTool(taskStore));
     tools.push(createArtifactViewTool(taskStore));
+    /*
+    FNXC:ArtifactRetraction 2026-11-11-12:23 (RUFU-433): task-scoped lane parity with the register tool
+    above; the bound author is the same `agentId`, so a heartbeat can retract what this lane registered and
+    nothing an agent merely discovered through `fn_artifact_list`.
+    */
+    tools.push(createArtifactRetractTool(taskStore, agentId));
     // Agent delegation tools — discover and delegate work to other agents
     tools.push(createListAgentsTool(this.store));
     tools.push(createDelegateTaskTool(this.store, taskStore, { rootDir: this.rootDir, sourceTaskId: taskId, sourceAgentId: agentId }));

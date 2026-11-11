@@ -117,6 +117,23 @@ export interface Artifact {
   createdAt: string;
   /** ISO-8601 last-update timestamp */
   updatedAt: string;
+  /*
+  FNXC:ArtifactRetraction 2026-11-11-12:00 (RUFU-433):
+  Tombstone fields, all optional and absent on every artifact written before migration 0097. Absence IS
+  the valid state, deliberately rather than a `retracted: false` boolean: a retracted artifact must never
+  present itself as live input anywhere, and a read surface that has to remember to check a flag is how
+  the false review artifact stayed readable. A consumer that ignores these fields still fails safe, because
+  the media route answers 410 Gone and every list default omits the row entirely.
+
+  `retractReason` is mandatory at every write surface and lives here plus on the parent card's History line
+  only — never in run-audit metadata, which carries ids/counts/fixed enums.
+  */
+  /** ISO-8601 timestamp of the retraction; undefined means the artifact is live */
+  retractedAt?: string;
+  /** Actor id that retracted it (an agent id, or the session user for an operator) */
+  retractedBy?: string;
+  /** Mandatory short sentence explaining the retraction */
+  retractReason?: string;
 }
 
 export interface ArtifactCreateInput {

@@ -181,6 +181,17 @@ export const READONLY_FN_TOOLS: ReadonlySet<string> = new Set([
   "fn_artifact_register",
   "fn_artifact_list",
   "fn_artifact_view",
+  /*
+  FNXC:ArtifactRetraction 2026-11-11-12:26 (RUFU-433): `fn_artifact_retract` is classified beside the other
+  three artifact tools because it belongs to the SAME class: it writes the artifact registry, not the task
+  board. It moves no card, changes no gate verdict, and clears no pause - the plan's third invariant - so
+  treating it as a task-agent mutation would put an operator approval in front of the one action that lets an
+  agent correct its own false evidence, which is the failure this card exists to remove. Membership here is
+  also load-bearing for `classifyPermanentAgentToolCall`, which only recognizes this set or an
+  `fn_(list|show|get|read|browse)_` prefix: an artifact-mutation tool needs BOTH lists, exactly as
+  `fn_artifact_register` does, or the permanent gate fails it safe to require-approval.
+  */
+  "fn_artifact_retract",
   "fn_task_list",
   "fn_task_show",
   // FNXC:TaskVerificationRequest 2026-07-30-00:00: persisted status is an explicit read-only operation.
@@ -273,6 +284,14 @@ export const COORDINATION_EXEMPT_TOOLS = [
   "fn_artifact_register",
   "fn_artifact_list",
   "fn_artifact_view",
+  /*
+  FNXC:ArtifactRetraction 2026-11-11-12:26 (RUFU-433): retract is coordination-exempt for the same reason
+  register is - registry state, not board state - and it must sit here AND in READONLY_FN_TOOLS because the
+  permanent-agent gate's classifier only recognizes those two sources. An unclassified `fn_*` tool fails
+  safe to require-approval, so the exemption has to be declared, not assumed: an agent that cannot retract
+  without an operator's approval keeps its false artifact live for as long as the approval takes.
+  */
+  "fn_artifact_retract",
   "fn_task_document_write",
   "fn_task_document_read",
   /*

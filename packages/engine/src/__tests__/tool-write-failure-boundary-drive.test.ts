@@ -51,11 +51,18 @@ const READ_VERB =
 const SUB_STORE_ACCESSOR = /(Store|Provider|Api|Client|Adapter|Runner|Factory|Registry)$/;
 
 /**
+ * Store methods that answer by running a callback of their own (`withPlanningLifecycleLock`, `withTaskLock`) rather
+ * than by returning a value. They are neither a write nor a read, so the proxy's default answer — `TASK_ID` — is a
+ * lock that was granted and never executed, which silently hides the store call the handler made inside it.
+ */
+const CALLBACK_LOCK_SEAM = /^with[A-Za-z0-9]*Lock$/;
+
+/**
  * Method names that mutate board state. Only these refuse, so "the handler met a store refusal" means "the handler
  * asked the store to write" and never counts a `String.prototype` call on a proxied row as a write attempt.
  */
 const WRITE_VERB =
-  /^(create|update|upsert|insert|patch|put|save|persist|store|record|write|append|add|link|unlink|assign|attach|detach|delete|destroy|remove|drop|set|clear|reset|mark|move|rename|duplicate|merge|reconcile|repair|register|publish|apply|commit|sync|mirror|bump|increment|decrement|archive|restore|revert|promote|demote|dispatch|deliver|send|post|reply|notify|queue|enqueue|spawn|start|stop|pause|resume|finalize|cancel|retry|refine|advance|complete|fulfil|dispute|vote|approve|reject|flag|mute|hide|wipe|truncate|migrate|seed|hydrate|invalidate|expire|flush|close|reopen|activate|select)(?=[A-Z]|$)/;
+  /^(create|update|upsert|insert|patch|put|save|persist|store|record|write|append|add|link|unlink|assign|attach|detach|delete|destroy|remove|drop|set|clear|reset|mark|move|rename|duplicate|merge|reconcile|repair|register|publish|apply|commit|sync|mirror|bump|increment|decrement|archive|restore|revert|promote|demote|dispatch|deliver|send|post|reply|notify|queue|enqueue|spawn|start|stop|pause|resume|finalize|cancel|retry|refine|advance|complete|fulfil|dispute|retract|vote|approve|reject|flag|mute|hide|wipe|truncate|migrate|seed|hydrate|invalidate|expire|flush|close|reopen|activate|select)(?=[A-Z]|$)/;
 
 /**
  * Deps-bag setters that mutate an in-process counter rather than the board (`deps-bags.ts:365` assigns
@@ -118,7 +125,7 @@ describe("every registered handler that reports a store write failure answers in
     mislabel a parameter error; see the write-surface-map task document.
     */
     expect(sharedShapeTools(driven)).toEqual([
-      "fn_artifact_list", "fn_post_room_message", "fn_read_messages", "fn_send_message", "fn_spawn_agent", "fn_task_add_dep",
+      "fn_artifact_list", "fn_artifact_retract", "fn_post_room_message", "fn_read_messages", "fn_send_message", "fn_spawn_agent", "fn_task_add_dep",
       "fn_task_assign", "fn_task_delete", "fn_task_document_write", "fn_task_duplicate", "fn_task_file_scope_add",
       "fn_task_logs_read", "fn_task_merge", "fn_task_pause", "fn_task_prompt_write", "fn_task_retry",
       "fn_task_unpause", "fn_task_update", "fn_workflow_create", "fn_workflow_delete", "fn_workflow_select",
@@ -139,8 +146,21 @@ describe("every registered handler that reports a store write failure answers in
     the shared-shape list gains it. Its refused-write path is covered per-site in
     `agent-tools-ack-messages.test.ts` instead, exactly where `read-path-store-failure.test.ts` pins the read lane.
     */
-    expect(reachedTools(driven).length).toBe(27);
-    expect(exercisedTools(driven).length).toBe(89);
+    /*
+    FNXC:ArtifactRetraction 2026-11-11-12:27 (RUFU-433): both reach pins move by one for `fn_artifact_retract`,
+    which the drive now reaches a refused write with. Getting there needed two fixture widenings, each of which
+    the plan named: `retract` joined `WRITE_VERB` (without it the store method answered as neither read nor
+    write, so the failure path was never driven at all), and the shared board row declares its author and a
+    falsy tombstone (see `boardRow`), because the handler's authorship check and its already-VOID check both
+    run BEFORE the write and a Proxy that answers every absent field made both pre-write guards pass as facts.
+
+    FNXC:WriteFailureSurfacing 2026-11-11-14:32 (RUFU-433): the reach pin is 29, not 28, once the lock seam runs its
+    callback (see `CALLBACK_LOCK_SEAM`): `fn_task_prompt_write` re-enters the reached set because its write lives
+    inside `withPlanningLifecycleLock`, which the proxy used to grant-and-skip. The exercised count is unchanged —
+    this drives a tool the drive already called, it only reaches the store now.
+    */
+    expect(reachedTools(driven).length).toBe(29);
+    expect(exercisedTools(driven).length).toBe(90);
 
     /*
     FNXC:WriteFailureSurfacing 2026-09-24:
@@ -259,6 +279,26 @@ function endpoint(readAnswersWithRow: boolean, refusals: Refusal[], method = "")
   const callable = (...args: unknown[]) => {
     if (SUB_STORE_ACCESSOR.test(method)) return endpoint(readAnswersWithRow, refusals, method);
     if (method === "isBackendMode") return Promise.resolve(false);
+    /*
+    FNXC:WriteFailureSurfacing 2026-11-11-14:32 (RUFU-433):
+    A lock seam that never runs its callback hides the write behind it. `fn_task_prompt_write` publishes PROMPT.md
+    through `store.withPlanningLifecycleLock(taskId, () => store.withTaskLock(taskId, () => updateTaskUnlocked(...)))`
+    whenever its caller passes `canPersist` (FN-151, 2026-08-22), and `construct` hands a callable proxy for every
+    factory argument, so `canPersist` is always truthy here and both lock methods answered `TASK_ID` without ever
+    invoking their callback. The shared-shape pin still named the tool, so the drive asserted a refused-write path it
+    had stopped reaching and died on the reach count long before the list assertion could name the missing tool.
+    Running the callback restores the driven write: the reached set gains exactly that tool, no handler turns silent,
+    and no assertion is widened.
+
+    Measured on main (this card's `agent-tools.ts` and this file replaced by main's, same command, 2026-11-11): the
+    shared-shape list fails as `expected [ 'fn_artifact_list', …(20) ] to deeply equal [ …, …(21) ]` with
+    `- "fn_task_prompt_write"` — main is red here on its own, which is why the fix is a fixture widening and this
+    card's classification is not the cause.
+    */
+    if (CALLBACK_LOCK_SEAM.test(method)) {
+      const callback = args.find((arg) => typeof arg === "function") as ((...a: unknown[]) => unknown) | undefined;
+      return callback ? Promise.resolve(callback()) : Promise.resolve(TASK_ID);
+    }
     if (WRITE_VERB.test(method) && !OBSERVER_METHODS.has(method) && !IN_PROCESS_SETTERS.has(method)) return refusedWrite(method, refusals);
     if (READ_VERB.test(method)) return Promise.resolve(readAnswer(readAnswersWithRow, refusals, method, args));
     return Promise.resolve(TASK_ID);
@@ -314,6 +354,15 @@ function boardRow(readAnswersWithRow: boolean, refusals: Refusal[], requestedId:
     content: "row",
     column: "in-progress",
     status: "in-progress",
+    /*
+    FNXC:ArtifactRetraction 2026-11-11-12:27 (RUFU-433): an author field, set to the same value `construct`
+    hands every factory as its bound author. `fn_artifact_retract` checks authorship BEFORE it writes - that
+    check is the permission, and a foreign retractor must never reach the store - so a row with no author made
+    the drive stop at "not the author" and its refused-write path was never driven at all. The row's stated job
+    is to satisfy pre-write lookups, and authorship is now one of them.
+    */
+    authorId: TASK_ID,
+    authorType: "agent",
     steps: [{ name: "Preflight", status: "done" }],
     log: [],
     dependencies: [],
@@ -338,6 +387,17 @@ function boardRow(readAnswersWithRow: boolean, refusals: Refusal[], requestedId:
     count: 1,
     revision: 1,
     outcome: "ok",
+    /*
+    FNXC:ArtifactRetraction 2026-11-11-12:27 (RUFU-433): declared falsy rather than left absent. This row is a
+    Proxy that answers any UNDECLARED property with another endpoint, which is right for nested sub-surfaces
+    and wrong for a scalar flag: an undeclared `retractedAt` came back truthy, so `fn_artifact_retract` read
+    the row as already-VOID and stopped there, and its refused-write path could never be driven. The same
+    applies to any future tombstone-shaped guard: a field whose ABSENCE is the precondition has to be stated
+    absent here, exactly as `log: []` and `dependencies: []` already are.
+    */
+    retractedAt: null,
+    retractedBy: null,
+    retractReason: null,
   };
   return new Proxy(row, {
     get(existing, property) {

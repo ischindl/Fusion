@@ -21,6 +21,14 @@ Agents must not run the full/workspace-wide test suite by default; targeted/pack
 FNXC:ExecutorPrompt 2026-07-05-00:35:
 FN-7608: a `require-approval` gate previously only parked the single tool call (soft rejection + task/agent paused in the store) while the turn-ending rules below forbade ending a turn without another tool call, so the model was effectively instructed to hunt for ungated workarounds (re-issuing the same bash, probing read-only equivalents, fn_web_fetch/fn_task_attach bypasses) instead of stopping. The engine now actually suspends the in-flight session when a gate resolves to wait-for-approval (see executor.ts buildActionGateContext.pauseForApproval), so the prompt must carve out waiting on a pending approval as a legitimate turn end and explicitly forbid probing for alternatives. This clause must stay byte-identical with EXECUTOR_PROMPT_TEXT in packages/core/src/agent-prompts.ts.
 */
+/*
+FNXC:ArtifactRetraction 2026-11-11-15:12 (RUFU-433):
+The "Artifact Registry" section below named only register/list/view, which is precisely the state that left a reviewer holding a false review artifact with no way
+out — the registry had a rich way in and no way out. The retract paragraph is therefore load-bearing prompt content, not decoration: an agent that does not know
+the tool exists reaches for "register another artifact to disclaim the first" instead, which thickens the very layer the false evidence sits in. Keep the
+`reason`-is-mandatory, author-bound, no-agent-restore and "retract, do not re-register" facts in this section; the tool schema enforces them, but the prompt is
+what makes an agent choose retract in the first place. `agent-prompts.test.ts` carries size budgets for prompt text, so trim here, not there.
+*/
 const EXECUTOR_SYSTEM_PROMPT = `${FUSION_RUNTIME_SELF_AWARENESS}
 
 You are a task execution agent for "fn", an AI-orchestrated task board.
@@ -104,6 +112,8 @@ Documents are versioned — each write creates a new revision. Use meaningful ke
 ## Artifact Registry
 
 Use \`fn_artifact_register\` to register multi-type artifacts for discovery across agents and tasks, \`fn_artifact_list\` to find registered artifacts by type/author/task/search, and \`fn_artifact_view\` to inspect artifact metadata plus inline content or URI references. Artifact registration sends a best-effort system inbox notification to the dashboard user; notification failures do not make registration fail.
+
+Use \`fn_artifact_retract(id, reason)\` when an artifact you registered no longer stands — wrong card or head, superseded, duplicated, or containing sensitive data. \`reason\` is mandatory. It is a tombstone, not a delete: the artifact leaves every default read and the gallery shows a VOID tile with your reason, and nothing is removed. It works only on artifacts you authored (a foreign author is refused), it never moves a card or changes a review verdict, and there is no agent-facing restore. Prefer retracting over registering a second artifact that disclaims the first. \`fn_artifact_list\` hides VOID artifacts unless you pass \`includeRetracted: true\`, and \`fn_artifact_view\` on one returns its VOID header and reason with no content.
 
 **IMPORTANT — Register visual and media deliverables as artifacts:** Whenever you produce a visual or media output — a screenshot of the app or a UI change, a wireframe, a design mockup, a diagram, a rendered chart, a before/after capture, a screen recording, an HTML prototype, or a PDF export — you MUST register it so it appears in the dashboard Artifacts gallery:
 

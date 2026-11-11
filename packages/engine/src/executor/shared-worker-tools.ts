@@ -22,6 +22,7 @@ import type { EngineRunContext } from "../util/run-audit.js";
 import {
   createArtifactListTool as sharedCreateArtifactListTool,
   createArtifactRegisterTool as sharedCreateArtifactRegisterTool,
+  createArtifactRetractTool as sharedCreateArtifactRetractTool,
   createArtifactViewTool as sharedCreateArtifactViewTool,
   createTaskCreateTool as sharedCreateTaskCreateTool,
   createTaskDocumentReadTool as sharedCreateTaskDocumentReadTool,
@@ -120,6 +121,16 @@ export function createArtifactListTool(deps: SharedWorkerToolsDeps): ToolDefinit
 
 export function createArtifactViewTool(deps: SharedWorkerToolsDeps): ToolDefinition {
   return sharedCreateArtifactViewTool(deps.store);
+}
+
+/*
+FNXC:ArtifactRetraction 2026-11-11-12:24 (RUFU-433): the shared-worker wrapper takes `authorId` explicitly
+rather than reading it off `deps`, because the author is the permission and the worker pool serves several
+authors. `run-implementation.ts` passes the same id it passed to register, which is what keeps the
+authorship rule honest across the wrapper instead of quietly widening it to "any agent in this pool".
+*/
+export function createArtifactRetractTool(deps: SharedWorkerToolsDeps, authorId: string): ToolDefinition {
+  return sharedCreateArtifactRetractTool(deps.store, authorId);
 }
 
 export function createWorkflowListTool(deps: SharedWorkerToolsDeps): ToolDefinition {

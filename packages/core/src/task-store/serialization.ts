@@ -529,6 +529,16 @@ export function rowToArtifact(row: ArtifactRow): Artifact {
     metadata: fromJson<Record<string, unknown>>(row.metadata),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+    /*
+    FNXC:ArtifactRetraction 2026-11-11-12:16 (RUFU-433): the tombstone must be mapped here too. Two
+    mappers turn one ArtifactRow into one Artifact (this one serves store.rowToArtifact, the async helper
+    in async-comments-attachments.ts serves every PG read), and a field mapped in only one of them is how
+    a retracted artifact comes back reading as live from whichever surface used the other. Absence still
+    means "never retracted", so a pre-0097 row is unaffected.
+    */
+    ...(row.retractedAt != null ? { retractedAt: row.retractedAt } : {}),
+    ...(row.retractedBy != null ? { retractedBy: row.retractedBy } : {}),
+    ...(row.retractReason != null ? { retractReason: row.retractReason } : {}),
   };
 }
 
