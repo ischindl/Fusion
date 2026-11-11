@@ -62,7 +62,14 @@ export async function resolveMemoryConsolidationPorts(deps: Deps): Promise<Memor
         edgeCount: built.edges,
         changed: built.changed,
         recoveryReason: built.stats.recoveryReason,
-        stats: { parsedFiles: built.stats.parsedFiles, reusedFiles: built.stats.reusedFiles, prunedFiles: built.stats.prunedFiles },
+        /*
+        FNXC:KnowledgeGraph 2026-11-11-20:12 (RUFU-500):
+        `readFiles` is carried across this boundary on purpose. The lane's whole performance question is
+        whether a heartbeat pass re-read the repository or only what changed, and `reusedFiles / readFiles`
+        answers it; dropping the field here would leave the operator with `parsed/reused/pruned` only, which
+        cannot distinguish a 0-read pass from a 1500-read pass because both reuse every file.
+        */
+        stats: { parsedFiles: built.stats.parsedFiles, reusedFiles: built.stats.reusedFiles, prunedFiles: built.stats.prunedFiles, readFiles: built.stats.readFiles },
       };
     },
     runSemantics: async (graphChanged) => {

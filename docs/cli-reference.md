@@ -1601,4 +1601,12 @@ Agent create/update payloads accept `roles` (a non-empty role-tag array) and opt
 
 ## Knowledge graph
 
-`fn knowledge-graph build [--force] [--dir <path>] [--json]` refreshes the deterministic, committable structure graph. `--force` bypasses incremental reuse; `--dir` overrides the project `knowledgeGraphDir`; `--json` prints build statistics as JSON.
+`fn knowledge-graph build [--force] [--dir <path>] [--json]` refreshes the deterministic, committable structure graph. `--force` bypasses incremental reuse (both the committed content fingerprints and the size-and-mtime stat cache); `--dir` overrides the project `knowledgeGraphDir`; `--json` prints the build statistics as one JSON object instead of a line.
+
+Without `--json` the command reports what the pass actually did, so a proportional incremental pass can be told apart from one that re-read the repository:
+
+```text
+Knowledge graph: 2023 nodes, 4307 edges; parsed 3, reused 428, pruned 0; read 3/431 (stat-only 428); synthesized imports 0, derived modules 30; changed=true
+```
+
+`read N/M` is file bodies read against files discovered; `reused` counts files whose work was skipped and `stat-only` the ones reused on a size-and-mtime check alone. An unchanged tree reads nothing, so `read 0/431 (stat-only 431)` is the healthy steady state. When the discovery ceiling truncates the walk the line ends with `; capped N` and the graph is incomplete. The command builds in its own short-lived process, so the board never waits on it; the dashboard's own rebuild button and the Memory Keeper pass run in a forked build child instead. See [Knowledge graph](./knowledge-graph.md).

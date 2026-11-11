@@ -17,9 +17,9 @@
  */
 import { fork } from "node:child_process";
 import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildKnowledgeGraph } from "./graph-builder.js";
+import { buildKnowledgeGraph, type BuildKnowledgeGraphOptions } from "./graph-builder.js";
 
 /** Serializable result of one build: what `buildKnowledgeGraph` reports, minus the graph object. */
 export type KnowledgeGraphBuildSummary = {
@@ -128,8 +128,65 @@ export type RunKnowledgeGraphBuildOptions = KnowledgeGraphBuildRequest & {
  * used — a source checkout (the worker is `.ts` there), a missing sibling from an incomplete bundle, or a
  * spawn that fails outright. The fallback is deliberate: an operator must never lose the graph because an
  * optimisation could not run, and a build that blocks the loop for a while is still better than no artifact.
+ *
+ * FNXC:KnowledgeGraph 2026-11-11-18:53 (RUFU-500):
+ * Single-flight per resolved `graphDir`: this process holds at most ONE build child per graph directory.
+ * Two dashboard triggers — the panel's "Rebuild graph", and the memory-consolidation lane re-entering the
+ * builder from its own tick — used to each spawn a child against the SAME directory. That doubled both the
+ * memory ceiling (every child carries its own heap limit, so two children ask for twice the RAM on the same
+ * artifact triple) and the CPU burn the operator's profile measured at 84.8%, and the two children then raced
+ * to write the same files. A caller arriving while a build is in flight joins it and receives that build's
+ * result object instead of spawning.
+ *
+ * Two contracts fall out of this and both are load-bearing:
+ *  - The lane is cleared on EVERY settle path — fulfilment, rejection, transport error, and the SIGKILL
+ *    timeout alike. A stale entry would make every later build for that directory resolve with an
+ *    already-settled promise, i.e. the graph would silently stop rebuilding forever, so the removal lives in
+ *    a `finally` and compares identity before deleting (a successor lane may already own the key).
+ *  - The registration is published before the entry point's first `await`, because two callers entering in
+ *    the same tick is precisely the case being fixed; a map write after an `await` would let both spawn.
+ *  - A `force` request never joins a build that was not itself forced — that build may already be reusing
+ *    the stat cache, so handing its result back would silently ignore the operator's "rebuild everything".
+ *    The forced build is not run CONCURRENTLY either, which would restore the double-write the lane exists
+ *    to prevent; it is chained to start after the weaker lane settles, so one directory still has one child
+ *    at a time.
  */
 export async function runKnowledgeGraphBuild(
+  options: RunKnowledgeGraphBuildOptions,
+): Promise<KnowledgeGraphBuildSummary> {
+  const key = resolve(options.graphDir);
+  const existing = buildLanes.get(key);
+  if (existing && !(options.force === true && !existing.force)) return existing.promise;
+
+  // Chain rather than overlap: a forced build waiting for a weaker in-flight build still runs alone.
+  const predecessor = existing ? existing.promise.then(() => undefined, () => undefined) : undefined;
+  const lane: BuildLane = {
+    force: options.force === true,
+    promise: predecessor ? predecessor.then(() => startKnowledgeGraphBuild(options)) : startKnowledgeGraphBuild(options),
+  };
+  buildLanes.set(key, lane);
+  try {
+    return await lane.promise;
+  } finally {
+    // Compare-and-delete: never drop a successor lane that a later caller already installed.
+    if (buildLanes.get(key) === lane) buildLanes.delete(key);
+  }
+}
+
+interface BuildLane {
+  readonly promise: Promise<KnowledgeGraphBuildSummary>;
+  /** Whether this build was asked to ignore prior artifacts, so a later `force` caller knows it may not join. */
+  readonly force: boolean;
+}
+
+/**
+ * One in-flight build per resolved graph directory. A Map of lanes (not a Set of children) because a joiner
+ * must await the same outcome, not merely avoid spawning: two callers of one directory get one answer and one
+ * artifact write, which is also what makes the double-write race impossible.
+ */
+const buildLanes = new Map<string, BuildLane>();
+
+async function startKnowledgeGraphBuild(
   options: RunKnowledgeGraphBuildOptions,
 ): Promise<KnowledgeGraphBuildSummary> {
   const { projectRoot, graphDir, force } = options;
@@ -225,11 +282,30 @@ export async function runKnowledgeGraphBuild(
   });
 }
 
+/**
+ * Build tuning an in-process caller may add to a request. It is deliberately a SEPARATE parameter rather
+ * extra fields on `KnowledgeGraphBuildRequest`.
+ *
+ * FNXC:KnowledgeGraph 2026-11-11-20:12 (RUFU-500):
+ * `KnowledgeGraphBuildRequest` is the IPC payload (`child.send({kind:"build", projectRoot, graphDir, force})`),
+ * so every field on it must survive JSON. `deps` and `extractFile` are functions: putting them on the request
+ * would make the child path silently drop them and report a build that never used the caller's own seam. An
+ * in-process-only capability therefore rides its own argument, which the fork path can never receive.
+ *
+ * Who needs it: `packages/dashboard/src/__tests__/knowledge-graph-loop-responsiveness.test.ts` must run the
+ * SAME synchronous CPU burn through both lanes to prove the offload is what saves the board. The measured
+ * alternatives were not usable as a ratchet: a real in-process build of a 1500-file fixture stalls a 10 ms tick
+ * by at most 57 ms (measured 2026-11-11), which sits under any bound wide enough not to flake, so a
+ * fixture-sized burn cannot reliably demonstrate the failure mode.
+ */
+export type KnowledgeGraphInProcessBuildTuning = Omit<BuildKnowledgeGraphOptions, "projectRoot" | "graphDir" | "force">;
+
 /** In-process build plus the same summary shape, so both paths return one thing. */
 export async function runKnowledgeGraphBuildInProcess(
   request: KnowledgeGraphBuildRequest,
+  build?: KnowledgeGraphInProcessBuildTuning,
 ): Promise<KnowledgeGraphBuildSummary> {
-  return summarize(await buildKnowledgeGraph(request));
+  return summarize(await buildKnowledgeGraph({ ...request, ...build }));
 }
 
 function summarize(built: Awaited<ReturnType<typeof buildKnowledgeGraph>>): KnowledgeGraphBuildSummary {

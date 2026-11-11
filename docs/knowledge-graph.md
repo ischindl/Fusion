@@ -12,6 +12,30 @@ The artifact is not committed. As of 2026-08-10 `.fusion-knowledge/` is gitignor
 
 An operator who explicitly wants a snapshot in history can still force one with `git add -f .fusion-knowledge/graph`; prefer a rebuild.
 
+The graph directory also holds `stat-cache.json`, a regenerable sidecar described under [Incremental reuse](#incremental-reuse-and-discovery-limits). It is cache, not artifact: deleting it costs one full pass and changes no artifact byte.
+
+## Where a build runs
+
+A rebuild triggered **inside the long-lived board process** runs in a forked child: the dashboard's `POST /api/knowledge/graph/build` (the **Memory → Knowledge Graph** rebuild button) and the Memory Keeper consolidation pass. At most **one build child exists per graph directory**: a second request for the same directory joins the running build instead of forking another, while another project's directory is unaffected.
+
+The child carries the CPU and a 4 GB heap ceiling, deliberately below the parent's, so an offloaded build cannot create an out-of-memory the board did not already have. It reports back counts and a work summary rather than the graph object, and the artifacts are read back from disk afterwards. One build may run up to 15 minutes before it is killed as a hang; that is a hang guard, not a throttle.
+
+The placement matters because the dashboard server and the engine are one Node process: a build that saturates that process is indistinguishable from a frozen board. Before the child existed this was measured directly — a rebuild held 84.8% of the whole dashboard process for minutes while the health endpoint took 3.5 seconds to answer.
+
+Three cases stay **in-process**, each deliberate:
+
+- **`fn knowledge-graph build`.** The CLI builds in its own short-lived process, which has no board event loop to starve, and that process is where the work summary is printed.
+- **A source checkout.** Run from TypeScript, the worker sibling is a `.ts` file that cannot be forked, and bundling a second copy of the tree-sitter wasm for development machines would be the larger risk. The lane logs `[knowledge-graph] offload refused, building in-process (...)` when it falls back.
+- **A degraded child.** If the child cannot start at all, the caller builds in-process rather than reporting no graph — placement is an optimisation, not a new dependency. A build that *fails* is not degraded: the error propagates, so a broken repository is never rebuilt a second time in the process that asked for it.
+
+## Incremental reuse and discovery limits
+
+Each pass records a file's size and modification time next to its content hash in `stat-cache.json`. Where size and mtime still match and the committed manifest agrees, the file body is **not read at all** and the file is reused. Touching 2 files in a 430-file tree re-reads 2 files, where the same pass used to read all 431.
+
+Because reuse keys on modification time, **a content change written back to the same size within the filesystem's mtime resolution can be missed.** When a pass must be trusted absolutely, run it with `--force`, which ignores the sidecar and rebuilds every file from its bytes; deleting `stat-cache.json` has the same effect for the next pass.
+
+File discovery stops at **25,000 files** (a code default, adjustable by callers, not an operator setting). The ceiling bounds the *walk*: reaching it stops descending rather than enumerating files the build would never read, so a mistyped root or a stray vendored tree cannot make a pass unbounded. The graph is then **incomplete**, which the summary reports as `cappedFiles` — a lower bound on the paths the walk refused, which `fn knowledge-graph build` prints as `capped N` only when it is non-zero. It sits far above any legitimate first-party tree (this repository discovers roughly 8,500 files), so an ordinary run prints nothing about truncation. A file larger than 2 MB is truncated before parsing and yields a file node with no symbols, so one generated bundle cannot dominate a pass.
+
 ## Model
 
 Nodes are `file`, `module`, `symbol`, `doc-concept`, or `rationale`. Structural edges are `contains`, `imports`, and `re-exports`; semantic edges are `relates-to` and `rationale-supports`. Every edge includes source, owner (`file` or `derived`), and provenance (`extracted` or `inferred`). IDs are path-derived (`file:path`, `module:dir`, `symbol:path#name`, `doc:path#slug~index`, and `rationale:path#area@stamp~index`) with reserved separators percent-escaped.
@@ -46,7 +70,7 @@ This layer has no LLM calls, embeddings, vector recall, MCP tools, source-validi
 
 ## Dashboard navigation
 
-The dashboard's **Memory → Knowledge Graph** tab provides list-and-detail navigation without transferring the full artifact or rendering a whole-graph canvas. It shows graph status, counts, directory and provenance data; operators can rebuild the artifact explicitly (including force rebuild). Reads use a small manifest-validated artifact cache and never rebuild the graph.
+The dashboard's **Memory → Knowledge Graph** tab provides list-and-detail navigation without transferring the full artifact or rendering a whole-graph canvas. It shows graph status, counts, directory and provenance data; operators can rebuild the artifact explicitly (including force rebuild). That rebuild goes to a build child, so the board keeps its event loop while the graph is regenerated; in a source checkout it runs in-process, where a rebuild can stall the dashboard for the length of the pass. Reads use a small manifest-validated artifact cache and never rebuild the graph.
 
 The tab queries capped node pages (200 nodes), node edges (200 per direction), and neighbors with direction, edge-kind, and depth controls. Node IDs are query parameters, so IDs containing `/`, `#`, `@`, or `~` remain safe to navigate. It also supports node filters for kind, path/id prefix, regular-expression name, FNXC area, symbol kind, and owner.
 

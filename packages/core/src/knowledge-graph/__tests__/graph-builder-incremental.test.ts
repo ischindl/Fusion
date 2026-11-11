@@ -90,6 +90,59 @@ describe("incremental graph builder", () => {
     expect((JSON.parse(await readFile(manifestPath, "utf8")) as { files: Record<string, { importRefs?: unknown[] }> }).files["docs/guide.md"]!.importRefs).toBeUndefined();
   });
 
+  /*
+  FNXC:KnowledgeGraph 2026-11-11-18:53 (RUFU-500):
+  The per-file full-array scans were replaced by one batched pass over the retained arrays. Green on the
+  single-file cases above would not prove that: the rewrite only engages when MANY files change at once, which
+  is the post-upstream-merge shape that produced the profile. So this test drives a wide change set and demands
+  that the batched path prune correctly, retain semantic conclusions, and converge on the same artifact bytes a
+  from-scratch rebuild produces for the same tree.
+  */
+  it("converges on a from-scratch rebuild after a wide batched change set", async () => {
+    const root = await fixture(), dir = join(root, ".fusion-knowledge/graph");
+    for (let index = 0; index < 12; index++) await writeFile(join(root, "src", `w${index}.ts`), `export const w${index} = ${index};\n`);
+    await mkdir(join(root, "docs"));
+    await writeFile(join(root, "docs", "concepts.md"), "# First concept\n\n# Second concept\n");
+    const docDiscovery = { sourceRoots: ["src"], markdownRoots: ["docs"] };
+    await buildKnowledgeGraph({ projectRoot: root, graphDir: dir, discovery: docDiscovery });
+    const initial = await loadArtifacts(dir);
+    expect(initial.ok).toBe(true);
+    if (!initial.ok) return;
+    const [from, to] = initial.graph.nodes.filter(node => node.kind === "doc-concept");
+    expect(from && to).toBeTruthy();
+    if (from && to) await addInferredEdges(dir, [{ kind: "relates-to", from: from.id, to: to.id }]);
+
+    // Touch most of the tree, drop one file, and add a new one: every branch of the batched pass at once.
+    for (let index = 0; index < 10; index++) await writeFile(join(root, "src", `w${index}.ts`), `export const w${index} = ${index * 7};\nexport const tail${index} = 1;\n`);
+    await rm(join(root, "src", "b.ts"));
+    await writeFile(join(root, "src", "w12.ts"), "export const w12 = 12;\n");
+
+    const extract = vi.fn(realExtractFile);
+    const batched = await buildKnowledgeGraph({ projectRoot: root, graphDir: dir, extractFile: extract, discovery: docDiscovery });
+    const batchedBytes = await Promise.all(["nodes.json", "edges.json", "manifest.json"].map(file => readFile(join(dir, file), "utf8")));
+    expect(batched.stats.parsedFiles).toBe(11);
+    expect(batched.stats.deletedFiles).toBe(1);
+    expect(extract).toHaveBeenCalledTimes(11);
+    expect(batched.graph.nodes.some(node => node.ownerPath === "src/b.ts")).toBe(false);
+    expect(batched.graph.edges.some(edge => edge.ownerPath === "src/b.ts" || edge.from === "file:src/b.ts" || edge.to === "file:src/b.ts")).toBe(false);
+    expect(batched.graph.edges.filter(edge => edge.provenance === "inferred")).toHaveLength(1);
+
+    // Same tree rebuilt from scratch must agree on every node and every structural edge. A forced pass is a
+    // full rebuild from source and therefore drops durable inferred edges by pre-existing design, so the
+    // comparison excludes them rather than pretending they survive.
+    const forced = await buildKnowledgeGraph({ projectRoot: root, graphDir: dir, discovery: docDiscovery, force: true });
+    const forcedBytes = await Promise.all(["nodes.json", "edges.json", "manifest.json"].map(file => readFile(join(dir, file), "utf8")));
+    expect(forced.graph.nodes.map(node => node.id)).toEqual(batched.graph.nodes.map(node => node.id));
+    const structural = (edges: typeof batched.graph.edges) => edges.filter(edge => edge.provenance !== "inferred").map(edge => edge.id).sort();
+    expect(structural(forced.graph.edges)).toEqual(structural(batched.graph.edges));
+    expect(forced.stats.deletedFiles).toBe(0);
+    expect(batchedBytes[0]).toBe(forcedBytes[0]);
+    expect(batchedBytes[2]).toBe(forcedBytes[2]);
+    // A further pass over the now-current tree must not move a byte: the batched path is idempotent.
+    await buildKnowledgeGraph({ projectRoot: root, graphDir: dir, discovery: docDiscovery });
+    expect(await Promise.all(["nodes.json", "edges.json", "manifest.json"].map(file => readFile(join(dir, file), "utf8")))).toEqual(forcedBytes);
+  });
+
   it("rebuilds rather than reusing a cache with forged synthetic file provenance", async () => {
     const root = await fixture(), dir = join(root, ".fusion-knowledge/graph");
     await buildKnowledgeGraph({ projectRoot: root, graphDir: dir, discovery });

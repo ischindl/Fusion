@@ -10,6 +10,7 @@ export * from "./extract-markdown.js";
 export * from "./extract-fnxc.js";
 export * from "./resolve-imports.js";
 export * from "./derive-modules.js";
+export * from "./graph-stat-cache.js";
 export * from "./graph-builder.js";
 /*
 FNXC:KnowledgeGraph 2026-10-02-14:05:

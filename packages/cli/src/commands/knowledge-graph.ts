@@ -67,11 +67,21 @@ export async function runKnowledgeGraphBuild(
     }
 
     const recovery = output.recoveryReason ? `; recovery=${output.recoveryReason}` : "";
+    /*
+    FNXC:KnowledgeGraph 2026-11-11-20:12 (RUFU-500):
+    The read counters are printed here because this command is the operator's only tool for answering "did that
+    pass do proportional work, or did it re-read the tree?" -- `reused` alone cannot tell those apart, since a
+    pass that read every file and a pass that read none both reuse everything. `capped` is surfaced only when
+    non-zero: the discovery ceiling truncating a walk is a graph-completeness warning, and printing `capped 0`
+    on every ordinary run would train the operator to ignore the one number that matters.
+    */
+    const capped = output.cappedFiles > 0 ? `; capped ${output.cappedFiles}` : "";
     console.log(
       `Knowledge graph: ${output.nodes} nodes, ${output.edges} edges; ` +
       `parsed ${output.parsedFiles}, reused ${output.reusedFiles}, pruned ${output.prunedFiles}; ` +
+      `read ${output.readFiles}/${output.discoveredFiles} (stat-only ${output.statOnlyFiles}); ` +
       `synthesized imports ${output.synthesizedImportEdges}, derived modules ${output.derivedModuleCount}; ` +
-      `changed=${output.changed}${recovery}`,
+      `changed=${output.changed}${recovery}${capped}`,
     );
   } finally {
     if (context) await closeProjectStore(context);

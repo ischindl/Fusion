@@ -9,7 +9,12 @@ const rationale = (id: string, ownerPath = "src/a.ts"): GraphNode => ({
   attributes: { fnxcArea: "Memory", fnxcStamp: "2026-08-11-09:41", fnxcText: `decision ${id}` },
 });
 const record = (id: string): RecallRecord => ({ id, projectId: "project", kind: "decision", content: id, contentHash: id, source: { origin: "other" }, tags: [], graphNodeIds: [], createdAt: "", updatedAt: "" });
-const graph = (changed: boolean, nodes = [rationale("rationale:src/a.ts#Memory@x~0")]) => ({ rationaleNodes: nodes, nodeCount: nodes.length, edgeCount: 0, changed, recoveryReason: null, stats: { parsedFiles: 1, reusedFiles: 0, prunedFiles: 0 } });
+/*
+FNXC:KnowledgeGraph 2026-11-11-20:12 (RUFU-500):
+`readFiles` is a REQUIRED member of the memory lane's `refreshGraph` stats, so this shared fixture states it:
+this lane's pass reads 1 body and reuses 0, which is the shape of a first pass over a one-file repository.
+*/
+const graph = (changed: boolean, nodes = [rationale("rationale:src/a.ts#Memory@x~0")]) => ({ rationaleNodes: nodes, nodeCount: nodes.length, edgeCount: 0, changed, recoveryReason: null, stats: { parsedFiles: 1, reusedFiles: 0, prunedFiles: 0, readFiles: 1 } });
 
 function ports(overrides: Partial<MemoryConsolidationPorts> = {}): MemoryConsolidationPorts {
   return {

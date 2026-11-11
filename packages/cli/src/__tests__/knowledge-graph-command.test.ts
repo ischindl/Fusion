@@ -3,12 +3,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const build = vi.hoisted(() => vi.fn().mockResolvedValue({
   graph: { nodes: [], edges: [] },
   changed: false,
+  // RUFU-500: the build stats gained required read counters; this fixture states them rather than omitting them.
   stats: {
     parsedFiles: 1,
     reusedFiles: 0,
     prunedFiles: 0,
     addedFiles: 1,
     deletedFiles: 0,
+    discoveredFiles: 1,
+    readFiles: 1,
+    statOnlyFiles: 0,
+    cappedFiles: 0,
     synthesizedImportEdges: 2,
     derivedModuleCount: 0,
     recoveryReason: null,
@@ -52,6 +57,10 @@ describe("knowledge graph CLI command", () => {
         prunedFiles: 0,
         addedFiles: 1,
         deletedFiles: 0,
+        discoveredFiles: 1,
+        readFiles: 1,
+        statOnlyFiles: 0,
+        cappedFiles: 0,
         synthesizedImportEdges: 2,
         derivedModuleCount: 0,
         recoveryReason: null,
@@ -87,7 +96,7 @@ describe("knowledge graph CLI command", () => {
     build.mockResolvedValueOnce({
       graph: { nodes: [{}, {}], edges: [{}] },
       changed: true,
-      stats: { parsedFiles: 2, reusedFiles: 3, prunedFiles: 4, addedFiles: 2, deletedFiles: 4, synthesizedImportEdges: 5, derivedModuleCount: 6, recoveryReason: "forced" },
+      stats: { parsedFiles: 2, reusedFiles: 3, prunedFiles: 4, addedFiles: 2, deletedFiles: 4, discoveredFiles: 431, readFiles: 2, statOnlyFiles: 429, cappedFiles: 0, synthesizedImportEdges: 5, derivedModuleCount: 6, recoveryReason: "forced" },
     });
 
     await runKnowledgeGraphBuild();
@@ -96,6 +105,30 @@ describe("knowledge graph CLI command", () => {
     expect(output).toHaveBeenCalledWith(expect.stringContaining("synthesized imports 5"));
     expect(output).toHaveBeenCalledWith(expect.stringContaining("derived modules 6"));
     expect(output).toHaveBeenCalledWith(expect.stringContaining("recovery=forced"));
+    /*
+    FNXC:KnowledgeGraph 2026-11-11-20:12 (RUFU-500):
+    The read ratio is the operator-visible proof that an incremental pass was proportional. `reused 3` alone
+    could not distinguish a 2-read pass from a 431-read pass, which is exactly the ambiguity that let the
+    whole-tree re-read survive unnoticed.
+    */
+    expect(output).toHaveBeenCalledWith(expect.stringContaining("read 2/431 (stat-only 429)"));
+    // An ordinary pass reports nothing about the ceiling: a permanent `capped 0` would dilute the warning.
+    expect(output.mock.calls[0]![0]).not.toContain("capped");
+    output.mockRestore();
+  });
+
+  it("warns in human output when the discovery ceiling truncated the walk", async () => {
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    build.mockResolvedValueOnce({
+      graph: { nodes: [{}], edges: [] },
+      changed: true,
+      stats: { parsedFiles: 1, reusedFiles: 0, prunedFiles: 0, addedFiles: 1, deletedFiles: 0, discoveredFiles: 25000, readFiles: 1, statOnlyFiles: 0, cappedFiles: 913, synthesizedImportEdges: 0, derivedModuleCount: 0, recoveryReason: null },
+    });
+
+    await runKnowledgeGraphBuild();
+
+    // A truncated walk is a graph-completeness warning, so it must be named, not silently dropped.
+    expect(output).toHaveBeenCalledWith(expect.stringContaining("capped 913"));
     output.mockRestore();
   });
 

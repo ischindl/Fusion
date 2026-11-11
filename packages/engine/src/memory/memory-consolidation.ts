@@ -3,8 +3,17 @@ import { deriveRecallMaterial } from "./memory-consolidation-material.js";
 
 export type MemoryConsolidationTickInput = { agentId: string; projectId: string };
 export type MemorySemanticsSkipReason = "unchanged" | "malformed-response" | "no-candidates" | "graph-unavailable";
+/*
+FNXC:KnowledgeGraph 2026-11-11-20:12 (RUFU-500):
+`refreshGraph`'s `stats` is the narrower port type the memory lane is allowed to see, and `readFiles` is now a
+REQUIRED part of it: `reusedFiles / readFiles` is the ratio that tells an operator whether a pass was
+proportional to what changed or re-read the whole tree (the 84.8%-of-the-dashboard symptom this lane produced).
+A port that dropped it would make the evidence unobtainable exactly where the burn used to happen.
+Deliberately NOT widened into `MemoryConsolidationOutcome`: that shape is persisted and rendered as the
+dashboard's consolidation history, which is a separate delivery surface.
+*/
 export type MemoryConsolidationPorts = {
-  refreshGraph: () => Promise<{ rationaleNodes: GraphNode[]; nodeCount: number; edgeCount: number; changed: boolean; recoveryReason: RecoveryReason | null; stats: { parsedFiles: number; reusedFiles: number; prunedFiles: number } }>;
+  refreshGraph: () => Promise<{ rationaleNodes: GraphNode[]; nodeCount: number; edgeCount: number; changed: boolean; recoveryReason: RecoveryReason | null; stats: { parsedFiles: number; reusedFiles: number; prunedFiles: number; readFiles: number } }>;
   appendRecall: (input: RecallAppendInput) => Promise<RecallAppendResult>;
   mergeRecallGraphNodeIds: (recordId: string, ids: string[]) => Promise<{ status: "updated" | "unchanged" | "missing" }>;
   /** Semantic enrichment is optional for test ports but production resolves it beside graph I/O. */

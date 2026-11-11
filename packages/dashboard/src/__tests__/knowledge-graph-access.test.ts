@@ -90,19 +90,49 @@ describe("knowledge graph artifact access", () => {
     silently run the same build twice and the operator would read a graph that was never written.
     */
     const store = { getRootDir: () => graphDir, getSettings: async () => ({ knowledgeGraphDir: "." }) };
-    const summary = { changed: false, nodes: 3, edges: 5, stats: { parsedFiles: 0 } };
+    /*
+    FNXC:KnowledgeGraph 2026-11-11-20:12 (RUFU-500):
+    The fallback must return the SAME shape as the child lane, including the four required read counters.
+    A caller that branches on `stats.readFiles` would otherwise crash only on a source checkout or an
+    incomplete bundle -- the one lane no child test ever covers. `toEqual` (not `toMatchObject`) is the point:
+    a summary missing a key is exactly the shape a divergent fallback produces.
+    */
+    const stats = { parsedFiles: 0, reusedFiles: 3, prunedFiles: 0, readFiles: 0, statOnlyFiles: 3 };
+    const summary = { changed: false, nodes: 3, edges: 5, stats };
     core.runKnowledgeGraphBuild.mockRejectedValueOnce(
       new KnowledgeGraphBuildOffloadUnavailableError("worker not usable in this checkout"),
     );
     core.runKnowledgeGraphBuildInProcess.mockResolvedValueOnce(summary);
 
-    await expect(rebuildProjectKnowledgeGraph(store as never, {})).resolves.toMatchObject({ changed: false, nodes: 3 });
+    await expect(rebuildProjectKnowledgeGraph(store as never, {})).resolves.toEqual({ changed: false, nodes: 3, edges: 5, stats });
     expect(core.runKnowledgeGraphBuildInProcess).toHaveBeenCalledTimes(1);
+    expect(core.runKnowledgeGraphBuildInProcess).toHaveBeenCalledWith({ projectRoot: graphDir, graphDir, force: undefined });
 
     core.runKnowledgeGraphBuild.mockRejectedValueOnce(new Error("graph manifest is inconsistent"));
     await expect(rebuildProjectKnowledgeGraph(store as never, {})).rejects.toThrow(/manifest is inconsistent/);
     // Second call must not have been reached: `toHaveBeenCalledTimes(1)` is the assertion, not the fallback.
     expect(core.runKnowledgeGraphBuildInProcess).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes a child build's proportionality counters through to the caller unchanged", async () => {
+    /*
+    FNXC:KnowledgeGraph 2026-11-11-20:12 (RUFU-500):
+    `POST /knowledge/graph/build` is where an operator checks whether a rebuild was proportional, so the
+    counters the child measured must survive this layer verbatim. Re-shaping or trimming them here would hide
+    the 0-read pass evidence behind the API.
+    */
+    const store = { getRootDir: () => graphDir, getSettings: async () => ({ knowledgeGraphDir: "." }) };
+    core.runKnowledgeGraphBuild.mockResolvedValueOnce({
+      changed: true, nodes: 863, edges: 1290,
+      stats: { parsedFiles: 0, reusedFiles: 429, prunedFiles: 0, readFiles: 2, statOnlyFiles: 429, discoveredFiles: 431, cappedFiles: 0, recoveryReason: null },
+    });
+
+    await expect(rebuildProjectKnowledgeGraph(store as never, { force: true })).resolves.toMatchObject({
+      changed: true,
+      nodes: 863,
+      edges: 1290,
+      stats: { readFiles: 2, statOnlyFiles: 429, discoveredFiles: 431, cappedFiles: 0 },
+    });
   });
 });
 
