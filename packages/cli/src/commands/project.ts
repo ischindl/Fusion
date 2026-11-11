@@ -25,7 +25,9 @@ import {
   type Column,
   countRunningAgentTasks,
   enrichRunningAgentTaskShape,
+  prefetchWorkflowSelections,
   resolveWorkflowIrForTask,
+  type WorkflowSelectionCache,
   readProjectIdentity,
   writeProjectIdentity,
 } from "@fusion/core";
@@ -197,8 +199,19 @@ async function getTaskCounts(projectPath: string): Promise<TaskCountSummary> {
     rather than per task.
     */
     const irCache = new Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>();
+    /*
+    FNXC:RunningAgentCountSelectionBatch 2026-11-11-08:55:
+    The CLI twin of `countRunningAgentsInStore` in `packages/dashboard/src/project-store-resolver.ts` —
+    the same helper, the same pure predicate, and the same whole-board loop, so it carries the same read
+    shape: `irCache` costs one IR per WORKFLOW, while each task still paid its own
+    `task_workflow_selection` read. Batch the page's selections once so an operator running `fn project`
+    pays one round trip instead of one per card. See the dashboard site for the measured production case
+    and why a failed batch keeps today's per-task fallback unchanged.
+    */
+    const selectionCache: WorkflowSelectionCache = new Map();
+    await prefetchWorkflowSelections(resolvedStore, tasks.map((task) => task.id), selectionCache);
     const enriched = await Promise.all(tasks.map(async (task) =>
-      enrichRunningAgentTaskShape(task, await resolveWorkflowIrForTask(resolvedStore, task.id, irCache)),
+      enrichRunningAgentTaskShape(task, await resolveWorkflowIrForTask(resolvedStore, task.id, irCache, selectionCache)),
     ));
     return { byColumn: counts, runningAgentCount: countRunningAgentTasks(enriched) };
   } catch {
