@@ -17,12 +17,14 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  classifyFileScopeFromPrompt,
   extractEffectiveWriteScopeFromPrompt,
   extractFileScopeTokens,
   isValidFileScopeEntry,
 } from "../tasks/file-scope-classification.js";
 import {
   isValidFileScopeEntry as storeFileScopeIsValidFileScopeEntry,
+  sanitizeFileScopeInPromptContent,
   validateFileScopeInPromptContent,
 } from "../task-store/file-scope.js";
 import { isValidFileScopeEntry as storeIsValidFileScopeEntry } from "../store.js";
@@ -252,5 +254,129 @@ Example only:
       "global.json",
       "src/MyApp/Program.cs",
     ]);
+  });
+});
+
+/*
+FNXC:FileScopeClassification 2026-11-11-16:03 (RUFU-494):
+An inline backticked annotation inside a `## File Scope` bullet is commentary, not a declared path.
+The harvest takes at most the LEADING backticked token of a line, so an annotated bullet - the shape
+repo spec hygiene actively encourages - stops being hard-rejected by the only path the planner has to
+repair a spec. RUFU-490 lost one of three planning passes to exactly the bullet below at
+2026-10-02 10:01:11.762Z, and refine/duplicate/archive-restore silently deleted annotated bullets
+through sanitize's whole-line filter.
+
+Conservatism is deliberately not widened: an invalid LEADING candidate (`origin/main`, `HEAD`, a bare
+`rerouted`, a bare `todo`) still lands in the `invalid` list, still classifies `invalid-entry`, and
+still refuses on all three throwing call sites. These cases pin both halves - narrowed harvest,
+undropped guard.
+*/
+const RUFU_490_BULLET =
+  "- `packages/engine/src/merge/workspace-review-reroute.ts` (returns an object literal with a `rerouted` false branch and a reason string at L51)";
+const RUFU_490_TARGET = "packages/engine/src/merge/workspace-review-reroute.ts";
+const annotatedPrompt = `# Task: RUFU-490\n\n## File Scope\n\n${RUFU_490_BULLET}\n\n## Steps\n- [ ] Go\n`;
+
+describe("leading-candidate harvest: inline annotations are commentary (RUFU-494)", () => {
+  it("accepts the exact RUFU-490 annotated bullet through validation and classification", () => {
+    expect(validateFileScopeInPromptContent(annotatedPrompt)).toEqual({
+      valid: [RUFU_490_TARGET],
+      invalid: [],
+    });
+    expect(extractFileScopeTokens(annotatedPrompt)).toEqual([RUFU_490_TARGET]);
+    expect(extractEffectiveWriteScopeFromPrompt(annotatedPrompt)).toEqual([RUFU_490_TARGET]);
+
+    const { entries } = classifyFileScopeFromPrompt(annotatedPrompt);
+    expect(entries.map((entry) => entry.token)).toEqual([RUFU_490_TARGET]);
+    expect(entries.some((entry) => entry.token === "rerouted")).toBe(false);
+    expect(entries.some((entry) => entry.token === "false")).toBe(false);
+    expect(entries.some((entry) => entry.reason === "invalid-entry")).toBe(false);
+  });
+
+  it("harvests nothing from a prose line whose backtick is not the leading content", () => {
+    const prompt = "## File Scope\n\n- `packages/core/src/task-store/file-scope.ts`\n\nNote: returns `rerouted` only when the slot is held.\n\n## Steps\n";
+    expect(extractFileScopeTokens(prompt)).toEqual(["packages/core/src/task-store/file-scope.ts"]);
+    expect(validateFileScopeInPromptContent(prompt)).toEqual({
+      valid: ["packages/core/src/task-store/file-scope.ts"],
+      invalid: [],
+    });
+  });
+
+  it("keeps only the first path of a two-path bullet (deliberate narrowing)", () => {
+    const prompt = "## File Scope\n\n- `packages/core/src/a.ts` and `packages/core/src/b.ts`\n";
+    expect(extractFileScopeTokens(prompt)).toEqual(["packages/core/src/a.ts"]);
+    expect(extractEffectiveWriteScopeFromPrompt(prompt)).toEqual(["packages/core/src/a.ts"]);
+    expect(validateFileScopeInPromptContent(prompt).invalid).toEqual([]);
+  });
+
+  it("does not harvest candidates from a fenced block inside the File Scope section", () => {
+    const prompt = [
+      "## File Scope",
+      "",
+      "- `packages/core/src/a.ts`",
+      "",
+      "```md",
+      "- `origin/main`",
+      "- `rerouted`",
+      "```",
+      "",
+      "## Steps",
+      "",
+    ].join("\n");
+    expect(extractFileScopeTokens(prompt)).toEqual(["packages/core/src/a.ts"]);
+    expect(validateFileScopeInPromptContent(prompt)).toEqual({
+      valid: ["packages/core/src/a.ts"],
+      invalid: [],
+    });
+    expect(extractEffectiveWriteScopeFromPrompt(prompt)).toEqual(["packages/core/src/a.ts"]);
+  });
+
+  it("still refuses an invalid leading candidate and names only that candidate", () => {
+    const prompt = "## File Scope\n\n- `origin/main` (the base branch for the diff and a `rerouted` note)\n";
+    expect(validateFileScopeInPromptContent(prompt)).toEqual({ valid: [], invalid: ["origin/main"] });
+
+    const { entries, effectiveWriteScope } = classifyFileScopeFromPrompt(prompt);
+    expect(effectiveWriteScope).toEqual([]);
+    expect(entries.filter((entry) => entry.reason === "invalid-entry").map((entry) => entry.token)).toEqual([
+      "origin/main",
+    ]);
+  });
+
+  it("still refuses a bare word, HEAD, and a bare column name used as the leading entry", () => {
+    for (const token of ["rerouted", "HEAD", "todo"]) {
+      const prompt = `## File Scope\n\n- \`${token}\` (annotated)\n`;
+      expect(validateFileScopeInPromptContent(prompt).invalid, token).toEqual([token]);
+      expect(extractEffectiveWriteScopeFromPrompt(prompt), token).toEqual([]);
+    }
+  });
+
+  it("keeps an annotated valid bullet byte-for-byte through sanitize", () => {
+    /*
+    sanitizeFileScopeInPromptContent backs refineTask, duplicateTask, and archive restore. Its
+    whole-line `tokens.every(...)` filter used to delete the annotated bullet outright, so a copied
+    spec silently lost the file it was about to edit.
+    */
+    const { sanitized, dropped } = sanitizeFileScopeInPromptContent(annotatedPrompt);
+    expect(sanitized).toBe(annotatedPrompt);
+    expect(dropped).toEqual([]);
+  });
+
+  it("drops only the line whose leading candidate is invalid and reports only that candidate", () => {
+    const prompt = [
+      "# Task",
+      "",
+      "## File Scope",
+      "",
+      "- `packages/core/src/a.ts` (carries a `rerouted` annotation)",
+      "- `origin/main` (annotated)",
+      "",
+      "## Steps",
+      "",
+    ].join("\n");
+
+    const { sanitized, dropped, kept } = sanitizeFileScopeInPromptContent(prompt);
+    expect(dropped).toEqual(["origin/main"]);
+    expect(kept).toEqual(["packages/core/src/a.ts"]);
+    expect(sanitized).toContain("- `packages/core/src/a.ts` (carries a `rerouted` annotation)");
+    expect(sanitized).not.toContain("origin/main");
   });
 });

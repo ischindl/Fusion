@@ -16,14 +16,31 @@
  * Token extraction and section location are shared with classification so fenced
  * code-block File Scope headings (issue repros) are ignored consistently on create,
  * sanitize, and effective write-scope paths.
+ *
+ * FNXC:FileScopeClassification 2026-11-11-16:08 (RUFU-494):
+ * Sanitize now consumes the SAME leading-candidate line walk the validator uses. Its old inline
+ * per-line `/`([^`]+)`/g` + `tokens.every(...)` filter treated an annotation span as a declared path,
+ * so it DELETED the whole annotated bullet from the copied spec - refineTask, duplicateTask, and
+ * archive restore could silently drop the very file the follow-up card was about to edit. A line
+ * whose leading candidate is valid is now kept byte-for-byte, annotation and all.
  */
 export { isValidFileScopeEntry, extractFileScopeTokens } from "../tasks/file-scope-classification.js";
 import {
   isValidFileScopeEntry,
   extractFileScopeTokens,
+  iterateFileScopeSectionLines,
   locateFileScopeSection,
 } from "../tasks/file-scope-classification.js";
 
+/**
+ * Split an operator-declared `## File Scope` into declared entries and refusals.
+ *
+ * FNXC:FileScopeClassification 2026-11-11-16:08 (RUFU-494):
+ * `invalid` holds ONLY leading candidates that `isValidFileScopeEntry` refuses (`origin/main`, a bare
+ * `rerouted`, an escaping path) - never an inline annotation. That list is what all three
+ * `InvalidFileScopeError` throw sites report, so a spec written in the repo's encouraged annotated
+ * style reaches PROMPT.md instead of burning a planning pass.
+ */
 export function validateFileScopeInPromptContent(prompt: string): { valid: string[]; invalid: string[] } {
   const tokens = extractFileScopeTokens(prompt);
   const valid: string[] = [];
@@ -38,6 +55,17 @@ export function validateFileScopeInPromptContent(prompt: string): { valid: strin
   return { valid, invalid };
 }
 
+/**
+ * Rebuild a prompt whose File Scope declares at least one refused path, dropping ONLY the lines
+ * whose leading candidate is refused.
+ *
+ * FNXC:FileScopeClassification 2026-11-11-16:08 (RUFU-494):
+ * Line-granular and leading-candidate only, through the classifier's shared walk: no candidate
+ * means prose or context (kept), a valid candidate keeps the WHOLE line including its annotation,
+ * and an invalid candidate drops just that line and reports just that candidate. The previous filter
+ * asked whether EVERY backtick span on the line was a valid path, so an annotated but perfectly
+ * valid bullet was deleted outright from every refine/duplicate/archive-restore copy.
+ */
 export function sanitizeFileScopeInPromptContent(prompt: string): { sanitized: string; dropped: string[]; kept: string[] } {
   const located = locateFileScopeSection(prompt);
   if (!located) {
@@ -51,13 +79,9 @@ export function sanitizeFileScopeInPromptContent(prompt: string): { sanitized: s
     return { sanitized: prompt, dropped, kept };
   }
 
-  const sanitizedSection = section
-    .split("\n")
-    .filter((line) => {
-      const tokens = Array.from(line.matchAll(/`([^`]+)`/g), (match) => match[1]);
-      if (tokens.length === 0) return true;
-      return tokens.every((token) => isValidFileScopeEntry(token));
-    })
+  const sanitizedSection = Array.from(iterateFileScopeSectionLines(section))
+    .filter(({ candidate }) => candidate === null || isValidFileScopeEntry(candidate))
+    .map(({ line }) => line)
     .join("\n");
 
   return {

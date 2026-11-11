@@ -94,10 +94,63 @@ export function isValidFileScopeEntry(token: string): boolean {
   return false;
 }
 
+/*
+FNXC:FileScopeClassification 2026-11-11-16:03 (RUFU-494):
+One rule for the whole harvest: a File Scope line contributes AT MOST ONE candidate entry - the
+backtick span that BEGINS the line's content, after optional indentation and an optional bullet
+marker (`-`, `*`, `+`, or a numbered `1.` / `1)`). Every other backtick span on that line, and every
+backtick span on a line whose first backtick does not open the content (`Note: returns \`rerouted\`
+when held.`), is an ANNOTATION: commentary, never a scope entry.
+
+Why: spec hygiene encourages annotated bullets, e.g.
+`- \`packages/engine/src/merge/workspace-review-reroute.ts\` (returns an object literal with a
+\`rerouted\` false branch)`. The previous whole-section scan harvested `rerouted` as a scope entry,
+`isValidFileScopeEntry` refused it, and all three `InvalidFileScopeError` throw sites rejected a
+valid spec - including `fn_task_prompt_write`, the only path the planner had to repair it (RUFU-490
+lost one of three planning passes that way). This narrows the harvest only: an invalid LEADING
+candidate (`origin/main`, `HEAD`, a bare `rerouted`) still classifies `invalid-entry` and still
+refuses, so conservatism is preserved and acceptance is not widened one bit.
+
+Exported because `sanitizeFileScopeInPromptContent` must apply the same rule to the same lines -
+validation, classification, and sanitize may not hold three opinions about what a bullet declares.
+*/
+const LEADING_CANDIDATE_RE = /^\s*(?:[-*+]|\d+[.)])?\s*`([^`]+)`/;
+
+/** The one candidate a File Scope line declares, or null when the line is prose/context/annotation. */
+export function extractLeadingFileScopeCandidate(line: string): string | null {
+  const token = LEADING_CANDIDATE_RE.exec(line)?.[1]?.trim();
+  return token ? token : null;
+}
+
+/**
+ * Walk a section body once, yielding each line with its candidate, and suppress candidates for
+ * lines inside a fenced block (same "repro snippets are documentation, not data" intent that keeps
+ * fenced `## File Scope` headings out of `locateFileScopeSection`, FNXC 2026-07-21-18:05).
+ *
+ * Exported for `sanitizeFileScopeInPromptContent`: sanitize must see the same line/candidate pairs
+ * the validator saw, or the two disagree about which line a refusal belongs to and the sanitizer
+ * deletes the wrong bullet.
+ */
+export function* iterateFileScopeSectionLines(section: string): Generator<{ line: string; candidate: string | null }> {
+  let inFence = false;
+  for (const line of section.split("\n")) {
+    if (/^```/.test(line)) {
+      inFence = !inFence;
+      yield { line, candidate: null };
+      continue;
+    }
+    yield { line, candidate: inFence ? null : extractLeadingFileScopeCandidate(line) };
+  }
+}
+
 export function extractFileScopeTokens(content: string): string[] {
   const section = extractFileScopeSection(content);
   if (!section) return [];
-  return extractBacktickedTokens(section);
+  const tokens: string[] = [];
+  for (const { candidate } of iterateFileScopeSectionLines(section)) {
+    if (candidate !== null) tokens.push(candidate);
+  }
+  return tokens;
 }
 
 export function extractEffectiveWriteScopeFromPrompt(content: string): string[] {
@@ -117,7 +170,16 @@ export function classifyFileScopeFromPrompt(content: string): FileScopeClassific
   const seen = new Set<string>();
   let context: "include" | "exclude" | "conditional" = "include";
 
-  for (const rawLine of section.split("\n")) {
+  /*
+  FNXC:FileScopeClassification 2026-11-11-16:03 (RUFU-494):
+  The per-line harvest now goes through the same leading-candidate extractor that validation uses, so
+  classification and validation cannot drift (FNXC 2026-07-21-19:00 contract) and an inline annotation
+  can never surface as an `invalid-entry` or pollute `effectiveWriteScope`. The include/exclude/
+  conditional state machine below is deliberately unchanged: it still reads every line, annotations
+  included, because a line's prose is exactly what tells the classifier which context its ONE
+  declared entry belongs to. Fenced lines keep their context effect but declare nothing.
+  */
+  for (const { line: rawLine, candidate } of iterateFileScopeSectionLines(section)) {
     const line = rawLine.trim();
     if (!line) continue;
     if (INCLUDE_CONTEXT_RE.test(line) && !EXCLUDE_CONTEXT_RE.test(line) && !CONDITIONAL_CONTEXT_RE.test(line)) {
@@ -130,22 +192,20 @@ export function classifyFileScopeFromPrompt(content: string): FileScopeClassific
       context = "conditional";
     }
 
-    const tokens = extractBacktickedTokens(line);
-    for (const rawToken of tokens) {
-      const token = rawToken.trim();
-      const reason = classifyToken(token, line, context);
-      if (reason !== "included-write-scope") {
-        entries.push({ token, included: false, reason, line });
-        continue;
-      }
-      if (seen.has(token)) {
-        entries.push({ token, included: false, reason: "duplicate-entry", line });
-        continue;
-      }
-      seen.add(token);
-      effectiveWriteScope.push(token);
-      entries.push({ token, included: true, reason, line });
+    if (candidate === null) continue;
+    const token = candidate;
+    const reason = classifyToken(token, line, context);
+    if (reason !== "included-write-scope") {
+      entries.push({ token, included: false, reason, line });
+      continue;
     }
+    if (seen.has(token)) {
+      entries.push({ token, included: false, reason: "duplicate-entry", line });
+      continue;
+    }
+    seen.add(token);
+    effectiveWriteScope.push(token);
+    entries.push({ token, included: true, reason, line });
   }
 
   return { entries, effectiveWriteScope };
@@ -246,6 +306,9 @@ function extractFileScopeSection(content: string): string | null {
   return content.slice(located.sectionStart, located.sectionEnd);
 }
 
-function extractBacktickedTokens(text: string): string[] {
-  return Array.from(text.matchAll(/`([^`]+)`/g), (match) => match[1]?.trim() ?? "").filter(Boolean);
-}
+/*
+FNXC:FileScopeClassification 2026-11-11-16:03 (RUFU-494):
+`extractBacktickedTokens` (a whole-text `/`([^`]+)`/g` scan) is DELETED here on purpose. It had zero
+callers once validation, classification, and sanitize moved to `extractLeadingFileScopeCandidate`,
+and a surviving caller-less wide scanner is exactly the seam someone re-widens from.
+*/

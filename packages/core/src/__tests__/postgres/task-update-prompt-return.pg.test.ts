@@ -14,7 +14,7 @@ import {
   pgDescribe,
   type SharedPgTaskStoreHarness,
 } from "../../__test-utils__/pg-test-harness.js";
-import { type TaskStore } from "../../store.js";
+import { type TaskStore, InvalidFileScopeError } from "../../store.js";
 
 const { persistPromptFile } = vi.hoisted(() => {
   const persistPromptFile = vi.fn();
@@ -191,5 +191,43 @@ pgDescribe("updateTask prompt return (PostgreSQL backend mode)", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+
+  /*
+  FNXC:PromptReadBack 2026-11-11-16:09 (RUFU-494) - Symptom Verification through the exact call
+  `fn_task_prompt_write` makes. A spec whose File Scope bullet carries an inline backticked
+  annotation must reach disk verbatim; a spec whose LEADING entry is refused must still reject
+  InvalidFileScopeError and leave the previous PROMPT.md bytes untouched. Green classifier unit tests
+  alone would not close this card: the refusal that burned RUFU-490's planning pass lived on this
+  store path, not in the classifier.
+  */
+  const annotatedBullet =
+    "- `packages/engine/src/merge/workspace-review-reroute.ts` (returns an object literal with a `rerouted` false branch and a reason string at L51)";
+  const annotatedSpec = `# Task: RUFU-490\n\n## Mission\n\nStop refusing annotated scope bullets.\n\n## File Scope\n\n${annotatedBullet}\n\n## Steps\n\n1. Verify the prompt write\n`;
+
+  it.sequential("writes an annotated File Scope bullet to PROMPT.md verbatim (RUFU-494 symptom)", async () => {
+    const task = await store.createTask({ description: "annotated file scope accepted" });
+
+    const updated = await store.updateTask(task.id, { prompt: annotatedSpec });
+
+    expect(updated?.prompt).toBe(annotatedSpec);
+    const onDisk = await readFile(join(store.taskDir(task.id), "PROMPT.md"), "utf8");
+    expect(onDisk).toContain(annotatedBullet);
+    expect(onDisk).toBe(annotatedSpec);
+  });
+
+  it.sequential("still rejects a refused leading File Scope entry and leaves PROMPT.md unchanged (RUFU-494 conservatism)", async () => {
+    const task = await store.createTask({ description: "invalid leading entry still refuses" });
+    await store.updateTask(task.id, { prompt: annotatedSpec });
+    const before = await readFile(join(store.taskDir(task.id), "PROMPT.md"), "utf8");
+
+    const refusedSpec = annotatedSpec.replace(
+      annotatedBullet,
+      "- `origin/main` (the base branch for the diff and a `rerouted` note)",
+    );
+
+    await expect(store.updateTask(task.id, { prompt: refusedSpec })).rejects.toBeInstanceOf(InvalidFileScopeError);
+    const after = await readFile(join(store.taskDir(task.id), "PROMPT.md"), "utf8");
+    expect(after).toBe(before);
   });
 });

@@ -38,6 +38,7 @@ import {
   hasCurrentHumanMergeApproval,
   isHumanMergeApprovalEnabled,
   isValidFileScopeEntry,
+  extractFileScopeTokens,
   locateFileScopeSection,
   resolveHumanMergeDecision,
   resolvePendingHumanMergeRejection,
@@ -521,12 +522,19 @@ strand exactly the work the operator asked for. This mirrors `fn_task_file_scope
 surgery rather than inventing a second format, and it only ever ADDS: no declared entry is removed,
 so the initial plan's scope evidence stays intact. Invalid or escaping paths were already dropped by
 the planner's validator; this re-checks because the section is durable operator-facing contract.
+
+FNXC:HumanMergeApproval 2026-11-11-16:09 (RUFU-494):
+The `existing` dedupe set comes from core's `extractFileScopeTokens`, the shared leading-candidate
+harvest, instead of a raw backtick scan of the section body. A raw scan let an inline ANNOTATION on a
+declared bullet make a genuinely missing file look already-declared, so the widening silently
+published corrective steps whose files were outside the scope the squash honors. The insertion shape
+(leading single-path `- \`path\`` bullets) is unchanged and remains a valid leading candidate.
 */
 export function widenPromptFileScope(prompt: string, files: readonly string[]): string {
   const section = locateFileScopeSection(prompt);
   if (!section) return prompt;
   const body = prompt.slice(section.sectionStart, section.sectionEnd);
-  const existing = new Set((body.match(/`([^`]+)`/g) ?? []).map((token) => token.slice(1, -1)));
+  const existing = new Set(extractFileScopeTokens(prompt));
   const toAdd = files
     .map((file) => file.trim())
     .filter((file) => file.length > 0 && isValidFileScopeEntry(file) && !existing.has(file));

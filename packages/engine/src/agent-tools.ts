@@ -3058,6 +3058,14 @@ export function createTaskPromptWriteTool(
 FNXC:FileScope 2026-07-08-22:40:
 Requirement: when an executing agent must edit files beyond the task's declared `## File Scope`, it should extend the declared scope itself rather than silently editing out-of-scope (which strands those edits — the merger's squash is scoped to `## File Scope`, and cross-task overlap blocking + the merge file-scope invariant both read it). This tool appends validated entries to the `## File Scope` section of PROMPT.md and persists via `store.updateTask({ prompt })`, so the same validation (`validateFileScopeInPromptContent`) and task.json/PROMPT.md sync path as `fn_task_prompt_write` applies, and `parseFileScopeFromPrompt` picks the additions up immediately.
 Entries are validated with `isValidFileScopeEntry` and de-duplicated against existing scope. Marker-free plain `- \`path\`` lines are used (not the merger's `scopeAutoWiden` HTML-comment marker) so these read as first-class declared scope. Caveat: unlike the merge-time auto-widen, this does NOT re-run the peer-claim refusal (files owned by another active task's scope) — the merge-time invariant remains the backstop for genuine cross-task conflicts.
+
+FNXC:FileScope 2026-11-11-16:09 (RUFU-494):
+De-duplication reads the declared scope through core's `extractFileScopeTokens`, the same
+leading-candidate harvest the validator and the classifier use. The previous raw `/`([^`]+)`/g` scan
+over the section let an inline ANNOTATION answer "Already present" for a path the executor
+legitimately needed to add - and a path refused that way cannot be added, so the executor would keep
+editing out-of-scope and strand its work at the squash. Same harvest everywhere means the tool, the
+validator, and the merge invariant can never disagree about what is declared.
 */
 export function createTaskFileScopeAddTool(store: TaskStore, taskId: string, runContext?: RunMutationContext): ToolDefinition {
   return {
@@ -3102,7 +3110,7 @@ export function createTaskFileScopeAddTool(store: TaskStore, taskId: string, run
         const sectionEnd = nextHeadingIdx === -1 ? prompt.length : sectionStart + nextHeadingIdx;
         const section = prompt.slice(sectionStart, sectionEnd);
 
-        const existing = new Set((section.match(/`([^`]+)`/g) ?? []).map((t) => t.slice(1, -1)));
+        const existing = new Set(fusionCore.extractFileScopeTokens(prompt));
         const alreadyPresent = valid.filter((f) => existing.has(f));
         const toAdd = valid.filter((f) => !existing.has(f));
 
