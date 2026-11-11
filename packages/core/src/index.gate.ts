@@ -554,6 +554,9 @@ export {
   validateStepDependencies,
   StepDependencyValidationError,
   resolveAuthoredStepHeadingOffset,
+  /* FNXC:StepDependencyValidation 2026-11-11-08:26 (RUFU-545): gate barrel mirror of the root barrel
+     export - the frame resolver is one rule and both barrels must carry it. */
+  resolveStepHeadingLabelFrame,
   PROMPT_STEP_PARSER_ID,
   __resetStepParserRegistryForTests,
 } from "./tasks/step-parsers.js";
@@ -565,6 +568,7 @@ export type {
   StepParserRegistrationReason,
   StepDependencyCoordinate,
   StepDependencyValidationReason,
+  StepHeadingLabelFrame,
 } from "./tasks/step-parsers.js";
 export {
   registerDefaultWorkflowHooks,

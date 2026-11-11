@@ -27,11 +27,20 @@ import { maskGeneratedOriginalDescription } from "./original-description-region.
 
 /**
  * A parsed step as produced by a parser. `dependsOn` is always a 0-indexed
- * persisted document index. Prefix Markdown `(depends:)` tokens use 1-based
- * positions. Legacy title-suffix annotations use contiguous authored heading labels.
+ * persisted document index. Prefix Markdown `(depends:)` tokens are authored heading
+ * LABELS, translated to that index through the frame the plan numbered its headings in
+ * (see `resolveStepHeadingLabelFrame`). Legacy title-suffix annotations use contiguous
+ * authored heading labels too, but only for a fully ascending sequence.
  *
  * FNXC:WorkflowSteps 2026-06-29-17:55:
  * Parser output must preserve array presence: omitted `dependsOn` means legacy previous-step fallback, while explicit `dependsOn: []` means an independent parallel root.
+ *
+ * FNXC:StepDependencyValidation 2026-11-11-08:26 (RUFU-545):
+ * The coordinate of a Markdown token used to be "1-based position in the parsed list", which is not
+ * what authors write: a planner numbering headings from `### Step 0` writes the label it is looking
+ * at, so every edge landed one step early and the immediately preceding step dropped out. Measured on
+ * the live corpus (814 heading documents, 233 annotated), the label coordinate is the only one anyone
+ * writes, so it is now authoritative and the position reading is gone.
  */
 export interface ParsedStep {
   name: string;
@@ -179,9 +188,15 @@ export const PROMPT_STEP_PARSER_ID = "step-headings";
  * to the legacy regex `^###\s+Step\s+\d+[^:]*:\s*(.+)$` (name = text after the
  * first colon, trimmed).
  *
- * Prefix annotations `### Step N (depends: 1,2): Title` use 1-based document positions.
- * Legacy suffix annotations `### Step N: Title (depends: 0)` use authored labels,
- * but only when the complete heading sequence is contiguous and starts at 0 or 1.
+ * FNXC:StepDependencyValidation 2026-11-11-08:26 (RUFU-545):
+ * Prefix annotations `### Step N (depends: 1,2): Title` name the AUTHORED HEADING LABEL, so
+ * `(depends: 4)` means "the heading that reads `### Step 4` in this same document". The parser reads
+ * the numbering frame from the heading sequence and translates a label into the persisted 0-based
+ * index; a token naming the step's own label denotes no prerequisite and collapses onto the preceding
+ * step rather than refusing; numbering that cannot be read while a token needs it is a deterministic
+ * `ambiguous-labels` refusal naming the annotated heading.
+ * Legacy suffix annotations `### Step N: Title (depends: 0)` keep their own authored-label reading,
+ * still restricted to a fully ascending sequence, and still refuse a self edge.
  * Both forms preserve an empty annotation as an explicit independent root and
  * validate every dependency before returning steps. Ambiguous or malformed input fails closed.
  */
@@ -229,23 +244,40 @@ export function matchStepHeadings(content: string): StepHeadingMatch[] {
 }
 
 export type StepDependencyCoordinate = "markdown-position" | "storage-index";
-export type StepDependencyValidationReason = "malformed" | "zero" | "negative" | "duplicate" | "out-of-range" | "self-or-forward" | "cycle";
+export type StepDependencyValidationReason = "malformed" | "zero" | "negative" | "duplicate" | "out-of-range" | "self-or-forward" | "cycle" | "ambiguous-labels";
 
-/** A stable, task-visible dependency refusal with the original bad token. */
+/**
+ * A stable, task-visible dependency refusal with the original bad token.
+ *
+ * FNXC:StepDependencyValidation 2026-11-11-08:26 (RUFU-545):
+ * `frame` names which authored-heading frame a Markdown refusal was read in and `authoredLabels`
+ * is the label sequence the document actually carries, so the message can tell an author which
+ * numbering it read instead of only that the token was bad. Storage-index refusals carry neither,
+ * because they are not about Markdown numbering at all.
+ */
 export class StepDependencyValidationError extends Error {
   readonly coordinate: StepDependencyCoordinate;
   readonly dependentPosition: number;
   readonly token: string | number;
   readonly reason: StepDependencyValidationReason;
   readonly stepCount: number;
+  readonly frame?: StepHeadingLabelFrame["kind"];
+  readonly authoredLabels?: number[];
 
-  constructor(params: { coordinate: StepDependencyCoordinate; dependentPosition: number; token: string | number; reason: StepDependencyValidationReason; stepCount: number }) {
-    const { coordinate, dependentPosition, token, reason, stepCount } = params;
+  constructor(params: { coordinate: StepDependencyCoordinate; dependentPosition: number; token: string | number; reason: StepDependencyValidationReason; stepCount: number; frame?: StepHeadingLabelFrame["kind"]; authoredLabels?: number[] }) {
+    const { coordinate, dependentPosition, token, reason, stepCount, frame, authoredLabels } = params;
     const displayed = coordinate === "markdown-position" ? token : Number(token) + 1;
     const prefix = `step ${dependentPosition} depends on`;
-    const message = reason === "out-of-range"
-      ? `${prefix} out-of-range step ${displayed} (valid positions: 1-${stepCount})`
-      : `${prefix} invalid step ${displayed} (${reason})`;
+    const labelRange = authoredLabels && authoredLabels.length > 0
+      ? `${Math.min(...authoredLabels)}-${Math.max(...authoredLabels)}`
+      : undefined;
+    const message = reason === "ambiguous-labels"
+      ? `${prefix} unreadable heading numbering: annotated heading ${dependentPosition} carries \`(depends: ${token})\` but the authored step labels ${authoredLabels?.join(", ") ?? "(none)"} are neither contiguous from 0 nor from 1. Renumber contiguously from 0 or from 1, or remove the annotation.`
+      : reason === "out-of-range" && labelRange
+        ? `${prefix} out-of-range step ${displayed} (authored labels: ${labelRange})`
+        : reason === "out-of-range"
+          ? `${prefix} out-of-range step ${displayed} (valid positions: 1-${stepCount})`
+          : `${prefix} invalid step ${displayed} (${reason})`;
     super(message);
     this.name = "StepDependencyValidationError";
     this.coordinate = coordinate;
@@ -253,6 +285,8 @@ export class StepDependencyValidationError extends Error {
     this.token = token;
     this.reason = reason;
     this.stepCount = stepCount;
+    this.frame = frame;
+    this.authoredLabels = authoredLabels;
   }
 }
 
@@ -312,11 +346,30 @@ export function parseStepHeadings(content: string): TaskStep[] {
   const annotatedRegex = /^###\s+Step\s+\d+\s*\(depends:\s*([^)]*)\)\s*:\s*([^\n]+)$/;
   const suffixRegex = /^###\s+Step\s+\d+\s*:\s*(.+?)\s+\(depends:\s*([^)]*)\)\s*$/;
   const matches = matchStepHeadings(source);
-  const legacyOffset = matches[0]?.headingNumber;
-  const unambiguousLegacyLabels = (legacyOffset === 0 || legacyOffset === 1)
-    && matches.every((entry, index) => entry.headingNumber === index + legacyOffset);
+  /*
+  FNXC:StepDependencyValidation 2026-11-11-08:26 (RUFU-545):
+  A `(depends:)` token is a heading LABEL, so the document's numbering frame has to be read before any
+  token is translated. `labelToIndex` does the translation; for the contiguous ascending sequences every
+  planner writes it is identical to `label - frame.offset`, and for an unordered-but-contiguous sequence
+  it still names the step the author pointed at. The suffix form keeps its stricter pre-existing gate:
+  an exact ascending sequence from 0 or from 1 in DOCUMENT order, which is the frame plus ascending order,
+  so a suffix annotation in a non-contiguous document is still refused exactly as before. The labels are
+  read from RUFU-536's masked source, so a prior generation of the plan quoted inside the generated
+  Original Description region contributes neither a frame entry nor a token target.
+  */
+  const frame = resolveStepHeadingLabelFrame(matches.map((entry) => entry.headingNumber));
+  const authoredLabels = matches.map((entry) => entry.headingNumber).sort((a, b) => a - b);
+  const labelToIndex = new Map<number, number>();
+  matches.forEach((entry, index) => {
+    if (!labelToIndex.has(entry.headingNumber)) labelToIndex.set(entry.headingNumber, index);
+  });
+  const unambiguousLegacyLabels = frame.kind !== "ambiguous"
+    && matches.every((entry, index) => entry.headingNumber === index + frame.offset);
   const steps: TaskStep[] = [];
-  const pendingDependencies: Array<{ position: number; raw: string; offset: number } | undefined> = [];
+  const pendingDependencies: Array<{ position: number; raw: string; form: "prefix" | "suffix" } | undefined> = [];
+  // The first prefix annotation that actually carries a token. An empty `(depends:)` states an
+  // independent root and needs no coordinate, so it never forces the document's numbering to be readable.
+  let tokenBearingAnnotation: { position: number; raw: string } | undefined;
 
   for (const entry of matches) {
     const annotated = annotatedRegex.exec(entry.match);
@@ -328,31 +381,64 @@ export function parseStepHeadings(content: string): TaskStep[] {
     }
     const name = annotated?.[2] ?? suffix?.[1] ?? /^###\s+Step\s+\d+[^:]*:\s*(.+)$/m.exec(entry.match)?.[1] ?? "";
     steps.push({ name: name.trim(), status: "pending" });
-    pendingDependencies.push(annotated
-      ? { position: steps.length, raw: annotated[1], offset: 1 }
-      : suffix ? { position: steps.length, raw: suffix[2], offset: legacyOffset! } : undefined);
+    if (annotated) {
+      pendingDependencies.push({ position: steps.length, raw: annotated[1], form: "prefix" });
+      if (!tokenBearingAnnotation && annotated[1].trim() !== "") tokenBearingAnnotation = { position: steps.length, raw: annotated[1].trim() };
+    } else {
+      pendingDependencies.push(suffix ? { position: steps.length, raw: suffix[2], form: "suffix" } : undefined);
+    }
   }
   if (steps.length > 0) {
+    if (tokenBearingAnnotation && frame.kind === "ambiguous") {
+      throw new StepDependencyValidationError({
+        coordinate: "markdown-position",
+        dependentPosition: tokenBearingAnnotation.position,
+        token: tokenBearingAnnotation.raw,
+        reason: "ambiguous-labels",
+        stepCount: steps.length,
+        frame: "ambiguous",
+        authoredLabels,
+      });
+    }
     for (const pending of pendingDependencies) {
       if (!pending) continue;
       const raw = pending.raw.trim();
-      if (raw === "") { steps[pending.position - 1]!.dependsOn = []; continue; }
+      const ownIndex = pending.position - 1;
+      if (raw === "") { steps[ownIndex]!.dependsOn = []; continue; }
       const seen = new Set<number>();
-      const dependencies: number[] = [];
+      const dependencies = new Set<number>();
       for (const token of raw.split(",").map((value) => value.trim())) {
-        const base = { coordinate: "markdown-position" as const, dependentPosition: pending.position, token, stepCount: steps.length };
+        const base = { coordinate: "markdown-position" as const, dependentPosition: pending.position, token, stepCount: steps.length, frame: frame.kind, authoredLabels };
         if (!/^-?\d+$/.test(token)) throw new StepDependencyValidationError({ ...base, reason: "malformed" });
         const value = Number(token);
-        if (value === 0 && pending.offset === 1) throw new StepDependencyValidationError({ ...base, reason: "zero" });
         if (value < 0) throw new StepDependencyValidationError({ ...base, reason: "negative" });
-        const dependency = value - pending.offset;
-        if (dependency >= steps.length) throw new StepDependencyValidationError({ ...base, reason: "out-of-range" });
+        // A token of 0 has no heading to name only in the legacy fully-1-based frame; in a document
+        // numbered from 0 it is the canonical name for the Preflight step.
+        if (value === 0 && frame.kind === "fully-1-based") throw new StepDependencyValidationError({ ...base, reason: "zero" });
+        const dependency = labelToIndex.get(value);
+        if (dependency === undefined) throw new StepDependencyValidationError({ ...base, reason: "out-of-range" });
         if (seen.has(value)) throw new StepDependencyValidationError({ ...base, reason: "duplicate" });
-        if (dependency >= pending.position - 1) throw new StepDependencyValidationError({ ...base, reason: "self-or-forward" });
         seen.add(value);
-        dependencies.push(dependency);
+        /*
+        FNXC:StepDependencyValidation 2026-11-11-08:26 (RUFU-545):
+        The prefix form's degenerate self token - `(depends: 8)` on `### Step 8` - denotes no
+        prerequisite at all, it is the redundant-boilerplate shape a planner writes when it copies the
+        step it is looking at. Refusing it would break real cards over a token carrying no information:
+        measured on the live corpus it appears on 44 headings across 16 specs, including all eight
+        annotated headings of RUFU-328. It therefore collapses onto the immediately preceding step and
+        that edge is PERSISTED EXPLICITLY, never left absent, because merge-queue-ops.ts applies its
+        completion guard for a non-graph writer only when `dependsOn` is an array - an absent value
+        would delete the guard. At index 0 there is no predecessor, so the token contributes nothing.
+        The suffix form keeps refusing its own label: that is its documented contract, unchanged here.
+        */
+        if (pending.form === "prefix" && dependency === ownIndex) {
+          if (ownIndex > 0) dependencies.add(ownIndex - 1);
+          continue;
+        }
+        if (dependency >= ownIndex) throw new StepDependencyValidationError({ ...base, reason: "self-or-forward" });
+        dependencies.add(dependency);
       }
-      steps[pending.position - 1]!.dependsOn = dependencies;
+      steps[ownIndex]!.dependsOn = [...dependencies];
     }
     validateStepDependencies(steps);
     return steps;
@@ -392,6 +478,38 @@ function extractStepsSection(content: string): string | undefined {
 }
 
 /*
+FNXC:StepDependencyValidation 2026-11-11-08:26:
+RUFU-545 makes the authored heading LABEL the authoritative coordinate of a Markdown
+`(depends:)` annotation, which requires the parser to know which frame a plan numbered its
+headings in before it can translate a token. This is that single decision, and every consumer
+of an authored-heading offset reads it from here: the Markdown annotation path (see
+`parseStepHeadings`) and file-scope normalization (`normalizeAuthoredStepScopes` in
+`packages/engine/src/execution/step-session-executor.ts`) must never hold two opinions about
+the same heading sequence, or a step's dependency edge and its declared file scope can drift
+onto different steps. An empty sequence is `ambiguous` on purpose - there is no frame to read
+and no annotation to translate.
+*/
+export type StepHeadingLabelFrame =
+  | { kind: "zero-based"; offset: 0 }
+  | { kind: "fully-1-based"; offset: 1 }
+  | { kind: "ambiguous"; sortedLabels: number[] };
+
+/** Classify an authored `### Step N` label sequence. Exactly `0..n-1` is the canonical
+ *  zero-based frame, exactly `1..n` is the legacy fully-1-based frame, and anything else
+ *  (gaps, duplicates, wild labels, empty) cannot be read as a frame at all. */
+export function resolveStepHeadingLabelFrame(headingNumbers: readonly number[]): StepHeadingLabelFrame {
+  const sortedLabels = [...headingNumbers].sort((a, b) => a - b);
+  const count = sortedLabels.length;
+  if (count > 0 && sortedLabels.every((label, index) => label === index)) {
+    return { kind: "zero-based", offset: 0 };
+  }
+  if (count > 0 && sortedLabels.every((label, index) => label === index + 1)) {
+    return { kind: "fully-1-based", offset: 1 };
+  }
+  return { kind: "ambiguous", sortedLabels };
+}
+
+/*
 FNXC:WorkflowStepControl 2026-09-04-01:38:
 PROMPT.md is model-authored, but its heading numbers are execution indices. A fully 1-based run
 previously produced a phantom step at steps.length, so only that unambiguous legacy sequence rebases.
@@ -399,10 +517,15 @@ previously produced a phantom step at steps.length, so only that unambiguous leg
 FNXC:WorkflowSteps 2026-09-04-02:57:
 Headings, file scopes, and dependency annotations must share one authored-heading offset rule so
 canonical 0-based plans and preserved fully-1-based legacy plans cannot drift between packages.
+
+FNXC:StepDependencyValidation 2026-11-11-08:26:
+RUFU-545 keeps this export's public behaviour byte-identical (`1` only for an exact `1..n`
+sequence, `0` otherwise, including an ambiguous sequence) and makes it a delegate over
+`resolveStepHeadingLabelFrame`, so scope normalization and annotation translation cannot drift.
+An ambiguous frame contributes offset 0 here exactly as it did before the extraction.
 */
 export function resolveAuthoredStepHeadingOffset(headingNumbers: readonly number[]): 0 | 1 {
-  const sorted = [...headingNumbers].sort((a, b) => a - b);
-  return sorted.length > 0 && sorted.every((heading, index) => heading === index + 1) ? 1 : 0;
+  return resolveStepHeadingLabelFrame(headingNumbers).kind === "fully-1-based" ? 1 : 0;
 }
 
 // ── Built-in: json-steps ──────────────────────────────────────────────────────

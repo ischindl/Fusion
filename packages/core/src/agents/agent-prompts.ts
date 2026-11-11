@@ -289,6 +289,17 @@ FNXC:FastPlanning 2026-09-04-01:38:
 The heading number is the 0-based execution index consumed by parseStepFileScopes and
 extractStepSection. A 1-based example previously scheduled a phantom step at steps.length.
 */
+/*
+FNXC:StepDependencyValidation 2026-11-11-08:34 (RUFU-545):
+The planner writes `(depends:)` annotations and `parseStepHeadings` reads them, so the three planning
+lanes below (standard, fast, concise) must teach the SAME coordinate the parser implements: the token is
+the visible heading label, not a position in the parsed list. The standard lane used to say "1-based
+positions" while the fast lane demanded 0-based headings, so every annotation the planner emitted
+resolved one step early (measured: every annotated spec in the corpus was written in the label
+coordinate). A prompt teaching a different frame than the parser reads turns a parser fix into a fresh
+Plan Review refusal, so change this text only together with the parser. See
+`resolveStepHeadingLabelFrame` and `docs/workflow-steps.md`.
+*/
 const FAST_TRIAGE_PROMPT_TEXT = `You are a task specification agent for "fn". This task is running in **fast mode**.
 
 ${FAST_PLANNING_COMPLETENESS_POLICY}
@@ -303,7 +314,7 @@ Write a lean, executable PROMPT.md quickly. Preserve safety gates, but skip heav
 Before writing a spec, call \`fn_task_list\` for active work, then call \`fn_task_search\` with \`includeDone: false\` for 2-4 targeted keyword phrases from the title/description, such as file paths, symptoms, and symbols. Do not search completed work for duplicate candidates. When an active match is a duplicate, do not write a spec — but still write PROMPT.md, with its entire contents being the single line \`DUPLICATE: {existing-task-id}\` and nothing else. That file is how the duplicate is recorded; announcing it only in your reply leaves no plan behind and re-plans the task in a loop.
 
 ## Required PROMPT.md shape
-Write PROMPT.md with Original Description, What This Delivers, Before → After Transformation, Mission, Plan Premises, Dependencies, Context to Read First, File Scope, Steps, Documentation Requirements, Completion Criteria, Git Commit Convention, and Do NOT. Put \`## Original Description\` immediately after the title/\`Created\`/\`Size\` metadata with the operator's original task description copied **verbatim** (do not paraphrase). Immediately after it, write \`## What This Delivers\` in plain product language so anyone can verify at a glance what the operator will gain; do not use file paths, symbols, or framework terms. Put \`## Before → After Transformation\` next, before \`## Mission\`, with concise Before/After bullets: current state, target state, why it satisfies the user's request at a glance. In \`## Steps\`, every executable heading MUST use \`### Step N: <name>\` (e.g. \`### Step 0: Preflight\`), numbered 0-based from \`### Step 0:\` through \`### Step N-1:\` with no gaps. Do not write bare \`### Preflight\` / \`### Implementation\` headings, and do not add review-level, triage subtask, or proactive subtask headings.
+Write PROMPT.md with Original Description, What This Delivers, Before → After Transformation, Mission, Plan Premises, Dependencies, Context to Read First, File Scope, Steps, Documentation Requirements, Completion Criteria, Git Commit Convention, and Do NOT. Put \`## Original Description\` immediately after the title/\`Created\`/\`Size\` metadata with the operator's original task description copied **verbatim** (do not paraphrase). Immediately after it, write \`## What This Delivers\` in plain product language so anyone can verify at a glance what the operator will gain; do not use file paths, symbols, or framework terms. Put \`## Before → After Transformation\` next, before \`## Mission\`, with concise Before/After bullets: current state, target state, why it satisfies the user's request at a glance. In \`## Steps\`, every executable heading MUST use \`### Step N: <name>\` (e.g. \`### Step 0: Preflight\`), numbered 0-based from \`### Step 0:\` through \`### Step N-1:\` with no gaps. A \`(depends: N)\` names the heading \`### Step N\` in the same document, never a parsed position, and never the step's own label. Do not write bare \`### Preflight\` / \`### Implementation\` headings, and do not add review-level, triage subtask, or proactive subtask headings.
 
 ## Surface Enumeration
 For bug fixes and UI-affordance add/remove tasks, the spec MUST include a \`## Surface Enumeration\` section. The workflow Plan Review gate validates this before execution when plan review is enabled.
@@ -314,7 +325,7 @@ For bug-fix and UI-affordance add/remove tasks, paste and fill in this checklist
 - [ ] shared hooks/components/modules/helpers reusing the logic.
 - [ ] For bug-fix tasks and UI-affordance add/remove tasks, every component that renders the affordance by searching the codebase for the icon/class/testid.
 - [ ] leftover shells after removal: empty buttons, orphaned click targets, now-unused wrappers, dangling aria-labels across desktop + mobile.
-Motivating incidents: streamed-response spacing regressed until covered across surfaces (FN-5787/FN-5789/FN-5803); auto-merge blank dashboard missed mobile Android (FN-5751).
+Motivating incidents: FN-5787/FN-5789/FN-5803 (surfaces), FN-5751 (mobile Android).
 
 ## Symptom Verification
 For bug-class/bug-fix tasks only; feature/docs/non-bug tasks do not need this section. Use the exact heading \`## Symptom Verification\` and include: (1) **Original symptom** — what the user/issue reported was broken; (2) **Exact reproduction** — the precise steps, inputs, fixture, or automated repro that triggered the failure; (3) **Assertion it is gone** — the executor's final verification must reproduce that original failure condition and assert it no longer occurs via a real automated test. Green build/tests alone are insufficient without symptom-based acceptance.
@@ -442,12 +453,17 @@ Follow this structure exactly:
 
 ## Steps
 
-> Optional: a step heading may carry a \`(depends: N,M)\` annotation listing 1-based positions in the
-> parsed step list — visible \`### Step N\` labels are display text, not identifiers. For example,
-> \`### Step 12 (depends: 1): Title\` depends on the first parsed step. \`(depends:)\` is an explicit
-> independent root; an unannotated step depends on the preceding parsed step. JSON \`depends\` remains
-> a separate 0-based API. Be conservative — only mark a step independent when it truly does not read
-> or modify the prior step's output.
+> Optional: a step heading may carry a \`(depends: N,M)\` annotation naming the visible heading labels
+> \`### Step N\` **in this same PROMPT.md** - it is not a position in the parsed step list. Number the
+> headings contiguously from \`0\` (a legacy sequence that starts at \`1\` is also read); numbering that
+> cannot be read at all is a deterministic refusal that names the annotated heading. In a plan whose
+> headings are \`### Step 0: Preflight\` and \`### Step 1: Implement\`, the dependent step is written
+> \`### Step 2 (depends: 1): Verify\` - never \`(depends: 2)\`, because \`2\` would name the step itself.
+> Never write a token equal to the step's own label: it denotes no prerequisite and collapses onto the
+> default previous-step edge, so it says nothing that the unannotated form does not already say.
+> \`(depends:)\` is an explicit independent root; an unannotated step depends on the preceding step.
+> Be conservative - only mark a step independent when it truly does not read or modify the prior step's
+> output. JSON \`depends\` is the opposite coordinate and stays a separate 0-based document-index API.
 
 ### Step 0: Preflight
 
@@ -1279,7 +1295,8 @@ Write a PROMPT.md specification to the given path. Be brief and precise — avoi
 4. **Review Level:** 0=trivial, 1=moderate, 2=multi-package, 3=security/breaking. Score 0-8.
 5. **No placeholders:** Real content only.
 6. **Read first:** Examine codebase before writing spec.
-7. **Be concise:** Short descriptions, minimal prose. Focus on what matters.`;
+7. **Be concise:** Short descriptions, minimal prose. Focus on what matters.
+8. **Step dependencies:** number headings contiguously from \`### Step 0:\`; a \`(depends: N)\` annotation names the heading \`### Step N\` in the same document, never a parsed position, and never the step's own label.`;
 
 const EXECUTOR_HEARTBEAT_GUIDANCE = `## Heartbeat Run Behavior
 

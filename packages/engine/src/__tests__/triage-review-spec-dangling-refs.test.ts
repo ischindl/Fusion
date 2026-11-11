@@ -96,7 +96,14 @@ describe("triage deterministic plan validation for dangling references", () => {
     }
   });
 
-  it("accepts arbitrary display labels and rejects invalid positional dependencies", async () => {
+  /*
+  FNXC:StepDependencyValidation 2026-11-11-10:05 (RUFU-545):
+  This case used to be the clearest statement of the removed contract: "arbitrary display labels" were
+  legal while `(depends: N)` picked the Nth parsed step. Labels are only arbitrary while nothing points
+  at them - as soon as an annotation carries a token the numbering has to be readable, and RUFU-545 made
+  that refusal its own class instead of silently resolving the token one step early.
+  */
+  it("accepts arbitrary display labels until an annotation needs them, then refuses unreadable numbering", async () => {
     const rootDir = await mkdtemp(join(tmpdir(), "fusion-triage-step-dependencies-"));
     try {
       const store = createMockStore();
@@ -105,13 +112,16 @@ describe("triage deterministic plan validation for dangling references", () => {
         "FN-5112",
         "## Steps\n### Step 12: First\n### Step 0: Second\n",
       )).resolves.toBeNull();
+      const unreadableNumbering = "step 2 depends on unreadable heading numbering: annotated heading 2 "
+        + "carries `(depends: 0)` but the authored step labels 0, 12 are neither contiguous from 0 nor "
+        + "from 1. Renumber contiguously from 0 or from 1, or remove the annotation.";
       await expect((processor as any).validateGeneratedPrompt(
         "FN-5112",
         "## Steps\n### Step 12: First\n### Step 0 (depends: 0): Second\n",
-      )).resolves.toBe("step 2 depends on invalid step 0 (zero)");
+      )).resolves.toBe(unreadableNumbering);
       expect(store.logEntry).toHaveBeenCalledWith(
         "FN-5112",
-        "Generated plan validation failed: step 2 depends on invalid step 0 (zero)",
+        `Generated plan validation failed: ${unreadableNumbering}`,
       );
     } finally {
       await rm(rootDir, { recursive: true, force: true });
@@ -134,10 +144,26 @@ describe("triage deterministic plan validation for dangling references", () => {
         "FN-5112",
         "## Steps\n### Step 0: Preflight\n### Step 1: Plan\n### Step 2: Build\n### Step 3 (depends: 1): Parallel A\n### Step 4: Continue\n### Step 5 (depends: 4): Parallel B\n### Step 6 (depends: 1): Parallel C\n### Step 7: Verify\n### Step 8: Deliver\n",
       )).resolves.toBeNull();
+      // RUFU-545: in a document numbered from 0 a `0` token is the canonical name for the Preflight
+      // step, and a token naming the step's own label is the redundant shape that means "the previous
+      // step". Both used to refuse (`zero` / a one-step-early edge) and both now validate.
+      await expect((processor as any).validateGeneratedPrompt(
+        "FN-5112",
+        "## Steps\n### Step 0: First\n### Step 1 (depends: 0): Second\n### Step 2 (depends: 1): Third\n",
+      )).resolves.toBeNull();
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a numbering gap that a dependency annotation depends on", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "fusion-triage-step-numbering-gap-"));
+    try {
+      const processor = new TriageProcessor(createMockStore(), rootDir);
       await expect((processor as any).validateGeneratedPrompt(
         "FN-5112",
         "## Steps\n### Step 0: First\n### Step 1 (depends: 0): Second\n### Step 3 (depends: 1): Gap\n",
-      )).resolves.toContain("step 2 depends on invalid step 0 (zero)");
+      )).resolves.toContain("depends on unreadable heading numbering");
     } finally {
       await rm(rootDir, { recursive: true, force: true });
     }

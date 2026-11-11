@@ -662,6 +662,10 @@ export {
   validateStepDependencies,
   StepDependencyValidationError,
   resolveAuthoredStepHeadingOffset,
+  /* FNXC:StepDependencyValidation 2026-11-11-08:26 (RUFU-545): the frame resolver is the single
+     authored-heading offset rule; consumers reach it through the barrels, and a missing export here
+     keeps lint/typecheck/build green while the gate goes red (the FN-8651 trap). */
+  resolveStepHeadingLabelFrame,
   PROMPT_STEP_PARSER_ID,
   __resetStepParserRegistryForTests,
 } from "./tasks/step-parsers.js";
@@ -671,6 +675,7 @@ export type {
   StepParseResult,
   ParsedStep,
   StepParserRegistrationReason,
+  StepHeadingLabelFrame,
 } from "./tasks/step-parsers.js";
 export {
   registerDefaultWorkflowHooks,

@@ -107,13 +107,59 @@ describe("parse-steps node handler (U12, KTD-12)", () => {
     expect(written[0][4]).toEqual({ name: "Documentation & delivery", status: "pending", dependsOn: [1, 2, 3] });
   });
 
-  it("maps Markdown positional dependencies through the production parse node", async () => {
+  /*
+  FNXC:StepDependencyValidation 2026-11-11-09:55 (RUFU-545):
+  This test used to prove the opposite contract: headings labelled 12 / 99 / 2 were legal display text
+  while `(depends: 2)` picked the second parsed step. Under the label coordinate the heading number IS
+  the identifier an annotation points at, so a plan has to number its headings as a readable sequence,
+  and the shape that used to resolve now routes `parse-error` instead of writing a wrong edge.
+  */
+  it("maps Markdown label dependencies through the production parse node", async () => {
     const { deps, written } = makeDeps({
-      readArtifact: async () => "### Step 12: Preflight\n### Step 99: Implement\n### Step 2 (depends: 2): Test",
+      readArtifact: async () => "### Step 0: Preflight\n### Step 1: Implement\n### Step 2 (depends: 0,1): Test",
     });
     const result = await runParse(parseIr("step-headings"), deps);
     expect(result.outcome).toBe("success");
-    expect(written[0][2]).toEqual({ name: "Test", status: "pending", dependsOn: [1] });
+    expect(written[0][2]).toEqual({ name: "Test", status: "pending", dependsOn: [0, 1] });
+  });
+
+  it("routes a plan whose heading numbering an annotation cannot resolve to parse-error", async () => {
+    const { deps, written, audits } = makeDeps({
+      readArtifact: async () => "### Step 12: Preflight\n### Step 99: Implement\n### Step 2 (depends: 2): Test",
+    });
+    const result = await runParse(
+      parseIr("step-headings", undefined, [{ from: "parse", to: "end", condition: "outcome:parse-error" }]),
+      deps,
+    );
+    expect(result.context["node:parse:value"]).toBe("parse-error");
+    expect(audits.some((a) => a.reason === "parse-error")).toBe(true);
+    expect(written).toHaveLength(0);
+  });
+
+  it("keeps each parser's coordinate at the production node: labels for Markdown, indices for JSON", async () => {
+    // One document is never read in both coordinates - a parse-steps node picks exactly one parser per
+    // artifact - so the two coordinate systems cannot disagree inside one run. The same *shape* of
+    // dependency resolves differently per parser: `(depends: 2)` names the heading `### Step 2`, while
+    // JSON `depends: [2]` names storage index 2 (the third step).
+    const markdown = makeDeps({
+      readArtifact: async () => "### Step 0: a\n### Step 1: b\n### Step 2 (depends: 1): c",
+    });
+    expect((await runParse(parseIr("step-headings"), markdown.deps)).outcome).toBe("success");
+    expect(markdown.written[0][2]).toEqual({ name: "c", status: "pending", dependsOn: [1] });
+
+    const json = makeDeps({
+      readArtifact: async () => JSON.stringify([{ name: "a" }, { name: "b" }, { name: "c", depends: [2] }]),
+    });
+    // Index 2 is `c`'s own position, so the storage-index validator refuses it rather than re-reading it
+    // as a heading label.
+    expect((await runParse(parseIr("json-steps", "STEPS.json"), json.deps)).outcome).toBe("failure");
+    expect(json.written).toHaveLength(0);
+
+    const legalJson = makeDeps({
+      readArtifact: async () => JSON.stringify([{ name: "a" }, { name: "b" }, { name: "c", depends: [1] }]),
+    });
+    expect((await runParse(parseIr("json-steps", "STEPS.json"), legalJson.deps)).outcome).toBe("success");
+    expect(legalJson.written[0][2]).toEqual({ name: "c", status: "pending", dependsOn: [1] });
   });
 
   it("json-steps parser writes structured steps", async () => {

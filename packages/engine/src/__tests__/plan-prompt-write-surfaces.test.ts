@@ -44,7 +44,10 @@ describe("planning prompt-write surfaces", () => {
   });
 
   it("rejects an invalid Markdown dependency before either prompt-write surface mutates", async () => {
-    const invalid = "### Step 12: First\n### Step 8 (depends: 0): Second";
+    // RUFU-545: the `zero` class belongs to a document whose headings run 1..n, where `0` names no
+    // heading. Headings numbered 12 / 8 used to be legal display text and now refuse as unreadable
+    // numbering, so the two classes are asserted separately below - both still gate the write.
+    const invalid = "### Step 1: First\n### Step 2 (depends: 0): Second";
     const triage = createProductionShapedStore();
     const review = createProductionShapedStore();
     const triageResult = await runTool(createTriagePromptWriteTool(triage.store, TASK_ID), invalid);
@@ -53,6 +56,16 @@ describe("planning prompt-write surfaces", () => {
     expect(getText(reviewResult)).toContain("step 2 depends on invalid step 0 (zero)");
     expect(triage.updateTask).not.toHaveBeenCalled();
     expect(review.updateTask).not.toHaveBeenCalled();
+
+    const unreadable = "### Step 12: First\n### Step 8 (depends: 0): Second";
+    const gatedTriage = createProductionShapedStore();
+    const gatedReview = createProductionShapedStore();
+    expect(getText(await runTool(createTriagePromptWriteTool(gatedTriage.store, TASK_ID), unreadable)))
+      .toContain("depends on unreadable heading numbering");
+    expect(getText(await runTool(createPlanReviewPromptWriteTool({ store: gatedReview.store, getRunContextFor: vi.fn() } as any, TASK_ID), unreadable)))
+      .toContain("depends on unreadable heading numbering");
+    expect(gatedTriage.updateTask).not.toHaveBeenCalled();
+    expect(gatedReview.updateTask).not.toHaveBeenCalled();
   });
 
   it("confirms Plan Review repair writes through the shared worker registration", async () => {
