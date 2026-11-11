@@ -198,12 +198,43 @@ type MailboxWakeDeferralEpisode = {
 };
 
 /**
- * The observable inputs a mailbox wake verdict rests on. Anything else (sender, content, metadata) is
- * immutable on a delivered message row, so a change here is the only event that can reverse a deferral.
+ * The states a mailbox wake may deliver into. Shared with the fingerprint so the memo class and the wake
+ * decision cannot drift: a fingerprint that is coarser than the decision would serve a stale verdict.
  */
+const WAKE_ELIGIBLE_AGENT_STATES: readonly Agent["state"][] = ["active", "idle", "running"];
+
+/*
+FNXC:MailboxWakeDeferral 2026-11-11-10:29: the complement of the states `reconcileUnreadMailboxWakes` skips
+before any verdict (`paused`, `error`). `AGENT_STATES` has exactly five values, so via the durable sweep the
+eligibility half of the fingerprint can never move — only the same-process send hook can hand this decision
+an ineligible recipient. That is why the key below reads eligibility for `immediate` and nothing broader.
+*/
+function agentWakeEligibility(state: Agent["state"]): "eligible" | "ineligible" {
+  return WAKE_ELIGIBLE_AGENT_STATES.includes(state) ? "eligible" : "ineligible";
+}
+
+/*
+FNXC:MailboxWakeDeferral 2026-11-11-10:29:
+The fingerprint keys on the inputs the verdict actually reaches, never on the row. Two shipped mistakes are
+encoded here, both measured on the deployed engine:
+
+1. The first version hashed `${agent.state}|${mode}`. The decision reads eligibility, not the state, so the
+   ordinary lifecycle of an `on-heartbeat` recipient — a heartbeat run moving it `idle -> running -> idle`,
+   which cannot change the verdict — evicted its own episode and the next pass re-decided and re-logged the
+   whole backlog. Measured over 60 minutes after the 09:32 deploy: 19 388 `outcome=on-heartbeat` lines
+   (5.4/s) across 22 recipients, with zero `deferral-cap-reached`, so it was eviction-by-state-flip, not the
+   cap.
+2. Eligibility is hashed only for `immediate`, because the mode gate in `deliverMessageToAgent` returns
+   before the state gate for every other mode. Hashing eligibility for an `on-heartbeat` recipient would
+   invalidate a verdict that provably does not read it — the same defect one level smaller.
+
+So: `mode` always, plus eligibility exactly when the decision can reach the state gate. A real reversal still
+invalidates at once — a mode edit changes the key, eligibility changes it for `immediate`, and `agent:updated`
+drops the recipient outright (see the listener in `start`).
+*/
 function mailboxWakeDecisionFingerprint(agent: Agent): string {
   const mode = (agent.runtimeConfig as AgentHeartbeatConfig | undefined)?.messageResponseMode ?? "unset";
-  return `${agent.state}|${mode}`;
+  return mode === "immediate" ? `${mode}|${agentWakeEligibility(agent.state)}` : mode;
 }
 
 /*
@@ -3084,8 +3115,12 @@ export class HeartbeatMonitor {
       return;
     }
 
-    const validStates = new Set(["active", "idle", "running"]);
-    if (!validStates.has(agent.state)) {
+    /*
+    FNXC:MailboxWakeDeferral 2026-11-11-10:29: the eligibility predicate is the SAME function the
+    fingerprint hashes, which is what keeps the memo honest — an inline `new Set([...])` here and a
+    different list at the key would let a state change be both invisible and decisive.
+    */
+    if (agentWakeEligibility(agent.state) === "ineligible") {
       if (this.recordMailboxWakeDeferral(agent, message.id, "ineligible-state")) {
         heartbeatLog.log(`[mailbox-wake-reconciliation] messageId=${message.id} agentId=${agent.id} outcome=ineligible-state state=${agent.state}`);
       }

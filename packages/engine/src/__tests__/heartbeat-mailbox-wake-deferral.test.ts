@@ -48,12 +48,14 @@ type Fixture = {
   execute: ReturnType<typeof vi.spyOn>;
   setInbox: (messages: Message[]) => void;
   setMode: (mode: string) => void;
+  setState: (state: string) => void;
 };
 
 function createFixture(initialInbox: Message[], initialMode = "on-heartbeat"): Fixture {
   let inbox = initialInbox;
   let mode = initialMode;
-  const agentRow = () => ({ id: "agent-1", state: "idle", runtimeConfig: { messageResponseMode: mode } });
+  let state = "idle";
+  const agentRow = () => ({ id: "agent-1", state, runtimeConfig: { messageResponseMode: mode } });
   const configStore = createMockStore({
     listAgents: vi.fn().mockResolvedValue([agentRow()]),
     getAgent: vi.fn().mockImplementation(async () => agentRow()),
@@ -79,6 +81,10 @@ function createFixture(initialInbox: Message[], initialMode = "on-heartbeat"): F
       mode = next;
       vi.mocked(configStore.listAgents!).mockResolvedValue([agentRow()] as never);
     },
+    setState: (next) => {
+      state = next;
+      vi.mocked(configStore.listAgents!).mockResolvedValue([agentRow()] as never);
+    },
   };
 }
 
@@ -96,6 +102,78 @@ afterEach(() => {
 });
 
 describe("mailbox wake deferral", () => {
+  /*
+  FNXC:MailboxWakeDeferral 2026-11-11-10:29: the invariant the first shipped version missed. The deferral
+  key hashed the raw `agent.state`, so the ordinary lifecycle of the recipient (a heartbeat run moving it
+  idle -> running -> idle) evicted its own episode and the next pass re-decided and re-logged the whole
+  backlog: 19 388 verdict lines in 60 minutes on the deployed engine, across 22 recipients, with zero
+  `deferral-cap-reached`. A flip the verdict cannot see must cost nothing; a flip it does read must not be
+  swallowed. Both halves are asserted, because a fix that only stopped logging would hide the second.
+  */
+  it("keeps a remembered verdict across every state flip an `on-heartbeat` verdict cannot read", async () => {
+    fixture = createFixture([
+      createMessage({ id: "mail-1", toId: "agent-1", toType: "agent" }),
+      createMessage({ id: "mail-2", toId: "agent-1", toType: "agent" }),
+    ]);
+    fixture.monitor.start();
+    await vi.advanceTimersByTimeAsync(50);
+    await reconcile(fixture.monitor);
+    expect(countLogLines("outcome=on-heartbeat")).toBe(2);
+
+    // The lifecycle of a running heartbeat, then a park: the mode gate returns before the state gate, so no
+    // flip below can change a `defer` verdict. Pre-fix each of these dropped the episode and re-log the
+    // backlog on the following pass.
+    for (const next of ["running", "active", "idle", "paused", "idle"] as const) {
+      fixture.setState(next);
+      await vi.advanceTimersByTimeAsync(61_000);
+      await reconcile(fixture.monitor);
+    }
+    expect(countLogLines("outcome=on-heartbeat")).toBe(2);
+    expect(countLogLines("outcome=ineligible-state")).toBe(0);
+    // Remembering a deferral across those flips is still not waking.
+    expect(fixture.execute).not.toHaveBeenCalled();
+  });
+
+  it("re-decides an `immediate` recipient the moment its eligibility class changes", async () => {
+    /*
+    The durable sweep skips `paused`/`error` recipients before the verdict, so the ineligible class is only
+    reachable through the same-process send hook — asserted here rather than against the sweep, which cannot
+    produce it. `AGENT_STATES` has five values and the sweep skips exactly the two the decision rejects.
+    */
+    let hook: ((message: Message) => void) | undefined;
+    let state = "paused";
+    const messageStore = createMockMessageStore((h) => {
+      hook = h;
+    }) as MessageStore & { getInbox: ReturnType<typeof vi.fn> };
+    messageStore.getInbox = vi.fn().mockResolvedValue([]);
+    const configStore = createMockStore({
+      getAgent: vi.fn().mockImplementation(async () => ({
+        id: "agent-1",
+        state,
+        runtimeConfig: { messageResponseMode: "immediate" },
+      })),
+    });
+    const monitor = new HeartbeatMonitor({ store: createMockStore(), agentStore: configStore, messageStore });
+    fixture = { monitor } as Fixture;
+    const execute = vi.spyOn(monitor, "executeHeartbeat").mockResolvedValue({ id: "run-1" } as AgentHeartbeatRun);
+    monitor.start();
+    await vi.advanceTimersByTimeAsync(50);
+
+    const message = createMessage({ id: "imm-mail", toId: "agent-1", toType: "agent" });
+    hook?.(message);
+    hook?.(message);
+    await vi.advanceTimersByTimeAsync(50);
+    // An immediate recipient that cannot be woken: told once, and the verdict remembered.
+    expect(countLogLines("outcome=ineligible-state")).toBe(1);
+    expect(execute).not.toHaveBeenCalled();
+
+    // Becoming eligible is a different verdict and must fire at once, not wait for anything else to notice.
+    state = "idle";
+    hook?.(message);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(execute).toHaveBeenCalled();
+  });
+
   it("decides a deferred backlog once, not once per pass, on the durable sweep", async () => {
     fixture = createFixture([
       createMessage({ id: "mail-1", toId: "agent-1", toType: "agent" }),
