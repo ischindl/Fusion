@@ -21,6 +21,7 @@
  */
 
 import type { TaskStep } from "../types.js";
+import { maskGeneratedOriginalDescription } from "./original-description-region.js";
 
 // ── Parser contract ──────────────────────────────────────────────────────────
 
@@ -162,6 +163,15 @@ export class StepParserRegistry {
 
 // ── Built-in: step-headings ───────────────────────────────────────────────────
 
+/*
+FNXC:StepSingleSource 2026-11-11-07:05 (RUFU-536):
+The id of the parser that decides what a card's steps are. The read path (`parseStepsFromPrompt`),
+the write path (`updateTask({ prompt })`), and the planning admission check must resolve THIS id, or
+the board list and the durable document are reading two different rules and the divergence the reader
+sees is the parser's, not the plan's.
+*/
+export const PROMPT_STEP_PARSER_ID = "step-headings";
+
 /**
  * Parse `### Step N:` headings into the task step list (step-inversion U1).
  *
@@ -186,20 +196,32 @@ export interface StepHeadingMatch {
 FNXC:WorkflowSteps 2026-09-05-22:06:
 Every consumer deciding whether text is a step heading must use this matcher. A private stricter
 matcher hid documented `(depends: …)` headings, causing false contiguity failures and empty step bodies.
+
+FNXC:StepSingleSource 2026-11-11-07:05 (RUFU-536):
+The scan runs over the document with the generated Original Description region MASKED, not over the
+raw bytes. The verbatim operator-request body is quoted text: when it carries a previous generation
+of the same plan, its `### Step N:` headings are evidence of what the operator once asked for, not
+steps anyone may execute, and reading them produced exactly that — a card whose board list named
+steps from the quoted generation. Masking (rather than stripping) keeps the byte length identical,
+so every `index`/`headingLineEnd` handed back still addresses the caller's own content, which is
+what the per-step session splitter and the review title extractor slice with. Unresolvable regions
+stay unmasked on purpose: the conservative over-read beats silently losing authored steps, and the
+integrity report is what surfaces the ambiguity.
 */
 export function matchStepHeadings(content: string): StepHeadingMatch[] {
+  const scanned = maskGeneratedOriginalDescription(content);
   const stepRegex = /^###\s+Step\s+\d+[^:]*:\s*(.+)$/gm;
   const matches: StepHeadingMatch[] = [];
   let match: RegExpExecArray | null;
-  while ((match = stepRegex.exec(content)) !== null) {
+  while ((match = stepRegex.exec(scanned)) !== null) {
     const heading = /^###\s+Step\s+(\d+)/.exec(match[0]);
     if (!heading) continue;
     const index = match.index;
-    const newline = content.indexOf("\n", index);
+    const newline = scanned.indexOf("\n", index);
     matches.push({
       headingNumber: Number(heading[1]),
       index,
-      headingLineEnd: newline === -1 ? content.length : newline,
+      headingLineEnd: newline === -1 ? scanned.length : newline,
       match: match[0],
     });
   }
@@ -270,10 +292,26 @@ export function validateStepDependencies(steps: readonly Pick<ParsedStep, "depen
   for (let index = 0; index < steps.length; index++) visit(index, new Set(), visited);
 }
 
+/*
+FNXC:StepSingleSource 2026-11-11-07:05 (RUFU-536):
+The one source a card's step list is derived from: line endings normalized, then the generated
+Original Description region masked. `canonicalizePlan`, the plan-approval fingerprint, and this
+function must look at the SAME document, otherwise the board's list and the plan the reviewer
+approved are two different readings of one file — which is the RUFU-536 symptom (a card showing the
+previous generation's step names while its durable document described the current one). Line-ending
+normalization is safe here and nowhere else: this function returns names and dependency edges, never
+offsets, while `matchStepHeadings` callers slice the caller's own bytes and may not be handed
+offsets into a rewritten copy.
+*/
+function authoredStepSource(content: string): string {
+  return maskGeneratedOriginalDescription(content.replace(/\r\n?/g, "\n"));
+}
+
 export function parseStepHeadings(content: string): TaskStep[] {
+  const source = authoredStepSource(content);
   const annotatedRegex = /^###\s+Step\s+\d+\s*\(depends:\s*([^)]*)\)\s*:\s*([^\n]+)$/;
   const suffixRegex = /^###\s+Step\s+\d+\s*:\s*(.+?)\s+\(depends:\s*([^)]*)\)\s*$/;
-  const matches = matchStepHeadings(content);
+  const matches = matchStepHeadings(source);
   const legacyOffset = matches[0]?.headingNumber;
   const unambiguousLegacyLabels = (legacyOffset === 0 || legacyOffset === 1)
     && matches.every((entry, index) => entry.headingNumber === index + legacyOffset);
@@ -320,7 +358,7 @@ export function parseStepHeadings(content: string): TaskStep[] {
     return steps;
   }
 
-  const stepsSection = extractStepsSection(content);
+  const stepsSection = extractStepsSection(source);
   if (!stepsSection) return steps;
   const plainHeadingRegex = /^###\s+(?!Step\s+\d+\b)(.+?)\s*$/gm;
   let match: RegExpExecArray | null;
@@ -333,7 +371,16 @@ export function parseStepHeadings(content: string): TaskStep[] {
 
 /*
 FNXC:WorkflowSteps 2026-06-30-00:54:
-Default Coding parses PROMPT.md before step execution. FN-7260/FN-7271 specs used plain `### Preflight`/`### Implementation` headings under `## Steps`; the previous parser returned zero steps, so fast-mode tasks reached merge with no implementation session. Accept plain third-level headings only inside the Steps section, and only when no legacy `### Step N:` headings were found, so unrelated spec sections do not become executable work.
+Default Coding parses PROMPT.md before step execution. FN-7260/FN-7271 specs used plain `### Preflight`
+/ `### Implementation` headings under `## Steps`; the previous parser returned zero steps, so
+fast-mode tasks reached merge with no implementation session. Accept plain third-level headings only
+inside the Steps section, and only when no legacy `### Step N:` headings were found, so unrelated spec
+sections do not become executable work.
+
+FNXC:StepSingleSource 2026-11-11-07:05 (RUFU-536):
+Receives the masked, line-ending-normalized source, so a `## Steps` heading quoted inside the
+operator-request region cannot become the section boundary either. Without the mask this fallback
+reads the quoted generation's plain headings whenever a fenced region precedes the real section.
 */
 function extractStepsSection(content: string): string | undefined {
   const sectionMatch = /^##\s+Steps\s*$/gim.exec(content);
@@ -423,7 +470,7 @@ export function parseJsonSteps(content: string): StepParseResult {
 
 const BUILTIN_STEP_PARSERS: StepParser[] = [
   {
-    id: "step-headings",
+    id: PROMPT_STEP_PARSER_ID,
     parse(content: string): StepParseResult {
       // The headings parser yields TaskStep[]; map to the parser contract
       // (dropping the `status` field, which the caller re-applies).

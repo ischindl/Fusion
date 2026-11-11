@@ -18,7 +18,7 @@ import { listTraits, isBuiltinWorkflowId, isTaskNotFoundError, renderTaskComment
 import { promoteHeldTask } from "./execution/hold-release.js";
 import { emitBoundedRunAudit } from "./util/emit-bounded-run-audit.js";
 import { STORE_RETRY_GUIDANCE, stepLifecycleNoopResult, storeErrorResult, storeWriteFailure } from "./tool-store-errors.js";
-import { computeCrossParentDiagnosticClaim, computeCrossParentDiagnosticClaimId, computeParentIntentClaimId, DASHBOARD_USER_ID, dailyMemoryPath, ensureOpenClawMemoryFiles, evaluateImplementationTaskBind, extractAgentProvisioningRequest, findSameAgentDuplicates, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, normalizeMessageParticipant, reconcileDeterministicDuplicate, resolveAgentProvisioningPolicy, resolveMemoryBackend, resolveMemorySearchTopic, resolveResearchSettings, resolveTaskGithubTracking, runDeterministicDuplicateGuard, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh, AgentTextCharsetError, assertAgentTextAllowed } from "@fusion/core";
+import { computeCrossParentDiagnosticClaim, computeCrossParentDiagnosticClaimId, computeParentIntentClaimId, DASHBOARD_USER_ID, dailyMemoryPath, ensureOpenClawMemoryFiles, evaluateImplementationTaskBind, extractAgentProvisioningRequest, findSameAgentDuplicates, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, normalizeMessageParticipant, reconcileDeterministicDuplicate, resolveAgentProvisioningPolicy, resolveMemoryBackend, resolveMemorySearchTopic, resolveResearchSettings, resolveTaskGithubTracking, runDeterministicDuplicateGuard, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh, AgentTextCharsetError, assertAgentTextAllowed, isDuplicatedPromptSectionError } from "@fusion/core";
 import { formatLongTermMemoryAppendReport, formatMemorySize, measureLongTermMemory, type LongTermMemoryScope } from "./memory/memory-budget.js";
 import { ResearchOrchestrator } from "./research/research-orchestrator.js";
 import { ResearchProviderRegistry } from "./research/provider-registry.js";
@@ -2762,9 +2762,11 @@ export function createInstallWorktreeDependenciesTool(
  */
 /*
 FNXC:PlanPromptWriteRefusal 2026-10-14-10:04 (RUFU-651):
-`fn_task_prompt_write` can decline a spec write for three reasons that are NOT store outages: the
+`fn_task_prompt_write` can decline a spec write for these reasons that are NOT store outages: the
 planning generation was reset under the attempt, the submitted Markdown has unparseable `### Step N:`
-headings, or the authoritative read-back does not match what was submitted. Until now all three fell
+headings, the submitted document repeats a lockable section outside the fenced operator-request region
+(`duplicated-prompt-section`, RUFU-536), or the authoritative read-back does not match what was
+submitted. Until now all of them fell
 into this tool's catch-all `storeErrorResult`, so the planner was told "the board recorded nothing,
 retry the call" — and `tool-store-errors.ts`' own STAS-251 note says a refusal dressed as an outage
 is the lie that teaches agents to retry something that will never succeed.
@@ -2779,6 +2781,7 @@ A genuine store failure still takes the unchanged outage path below.
 export type PlanPromptWriteRefusalReason =
   | "planning-reset-fenced"
   | "invalid-step-headings"
+  | "duplicated-prompt-section"
   | "prompt-read-back-mismatch";
 
 export class PlanPromptWriteRefusalError extends Error {
@@ -2793,6 +2796,15 @@ const PLAN_PROMPT_WRITE_REFUSAL_GUIDANCE: Record<PlanPromptWriteRefusalReason, s
     "Do not retry: this planning attempt was superseded by a task reset and a newer generation owns the spec.",
   "invalid-step-headings":
     "Nothing was persisted. Fix the plan Markdown so every `### Step N:` heading parses, then submit the complete PROMPT.md again.",
+  /*
+  FNXC:PromptSpecIntegrity 2026-11-11-07:05 (RUFU-536):
+  The store refuses a submission that carries one section twice, and the planner must hear it as a
+  refusal with an instruction, not an outage to retry. The one legal place for a second copy of a
+  lockable heading is inside the fenced region that quotes the operator's own request — outside it,
+  one heading means one generation, and the board's step list is built from exactly that reading.
+  */
+  "duplicated-prompt-section":
+    "Nothing was persisted. The submitted specification repeats a section outside the fenced operator-request block, so the board could not tell which generation is current. Publish one generation of each section: fold the older copy's decisions into the current one, or leave the older copy inside the fenced region that quotes the operator's request, then submit the complete PROMPT.md again.",
   "prompt-read-back-mismatch":
     "Nothing verifiable was persisted: the authoritative PROMPT.md does not match the content submitted. Report this instead of assuming the plan published.",
 };
@@ -2822,7 +2834,8 @@ export function createTaskPromptWriteTool(
     label: "Write PROMPT.md",
     description:
       "Create or replace this task's PROMPT.md with complete plan/spec content. " +
-      "Use during fresh triage planning, replanning, or Plan Review repair; provide the complete final PROMPT.md content.",
+      "Use during fresh triage planning, replanning, or Plan Review repair; provide the complete final PROMPT.md content. " +
+      "One section means one generation: the board builds its step list from the headings a submission leaves visible, so the only place a heading may appear a second time is inside the fenced region that quotes the operator's own request. A submission that repeats a section outside that region is refused and nothing is written.",
     parameters: taskPromptWriteParams,
     execute: async (_id: string, params: Static<typeof taskPromptWriteParams>) => {
       /*
@@ -2987,6 +3000,18 @@ export function createTaskPromptWriteTool(
         if (err instanceof PlanPromptWriteRefusalError) {
           onWriteRefused?.({ reason: err.reason, detail: err.message });
           return planPromptWriteRefusalResult(taskId, err.reason, err.message);
+        }
+        /*
+        FNXC:PromptSpecIntegrity 2026-11-11-07:05 (RUFU-536):
+        The store's publication gate refuses a document that carries one section twice. Map it to the
+        refusal shape — with its `onWriteRefused` attribution, so the owning planning attempt records
+        that the writer was refused — rather than letting `storeErrorResult` tell the planner the board
+        was unreachable and the call is worth repeating. Nothing was persisted either way; only the
+        honesty of the report differs, and RUFU-651 named that difference as the whole point.
+        */
+        if (isDuplicatedPromptSectionError(err)) {
+          onWriteRefused?.({ reason: "duplicated-prompt-section", detail: err.message });
+          return planPromptWriteRefusalResult(taskId, "duplicated-prompt-section", err.message);
         }
         return storeErrorResult(`PROMPT.md plan mirror for ${taskId}`, err);
       }

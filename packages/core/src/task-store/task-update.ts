@@ -42,6 +42,9 @@ import {PLAN_REVIEW_GROUP_ID} from "../workflows/builtin-plan-review-group.js";
 import {BranchWriteProvenanceError, validateTaskBranchName} from "../branch/branch-assignment.js";
 import {withTaskBranchContextInSourceMetadata} from "./branch-context.js";
 import {writePromptFileAtomic} from "./prompt-file.js";
+import {assertPromptDocumentPublishable} from "../tasks/prompt-document-integrity.js";
+import {mergeReDerivedSteps} from "../tasks/step-rederivation.js";
+import {getStepParser, PROMPT_STEP_PARSER_ID} from "../tasks/step-parsers.js";
 import type { TaskAtomicPersistFence } from "./project-store-ops.js";
 
 /*
@@ -503,6 +506,17 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
       re-populates it. That is the designed hybrid contract, NOT a lost write — an investigation
       mistook it for a PostgreSQL persistence bug. To make a task genuinely stepless, remove the step
       headings from PROMPT.md; clearing this array only marks the plan unparsed.
+
+      FNXC:StepSingleSource 2026-11-11-07:05 (RUFU-536):
+      The empty-means-unparsed rule still holds, but a prompt replacement now narrows when an array is
+      ever empty by accident: `updateTask({ prompt })` re-derives the list from the submitted document
+      in the same transaction (see the StepSingleSource note on the prompt branch), so an empty array
+      after a prompt write is the document's own answer — it declares no step headings — and not a
+      generation that was never parsed. Empty-as-unparsed now applies to rows written before any
+      derivation existed (and to `steps: []` writes like the one above), which is exactly the
+      population the read-path re-derivation is for. What did NOT change: the read paths still
+      re-derive whenever the array is empty, and `updates.steps` is still an explicit list write that
+      a prompt replacement does not override.
       */
       if (updates.steps !== undefined) task.steps = updates.steps;
       // U11/KTD-13: customFields writes are validated against the task's workflow
@@ -1370,6 +1384,22 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
         if (validation.invalid.length > 0) {
           throw new InvalidFileScopeError(id, validation.invalid);
         }
+        /*
+        FNXC:PromptSpecIntegrity 2026-11-11-07:05 (RUFU-536):
+        One generation per section, checked on the submitted bytes BEFORE anything is written. The
+        spec lock already saw this shape — a repeated H2 outside the verbatim operator-request region
+        is `section-duplicate` to it — but it reports that as degraded plan-approval evidence and
+        never at the write boundary, so a spliced document still reached disk. A refusal is a total
+        no-op here: this window runs before the row commit, before the directory is created, and
+        before `writePromptFileAtomic`, so the previously durable document, its approval fingerprint,
+        and its captured evidence all stay untouched, exactly like the InvalidFileScopeError above.
+        The candidate is never rewritten — there is no repair path, because repairing the operator's
+        verbatim request is not this boundary's call, and half-repaired bytes are worse than a
+        refusal. Producers that construct a document (specification hygiene, the plan-artifact write
+        path) run the same report on their own post-hygiene string so they hear about it in their own
+        vocabulary instead of through a rejected write.
+        */
+        assertPromptDocumentPublishable(id, updates.prompt);
         await mkdir(dir, { recursive: true });
         if (existsSync(promptPath) && (await stat(promptPath)).isDirectory()) {
           throw new Error(`Cannot write PROMPT.md for ${id}: destination is a directory`);
@@ -1381,6 +1411,45 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
         rewritten plan cannot inherit release authorization from its predecessor.
         */
         task.approvedPlanFingerprint = undefined;
+        /*
+        FNXC:StepSingleSource 2026-11-11-07:05 (RUFU-536):
+        A prompt replacement re-derives the persisted step list, because the document — not the array
+        — is the plan. Before this, `updateTask({ prompt })` rewrote PROMPT.md and left `task.steps`
+        as the previous generation persisted it, while reads re-derived only when the stored array was
+        empty; the board therefore kept showing an older plan's steps (measured on RUFU-519: eight
+        board steps whose names were an earlier generation of that same card's plan).
+
+        Deriving here rather than after `writePromptFileAtomic` is deliberate and rests on the
+        refuse-don't-mutate contract above: the submitted string is what lands on disk byte-for-byte,
+        so deriving from it IS deriving from the just-written document, and it happens in the one
+        window where a refusal is still free. Deriving after the write could only persist a lagging
+        list or throw away a durable file.
+
+        The registry parser is resolved by id, exactly as `parseStepsFromPrompt` does on the read side,
+        so the board list and the durable document cannot disagree about what a step is. A parse throw
+        (malformed `(depends:)`) refuses the write instead of persisting a plan that cannot schedule.
+        An explicit `updates.steps` in the same call is a deliberate list write — the parse-steps graph
+        node owns wholesale-list replacement and must keep that contract — so it is not overridden.
+        */
+        if (updates.steps === undefined) {
+          const stepParser = getStepParser(PROMPT_STEP_PARSER_ID);
+          if (!stepParser) throw new Error(`Step parser '${PROMPT_STEP_PARSER_ID}' is not registered`);
+          const reDerived = mergeReDerivedSteps(task.steps ?? [], stepParser.parse(updates.prompt).steps);
+          task.steps = reDerived.steps;
+          const reDerivationNotes: string[] = [];
+          if (reDerived.droppedStepNames.length > 0) {
+            reDerivationNotes.push(`dropped ${reDerived.droppedStepNames.length} step(s) the new document no longer declares: ${reDerived.droppedStepNames.join(", ")}`);
+          }
+          if (reDerived.prunedRemediationEdgeCount > 0) {
+            reDerivationNotes.push(`pruned ${reDerived.prunedRemediationEdgeCount} orphaned remediation dependency edge(s)`);
+          }
+          if (reDerivationNotes.length > 0) {
+            task.log.push({
+              timestamp: new Date().toISOString(),
+              action: `Step list re-derived from PROMPT.md — ${reDerivationNotes.join("; ")}`,
+            });
+          }
+        }
       }
 
       /*

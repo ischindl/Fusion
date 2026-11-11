@@ -210,7 +210,23 @@ export { PLAN_PREMISE_KINDS, parsePlanPremises } from "./planner/plan-premises.j
 export type { PlanPremise, PlanPremiseKind, PlanPremisesParseResult } from "./planner/plan-premises.js";
 export { canonicalizePlan, createCurrentPlanEvidence, diffSpecLocks, isSpecLockActive, isUnavailablePlanLockError, PLAN_LOCK_UNAVAILABLE_DIAGNOSTIC, SPEC_LOCK_PARSER_VERSION, UnavailablePlanLockError } from "./planner/spec-lock.js";
 export { evaluateSpecDrift, hasPriorLockDivergence, isCurrentSpecDriftReport } from "./planner/drift-report.js";
-export type { CanonicalPlan, CanonicalPlanSection, CurrentPlanEvidence, SpecLock, SpecLockDiff, SpecLockSection } from "./planner/spec-lock.js";
+export type { CanonicalPlan, CanonicalPlanSection, CurrentPlanEvidence, SpecLock, SpecLockDiff, SpecLockSection, SpecParseReason } from "./planner/spec-lock.js";
+/*
+FNXC:PromptSpecIntegrity 2026-11-11-07:05 (RUFU-536):
+The one-generation-per-section report and its publication refusal are exported from the root barrel so
+EVERY producer of a durable PROMPT.md asks the same detector — the store boundary, the specification
+hygiene writer, and the plan-mirror tool cannot each carry their own idea of a duplicate.
+*/
+export { assertPromptDocumentPublishable, inspectPromptDocument, isDuplicatedPromptSectionError, DuplicatedPromptSectionError } from "./tasks/prompt-document-integrity.js";
+export type { PromptDocumentIntegrityReport, PromptIntegrityIssue, PromptIntegrityIssueKind } from "./tasks/prompt-document-integrity.js";
+/*
+FNXC:StepSingleSource 2026-11-11-07:05 (RUFU-536):
+The prompt-replacement step merge lives beside the parser it merges, not in the store, so the graph's
+wholesale-replace runner and the store's status-preserving merge are two named contracts over one
+parser instead of two copies of the same loop.
+*/
+export { mergeReDerivedSteps } from "./tasks/step-rederivation.js";
+export type { StepReDerivationResult } from "./tasks/step-rederivation.js";
 export type { DriftAlignment, DriftFinding, DriftFindingCategory, DriftFindingKind, DriftReport } from "./planner/drift-report.js";
 export type { PlanApprovalMode } from "./planner/plan-approval.js";
 export { isActiveNearDuplicateColumn, isNearDuplicateCanonicalInactive } from "./duplicates/near-duplicate-canonical.js";
@@ -646,6 +662,7 @@ export {
   validateStepDependencies,
   StepDependencyValidationError,
   resolveAuthoredStepHeadingOffset,
+  PROMPT_STEP_PARSER_ID,
   __resetStepParserRegistryForTests,
 } from "./tasks/step-parsers.js";
 export type {

@@ -177,7 +177,17 @@ export { PLAN_PREMISE_KINDS, parsePlanPremises } from "./planner/plan-premises.j
 export type { PlanPremise, PlanPremiseKind, PlanPremisesParseResult } from "./planner/plan-premises.js";
 export { canonicalizePlan, createCurrentPlanEvidence, diffSpecLocks, isSpecLockActive, isUnavailablePlanLockError, PLAN_LOCK_UNAVAILABLE_DIAGNOSTIC, SPEC_LOCK_PARSER_VERSION, UnavailablePlanLockError } from "./planner/spec-lock.js";
 export { evaluateSpecDrift, hasPriorLockDivergence, isCurrentSpecDriftReport } from "./planner/drift-report.js";
-export type { CanonicalPlan, CanonicalPlanSection, CurrentPlanEvidence, SpecLock, SpecLockDiff, SpecLockSection } from "./planner/spec-lock.js";
+export type { CanonicalPlan, CanonicalPlanSection, CurrentPlanEvidence, SpecLock, SpecLockDiff, SpecLockSection, SpecParseReason } from "./planner/spec-lock.js";
+/*
+FNXC:PromptSpecIntegrity 2026-11-11-07:05 (RUFU-536):
+Mirrored from index.ts: the one-generation-per-section report and its publication refusal are reached
+transitively by the gate files through task-update.ts and the planning write path, so the gate barrel
+must name them the same way the full barrel does.
+*/
+export { assertPromptDocumentPublishable, inspectPromptDocument, isDuplicatedPromptSectionError, DuplicatedPromptSectionError } from "./tasks/prompt-document-integrity.js";
+export type { PromptDocumentIntegrityReport, PromptIntegrityIssue, PromptIntegrityIssueKind } from "./tasks/prompt-document-integrity.js";
+export { mergeReDerivedSteps } from "./tasks/step-rederivation.js";
+export type { StepReDerivationResult } from "./tasks/step-rederivation.js";
 export type { DriftAlignment, DriftFinding, DriftFindingCategory, DriftFindingKind, DriftReport } from "./planner/drift-report.js";
 export type { PlanApprovalMode } from "./planner/plan-approval.js";
 export { isActiveNearDuplicateColumn, isNearDuplicateCanonicalInactive } from "./duplicates/near-duplicate-canonical.js";
@@ -544,6 +554,7 @@ export {
   validateStepDependencies,
   StepDependencyValidationError,
   resolveAuthoredStepHeadingOffset,
+  PROMPT_STEP_PARSER_ID,
   __resetStepParserRegistryForTests,
 } from "./tasks/step-parsers.js";
 export type {

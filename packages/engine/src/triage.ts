@@ -79,6 +79,11 @@ import {
   resolveTaskOutputLanguage,
   parsePlanningPlanMd,
   parseStepHeadings,
+  /*
+  FNXC:PromptSpecIntegrity 2026-11-11-07:05 (RUFU-536): planning finalization writes PROMPT.md with a
+  raw writeFile, so the store's publication gate never sees it — triage runs the same report itself.
+  */
+  inspectPromptDocument,
   loadWorkspaceConfig,
   isUnavailablePlanLockError,
   // FNXC:AgentTextCharset 2026-11-04-12:08 (RUFU-307): the planner's own create refuses typed charset
@@ -304,7 +309,8 @@ name the party that actually stopped the plan. With no recorded write refusal th
 what it always was — "Planner did not update the authoritative PROMPT.md" — because nothing proved
 otherwise. Once the durable writer refused a write during this attempt, blaming the planner is a
 misattribution: the card was blocked by its own spec-write guard (a reset fence, unparseable step
-headings, or a failed read-back), which is the class of cause behind `STUCK_LOOP_EXHAUSTED` cards
+headings, a document that repeats a section outside the operator-request region, or a failed
+read-back), which is the class of cause behind `STUCK_LOOP_EXHAUSTED` cards
 that burned 6 planning attempts while running many sessions and leaving no artifact.
 */
 export function describeUnwrittenPlanArtifact(
@@ -6056,6 +6062,25 @@ export class TriageProcessor {
       return diagnostic;
     }
 
+    /*
+    FNXC:PromptSpecIntegrity 2026-11-11-07:05 (RUFU-536):
+    One generation per lockable section, checked here as well as at the store boundary, because the
+    planner's artifact reaches disk through finalization's raw write path and not through
+    `updateTask({ prompt })` — the store gate alone would never see it. This is deliberately the SAME
+    report the store throws on (one detector, one verdict), and it is reported as an ordinary
+    deterministic spec failure so the existing planning refusal recovery owns the outcome: a failing
+    spec charges the Plan Review replan budget and parks at the cap, exactly like a dangling-reference
+    finding. Do not add a second recovery owner here.
+    */
+    const integrity = inspectPromptDocument(promptContent);
+    if (!integrity.ok) {
+      const offending = integrity.blockingIssues.map((issue) => issue.section ? `"${issue.section}" (${issue.reason})` : issue.reason).join(", ");
+      const diagnostic = `PROMPT.md repeats a section outside the operator-request block: ${offending}. ${integrity.blockingIssues[0]?.detail ?? ""}`;
+      planLog.warn(`${taskId}: ${diagnostic}`);
+      await this.store.logEntry(taskId, `Generated plan validation failed: duplicated PROMPT.md section — ${offending}`);
+      return diagnostic;
+    }
+
     const danglingRefs = await detectDanglingTaskDocReferences(promptContent, {
       rootDir: this.rootDir,
       taskId,
@@ -6578,15 +6603,37 @@ export class TriageProcessor {
       let nextPrompt = applyOriginalDescription(written, originalDescription);
       nextPrompt = applyFrontendUxCriteria(nextPrompt, parsedFileScope);
       if (nextPrompt !== written) {
-        const promptPath = join(this.rootDir, ".fusion", "tasks", task.id, "PROMPT.md");
-        try {
-          if (!await this.runIfStillPlanningUnderTaskLock(task, async () => {
-            await writeFile(promptPath, nextPrompt, "utf-8");
-          })) return;
-          written = nextPrompt;
-        } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : String(error);
-          planLog.warn(`${task.id}: failed to write prompt hygiene sections to PROMPT.md (${message})`);
+        /*
+        FNXC:PromptSpecIntegrity 2026-11-11-07:05 (RUFU-536):
+        Hygiene is itself a producer of the invariant it is supposed to protect. `applyOriginalDescription`
+        splices the regenerated region and keeps the bytes after it, so a document whose operator text
+        quoted an earlier generation can come back carrying that quoted generation as visible structure —
+        which is how RUFU-519 got two `## Steps`, two `## Non-Goals`, and a board still listing the older
+        generation's steps. So the POST-hygiene string, not the planner's artifact, is what gets reported:
+        `validateGeneratedPrompt` ran on `written` earlier in this pass, and the bytes about to be spliced
+        over it are the ones that must satisfy the single-generation contract.
+
+        On a violation the rewrite is skipped and finalization proceeds with the document that already
+        passed validation. Aborting finalization instead would leave a valid single-generation spec
+        unclaimed and hand the same input back to the planner, which re-produces the same hygiene output —
+        a loop that ends only at the reseed cap. The rejected bytes never reach disk, the operator sees
+        the failure in the card's History (validateGeneratedPrompt logs it durably), and the missing
+        injected section is the visible, bounded cost.
+        */
+        const hygieneDiagnostic = await this.validateGeneratedPrompt(task.id, nextPrompt);
+        if (hygieneDiagnostic) {
+          planLog.warn(`${task.id}: prompt hygiene rewrite skipped — post-hygiene PROMPT.md failed deterministic validation (${hygieneDiagnostic})`);
+        } else {
+          const promptPath = join(this.rootDir, ".fusion", "tasks", task.id, "PROMPT.md");
+          try {
+            if (!await this.runIfStillPlanningUnderTaskLock(task, async () => {
+              await writeFile(promptPath, nextPrompt, "utf-8");
+            })) return;
+            written = nextPrompt;
+          } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : String(error);
+            planLog.warn(`${task.id}: failed to write prompt hygiene sections to PROMPT.md (${message})`);
+          }
         }
       }
     }

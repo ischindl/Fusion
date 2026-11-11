@@ -132,28 +132,62 @@ function decodeDeclaredOriginalDescriptionBody(body: string): string {
  * FN-9272 makes this policy-owned list the shared definition for both unmarked Original
  * Description placement and marked-region validation. Keeping one definition ensures the
  * planner's required What This Delivers successor cannot drift from spec-lock parsing.
+ *
+ * FNXC:PromptSpecIntegrity 2026-11-11-07:05 (RUFU-536):
+ * This list is the ONE vocabulary answering "is this H2 a real PROMPT section?", so it must stay
+ * complete. A region whose immediate successor is missing here resolves to nothing, and an
+ * unresolved region makes stripGeneratedOriginalDescription return the document UNCHANGED — every
+ * heading quoted in the verbatim operator body then reads as authored document structure, which is
+ * how a single-generation spec gets reported as a duplicated `## Steps`. Measured before this
+ * change: a marked region followed by `## Plan Premises` (a heading the planner template in
+ * agent-prompts.ts requires) resolved=false while the same region followed by
+ * `## What This Delivers` resolved=true. Closed by adding the headings that were absent —
+ * `## Plan Premises`, the lineage and non-goals aliases the spec lock owns, and the delivery and
+ * testing headings hand-authored specs use — and by accepting the ASCII `->` arrow beside U+2192,
+ * since both spellings ship in real specs (this card's own spec carries
+ * `## Before -> After Transformation`). Order stays template order: the list is placement *priority*
+ * for findPreferredSectionTerminatorOffset, not document order.
  */
 export const PREFERRED_SECTION_TERMINATORS: readonly RegExp[] = [
   /^##\s+What This Delivers\s*$/im,
-  /^##\s+Before\s*→\s*After Transformation\s*$/im,
+  /^##\s+Before\s*(?:→|->)\s*After Transformation\s*$/im,
   /^##\s+Review Level(?:\s*:.*)?\s*$/im,
   /^##\s+Mission\s*$/im,
+  /^##\s+Plan Premises\s*$/im,
   /^##\s+Surface Enumeration\s*$/im,
   /^##\s+Symptom Verification\s*$/im,
   /^##\s+Dependencies\s*$/im,
   /^##\s+Context to Read First\s*$/im,
   /^##\s+File Scope\s*$/im,
   /^##\s+Steps\s*$/im,
+  /^##\s+Mission Lineage\s*$/im,
+  /^##\s+Parent-Child Lineage\s*$/im,
   /^##\s+Documentation Requirements\s*$/im,
+  /^##\s+Testing (?:&|and) Verification\s*$/im,
+  /^##\s+Documentation (?:&|and) Delivery\s*$/im,
   /^##\s+Completion Criteria\s*$/im,
   /^##\s+Git Commit Convention\s*$/im,
   /^##\s+Do NOT\s*$/im,
+  /^##\s+Non-Goals\s*$/im,
   /^##\s+Changeset Requirements\s*$/im,
   /^##\s+Frontend UX Criteria\s*$/im,
   /^##\s+Acceptance Criteria\s*$/im,
   /^##\s+Notifications\s*$/im,
   /^##\s+External Integration Evidence\s*$/im,
 ];
+
+/*
+FNXC:PromptSpecIntegrity 2026-11-11-07:05 (RUFU-536):
+Single membership predicate over the vocabulary above, so the region resolver and the
+publication-time integrity report can never disagree about what an "unknown successor" is. The
+RUFU-536 defect WAS two vocabularies disagreeing: the region needed a known successor heading to
+resolve, while nothing checked that the vocabulary covered the headings the template actually
+emits. Do not re-derive this test at a call site.
+*/
+/** True when `headingLine` (an H2 line, `## ` included) names a real PROMPT section. */
+export function isKnownPromptSectionHeading(headingLine: string): boolean {
+  return PREFERRED_SECTION_TERMINATORS.some((pattern) => new RegExp(pattern.source, pattern.flags).test(headingLine));
+}
 
 /**
  * Build the `## Original Description` section body (heading + marked verbatim text).
@@ -261,9 +295,7 @@ export function resolveOriginalDescriptionEnd(
     } else {
       const after = promptText.slice(end + ORIGINAL_DESCRIPTION_END_MARKER.length);
       const successor = /^\n{1,2}(##[^\r\n]*)(?:\r?\n|$)/.exec(after)?.[1];
-      const isKnownSuccessor = successor !== undefined && PREFERRED_SECTION_TERMINATORS.some((pattern) =>
-        new RegExp(pattern.source, pattern.flags).test(successor),
-      );
+      const isKnownSuccessor = successor !== undefined && isKnownPromptSectionHeading(successor);
       if (!after.trim() || isKnownSuccessor) {
         return { resolved: true, end, skippedCandidateCount };
       }
