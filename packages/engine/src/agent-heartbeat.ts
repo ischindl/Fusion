@@ -158,6 +158,55 @@ const MAILBOX_WAKE_RECONCILIATION_INBOX_LIMIT = 10;
 const MAILBOX_WAKE_RECONCILIATION_MAX_PAGES = 10;
 
 /*
+FNXC:MailboxWakeDeferral 2026-11-11-08:43:
+The durable inbox reconciliation walked a backlog that provably cannot drain. An `on-heartbeat` recipient
+keeps its mail unread until a real heartbeat RUN consumes the inbox, so a card whose agent never runs (the
+measured production board: live_exec=0, 21 operator holds) leaves the unread set permanent, and every 1 s
+pass re-delivered the same rows: 100 883 `outcome=on-heartbeat` lines in one hour, the SAME messageId
+reconciled 1 663 times, and one `configStore.getAgent` round trip per message per pass against an arrival
+rate of 7 messages per 30 minutes (a ~7 000:1 amplification).
+So a reconciliation pass must cost what it DECIDES, not what the backlog CONTAINS. A message the monitor has
+already classified as "deferred to the recipient's own heartbeat run, nothing for the wake path to do" is
+recorded once and skipped silently afterwards. Only two verdicts are recordable, because only they rest on a
+decision input the monitor can observe changing: `on-heartbeat` (recipient's `messageResponseMode`) and
+`ineligible-state` (recipient `state`). `recipient-missing` is deliberately NOT remembered — an id that
+resolves on no read today can be created a minute later and has no decision input to invalidate against —
+and a forced user wake is never suppressed, because `wakeRecipient` is re-derived from the message row on
+every pass rather than remembered.
+Validity is what makes the memo safe, so it has three independent invalidators: the episode carries the
+recipient's decision fingerprint and is discarded the moment that fingerprint differs; a persisted
+`agent:updated` drops that recipient's episode immediately (an edit to `messageResponseMode` or `state`
+must re-derive at once, not on some later TTL); and monitor start/stop clears the whole map, so a restart
+never inherits a verdict it did not itself observe.
+Telemetry that grows with the backlog is the same class of bug this is fixing, so the remembered ids are
+capped per recipient and the recipients themselves are capped, both FIFO. The durable record of the backlog
+is `project.messages` itself, which is why no run-audit row is added: a pre-fix row would have been ~28 per
+second, and the bounded per-recipient summary line below carries the counts an operator can act on.
+*/
+const MAILBOX_WAKE_DEFERRAL_MAX_IDS_PER_AGENT = 256;
+const MAILBOX_WAKE_DEFERRAL_MAX_AGENTS = 64;
+/** Floor for the per-recipient deferred-backlog summary so the deferral stays visible without re-logging per message. */
+const MAILBOX_WAKE_DEFERRAL_SUMMARY_INTERVAL_MS = 60_000;
+
+/** Remembered no-action verdicts for one recipient, valid only for the fingerprint they were decided under. */
+type MailboxWakeDeferralEpisode = {
+  fingerprint: string;
+  deferredMessageIds: Set<string>;
+  deferredSinceMs: number;
+  lastSummaryAtMs: number;
+  skippedSinceSummary: number;
+};
+
+/**
+ * The observable inputs a mailbox wake verdict rests on. Anything else (sender, content, metadata) is
+ * immutable on a delivered message row, so a change here is the only event that can reverse a deferral.
+ */
+function mailboxWakeDecisionFingerprint(agent: Agent): string {
+  const mode = (agent.runtimeConfig as AgentHeartbeatConfig | undefined)?.messageResponseMode ?? "unset";
+  return `${agent.state}|${mode}`;
+}
+
+/*
 FNXC:HeartbeatTerminalBoundary 2026-10-13-02:14:
 A heartbeat completion is a user-visible terminal boundary, not a suggestion for the provider. Pi only honors a tool batch's terminate hint when every result opts in, so the monitor owns a completion latch and aborts the session after the completion tool settles. This prevents mixed batches or a non-cooperative provider from buying another turn after fn_heartbeat_done.
 */
@@ -1148,6 +1197,13 @@ export class HeartbeatMonitor {
   */
   private mailboxWakeAbovePageCursors: Map<string, { createdAt: string; id: string }> = new Map();
   private mailboxWakeAboveHeads: Map<string, { createdAt: string; id: string }> = new Map();
+  /*
+  FNXC:MailboxWakeDeferral 2026-11-11-08:43:
+  Per-recipient no-action verdicts, so a pass over an undrainable unread backlog costs a Set lookup per
+  already-decided row instead of a recipient read plus a log line. See the constant block for the full
+  contract (what may be remembered, what invalidates it, what bounds it).
+  */
+  private mailboxWakeDeferrals: Map<string, MailboxWakeDeferralEpisode> = new Map();
   /** One serialized wake per recipient coalesces hook and durable observations. */
   private pendingMailboxWakes: Map<string, Message> = new Map();
   private isRunning = false;
@@ -1944,6 +2000,12 @@ export class HeartbeatMonitor {
     this.isRunning = true;
     const mailboxWakeGeneration = ++this.mailboxWakeGeneration;
     /*
+    FNXC:MailboxWakeDeferral 2026-11-11-08:43:
+    A deferral is a decision THIS monitor made from a recipient row it read. A new lifecycle re-reads those
+    rows and must be free to reach its own verdict, so remembered verdicts never cross a start boundary.
+    */
+    this.mailboxWakeDeferrals.clear();
+    /*
     FNXC:HeartbeatTerminalBoundary 2026-10-13-02:14:
     CLI and extension processes can only persist a pause intent. The runtime
     that owns a live session consumes its project-scoped AgentStore update and
@@ -1955,6 +2017,13 @@ export class HeartbeatMonitor {
       if (agent.state === "paused" && (this.trackedAgents.has(agent.id) || this.pendingHeartbeatRuns.has(agent.id))) {
         void this.stopRun(agent.id, { preservePausedState: true });
       }
+      /*
+      FNXC:MailboxWakeDeferral 2026-11-11-08:43:
+      `state` and `messageResponseMode` are the inputs every remembered wake verdict rests on, and both
+      arrive here. Dropping the recipient's episode on any persisted update means an operator who switches
+      an agent to `immediate` is honored on the next pass rather than after some TTL lapses.
+      */
+      this.mailboxWakeDeferrals.delete(agent.id);
     };
     const eventStore = this.store as AgentStore & { on?: (event: string, listener: (agent: Agent) => void) => void };
     eventStore.on?.("agent:updated", this.agentUpdatedListener);
@@ -2981,12 +3050,24 @@ export class HeartbeatMonitor {
     }
   }
 
-  private async deliverMessageToAgent(message: Message): Promise<void> {
+  /*
+  FNXC:MailboxWakeDeferral 2026-11-11-08:43:
+  `knownAgent` is the row the durable-inbox sweep already loaded from the same store in the same pass. The
+  reconciliation calls this once per unread message, so resolving the recipient again per message was one
+  `getAgent` round trip per row per pass; the same-process send hook still resolves the recipient itself.
+  */
+  private async deliverMessageToAgent(message: Message, knownAgent?: Agent): Promise<void> {
     if (!this.isRunning || message.toType !== "agent") return;
 
-    const agent = await this.configStore.getAgent(message.toId);
+    const agent = knownAgent ?? await this.configStore.getAgent(message.toId);
     if (!this.isRunning || !agent) {
       heartbeatLog.log(`[mailbox-wake-reconciliation] messageId=${message.id} agentId=${message.toId} outcome=recipient-missing`);
+      return;
+    }
+
+    const alreadyDeferred = this.recallMailboxWakeDeferral(agent, message.id);
+    if (alreadyDeferred) {
+      // Silent by design: the verdict is remembered, the summary line reports the count.
       return;
     }
 
@@ -2997,17 +3078,96 @@ export class HeartbeatMonitor {
     // on each other.
     const senderForcedWake = message.metadata?.wakeRecipient === true && message.fromType === "user";
     if (!senderForcedWake && runtimeConfig?.messageResponseMode !== "immediate") {
-      heartbeatLog.log(`[mailbox-wake-reconciliation] messageId=${message.id} agentId=${agent.id} outcome=on-heartbeat`);
+      if (this.recordMailboxWakeDeferral(agent, message.id, "on-heartbeat")) {
+        heartbeatLog.log(`[mailbox-wake-reconciliation] messageId=${message.id} agentId=${agent.id} outcome=on-heartbeat`);
+      }
       return;
     }
 
     const validStates = new Set(["active", "idle", "running"]);
     if (!validStates.has(agent.state)) {
-      heartbeatLog.log(`[mailbox-wake-reconciliation] messageId=${message.id} agentId=${agent.id} outcome=ineligible-state state=${agent.state}`);
+      if (this.recordMailboxWakeDeferral(agent, message.id, "ineligible-state")) {
+        heartbeatLog.log(`[mailbox-wake-reconciliation] messageId=${message.id} agentId=${agent.id} outcome=ineligible-state state=${agent.state}`);
+      }
       return;
     }
 
     this.scheduleMailboxWake(message, senderForcedWake);
+  }
+
+  /**
+   * True when this recipient was already told to pick this message up on its own heartbeat run, in which
+   * case the wake path has nothing left to do and must not re-decide it. An episode decided under a
+   * different state/mode fingerprint is discarded before the lookup, so a config edit is never swallowed.
+   */
+  private recallMailboxWakeDeferral(agent: Agent, messageId: string): boolean {
+    const fingerprint = mailboxWakeDecisionFingerprint(agent);
+    const episode = this.mailboxWakeDeferrals.get(agent.id);
+    if (!episode) return false;
+    if (episode.fingerprint !== fingerprint) {
+      this.mailboxWakeDeferrals.delete(agent.id);
+      return false;
+    }
+    if (!episode.deferredMessageIds.has(messageId)) return false;
+    episode.skippedSinceSummary += 1;
+    this.summarizeMailboxWakeDeferrals(agent.id, episode);
+    return true;
+  }
+
+  /**
+   * Remembers a no-action verdict. Returns true when the message was not yet known, which is the only pass
+   * allowed to log it. Returns false past the cap, where the caller keeps its existing per-message log line
+   * rather than losing the observation — the cap bounds memory, never correctness.
+   */
+  private recordMailboxWakeDeferral(agent: Agent, messageId: string, reason: "on-heartbeat" | "ineligible-state"): boolean {
+    const fingerprint = mailboxWakeDecisionFingerprint(agent);
+    const now = Date.now();
+    let episode = this.mailboxWakeDeferrals.get(agent.id);
+    if (episode && episode.fingerprint !== fingerprint) {
+      episode = undefined;
+      this.mailboxWakeDeferrals.delete(agent.id);
+    }
+    if (!episode) {
+      // Recipients are few and the map is process-local, but an unbounded key space here is exactly the
+      // mistake being repaired, so the oldest recipient's verdicts are dropped rather than stored forever.
+      if (this.mailboxWakeDeferrals.size >= MAILBOX_WAKE_DEFERRAL_MAX_AGENTS) {
+        const oldest = this.mailboxWakeDeferrals.keys().next();
+        if (!oldest.done) this.mailboxWakeDeferrals.delete(oldest.value);
+      }
+      episode = {
+        fingerprint,
+        deferredMessageIds: new Set(),
+        deferredSinceMs: now,
+        lastSummaryAtMs: now,
+        skippedSinceSummary: 0,
+      };
+      this.mailboxWakeDeferrals.set(agent.id, episode);
+    }
+    if (episode.deferredMessageIds.has(messageId)) return false;
+    if (episode.deferredMessageIds.size >= MAILBOX_WAKE_DEFERRAL_MAX_IDS_PER_AGENT) {
+      heartbeatLog.log(
+        `[mailbox-wake-reconciliation] agentId=${agent.id} outcome=deferral-cap-reached reason=${reason} cap=${MAILBOX_WAKE_DEFERRAL_MAX_IDS_PER_AGENT}`,
+      );
+      return false;
+    }
+    episode.deferredMessageIds.add(messageId);
+    this.summarizeMailboxWakeDeferrals(agent.id, episode);
+    return true;
+  }
+
+  /**
+   * The bounded surface that keeps a permanent unread backlog visible: counts only, per recipient, at most
+   * once per summary interval. Without it the fix would trade a 28-line-per-second flood for silence.
+   */
+  private summarizeMailboxWakeDeferrals(agentId: string, episode: MailboxWakeDeferralEpisode): void {
+    const now = Date.now();
+    if (now - episode.lastSummaryAtMs < MAILBOX_WAKE_DEFERRAL_SUMMARY_INTERVAL_MS) return;
+    episode.lastSummaryAtMs = now;
+    const skipped = episode.skippedSinceSummary;
+    episode.skippedSinceSummary = 0;
+    heartbeatLog.log(
+      `[mailbox-wake-reconciliation] agentId=${agentId} outcome=deferred-backlog deferred=${episode.deferredMessageIds.size} skipped=${skipped} deferredSince=${new Date(episode.deferredSinceMs).toISOString()}`,
+    );
   }
 
   /** Reconcile durable mail written by a CLI or another process without its local hook. */
@@ -3037,7 +3197,7 @@ export class HeartbeatMonitor {
               });
             }
             for (const message of newlyArrived) {
-              await this.deliverMessageToAgent(message);
+              await this.deliverMessageToAgent(message, agent);
               aboveBefore = { createdAt: message.createdAt, id: message.id };
               this.mailboxWakeAbovePageCursors.set(agent.id, aboveBefore);
               if (!this.isRunning || generation !== this.mailboxWakeGeneration || this.pendingMailboxWakes.has(agent.id)) break;
@@ -3069,7 +3229,7 @@ export class HeartbeatMonitor {
               });
             }
             for (const message of unread) {
-              await this.deliverMessageToAgent(message);
+              await this.deliverMessageToAgent(message, agent);
               before = { createdAt: message.createdAt, id: message.id };
               this.mailboxWakePageCursors.set(agent.id, before);
               if (!this.isRunning || generation !== this.mailboxWakeGeneration || this.pendingMailboxWakes.has(agent.id)) break;
