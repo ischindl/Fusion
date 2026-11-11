@@ -7,6 +7,8 @@ import { createHash } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { resolveDiffBaseRef } from "../executor/worktree-git-refs.js";
+import { resolveDescendantMergeBase } from "../execution/base-commit-capture.js";
+import { executorLog } from "../logger.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -62,25 +64,179 @@ export type ContentReviewInputProof =
   | { kind: "fingerprint"; fingerprint: string }
   | { kind: "unprovable"; reason: string };
 
-/** Resolve and normalize the singular source input that a content-binding review must approve. */
+/** Input for {@link probeSingularReviewDiffFingerprint}. */
+export type SingularReviewDiffProbeInput = {
+  /** The task's own checkout. Absent → `unavailable`, exactly as the HEAD-only probe reported it. */
+  worktreePath: string | undefined;
+  /** The card's recorded `baseCommitSha` when it has one; validated against the branch tip before use. */
+  recordedBaseCommitSha: string | undefined;
+  /** The card's own branch (`task.branch`). Absent → today's HEAD path, unchanged, for legacy rows. */
+  branchRef: string | undefined;
+  /**
+   * Optional witness for checkout drift, called when the branch tip and HEAD name different commits.
+   * Observation only — it adds no lifecycle state, because reviewer-session tree consistency against a
+   * reclaimed detached checkout is a documented, out-of-scope limitation of reclaim policy.
+   */
+  driftNotice?: (detail: { branchRef: string; branchTipSha: string; headSha: string }) => void;
+};
+
+/** Peel a revision to its commit, or `undefined` when Git cannot resolve it in this repository. */
+async function revParseCommit(worktreePath: string, revision: string): Promise<string | undefined> {
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["rev-parse", "--verify", `${revision}^{commit}`],
+      gitCaptureOptions(worktreePath),
+    );
+    return stdout.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** `git merge-base --is-ancestor`, tri-state collapsed to a boolean (any failure is "not an ancestor"). */
+async function isCommitAncestor(worktreePath: string, ancestor: string, descendant: string): Promise<boolean> {
+  try {
+    await execFileAsync(
+      "git",
+      ["merge-base", "--is-ancestor", ancestor, descendant],
+      gitCaptureOptions(worktreePath),
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** `resolveDiffBaseRef` never throws today, but its callers have always treated a throw as "no base". */
+async function resolveHeadLegBaseRef(worktreePath: string, recordedBaseCommitSha: string | undefined): Promise<string | undefined> {
+  try {
+    return await resolveDiffBaseRef(worktreePath, recordedBaseCommitSha);
+  } catch {
+    return undefined;
+  }
+}
+
+/*
+FNXC:ReviewInputProof 2026-11-10-23:31 (RUFU-521):
+The singular review content proof measured the checkout's mutable HEAD, so a drifted checkout could
+convince the platform a card with real work had delivered nothing at all.
+
+Live harm (RUFU-290): the card's branch carried its own commits while `.fusion/worktrees/rufu-290`
+sat detached on an unrelated `main` commit. The HEAD-relative base resolved to that very commit, so
+`git diff --binary mainTip..HEAD` was an empty patch, the step row recorded
+`reviewInputFingerprint = empty-review-input:v1`, and a `REVISE` verdict was written about content that
+was never read. `no-commits-finalize-guard.ts` then accepts that sentinel as zero-diff proof, so one
+false sentinel is a false "zero delivery" claim at the finalize gate too.
+
+The target rule this composition locks, in order:
+ 1. No `branchRef` → today's HEAD path verbatim. Legacy/branchless cards are untouched.
+ 2. Resolve the tip with ONE `rev-parse --verify <branch>^{commit}`; unresolvable → the named
+    `branch-ref-unresolvable` reason, fail-closed. Never `empty`: "cannot read the branch" and
+    "the branch is empty" are different claims (dispatch refuses, the merge door says `unavailable`).
+ 3. The base MUST be branch-relative. The probe is a TWO-DOT `git diff --binary <base>..<target>`, a
+    tree-to-tree comparison, so a base newer than the tip renders every integration-only commit the
+    branch lacks as DELETIONS of other people's work and corrupts the digest. Accept the recorded base
+    only when it is an ancestor of the tip; otherwise recompute with the SAME descendant-of-two-merge-bases
+    rule RUFU-445 consolidated, anchored on the tip. Neither resolving → `no-diff-base`, never `empty`.
+ 4. A non-empty branch leg wins outright. That one rule is what frees a drifted card from a false empty.
+ 5. Branch leg empty → re-probe HEAD exactly as today (`resolveDiffBaseRef` + `base..HEAD`), preserving
+    the documented overlap-resume case where the branch is at the base but the checkout carries the work.
+ 6. Only when BOTH legs, each on its own correctly-based diff, report no content does `empty` — and so
+    the sentinel — become true. The sentinel now means "verified HEAD <-> task.branch relation", not
+    "the checkout happened to be sitting somewhere".
+
+Locked stability invariant: when HEAD already equals the branch tip and the base is an ancestor of it,
+rule 3 plus rule 4 compute the SAME byte range today's HEAD probe computes, so the sha256 — and every
+stored `reviewInputFingerprint`, including the rows `stale-content-review-reroute.ts` compares at the
+merge door — stays valid across this deploy. Only genuinely drifted cards change identity, which IS the
+correction. Pinned by the two healthy-checkout fixtures in `review-diff-fingerprint.test.ts`.
+*/
+export async function probeSingularReviewDiffFingerprint(
+  input: SingularReviewDiffProbeInput,
+): Promise<ReviewDiffFingerprintProbe> {
+  const { worktreePath, recordedBaseCommitSha, branchRef } = input;
+  if (!worktreePath) return { state: "unavailable", reason: "missing-worktree-or-base" };
+
+  if (!branchRef) {
+    return await probeReviewDiffFingerprint(worktreePath, await resolveHeadLegBaseRef(worktreePath, recordedBaseCommitSha));
+  }
+
+  const branchTipSha = await revParseCommit(worktreePath, branchRef);
+  if (!branchTipSha) return { state: "unavailable", reason: "branch-ref-unresolvable" };
+
+  if (input.driftNotice) {
+    const headSha = await revParseCommit(worktreePath, "HEAD");
+    if (headSha && headSha !== branchTipSha) {
+      input.driftNotice({ branchRef, branchTipSha, headSha });
+    }
+  }
+
+  let branchBaseRef: string | undefined;
+  if (recordedBaseCommitSha) {
+    const recorded = await revParseCommit(worktreePath, recordedBaseCommitSha);
+    if (recorded && await isCommitAncestor(worktreePath, recorded, branchTipSha)) branchBaseRef = recorded;
+  }
+  if (!branchBaseRef) {
+    branchBaseRef = await resolveDescendantMergeBase(worktreePath, {
+      revision: branchTipSha,
+      logger: { warn: (msg) => executorLog.warn(`Failed branch-relative merge-base lookup for review proof in ${worktreePath}: ${msg}`) },
+    });
+  }
+  if (!branchBaseRef) return { state: "unavailable", reason: "no-diff-base" };
+
+  const branchProbe = await probeReviewDiffFingerprint(worktreePath, branchBaseRef, branchTipSha);
+  if (branchProbe.state !== "empty") return branchProbe;
+
+  // Rules 5 and 6 share one call: a HEAD fingerprint is the overlap-resume truth, `empty` is the
+  // both-legs-agree verdict, and an unavailable HEAD keeps the probe fail-closed instead of empty.
+  return await probeReviewDiffFingerprint(worktreePath, await resolveHeadLegBaseRef(worktreePath, recordedBaseCommitSha));
+}
+
+/** {@link computeReviewDiffFingerprint} under the branch target rule: no signal for empty or unreadable. */
+export async function computeSingularReviewDiffFingerprint(
+  input: SingularReviewDiffProbeInput,
+): Promise<string | undefined> {
+  const result = await probeSingularReviewDiffFingerprint(input);
+  return result.state === "fingerprint" ? result.fingerprint : undefined;
+}
+
+/** {@link computeCodeReviewInputFingerprint} under the branch target rule: empty collapses to the sentinel. */
+export async function computeSingularCodeReviewInputFingerprint(
+  input: SingularReviewDiffProbeInput,
+): Promise<string | undefined> {
+  const result = await probeSingularReviewDiffFingerprint(input);
+  if (result.state === "empty") return EMPTY_REVIEW_DIFF_FINGERPRINT;
+  return result.state === "fingerprint" ? result.fingerprint : undefined;
+}
+
+/**
+ * Resolve and normalize the singular source input that a content-binding review must approve.
+ *
+ * FNXC:ReviewInputProof 2026-11-10-23:31 (RUFU-521): `branchRef` is optional so branchless callers keep
+ * today's HEAD path byte-for-byte; singular content-binding lanes pass `task.branch` and are measured
+ * against the card's own delivery. Every pre-existing `reason` value still ships: the composition
+ * reports an unresolvable base as `missing-worktree-or-base`, which this seam has always published under
+ * its own honest name (`no-diff-base`) and still does. `driftNotice` is the dispatch lane's chance to
+ * name a drifted checkout on the card; it never changes the proof.
+ */
 export async function resolveContentReviewInputProof(
   worktreePath: string,
   diffBaseCommitSha: string | undefined,
+  branchRef?: string,
+  driftNotice?: SingularReviewDiffProbeInput["driftNotice"],
 ): Promise<ContentReviewInputProof> {
-  let baseRef: string | undefined;
-  try {
-    baseRef = await resolveDiffBaseRef(worktreePath, diffBaseCommitSha);
-  } catch {
-    return { kind: "unprovable", reason: "no-diff-base" };
-  }
-  if (!baseRef) return { kind: "unprovable", reason: "no-diff-base" };
-  const probe = await probeReviewDiffFingerprint(worktreePath, baseRef);
+  const probe = await probeSingularReviewDiffFingerprint({
+    worktreePath,
+    recordedBaseCommitSha: diffBaseCommitSha,
+    branchRef,
+    ...(driftNotice ? { driftNotice } : {}),
+  });
   if (probe.state === "empty") {
     return { kind: "fingerprint", fingerprint: EMPTY_REVIEW_DIFF_FINGERPRINT };
   }
-  return probe.state === "fingerprint"
-    ? { kind: "fingerprint", fingerprint: probe.fingerprint }
-    : { kind: "unprovable", reason: probe.reason };
+  if (probe.state === "fingerprint") return { kind: "fingerprint", fingerprint: probe.fingerprint };
+  return { kind: "unprovable", reason: probe.reason === "missing-worktree-or-base" ? "no-diff-base" : probe.reason };
 }
 
 /*
@@ -118,6 +274,14 @@ For a byte-lossy patch (a text file holding invalid utf8) the digest MAY differ,
 decoding is lossy where streaming is not. The only consequence is one extra "review input changed"
 convergence round after this ships: it can never approve a review that has not run, and it cannot
 wedge a merge, because an input fingerprint is compared only against another input fingerprint.
+*/
+/*
+FNXC:ReviewInputProof 2026-11-10-23:31 (RUFU-521):
+The refusal reason enum above grew one member: `branch-ref-unresolvable`, returned when the card names
+`task.branch` but that ref resolves to no commit in the repository. It is deliberately a named refusal
+and never `empty`, because `empty` is a positive claim of zero delivery that a card with commits must
+not receive. The three pre-existing reasons keep their exact meanings; `missing-worktree-or-base` still
+publishes as `no-diff-base` through `resolveContentReviewInputProof`.
 */
 function streamGitDiffFingerprint(worktreePath: string, range: string): Promise<ReviewDiffFingerprintProbe> {
   return new Promise((resolve) => {

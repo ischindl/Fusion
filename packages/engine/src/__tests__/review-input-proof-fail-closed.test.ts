@@ -134,6 +134,16 @@ function executeDeps(row: TaskDetail): ExecuteWorkflowStepDeps {
     deleteActiveWorkflowStepSession: vi.fn(),
     getAssignedAgentRuntimeConfig: vi.fn(),
     getAuthoritativeAssignedAgent: vi.fn(),
+    /*
+    FNXC:TestFixtures 2026-11-10-23:31 (RUFU-521):
+    The executor deps bag renamed `resolveInstructionsForRole` to the three-part
+    `resolveInstructionPartsForRole` and this harness was never updated, so any case here that reaches
+    `runOnce` died on `deps.resolveInstructionPartsForRole is not a function` — a fixture gap, not a
+    product defect, and already fixed the same way in
+    `run-audit-sink-health-review-recapture.test.ts`. Canonical empty parts: this suite's subject is the
+    content-proof contract, not prompt assembly.
+    */
+    resolveInstructionPartsForRole: async () => ({ configTime: "", memorySection: "", performanceFeedback: "" }),
     readTaskArtifact: vi.fn(async () => "# Task\nReview the implementation."),
     resolveInstructionsForRole: vi.fn(),
     resolveMcpServers: vi.fn(),
@@ -235,6 +245,48 @@ describe("content-binding review dispatch proof", () => {
     const result = await runGraphCustomNode(harness as never, codeNode("script") as never, row, {} as Settings);
     expect(harness.executeScriptWorkflowStep).toHaveBeenCalledTimes(1);
     expect(result.contextPatch).toMatchObject({ reviewInputFingerprint: "proof-279" });
+  });
+
+  /*
+  FNXC:ReviewInputProof 2026-11-10-23:31 (RUFU-521):
+  Both content-binding dispatch lanes must hand the proof the card's own branch, or a checkout parked
+  off that branch measures `HEAD` and can report the false `empty-review-input:v1` the reviewer then
+  ruled on (RUFU-290). The branch travels as the third argument and the drift witness as the fourth, so
+  a lane that silently drops either would send the proof back to HEAD-only measurement.
+  */
+  it("forwards the task branch to the proof on both content-binding dispatch lanes", async () => {
+    // Refuse the proof so each lane stops immediately after computing it: the argument this case
+    // exists to pin is what the lanes HAND to the proof, and no reviewer session needs to run for it.
+    mocks.resolveProof.mockResolvedValue({ kind: "unprovable", reason: "no-diff-base" });
+    const row = task({ branch: "fusion/FN-279" });
+
+    const harness = graphHarness(row);
+    await runGraphCustomNode(harness as never, codeNode("prompt") as never, row, {} as Settings);
+    expect(mocks.resolveProof.mock.calls.at(-1)?.[0]).toBe(process.cwd());
+    expect(mocks.resolveProof.mock.calls.at(-1)?.[1]).toBe("base");
+    expect(mocks.resolveProof.mock.calls.at(-1)?.[2]).toBe("fusion/FN-279");
+    expect(typeof mocks.resolveProof.mock.calls.at(-1)?.[3]).toBe("function");
+
+    mocks.resolveProof.mockClear();
+    const producerRow = task({ branch: "fusion/FN-279" });
+    await expect(executeWorkflowStep(
+      executeDeps(producerRow),
+      producerRow,
+      step({ reviewKind: "code" }),
+      process.cwd(),
+      {} as Settings,
+    )).resolves.toMatchObject({ success: false, failureValue: "review-input-unprovable" });
+    expect(mocks.resolveProof.mock.calls.at(-1)?.[0]).toBe(process.cwd());
+    expect(mocks.resolveProof.mock.calls.at(-1)?.[1]).toBe("base");
+    expect(mocks.resolveProof.mock.calls.at(-1)?.[2]).toBe("fusion/FN-279");
+    expect(typeof mocks.resolveProof.mock.calls.at(-1)?.[3]).toBe("function");
+  });
+
+  it("leaves the branch argument absent for a branchless card so the HEAD path stays in charge", async () => {
+    const row = task({ branch: undefined });
+    const harness = graphHarness(row);
+    await runGraphCustomNode(harness as never, codeNode("prompt") as never, row, {} as Settings);
+    expect(mocks.resolveProof.mock.calls.at(-1)?.[2]).toBeUndefined();
   });
 
   it("recognizes the reserved optional-group identity without reviewKind", async () => {

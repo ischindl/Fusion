@@ -34,7 +34,7 @@ async function git(cwd: string, args: string[]) {
   return await execFileAsync("git", args, { cwd, encoding: "utf8" });
 }
 
-async function repository() {
+async function repository(branchName?: string) {
   const directory = await mkdtemp(join(tmpdir(), "fusion-inline-review-"));
   directories.push(directory);
   await git(directory, ["init"]);
@@ -47,7 +47,17 @@ async function repository() {
   await writeFile(join(directory, "app.txt"), "implementation\n");
   await git(directory, ["add", "."]);
   await git(directory, ["commit", "-m", "implementation"]);
-  return { directory, base, reviewed: (await git(directory, ["rev-parse", "HEAD"])).stdout.trim() };
+  /*
+  FNXC:ReviewInputProof 2026-11-10-23:31 (RUFU-521):
+  A caller that names a branch on its task fixture now gets that branch, checked out, the way worktree
+  acquisition gives every real task worktree. The seam used to ignore `task.branch` entirely, so a
+  fixture could name a ref that never existed and still pass; now that the content proof targets the
+  branch, an unnamed ref would read as `branch-ref-unresolvable` and refuse the dispatch this suite
+  exists to observe. Checked-out equality also keeps every fingerprint here byte-identical to the
+  HEAD-only measurement the assertions below were written against.
+  */
+  if (branchName) await git(directory, ["checkout", "-b", branchName]);
+  return { directory, base, branch: branchName, reviewed: (await git(directory, ["rev-parse", "HEAD"])).stdout.trim() };
 }
 
 function codeReviewStep(id = "code-review") {
@@ -159,6 +169,16 @@ async function reviewFixture(workspace = false) {
     captureModifiedFiles: async () => [], createSpawnAgentTool: () => undefined, sharedWorkerTools: {},
     deleteActiveWorkflowStepSession: () => undefined, getAssignedAgentRuntimeConfig: () => undefined,
     getAuthoritativeAssignedAgent: async () => undefined, readTaskArtifact: async () => "# Approved task\n",
+    /*
+    FNXC:TestFixtures 2026-11-10-23:31 (RUFU-521):
+    The executor deps bag renamed `resolveInstructionsForRole` to the three-part
+    `resolveInstructionPartsForRole` and this real-git harness was never updated, so every case here
+    died on `deps.resolveInstructionPartsForRole is not a function` before reaching the recapture lane
+    this suite exists to pin. Canonical empty parts, matching
+    `run-audit-sink-health-review-recapture.test.ts`; the `resolveInstructionsForRole` line stays
+    because the deps bag still declares it.
+    */
+    resolveInstructionPartsForRole: async () => ({ configTime: "", memorySection: "", performanceFeedback: "" }),
     resolveInstructionsForRole: async () => "", resolveMcpServers: async () => [],
     setActiveWorkflowStepSession: () => undefined,
   } as any;
@@ -214,7 +234,7 @@ describe("inline review fingerprint recapture", () => {
   });
 
   it("executes, persists, gates, reroutes, and converges a reviewer inline fix without mutating its sibling lane", async () => {
-    const repo = await repository();
+    const repo = await repository("fusion/fn-9234");
     const preFixFingerprint = await computeCodeReviewInputFingerprint(repo.directory, repo.base);
     const securityResult = {
       workflowStepId: "security-review",
@@ -233,7 +253,7 @@ describe("inline review fingerprint recapture", () => {
       description: "Regression fixture",
       column: "in-review",
       worktree: repo.directory,
-      branch: "fusion/fn-9234",
+      branch: repo.branch,
       baseCommitSha: repo.base,
       autoMerge: true,
       dependencies: [],
@@ -271,6 +291,8 @@ describe("inline review fingerprint recapture", () => {
       getAssignedAgentRuntimeConfig: () => undefined,
       getAuthoritativeAssignedAgent: async () => undefined,
       readTaskArtifact: async () => "# Approved task\n",
+      // Same deps-bag rename as the primary harness above; without it this lane cannot dispatch at all.
+      resolveInstructionPartsForRole: async () => ({ configTime: "", memorySection: "", performanceFeedback: "" }),
       resolveInstructionsForRole: async () => "",
       resolveMcpServers: async () => [],
       setActiveWorkflowStepSession: () => undefined,

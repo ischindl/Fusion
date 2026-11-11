@@ -11,6 +11,17 @@ export interface DescendantMergeBaseOptions {
   logger?: { warn: (msg: string) => void };
   /** Integration branch to fork against; defaults to the historic "main" literal. */
   integrationBranch?: string;
+  /**
+   * Revision whose integration fork point is measured. Omitted → the historic bare `HEAD` anchor,
+   * emitted UNQUOTED, which keeps the shell command byte-identical for every pre-existing caller.
+   *
+   * FNXC:ReviewInputProof 2026-11-10-23:31 (RUFU-521):
+   * RUFU-521 adds the one alternative the review content proof needs: a card's own branch tip. Without
+   * this option the branch leg of `probeSingularReviewDiffFingerprint` would have to re-implement the
+   * descendant-of-two-merge-bases rule a second time, which is precisely the drift RUFU-445 removed by
+   * consolidating it here.
+   */
+  revision?: string;
 }
 
 /*
@@ -62,12 +73,23 @@ export async function resolveDescendantMergeBase(
   the standard `'\''` close-reopen sequence.
   */
   const shellSingleQuote = (value: string): string => `'${value.replace(/'/g, "'\\''")}'`;
+  /*
+  FNXC:ReviewInputProof 2026-11-11-01:55 (RUFU-521):
+  The default anchor stays the BARE `HEAD` token, never `'HEAD'`. The emitted command string is an
+  observable contract, not an implementation detail: `executor-base-commit-capture.test.ts` fails the
+  LOCAL merge-base by matching `HEAD 'main'` and calls the quoting load-bearing ("git merge-base HEAD
+  'origin/main'"), so quoting the default anchor silently makes that mock discriminate nothing and the
+  per-ref warning contract stops being covered. Only an explicitly supplied revision — always a ref the
+  caller named, e.g. a branch tip sha — goes through the quoting helper.
+  */
+  const explicitRevision = options.revision?.trim();
+  const revisionArg = explicitRevision ? shellSingleQuote(explicitRevision) : "HEAD";
   const localRef = shellSingleQuote(branch);
   const originRef = shellSingleQuote(`origin/${branch}`);
 
   const mergeBase = async (against: string): Promise<string | undefined> => {
     try {
-      const { stdout } = await execAsync(`git merge-base HEAD ${against}`, { cwd: worktreePath, encoding: "utf-8" });
+      const { stdout } = await execAsync(`git merge-base ${revisionArg} ${against}`, { cwd: worktreePath, encoding: "utf-8" });
       return stdout.trim() || undefined;
     } catch (err: unknown) {
       logger?.warn(`merge-base against ${against} failed: ${err instanceof Error ? err.message : String(err)}`);

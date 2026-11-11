@@ -112,8 +112,8 @@ import {
 } from "./workflow-step-verdict.js";
 import { resolveDiffBaseRef } from "./worktree-git-refs.js";
 import {
-  computeCodeReviewInputFingerprint,
-  computeReviewDiffFingerprint,
+  computeSingularCodeReviewInputFingerprint,
+  computeSingularReviewDiffFingerprint,
   EMPTY_REVIEW_DIFF_FINGERPRINT,
   probeReviewChangesSinceCommit,
   resolveContentReviewInputProof,
@@ -446,11 +446,33 @@ export async function executeWorkflowStep(
     } catch {
       // The content-proof resolver below reports the fail-closed diagnostic when this step binds content.
     }
+    /*
+    FNXC:ReviewInputProof 2026-11-10-23:31 (RUFU-521):
+    A singular card's review identity is its OWN branch's delivery, not whatever commit its checkout
+    happens to be parked on, so every fingerprint this lane computes is branch-targeted. A workspace
+    card keeps `undefined` and therefore today's HEAD path byte-for-byte — its per-repository proof is
+    computed per member in `workspace-review-evidence.ts`, which already targets `entry.branch`.
+    */
+    const reviewTargetBranch = task.workspaceWorktrees === undefined ? task.branch ?? undefined : undefined;
+    /*
+    Drift is named on the card when the checkout and the branch disagree, because a reclaimed detached
+    checkout is otherwise silent: the proof will correctly describe branch content while the reviewer
+    session browses a different tree. Observation only — no lifecycle state, and reclaim policy itself
+    is deliberately untouched (operator-locked).
+    */
+    const reportReviewTargetDrift = (detail: { branchRef: string; branchTipSha: string; headSha: string }) => {
+      void deps.store.logEntry(
+        task.id,
+        `[pre-merge] ${workflowStep.name} review input is measured against the task branch ${detail.branchRef} (${detail.branchTipSha.slice(0, 10)}), while this checkout is detached on ${detail.headSha.slice(0, 10)}.`,
+        undefined,
+        deps.getRunContextFor(task.id),
+      ).catch(() => undefined);
+    };
     if (isContentBindingStep && task.workspaceWorktrees === undefined) {
       const suppliedFingerprint = stepOptions?.reviewInputFingerprint?.trim();
       const proof = suppliedFingerprint
         ? { kind: "fingerprint" as const, fingerprint: suppliedFingerprint }
-        : await resolveContentReviewInputProof(worktreePath, diffBaseCommitSha);
+        : await resolveContentReviewInputProof(worktreePath, diffBaseCommitSha, reviewTargetBranch, reportReviewTargetDrift);
       if (proof.kind === "unprovable") {
         const diagnostic = `${workflowStep.name} review input is unprovable (${proof.reason}); reviewer dispatch refused.`;
         await deps.store.logEntry(
@@ -464,10 +486,20 @@ export async function executeWorkflowStep(
       reviewInputFingerprint = proof.fingerprint;
     } else if (baseRef) {
       try {
+        // Same target rule as the content-binding lane above, so dispatch-time and post-review
+        // identities of one card can never disagree about which ref they measured.
         if (workflowStepMetadata.reviewKind === "code") {
-          reviewInputFingerprint = await computeCodeReviewInputFingerprint(worktreePath, baseRef);
+          reviewInputFingerprint = await computeSingularCodeReviewInputFingerprint({
+            worktreePath,
+            recordedBaseCommitSha: diffBaseCommitSha,
+            branchRef: reviewTargetBranch,
+          });
         } else if (isReviewTypeWorkflowStep) {
-          reviewInputFingerprint = await computeReviewDiffFingerprint(worktreePath, baseRef);
+          reviewInputFingerprint = await computeSingularReviewDiffFingerprint({
+            worktreePath,
+            recordedBaseCommitSha: diffBaseCommitSha,
+            branchRef: reviewTargetBranch,
+          });
         }
       } catch {
         // Non-content review fingerprints remain best-effort; content-binding singular steps fail above.
@@ -1629,9 +1661,24 @@ CRITICAL SCOPING RULES — read before doing anything else:
               // A post-review fingerprint is evidence only: an unreadable probe must preserve the
               // already-recorded approval identity rather than converting a completed review to failure.
               try {
+                /*
+                FNXC:ReviewInputProof 2026-11-10-23:31 (RUFU-521):
+                The recapture MUST apply the same target rule the dispatch lane used, or a post-review
+                recompute on a drifted checkout would disagree with the identity the reviewer was
+                actually dispatched against. `baseRef` is this lane's already-resolved base, which the
+                composition still re-validates as an ancestor of the branch tip.
+                */
                 const recapturedFingerprint = workflowStepMetadata.reviewKind === "code"
-                  ? await computeCodeReviewInputFingerprint(worktreePath, baseRef)
-                  : await computeReviewDiffFingerprint(worktreePath, baseRef);
+                  ? await computeSingularCodeReviewInputFingerprint({
+                    worktreePath,
+                    recordedBaseCommitSha: baseRef,
+                    branchRef: reviewTargetBranch,
+                  })
+                  : await computeSingularReviewDiffFingerprint({
+                    worktreePath,
+                    recordedBaseCommitSha: baseRef,
+                    branchRef: reviewTargetBranch,
+                  });
                 const finalDecision = classifyReviewInlineFixRecapture({
                   verdict: effectiveVerdict,
                   reviewKind: workflowStepMetadata.reviewKind,

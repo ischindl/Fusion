@@ -1239,7 +1239,26 @@ export async function runGraphCustomNode(
       on an approval that persistence and merge admission must discard.
       */
       if (isContentBindingStep && !workspaceConfig) {
-        const proof = await resolveContentReviewInputProof(worktreePath, executionTarget.baseCommitSha);
+        /*
+        FNXC:ReviewInputProof 2026-11-10-23:31 (RUFU-521):
+        The graph's second content-binding lane must measure the same ref the producer lane measures,
+        otherwise the fingerprint this node refuses to dispatch without and the identity the merge door
+        later compares would disagree for one drifted checkout. A card whose branch tip is not checked
+        out gets one History line naming the drift: the proof is still honest, the reviewer's tree is not.
+        */
+        const proof = await resolveContentReviewInputProof(
+          worktreePath,
+          executionTarget.baseCommitSha,
+          executionTarget.branch ?? undefined,
+          (detail) => {
+            void deps.store.logEntry(
+              live.id,
+              `[pre-merge] ${step.name} review input is measured against the task branch ${detail.branchRef} (${detail.branchTipSha.slice(0, 10)}), while this checkout is detached on ${detail.headSha.slice(0, 10)}.`,
+              undefined,
+              deps.getRunContextFor(live.id),
+            ).catch(() => undefined);
+          },
+        );
         if (proof.kind === "unprovable") {
           const diagnostic = `${step.name} review input is unprovable (${proof.reason}); reviewer dispatch refused.`;
           await deps.store.logEntry(

@@ -1,7 +1,7 @@
 import type { MergeContentDescriptor, Task } from "@fusion/core";
 import { describeMergeContentShape } from "@fusion/core";
 import { resolveDiffBaseRef } from "../executor/worktree-git-refs.js";
-import { probeReviewDiffFingerprint } from "../worktree/review-diff-fingerprint.js";
+import { probeSingularReviewDiffFingerprint } from "../worktree/review-diff-fingerprint.js";
 import {
   captureWorkspaceReviewEvidence,
   WorkspaceMemberEvidenceError,
@@ -10,6 +10,22 @@ import {
 export type MergeContentCaptureDeps = {
   workspaceRootDir: string;
   settings: Record<string, unknown>;
+};
+
+/**
+ * Controls which ref the SINGULAR leg measures. Workspace members are unaffected either way — they
+ * already measure `entry.branch` in `captureWorkspaceReviewEvidence`.
+ *
+ * - `undefined` (no options passed): derive `task.branch`. Every door that asks "does this match what
+ *   the reviewer approved?" must measure the same ref the dispatch lane measured, or a drifted checkout
+ *   makes one honest side look stale and the card reroutes forever.
+ * - a string: measure that branch.
+ * - `null`: stay on `HEAD`. The explicit opt-out for a caller that deliberately captures a different
+ *   tree than the card's branch; naming it here keeps the exception reviewable instead of a silent
+ *   caller that simply forgot the branch.
+ */
+export type MergeContentCaptureOptions = {
+  branchRef?: string | null;
 };
 
 /*
@@ -21,6 +37,7 @@ failure becomes an unavailable descriptor and the positive approval gate defers.
 export async function captureMergeContentDescriptor(
   task: Task,
   deps: MergeContentCaptureDeps,
+  options?: MergeContentCaptureOptions,
 ): Promise<MergeContentDescriptor> {
   if (describeMergeContentShape(task) === "workspace") {
     try {
@@ -61,6 +78,22 @@ export async function captureMergeContentDescriptor(
   const baseRef = task.worktree
     ? await resolveDiffBaseRef(task.worktree, task.baseCommitSha)
     : undefined;
-  const probe = await probeReviewDiffFingerprint(task.worktree, baseRef);
+  /*
+  FNXC:ReviewInputProof 2026-11-10-23:31 (RUFU-521):
+  The singular door measured `base..HEAD`, the mutable checkout tip, while the fingerprint it compares
+  against came from the review. One reclaimed checkout parked off the branch made the two disagree: the
+  card with commits read as the `empty-review-input:v1` sentinel and either auto-passed on a matching
+  no-commit claim or raised a false `stale_content` REVISE (RUFU-290). The door now asks the same
+  question the review answered — what does this card's own branch deliver — and an unresolvable branch
+  names itself as `branch-ref-unresolvable` instead of ever resolving to `empty`. Workspace members
+  already measured `entry.branch` here and at `merger-ai.ts`'s per-repository leg; this closes the
+  singular half of that same rule.
+  */
+  const branchRef = options?.branchRef === undefined ? task.branch : options.branchRef;
+  const probe = await probeSingularReviewDiffFingerprint({
+    worktreePath: task.worktree,
+    recordedBaseCommitSha: baseRef,
+    branchRef: branchRef ?? undefined,
+  });
   return { kind: "singular", diff: probe };
 }
