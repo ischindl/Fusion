@@ -26,13 +26,17 @@ import {
 } from "./src/process-manager.js";
 import { createHash } from "node:crypto";
 import {
-  getCustomToolDefs,
   toolsFromContext,
   writeMcpConfig,
   buildAcpMcpServers,
   type McpToolDef,
   type UserMcpServerSpec,
 } from "./src/mcp-config.js";
+import {
+  TOOL_NOT_AVAILABLE_MARKER,
+  reconcileToolSurface,
+  type ReconciledToolSurface,
+} from "./src/tool-surface.js";
 
 /**
  * FNXC:pi-claude-cli 2026-06-27-06:39:
@@ -46,7 +50,7 @@ function resolveAcpBridgePath(): string | undefined {
   return typeof p === "string" && p.length > 0 ? p : undefined;
 }
 
-/** Resolve custom tool defs the same way ensureMcpConfig does (context → registry). */
+/** Project pi's own transcript replay onto the flat shape this package declares. */
 function normalizeTranscriptTools(tools: ReturnType<typeof getCurrentTools>): Array<{ name: string; description: string; parameters: Record<string, unknown> }> {
   return tools.map((tool) => ({
     name: tool.name,
@@ -55,13 +59,18 @@ function normalizeTranscriptTools(tools: ReturnType<typeof getCurrentTools>): Ar
   }));
 }
 
-function resolveToolDefs(
-  pi: ExtensionAPI,
-  contextTools: ReadonlyArray<{ name: string; description: string; parameters: Record<string, unknown> }>,
-): McpToolDef[] {
-  let toolDefs = toolsFromContext(contextTools);
-  if (toolDefs.length === 0 && Array.isArray(pi.getAllTools())) toolDefs = getCustomToolDefs(pi);
-  return toolDefs;
+/**
+ * Resolve the custom MCP defs for the ACP route from the reconciled surface.
+ *
+ * FNXC:ToolDispatchIntegrity 2026-11-11-04:02:
+ * RUFU-520. This used to re-derive the surface itself (`toolsFromContext(contextTools)`, then
+ * `getCustomToolDefs(pi)` when that came back empty), which is the same drift in a second place:
+ * two authorities for one request, disagreeing per call. The ACP route now consumes the same
+ * reconciled surface the `-p` route declares, so both transports see one list.
+ */
+function resolveToolDefs(surface: ReconciledToolSurface): McpToolDef[] {
+  if (surface.registryUnreadable) return [];
+  return toolsFromContext(surface.customTools);
 }
 
 // Kill all active Claude subprocesses on process exit to prevent orphans
@@ -106,54 +115,62 @@ function getUserMcpServers(options: unknown): UserMcpServerSpec[] {
 }
 
 /**
- * Resolve the MCP config path for the current request, regenerating it when
- * the set of custom tools changes.
+ * Write (or reuse) the MCP config file that declares this turn's custom tools to the Claude CLI.
  *
- * Source of truth (in order of preference):
- * 1. Pi 0.86 transcript tool declarations, replayed through
- *    `getCurrentTools(context.messages)` so mid-conversation updates survive.
- * 2. `pi.getAllTools()` — fallback when the current transcript has no tools.
+ * FNXC:ToolDispatchIntegrity 2026-11-11-04:02:
+ * RUFU-520 primary fix: every prior-state return in this function is gone. It used to answer
+ * `return cachedMcpConfig?.configPath` when the transcript replay yielded no custom defs and
+ * `pi.getAllTools()` was not an array, and again from its `catch`, and it re-served the cached path
+ * whenever a hash matched. A call whose own derivation failed was therefore served the file an
+ * earlier call had written, declaring that earlier call's tools, and because the hash was computed
+ * from whatever that stale list was, one bad derivation then persisted for the rest of the run.
+ * That is the drift the sightings recorded: `fn_list_agents` invisible for a whole session while
+ * `read` stayed visible, so the model called `read` on a fabricated `/fusion/fn_read_messages`
+ * path and the board consumed a fabricated observation as a real coordination result.
  *
- * Why not a single once-and-lock cache:
- * - The engine spawns triage/executor sessions with session-scoped tools.
- *   A locked-on-first-call cache silently drops them and the Claude CLI
- *   subprocess refuses with "unknown tool fn_review_spec".
- * - Hashing the tool defs lets us reuse temp files when the tool set is
- *   unchanged across calls and produce fresh files (with the hash in the
- *   filename to avoid races) when it changes.
+ * The contract now: the surface is derived from the live session by `reconcileToolSurface` in
+ * `tool-surface.ts` (one call per `streamSimple`), and a derivation that cannot prove its surface
+ * declares *nothing* rather than guessing. `undefined` means the CLI runs with pi's built-ins only,
+ * which is an honest "no coordination tools available this turn"; a stale file would instead assert
+ * that tools exist which this run cannot execute, or hide tools it can. The cache is cleared on
+ * every such path so the next turn re-derives instead of inheriting the failure. The cache-hit
+ * branch is the only path that still returns a stored path, and only because the derived defs are
+ * byte-identical to the ones that produced that file.
  *
- * Uses warn-don't-block: failure logs a warning but does not prevent the
- * provider from functioning (built-ins still work).
+ * Source of truth, in order:
+ * 1. `pi.getActiveTools()` names (what pi will accept this turn), intersected with
+ *    `pi.getAllTools()` definitions (the schemas), minus pi's six built-ins and minus any name pi
+ *    refuses to declare (`hidden`, `codemode`, `deferred`).
+ * 2. The transcript replay supplies the declaration *text* for names already proven member-only;
+ *    it is never consulted for membership.
+ *
+ * Uses warn-don't-block: a failed write logs and degrades to built-ins, it never blocks the send.
  */
 function ensureMcpConfig(
-  pi: ExtensionAPI,
-  contextTools: ReadonlyArray<{
-    name: string;
-    description: string;
-    parameters: Record<string, unknown>;
-  }>,
+  surface: ReconciledToolSurface,
   userMcpServers: UserMcpServerSpec[] = [],
 ): string | undefined {
   try {
-    let toolDefs: McpToolDef[] = toolsFromContext(contextTools);
-    if (contextTools && contextTools.length > 0) {
-      debugMcp(
-        `MCP config from current transcript: ${contextTools.map((tool) => tool.name).join(", ")}`,
+    if (surface.registryUnreadable) {
+      console.warn(
+        `${TOOL_NOT_AVAILABLE_MARKER}: pi.getAllTools() returned no array, so this turn declares no custom MCP tools. A previously written config is deliberately not reused.`,
       );
-    }
-
-    // Fallback to the pi runtime registry when the transcript has no current tools.
-    if (toolDefs.length === 0) {
-      const allTools = pi.getAllTools();
-      if (!Array.isArray(allTools)) {
-        return cachedMcpConfig?.configPath;
-      }
-      toolDefs = getCustomToolDefs(pi);
-    }
-
-    if (toolDefs.length === 0 && userMcpServers.length === 0) {
       cachedMcpConfig = undefined;
       return undefined;
+    }
+
+    const toolDefs = toolsFromContext(surface.customTools);
+
+    if (toolDefs.length === 0 && userMcpServers.length === 0) {
+      // Nothing is active and registered under this session's own authority. Declare nothing.
+      cachedMcpConfig = undefined;
+      return undefined;
+    }
+
+    if (surface.droppedNames.length > 0) {
+      debugMcp(
+        `dropped replayed tool(s) not executable this turn: ${surface.droppedNames.join(", ")}`,
+      );
     }
 
     const hash = createHash("sha1")
@@ -175,10 +192,11 @@ function ensureMcpConfig(
     return configPath;
   } catch (err) {
     console.warn(
-      "[pi-claude-cli] MCP config generation failed, custom tools unavailable:",
+      `${TOOL_NOT_AVAILABLE_MARKER}: MCP config generation failed, so this turn declares no custom MCP tools rather than reusing a previous config:`,
       err,
     );
-    return cachedMcpConfig?.configPath;
+    cachedMcpConfig = undefined;
+    return undefined;
   }
 }
 
@@ -249,10 +267,19 @@ export default function (pi: ExtensionAPI) {
         /*
         FNXC:PiTranscriptBridge 2026-10-04-07:28:
         Pi 0.86 replaces the retired Context.tools field with transcript system-message deltas. Replay the current prompt and tool declarations before building either local CLI bridge so resumed and branched sessions retain their latest instructions and MCP schemas.
+
+        FNXC:ToolDispatchIntegrity 2026-11-11-04:02:
+        RUFU-520: the replay is now only the *text* source. `reconcileToolSurface` decides
+        membership from `pi.getActiveTools()` intersected with `pi.getAllTools()`, so the surface
+        declared to the CLI is the session's current one, and `cliContext.tools` carries that
+        reconciled list rather than the raw replay. Prompt adapters that read `cliContext.tools` to
+        name MCP tools therefore cannot advertise a tool the request does not declare, nor omit one
+        it does. One derivation per call, consumed by both transports.
         */
         const contextTools = normalizeTranscriptTools(getCurrentTools(context.messages));
+        const surface = reconcileToolSurface(pi, contextTools);
         // FNXC:PiTranscriptBridge 2026-09-20-17:02: Prompt adapters still consume Context.tools for MCP tool-name instructions, so forward Pi's normalized current transcript tools after replacing its retired source field.
-        const cliContext = { ...context, systemPrompt: getCurrentSystemPrompt(context.messages), tools: contextTools };
+        const cliContext = { ...context, systemPrompt: getCurrentSystemPrompt(context.messages), tools: surface.declaredTools };
 
         /*
         FNXC:AgentCwdBoundary 2026-10-18-10:29:
@@ -268,7 +295,7 @@ export default function (pi: ExtensionAPI) {
         // FNXC:pi-claude-cli 2026-06-27-06:39: Route A drives Claude through the ACP bridge only when the kill-switch is on AND a bridge path is injected. OFF by default → `-p` path below.
         const bridgePath = resolveAcpBridgePath();
         if (bridgePath) {
-          const toolDefs = resolveToolDefs(pi, contextTools);
+          const toolDefs = resolveToolDefs(surface);
           const userMcpServers = getUserMcpServers(options);
           const hash = createHash("sha1").update(JSON.stringify({ toolDefs, userMcpServerNames: userMcpServers.map((server) => server.name) })).digest("hex").slice(0, 12);
           return streamViaAcp(model, cliContext as never, {
@@ -281,7 +308,7 @@ export default function (pi: ExtensionAPI) {
           });
         }
 
-        const configPath = ensureMcpConfig(pi, contextTools, getUserMcpServers(options));
+        const configPath = ensureMcpConfig(surface, getUserMcpServers(options));
         return streamViaCli(model, cliContext as never, {
           ...options,
           cwd: agentCwd,

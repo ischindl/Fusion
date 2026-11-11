@@ -25,12 +25,16 @@ vi.mock("@earendil-works/pi-ai", () => ({
 
 import register from "../../index.js";
 
-function registerAndGetStreamSimple() {
+function registerAndGetStreamSimple(session?: { registry?: unknown; active?: string[] }) {
   const calls: Array<[string, { streamSimple: (...a: unknown[]) => unknown }]> = [];
   const pi = {
     registerProvider: (name: string, cfg: { streamSimple: (...a: unknown[]) => unknown }) => calls.push([name, cfg]),
     on: vi.fn(),
-    getAllTools: () => [],
+    getAllTools: () => session?.registry ?? [],
+    // RUFU-520: the surface a turn declares is the session's active set intersected with the
+    // registry, so a harness that expects a custom tool to be declared has to state that the run
+    // actually has it, instead of relying on the transcript replay alone.
+    getActiveTools: () => session?.active ?? [],
     setActiveTools: vi.fn(),
   } as never;
   register(pi);
@@ -72,7 +76,12 @@ describe("streamSimple kill-switch dispatch (U11/R9/R14)", () => {
       description: "Fetch a URL",
       parameters: { type: "object", properties: { url: { type: "string" } } },
     }];
-    const streamSimple = registerAndGetStreamSimple();
+    // RUFU-520: the replay is the declaration text, not the membership answer. This run has the
+    // tool registered and active, which is what lets it be declared at all.
+    const streamSimple = registerAndGetStreamSimple({
+      registry: [{ ...tools[0], exposure: "direct" }],
+      active: ["fn_web_fetch"],
+    });
     streamSimple(MODEL, { messages: [{ role: "system", content: "Use Fusion tools", toolsAdded: tools }] } as never, {});
 
     expect(streamViaCli).toHaveBeenCalledWith(
@@ -80,6 +89,23 @@ describe("streamSimple kill-switch dispatch (U11/R9/R14)", () => {
       expect.objectContaining({ systemPrompt: "Use Fusion tools", tools }),
       expect.any(Object),
     );
+  });
+
+  it("does not declare a transcript tool the run cannot execute", () => {
+    // RUFU-520: the drift direction that made a coordination tool invisible for a whole session.
+    // A name the session no longer has active must not be offered to the CLI, because the model
+    // would then substitute a visible tool and the board would consume a fabricated observation.
+    delete process.env.FUSION_CLAUDE_ACP;
+    const tools = [{
+      name: "fn_web_fetch",
+      description: "Fetch a URL",
+      parameters: { type: "object", properties: { url: { type: "string" } } },
+    }];
+    const streamSimple = registerAndGetStreamSimple({ registry: [{ ...tools[0], exposure: "direct" }], active: [] });
+    streamSimple(MODEL, { messages: [{ role: "system", content: "Use Fusion tools", toolsAdded: tools }] } as never, {});
+
+    const context = (streamViaCli.mock.calls[0] as unknown as [unknown, { tools?: unknown[] }])[1];
+    expect(context.tools).toEqual([]);
   });
 
   it("dispatches to the ACP bridge when the flag AND a bridge path are set", () => {

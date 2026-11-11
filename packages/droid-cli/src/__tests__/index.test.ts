@@ -13,9 +13,6 @@ const runtimeMocks = vi.hoisted(() => {
     validateCliPresenceAsync: vi.fn(async () => ({ ok: true })),
     validateCliAuthAsync: vi.fn(async () => undefined),
     killAllProcesses: vi.fn(),
-    getCustomToolDefs: vi.fn(() => [
-      { name: "fn_read", description: "Read", input_schema: { type: "object" } },
-    ]),
     toolsFromContext: vi.fn((tools?: readonly ToolDescriptor[]) =>
       Array.isArray(tools)
         ? tools.map((tool) => ({
@@ -29,7 +26,20 @@ const runtimeMocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("@fusion-plugin-examples/droid-runtime", () => runtimeMocks);
+/*
+ FNXC:ToolDispatchIntegrity 2026-11-11-04:02:
+ RUFU-520. The surface derivation is deliberately NOT mocked: this file tests that the extension
+ entry asks the live session which tools it may execute, so the real `reconcileToolSurface` from the
+ droid runtime plugin has to answer. Only the transport and the file writer are faked.
+*/
+vi.mock("@fusion-plugin-examples/droid-runtime", async () => {
+  const surface = await import("../../../../plugins/fusion-plugin-droid-runtime/src/tool-surface.js");
+  return {
+    ...runtimeMocks,
+    reconcileToolSurface: surface.reconcileToolSurface,
+    TOOL_NOT_AVAILABLE_MARKER: surface.TOOL_NOT_AVAILABLE_MARKER,
+  };
+});
 
 const flushAsyncRegistration = async () => {
   await Promise.resolve();
@@ -191,10 +201,20 @@ describe("droid-cli extension entrypoint", () => {
 
   it("wires context tools to mcp config and passes mcpConfigPath into streamViaCli", async () => {
     const registerProvider = vi.fn();
+    // RUFU-520: the transcript names the tools that were declared; the session's registry plus its
+    // active set decide which of them this run may execute. State both, as a real session does.
+    const tools = [
+      {
+        name: "fn_web_fetch",
+        description: "Fetch URL",
+        parameters: { type: "object", properties: { url: { type: "string" } } },
+      },
+    ];
     const mockPi = {
       registerProvider,
       on: vi.fn(),
-      getAllTools: vi.fn(() => [{ name: "find" }]),
+      getAllTools: vi.fn(() => [{ ...tools[0], exposure: "direct" }]),
+      getActiveTools: vi.fn(() => ["fn_web_fetch"]),
       setActiveTools: vi.fn(),
     };
 
@@ -206,13 +226,6 @@ describe("droid-cli extension entrypoint", () => {
       streamSimple: (model: unknown, context: unknown, options: Record<string, unknown>) => unknown;
     };
 
-    const tools = [
-      {
-        name: "fn_web_fetch",
-        description: "Fetch URL",
-        parameters: { type: "object", properties: { url: { type: "string" } } },
-      },
-    ];
     const context = { messages: [{ role: "system", content: "Use current tools", toolsAdded: tools }] };
 
     config.streamSimple({ id: "droid-pro" }, context, { temperature: 0.2 });
@@ -226,14 +239,17 @@ describe("droid-cli extension entrypoint", () => {
     );
   });
 
-  it("falls back to getCustomToolDefs when context tools are missing", async () => {
-    runtimeMocks.toolsFromContext.mockReturnValue([]);
-
+  it("declares an active registered tool the transcript never mentioned", async () => {
+    // RUFU-520, the drop direction: a tool the session has active must be declared even when no
+    // earlier turn named it, or the prompt offers a coordination tool the schema cannot back.
     const registerProvider = vi.fn();
     const mockPi = {
       registerProvider,
       on: vi.fn(),
-      getAllTools: vi.fn(() => [{ name: "ls" }]),
+      getAllTools: vi.fn(() => [
+        { name: "fn_task_show", description: "Show a task", parameters: { type: "object" }, exposure: "direct" },
+      ]),
+      getActiveTools: vi.fn(() => ["fn_task_show"]),
       setActiveTools: vi.fn(),
     };
 
@@ -247,7 +263,92 @@ describe("droid-cli extension entrypoint", () => {
 
     config.streamSimple({ id: "droid-pro" }, { messages: [] }, {});
 
-    expect(runtimeMocks.getCustomToolDefs).toHaveBeenCalledWith(mockPi);
     expect(runtimeMocks.writeMcpConfig).toHaveBeenCalledTimes(1);
+    const declared = runtimeMocks.toolsFromContext.mock.calls.at(-1)?.[0] as unknown as Array<{ name: string }>;
+    expect(declared.map((tool) => tool.name)).toEqual(["fn_task_show"]);
+  });
+
+  it("declares no custom tool when the session has none active", async () => {
+    // RUFU-520. The deleted subject of this file's earlier "falls back to getCustomToolDefs" case
+    // was the registry fallback that declared every registered tool regardless of the session's
+    // authority. The replacement truth: registered-but-not-executable is never declared.
+    runtimeMocks.toolsFromContext.mockReturnValue([]);
+
+    const registerProvider = vi.fn();
+    const mockPi = {
+      registerProvider,
+      on: vi.fn(),
+      getAllTools: vi.fn(() => [{ name: "ls" }, { name: "fn_task_show" }]),
+      getActiveTools: vi.fn(() => []),
+      setActiveTools: vi.fn(),
+    };
+
+    const mod = await import("../../index");
+    mod.default(mockPi as never);
+    await flushAsyncRegistration();
+
+    const config = registerProvider.mock.calls[0]?.[1] as {
+      streamSimple: (model: unknown, context: unknown, options?: Record<string, unknown>) => unknown;
+    };
+
+    config.streamSimple({ id: "droid-pro" }, { messages: [] }, {});
+
+    expect(runtimeMocks.writeMcpConfig).not.toHaveBeenCalled();
+    const callArgs = runtimeMocks.streamViaCli.mock.calls.at(-1) as unknown as [unknown, { tools?: unknown[] }];
+    expect(callArgs[1]?.tools).toEqual([]);
+  });
+
+  it("does not reuse an earlier call's config when the registry becomes unreadable", async () => {
+    // RUFU-520 primary refusal, asserted on the droid clone so both bridges prove the same
+    // invariant: an unprovable surface declares nothing rather than inheriting a stale list.
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const registerProvider = vi.fn();
+    const registry: unknown[] = [
+      { name: "fn_task_show", description: "Show a task", parameters: { type: "object" }, exposure: "direct" },
+    ];
+    const mockPi = {
+      registerProvider,
+      on: vi.fn(),
+      getAllTools: vi.fn(() => registry),
+      getActiveTools: vi.fn(() => ["fn_task_show"]),
+      setActiveTools: vi.fn(),
+    };
+
+    const mod = await import("../../index");
+    mod.default(mockPi as never);
+    await flushAsyncRegistration();
+
+    const config = registerProvider.mock.calls[0]?.[1] as {
+      streamSimple: (model: unknown, context: unknown, options?: Record<string, unknown>) => unknown;
+    };
+    const messages = [
+      {
+        role: "system",
+        content: "prompt",
+        toolsAdded: [{ name: "fn_task_show", description: "Show a task", parameters: {} }],
+      },
+    ];
+
+    config.streamSimple({ id: "droid-pro" }, { messages }, {});
+    const first = (runtimeMocks.streamViaCli.mock.calls.at(-1) as unknown as [unknown, unknown, { mcpConfigPath?: string }])[2];
+    expect(first?.mcpConfigPath).toEqual(expect.stringContaining("/tmp/droid-mcp-"));
+
+    registry.push(1 as never);
+    (mockPi.getAllTools as ReturnType<typeof vi.fn>).mockReturnValue(undefined);
+    runtimeMocks.streamViaCli.mockClear();
+    config.streamSimple({ id: "droid-pro" }, { messages }, {});
+
+    const degraded = runtimeMocks.streamViaCli.mock.calls.at(-1) as unknown as [unknown, unknown, { mcpConfigPath?: string }];
+    expect(degraded[2]?.mcpConfigPath).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("TOOL_NOT_AVAILABLE"));
+
+    // Not sticky: the next call that can read the session re-declares the tool.
+    (mockPi.getAllTools as ReturnType<typeof vi.fn>).mockReturnValue(registry.slice(0, 1));
+    runtimeMocks.streamViaCli.mockClear();
+    config.streamSimple({ id: "droid-pro" }, { messages }, {});
+
+    const recovered = runtimeMocks.streamViaCli.mock.calls.at(-1) as unknown as [unknown, unknown, { mcpConfigPath?: string }];
+    expect(recovered[2]?.mcpConfigPath).toEqual(expect.stringContaining("/tmp/droid-mcp-"));
+    warnSpy.mockRestore();
   });
 });

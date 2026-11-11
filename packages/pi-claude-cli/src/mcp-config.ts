@@ -29,7 +29,7 @@ interface PiInstance {
 }
 
 /** The 6 built-in tools that pi handles natively (match pi tool names). */
-const BUILT_IN_TOOL_NAMES = new Set([
+export const BUILT_IN_TOOL_NAMES = new Set([
   "read",
   "write",
   "edit",
@@ -75,9 +75,19 @@ interface PiAiToolLike {
 }
 
 /**
- * Convert the pi-ai `Context.tools` array (the authoritative per-session tool
- * list pi-coding-agent passes to streamSimple) into MCP tool defs, filtering
- * out the 6 built-ins that pi handles natively.
+ * Convert a list of pi-ai tool declarations into MCP tool defs, filtering out the 6 built-ins
+ * that pi handles natively.
+ *
+ * FNXC:ToolDispatchIntegrity 2026-11-11-04:02:
+ * RUFU-520. This helper's earlier JSDoc called its argument "the authoritative per-session tool
+ * list pi-coding-agent passes to streamSimple". That field is retired: pi 1.1 hands a custom
+ * provider only a transcript-shaped context (`{ messages }`), so `Context.tools` no longer exists
+ * on it, and every call site that reads this argument feeds it from
+ * `normalizeTranscriptTools(getCurrentTools(context.messages))` in `index.ts`. The argument is
+ * therefore pi's *transcript replay*: it carries the declaration text pi-ai normalized, but it
+ * says nothing trustworthy about which tools this run can actually execute. Membership authority
+ * now lives in `reconcileToolSurface` in `tool-surface.ts`; this function stays a pure shape
+ * converter so a caller that only needs MCP defs cannot re-establish the replay as an authority.
  */
 export function toolsFromContext(
   contextTools: ReadonlyArray<PiAiToolLike> | undefined,

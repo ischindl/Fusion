@@ -63,7 +63,17 @@ import { ClientSideConnection } from "@agentclientprotocol/sdk";
 import { streamViaAcp, buildBridgeEnv } from "../acp-driver.js";
 
 const MODEL = { id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" } as never;
-const CTX = { messages: [{ role: "user", content: "hi" }] } as never;
+/*
+ FNXC:ToolDispatchIntegrity 2026-11-11-05:12:
+ RUFU-520. `streamViaAcp` now hands the bridge the tools this turn declared, so a fixture that asks
+ for `fn_task_list` has to declare it, exactly as a real session does: the extension entry puts the
+ reconciled pi-side names on `cliContext.tools`. Declaring it here is what keeps these cases testing
+ break-early translation rather than the new refusal path, which has its own tests.
+*/
+const CTX = {
+  messages: [{ role: "user", content: "hi" }],
+  tools: [{ name: "fn_task_list", description: "List tasks", parameters: { type: "object" } }],
+} as never;
 const OPTS = { bridgePath: "/fake/claude-code-cli-acp", cwd: "/tmp", mcpServers: [], bridgeEnv: { HOME: "/h", PATH: "/b" } };
 
 function eventsOf(stream: { _events: Array<Record<string, unknown>> }) {
@@ -161,6 +171,28 @@ describe("streamViaAcp — ACP→pi translation (U11)", () => {
     expect(eventsOf(stream).some((e) => e.type === "toolcall_start")).toBe(true);
     const done = eventsOf(stream).find((e) => e.type === "done");
     expect(done!.reason).toBe("toolUse");
+  });
+
+  it("refuses a coordination tool the turn never declared instead of leaving it unanswered", async () => {
+    /*
+     FNXC:ToolDispatchIntegrity 2026-11-11-05:12:
+     RUFU-520 symptom acceptance on the route that produced the incident. The reported shape was an
+     `fn_*` request that pi could not execute and that Fusion answered with nothing, after which the
+     model improvised `read` on `/fusion/fn_task_show` and reported that missing file as the state of
+     the task. `CTX` above declares only `fn_task_list`, so this request is for a tool the run cannot
+     execute: the assertion is that no tool call leaves the bridge at all and the model is told, in
+     words it cannot misread, that nothing ran.
+    */
+    scriptedUpdates = [
+      { sessionUpdate: "tool_call", toolCallId: "gone", _meta: { claudeCode: { toolName: "mcp__custom-tools__fn_task_show" } }, rawInput: { taskId: "FN-001" } },
+    ];
+    const stream = streamViaAcp(MODEL, CTX, OPTS) as unknown as { _events: Array<Record<string, unknown>> };
+    await flush();
+
+    expect(eventsOf(stream).some((e) => e.type === "toolcall_start")).toBe(false);
+    const deltas = eventsOf(stream).filter((e) => e.type === "text_delta").map((e) => String(e.delta));
+    expect(deltas.join("")).toContain("TOOL_NOT_AVAILABLE");
+    expect(deltas.join("")).toContain("fn_task_show");
   });
 
   it("R17 auth-signal: sets on a 'Not logged in' turn, clears on a real response, ignores long answers", async () => {
@@ -288,7 +320,12 @@ describe("connection reuse (item 1) — gated by FUSION_CLAUDE_ACP_REUSE", () =>
     // Turn 1 (cold) breaks early on a pi-known tool — prompt() never resolves
     // (the break happens mid-stream), so the connection must be torn down, not
     // released warm, or turn 2 would launch a concurrent prompt on it.
-    const ctx1 = { messages: [{ role: "user", content: "hi" }, { role: "assistant", content: "hello" }] } as never;
+    const ctx1 = {
+      messages: [{ role: "user", content: "hi" }, { role: "assistant", content: "hello" }],
+      // Declared, as a real turn does, so this case keeps exercising break-early on a real tool call
+      // instead of the RUFU-520 refusal path.
+      tools: [{ name: "fn_task_list", description: "List tasks", parameters: { type: "object" } }],
+    } as never;
     scriptedUpdates = [
       { sessionUpdate: "tool_call", toolCallId: "t1", _meta: { claudeCode: { toolName: "mcp__custom-tools__fn_task_list" } }, rawInput: {} },
     ];
@@ -299,7 +336,10 @@ describe("connection reuse (item 1) — gated by FUSION_CLAUDE_ACP_REUSE", () =>
 
     // Turn 2 must cold-spawn a fresh bridge (no warm reuse after a tool turn).
     scriptedUpdates = [{ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "after tool" } }];
-    const ctx2 = { messages: [...(ctx1 as unknown as { messages: unknown[] }).messages, { role: "user", content: "again" }] } as never;
+    const ctx2 = {
+      messages: [...(ctx1 as unknown as { messages: unknown[] }).messages, { role: "user", content: "again" }],
+      tools: (ctx1 as unknown as { tools: unknown[] }).tools,
+    } as never;
     streamViaAcp(MODEL, ctx2, reuseOpts);
     await flush();
     expect(vi.mocked(spawn)).toHaveBeenCalledTimes(2); // fresh spawn → no concurrent prompt on a warm conn

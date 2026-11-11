@@ -6,10 +6,12 @@ import {
   validateCliPresenceAsync,
   validateCliAuthAsync,
   killAllProcesses,
-  getCustomToolDefs,
   toolsFromContext,
   writeMcpConfig,
+  TOOL_NOT_AVAILABLE_MARKER,
+  reconcileToolSurface,
   type McpToolDef,
+  type ReconciledToolSurface,
 } from "@fusion-plugin-examples/droid-runtime";
 import { createHash } from "node:crypto";
 
@@ -69,6 +71,7 @@ function toProviderModels(ids: string[]): DiscoveredModel[] {
   }));
 }
 
+/** Project pi's own transcript replay onto the flat shape this package declares. */
 function normalizeTranscriptTools(tools: ReturnType<typeof getCurrentTools>): Array<{ name: string; description: string; parameters: Record<string, unknown> }> {
   return tools.map((tool) => ({
     name: tool.name,
@@ -77,24 +80,33 @@ function normalizeTranscriptTools(tools: ReturnType<typeof getCurrentTools>): Ar
   }));
 }
 
-function ensureMcpConfig(
-  pi: ExtensionAPI,
-  contextTools: ReadonlyArray<{
-    name: string;
-    description: string;
-    parameters: Record<string, unknown>;
-  }>,
-): string | undefined {
+/**
+ * Write (or reuse) the MCP config file that declares this turn's custom tools to the Droid CLI.
+ *
+ * FNXC:ToolDispatchIntegrity 2026-11-11-04:02:
+ * RUFU-520 primary fix, mirrored from the pi-claude-cli bridge so both clones honor one invariant.
+ * The two `return cachedMcpConfig?.configPath` answers are gone: one fired when the replay yielded
+ * no custom defs and `pi.getAllTools()` was not an array, the other from the `catch`. Each served an
+ * earlier call's tool list to a call that could not derive its own, and the hash being computed from
+ * that stale list made the drift stick for the rest of the run. A derivation that cannot prove its
+ * surface now declares nothing - the honest "no coordination tools this turn" - and clears the cache
+ * so the next call re-derives. The cache-hit branch is the only one that returns a stored path, and
+ * only while the derived defs are byte-identical to the ones that produced that file.
+ */
+function ensureMcpConfig(surface: ReconciledToolSurface): string | undefined {
   try {
-    let toolDefs: McpToolDef[] = toolsFromContext(contextTools);
-
-    if (toolDefs.length === 0) {
-      const allTools = pi.getAllTools();
-      if (!Array.isArray(allTools)) return cachedMcpConfig?.configPath;
-      toolDefs = getCustomToolDefs(pi);
+    if (surface.registryUnreadable) {
+      console.warn(
+        `${TOOL_NOT_AVAILABLE_MARKER}: pi.getAllTools() returned no array, so this turn declares no custom MCP tools. A previously written config is deliberately not reused.`,
+      );
+      cachedMcpConfig = undefined;
+      return undefined;
     }
 
+    const toolDefs: McpToolDef[] = toolsFromContext(surface.customTools);
+
     if (toolDefs.length === 0) {
+      // Nothing is active and registered under this session's own authority. Declare nothing.
       cachedMcpConfig = undefined;
       return undefined;
     }
@@ -105,8 +117,13 @@ function ensureMcpConfig(
     const configPath = writeMcpConfig(toolDefs, hash);
     cachedMcpConfig = { hash, configPath };
     return configPath;
-  } catch {
-    return cachedMcpConfig?.configPath;
+  } catch (error) {
+    console.warn(
+      `${TOOL_NOT_AVAILABLE_MARKER}: MCP config generation failed, so this turn declares no custom MCP tools rather than reusing a previous config:`,
+      error,
+    );
+    cachedMcpConfig = undefined;
+    return undefined;
   }
 }
 
@@ -121,11 +138,18 @@ function registerDroidProvider(pi: ExtensionAPI, models: DiscoveredModel[]) {
       /*
       FNXC:PiTranscriptBridge 2026-09-20-16:20:
       Pi 0.86 carries prompt and tool changes in transcript system messages rather than Context.tools. Replay the current state so Droid receives the active prompt and MCP schema after resume or branching.
+
+      FNXC:ToolDispatchIntegrity 2026-11-11-04:02:
+      RUFU-520: the replay is only the text source. `reconcileToolSurface` decides membership from
+      `pi.getActiveTools()` intersected with `pi.getAllTools()`, so what the Droid CLI is configured
+      with is the session's current surface, and `cliContext.tools` carries that reconciled list
+      rather than the raw replay - the prompt cannot advertise a tool the request does not declare.
       */
       const contextTools = normalizeTranscriptTools(getCurrentTools(context.messages));
-      const configPath = ensureMcpConfig(pi, contextTools);
+      const surface = reconcileToolSurface(pi, contextTools);
+      const configPath = ensureMcpConfig(surface);
       // FNXC:PiTranscriptBridge 2026-09-20-17:02: Droid's prompt adapter reads Context.tools for MCP instructions, so preserve the normalized transcript declarations in its compatibility context.
-      const cliContext = { ...context, systemPrompt: getCurrentSystemPrompt(context.messages), tools: contextTools };
+      const cliContext = { ...context, systemPrompt: getCurrentSystemPrompt(context.messages), tools: surface.declaredTools };
       return streamViaCli(
         model,
         cliContext as never,

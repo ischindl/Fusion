@@ -729,6 +729,49 @@ A session inherits its working directory for real: the model's shell tool starts
 
 Exemptions live in the ratchet test, not in new code: `packages/engine/src/__tests__/agent-cwd-ratchet.test.ts` scans `packages/engine/src`, `packages/dashboard/src`, and the whole `packages/pi-claude-cli` package (test files excluded), and every allow-listed `process.cwd()` site carries the evidence and reason it is exempt — read-only watchdog discovery, the heartbeat research root, and operator-owned pi configuration. Adding a new launch path that inherits its directory fails that test; adding a genuinely legitimate read means adding an entry with a reason.
 
+## Declared Tool Surface in the CLI Bridges
+
+The `claude-cli` and `droid-cli` lanes run a real vendor CLI against a pi-owned tool registry, so two
+lists have to agree: what the model is told it may call, and what the session can actually execute.
+When they disagree the model gets a failure it cannot read and improvises, which is how an `fn_*`
+coordination call came back as `File not found: /fusion/fn_task_show` from the built-in `read` tool
+(RUFU-520).
+
+- **One derivation, one source of truth.** `reconcileToolSurface()` in `packages/pi-claude-cli/src/tool-surface.ts`
+  (and its rename-diff clone `plugins/fusion-plugin-droid-runtime/src/tool-surface.ts`) computes the
+  surface from `pi.getAllTools()` intersected with `pi.getActiveTools()`, minus pi built-ins and minus
+  the exposures pi cannot declare (`codemode`, `deferred`, `hidden`). The prompt context, the MCP
+  config file, and the bridge's request guard all read that one result, so they cannot disagree.
+- **Transcript replay is text, not permission.** `getCurrentTools(context.messages)` carries the
+  declaration bodies the session published earlier, which the prompt needs for cache stability. It is
+  never the authority for availability: a tool revoked mid-session leaves the declared surface, and a
+  tool that is active but was never named by an earlier system message is appended.
+- **An unprovable surface declares nothing.** If `pi.getAllTools()` yields no array, the turn runs
+  with pi's own tools and warns with the `TOOL_NOT_AVAILABLE` marker. No branch of `ensureMcpConfig()`
+  may return a previously written config path; a stale declaration is the defect, not a fallback.
+- **A refusal is visible.** `resolveToolRequestDisposition()` classifies each requested name as
+  `execute`, `guard`, or `skip`. A guarded request emits no tool call at all and streams an assistant
+  line carrying `TOOL_NOT_AVAILABLE` that says explicitly it is not an empty result, so no other
+  handler can be mistaken for the answer. The schema-only MCP server refuses `tools/call` with a
+  JSON-RPC error carrying the same marker rather than the `null` it used to return, which would hang
+  the vendor CLI.
+- **Every transport carries the guard.** `streamViaCli` (provider), the ACP warm-session transport
+  (`streamViaAcp`), and the droid provider all build their bridge with `declaredToolNames`, so no lane
+  keeps the historic passthrough. A test asserts this over call sites rather than over two named
+  files, so a new transport that forgets the surface fails rather than shipping unguarded.
+- **pi's own dispatch is already name-faithful.** `prepareToolCall` in the pinned
+  `@earendil-works/pi-coding-agent` bundle resolves the handler with `tools.find(t => t.name ===
+  toolCall.name)` and returns `Tool <name> not found` otherwise, so there is deliberately no
+  engine-side wrapper guard; the ratchet against positional or last-used dispatch lives in the bridge
+  guard and its tests.
+- **Both lanes stay equal.** `packages/pi-claude-cli/src/__tests__/bridge-clone-parity.test.ts` holds
+  the tool-surface module, the schema server, and their tests to an exact rename-diff and asserts
+  neither bridge entry can return a cached config from a failure branch. A fix applied to one lane
+  only fails that test.
+
+See `docs/solutions/reliability/declared-tool-surface-vs-executable-surface-rufu-520.md` for the
+forensics, including the two premises of the original report that the source disproved.
+
 ## Agent Memory Layers in Runtime Tools
 
 When engine sessions include per-agent memory context, the memory tools operate over the full agent-memory workspace under `.fusion/agent-memory/{agentId}/`, not only the inline `agent.memory` field.

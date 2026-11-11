@@ -82,3 +82,24 @@ export {
 } from "./process-manager.js";
 export { getCustomToolDefs, toolsFromContext, writeMcpConfig } from "./mcp-config.js";
 export type { McpToolDef } from "./mcp-config.js";
+/*
+ FNXC:ToolDispatchIntegrity 2026-11-11-04:02:
+ RUFU-520. The turn's declared tool surface and the unavailable-tool guard are exported so the
+ droid-cli extension entry derives one surface for the MCP schema, the prompt context, and the
+ event-bridge guard. Before this, each of those read a different authority and a call whose own
+ derivation failed silently inherited a previous call's tool list.
+*/
+export {
+  TOOL_NOT_AVAILABLE_MARKER,
+  toolNotAvailableMessage,
+  isToolNotAvailableMessage,
+  reconcileToolSurface,
+  resolveToolRequestDisposition,
+} from "./tool-surface.js";
+export type {
+  ReconciledToolSurface,
+  ToolDeclaration,
+  ReplayedTool,
+  PiToolSurfaceApi,
+  ToolRequestDisposition,
+} from "./tool-surface.js";

@@ -171,7 +171,16 @@ export function streamViaCli(
       debugLog("user message written to stdin, stdin.end() called");
 
       // Create event bridge (before endStreamWithError so bridge is in scope)
-      const bridge = createEventBridge(stream, model);
+      /*
+      FNXC:ToolDispatchIntegrity 2026-11-11-04:02:
+      RUFU-520. The bridge gets this turn's declared surface so a `tool_use` naming a coordination
+      tool the run cannot execute is refused out loud instead of being dropped. `context.tools` is
+      the reconciled surface `index.ts` derived from the live session, so the guard and the MCP
+      schema the CLI was configured with state the same list.
+      */
+      const bridge = createEventBridge(stream, model, {
+        declaredToolNames: (context.tools ?? []).map((tool) => tool.name),
+      });
 
       // Guard against double stream.end() and double error events.
       // First error path wins; subsequent ones are no-ops.

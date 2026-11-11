@@ -271,7 +271,17 @@ export function streamViaAcp(
   // @ts-expect-error — pi-ai exports AssistantMessageEventStream as a type; the
   // constructor exists at runtime (same workaround as streamViaCli).
   const stream = new AssistantMessageEventStream();
-  const bridge = createEventBridge(stream, model);
+  /*
+  FNXC:ToolDispatchIntegrity 2026-11-11-05:12:
+  RUFU-520. The ACP transport is a production route (warm-session reuse), not a test seam, so it has
+  to carry the same unavailable-tool guard `streamViaCli` gets from provider.ts. `context.tools` here
+  is the reconciled surface the extension entry put on `cliContext.tools`, so the bridge refuses a
+  requested-but-undeclared tool with TOOL_NOT_AVAILABLE instead of dropping it silently; a dropped
+  coordination call is what let the model improvise a `read` of /fusion/fn_task_show.
+  */
+  const bridge = createEventBridge(stream, model, {
+    declaredToolNames: (context.tools ?? []).map((tool) => tool.name),
+  });
 
   (async () => {
     const reuseKey =

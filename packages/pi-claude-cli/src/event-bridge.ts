@@ -12,8 +12,25 @@ import type {
 import {
   mapClaudeToolNameToPi,
   translateClaudeArgsToPi,
-  isPiKnownClaudeTool,
 } from "./tool-mapping.js";
+import {
+  resolveToolRequestDisposition,
+  toolNotAvailableMessage,
+} from "./tool-surface.js";
+
+/**
+ * The turn's declared tool surface, as reconciled by the caller.
+ *
+ * FNXC:ToolDispatchIntegrity 2026-11-11-04:02:
+ * RUFU-520: the bridge needs the surface so a `tool_use` naming a coordination tool the run cannot
+ * execute is answered out loud instead of being dropped. An absent surface means the caller has no
+ * surface to offer (unit tests, the ACP kill-switch route), and the bridge then keeps its historic
+ * name-faithful passthrough; both production transports pass the reconciled set.
+ */
+export interface EventBridgeToolSurface {
+  /** Names this turn declares, pi names, built-ins included. */
+  declaredToolNames?: Iterable<string>;
+}
 
 /**
  * Extended tracking for tool_use content blocks during streaming.
@@ -102,9 +119,20 @@ function normalizeStreamingDelta(previousText: string, nextDelta: string): strin
 export function createEventBridge(
   stream: AssistantMessageEventStream,
   model: Model<Api>,
+  toolSurface?: EventBridgeToolSurface,
 ): EventBridge {
   // Tracked content blocks indexed by Claude's content_block index
   const blocks: TrackedBlock[] = [];
+
+  /*
+   FNXC:ToolDispatchIntegrity 2026-11-11-04:02:
+   RUFU-520: one Set per stream, snapshot at construction. A request's own name selects the handler;
+   this Set only decides whether that name is executable at all, so a guarded request can never be
+   answered by a different tool's result.
+   */
+  const declaredToolNames = toolSurface?.declaredToolNames
+    ? new Set(toolSurface.declaredToolNames)
+    : undefined;
 
   // The accumulated output message
   const output: AssistantMessage = {
@@ -223,10 +251,62 @@ export function createEventBridge(
       });
     } else if (blockType === "tool_use") {
       const claudeName = event.content_block!.name!;
+      const disposition = resolveToolRequestDisposition(claudeName, declaredToolNames);
 
-      // Skip internal Claude Code tools (ToolSearch, Task, Agent, etc.)
-      // that pi cannot execute — only emit pi-known tools
-      if (!isPiKnownClaudeTool(claudeName)) {
+      /*
+       FNXC:ToolDispatchIntegrity 2026-11-11-04:02:
+       RUFU-520 guard: the request named a Fusion coordination tool (`fn_*`, or an MCP-prefixed
+       custom tool) that this turn does not declare. The old code answered by `return`ing here,
+       which produced the worst observable outcome in this bridge: the call disappeared, no error
+       reached pi, and `provider.ts` then rewrote `stopReason: "toolUse"` to `"stop"` because no
+       tool call survived — an agent silently losing its coordination call mid-run. Refusing out
+       loud as assistant text costs the turn nothing it was not already losing (the turn still
+       ends) and leaves an explicit, greppable record. No handler for any other tool runs here.
+       */
+      if (disposition === "guard") {
+        const guardText = toolNotAvailableMessage(mapClaudeToolNameToPi(claudeName));
+        console.warn(`[pi-claude-cli] ${guardText}`);
+        const guardBlock: TrackedContentBlock = {
+          type: "text",
+          text: "",
+          index: event.index ?? 0,
+        };
+        blocks.push(guardBlock);
+        output.content.push({ type: "text" as const, text: "" });
+        stream.push({
+          type: "text_start",
+          contentIndex: output.content.length - 1,
+          partial: output,
+        });
+        /*
+         FNXC:ToolDispatchIntegrity 2026-11-11-04:02:
+         The guard sentence is streamed through the bridge's own text path rather than written
+         straight into the output message, so pi's consumers see the ordinary
+         text_start/text_delta/text_end sequence and the sentence is never both pushed and
+         accumulated. The Claude block's own `input_json_delta` and `content_block_stop` events for
+         this index then land on an already-closed block and are ignored, which is what keeps the
+         fabricated arguments from ever reaching a handler.
+         */
+        handleContentBlockDelta({
+          type: "content_block_delta",
+          index: event.index ?? 0,
+          delta: { type: "text_delta", text: guardText },
+        } as never);
+        handleContentBlockStop({ type: "content_block_stop", index: event.index ?? 0 } as never);
+        return;
+      }
+
+      /*
+       FNXC:ToolDispatchIntegrity 2026-11-11-04:02:
+       RUFU-520. The test used to be `!isPiKnownClaudeTool(claudeName)`, which is a *shape* check
+       ("is this an MCP-prefixed or PascalCase built-in name"), so a declared coordination tool the
+       model named directly (`fn_task_show`, no MCP prefix) fell through it and was discarded even
+       though pi holds a handler for exactly that name. The disposition already carries the
+       availability answer, so it is now the only gate: `skip` still discards the internal Claude
+       Code tools (ToolSearch, Task, Agent) pi cannot execute, and `execute` emits the call under
+       the requested name.
+       */
+      if (disposition !== "execute") {
         return;
       }
 
