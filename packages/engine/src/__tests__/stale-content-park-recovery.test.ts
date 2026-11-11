@@ -19,7 +19,7 @@ vi.mock("@fusion/core", async (importOriginal) => ({
 vi.mock("../merge/merge-content-capture.js", () => ({ captureMergeContentDescriptor: recovery.capture }));
 vi.mock("../merge/stale-content-review-reroute.js", () => ({ rerouteSingularStaleContentToReview: recovery.reroute }));
 
-import { STALE_CONTENT_APPROVAL_BLOCKER, type Task } from "@fusion/core";
+import { STALE_CONTENT_APPROVAL_BLOCKER, IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON, type Task } from "@fusion/core";
 import { SelfHealingManager } from "../self-healing.js";
 import { AUTO_MERGE_RETRY_REJECTED_PREFIX, classifyStaleContentPark } from "../merge/stale-content-park.js";
 
@@ -75,12 +75,24 @@ describe("classifyStaleContentPark", () => {
     expect(classifyStaleContentPark({ status: "failed", error: `${AUTO_MERGE_RETRY_REJECTED_PREFIX} ${blocker}` })).toBe("retry-rejected");
     expect(classifyStaleContentPark({ status: "failed", error: blocker })).toBe("raw-blocker");
     expect(classifyStaleContentPark({ status: null, error: blocker })).toBe("retry-exhausted");
+    /*
+    FNXC:StaleContentParkAdmission 2026-10-09-20:04 (RUFU-343): the engine's own stall park is a
+    terminal shape of its own, and its wrapped retry marker must not be read as the shape.
+    */
+    expect(classifyStaleContentPark({
+      status: "failed",
+      error: `In-review stall deadlock: merge-blocker — 4 identical in-review stall observations in one unchanged episode (stall observations, not merge attempts). ${AUTO_MERGE_RETRY_REJECTED_PREFIX} ${blocker}`,
+      paused: true,
+      pausedReason: IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON,
+    })).toBe("stall-deadlock");
   });
 
   it("excludes unrelated, active, and operator-held cards", () => {
     expect(classifyStaleContentPark({ status: "failed", error: "AUTO_MERGE_RETRY_FAILED: nope" })).toBeUndefined();
     expect(classifyStaleContentPark({ status: "failed", error: "AUTO_MERGE_RETRY_REJECTED: Cannot merge FN-1: task is marked 'needs-replan'" })).toBeUndefined();
     expect(classifyStaleContentPark({ status: "merging", error: blocker })).toBeUndefined();
+    // A bare pause carries no provenance, so it stays an operator veto (RUFU-343 admits ONLY the
+    // named engine deadlock park — see stale-content-park-classification.test.ts for that matrix).
     expect(classifyStaleContentPark({ status: "failed", error: blocker, paused: true })).toBeUndefined();
     expect(classifyStaleContentPark({ status: "failed", error: blocker, userPaused: true })).toBeUndefined();
     expect(classifyStaleContentPark({ status: "failed", error: blocker, deletedAt: "2026-01-01" })).toBeUndefined();
@@ -141,5 +153,64 @@ describe("hidden stale-content park recovery", () => {
     await manager.recoverMergeableReviewTasks();
     expect(recovery.reroute).toHaveBeenCalled();
     manager.stop();
+  });
+});
+
+/*
+FNXC:StaleContentParkAdmission 2026-10-09-21:16 (RUFU-343 remediation):
+`staleContentParkReleasePatch` is the single fence every release of this lane passes, and its job is to
+answer one question about the LIVE row: is the pause you are about to lift the one the engine authored
+for itself? All three guards in this lane (classifier, seed-lane admission, this fence) now ask the
+canonical `isEngineAuthoredInReviewStallPark`, so the fence is pinned directly — the route above can
+only reach it through the classifier, which would hide which rule answered.
+*/
+describe("staleContentParkReleasePatch fence", () => {
+  const deadlockError = `In-review stall deadlock: completed-review-status-none — 4 identical in-review stall observations in one unchanged episode (stall observations, not merge attempts). ${blocker}`;
+
+  const fence = () => {
+    const manager = new SelfHealingManager({} as any, { rootDir: "/tmp/test-project" });
+    return (live: Task, shape: ReturnType<typeof classifyStaleContentPark>) => {
+      const patch = (manager as any).staleContentParkReleasePatch(live, shape);
+      manager.stop();
+      return patch;
+    };
+  };
+
+  it("clears the pause pair for the engine's own stall park", () => {
+    const live = hiddenTask({
+      status: "failed", error: deadlockError, paused: true,
+      pausedReason: IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON, mergeRetries: 3,
+    });
+    expect(classifyStaleContentPark(live)).toBe("stall-deadlock");
+    expect(fence()(live, "stall-deadlock")).toEqual({
+      status: null, error: null, paused: false, pausedReason: null, mergeRetries: 0,
+    });
+  });
+
+  it("keeps admitting a stall park an operator already un-parked, and releases only what it holds", () => {
+    // The watchdog sentence is still on the row, but `paused` is gone, so the classifier reports the
+    // merge terminal it can prove (raw-blocker) and the patch carries no pause pair. The fence therefore
+    // cannot be written as the bare canonical predicate, which requires a card to be paused right now.
+    const live = hiddenTask({ status: "failed", error: deadlockError, pausedReason: IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON });
+    expect(classifyStaleContentPark(live)).toBe("raw-blocker");
+    expect(fence()(live, "raw-blocker")).toEqual({ status: null, error: null, mergeRetries: 0 });
+  });
+
+  it("refuses a pause marker whose watchdog sentence a later terminal replaced", () => {
+    // The stale-content claim is still true, so only provenance separates this row from the one above:
+    // the newer failure's sentence is the operator's only view of it, and this lane must not null it.
+    const live = hiddenTask({
+      status: "failed", paused: true, pausedReason: IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON,
+      error: `In-review merge deferred (retry 3/3): ${blocker}`,
+    });
+    expect(fence()(live, "stall-deadlock")).toBeNull();
+    expect(fence()(live, "raw-blocker")).toBeNull();
+  });
+
+  it("refuses an operator hold and leaves an unpaused terminal's patch byte-identical", () => {
+    expect(fence()(hiddenTask({ paused: true, pausedReason: "operator-pause" }), "raw-blocker")).toBeNull();
+    expect(fence()(hiddenTask({ userPaused: true }), "raw-blocker")).toBeNull();
+    expect(fence()(hiddenTask({ deletedAt: new Date().toISOString() }), "raw-blocker")).toBeNull();
+    expect(fence()(hiddenTask(), "raw-blocker")).toEqual({ status: null, error: null, mergeRetries: 0 });
   });
 });

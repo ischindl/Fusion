@@ -166,8 +166,17 @@ describe("reliability interactions: stall deadlock re-proves an empty-land premi
     const { store, manager, surfaced } = await surfaceOnce(task, CONTRADICTED);
 
     expect(surfaced).toBe(1);
-    // The deadlock stem is preserved byte-for-byte; only the embedded clause changes.
-    expect(task.error).toBe(`In-review stall deadlock: merge-blocker repeated 3× without progress. ${EMPTY_LAND_CONTRADICTION_REASON}`);
+    /*
+    FNXC:StallDeadlockSentence 2026-11-05-10:35 (RUFU-343 Arm A point 3):
+    The deadlock stem is preserved byte-for-byte; only the embedded clause changes. The count clause
+    now reads `— N identical in-review stall observations in one unchanged episode (stall observations,
+    not merge attempts)`, because the old `repeated N× without progress.` asserted merge attempts the
+    card never made: a card refused at the door never enters the auto-merge retry loop, so it sat at
+    `mergeRetries: 0` while the detector fired three times. These three pins assert the produced
+    sentence, so they carry the new form; the clause each case distinguishes (contradiction vs FN-8141
+    diagnosis vs ordinary stall) is unchanged and still asserted by its own `not.toContain` guard.
+    */
+    expect(task.error).toBe(`In-review stall deadlock: merge-blocker — 3 identical in-review stall observations in one unchanged episode (stall observations, not merge attempts). ${EMPTY_LAND_CONTRADICTION_REASON}`);
     expect(task.error).not.toContain("reverted or lost");
     // Disposition is untouched: the contradiction explains the park, it does not release it.
     expect(task.paused).toBe(true);
@@ -212,7 +221,7 @@ describe("reliability interactions: stall deadlock re-proves an empty-land premi
     const { store, manager, surfaced } = await surfaceOnce(task, verdict);
 
     expect(surfaced).toBe(1);
-    expect(task.error).toBe(`In-review stall deadlock: merge-blocker repeated 3× without progress. task is marked 'failed': ${EMPTY_MERGE_NO_LANDED_PROOF_REASON}`);
+    expect(task.error).toBe(`In-review stall deadlock: merge-blocker — 3 identical in-review stall observations in one unchanged episode (stall observations, not merge attempts). task is marked 'failed': ${EMPTY_MERGE_NO_LANDED_PROOF_REASON}`);
     expect(task.error).not.toContain("merge-lane malfunction");
     expect(task.pausedReason).toBe("in-review-stall-deadlock");
     // The probe ran and came back non-contradicted — conservative path, no new event.
@@ -231,7 +240,7 @@ describe("reliability interactions: stall deadlock re-proves an empty-land premi
 
     expect(surfaced).toBe(1);
     expect(manager.probes).toEqual([]);
-    expect(task.error).toBe("In-review stall deadlock: merge-blocker repeated 3× without progress. task is marked 'failed': Failed to create worktree after 3 attempts: branch conflict could not be auto-resolved");
+    expect(task.error).toBe("In-review stall deadlock: merge-blocker — 3 identical in-review stall observations in one unchanged episode (stall observations, not merge attempts). task is marked 'failed': Failed to create worktree after 3 attempts: branch conflict could not be auto-resolved");
     expect(contradictionEvents(store)).toHaveLength(0);
     manager.stop();
   });

@@ -105,7 +105,13 @@ function approvedPlanRow(): WorkflowStepResult {
 }
 
 function deadlockError(taskId: string): string {
-  return `In-review stall deadlock: merge-blocker repeated 3× without progress. Cannot merge ${taskId}: ${buildPreMergeGateApprovalBlocker("plan-review")}`;
+  /*
+  FNXC:InReviewStallAttribution 2026-10-09-21:24 (RUFU-343): mirrors what the deadlock disposition writes
+  TODAY — RUFU-343 reworded the mid-sentence to count stall observations rather than merge attempts. This
+  lane parses the trailing embedded blocker, never the count, so only the prefix and the blocker segment
+  carry the contract; pre-rewording parks (other fixtures in this suite keep them) stay valid by that rule.
+  */
+  return `In-review stall deadlock: merge-blocker — 3 identical in-review stall observations in one unchanged episode (stall observations, not merge attempts). Cannot merge ${taskId}: ${buildPreMergeGateApprovalBlocker("plan-review")}`;
 }
 
 function verdictlessTask(id: string, fingerprint: string, overrides: Partial<Task> = {}): Task {

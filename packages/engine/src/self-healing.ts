@@ -166,7 +166,7 @@ import { prefetchWorkflowSelections, type WorkflowSelectionCache,
   listStrandedLiveReviewerRuns,
   type ReviewerRunRow,
 } from "@fusion/core";
-import { AUTO_MERGE_RETRY_REJECTED_PREFIX, classifyStaleContentPark } from "./merge/stale-content-park.js";
+import { AUTO_MERGE_RETRY_REJECTED_PREFIX, classifyStaleContentPark, type StaleContentParkShape } from "./merge/stale-content-park.js";
 import type { MeshLeaseManager } from "./project/mesh-lease-manager.js";
 import { createLogger, schedulerLog } from "./logger.js";
 import { registerLifecycleMoveLog } from "./execution/lifecycle-move-log.js";
@@ -1235,7 +1235,7 @@ const MAX_STARVATION_DROPS = 3;
 /*
 FNXC:VerdictlessFailedGate 2026-09-14-14:47 (RUFU-217, Step 5 / AC1):
 Terminal parks re-persist the merge-door refusal they hit: the stall-deadlock disposition writes
-`In-review stall deadlock: <code> repeated N× without progress. <blocker>` and merge-retry
+`In-review stall deadlock: <code> — N identical in-review stall observations in one unchanged episode. <blocker>` and merge-retry
 exhaustion writes an `AUTO_MERGE_RETRY_REJECTED:` sentence embedding the raw blocker. When that
 embedded sentence names a gate whose latest required row has NO authored verdict, the park is a
 plumbing death wearing a terminal costume and recovery may seed a bounded fresh run of exactly
@@ -14844,6 +14844,64 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   }
 
   /*
+  FNXC:StaleContentParkRecovery 2026-10-09-20:04 (RUFU-343):
+  The stale-content recovery reads the merge door through this lane-local view — the same idiom the
+  unrun-gate recovery uses two screens below (`const recoverable = { ...task, status: undefined, paused: false }`).
+  It is lane-local rather than a door change because `getTaskMergeBlocker` answers a parked or
+  terminalized card from its pause/status arm BEFORE it ever evaluates content approvals, so the one
+  lane that exists to release such a park could not see the blocker it was sent to release. Production
+  card RUFU-301 is the measurement: classified as a stale-content park, routed here, and returned
+  `handled: false` on every pass because the door answered its own pause. The door file stays
+  byte-identical, so every other consumer (merge enqueue, the dashboard chip, the store's merge blocker)
+  keeps refusing the parked card. Applied only when the caller supplied a park shape, i.e. only for a row
+  `classifyStaleContentPark` already proved is a stale-content park; consent (operator hold, soft delete)
+  is still re-proved against the live row inside `staleContentParkReleasePatch`.
+  */
+  private staleContentDoorView(task: Task, parkShape?: StaleContentParkShape): Task {
+    return parkShape ? { ...task, status: undefined, paused: false } : task;
+  }
+
+  /*
+  FNXC:StaleContentParkRecovery 2026-10-09-20:04 (RUFU-343):
+  The single fence every stale-content park release passes through, so the seed branch and the
+  disproven-park branch cannot disagree about consent. It re-derives the classification from the LIVE row
+  (the seed can race a new hold), refuses a user override and a soft-deleted card outright, and refuses
+  any pause that is not the engine's own `in-review-stall-deadlock` park.
+
+  That identity decision is the canonical `isEngineAuthoredInReviewStallPark`, not a local comparison of
+  `pausedReason` — the same predicate the classifier and the seed-lane guard run, so the three guards
+  cannot drift into admitting different cards. It is composed as `paused === true && !canonical` rather
+  than the bare predicate on purpose: the canonical form also requires the card to be paused right now,
+  and this fence must keep admitting a card whose park an operator has already unpaused (the released
+  patch then just omits the pause pair).
+
+  FNXC:StaleContentParkAdmission 2026-10-09-21:16 (RUFU-343): measured, not assumed — with the
+  provenance-aware classifier this arm is defense-in-depth, not the live refusal: the shape guard above
+  already rejects a drifted pause, because `classifyStaleContentPark` returns `undefined` for a card whose
+  watchdog sentence was replaced and `"stall-deadlock"` only for a canonical park. It stays stated here in
+  the SAME words because two copies of one rule that disagree is exactly how these three guards cancelled
+  this rescue in sequence, and the identity of an engine-authored park belongs to
+  `pre-merge-gate-reseed.ts`: a pause marker left behind by a later, unrelated terminal failure is not
+  this lane's pause to lift, and clearing it would erase the operator's only view of that newer failure.
+
+  A bare `live.paused` veto was the third of the three guards that cancelled this rescue in sequence, and
+  it also made the clear wrong for the shape it should have released: a stall-deadlock park holds the
+  pause pair, so clearing only `status`/`error`/`mergeRetries` left the card `paused: true` with its
+  watchdog sentence gone — re-arming the same deadlock on the next tick with nothing left to name it.
+  */
+  private staleContentParkReleasePatch(
+    live: Task,
+    parkShape: StaleContentParkShape,
+  ): Parameters<TaskStore["updateTask"]>[1] | null {
+    if (classifyStaleContentPark(live) !== parkShape) return null;
+    if (live.userPaused === true || live.deletedAt) return null;
+    if (live.paused === true && !isEngineAuthoredInReviewStallPark(live)) return null;
+    return parkShape === "stall-deadlock"
+      ? { status: null, error: null, paused: false, pausedReason: null, mergeRetries: 0 }
+      : { status: null, error: null, mergeRetries: 0 };
+  }
+
+  /*
   FNXC:PreMergeApproval 2026-09-01-14:05:
   Self-healing must not treat a stale content-bound approval as mergeable just because the cheap
   blocker check lacks a fresh Git descriptor. Capture the same merge content the merge queue uses and
@@ -14863,18 +14921,89 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     parkCleared: boolean;
     mergeRetriesReset: boolean;
   }> {
-    const blocker = getTaskMergeBlocker(task, {
+    /*
+    FNXC:StaleContentParkRecovery 2026-10-09-20:04 (RUFU-343):
+    One door verdict decides both branches below, and it is the REAL door — never a stand-in — because
+    the false-green this card exists to fix was a harness that mocked exactly this call.
+    */
+    const blocker = getTaskMergeBlocker(this.staleContentDoorView(task, parkShape), {
       reviewColumns,
       requiredPreMergeStepIds: mergeGate.requiredPreMergeStepIds,
       mergeContent,
     });
-    if (!isStaleContentApprovalBlocker(blocker) || mergeContent.kind !== "singular") {
+    if (mergeContent.kind !== "singular") {
+      return { handled: false, seeded: false, parkCleared: false, mergeRetriesReset: false };
+    }
+
+    /*
+    FNXC:StaleContentParkRecovery 2026-10-09-20:04 (RUFU-343):
+    A park whose own sentence the door has disproven needs no re-review, only release. RUFU-301's parked
+    blocker claimed a pre-merge approval recorded against different content while the door's fresh
+    recomputation produced the SAME fingerprint the reviewer recorded, so seeding review would have
+    burned a cycle to re-approve identical content. The release is the same fenced atomic write the seed
+    branch uses, so a hold that arrived meanwhile still wins; a refused release returns `handled: false`
+    so the caller's bounded recovery budget is not spent on a card this lane may not touch. It is
+    auditable under the same mutation type with `reason: "park-release"` — a silent park release would
+    be the RUFU-336 defect wearing a different hat.
+    */
+    const parkedShape = parkShape;
+    if (parkedShape && blocker === undefined) {
+      let disprovenParkReleased = false;
+      await this.store.updateTaskAtomic(task.id, (live) => {
+        const patch = this.staleContentParkReleasePatch(live, parkedShape);
+        if (!patch) return null;
+        disprovenParkReleased = true;
+        return patch;
+      });
+      const auditKey = `${task.id}:park-release::${parkedShape}`;
+      if (disprovenParkReleased && !this.staleContentRerouteAuditKeys.has(auditKey)) {
+        this.staleContentRerouteAuditKeys.add(auditKey);
+        await this.store.logEntry(
+          task.id,
+          `[pre-merge] The ${parkedShape} stale-content park names a blocker the merge door no longer finds against current content; self-healing released the park without re-running review.`,
+        );
+        log.warn(`Stale-content park for ${task.id} disproven by the live merge door; park released`);
+        await emitBoundedRunAudit(this.store, {
+          taskId: task.id,
+          agentId: "self-healing",
+          runId: generateSyntheticRunId("self-healing", task.id),
+          domain: "database",
+          mutationType: "task:merge-stale-content-review-rerouted",
+          target: task.id,
+          metadata: {
+            taskId: task.id,
+            nodeId: undefined,
+            workflowStepId: undefined,
+            reason: "park-release",
+            source: "self-healing",
+            parkShape: parkedShape,
+            parkCleared: true,
+            mergeRetriesReset: true,
+          },
+        });
+      }
+      return {
+        handled: disprovenParkReleased,
+        seeded: false,
+        parkShape,
+        parkCleared: disprovenParkReleased,
+        mergeRetriesReset: disprovenParkReleased,
+      };
+    }
+
+    if (!isStaleContentApprovalBlocker(blocker)) {
       return { handled: false, seeded: false, parkCleared: false, mergeRetriesReset: false };
     }
 
     const reroute = await rerouteSingularStaleContentToReview(this.store, task, {
       requiredPreMergeStepIds: mergeGate.requiredPreMergeStepIds,
       mergeContent,
+      /*
+      FNXC:StaleContentParkRecovery 2026-10-09-20:04 (RUFU-343):
+      The classifier already proved this hold is the engine's own watchdog park, so this route — and only
+      this route — owns seeding under it. The seed-lane guard still refuses every other pause.
+      */
+      allowDeadlockPark: parkShape === "stall-deadlock",
     }).catch(() => ({
       rerouted: false,
       reason: "no-progress" as const,
@@ -14890,11 +15019,10 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     let parkCleared = false;
     if (reroute.rerouted && parkShape) {
       await this.store.updateTaskAtomic(task.id, (live) => {
-        if (classifyStaleContentPark(live) !== parkShape || live.paused || live.userPaused || live.deletedAt) {
-          return null;
-        }
+        const patch = this.staleContentParkReleasePatch(live, parkShape);
+        if (!patch) return null;
         parkCleared = true;
-        return { status: null, error: null, mergeRetries: 0 };
+        return patch;
       });
     }
     const mergeRetriesReset = parkCleared;
@@ -16700,6 +16828,24 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             const contradictionClause = contradictedPremise
               ? ` NOTE: ${EMPTY_LAND_CONTRADICTION_REASON} (${emptyLandEvidence?.filesChanged ?? 0} files, +${emptyLandEvidence?.insertions ?? 0}/-${emptyLandEvidence?.deletions ?? 0}, ahead ${emptyLandEvidence?.aheadCount ?? 0})`
               : "";
+
+            /*
+            FNXC:InReviewStallAttribution 2026-10-09-21:24 (RUFU-343):
+            This sentence is the operator's only record of WHY a card stopped, so the number in it has to
+            name the evidence it counted. `repetitionCount` comes from `countRecentIdenticalStallEntries`
+            — trailing `In-review stall surfaced [<code>]: <reason>` entries in the card's own log, reset by
+            `getLatestFailedPreMergeStepProgressAt` — which is a count of identical in-review stall
+            observations inside one unchanged episode. It is NOT a merge-attempt count: `mergeRetries` is an
+            independent counter this disposition never writes, so a card whose stall never reached the merge
+            door (measured: `completed-review-status-none` on saneca, and RUFU-301) parks at threshold with
+            `mergeRetries: 0` while the old wording accused it of N failed merges it never made. The
+            attribution matters because this sentence is what the verdictless-gate and stale-content
+            recoveries read back, and an operator who trusts the wrong count audits the wrong lane.
+
+            Deliberately NOT changed here: no `mergeRetries` write and no `agentId` clear. The RUFU-301 card
+            arrived with `agentId: null`, and pinning that this patch does not write it is what keeps that
+            finding attributable to whichever lane actually dropped it.
+            */
             return {
               logEntry: {
                 timestamp,
@@ -16712,13 +16858,21 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
               status: "failed",
               /*
               FNXC:EmptyLandEvidence 2026-09-25-10:55 (RUFU-293):
-              Prefix, code, and repetition stem stay byte-identical — the FN-8953 wedge descriptor, the
+              Prefix and code stay byte-identical — the FN-8953 wedge descriptor, the
               `In-review stall deadlock` matcher and RUFU-280's verdict-less-gate classifier all reason
-              about them. Only the embedded clause is replaced, and only while `live.error` still carries
-              the empty-merge premise the probe measured. Disposition, counters, `pausedReason` and the
-              owner-detach are untouched: a contradicted verdict explains the park, it does not release it.
+              about them. Measured 2026-11-01 during the RUFU-343 rebase: those matchers read the prefix
+              constant and `pausedReason` only, so the repetition stem is free text and may be reworded
+              without deafening recovery. Only the embedded clause is replaced, and only while `live.error`
+              still carries the empty-merge premise the probe measured. Disposition, counters, `pausedReason`
+              and the owner-detach are untouched: a contradicted verdict explains the park, it does not release it.
+
+              FNXC:RebaseConflictResolution 2026-11-01-19:38 (CEO, RUFU-343 onto d3a59f0491):
+              Both arms carried behavior the other lacked. `main` gained the `contradictedPremise` clause from
+              RUFU-293; this card reworded the count to name what it actually counts. Dropping either would
+              silently revert one fix, so the merged sentence keeps the card's attribution wording AND the
+              empty-land ternary, and keeps both explanatory blocks above.
               */
-              error: `${IN_REVIEW_STALL_DEADLOCK_ERROR_PREFIX}${signal.code} repeated ${repetitionCount}× without progress. ${contradictedPremise ? EMPTY_LAND_CONTRADICTION_REASON : signal.reason}`,
+              error: `${IN_REVIEW_STALL_DEADLOCK_ERROR_PREFIX}${signal.code} — ${repetitionCount} identical in-review stall observations in one unchanged episode (stall observations, not merge attempts). ${contradictedPremise ? EMPTY_LAND_CONTRADICTION_REASON : signal.reason}`,
             };
           }
           disposition = "observation";

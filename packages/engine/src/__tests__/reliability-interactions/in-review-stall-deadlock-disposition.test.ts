@@ -159,7 +159,98 @@ describe("reliability interactions: in-review stall deadlock disposition", () =>
     vi.setSystemTime(new Date("2026-01-01T00:20:00.000Z"));
     expect(await manager.surfaceInReviewStalls()).toBe(1);
     expect(task.pausedReason).toBe("in-review-stall-deadlock");
-    expect(task.error).toContain("repeated 10× without progress");
+    /*
+    FNXC:InReviewStallAttribution 2026-10-09-21:24 (RUFU-343): the sentence is asserted by its three
+    segments — the code, the count of identical stall observations, then the trailing stall reason — and the
+    superseded wording that counted them as merge attempts is asserted GONE. Recovery lanes key off the
+    leading prefix and the trailing reason only, so those are the parts that must survive any rewording.
+    */
+    expect(task.error).toMatch(/^In-review stall deadlock: merge-blocker/);
+    expect(task.error).toContain("10 identical in-review stall observations");
+    expect(task.error!.endsWith(reason)).toBe(true);
+    expect(task.error).not.toMatch(/repeated \d+\u00d7/);
+  });
+
+  it("counts stall observations, not merge attempts: parks with mergeRetries 0 and no merge enqueued", async () => {
+    /*
+    FNXC:InReviewStallAttribution 2026-10-09-21:24 (RUFU-343):
+    The measured RUFU-301 card parked with `mergeRetries: 0`, which the old `repeated N× without progress`
+    sentence misread as N failed merges. The counter is `countRecentIdenticalStallEntries` over the card's
+    own stall-log suffix, so a card whose stall never reached the merge door still reaches threshold. This
+    pins the claim to observable evidence: three identical observations parked the card while the merge
+    queue was never touched.
+    */
+    const reason = "task is marked 'failed': unchanged merge failure";
+    const task = {
+      id: "RUFU-343-ZERO-RETRIES",
+      column: "in-review",
+      paused: false,
+      userPaused: false,
+      status: "failed",
+      error: "unchanged merge failure",
+      steps: [{ name: "implementation", status: "done" }],
+      workflowStepResults: [],
+      worktree: "/tmp/rufu-343-zero-retries",
+      mergeDetails: {},
+      mergeRetries: 0,
+      agentId: "agent-rufu-343",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      log: Array.from({ length: 2 }, (_, index) => ({
+        timestamp: `2026-01-01T00:0${index}:00.000Z`,
+        action: `In-review stall surfaced [merge-blocker]: ${reason}`,
+      })),
+    } as any satisfies Task;
+    const store = createStore(task);
+    const manager = new SelfHealingManager(store, { rootDir: "/tmp/repo" });
+
+    vi.setSystemTime(new Date("2026-01-01T00:20:00.000Z"));
+    expect(await manager.surfaceInReviewStalls()).toBe(1);
+
+    expect(task.pausedReason).toBe("in-review-stall-deadlock");
+    expect(task.error).toContain("3 identical in-review stall observations");
+    expect(task.error).toContain("not merge attempts");
+    // The counted evidence is observations; the merge door was never reached.
+    expect(store.enqueueMergeQueue).not.toHaveBeenCalled();
+    expect(task.mergeRetries).toBe(0);
+  });
+
+  it("writes neither agentId nor mergeRetries from the deadlock patch", async () => {
+    /*
+    FNXC:InReviewStallAttribution 2026-10-09-21:24 (RUFU-343):
+    RUFU-301's card arrived with `agentId: null` beside this park, and an earlier shape of the disposition
+    looked like its author. Pinning the patch's non-writes (an unspent-but-nonzero retry budget and a live
+    agent both survive the park byte-for-byte) is what keeps that field attributable to whichever lane
+    actually clears it, and keeps the recovery budget from being silently reset by a stall write.
+    */
+    const reason = "task is marked 'failed': unchanged merge failure";
+    const task = {
+      id: "RUFU-343-OWNERSHIP",
+      column: "in-review",
+      paused: false,
+      userPaused: false,
+      status: "failed",
+      error: "unchanged merge failure",
+      steps: [{ name: "implementation", status: "done" }],
+      workflowStepResults: [],
+      worktree: "/tmp/rufu-343-ownership",
+      mergeDetails: {},
+      mergeRetries: 2,
+      agentId: "agent-rufu-343",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      log: Array.from({ length: 2 }, (_, index) => ({
+        timestamp: `2026-01-01T00:0${index}:00.000Z`,
+        action: `In-review stall surfaced [merge-blocker]: ${reason}`,
+      })),
+    } as any satisfies Task;
+    const store = createStore(task);
+    const manager = new SelfHealingManager(store, { rootDir: "/tmp/repo" });
+
+    vi.setSystemTime(new Date("2026-01-01T00:20:00.000Z"));
+    expect(await manager.surfaceInReviewStalls()).toBe(1);
+
+    expect(task.pausedReason).toBe("in-review-stall-deadlock");
+    expect(task.agentId).toBe("agent-rufu-343");
+    expect(task.mergeRetries).toBe(2);
   });
 
   it("starts a new episode when a failed pre-merge gate progressed after identical stalls", async () => {
@@ -546,8 +637,15 @@ describe("reliability interactions: in-review stall deadlock disposition", () =>
       expect(task.log.filter((entry: { action: string }) => entry.action.startsWith("In-review stall auto-disposed ["))[0].action)
         .toBe(`In-review stall auto-disposed [merge-blocker]: deadlock-prevention threshold reached after 3 identical stalls — pausing task. last reason: ${BLOCKER_REASON}`);
       // Unchanged pause payload.
+      /*
+      FNXC:StallDeadlockSentence 2026-11-05-10:35 (RUFU-343 Arm A point 3):
+      The count clause carries the observation wording (`— N identical in-review stall observations in
+      one unchanged episode`), not `repeated N× without progress.`, because the number is read from the
+      stall episode log and never from `mergeRetries` — which is exactly the false claim RUFU-398's
+      `episodeHasMergeAttempt` exists to make queryable. The pause payload itself is unchanged.
+      */
       expect(task.status).toBe("failed");
-      expect(task.error).toBe(`In-review stall deadlock: merge-blocker repeated 3× without progress. ${BLOCKER_REASON}`);
+      expect(task.error).toBe(`In-review stall deadlock: merge-blocker — 3 identical in-review stall observations in one unchanged episode (stall observations, not merge attempts). ${BLOCKER_REASON}`);
 
       releasePark(task);
       await driveToPark(manager, [20, 22, 24]);
