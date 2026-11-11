@@ -88,6 +88,21 @@ function createStore(task: Task, settings: Record<string, unknown> = {}): TaskSt
     logEntry: vi.fn().mockResolvedValue(undefined),
     appendAgentLog: vi.fn().mockResolvedValue(undefined),
     getTask: vi.fn(async () => store.task),
+    /*
+    FNXC:WorkspaceLandFixture 2026-11-11-09:44:
+    The merge-gate recheck reads stale-review waiver receipts UNCONDITIONALLY on every land path
+    (`ctx.store.getStaleReviewCallbackWaiverReceipts(task.id)` in `merge/merger-ai.ts`, added by
+    6e4ab56f44 / FN-9429), so a hand-rolled fake store must implement the seam or the per-repo land
+    throws before any ref advances. Deleting these two stubs reproduces the measured 6/9 red of this
+    file deterministically; the swallowed cause is
+    `sub-repo repo-a land failed: ctx.store.getStaleReviewCallbackWaiverReceipts is not a function`,
+    which the per-repo catch converts into `status: "failed"` and a quiet partial land. That is why
+    the red read as fixture drift rather than breakage: `expected 'failed' to be 'landed'`, a missing
+    landed sha, `expected false to be true` (`alreadyLanded`), and a DB-fault case that resolved
+    instead of rejecting. Real stores are unaffected (`TaskStore.getStaleReviewCallbackWaiverReceipts`
+    in `core/src/store.ts`), so the fixture was the wrong side of the seam, fixed by 5cb91494a8
+    (FN-9460). RUFU-511 re-verified this by reverse-patching exactly these two lines at HEAD.
+    */
     getStaleReviewCallbackWaiverReceipts: vi.fn().mockResolvedValue([]),
     getProjectId: vi.fn().mockReturnValue("test-project"),
     moveTask: vi.fn((id: string, column: string) => {
