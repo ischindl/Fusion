@@ -55,6 +55,15 @@ Non-negotiable constraints honored here:
 
 import { exec } from "node:child_process";
 import { createRequire } from "node:module";
+/*
+FNXC:LoopDelayMetrics 2026-11-11-02:55: the only loop-health signal this server had was
+`fusion_system_last_request_age_ms`, and that gauge is only evidence while a request is actually
+waiting. Measured 2026-11-11 on the engine host: the gauge read 305 000 ms with zero pending
+requests, because the engine host simply gets no HTTP traffic — while `ps` showed its main thread
+at 74.5 % CPU. The histogram below measures the loop itself, so starvation becomes visible with or
+without traffic.
+*/
+import { monitorEventLoopDelay } from "node:perf_hooks";
 
 import type { MetricFamily } from "./prometheus-text.js";
 
@@ -173,6 +182,24 @@ export interface RuntimeSampler {
   buildSnapshot(nowMs?: number): MetricFamily[];
 }
 
+/*
+FNXC:LoopDelayMetrics 2026-11-11-02:55: the subset of Node's `Historogram` this sampler reads.
+Node reports delay in nanoseconds; the exposed metric is milliseconds.
+*/
+export interface EventLoopDelayLike {
+  percentile(p: number): number;
+  /*
+  Node exposes `mean`/`max`/`min` as methods on some versions and as plain numeric properties on
+  others (numeric on the v26 the board runs on). Accepting both keeps a Node upgrade from turning
+  every scrape into a `loopDelay.mean is not a function` throw.
+  */
+  mean: number | (() => number);
+  max: number | (() => number);
+  enable(): void;
+  disable(): void;
+  reset(): void;
+}
+
 /** Constructor options (all injectable for tests). */
 export interface RuntimeSamplerInit {
   /** Process API surface (defaults to the global `process`). */
@@ -187,6 +214,14 @@ export interface RuntimeSamplerInit {
   ringCap?: number;
   /** Tick cadences in ms (defaults: latency 5s / process 5s / git 15s). */
   tick?: { latencyMs?: number; processMs?: number; gitMs?: number };
+  /**
+   * FNXC:LoopDelayMetrics 2026-11-11-02:55: event-loop delay histogram (defaults to
+   * `monitorEventLoopDelay({ resolution: 10 })`). Pass `null` to opt out. Injectable because the
+   * honest way to prove a delay histogram is to stall the loop for a second — and a test that sleeps
+   * a second is exactly the slow-test class this repo refuses; a fake histogram asserts the
+   * nanosecond→ms conversion and the family shape instead.
+   */
+  eventLoopDelay?: EventLoopDelayLike | null;
   /** A fake-timer-friendly `setInterval`/`clearInterval` surface. */
   timers?: {
     setInterval: (fn: () => void, ms: number) => TimerLike;
@@ -312,6 +347,20 @@ function defaultTimers(): {
  * {@link RuntimeSampler.start} is called. `start()` uses `unref()`'d timers so
  * a running sampler never keeps the process alive.
  */
+function defaultEventLoopDelay(): EventLoopDelayLike | null {
+  try {
+    const histogram = monitorEventLoopDelay({ resolution: 10 });
+    histogram.enable();
+    // Node unrefs this timer internally; the guard keeps a future runtime change from turning a
+    // metrics probe into something that holds the process open.
+    (histogram as { unref?: () => void }).unref?.();
+    return histogram as unknown as EventLoopDelayLike;
+  } catch {
+    // No delay probe is better than no server: the samplers must degrade to the previous surface.
+    return null;
+  }
+}
+
 export function createRuntimeSampler(init: RuntimeSamplerInit = {}): RuntimeSampler {
   const proc = init.processRef ?? defaultProcessLike();
   const spawnMod = init.spawnModule ??
@@ -325,6 +374,15 @@ export function createRuntimeSampler(init: RuntimeSamplerInit = {}): RuntimeSamp
     gitMs: init.tick?.gitMs ?? 15_000,
   };
   const timers = init.timers ?? defaultTimers();
+
+  /*
+  FNXC:LoopDelayMetrics 2026-11-11-02:55: `resolution: 10` ms keeps the sampler's own wakeups well
+  below a turn worth noticing, and the probe is enabled for the sampler's whole lifetime because a
+  histogram that is disabled between scrapes reports a window of nothing.
+  */
+  const loopDelay = init.eventLoopDelay === undefined
+    ? defaultEventLoopDelay()
+    : init.eventLoopDelay;
 
   const latencyState: LatencyRecorderState = {
     recent: [],
@@ -451,6 +509,16 @@ export function createRuntimeSampler(init: RuntimeSamplerInit = {}): RuntimeSamp
 
   function stopTimers(): void {
     started = false;
+    /*
+    FNXC:LoopDelayMetrics 2026-11-11-02:55: reset, not disable. Disabling leaves a probe that a later
+    `start()` must remember to re-enable, and the underlying timer is already unref'd, so it cannot
+    keep a process alive. Reset drops a window that spans the shutdown.
+    */
+    try {
+      loopDelay?.reset();
+    } catch {
+      /* a failed reset must not break shutdown */
+    }
     for (const key of [...timersMap.keys()]) {
       const timer = timersMap.get(key);
       if (timer) {
@@ -505,6 +573,31 @@ export function createRuntimeSampler(init: RuntimeSamplerInit = {}): RuntimeSamp
       type: "gauge",
       samples: [{ value: lastAgeMs }],
     });
+
+    /*
+    FNXC:LoopDelayMetrics 2026-11-11-02:55: this is the starvation signal the request-age gauge only
+    imitated. A p99 in the hundreds of ms while `live_exec` is small is the shape we are hunting:
+    synchronous work on the main thread that delays both engine dispatch and board reads.
+    */
+    if (loopDelay) {
+      const toMs = (ns: number | (() => number)) => {
+        const value = typeof ns === "function" ? ns() : ns;
+        return Number.isFinite(value) ? Math.max(0, value / 1e6) : 0;
+      };
+      families.push({
+        name: "fusion_eventloop_delay_ms",
+        help: "Event-loop delay in ms over the current measurement window (Node monitorEventLoopDelay)",
+        type: "gauge",
+        labels: ["quantile"],
+        samples: [
+          { labelValues: ["p50"], value: toMs(loopDelay.percentile(50)) },
+          { labelValues: ["p95"], value: toMs(loopDelay.percentile(95)) },
+          { labelValues: ["p99"], value: toMs(loopDelay.percentile(99)) },
+          { labelValues: ["mean"], value: toMs(loopDelay.mean) },
+          { labelValues: ["max"], value: toMs(loopDelay.max) },
+        ],
+      });
+    }
 
     // ── Process CPU / memory ───────────────────────────────────────────────
     // cpuUsage() returns microseconds; expose seconds for a human-friendly gauge.

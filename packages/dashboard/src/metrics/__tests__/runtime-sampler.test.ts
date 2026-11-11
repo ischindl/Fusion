@@ -346,3 +346,71 @@ describe("overlap guard (RUFU-081 Greptile P1 #2)", () => {
     vi.useRealTimers();
   });
 });
+/*
+FNXC:LoopDelayMetrics 2026-11-11-02:55:
+`fusion_system_last_request_age_ms` was the loop-health signal, and it is only evidence while a request
+is actually waiting. Measured 2026-11-11 on the engine host it read 305 000 ms with zero pending requests
+— the engine host simply gets no HTTP traffic — while `ps` showed its main thread at 74.5 % CPU. These
+cases hold the replacement: an absolute delay histogram that reports the same thing with or without
+traffic.
+*/
+describe("event-loop delay histogram", () => {
+  const fakeDelay = (overrides: Partial<{ reset: () => void }> = {}) => ({
+    percentile: (p: number) => (({ 50: 1_500_000, 95: 9_000_000, 99: 42_000_000 }) as Record<number, number>)[p] ?? 0,
+    mean: 3_000_000,
+    max: 120_000_000,
+    enable: vi.fn(),
+    disable: vi.fn(),
+    reset: vi.fn(),
+    ...overrides,
+  });
+
+  const familyOf = (sampler: ReturnType<typeof createRuntimeSampler>) =>
+    sampler.buildSnapshot().find((f) => f.name === "fusion_eventloop_delay_ms");
+
+  it("converts the nanosecond histogram into millisecond quantiles", () => {
+    const sampler = createRuntimeSampler({ eventLoopDelay: fakeDelay() });
+    const family = familyOf(sampler);
+
+    expect(family?.type).toBe("gauge");
+    expect(family?.labels).toEqual(["quantile"]);
+    const byQuantile = Object.fromEntries((family?.samples ?? []).map((s) => [s.labelValues?.[0], s.value]));
+    expect(byQuantile.p50).toBeCloseTo(1.5);
+    expect(byQuantile.p95).toBeCloseTo(9);
+    expect(byQuantile.p99).toBeCloseTo(42);
+    expect(byQuantile.mean).toBeCloseTo(3);
+    expect(byQuantile.max).toBeCloseTo(120);
+  });
+
+  it("exposes no family when the probe is opted out", () => {
+    const sampler = createRuntimeSampler({ eventLoopDelay: null });
+    expect(familyOf(sampler)).toBeUndefined();
+  });
+
+  it("resets the window when timers stop, so a shutdown-spanning window is never scraped", () => {
+    const delay = fakeDelay();
+    const sampler = createRuntimeSampler({ eventLoopDelay: delay });
+
+    sampler.stopTimers();
+
+    expect(delay.reset).toHaveBeenCalledOnce();
+  });
+
+  it("reports a real stall on the live probe, without a fake in the way", async () => {
+    /*
+    Measured 2026-11-11 under the probe's 10 ms resolution: an unblocked process floors at
+    max≈10.9 ms, a 120 ms block yields max≈120.65 ms. 60 ms therefore separates a stalled loop from a
+    loaded-but-healthy one by an order of magnitude on one side and 5x on the other, and the block
+    itself stays short enough that this is not a slow test.
+    */
+    const sampler = createRuntimeSampler();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const deadline = Date.now() + 120;
+    while (Date.now() < deadline) { /* block the loop */ }
+    // One macrotask lets the probe's own timer observe the delay it just missed.
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    const max = familyOf(sampler)?.samples.find((s) => s.labelValues?.[0] === "max")?.value;
+    expect(max).toBeGreaterThanOrEqual(60);
+  });
+});

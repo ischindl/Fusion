@@ -14,7 +14,7 @@
  *   const store = await getOrCreateProjectStore(projectId);
  */
 
-import { buildConsumerId, countRunningAgentTasks, enrichRunningAgentTaskShape, resolveWorkflowIrForTask, type TaskStore } from "@fusion/core";
+import { buildConsumerId, countRunningAgentTasks, enrichRunningAgentTaskShape, prefetchWorkflowSelections, resolveWorkflowIrForTask, type TaskStore, type WorkflowSelectionCache } from "@fusion/core";
 
 /**
  * Internal cache: projectId → TaskStore instance.
@@ -363,13 +363,38 @@ export async function countRunningAgentsInStore(store: TaskStore): Promise<numbe
   const tasks = await store.listTasks({ slim: true, derive: false, fields: ["workflowStepResults"] });
   const irCache = new Map();
   /*
+  FNXC:RunningAgentCountSelectionBatch 2026-11-11-08:55:
+  The read projection above narrowed WHICH COLUMNS this reader pulls; it did not narrow HOW OFTEN it
+  pulls a workflow selection. `irCache` collapsed IR reads to one per workflow, but each task still
+  resolved its own selection row, so a board of N cards cost N round trips every 5 s tick. Measured on
+  production: 843 + 310 open cards in the two registered stores at a 5 s domain tick = ~230 single-row
+  `task_workflow_selection` SELECTs per second, which the read-attribution seam recorded as 64 953
+  `workflowSelection` reads in one 5-minute window and which was 78 % of all active PostgreSQL time — the
+  single largest consumer of the main thread on BOTH hosts, since both serve this sampler. It is the
+  caller `sampleDomain < defaultCountAgents < countRunningAgentsInStore` that RUFU-871's own note names.
+
+  One batched project-scoped `IN (...)` read now fills a pass-owned selection cache, so the per-task
+  resolution below answers from it. This is the established primitive for exactly this shape
+  (`prefetchWorkflowSelections` is what the board hydration, scheduler, triage, self-healing and
+  capacity passes already use) chosen because board size must not multiply round trips — the issue #3364
+  note at that reader is a measured 23 s prefetch made of sequential per-task reads over a 3-connection
+  pool.
+
+  Failure keeps today's behavior exactly: `prefetchWorkflowSelections` returns `{batched: 0, singles: N}`
+  and leaves the cache untouched when the store has no batch reader or the batch fails, and an absent
+  selection still resolves to the `builtin:coding` fallback rather than an error. Counts cannot drift, the
+  selection cache is per pass, so a workflow edit a second later is read fresh.
+  */
+  const selectionCache: WorkflowSelectionCache = new Map();
+  await prefetchWorkflowSelections(store, tasks.map((task) => task.id), selectionCache);
+  /*
   FNXC:ConcurrencyIndicators 2026-08-03-12:00:
   FN-8453 requires dashboard store counts to enrich custom workflow traits before
   the pure predicate runs; otherwise a custom complete card with stale session
   metadata would falsely consume displayed/global top-level concurrency.
   */
   const enriched = await Promise.all(tasks.map(async (task) =>
-    enrichRunningAgentTaskShape(task, await resolveWorkflowIrForTask(store, task.id, irCache)),
+    enrichRunningAgentTaskShape(task, await resolveWorkflowIrForTask(store, task.id, irCache, selectionCache)),
   ));
   return countRunningAgentTasks(enriched);
 }
