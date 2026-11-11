@@ -314,18 +314,32 @@ pgDescribe("plan approval status persistence", () => {
       const mutationEntered = barrier();
       const allowMutation = barrier();
       const originalMutationLock = mutationStore.withPlanningLifecycleLock.bind(mutationStore);
-      mutationStore.withPlanningLifecycleLock = async <T>(id: string, fn: () => Promise<T>): Promise<T> =>
+      /*
+      FNXC:PlanningLifecycleLockOperatorLane 2026-11-11-17:35 (RUFU-600 Steps 3-4):
+      The wrapper forwards the options argument. A spy that silently drops it would hide a caller's declared
+      budget or hold bound, which is the exact class of gap this task is about: the interception must be
+      transparent or its ordering assertion stops describing the call the product actually makes.
+      */
+      mutationStore.withPlanningLifecycleLock = async <T>(
+        id: string,
+        fn: () => Promise<T>,
+        options?: Parameters<typeof originalMutationLock>[2],
+      ): Promise<T> =>
         originalMutationLock(id, async () => {
           mutationEntered.release();
           await allowMutation.promise;
           return await fn();
-        });
+        }, options);
 
       const approvalAttempted = barrier();
       const originalApprovalLock = store.withPlanningLifecycleLock.bind(store);
-      store.withPlanningLifecycleLock = async <T>(id: string, fn: () => Promise<T>): Promise<T> => {
+      store.withPlanningLifecycleLock = async <T>(
+        id: string,
+        fn: () => Promise<T>,
+        options?: Parameters<typeof originalApprovalLock>[2],
+      ): Promise<T> => {
         approvalAttempted.release();
-        return await originalApprovalLock(id, fn);
+        return await originalApprovalLock(id, fn, options);
       };
 
       try {
@@ -365,18 +379,32 @@ pgDescribe("plan approval status persistence", () => {
     const approvalEntered = barrier();
     const allowApproval = barrier();
     const originalApprovalLock = store.withPlanningLifecycleLock.bind(store);
-    store.withPlanningLifecycleLock = async <T>(id: string, fn: () => Promise<T>): Promise<T> =>
+    /*
+    FNXC:PlanningLifecycleLockOperatorLane 2026-11-11-19:14 (RUFU-600 code-review P2):
+    Same forwarding rule as the wrappers above: a spy that takes two arguments cannot see a third, so any
+    options the approval lane declares (an operator budget, a hold bound, a holder label) would vanish inside
+    the test while the ordering assertion still claimed to describe the production call.
+    */
+    store.withPlanningLifecycleLock = async <T>(
+      id: string,
+      fn: () => Promise<T>,
+      options?: Parameters<typeof originalApprovalLock>[2],
+    ): Promise<T> =>
       originalApprovalLock(id, async () => {
         approvalEntered.release();
         await allowApproval.promise;
         return await fn();
-      });
+      }, options);
 
     const mutationAttempted = barrier();
     const originalMutationLock = mutationStore.withPlanningLifecycleLock.bind(mutationStore);
-    mutationStore.withPlanningLifecycleLock = async <T>(id: string, fn: () => Promise<T>): Promise<T> => {
+    mutationStore.withPlanningLifecycleLock = async <T>(
+      id: string,
+      fn: () => Promise<T>,
+      options?: Parameters<typeof originalMutationLock>[2],
+    ): Promise<T> => {
       mutationAttempted.release();
-      return await originalMutationLock(id, fn);
+      return await originalMutationLock(id, fn, options);
     };
 
     try {

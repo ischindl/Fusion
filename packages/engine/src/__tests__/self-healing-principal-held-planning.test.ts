@@ -167,7 +167,7 @@ describe("reconcilePrincipalHeldPlanningContinuations", () => {
 
     await expect(manager.reconcilePrincipalHeldPlanningContinuations()).resolves.toBe(0);
 
-    expect(store.withPlanningLifecycleLock).toHaveBeenCalledWith("FN-8923", expect.any(Function));
+    expect(store.withPlanningLifecycleLock).toHaveBeenCalledWith("FN-8923", expect.any(Function), { holderLabel: "sweep" });
     expect(task.status).toBe("planning");
     expect(recordRunAuditEventMock).toHaveBeenCalledWith(expect.objectContaining({
       type: "task:reconcile-principal-held-planning-no-action",

@@ -72,6 +72,9 @@ import { PRE_MERGE_STEPS_NOT_RUN_BLOCKER, loadWorkspaceConfig, type TaskMoveLane
   resolveWorktreePathReservationDirectory,
   resolveLegacyWorktreesDirLayout,
   getMergeConfirmedFinalizationBlocker,
+  isPlanningLifecycleSessionLive,
+  PLANNING_LIFECYCLE_RELEASE_AGE_FLOOR_MS,
+  type PlanningLifecycleHolder,
 } from "@fusion/core";
 
 /*
@@ -1200,6 +1203,34 @@ export function shouldProbeEmptyLandDeadlockPremise(input: {
   return error.includes(EMPTY_MERGE_NO_LANDED_PROOF_REASON) || error.includes(EMPTY_LAND_CONTRADICTION_REASON);
 }
 
+/*
+FNXC:PlanningLifecycleOrphanReclaim 2026-11-11-17:35 (RUFU-600 Step 5):
+Two bounds on the reclaim pass. The floor is a lifetime, not a hint: every planning-lifecycle lane
+acquires on a budget of seconds (5s automated, 20s operator) and Step 2 bounded the granted hold itself,
+so a holder that PostgreSQL reports as idle for a quarter of an hour is not mid-work — it is what the
+un-awaited teardown used to leave behind. The pass cap bounds the blast radius of one sweep: five sessions
+ended per pass is already more than a project has ever accumulated, and a real leak shows up again on the
+next pass with its rows still countable.
+
+FNXC:PlanningLifecycleOrphanReclaim 2026-11-11-19:14 (RUFU-600 code-review P0):
+The floor is IMPORTED from the core surface rather than restated here. It used to be a local constant, and
+that is exactly how the operator's Release route came to have none: the sweep honoured a 15-minute floor the
+release primitive never asked for, so the same act was safe from one caller and immediate from the other.
+One declaration, read by both, is the fix.
+*/
+const PLANNING_LIFECYCLE_RECLAIM_PASS_CAP = 5;
+
+/** Closed vocabulary of what one candidate holder session turned into. */
+type PlanningLifecycleReclaimOutcome =
+  | "reclaimed"
+  | "already-free"
+  | "holder-moved"
+  | "session-live"
+  | "card-live"
+  | "terminate-refused"
+  | "release-unproven"
+  | "skipped";
+
 const MAX_STARVATION_DROPS = 3;
 /*
 FNXC:VerdictlessFailedGate 2026-09-14-14:47 (RUFU-217, Step 5 / AC1):
@@ -1679,6 +1710,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   same card is reportable again.
   */
   private abandonedPlanningNoActionAudited = new Set<string>();
+  /** Withheld reclaim reports already written this process, keyed by task/pid/outcome. */
+  private planningLifecycleOrphanWithheldAudited = new Set<string>();
   /*
   FNXC:PlanningFenceRecovery 2026-10-02-01:20 (RUFU-288):
   Bounds the `reconcile-planning-fence-park` no-action findings per (taskId, outcome, requirement).
@@ -3048,6 +3081,14 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       */
       { name: "reconcile-abandoned-planning-sessions", fn: () => this.reconcileAbandonedPlanningSessions().then(() => undefined) },
       /*
+      FNXC:PlanningLifecycleOrphanReclaim 2026-11-11-17:35 (RUFU-600 Step 5):
+      An engine start is when the previous process's abandoned planning-lifecycle holder sessions become
+      provably not-this-process's, which is the same fact RUFU-470 exploits. Registered beside it and not
+      merged: that pass releases a claim and writes a lifecycle status, this one ends a PostgreSQL session
+      and writes no task field at all. The veto list lives in `reconcilePlanningLifecycleOrphanHolders`.
+      */
+      { name: "reconcile-planning-lifecycle-orphan-holders", fn: () => this.reconcilePlanningLifecycleOrphanHolders().then(() => undefined) },
+      /*
       FNXC:ProgressOwningRecovery 2026-10-06-15:13:
       Run the detector after all specialized recovery owners have had one chance.
       It remains non-mutating, but an unknown stranded shape is now surfaced on
@@ -4371,6 +4412,10 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           this sweep repeats internally.
           */
           { name: "reconcile-abandoned-planning-sessions", fn: () => this.reconcileAbandonedPlanningSessions() },
+          // RUFU-600: ends a planning-lifecycle holder session that outlived its acquirer. Batch 2 for the
+          // same reason as the sweep above — it belongs to task recovery, and batch 2 is the pass that is
+          // skipped wholesale on global/engine pause, which is the right gate here.
+          { name: "reconcile-planning-lifecycle-orphan-holders", fn: () => this.reconcilePlanningLifecycleOrphanHolders().then(() => undefined) },
           { name: "surface-db-corruption", fn: () => this.surfaceDbCorruption() },
           { name: "audit-no-commits-expected-candidates", fn: () => this.auditNoCommitsExpectedCandidates() },
         ];
@@ -11875,7 +11920,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             };
             const lifecycleLock = (this.store as Partial<TaskStore>).withPlanningLifecycleLock;
             const seeded = lifecycleLock
-              ? await lifecycleLock.call(this.store, snapshot.id, reconcileUnderLifecycleLock)
+              ? await lifecycleLock.call(this.store, snapshot.id, reconcileUnderLifecycleLock, { holderLabel: "sweep" })
               : await reconcileUnderLifecycleLock();
             if (seeded) repaired += 1;
           } catch (error) { log.warn(`reconcileStrandedHoldContinuations: failed for ${snapshot.id}: ${error instanceof Error ? error.message : String(error)}`); }
@@ -12043,7 +12088,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             };
             const lifecycleLock = (this.store as Partial<TaskStore>).withPlanningLifecycleLock;
             const didRepair = lifecycleLock
-              ? await lifecycleLock.call(this.store, task.id, repairUnderLifecycleLock)
+              ? await lifecycleLock.call(this.store, task.id, repairUnderLifecycleLock, { holderLabel: "sweep" })
               : await repairUnderLifecycleLock();
             if (!didRepair) continue;
             this.principalHeldPlanningNoActionAudited.delete(`${task.id}:live-session`);
@@ -12350,7 +12395,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
 
     const lifecycleLock = (this.store as Partial<TaskStore>).withPlanningLifecycleLock;
     const didRepair = lifecycleLock
-      ? await lifecycleLock.call(this.store, task.id, repairUnderLifecycleLock)
+      ? await lifecycleLock.call(this.store, task.id, repairUnderLifecycleLock, { holderLabel: "sweep" })
       : await repairUnderLifecycleLock();
     if (didRepair === true) {
       // The episode is over; a future abandonment of the same card must be reportable again.
@@ -12402,6 +12447,188 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       metadata,
     });
     if (isNoAction) this.abandonedPlanningNoActionAudited.add(key);
+  }
+
+  /*
+  FNXC:PlanningLifecycleOrphanReclaim 2026-11-11-17:35 (RUFU-600 Step 5):
+  A planning-lifecycle advisory key can outlive the code that asked for it. The acquisition path used to
+  request its teardown without ever awaiting or verifying it, so a session that stalled on the grant, or
+  was abandoned mid-cleanup, could stay connected and keep holding the key — and every later card for that
+  task would be refused by a holder nobody could name. The acquisition side now proves its own teardown
+  (RUFU-600 Step 2); this pass owns what that cannot reach: a session some other process, or an older
+  build, left behind.
+
+  Eligibility is deliberately narrow, because the only lever PostgreSQL offers over a foreign advisory
+  holder is ending its session (`pg_advisory_unlock` binds to the holding session; cancel cannot unhold an
+  idle session). A candidate must:
+    - name the card it opened for, from the `application_name` this repo stamps, and carry that same
+      `fusion-planning:` prefix (a foreign client sitting on a colliding advisory key is never a candidate);
+    - be older than the floor, measured by PostgreSQL from the session's own state change;
+    - not be running a statement (`state: "active"`), and not be a session THIS process registered as live;
+    - still be the holder that the named card's key reports right now, re-read immediately before the act,
+      so a pass reasoning about a stale snapshot cannot end a session that has since moved on;
+    - belong to a card with no planning or execution liveness signal, which the release primitive re-checks
+      for itself because the operator route reaches the same act.
+  Ending the session is then performed through the same confirmed release the operator route uses, which
+  re-verifies that the key is free afterwards. Nothing here moves a card, writes a status, or clears a
+  pause: a reclaimed key simply stops refusing the next acquirer, and the normal scheduler releases the
+  card. Registered in batch 2 (Task recovery) beside the planning-recovery family, and startup.
+  */
+  async reconcilePlanningLifecycleOrphanHolders(): Promise<number> {
+    try {
+      const settings = await this.store.getSettings();
+      if (settings.globalPause === true || settings.enginePaused === true) return 0;
+      /*
+      Duck-typed on purpose: a store without the PostgreSQL advisory surface (an in-memory fake, or a
+      non-PostgreSQL backend) has no server sessions to reclaim, and a sweep that invented one would be
+      reclaiming nothing while reporting a repair.
+      */
+      const listPopulation = this.store.listPlanningLifecycleHolderSessions;
+      const diagnose = this.store.diagnosePlanningLifecycleLock;
+      const release = this.store.releasePlanningLifecycleLock;
+      if (typeof listPopulation !== "function" || typeof diagnose !== "function" || typeof release !== "function") return 0;
+
+      const population = await listPopulation.call(this.store);
+      if (population.reason !== "ok") {
+        // An unreadable catalog is never an empty one: no candidates, no verdict, no reclaim.
+        log.debug(`reconcilePlanningLifecycleOrphanHolders: holder population unreadable (${population.reason}); nothing reclaimed`);
+        return 0;
+      }
+
+      const candidates = population.sessions
+        .filter((session) => session.ours
+          && session.taskId !== null
+          && session.state !== "active"
+          && session.ageMs >= PLANNING_LIFECYCLE_RELEASE_AGE_FLOOR_MS)
+        .sort((a, b) => b.ageMs - a.ageMs)
+        .slice(0, PLANNING_LIFECYCLE_RECLAIM_PASS_CAP);
+      if (candidates.length === 0) return 0;
+
+      const livenessSignal = (taskId: string): TaskLivenessSignal | undefined =>
+        getTaskPlanningOrExecutionLivenessSignal(taskId, {
+          isTaskActive: this.options.isTaskActive,
+          getPlanningTaskIds: this.options.getPlanningTaskIds,
+        });
+
+      let reclaimed = 0;
+      for (const session of candidates) {
+        const taskId = session.taskId as string;
+        try {
+          const outcome = await this.reconcileOnePlanningLifecycleOrphan({ taskId, session, diagnose, release, livenessSignal });
+          if (outcome === "reclaimed") reclaimed += 1;
+        } catch (error) {
+          log.warn(`reconcilePlanningLifecycleOrphanHolders: failed for ${taskId} (pid ${session.pid}): ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      if (reclaimed > 0) log.log(`Reclaimed ${reclaimed} abandoned planning-lifecycle holder session(s)`);
+      return reclaimed;
+    } catch (error) {
+      log.warn(`reconcilePlanningLifecycleOrphanHolders failed: ${error instanceof Error ? error.message : String(error)}`);
+      return 0;
+    }
+  }
+
+  /** One holder session. Every veto is checked here; the caller only counts the outcome. */
+  private async reconcileOnePlanningLifecycleOrphan(input: {
+    taskId: string;
+    session: PlanningLifecycleHolder;
+    diagnose: NonNullable<TaskStore["diagnosePlanningLifecycleLock"]>;
+    release: NonNullable<TaskStore["releasePlanningLifecycleLock"]>;
+    livenessSignal: (taskId: string) => TaskLivenessSignal | undefined;
+  }): Promise<PlanningLifecycleReclaimOutcome> {
+    const { taskId, session } = input;
+    const emit = async (outcome: PlanningLifecycleReclaimOutcome, released: boolean): Promise<void> => {
+      if (!released && this.planningLifecycleOrphanWithheldAudited.has(`${taskId}:${session.pid}:${outcome}`)) return;
+      if (!released) this.planningLifecycleOrphanWithheldAudited.add(`${taskId}:${session.pid}:${outcome}`);
+      await emitBoundedRunAudit(this.store, {
+        taskId,
+        agentId: "self-healing",
+        runId: generateSyntheticRunId("reconcile-planning-lifecycle-orphan-holders", taskId),
+        domain: "database",
+        mutationType: released ? "task:planning-lifecycle-orphan-reclaimed" : "task:planning-lifecycle-orphan-withheld",
+        target: taskId,
+        metadata: {
+          taskId,
+          holderLabel: session.label,
+          pid: session.pid,
+          holderState: session.state,
+          ageMs: session.ageMs,
+          outcome,
+        },
+      });
+    };
+
+    // A session this daemon registered is one it may be using right now, whatever its age.
+    if (isPlanningLifecycleSessionLive(session.pid)) {
+      await emit("session-live", false);
+      return "session-live";
+    }
+    // The card itself must be idle: an executing or planning card owns its own sessions.
+    if (input.livenessSignal(taskId) !== undefined) {
+      await emit("card-live", false);
+      return "card-live";
+    }
+    // Re-read the key the pass is about to act on, rather than trusting the population snapshot.
+    const diagnosis = await input.diagnose.call(this.store, taskId);
+    if (!diagnosis) return "skipped";
+    if (diagnosis.reason === "not-held") {
+      await emit("already-free", false);
+      return "already-free";
+    }
+    if (diagnosis.reason !== "held" || diagnosis.holder?.pid !== session.pid) {
+      await emit("holder-moved", false);
+      return "holder-moved";
+    }
+
+    /*
+    FNXC:PlanningLifecycleOrphanReclaim 2026-11-11-19:14 (RUFU-600 code-review P0):
+    The liveness probe is handed to the release surface instead of being only this loop's private filter.
+    The check below still runs first because it is cheap and this pass must name its own withheld outcome,
+    but the authority is the shared primitive: the operator's Release route now answers the same conjunction
+    whether or not its caller thought to check, and a sweep-local filter cannot make that true for them.
+    */
+    const report = await input.release.call(this.store, taskId, {
+      confirm: true,
+      isCardLive: (id: string) => input.livenessSignal(id) !== undefined,
+    });
+    if (!report) return "skipped";
+    /*
+    Every withheld reason the shared surface can answer with maps onto this pass's fixed outcome vocabulary,
+    so a refusal is never flattened into `release-unproven` (which claims an attempt that was refused before
+    it was made): a live card reports `card-live`, a holder that is not ours or too young to be dead reports
+    the liveness/session answer, and `release-unproven` stays reserved for a terminate that was performed and
+    could not be verified.
+    */
+    const outcome: PlanningLifecycleReclaimOutcome = report.released
+      ? "reclaimed"
+      : report.reason === "terminate-failed"
+        ? "terminate-refused"
+        : report.reason === "card-live" || report.reason === "liveness-unproven"
+          ? "card-live"
+          : report.reason === "live-session" || report.reason === "holder-active" || report.reason === "below-age-floor"
+            ? "session-live"
+            : report.reason === "foreign-holder"
+              ? "holder-moved"
+              : "release-unproven";
+    await emit(outcome, report.released);
+    if (report.released) await this.logPlanningLifecycleReclaim(taskId, session);
+    return outcome;
+  }
+
+  /** One History sentence per reclaimed holder: a key that freed itself looks like a spontaneous recovery. */
+  private async logPlanningLifecycleReclaim(taskId: string, session: PlanningLifecycleHolder): Promise<void> {
+    const seconds = Math.round(session.ageMs / 1000);
+    const message = `Planning lock reclaimed: an abandoned ${session.label} session (pid ${session.pid}, idle ${seconds}s) was holding this task's planning key and was ended. No card state was changed.`;
+    try {
+      const once = (this.store as unknown as { logEntryOnce?: (input: { taskId: string; message: string; dedupeKey: string }) => Promise<unknown> }).logEntryOnce;
+      if (typeof once === "function") {
+        await once.call(this.store, { taskId, message, dedupeKey: `planning-lifecycle-orphan:${session.pid}` });
+        return;
+      }
+      await this.store.logEntry(taskId, message);
+    } catch (error) {
+      log.debug(`reconcilePlanningLifecycleOrphanHolders: history line failed for ${taskId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   /*
@@ -12594,7 +12821,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             let didRepair = false;
             try {
               didRepair = lifecycleLock
-                ? await lifecycleLock.call(this.store, task.id, repairUnderLifecycleLock) as unknown as boolean
+                ? await lifecycleLock.call(this.store, task.id, repairUnderLifecycleLock, { holderLabel: "sweep" }) as unknown as boolean
                 : await repairUnderLifecycleLock();
             } catch (probeError) {
               const probeMessage = probeError instanceof Error ? probeError.message : String(probeError);
@@ -12824,7 +13051,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             };
             const lifecycleLock = (this.store as Partial<TaskStore>).withPlanningLifecycleLock;
             const didRepair = lifecycleLock
-              ? await lifecycleLock.call(this.store, task.id, repairUnderLifecycleLock) as unknown as boolean
+              ? await lifecycleLock.call(this.store, task.id, repairUnderLifecycleLock, { holderLabel: "sweep" }) as unknown as boolean
               : await repairUnderLifecycleLock();
             if (!didRepair) continue;
             // A repair ends the episode, so every withheld outcome for this card becomes stale: the next

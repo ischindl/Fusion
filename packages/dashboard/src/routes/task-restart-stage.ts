@@ -3,6 +3,7 @@ import {
   computeWorkflowIrPin,
   disposeTaskBeforeReset,
   isVerdictLessFailedGateRow,
+  OPERATOR_PLANNING_LIFECYCLE_LOCK_TIMEOUT_MS,
   planTaskColumnRestart,
   RESTART_STAGE_FENCE_REASON,
   resolveTaskSymbolsForTask,
@@ -12,6 +13,7 @@ import {
 } from "@fusion/core";
 import { isMergeActiveStatus, isStaleMergeActiveStatus, filterContinuationHoldLedgerGates, openContinuationHoldRerunEpisode, openVerdictlessGateRerunEpisode, optionalStepRevisionResetOutcome, resolveColumnResumeNode } from "@fusion/engine";
 import { badRequest, conflict, notFound } from "../api-error.js";
+import { withOperatorPlanningLock } from "./task-planning-lock.js";
 
 interface RestartTaskStageEngine {
   clearTaskPauseAbortState?: (taskId: string) => void | Promise<void>;
@@ -89,6 +91,24 @@ restore the prior pause fields and return the same conflict so Retry never inter
 won the race. The ordinary `pauseTask` write still follows for admitted retries so pause lifecycle
 logging and WIP/review presentation remain unchanged.
 */
+/*
+FNXC:PlanningLifecycleRetryBudget 2026-11-11-17:35 (RUFU-600 Step 4, reporter's step 1):
+The operator's Retry used to inherit the automated lanes' 5-second acquisition budget while sitting behind
+holds that are measured in tens of seconds (the reported case: a 46-second hold), so a click made while a
+legitimate lane was mid-flight died as a failure rather than waiting. Retry is a human answering a button,
+so it gets the operator budget — the same constant the diagnose/release surface uses — and it names itself
+(`retry`) so the holder on the other end of that wait is identifiable instead of an anonymous pid. The
+longer wait is paid for with a hard hold bound: a granted Retry that runs past 30s ends its own session
+instead of becoming the next unbounded holder. Publication is fenced and idempotent by design (`Retry
+publication parked at <step>; rerun Retry safely`), so a bounded death leaves the card parked and
+re-runnable rather than half-published, which is strictly better than the freeze it replaces.
+*/
+const RETRY_PLANNING_LIFECYCLE_LOCK_OPTIONS = {
+  holderLabel: "retry" as const,
+  timeoutMs: OPERATOR_PLANNING_LIFECYCLE_LOCK_TIMEOUT_MS,
+  maxHoldMs: 30_000,
+};
+
 function isLiveMergeRestart(task: Task, deps: RestartTaskStageDeps): boolean {
   const activeMergeTaskId = deps.getActiveMergeTaskId?.() ?? deps.activeMergeTaskId ?? null;
   if (activeMergeTaskId === task.id) return true;
@@ -104,7 +124,13 @@ export async function restartTaskStage(deps: RestartTaskStageDeps): Promise<Rest
     throw badRequest("Retry discards work produced in the current stage. Pass { \"confirm\": true } to proceed.");
   }
 
-  return store.withPlanningLifecycleLock(taskId, async () => {
+  /*
+  FNXC:PlanningLockOperatorSurface 2026-11-11-17:35 (RUFU-600 Step 5, reporter's second step):
+  The lane refuses with a conflict that names the holder instead of letting a planning-lock refusal travel
+  to the browser as an unclassified 500. The route boundary classifies as well, because Retry can reach the
+  same key through the external-block preflight and the legacy rebound before this lane is ever entered.
+  */
+  return withOperatorPlanningLock(store, taskId, async () => {
     let publicationStep = "validate";
     let fenced = false;
     try {
@@ -289,5 +315,5 @@ export async function restartTaskStage(deps: RestartTaskStageDeps): Promise<Rest
       }
       throw error;
     }
-  });
+  }, RETRY_PLANNING_LIFECYCLE_LOCK_OPTIONS);
 }

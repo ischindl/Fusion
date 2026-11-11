@@ -248,7 +248,7 @@ describe("triage planning continuation lease", () => {
     await waitForCall(h.replace);
     await waitForCall(mockPromptWithFallback);
 
-    expect(h.lifecycleLock).toHaveBeenCalledWith(h.current.id, expect.any(Function));
+    expect(h.lifecycleLock).toHaveBeenCalledWith(h.current.id, expect.any(Function), { holderLabel: "planning" });
     expect(h.replace).toHaveBeenCalledWith(expect.objectContaining({
       state: "running",
       leaseOwner: expect.stringMatching(/^triage:FN-299-LEASE:triage-FN-299-LEASE-/),

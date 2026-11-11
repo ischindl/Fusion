@@ -246,7 +246,7 @@ describe("reconcileAbandonedPlanningSessions — the reclaim", () => {
     await manager.reconcileAbandonedPlanningSessions();
 
     expect(store.withPlanningLifecycleLock).toHaveBeenCalledWith(
-      "RUFU-470", expect.any(Function),
+      "RUFU-470", expect.any(Function), { holderLabel: "sweep" },
     );
   });
 

@@ -30,6 +30,55 @@ export {
 export {
   PlanningLifecycleLockTransportError,
   withPlanningLifecycleAdvisoryLock,
+  /*
+  FNXC:PlanningLifecycleLockIdentity 2026-11-11-14:05 (RUFU-600 Steps 1-2):
+  The holder-identity and reclaim surface is exported because the operator Retry route and the self-healing
+  reclaim sweep both need it: an HTTP handler cannot name a holder or release a key it cannot ask the
+  database about, and only this module knows the key derivation. Nothing here opens a connection on its own,
+  so importing it stays inert.
+   */
+  PLANNING_LIFECYCLE_APPLICATION_NAME_PREFIX,
+  PLANNING_LIFECYCLE_HOLDER_LABELS,
+  PLANNING_LIFECYCLE_RELEASE_AGE_FLOOR_MS,
+  PLANNING_LIFECYCLE_TEARDOWN_BUDGET_MS,
+  clearPlanningLifecycleUnprovenTeardown,
+  diagnosePlanningLifecycleAdvisoryKey,
+  getPlanningLifecycleLiveSessionPids,
+  getPlanningLifecycleUnprovenTeardowns,
+  isPlanningLifecycleSessionLive,
+  listPlanningLifecycleHolderSessions,
+  parsePlanningLifecycleApplicationName,
+  planningLifecycleApplicationName,
+  planningLifecycleLockKey,
+  planningLifecycleLockTransportAvailability,
+  OPERATOR_PLANNING_LIFECYCLE_LOCK_TIMEOUT_MS,
+  registerPlanningLifecycleSession,
+  releasePlanningLifecycleAdvisoryKey,
+  resolvePlanningLifecycleHolderLabel,
+  summarizeHolderRows,
+  terminatePlanningLifecycleSession,
+  unregisterPlanningLifecycleSession,
+  withPlanningLifecycleAdvisoryLocks,
+} from "./advisory-locks.js";
+export type {
+  PlanningLifecycleKeyDiagnosis,
+  PlanningLifecycleDiagnosisReason,
+  PlanningLifecycleLockDiagnosis,
+  PlanningLifecycleLockFailureReason,
+  PlanningLifecycleLockOptions,
+  PlanningLifecycleReleaseGuards,
+  PlanningLifecycleReleaseReport,
+  PlanningLifecycleTerminateOutcome,
+  PlanningLifecycleHolder,
+  PlanningLifecycleHolderLabel,
+  PlanningLifecycleHolderState,
+  PlanningLifecycleLockInput,
+  PlanningLifecycleTransportAvailability,
+  PlanningLifecycleTeardownProof,
+  PlanningLifecycleSessionInput,
+  PlanningLifecycleLockAcquireOptions,
+  PlanningLifecycleUnprovenTeardown,
+  PostgresBackendIdentity,
 } from "./advisory-locks.js";
 
 export {

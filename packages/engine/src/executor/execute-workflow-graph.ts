@@ -570,7 +570,7 @@ export async function persistWorkflowStepResultWithOutcome(
           return;
         }
         if (!unavailablePlanLockDiagnostic) await deps.store.reconcileSpecDriftWhilePlanningLocked(written.task!);
-      });
+      }, { holderLabel: "planning" });
     } else {
       const written = await writeWorkflowStepResultPatch(
         deps,

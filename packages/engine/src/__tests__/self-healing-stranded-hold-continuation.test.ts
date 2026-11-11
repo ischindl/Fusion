@@ -114,7 +114,7 @@ describe("FN-8592 stranded hold continuation recovery", () => {
 
     await expect(manager.reconcileStrandedHoldContinuations()).resolves.toBe(1);
     expect(store.seedStrandedPlanReviewContinuation).toHaveBeenCalledOnce();
-    expect(store.withPlanningLifecycleLock).toHaveBeenCalledWith(task.id, expect.any(Function));
+    expect(store.withPlanningLifecycleLock).toHaveBeenCalledWith(task.id, expect.any(Function), { holderLabel: "sweep" });
     expect(store._items).toHaveLength(1);
     expect(recordRunAuditEventMock).toHaveBeenCalledWith(expect.objectContaining({
       type: "task:reconcile-stranded-hold-continuation",

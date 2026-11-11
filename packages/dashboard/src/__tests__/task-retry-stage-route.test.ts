@@ -7,6 +7,8 @@ import { tmpdir } from "node:os";
 import {
   DETERMINISTIC_SPEC_REJECTION_METADATA_KEY,
   getTaskMergeBlocker,
+  PlanningLifecycleLockTransportError,
+  OPERATOR_PLANNING_LIFECYCLE_LOCK_TIMEOUT_MS,
   PRE_MERGE_STEPS_NOT_RUN_BLOCKER,
   registerTaskResetDisposer,
   RESTART_STAGE_FENCE_REASON,
@@ -121,7 +123,7 @@ function applyRowPatch(row: Task, patch: Record<string, unknown>): void {
   Object.assign(row, rest);
 }
 
-function createRestartStore(root: string, row: Task, options: { failAt?: "cancel" | "patch" | "replace"; moveOnSecondRead?: boolean; mergeOnFence?: boolean; ir?: unknown } = {}) {
+function createRestartStore(root: string, row: Task, options: { failAt?: "cancel" | "patch" | "replace"; moveOnSecondRead?: boolean; mergeOnFence?: boolean; ir?: unknown; lockRefusal?: "contention" } = {}) {
   const calls: string[] = [];
   const items: Array<Record<string, unknown>> = [{ id: "old", taskId: row.id, kind: "task", nodeId: "old-node", state: "running" }];
   let reads = 0;
@@ -136,7 +138,14 @@ function createRestartStore(root: string, row: Task, options: { failAt?: "cancel
       return structuredClone(row);
     }),
     listTasks: vi.fn().mockResolvedValue([structuredClone(row)]),
-    withPlanningLifecycleLock: vi.fn(async (_id: string, work: () => Promise<Task>) => await work()),
+    withPlanningLifecycleLock: vi.fn(async (_id: string, work: () => Promise<Task>) => {
+      /*
+      FNXC:PlanningLockOperatorSurface 2026-11-11-17:35 (RUFU-600 Step 5): the reported shape. Another lane
+      holds the card's planning key, so acquisition refuses before the restart body ever runs.
+      */
+      if (options.lockRefusal === "contention") throw retryPlanningLockContention();
+      return await work();
+    }),
     getTaskWorkflowSelectionAsync: vi.fn().mockResolvedValue({ workflowId: "wf-restart" }),
     getWorkflowDefinition: vi.fn().mockResolvedValue({ id: "wf-restart", name: "Restart route", ir: options.ir ?? RESTART_IR }),
     updateTaskAtomic: vi.fn(async (_id: string, updater: (current: Task) => Partial<Task> | null | undefined | Promise<Partial<Task> | null | undefined>) => {
@@ -195,6 +204,26 @@ function createRestartStore(root: string, row: Task, options: { failAt?: "cancel
     getProjectScopedPluginMcpServers: vi.fn().mockResolvedValue([]),
   };
   return { store: store as unknown as TaskStore, calls, items };
+}
+
+/**
+ * FNXC:PlanningLockOperatorSurface 2026-11-11-17:35 (RUFU-600 Step 5):
+ * The exact refusal the operator hit (RUFU-308): a planning key held by another lane for 46s while the
+ * caller spent its whole budget waiting. Carried as the core's own error so the route's mapping, not a
+ * fixture's idea of it, is what the assertions see.
+ */
+function retryPlanningLockContention() {
+  return new PlanningLifecycleLockTransportError(
+    "Planning lifecycle lock acquisition timed out after 20000ms",
+    {
+      reason: "contention",
+      phase: "acquisition",
+      budgetMs: 20_000,
+      waitedMs: 20_000,
+      taskId: "FN-204",
+      holder: { label: "planning", pid: 4242, state: "idle in transaction", ageMs: 46_000, taskId: "FN-204" },
+    },
+  );
 }
 
 async function postRetry(app: ReturnType<typeof createApp>, taskId = "FN-204", body?: Record<string, unknown>) {
@@ -394,8 +423,48 @@ describe("POST /tasks/:id/retry", () => {
 
     expect(response.status).toBe(400);
     expect(JSON.stringify(response.body)).toContain("no-column-model");
-    expect(store.withPlanningLifecycleLock).toHaveBeenCalledWith("FN-204", expect.any(Function));
+    expect(store.withPlanningLifecycleLock).toHaveBeenCalledWith("FN-204", expect.any(Function), expect.objectContaining({ holderLabel: "retry" }));
     expect(calls).toEqual([]);
+  });
+
+  /*
+  FNXC:PlanningLockOperatorSurface 2026-11-11-17:35 (RUFU-600 Step 5, the reporter's second step):
+  This is the load-bearing half of the task: a card whose planning key is held answered HTTP 500 with
+  `acquisition timed out after 5000ms`, which reads as a server defect and names nobody. Contention is a
+  conflict with a holder and a remedy, so it must answer 409 and say who and how long. Verified failing on
+  the pre-fix tree (see the task's prefix-evidence document).
+  */
+  it("answers a held planning key with 409 naming the holder, not a 500", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fusion-retry-lock-held-"));
+    const { store, calls } = createRestartStore(root, taskFixture(), { lockRefusal: "contention" });
+
+    const response = await postRetry(createApp(store));
+
+    expect(response.status).toBe(409);
+    const body = JSON.stringify(response.body);
+    expect(body).toContain("planning for FN-204 (pid 4242, idle in transaction 46s)");
+    expect(body).toContain("waited 20000ms");
+    expect(body).toContain("/api/tasks/FN-204/planning-lock");
+    // A refusal is not a partial restart: the body never ran, so nothing was written.
+    expect(calls).toEqual([]);
+    expect(store.updateTask).not.toHaveBeenCalled();
+    expect(store.replaceActiveTaskWorkflowContinuation).not.toHaveBeenCalled();
+  });
+
+  it("waits on the operator budget and stamps itself as the retry holder", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fusion-retry-lock-budget-"));
+    const { store } = createRestartStore(root, taskFixture());
+
+    const response = await postRetry(createApp(store));
+
+    expect(response.status).toBe(200);
+    // The five-second automated budget is what made a legitimate 46-second hold look like a crash.
+    expect(store.withPlanningLifecycleLock).toHaveBeenCalledWith("FN-204", expect.any(Function), {
+      holderLabel: "retry",
+      timeoutMs: OPERATOR_PLANNING_LIFECYCLE_LOCK_TIMEOUT_MS,
+      maxHoldMs: expect.any(Number),
+    });
+    expect(OPERATOR_PLANNING_LIFECYCLE_LOCK_TIMEOUT_MS).toBeGreaterThan(5_000);
   });
 
   it("refuses a pure hold column whose graph can only resume in a later lane without touching its artifacts", async () => {

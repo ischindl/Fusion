@@ -1307,3 +1307,46 @@ changed, so the seam writes no tombstone, no History line, no audit row, and pub
 of a half-delivered tool call therefore cannot drift the tombstone clock or double-narrate the withdrawal.
 `runId` is `artifact-retraction:<artifactId>:<action>`, which resolves both halves of one artifact's trail
 without putting the artifact's title or content into a lookup key.
+
+### The planning-lifecycle holder that outlived its code (RUFU-600)
+
+`task:planning-lifecycle-orphan-reclaimed` and `task:planning-lifecycle-orphan-withheld` record one pass
+each of the `reconcile-planning-lifecycle-orphan-holders` sweep (startup + maintenance batch 2, beside
+`reconcile-abandoned-planning-sessions`) over sessions that still hold a card's planning-lifecycle advisory
+key after the code that asked for it has gone. The acquisition path now proves its own teardown, so what is
+left for a sweep to find is a holder another process, or an older build, abandoned. PostgreSQL offers no
+lever over a foreign advisory holder except ending its session — `pg_advisory_unlock` releases only the
+calling session's keys and `pg_cancel_backend` cannot unhold an idle-in-transaction one — so the sweep's
+only action is `pg_terminate_backend`, which is why eligibility is a conjunction rather than an age guess:
+the holder must carry the `fusion-planning:` prefix this product stamps on the `application_name` it opened
+with (a client outside this product is never a candidate at any age, in the sweep or in the release route),
+named the card it opened for, sit past the 15-minute floor PostgreSQL measures from the session's own state
+change, not be running a statement, not be a session this process registered as live, belong to a card with
+no planning or execution liveness signal, and still be the same pid the key reports when it is re-read
+immediately before the act. The age floor and the card-liveness veto are enforced by the shared release
+surface itself (`releasePlanningLifecycleAdvisoryKey`, whose floor constant
+`PLANNING_LIFECYCLE_RELEASE_AGE_FLOOR_MS` the sweep imports rather than restates), so a caller cannot reach
+a terminate by forgetting to check, and a route cannot lower the floor from a request body.
+
+Metadata is a closed set of ids/counts/fixed outcomes — `taskId`, `holderLabel`, `pid`, `holderState`,
+`ageMs`, `outcome` — emitted through the FN-9175 bounded seam under the synthetic `self-healing` run id.
+Holder identity comes from `application_name` and never from a lock row: an advisory key is a `hashtext()`
+digest and cannot name a card. A holder that names nothing reports `taskId: null` and is skipped rather than
+guessed, so the withheld row's `outcome` vocabulary (`already-free`, `holder-moved`, `session-live`,
+`card-live`, `terminate-refused`, `release-unproven`, `skipped`) is also the answer to "why is this session
+still holding my card". Each refusal the shared release surface answers with folds onto that closed
+vocabulary rather than widening it — a holder too young to be dead or a session that turned out to be
+running reports `session-live`, a card that shows planning or execution liveness or a caller who cannot prove
+it idle reports `card-live`, and a holder this product did not open or one the key no longer names reports
+`holder-moved` — so one query still answers the operator's question without a new mutation type per reason.
+`ageMs` is PostgreSQL's own measurement of the session state change, not a value
+this process computed, and it is the number an operator needs when deciding to reclaim by hand through the
+card's `planning-lock` route.
+
+The sweep writes no `column`, no `status`, no `paused` and no `pauseReason`: a reclaimed key only stops
+refusing the next acquirer, and the normal scheduler releases the card. Refusals dedupe per
+`(card, outcome)` for the lifetime of the process, so a sustained refusal stays countable without
+re-announcing every pass, and an accepted reclaim always also writes one task-history line, because the
+operator's question is always about one specific card. Like RUFU-462's `runtime:heap-ceiling`, both events
+are deliberately absent from the curated delivery-pipeline catalogue, which `run-audit-catalogue.test.ts`
+locks table-for-table against this file.

@@ -985,7 +985,7 @@ export async function dispatchPlanningContinuationIfCurrent(input: {
   };
   const lifecycleLock = (input.store as Partial<TaskStore>).withPlanningLifecycleLock;
   return typeof lifecycleLock === "function"
-    ? await input.store.withPlanningLifecycleLock(input.task.id, validateAndDispatch)
+    ? await input.store.withPlanningLifecycleLock(input.task.id, validateAndDispatch, { holderLabel: "planning" })
     : await validateAndDispatch();
 }
 

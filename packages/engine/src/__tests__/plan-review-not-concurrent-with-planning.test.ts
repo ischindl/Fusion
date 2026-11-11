@@ -231,7 +231,7 @@ describe("Plan Review cannot overlap a live planning session", () => {
     h.releaseSettings();
     await draining;
 
-    expect(h.store.withPlanningLifecycleLock).toHaveBeenCalledWith(h.currentTask.id, expect.any(Function));
+    expect(h.store.withPlanningLifecycleLock).toHaveBeenCalledWith(h.currentTask.id, expect.any(Function), { holderLabel: "planning" });
     expect(h.lockEvents).toEqual(["lock-enter", "lock-exit"]);
     expect(execute).not.toHaveBeenCalled();
   });

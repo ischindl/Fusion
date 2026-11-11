@@ -1098,7 +1098,7 @@ export class TriageProcessor {
         });
       }
       persisted = true;
-    });
+    }, { holderLabel: "planning" });
     return persisted;
   }
 
@@ -5785,7 +5785,7 @@ export class TriageProcessor {
     };
     const lifecycleLock = (this.store as Partial<TaskStore>).withPlanningLifecycleLock;
     return typeof lifecycleLock === "function"
-      ? await this.store.withPlanningLifecycleLock(task.id, inspectAndClaim)
+      ? await this.store.withPlanningLifecycleLock(task.id, inspectAndClaim, { holderLabel: "planning" })
       : await inspectAndClaim();
   }
 
@@ -5798,7 +5798,7 @@ export class TriageProcessor {
     };
     const lifecycleLock = (this.store as Partial<TaskStore>).withPlanningLifecycleLock;
     return typeof lifecycleLock === "function"
-      ? await this.store.withPlanningLifecycleLock(input.taskId, inspectAndInstall)
+      ? await this.store.withPlanningLifecycleLock(input.taskId, inspectAndInstall, { holderLabel: "planning" })
       : await this.writePlanningContinuation(input);
   }
 
@@ -6226,7 +6226,7 @@ export class TriageProcessor {
     */
     try {
       return lifecycleLock
-        ? await this.store.withPlanningLifecycleLock(task.id, finalizeUnderLock)
+        ? await this.store.withPlanningLifecycleLock(task.id, finalizeUnderLock, { holderLabel: "planning" })
         : await finalizeUnderLock();
     } finally {
       this.finalizing.delete(task.id);

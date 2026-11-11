@@ -982,6 +982,23 @@ export type DatabaseMutationType =
   the cause is queryable without the cause string being stored.
   */
   | "task:reconcile-planning-fence-park"
+  /*
+  FNXC:PlanningLifecycleOrphanReclaim 2026-11-11-17:35 (RUFU-600 Step 5):
+  One row per holder session a reclaim pass acted on (`-reclaimed`) or deliberately left alone
+  (`-withheld`). Metadata is ids/counts/fixed enums only: `taskId`, `holderLabel` from the closed
+  application-name vocabulary, `pid`, `holderState`, PostgreSQL's own `ageMs`, and `outcome` from
+  `reclaimed` / `already-free` / `holder-moved` / `session-live` / `card-live` / `terminate-refused` /
+  `release-unproven`. Why the pair exists: ending a session is the only lever PostgreSQL offers over a
+  foreign advisory holder, so the operator must be able to ask which sessions were ended and which were
+  refused, without that being reconstructable from a card that merely stopped erroring. Session
+  `application_name` beyond the label, connection strings, and any error text never enter the row.
+
+  Deliberately OUTSIDE the curated delivery-pipeline catalogue (the precedent is RUFU-462's
+  `runtime:heap-ceiling`): documented as prose in `docs/run-audit.md`, which `run-audit-catalogue.test.ts`
+  locks table-for-table.
+   */
+  | "task:planning-lifecycle-orphan-reclaimed"
+  | "task:planning-lifecycle-orphan-withheld"
   /** Deduped companion row for a fence park this pass examined and deliberately left alone. Same metadata. */
   | "task:reconcile-planning-fence-park-no-action"
   /*

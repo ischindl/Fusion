@@ -105,7 +105,8 @@ import { GlobalSettingsStore } from "./config/global-settings.js";
 import { Database } from "./db/db.js";
 import { projectScopeFor, type AsyncDataLayer, type DbTransaction } from "./postgres/data-layer.js";
 import { appendPlanEvidenceInTransaction } from "./task-store/plan-evidence.js";
-import { planningLifecycleLockTransportAvailability, withPlanningLifecycleAdvisoryLock, withPlanningLifecycleAdvisoryLocks } from "./postgres/advisory-locks.js";
+import { planningLifecycleLockTransportAvailability, withPlanningLifecycleAdvisoryLock, withPlanningLifecycleAdvisoryLocks, diagnosePlanningLifecycleAdvisoryKey, listPlanningLifecycleHolderSessions, releasePlanningLifecycleAdvisoryKey, OPERATOR_PLANNING_LIFECYCLE_LOCK_TIMEOUT_MS } from "./postgres/advisory-locks.js";
+import type { PlanningLifecycleHolderPopulation, PlanningLifecycleLockDiagnosis, PlanningLifecycleLockOptions, PlanningLifecycleReleaseGuards, PlanningLifecycleReleaseReport } from "./postgres/advisory-locks.js";
 import { MissionStore } from "./missions/mission-store.js";
 import { AsyncMissionStore } from "./async-stores/async-mission-store.js";
 import { AsyncIdeationStore } from "./async-stores/async-ideation-store.js";
@@ -1349,18 +1350,29 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
    * handoffs. PostgreSQL persistence already makes the inner writes atomic;
    * this FIFO is the compatibility fallback used by in-process/test stores.
    */
-  public async withPlanningLifecycleLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+  public async withPlanningLifecycleLock<T>(
+    id: string,
+    fn: () => Promise<T>,
+    options?: PlanningLifecycleLockOptions,
+  ): Promise<T> {
     const backend = this.asyncLayer?.backend;
     if (this.asyncLayer && backend) {
       return await withPlanningLifecycleAdvisoryLock({
-        projectId: this.asyncLayer.projectId ?? this.rootDir,
+        ...this.planningLifecycleSessionTransport(),
         taskId: id,
-        directSessionUrl: backend.directSessionUrl ?? null,
-        provenance: backend.directSessionProvenance ?? null,
-        runtimeUrl: backend.runtimeUrl,
-        migrationUrl: backend.migrationUrl,
+        ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+        holderLabel: options?.holderLabel,
+        maxHoldMs: options?.maxHoldMs,
       }, fn);
     }
+    /*
+    FNXC:PlanningLifecycleLockOperatorLane 2026-11-11-17:35 (RUFU-600 Steps 3-4):
+    The in-process FIFO is the non-PostgreSQL fallback. A holder label, a transport budget, and a hold
+    bound are all properties of a SERVER session, and this path has none — it is a Promise chain inside
+    one process — so the options are legitimately meaningless here rather than silently dropped: the
+    in-memory queue still serializes exactly as it did, and any caller that needs the server-side
+    guarantees is asking PostgreSQL through the other branch.
+     */
     const projectId = this.asyncLayer?.projectId ?? this.rootDir;
     const key = `${projectId}:${id}`;
     const prior = planningLifecycleLocks.get(key) ?? Promise.resolve();
@@ -1376,23 +1388,111 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     }
   }
   /** Acquire all child planning keys in deterministic order without a fan-out connection cost. */
-  public async withPlanningLifecycleLocks<T>(ids: readonly string[], fn: () => Promise<T>): Promise<T> {
+  public async withPlanningLifecycleLocks<T>(
+    ids: readonly string[],
+    fn: () => Promise<T>,
+    options?: PlanningLifecycleLockOptions,
+  ): Promise<T> {
     const sorted = [...new Set(ids)].sort();
     if (sorted.length === 0) return fn();
     const backend = this.asyncLayer?.backend;
     if (this.asyncLayer && backend) {
       return withPlanningLifecycleAdvisoryLocks({
-        projectId: this.asyncLayer.projectId ?? this.rootDir,
+        ...this.planningLifecycleSessionTransport(),
         taskIds: sorted,
-        directSessionUrl: backend.directSessionUrl ?? null,
-        provenance: backend.directSessionProvenance ?? null,
-        runtimeUrl: backend.runtimeUrl,
-        migrationUrl: backend.migrationUrl,
+        ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+        holderLabel: options?.holderLabel,
+        maxHoldMs: options?.maxHoldMs,
       }, fn);
     }
-    const acquire = async (index: number): Promise<T> => index === sorted.length ? fn() : this.withPlanningLifecycleLock(sorted[index]!, () => acquire(index + 1));
+    const acquire = async (index: number): Promise<T> => index === sorted.length ? fn() : this.withPlanningLifecycleLock(sorted[index]!, () => acquire(index + 1), options);
     return acquire(0);
   }
+
+  /** The five transport fields every planning-lifecycle call needs, resolved from the bound backend once. */
+  private planningLifecycleSessionTransport(): {
+    projectId: string;
+    directSessionUrl: string | null;
+    provenance: "embedded-lifecycle" | "migration-override" | "runtime-direct" | null;
+    runtimeUrl: string;
+    migrationUrl: string;
+  } {
+    const backend = this.asyncLayer?.backend;
+    return {
+      projectId: this.asyncLayer?.projectId ?? this.rootDir,
+      directSessionUrl: backend?.directSessionUrl ?? null,
+      provenance: backend?.directSessionProvenance ?? null,
+      runtimeUrl: backend?.runtimeUrl ?? "",
+      migrationUrl: backend?.migrationUrl ?? "",
+    };
+  }
+
+  /**
+   * FNXC:PlanningLifecycleLockIdentity 2026-11-11-17:35 (RUFU-600 Step 3):
+   * "Who holds this task's planning lock, and how long has it been held?" — asked of PostgreSQL, because
+   * the alternative is what this task started as: a timeout being reported as a verdict about the key.
+   * Returns `null` when no PostgreSQL backend is bound (the in-process FIFO has no server session to ask);
+   * a bound backend always answers with a reason, including `not-held`.
+   */
+  public async diagnosePlanningLifecycleLock(taskId: string): Promise<PlanningLifecycleLockDiagnosis | null> {
+    const backend = this.asyncLayer?.backend;
+    if (!this.asyncLayer || !backend) return null;
+    const timeoutMs = OPERATOR_PLANNING_LIFECYCLE_LOCK_TIMEOUT_MS;
+    const diagnosis = await diagnosePlanningLifecycleAdvisoryKey({ ...this.planningLifecycleSessionTransport(), taskId, timeoutMs });
+    const holders = await listPlanningLifecycleHolderSessions({ ...this.planningLifecycleSessionTransport(), timeoutMs });
+    return {
+      ...diagnosis,
+      transport: planningLifecycleLockTransportAvailability(this.planningLifecycleSessionTransport()),
+      budgetMs: timeoutMs,
+      holders: holders.sessions,
+      holdersReason: holders.reason,
+    };
+  }
+
+  /**
+   * FNXC:PlanningLifecycleLockRelease 2026-11-11-17:35 (RUFU-600 Step 4):
+   * The operator's release. PostgreSQL lets only the holding session uncheck an advisory key, so the
+   * single lever over a foreign holder is terminating that session — which is why `confirm: true` is
+   * required here and re-checked inside the primitive.
+   *
+   * FNXC:PlanningLifecycleLockRelease 2026-11-11-19:14 (RUFU-600 code-review P0):
+   * `isCardLive` is not a courtesy hook: the primitive refuses the terminate outright when no probe is
+   * supplied, so a caller cannot forget the veto by omission. Every lane that ends a session it did not open
+   * has to answer "is this card busy?" first — the reclaim sweep injects the planning/execution liveness
+   * signal, the operator route injects the same authority through the engine's registries — and an absent or
+   * throwing answer reads as busy. Returns `null` with no backend bound.
+   */
+  public async releasePlanningLifecycleLock(
+    taskId: string,
+    input: { confirm: boolean } & PlanningLifecycleReleaseGuards,
+  ): Promise<PlanningLifecycleReleaseReport | null> {
+    const backend = this.asyncLayer?.backend;
+    if (!this.asyncLayer || !backend) return null;
+    const { confirm, ...guards } = input;
+    return releasePlanningLifecycleAdvisoryKey({
+      ...this.planningLifecycleSessionTransport(),
+      taskId,
+      timeoutMs: OPERATOR_PLANNING_LIFECYCLE_LOCK_TIMEOUT_MS,
+    }, confirm, guards);
+  }
+
+  /**
+   * FNXC:PlanningLifecycleOrphanReclaim 2026-11-11-17:35 (RUFU-600 Step 5):
+   * Every labelled planning-lifecycle session this project's database can see, held sessions included.
+   * The reclaim pass needs the population rather than one key's verdict, because an abandoned acquisition
+   * is identified by the session it left behind, and the key hash cannot name the card that session was
+   * opened for — only the stamped `application_name` can. `reason` is reported rather than swallowed: an
+   * unreadable `pg_stat_activity` must never look like an empty population.
+   */
+  public async listPlanningLifecycleHolderSessions(): Promise<PlanningLifecycleHolderPopulation> {
+    const backend = this.asyncLayer?.backend;
+    if (!this.asyncLayer || !backend) return { sessions: [], reason: "transport-unavailable" };
+    return listPlanningLifecycleHolderSessions({
+      ...this.planningLifecycleSessionTransport(),
+      timeoutMs: OPERATOR_PLANNING_LIFECYCLE_LOCK_TIMEOUT_MS,
+    });
+  }
+
   public planningLifecycleLockTransportAvailability(): { available: true } | { available: false; reason: string } {
     const backend = this.asyncLayer?.backend;
     if (!this.asyncLayer || !backend) return { available: true };

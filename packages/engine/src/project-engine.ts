@@ -1217,7 +1217,7 @@ export class ProjectEngine {
       });
       closeoutTask = live;
       accepted = true;
-    });
+    }, { holderLabel: "pr-closeout" });
     /*
     FNXC:ExternalPrCloseout 2026-10-05-04:07:
     Execute after releasing the cross-process lifecycle fence: the durable

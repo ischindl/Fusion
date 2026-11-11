@@ -172,6 +172,7 @@ import { FUSION_CLIENT_HEADER, resolveHttpDeleteCallerKind, isValidTaskBranchNam
 import { ApiError, badRequest, conflict, notFound } from "../api-error.js";
 /* FNXC:HumanMergeApproval 2026-09-17-18:09: FN-514's operator surface for the per-card delivery lock. */
 import { registerTaskMergeApprovalRoutes } from "./task-merge-approval.js";
+import { registerTaskPlanningLockRoutes, mapPlanningLifecycleLockError } from "./task-planning-lock.js";
 import { isGhAuthenticated } from "@fusion/core";
 // FNXC:TaskLookup404 2026-07-26-11:40: shared task-miss -> 404 mapping seam.
 import { isTaskLookupMiss, rethrowTaskApiError } from "./task-lookup-error.js";
@@ -1200,6 +1201,9 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
   registrar's project resolution and operator authentication instead of introducing a second one.
   The GitHub capability probe is INJECTED, keeping the engine free of a dashboard dependency.
   */
+  // RUFU-600: who holds a card's planning key, and the confirmed release of that holder. Mounted with
+  // the other per-card operator surfaces so it inherits project resolution and daemon auth.
+  registerTaskPlanningLockRoutes(ctx);
   registerTaskMergeApprovalRoutes(ctx, {
     isGithubAuthenticated: () => isGhAuthenticated(),
     resolveRemote: async (_task, repoRoot) => {
@@ -4373,10 +4377,18 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       const updated = await scopedStore.moveTask(req.params.id, reboundColumn);
       res.json(updated);
     } catch (err: unknown) {
-      if (err instanceof ApiError) {
-        throw err;
+      /*
+      FNXC:PlanningLockOperatorSurface 2026-11-11-17:35 (RUFU-600 Step 5, reporter's second step):
+      Retry touches the planning lifecycle lock in three places — the external-block preflight, the stage
+      restart, and the legacy rebound — so the contention-vs-crash split sits at this boundary, where all
+      three arrive, rather than in each lane (where one of them was historically missed and the operator got
+      HTTP 500 for a key someone else was holding).
+      */
+      const planningLockRefusal = mapPlanningLifecycleLockError(err, req.params.id);
+      if (planningLockRefusal instanceof ApiError) {
+        throw planningLockRefusal;
       }
-      rethrowTaskApiError(err, req.params.id);
+      rethrowTaskApiError(planningLockRefusal, req.params.id);
     }
   });
 

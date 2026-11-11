@@ -557,4 +557,32 @@ describe("hold-release bounded database work", () => {
     expect(skipped).toEqual({ released: [], held: [], skippedConcurrent: true });
     expect(second.getSettings).not.toHaveBeenCalled();
   });
+
+  /*
+  FNXC:HoldReleasePlanningLockFree 2026-11-11-19:14 (RUFU-600 code-review P2):
+  The reporter's HTTP 500 came from a 5-second planning-lifecycle acquisition budget standing inside a wait
+  that lasts 46 seconds: a card held in `todo` by WIP capacity was being asked to take its own planning key
+  before it was ever allowed to move. The fix (Step 2) removed that acquisition, and this guard is what keeps
+  it removed — the sweep's own budget (`sweepBudgetMs`) is a per-pass bound shared by every card on the
+  board, so ONE planning-key wait inside it could truncate the release of every later card, and the refusal
+  it returns carries a holder the scheduler can do nothing about.
+
+  Load-bearing shape: the card here genuinely releases (so the pass cannot be vacuously green on a sweep
+  that moved nothing), and the planning surface is present on the store but booby-trapped — a sweep that
+  reached for it would throw rather than silently skip an absent method.
+  */
+  it("releases a capacity-held card without acquiring its planning key", async () => {
+    const held = task("H-A");
+    const store = storeWith([held]);
+    const planningAcquisitions = vi.fn(async () => { throw new Error("the hold-release sweep must not acquire a planning-lifecycle key"); });
+    (store as unknown as Record<string, unknown>).withPlanningLifecycleLock = planningAcquisitions;
+    (store as unknown as Record<string, unknown>).acquirePlanningLifecycleLock = planningAcquisitions;
+
+    const result = await runHoldReleaseSweep(store, { now: () => 1_000_000 });
+
+    expect(result.released).toEqual(["H-A"]);
+    expect(planningAcquisitions).not.toHaveBeenCalled();
+    // The release is a real move across the seam, not a no-op pass that could not find a candidate.
+    expect((store.moveTaskIf as ReturnType<typeof vi.fn>).mock.calls[0]!.slice(0, 2)).toEqual(["H-A", "in-progress"]);
+  });
 });
