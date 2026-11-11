@@ -23,6 +23,17 @@ fallback when no remotes are configured.
 */
 export function parsePushRemoteSetting(pushRemote: string | undefined): { remote: string; branch: string } {
     const tokens = (pushRemote ?? "").trim().split(/\s+/).filter(Boolean);
+    /*
+    FNXC:MergePush 2026-11-08-17:40 (RUFU-366):
+    This `?? "origin"` is a UI PREVIEW default only — it names which dropdown row to highlight when the
+    setting is unset. It is never a push target: the engine resolves the publish remote through
+    `resolvePublishRemote` (push-after-merge-policy.ts), which has no default and refuses to publish
+    while the setting is unset. Do not read this line as evidence the product pushes to origin.
+    Known display cousin, deliberately NOT redesigned here: because this preview value feeds the
+    controlled remote select, a project whose setting is UNSET renders "origin" as if it were
+    configured. Making the unset state visibly "not configured" is a three-state field change on the
+    surface RUFU-347 owns, so it is reported rather than silently redesigned.
+    */
     return { remote: tokens[0] ?? "origin", branch: tokens.slice(1).join(" ") };
 }
 export function composePushRemoteSetting(remote: string, branch: string): string | undefined {
@@ -681,14 +692,20 @@ export function MergeSection({ form, setForm, integrationBranchOptions, integrat
       {form.pushAfterMerge && (gitRemoteOptions.length === 0 ? (<div className="form-group">
           <div className="settings-field-label-row">
             <label htmlFor="pushRemote">{t("settings.merge.pushRemote", "Push Remote")}</label>
-            <SettingsHelpTip settingKey="pushRemote">{t("settings.merge.gitRemoteToPushToEGOrigin", "Git remote to push to (e.g. \"origin\"). Can include branch name (e.g. \"origin main\"). Default: \"origin\".")}</SettingsHelpTip>
+            <SettingsHelpTip settingKey="pushRemote">{t("settings.merge.gitRemoteToPushToEGOrigin", "Git remote to push to (e.g. \"origin\"). Can include branch name (e.g. \"origin main\"). No default \u2014 unset, and required when push-after-merge is enabled: with no remote configured, publishing is refused and nothing is pushed.")}</SettingsHelpTip>
+          {/*
+          FNXC:MergePush 2026-11-08-17:40 (RUFU-366): the "origin" PLACEHOLDER is deliberately kept — a
+          placeholder is an example of the accepted shape, not a default the product applies. The help tip
+          above is the contract: unset means refused, nothing is pushed. Changing this placeholder to an
+          empty string would remove the only hint of the "remote branch" two-token form.
+          */}
           </div>
           <input id="pushRemote" type="text" placeholder={t("settings.merge.origin", "origin")} value={form.pushRemote || ""} onChange={(e) => setForm((f) => ({ ...f, pushRemote: e.target.value || undefined }))}/>
         </div>) : (<>
           <div className="form-group">
             <div className="settings-field-label-row">
               <label htmlFor="pushRemote">{t("settings.merge.pushRemote", "Push Remote")}</label>
-              <SettingsHelpTip settingKey="pushRemote">{t("settings.merge.gitRemoteThatMergedResultsArePushedTo", "Git remote that merged results are pushed to. Default: \"origin\".")}</SettingsHelpTip>
+              <SettingsHelpTip settingKey="pushRemote">{t("settings.merge.gitRemoteThatMergedResultsArePushedTo", "Git remote that merged results are pushed to. No default \u2014 unset; required when publishing is enabled, and no configured remote means no push.")}</SettingsHelpTip>
             </div>
             <select id="pushRemote" className="select" value={pushTarget.remote} onChange={(e) => {
                 // Capture eagerly: the deferred setForm updater must not read the

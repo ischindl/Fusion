@@ -676,7 +676,19 @@ export const DEFAULT_PROJECT_SETTINGS = {
   integrationBranch: undefined,
   // `requirePrApproval` MOVED to workflow settings (U4) — see MOVED_SETTINGS_KEYS.
   pushAfterMerge: false,
-  pushRemote: "origin",
+  /*
+  FNXC:MergePush 2026-11-08-16:19 (RUFU-366):
+  There is deliberately NO publish-remote default. The value used to be `"origin"`, which meant an
+  operator who turned on "Push to remote after merge" without naming a remote silently published the
+  integration branch to GitHub — the target the operator of this deployment forbade for the engine on
+  2026-09-27 (publishes go to the OneDev remote `lan`). Four layers carried an origin fallback; this was
+  the one that injected it into every effective-settings merge, so even a project that never wrote the
+  key resolved `origin`. Publishing is now refused (non-fatal, nothing pushed) while the setting is
+  unset. The key STAYS declared because PROJECT_SETTINGS_KEYS derives from these keys — deleting it
+  would make every settings write of `pushRemote` a rejected unknown key. `postMergeCiRepo` above is
+  the in-repo precedent for an explicitly-unset string default.
+  */
+  pushRemote: undefined,
   unavailableNodePolicy: "block",
   owningNodeHandoffPolicy: "reassign-to-local",
   defaultNodeId: undefined,

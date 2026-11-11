@@ -355,7 +355,7 @@ import {
 } from "./merge/merger-integration-worktree.js";
 import { acquireTaskWorktree } from "./worktree/worktree-acquisition.js";
 import { resolveIntegrationBranch } from "./merge/integration-branch.js";
-import { isPushAfterMergeEnabled } from "./merge/push-after-merge-policy.js";
+import { isPushAfterMergeEnabled, PUBLISH_REMOTE_UNCONFIGURED, resolvePublishRemote } from "./merge/push-after-merge-policy.js";
 import { evaluateBranchGroupPromotion, resolveBranchGroupMergeRouting } from "./merge/group-merge-coordinator.js";
 import { advanceIntegrationBranchRef, IntegrationBranchConcurrentAdvanceError } from "./merge/merger-ref-update-advance.js";
 import { appendAutoWidenedScopeToPrompt, evaluateScopeAutoWiden } from "./merge/merger-scope-auto-widen.js";
@@ -5885,11 +5885,24 @@ FNXC:MergePush 2026-07-11-22:10:
 Exported for the unified AI merge path (merger-ai.ts pushAfterMergeToRemote) so the
 `pushRemote` setting keeps one parser: "origin" (target branch defaults to the integration
 branch) or "origin main" (explicit remote + target branch).
+
+FNXC:MergePush 2026-11-08-16:19 (RUFU-366):
+The parser used to own TWO silent origin defaults (`pushRemote?.trim() || "origin"` and
+`remoteToken || "origin"`), so an unset, empty, or whitespace-only setting produced a real push to
+GitHub — the target the operator of this deployment forbade for the engine on 2026-09-27. Both are
+gone: an unset/empty/whitespace remote now THROWS the canonical refusal instead of guessing, and
+because both callers already catch this throw and return `pushed: false` before any git command,
+strictness here is by itself a complete refusal for both merge lanes. Branch resolution is
+unchanged (explicit branch → fallbackBranch → symbolic-ref). A caller-level pre-check still exists
+in each lane so a configuration gap is reported as a refusal, not as a transport failure.
 */
 export function parsePushRemoteTarget(rootDir: string, pushRemote?: string, fallbackBranch?: string): { remote: string; branch: string } {
-  const rawTarget = pushRemote?.trim() || "origin";
+  const rawTarget = resolvePublishRemote({ pushRemote });
+  if (!rawTarget) {
+    throw new Error(PUBLISH_REMOTE_UNCONFIGURED);
+  }
   const [remoteToken, ...branchTokens] = rawTarget.split(/\s+/).filter(Boolean);
-  const remote = remoteToken || "origin";
+  const remote = remoteToken ?? "";
 
   let branch = branchTokens.join(" ").trim();
   if (!branch) {
@@ -9950,6 +9963,10 @@ export async function aiMergeTask(
 
   // 8b. Push to remote if configured
   if (isPushAfterMergeEnabled(settings, { lane: "single-repo" })) {
+    // RUFU-366: resolved once for the whole step so the guard, the audit rows, and the task-history
+    // sentences all name the SAME remote (or the same absence of one). Declared outside the try
+    // because the catch paths report it too.
+    const publishRemote = resolvePublishRemote(settings);
     try {
       throwIfAborted(options.signal, taskId);
       const pushTask = await store.getTask(taskId).catch(() => null);
@@ -9968,14 +9985,25 @@ export async function aiMergeTask(
       // but the working tree may be dirty and is NOT touched by us) sends the
       // new tip to the remote.
       const pushRootDir = reuseTaskWorktreeMerge ? projectRootDir : rootDir;
-      const pushResult = await pushToRemoteAfterMerge(store, pushRootDir, taskId, settings, {
-        onAgentText: options.onAgentText,
-        signal: options.signal,
-        runtimeHint: pushRuntimeHint,
-        assignedAgentRuntimeConfig: pushAssignedAgent?.runtimeConfig,
-        onSession: options.onSession,
-        integrationBranch: mergeTarget.branch,
-      });
+      /*
+      FNXC:MergePush 2026-11-08-16:19 (RUFU-366):
+      The pre-check sits BEFORE `pushToRemoteAfterMerge` on purpose. Its strict parser would already
+      refuse with `pushed: false`, but that reaches this lane's else branch as outcome `"failed"` with
+      the "task marked done anyway; local main may diverge from origin" sentence — a configuration
+      gap mislabeled as a transport failure, naming a remote that was never used. Refusing here keeps
+      the outcome honest (`"refused"` + `reason: "publish-remote-unset"`, `remote: null`) and runs zero
+      git commands. Non-fatal contract unchanged: the merge stays finalized and `pushedToRemote` is false.
+      */
+      const pushResult: { pushed: boolean; error?: string; unconfigured?: boolean } = publishRemote
+        ? await pushToRemoteAfterMerge(store, pushRootDir, taskId, settings, {
+          onAgentText: options.onAgentText,
+          signal: options.signal,
+          runtimeHint: pushRuntimeHint,
+          assignedAgentRuntimeConfig: pushAssignedAgent?.runtimeConfig,
+          onSession: options.onSession,
+          integrationBranch: mergeTarget.branch,
+        })
+        : { pushed: false, unconfigured: true, error: PUBLISH_REMOTE_UNCONFIGURED };
       if (pushResult.pushed) {
         mergerLog.log(`${taskId}: pushed merged result to remote`);
         // Push may trigger an internal pull --rebase that rewrites HEAD (see
@@ -10039,14 +10067,20 @@ export async function aiMergeTask(
           target: taskId,
           metadata: {
             integrationBranch: mergeTarget.branch,
-            remote: settings.pushRemote || "origin",
-            outcome: "failed",
+            // RUFU-366: `remote` names the target actually offered, never a fabricated "origin", and is
+            // null when nothing was offered. `remoteConfigured` records what configuration named — the
+            // configured remote or the literal "unset" — so a missing setting is never mistaken for a
+            // deliberate choice of a server.
+            remote: publishRemote ?? null,
+            remoteConfigured: publishRemote ?? "unset",
+            outcome: pushResult.unconfigured ? "refused" : "failed",
+            ...(pushResult.unconfigured ? { reason: "publish-remote-unset" } : {}),
             stderrPreview: pushResult.error,
           },
         }).catch(() => undefined);
         await store.logEntry(
           taskId,
-          `Push to remote failed after merge — task marked done anyway; local main may diverge from origin: ${pushResult.error}`,
+          `Push to remote failed after merge — task marked done anyway; local main may diverge from ${publishRemote ?? "the publish remote (none is configured)"}: ${pushResult.error}`,
           "PushToRemoteFailed",
         ).catch(() => undefined);
       }
@@ -10066,7 +10100,8 @@ export async function aiMergeTask(
           target: taskId,
           metadata: {
             integrationBranch: mergeTarget.branch,
-            remote: settings.pushRemote || "origin",
+            remote: publishRemote ?? null,
+            remoteConfigured: publishRemote ?? "unset",
             outcome: "aborted",
           },
         }).catch(() => undefined);
@@ -10080,14 +10115,15 @@ export async function aiMergeTask(
           target: taskId,
           metadata: {
             integrationBranch: mergeTarget.branch,
-            remote: settings.pushRemote || "origin",
+            remote: publishRemote ?? null,
+            remoteConfigured: publishRemote ?? "unset",
             outcome: "failed",
             stderrPreview: err.message,
           },
         }).catch(() => undefined);
         await store.logEntry(
           taskId,
-          `Push to remote threw after merge — task marked done anyway; local main may diverge from origin: ${err.message}`,
+          `Push to remote threw after merge — task marked done anyway; local main may diverge from ${publishRemote ?? "the publish remote (none is configured)"}: ${err.message}`,
           "PushToRemoteFailed",
         ).catch(() => undefined);
       }

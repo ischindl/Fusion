@@ -144,6 +144,7 @@ import {
   inferDefaultTestCommand,
   resolveTaskDiffBaseRef,
   commitOrAmendMergeWithFixes,
+  parsePushRemoteTarget,
   isTransientGitPushError,
   MergeAbortedError,
   pushWithTransientRetries,
@@ -326,6 +327,47 @@ describe("findWorktreeUser", () => {
     ]);
     const result = await findWorktreeUser(store, "/tmp/wt", "FN-050");
     expect(result).toBeNull();
+  });
+});
+
+
+/*
+FNXC:MergePush 2026-11-08-16:19 (RUFU-366):
+The publish remote has no default anywhere, so these cases pin the parser half of that contract:
+an explicit remote resolves exactly as configured, and an unset/empty/whitespace remote refuses by
+throwing the canonical sentence instead of guessing a server. The pre-existing contract that the
+integration branch (not the worktree's incidental HEAD) is the target when only a remote is given is
+preserved here too, because RUFU-366 changed remote resolution only.
+*/
+describe("parsePushRemoteTarget — explicit publish remote required", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("resolves an explicit remote name against the supplied integration branch", () => {
+    const target = parsePushRemoteTarget("/tmp/root", "lan", "main");
+    expect(target).toEqual({ remote: "lan", branch: "main" });
+    // Branch came from the caller, so the worktree's incidental HEAD was never consulted.
+    expect(mockedExecSync.mock.calls.some((call) => String(call[0]).includes("symbolic-ref"))).toBe(false);
+  });
+
+  it("honors an explicit branch in the two-token form", () => {
+    expect(parsePushRemoteTarget("/tmp/root", "lan release", "main")).toEqual({ remote: "lan", branch: "release" });
+  });
+
+  it("keeps the symbolic-ref fallback when the caller supplies no integration branch", () => {
+    mockedExecSync.mockImplementation((cmd: any) => {
+      if (String(cmd).includes("git symbolic-ref --short HEAD")) return Buffer.from("trunk\n");
+      return Buffer.from("");
+    });
+    expect(parsePushRemoteTarget("/tmp/root", "lan")).toEqual({ remote: "lan", branch: "trunk" });
+  });
+
+  it.each([undefined, "", "   "])("refuses without touching git when pushRemote is %j", (pushRemote) => {
+    expect(() => parsePushRemoteTarget("/tmp/root", pushRemote, "main")).toThrow(
+      "merge.pushRemote is not configured — publishing the merge result requires an explicit publish remote (e.g. \"lan\" or \"lan main\"); nothing was pushed.",
+    );
+    expect(mockedExecSync).not.toHaveBeenCalled();
   });
 });
 
@@ -693,7 +735,74 @@ describe("push-after-merge", () => {
     );
   });
 
-  it.each([undefined, "", "   "])("FN-7490 falls back to origin and integration branch for empty pushRemote %s", async (pushRemote) => {
+  /*
+  FNXC:MergePush 2026-11-08-17:07 (RUFU-366):
+  Step 8b of the retained merger now pre-checks the publish remote BEFORE calling the push helper.
+  Without that pre-check the refusal still produced zero git commands (the strict parser bails), but it
+  surfaced through the else branch as outcome "failed" carrying the local-main-may-diverge sentence — a
+  configuration gap mislabelled as a transport failure, pointing the operator at the network instead of
+  at Settings. These are the three halves of the new contract: the row says refused with no remote
+  named, no transport command is ever issued, and the merge still finalizes because the push contract is
+  non-fatal.
+  */
+  it("RUFU-366 refuses step-8b publishing with no remote configured, without a transport attempt", async () => {
+    setupAiMergeExecSyncWithPush();
+
+    const store = createMockStore();
+    (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...DEFAULT_SETTINGS,
+      mergeIntegrationWorktree: "cwd-main" as const,
+      pushAfterMerge: true,
+      pushRemote: undefined,
+      mergeStrategy: "direct",
+    });
+
+    const result = await aiMergeTask(store, "/tmp/root", "FN-050");
+
+    expect(result.merged).toBe(true);
+    expect(result.pushedToRemote).toBe(false);
+    expect(result.pushError).toContain("merge.pushRemote is not configured");
+    expect(store.moveTaskIf).toHaveBeenCalledWith("FN-050", "done", expect.any(Function), expect.any(Object));
+    expect(store.recordRunAuditEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        domain: "git",
+        mutationType: "push:origin",
+        target: "FN-050",
+        metadata: expect.objectContaining({
+          outcome: "refused",
+          reason: "publish-remote-unset",
+          remote: null,
+          remoteConfigured: "unset",
+        }),
+      }),
+    );
+    // A refused publish is never recorded as a failed transport.
+    expect(store.recordRunAuditEvent).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        mutationType: "push:origin",
+        metadata: expect.objectContaining({ outcome: "failed" }),
+      }),
+    );
+    // Task history names the configuration sentence, and never names a remote nobody configured.
+    expect(store.logEntry).toHaveBeenCalledWith(
+      "FN-050",
+      expect.stringContaining("merge.pushRemote is not configured"),
+      "PushToRemoteFailed",
+    );
+    // Zero transport: the refusal returns before the pull-then-push the push helper would issue.
+    expect(
+      mockedExecSync.mock.calls.filter((call) => /^git (pull|push)\b/.test(String(call[0]))),
+    ).toEqual([]);
+  });
+
+  /*
+  FNXC:MergePush 2026-11-08-16:19 (RUFU-366):
+  This case pinned the OLD contract ("FN-7490 falls back to origin and integration branch for empty
+  pushRemote"), which is exactly the behavior RUFU-366 removes: an unset publish remote must not send
+  the integration branch to a server nobody chose. The assertions are inverted, not weakened — the
+  refusal must produce zero git commands, not merely a different command.
+  */
+  it.each([undefined, "", "   "])("RUFU-366 refuses to publish when pushRemote is %j", async (pushRemote) => {
     mockedExecSync.mockImplementation((cmd: any) => {
       const cmdStr = String(cmd);
       if (cmdStr.startsWith('git pull --rebase "origin" "main"')) return Buffer.from("");
@@ -715,13 +824,13 @@ describe("push-after-merge", () => {
       pushRemote,
     }, { integrationBranch: "main" });
 
-    expect(result.pushed).toBe(true);
+    expect(result.pushed).toBe(false);
+    expect(result.error).toContain("merge.pushRemote is not configured");
+    expect(result.error).toContain("nothing was pushed");
+    // The refusal happens before the first git command, so no transport call is ever attempted.
     expect(
-      mockedExecSync.mock.calls.some((call) => String(call[0]).startsWith('git pull --rebase "origin" "main"')),
-    ).toBe(true);
-    expect(
-      mockedExecSync.mock.calls.some((call) => String(call[0]).startsWith('git push "origin" "main"')),
-    ).toBe(true);
+      mockedExecSync.mock.calls.filter((call) => /^git (pull|push)\b/.test(String(call[0]))),
+    ).toEqual([]);
   });
 
   it("uses integration branch fallback for remote-only push targets", async () => {

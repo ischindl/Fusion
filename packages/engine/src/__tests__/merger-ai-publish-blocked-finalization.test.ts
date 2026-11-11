@@ -126,6 +126,14 @@ function makeStore(settingsOverrides: Record<string, unknown> = {}) {
     getSettings: vi.fn(async () => ({
       merger: { mode: "ai", maxReviewPasses: 1 },
       pushAfterMerge: true,
+      /* FNXC:MergePush 2026-11-08-16:19 (RUFU-366): the publish target has no default any more, so
+         this shared fixture states it explicitly. Every case here asserts that a landing was
+         published, which is only reachable under a configured remote; `pushRemote: undefined` from an
+         override now genuinely refuses the publish instead of silently choosing `origin`.
+         Operator decision recorded here because this fixture is the `origin` assumption itself: in
+         this deployment publishes go to the OneDev remote `lan` (set `merge.pushRemote = "lan"`) and
+         pushes to GitHub are forbidden, so an implicit default is not a harmless convenience. */
+      pushRemote: "origin",
       ...settingsOverrides,
     })),
     updateTask: vi.fn(async (_id: string, patch: Record<string, unknown>) => { Object.assign(task, patch); return task; }),

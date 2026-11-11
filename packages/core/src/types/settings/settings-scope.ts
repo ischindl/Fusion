@@ -1479,10 +1479,23 @@ export interface ProjectSettings {
    *  If conflicts arise during the pull, they are resolved using the AI conflict resolution pipeline.
    *  Only applies when mergeStrategy is "direct". Default: false. */
   pushAfterMerge?: boolean;
-  /** The git remote and branch to push to after merging (e.g. "origin", "origin main").
-   *  When set to just a remote name (e.g. "origin"), the current branch is pushed.
+  /** The git remote and branch to push to after merging (e.g. "lan", "lan main").
+   *  When set to just a remote name, the integration branch is pushed to its same-named remote branch.
    *  When set to "remote branch" format, both the remote and branch are specified.
-   *  Only used when pushAfterMerge is true. Default: "origin". */
+   *  Only used when pushAfterMerge is true.
+   *
+   *  No default, and publishing is REFUSED while it is unset: with pushAfterMerge enabled and no
+   *  remote configured, every publish path (both merge lanes and the confirmed-landing recovery lane)
+   *  stops before running any git command, records the refusal, and finalizes the merge anyway — the
+   *  non-fatal push contract holds. A remote nobody chose is worse than no push at all.
+   *
+   *  FNXC:MergePush 2026-11-08-16:19 (RUFU-366): the former `Default: "origin"` was the defect — an
+   *  operator enabling push-after-merge was silently pointed at a server they never selected.
+   *
+   *  This names a PUBLISH target only; it never says where post-merge CI evidence comes from. That is
+   *  `postMergeCiRepo` plus the workflow node's provider/evidence.kind axis, and
+   *  `post-merge-ci-repository.ts` states the NO-FALLBACK rule naming this very setting as answering a
+   *  different question (see its JSDoc at `postMergeCiRepo` below). */
   pushRemote?: string;
   /** Policy for how to route execution when the selected node is unavailable/unhealthy.
    *  Applies to both project default node selection and per-task node overrides.

@@ -543,16 +543,30 @@ export type GitMutationType =
    * ```ts
    * {
    *   integrationBranch: string;
-   *   remote: string;
+   *   remote: string | null;   // the target ACTUALLY offered; null when nothing was offered
+   *   remoteConfigured: string; // the configured publish remote, or the literal "unset"
    *   targetBranch?: string;   // omitted on the shutdown-abort path
    *   refAdvanced?: boolean;   // divergence rebase rewrote the landed squash
-   *   outcome: "success" | "failed" | "aborted";
+   *   outcome: "success" | "refused" | "failed" | "aborted";
+   *   reason?: "publish-remote-unset"; // present on "refused"
    *   stderrPreview?: string;  // present on "failed"
    * }
    * ```
    * `outcome: "aborted"` (Tchori-Labs/Fusion#5) marks a shutdown signal after
    * finalization: the merge stays landed and its divergence recovery branch is
    * retained (see `push:recovery-branch`), but the target push did not complete.
+   *
+   * FNXC:MergePush 2026-11-08-17:55 (RUFU-366):
+   * `remote` used to be filled from `settings.pushRemote ?? "origin"`, so the row said `origin` whether
+   * an operator chose that remote or nothing was configured at all — the record could not distinguish
+   * intent from a missing setting, and a missing setting meant a real push to a server nobody picked.
+   * `remote` is now the resolved target (null on refusal) and `remoteConfigured` records what
+   * configuration named, so the two questions "which server did this touch" and "did an operator choose
+   * it" are answered separately. `outcome: "refused"` + `reason: "publish-remote-unset"` is a
+   * configuration refusal that ran ZERO git commands, not a transport failure; the merge still
+   * finalizes. The EVENT NAME `push:origin` is deliberately retained — it is the query key every
+   * existing operator query, dashboard surface, and doc uses, and renaming it would break historical
+   * continuity for a naming purity gain. The name describes the lane, not the target.
    */
   | "push:origin"
   /*

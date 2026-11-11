@@ -6871,7 +6871,7 @@
     },
     {
       "callSiteId": "packages/engine/src/merge/merger-ai.ts::runPushAfterMergeStep::store.logEntry::#3",
-      "callSiteFingerprint": "store.logEntry(taskId,`Push to remote threw after merge — task finalized anyway; local ${integrationBranch} may diverge from origin: ${message,\"PushToRemoteFailed\")",
+      "callSiteFingerprint": "store.logEntry(taskId,`Push to remote threw after merge — task finalized anyway; local ${integrationBranch} may diverge from ${publishRemote ?,\"PushToRemoteFailed\")",
       "file": "packages/engine/src/merge/merger-ai.ts",
       "enclosingSymbolPath": "runPushAfterMergeStep",
       "writer": "store.logEntry",
@@ -7945,7 +7945,7 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask::store.logEntry::#20",
-      "callSiteFingerprint": "store.logEntry(taskId,`Push to remote failed after merge — task marked done anyway; local main may diverge from origin: ${pushResult.error}`,\"PushToRemoteFailed\")",
+      "callSiteFingerprint": "store.logEntry(taskId,`Push to remote failed after merge — task marked done anyway; local main may diverge from ${publishRemote ?? \"the publis,\"PushToRemoteFailed\")",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.logEntry",
@@ -7983,7 +7983,7 @@
     },
     {
       "callSiteId": "packages/engine/src/merger.ts::aiMergeTask::store.logEntry::#22",
-      "callSiteFingerprint": "store.logEntry(taskId,`Push to remote threw after merge — task marked done anyway; local main may diverge from origin: ${err.message}`,\"PushToRemoteFailed\")",
+      "callSiteFingerprint": "store.logEntry(taskId,`Push to remote threw after merge — task marked done anyway; local main may diverge from ${publishRemote ?? \"the publish,\"PushToRemoteFailed\")",
       "file": "packages/engine/src/merger.ts",
       "enclosingSymbolPath": "aiMergeTask",
       "writer": "store.logEntry",

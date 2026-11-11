@@ -980,6 +980,21 @@ These two events are deliberately **not** in the curated delivery-pipeline event
 
 The bound is **one publish-policy record per withheld publish — never zero, never two**. The evidence-blocked arm already carries `task:merge-publish-before-finalize-unavailable` naming `hold: "policy-disabled"` plus its visible refusal, so it is deliberately not given a second row; the arm that would otherwise leave no trace at all is the one that records here. Both arms are under test, because that sentence is only honest if each owning arm is asserted. Like RUFU-346's pair, this event is deliberately outside the curated delivery-pipeline catalogue and documents as prose here — do not add a row for it to that table.
 
+### Which remote a publish actually touched (RUFU-366)
+
+`push:origin` is the automatic post-merge publish row (the event NAME describes the lane, not the target, and is deliberately retained: every existing operator query, dashboard surface, and doc keys on it, and renaming it would break historical continuity for a naming-purity gain). Its `remote` key used to be filled from `settings.pushRemote ?? "origin"`, so the row said `origin` whether an operator had chosen that remote or had never configured anything — the record could not distinguish intent from a missing setting, and a missing setting also meant a real push to a server nobody picked.
+
+Two keys answer those two questions separately now:
+
+- `remote` is the target **actually offered** (`null` when nothing was offered). It is never a fabricated default.
+- `remoteConfigured` is what configuration named — the configured publish remote, or the literal `"unset"`.
+
+`outcome` gains `"refused"`, and it is the shape an unconfigured publish produces: `outcome: "refused"` with `reason: "publish-remote-unset"`, `remote: null`, and `remoteConfigured: "unset"`. A refusal is a **configuration refusal, not a transport failure** — it runs zero git commands, the merge still finalizes, and the card's History carries the canonical sentence `'merge.pushRemote is not configured — publishing the merge result requires an explicit publish remote (e.g. "lan" or "lan main"); nothing was pushed.'`. The remedy is an operator writing the setting, which is why it is not modelled as a `MergePublishHold` code: a hold reads as transient, this does not.
+
+The confirmed-landing recovery lane — the pump-driven retry for a merge whose push was believed missed — deliberately writes **nothing at all** when the remote is unset: no `push:origin` row, no `pushRecovery` retry record, and no `branchAttempts` cooldown slot, because a per-pump-pass History line would spam and an unset remote is not a transport failure whose retry budget should be burned. That silence is an accepted observability tradeoff, and its discoverable surfaces are the settings themselves and the `refused` rows the two merge lanes write.
+
+Metadata stays ids/outcomes-only in the family's own sense: the configured remote name is the one string the row exists to carry. Remote URLs, ref tips, credentials in a remote URL, review findings, and error prose never enter the row; a failed push keeps its detail in the engine log and in `stderrPreview`.
+
 ### Long-term memory budget maintenance (RUFU-279)
 
 `memory:long-term-over-budget` records a long-term `MEMORY.md` (project scope, or one durable agent's

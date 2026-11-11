@@ -173,7 +173,7 @@ import {
 import { probeBranchPresence } from "./branch-presence-probe.js";
 import { persistWorkspaceRepoLandFailure, clearWorkspaceRepoLandFailure } from "./workspace-land-failure.js";
 import { ensureTenancyFenceRef, mergeDispatchFenceRef, publishWorkspaceIntegrationRef, WorkspaceFenceRefError, workspaceLandFenceRef } from "./workspace-fence-ref.js";
-import { isPushAfterMergeEnabled, explainPushAfterMergeDecision, type PushAfterMergeDisabledReason, type PushAfterMergeLane } from "./push-after-merge-policy.js";
+import { isPushAfterMergeEnabled, explainPushAfterMergeDecision, resolvePublishRemote, PUBLISH_REMOTE_UNCONFIGURED, type PushAfterMergeDisabledReason, type PushAfterMergeLane } from "./push-after-merge-policy.js";
 import { resolveWorkspaceIntegrationTarget, WorkspaceEnvironmentError, WorkspaceIntegrationTargetError, type WorkspaceIntegrationTarget } from "./workspace-integration-target.js";
 import { finalizeProvenAutoMergeTask } from "./auto-merge-finalization.js";
 import { getCommitTaskOwnership, detectAlreadyLandedOnMain } from "./already-merged-detector.js";
@@ -2506,20 +2506,34 @@ async function runPushAfterMergeStep(input: {
   `reasonCode` from, so a defensive belt and its trace cannot disagree about why nothing ran.
   */
   if (!explainPushAfterMergeDecision(settings, { lane: "single-repo" }).enabled) return;
+  /*
+  FNXC:MergePush 2026-11-08-16:19 (RUFU-366):
+  Enabling "push after merge" used to be enough to reach a server: when `pushRemote` was unset this
+  lane resolved `origin` at three separate layers and pushed the integration branch there. Now the
+  publish target must be CONFIGURED, and an unconfigured one is a refusal that runs zero git
+  commands. It deliberately rides the existing failure path rather than a new branch: the push
+  contract here is non-fatal (the merge already landed), so the refusal sets `pushedToRemote: false`
+  plus `pushError`, writes the same PushToRemoteFailed task-history entry, and finalizes as before.
+  It is NOT a `MergePublishHold` code — a "hold" reads as transient and this is a configuration
+  refusal whose remedy is an operator writing a value in Settings.
+  */
+  const publishRemote = resolvePublishRemote(settings);
   try {
-    const pushOutcome = await pushAfterMergeToRemote({
-      store,
-      projectRootDir,
-      taskId,
-      settings,
-      integrationBranch,
-      audit,
-      log,
-      signal: options.signal,
-      onAgentText: options.onAgentText,
-      onSession: options.onSession,
-      fence,
-    });
+    const pushOutcome: Awaited<ReturnType<typeof pushAfterMergeToRemote>> = publishRemote
+      ? await pushAfterMergeToRemote({
+        store,
+        projectRootDir,
+        taskId,
+        settings,
+        integrationBranch,
+        audit,
+        log,
+        signal: options.signal,
+        onAgentText: options.onAgentText,
+        onSession: options.onSession,
+        fence,
+      })
+      : { pushed: false, unconfigured: true, error: PUBLISH_REMOTE_UNCONFIGURED };
     result.pushedToRemote = pushOutcome.pushed;
     if (pushOutcome.error) result.pushError = pushOutcome.error;
     await audit.git({
@@ -2527,9 +2541,16 @@ async function runPushAfterMergeStep(input: {
       target: taskId,
       metadata: {
         integrationBranch,
-        remote: pushOutcome.remote ?? settings.pushRemote ?? "origin",
+        // RUFU-366: `remote` names the target actually offered, never a fabricated "origin", and is
+        // null when nothing was offered at all. `remoteConfigured` is the fixed-vocabulary record of
+        // what configuration named: the configured remote, or the literal "unset". The two together
+        // answer "which server did this lane touch" and "did an operator ever choose it" separately,
+        // so a missing setting can no longer read as a deliberate choice of a forbidden server.
+        remote: pushOutcome.remote ?? publishRemote ?? null,
+        remoteConfigured: publishRemote ?? "unset",
         targetBranch: pushOutcome.targetBranch,
-        outcome: pushOutcome.pushed ? "success" : "failed",
+        outcome: pushOutcome.unconfigured ? "refused" : pushOutcome.pushed ? "success" : "failed",
+        ...(pushOutcome.unconfigured ? { reason: "publish-remote-unset" } : {}),
         refAdvanced: pushOutcome.refAdvanced,
         ...(pushOutcome.error ? { stderrPreview: pushOutcome.error.slice(0, 500) } : {}),
       },
@@ -2557,7 +2578,7 @@ async function runPushAfterMergeStep(input: {
       aiMergeLog.warn(`${taskId}: push to remote failed: ${pushOutcome.error}`);
       await fence.write("log", () => store.logEntry(
         taskId,
-        `Push to remote failed after merge — task finalized anyway; local ${integrationBranch} may diverge from ${pushOutcome.remote ?? "origin"}: ${pushOutcome.error}`,
+        `Push to remote failed after merge — task finalized anyway; local ${integrationBranch} may diverge from ${pushOutcome.remote ?? publishRemote ?? "the publish remote (none is configured)"}: ${pushOutcome.error}`,
         "PushToRemoteFailed",
       ).catch(() => undefined));
     }
@@ -2574,7 +2595,7 @@ async function runPushAfterMergeStep(input: {
       await audit.git({
         type: "push:origin",
         target: taskId,
-        metadata: { integrationBranch, remote: settings.pushRemote ?? "origin", outcome: "aborted" },
+        metadata: { integrationBranch, remote: publishRemote ?? null, remoteConfigured: publishRemote ?? "unset", outcome: "aborted" },
       }).catch(() => undefined);
       await fence.write("log", () => store.logEntry(taskId, message, "PushToRemoteFailed").catch(() => undefined));
       return;
@@ -2586,11 +2607,11 @@ async function runPushAfterMergeStep(input: {
     await audit.git({
       type: "push:origin",
       target: taskId,
-      metadata: { integrationBranch, remote: settings.pushRemote ?? "origin", outcome: "failed", stderrPreview: message.slice(0, 500) },
+      metadata: { integrationBranch, remote: publishRemote ?? null, remoteConfigured: publishRemote ?? "unset", outcome: "failed", stderrPreview: message.slice(0, 500) },
     }).catch(() => undefined);
     await fence.write("log", () => store.logEntry(
       taskId,
-      `Push to remote threw after merge — task finalized anyway; local ${integrationBranch} may diverge from origin: ${message}`,
+      `Push to remote threw after merge — task finalized anyway; local ${integrationBranch} may diverge from ${publishRemote ?? "the publish remote (none is configured)"}: ${message}`,
       "PushToRemoteFailed",
     ).catch(() => undefined));
   }
@@ -4746,6 +4767,14 @@ the behavior without ever touching the user's working tree:
 Failures are ALWAYS non-fatal: the merge already landed locally, so the task finalization must
 never be blocked or rolled back by a push problem. Outcome is surfaced via the `push:origin`
 run-audit event, a task-log entry, and MergeResult.pushedToRemote/pushError.
+
+FNXC:MergePush 2026-11-08-16:19 (RUFU-366):
+The `parsePushRemoteTarget` bail below returns `pushed: false` BEFORE the first git command, so the
+now-strict parser is by itself a complete refusal for this lane: with no publish remote configured
+nothing is pushed and no remote name is invented. The caller (`runPushAfterMergeStep`) still
+pre-checks `resolvePublishRemote` so the record reads as an intentional refusal (`outcome: "refused"`,
+`reason: "publish-remote-unset"`) rather than as a malformed configuration, and marks that shape with
+`unconfigured: true`.
 */
 export async function pushAfterMergeToRemote(input: {
   store: TaskStore;
@@ -4759,7 +4788,7 @@ export async function pushAfterMergeToRemote(input: {
   onAgentText?: (delta: string) => void;
   onSession?: (session: { dispose: () => void }) => void;
   fence?: MergeWriteFence;
-}): Promise<{ pushed: boolean; remote?: string; targetBranch?: string; refAdvanced?: boolean; rebasedSha?: string; error?: string }> {
+}): Promise<{ pushed: boolean; remote?: string; targetBranch?: string; refAdvanced?: boolean; rebasedSha?: string; error?: string; unconfigured?: boolean }> {
   const { store, projectRootDir, taskId, settings, integrationBranch, audit, log, signal } = input;
   // FNXC:MergeReliability 2026-08-11-22:17: Post-push recovery diagnostics can outlive
   // cancellation, so direct callers construct the same per-generation write fence.

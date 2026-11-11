@@ -16,7 +16,10 @@ function fixture() {
     mergeDetails: { mergeConfirmed: true, commitSha: sha, mergeTargetBranch: "main" },
     workflowStepResults: [{ workflowStepId: "post-merge-verification", status: "failed", verdict: "REVISE" }],
   } as Task;
-  const settings = { autoMerge: true, pushAfterMerge: true } as Settings;
+  // RUFU-366: the publish remote is now explicit-only, so the fixture states it. It deliberately uses
+  // a non-origin name (`lan`) so this suite proves the lane honors configuration instead of pinning
+  // the target this deployment forbids; the assertions below name `lan` wherever a remote is asserted.
+  const settings = { autoMerge: true, pushAfterMerge: true, pushRemote: "lan" } as Settings;
   const store = {
     rootDir: `/repo-${++sequence}`,
     getTask: vi.fn(async () => task), getSettings: vi.fn(async () => settings),
@@ -50,7 +53,7 @@ describe("confirmed landing remote delivery recovery", () => {
       const landedSha = await git(["rev-parse", "HEAD"], local);
       await commit();
       const newerSha = await git(["rev-parse", "HEAD"], local);
-      await git(["remote", "add", "origin", join(root, "remote.git")], local);
+      await git(["remote", "add", "lan", join(root, "remote.git")], local);
       const { task, store, settings } = fixture();
       store.rootDir = local;
       task.mergeDetails!.commitSha = landedSha;
@@ -69,7 +72,7 @@ describe("confirmed landing remote delivery recovery", () => {
     const evidence = structuredClone(task.workflowStepResults);
     await recoverConfirmedMergePush(store, task, settings, run);
     expect(run).toHaveBeenCalledWith(["merge-base", "--is-ancestor", sha, "refs/heads/main"], store.rootDir, expect.any(Number));
-    expect(run).toHaveBeenCalledWith(["push", "origin", `${sha}:refs/heads/main`], store.rootDir, expect.any(Number));
+    expect(run).toHaveBeenCalledWith(["push", "lan", `${sha}:refs/heads/main`], store.rootDir, expect.any(Number));
     expect(task.mergeDetails?.pushRecovery?.pushedAt).toBeTruthy();
     expect(task.column).toBe("in-review");
     expect(task.workflowStepResults).toEqual(evidence);
@@ -126,7 +129,7 @@ describe("confirmed landing remote delivery recovery", () => {
       return "";
     });
     await recoverConfirmedMergePush(store, task, settings, run);
-    expect(run).toHaveBeenCalledWith(["fetch", "--no-tags", "--no-write-fetch-head", "origin", "refs/heads/main"], store.rootDir, expect.any(Number));
+    expect(run).toHaveBeenCalledWith(["fetch", "--no-tags", "--no-write-fetch-head", "lan", "refs/heads/main"], store.rootDir, expect.any(Number));
     expect(run.mock.calls.some(([args]) => args[0] === "push")).toBe(false);
     expect(task.mergeDetails?.pushRecovery?.pushedAt).toBeTruthy();
   });
@@ -179,6 +182,30 @@ describe("confirmed landing remote delivery recovery", () => {
     });
     await recoverConfirmedMergePush(store, task, settings, run);
     expect(task.mergeDetails!.pushRecovery).toEqual({ target: "origin/other", commitSha: sha, nextAttemptAt: "2099-01-01T00:00:00Z" });
+  });
+
+  /*
+  FNXC:MergePush 2026-11-08-16:19 (RUFU-366):
+  This lane is a live automatic publish path, so its refusal contract is asserted here rather than
+  inferred from the merge lanes. The honest observable shape of this refusal is ABSENCE: by design it
+  writes nothing (the pump re-visits landed cards every pass, so a per-tick History line or audit row
+  would spam), which is why the assertions are `run` never called, `updateTaskAtomic` never called,
+  no pushRecovery marker, and — critically — no branchAttempts cooldown slot claimed, proved by
+  configuring the remote afterwards and showing the very next pass still runs.
+  */
+  it.each([undefined, "", "   "])("refuses an unconfigured publish remote (%j) with zero git, zero writes, and no cooldown claim", async (pushRemote) => {
+    const { task, settings, store, run } = fixture();
+    settings.pushRemote = pushRemote;
+    await recoverConfirmedMergePush(store, task, settings, run);
+    expect(run).not.toHaveBeenCalled();
+    expect(store.updateTaskAtomic).not.toHaveBeenCalled();
+    expect(store.logEntry).not.toHaveBeenCalled();
+    expect(task.mergeDetails?.pushRecovery).toBeUndefined();
+    // The refusal claimed no 5-minute branch slot: once an operator configures the remote, the next
+    // pump pass publishes immediately instead of waiting out a cooldown it never earned.
+    settings.pushRemote = "lan";
+    await recoverConfirmedMergePush(store, task, settings, run);
+    expect(run.mock.calls.some(([args]) => args[0] === "push")).toBe(true);
   });
 
   it("suppresses all writes and git operations for an aborted merge generation", async () => {

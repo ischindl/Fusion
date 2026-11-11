@@ -15,9 +15,20 @@ enumerated surfaces — fast path (remote behind), divergence path (remote moved
 clean-room rebase + non-FF local ref advance), explicit "remote branch" push targets,
 setting disabled (no push), and push failure (non-fatal: task still finalizes done).
 */
+/*
+FNXC:MergePush 2026-11-08-16:19 (RUFU-366):
+The operator decision behind this file changed: publishing goes to an explicitly configured remote
+(`lan`) and pushes to GitHub are forbidden, so the schema default and every parser/policy fallback
+that re-synthesised `origin` were removed. A header whose surfaces all asserted the bare `origin`
+remote could no longer tell a push the configuration requested from a push nobody configured, so the
+fixture states `pushRemote: "origin"` explicitly and two new surfaces pin the new contract: unset
+remote → refused publish, remote untouched, `push:origin` row with `remote: null` +
+`reason: "publish-remote-unset"`; and a configured non-origin remote → that remote advances while a
+real reachable `origin` stays at its old tip.
+*/
 import { describe, it, expect, vi, afterAll } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 
@@ -113,6 +124,10 @@ function makeStore(settingsOverrides: Record<string, unknown> = {}) {
     getSettings: vi.fn(async () => ({
       merger: { mode: "ai", maxReviewPasses: 1 },
       pushAfterMerge: true,
+      /* FNXC:MergePush 2026-11-08-16:19 (RUFU-366): the publish target has no default any more, so
+         this shared fixture states it. Cases testing the refusal override with `pushRemote:
+         undefined`, which the spread below honours, and one case names a non-existent remote. */
+      pushRemote: "origin",
       ...settingsOverrides,
     })),
     updateTask: vi.fn(async (_id: string, patch: Record<string, unknown>) => { Object.assign(task, patch); return task; }),
@@ -417,7 +432,7 @@ exit 1
 
   it("finalizes the task even when the push fails (non-fatal contract)", async () => {
     const { dir } = initRepoWithRemote();
-    const { store, task, logs } = makeStore({ pushRemote: "nonexistent-remote" });
+    const { store, storeMocks, task, logs } = makeStore({ pushRemote: "nonexistent-remote" });
 
     const result = await runAiMerge(store, dir, "FN-1", { manual: true }, {
       mergeAgent: realMergeAgent("fusion/fn-1"),
@@ -429,5 +444,81 @@ exit 1
     expect(result.pushedToRemote).toBe(false);
     expect(result.pushError).toBeTruthy();
     expect(logs.some((l) => l.action === "PushToRemoteFailed")).toBe(true);
+    /* FNXC:RunAudit 2026-11-08-16:19 (RUFU-366): a target that was configured, tried, and failed must
+       be told apart from a publish that was never configured. Both are `pushed: false`, but only this
+       one names the remote it actually attempted — `remoteConfigured` carries the configured value
+       verbatim, which is exactly what makes a typo in Settings visible in the record. */
+    expect(auditRows(storeMocks, "push:origin").at(-1)!.metadata).toMatchObject({
+      remote: "nonexistent-remote",
+      remoteConfigured: "nonexistent-remote",
+      outcome: "failed",
+    });
+  });
+
+  /*
+  FNXC:MergePush 2026-11-08-16:19 (RUFU-366):
+  Symptom tests for the defect this card removes: with no publish remote configured, this lane used to
+  push the merge result to `origin` anyway, because four layers each re-synthesised that default. The
+  old assertions all hard-coded the bare `origin` remote, so a green run could not tell a push the
+  configuration asked for from a push nobody configured. These cases drive the REAL git merge path
+  through the real parser and the real push helper (the mock the sibling suites inject into
+  `pushToRemoteAfterMerge` would only replay the mock's own constant, proving nothing about Layer 2).
+  */
+  it("refuses to publish with no remote configured, leaving the remote untouched", async () => {
+    const { dir, originDir } = initRepoWithRemote();
+    const { store, storeMocks, task, logs } = makeStore({ pushRemote: undefined });
+    const remoteBefore = git(originDir, "rev-parse main");
+
+    const result = await runAiMerge(store, dir, "FN-1", { manual: true }, {
+      mergeAgent: realMergeAgent("fusion/fn-1"),
+      reviewAgent: approveReviewer(),
+    });
+
+    // The merge itself still lands and finalizes; only the publish is withheld (non-fatal contract).
+    expect(result.merged).toBe(true);
+    expect(task.column).toBe("done");
+    expect(result.pushedToRemote).toBe(false);
+    expect(result.pushError).toContain("merge.pushRemote is not configured");
+    // The symptom: nothing reached the remote that used to receive it by accident.
+    expect(git(originDir, "rev-parse main")).toBe(remoteBefore);
+    expect(git(dir, "rev-parse main")).not.toBe(remoteBefore);
+    const rows = auditRows(storeMocks, "push:origin");
+    expect(rows).toHaveLength(1);
+    // `outcome: "refused"` is this row's honest non-delivery signal; the row shape has always carried
+    // outcome rather than a `pushed` boolean, and `result.pushedToRemote` above asserts the outward one.
+    expect(rows[0]!.metadata).toMatchObject({
+      outcome: "refused",
+      remote: null,
+      remoteConfigured: "unset",
+      reason: "publish-remote-unset",
+    });
+    expect(logs.some((l) => l.action === "PushToRemoteFailed" && l.message.includes("merge.pushRemote is not configured"))).toBe(true);
+    // Zero git invocations, provable from the record: a transport attempt would carry Git's own stderr
+    // (as the `nonexistent-remote` case above does). Here the only error text is the configuration
+    // sentence, because the lane returned before reaching the push helper at all.
+    expect(rows[0]!.metadata.stderrPreview).toContain("merge.pushRemote is not configured");
+    expect(String(rows[0]!.metadata.stderrPreview)).not.toMatch(/fatal|remote error|couldn't find remote ref/);
+  });
+
+  it("publishes to the configured remote and never to a remote merely named origin", async () => {
+    const { dir, originDir } = initRepoWithRemote();
+    // A second bare remote, registered under the configured name, is the only legitimate target.
+    const mirrorDir = join(dirname(originDir), "mirror.git");
+    git(dir, `init -q --bare "${mirrorDir}"`);
+    git(dir, `remote add mirror "${mirrorDir}"`);
+    const { store, storeMocks } = makeStore({ pushRemote: "mirror" });
+    const remoteBefore = git(originDir, "rev-parse main");
+
+    const result = await runAiMerge(store, dir, "FN-1", { manual: true }, {
+      mergeAgent: realMergeAgent("fusion/fn-1"),
+      reviewAgent: approveReviewer(),
+    });
+
+    expect(result.pushedToRemote).toBe(true);
+    // The configured remote received the landing.
+    expect(git(mirrorDir, "rev-parse main")).toBe(git(dir, "rev-parse main"));
+    // `origin` is a real, reachable remote here, so staying at its old tip is proof, not an artifact.
+    expect(git(originDir, "rev-parse main")).toBe(remoteBefore);
+    expect(auditRows(storeMocks, "push:origin").at(-1)!.metadata).toMatchObject({ remote: "mirror", remoteConfigured: "mirror" });
   });
 });

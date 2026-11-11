@@ -52,3 +52,39 @@ export function isPushAfterMergeEnabled(
 ): boolean {
   return explainPushAfterMergeDecision(settings, options).enabled;
 }
+
+/**
+ * The canonical refusal for "publishing is on but no publish remote is configured".
+ * One string on purpose: the parser throws it, both merge lanes put it in
+ * `MergeResult.pushError`, and all three publish paths write it to task history, so a
+ * support question about a refused publish has exactly one sentence to grep for.
+ *
+ * FNXC:MergePush 2026-11-08-16:19 (RUFU-366).
+ */
+export const PUBLISH_REMOTE_UNCONFIGURED = 'merge.pushRemote is not configured \u2014 publishing the merge result requires an explicit publish remote (e.g. "lan" or "lan main"); nothing was pushed.';
+
+/**
+ * The publish remote an operator actually configured, or `undefined` when they did not.
+ *
+ * FNXC:MergePush 2026-11-08-16:19 (RUFU-366):
+ * This is the single answer to "where may this merge result be pushed?", and it deliberately
+ * has NO default. Before this helper, four independent layers each re-derived `"origin"` when
+ * the setting was unset — the schema default, two fallbacks in `parsePushRemoteTarget`, six
+ * run-audit metadata fallbacks, and the confirmed-landing recovery lane's own statement — so an
+ * operator who enabled "push after merge" without naming a remote silently published the
+ * integration branch to a server nobody chose. Operator decision 2026-09-27 for this deployment
+ * is that the engine publishes to the OneDev remote `lan` and that pushes to GitHub are
+ * forbidden; the fix is explicit configuration plus refusal, NOT a provider blocklist, because
+ * deployments that legitimately publish to GitHub must keep working untouched.
+ * Whitespace-only counts as unset, and the returned string is trimmed, which is what lets
+ * callers split it on whitespace and trust a non-empty first token.
+ *
+ * This names a PUBLISH target only. It is never a CI-evidence repository — see
+ * `postMergeCiRepo` and the NO-FALLBACK rule in `post-merge-ci-repository.ts`, which names
+ * `merge.pushRemote` as answering a different question.
+ */
+export function resolvePublishRemote(
+  settings: Pick<Settings, "pushRemote">,
+): string | undefined {
+  return settings.pushRemote?.trim() || undefined;
+}

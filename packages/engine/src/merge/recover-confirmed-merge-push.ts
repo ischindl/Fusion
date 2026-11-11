@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { allowsAutoMergeProcessing, getPostMergeFinalizeBlocker, type Settings, type Task, type TaskStore } from "@fusion/core";
 import { activeSessionRegistry, executingTaskLock } from "../agents/active-session-registry.js";
 import { isTaskExecutionLive } from "./merge-execution-exclusion.js";
-import { isPushAfterMergeEnabled } from "./push-after-merge-policy.js";
+import { isPushAfterMergeEnabled, resolvePublishRemote } from "./push-after-merge-policy.js";
 import { createMergeWriteFence, type MergeWriteFence } from "./merge-write-fence.js";
 
 const execFileAsync = promisify(execFile);
@@ -41,7 +41,30 @@ export async function recoverConfirmedMergePush(
   const branch = details.mergeTargetBranch;
   const sha = details.commitSha;
   if (!branch || !sha || !/^[a-f0-9]{40,64}$/i.test(sha)) return;
-  const [remote = "origin", ...targetParts] = (settings.pushRemote?.trim() || "origin").split(/\s+/);
+  /*
+  FNXC:MergePush 2026-11-08-16:19 (RUFU-366):
+  This lane is a live automatic publish path with its OWN target derivation and its OWN `git push`, so
+  the schema/parser fixes do not reach it. Its old statement carried two origin defaults at once — the
+  `|| "origin"` expression and the `remote = "origin"` destructuring default — and then really pushed
+  (below, at the `git push` call), i.e. a pump-driven retry could re-guess a forbidden target on its
+  own. An unconfigured publish remote now returns here: above the `branchAttempts` cooldown claim (a
+  pump pass that can never publish must not burn a 5-minute slot for it), above every git call, and
+  outside the try/catch that writes errors into `mergeDetails.pushRecovery` — a missing setting is a
+  configuration gap, not a transport failure, and must not burn the retry record.
+
+  Honest observability tradeoff, accepted deliberately: this refusal writes NOTHING — no audit row, no
+  task-history line, no cooldown claim — because the pump re-visits every landed in-review card each
+  pass and a per-tick History line would spam the card forever. It is discoverable instead through the
+  configuration itself and through the two merge lanes' `outcome: "refused"` / `reason:
+  "publish-remote-unset"` rows, which report the same missing setting on the merge that first needed it.
+  */
+  const publishRemote = resolvePublishRemote(settings);
+  if (!publishRemote) return;
+  // `resolvePublishRemote` trims and maps empty/whitespace-only to undefined, so the first
+  // whitespace-delimited token is always non-empty; that guarantee is what makes removing the old
+  // destructuring default safe instead of leaving `remote` possibly undefined. "lan main" still
+  // resolves to remote `lan` and target branch `main`.
+  const [remote = "", ...targetParts] = publishRemote.split(/\s+/);
   const targetBranch = targetParts.join(" ") || branch;
   // Only configured remote names, never arbitrary URLs, options, or shell expressions.
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(remote)) return;
