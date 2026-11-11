@@ -636,6 +636,86 @@ describe("HeartbeatTriggerScheduler", () => {
       expect(store.endHeartbeatRun).toHaveBeenCalledTimes(1);
     });
 
+    /*
+    FNXC:HeartbeatRunOwnership 2026-11-11-00:07:
+    The reap above is correct for a run this host owns or whose owner died; it is the defect when the
+    owner is a live peer. Measured 2026-11-10/11 with a `--no-engine` UI process beside a `fn serve`
+    engine host on one PostgreSQL, each process reaped the other's live run at the stale threshold (10 of
+    the UI process's 17 runs ended `terminated`; six agents were driven by both hosts in the same hour).
+    Age proves the OWNER stopped reporting, not that the run stopped running.
+    */
+    describe("heartbeat run ownership", () => {
+      const staleAgent = () => ({
+        id: "agent-001",
+        name: "Agent 001",
+        role: "executor",
+        state: "active",
+        lastHeartbeatAt: "2026-01-01T00:00:00.000Z",
+        runtimeConfig: { enabled: true, heartbeatIntervalMs: 3_600_000, heartbeatTimeoutMs: 10_000 },
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        metadata: {},
+      } as Agent);
+
+      const ownedRun = (processPid?: number) => ({
+        id: "run-peer",
+        agentId: "agent-001",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        status: "active",
+        ...(processPid === undefined ? {} : { processPid }),
+      } as any);
+
+      const ownerDeps = (isPidAlive: () => boolean) => ({
+        currentPid: 1000,
+        platform: "linux" as NodeJS.Platform,
+        isKernelLinux: () => true,
+        isPidAlive,
+        readProcCmdline: () => "/usr/bin/node\u0000packages/cli/dist/bin.js\u0000serve\u0000",
+      });
+
+      const armAudit = async (processPid?: number, deps?: ReturnType<typeof ownerDeps>) => {
+        const run = ownedRun(processPid);
+        vi.mocked(store.listAgents).mockResolvedValue([staleAgent()]);
+        vi.mocked(store.getActiveHeartbeatRun).mockResolvedValue(run);
+        vi.mocked(store.getRunDetail).mockResolvedValue(run);
+        scheduler = new HeartbeatTriggerScheduler(store, callback, undefined, deps ? { runOwnerDeps: deps } : undefined);
+        scheduler.start();
+        await vi.advanceTimersByTimeAsync(0);
+      };
+
+      it("leaves a run owned by a live peer host untouched and names the reason", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-01-01T02:00:00.000Z"));
+
+        await armAudit(4242, ownerDeps(() => true));
+
+        expect(store.endHeartbeatRun).not.toHaveBeenCalled();
+        expect(store.saveRun).not.toHaveBeenCalled();
+        expect(heartbeatLog.log).toHaveBeenCalledWith(
+          expect.stringContaining("Heartbeat stale-run reap withheld reason=owner-live-peer agentId=agent-001 runId=run-peer"),
+        );
+      });
+
+      it("reaps a dead owner's run once the stale threshold passes", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-01-01T02:00:00.000Z"));
+
+        await armAudit(4242, ownerDeps(() => false));
+
+        expect(store.endHeartbeatRun).toHaveBeenCalledWith("run-peer", "terminated");
+      });
+
+      it("keeps the FN-4119 behaviour for a legacy run that records no owner pid", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-01-01T02:00:00.000Z"));
+
+        await armAudit(undefined, ownerDeps(() => true));
+
+        expect(store.endHeartbeatRun).toHaveBeenCalledWith("run-peer", "terminated");
+      });
+    });
+
+
     it("FN-4119 leaves healthy active runs alone during audit", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-01-01T00:00:15.000Z"));

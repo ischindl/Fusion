@@ -447,6 +447,15 @@ export interface ServerOptions {
     isRunning(): boolean;
     executeManualValidatorRun?(run: { id: string; featureId: string }): Promise<void>;
   };
+  /*
+  FNXC:HeartbeatOwnership 2026-11-11-00:07: test seam for the process-ownership check the agent run
+  control routes apply before writing a run row this process cannot drive. Production leaves it undefined
+  and reads the real process table; a test injects a fake one, because "the owner is a live peer" cannot be
+  staged honestly by picking a pid — a fixture that works only while the machine happens to host a suitable
+  process is a fixture that quietly stops testing anything.
+  */
+  heartbeatRunOwnerDeps?: import("@fusion/engine").HeartbeatRunOwnershipDeps;
+
   /** Optional HeartbeatMonitor for triggering agent execution runs */
   heartbeatMonitor?: {
     /** Project root directory this monitor is bound to. Used for scope validation. */

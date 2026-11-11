@@ -359,6 +359,12 @@ export interface HeartbeatMonitorOptions {
    * failure (FN-7721).
    */
   onTaskAcquisitionExhausted?: (taskId: string, detail: string) => void;
+  /**
+   * FNXC:HeartbeatRunOwnership 2026-11-11-00:07: owner-liveness deps for the stale-run reconciliation.
+   * Production passes nothing; tests inject a fake process table so "a live peer owns this run" is a
+   * reachable branch instead of an untestable claim.
+   */
+  runOwnerDeps?: HeartbeatRunOwnershipDeps;
 }
 
 /** Options for waking up an agent */
@@ -807,6 +813,13 @@ import {
   isHeartbeatManaged,
 } from "./agents/agent-heartbeat-error-recovery.js";
 import { isProviderThrottleEnvelopeError } from "./errors/transient-error-detector.js";
+import {
+  classifyHeartbeatRunOwner,
+  heartbeatRunOwnerReasonCode,
+  isHeartbeatRunReapAllowedForOwner,
+  type HeartbeatRunOwnershipDeps,
+  type HeartbeatRunOwnerVerdict,
+} from "./agents/heartbeat-run-ownership.js";
 
 
 /** Parameter schema for the fn_heartbeat_done tool */
@@ -1173,6 +1186,8 @@ export class HeartbeatMonitor {
    * and a queued recovery wake can re-check the evidence it was dispatched on.
    */
   private recoveryEpisodes: Map<string, RecoveryEpisode> = new Map();
+  /** FNXC:HeartbeatRunOwnership 2026-11-11-00:07: see `HeartbeatMonitorOptions.runOwnerDeps`. */
+  private runOwnerDeps?: HeartbeatRunOwnershipDeps;
 
   constructor(options: HeartbeatMonitorOptions) {
     this.store = options.store;
@@ -1186,6 +1201,7 @@ export class HeartbeatMonitor {
     this.onRunStarted = options.onRunStarted;
     this.onRunCompleted = options.onRunCompleted;
     this.onTaskAcquisitionExhausted = options.onTaskAcquisitionExhausted;
+    this.runOwnerDeps = options.runOwnerDeps;
     this.taskStore = options.taskStore;
     this.rootDir = options.rootDir;
     this.messageStore = options.messageStore;
@@ -2089,7 +2105,19 @@ export class HeartbeatMonitor {
           // Freshness/staleness for active+idle reports is interval-based in
           // `buildReportsHealthSection()` and dashboard `agentHealth.tsx` via
           // `max(heartbeatIntervalMs × 4, 5m)` (FN-4255).
-          if (!Number.isFinite(heartbeatAgeMs) || heartbeatAgeMs > timeoutMs * 3) {
+          /*
+          FNXC:HeartbeatRunOwnership 2026-11-11-00:07: `!trackedAgents.has(agent.id)` proves only that
+          THIS process has no session for the agent, and the run row is shared — so with a second Fusion
+          host on the same database (measured 2026-11-10/11: a `--no-engine` UI process beside a
+          `fn serve` engine host) every live peer run reached this branch and was terminated as an
+          orphan, 10 of 17 runs in one hour on the same six agents. Ownership outranks staleness.
+          */
+          const ownerVerdict = classifyHeartbeatRunOwner(activeRun, this.runOwnerDeps);
+          if (!isHeartbeatRunReapAllowedForOwner(ownerVerdict)) {
+            heartbeatLog.log(
+              `Heartbeat stale-run reap withheld reason=${heartbeatRunOwnerReasonCode(ownerVerdict)} agentId=${agent.id} runId=${activeRun.id}`,
+            );
+          } else if (!Number.isFinite(heartbeatAgeMs) || heartbeatAgeMs > timeoutMs * 3) {
             try {
               await terminatePersistedHeartbeatRun(
                 this.store,
@@ -7149,6 +7177,12 @@ export class HeartbeatTriggerScheduler {
   private callback: TriggerCallback;
   private taskStore?: TaskStore;
   private shouldSuppressTimerWake?: (agent: Agent, context?: TimerWakeContext) => Promise<TimerWakeDecision>;
+  /**
+   * FNXC:HeartbeatRunOwnership 2026-11-11-00:07: decides whether THIS process may close a persisted
+   * run. A run owned by another live Fusion host is not an orphan, and reaping it is what made two
+   * hosts on one database fight over every agent (see the module's own note).
+   */
+  private classifyRunOwner: (run: AgentHeartbeatRun) => HeartbeatRunOwnerVerdict;
   private timers: Map<string, AgentTimer> = new Map();
   private errorRecoveryLimit = MAX_HEARTBEAT_ERROR_RECOVERY_ATTEMPTS;
   private pendingAssignments: Map<string, PendingAssignment> = new Map();
@@ -7262,6 +7296,10 @@ export class HeartbeatTriggerScheduler {
     isTaskExecuting?: (taskId: string) => boolean;
     isAgentEffectivelyExecuting?: (agentId: string) => boolean;
     shouldSuppressTimerWake?: (agent: Agent, context?: TimerWakeContext) => Promise<TimerWakeDecision>;
+    /** FNXC:HeartbeatRunOwnership 2026-11-11-00:07: injectable owner classifier (tests only). */
+    classifyRunOwner?: (run: AgentHeartbeatRun) => HeartbeatRunOwnerVerdict;
+    /** Owner-liveness deps, injected by tests; production takes the real process table. */
+    runOwnerDeps?: HeartbeatRunOwnershipDeps;
   }) {
     this.store = store;
     this.callback = callback;
@@ -7269,6 +7307,8 @@ export class HeartbeatTriggerScheduler {
     this.isTaskExecuting = options?.isTaskExecuting;
     this.isAgentEffectivelyExecuting = options?.isAgentEffectivelyExecuting;
     this.shouldSuppressTimerWake = options?.shouldSuppressTimerWake;
+    this.classifyRunOwner = options?.classifyRunOwner
+      ?? ((run) => classifyHeartbeatRunOwner(run, options?.runOwnerDeps));
   }
 
   /**
@@ -8334,6 +8374,21 @@ export class HeartbeatTriggerScheduler {
     const thresholdMs = this.getActiveRunStaleThresholdMs(agent, staleMultiplier);
     const elapsedMs = getHeartbeatAgeMs(agent);
     if (!Number.isFinite(elapsedMs) || elapsedMs <= thresholdMs) {
+      return { reaped: false, elapsedMs, thresholdMs };
+    }
+
+    /*
+    FNXC:HeartbeatRunOwnership 2026-11-11-00:07: this is the reaper that fired in production
+    (`reason=orphaned-run-reaped source=timer thresholdMs=120000`) while another host was streaming the
+    very run it closed. Age proves the OWNER stopped reporting, not that the run stopped running; a run
+    whose owner pid is alive is running, and only its owner may close it. Withholding is also the correct
+    wake decision — the peer's session really is busy, so the next tick must not open a second one.
+    */
+    const ownerVerdict = this.classifyRunOwner(activeRun);
+    if (!isHeartbeatRunReapAllowedForOwner(ownerVerdict)) {
+      heartbeatLog.log(
+        `Heartbeat stale-run reap withheld reason=${heartbeatRunOwnerReasonCode(ownerVerdict)} agentId=${agent.id} runId=${activeRun.id} source=${reason}`,
+      );
       return { reaped: false, elapsedMs, thresholdMs };
     }
 

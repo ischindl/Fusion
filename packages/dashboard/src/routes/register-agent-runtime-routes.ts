@@ -2,6 +2,17 @@ import { ApiError, badRequest, notFound } from "../api-error.js";
 import type { ApiRoutesContext } from "./types.js";
 import { requireAsyncLayer } from "../require-async-layer.js";
 import { resolveTaskLifecycleColumns } from "@fusion/core";
+/*
+FNXC:HeartbeatOwnership 2026-11-11-00:07: a run row names the process that opened it. Two dashboard
+routes used to write "terminated" (or write a fresh "active") against a run this process cannot drive,
+which is how a UI-only host erased a live engine host's session and how it invented a run nobody would
+ever run. Both now ask the owner first.
+*/
+import {
+  classifyHeartbeatRunOwner,
+  heartbeatRunOwnerReasonCode,
+  isHeartbeatRunReapAllowedForOwner,
+} from "@fusion/engine";
 
 type NormalizedAuditEvent = import("../routes.js").NormalizedRunAuditEvent;
 type TimelineEntry = import("../routes.js").TimelineEntry;
@@ -43,6 +54,7 @@ interface AgentRuntimeRouteDeps {
 
 export function registerAgentRuntimeRoutes(ctx: ApiRoutesContext, deps: AgentRuntimeRouteDeps): void {
   const { router, getProjectContext, rethrowAsApiError, runtimeLogger } = ctx;
+  const runOwnerDeps = ctx.options?.heartbeatRunOwnerDeps;
   const {
     validateAgentInstructionsPayload,
     serializeAccessState,
@@ -1215,32 +1227,19 @@ export function registerAgentRuntimeRoutes(ctx: ApiRoutesContext, deps: AgentRun
 
         res.status(201).json(createdRun);
       } else {
-        // Fallback: record-only behavior without HeartbeatMonitor
-        const { store: scopedStore } = await getProjectContext(req);
-        const { AgentStore } = await import("@fusion/core");
-        const agentStore = new AgentStore({ rootDir: scopedStore.getFusionDir(), asyncLayer: scopedStore.getAsyncLayer() ?? undefined });
-        await agentStore.init();
-
-        const agent = await agentStore.getAgent(req.params.id);
-        if (!agent) {
-          throw notFound(`Agent ${req.params.id} not found`);
-        }
-
-        // Check for existing active run
-        const activeRun = await agentStore.getActiveHeartbeatRun(req.params.id);
-        if (activeRun) {
-          throw new ApiError(409, "Agent already has an active run", { runId: activeRun.id });
-        }
-
-        const run = await agentStore.startHeartbeatRun(req.params.id);
-
-        // Enrich with invocation source, trigger detail, and context snapshot
-        run.invocationSource = invocationSource;
-        run.triggerDetail = trigger;
-        run.contextSnapshot = contextSnapshot;
-
-        await agentStore.saveRun(run);
-        res.status(201).json(run);
+        /*
+        FNXC:HeartbeatOwnership 2026-11-11-00:07 (was: "Fallback: record-only behavior without
+        HeartbeatMonitor"): the fallback opened a real `active` run row and returned 201 with it, on a
+        host that had no executor to drive it. The agent never woke, the row stayed active until some
+        other host's stale-run reaper closed it, and — while the split was live — that reaper was the
+        engine host, which correctly read it as an orphan of its own fleet. A UI-only host cannot run an
+        agent; saying so is the whole response.
+        */
+        throw new ApiError(
+          501,
+          "This Fusion host does not run agents. Agent runtime lives with the process that owns the project's engine; wake the agent there, or start this project's engine here.",
+          { reason: "agent-runtime-not-hosted-here", agentId: req.params.id },
+        );
       }
     } catch (err: unknown) {
       if (err instanceof ApiError) {
@@ -1274,6 +1273,20 @@ export function registerAgentRuntimeRoutes(ctx: ApiRoutesContext, deps: AgentRun
       if (!activeRun) {
         res.status(200).json({ ok: true, message: "No active run" });
         return;
+      }
+
+      /*
+      FNXC:HeartbeatOwnership 2026-11-11-00:07: one choke point for both branches below. Terminating the
+      row does not terminate the session — only the owner can do that — so writing "terminated" over a
+      run another live process is streaming was a double lie: the operator saw a stopped run that kept
+      running, and the owner's own completion write then raced it.
+      */
+      const stopOwner = classifyHeartbeatRunOwner(activeRun, runOwnerDeps);
+      if (!isHeartbeatRunReapAllowedForOwner(stopOwner)) {
+        throw new ApiError(409, "This run is owned by another Fusion host that is still alive; stop it from that host.", {
+          reason: heartbeatRunOwnerReasonCode(stopOwner),
+          runId: activeRun.id,
+        });
       }
 
       if (hasHeartbeatExecutor && heartbeatMonitor) {

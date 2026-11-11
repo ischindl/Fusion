@@ -8,18 +8,15 @@ import { fileURLToPath } from "node:url";
 import { launchUrl, secretForDisplay } from "./startup-secret.js";
 import {
   type TaskStore,
-  type SecretsStore,
   AutomationStore,
   CentralCore,
   AgentStore,
   PluginLoader,
   getTaskMergeBlocker,
   getEnabledPiExtensionPaths,
-  isEphemeralAgent,
   DaemonTokenManager,
   GlobalSettingsStore,
   resolveGlobalDir,
-  DEFAULT_AGENT_HEARTBEAT_INTERVAL_MS,
   isWorkspaceTask,
   resolveColumnFlags,
   resolveDefaultWorkflowIr,
@@ -112,10 +109,7 @@ import {
   MissionAutopilot,
   MissionExecutionLoop,
   LandedValidationEvidenceProvider,
-  HeartbeatMonitor,
   HeartbeatTriggerScheduler,
-  asWakeSignalKind,
-  type WakeContext,
   ProjectEngineManager,
   warmUpProjectEngine,
   PeerExchangeService,
@@ -186,25 +180,6 @@ import {
 // Re-export for backward compatibility with tests
 export { promptForPort };
 
-/*
-FNXC:SecretsEnvRuntimeWiring 2026-08-05-21:40:
-UI-only dashboard heartbeats are a separate production composition root. Keep this
-factory bound to the project-scoped store so fresh heartbeat worktrees never degrade to no-store.
-*/
-export function buildUiOnlyHeartbeatMonitorOptions(input: {
-  agentStore: AgentStore;
-  taskStore: TaskStore;
-  rootDir: string;
-  secretsStore: Pick<SecretsStore, "listEnvExportable">;
-}) {
-  return {
-    store: input.agentStore,
-    agentStore: input.agentStore,
-    taskStore: input.taskStore,
-    rootDir: input.rootDir,
-    secretsStore: input.secretsStore,
-  };
-}
 
 let processDiagnosticsRegistered = false;
 let diagnosticIntervalHandle: ReturnType<typeof setInterval> | null = null;
@@ -1682,13 +1657,9 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
   // delegates to InProcessRuntime's already-initialized instances. This avoids
   // running duplicate heartbeat infrastructure alongside the engine's own.
   //
-  // In UI-only mode: created inline inside the noEngine block below, since the
-  // engine does not start when --no-engine is passed.
+  // In UI-only mode: neither exists — see FNXC:HeartbeatOwnership 2026-11-11-00:07. A UI-only host must
+  // not drive durable agents beside the process that owns the project's engine.
   //
-  // heartbeatMonitorImpl is a mutable reference. The proxy passed to
-  // createServer delegates through it so routes work in both modes.
-  //
-  let heartbeatMonitorImpl: HeartbeatMonitor | undefined;
   let triggerScheduler: HeartbeatTriggerScheduler | undefined;
 
   // Set enginePaused if starting in paused mode
@@ -2781,7 +2752,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
       logSink.log("Received SIGHUP (terminal disconnected) — ignoring", "dashboard");
     });
   } else {
-    // UI-only mode: create HeartbeatMonitor + TriggerScheduler inline (engine not started)
+    // UI-only mode: no engine, and no agent runtime either — see FNXC:HeartbeatOwnership 2026-11-11-00:07
 
     // ── Mesh networking for UI-only mode ─────────────────────────────────
     //
@@ -2801,143 +2772,30 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
       logSink.warn(`Failed to initialize mesh networking: ${message}`, "dashboard");
     }
 
-    try {
-      /*
-      FNXC:SecretsEnvRuntimeWiring 2026-08-05-21:40:
-      UI-only dashboard mode still runs durable-agent heartbeat worktree acquisition.
-      Resolve this project's store before constructing that monitor so its fresh worktrees
-      materialize only env-exportable project secrets instead of silently taking no-store.
-      */
-      const secretsStore = await store.getSecretsStore();
-      heartbeatMonitorImpl = new HeartbeatMonitor({
-        ...buildUiOnlyHeartbeatMonitorOptions({
-          agentStore,
-          taskStore: store,
-          rootDir: cwd,
-          secretsStore,
-        }),
-        onMissed: (agentId, reason) => {
-          logSink.warn(`Agent ${agentId} missed heartbeat: ${reason}`, "engine");
-        },
-        onTerminated: (agentId, reason) => {
-          logSink.warn(`Agent ${agentId} terminated (unresponsive): ${reason}`, "engine");
-        },
-      });
-      heartbeatMonitorImpl.start();
+    /*
+    FNXC:HeartbeatOwnership 2026-11-11-00:07 (step 0 of the process-split rollback):
+    A `--no-engine` host used to build its own HeartbeatMonitor + HeartbeatTriggerScheduler for its cwd
+    project. Driving agents does not need an in-process monitor: an assignment, a comment, and a schedule
+    are all DATABASE rows, and the process that owns the project's engine (its per-machine singleton)
+    consumes them. What the duplicate monitor actually did was fight the real owner. Measured on
+    production 2026-11-10/11 with a `--no-engine` UI process beside a `fn serve` engine host on one
+    PostgreSQL: six durable RunFusion agents were woken by BOTH processes in the same hour (agent-ce645ede
+    5 runs from the engine, 7 from the UI), 10 of the UI process's 17 runs ended `terminated` because each
+    host reaped the other's live run at the 120 s stale threshold, and each of those runs cost ~1M input
+    tokens — on the process whose entire purpose was to keep its event loop free.
 
-      triggerScheduler = new HeartbeatTriggerScheduler(
-        agentStore,
-        async (agentId, source, context: WakeContext) => {
-          if (!heartbeatMonitorImpl) return;
-          await heartbeatMonitorImpl.executeHeartbeat({
-            agentId,
-            source,
-            triggerDetail: context.triggerDetail,
-            taskId: typeof context.taskId === "string" ? context.taskId : undefined,
-            triggeringCommentIds: Array.isArray(context.triggeringCommentIds)
-              ? context.triggeringCommentIds.filter((id): id is string => typeof id === "string" && id.length > 0)
-              : undefined,
-            triggeringCommentType:
-              context.triggeringCommentType === "steering"
-              || context.triggeringCommentType === "task"
-              || context.triggeringCommentType === "pr"
-                ? context.triggeringCommentType
-                : undefined,
-            contextSnapshot: { ...context },
-            /*
-            FNXC:HeartbeatIdlePreflight 2026-11-01-01:05 (RUFU-268):
-            Forward the scheduler gate's classification. Only the candidate-table kind makes the compact idle
-            turn admissible; every other value, and its absence, keeps the full path. The narrowing goes
-            through `asWakeSignalKind` — the same list the classifier is defined against — rather than a
-            literal union copied here, because a copy is how a later kind would be dropped at exactly one of
-            the two wiring sites.
-            */
-            fresherSignal: asWakeSignalKind(context.fresherSignal),
-          });
-        },
-        store,
-        // UI-only scheduler: no TaskExecutor runs here (engine not started), so
-        // neither `isTaskExecuting` nor the U5 reverse-direction
-        // `isAgentEffectivelyExecuting` guard has a source — both stay unwired (the
-        // guards simply never fire), matching the prior `isTaskExecuting` omission.
-        // The real wiring is the InProcessRuntime construction site.
-        {
-          // STAS-300: this scheduler still executes heartbeats through heartbeatMonitorImpl, so an
-          // acknowledged idle agent must not be re-woken here either.
-          //
-          // FNXC:HeartbeatIdleBackoff 2026-11-01-00:35 (RUFU-268): the tick forwards its effective interval
-          // so the idle ladder measures against the period actually scheduled here. This site must forward
-          // the same context as `runtimes/in-process-runtime.ts` — these two are the only paths a timer tick
-          // takes, and a ladder wired to one and not the other is the divergence this step exists to prevent.
-          shouldSuppressTimerWake: async (agent, context) => heartbeatMonitorImpl
-            ? await heartbeatMonitorImpl.decideTimerWake(agent, { source: "timer", intervalMs: context?.intervalMs })
-            : { suppress: false },
-        },
-      );
-      triggerScheduler.start();
-
-      const agents = await agentStore.listAgents();
-      const missedCatchupTargets: { agentId: string; lastHeartbeatAt: string }[] = [];
-      for (const agent of agents) {
-        // State is the source of truth: arm timers only for non-ephemeral,
-        // heartbeat-enabled agents in tickable states. Transitions into
-        // tickable states while the scheduler is already running are
-        // handled by the scheduler's own lifecycle listeners.
-        if (isEphemeralAgent(agent)) continue;
-        if (agent.runtimeConfig?.enabled === false) continue;
-        if (agent.state !== "active" && agent.state !== "running" && agent.state !== "idle") continue;
-        const rc = agent.runtimeConfig;
-        const intervalMs = (rc?.heartbeatIntervalMs as number | undefined) ?? DEFAULT_AGENT_HEARTBEAT_INTERVAL_MS;
-        triggerScheduler.registerAgent(
-          agent.id,
-          {
-            enabled: rc?.enabled as boolean | undefined,
-            heartbeatIntervalMs: rc?.heartbeatIntervalMs as number | undefined,
-            maxConcurrentRuns: rc?.maxConcurrentRuns as number | undefined,
-          },
-          { lastHeartbeatAt: agent.lastHeartbeatAt },
-        );
-
-        // Per-agent opt-in: if the server was down across a scheduled tick,
-        // fire one catch-up heartbeat. We require explicit lastHeartbeatAt to
-        // avoid firing on agents that have never run.
-        if (
-          rc?.runMissedHeartbeatOnStartup === true
-          && rc?.enabled !== false
-          && typeof agent.lastHeartbeatAt === "string"
-          && agent.lastHeartbeatAt.length > 0
-        ) {
-          const lastMs = Date.parse(agent.lastHeartbeatAt);
-          if (Number.isFinite(lastMs) && Date.now() - lastMs > intervalMs) {
-            missedCatchupTargets.push({ agentId: agent.id, lastHeartbeatAt: agent.lastHeartbeatAt });
-          }
-        }
-      }
-      if (agents.length > 0) {
-        logSink.log(`Registered ${triggerScheduler.getRegisteredAgents().length} agents for heartbeat triggers`, "engine");
-      }
-
-      for (const target of missedCatchupTargets) {
-        const monitor = heartbeatMonitorImpl;
-        if (!monitor) break;
-        logSink.log(
-          `Firing catch-up heartbeat for ${target.agentId} (lastHeartbeatAt=${target.lastHeartbeatAt})`,
-          "engine",
-        );
-        // Fire and forget; serialized per-agent inside executeHeartbeat.
-        void monitor.executeHeartbeat({
-          agentId: target.agentId,
-          source: "timer",
-          triggerDetail: "startup-missed-heartbeat-catchup",
-        }).catch((err) => {
-          const message = err instanceof Error ? err.message : String(err);
-          logSink.warn(`Catch-up heartbeat for ${target.agentId} failed: ${message}`, "engine");
-        });
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      logSink.log(`HeartbeatMonitor initialization failed (continuing without agent monitoring): ${message}`, "engine");
-    }
+    The UI-only host therefore hosts no agent runtime. Three consequences a later reader must keep:
+    - Agent CONFIGURATION is unaffected: cadence, prompt, procedure, and model live in the agent row,
+      which the engine owner reads. Nothing about editing agents moves.
+    - Agent CONTROL from this host must refuse by name (`agent-runtime-not-hosted-here`), not write a run
+      row it cannot drive. `hasHeartbeatExecutor` in the dashboard already models a missing executor.
+    - Removing this composition is not sufficient on its own: `heartbeat-run-ownership.ts` is what keeps
+      any two hosts sharing one database from reaping each other's runs.
+    */
+    logSink.log(
+      "UI-only host: durable-agent heartbeat runtime not started (engine-owned). Agent configuration still applies; wakes are driven by the process that owns the project's engine.",
+      "engine",
+    );
 
     // Ensure plugin loading has completed before pluginLoader is handed off
     // to createServer — routes derived from getPluginRoutes() rely on it.
@@ -2974,12 +2832,13 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
         recoverActiveMissions: () => missionExecutionLoopImpl?.recoverActiveMissions() ?? Promise.resolve({ recoveredCount: 0 }),
         isRunning: () => missionExecutionLoopImpl?.isRunning() ?? false,
       },
-      heartbeatMonitor: {
-        rootDir: cwd,
-        startRun: (...args: Parameters<HeartbeatMonitor["startRun"]>) => heartbeatMonitorImpl!.startRun(...args),
-        executeHeartbeat: (...args: Parameters<HeartbeatMonitor["executeHeartbeat"]>) => heartbeatMonitorImpl!.executeHeartbeat(...args),
-        stopRun: (...args: Parameters<HeartbeatMonitor["stopRun"]>) => heartbeatMonitorImpl!.stopRun(...args),
-      },
+      /*
+      FNXC:HeartbeatOwnership 2026-11-11-00:07: no monitor is constructed here any more, so the proxy is
+      absent rather than a wrapper around a reference that is never assigned — the old `!`-asserted proxy
+      threw a TypeError the moment a route called it. Route handlers key off `hasHeartbeatExecutor`, which is
+      exactly the "this host does not run agents" signal they are already built to handle.
+      */
+      heartbeatMonitor: undefined,
       pluginStore,
       pluginLoader,
       pluginRunner: undefined,
@@ -3095,7 +2954,6 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
       await disposeAsync();
       stopDiagnosticInterval();
       if (triggerScheduler) triggerScheduler.stop();
-      if (heartbeatMonitorImpl) heartbeatMonitorImpl.stop();
 
       // Tear down user-project dev-server children (and their process groups)
       // before exiting. process.exit below skips server.close()'s cleanup hook.
@@ -3139,7 +2997,6 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
     if (centralCoreForMesh) {
       bindDevSourceRestart(centralCoreForMesh, () => {
         triggerScheduler?.stop();
-        heartbeatMonitorImpl?.stop();
       });
     }
     registerHandler(process, "SIGINT", () => void devShutdown("SIGINT"));

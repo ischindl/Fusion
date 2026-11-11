@@ -788,6 +788,18 @@ export {
   type MockScriptContext,
 } from "./providers/index.js";
 export { activeSessionRegistry } from "./agents/active-session-registry.js";
+/*
+FNXC:HeartbeatOwnership 2026-11-11-00:07: exported because BOTH reapers (engine) and the run-control
+routes (dashboard) must apply one owner predicate; a second copy in the dashboard would be a second
+opinion about who owns a run.
+*/
+export {
+  classifyHeartbeatRunOwner,
+  heartbeatRunOwnerReasonCode,
+  isHeartbeatRunReapAllowedForOwner,
+  type HeartbeatRunOwnerVerdict,
+  type HeartbeatRunOwnershipDeps,
+} from "./agents/heartbeat-run-ownership.js";
 export {
   scanIdleWorktrees,
   cleanupOrphanedWorktrees,

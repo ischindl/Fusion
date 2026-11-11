@@ -4076,20 +4076,35 @@ describe("Saturated-slot regression: heartbeat wake routes", () => {
       FNXC:PostgresCutover 2026-07-05-16:50:
       The legacy `new AgentStore({ rootDir })` runtime was removed
       (VAL-REMOVAL-005); spy on the prototype instead of seeding a real
-      on-disk agent store. The record-only run-creation path is exercised via
-      startHeartbeatRun/saveRun spies; run enrichment stays real.
+      on-disk agent store.
+
+      FNXC:HeartbeatOwnership 2026-11-11-00:07:
+      This case used to exercise run creation through the host's record-only fallback — the branch that
+      wrote an `active` row on a process with no executor to drive it. That fallback is gone (a UI-only
+      host now refuses with `agent-runtime-not-hosted-here` rather than inventing a run some other host
+      would later reap), so the invariant it guards — a comment wake is a utility lane and is NOT gated
+      by executor capacity — is asserted through an actual executor. The store spies stay because the
+      route still reads agent + active-run state from an AgentStore it constructs itself.
       */
         const agent = { id: "agent-sat-run-1", name: "Saturated Run Agent", role: "executor", state: "idle" };
         vi.spyOn(AgentStore.prototype, "init").mockResolvedValue(undefined);
         vi.spyOn(AgentStore.prototype, "getAgent").mockResolvedValue(agent as never);
         vi.spyOn(AgentStore.prototype, "getActiveHeartbeatRun").mockResolvedValue(null);
-        vi.spyOn(AgentStore.prototype, "startHeartbeatRun").mockResolvedValue({
-          id: "run-sat-created",
-          agentId: agent.id,
-          startedAt: "2026-01-01T00:00:00.000Z",
-          status: "running",
-        } as never);
-        vi.spyOn(AgentStore.prototype, "saveRun").mockResolvedValue(undefined as never);
+        const executed: Array<Record<string, unknown>> = [];
+        const heartbeatMonitor = {
+          executeHeartbeat: vi.fn(async (args: Record<string, unknown>) => {
+            executed.push(args);
+            return {
+              id: "run-sat-created",
+              agentId: agent.id,
+              startedAt: "2026-01-01T00:00:00.000Z",
+              status: "active",
+              contextSnapshot: args.contextSnapshot,
+            };
+          }),
+          startRun: vi.fn(),
+          stopRun: vi.fn(),
+        };
 
         const store = createSaturatedStore({
           getFusionDir: vi.fn().mockReturnValue(fusionDir),
@@ -4097,7 +4112,7 @@ describe("Saturated-slot regression: heartbeat wake routes", () => {
 
         const app = express();
         app.use(express.json());
-        app.use("/api", createApiRoutes(store));
+        app.use("/api", createApiRoutes(store, { heartbeatMonitor }));
 
         const res = await REQUEST(
           app,
@@ -4115,6 +4130,7 @@ describe("Saturated-slot regression: heartbeat wake routes", () => {
 
         // UTILITY PATH: Agent run creation must NOT be blocked by maxConcurrent=0
         expect(res.status).toBe(201);
+        expect(executed).toHaveLength(1);
         expect(res.body.contextSnapshot).toMatchObject({
           wakeReason: "on_demand",
           triggerDetail: "task-comment",

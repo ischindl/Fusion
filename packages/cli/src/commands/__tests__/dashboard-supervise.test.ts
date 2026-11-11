@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
-  buildUiOnlyHeartbeatMonitorOptions,
   classifyDashboardFatalExit,
   hasLiveSupervisingParent,
   resolveSupervisorRespawnCommand,
@@ -81,23 +82,31 @@ describe("hasLiveSupervisingParent", () => {
   });
 });
 
-describe("UI-only heartbeat composition", () => {
-  it("preserves the project-scoped secrets store for fresh heartbeat worktrees", () => {
-    const agentStore = {} as any;
-    const taskStore = {} as any;
-    const secretsStore = { listEnvExportable: async () => [] };
+/*
+FNXC:HeartbeatOwnership 2026-11-11-00:07:
+The dashboard host composes no agent runtime at all. It used to build a `HeartbeatMonitor` +
+`HeartbeatTriggerScheduler` inline for `--no-engine`, so a UI process and the engine host sharing one
+database both drove the same durable agents: measured 2026-11-10/11, six RunFusion agents were woken by
+both in the same hour and 10 of the UI process's 17 runs ended `terminated` because each host reaped the
+other's live run at the 120 s stale threshold. Wakes are DATABASE rows (assignment, comment, schedule);
+the process that owns the project's engine consumes them, so a UI-only host has nothing to drive.
 
-    const options = buildUiOnlyHeartbeatMonitorOptions({
-      agentStore,
-      taskStore,
-      rootDir: "/project",
-      secretsStore,
-    });
+This is a composition-root invariant, and the only honest way to hold it is structurally: `runDashboard`
+is a 3k-line boot sequence with no seam that a fake could exercise without booting a server and a
+database (and a test that boots both is exactly the slow-test class this repo refuses).
+`register-agent-runtime-routes.ts` covers the caller-visible half — a host with no executor refuses with
+`agent-runtime-not-hosted-here` instead of fabricating a run row.
+*/
+describe("UI-only host owns no agent runtime", () => {
+  const source = readFileSync(fileURLToPath(new URL("../dashboard.ts", import.meta.url)), "utf8");
 
-    expect(options.store).toBe(agentStore);
-    expect(options.agentStore).toBe(agentStore);
-    expect(options.taskStore).toBe(taskStore);
-    expect(options.secretsStore).toBe(secretsStore);
+  it("never constructs a heartbeat runtime in the dashboard host", () => {
+    expect(source).not.toMatch(/new\s+HeartbeatMonitor\s*\(/);
+    expect(source).not.toMatch(/new\s+HeartbeatTriggerScheduler\s*\(/);
+  });
+
+  it("leaves the monitor absent rather than a proxy over an unassigned reference", () => {
+    expect(source).toContain("heartbeatMonitor: undefined");
   });
 });
 
