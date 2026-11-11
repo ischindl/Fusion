@@ -1398,14 +1398,24 @@ export async function runHoldReleaseSweep(
 
     Two cheaper-looking variants are deliberately NOT used because each costs more than it saves:
     - `slim: true` also drops `log`, but it bundles the drop with `finalizeSlimListTask`, which
-      re-parses PROMPT.md for every task whose persisted `steps` is empty via the unmemoised
-      `parseStepsFromPromptImpl` — one `existsSync` + `readFile` per such task, per pass, on the
-      sweep's hot path. It additionally blanks `prInfo`/`review`/`attachments` and can newly populate
+      derives steps for every task whose persisted `steps` is empty by reading and parsing that
+      task's `PROMPT.md`. It additionally blanks `prInfo`/`review`/`attachments` and can newly populate
       `steps`, and the sweep's own release decisions must not shift as a side effect of a bandwidth
       change. `excludeLog` buys the same byte saving with neither.
     - `excludeColumns: ["log"]` is not a column projection at all: it filters board LANES, and setting
       it also switches off `listTasksImpl`'s `excludeColumn: "archived"` narrowing, which would put
       archived cards back into a release-decision pass.
+
+    FNXC:ListReadPromptParseCache 2026-11-11-04:57 (RUFU-495):
+    The bullet above used to reject `slim` partly "via the unmemoised `parseStepsFromPromptImpl` — one
+    `existsSync` + `readFile` per such task, per pass". That claim went stale when the funnel was
+    memoised: the parse is now remembered per store and validated by the file's mtime + size, so a warm
+    board read costs one `stat` per such card and a real read plus parse at most once per card per
+    process. The rejection itself still stands on its own two legs — the FIRST pass after a process
+    start still pays the read and parse for every card with empty steps, and the shape change (`prInfo`,
+    `review`, `attachments` blanked; `steps` possibly newly populated) would move this sweep's release
+    decisions. Do not restore the unmemoised wording, and do not switch this sweep to `slim` on the
+    strength of the cache alone.
     */
     const allTasks = await store.listTasks({ includeArchived: false, selectionCache, selectionReadTally, irCache, definitionReadTally, derive: false, excludeLog: true });
     counters.batchSelections += selectionReadTally.batched;

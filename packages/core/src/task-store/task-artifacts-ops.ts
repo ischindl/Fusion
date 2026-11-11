@@ -175,16 +175,165 @@ other) and is validated by `mtimeNs` + `size`, never by time-based TTL: a rewrit
 a deletion invalidates (a stale `steps` entry must not survive `PROMPT.md` removal), and a parse failure is
 remembered so a permanently malformed file costs one stat per read instead of a read + parse + captured
 stack trace. In-flight reads are coalesced so two overlapping list passes parse a cold card once.
+
+FNXC:ListReadPromptParseCache 2026-11-09-11:15 (RUFU-495 residual pass):
+Three hardening invariants over the same shipped memo. (1) COPY-ON-RETURN: the array stored in the cache is
+never handed out — every caller receives a fresh copy, because `updateStep` writes a step's `status` into the
+array it was given (`merge-queue-ops.ts` assigns the parse result straight onto `task.steps`), and one such
+write would otherwise poison every later reader of that card for the life of the process. (2) ONE BOUND FOR
+BOTH COLLECTIONS: the success map and the warned-key set share `PROMPT_STEPS_CACHE_MAX` and share the
+`makeRoomForBoundedKey` insert rule — grow by at most one per key, never grow on a repeat write, and drop the
+OLDEST entry at the bound. The failure entry used to be inserted unchecked and the warned set used to be
+cleared wholesale at its cap, which silently re-armed every previously warned card. (3) ABSENCE IS NEVER A
+POSITIVE ENTRY: a missing or unreadable `PROMPT.md` deletes the entry and returns falsy, so the unreachable
+`{ kind: "absent" }` union variant is gone rather than kept as dead shape. (4) COUNTABLE: `getPromptStepsCacheStats`
+answers the live entry count, the effective bound and the monotonic counters (hits, misses, coalesced joins,
+invalidations, evictions, warned cards) in-process — ids and counts only, never a card id or prompt text —
+which is what `docs/solutions/performance/dashboard-heap-growth-runbook.md` demands of a cache; the `readFile`
+spy stays the test authority and these counters the operational one. No TTL anywhere.
+
+FNXC:ListReadPromptParseCache 2026-11-09-11:28 (RUFU-495 residual pass): why `clearListReadCaches()` stays
+UNWIRED to this memo. That seam (store.ts) invalidates the two list-read SHAPE maps on a board mutation,
+because a stored response there can go stale with nothing on disk changing. This memo has no such exposure:
+its freshness authority is the per-read `stat`, so a committed `PROMPT.md` write is seen by the very next
+read and a deletion already deletes the entry here. Wiring it in would be a second invalidation surface for
+one invariant — and writing `PROMPT.md` is not a board mutation, so that seam does not even run for it.
 */
 type PromptStepsCacheEntry =
   | { kind: "steps"; stamp: string; steps: import("../types.js").TaskStep[] }
-  | { kind: "failed"; stamp: string; message: string }
-  | { kind: "absent" };
+  | { kind: "failed"; stamp: string; message: string };
 
 const promptStepsCache = new WeakMap<TaskStore, Map<string, PromptStepsCacheEntry>>();
+/*
+FNXC:ListReadPromptParseCache 2026-11-09-11:28 (RUFU-495 residual pass):
+The in-flight map is keyed by the CARD PLUS THE STAMP the joining read validated, not by the card alone.
+Keyed by id, a parse that began before a `PROMPT.md` rewrite could be handed to a reader that had already
+stat-ed the NEWER file: the joiner's own freshness check passed it, then the shared promise answered with
+the older plan, which is exactly the stale-step service the `mtimeMs`+`size` rule exists to forbid. Two
+live parses for one card after a rewrite is the correct cost of that contract, and each deletes only its
+own keyed entry when it settles. A cache write that lands out of completion order stays self-correcting:
+the losing entry's stamp no longer matches the next read's stat, so that read simply re-parses.
+*/
 const promptStepsInFlight = new WeakMap<TaskStore, Map<string, Promise<import("../types.js").TaskStep[]>>>();
 /** Bounded so a long-lived store cannot grow one entry per card ever seen. */
 const PROMPT_STEPS_CACHE_MAX = 4096;
+
+/**
+ * Runtime override for the bound, so a test can prove eviction in milliseconds instead of writing
+ * thousands of cards. `null` means "the named cap is in force"; nothing in the product ever sets it.
+ */
+let promptStepsCacheMaxOverride: number | null = null;
+
+/** Per-store operational counters — ids and counts only, never card ids or file content. */
+type PromptStepsCounters = {
+  hits: number;
+  misses: number;
+  coalescedJoins: number;
+  invalidations: number;
+  evictions: number;
+  warnedCards: number;
+};
+
+const promptStepsCounters = new WeakMap<TaskStore, PromptStepsCounters>();
+
+function promptStepsCountersForStore(store: TaskStore): PromptStepsCounters {
+  let counters = promptStepsCounters.get(store);
+  if (!counters) {
+    counters = { hits: 0, misses: 0, coalescedJoins: 0, invalidations: 0, evictions: 0, warnedCards: 0 };
+    promptStepsCounters.set(store, counters);
+  }
+  return counters;
+}
+
+/**
+ * In-process view of the memo for operators and tests: how many entries are live, whether the bound has
+ * been reached, and the monotonic counters that say what the cache actually did. Counts only — no card id,
+ * no path, no prompt text ever leaves through here.
+ */
+export type PromptStepsCacheStats = PromptStepsCounters & {
+  liveEntries: number;
+  liveWarnedKeys: number;
+  bound: number;
+};
+
+export function getPromptStepsCacheStats(store: TaskStore): PromptStepsCacheStats {
+  return {
+    ...promptStepsCountersForStore(store),
+    liveEntries: promptStepsCache.get(store)?.size ?? 0,
+    liveWarnedKeys: promptWarnedKeys.get(store)?.size ?? 0,
+    bound: promptStepsCacheBound(),
+  };
+}
+
+/** Whether this store still holds a cache entry (steps OR failure) for the card. */
+export function isPromptStepsCacheEntryLive(store: TaskStore, id: string): boolean {
+  return promptStepsCache.get(store)?.has(id) ?? false;
+}
+
+/**
+ * Test-only: drop everything this store has remembered — steps cache, in-flight parses, warned keys and
+ * counters — so one case cannot inherit another's cache state. Leaves the bound override alone, which is
+ * what lets an eviction case lower the bound and still reset between assertions.
+ */
+export function __resetPromptStepsCacheForTests(store: TaskStore): void {
+  promptStepsCache.delete(store);
+  promptStepsInFlight.delete(store);
+  promptWarnedKeys.delete(store);
+  promptStepsCounters.delete(store);
+}
+
+/**
+ * Test-only: lower (or with `null` restore) the bound of BOTH prompt-steps collections, and return the
+ * previously effective value. A named cap stays mandatory — the setter cannot lift retention above the
+ * documented `PROMPT_STEPS_CACHE_MAX`, it can only tighten it.
+ */
+export function __setPromptStepsCacheBoundForTesting(bound: number | null): number {
+  const previous = promptStepsCacheBound();
+  promptStepsCacheMaxOverride =
+    bound === null ? null : Math.max(1, Math.min(Math.floor(bound), PROMPT_STEPS_CACHE_MAX));
+  return previous;
+}
+
+/**
+ * Structural view of `Map`/`Set` for the shared insert rule: both are insertion-ordered and both expose
+ * `keys()`, so the oldest live key is the first one either collection iterates.
+ */
+type BoundedKeyCollection = {
+  size: number;
+  has(key: unknown): boolean;
+  delete(key: unknown): boolean;
+  keys(): IterableIterator<unknown>;
+};
+
+/**
+ * Evict-oldest-before-insert for both prompt-steps collections. Returns true only when an entry was
+ * actually dropped, so the eviction counter never reports a write that evicted nothing. A key already
+ * present needs no room (the write overwrites it and cannot grow the collection), and an insert below the
+ * bound evicts nothing — those two rules are what keep `size` growing by at most one per distinct key.
+ */
+function makeRoomForBoundedKey(collection: BoundedKeyCollection, key: unknown, bound: number): boolean {
+  if (collection.has(key) || collection.size < bound) return false;
+  const oldest = collection.keys().next();
+  if (oldest.done) return false;
+  return collection.delete(oldest.value);
+}
+
+/**
+ * FNXC:ListReadPromptParseCache 2026-11-09-11:28 (RUFU-495 residual pass):
+ * The ONE definition of the copy-on-return rule, exported so a call site that intends to mutate the steps
+ * it received says so through this function instead of re-deriving the shape. `updateStep`
+ * (`merge-queue-ops.ts`) mutates `task.steps[stepIndex].status` in place, so it must own its array; keeping
+ * the copy rule in one place is what stops the two definitions from drifting apart.
+ *
+ * Defensive copy of a cached step list. `TaskStep` is flat except `dependsOn`, so a per-step spread plus a
+ * fresh dependency array is a full copy: mutating a returned element, its `dependsOn`, or the array itself
+ * cannot reach the cached canonical value or another caller's copy.
+ */
+export function copyPromptSteps(steps: readonly import("../types.js").TaskStep[]): import("../types.js").TaskStep[] {
+  return steps.map((step) =>
+    step.dependsOn ? { ...step, dependsOn: [...step.dependsOn] } : { ...step },
+  );
+}
 
 function promptStampKey(st: { mtimeNs?: bigint | number; mtimeMs: number; size: number }): string {
   // mtimeNs where the platform provides it (nanosecond resolution, so a same-millisecond rewrite is still
@@ -193,15 +342,44 @@ function promptStampKey(st: { mtimeNs?: bigint | number; mtimeMs: number; size: 
 }
 
 /**
+ * Single read point for the bound of BOTH prompt-steps collections (the steps cache and the warned-key
+ * set), so no call site can drift to a different limit. The named cap stays `PROMPT_STEPS_CACHE_MAX`.
+ */
+function promptStepsCacheBound(): number {
+  return promptStepsCacheMaxOverride ?? PROMPT_STEPS_CACHE_MAX;
+}
+
+/** The key an in-flight parse is registered under: card id + the stamp the joiner validated. */
+function promptInFlightKey(id: string, stamp: string): string {
+  return `${id}\u0000${stamp}`;
+}
+
+/**
  * A malformed `PROMPT.md` stays malformed; call sites warn on every read. They ask this first so the
  * warning is one line per card, not ~1.7 per second — the spam itself was part of the RUFU-495 cost.
+ *
+ * FNXC:ListReadPromptParseCache 2026-11-09-11:15 (RUFU-495 residual pass): at the cap this evicted its
+ * WHOLE set, so a board whose warned keys exceeded the bound silently re-armed every card it had already
+ * explained. It now evicts the oldest warned key only, under the same named bound as the steps cache.
+ *
+ * FNXC:ListReadPromptParseCache 2026-11-09-11:28 (RUFU-495 residual pass): the key is the CARD ID ALONE.
+ * Four surfaces discover this failure and each composes its own sentence — `finalizeSlimListTask`
+ * (`during listTasks:`), `searchTasks` / `searchTasksGlobal` (`during searchTasks:`), the per-task detail
+ * read, and the `updateStep` auto-init (`failed to auto-init steps from PROMPT.md for`) — so a key that
+ * also carried the message let one card be reported once PER SURFACE, which is how the same card came back
+ * to the operator every few seconds. The accepted cost, stated so nobody "fixes" it back: a second,
+ * DIFFERENT failure for an already-reported card stays silent for the life of the process.
  */
 export function shouldWarnPromptParseFailure(store: TaskStore, id: string, message: string): boolean {
     const seen = promptWarnedForStore(store);
-    const key = `${id}\u0000${message}`;
-    if (seen.has(key)) return false;
-    if (seen.size >= PROMPT_STEPS_CACHE_MAX) seen.clear();
-    seen.add(key);
+    const counters = promptStepsCountersForStore(store);
+    // `message` stays in the signature because every call site composes its own surface-specific line and
+    // logs it itself; it is deliberately not part of the key (see the FNXC note above).
+    void message;
+    if (seen.has(id)) return false;
+    if (makeRoomForBoundedKey(seen, id, promptStepsCacheBound())) counters.evictions++;
+    seen.add(id);
+    counters.warnedCards++;
     return true;
 }
 
@@ -249,14 +427,18 @@ export async function parseStepsFromPromptImpl(store: TaskStore, id: string): Pr
         stamp = promptStampKey(await stat(promptPath));
     } catch {
         // Missing or unreadable file: drop any remembered steps so a deletion can never serve stale steps.
-        cache.delete(id);
+        // Absence is NEVER stored as a positive entry — the cache entry count answers only real plans and
+        // real failures, and this read stays uncounted as a hit or a miss because neither happened.
+        if (cache.delete(id)) promptStepsCountersForStore(store).invalidations++;
         return [];
     }
 
     const cached = cache.get(id);
-    if (cached && cached.kind !== "absent" && cached.stamp === stamp) {
+    if (cached && cached.stamp === stamp) {
+        promptStepsCountersForStore(store).hits++;
         if (cached.kind === "failed") throw new Error(cached.message);
-        return cached.steps;
+        // Copy-on-return: the cached array is the canonical value for this card, never the caller's.
+        return copyPromptSteps(cached.steps);
     }
 
     // Coalesce concurrent reads of the same cold card into one parse.
@@ -265,28 +447,41 @@ export async function parseStepsFromPromptImpl(store: TaskStore, id: string): Pr
         pendingMap = new Map<string, Promise<import("../types.js").TaskStep[]>>();
         promptStepsInFlight.set(store, pendingMap);
     }
-    const running = pendingMap.get(id);
-    if (running) return running;
+    const flightKey = promptInFlightKey(id, stamp);
+    const running = pendingMap.get(flightKey);
+    if (running) {
+        // A joiner is served the in-flight parse, but never the array that parse resolves to: that value is
+        // the cached canonical entry. Copy on the join for exactly the reason the cache hit copies.
+        promptStepsCountersForStore(store).coalescedJoins++;
+        return running.then(copyPromptSteps);
+    }
 
+    promptStepsCountersForStore(store).misses++;
     const job = (async (): Promise<import("../types.js").TaskStep[]> => {
         try {
             const steps = await readAndParsePromptSteps(store, id);
-            if (cache!.size >= PROMPT_STEPS_CACHE_MAX) {
-                const oldest = cache!.keys().next().value;
-                if (oldest !== undefined) cache!.delete(oldest);
+            // The freshly parsed array becomes the cached canonical value, so it must never also be the
+            // value handed to this call's consumers — every return path below copies it.
+            if (makeRoomForBoundedKey(cache!, id, promptStepsCacheBound())) {
+                promptStepsCountersForStore(store).evictions++;
             }
             cache!.set(id, { kind: "steps", stamp, steps });
             return steps;
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
+            // The failure path sits under the SAME bound as the success path: a permanently malformed card
+            // is a permanent entry, and an unbounded failure map is unbounded retention.
+            if (makeRoomForBoundedKey(cache!, id, promptStepsCacheBound())) {
+                promptStepsCountersForStore(store).evictions++;
+            }
             cache!.set(id, { kind: "failed", stamp, message });
             throw err;
         } finally {
-            pendingMap!.delete(id);
+            pendingMap!.delete(flightKey);
         }
     })();
-    pendingMap.set(id, job);
-    return job;
+    pendingMap.set(flightKey, job);
+    return job.then(copyPromptSteps);
 }
 
 export async function parseDependenciesFromPromptImpl(store: TaskStore, id: string): Promise<string[]> {

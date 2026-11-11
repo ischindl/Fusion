@@ -10,6 +10,8 @@ applies_when:
   - "`task_workflow_selection` or `workflow_prompt_overrides` dominate `pg_stat_activity` even though the overrides table is empty"
   - "A startup/slim list memo returns correct data but costs a full deep clone on every hit"
   - "A recurring full-board sweep moves megabytes per pass while reading none of the heavy `log` column"
+  - "`/api/health` answers in seconds while a board mounts and the log repeats `failed to sync steps from PROMPT.md` for the same cards"
+  - "A cached step list appears to change status by itself, or one card's plan serves another card's edits"
 component: task-store
 tags:
   - performance
@@ -20,6 +22,7 @@ tags:
   - board-parity
   - listtasksderiveoptout
   - excludelog
+  - listreadpromptparsecache
 related_components:
   - task_store
   - engine_scheduler
@@ -139,11 +142,73 @@ drop, and the `slim` veto that used to guard it was protecting a column nothing 
 is assigned `[]` on both slim paths, so no slim consumer could ever have observed an entry).
 
 **Use `excludeLog`, not `slim`, to shed the log column.** `slim` bundles the drop with
-`finalizeSlimListTask`, which re-parses `PROMPT.md` for every task whose persisted `steps` is empty, via
-the unmemoised `parseStepsFromPrompt` (one `existsSync` + one `readFile` per such task, per call). It
-also blanks `prInfo`/`prInfos`/`issueInfo`/`sourceIssue`/`attachments`/`review` and can newly populate
+`finalizeSlimListTask`, which derives `steps` from `PROMPT.md` for every task whose persisted `steps` is
+empty, through `parseStepsFromPrompt`. That funnel is a memo (see the next section): a warm read costs one
+`stat` per such task and a real `readFile` + parse at most once per card per process. It still costs the
+first pass in a process, and `slim` also blanks
+`prInfo`/`prInfos`/`issueInfo`/`sourceIssue`/`attachments`/`review` and can newly populate
 `steps`. A bandwidth change must not be able to shift a release decision, and a timer sweep that never
-reads `steps` has no business paying for that parse.
+reads `steps` has no business paying for that parse. `fields: [...]` without `steps` is the shape that
+pays nothing at all.
+
+## The `PROMPT.md` steps-derivation memo (RUFU-495)
+
+The `slim` path above is the funnel, and it was the actual event-loop stall: `finalizeSlimListTask` ran
+`parseStepsFromPrompt` per row per call, so a 454-card board re-read and re-parsed up to 454 files on
+every board mount, and re-threw for every malformed one — 572 `failed to sync steps from PROMPT.md`
+warnings in 331 s from 9 distinct cards while `GET /api/health` took 2.9–5.6 s.
+
+**What shipped in `117afa5799`** (`packages/core/src/task-store/task-artifacts-ops.ts`, not a new module):
+the parse is memoised per `TaskStore` instance through a module-scope `WeakMap`; freshness authority is
+the file's `mtime` + `size` re-`stat`-ed on every call, never a TTL; concurrent parses of one cold card
+are coalesced; a parse failure is remembered, so a permanently malformed card costs one `stat` per read
+instead of a read, a parse and a captured stack trace; and the warning is deduplicated per card.
+
+**What the RUFU-495 residual pass changed** (same module):
+
+| Hazard closed | Rule |
+| --- | --- |
+| A cache hit handed out the cached array itself, and `updateStep` writes a step's `status` into the array it was given | Every return path (`copyPromptSteps`) hands out a copy; the cached array is the memo's own canonical value and no caller can reach it |
+| The failure entry was inserted with no size check, and the warned-key set was cleared wholesale at its cap — silently re-arming every card ever warned about | Both collections share one named bound, `PROMPT_STEPS_CACHE_MAX = 4096` per store, and one insert rule (`makeRoomForBoundedKey`): grow by at most one per key, never grow on a repeat write, drop the OLDEST at the bound |
+| The in-flight map was keyed by card id, so a parse started before a `PROMPT.md` rewrite could be served to a reader that had already validated the newer file | The in-flight key is the card id plus the stamp the joining read validated |
+| Absence was declared as a `{ kind: "absent" }` cache variant no code path could produce | Absence is a cache delete plus a falsy return; the unreachable variant is gone |
+| `updateStep`'s auto-init warning was not behind the gate | `shouldWarnPromptParseFailure` keys on the CARD ID, so one line per card per process across `listTasks`, `searchTasks`, `searchTasksGlobal` and the auto-init, with the reported text byte-identical |
+| Nothing could answer what the memo was doing | `getPromptStepsCacheStats(store)` reports `liveEntries`, `liveWarnedKeys`, `bound` and monotonic `hits` / `misses` / `coalescedJoins` / `invalidations` / `evictions` / `warnedCards`; ids and counts only. `__resetPromptStepsCacheForTests` and `__setPromptStepsCacheBoundForTests` are the test seams |
+
+**Retention, per the heap-growth runbook:** the bound is the named 4096 above; a 7-step entry measures
+1 466 bytes retained (2 594 bytes at 14 steps) and a warned key 20 bytes, so both collections sitting at
+the cap is roughly 6 MB, and an entry carries no `PROMPT.md` text. Nothing is expired on a timer, and
+nothing is deleted when a task is deleted — an entry leaves by oldest-first eviction at the bound or when
+its store is collected. On restart all counters and entries are simply rebuilt from the files: the loss is
+a cold first pass, which is what the product always did. It is not registered with the dashboard retention
+census because `@fusion/core` cannot import `@fusion/dashboard`; the in-process stats call above is the
+observation surface, and `pnpm check:retention-coverage` still reports `packages/core/src` as a pending
+(not yet gated) root.
+
+**Rollback boundary now.** The delivered memo and the residual pass are one module and the residual is not
+optional on top of it: reverting the residual reintroduces the shared-array mutation (one `updateStep`
+can poison a card's plan for the life of the process), the unbounded failure insert, and the wholesale
+warn-set clear. Reverting the whole module returns `slim` reads to a per-call, per-card file parse, which
+is the stall this card was filed for. Neither half has a keeper flag or a setting; the only supported
+state is both halves together.
+
+### Measured before/after (RUFU-495)
+
+| Measurement | Before (production, 454 cards, engine running) | After (measured 2026-11-11, 450-card scratch project, real `fn serve`, free port, engine paused) |
+| --- | --- | --- |
+| `GET /api/health` during a board mount | 2 918–5 560 ms (5 379 / 4 939 ms quoted in the report) | median 2–6 ms, worst single sample 50 ms, across 72 samples in four passes |
+| `GET /api/agents` during the same load | 3 874 ms | median 33–201 ms, worst single sample 293 ms (in the 4-concurrent-read pass) |
+| `failed to sync steps from PROMPT.md` | 572 lines in 331 s from 9 distinct cards (~1.7/s) | 10 lines for 10 distinct malformed cards, across 25 board reads, 15 agent reads and 12 forced full invalidations of all 450 files — one line per card per process |
+| Engine-stopped floor for reference | 13 ms | not applicable (the scratch server ran with the engine paused) |
+
+Honest limit of that measurement, recorded because it is the part an operator must not over-read: the
+synthetic board did NOT reproduce the multi-second stall. Forcing a full re-read and re-parse of all 450
+`PROMPT.md` files (450 x 24 KB = 11 MB) before every single list read cost about 20 ms of request time on
+this host, and `health` stayed at 6 ms while it ran. The list read's own lifecycle and workflow-IR work
+dominates here in a way it did not on the production box, so the elimination of the re-read rests on the
+deterministic `readFile`-count tests (`list-tasks-prompt-steps-memo.pg.test.ts`: a second list read costs
+0 additional reads against real PG rows and real task directories), and this live run proves only that the
+endpoints stay in the millisecond-to-low-hundreds range and that the report fires once per card.
 
 Two rejections worth repeating:
 
@@ -427,3 +492,8 @@ not exist on this tree; the field-parity contract it is described as carrying li
 - Do not reach for `slim: true` when all you want is the log column dropped — `slim` bundles the drop
   with the PROMPT.md steps sync and the `timedExecutionMs` figure, and it blanks `log` on the way out.
   `excludeLog` is the narrow flag; `fields: ["description"]` is the one that also sheds the rest.
+- Do not return the memo's own array from `parseStepsFromPrompt`, and do not add a second PROMPT.md read
+  or an ungated `storeLog.warn` for this failure outside `shouldWarnPromptParseFailure`. The copy is the
+  only thing standing between one in-place `updateStep` write and a poisoned plan for every later reader
+  of that card, and the gate is the only reason the warning is one line per card rather than 572 lines
+  per five minutes.

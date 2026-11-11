@@ -21,6 +21,7 @@ import {acquireMergeQueueLease as acquireMergeQueueLeaseAsync} from "../task-sto
 import {appendTaskStepReport} from "../workflows/task-step-reports.js";
 import {buildStepLedgerReopenLog, evaluateStepLedgerSeal, STEP_LEDGER_REFUSAL_MARKER_PREFIX} from "./step-ledger-seal.js";
 import {validateStepDependencies} from "../tasks/step-parsers.js";
+import {copyPromptSteps, shouldWarnPromptParseFailure} from "./task-artifacts-ops.js";
 
 export type StepStartDisposition = "started" | "resumed" | "blocked" | "terminal";
 
@@ -95,16 +96,26 @@ async function mutateStepImpl(store: TaskStore, id: string, stepIndex: number, s
       // FNXC:TaskDetailPromptResilience 2026-07-10-15:00 (merge port from main):
       // step auto-init is best-effort — an unreadable PROMPT.md must not fail
       // updateStep; proceed with the persisted (empty) steps.
+      //
+      // FNXC:ListReadPromptParseCache 2026-11-09-11:28 (RUFU-495 residual pass): two invariants sit here.
+      // (1) COPY BEFORE MUTATING: this block assigns the parse result onto `task.steps` and the function
+      //     later writes `task.steps[stepIndex].status = status` IN PLACE, so the array assigned here must
+      //     be owned by this call. `parseStepsFromPrompt` already hands out a defensive copy; the explicit
+      //     `copyPromptSteps` at the call site names that rule where the mutation happens, so a future
+      //     change to the memo cannot silently turn this write into a write-back on shared cache state.
+      // (2) ONE REPORT PER CARD PER PROCESS: this warning used to be the only ungated one, so a card
+      //     already explained by a list read could be re-announced from here every few seconds.
       let promptStepsUnavailable: string | undefined;
       if (task.steps.length === 0 && !graphSource) {
         try {
-          task.steps = await store.parseStepsFromPrompt(id);
+          task.steps = copyPromptSteps(await store.parseStepsFromPrompt(id));
         } catch (err) {
           // Remember WHY steps couldn't be resolved so the range check below
           // attributes the failure to the unreadable PROMPT.md rather than a
           // misleading "0 steps".
           promptStepsUnavailable = err instanceof Error ? err.message : String(err);
-          storeLog.warn(`[task-detail] failed to auto-init steps from PROMPT.md for ${id}: ${promptStepsUnavailable}`);
+          const detail = `failed to auto-init steps from PROMPT.md for ${id}: ${promptStepsUnavailable}`;
+          if (shouldWarnPromptParseFailure(store, id, detail)) storeLog.warn(`[task-detail] ${detail}`);
         }
       }
 

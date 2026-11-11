@@ -369,9 +369,16 @@ pgTest("listTasks derive opt-out (PostgreSQL)", () => {
   /*
   FNXC:ListTasksExcludeLog 2026-09-09-01:50 (RUFU-202):
   `slim` was the only way to drop the heaviest column, and it bundles a per-task PROMPT.md parse
-  (`finalizeSlimListTask` → unmemoised `parseStepsFromPrompt`) that a board sweep has no use for.
+  (`finalizeSlimListTask` → `parseStepsFromPrompt`) that a board sweep has no use for.
   These tests pin `excludeLog` as the shape that gets the byte saving WITHOUT that parse: the hold-
   release sweep is the consumer, and it never reads `log` or `steps`.
+
+  FNXC:ListReadPromptParseCache 2026-11-11-04:57 (RUFU-495):
+  This block used to name that funnel "unmemoised". It is memoised now — per store, validated by the
+  file's mtime + size, bounded, with copy-on-return — and the assertion below is worth MORE than it was
+  because of it: it pins that a `derive: false` + `excludeLog` read enters the funnel ZERO times, so it
+  never pays even the per-card `stat` the memo leaves behind, and it keeps that zero true independently
+  of whether the cache is warm. Do not read the cache as a licence to let a non-steps read start parsing.
   */
   it("drops the log column for a non-slim opted-out read without parsing PROMPT.md", async () => {
     await seedInProgressCard("RUFU-9207");

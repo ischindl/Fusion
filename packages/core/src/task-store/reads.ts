@@ -602,7 +602,8 @@ export async function getTaskImpl(store: TaskStore, id: string, options?: { acti
         } catch (err) {
           // FNXC:ListReadPromptParseCache 2026-10-02-11:59 (RUFU-495): a malformed PROMPT.md stays malformed, so this
           // warning used to repeat on every read of the same card (~1.7 lines/s on the production board). Same
-          // signal, once per card.
+          // signal, once per card — and because the gate keys on the CARD ID, once per process across every
+          // read surface, not once per surface (RUFU-495 residual pass). The composed text is unchanged.
           const detail = `failed to sync steps from PROMPT.md for ${id}: ${err instanceof Error ? err.message : String(err)}`;
           if (shouldWarnPromptParseFailure(store, id, detail)) storeLog.warn(`[task-detail] ${detail}`);
         }
@@ -876,6 +877,17 @@ restore a value the persisted row lacks, so running it for a field the caller de
 read would trade a dropped column for one `existsSync` + `readFile` per card — the unbounded per-pass
 file-read fan-out this file's own `slim` documentation warns about. A declared read without `steps`
 therefore returns the `rowToTask` default (`[]`) and performs ZERO parses.
+
+FNXC:ListReadPromptParseCache 2026-11-11-04:57 (RUFU-495 residual pass):
+State what the funnel this tail calls actually is, because an earlier revision of this file described it
+as an unbounded per-pass file read. It is a memo: per `TaskStore` instance, validated by the file's
+mtime + size on every call (never a TTL), bounded by `PROMPT_STEPS_CACHE_MAX` with oldest-first eviction
+on every insert — including the remembered-failure insert, which used to be unchecked — and it hands the
+caller a COPY so no read surface can write into cached state. Cost of a warm list read is therefore one
+`stat` per card whose persisted `steps` is empty, and a real read plus parse at most once per card per
+process; the malformed case costs one `stat` and rethrows the remembered failure. Two ways in stay off
+this path entirely and both stay required: a card with persisted steps, and a read whose field
+declaration omits `steps`.
 */
 async function finalizeSlimListTask(store: TaskStore, task: Task, slim: boolean, stepsDeclared: boolean): Promise<Task> {
   if (!slim || !stepsDeclared || task.steps.length > 0) {
@@ -887,7 +899,8 @@ async function finalizeSlimListTask(store: TaskStore, task: Task, slim: boolean,
   } catch (err) {
     // FNXC:ListReadPromptParseCache 2026-10-02-11:59 (RUFU-495): a malformed PROMPT.md stays malformed, so this
     // warning used to repeat on every read of the same card (~1.7 lines/s on the production board). Same
-    // signal, once per card.
+    // signal, once per card — and because the gate keys on the CARD ID, once per process across every read
+    // surface, not once per surface (RUFU-495 residual pass). The composed text is unchanged.
     const detail = `failed to sync steps from PROMPT.md for ${task.id} during listTasks: ${err instanceof Error ? err.message : String(err)}`;
     if (shouldWarnPromptParseFailure(store, task.id, detail)) storeLog.warn(`[task-detail] ${detail}`);
     return task;
@@ -2348,7 +2361,8 @@ const searchRollups = logFreeRowIds.length > 0 && searchLayer
   } catch (err) {
     // FNXC:ListReadPromptParseCache 2026-10-02-11:59 (RUFU-495): a malformed PROMPT.md stays malformed, so this
     // warning used to repeat on every read of the same card (~1.7 lines/s on the production board). Same
-    // signal, once per card.
+    // signal, once per card — and because the gate keys on the CARD ID, once per process across every read
+    // surface, not once per surface (RUFU-495 residual pass). The composed text is unchanged.
     const detail = `failed to sync steps from PROMPT.md for ${task.id} during searchTasks: ${err instanceof Error ? err.message : String(err)}`;
     if (shouldWarnPromptParseFailure(store, task.id, detail)) storeLog.warn(`[task-detail] ${detail}`);
     return task;
@@ -2508,7 +2522,8 @@ export async function searchTasksImpl(store: TaskStore, query: string, options?:
       } catch (err) {
         // FNXC:ListReadPromptParseCache 2026-10-02-11:59 (RUFU-495): a malformed PROMPT.md stays malformed, so this
         // warning used to repeat on every read of the same card (~1.7 lines/s on the production board). Same
-        // signal, once per card.
+        // signal, once per card — and because the gate keys on the CARD ID, once per process across every read
+        // surface, not once per surface (RUFU-495 residual pass). The composed text is unchanged.
         const detail = `failed to sync steps from PROMPT.md for ${task.id} during searchTasks: ${err instanceof Error ? err.message : String(err)}`;
         if (shouldWarnPromptParseFailure(store, task.id, detail)) storeLog.warn(`[task-detail] ${detail}`);
         return task;
