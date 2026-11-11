@@ -28,6 +28,16 @@ export { ActiveSessionWorktreeRemovalError } from "./worktree/worktree-backend.j
 export {
   isFailedNoVerdictPreMergeReviewResult,
   openVerdictlessGateRerunEpisode,
+  /*
+  FNXC:ContinuationHoldBudget 2026-11-11-09:52 (RUFU-490):
+  The hold-ledger surface the dashboard's Retry route consumes, exported beside its verdictless
+  sibling so the two re-arm seams of one review gate are found together.
+  */
+  filterContinuationHoldLedgerGates,
+  openContinuationHoldRerunEpisode,
+  continuationHoldGateEpisodeResetMarker,
+  continuationHoldGatePatienceLogMarker,
+  continuationHoldGateRerunLogMarker,
   rerouteFailedNoVerdictPreMergeGateToReview,
   verdictlessGateEpisodeResetMarker,
 } from "./merge/pre-merge-gate-reseed.js";

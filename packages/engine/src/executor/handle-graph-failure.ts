@@ -1383,12 +1383,14 @@ export async function handleGraphFailure(
           like RUFU-204's (its remediation feedback would be "(no feedback captured)"). The FN-9243
           reseed lane owns admission and its budget: it only seeds gates classified verdict-less or
           missing, refuses while a continuation is active, and stops seeding once the persisted
-          per-task per-gate rerun budget is spent. The same resolver trio as the unrun-gate block
-          below runs here — one resolution per failure, so blocker and reroute decide from identical
-          evidence. A DECLINED seed (budget spent, active continuation, or resolve failure) falls
-          through to the pre-existing "remediation was not scheduled" park with that message byte-
-          identical to the authored-REVISE answer (AC3), skipping remediation because there is no
-          authored opinion to remediate.
+          per-task per-gate rerun budget is spent OR once this gate's continuation-hold ledger is spent
+          on abandoned holders (RUFU-490 `continuation-hold-budget-exhausted`, which declines the seed
+          for the same standing holder `active-continuation` names). The same resolver trio as the
+          unrun-gate block below runs here — one resolution per failure, so blocker and reroute decide
+          from identical evidence. A DECLINED seed (budget spent, active continuation, spent hold
+          ledger, or resolve failure) falls through to the pre-existing "remediation was not scheduled"
+          park with that message byte-identical to the authored-REVISE answer (AC3), skipping remediation
+          because there is no authored opinion to remediate.
           */
           let verdictlessRerunDeclined = false;
           if (isVerdictLessFailedGateRow(failedPreMergeStep)

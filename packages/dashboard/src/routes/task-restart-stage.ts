@@ -10,7 +10,7 @@ import {
   type Task,
   type TaskStore,
 } from "@fusion/core";
-import { isMergeActiveStatus, isStaleMergeActiveStatus, openVerdictlessGateRerunEpisode, optionalStepRevisionResetOutcome, resolveColumnResumeNode } from "@fusion/engine";
+import { isMergeActiveStatus, isStaleMergeActiveStatus, filterContinuationHoldLedgerGates, openContinuationHoldRerunEpisode, openVerdictlessGateRerunEpisode, optionalStepRevisionResetOutcome, resolveColumnResumeNode } from "@fusion/engine";
 import { badRequest, conflict, notFound } from "../api-error.js";
 
 interface RestartTaskStageEngine {
@@ -259,6 +259,24 @@ export async function restartTaskStage(deps: RestartTaskStageDeps): Promise<Rest
         return latest === undefined ? false : isVerdictLessFailedGateRow(latest);
       });
       await openVerdictlessGateRerunEpisode(store, taskId, verdictlessGateIds)
+        .catch(() => undefined);
+      /*
+      FNXC:ContinuationHoldBudget 2026-11-11-09:52 (RUFU-490):
+      The same operator action re-arms the SECOND hold ledger, for the same reason and with the same
+      best-effort failure mode (a refused log write leaves the old episode's strikes standing, which is
+      the pre-fix behavior rather than a new hazard). This retry cancelled the card's own continuations
+      above, so a slot the abandoned holder was refusing is now seedable — and a spent ledger would
+      refuse it anyway, which is precisely the permanent sentence a retry must be able to lift.
+      Scoped by LEDGER rather than by verdict class: this route may discard a `passed` code-review row
+      (an approved gate held by a zombie continuation is a thing operators restart), so the verdict-class
+      filter its sibling above uses would miss the case this ledger exists for. A gate whose ledger
+      holds no line is not mentioned at all, so the routine re-runs that pass through this route every
+      day cost zero lines — the one line a re-arm may cost is spent only on a gate that was actually
+      refused.
+      */
+      const holdLedgerGateIds = await filterContinuationHoldLedgerGates(store, taskId, plan.discardedWorkflowStepIds)
+        .catch(() => [] as string[]);
+      await openContinuationHoldRerunEpisode(store, taskId, holdLedgerGateIds)
         .catch(() => undefined);
       const updated = await store.getTask(taskId);
       if (!updated) throw notFound(`Task ${taskId} not found after retry`);

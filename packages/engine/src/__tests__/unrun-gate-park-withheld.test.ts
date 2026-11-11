@@ -200,6 +200,9 @@ describe("withheld never-ran gate repair — paired -no-action signal", () => {
     expect(new Set(UNRUN_GATE_PARK_REFUSAL_REASONS)).toEqual(new Set([
       "rerun-budget-exhausted",
       "active-continuation",
+      // RUFU-490: the bounded continuation-hold refusal is part of this closed vocabulary. Listed or
+      // the census fails — which is the point: a new guard cannot enter the row unlisted.
+      "continuation-hold-budget-exhausted",
       "no-unrun-gate",
       "no-review-route",
       "not-singular",

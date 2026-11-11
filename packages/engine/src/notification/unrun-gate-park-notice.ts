@@ -53,6 +53,10 @@ export type UnrunGateParkRefusalReason = UnrunPreMergeGateRefusalReason | "park-
 export const UNRUN_GATE_PARK_REFUSAL_REASONS = [
   "rerun-budget-exhausted",
   "active-continuation",
+  // RUFU-490: the same standing holder as `active-continuation`, named separately so a consumer that
+  // treats a transient wait as nothing-to-see cannot swallow a refusal that has already spent its
+  // budget. Listed here or the census test fails — that is the test's whole purpose.
+  "continuation-hold-budget-exhausted",
   "no-unrun-gate",
   "no-review-route",
   "not-singular",

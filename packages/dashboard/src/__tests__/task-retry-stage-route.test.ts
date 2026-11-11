@@ -15,6 +15,8 @@ import {
 } from "@fusion/core";
 import {
   buildDeterministicSpecExhaustedError,
+  continuationHoldGateEpisodeResetMarker,
+  continuationHoldGateRerunLogMarker,
   isDeterministicSpecValidationParkError,
   verdictlessGateEpisodeResetMarker,
 } from "@fusion/engine";
@@ -486,6 +488,51 @@ describe("POST /tasks/:id/retry", () => {
     expect(lines.some((line) => line.includes(verdictlessGateEpisodeResetMarker("legacy-plan-review")))).toBe(false);
     // Both budgets open together — the restart that discards a gate must not leave one counter spent.
     expect(lines.some((line) => line.includes("Revision budget reset for 'legacy-code-review'"))).toBe(true);
+  });
+
+  /*
+  FNXC:ContinuationHoldBudget 2026-11-11-10:33 (RUFU-490):
+  The same operator action must also lift the continuation-hold refusal, or Retry cannot do the one
+  thing the exhaustion line told the operator to do. Two halves are asserted: a discarded gate whose
+  hold ledger holds a line is re-armed, and a gate is re-armed only when BOTH the discard and the
+  ledger say so — a retained gate keeps its strikes, and a routine retry over gates that were never
+  refused writes no line at all.
+  */
+  it("re-arms the continuation-hold ledger only for a discarded gate that had one", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fusion-restart-stage-hold-episode-"));
+    const row = taskFixture({
+      column: "signoff",
+      workflowStepResults: [
+        { workflowStepId: "legacy-code-review", status: "failed", reviewKind: "code" },
+        { workflowStepId: "legacy-plan-review", status: "passed", reviewKind: "plan" },
+      ],
+      log: [
+        { action: `${continuationHoldGateRerunLogMarker("legacy-code-review")} holder 'wi-a' hold 1 of 3` },
+        { action: `${continuationHoldGateRerunLogMarker("legacy-plan-review")} holder 'wi-b' hold 1 of 3` },
+      ] as never,
+    });
+    const { store } = createRestartStore(root, row);
+
+    expect((await postRetry(createApp(store))).status).toBe(200);
+
+    const lines = vi.mocked(store.logEntry).mock.calls.map((call) => String(call[1]));
+    expect(lines.filter((line) => line.includes(continuationHoldGateEpisodeResetMarker("legacy-code-review")))).toHaveLength(1);
+    // Discarded but never refused, and refused but retained, are both out of scope for the re-arm.
+    expect(lines.some((line) => line.includes(continuationHoldGateEpisodeResetMarker("legacy-plan-review")))).toBe(false);
+  });
+
+  it("writes no continuation-hold line on a retry over gates that were never refused", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fusion-restart-stage-hold-quiet-"));
+    const row = taskFixture({
+      column: "signoff",
+      workflowStepResults: [{ workflowStepId: "legacy-code-review", status: "failed", reviewKind: "code" }],
+    });
+    const { store } = createRestartStore(root, row);
+
+    expect((await postRetry(createApp(store))).status).toBe(200);
+
+    const lines = vi.mocked(store.logEntry).mock.calls.map((call) => String(call[1]));
+    expect(lines.some((line) => line.includes(continuationHoldGateEpisodeResetMarker("legacy-code-review")))).toBe(false);
   });
 
   it.each(["cancel", "patch", "replace"] as const)("keeps crash at %s fenced and a second HTTP request converges", async (failAt) => {

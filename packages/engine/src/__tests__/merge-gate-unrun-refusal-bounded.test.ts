@@ -26,6 +26,10 @@ board under a different label.
 const REFUSAL_REASONS = [
   "rerun-budget-exhausted",
   "active-continuation",
+  // RUFU-490: a new refusal value must join this census, because the guard below is one site for the
+  // whole vocabulary — a bound that holds for `active-continuation` while a restated new value floods
+  // is the same defect under a new label.
+  "continuation-hold-budget-exhausted",
   "no-unrun-gate",
   "no-review-route",
   "not-singular",

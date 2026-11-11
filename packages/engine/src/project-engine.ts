@@ -1388,7 +1388,15 @@ export class ProjectEngine {
       path cannot later seed an old review node after queue admission resumes.
       */
       if (reroute.reason === "workflow-selection-changed") return "changed";
-      if (reroute.reason === "active-continuation") return "pending";
+      /*
+      FNXC:ContinuationHoldBudget 2026-11-11-09:52 (RUFU-490):
+      The exhausted hold ledger names the SAME standing holder as `active-continuation`, so it maps to
+      the SAME verdict here. This matters beyond tidiness: any other value falls through to
+      `"not-applicable"`, which releases the card to the generic merge-reset path — the exact
+      automatic re-seed of a gate whose hold budget was just refused. The refusal changes what the
+      re-seed lane does, not what the retry fence owes the card.
+      */
+      if (reroute.reason === "active-continuation" || reroute.reason === "continuation-hold-budget-exhausted") return "pending";
       return "not-applicable";
     } catch {
       return "unavailable";
@@ -5697,7 +5705,18 @@ export class ProjectEngine {
             const reroute = reviewTask
               ? await rerouteWorkspaceReviewToCodeReview(store, reviewTask).catch(() => ({ rerouted: false, reason: "no-code-review-route" as const }))
               : { rerouted: false, reason: "no-code-review-route" as const };
-            const graphOwnsReentry = reroute.rerouted || reroute.reason === "active-continuation";
+            const graphOwnsReentry = reroute.rerouted
+              || reroute.reason === "active-continuation"
+              /*
+              FNXC:ContinuationHoldBudget 2026-11-11-09:52 (RUFU-490):
+              A spent hold ledger refuses to seed a NEW continuation; it does not move the rework edge.
+              The card's slot is still held by a real continuation, so the graph still owns re-entry and
+              the existing sentence plus the cleared error stay true. Flipping this to false would
+              instead print "configure or enable Code Review, then choose Retry" — a wrong diagnosis for
+              a route that exists, and the failure mode where a new refusal class invents an operator
+              action that was never the remedy.
+              */
+              || reroute.reason === "continuation-hold-budget-exhausted";
             /*
             FNXC:WorkspaceReviewReroute 2026-08-22-22:30:
             An active continuation already owns the graph rework edge. It is a
@@ -5713,7 +5732,7 @@ export class ProjectEngine {
               error: graphOwnsReentry ? null : errorMsg,
             }).catch(() => undefined);
             if (hasManualResolver) {
-              if (reroute.reason === "active-continuation" && reviewTask) {
+              if ((reroute.reason === "active-continuation" || reroute.reason === "continuation-hold-budget-exhausted") && reviewTask) {
                 /*
                 FNXC:WorkspaceReviewReroute 2026-08-21-20:11:
                 The active graph already owns the only continuation slot. Resolve its merge
