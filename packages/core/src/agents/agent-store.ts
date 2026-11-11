@@ -2973,8 +2973,14 @@ export class AgentStore extends EventEmitter {
 
   /**
    * Resolve an agent by authoritative exact ID or normalized durable display name.
+   *
+   * Resolution is id-first: an exact ID is a single indexed by-id read (`getAgent`), and only an
+   * ID miss enumerates the roster for normalized-name lookup. Durability is NOT decided here —
+   * an exact ID returns the row it names, ephemeral included; a surface that requires a durable
+   * identity applies {@link isEphemeralAgent} itself.
+   *
    * @param shortname - Agent ID or normalized agent name
-   * @returns Matching agent, or null when no durable identity matches
+   * @returns Matching agent, or null when no identity matches
    * @throws {AmbiguousAgentNameError} when a normalized name matches multiple durable agents
    */
   async resolveAgent(shortname: string): Promise<Agent | null> {
@@ -2982,6 +2988,19 @@ export class AgentStore extends EventEmitter {
     FNXC:AgentIdentityResolution 2026-10-04-10:41:
     Project-scoped IDs are authoritative and must remain readable even when legacy durable rows
     share a display name. Only an ID miss may enumerate durable agents for normalized-name lookup.
+
+    FNXC:AgentIdentityResolution 2026-11-11-07:18 (RUFU-543):
+    An exact-id caller must never pay for the whole-roster listing. `fn_agent_evaluation_followup`
+    failed on 2026-10-03 with a bare `Failed query: select ... from "project"."agents" ... order by
+    "project"."agents"."created_at" desc, "project"."agents"."id" desc` and no underlying cause,
+    while `fn_agent_show` on the same agent succeeded minutes earlier in the same session — the
+    caller already held an exact id yet its failure surface was a full `project.agents` SELECT.
+    Replaying that verbatim statement against a fresh partition succeeds, so the statement shape is
+    not the defect; being forced through it at all was. The requirement this encodes: keep the
+    exact-id branch on the single-row by-id read and never route an id hit back through
+    `listAgents()`, whose `ORDER BY created_at DESC, id DESC` widens one tool call's blast radius to
+    every row in the project. Pinned by `agent-resolve-by-id.pg.test.ts`, which asserts zero
+    `listAgents` calls inside a direct `resolveAgent(exactId)` window.
     */
     const exact = await this.getAgent(shortname);
     if (exact) {
