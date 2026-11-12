@@ -132,7 +132,14 @@ describe("triage planning lifecycle lock transport failures (FN-8911)", () => {
     await new TriageProcessor(fixture.store, root).specifyTask(fixture.task());
 
     const retryLog = fixture.logs.at(-1) ?? "";
-    expect(retryLog).toContain("Planning lifecycle lock transport failure recorded at");
+    /*
+    FNXC:PlannerNoopRelease 2026-11-11-22:54 (RUFU-527 — monotone consequence, asserted not hidden):
+    This pass now reaches the handoff instead of stopping at the unchanged-spec failure branch, so the
+    infrastructure refusal arrives from the fenced plan-capture write rather than from the persisted
+    marker read. Both sentences begin with the same shipped prefix, and the subject of this case is
+    unchanged: the retry names a transport failure and never a planner that left the spec alone.
+    */
+    expect(retryLog).toContain("Planning lifecycle lock transport failure");
     expect(retryLog).not.toContain("did not update the authoritative PROMPT.md");
     expect(fixture.task().recoveryRetryCount).toBe(2);
 
@@ -142,15 +149,23 @@ describe("triage planning lifecycle lock transport failures (FN-8911)", () => {
     await new TriageProcessor(fixture.store, root).specifyTask(fixture.task());
 
     expect(fixture.task()).toMatchObject({
-      status: "needs-replan",
-      error: null,
+      /*
+      FNXC:PlannerNoopRelease 2026-11-11-22:54 (RUFU-527 — the one consequence that is NOT monotone, stated):
+      With the release door widened, this card's passes now reach the handoff, so the fenced plan-capture
+      write is where the outage surfaces and FN-8911's transport lane is what stops the loop: after its
+      own bounded retries it parks the card `failed` naming the endpoint, instead of the earlier shape
+      where the unchanged-spec branch short-circuited every pass and the generic cadence reseeded forever.
+      The specification stays on disk and the verdict names infrastructure, so the operator's Retry is a
+      real exit; giving that park its own reconciliation sweep, the way RUFU-288 did for the fence park,
+      is recorded as follow-up work rather than folded into this change.
+      */
+      status: "failed",
       recoveryRetryCount: null,
       nextRecoveryAt: null,
-      recoveryDisposition: "escalated-reseed",
       planningFailure: null,
       customFields: { unrelated: "preserve-me" },
     });
-    expect(fixture.logs.at(-1)).toContain("Planning lifecycle lock transport failure recorded at");
+    expect(fixture.task().error ?? "").toContain("Planning lifecycle lock transport failure");
     expect(fixture.logs.at(-1)).not.toContain("did not update the authoritative PROMPT.md");
   });
 
@@ -158,7 +173,13 @@ describe("triage planning lifecycle lock transport failures (FN-8911)", () => {
     const fixture = createPersistedStore(createTask({ customFields: { unrelated: "preserve-me" } }));
     const promptPath = join(root, ".fusion", "tasks", "FN-8911", "PROMPT.md");
     await mkdir(join(root, ".fusion", "tasks", "FN-8911"), { recursive: true });
-    await writeFile(promptPath, "# Existing plan\n", "utf8");
+    /*
+    FNXC:PlannerNoopRelease 2026-11-11-22:54 (RUFU-527):
+    This case owns the UNCLASSIFIED unchanged-spec verdict, so its retained spec must not be one the
+    widened release door would let go. Prose-only content now releases on its own merits; the
+    out-of-range `(depends:)` token keeps the card on the ordinary failure verdict deterministically.
+    */
+    await writeFile(promptPath, "# Existing plan\n\n### Step 24 (depends: 2): Uses an absent prerequisite\n", "utf8");
 
     mockPromptWithFallback.mockResolvedValue(undefined);
     (fixture.store.lockCurrentPlanWhilePlanningLocked as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);

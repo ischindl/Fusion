@@ -131,7 +131,32 @@ describe("Plan Review session-failure budget (RUFU-251)", () => {
       expect(audits).toHaveLength(0);
     });
 
-    it("writes a revision-keyed attempt marker for a charged turn", async () => {
+    /*
+  FNXC:PlannerNoopRelease 2026-11-11-22:54 (RUFU-527 — the episode-scope proof this change depends on):
+  The release door no longer asks for a `REVISE` projection, so the only thing keeping a
+  no-projection release off the Plan Review ledger is this function's own episode test. This is the row
+  shape RUFU-519 was stuck in — a complete spec and `workflowStepResults: []` — and the charge entry
+  point must stay silent for it: no revision-keyed marker, no budget row, no turn consumed. The
+  matching claim on the release side (that the recycled-release audit emit is reached only inside an
+  episode, so this card writes no row at all) is proven end-to-end by the row counts in
+  `triage-planner-noop-release.test.ts` and `triage-plan-review-session-failure-loop.test.ts`.
+  */
+    it("charges no turn for a complete spec with an empty Plan Review projection", async () => {
+      const { store, logged, audits } = storeFixture();
+      const releasable = taskFixture({ workflowStepResults: [], status: null });
+      const result = await chargePlanReviewSessionFailureAttempt(
+        { store },
+        releasable,
+        settingsFixture,
+        { runContext: undefined },
+      );
+      expect(result.charged).toBe(false);
+      expect(result.budget).toMatchObject({ inRevisionEpisode: false, attemptsConsumed: 0, attempt: 1 });
+      expect(logged).toHaveLength(0);
+      expect(audits).toHaveLength(0);
+    });
+
+  it("writes a revision-keyed attempt marker for a charged turn", async () => {
       const { store, logged, audits } = storeFixture();
       const task = taskFixture({ workflowStepResults: [planReviewRow({ planReviewAttemptCount: 1 })] });
       const result = await chargePlanReviewSessionFailureAttempt(

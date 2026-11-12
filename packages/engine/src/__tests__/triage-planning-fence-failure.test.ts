@@ -223,6 +223,15 @@ describe("triage workflow-principal fence refusals (RUFU-288)", () => {
     expect(task.planningFailure?.principalFence?.firstAt).toBeTruthy();
   });
 
+  /*
+  FNXC:RecoveryOwnership 2026-10-08-13:16 (FN-9512 / RUFU-768 — the contract these two cases must state):
+  Cadence exhaustion no longer parks `failed`: FN-9512 removed the terminal authoring park because a
+  failed row has no automatic planning claimant, and the card is reseeded into `needs-replan` instead.
+  No new row carries `PLANNING_FAILED_EXHAUSTED:` any more (`planning-handoff-recovery.ts` still READS
+  it for rows earlier builds wrote). What these two cases own is unchanged and still asserted in full:
+  an authoring failure must not inherit an infrastructure verdict, and the stale fence evidence must
+  leave with the transient fields.
+  */
   it("keeps a stale fence marker from re-classifying an unchanged-PROMPT authoring failure as a fence park", async () => {
     const fixture = createFixture(
       createTask({
@@ -232,16 +241,25 @@ describe("triage workflow-principal fence refusals (RUFU-288)", () => {
       }),
       () => new Error("planner produced nothing usable"),
     );
-    // The spec exists and the planner leaves it untouched: the unchanged-PROMPT authoring failure.
-    await writeFile(promptPath, "# Pre-existing plan\n\nAuthoritative spec body.\n", "utf8");
+    /*
+    FNXC:PlannerNoopRelease 2026-11-11-22:54 (RUFU-527):
+    This case owns the AUTHORING failure, so its retained spec must be one that cannot release on its
+    own merits. A prose-only spec now takes RUFU-527's release path, which would silently move this
+    case off the branch it is here to test; the `(depends:)` token naming an absent step keeps it on
+    the unchanged-spec failure branch deterministically.
+    */
+    await writeFile(promptPath, "# Pre-existing plan\n\n### Step 24 (depends: 2): Uses an absent prerequisite\n", "utf8");
     await attemptOnce(fixture.store, fixture.task(), false);
 
     const task = fixture.task();
-    expect(task.status).toBe("failed");
-    expect(task.error).toContain("Planner did not update the authoritative PROMPT.md");
-    expect(task.error?.startsWith(PLANNING_FENCE_PARK_ERROR_PREFIX)).toBe(false);
+    expect(task.status).toBe("needs-replan");
+    expect(task.error).toBeNull();
+    // The card's own history names the authoring failure, never an infrastructure verdict.
+    expect(fixture.logs.join("\n")).toContain("Planner did not update the authoritative PROMPT.md");
+    expect(String(task.error ?? "")).not.toContain(PLANNING_FENCE_PARK_ERROR_PREFIX);
     // The retained evidence must stay inert: no sweep selection and no named planning wedge.
     expect(isPlanningFenceTerminalPark(task)).toBe(false);
+    expect(task.planningFailure).toBeNull();
   });
 
   it("clears a stale fence marker when the generic authoring budget is what exhausts", async () => {
@@ -257,9 +275,9 @@ describe("triage workflow-principal fence refusals (RUFU-288)", () => {
     await attemptOnce(fixture.store, fixture.task(), true);
 
     const task = fixture.task();
-    expect(task.status).toBe("failed");
-    expect(task.error).toContain("PLANNING_FAILED_EXHAUSTED");
-    expect(task.error?.startsWith(PLANNING_FENCE_PARK_ERROR_PREFIX)).toBe(false);
+    expect(task.status).toBe("needs-replan");
+    expect(task.error).toBeNull();
+    expect(String(task.error ?? "")).not.toContain(PLANNING_FENCE_PARK_ERROR_PREFIX);
     // An authoring verdict must never carry infrastructure evidence forward.
     expect(task.planningFailure).toBeNull();
   });

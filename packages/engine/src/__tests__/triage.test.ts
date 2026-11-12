@@ -4318,7 +4318,16 @@ describe("taskCreate tool model inheritance", () => {
       }
     });
 
-    it("retries an unchanged valid plan instead of treating inherited text as output", async () => {
+    /*
+    FNXC:PlannerNoopRelease 2026-11-11-22:54 (RUFU-527 — the monotone half of the change, asserted):
+    This case's invariant is that an unchanged plan is never CREDITED as the planner's output. What
+    changed is what happens next: an unchanged spec that is complete and deterministically valid now
+    releases on its own merits instead of burning a recovery unit, which is exactly the wedge RUFU-519
+    died in (10 dispatches, attempt `:25`, over a spec that was already complete). The inherited text
+    is still not credited — the release carries the artifact that was already on disk, and no retry
+    budget is touched — so the assertions moved from "charged" to "released, uncharged".
+    */
+    it("releases an unchanged valid plan on its merits instead of treating inherited text as output", async () => {
       const task = createTriageTask({ id: "FN-UNCHANGED-VALID" });
       const root = await createTriageFixtureRoot("fusion-triage-unchanged-valid-");
       const promptPath = join(root, ".fusion", "tasks", task.id, "PROMPT.md");
@@ -4334,12 +4343,11 @@ describe("taskCreate tool model inheritance", () => {
 
       try {
         await new TriageProcessor(store, root, { onSpecifyComplete }).specifyTask(task);
-        expect(store.updateTask).toHaveBeenCalledWith(task.id, expect.objectContaining({
-          status: "needs-replan",
-          recoveryRetryCount: 1,
-          nextRecoveryAt: expect.any(String),
-        }));
-        expect(onSpecifyComplete).not.toHaveBeenCalled();
+        // The handoff ran: the card moved, it was not requeued for another planner turn.
+        expect(onSpecifyComplete).toHaveBeenCalledWith(task, expect.objectContaining({ outcome: "released" }));
+        // Nothing was charged: no retry write, no backoff stamp, no replan requeue.
+        expect(store.updateTask).not.toHaveBeenCalledWith(task.id, expect.objectContaining({ recoveryRetryCount: 1 }));
+        expect(store.updateTask).not.toHaveBeenCalledWith(task.id, expect.objectContaining({ status: "needs-replan" }));
       } finally {
         await cleanupTriageFixtureRoot(root);
       }

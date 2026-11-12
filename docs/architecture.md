@@ -103,6 +103,35 @@ The conservative stranded-shape recovery claims only a complete non-seed prompt 
 <!-- FNXC:TaskReset 2026-08-22-18:15: Reset holds this non-reentrant lock while it cancels planner ownership and clears discarded output, so planner publications re-check their attempt generation inside the authoritative lock-held mutation. The reset disposer only aborts/disposes and unregisters its own planning paths; it never waits for a finalizer that needs this lock. -->
 A task Reset is therefore a planner-inclusive but lock-free cancellation fence. A surviving self-owned worktree registration is reconciled only after normal live-owner and idle checks, while live or foreign holders remain conflicts rather than force-removal candidates.
 
+## Unchanged-spec release predicate and its budget scopes (RUFU-527)
+
+A planner session that finishes without touching `PROMPT.md` is the one planning outcome with two opposite meanings, and the release predicate decides which one a card gets. It is `specReleasableUnchanged` in `packages/engine/src/triage.ts`, and it asks five things of the artifact the planner left behind: the pass changed nothing, no dispatch-shape veto fired, the content is non-empty, the ONE deterministic validator (`validateGeneratedPrompt`, never re-run and never widened per call site) returns null for it, and it is neither the engine's own seed prompt (`isUnplannedSeedPrompt`) nor a `DUPLICATE:`-only redirect (`isDuplicateRedirectOnlyPrompt`) — the same two classifiers `hold-release` and the "Queued to plan" badge use, so triage cannot release a state the admission door then refuses. A release is an ordinary handoff: `tryFinalizeExplicitDuplicateMarker` then `finalizeApprovedTask`, with their human-approval, gate-ordering, fingerprint, and spec-drift checks intact. The card gets one History sentence (`PLANNER_NOOP_RELEASE_NO_PROJECTION_LOG`) saying the plan released on its own merits.
+
+`isPlanReviewRevisionEpisode` no longer gates that door, and it still exists. It labels WHY a card is being released and it is the only thing that admits the Plan Review session-failure budget. RUFU-251 made the release conditional on a live Plan Review `REVISE` row, which is right for a card that was asked to revise and wrong for every other card: a card whose spec was authored while `workflowStepResults` was still empty has no `REVISE` row to point at, so the predicate was unsatisfiable and the planner's correct no-op was charged as a failed dispatch until the card was parked `failed` (RUFU-519: 10 dispatches over ~6.5 h, attempt `:25`, ending in a retry-exhaustion verdict about a specification that was already complete; 15 further non-terminal cards carried the same empty-projection row). Release is now decided by what a release can be proved from, and the review history decides only which ledger a failure is charged to.
+
+The two budgets keep strictly separate scopes:
+
+- **The Plan Review session-failure budget** (`packages/engine/src/executor/plan-review-session-failure-budget.ts`, shared with the graph's remediation seam) is `REVISE`-episode scoped. Outside a live, unsuperseded `REVISE` row it charges nothing, writes no revision-keyed marker, and emits no `task:plan-replan-session-failure-budget` row — including for the release path, whose audit emit (`spec-complete-recycled`) is reached only inside an episode. Exhaustion parks through the existing `plan-review-replan-cap` operator surface.
+- **The filesystem-twin recovery budget** (`recoveryRetryCount` / `nextRecoveryAt`, `MAX_RECOVERY_RETRIES`) is inert inside a `REVISE` episode (the episode's own ceiling owns the loop) and is the bound everywhere else. Its exhaustion is not a terminal park: it hands the card to `escalatePlanningReseed`, whose ceiling is the planning reseed cycle budget (RUFU-768).
+
+Failure-mode taxonomy — which budget bounds each failure, and which release conditions it withholds:
+
+| Failure mode | Bounded by | Withholds which release condition |
+| --- | --- | --- |
+| Planner no-op over a complete, valid spec (no projection, or a superseded/approving one) | nothing — it releases | none; this is the release |
+| Empty or whitespace-only artifact | filesystem twin | non-empty content |
+| Engine seed prompt or `DUPLICATE:`-only redirect | filesystem twin (no Plan Review turn is charged) | not-seed, not-redirect |
+| Structurally invalid or dangling-reference spec | filesystem twin inside an episode, plus the Plan Review budget | deterministic validator returns null |
+| Fallback engaged, or a fallback dispatch that never reported its settlement boundary | Plan Review budget inside an episode, filesystem twin otherwise | no dispatch-shape veto |
+| Lifecycle-lock transport / workflow-principal fence refusal | that lane's own bounded retry, then `escalatePlanningReseed` or the named fence park | none — this is not an artifact verdict |
+| Planning reseed ceiling reached | `PLANNING_RESEED_CYCLE_EXHAUSTED:` park, recoverable only by operator Retry | n/a |
+
+Recovery ownership stays where it was: a fence park is repaired by the `reconcile-planning-fence-park` sweep, a reseed-cycle park by operator Retry, and `escalatePlanningReseed` remains the only seam that converts cadence exhaustion into a fresh planning cadence. Because the release no longer needs a reviewer projection, no release path can fabricate a Plan Review verdict: the gate re-decides with a real verdict after the handoff.
+
+An exhausted-counter message must stay honest about what it reports. The unchanged-spec verdict reads "Planner did not update the authoritative PROMPT.md … exhausted its retry cadence", and at the pass that writes it the shared counter was already at its ceiling — the pass consumed no new unit — while the ceiling actually ending the card is the reseed ceiling. `describeExhaustedPlanningBudgetAttribution` therefore adds one History sentence naming both, plus the owners that debit that one counter (planner no-ops, lifecycle-lock transport, the fence, and generic planning failures all share `recoveryRetryCount`). It returns null while the counter still has units of its own, and it never rewrites the base sentinel sentence, so the readers and tests that key on that sentence keep parsing.
+
+The change is monotone by construction: every shape the old predicate withheld is still withheld — now asserted as a table in `triage-planner-noop-release.test.ts` — and only the complete-and-valid no-projection shape newly moves. A card that previously failed either keeps failing or now moves; it can never end in a state that is neither.
+
 ## Event-driven dispatch wake (FN-519)
 
 Nominal progress is event-driven: an authorized mutation wakes the consumer that owns the next step,

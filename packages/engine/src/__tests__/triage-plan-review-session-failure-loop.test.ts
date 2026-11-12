@@ -26,12 +26,24 @@ vi.mock("../pi.js", async (importOriginal) => {
   };
 });
 
-import { TriageProcessor } from "../triage.js";
+import { TriageProcessor, describeExhaustedPlanningBudgetAttribution } from "../triage.js";
+import {
+  PLANNING_RESEED_CYCLE_EXHAUSTED_PREFIX,
+  PLANNING_RESEED_CYCLE_LIMIT,
+  PLANNING_RESEED_CYCLE_METADATA_KEY,
+} from "../executor/planning-reseed-cycle-budget.js";
 
 const VALID_SPEC = "# Plan\n\n## What This Delivers\n\nShip the bound.\n";
-// `### Step 1:` as the first heading is engine-provable structural damage, so
-// deterministic validation rejects it without any reviewer judgement.
-const INVALID_SPEC = "# Plan\n\n### Step 1: wrong numbering\n\nShip the bound.\n";
+/*
+FNXC:StepDependencyValidation 2026-10-01-22:44 (RUFU-545 made heading labels display-only):
+`### Step 1:` as the first heading used to be this file's engine-provable structural damage, but a
+heading LABEL is prose now, so a lone mis-numbered heading parses cleanly and every case that leans on
+this fixture silently stops exercising its failure branch. The damage has to be an impossible PARSED
+position instead: this `(depends: 2)` token names a step the document does not have, which
+`parseStepHeadings` refuses deterministically, without any reviewer judgement. Same shape as the
+shared fixture in `triage-planning-retry-hold.test.ts`.
+*/
+const INVALID_SPEC = "# Plan\n\n### Step 24 (depends: 2): Uses an absent prerequisite\n\nShip the bound.\n";
 
 const planReviewReviseRow = (overrides: Record<string, unknown> = {}) => ({
   workflowStepId: "plan-review",
@@ -206,14 +218,23 @@ describe("triage planner-session failures inside a Plan Review REVISE episode (R
     await rm(root, { recursive: true, force: true });
   });
 
-  it("keeps the unchanged-spec rebound untouched when no Plan Review REVISE request is live", async () => {
+  /*
+  FNXC:PlannerNoopRelease 2026-11-11-22:54 (RUFU-527 — the case this file used to expect to fail):
+  Before RUFU-527 this was the wedge: a complete, valid spec with an empty `workflowStepResults` was
+  reported as a failed planner session and burned a recovery unit, forever, because the release
+  predicate demanded a `REVISE` projection that this card never had. The card's own merits are now the
+  release condition, so the case keeps its RUFU-251 assertion (the Plan Review session-failure budget
+  is never charged outside a live REVISE episode) and gains the release assertions. The withhold half
+  of the same shape lives in `triage-planner-noop-release.test.ts`.
+  */
+  it("releases a complete unchanged spec with no Plan Review REVISE request live, and charges nothing", async () => {
     await writeFile(promptPath, VALID_SPEC, "utf8");
     const fixture = createPersistedStore(createTask());
 
     await new TriageProcessor(fixture.store, root).specifyTask(fixture.task());
 
-    expect(fixture.logs.join("\n")).toContain("Planner did not update the authoritative PROMPT.md");
-    expect(fixture.task().recoveryRetryCount).toBe(1);
+    expect(fixture.logs.join("\n")).not.toContain("Planner did not update the authoritative PROMPT.md");
+    expect(fixture.task().recoveryRetryCount ?? null).toBeNull();
     expect(chargedMarkers(fixture.entries)).toHaveLength(0);
     expect(budgetEvents(fixture.audits)).toHaveLength(0);
   });
@@ -406,7 +427,14 @@ describe("triage planner-session failures inside a Plan Review REVISE episode (R
     await expect(discover(parked.task())).resolves.toEqual([]);
   });
 
-  it("keeps RUFU-244's approved-plan variant on the pre-change path (no recycle, no charge)", async () => {
+  /*
+  FNXC:PlannerNoopRelease 2026-11-11-22:54 (RUFU-527): an APPROVE satisfies the gate, so RUFU-251's
+  two budget branches stay out exactly as before — but the release no longer needs either of them.
+  A superseded or approving projection is simply "no live REVISE episode", which is the same row shape
+  as the empty case above, so the unchanged-and-complete spec releases on its merits. That is the
+  monotone half of this change: a card that used to fail here now moves.
+  */
+  it("releases RUFU-244's approved-plan variant on its merits (no recycle, no charge)", async () => {
     await writeFile(promptPath, VALID_SPEC, "utf8");
     const fixture = createPersistedStore(
       createTask({
@@ -420,14 +448,14 @@ describe("triage planner-session failures inside a Plan Review REVISE episode (R
 
     await new TriageProcessor(fixture.store, root).specifyTask(fixture.task());
 
-    // An APPROVE satisfies the gate, so neither budget branch may fire: the unchanged spec keeps
-    // the plain clean-attempt failure it had before RUFU-251.
-    expect(fixture.logs.join("\n")).toContain("Planner did not update the authoritative PROMPT.md");
-    expect(fixture.logs.join("\n")).not.toContain("found nothing to change");
+    // An APPROVE satisfies the gate, so neither budget branch may fire: the release is proved by the
+    // artifact alone and writes no ledger row of either kind.
+    expect(fixture.logs.join("\n")).not.toContain("Planner did not update the authoritative PROMPT.md");
+    expect(fixture.logs.join("\n")).not.toContain("Plan Review revision request found nothing to change");
     expect(chargedMarkers(fixture.entries)).toHaveLength(0);
     expect(budgetEvents(fixture.audits)).toHaveLength(0);
     expect(fixture.task().status).not.toBe("awaiting-approval");
-    expect(fixture.task().recoveryRetryCount).toBe(1);
+    expect(fixture.task().recoveryRetryCount ?? null).toBeNull();
   });
 
   /*
@@ -437,6 +465,13 @@ describe("triage planner-session failures inside a Plan Review REVISE episode (R
   stored backoff timestamp into the past between sessions, which stands in for the operator's clock
   waiting it out — the engine's own retry arithmetic and its 3-retry ceiling are untouched.
   */
+  /*
+  FNXC:PlanningReseedCycleBudget 2026-10-22-11:08 (RUFU-768 — the contract this fixture must state):
+  Cadence exhaustion no longer ends the card: it GRANTS a re-seed cycle, and only the card-level cycle
+  ceiling parks it. The three cadence turns below are unchanged, so the terminal pass is reached with
+  the cycle counter stamped at its ceiling — the state three earlier granted cycles leave behind —
+  instead of driving twelve more planner sessions to arrive at the same row.
+  */
   it("still terminates a no-REVISE planning failure through the filesystem recovery budget", async () => {
     await writeFile(promptPath, INVALID_SPEC, "utf8");
     const fixture = createPersistedStore(createTask({ status: "needs-replan" }));
@@ -445,6 +480,16 @@ describe("triage planner-session failures inside a Plan Review REVISE episode (R
     for (let session = 1; session <= 4; session += 1) {
       // Let the previous session's backoff elapse so the next pass is a real recovery turn.
       await fixture.store.updateTask("FN-2511", { nextRecoveryAt: new Date(Date.now() - 1_000).toISOString() });
+      if (session === 4) {
+        // The fixture store patches fields literally, so the episode marker is written in its own
+        // container rather than through the production key-level `sourceMetadataPatch` seam.
+        await fixture.store.updateTask("FN-2511", {
+          sourceMetadata: {
+            ...(fixture.task().sourceMetadata ?? {}),
+            [PLANNING_RESEED_CYCLE_METADATA_KEY]: PLANNING_RESEED_CYCLE_LIMIT,
+          },
+        } as Partial<Task>);
+      }
       await triage.specifyTask(fixture.task());
       if (session < 4) {
         expect(fixture.task().status).toBe("needs-replan");
@@ -453,11 +498,37 @@ describe("triage planner-session failures inside a Plan Review REVISE episode (R
     }
 
     expect(fixture.task().status).toBe("failed");
-    expect(fixture.task().error).toContain("after 3 retries");
+    expect(fixture.task().error).toContain(PLANNING_RESEED_CYCLE_EXHAUSTED_PREFIX);
+    /*
+    FNXC:PlanningBudgetAttribution 2026-11-11-22:54 (RUFU-527): the exhausted-cadence sentence names
+    the shape of the verdict, so the card must also carry the accounting truth beside it — this pass
+    spent no new unit (the shared counter was already at its ceiling) and the ceiling that ended the
+    card is the reseed ceiling, not that cadence.
+    */
+    expect(fixture.logs.join("\n")).toContain("this pass consumed no new unit of it");
+    expect(fixture.logs.join("\n")).toContain("planning reseed ceiling");
+    // The sentinel the sentence is built from stays intact — attribution is additive, never a rewrite.
+    expect(fixture.logs.join("\n")).toContain("Planner did not update the authoritative PROMPT.md");
     // The Plan Review budget never entered: no live REVISE request existed to charge.
     expect(chargedMarkers(fixture.entries)).toHaveLength(0);
     expect(budgetEvents(fixture.audits)).toHaveLength(0);
     expect((fixture.task() as unknown as Record<string, unknown>).awaitingApprovalReason).toBeUndefined();
+  });
+
+  /*
+  FNXC:PlanningBudgetAttribution 2026-11-11-22:54 (RUFU-527): the attribution must never appear for a
+  pass that is escalating with a still-fresh counter — that pass DID spend its own unit, and telling
+  an operator otherwise would send them to the wrong ledger.
+  */
+  it("withholds the attribution while the shared counter still has units of its own", () => {
+    expect(describeExhaustedPlanningBudgetAttribution(
+      { recoveryRetryCount: 1 },
+      { retryCadence: 3, reseedCycleLimit: PLANNING_RESEED_CYCLE_LIMIT, reseedCyclesGranted: 0 },
+    )).toBeNull();
+    expect(describeExhaustedPlanningBudgetAttribution(
+      { recoveryRetryCount: null },
+      { retryCadence: 3, reseedCycleLimit: PLANNING_RESEED_CYCLE_LIMIT, reseedCyclesGranted: 0 },
+    )).toBeNull();
   });
 
   it("leaves a non-REVISE card whose rewritten spec is invalid on the filesystem recovery budget", async () => {

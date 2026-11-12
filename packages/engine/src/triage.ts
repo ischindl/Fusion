@@ -30,6 +30,9 @@ import {
   readPlanAdmissionStallEpisode,
   buildTriageMemoryInstructions,
   isUnplannedSeedPrompt,
+  // FNXC:PlannerNoopRelease 2026-11-11-22:54 (RUFU-527): the release door refuses a redirect-only
+  // PROMPT.md with the SAME classifier hold-release and the badge use; never re-open-code it here.
+  isDuplicateRedirectOnlyPrompt,
   // FNXC:TaskFollowUp 2026-09-17-16:10: FN-513's shared sub-type test; never re-derived here.
   isFollowUpTask,
   isTaskAwaitingPlanning,
@@ -323,6 +326,45 @@ export function describeUnwrittenPlanArtifact(
     .map((reason) => `${reason} x${refusals.filter((candidate) => candidate === reason).length}`)
     .join(", ");
   return `${base} — the durable spec writer REFUSED this attempt's write (${tally}); this is a write refusal, not a planner that produced no plan`;
+}
+
+/*
+FNXC:PlannerNoopRelease 2026-11-11-22:54 (RUFU-527):
+A planner pass that changed nothing over a spec that is complete and deterministically valid on its
+own merits is released through the ordinary handoff, and the operator reads this one sentence saying
+so. It is a module-level constant rather than an inline literal because the release and its History
+line must not drift: `triage-planner-noop-release.test.ts` asserts THIS symbol, so editing the copy
+in a test can no longer hide a missing release notice on the card.
+
+The wording deliberately names what was absent (a Plan Review revision request) and not a retry
+number, for the same reason RUFU-251 gave for "turn" instead of "attempt N/": a marker that looks
+like a consumed turn would be counted back out of the ledger as one.
+*/
+export const PLANNER_NOOP_RELEASE_NO_PROJECTION_LOG = "Complete specification found nothing to change — releasing the unchanged plan without a Plan Review revision request";
+
+/*
+FNXC:PlanningBudgetAttribution 2026-11-11-22:54 (RUFU-527):
+An exhausted-counter message must say honestly what was exhausted. RUFU-519's card died on
+"Planner did not update the authoritative PROMPT.md … exhausted its retry cadence" after its 10th
+dispatch, and the sentence was misleading in two ways at once: the pass that wrote it consumed no new
+unit of the cadence (the counter was already at its ceiling, so the arm only escalated), and the
+ceiling that actually ended the card was the planning RESEED ceiling, not that cadence. The counter is
+shared, so the sentence also cannot name who spent it: planner no-ops, lifecycle-lock transport
+failures, workflow-principal fence refusals and generic planning failures all debit the same field.
+
+This helper is the clarification the card gets beside that sentence. It returns null unless the
+attribution is actually true — a pass that is escalating for a still-fresh counter has consumed its
+own unit and must not be told otherwise — and it never rewrites the existing sentinel, so the
+`describeUnwrittenPlanArtifact` base stays byte-identical and stays parseable for the tests and
+recovery readers that key on it.
+*/
+export function describeExhaustedPlanningBudgetAttribution(
+  task: Pick<Task, "recoveryRetryCount">,
+  limits: { retryCadence: number; reseedCycleLimit: number; reseedCyclesGranted: number },
+): string | null {
+  const spent = task.recoveryRetryCount ?? 0;
+  if (spent < limits.retryCadence) return null;
+  return `Attribution of the exhausted retry count above: this pass consumed no new unit of it — the shared planning recovery counter was already at its ceiling of ${limits.retryCadence}. Planner no-ops, lifecycle-lock transport failures, workflow-principal fence refusals and generic planning failures all debit this one counter, so the sentence names the shape of the verdict, not who spent the budget. The bound that ends this card is the planning reseed ceiling: ${limits.reseedCyclesGranted} of ${limits.reseedCycleLimit} reseed cycles granted.`;
 }
 
 export interface PlanningDependencyInstructionTarget {
@@ -4766,8 +4808,11 @@ export class TriageProcessor {
              replan budget the graph consumes, so the shared ceiling stops the loop with the existing
              `plan-review-replan-cap` operator park.
 
-          Outside a live REVISE episode nothing changes: a first-pass plan with no Plan Review verdict
-          yet (or a superseded projection) keeps the unchanged-spec rebound exactly as before.
+          Outside a live REVISE episode the charge and the episode park are still inert, so no planner
+          session is ever billed a Plan Review turn it did not spend. What the release itself needs
+          changed under RUFU-527: a first-pass plan with no Plan Review verdict yet (or a superseded
+          projection) is released on the merits of its own spec instead of rebounding — see
+          `specReleasableUnchanged` below.
           */
           let generatedPromptValidation: { value: string | null } | undefined;
           const validateGeneratedPromptOnce = async (): Promise<string | null> => {
@@ -4779,12 +4824,41 @@ export class TriageProcessor {
           // engaged at all, is a session failure whatever the artifact looks like, so it can never
           // qualify as "the planner finished the revision and found nothing to change".
           const sessionFailureByDispatchShape = fallbackDispatchBoundaryMissing || planningAttempt.fallbackEngaged;
-          const specCompleteRevision = !sessionFailureByDispatchShape
+          /*
+          FNXC:PlannerNoopRelease 2026-11-11-22:54 (RUFU-527):
+          The release door is the SPEC, not the review history. RUFU-251 widened "the planner left
+          PROMPT.md alone" into a release only for a card with a live Plan Review `REVISE` projection,
+          and that conjunct is what wedged RUFU-519 and RUFU-479: a card whose spec was authored while
+          `workflowStepResults` was still `[]` (Plan Review never ran, or recorded no row) could never
+          satisfy the predicate, so the planner's CORRECT no-op was charged as a failed dispatch and
+          the card burned the filesystem-twin recovery budget until it was parked `failed`. Measured on
+          RUFU-519: 10 planner dispatches over ~6.5 h, attempt `:25`, ending in a retry-exhaustion
+          verdict about a specification that was already complete, with 15 more non-terminal cards
+          carrying the same empty-projection row.
+
+          `specReleasableUnchanged` therefore asks only what the release can honestly be proved from:
+          the pass changed nothing, no dispatch-shape veto, and the artifact the planner left behind is
+          non-empty, passes the ONE deterministic validator (`validateGeneratedPromptOnce`, never
+          re-run and never weakened here), and is neither the engine's own seed prompt nor a
+          `DUPLICATE:`-only redirect — the same two classifications `hold-release` and the board badge
+          use, so triage cannot create a state the admission door then refuses. An empty, seed-only,
+          redirect-only, structurally invalid or dangling-reference spec is still withheld and still
+          charges the ordinary unchanged-spec failure.
+
+          What did NOT move: `inPlanReviewRevisionEpisode` still labels the release reason and still
+          gates the recycled-budget audit and the charge branch below. The Plan Review session-failure
+          budget stays strictly `REVISE`-episode scoped, so a no-projection release writes no budget row
+          and consumes no turn, and release still runs through `tryFinalizeExplicitDuplicateMarker` ->
+          `finalizeApprovedTask` with its human-approval, gate-ordering, fingerprint and spec-drift
+          checks intact.
+          */
+          const specReleasableUnchanged = !sessionFailureByDispatchShape
             && !artifactChangedByAttempt
-            && inPlanReviewRevisionEpisode
             && written.trim().length > 0
-            && !(await validateGeneratedPromptOnce());
-          if (specCompleteRevision) {
+            && !(await validateGeneratedPromptOnce())
+            && !isUnplannedSeedPrompt(written, task.id, task.title, task.description)
+            && !isDuplicateRedirectOnlyPrompt(written, task.title);
+          if (specReleasableUnchanged && inPlanReviewRevisionEpisode) {
             const budget = await resolvePlanReviewSessionFailureBudget({ store: this.store }, task, settings);
             await this.store.logEntry(
               task.id,
@@ -4804,8 +4878,17 @@ export class TriageProcessor {
               budget,
               outcome: "spec-complete-recycled",
             });
+          } else if (specReleasableUnchanged) {
+            // FNXC:PlannerNoopRelease 2026-11-11-22:54 (RUFU-527): no projection, no budget row —
+            // this release is proved by the artifact alone, so nothing here may touch the revision-keyed
+            // ledger. The card still gets the one History sentence that explains why it is moving.
+            await this.store.logEntry(
+              task.id,
+              PLANNER_NOOP_RELEASE_NO_PROJECTION_LOG,
+              "PROMPT.md is identical to its pre-session content and passes deterministic validation, so the plan releases on its own merits instead of being charged as a failed planner session.",
+            );
           }
-          if (sessionFailureByDispatchShape || (!artifactChangedByAttempt && !specCompleteRevision)) {
+          if (sessionFailureByDispatchShape || (!artifactChangedByAttempt && !specReleasableUnchanged)) {
             const liveTask = await Promise.resolve(this.store.getTask(task.id)).catch(() => task) ?? task;
             const transportFailure = getPlanningLifecycleLockTransportFailure(liveTask);
             const failure = transportFailure
@@ -4859,6 +4942,18 @@ export class TriageProcessor {
               warn: true,
               clearPlanningFailure: true,
             });
+            /*
+            FNXC:PlanningBudgetAttribution 2026-11-11-22:54 (RUFU-527): the sentence above is the shape
+            of the verdict, not an accounting statement. Say plainly who could have spent the counter
+            and which ceiling is really ending the card, so a reader is never sent to repair the wrong
+            budget (RUFU-519's operator-facing symptom).
+            */
+            const attribution = describeExhaustedPlanningBudgetAttribution(task, {
+              retryCadence: MAX_RECOVERY_RETRIES,
+              reseedCycleLimit: PLANNING_RESEED_CYCLE_LIMIT,
+              reseedCyclesGranted: readPlanningReseedCycleCount(task),
+            });
+            if (attribution) await this.store.logEntry(task.id, attribution).catch(() => undefined);
             return;
           }
 
