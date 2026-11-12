@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { join, resolve } from "node:path";
-import { realpath } from "node:fs/promises";
+import { join } from "node:path";
 import type { Settings, Task } from "@fusion/core";
+import { isSamePath } from "./lane-legs.js";
 import { resolveWorkspaceRepoBaseBranch } from "./workspace-base-branch.js";
 import {
   computeReviewDiffFingerprint,
@@ -78,23 +78,20 @@ async function git(args: string[], cwd: string): Promise<string> {
 }
 
 /*
+FNXC:WorkspaceReviewEvidence 2026-11-11-23:10 (RUFU-425):
+Identity has to survive symlinks, and that rule is now owned once. This file was the origin of the
+realpath-based comparison (RUFU-519, measured 2026-10-02: 12 review-lane cards lost their member
+worktrees and every probe silently read the ROOT repository, which carries the same `fusion/<id>`
+branch name). RUFU-425 lifted the same rule into `lane-legs.ts` for the two seams that had grown
+their own half-guard, so keeping a private copy here would let the two equality rules drift apart —
+and a drifted comparison is exactly how a member worktree starts reading as somebody else's.
+
 FNXC:WorkspaceReviewEvidence 2026-10-03-01:20 (RUFU-519):
-Identity has to survive symlinks. `resolve()` is purely lexical, while git reports a resolved path, so
-under a symlinked workspace root (a `/var` -> `/private/var` style link, or a linked checkout) a
-lexical comparison would declare a perfectly good member worktree missing. Realpath both sides and fall
-back to the lexical form only when realpath cannot answer.
+`resolve()` is purely lexical while git reports a resolved path, so under a symlinked workspace root (a
+`/var` -> `/private/var` style link, or a linked checkout) a lexical comparison would declare a
+perfectly good member worktree missing; realpath both sides and fall back to the lexical form only
+when realpath cannot answer.
 */
-async function isSamePath(left: string, right: string): Promise<boolean> {
-  if (resolve(left) === resolve(right)) return true;
-  const real = async (path: string): Promise<string> => {
-    try {
-      return await realpath(path);
-    } catch {
-      return resolve(path);
-    }
-  };
-  return await real(left) === await real(right);
-}
 
 /**
  * Name why a member could not be measured. An unresolvable path or an enclosing top-level is a missing

@@ -140,6 +140,15 @@ export type GitMutationType =
   | "worktree:workspace-repo-base-branch"
   /* FNXC:Workspace 2026-08-15-07:05: Main-checkout guard reports only ids/counts/fixed outcomes. */
   | "worktree:workspace-main-checkout-edit"
+  /*
+  FNXC:LaneLegGate 2026-11-11-22:50 (RUFU-425):
+  A gate refused to measure a workspace leg because the leg is not its own repository. Metadata is
+  { taskId, source, code, repository, legCount, entryCount } — the repository KEY from the task record,
+  never a filesystem path, because the path is what an operator reads on the card's History line and a
+  path in the audit store carries the whole project root with it. Deliberately outside the curated
+  delivery-pipeline catalogue; documented as prose in docs/run-audit.md.
+  */
+  | "worktree:lane-leg-refusal"
   /**
    * worktrunk run-audit metadata shape:
    *

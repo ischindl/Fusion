@@ -29,6 +29,17 @@ MEASURED BEFORE -> AFTER (git forks per trigger): a 4-card pass 24 -> 18, an 8-c
 cold burst of 4 trusted-ref resolutions 8 -> 2. Single-card triggers stay at 4/6 and the warm repeat
 pass stays at 0, because both were already at their floor — see the `2 -> 2` and `0 -> 0` cases below.
 
+FNXC:LaneLegGate 2026-11-11-23:45 (RUFU-425): the lane-leg pre-flight added to
+`CheckoutEmptinessProver.prove` measures ZERO git forks — this file passes UNCHANGED, so every
+expected count recorded above still holds after the change and no counter needed a delta. That is a
+design requirement rather than luck: the pre-flight asks the leg for its own state with `readdir` +
+`lstat`, never with `git`, precisely because this file's own header records that the prover's fork
+count was the single largest `child_process` cost on the board endpoints, and the leg check runs on
+the scheduler's admission path on top of it. An implementation that had probed with
+`git rev-parse --show-toplevel` would have added one fork per leg per admission pass and failed here.
+The fork-free probe is separately pinned by `checkout-emptiness-lane-legs.test.ts`, which asserts the
+leg state is refused BEFORE any git subprocess is asked about the leg.
+
 FNXC:GitProofForkAccounting 2026-11-08-03:49 (RUFU-871, second slice): `proveDormantCheckoutEmptiness`
 went from ONE `git symbolic-ref --short refs/remotes/origin/HEAD` per call (unbounded — 7 production call
 sites, one per admission pass / dispatch / card) to one per repository per 10 s TTL window, with a

@@ -570,6 +570,9 @@ async function dormantCheckoutEmptinessForBlocker(
         rootDir: () => store.getRootDir(),
         settings,
         candidates: [blocker],
+        // RUFU-425: this proof decides whether a dependency's lease may be released, so a leg that
+        // cannot be measured is announced on that card.
+        store,
       });
       proof = proofs.get(blocker.id);
     } catch {
@@ -6220,6 +6223,9 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             rootDir: this.options.rootDir,
             settings,
             candidates: [task],
+            // RUFU-425: this branch is about to reclaim a branch/worktree, so an unmeasurable leg is
+            // announced on the card rather than silently read as "nothing to preserve".
+            store: this.store,
           });
           const retainedProof = emptinessByTask.get(task.id);
           if (!retainedProof || taskHoldsUnmergedCheckout(task, retainedProof)) {

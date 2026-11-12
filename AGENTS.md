@@ -30,6 +30,52 @@ cd ../kb-worktrees/<branch-name>
 - Land branch work via PR, `wt merge`, or an explicit operator request — do not move the primary checkout onto the feature branch as the default workflow.
 - If you need a branch and discover you are about to switch the primary tree off `main`, stop and open a worktree instead.
 
+### Standing Rule: A Workspace Leg Must Be Its Own Repository Before Anything Measures It (RUFU-425)
+
+A workspace card's execution folder is not a repository, and the paths under `task.workspaceWorktrees` are
+only where a repository *would* be. Git resolves upward, so at a leg that was never materialised every
+read still *succeeds* and simply describes the wrong repository: `rev-parse --show-toplevel` prints the
+ENCLOSING worktree's path (it prints nothing only when no ancestor is a repository at all), `rev-parse
+HEAD` answers with that enclosing repository's commit, and `git status --porcelain` reports its dirt. Two
+wrong verdicts came from that one affordance — a verification gate recorded `pass` for a green suite it
+ran in an empty directory, and an emptiness proof answered `empty`, which released a file-scope lease and
+authorised a worktree removal. On the card, "clean, zero commits ahead" and "nothing here at all" looked
+identical.
+
+So measure the leg, not the folder. Before any number taken at a leg's path is trusted, classify the leg
+with `assessLaneLegs` (`packages/engine/src/worktree/lane-legs.ts`): directory entries including hidden
+ones, then ownership via `rev-parse --show-toplevel` compared with the recorded path, then HEAD, then lag
+against a local trunk ref — no fetch, no mutation, closed classification and refusal-code sets. "Leg
+exists", "leg has a HEAD", and "leg is own toplevel" are three facts and never share a label. A leg that is
+real, named, and a full trunk behind measures as a clean checkout, which is the same false green one step
+further along; report it. `rev-parse HEAD` is never the ownership test — at the reported shape it is the
+read that lies.
+
+A leg that cannot be measured refuses the measurement instead of returning a verdict, and each seam says
+what it actually means: the verification gate runs no command and reports
+`verification-infrastructure-failure` / `lane-legs-not-materialized` (never a red command — a fix agent
+cannot materialise a repository, so it must not be dispatched either); the executor parks
+`LANE_LEGS_NOT_MATERIALIZED: <code> (<repo>)` — and that park owes two writes, because a park the engine
+can walk past is not a refusal: it clears the completed-task watchdog the run armed before the gate, and
+it repeats the class token in the card's History line, which is the only evidence
+`evaluateCompletedPromotionFailureProvenance` consults (it scans log actions, never `task.error`) when a
+stranded-completed sweep decides whether to promote. Skip either half and the refused card reaches review
+as if it had been measured — the FN-8141 laundering shape again. The checkout-emptiness prover answers
+`unknown` — the verdict every consumer already treats as a holder — so no lease is released and no
+worktree removed on a
+cleanliness proof read from the wrong repository. A genuinely missing directory still proves from its
+branch ref in the main checkout; that mode is unchanged. Record the refusal once, through
+`recordLaneLegRefusal`, which writes the card's History line and the `worktree:lane-leg-refusal` audit row:
+the path belongs to the History line, never to metadata. Use the fork-free probe
+(`inspectLaneLegLocal`) on the scheduler's admission path — the prover's subprocess count is a measured
+ratchet. Invariant: *Architecture → Lane-leg measurement invariant*.
+
+<!--
+FNXC:LaneLegGate 2026-11-11-23:57 (RUFU-425):
+Rule added from a measured reproduction, not a hypothesis: five lanes of one project were probed
+read-only and all five had vanished from disk while their cards reported completion.
+-->
+
 ### Spec Generation Hygiene
 
 - Do not cite `.fusion/tasks/<id>/<file>` paths in Context/Steps/File Scope unless the file already exists, is explicitly created as a `(new)` Artifact, or is sibling `PROMPT.md`/`task.json`/`attachments/*`.

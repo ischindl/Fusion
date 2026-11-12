@@ -30,6 +30,7 @@ import { withRateLimitRetry } from "../errors/rate-limit-retry.js";
 import { describeModel, promptWithFallback } from "../pi.js";
 import { executorLog } from "../logger.js";
 import { createRunAuditor, type EngineRunContext } from "../util/run-audit.js";
+import type { LaneLegRefusalNotice } from "../worktree/lane-leg-refusal.js";
 import type { PluginRunner } from "../plugins/plugin-runner.js";
 import type { AgentStore } from "@fusion/core";
 
@@ -48,7 +49,21 @@ export type AttemptExecutorVerificationFixDeps = {
     worktreePath: string,
     settings: Settings,
     extraEnv?: NodeJS.ProcessEnv,
-  ) => Promise<{ allPassed: boolean }>;
+  ) => Promise<{ allPassed: boolean; laneLegRefusal?: LaneLegRefusalNotice }>;
+};
+
+/*
+FNXC:LaneLegGate 2026-11-11-23:40 (RUFU-425, W3):
+A bare boolean could not carry the one outcome the caller must treat differently. `false` meant
+"the fix did not work, dispatch another one", and that is the wrong reaction when the re-run refused
+to measure at all: a fix agent cannot materialise a repository, so another attempt just spends
+retries against a directory that is empty. The refusal rides beside the boolean so every existing
+`fixed` consumer keeps its meaning and the loop gets its stop signal.
+*/
+export type ExecutorVerificationFixOutcome = {
+  fixed: boolean;
+  /** Set when the re-run measured nothing; the caller must stop dispatching fix agents. */
+  laneLegRefusal?: LaneLegRefusalNotice;
 };
 
 /**
@@ -70,7 +85,7 @@ export async function attemptExecutorVerificationFix(
   retryNumber: number,
   maxRetries: number,
   extraEnv?: NodeJS.ProcessEnv,
-): Promise<boolean> {
+): Promise<ExecutorVerificationFixOutcome> {
   try {
     executorLog.log(`${task.id}: spawning executor verification fix agent (attempt ${retryNumber}/${maxRetries})`);
 
@@ -239,7 +254,16 @@ ${failureContext.output.slice(0, VERIFICATION_LOG_MAX_CHARS)}
       */
       const reRunResult = await deps.runExecutorDeterministicVerification(task, worktreePath, settings, extraEnv);
 
-      return reRunResult.allPassed;
+      /*
+      FNXC:LaneLegGate 2026-11-11-23:40 (RUFU-425, W3):
+      A refusal that appears MID-loop is a different fact from a red command: the leg stopped being a
+      repository while the fix agent worked (a released worktree, a deinitialised member). The
+      primitive already wrote the card's History line and its audit row, so all that is left here is
+      to hand the caller the stop signal rather than the "try again" verdict.
+      */
+      return reRunResult.laneLegRefusal
+        ? { fixed: false, laneLegRefusal: reRunResult.laneLegRefusal }
+        : { fixed: reRunResult.allPassed };
     } finally {
       await logger.flush();
       session.dispose();
@@ -260,6 +284,6 @@ ${failureContext.output.slice(0, VERIFICATION_LOG_MAX_CHARS)}
       errorMessage,
       "executor",
     );
-    return false;
+    return { fixed: false };
   }
 }

@@ -157,6 +157,9 @@ export async function blockOuterDispatchWhenFileScopeLeaseHeld(
     rootDir: () => deps.store.getRootDir(),
     settings,
     candidates: dormantProofCandidates,
+    // RUFU-425: a lane leg that cannot be measured must be named on the holder's card, not only in
+    // the engine log, because the outcome of this pass is a file-scope lease release.
+    store: deps.store,
   });
   for (const { holder, roles, handoffAccepted } of roleResolvedHolders) {
     // A receipt changes admission, so resolve its current normalized scope before classification.

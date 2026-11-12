@@ -2,6 +2,7 @@ import type { Settings, Task, TaskStore, WorkflowIrNode } from "@fusion/core";
 import { runExecutorDeterministicVerification } from "../executor/deterministic-verification.js";
 import { truncateWithEllipsis } from "../execution/verification-utils.js";
 import type { EngineRunContext } from "../util/run-audit.js";
+import { laneLegRefusalSentence } from "../worktree/lane-leg-refusal.js";
 
 export type DeterministicVerificationGateDeps = {
   store: TaskStore;
@@ -61,6 +62,25 @@ export async function runDeterministicVerificationGate(
 
   if (result.allPassed) {
     return { outcome: "success", value: "passed", contextPatch: { output: "Verification passed." } };
+  }
+
+  /*
+   * FNXC:LaneLegGate 2026-11-11-23:05 (RUFU-425, W2):
+   * A lane-leg refusal must be branched BEFORE the failed-command arithmetic below, or it collapses
+   * into `failed` and remediation is handed a red test that never ran. It joins the infrastructure
+   * class for the same reason a timeout does: the measurement is absent, so there is nothing to fix
+   * and no evidence to merge on. The card's History line and audit row are already written by the
+   * shared primitive, so this branch adds no second sentence.
+   */
+  if (result.laneLegRefusal) {
+    return {
+      outcome: "failure",
+      value: "verification-infrastructure-failure",
+      contextPatch: {
+        output: laneLegRefusalSentence(result.laneLegRefusal, "deterministic-verification"),
+        verificationFailure: { commandLabel: "lane-legs", reason: "lane-legs-not-materialized" },
+      },
+    };
   }
 
   const failed = result.failedCommand === "testCommand" ? result.testResult : result.buildResult;

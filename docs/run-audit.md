@@ -1367,3 +1367,47 @@ re-announcing every pass, and an accepted reclaim always also writes one task-hi
 operator's question is always about one specific card. Like RUFU-462's `runtime:heap-ceiling`, both events
 are deliberately absent from the curated delivery-pipeline catalogue, which `run-audit-catalogue.test.ts`
 locks table-for-table against this file.
+
+### The leg a lane never materialised (RUFU-425)
+
+`worktree:lane-leg-refusal` records the one event where a workspace lane was asked for a verdict it is
+not able to give: a declared member leg under `task.workspaceWorktrees` whose directory is empty, absent,
+or is not its own repository. Git resolves upward from such a path, so `rev-parse HEAD` answers with the
+enclosing superproject's commit and `git status --porcelain` reports the folder containing the leg. That
+affordance produced two recorded wrong verdicts on a six-lane project — a verification gate that wrote
+`pass` with a green suite run in an empty directory, and an emptiness proof that answered `empty` and so
+released a file-scope lease and authorised a worktree removal — while the only evidence of either was an
+out-of-band operator probe of the folder itself, because nothing on the card distinguished "zero commits
+ahead and clean" from "nothing here at all".
+
+The row is written by `recordLaneLegRefusal`
+(`packages/engine/src/worktree/lane-leg-refusal.ts`), the single place a refusal reaches the board, and
+both of its durable effects are emitted there: one task-history line and this audit row. A refusal that
+recorded only its audit row would reproduce the exact defect the card was raised for — a false green
+whose only trace is a filesystem fact — so the History line carries what the row deliberately omits: the
+classification's plain-language description, the refusal code, the seam that recorded it, the recorded
+path, the directory's entry count (`unreadable` when the directory could not be read), and how many legs
+the card declared. Metadata is ids, fixed enums and counts only — `taskId`, the refusing `repository`,
+`code` from the closed refusal-code set, `source` from `deterministic-verification` / `checkout-emptiness`,
+`legCount`, and `entryCount` (nullable) — because the refusal code is what a query groups on. A path is
+not a dimension anybody groups by, and putting the recorded path there would name a filesystem location in
+a store readable by anything with query access. `target` is the repository KEY from the task record, and
+an emit without a run context lands under the synthetic `lane-leg-gate` agent and run id.
+
+Emission is the FN-9175 bounded seam (`emitBoundedRunAudit` from `packages/engine/src/util/run-audit.ts`,
+the wrapper that adds `phase`/`source`/`taskLineageId`), so an absent, throwing, rejecting, or hanging
+audit sink cannot alter, delay, or replace the verdict being reported — pinned in
+`packages/engine/src/worktree/__tests__/lane-leg-refusal.test.ts` by asserting a rejecting sink leaves the
+refusal and the returned verdict identical. Bounded emission is not a courtesy here: the checkout-emptiness
+prover answers `unknown` on the scheduler's admission path for every pass of a refused leg, so a prover
+that awaited its own telemetry would have made an unreachable audit store a scheduling dependency. The
+announcement is therefore bounded per path while the protective verdict is not.
+
+The event is deliberately absent from the curated delivery-pipeline catalogue, which
+`run-audit-catalogue.test.ts` locks table-for-table against this file: a lane that cannot be measured is
+not a delivery step, and adding a row there would make an unmaterialised checkout look like a stage every
+card is expected to pass through. Like RUFU-462's `runtime:heap-ceiling` and RUFU-279's `memory:*` trio,
+it is documented in prose and declared in the typed catalogue module only. The paired surfaces — the
+verification gate's `verificationFailure.reason: "lane-legs-not-materialized"`, the executor's
+`LANE_LEGS_NOT_MATERIALIZED:` error prefix, and the invariant itself — are in *Architecture → Lane-leg
+measurement invariant*.

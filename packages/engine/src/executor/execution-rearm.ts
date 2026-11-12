@@ -147,7 +147,8 @@ export async function hasStepWorkEvidence(
   if (entries.length === 0) return { hasEvidence: false, verdicts: "no-checkout" };
   const rootDir = deps.store.getRootDir?.() ?? "";
   if (!rootDir) return { hasEvidence: false, verdicts: "no-root-dir" };
-  const prover = deps.emptinessProver ?? checkoutEmptinessProverFor(rootDir);
+  // The store is offered so a refused lane leg reaches the card; proof verdicts are unchanged by it.
+  const prover = deps.emptinessProver ?? checkoutEmptinessProverFor(rootDir, { store: deps.store });
   const settings = await deps.store.getSettings?.().catch(() => undefined);
   const integrationBranch = settings
     ? await resolveIntegrationBranch(rootDir, settings, {}).catch((): string | null => null)

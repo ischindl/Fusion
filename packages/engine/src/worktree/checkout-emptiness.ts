@@ -25,6 +25,8 @@ Design constraints that shaped this file:
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import type { CheckoutEmptinessProofMap, CheckoutEmptinessVerdict } from "@fusion/core";
+import { inspectLaneLegLocal, REFUSAL_BY_CLASSIFICATION, type LaneLegClassification, type LaneLegLocalState } from "./lane-legs.js";
+import { recordLaneLegRefusal, type LaneLegRefusalNotice, type LaneLegRefusalStore } from "./lane-leg-refusal.js";
 import { resolveIntegrationBranch, resolveIntegrationBranchFromSettings, type IntegrationBranchSettings } from "../merge/integration-branch.js";
 /* RUFU-231: shared trusted-integration-identity chain (the same ordered identities the
    branch-conflict inspection and the sweep's foreign-tip rejection trust). */
@@ -44,6 +46,26 @@ const GIT_COMMAND_TIMEOUT_MS = 5_000;
 const GIT_MAX_BUFFER_BYTES = 4 * 1024 * 1024;
 const DEFAULT_PROOF_CONCURRENCY = 4;
 const DEFAULT_MAX_CACHED_PROOFS = 512;
+
+/*
+FNXC:LaneLegGate 2026-11-11-23:15 (RUFU-425, W4):
+How often one refused leg may re-announce itself. The proof cache suppresses repeats inside its TTL,
+but a scheduling pass every few seconds would otherwise write a History line per pass per lane — the
+same shape that produced 16 536 audit rows for one card over two days (RUFU-393). The prover's refusal
+is therefore announced at most once per window per path, while the `unknown` verdict it accompanies is
+returned on EVERY pass: the announcement is bounded, the protection is not.
+*/
+const LANE_LEG_REFUSAL_NOTICE_FLOOR_MS = 15 * 60_000;
+
+/*
+FNXC:LaneLegGate 2026-11-11-23:50 (RUFU-425):
+`LaneLegLocalState` is a subset of `LaneLegClassification` — the fork-free probe can name every
+refusing class except `unborn-repository`, which needs a git read — so the shared
+{@link REFUSAL_BY_CLASSIFICATION} table answers this file's lookup too. There is deliberately no
+second mapping here: the code a refusal carries and the sentence the operator reads must not be able
+to disagree about which class fired.
+*/
+const refusalCodeForLegState = (state: Exclude<LaneLegLocalState, "own-checkout">) => REFUSAL_BY_CLASSIFICATION[state];
 
 /** Lookup key for a task's singular {@link Task.worktree} checkout. */
 export const SINGULAR_CHECKOUT_KEY = "";
@@ -154,6 +176,12 @@ export interface CheckoutEmptinessProverOptions {
   now?: () => number;
   /** Injectable git runner for unit tests; real-git tests use the default. */
   execImpl?: CheckoutEmptinessExec;
+  /**
+   * Optional board handle used ONLY to record a lane-leg refusal (one History line plus one audit row).
+   * Proving is never gated on it: a prover without a store still answers `unknown` for an
+   * unmeasurable leg, which every consumer already treats as a holder.
+   */
+  store?: LaneLegRefusalStore;
 }
 
 interface CachedProof {
@@ -200,6 +228,10 @@ export class CheckoutEmptinessProver {
   private readonly cache = new Map<string, CachedProof>();
   private readonly inFlight = new Map<string, Promise<CheckoutEmptinessVerdict>>();
   private integrationBranchPromise: Promise<string | null> | null = null;
+  /** Optional board handle for lane-leg refusals; attaching is idempotent and never changes a verdict. */
+  private legRefusalStore: LaneLegRefusalStore | undefined;
+  /** Path -> when its refusal was last announced, so a polled lane cannot write History per pass. */
+  private readonly legRefusalAnnouncedAt = new Map<string, number>();
 
   constructor(options: CheckoutEmptinessProverOptions) {
     this.rootDir = options.rootDir;
@@ -209,10 +241,23 @@ export class CheckoutEmptinessProver {
     this.maxEntries = options.maxEntries ?? DEFAULT_MAX_CACHED_PROOFS;
     this.concurrency = Math.max(1, options.concurrency ?? DEFAULT_PROOF_CONCURRENCY);
     this.now = options.now ?? Date.now;
+    this.legRefusalStore = options.store;
     this.execImpl = options.execImpl ?? (async (command, execOptions) => {
       const result = await execAsync(command, execOptions);
       return { stdout: result.stdout };
     });
+  }
+
+  /*
+  FNXC:LaneLegGate 2026-11-11-23:15 (RUFU-425):
+  One prover is shared per project root, and the first caller to construct it does not necessarily
+  own a store. Attaching late is therefore the difference between the refusal being recorded and the
+  refusal existing nowhere, so an already-registered prover accepts a store the first time one is
+  offered. It changes no verdict: proof behavior is identical with or without a recorder.
+  */
+  attachLegRefusalStore(store: LaneLegRefusalStore | undefined): void {
+    if (!store) return;
+    this.legRefusalStore ??= store;
   }
 
   /** Prove one task's retained entries. Returns an empty map for a checkout-free task. */
@@ -251,7 +296,7 @@ export class CheckoutEmptinessProver {
     const worker = async (): Promise<void> => {
       while (cursor < jobs.length) {
         const job = jobs[cursor++];
-        const verdict = await this.proveEntry(job.entry, options.force === true);
+        const verdict = await this.proveEntry(job.entry, options.force === true, job.taskId);
         result.get(job.taskId)?.set(job.key, verdict);
       }
     };
@@ -272,7 +317,7 @@ export class CheckoutEmptinessProver {
     this.cache.clear();
   }
 
-  private async proveEntry(entry: CheckoutEmptinessEntry, force: boolean): Promise<CheckoutEmptinessVerdict> {
+  private async proveEntry(entry: CheckoutEmptinessEntry, force: boolean, taskId = ""): Promise<CheckoutEmptinessVerdict> {
     const baseRef = entry.baseRef ?? await this.defaultBaseRef();
     if (!baseRef) return "unknown";
     /*
@@ -317,7 +362,7 @@ export class CheckoutEmptinessProver {
       this.cache.delete(cacheKey);
     }
 
-    const pending = this.runProof(entry, baseRefs)
+    const pending = this.runProof(entry, baseRefs, taskId)
       .then((verdict) => {
         this.remember(cacheKey, verdict);
         return verdict;
@@ -327,6 +372,42 @@ export class CheckoutEmptinessProver {
       });
     this.inFlight.set(cacheKey, pending);
     return pending;
+  }
+
+  /*
+  FNXC:LaneLegGate 2026-11-11-23:15 (RUFU-425):
+  Announce a refused leg and never wait for the announcement. A proof that blocks on a board write is
+  the anti-pattern FN-9175 exists to prevent, so the record is handed off and the verdict is returned
+  on the same tick. The announcement floor bounds History per path; the `unknown` verdict that protects
+  the lease is returned on every single pass regardless of the floor.
+  */
+  private recordLegRefusal(
+    taskId: string,
+    entry: CheckoutEmptinessEntry,
+    state: Exclude<LaneLegLocalState, "own-checkout">,
+  ): void {
+    const store = this.legRefusalStore;
+    if (!store || !taskId) return;
+    const code = refusalCodeForLegState(state);
+    if (!code) return;
+    const now = this.now();
+    const announcedAt = this.legRefusalAnnouncedAt.get(entry.path);
+    if (announcedAt !== undefined && now - announcedAt < LANE_LEG_REFUSAL_NOTICE_FLOOR_MS) return;
+    this.legRefusalAnnouncedAt.set(entry.path, now);
+    const notice: LaneLegRefusalNotice = {
+      code,
+      repository: entry.key,
+      path: entry.path,
+      legs: [{
+        repository: entry.key,
+        classification: state as LaneLegClassification,
+        entryCount: null,
+        toplevel: null,
+        head: null,
+        lag: null,
+      }],
+    };
+    void recordLaneLegRefusal(store, taskId, notice, "checkout-emptiness").catch(() => undefined);
   }
 
   private remember(cacheKey: string, verdict: CheckoutEmptinessVerdict): void {
@@ -349,7 +430,30 @@ export class CheckoutEmptinessProver {
   cleanliness is VACUOUS there because there is no tree to be dirty, so zero commits ahead really does
   mean nothing to preserve. An unreadable ref yields `unknown`, never `empty`.
   */
-  private async runProof(entry: CheckoutEmptinessEntry, baseRefs: readonly string[]): Promise<CheckoutEmptinessVerdict> {
+  private async runProof(entry: CheckoutEmptinessEntry, baseRefs: readonly string[], taskId = ""): Promise<CheckoutEmptinessVerdict> {
+    /*
+    FNXC:LaneLegGate 2026-11-11-23:15 (RUFU-425, W4):
+    A leg whose directory is empty, or is not its own repository, makes the live half of this proof
+    read the ENCLOSING project: `git status --porcelain` at such a path answers for the folder that
+    contains it, and a clean project around a leg that holds nothing produces a confident `empty`. That
+    verdict is what releases a file-scope lease and authorises a worktree removal, so the prover was one
+    of the two seams where a wrong-repository measurement could destroy live work.
+
+    The check is the fork-free local probe, not `assessLaneLegs`: this prover's subprocess count is a
+    measured ratchet (RUFU-871) and the pass covers dozens of checkouts. `.git` presence and an upward
+    `stat` walk answer the same question without a spawn.
+
+    A MISSING directory is deliberately NOT refused here. Proving a released worktree from its branch ref
+    in the main checkout is the mode this function was designed around (RUFU-200), and it stays the
+    answer; the missing-leg class is refused by the gates that have no refs-only mode.
+    */
+    const legState = await inspectLaneLegLocal(entry.path);
+    if (legState !== "own-checkout" && legState !== "missing-directory") {
+      // `unknown` is the verdict every consumer already treats as a holder. The refusal says why.
+      this.recordLegRefusal(taskId, entry, legState);
+      return "unknown";
+    }
+
     const status = await this.runGit("git status --porcelain", entry.path);
     if (status.ok) {
       if (status.stdout.trim().length > 0) return "occupied";
@@ -434,7 +538,11 @@ export function checkoutEmptinessProverFor(
   options: Omit<CheckoutEmptinessProverOptions, "rootDir"> = {},
 ): CheckoutEmptinessProver {
   const existing = proverByRootDir.get(rootDir);
-  if (existing) return existing;
+  if (existing) {
+    // The first construction does not necessarily own a store, so a later caller may still attach one.
+    existing.attachLegRefusalStore(options.store);
+    return existing;
+  }
   const created = new CheckoutEmptinessProver({ ...options, rootDir });
   proverByRootDir.set(rootDir, created);
   return created;
@@ -590,6 +698,11 @@ export async function proveDormantCheckoutEmptiness(input: {
   candidates: readonly CheckoutEmptinessTaskShape[];
   prover?: CheckoutEmptinessProver;
   /**
+   * Optional board handle forwarded to the shared prover so a refused lane leg is announced on the
+   * card rather than only inside the engine log. Absent changes nothing about the verdicts.
+   */
+  store?: LaneLegRefusalStore;
+  /**
    * Injectable clock for the per-repository base-ref memo, mirroring `CheckoutEmptinessProverOptions.now`,
    * so the TTL boundary is testable by advancing a counter instead of waiting out 10 s.
    */
@@ -597,7 +710,7 @@ export async function proveDormantCheckoutEmptiness(input: {
 }): Promise<ReadonlyMap<string, CheckoutEmptinessProofMap>> {
   if (input.candidates.length === 0) return new Map<string, CheckoutEmptinessProofMap>();
   const rootDir = typeof input.rootDir === "function" ? input.rootDir() : input.rootDir;
-  const prover = input.prover ?? checkoutEmptinessProverFor(rootDir);
+  const prover = input.prover ?? checkoutEmptinessProverFor(rootDir, { store: input.store });
   const integrationBranch = await resolvePassIntegrationBranch(rootDir, input.settings, input.now ?? Date.now);
   return await prover.proveTasks(input.candidates, { integrationBranch });
 }

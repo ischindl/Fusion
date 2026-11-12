@@ -51,12 +51,31 @@ export const MAX_LOG_SCAN = 250;
  *  - "fn_task_done refusal retry budget exhausted" (explicit fn_task_done refusal exhaustion)
  *  - "execution failed after task-done retry budget was exhausted" (retry-budget failure)
  *  - "execution failed because implicit fn_task_done was refused" (implicit-completion refusal)
+ *
+ * This list is the declared extension point for a new terminal refusal park: a park that writes
+ * `status: "failed"` and an error class but no marker line here is invisible to every
+ * stranded-completed promoter, which then promotes the refused card to review as if it had been
+ * measured. Add the park's greppable class token here AND write it as a History line at the park
+ * site — the two halves are one contract.
  */
+/*
+FNXC:LaneLegGate 2026-11-12-01:36 (RUFU-425):
+RUFU-425's lane-leg refusal park is the fifth member. The executor parks
+`LANE_LEGS_NOT_MATERIALIZED: <code> (<repo>)` when a declared workspace leg is not its own repository,
+because the verification measurement could not be taken at all. Without this entry the park was laundered
+by the engine's own recovery: the completed-task watchdog and both stranded-completed sweeps filter on
+lane plus step statuses only, and the most recent marker in such a card's History is the clean completion
+("Task marked done by agent"), so `evaluateCompletedPromotionFailureProvenance` answered `blocked: false`
+and the refused card reached review as though it had been measured — the FN-8141 shape, wearing a refusal
+instead of a skip. The token is the same greppable class name the error carries, so one grep finds both
+the row and the sentence.
+*/
 const FAILURE_PARK_MARKERS = [
   "task parked failed during no-fn_task_done retry",
   "fn_task_done refusal retry budget exhausted",
   "execution failed after task-done retry budget was exhausted",
   "execution failed because implicit fn_task_done was refused",
+  "LANE_LEGS_NOT_MATERIALIZED",
 ];
 
 /**

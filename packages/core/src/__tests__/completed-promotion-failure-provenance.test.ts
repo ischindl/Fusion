@@ -19,6 +19,17 @@ function log(actions: string[]): TaskLogEntry[] {
   return actions.map(entry);
 }
 
+/**
+ * FNXC:LaneLegGate 2026-11-12-01:36 (RUFU-425):
+ * A refusal park is a FAILURE marker only when a seam actually parked the card. RUFU-425 refuses at
+ * three gates and parks at exactly one of them (the executor's verification gate); the
+ * checkout-emptiness seam refuses on every scheduler pass while the card keeps living, so its shared
+ * History sentence must stay inert here or a card could never be promoted after one refused emptiness
+ * probe. The two cases below pin that line between the sentence and the park.
+ */
+const LANE_LEG_PARK = "RUFU-425: verification refused the measurement — LANE_LEGS_NOT_MATERIALIZED: lane-leg-empty (member); no command ran and no fix agent was dispatched";
+const LANE_LEG_REFUSAL_SENTENCE = "Lane-leg gate refused: the member repository is not its own repository — its directory holds nothing. lane-leg-empty at checkout-emptiness; recorded path /tmp/wt/member (0 entries), 1 leg(s) declared. This gate produced no verdict — nothing here is evidence that the work is absent or complete.";
+
 const FAILURE_PARK = "FN-8141: task parked failed during no-fn_task_done retry — honoring park, not retrying";
 const REFUSAL_EXHAUST = "bulk-step-completion-without-review — fn_task_done refusal retry budget exhausted";
 const CLEAN_DONE = "Task marked done by agent";
@@ -63,10 +74,27 @@ describe("evaluateCompletedPromotionFailureProvenance", () => {
     ).toBe(true);
   });
 
+  it("blocks on the lane-leg refusal park even behind a clean completion", () => {
+    const result = evaluateCompletedPromotionFailureProvenance({
+      log: log(["Starting execution", CLEAN_DONE, LANE_LEG_REFUSAL_SENTENCE, LANE_LEG_PARK]),
+    });
+    expect(result).toMatchObject({ blocked: true, reason: "failure-provenance" });
+    expect(result.markerAction).toContain("LANE_LEGS_NOT_MATERIALIZED");
+  });
+
+  it("does NOT treat a refusal sentence from a non-parking seam as a park", () => {
+    // The checkout-emptiness seam answers `unknown` and leaves the card running; only the executor's
+    // park sentence carries the class token, so a refused probe is not failure provenance.
+    expect(
+      evaluateCompletedPromotionFailureProvenance({ log: log([CLEAN_DONE, LANE_LEG_REFUSAL_SENTENCE]) }).blocked,
+    ).toBe(false);
+  });
+
   it("does NOT block when a fresh clean completion supersedes an earlier failure park", () => {
     const result = evaluateCompletedPromotionFailureProvenance({
       log: log([
         REFUSAL_EXHAUST,
+        LANE_LEG_PARK,
         FAILURE_PARK,
         "Execution paused — session preserved for resume, moved to todo",
         // operator retried → fresh execution completed all steps cleanly

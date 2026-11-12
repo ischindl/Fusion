@@ -3314,6 +3314,9 @@ export class Scheduler {
         rootDir: () => this.store.getRootDir(),
         settings,
         candidates: dormantProofCandidates,
+        // RUFU-425: admission reads these verdicts, so a leg that is not its own repository is named
+        // on the holder's card instead of only lowering the pass's confidence.
+        store: this.store,
       });
 
       if (settings.groupOverlappingFiles) {

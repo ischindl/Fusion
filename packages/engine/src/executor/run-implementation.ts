@@ -1730,6 +1730,61 @@ export async function runImplementation(
               if (settings.testCommand?.trim() || settings.buildCommand?.trim()) {
                 const verificationResult = await deps.runExecutorDeterministicVerification(task, worktreePath, settings, taskEnv);
 
+                /*
+                FNXC:LaneLegGate 2026-11-11-23:10 (RUFU-425, W3):
+                A workspace leg that is not its own repository means the command could not be attributed
+                to any repository, so there is no measurement to act on. This branch sits BEFORE the
+                fix-agent loop on purpose: a fix agent handed a failing test that never executed would
+                burn its retries editing code that the gate never measured, and the card would then
+                carry a remediation history describing a failure that did not happen.
+
+                The card parks with a greppable class name rather than advancing, because the session
+                that could have repaired the checkout has already ended, and because the alternative —
+                falling through — is exactly the green-over-nothing verdict this gate exists to stop.
+                The shared primitive wrote the refusal's one History line and one audit row; the park
+                below adds only its own park-marker History line, which the shared sentence deliberately
+                does not carry because the checkout-emptiness seam refuses without ever parking a card.
+                */
+                if (verificationResult?.laneLegRefusal) {
+                  const refusal = verificationResult.laneLegRefusal;
+                  const terminalError = `LANE_LEGS_NOT_MATERIALIZED: ${refusal.code} (${refusal.repository})`;
+                  executorLog.log(`${task.id}: [verification] ${terminalError} — no fix agent dispatched`);
+                  /*
+                  FNXC:LaneLegGate 2026-11-12-01:36 (RUFU-425, P0 remediation):
+                  Two writes are required for this park to survive the engine's own recovery, and the
+                  first cut wrote neither.
+
+                  (1) The completed-task watchdog armed above this block is a 60-second timer whose only
+                  job is to notice a run that finished without handing off, and it clears nothing but
+                  itself: `completed-task-watchdog.ts` and `recoverCompletedTask` carry no status/error
+                  guard, and the stranded-completed sweep filters on lane plus step statuses only. A
+                  refusal that returns without clearing it therefore hands the card to the promotion
+                  chokepoint 60 seconds later. Every sibling exit from this region clears it first —
+                  `bounceVerificationFailureSeam`, the graph handoff, and the terminal parks.
+
+                  (2) The durable History marker is what the promotion guard actually reads.
+                  `evaluateCompletedPromotionFailureProvenance` blocks promotion ONLY via
+                  `FAILURE_PARK_MARKERS`, scanning log ACTIONS (never `task.error`), and it stops at the
+                  first marker it meets from the tail. Without a park marker here, the most recent marker
+                  on a refused card is the clean completion that opened this region, so the guard answered
+                  `blocked: false` and the refused card was promoted to review — a refusal arriving as if
+                  it had been measured, the FN-8141 laundering shape. The marker sentence therefore
+                  carries the same greppable class token as the error.
+                  */
+                  deps.clearCompletedTaskWatchdog(task.id);
+                  await deps.store.logEntry(
+                    task.id,
+                    `${task.id}: verification refused the measurement — ${terminalError}; no command ran and no fix agent was dispatched`,
+                    undefined,
+                    deps.getRunContextFor(task.id),
+                  );
+                  // Marker first, status second: a crash between the two writes must leave the card
+                  // un-promotable with its explanation already on it, never failed-but-invisible.
+                  await deps.store.updateTask(task.id, { status: "failed", error: terminalError });
+                  await deps.persistTokenUsage(task.id);
+                  return;
+                }
+
                 if (!verificationResult.allPassed) {
                   const failedType = verificationResult.failedCommand === "testCommand" ? "test" : "build";
                   const failedResult = failedType === "test" ? verificationResult.testResult! : verificationResult.buildResult!;
@@ -1778,7 +1833,7 @@ export async function runImplementation(
 
                   let fixSucceeded = false;
                   for (let attempt = 1; attempt <= maxFixRetries; attempt++) {
-                    const fixed = await deps.attemptExecutorVerificationFix(
+                    const fixAttempt = await deps.attemptExecutorVerificationFix(
                       task, worktreePath,
                       {
                         command: failedCommand,
@@ -1791,6 +1846,34 @@ export async function runImplementation(
                       maxFixRetries,
                       taskEnv,
                     );
+                    /*
+                    FNXC:LaneLegGate 2026-11-11-23:40 (RUFU-425, W3):
+                    The leg stopped being a repository while a fix agent was working, so the re-run
+                    measured nothing. Spending the remaining retries would dispatch more agents at a
+                    directory that is empty, and bouncing would hand remediation a red command that did
+                    not happen. The card parks under the same greppable class the pre-loop branch uses,
+                    and the shared primitive already wrote the sentence and the audit row.
+                    */
+                    if (fixAttempt?.laneLegRefusal) {
+                      const refusal = fixAttempt.laneLegRefusal as { code: string; repository: string };
+                      const terminalError = `LANE_LEGS_NOT_MATERIALIZED: ${refusal.code} (${refusal.repository})`;
+                      executorLog.log(`${task.id}: [verification] ${terminalError} — fix loop stopped at attempt ${attempt}/${maxFixRetries}`);
+                      // Same two halves as the pre-loop park: clear the watchdog, then write the marker
+                      // the promotion guard reads. See the FNXC note above for why either half alone
+                      // loses the card to auto-promotion.
+                      deps.clearCompletedTaskWatchdog(task.id);
+                      await deps.store.logEntry(
+                        task.id,
+                        `${task.id}: verification refused the measurement — ${terminalError}; the fix loop stopped at attempt ${attempt}/${maxFixRetries}`,
+                        undefined,
+                        deps.getRunContextFor(task.id),
+                      );
+                      // Marker before status, same crash-window reason as the pre-loop park.
+                      await deps.store.updateTask(task.id, { status: "failed", error: terminalError });
+                      await deps.persistTokenUsage(task.id);
+                      return;
+                    }
+                    const fixed = fixAttempt?.fixed === true;
                     if (fixed) {
                       fixSucceeded = true;
                       executorLog.log(`${task.id}: [verification] fix agent succeeded on attempt ${attempt}/${maxFixRetries}`);

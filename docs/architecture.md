@@ -3135,6 +3135,62 @@ An AI empty-merge finalization refusal now persists a hard blocking failed statu
 
 The review-gated coding workflow preserves implementation steps across review rejection. Its replay authority is appended remediation provenance, not step-name matching. A Code Review `REVISE` produces that remediation before any review-to-WIP move: malformed or out-of-scope reviewer findings receive one deterministic executor Fix step rather than leaving the card blocked in review. Self-healing claims keyable review episodes before budget consumption and narration, fencing the claim by step id, input signature, and owner so concurrent or stale runners cannot duplicate or erase a newer remediation attempt. Zero-diff finalization recognizes legacy verification names, structurally marked remediation steps, and required gate results so a missing or failed Verification cannot be finalized as a no-op.
 
+## Lane-leg measurement invariant (RUFU-425)
+
+A workspace card's execution folder is not a repository. Each declared member leg under
+`task.workspaceWorktrees` is the path a repository *would* occupy, and Git's own discovery rules resolve
+upward from a path that does not own a repository, so at an unmaterialised leg every read still succeeds
+and describes the wrong repository: `git rev-parse --show-toplevel` prints the ENCLOSING worktree's path
+(it prints nothing only when no ancestor is a repository at all), `rev-parse HEAD` answers with that
+enclosing repository's commit, and `git status --porcelain` reports its dirt. Every consumer that measured
+a leg
+therefore measured somebody else's repository, and the two recorded wrong verdicts are both products of
+that single affordance — a verification gate that recorded `pass` with a green suite in an empty directory,
+and an emptiness proof that answered `empty` and thereby released a file-scope lease and authorised a
+worktree removal.
+
+The invariant is that **a leg must be measured as its own repository before any number taken at its path
+is trusted, and a leg that cannot be so measured refuses the measurement rather than reporting a
+verdict.** The classifier is `assessLaneLegs` (`packages/engine/src/worktree/lane-legs.ts`): read-only, one
+leg at a time, probing in a fixed order — directory entries including hidden ones, then repository
+identity via `rev-parse --show-toplevel` compared with the recorded path, then HEAD, then lag against a
+local trunk ref with no fetch. `rev-parse HEAD` is never the ownership test, because at the reported shape
+it is precisely the read that lies. Classification and refusal codes are closed sets; the worst class
+across a card's legs decides the report, ties break on repository name, and a singular card with no legs
+performs no extra work and gains no new field. "Leg exists", "leg has a HEAD", and "leg is own toplevel"
+are three different facts and never share a label — a leg that is real, named, and a full trunk behind
+measures as a clean checkout, which is the same false green one step further along.
+
+Four seams consume it, and each answers the question that seam actually asks. The deterministic
+verification primitive refuses before a command is assembled, so an empty leg cannot execute the
+ENCLOSING project's `testCommand` and have the result recorded as the card's; the refusal adds no key to
+the no-command shape, because `notRun: true` plus `notRunReason` is a tolerated absence and a refusal is
+not one. The graph Verification node reports `verification-infrastructure-failure` with reason
+`lane-legs-not-materialized` — never a red command, because no command failed, and a named red command
+hands a coding agent work it cannot do: a fix agent cannot materialise a repository. The executor parks
+`LANE_LEGS_NOT_MATERIALIZED: <code> (<repo>)` before the fix-agent loop, and a refusal discovered
+mid-loop ends the loop rather than spending its retries. That park owes two further writes or the engine
+walks past it, because a card refused here still has every step done and so looks finished to every
+automatic promoter: it clears the completed-task watchdog the run armed before the gate (a 60-second timer
+whose only job is to promote a card still sitting in WIP), and it writes the same class token as a History
+line, which is the sole evidence `evaluateCompletedPromotionFailureProvenance` consults — it scans log
+actions and never `task.error` — when a stranded-completed sweep decides whether to promote. A terminal
+refusal park that omits either half reproduces FN-8141 with a refusal where the skip used to be. The
+checkout-emptiness prover answers `unknown`
+for an empty or borrowed leg, which is the verdict every consumer already treats as a holder, so an
+emptiness proof cannot release a lease or authorise a removal on a cleanliness read taken from the
+wrong repository; a genuinely missing directory still proves from its branch ref in the main checkout,
+which is the mode that prover was designed around and remains unchanged.
+
+Two constraints bind the implementation. The prover's leg check uses a fork-free local probe (`readdir`
+plus an `lstat` walk) rather than `git`, because that prover's subprocess count is a measured ratchet
+(RUFU-871, `git-proof-fork-count.test.ts`) and the check sits on the scheduler's admission path. And the
+refusal is recorded once per event through one helper (`recordLaneLegRefusal`) that writes the card
+History line and the `worktree:lane-leg-refusal` audit row: the filesystem path belongs to the History
+line and never to metadata, and the announcement is bounded per path while the protective verdict is
+returned on every pass. Nothing in this rule moves, pauses, or closes a card; it only withholds the
+verdict a lane is not able to give.
+
 ## External task blocks
 
 `classifyExternalObstacle` is the sole authority that may persist `status: "blocked"` with structured `externalBlock` metadata. Only conservative host-resource, network, model-provider, and credential classifications freeze a card. The freeze retains the column, steps, current step, worktree, branch, its file-scope lease, and — for as long as its checkout is not proven free — its concurrency/worktree capacity, as an instance of the general lifetime contract. Capacity is retained because it protects the work, not the status: Retry must resume into a retained checkout, and a frozen card that owns no checkout at all protects nothing by holding an agent slot (RUFU-374). The durable `external-block` pause fences dispatch and every lifecycle-mutating recovery sweep; it is neither `userPaused` nor failure.
