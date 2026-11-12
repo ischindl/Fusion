@@ -2,6 +2,13 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { TaskStore } from "@fusion/core";
+/*
+FNXC:PromptWriteIntegrity 2026-11-11-22:52 (RUFU-534):
+Value imports (not `type`) so the writeback can measure prompt size and recognise the store's shrink
+refusal. The engine mocks `@fusion/core`; classification uses the exported duck-typed predicate
+(`isPromptShrinkRejectedError`) so it survives that boundary, mirroring `isDuplicatedPromptSectionError`.
+*/
+import { isMaterialPromptShrink, promptByteLength, isPromptShrinkRejectedError } from "@fusion/core";
 
 /*
 FNXC:PlanArtifactPersistence 2026-09-01-14:49:
@@ -53,6 +60,13 @@ export type PlanWritebackOutcome =
   | "already-authoritative"
   /** Worktree copy was copied back into the project `.fusion/` folder. */
   | "recovered"
+  /**
+   * FNXC:PromptWriteIntegrity 2026-11-11-22:52 (RUFU-534): the worktree copy is a material shrink of the
+   * authoritative root copy. The root file is left untouched and the LARGER root content is returned so
+   * triage classifies it as size loss (`recovery-shrunk`), NOT a heading-shape problem and NOT `recovery-failed`
+   * (which would offer a doomed retry that only reproduces the truncation).
+   */
+  | "recovery-shrunk"
   /** A worktree copy existed but persisting it failed; the root copy is untouched. */
   | "recovery-failed"
   /** A reset fenced this planning attempt before its worktree copy could be published. */
@@ -106,6 +120,25 @@ export async function reconcileWorktreePlanArtifact(
     return { outcome: "already-authoritative", content: rootContent };
   }
 
+  /*
+  FNXC:PromptWriteIntegrity 2026-11-11-22:52 (RUFU-534):
+  Eager shrink detection BEFORE any root mutation or authoritative restore. The worktree is a disposable
+  checkout, so its (possibly truncated) copy must never be allowed to overwrite a larger accepted spec.
+  If the non-empty root copy is materially larger than the worktree copy, keep the root bytes and report
+  `recovery-shrunk` — the LARGER root content is what downstream reads recover, and triage names the durable
+  revision instead of blaming operator heading shape.
+  */
+  if (rootContent !== null && rootContent.trim().length > 0) {
+    const rootBytes = promptByteLength(rootContent);
+    const worktreeBytes = promptByteLength(worktreeContent);
+    if (isMaterialPromptShrink(rootBytes, worktreeBytes)) {
+      logger?.warn?.(
+        `${taskId}: worktree-local PROMPT.md (${worktreeBytes} B) is a material shrink of the accepted root spec (${rootBytes} B); keeping the authoritative root copy`,
+      );
+      return { outcome: "recovery-shrunk", content: rootContent };
+    }
+  }
+
   try {
     // The single validated persistence path: File Scope validation + root PROMPT.md write + task.json sync.
     const persisted = options.writeAuthoritativePrompt
@@ -117,6 +150,19 @@ export async function reconcileWorktreePlanArtifact(
     );
     return { outcome: "recovered", content: worktreeContent };
   } catch (error) {
+    /*
+    FNXC:PromptWriteIntegrity 2026-11-11-22:52 (RUFU-534):
+    A store-level shrink refusal (the writeback writer runs `updateTask({ prompt })` which consults the
+    guard, including the eager path above) must NOT be reported as `recovery-failed`. `recovery-failed`
+    reads as "retry the rescue", but retrying only reproduces the truncation. Classify the refusal as
+    `recovery-shrunk` and return the untouched root content as the recovery source.
+    */
+    if (isPromptShrinkRejectedError(error)) {
+      logger?.warn?.(
+        `${taskId}: authoritative writeback refused a material shrink of the accepted spec; keeping the root copy as the recovery source`,
+      );
+      return { outcome: "recovery-shrunk", content: rootContent ?? undefined };
+    }
     const message = error instanceof Error ? error.message : String(error);
     logger?.warn?.(
       `${taskId}: failed to copy the worktree-local PROMPT.md back into the project .fusion folder: ${message}`,

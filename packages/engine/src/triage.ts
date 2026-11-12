@@ -1081,11 +1081,13 @@ export class TriageProcessor {
     planningGeneration: number,
     content: string,
     mirrorPlan: boolean,
+    /** Authorize a shrink only for a proven deliberate replacement; the writeback/mirror arms pass false. */
+    allowShrink = false,
   ): Promise<boolean> {
     let persisted = false;
     await this.store.withPlanningLifecycleLock(task.id, async () => {
       if (this.resetFence.isStale(task.id, planningGeneration)) return;
-      const updated = await this.store.withTaskLock(task.id, () => this.store.updateTaskUnlocked(task.id, { prompt: content }));
+      const updated = await this.store.withTaskLock(task.id, () => this.store.updateTaskUnlocked(task.id, { prompt: content, promptShrinkAuthorized: allowShrink }));
       if (this.store.isBackendMode()) {
         await this.store.reconcileSpecDriftWhilePlanningLocked(updated).catch((error: unknown) => {
           planLog.warn(`[spec-lock] deferred drift reconciliation for ${updated.id}: ${error instanceof Error ? error.message : String(error)}`);
@@ -4669,6 +4671,19 @@ export class TriageProcessor {
               "Recovered the plan written inside the task worktree into the project .fusion folder",
             ).catch(() => undefined);
           }
+          /*
+          FNXC:PromptWriteIntegrity 2026-11-11-22:52 (RUFU-534):
+          A worktree copy that materially shrank the accepted spec is NOT recovered and NOT `recovery-failed`;
+          the writeback keeps the larger root copy and returns it, so the finalize read below recovers the
+          good spec. Surface the rejection so the operator sees why the worktree draft was dropped instead of
+          silently adopting a truncated plan. This is a detection point, not a retry trigger.
+          */
+          if (planPersistence.outcome === "recovery-shrunk") {
+            await this.store.logEntry(
+              task.id,
+              "Rejected a worktree PROMPT.md that materially shrank the accepted spec; kept the larger authoritative copy as the recovery source",
+            ).catch(() => undefined);
+          }
 
           let written = await readFile(
             join(this.rootDir, promptPath),
@@ -4706,6 +4721,11 @@ export class TriageProcessor {
                 planningGeneration,
                 markerBody,
                 false,
+                // FNXC:PromptWriteIntegrity 2026-11-11-22:52 (RUFU-534): the FN-8600 duplicate-marker body is
+                // a deliberate ~20 B wholesale replacement of the spec; without this authorization, duplicate
+                // intake is refused on any card whose spec is past the 4 096 B floor. The writeback and
+                // mirror arms keep allowShrink=false because that arm is a detection point, not a waiver.
+                true,
               ).catch((err: unknown) => {
                 const msg = err instanceof Error ? err.message : String(err);
                 planLog.warn(`${task.id}: failed to persist recovered duplicate marker: ${msg}`);
@@ -5167,11 +5187,38 @@ export class TriageProcessor {
           burns the planning budget without changing its structural verdict; retain the hash so a
           changed prompt gets one ordinary recovery attempt while the repeat parks immediately.
           */
+          /*
+          FNXC:PromptWriteIntegrity 2026-11-11-22:52 (RUFU-534):
+          Measure SIZE before any sentence exculpates operator heading shape. A model-side truncation
+          (RUFU-519) can leave a spec too short to carry its lockable sections, so the lock reports the
+          section as `unavailable` and the old path blamed heading shape and offered a retry that only
+          re-truncates. When the live spec is a material shrink of the largest durable `plan` revision, park
+          PLANNING_FAILED_SPEC_PROMPT_SHRUNK naming the recovery revision and RETURN — no heading-shape blame,
+          no retry. A non-shrink or an unmeasurable verdict falls through, and `headingExculpation` below then
+          states which of those two it was, so the residual path can never silently claim "headings are not
+          the cause" over an unmeasured size.
+          */
+          const shrink = await this.evaluatePlanningPromptShrink(task);
+          if (shrink.kind === "shrink") {
+            const shrunkMessage = `PLANNING_FAILED_SPEC_PROMPT_SHRUNK: spec fell from ${shrink.fromBytes} B to ${shrink.toBytes} B; recover from task document "plan" revision ${shrink.revision}`;
+            await this.store.logEntry(task.id, `${shrunkMessage}. The spec was truncated; do not retry the planner — recover the named revision.`).catch(() => undefined);
+            const persisted = await this.updatePlanningStateIfStillCurrent(task, () => ({
+              status: "failed", error: shrunkMessage, recoveryRetryCount: null, nextRecoveryAt: null, planningFailure: null,
+            })).catch(async (writeError: unknown) => {
+              await this.parkPlanningRecoveryWriteFailure(task, shrunkMessage, writeError);
+              return false;
+            });
+            if (!persisted) return;
+            return;
+          }
+          const headingExculpation = shrink.kind === "unmeasurable"
+            ? "Operator description headings are not the cause, and prompt size could not be measured against a durable copy"
+            : `Operator description headings are not the cause, and prompt size was checked at ${shrink.liveBytes} B against a ${shrink.mirrorBytes} B durable copy with no material shrink`;
           const prior = getPlanningSpecLockUnavailableFailure(task);
           const sections = err.unavailableSections.join(", ") || "unknown section";
           const failureMessage = `PLANNING_FAILED_SPEC_LOCK_UNAVAILABLE: ${err.reason} (${sections})`;
           if (prior?.sourceHash === err.sourceHash) {
-            await this.store.logEntry(task.id, `${failureMessage}; identical prompt parse verdict repeated. Operator description headings are not the cause.`).catch(() => undefined);
+            await this.store.logEntry(task.id, `${failureMessage}; identical prompt parse verdict repeated. ${headingExculpation}.`).catch(() => undefined);
             const persisted = await this.updatePlanningStateIfStillCurrent(task, () => ({
               status: "failed", error: failureMessage, recoveryRetryCount: null, nextRecoveryAt: null, planningFailure: null,
             })).catch(async (writeError: unknown) => {
@@ -5182,7 +5229,7 @@ export class TriageProcessor {
             return;
           }
           const decision = computeRecoveryDecision({ recoveryRetryCount: task.recoveryRetryCount, nextRecoveryAt: task.nextRecoveryAt });
-          const retryMessage = `${failureMessage}; recording deterministic parser evidence and retrying once for changed prompt text. Operator description headings are not the cause.`;
+          const retryMessage = `${failureMessage}; recording deterministic parser evidence and retrying once for changed prompt text. ${headingExculpation}.`;
           await this.store.logEntry(task.id, retryMessage).catch(() => undefined);
           if (decision.shouldRetry) {
             const retryHoldStatus = await this.resolvePlanningRetryHoldStatus(task);
@@ -5824,6 +5871,49 @@ export class TriageProcessor {
       return await this.store.replaceActiveTaskWorkflowContinuation(input);
     }
     return await this.store.upsertWorkflowWorkItem(input);
+  }
+
+  /*
+  FNXC:PromptWriteIntegrity 2026-11-11-22:52 (RUFU-534):
+  Measure whether the LIVE authoritative PROMPT.md is a material shrink of the largest durable `plan`
+  document revision. Returns `shrink` (from/to bytes plus the recovery revision), `no-shrink`, or
+  `unmeasurable` (unreadable live file, no durable revisions, or a fake store without
+  `getTaskDocumentRevisions`). It never throws: an unmeasurable verdict must let the caller fall back to
+  shape classification rather than invent a size claim it cannot support. The recovery target is the LARGEST
+  stored revision, which a mirror-after-truncation can never overwrite (a shrink is refused before mirroring),
+  so it is always the pre-truncation spec.
+  */
+  private async evaluatePlanningPromptShrink(
+    task: Task,
+  ): Promise<
+    | { kind: "shrink"; fromBytes: number; toBytes: number; revision: number }
+    | { kind: "no-shrink"; liveBytes: number; mirrorBytes: number }
+    | { kind: "unmeasurable" }
+  > {
+    try {
+      const live = await readFile(join(this.rootDir, relativePromptPath(task.id)), "utf-8").catch(() => null);
+      if (live === null || live.trim().length === 0) return { kind: "unmeasurable" };
+      if (typeof this.store.getTaskDocumentRevisions !== "function") return { kind: "unmeasurable" };
+      const revisions = await this.store.getTaskDocumentRevisions(task.id, "plan", { limit: 50 }).catch(() => null);
+      if (!revisions || revisions.length === 0) return { kind: "unmeasurable" };
+      let largestBytes = 0;
+      let largestRevision: number | null = null;
+      for (const rev of revisions) {
+        const bytes = fusionCore.promptByteLength(rev.content ?? "");
+        if (bytes > largestBytes) {
+          largestBytes = bytes;
+          largestRevision = rev.revision;
+        }
+      }
+      if (largestBytes === 0 || largestRevision === null) return { kind: "unmeasurable" };
+      const liveBytes = fusionCore.promptByteLength(live);
+      if (fusionCore.isMaterialPromptShrink(largestBytes, liveBytes)) {
+        return { kind: "shrink", fromBytes: largestBytes, toBytes: liveBytes, revision: largestRevision };
+      }
+      return { kind: "no-shrink", liveBytes, mirrorBytes: largestBytes };
+    } catch {
+      return { kind: "unmeasurable" };
+    }
   }
 
   /**

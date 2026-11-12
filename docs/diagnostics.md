@@ -646,3 +646,27 @@ first 4 096 characters.
   first would re-import the whole-file read cost RUFU-208 removed (pinned by counted `node:fs` reads in
   `agent-log-detail-spill.test.ts`). A surface that re-implemented resolution would be a second authority — the
   store reader is the only one.
+
+## Prompt-write integrity markers (`PROMPT_SHRINK_REJECTED:`, `PLANNING_FAILED_SPEC_PROMPT_SHRUNK`, RUFU-534)
+
+Two markers name the same defect class from two ends, and both are read on the card, not in a log file.
+
+- `PROMPT_SHRINK_REJECTED:` is written by the store seam when an authoritative `PROMPT.md` write would
+  materially shrink the accepted spec (prior at or above 4 096 B, new payload below half of it). It states the
+  prior and new byte counts and names the largest stored `plan` document revision to recover from, and it
+  never carries specification content. Where it appears: the `fn_task_prompt_write` tool result (typed as
+  `PLAN_PROMPT_WRITE_REFUSED` with refusal reason `prompt-shrink-rejected`, never as a store outage), the
+  worktree plan writeback (outcome `recovery-shrunk`, logged as a size finding on the card), and any direct
+  `updateTask({ prompt })` caller that did not authorize a shrink.
+- `PLANNING_FAILED_SPEC_PROMPT_SHRUNK:` is the card's `status`/`error` pair when planning admission discovers
+  that the live `PROMPT.md` is already a material shrink of the largest durable `plan` revision. It names the
+  fall in bytes and the recovery revision, and it deliberately replaces the
+  `PLANNING_FAILED_SPEC_LOCK_UNAVAILABLE: ... Operator description headings are not the cause.` shape: a
+  heading edit cannot repair a truncated body, and the retry that sentence offers is what burned 44 planning
+  attempts on RUFU-519.
+
+**Reading them.** Both markers are refusal sentences, not outages: nothing was written and nothing needs a
+retry. The remedy is a re-send of the complete specification or a restore from the named revision, and no lane
+performs that restore automatically - recovery stays an operator or planner decision. An authorized
+replacement (an operator prompt edit through the task-update route, a merge-boundary correction, the duplicate
+marker body) is the one case that shrinks without a marker, because it states its intent explicitly.

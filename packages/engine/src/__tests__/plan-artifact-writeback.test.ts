@@ -191,6 +191,77 @@ describe("plan artifact write-back", () => {
     await expect(readFile(join(rootDir, relativePromptPath(TASK_ID)), "utf-8")).resolves.toBe(REAL_SPEC);
   });
 
+  /*
+  FNXC:PromptWriteIntegrity 2026-11-11-23:58 (RUFU-534):
+  A disposable worktree checkout can carry a truncated draft (RUFU-519: 57 814 B accepted, 1 579 B
+  landed). Rescuing that copy over a larger accepted root spec is the same destruction class, so the
+  writeback must classify it as size loss and hand back the LARGER root content. `recovery-failed` would
+  read as "retry the rescue", and a retry only reproduces the truncation, so both the eager size leg and
+  the store-refusal arm are asserted, alongside the proof that a worktree copy which only GREW still
+  recovers exactly as before.
+  */
+  it("refuses to overwrite a materially larger root spec with a shrunken worktree copy", async () => {
+    const bigRoot = `${REAL_SPEC}\n${"detail ".repeat(800)}\n`; // > 4 096 B floor
+    await writeSpec(rootDir, TASK_ID, bigRoot);
+    await writeSpec(worktreeDir, TASK_ID, "# Task: FN-9001 - Truncated draft\n");
+    const warn = vi.fn();
+
+    const result = await reconcileWorktreePlanArtifact({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      store: store as any,
+      taskId: TASK_ID,
+      rootDir,
+      planningCwd: worktreeDir,
+      logger: { warn },
+    });
+
+    expect(result.outcome).toBe("recovery-shrunk");
+    // The caller mirrors the authoritative root content, never the truncated draft.
+    expect(result.content).toBe(bigRoot);
+    expect(warn).toHaveBeenCalled();
+    expect(store.updateTask).not.toHaveBeenCalled();
+    await expect(readFile(join(rootDir, relativePromptPath(TASK_ID)), "utf-8")).resolves.toBe(bigRoot);
+  });
+
+  it("classifies a store shrink refusal from the writeback writer as recovery-shrunk, not recovery-failed", async () => {
+    const { PromptShrinkRejectedError } = await import("@fusion/core");
+    await writeSpec(rootDir, TASK_ID, REAL_SPEC);
+    await writeSpec(worktreeDir, TASK_ID, "# Task: FN-9001 - Grew past the floor\n");
+
+    const result = await reconcileWorktreePlanArtifact({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      store: store as any,
+      taskId: TASK_ID,
+      rootDir,
+      planningCwd: worktreeDir,
+      writeAuthoritativePrompt: async () => {
+        throw new PromptShrinkRejectedError({ label: "writeback", priorBytes: 57814, nextBytes: 1579, recovery: null });
+      },
+    });
+
+    expect(result.outcome).toBe("recovery-shrunk");
+    expect(result.content).toBe(REAL_SPEC);
+    await expect(readFile(join(rootDir, relativePromptPath(TASK_ID)), "utf-8")).resolves.toBe(REAL_SPEC);
+  });
+
+  it("still recovers a worktree copy that only grew, even past the shrink floor", async () => {
+    const smallRoot = REAL_SPEC;
+    const biggerWorktree = `${REAL_SPEC}\n${"detail ".repeat(800)}\n`;
+    await writeSpec(rootDir, TASK_ID, smallRoot);
+    await writeSpec(worktreeDir, TASK_ID, biggerWorktree);
+
+    const result = await reconcileWorktreePlanArtifact({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      store: store as any,
+      taskId: TASK_ID,
+      rootDir,
+      planningCwd: worktreeDir,
+    });
+
+    expect(result.outcome).toBe("recovered");
+    expect(result.content).toBe(biggerWorktree);
+  });
+
   it("skips redundant document revisions when the mirrored plan is unchanged", async () => {
     await expect(mirrorPlanToProjectDb(store as never, TASK_ID, REAL_SPEC)).resolves.toBe(true);
     await expect(mirrorPlanToProjectDb(store as never, TASK_ID, REAL_SPEC)).resolves.toBe(false);

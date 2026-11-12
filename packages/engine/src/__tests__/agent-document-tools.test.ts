@@ -372,6 +372,121 @@ describe("task_prompt_write tool", () => {
 
     expect(getText(result)).toBe(`Updated PROMPT.md for ${TASK_ID}.`);
   });
+
+  /*
+  FNXC:PromptWriteIntegrity 2026-11-11-23:58 (RUFU-534):
+  The store refused a material shrink of the accepted spec (RUFU-519: 57 814 B accepted, 1 579 B sent).
+  Routed through `PromptShrinkRejectedError`, that refusal used to fall into `storeErrorResult` and tell the
+  model the board was unreachable — the exact sentence that teaches a retry of something a retry can never
+  change. Asserted as a two-sided contract like RUFU-651's: the shrink is refusal-shaped (typed code,
+  refusal reason, byte fall, named recovery revision, no outage text, no retry guidance) AND the truncated
+  body never reaches the plan mirror.
+  */
+  it("answers a store shrink refusal with the typed refusal, naming the largest durable revision", async () => {
+    const { PromptShrinkRejectedError } = await import("@fusion/core");
+    const refusals: Array<{ reason: string; detail: string }> = [];
+    const truncated = "# Truncated plan";
+    const updateTask = vi.fn().mockRejectedValue(new PromptShrinkRejectedError({
+      label: `updateTask ${TASK_ID}`,
+      priorBytes: 57814,
+      nextBytes: 1579,
+      recovery: null,
+    }));
+    const getTask = vi.fn().mockResolvedValue({ id: TASK_ID, prompt: "# Accepted spec" });
+    const upsertTaskDocument = vi.fn();
+    const getTaskDocumentRevisions = vi.fn().mockResolvedValue([
+      { revision: 1, content: "# Accepted spec, the large original".repeat(200) },
+      { revision: 2, content: truncated },
+    ]);
+    const store = { updateTask, getTask, upsertTaskDocument, getTaskDocumentRevisions } as unknown as TaskStore;
+
+    const result = await runTool(
+      createTaskPromptWriteTool(store, TASK_ID, undefined, undefined, (info) => refusals.push(info)),
+      "call-shrink",
+      { content: truncated },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.details.code).toBe("PLAN_PROMPT_WRITE_REFUSED");
+    expect(result.details.refusal).toBe("prompt-shrink-rejected");
+    const text = getText(result);
+    expect(text).toContain("prompt-shrink-rejected");
+    expect(text).toContain("57814");
+    expect(text).toContain("1579");
+    // The recovery target is the LARGEST revision, which is not the newest one: a truncated write is
+    // mirrored as a new, smaller revision, so naming the newest would point at the destroyed body.
+    expect(text).toContain('task document "plan" revision 1');
+    expect(text).toContain("Re-issue the COMPLETE specification");
+    expect(text).not.toContain("did not reach the task store");
+    expect(text).not.toContain(STORE_RETRY_GUIDANCE);
+    expect(text).not.toContain(`Updated PROMPT.md for ${TASK_ID}`);
+    expect(refusals.map((r) => r.reason)).toEqual(["prompt-shrink-rejected"]);
+    // The refusal threw before the mirror ran, so no truncated body can become the newest plan revision.
+    expect(upsertTaskDocument).not.toHaveBeenCalled();
+  });
+
+  it("still refuses a shrink with a generic pointer when the revisions reader is absent", async () => {
+    const { PromptShrinkRejectedError } = await import("@fusion/core");
+    const updateTask = vi.fn().mockRejectedValue(new PromptShrinkRejectedError({
+      label: `updateTask ${TASK_ID}`, priorBytes: 20000, nextBytes: 900, recovery: null,
+    }));
+    // A fake store without `getTaskDocumentRevisions` must degrade, never throw, inside the refusal arm.
+    const store = { updateTask, getTask: vi.fn() } as unknown as TaskStore;
+
+    const result = await runTool(createTaskPromptWriteTool(store, TASK_ID), "call-shrink-no-revisions", {
+      content: "# short",
+    });
+
+    expect(result.details.refusal).toBe("prompt-shrink-rejected");
+    expect(getText(result)).toContain("plan");
+    expect(getText(result)).not.toContain("did not reach the task store");
+  });
+
+  /*
+  FNXC:PromptWriteIntegrity 2026-11-11-23:58 (RUFU-534):
+  The planner, the Plan Review repair (`executor/execute-workflow-step.ts` via the `shared-worker-tools`
+  wrapper), and the reviewer's inline repair (`execution/reviewer.ts`) all register this ONE tool, and none
+  of them carries a shrink-authorization path. A refusal that only looks right on the planner surface would
+  leave the other two lanes reading an outage, so the SAME bytes must come back from every construction
+  site, and no surface may smuggle an authorization into the update it sends.
+  */
+  it("answers the shrink refusal identically on the planner and Plan Review repair surfaces", async () => {
+    const { PromptShrinkRejectedError } = await import("@fusion/core");
+    const { createTaskPromptWriteTool: createPlanReviewPromptWriteTool } = await import("../executor/shared-worker-tools.js");
+    const truncated = "# Truncated plan";
+    const makeStore = () => ({
+      updateTask: vi.fn().mockRejectedValue(new PromptShrinkRejectedError({
+        label: "updateTask", priorBytes: 57814, nextBytes: 1579, recovery: null,
+      })),
+      getTask: vi.fn().mockResolvedValue({ id: TASK_ID, prompt: "# Accepted spec" }),
+      getTaskDocumentRevisions: vi.fn().mockResolvedValue([]),
+    });
+
+    const plannerStore = makeStore();
+    const plannerResult = await runTool(
+      createTaskPromptWriteTool(plannerStore as unknown as TaskStore, TASK_ID),
+      "call-planner-shrink",
+      { content: truncated },
+    );
+
+    const reviewStore = makeStore();
+    const reviewResult = await runTool(
+      createPlanReviewPromptWriteTool({ store: reviewStore as unknown as TaskStore, getRunContextFor: () => undefined } as never, TASK_ID),
+      "call-review-repair-shrink",
+      { content: truncated },
+    );
+
+    expect(reviewResult.details.refusal).toBe("prompt-shrink-rejected");
+    expect(getText(reviewResult)).toBe(getText(plannerResult));
+    expect(getText(reviewResult)).not.toContain("did not reach the task store");
+    // Neither AI surface may authorize its own shrink: the update that reaches the store carries the
+    // prompt and nothing else, so `promptShrinkAuthorized` cannot appear from either lane.
+    for (const store of [plannerStore, reviewStore]) {
+      expect(store.updateTask).toHaveBeenCalledWith(TASK_ID, { prompt: truncated }, undefined);
+      const sent = store.updateTask.mock.calls[0]?.[1] as Record<string, unknown>;
+      expect(Object.keys(sent)).toEqual(["prompt"]);
+    }
+  });
 });
 
 describe("task_document_read tool", () => {

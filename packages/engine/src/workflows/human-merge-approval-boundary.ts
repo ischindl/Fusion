@@ -600,7 +600,9 @@ export function buildHumanMergeCorrectionPublicationDeps(
     publishAmendment: async (task, amendment, files) => {
       const base = task.prompt ?? "";
       const next = `${widenPromptFileScope(base, files).replace(/\s+$/, "")}\n${amendment}`;
-      await deps.store.updateTask(task.id, { prompt: next });
+      // FNXC:PromptWriteIntegrity 2026-11-11-22:52 (RUFU-534): an operator correction at the merge boundary
+      // is a deliberate wholesale replacement, so the shrink guard is authorized here and cannot strand it.
+      await deps.store.updateTask(task.id, { prompt: next, promptShrinkAuthorized: true });
       /*
       Fail-closed read-back: `project.tasks` has no prompt column, so only re-reading the hydrated
       artifact proves the authoritative PROMPT.md actually carries the amendment.

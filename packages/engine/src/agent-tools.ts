@@ -18,7 +18,7 @@ import { listTraits, isBuiltinWorkflowId, isTaskNotFoundError, renderTaskComment
 import { promoteHeldTask } from "./execution/hold-release.js";
 import { emitBoundedRunAudit } from "./util/emit-bounded-run-audit.js";
 import { STORE_RETRY_GUIDANCE, stepLifecycleNoopResult, storeErrorResult, storeWriteFailure } from "./tool-store-errors.js";
-import { computeCrossParentDiagnosticClaim, computeCrossParentDiagnosticClaimId, computeParentIntentClaimId, DASHBOARD_USER_ID, dailyMemoryPath, ensureOpenClawMemoryFiles, evaluateImplementationTaskBind, extractAgentProvisioningRequest, findSameAgentDuplicates, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, normalizeMessageParticipant, reconcileDeterministicDuplicate, resolveAgentProvisioningPolicy, resolveMemoryBackend, resolveMemorySearchTopic, resolveResearchSettings, resolveTaskGithubTracking, runDeterministicDuplicateGuard, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh, AgentTextCharsetError, assertAgentTextAllowed, isDuplicatedPromptSectionError } from "@fusion/core";
+import { computeCrossParentDiagnosticClaim, computeCrossParentDiagnosticClaimId, computeParentIntentClaimId, DASHBOARD_USER_ID, dailyMemoryPath, ensureOpenClawMemoryFiles, evaluateImplementationTaskBind, extractAgentProvisioningRequest, findSameAgentDuplicates, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, normalizeMessageParticipant, reconcileDeterministicDuplicate, resolveAgentProvisioningPolicy, resolveMemoryBackend, resolveMemorySearchTopic, resolveResearchSettings, resolveTaskGithubTracking, runDeterministicDuplicateGuard, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh, AgentTextCharsetError, assertAgentTextAllowed, isDuplicatedPromptSectionError, isPromptShrinkRejectedError, largestPriorPromptBytes } from "@fusion/core";
 import { formatLongTermMemoryAppendReport, formatMemorySize, measureLongTermMemory, type LongTermMemoryScope } from "./memory/memory-budget.js";
 import { ResearchOrchestrator } from "./research/research-orchestrator.js";
 import { ResearchProviderRegistry } from "./research/provider-registry.js";
@@ -2817,7 +2817,8 @@ export type PlanPromptWriteRefusalReason =
   | "planning-reset-fenced"
   | "invalid-step-headings"
   | "duplicated-prompt-section"
-  | "prompt-read-back-mismatch";
+  | "prompt-read-back-mismatch"
+  | "prompt-shrink-rejected";
 
 export class PlanPromptWriteRefusalError extends Error {
   constructor(readonly reason: PlanPromptWriteRefusalReason, detail: string) {
@@ -2842,6 +2843,16 @@ const PLAN_PROMPT_WRITE_REFUSAL_GUIDANCE: Record<PlanPromptWriteRefusalReason, s
     "Nothing was persisted. The submitted specification repeats a section outside the fenced operator-request block, so the board could not tell which generation is current. Publish one generation of each section: fold the older copy's decisions into the current one, or leave the older copy inside the fenced region that quotes the operator's request, then submit the complete PROMPT.md again.",
   "prompt-read-back-mismatch":
     "Nothing verifiable was persisted: the authoritative PROMPT.md does not match the content submitted. Report this instead of assuming the plan published.",
+  /*
+  FNXC:PromptWriteIntegrity 2026-11-11-22:52 (RUFU-534):
+  The store refused to overwrite an accepted spec with a materially smaller one. A model that truncated
+  its own tool-call argument sends back a truncated string, so read-back verification (which only proves
+  landed == submitted) stays silent; this refusal is the sole signal that the SPEC shrank. Never retry with
+  a shorter body: re-issue the complete specification. The refusal names the largest durable copy so the
+  planner can recover content it lost rather than re-refusing.
+  */
+  "prompt-shrink-rejected":
+    "Nothing was persisted: the submitted specification is materially smaller than the accepted spec, so the store kept the larger version as the recovery source. Do NOT retry with the shorter text. Re-issue the COMPLETE specification; if the previous body was lost from your context, recover it from the named task document revision.",
 };
 
 function planPromptWriteRefusalResult(taskId: string, reason: PlanPromptWriteRefusalReason, detail: string) {
@@ -3047,6 +3058,38 @@ export function createTaskPromptWriteTool(
         if (isDuplicatedPromptSectionError(err)) {
           onWriteRefused?.({ reason: "duplicated-prompt-section", detail: err.message });
           return planPromptWriteRefusalResult(taskId, "duplicated-prompt-section", err.message);
+        }
+        /*
+        FNXC:PromptWriteIntegrity 2026-11-11-22:52 (RUFU-534):
+        The store refused a material shrink of the accepted spec. Report it in the refusal shape — with
+        `onWriteRefused` attribution and a pointer at the largest durable copy — NEVER as a store outage.
+        A model that truncated its own tool-call argument sends a truncated string, so a lost spec would
+        otherwise re-refuse forever behind an outage message that invites the exact retry that loses content.
+        The recovery pointer reads the `plan` document revision chain (feature-detected so a fake store
+        degrades to a generic pointer) and names the biggest stored revision, which is the recovery target.
+        */
+        if (isPromptShrinkRejectedError(err)) {
+          let pointer = `the largest copy under this task's "plan" document, if any`;
+          if (typeof store.getTaskDocumentRevisions === "function") {
+            try {
+              const revisions = await store.getTaskDocumentRevisions(taskId, "plan", { limit: 50 });
+              let largestRevision: number | null = null;
+              let largestBytes = 0;
+              for (const rev of revisions ?? []) {
+                const bytes = largestPriorPromptBytes([rev.content]);
+                if (bytes > largestBytes) {
+                  largestBytes = bytes;
+                  largestRevision = rev.revision;
+                }
+              }
+              if (largestRevision !== null) pointer = `task document "plan" revision ${largestRevision} (${largestBytes} B)`;
+            } catch {
+              /* The revisions read is best-effort; the refusal stands with the generic pointer. */
+            }
+          }
+          const detail = `${err.message} Largest durable copy: ${pointer}.`;
+          onWriteRefused?.({ reason: "prompt-shrink-rejected", detail });
+          return planPromptWriteRefusalResult(taskId, "prompt-shrink-rejected", detail);
         }
         return storeErrorResult(`PROMPT.md plan mirror for ${taskId}`, err);
       }

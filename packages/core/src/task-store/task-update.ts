@@ -41,7 +41,7 @@ import {resolveHumanPlanApprovalExecutionMode} from "../planner/human-plan-appro
 import {PLAN_REVIEW_GROUP_ID} from "../workflows/builtin-plan-review-group.js";
 import {BranchWriteProvenanceError, validateTaskBranchName} from "../branch/branch-assignment.js";
 import {withTaskBranchContextInSourceMetadata} from "./branch-context.js";
-import {writePromptFileAtomic} from "./prompt-file.js";
+import {writePromptFileAtomic, assertNoAuthoritativePromptShrink} from "./prompt-file.js";
 import {assertPromptDocumentPublishable} from "../tasks/prompt-document-integrity.js";
 import {mergeReDerivedSteps} from "../tasks/step-rederivation.js";
 import {getStepParser, PROMPT_STEP_PARSER_ID} from "../tasks/step-parsers.js";
@@ -1405,6 +1405,22 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
           throw new Error(`Cannot write PROMPT.md for ${id}: destination is a directory`);
         }
         /*
+        FNXC:PromptWriteIntegrity 2026-11-11-22:52 (RUFU-534):
+        Refuse a material shrink of the authoritative spec BEFORE the row commit and BEFORE the file is
+        touched, so a refusal is a total no-op (row and file untouched, previous version intact as the
+        recovery source). RUFU-519 lost 57 814 B to 1 579 B silently because this one durable seam never
+        compared the incoming bytes to the bytes it replaced. The store seam passes no recovery pointer (it
+        does not read the plan-document mirror chain here); the tool layer adds the named recovery revision
+        in its own refusal. `allowShrink` is set only by callers the code proves to be deliberate wholesale
+        replacements (see the authorization inventory on `updateTask`).
+        */
+        await assertNoAuthoritativePromptShrink({
+          promptPath,
+          nextContent: updates.prompt,
+          allowShrink: updates.promptShrinkAuthorized === true,
+          label: `updateTask ${id}`,
+        });
+        /*
         FNXC:SpecLock 2026-08-09-12:34:
         An explicit full-spec write is an authoritative plan revision, not cosmetic title sync.
         Capture comparable evidence and retire approval before publishing the task update so a
@@ -1521,7 +1537,17 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
         if (persistPromptDerivedSymbols && existsSync(promptPath)) {
           previousPromptContents = await readFile(promptPath, "utf-8");
         }
-        await writePromptFileAtomic(promptPath, updates.prompt);
+        /*
+        FNXC:PromptWriteIntegrity 2026-11-11-22:52 (RUFU-534):
+        This is the ONE authoritative publish, so it is the ONE site that turns on landed-byte verification
+        AND fenced compensation. RUFU-519's 57 814 B plan landed 1 579 B and was reported as a success
+        because the primitive never compared what landed to what it was handed. A verified mismatch here
+        restores the previous PROMPT.md (or removes a newly created one) only while the on-disk bytes are
+        still exactly what this call landed, so a rollback can never paste an older spec over a newer write.
+        The write runs inside the planning lifecycle lock (updateTaskImpl wraps the task lock in it), which
+        closes the residual compensation window that cosmetic unlocked writers could otherwise interleave.
+        */
+        await writePromptFileAtomic(promptPath, updates.prompt, { verifyLanded: true, compensateOnMismatch: true, label: `updateTask ${id}` });
         /*
         FNXC:PromptReadBack 2026-09-04-05:45:
         The PG tasks row has no prompt column, so the row re-read never hydrates task.prompt.

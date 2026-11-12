@@ -7918,7 +7918,17 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       const updates: Parameters<typeof scopedStore.updateTask>[1] = {};
       if (title !== undefined) updates.title = title;
       if (description !== undefined) updates.description = description;
-      if (prompt !== undefined) updates.prompt = prompt;
+      if (prompt !== undefined) {
+        updates.prompt = prompt;
+        /*
+        FNXC:PromptWriteIntegrity 2026-11-11-22:52 (RUFU-534):
+        This is the board's sanctioned operator prompt-edit transport, so a human deliberately replacing a
+        whole spec (including a shorter one) is authorized here and the shrink guard does not bind it. AI
+        prompt-write lanes never reach this route. The guard would otherwise refuse an operator's intentional
+        slim rewrite; the route test proves this authorization arm is live.
+        */
+        updates.promptShrinkAuthorized = true;
+      }
       if (dependencies !== undefined) updates.dependencies = dependencies;
       if (enabledWorkflowSteps !== undefined) updates.enabledWorkflowSteps = enabledWorkflowSteps;
       if (hasBodyField("noCommitsExpected")) updates.noCommitsExpected = noCommitsExpected;

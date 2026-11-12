@@ -49,3 +49,27 @@ unverified artifact as unsafe.
   states.
 - `packages/engine/src/__tests__/plan-prompt-write-surfaces.test.ts` covers
   triage/replanning, Plan Review, and reviewer-inline registration reachability.
+
+## Byte-equality verification cannot see a model-side truncation (RUFU-534)
+
+The read-back above proves one thing: the file on disk equals the string the
+process was handed. It cannot prove that string is the whole specification, and
+the two failure classes are disjoint. RUFU-519 measured it: a planner truncated
+its own tool-call argument, so received payload and landed file were both 1 579 B
+of a 57 814 B spec, the read-back saw a zero diff, and the write reported success
+39.4 s later.
+
+The verification layers are complementary, not redundant, and each catches what
+the other cannot see:
+
+- row read-back (`agent-tools.ts`) - the durable task row does not carry the
+  prompt body, so the mutation return must not be trusted as evidence.
+- landed-byte verification (`writePromptFileAtomic`, `verifyLanded`) - the rename
+  landed bytes other than what it was handed (a partial or racing write).
+- material-shrink guard (`assertNoAuthoritativePromptShrink`) - the bytes handed
+  in are themselves materially smaller than the accepted spec, which is the only
+  signal available when the truncation happened upstream of this process.
+
+Do not collapse one into another: a change that removes the shrink guard "because
+the write is already verified" reopens RUFU-519 exactly, and a change that removes
+the row read-back reopens the original defect this file documents.
