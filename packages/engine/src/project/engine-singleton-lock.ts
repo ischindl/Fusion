@@ -17,6 +17,10 @@
  *   - Socket alone: stale UDS files survive crashes (we probe + unlink).
  *
  * If acquisition fails, both guards are unwound before throwing.
+ *
+ * The module also answers the read-only half of the same question —
+ * `probeEngineSingletonPresence` — for a process that must know whether an engine is live without
+ * ever trying to own it (see RUFU-938: a `--no-engine` dashboard reporting a live project as down).
  */
 
 import { mkdirSync } from "node:fs";
@@ -189,8 +193,16 @@ function listen(server: net.Server, path: string): Promise<void> {
   });
 }
 
-/** Probe the loopback address — true if another process accepts connections. */
-async function isAddressLive(path: string): Promise<boolean> {
+/**
+ * Probe the loopback address — true if another process accepts connections.
+ *
+ * FNXC:EngineAvailability 2026-11-12-16:14 (RUFU-938):
+ * The timeout became a parameter because the same probe now answers an operator-facing
+ * liveness question (`probeEngineSingletonPresence`) as well as the acquire path's
+ * stale-socket check. The default stays `PROBE_TIMEOUT_MS`, so no caller can wait longer
+ * than the acquire path already tolerates.
+ */
+async function isAddressLive(path: string, timeoutMs: number = PROBE_TIMEOUT_MS): Promise<boolean> {
   return new Promise((resolve) => {
     const socket = net.connect(path);
     const done = (live: boolean) => {
@@ -200,8 +212,34 @@ async function isAddressLive(path: string): Promise<boolean> {
     };
     socket.once("connect", () => done(true));
     socket.once("error", () => done(false));
-    setTimeout(() => done(false), PROBE_TIMEOUT_MS).unref();
+    setTimeout(() => done(false), timeoutMs).unref();
   });
+}
+
+/**
+ * Read-only presence probe: is a live engine holding this project's singleton on this machine?
+ *
+ * FNXC:EngineAvailability 2026-11-12-16:14 (RUFU-938):
+ * A dashboard started with `--no-engine` beside a real engine host on one shared database had no
+ * way to learn that an engine is live: `ProjectEngineManager.hasRunningEngine()` only sees engines
+ * THIS process knows about, and `externalEngines` is filled only as a side effect of a start
+ * attempt that hit `EngineAlreadyRunningError` — an attempt a UI-only host never makes. The UI
+ * therefore told the operator to stop the server and run `fn serve`/`pnpm local`, actions that
+ * would break the split deployment it describes.
+ *
+ * The bound of this function is the contract its callers rely on: it connects to the address the
+ * engine binds and reads nothing else. It never acquires the lockfile, never binds, never unlinks
+ * a stale socket, and never constructs an engine — a probe that could start the thing it is asking
+ * about would reintroduce the exact failure it measures. `true` means a process accepted a
+ * connection on this project's loopback address; every other outcome, including an unreadable
+ * address, is `false` ("not proven"), never an error, so a liveness answer cannot fail a request.
+ */
+export async function probeEngineSingletonPresence(
+  projectId: string,
+  opts: { timeoutMs?: number } = {},
+): Promise<boolean> {
+  if (!projectId) return false;
+  return await isAddressLive(computeEngineSocketPath(projectId), opts.timeoutMs ?? PROBE_TIMEOUT_MS);
 }
 
 async function bindLoopback(socketPath: string): Promise<net.Server> {

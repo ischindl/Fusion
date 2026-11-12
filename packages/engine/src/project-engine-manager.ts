@@ -294,6 +294,13 @@ export class ProjectEngineManager {
    * engines owned by another fusion process (detected via the singleton lock).
    * Drives the dashboard's "engine available" health so a UI-only launch
    * alongside an already-running engine does not show a false banner.
+   *
+   * FNXC:EngineAvailability 2026-11-12-16:14 (RUFU-938):
+   * This answers the question only for a process that HAS a manager. `externalEngines` is filled
+   * as a side effect of an `ensureEngine` call that hit `EngineAlreadyRunningError`, so a host that
+   * never starts an engine (a `--no-engine` dashboard) has an empty set no matter how many engines
+   * are live. Those hosts ask the lock directly through `probeEngineSingletonPresence` — see
+   * `packages/dashboard/src/engine-presence.ts`.
    */
   hasRunningEngine(): boolean {
     return this.engines.size > 0 || this.externalEngines.size > 0;

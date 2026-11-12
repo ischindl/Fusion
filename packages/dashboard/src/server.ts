@@ -32,6 +32,12 @@ import {
 import type { AuthStorageLike, ModelRegistryLike } from "./routes.js";
 import type { EngineStartStage } from "@fusion/engine";
 import { createHealthSnapshot } from "./health-snapshot.js";
+import {
+  anyEngineSingletonLive,
+  createPresenceCandidateReader,
+  isEngineSingletonLive,
+  type EnginePresenceProbe,
+} from "./engine-presence.js";
 import { createApiRoutes } from "./routes.js";
 import { createSSE, disconnectSSEClient, markSSEClientAlive } from "./sse.js";
 import { rateLimit, RATE_LIMITS } from "./rate-limit.js";
@@ -659,6 +665,14 @@ export interface ServerOptions {
    */
   postgresHealthLayer?: import("@fusion/core").AsyncDataLayer;
   /*
+  FNXC:EngineAvailability 2026-11-12-16:14 (RUFU-938):
+  Test/host seam for the manager-free presence read. Production leaves it unset and gets
+  `singletonLockPresenceProbe`, a connect-only read of the engine singleton's loopback address.
+  Injecting a probe must never be able to start an engine: the whole point of the field is that the
+  answers it produces are observations, not actions.
+  */
+  enginePresenceProbe?: EnginePresenceProbe;
+  /*
   FNXC:SystemPanel 2026-07-12-11:15:
   Host-process control surface for the dashboard System panel (Command Center →
   System). The host CLI injects these; the /api/system routes consume them.
@@ -687,28 +701,54 @@ export interface SystemLogEntry {
   prefix?: string;
 }
 
-function hasDashboardEngine(options?: ServerOptions): boolean {
+/**
+ * Machine-scoped engine availability — the fact behind `/api/health`'s `engine.available`.
+ *
+ * FNXC:DashboardHealth 2026-06-21-03:30:
+ * Engine availability must reflect machine-level truth, not only engines owned by this dashboard
+ * process. `hasRunningEngine` counts engines owned by this process AND engines owned by another
+ * fusion process on the machine (detected via the singleton lock); without the latter a UI-only
+ * launch alongside an already-running engine shows a false "engine not running" banner.
+ *
+ * FNXC:DesktopEngineAvailability 2026-07-03-16:15:
+ * Desktop embedded local mode creates modern ProjectEngineManager before any project engine may exist.
+ * Treating an empty owned-engine map as dashboard-only makes the app shell show restart-Fusion remediation while the same manager is still starting, reconciling, or able to lazily ensure the selected project engine. A manager with machine-level liveness support therefore means automation is available at the process level; project-scoped disconnected/starting details stay on /api/engine/status. Older manager test doubles without that method retain the historical owned-engine fallback.
+ *
+ * FNXC:EngineAvailability 2026-11-12-16:14 (RUFU-938):
+ * The 2026-06-21 requirement above was unreachable in the one mode that needs it, because the whole
+ * machine-level branch sat behind `if (!manager) return false`. Measured 2026-11-12 with a
+ * `--no-engine` UI host beside a real engine host on one database: `engine.available` was `false`
+ * while the same process answered `/api/engine/status` with live lanes and
+ * `/api/projects/<id>/health` with `inFlightAgentCount: 1`, so the shell drew "AI engine is not
+ * running" over a board whose agents were running.
+ *
+ * A host with no manager therefore asks the lock directly ({@link anyEngineSingletonLive}) instead
+ * of answering from its own ownership table. Two bounds hold this in place:
+ * - It reads presence only. No engine is started to answer a health probe — that is the failure the
+ *   card exists to prevent, and the split deployment breaks the moment a UI-only host spawns a
+ *   second engine for the project.
+ * - It never adds a database read to the health evaluation. That path is on RUFU-674's budget (a
+ *   20 s refresh, a 90 s stale ceiling, and a watchdog that restarts the process after three missed
+ *   probes), and the running-agent count is a full board scan; the socket probe is not.
+ *
+ * Exported so the availability rule is testable at its own seam, like `buildEngineStatusPayload`.
+ */
+export async function resolveDashboardEngineAvailability(options?: ServerOptions): Promise<boolean> {
   if (options?.engine) return true;
   const manager = options?.engineManager;
-  if (!manager) return false;
-  /*
-   * FNXC:DashboardHealth 2026-06-21-03:30:
-   * Engine availability must reflect machine-level truth, not only engines
-   * owned by this dashboard process. `hasRunningEngine` counts engines owned
-   * by this process AND engines owned by another fusion process on the machine
-   * (detected via the singleton lock); without the latter a UI-only launch
-   * alongside an already-running engine shows a false "engine not running"
-   * banner.
-   *
-   * FNXC:DesktopEngineAvailability 2026-07-03-16:15:
-   * Desktop embedded local mode creates modern ProjectEngineManager before any project engine may exist.
-   * Treating an empty owned-engine map as dashboard-only makes the app shell show restart-Fusion remediation while the same manager is still starting, reconciling, or able to lazily ensure the selected project engine. A manager with machine-level liveness support therefore means automation is available at the process level; project-scoped disconnected/starting details stay on /api/engine/status. Older manager test doubles without that method retain the historical owned-engine fallback.
-   */
-  if (typeof manager.hasRunningEngine === "function") {
-    return true;
+  if (manager) {
+    if (typeof manager.hasRunningEngine === "function") {
+      return true;
+    }
+    const engines = manager.getAllEngines?.();
+    return Boolean(engines && engines.size > 0);
   }
-  const engines = manager.getAllEngines?.();
-  return Boolean(engines && engines.size > 0);
+
+  const readCandidates = createPresenceCandidateReader({
+    listRegisteredProjectIds: () => listRegisteredProjectStores().map((entry) => entry.projectId),
+    resolveDefaultProjectId: async () => await options?.centralCore?.getDefaultProjectId?.(),
+  });
+  return await anyEngineSingletonLive(await readCandidates(), options?.enginePresenceProbe);
 }
 
 /*
@@ -719,6 +759,17 @@ The reason vocabulary now names the states that actually exist. The old pair
 `live-without-handle` and `externally-owned` are the two states where the project IS working and
 this process simply does not own the engine; `starting` and `start-failed` are the two states where
 a start attempt exists and can be described (age + stage, or the recorded reason).
+
+FNXC:EngineAvailability 2026-11-12-16:14 (RUFU-938):
+No value was added and none was removed; what was fixed is what `dashboard-only` is allowed to mean.
+It used to be the whole answer of a manager-free process, computed before any evidence was read, so
+it claimed "the engine is not running" from the process's own shape. It now means exactly one thing:
+this process has no engine manager AND neither the running-agent count nor the singleton-lock probe
+proved anything. In a `--no-engine` host beside a live engine the same request answers
+`externally-owned` (this machine holds the project's engine singleton in another process) or
+`live-without-handle` (lanes are busy in a store this process already has open), both with
+`connected:true`. The fail-closed direction is deliberate: no evidence is `dashboard-only`, never a
+live claim.
 */
 export type EngineStatusReason =
   | "dashboard-only"
@@ -810,6 +861,78 @@ async function resolveRunningAgentCountFromOpenStores(
 }
 
 /**
+ * The `/api/engine/status` answer for a process that has no `ProjectEngineManager` at all — a
+ * `--no-engine` dashboard, which is how the split deployment (UI host + separate engine host, one
+ * shared database) is run.
+ *
+ * FNXC:EngineAvailability 2026-11-12-16:14 (RUFU-938):
+ * This arm used to be the function's first line: `{connected:false, starting:false, canStart:false,
+ * canResume:false, reason:"dashboard-only"}`, returned before `engineHandle`, `externallyOwned` and
+ * `lanesRunning` were computed. It therefore asserted an outage from a single structural fact about
+ * the process, and it did so in the only mode where the project can be demonstrably alive: measured
+ * 2026-11-12, the same UI-only process answered `/api/projects/<id>/health` with `status:"active"`
+ * and `inFlightAgentCount: 1` while this payload said "not connected", and the banner it drives told
+ * the operator to run `fn serve` — the action that would break the running deployment.
+ *
+ * The replacement keeps the two invariants the card is about:
+ *
+ * - **Manager-free evidence, computed before any verdict.** `runningAgentCount` (already-open stores
+ *   — the same signal project health publishes) and the singleton-lock presence probe (an engine
+ *   owned by another process on this machine, which is exactly the split-mode shape) are both read
+ *   without a manager. `reason` then distinguishes the two states the old single value conflated:
+ *   `externally-owned` / `live-without-handle` when either signal proved the project live, and
+ *   `dashboard-only` only when NEITHER did.
+ * - **Fail-closed, never aspirational.** No evidence is `connected:false`. The opposite error — a
+ *   payload claiming a live engine nobody measured — would hide the one banner that tells an operator
+ *   with a genuinely engine-less host to start one, so every probe failure resolves "not proven".
+ * - **No engine start on this path, ever.** `canStart` and `canResume` stay false here because a
+ *   process with no manager cannot start or resume anything; `POST /api/engine/start` still refuses.
+ *   Detection must never become an action: an idle split deployment now reads as live instead of
+ *   inviting a second engine for the same project.
+ */
+async function buildManagerFreeEngineStatusPayload(
+  projectId: string | undefined,
+  options: ServerOptions | undefined,
+  defaultStore: TaskStore | undefined,
+): Promise<EngineStatusPayload> {
+  const base = projectId ? { projectId } : {};
+  if (!projectId) {
+    // Unchanged from the pre-RUFU-938 shape: with no manager there is nothing this request can name
+    // a project against, and inventing a `no-project` verdict for a manager-free host would be a new
+    // claim, not a repair.
+    return {
+      connected: false,
+      starting: false,
+      canStart: false,
+      canResume: false,
+      reason: "dashboard-only",
+      ...base,
+    };
+  }
+
+  // The manager ladder's own precedence: another process owning THIS project's singleton is the more
+  // specific proof than an inference drawn from how many lanes happen to be busy.
+  const externallyOwned = await isEngineSingletonLive(projectId, options?.enginePresenceProbe);
+  const runningAgentCount = await resolveRunningAgentCountFromOpenStores(projectId, options, defaultStore);
+  const lanesRunning = typeof runningAgentCount === "number" && runningAgentCount > 0;
+  const connected = externallyOwned || lanesRunning;
+
+  return {
+    connected,
+    starting: false,
+    canStart: false,
+    canResume: false,
+    reason: connected
+      ? externallyOwned ? "externally-owned" : "live-without-handle"
+      : "dashboard-only",
+    ...base,
+    engineHandle: false,
+    externallyOwned,
+    ...(runningAgentCount === undefined ? {} : { runningAgentCount }),
+  };
+}
+
+/**
  * Build the project engine status.
  *
  * FNXC:EngineStatusTruth 2026-11-07-13:55 (RUFU-496):
@@ -839,17 +962,9 @@ export async function buildEngineStatusPayload(
   defaultStore?: TaskStore,
 ): Promise<EngineStatusPayload> {
   const engineManager = options?.engineManager;
-  const base = projectId ? { projectId } : {};
 
   if (!engineManager) {
-    return {
-      connected: false,
-      starting: false,
-      canStart: false,
-      canResume: false,
-      reason: "dashboard-only",
-      ...base,
-    };
+    return await buildManagerFreeEngineStatusPayload(projectId, options, defaultStore);
   }
 
   if (!projectId) {
@@ -2361,7 +2476,7 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
       taskIdIntegrityReport: health.taskIdIntegrity,
       migration: health.migration,
       cliPackageVersion,
-      engineAvailable: hasDashboardEngine(options),
+      engineAvailable: await resolveDashboardEngineAvailability(options),
     });
   };
   const healthSnapshot = createHealthSnapshot<ReturnType<typeof buildHealthPayload>>({
@@ -2410,7 +2525,25 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
     const engineManager = options?.engineManager;
 
     if (!engineManager) {
-      res.status(409).json({ error: "Engine manager is unavailable", reason: "dashboard-only" });
+      /*
+      FNXC:EngineAvailability 2026-11-12-16:14 (RUFU-938):
+      The refusal stands — a process with no engine manager cannot start an engine, and this route is
+      where that limit is enforced. What changed is which true reason it names. Answering
+      `reason:"dashboard-only"` unconditionally told a caller that nothing was running and that
+      starting was the available remedy, in the same mode where `/api/engine/status` reports the
+      project live; the payload and the refusal disagreed about the same project (measured 2026-11-12
+      in a split deployment). The route now answers from the same builder the banner reads, so a live
+      project is refused as live and a genuinely engine-less host keeps the original refusal. Either
+      way the status travels with the 409, the same shape the manager-bearing arm already uses.
+      */
+      const status = await buildEngineStatusPayload(projectId, options, store);
+      res.status(409).json(status.connected
+        ? {
+          error: "This project's engine is running in another process, so this dashboard process started nothing",
+          reason: status.reason ?? "externally-owned",
+          status,
+        }
+        : { error: "Engine manager is unavailable", reason: "dashboard-only", status });
       return;
     }
 
@@ -2661,7 +2794,7 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
       taskIdIntegrityReport: health.taskIdIntegrity,
       migration: health.migration,
       cliPackageVersion,
-      engineAvailable: hasDashboardEngine(options),
+      engineAvailable: await resolveDashboardEngineAvailability(options),
     }));
   });
 

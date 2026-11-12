@@ -2812,6 +2812,21 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
     FNXC:PluginRoutes 2026-07-22-09:55:
     createPluginRouter still mounts plugin-defined HTTP routes from pluginLoader when pluginRunner is undefined. Do not pass pluginLoader as pluginRunner here — that reintroduces the Grok getRuntimeById TypeError — and do not skip pluginLoadingPromise; CE /sessions and /artifacts depend on the loaded plugin route table.
     */
+    /*
+    FNXC:EngineAvailability 2026-11-12-16:14 (RUFU-938):
+    This branch deliberately passes NO `engineManager`, and that is the correct half of the
+    "UI-only dashboard says the engine is down" fix — not the bug. A `--no-engine` host owns no
+    engine manager because it hosts no engine runtime at all (see the FNXC:HeartbeatOwnership note
+    above: driving agents belongs to the process that holds the project's engine singleton). Handing
+    it a manager would make `POST /api/engine/start` callable here, and a UI-only process starting a
+    second engine for a project another process already owns is the exact destruction of a working
+    split deployment this card exists to prevent.
+
+    So the truthfulness is fixed on the read side instead: `createServer` answers `/api/health` and
+    `/api/engine/status` from manager-free evidence (the engine singleton's loopback presence plus the
+    running-agent count of already-open stores — see
+    `packages/dashboard/src/engine-presence.ts`), and the start route keeps refusing.
+    */
     app = createServer(store, {
       onMerge: uiOnlyOnMerge,
       centralCore: centralCoreForMesh ?? undefined,

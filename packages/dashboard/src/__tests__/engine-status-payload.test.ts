@@ -488,3 +488,127 @@ describe("buildEngineStatusPayload — the forbidden triple is unrepresentable",
     }
   });
 });
+
+/**
+ * RUFU-938 — a `--no-engine` process answering for a project it does not own.
+ *
+ * Measured 2026-11-12 in the split deployment (UI-only host on one port, real engine host on another,
+ * one shared database): this builder returned its whole answer from the structural fact "I have no
+ * engine manager", before computing any liveness signal. The same process was simultaneously able to
+ * report `inFlightAgentCount: 1` for the project, so the UI drew "AI engine is not running" and
+ * "Run `fn serve`" over a board whose agents were running — remediation that would take down the
+ * engine it describes.
+ *
+ * Every case below passes NO `engineManager`, which is the mode under test: there is no collaborator
+ * here that could start an engine, and the resolver mock above throws from `getOrCreateProjectStore`,
+ * so an answer that tried to open a project (or reach a manager) to prove liveness fails loudly
+ * instead of quietly succeeding.
+ */
+describe("buildEngineStatusPayload — a UI-only (--no-engine) process", () => {
+  /** Presence double: records the ids it was asked about so "we never asked" stays provable. */
+  function presenceDouble(live: boolean | ((projectId: string) => boolean)) {
+    const probe = vi.fn(async (projectId: string) =>
+      typeof live === "function" ? live(projectId) : live);
+    return { probe, seen: (): string[] => probe.mock.calls.map(([id]) => id) };
+  }
+
+  it("reports the project live when an already-open store proves its lanes are up", async () => {
+    registry.entries = [{ projectId: "proj_aaa", store: storeWithRunningAgents(1) }];
+    const presence = presenceDouble(false);
+
+    const payload = await buildEngineStatusPayload("proj_aaa", {
+      enginePresenceProbe: presence.probe,
+    } as never);
+
+    expect(payload.connected).toBe(true);
+    expect(payload.reason).toBe("live-without-handle");
+    expect(payload.engineHandle).toBe(false);
+    expect(payload.externallyOwned).toBe(false);
+    expect(payload.runningAgentCount).toBe(1);
+    // The false offer is the whole defect: a live project must never look startable.
+    expect(payload.canStart).toBe(false);
+    expect(payload.canResume).toBe(false);
+    expectNoContradictoryTriple(payload as Record<string, unknown>);
+  });
+
+  it("reports the project live when another process holds its engine singleton, with no lanes busy", async () => {
+    // The idle split deployment: nothing happens to be running, yet the engine is provably alive on
+    // this machine. An agent count alone would report this as down until work arrived.
+    registry.entries = [{ projectId: "proj_aaa", store: storeWithRunningAgents(0) }];
+    const presence = presenceDouble(true);
+
+    const payload = await buildEngineStatusPayload("proj_aaa", {
+      enginePresenceProbe: presence.probe,
+    } as never);
+
+    expect(presence.seen()).toEqual(["proj_aaa"]);
+    expect(payload.connected).toBe(true);
+    expect(payload.reason).toBe("externally-owned");
+    expect(payload.externallyOwned).toBe(true);
+    expect(payload.engineHandle).toBe(false);
+    // A foreign-owned engine is not this process's to start, and not its to resume either.
+    expect(payload.canStart).toBe(false);
+    expect(payload.canResume).toBe(false);
+    expectNoContradictoryTriple(payload as Record<string, unknown>);
+  });
+
+  it("stays not-live when neither manager-free signal proves anything", async () => {
+    // The opposite error the spec forbids: claiming a live engine without evidence. With no open
+    // store and no live singleton, the payload must remain the honest "cannot see an engine".
+    registry.entries = [];
+    const presence = presenceDouble(false);
+
+    const payload = await buildEngineStatusPayload("proj_aaa", {
+      enginePresenceProbe: presence.probe,
+      centralCore: coreDouble("active") as never,
+    } as never);
+
+    expect(payload.connected).toBe(false);
+    expect(payload.reason).toBe("dashboard-only");
+    expect(payload.starting).toBe(false);
+    expect(payload.canStart).toBe(false);
+    expect(payload.canResume).toBe(false);
+    // Unknown stays unknown: an unopened store contributes no count, never a fabricated zero.
+    expect("runningAgentCount" in payload).toBe(false);
+    expectNoContradictoryTriple(payload as Record<string, unknown>);
+  });
+
+  it("treats a presence probe that throws as no evidence, not as a live engine", async () => {
+    registry.entries = [];
+    const hostileProbe = vi.fn(async () => {
+      throw new Error("PROBE_MUST_NOT_FAIL_THE_REQUEST");
+    });
+
+    const payload = await buildEngineStatusPayload("proj_aaa", {
+      enginePresenceProbe: hostileProbe,
+    } as never);
+
+    expect(payload.connected).toBe(false);
+    expect(payload.reason).toBe("dashboard-only");
+    expect(payload.canStart).toBe(false);
+  });
+
+  it("withholds resume from a paused project in a process that has nothing to resume it with", async () => {
+    // The manager branch offers `canResume` for a paused project because it can call `resumeProject`.
+    // A UI-only process must not grow that affordance just because it now reads liveness.
+    registry.entries = [];
+    const payload = await buildEngineStatusPayload("proj_aaa", {
+      enginePresenceProbe: vi.fn(async () => false),
+      centralCore: coreDouble("paused") as never,
+    } as never);
+
+    expect(payload.canResume).toBe(false);
+    expect(payload.connected).toBe(false);
+  });
+
+  it("keeps a manager-free request that names no project on the unchanged dashboard-only answer", async () => {
+    const payload = await buildEngineStatusPayload(undefined, {
+      enginePresenceProbe: vi.fn(async () => true),
+    } as never);
+
+    // No project named means nothing to probe; this arm is byte-identical to the pre-fix answer.
+    expect(payload.reason).toBe("dashboard-only");
+    expect(payload.connected).toBe(false);
+    expect("projectId" in payload).toBe(false);
+  });
+});

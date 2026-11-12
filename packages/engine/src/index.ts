@@ -1234,6 +1234,7 @@ export {
   computeEngineLockFilePath,
   computeEngineSocketPath,
   EngineAlreadyRunningError,
+  probeEngineSingletonPresence,
   type EngineSingletonLock,
 } from "./project/engine-singleton-lock.js";
 export { NodeHealthMonitor } from "./project/node-health-monitor.js";
