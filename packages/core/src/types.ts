@@ -626,6 +626,7 @@ import {
   DETERMINISTIC_SPEC_REJECTION_METADATA_KEY,
   WIP_ADMISSION_STALL_METADATA_KEY,
   BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY,
+  STRANDED_CONTINUATION_RECLAIM_METADATA_KEY,
   WEDGE_RENOTIFY_COOLDOWN_MS,
 } from "./types/task/task-core.js";
 export {
@@ -641,6 +642,7 @@ export {
   DETERMINISTIC_SPEC_REJECTION_METADATA_KEY,
   WIP_ADMISSION_STALL_METADATA_KEY,
   BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY,
+  STRANDED_CONTINUATION_RECLAIM_METADATA_KEY,
   WEDGE_RENOTIFY_COOLDOWN_MS,
 };
 export type { PlanPremiseRejectionEpisode } from "./types/task/task-core.js";
@@ -648,6 +650,7 @@ export type { TaskPlanAdmissionStallCode, TaskPlanAdmissionStallEpisode } from "
 export type { TaskDeterministicSpecRejectionEpisode } from "./types/task/task-core.js";
 export type { TaskWipAdmissionStallCode, TaskWipAdmissionStallEpisode } from "./types/task/task-core.js";
 export type { TaskBranchConflictRecoveryEpisode } from "./types/task/task-core.js";
+export type { StrandedContinuationReclaimEpisode, StrandedContinuationReclaimAnnouncement } from "./types/task/task-core.js";
 
 import type {
   SourceType,

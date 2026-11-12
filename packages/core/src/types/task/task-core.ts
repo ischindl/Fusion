@@ -947,6 +947,72 @@ export interface TaskBranchConflictRecoveryEpisode {
   lastSource: "self-owned-reclaim" | "pr-reclaim" | "executor-conflict" | "dirty-checkout-hold" | "foreign-tip-reject" | "dispatcher-irreducible-pause";
 }
 
+/*
+FNXC:StrandedContinuationReclaim 2026-11-11-23:30 (RUFU-547):
+The stranded-continuation sweep promises "one note per condition, not one per maintenance pass" and a
+30-minute -> 2-hour -> 6-hour re-check ladder. Both halves were unenforceable because the memory behind
+them was in-process (`SelfHealingManager.strandedContinuationAnnounced`) and the width behind the ladder
+was stamped on the *work-item row*, which is not a durable carrier for either:
+
+  - the announce memo died with the process, so every restart or second manager instance re-wrote the
+    identical `[recovery]` line (measured: two byte-identical lines three seconds apart on RUFU-215,
+    which no shared memo can produce);
+  - the re-queue write itself nulls `retryAfter`, and the re-holding seam
+    (`holdPlanReviewNoOpContinuation` -> `replaceActiveTaskWorkflowContinuation`) installs the successor
+    row with `retryAfter` at its DB default, so `nextDeferralMs` received NaN and answered rung 0
+    forever. That is the ~38-minute cadence: one rung plus pass granularity, re-applied endlessly.
+
+This key is the durable carrier for both facts. It rides `sourceMetadata` (no new `tasks` column) for the
+reasons RUFU-246/273/393/395 already established: `updateTask`'s `sourceMetadataPatch` writes at KEY level
+so unrelated provenance keys survive, and the row is in the projection the self-healing sweeps already
+read. The carrier is deliberately the TASK row and not the continuation row, because the continuation row
+is the artifact being replaced — a bound stored on it is erased by the very churn it must bound.
+
+Diagnostic-adjacent but load-bearing: it bounds a *note* and a *cadence*. It must never gate admission,
+release, dispatch, or merge, and a missing or malformed episode degrades to today's behavior (announce,
+start at rung 0) rather than to silence. `buildManualRetryResetPatch` clears it, so an operator Retry
+returns the wedge a fresh voice and a fresh ladder.
+*/
+export const STRANDED_CONTINUATION_RECLAIM_METADATA_KEY = "strandedContinuationReclaim" as const;
+
+/** One announced condition on a wedge: the full `taskId|nodeId|state|reason` signature and when it spoke. */
+export interface StrandedContinuationReclaimAnnouncement {
+  /** Condition signature as produced by `strandedHoldConditionKey`. */
+  key: string;
+  /** ISO instant of the announce that earned the entry; drives the 24 h re-arm. */
+  at: string;
+}
+
+/**
+ * Durable per-wedge reclaim episode (RUFU-547). One per card, describing the continuation NODE the sweep
+ * last acted on — a different node is a different wedge and starts a fresh episode. Ids, a width, a
+ * bounded ledger and ISO instants only: never a reason sentence, a blockedReason value, or an error.
+ */
+export interface StrandedContinuationReclaimEpisode {
+  /**
+   * Writer identity, prefixed (`self-healing:stranded-reclaim:<nodeId>`) so an episode this lane did not
+   * author is recognizable and reads as absent rather than as a fact to consume.
+   */
+  signature: string;
+  /** The wedge: which continuation node this card is stuck on. */
+  nodeId: string;
+  /**
+   * Widest deferral rung reached on THIS wedge, in ms. Monotonic while the wedge exists: the row's own
+   * `retryAfter` may be zeroed by a reclaim or erased by a row replacement, and this number is what
+   * keeps the ladder from falling back to rung 0. Reset only by a wedge change, RUFU-299's reveal, or an
+   * operator Retry.
+   */
+  deferralWidthMs: number;
+  /**
+   * Bounded FIFO of conditions already announced to the card history, oldest first, capped by the writer
+   * at `STRANDED_RECLAIM_ANNOUNCED_CAP`. Entries are what make "the card already said this" survive a
+   * restart; the cap is what stops an unstable reason vocabulary from growing the carrier forever.
+   */
+  announcedConditions: StrandedContinuationReclaimAnnouncement[];
+  /** ISO timestamp of the most recent episode write. */
+  lastAt: string;
+}
+
 /** One cross-project handoff pointer record (see the FNXC block above). */
 export interface TaskHandoffPointer {
   /** Registry id of the project the pointer references. */
@@ -983,6 +1049,10 @@ export interface TaskSource {
    * - planning-admission stall episode (RUFU-273): `planAdmissionStall`
    *   ({@link TaskPlanAdmissionStallEpisode}, nullable) names the planning gate an aged card is
    *   behind so the stall authority can render it. Diagnostic-only; never gates admission.
+   * - stranded-continuation reclaim episode (RUFU-547): `strandedContinuationReclaim`
+   *   ({@link StrandedContinuationReclaimEpisode}) carries the wedge's announced-condition ledger and the
+   *   reached deferral rung, because the work-item row that a reclaim re-creates cannot carry either.
+   *   Bounds a note and a cadence only; never gates admission, release, dispatch, or merge.
    * - WIP-admission park episode (RUFU-393): `wipAdmissionStall`
    *   ({@link TaskWipAdmissionStallEpisode}, nullable) names the gate that refused this card's
    *   hold->WIP crossing and when it was first refused. Diagnostic-only; never gates release.

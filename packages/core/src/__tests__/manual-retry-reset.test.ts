@@ -187,7 +187,15 @@ describe("buildManualRetryResetPatch", () => {
   planning-admission clear: the object is still pinned literally, so a constant rename that would orphan
   persisted episodes is still caught, and the whole-field wipe guard below is unchanged.
   */
-  it("clears the plan-premise, planning-admission, deterministic-spec and branch-conflict-refusal episodes at the key level, never the whole field", () => {
+  /*
+  FNXC:StrandedContinuationReclaim 2026-11-11-23:45 (RUFU-547):
+  The fifth key is the stranded-reclaim episode. Same reasoning as the two above, in its sharpest form:
+  RUFU-547 moved the announce ledger and the reached ladder rung onto this carrier precisely because the
+  work-item row they used to lean on is re-created under the sweep's hands, and a carrier that survives an
+  operator Retry would keep both promises locked against a card the operator just released. The literal is
+  re-pinned here — not loosened — so a constant rename that orphans a persisted episode is still caught.
+  */
+  it("clears the plan-premise, planning-admission, deterministic-spec, branch-conflict-refusal and stranded-reclaim episodes at the key level, never the whole field", () => {
     /*
     FNXC:BranchConflictRecovery 2026-11-04-14:36 (RUFU-395):
     The third key is this family's own refusal register. RUFU-395 made `refusalCount` the sole
@@ -196,8 +204,8 @@ describe("buildManualRetryResetPatch", () => {
     the operator just released. The literal stays pinned on purpose — a constant rename that would
     orphan a persisted episode is still caught here rather than in production.
     */
-    expect(buildManualRetryResetPatch().sourceMetadataPatch).toEqual({ planPremiseRejection: null, planAdmissionStall: null, deterministicSpecRejection: null, branchConflictRecoveryEpisode: null });
-    expect(buildManualRetryResetPatch({ resetMergeRetries: true }).sourceMetadataPatch).toEqual({ planPremiseRejection: null, planAdmissionStall: null, deterministicSpecRejection: null, branchConflictRecoveryEpisode: null });
+    expect(buildManualRetryResetPatch().sourceMetadataPatch).toEqual({ planPremiseRejection: null, planAdmissionStall: null, deterministicSpecRejection: null, branchConflictRecoveryEpisode: null, strandedContinuationReclaim: null });
+    expect(buildManualRetryResetPatch({ resetMergeRetries: true }).sourceMetadataPatch).toEqual({ planPremiseRejection: null, planAdmissionStall: null, deterministicSpecRejection: null, branchConflictRecoveryEpisode: null, strandedContinuationReclaim: null });
     expect(buildManualRetryResetPatch()).not.toHaveProperty("sourceMetadata");
   });
 

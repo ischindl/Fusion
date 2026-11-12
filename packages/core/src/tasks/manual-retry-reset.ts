@@ -1,4 +1,4 @@
-import { BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY, DETERMINISTIC_SPEC_REJECTION_METADATA_KEY, PLAN_ADMISSION_STALL_METADATA_KEY, PLAN_PREMISE_REJECTION_METADATA_KEY, type Task } from "../types.js";
+import { BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY, DETERMINISTIC_SPEC_REJECTION_METADATA_KEY, PLAN_ADMISSION_STALL_METADATA_KEY, PLAN_PREMISE_REJECTION_METADATA_KEY, STRANDED_CONTINUATION_RECLAIM_METADATA_KEY, type Task } from "../types.js";
 import type { TaskStore } from "../store.js";
 
 export const IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON = "in-review-stall-deadlock";
@@ -146,11 +146,24 @@ export function buildManualRetryResetPatch(options?: { resetMergeRetries?: boole
     (reset only on a clean planning handoff) and clearing it belongs to a separate finding; mixing it
     into this card's patch would silently change the re-seed ceiling's behavior.
     */
+    /*
+    FNXC:StrandedContinuationReclaim 2026-11-11-23:44 (RUFU-547):
+    And to the stranded-reclaim episode, the fifth key in this one statement. RUFU-547 made it the durable
+    bound for the wedge's `[recovery]` line AND for the re-check ladder, which makes it the same shape as
+    RUFU-395's register and RUFU-485's identity: an operator Retry that left it behind would be a no-op on
+    both halves at once. The surviving announce ledger would swallow the very History line the Retry is
+    supposed to produce, and the clamped top rung would be inherited by the NEXT wedge on the same node,
+    so a card the operator just pushed to the front of the queue would still be re-checked once every six
+    hours. Unlike `wipAdmissionStall` (a capacity gate whose release owner is the hold/release sweep) this
+    episode has no owner but the card's own progress — the reveal sweep ends it — so the operator is
+    always allowed to end it by hand.
+    */
     sourceMetadataPatch: {
       [PLAN_PREMISE_REJECTION_METADATA_KEY]: null,
       [PLAN_ADMISSION_STALL_METADATA_KEY]: null,
       [BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY]: null,
       [DETERMINISTIC_SPEC_REJECTION_METADATA_KEY]: null,
+      [STRANDED_CONTINUATION_RECLAIM_METADATA_KEY]: null,
     },
     nextRecoveryAt: null as unknown as Task["nextRecoveryAt"],
     sessionContentionWaitReason: null as unknown as Task["sessionContentionWaitReason"],

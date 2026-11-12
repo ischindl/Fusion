@@ -1,5 +1,5 @@
 import { resumeMissingPostMergeGate } from "./merge/post-merge-gate-reseed.js";
-import { EpochedWorkflowIrCache, EpochedWorkflowSelectionCache } from "@fusion/core";
+import { EpochedWorkflowIrCache, EpochedWorkflowSelectionCache, STRANDED_CONTINUATION_RECLAIM_METADATA_KEY } from "@fusion/core";
 /**
  * SelfHealingManager — enables unattended multi-day/week operation by
  * providing automatic recovery from common failure modes.
@@ -295,7 +295,7 @@ import {
 } from "./planning-handoff-recovery.js";
 import { getPromptPath } from "./execution/spec-staleness.js";
 import { evaluateStrandedHoldContinuation, seedPreReleasePlanReviewContinuation } from "./plan-review-continuation.js";
-import { evaluateStrandedContinuationReclaim, needsOverlapHolderProof, strandedHoldConditionKey, RECLAIM_RETIRED_STATE, RECLAIM_STALENESS_GRACE_MS, RECLAIM_DEFERRAL_HORIZON_MS } from "./workflows/stranded-continuation-reclaim.js";
+import { evaluateStrandedContinuationReclaim, needsOverlapHolderProof, readStrandedReclaimEpisode, strandedHoldConditionKey, strandedReclaimAnnounceSuppression, strandedReclaimEpisodeClearPatch, strandedReclaimEpisodeWrite, RECLAIM_RETIRED_STATE, RECLAIM_STALENESS_GRACE_MS, RECLAIM_DEFERRAL_HORIZON_MS } from "./workflows/stranded-continuation-reclaim.js";
 /* FNXC:ResumePlacement 2026-11-01-22:05 (RUFU-300): the advanced-triage pin re-home asks the same
    evidence-aware placement question the graph asks, instead of trusting the pin as a naked claim. */
 import {
@@ -1733,18 +1733,19 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   */
   private deterministicSpecParkNoActionAudited = new Set<string>();
   /*
-  FNXC:StrandedContinuationReclaim 2026-09-22-14:21 (RUFU-263):
-  Two memos bound the stranded-reclaim noise per (taskId, nodeId, state, blockedReason) CONDITION, keyed
-  through `strandedHoldConditionKey`, instead of per maintenance pass:
+  FNXC:StrandedContinuationReclaim 2026-11-11-23:38 (RUFU-547):
+  The paragraph above claimed the row's own `retryAfter` IS the durable bound. It is not, and the claim was
+  false in both directions. The row is the artifact a reclaim re-creates: the re-queue write nulls
+  `retryAfter` in the same pass that announces, and `holdPlanReviewNoOpContinuation` re-holds the wait
+  through `replaceActiveTaskWorkflowContinuation`, whose insert leaves `retryAfter` at its default — so the
+  ladder's width (read off that column) was NaN on almost every pass and answered rung 0 forever, while the
+  memo below was empty for every new process. Measured 2026-11-11: two byte-identical `[recovery]` lines
+  three seconds apart on RUFU-215, which one shared `Set` cannot produce.
 
-  - `strandedContinuationAnnounced` remembers that the card already got its `[recovery]` task-log line and
-    re-queue event row for this exact condition, so an unchanged condition is announced once. It is set
-    only after the log write lands, matching the house convention below.
-  - `strandedContinuationNoActionAudited` records the sustained condition once in the event store.
-
-  Restart costs one extra announcement per condition, which is what the house convention accepts; the
-  DURABLE bound is the `retryAfter` deferral the classifier stamps on the row itself, which survives a
-  restart because it is the same due-gate every reader honours.
+  So the announce ledger and the reached ladder rung now live on the CARD's `sourceMetadata` (key
+  `STRANDED_CONTINUATION_RECLAIM_METADATA_KEY`), which the churn below cannot touch. These two Sets are
+  kept as a strictly additive SECOND source: they can only suppress more than the durable episode, never
+  less, which is what keeps a failed episode write from resurrecting a line this process already wrote.
   */
   private strandedContinuationAnnounced = new Set<string>();
   private strandedContinuationNoActionAudited = new Set<string>();
@@ -13173,6 +13174,27 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           const livenessSignal = liveness(item.taskId);
           /* One signature per (taskId, nodeId, state, blockedReason) condition, shared by the two noise memos. */
           const conditionKey = strandedHoldConditionKey(item, item.blockedReason);
+          /*
+          FNXC:StrandedContinuationReclaim 2026-11-11-23:39 (RUFU-547):
+          The durable half of the once-per-condition bound, read off the CARD rather than off the row.
+          The row is the artifact this sweep and the re-holding seam keep re-creating, so neither the
+          announce ledger nor the reached ladder rung can live on it: the first is process-local noise with
+          no witness at all, and the second is a column the re-queue zeroes and the replacement insert
+          never carries over. `nodeId` is the wedge identity — a card whose wait moves to a different node
+          is a different wedge and legitimately starts a fresh episode.
+          */
+          const reclaimEpisode = readStrandedReclaimEpisode(task?.sourceMetadata);
+          const reclaimWedgeMatch = reclaimEpisode?.nodeId === item.nodeId;
+          const announce = strandedReclaimAnnounceSuppression({
+            existing: reclaimEpisode,
+            nodeId: item.nodeId,
+            conditionKey,
+            inProcessAnnounced: this.strandedContinuationAnnounced.has(conditionKey),
+            now,
+          });
+          /* A known condition is never re-queued just because its note aged out: the re-arm costs a LINE,
+             not a row transition. Re-queueing a hold a named seam may still own is the churn RUFU-263 removed. */
+          const conditionIsKnown = announce.suppressed || announce.reArm;
           const reclaimInput = {
             item,
             taskMissing: !task,
@@ -13197,7 +13219,14 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             */
             taskBlockedBy: task?.blockedBy ?? null,
             taskOverlapBlockedBy: task?.overlapBlockedBy ?? null,
-            alreadyAnnounced: this.strandedContinuationAnnounced.has(conditionKey),
+            alreadyAnnounced: conditionIsKnown,
+            /*
+            FNXC:StrandedContinuationReclaim 2026-11-11-23:39 (RUFU-547):
+            The wedge's durable high-water, so a row that arrives with no `retryAfter` (the re-queue's own
+            write, or a replacement insert) still climbs instead of restarting at rung 0. Zero for a fresh
+            wedge, which is what keeps a card that genuinely progressed from inheriting a stale cadence.
+            */
+            durableDeferralWidthMs: reclaimWedgeMatch ? reclaimEpisode?.deferralWidthMs : 0,
             /*
             FNXC:StrandedContinuationDeferralHorizon 2026-11-02-12:27 (RUFU-299):
             The sweep always passes the horizon: an unbounded ladder is what made a deferred card invisible
@@ -13268,6 +13297,44 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             stalenessMs: Math.max(0, now - new Date(item.updatedAt).getTime()),
           };
           /*
+          FNXC:StrandedContinuationReclaim 2026-11-11-23:40 (RUFU-547):
+          The durable witness for this wedge, written through the key-preserving `sourceMetadataPatch`
+          channel so `duplicateOfTaskIds`/`handoffFrom`/the planning episodes all survive. The episode is
+          recomputed from the LIVE row inside the updater, because the card may have gained an announce on
+          another node between the scan and this write.
+
+          It runs AFTER the guarded row transition and never inside it: the recovery is the deliverable and
+          a bookkeeping write must not be able to lose, block, or reverse one. A failure degrades to the
+          in-process memo — today's floor — and is logged, not swallowed.
+          */
+          const writeReclaimEpisode = async (written: {
+            announced: boolean;
+            deferralWidthMs: number;
+          }): Promise<void> => {
+            if (!task) return;
+            try {
+              await this.store.updateTaskAtomic(item.taskId, (live) => ({
+                sourceMetadataPatch: { [STRANDED_CONTINUATION_RECLAIM_METADATA_KEY]: strandedReclaimEpisodeWrite({
+                  existing: readStrandedReclaimEpisode(live?.sourceMetadata),
+                  nodeId: item.nodeId,
+                  conditionKey,
+                  announced: written.announced,
+                  deferralWidthMs: written.deferralWidthMs,
+                  now,
+                }) },
+              }));
+            } catch (episodeError) {
+              log.warn(`reconcileStrandedWorkflowContinuations: episode write failed for ${item.taskId}/${item.nodeId}: ${episodeError instanceof Error ? episodeError.message : String(episodeError)}`);
+            }
+          };
+          /* RUFU-547: what the durable episode says about this wedge's cadence, for the rows that carry it. */
+          const cadenceMetadata = {
+            /** The rung in force for this wedge: the width this pass stamped, else the persisted high-water. */
+            deferralWidthMs: verdict.action === "defer" ? verdict.deferralWidthMs : (reclaimWedgeMatch ? reclaimEpisode?.deferralWidthMs ?? null : 0),
+            /** Which half of the bound kept the `[recovery]` card line down, or `none` when it was written. */
+            announceSuppressedBy: announce.suppressedBy,
+          };
+          /*
           FNXC:StrandedContinuationReclaim 2026-09-22-14:21 (RUFU-263):
           A sustained hold is DEFERRED, not re-queued: the row keeps its state and its `blockedReason` (the
           reason is the evidence the next pass re-reads) and gains a durable `retryAfter`, so the due-gate
@@ -13293,6 +13360,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             await audit("workflowWorkItem:reconcile-stranded-no-action", {
               ...rowMetadata,
               nextCheckAt: new Date(verdict.retryAfterMs).toISOString(),
+              ...cadenceMetadata,
             }, this.strandedContinuationNoActionAudited);
             /*
             The ladder working and the ladder exhausted look identical from the row alone, so every saturated
@@ -13333,6 +13401,26 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
                 if (announced) this.strandedContinuationDeferralSustained.add(conditionKey);
               }
             }
+            /*
+            FNXC:StrandedContinuationReclaim 2026-11-11-23:41 (RUFU-547):
+            A condition whose durable note is older than the re-arm bound gets ONE more line, and only a
+            line: the row keeps its `blockedReason` and its state, because nothing about the wait changed
+            and re-queueing a hold a named seam may own is the churn RUFU-263 removed. The honest sentence
+            says "still", because this pass re-applied a deferral rather than moving the row.
+            */
+            let reArmAnnounced = false;
+            if (announce.reArm) {
+              reArmAnnounced = await this.store.logEntry(
+                item.taskId,
+                `[recovery] workflow continuation still stranded — ${item.nodeId} is held for the reason already noted on this card (${verdict.reason}); the re-check ladder is at ${Math.round(verdict.deferralWidthMs / 60_000)} min`,
+              ).then(() => true).catch(() => false);
+              if (reArmAnnounced) this.strandedContinuationAnnounced.add(conditionKey);
+            }
+            /* The rung just stamped IS the durable width of this wedge; it survives the next row identity. */
+            await writeReclaimEpisode({
+              announced: reArmAnnounced,
+              deferralWidthMs: verdict.deferralWidthMs,
+            });
             continue;
           }
           /*
@@ -13367,6 +13455,35 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             this.strandedContinuationAnnounced.delete(conditionKey);
             this.strandedContinuationNoActionAudited.delete(conditionKey);
             this.strandedContinuationDeferralSustained.delete(conditionKey);
+            /*
+            FNXC:StrandedContinuationReclaim 2026-11-11-23:42 (RUFU-547):
+            The durable episode ends with the deferral it was describing. RUFU-299's reveal already promises
+            "a fresh episode at rung 0" and "the next episode can announce itself again", and both promises
+            are only true once the durable witness is cleared beside the process-local ones — a surviving
+            ledger would hand the next episode the previous one's silence and its clamped ladder.
+
+            FNXC:StrandedContinuationReclaim 2026-11-12-10:14 (RUFU-547):
+            The clear is duck-typed and bounded for the same reason `writeReclaimEpisode` is. A plain
+            `this.store.updateTaskAtomic(...).catch(...)` guards only a REJECTED promise: a store that does
+            not carry the method throws synchronously at the call, and that throw landed in the per-item
+            catch below — so the reveal silently lost its own `reconcile-stranded-revealed` event row AND its
+            card-history line. Measured by `self-healing-stranded-deferral-horizon.test.ts`, whose fake store
+            has no task-row writer: the row was genuinely revealed, and the operator's only two records of
+            that reveal vanished. Losing the ledger costs the NEXT episode its cadence; losing this pair costs
+            THIS reveal its evidence, which is the worse trade. A degraded clear is logged, never swallowed.
+            */
+            const clearEpisode = (this.store as Partial<TaskStore>).updateTaskAtomic;
+            if (task && typeof clearEpisode === "function") {
+              try {
+                await clearEpisode.call(
+                  this.store,
+                  item.taskId,
+                  () => ({ sourceMetadataPatch: strandedReclaimEpisodeClearPatch() }),
+                );
+              } catch (episodeError) {
+                log.warn(`reconcileStrandedWorkflowContinuations: episode clear failed for ${item.taskId}/${item.nodeId}: ${episodeError instanceof Error ? episodeError.message : String(episodeError)}`);
+              }
+            }
             await audit("workflowWorkItem:reconcile-stranded-revealed", {
               ...rowMetadata,
               deferralAgeMs: verdict.deferralAgeMs,
@@ -13408,6 +13525,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             await audit("workflowWorkItem:reconcile-stranded-no-action", {
               ...rowMetadata,
               nextCheckAt: new Date(verdict.retryAfterMs).toISOString(),
+              ...cadenceMetadata,
             }, this.strandedContinuationNoActionAudited);
             continue;
           }
@@ -13440,21 +13558,37 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             announced stays out of the log, because the RUFU-220 card carried 782 identical `[recovery]`
             lines while the card itself never moved. The marker is set after the log write lands, so a failed
             write re-announces on the next pass instead of silently dropping the operator's only evidence.
+
+            FNXC:StrandedContinuationReclaim 2026-11-11-23:43 (RUFU-547):
+            The gate now consults BOTH bounders. This is the hole RUFU-208 fell into: a `running` row with a
+            dead lease takes its verdict before the classifier ever reads `alreadyAnnounced`, so a
+            process-local memo was the only thing standing between that shape and one identical line per
+            maintenance pass — and the sweep re-queues the row in the same breath, wiping the memo's own
+            premise. The RECLAIM itself stays unsuppressed (the row must become claimable again); only the
+            repeated sentence is bounded.
             */
-            if (verdict.announceRecovery && !this.strandedContinuationAnnounced.has(conditionKey)) {
+            if (verdict.announceRecovery && !announce.suppressed) {
               const announced = await this.store.logEntry(
                 item.taskId,
                 `[recovery] workflow continuation re-queued — ${item.nodeId} was stranded in '${item.state}' (${verdict.reason})`,
               ).then(() => true).catch(() => false);
               // FNXC:StrandedContinuationReclaim 2026-09-22-14:21: marked only when the write landed (FN-8600 convention).
-              if (announced) this.strandedContinuationAnnounced.add(conditionKey);
+              if (announced) {
+                this.strandedContinuationAnnounced.add(conditionKey);
+                /*
+                The durable twin of that marker. It is written only once the line landed, so a failed write
+                re-announces instead of buying silence — the same FN-8600 ordering, one level deeper. A
+                re-queue stamps no deferral, so the wedge's high-water is carried, not advanced.
+                */
+                await writeReclaimEpisode({ announced: true, deferralWidthMs: 0 });
+              }
             }
           }
           await audit(
             verdict.action === "retire"
               ? "workflowWorkItem:reconcile-stranded-retired"
               : "workflowWorkItem:reconcile-stranded-requeued",
-            rowMetadata,
+            { ...rowMetadata, ...cadenceMetadata },
           );
         } catch (error) {
           log.warn(`reconcileStrandedWorkflowContinuations: failed for ${item.id}: ${error instanceof Error ? error.message : String(error)}`);

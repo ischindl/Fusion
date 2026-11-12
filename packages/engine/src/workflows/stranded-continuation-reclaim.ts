@@ -1,4 +1,11 @@
-import { ACTIVE_WORKFLOW_WORK_ITEM_STATES, HUMAN_MERGE_APPROVAL_HOLD_MARKER, type WorkflowWorkItem } from "@fusion/core";
+import {
+  ACTIVE_WORKFLOW_WORK_ITEM_STATES,
+  HUMAN_MERGE_APPROVAL_HOLD_MARKER,
+  STRANDED_CONTINUATION_RECLAIM_METADATA_KEY,
+  type StrandedContinuationReclaimAnnouncement,
+  type StrandedContinuationReclaimEpisode,
+  type WorkflowWorkItem,
+} from "@fusion/core";
 
 /*
 FNXC:StrandedContinuationReclaim 2026-08-11-09:12:
@@ -101,7 +108,7 @@ RUFU-285 adds:
 export type StrandedContinuationVerdict =
   | { action: "requeue"; reason: StrandedContinuationReason; announceRecovery: boolean; retryAfterMs?: number }
   | { action: "retire"; reason: StrandedContinuationReason }
-  | { action: "defer"; reason: StrandedContinuationReason; retryAfterMs: number; sustained?: true; deferralAgeMs?: number }
+  | { action: "defer"; reason: StrandedContinuationReason; retryAfterMs: number; deferralWidthMs: number; sustained?: true; deferralAgeMs?: number }
   /*
   FNXC:StrandedContinuationDeferralHorizon 2026-11-02-12:27 (RUFU-299):
   The reason is the SAME vocabulary the deferral used, so the caller can name which unownable wait it just
@@ -249,6 +256,157 @@ export function strandedHoldConditionKey(
   return `${item.taskId}|${item.nodeId}|${item.state}|${reason ?? "<none>"}`;
 }
 
+/*
+FNXC:StrandedContinuationReclaim 2026-11-11-23:35 (RUFU-547):
+The durable half of the two bounds this sweep always claimed to have.
+
+`strandedHoldConditionKey` is the identity of a CONDITION; the durable episode is keyed on the WEDGE
+(the continuation node the card is stuck on). Both are needed and they are not interchangeable: a wedge
+whose `blockedReason` vocabulary flips (`onSuspend` writes no reason, `holdPlanReviewNoOpContinuation`
+writes `plan-review-close-*`) is ONE wait wearing two condition keys. Keying the memo on the condition
+alone is what let RUFU-208 re-announce; keying the LADDER on the condition alone would let the same flip
+buy a reset to the 30-minute rung. So the announce ledger is per condition and the reached width is per
+wedge, and a new condition key on a known wedge costs exactly one honest line and nothing else.
+
+Everything here is a pure function over the carrier the caller hands in. The write-decider returns the
+episode to store; it never writes, so the sweep keeps single ownership of the compare-and-set and the
+card-history line keeps its mark-after-write ordering.
+*/
+
+/** Writer identity for the episode. An episode that does not carry this prefix is not ours to read. */
+export const STRANDED_RECLAIM_EPISODE_SIGNATURE_PREFIX = "self-healing:stranded-reclaim";
+
+/** Upper bound on the announced-condition ledger. Oldest entries are dropped first (FIFO). */
+export const STRANDED_RECLAIM_ANNOUNCED_CAP = 8;
+
+/**
+ * How long a durable announce suppresses the card line. A wedge that is still stuck a day later is
+ * worth one more honest sentence; a wedge that is stuck for a month is not worth 120 of them. This is
+ * the bound that keeps the durable memo from becoming the silence it replaced.
+ */
+export const STRANDED_RECLAIM_ANNOUNCE_REARM_MS = 24 * 60 * 60_000;
+
+/** Which half of the bound held the card line back. Fixed vocabulary for the `-requeued`/`-no-action` rows. */
+export type StrandedReclaimAnnounceSource = "durable-episode" | "in-process-memo" | "none";
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+/**
+ * Structural read of the durable episode. Anything that is not exactly the shape this module writes
+ * reads as NO EPISODE: the degrade target is today's behavior (announce, start at rung 0), never a
+ * fabricated rung and never a silence. A foreign `signature` is likewise not ours — an episode written
+ * by some other lane under the same key must not be consumed as our own announce history.
+ */
+export function readStrandedReclaimEpisode(
+  sourceMetadata: Record<string, unknown> | null | undefined,
+): StrandedContinuationReclaimEpisode | null {
+  const raw = sourceMetadata?.[STRANDED_CONTINUATION_RECLAIM_METADATA_KEY];
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const candidate = raw as Record<string, unknown>;
+  if (!isNonEmptyString(candidate.signature)
+    || !candidate.signature.startsWith(STRANDED_RECLAIM_EPISODE_SIGNATURE_PREFIX)) return null;
+  if (!isNonEmptyString(candidate.nodeId)) return null;
+  if (typeof candidate.deferralWidthMs !== "number"
+    || !Number.isFinite(candidate.deferralWidthMs)
+    || candidate.deferralWidthMs < 0) return null;
+  if (!Array.isArray(candidate.announcedConditions)) return null;
+  const announcedConditions: StrandedContinuationReclaimAnnouncement[] = [];
+  for (const entry of candidate.announcedConditions) {
+    if (typeof entry !== "object" || entry === null) return null;
+    const record = entry as Record<string, unknown>;
+    if (!isNonEmptyString(record.key) || !isNonEmptyString(record.at)) return null;
+    announcedConditions.push({ key: record.key, at: record.at });
+  }
+  if (!isNonEmptyString(candidate.lastAt)) return null;
+  return {
+    signature: candidate.signature,
+    nodeId: candidate.nodeId,
+    deferralWidthMs: candidate.deferralWidthMs,
+    announcedConditions,
+    lastAt: candidate.lastAt,
+  };
+}
+
+/**
+ * Does this condition already have a witness in the card's history?
+ *
+ * The in-process Set stays as a STRICTLY ADDITIVE second source: it can only ever suppress more than the
+ * durable episode, never less. That ordering matters when the episode write has failed (the degrade path
+ * the sweep takes), and it means a durable entry never resurrects a line the live process already wrote.
+ *
+ * An unparseable announce stamp reads as EXPIRED, not as permanent silence: the failure mode this module
+ * exists to remove is a card that stopped talking for good.
+ */
+export function strandedReclaimAnnounceSuppression(input: {
+  existing: StrandedContinuationReclaimEpisode | null | undefined;
+  nodeId: string;
+  conditionKey: string;
+  inProcessAnnounced: boolean;
+  now: number;
+  reArmMs?: number;
+}): { suppressed: boolean; suppressedBy: StrandedReclaimAnnounceSource; reArm: boolean } {
+  if (input.inProcessAnnounced) {
+    return { suppressed: true, suppressedBy: "in-process-memo", reArm: false };
+  }
+  const sameWedge = input.existing && input.existing.nodeId === input.nodeId ? input.existing : null;
+  const entry = sameWedge?.announcedConditions.find((candidate) => candidate.key === input.conditionKey);
+  if (!entry) return { suppressed: false, suppressedBy: "none", reArm: false };
+  const announcedAt = Date.parse(entry.at);
+  const ageMs = Number.isFinite(announcedAt) ? input.now - announcedAt : Number.POSITIVE_INFINITY;
+  if (ageMs < (input.reArmMs ?? STRANDED_RECLAIM_ANNOUNCE_REARM_MS)) {
+    return { suppressed: true, suppressedBy: "durable-episode", reArm: false };
+  }
+  return { suppressed: false, suppressedBy: "none", reArm: true };
+}
+
+/**
+ * Compose the episode to persist after one sweep pass touched this wedge.
+ *
+ * Monotonic by construction: the width is `max(reached, this pass)` for the same node, so a pass that
+ * stamped no deferral (a re-queue) or a condition-key flip cannot walk the ladder back to rung 0. A
+ * DIFFERENT node is a different wedge and legitimately starts over, which is also what makes a card
+ * that genuinely progresses cost nothing extra.
+ */
+export function strandedReclaimEpisodeWrite(input: {
+  existing: StrandedContinuationReclaimEpisode | null | undefined;
+  nodeId: string;
+  conditionKey: string;
+  announced: boolean;
+  deferralWidthMs: number;
+  now: number;
+}): StrandedContinuationReclaimEpisode {
+  const prior = input.existing && input.existing.nodeId === input.nodeId ? input.existing : null;
+  const priorWidth = prior && Number.isFinite(prior.deferralWidthMs) && prior.deferralWidthMs > 0
+    ? prior.deferralWidthMs
+    : 0;
+  const observed = Number.isFinite(input.deferralWidthMs) && input.deferralWidthMs > 0 ? input.deferralWidthMs : 0;
+  /*
+  A pass that stamps a deferral announces NOTHING, and must therefore carry the ledger UNTOUCHED. Dropping
+  the current key here (the obvious `filter`-then-maybe-append shape) un-announces the condition one pass
+  after it was announced, which returns the exact repeated line this episode exists to bound — the width
+  keeps climbing while the note comes back, so no ladder assertion would ever notice.
+  */
+  const carried = prior ? prior.announcedConditions : [];
+  const announcedConditions = input.announced
+    ? [...carried.filter((entry) => entry.key !== input.conditionKey), { key: input.conditionKey, at: new Date(input.now).toISOString() }]
+      .slice(-STRANDED_RECLAIM_ANNOUNCED_CAP)
+    : carried;
+  return {
+    signature: `${STRANDED_RECLAIM_EPISODE_SIGNATURE_PREFIX}:${input.nodeId}`,
+    nodeId: input.nodeId,
+    deferralWidthMs: Math.max(priorWidth, observed),
+    announcedConditions,
+    lastAt: new Date(input.now).toISOString(),
+  };
+}
+
+/** Key-level clear patch: RUFU-299's reveal ends the episode, so its durable witness ends with it. */
+export function strandedReclaimEpisodeClearPatch(): Record<string, null> {
+  return { [STRANDED_CONTINUATION_RECLAIM_METADATA_KEY]: null };
+}
+
 /** Rung lookup: the first ladder step strictly wider than the deferral already observed on the row. */
 function nextDeferralMs(priorWidthMs: number): number {
   let widest = 0;
@@ -325,6 +483,17 @@ export function evaluateStrandedContinuationReclaim(input: {
   taskOverlapBlockedBy?: string | null;
   alreadyAnnounced?: boolean;
   /**
+  FNXC:StrandedContinuationReclaim 2026-11-11-23:36 (RUFU-547):
+  The widest rung this WEDGE has already reached, read off the card's durable episode by the caller.
+  The row is not a trustworthy carrier for this number: the re-queue write nulls `retryAfter` in the same
+  pass that announces, and the re-holding seam installs a successor row whose `retryAfter` is the DB
+  default, so the row-derived width is NaN on almost every pass and the ladder re-applies rung 0 forever
+  (the measured ~38-minute cadence: one rung plus pass granularity). The effective prior width is the
+  WIDER of the two witnesses, so a stale-but-real durable width can never slow a row that is genuinely
+  asking for more, and a fresh row identity can never reset a wedge that has already waited.
+  */
+  durableDeferralWidthMs?: number;
+  /**
   FNXC:StrandedContinuationReclaim 2026-09-26-03:06 (RUFU-285):
   Caller-resolved proof that `taskOverlapBlockedBy` names a task that still resolves, is not
   soft-deleted, and is not in the terminal column. Optional and compared with `=== true`, so an
@@ -385,7 +554,19 @@ export function evaluateStrandedContinuationReclaim(input: {
   no such width and starts at rung 0.
   */
   const stoppedAt = input.now - input.stalenessMs;
-  const priorWidthMs = input.item.retryAfter ? Date.parse(input.item.retryAfter) - stoppedAt : Number.NaN;
+  const rowWidthMs = input.item.retryAfter ? Date.parse(input.item.retryAfter) - stoppedAt : Number.NaN;
+  /*
+  FNXC:StrandedContinuationReclaim 2026-11-11-23:36 (RUFU-547):
+  Two witnesses for one fact, and the wider one wins. A non-finite row width (no `retryAfter`, or one the
+  re-holding seam never carried over) leaves the durable width in charge; a durable width of 0 or an
+  absent episode leaves the row in charge. `nextDeferralMs` then advances exactly one rung from the
+  effective width and clamps at the tail, so the ladder is monotonic for the life of the wedge instead of
+  for the life of a row object.
+  */
+  const durableWidthMs = Number.isFinite(input.durableDeferralWidthMs) && (input.durableDeferralWidthMs ?? 0) > 0
+    ? input.durableDeferralWidthMs!
+    : 0;
+  const priorWidthMs = Number.isFinite(rowWidthMs) ? Math.max(rowWidthMs, durableWidthMs) : durableWidthMs;
   /*
   FNXC:StrandedContinuationDeferralHorizon 2026-11-02-12:27 (RUFU-299):
   The episode clock, read ONLY off the durable anchor. An unparseable or future stamp yields a non-finite age,
@@ -404,6 +585,8 @@ export function evaluateStrandedContinuationReclaim(input: {
   */
   const rungSaturated = Number.isFinite(priorWidthMs)
     && priorWidthMs >= RECLAIM_DEFERRAL_LADDER_MS[RECLAIM_DEFERRAL_LADDER_MS.length - 1]!;
+  /* One rung lookup per pass: the stamp and the reported width must be the SAME number. */
+  const nextRungMs = nextDeferralMs(priorWidthMs);
   const deferVerdict = (why: "dependency-hold" | "unclaimable-sustained"): StrandedContinuationVerdict => {
     if (horizonReached) {
       /*
@@ -418,7 +601,11 @@ export function evaluateStrandedContinuationReclaim(input: {
     return {
       action: "defer",
       reason: why,
-      retryAfterMs: input.now + nextDeferralMs(priorWidthMs),
+      retryAfterMs: input.now + nextRungMs,
+      /* The rung this pass stamped, reported rather than re-derived: the caller persists it as the new
+        wedge high-water, and a caller that recomputed `retryAfterMs - now` would silently diverge the
+        moment the stamp instant and the measurement instant differ. */
+      deferralWidthMs: nextRungMs,
       ...(rungSaturated ? { sustained: true as const } : {}),
       ...(deferralAgeMs !== undefined ? { deferralAgeMs } : {}),
     };

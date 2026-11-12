@@ -1647,7 +1647,15 @@ reason RUFU-273 states above: the triage writer and the self-healing owner are s
 one key, and engine-core gate tests resolve `@fusion/core` to this file, so a key exported only from
 the full barrel would be unreadable from exactly the lane that must honour the short-circuit.
 */
-export { PLAN_ADMISSION_STALL_METADATA_KEY, DETERMINISTIC_SPEC_REJECTION_METADATA_KEY, WIP_ADMISSION_STALL_METADATA_KEY, BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY } from "./types.js";
+/*
+FNXC:StrandedContinuationReclaim 2026-11-11-23:46 (RUFU-547):
+The stranded-reclaim episode joins this group in BOTH barrels for the reason RUFU-273 states above, with an
+extra sharp edge: the engine writes the key and the CORE operator-reset patch clears it, so a key exported
+only from the full barrel would have the gate lane persist `undefined` as a literal property name while
+`buildManualRetryResetPatch` nulls the real one — an operator Retry that silently never lifts the bound.
+*/
+export { PLAN_ADMISSION_STALL_METADATA_KEY, DETERMINISTIC_SPEC_REJECTION_METADATA_KEY, WIP_ADMISSION_STALL_METADATA_KEY, BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY, STRANDED_CONTINUATION_RECLAIM_METADATA_KEY } from "./types.js";
+export type { StrandedContinuationReclaimAnnouncement, StrandedContinuationReclaimEpisode } from "./types.js";
 export type { TaskPlanAdmissionStallCode, TaskPlanAdmissionStallEpisode } from "./types.js";
 export type { TaskDeterministicSpecRejectionEpisode } from "./types.js";
 export type { TaskWipAdmissionStallCode, TaskWipAdmissionStallEpisode } from "./types.js";
