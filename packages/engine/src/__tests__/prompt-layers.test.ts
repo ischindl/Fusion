@@ -61,13 +61,24 @@ describe("buildPromptLayers", () => {
     const layers = buildPromptLayers({
       basePrompt: "Base.",
       agentInstructions: "Instructions.",
-      memoryInstructions: "Memory.",
-      pluginContributions: "Plugins.",
+      memoryInstructions: "## Project Memory\n\nMemory.",
+      pluginContributions: "## Plugin: x\n\nPlugins.",
     });
 
+    // RUFU-597: compliant (headed) blocks stay byte-for-byte; the Custom Instructions wrapper is
+    // the heading `agentInstructions` gets by shape.
     expect(layers.dynamic).toBe(
-      "Memory.\n\n## Custom Instructions\n\nInstructions.\n\nPlugins."
+      "## Project Memory\n\nMemory.\n\n## Custom Instructions\n\nInstructions.\n\n## Plugin: x\n\nPlugins."
     );
+  });
+
+  it("gives a headingless config block its own section boundary (RUFU-597)", () => {
+    const layers = buildPromptLayers({
+      basePrompt: "Base.",
+      memoryInstructions: "Memory.",
+    });
+
+    expect(layers.dynamic).toBe("## Project Memory\n\nMemory.");
   });
 
   it("omits empty dynamic sections", () => {
@@ -75,10 +86,10 @@ describe("buildPromptLayers", () => {
       basePrompt: "Base.",
       agentInstructions: "",
       memoryInstructions: "",
-      pluginContributions: "Plugins.",
+      pluginContributions: "## Plugin: x\n\nPlugins.",
     });
 
-    expect(layers.dynamic).toBe("Plugins.");
+    expect(layers.dynamic).toBe("## Plugin: x\n\nPlugins.");
     expect(layers.dynamic).not.toContain("Custom Instructions");
   });
 
@@ -171,6 +182,11 @@ describe("buildRequestVolatileContext", () => {
     expect(positions.every((position) => position >= 0)).toBe(true);
     expect([...positions].sort((a, b) => a - b)).toEqual(positions);
     expect(ctx.indexOf("POLICY-A")).toBeLessThan(ctx.indexOf("POLICY-B"));
+    // RUFU-597: headingless fixtures are normalized so every emitted block opens its own section;
+    // the fixed order is the SLOT order, unchanged.
+    expect(ctx).toContain("## Agent Memory\n\nMEMORY");
+    expect(ctx).toContain("## Identity\n\nIDENTITY");
+    expect(ctx).toContain("## Session Policy\n\nPOLICY-A");
   });
 
   it("changes byte-for-byte when runtime state changes and renders identically when it does not", () => {

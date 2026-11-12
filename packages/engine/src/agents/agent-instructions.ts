@@ -372,6 +372,14 @@ function memoryWorkspaceDisplayPath(agentId: string): string {
   return `.fusion/agent-memory/${safeAgentId}/MEMORY.md`;
 }
 
+/**
+ * Renders the DECLARED SOURCE of the `## Agent Memory` section: the agent's inline `memory` field
+ * (operator/agent-editable, clamped to MAX_MEMORY_LENGTH) plus the long-term memory file, per the
+ * inclusion mode. Every mode emits its own heading or returns "" — the section-source invariant
+ * (RUFU-597) means whatever bytes land here are presented verbatim under that heading, so text
+ * that was written INTO these sources (by an identity edit or a consolidation rewrite) renders as
+ * memory with no further cap than the clamp below.
+ */
 async function formatMemorySection(
   memory: string,
   workspaceMemory: string,

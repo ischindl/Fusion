@@ -35,7 +35,7 @@ Every non-`NOOP` outcome spends the session the agent would have spent before th
 the cheapest possible turn can never be the reason real work was skipped.
 */
 
-import { SESSION_CONTEXT_HEADING, appendRequestVolatileContext } from "./execution/prompt-layers.js";
+import { buildRequestVolatileContext } from "./execution/prompt-layers.js";
 
 /** How many candidate ids the compact turn is allowed to name. Beyond this it is no longer compact. */
 export const IDLE_PREFLIGHT_MAX_CANDIDATE_IDS = 40;
@@ -82,11 +82,18 @@ export function clampIdlePreflightCandidateIds(candidateIds: readonly string[]):
  */
 export function buildIdlePreflightRequest(candidateIds: readonly string[]): string {
   const ids = clampIdlePreflightCandidateIds(candidateIds);
-  const volatileContext = [
-    SESSION_CONTEXT_HEADING,
-    `Offered task ids (${ids.length}): ${ids.length > 0 ? ids.join(", ") : "(none)"}`,
-  ].join("\n");
-  return appendRequestVolatileContext("Should I act on any of these this tick?", volatileContext);
+  /*
+  FNXC:PromptSectionSource 2026-11-11-23:34:
+  RUFU-597: the id list used to be hand-assembled under a bare `SESSION_CONTEXT_HEADING`, so it sat
+  headingless inside the session-context section — the same positional fall-in the section-source
+  invariant forbids. It now rides `buildRequestVolatileContext`'s `requestBoardContext` slot, so it
+  opens its own heading like every other block, composed in the one place. `appendRequestVolatileContext`
+  is no longer used here because `buildRequestVolatileContext` already emits the session-context
+  heading; the pre-question sentence is folded into the slot body.
+  */
+  return buildRequestVolatileContext({
+    requestBoardContext: `Should I act on any of these this tick? Offered task ids (${ids.length}): ${ids.length > 0 ? ids.join(", ") : "(none)"}`,
+  });
 }
 
 /**

@@ -664,6 +664,18 @@ function compactMarkdownMemorySection(sectionBody: string): string {
   ].join("\n").trim();
 }
 
+/*
+FNXC:PromptSectionSource 2026-11-11-23:34:
+RUFU-597 section-source invariant. The pattern below declares a named memory section's span as
+running to the next `#`/`##` heading or END-OF-STRING, and the compactor re-emits the captured body
+under the same heading with its keep-bullets filter. That is sound only while every block appended
+after a named section opens with its own heading: a headingless follower would be captured into the
+memory span and RE-LABELLED as memory (its bullets survive the filter while real memory prose is
+stripped). The one composition authority that guarantees this is `buildRequestVolatileContext` in
+`execution/prompt-layers.ts`, which normalizes every slot block to open with its own heading. Do
+not hand-assemble a tail around this regex — route through the tail API so the boundary is
+composed, not assumed.
+*/
 function compactPromptMemory(prompt: string): string | null {
   const sectionPattern = /(^|\n)(## (?:Project Memory|Agent Memory|Memory)\n\n)([\s\S]*?)(?=\n## [^#]|\n# [^#]|$)/g;
   let changed = false;
@@ -915,6 +927,9 @@ function compactLargePromptSections(prompt: string): string | null {
 
 export const __testOnlyPromptCompaction = {
   compactLargePromptSections,
+  // RUFU-597: the memory-span compactor needs direct test coverage of the section-source
+  // invariant (a headingless follower must never be re-emitted under a memory heading).
+  compactPromptMemory,
 };
 
 async function retryWithCompactedPromptMemory(

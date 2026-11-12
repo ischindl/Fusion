@@ -134,6 +134,74 @@ export const SYSTEM_PROMPT_VOLATILE_FIELD_NAMES = [
  */
 export const PROMPT_VOLATILITY_GUARD_ID = "check:prompt-volatility";
 
+/*
+FNXC:PromptSectionSource 2026-11-11-23:34:
+RUFU-597: a named prompt section is composed of exactly one declared source. Every consumer that
+reads flattened prompt text applies the same span rule — the model, and `compactPromptMemory` in
+`pi.ts`, whose lookahead ends a named section only at a `#`/`##` heading or at END-OF-STRING — so
+a block that does not open with its own heading sits POSITIONALLY INSIDE the preceding named
+section. On a context-overflow retry `compactPromptMemory` then captures that span and re-emits it
+under the memory heading, and because its body filter keeps bullet/numbered lines while stripping
+memory prose, foreign bytes are not merely misread there — they are ACTIVELY RELABELLED as memory
+while the real memory prose is trimmed away. Headed-ness was a producer convention nothing
+enforced, and two live producers violated it: the executor's column-agent persona
+(`buildAgentPersona`, headingless soul+instructions as `identitySection`) and the step-session task
+identity line (`workflowStepTaskIdentityLine`) both fell inside the `## Agent Memory` span whenever
+goal context was empty. `buildRequestVolatileContext` and the config-time dynamic slots of
+`buildPromptLayers` are now the single enforcement point: a block that does not open with its own
+`#`/`##` heading gets that slot's declared fallback heading prepended. The guard never deletes,
+reorders, or moves bytes — it only inserts the boundary line, so a compliant prompt is byte-for-byte
+what it was before this module existed.
+*/
+
+/**
+ * A block opens its own named section (and terminates the preceding span) only when its first
+ * non-whitespace line starts a level-1 or level-2 ATX heading followed by a space and a
+ * non-heading character — the exact shape `compactPromptMemory`'s lookahead
+ * `(?=\n## [^#]|\n# [^#]|$)` treats as a boundary. A `###` opener does NOT count: it would not
+ * terminate the preceding span, so such a block is normalized under its slot heading and the
+ * `###` remains a legitimate sub-heading inside it.
+ */
+const SECTION_OPENING_HEADING = /^#{1,2} [^#\s]/;
+
+/**
+ * Declared fallback heading per request-tail slot, used only when a producer hands the slot a
+ * headingless block. Each names the slot's own meaning, so the inserted boundary reads as an
+ * honest section title rather than an artifact of the guard.
+ */
+export const REQUEST_VOLATILE_SECTION_HEADINGS: Record<keyof RequestVolatileInput, string> = {
+  memorySection: "## Agent Memory",
+  goalContext: "## Active Goals",
+  identitySection: "## Identity",
+  policySections: "## Session Policy",
+  performanceFeedback: "## Performance Feedback",
+  taskReviewPolicy: "## Workflow Review Policy",
+  requestBoardContext: "## Request Context",
+  memoryRecall: "## Memory Recall",
+  selfImprovePrompt: "## Self-Improvement",
+};
+
+/**
+ * Section-boundary normalizer: returns the block unchanged when it already opens with its own
+ * `#`/`##` heading (bytes untouched, so byte-stability of compliant producers survives), or the
+ * fallback heading + blank line + block when it does not. Blank blocks are returned untouched —
+ * the joiner already drops them.
+ */
+export function withSectionHeading(block: string, fallbackHeading: string): string {
+  if (!block.trim()) return block;
+  if (SECTION_OPENING_HEADING.test(block.trimStart())) return block;
+  return `${fallbackHeading}\n\n${block}`;
+}
+
+/** Normalize each non-empty piece of one tail slot so every piece opens its own section. */
+function normalizeSectionBlocks(
+  field: keyof RequestVolatileInput,
+  block: string | string[] | undefined,
+): string[] {
+  const pieces = (Array.isArray(block) ? block : [block]).filter((piece): piece is string => Boolean(piece?.trim()));
+  return pieces.map((piece) => withSectionHeading(piece, REQUEST_VOLATILE_SECTION_HEADINGS[field]));
+}
+
 /** Join non-empty prompt sections with a blank line, skipping blanks. */
 function joinSections(sections: Array<string | string[] | undefined>): string {
   const parts: string[] = [];
@@ -170,8 +238,12 @@ function joinSections(sections: Array<string | string[] | undefined>): string {
 export function buildPromptLayers(input: PromptLayerInput): SystemPromptLayers {
   const dynamicParts: string[] = [];
 
+  // FNXC:PromptSectionSource 2026-11-11-23:34 (RUFU-597): every dynamic slot is normalized too,
+  // so a headingless config block cannot fall inside a named section of the role head when
+  // `collapsePromptLayers` joins `stable` and `dynamic`. Today's producers are all headed, so
+  // this changes no current bytes; it forecloses future ones.
   if (input.memoryInstructions?.trim()) {
-    dynamicParts.push(input.memoryInstructions);
+    dynamicParts.push(withSectionHeading(input.memoryInstructions, "## Project Memory"));
   }
 
   if (input.agentInstructions) {
@@ -187,11 +259,11 @@ export function buildPromptLayers(input: PromptLayerInput): SystemPromptLayers {
   }
 
   if (input.pluginContributions?.trim()) {
-    dynamicParts.push(input.pluginContributions);
+    dynamicParts.push(withSectionHeading(input.pluginContributions, "## Plugin Contributions"));
   }
 
   if (input.operatorLanguageDirective?.trim()) {
-    dynamicParts.push(input.operatorLanguageDirective);
+    dynamicParts.push(withSectionHeading(input.operatorLanguageDirective, "## Operator Language"));
   }
 
   return {
@@ -220,19 +292,24 @@ export function collapsePromptLayers(layers: SystemPromptLayers): string {
  * prompt reads them in the same sequence, now at the end of the request. Each block keeps its own
  * `##` heading; only the byte position changed, never the sentences.
  *
+ * Section-source invariant (RUFU-597): every emitted block opens with its own `#`/`##` heading.
+ * A headingless producer block is normalized under its slot's declared fallback heading — never
+ * deleted, reordered, or moved — so a named section's span can never swallow the next block's
+ * bytes, at read time or under `compactPromptMemory`'s end-of-string span extension.
+ *
  * Returns "" when nothing is volatile for this request, so a lane can append unconditionally.
  */
 export function buildRequestVolatileContext(input: RequestVolatileInput): string {
   const sections = joinSections([
-    input.memorySection,
-    input.goalContext,
-    input.identitySection,
-    input.policySections,
-    input.performanceFeedback,
-    input.taskReviewPolicy,
-    input.requestBoardContext,
-    input.memoryRecall,
-    input.selfImprovePrompt,
+    ...normalizeSectionBlocks("memorySection", input.memorySection),
+    ...normalizeSectionBlocks("goalContext", input.goalContext),
+    ...normalizeSectionBlocks("identitySection", input.identitySection),
+    ...normalizeSectionBlocks("policySections", input.policySections),
+    ...normalizeSectionBlocks("performanceFeedback", input.performanceFeedback),
+    ...normalizeSectionBlocks("taskReviewPolicy", input.taskReviewPolicy),
+    ...normalizeSectionBlocks("requestBoardContext", input.requestBoardContext),
+    ...normalizeSectionBlocks("memoryRecall", input.memoryRecall),
+    ...normalizeSectionBlocks("selfImprovePrompt", input.selfImprovePrompt),
   ]);
   if (!sections) return "";
   return `${SESSION_CONTEXT_HEADING}\n\n${sections}`;

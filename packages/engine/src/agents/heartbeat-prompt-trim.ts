@@ -43,6 +43,14 @@ function truncate(value: string, cap: number, marker: string): string {
 }
 
 export function trimTaskDescription(description: string, template: HeartbeatPromptTemplate): string {
+  /*
+  FNXC:PromptSectionSource 2026-11-11-23:34:
+  RUFU-597: the card description is rendered under the headingless `Task description:` label — it
+  is content, not a named section. The HEAD-cap is part of the section-source invariant: whatever
+  survives is only ever the card's own declared description plus a visible truncation marker, and
+  a description's tail can never reach prompt bytes beyond the label region. Never replace this
+  with tail-preserving or middle-preserving truncation.
+  */
   return truncate(description, TASK_DESC_CAP[template], TASK_TRUNCATION_MARKER);
 }
 

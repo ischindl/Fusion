@@ -2116,6 +2116,56 @@ describe("executeHeartbeat", () => {
       expect(executionPrompt).toContain("autonomous heartbeat run");
     });
 
+    it("RUFU-597: a card description tail never renders inside the ## Agent Memory span of the wake prompt", async () => {
+      // The incident shape, replayed through the real wake composition: a long card description
+      // whose TAIL carries a sentinel, plus an agent whose inline memory is the declared source
+      // of ## Agent Memory. The observed bleed showed the card tail at the END of the memory
+      // section; the invariant is that the tail never crosses the section boundary and the
+      // head-cap keeps even the full description out of the prompt.
+      const cardTailSentinel = "msg-d259a92b tail sentinel stripped of diacritics";
+      const filler = "Filler narrative sentence for the card description body. ".repeat(40);
+      const longDescription = `This card investigates a prompt bleed. ${filler}** It also self-retracted asserting (${cardTailSentinel}).`;
+
+      const store = createStoreWithAgentForExec({
+        taskId: "FN-001",
+        memory: "durable note: rufu597-inline-memory sentinel",
+      });
+      const mockSession = createMockAgentSession();
+      mockedCreateFnAgent.mockResolvedValue({ session: mockSession as any });
+      vi.mocked(mockTaskStore.getTask).mockResolvedValue({
+        id: "FN-001",
+        title: "Long card",
+        description: longDescription,
+        prompt: undefined,
+        steps: [],
+        column: "todo",
+        dependencies: [],
+        log: [],
+        attachments: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      } as never);
+
+      const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+      await monitor.executeHeartbeat({ agentId: "agent-001", source: "timer" });
+
+      const promptCalls = mockSession.prompt.mock.calls;
+      expect(promptCalls.length).toBeGreaterThan(0);
+      const executionPrompt = promptCalls[promptCalls.length - 1]![0]!;
+
+      // Mirror of compactPromptMemory's span rule (heading body to the next #/## heading or EOS).
+      const spanMatch = /(?:^|\n)## Agent Memory\n\n([\s\S]*?)(?=\n#{1,2} [^#]|$)/.exec(executionPrompt);
+      const memorySpan = spanMatch?.[1] ?? "";
+
+      // The declared source renders; the card tail does not cross the boundary anywhere.
+      expect(executionPrompt).toContain("## Agent Memory");
+      expect(memorySpan).toContain("rufu597-inline-memory");
+      expect(memorySpan).not.toContain(cardTailSentinel);
+      expect(executionPrompt).not.toContain(cardTailSentinel);
+      expect(executionPrompt).toContain("Task description:");
+      expect(executionPrompt).toContain("truncated");
+    });
+
     it("Wake Delta includes multi-assign coordination inventory for sibling assignments", async () => {
       const now = new Date().toISOString();
       const getTasksByAssignedAgent = vi.fn().mockResolvedValue([
