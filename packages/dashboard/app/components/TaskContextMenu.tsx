@@ -6,6 +6,14 @@ import type { TFunction } from "i18next";
 import type { ColumnId, Task, TaskDetail } from "@fusion/core";
 /* FNXC:TaskFollowUp 2026-09-17-18:10: FN-513's eligibility rule is a PURE core helper reachable through the barrel. */
 import { isFollowUpEligible } from "@fusion/core";
+/*
+FNXC:LifecycleColumnCensus 2026-11-06-14:05 (RUFU-546):
+The terminal-lane question below is answered through the board's resolved `complete` trait, so this
+file imports the ONE canonical role helper instead of spelling `=== "done"` a fourth time. Same
+module `useTasks.ts` and `Column.tsx` read from — the three surfaces that decide whether a card is
+terminal must not hold three definitions of it.
+*/
+import { isCompleteColumnRole } from "../utils/columnRoles";
 
 
 /*
@@ -353,7 +361,24 @@ export function buildTaskActionMenuModel(options: BuildTaskActionMenuModelOption
   if (options.onToggleMergeApproval) {
     const deliveryStarted = task.mergeDetails?.mergeConfirmed === true
       || (typeof task.status === "string" && ["merging", "merging-pr", "merging-fix"].includes(task.status));
-    const isTerminal = currentColumnFlags?.complete === true || (currentColumnFlags === undefined && task.column === "done");
+    /*
+    FNXC:LifecycleColumnCensus 2026-11-06-14:05 (RUFU-546 — census disposition: CONVERTED):
+    Inline copy of the terminal-lane rule removed in favour of `isCompleteColumnRole`, whose
+    degraded `done` arm is the documented no-metadata fallback (first paint before the workflow
+    fetch resolves, or a card stranded on an id its workflow no longer declares — exactly the
+    `currentColumnFlags === undefined` arm this line used to spell out). Truth table unchanged; the
+    flags argument has real suppliers (`TaskCard.tsx`'s resolved column flags, `TaskDetailModal`'s
+    `workflowMoveMetadata.currentColumnFlags`), so the trait answer is the live path.
+
+    FNXC:LifecycleColumnCensus 2026-11-12-15:57: the constraint that chose this shape is the pair of
+    inert-conversion ratchets. `check:inert-flag-seams` fails a conversion that adds a trailing optional
+    lane/flag property no production call site supplies, and `check:inert-sync-lane-conversions` fails a
+    guard fed by `store.resolveTaskWorkflowIrSync`, which always answers the default workflow under
+    PostgreSQL and so behaves exactly as the removed literal did. Neither is run by `pnpm lint`,
+    `pnpm test` or `pnpm verify:fast`. This conversion adds no new property and resolves nothing
+    synchronously, which is what keeps both at zero here.
+    */
+    const isTerminal = isCompleteColumnRole(currentColumnFlags, task.column);
     if (!deliveryStarted && !isTerminal) {
       const locked = task.humanMergeApproval?.enabled === true;
       actions.push({

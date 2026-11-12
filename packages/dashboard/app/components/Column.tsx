@@ -12,6 +12,7 @@ import { QuickEntryBox } from "./QuickEntryBox";
 import { PluginSlot } from "./PluginSlot";
 import { groupByWorktree } from "../utils/worktreeGrouping";
 import {
+  isCompleteColumnRole,
   isWipColumnRole,
 } from "../utils/columnRoles";
 import type { ToastType } from "../hooks/useToast";
@@ -398,9 +399,33 @@ function ColumnComponent({ column, tasks, projectId, maxWorktrees, showWorktreeG
   absent so they retain lifecycle fallback rather than creating a blank shell.
   */
   const resolvedColumnDescription = columnDescription?.trim() ? columnDescription : COLUMN_DESCRIPTIONS[column];
-  /* DELIBERATE-LITERAL: the `column === "done"` is intentional as the degraded fallback when not in
-     workflow mode and the column flags resolver is unavailable — `done` is the built-in Complete id. */
-  const isCompleteColumn = columnFlags?.complete === true || (!workflowMode && column === "done");
+  /*
+  FNXC:WorkflowResolvedColumns 2026-09-07-18:19 (RUFU-195, replayed by RUFU-546 on 2026-11-08):
+  This was the only role question in the file still asked as `trait || literal`. The OR is a split
+  brain, not a fallback: with flags PRESENT and `complete` false, `column === "done"` could still
+  answer complete, so a board that renamed its terminal lane kept showing the done-lane affordance on
+  a legacy-id column that is no longer terminal. `isCompleteColumnRole` answers trait-first and reaches
+  the legacy id only when flags are genuinely absent — the convention recorded above for WIP, which
+  `column-role-degraded-flags.test.ts` pins for the other roles.
+
+  Replay note: `main` independently answered the same question by gating the literal on
+  `!workflowMode` and marking it DELIBERATE-LITERAL. That gate substitutes a BOARD-level boolean for
+  the PER-COLUMN question, which is exactly what the note above at `isWipProcessingColumn` rejects —
+  a workflow-mode board whose terminal column carries no resolved traits answered `false` for every
+  role there. The helper is the convention's answer, so the replayed conversion wins and the literal
+  (with its allowance) is gone rather than re-marked.
+
+  FNXC:LifecycleColumnCensus 2026-11-12-15:57 (RUFU-546): why the conversion has THIS shape. Two
+  ratchets reject a conversion that only looks wired, and neither runs in `pnpm lint`, `pnpm test` or
+  `pnpm verify:fast` -- `check:inert-flag-seams` fails a conversion that adds a trailing OPTIONAL
+  lane/flag parameter which no production call site supplies (a literal `undefined` does not count),
+  and `check:inert-sync-lane-conversions` fails a guard fed by `store.resolveTaskWorkflowIrSync`, which
+  answers the DEFAULT workflow in PostgreSQL and therefore behaves exactly like the literal it replaced.
+  Adding a `columnFlags` parameter here would have tripped the first; this one adds none -- the
+  metadata object `BoardView` already builds for the column is the argument -- and the answer is read
+  from resolved traits, not from a sync resolver, which is why both checks stay at zero on this file.
+  */
+  const isCompleteColumn = isCompleteColumnRole(columnFlags, column);
   const displayedTaskCount = totalTaskCount ?? tasks.length;
   const countFlashing = useFlashOnIncrease(displayedTaskCount);
   const getTaskContextMenuColumns = useCallback((task: Task) => (

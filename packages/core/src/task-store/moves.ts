@@ -1334,7 +1334,25 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
         && approvalHoldEntry.userPaused !== true
         && moveSource === "user"
         && options?.preserveStatus !== true
-        && (moveReviewColumns ? moveReviewColumns.has(fromColumn) : fromColumn === "in-review")
+        /*
+        FNXC:LifecycleColumnCensus 2026-11-06-14:05 (RUFU-546 — census disposition: CONVERTED):
+        Third review-lane membership test in this function, and the only one still spelling the
+        degraded vocabulary inline. `moveReviewColumns` is resolved from the card's own workflow
+        (async selection resolver, so no built-in-board impersonation), and `LEGACY_REVIEW_LANES` is
+        the file's named no-IR fallback — the same pair the enqueue/dequeue pair and the same-column
+        handoff above already read. Truth table identical (`LEGACY_REVIEW_LANES` is `{"in-review"}`);
+        what changes is that the approval-hold clear can no longer disagree with the merge-queue
+        membership test it sits beside.
+
+        FNXC:LifecycleColumnCensus 2026-11-12-15:57: why the value is carried in rather than resolved
+        here. `check:inert-sync-lane-conversions` counts a guard fed by `resolveTaskWorkflowIrSync`,
+        whose selection lookup returns nothing unconditionally in PostgreSQL mode, so it answers with the
+        DEFAULT built-in board and the "conversion" is inert -- the census would score that as a win
+        while the behaviour stayed a literal. Reaching the lanes asynchronously from inside a move would
+        read a selection the move has not re-validated, so the caller-resolved set is the honest shape:
+        real board data in, no sync resolver, and the ledger for this file stays at zero.
+        */
+        && (moveReviewColumns ?? LEGACY_REVIEW_LANES).has(fromColumn)
       ) {
         const wipedDuringMove = approvalHoldEntry.hadStepResults && task.workflowStepResults === undefined;
         const holdReason = approvalHoldEntry.awaitingApprovalReason;

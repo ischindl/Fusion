@@ -350,6 +350,33 @@ run this census. Resolve every rise by converting it to a live workflow-resolved
 declaration-leading `DELIBERATE-LITERAL` marker with its reason, then re-record the baseline with
 `--strict --update-baseline` in the same change.
 
+<!-- FNXC:LifecycleColumnCensus 2026-11-12-15:57 (RUFU-546): the census scores an INERT resolver
+conversion as a win, and the two checks that catch it are in no local command anyone runs routinely.
+Recorded in the run matrix because their absence from it is what makes the false green reachable. -->
+**A conversion also has to be real, and two other ratchets decide that — the census itself cannot.**
+The census counts comparisons against legacy ids, so a "conversion" that removes the id without routing
+real board data through the guard lowers the number while behaving exactly as the literal did. Two
+scripts own the two shapes:
+
+- `pnpm check:inert-flag-seams` (`scripts/check-inert-flag-seams.mjs`) fails a conversion that adds a
+  trailing **optional** lane/flag parameter (or component prop) that no production call site supplies —
+  a literal `undefined` is not a supply. It is a blocking `Lint` step (`"Inert lane/flag seams"`) in
+  `.github/workflows/pr-checks.yml`. Nothing local runs it: not `pretest`, not `pretest:full`, not
+  `test:gate:static`, not `pnpm lint`, not `verify:fast`. Component props are covered separately by
+  `packages/dashboard/app/__tests__/resolved-flags-seams-have-suppliers.test.ts`.
+- `pnpm check:inert-sync-lanes` (`scripts/check-inert-sync-lane-conversions.mjs`, own ledger
+  `scripts/lib/inert-sync-lane-baseline.json`) fails a guard fed by a **synchronous** resolver that
+  always answers the default workflow under PostgreSQL (`store.resolveTaskWorkflowIrSync`). It is a
+  member of `test:gate:static`, so locally it is reached only through `pnpm test:gate`; it is not a
+  standalone `pr-checks.yml` step and not in `pretest` or `verify:fast`. A **rise** must be fixed by
+  changing the conversion shape — resolving asynchronously, or carrying the resolved lanes on the
+  payload — never by re-recording that ledger, which the script itself names as "the same false green
+  one layer up".
+
+Consequence for anyone converting a guard: `pnpm lint`, `pnpm test` and `pnpm verify:fast` exercise
+neither path, so both scripts have to be run explicitly as part of the change. They are separate
+ledgers from the census baseline — a re-record of one is not a re-record of the other.
+
 The regression suite is `packages/engine/src/__tests__/lifecycle-column-census.test.ts`. It pins
 each form the census must catch (all six ids, non-`column` locals, single quotes, negation,
 multiple hits per line) and each it must not (role comparisons, comment prose, trailing line

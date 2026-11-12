@@ -22,7 +22,7 @@ and Systems (No Drift)". The board's own failed refresh previously had NO retry 
 `lastRefreshErrorAt`, which has no production consumer, so the operator's only recovery was a reload.
 */
 import { DEFAULT_RESYNC_RETRY_DELAYS_MS } from "./resyncRetry";
-import { isIntakeColumnRole, isHoldColumnRole, type ColumnRoleFlags } from "../utils/columnRoles";
+import { isCompleteColumnRole, isIntakeColumnRole, isHoldColumnRole, type ColumnRoleFlags } from "../utils/columnRoles";
 import { isForeignTaskEvent, readTaskEventProjectId, stripTaskEventProjectId } from "../utils/taskEventProjectScope";
 
 const loggedTaskCacheHitProjects = new Set<string>();
@@ -1545,10 +1545,30 @@ export function useTasks(options?: UseTasksOptions) {
       tasksRef.current = nextTasks;
       setTasks(nextTasks);
     };
-    /* DELIBERATE-LITERAL: the `column === "done"` below is intentional as the degraded fallback when the
-       workflow column resolver is unavailable — `done` is the built-in Complete column id. */
+    /*
+    FNXC:WorkflowResolvedColumns 2026-09-07-18:19 (RUFU-195, replayed by RUFU-546 on 2026-11-08):
+    Same split brain as Column's `isCompleteColumn`, and the same fix. `|| column === "done"` ran even
+    when the resolver had just answered `complete: false`, so a board that moved its terminal lane off
+    `done` kept folding legacy-id rows into the completed set — which then fed `syncCompletedMembership`
+    and the completed-task counts. The resolver stays authoritative whenever it has flags; the legacy id
+    survives only for the pre-load window where the ref has not resolved a workflow yet.
+
+    Replay note: `main` had instead marked that literal DELIBERATE-LITERAL with the reason "the
+    degraded fallback when the workflow column resolver is unavailable", which does not describe the
+    expression — the arm also runs when the resolver IS available and answered `complete: false`. A
+    marker whose reason misstates the code is worse than the literal it excuses, so the replayed
+    conversion replaces the marker instead of coexisting with it.
+
+    FNXC:LifecycleColumnCensus 2026-11-12-15:57 (RUFU-546): the non-inert condition, stated where the
+    conversion lives. `check:inert-flag-seams` rejects a conversion that introduces a trailing optional
+    lane/flag argument no production caller fills in, and `check:inert-sync-lane-conversions` rejects a
+    guard fed by `store.resolveTaskWorkflowIrSync`, which answers with the default workflow in
+    PostgreSQL. Neither runs in `pnpm lint`, `pnpm test` or `pnpm verify:fast`, so the census alone
+    would have scored both shapes as progress. This site passes both for the same reason: no new
+    parameter, and the flags come from the resolver this hook already calls per task.
+    */
     const isCompletedTask = (task: Task, column: ColumnId = task.column): boolean => (
-      resolveColumnFlagsRef.current?.({ ...task, column })?.complete === true || column === "done"
+      isCompleteColumnRole(resolveColumnFlagsRef.current?.({ ...task, column }), column)
     );
     const syncCompletedMembership = (
       task: Task,

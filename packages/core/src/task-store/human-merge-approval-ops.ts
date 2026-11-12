@@ -78,6 +78,28 @@ export interface HumanMergeTakenEvidence {
   mergeLeaseHeld?: boolean;
 }
 
+/*
+FNXC:WorkflowLifecycleColumns 2026-11-06-14:05 (RUFU-546 — census disposition for the terminal pair
+below: DELIBERATE-LITERAL)
+The take test is trait-first with the legacy `done` id as the DEGRADED ANSWER: `terminalColumns` is the
+resolver's answer, `=== "done"` is what answers when no board vocabulary reached the call.
+
+Why no resolver reaches it here: the take test runs inside `withHumanMergeApprovalTransaction`'s SYNC
+compute callback, which RUFU-451 forbids from awaiting anything — and a card's terminal lane is only
+knowable through its workflow selection, an async store read. Awaiting it before the fence would answer
+about a task the fence never re-read. So the caller resolves it (`HumanMergeTakenEvidence` documents
+`terminalColumns` as caller-resolved) and this floor answers for the callers that do not.
+
+Deleting the id would not make the guard board-aware; it would make the degraded answer "this card has
+NOT landed", arming a delivery lock on a card that already finished on any board whose vocabulary did
+not reach the call — the unsafe direction, and the same no-metadata fallback shape
+`isCompleteColumnRole`'s degraded arm takes for the same reason.
+
+Recorded, not hidden: no production caller supplies `terminalColumns` today (neither merge-approval route
+resolves it), so on a board whose terminal lane is not named `done` this floor IS the live answer.
+Having the routes resolve it changes what a delivery refusal refuses, which is a behavior change this
+census card does not make.
+*/
 export function describeHumanMergeTaken(
   task: Task,
   evidence: HumanMergeTakenEvidence = {},
@@ -92,6 +114,8 @@ export function describeHumanMergeTaken(
   const worktrees = task.workspaceWorktrees ?? {};
   const landed = Object.values(worktrees).filter((entry) => (entry as { landedAt?: string })?.landedAt);
   if (landed.length > 0 && landed.length < Object.keys(worktrees).length) return "merge-taken";
+  /* Terminal-lane pair: trait answer when the caller resolved it, the legacy `done` id when it did not.
+  Disposition and reason: the FNXC:WorkflowLifecycleColumns note on this function's declaration. */
   if (evidence.terminalColumns?.has(task.column)) return "terminal";
   if (evidence.terminalColumns === undefined && task.column === "done") return "terminal";
   return undefined;

@@ -1688,6 +1688,27 @@ export async function runHoldReleaseSweep(
     inFlightSweepProjects.delete(projectKey);
   }
 }
+/*
+FNXC:LifecycleColumnCensus 2026-11-06-14:05 (RUFU-546 — census dispositions; both remaining
+literals here are floors no board vocabulary can supply, not missed conversions):
+
+DELIBERATE-LITERAL (`sourceColumn === "todo" || sourceColumn === "triage"`, the `!source` arm): reached
+only when `findColumn(ir, sourceColumn)` finds NO column declaration — a legacy v1 IR, or a card
+stranded on an id its workflow no longer declares (RUFU-174). Nothing is resolvable in that state, so
+the legacy pre-implementation ids are the whole vocabulary; the pair mirrors the degraded set of the
+dashboard-side `isPreImplementationColumnRole`, which asks this same question on the other side of the
+wire.
+
+DELIBERATE-LITERAL (`|| sourceColumn === "todo"` on the resolved-flags return): the WIP-ADMISSION
+floor. A board that traited its implementation lane (`countsTowardWip`) while leaving `todo` with no
+lifecycle traits resolves to an all-false flag set here, so the trait-only answer is "not a first
+admission" — and BOTH callers then take the plain `moveTask` branch (cli `task.ts` move,
+dashboard `register-task-workflow-routes` move route), skipping the worktree allocation, the
+lease / running-session / WIP-cap checks and the Plan-Premise Release Gate that only `admitTaskToWip`
+performs. The literal therefore answers "this crossing still needs admitting" for a board that never
+declared the lane's role; deleting it would silently widen the un-admitted path instead of consulting
+the board. Where the board DOES declare a role, the trait read above is the authority.
+*/
 export function isFirstPlanningToWipAdmission(ir: WorkflowIr, sourceColumn: string, targetColumn: string): boolean {
   const source = findColumn(ir, sourceColumn);
   const target = findColumn(ir, targetColumn);

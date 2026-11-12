@@ -219,6 +219,24 @@ export function resolveTaskCommentRecipient(input: TaskCommentRecipientInput): T
   if (workflowBound) return { agentId: workflowBound, via: "workflow-binding", skippedRungs, poolSize: 0 };
 
   const preferred = taskCommentLaneRole(lane);
+  /*
+  FNXC:CommentDelivery 2026-11-06-14:05 (RUFU-546 — census disposition: DELIBERATE-LITERAL, and the
+  census counted this line in error)
+  `preferred` holds an AGENT ROLE — `taskCommentLaneRole(lane)` returns the `triage` or `executor`
+  AgentRole whose single-member pool should receive the body — never a task column. The `=== "triage"`
+  below picks the second rung of the role ladder (lane's own role first, the other role second) and no
+  column vocabulary is in scope at this point in the function: the rungs above it already consumed the
+  only two places a column appears (`columnBinding` / `workflowBinding`), and both return agent ids.
+  Converting this to a trait read would ask the column registry what lane an agent role sits in.
+
+  Why it was counted anyway, recorded for the instrument owner: the AST heuristic classifies a
+  `triage`/`done`/`in-review` equality as a lifecycle-column guard when the receiver is neither a
+  role-named token nor fed by a `*Column*`/`*Lane*`-named function. The receiver here is the local
+  alias `preferred`, and `taskCommentLaneRole` ends in `Role`, which is not in the heuristic's
+  LANE-shaped suffix list — so a role comparison inherited the column verdict. Renaming the local to
+  `laneRole` or widening the suffix list would reclassify it as the role guard it is; neither is this
+  card's call, so the marker stands and the miscount is reported.
+  */
   const order: readonly ("triage" | "executor")[] = [preferred, preferred === "triage" ? "executor" : "triage"];
   let terminal: { reason: TaskCommentUnroutedReason; poolSize: number } | undefined;
   for (const role of order) {
