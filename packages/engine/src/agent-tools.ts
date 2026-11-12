@@ -4269,7 +4269,7 @@ export function createTaskRetryTool(store: TaskStore, options: TaskRetryToolOpti
     name: "fn_task_retry",
     label: "Retry Task",
     description:
-      "Retry a failed task. Clears failure state and re-queues the task for execution. Also reaches a card stranded by a dead workflow gate — a required Plan/Code Review row that failed with no verdict while the card sits in a pre-execution lane with an approved plan — and discharges that gate in place, without moving the card or discarding its plan, steps or worktree.",
+      "Retry a failed task. Clears failure state and re-queues the task for execution. Also reaches a card stranded by a dead workflow gate — a required Plan/Code Review row that failed with no verdict while the card sits in a pre-execution lane with an approved plan — and discharges that gate in place, without moving the card or discarding its plan, steps or worktree. It further reaches a card whose PLANNING run itself exhausted (a spec timeout parked as `queued` or `needs-replan` in its own planning lane, which no status gate used to accept) and re-arms it to needs-replan in place, leaving the card's lane, specification, steps and worktree untouched.",
     parameters: taskRetryParams,
     execute: async (_id: string, params: Static<typeof taskRetryParams>) => {
       try {
@@ -4387,6 +4387,37 @@ export function createTaskRetryTool(store: TaskStore, options: TaskRetryToolOpti
               text: `Retried ${params.id} in ${task.column}: the verdict-less ${gateStepIds.join(", ")} gate row(s) were discharged, so the gate re-runs against the approved plan. The card did not move and its steps, plan and worktree are intact.`,
             }],
             details: { taskId: params.id, column: task.column, strandedGateRetried: true, gateStepIds },
+          };
+        }
+        /*
+        FNXC:PlanningStrandedRetry 2026-11-10-15:40 (RUFU-575, chat-tool surface of four):
+        Core's single classification, the same call the CLI command, the extension tool and the board route
+        make. Placed BEFORE the status gate rather than inside its refusal arm, and that placement is the
+        parity: a legacy `PLANNING_FAILED_EXHAUSTED:` park IS `failed`, so a check nested in the refusal arm
+        would let the `failed`/`stuck-killed` half of this population fall through to the generic path
+        below - which clears the status to `null` and MOVES the card - while the CLI command re-armed the
+        identical row to `needs-replan` without moving it. One card, one answer, on all four surfaces.
+
+        The shape SANE-282 was found in (`queued`, or SANE-524's `needs-replan`) never reached a hatch at
+        all: the status gate refused both with "is not in a retryable state" while the spec run's terminal
+        error sat on the row.
+        */
+        const planningStrandedRetry = fusionCore.classifyPlanningStrandedRetry({ task, ir: retryIr });
+        if (planningStrandedRetry.kind === "planning-stranded") {
+          await store.updateTask(params.id, {
+            ...fusionCore.buildManualRetryResetPatch({ resetMergeRetries: true }),
+            ...fusionCore.buildPlanningStrandedRetryPatch(task),
+          });
+          await store.logEntry(
+            params.id,
+            `Retry requested via chat tool (planning run exhausted in ${task.column}; re-armed to needs-replan - the card did not move and its specification, steps, worktree and branch are untouched)`,
+          );
+          return {
+            content: [{
+              type: "text" as const,
+              text: `Retried ${params.id} in ${task.column}: the exhausted planning run was re-armed to needs-replan, so the planner runs the specification again. The card did not move and its specification, steps, worktree and branch are intact.`,
+            }],
+            details: { taskId: params.id, column: task.column, planningStrandedRetried: true },
           };
         }
         if (task.status !== "failed" && task.status !== "stuck-killed") {

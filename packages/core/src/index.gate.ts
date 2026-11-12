@@ -1293,6 +1293,22 @@ export {
   buildStrandedGateRetryPatch,
 } from "./tasks/stranded-gate-retry.js";
 export type { StrandedGateRetryClassification } from "./tasks/stranded-gate-retry.js";
+/*
+FNXC:PlanningStrandedRetry 2026-11-10 (RUFU-575): MIRRORED here, not excluded. The gate lane reaches
+planning-lane retry vocabulary transitively (hold-release, triage, notification), and the engine-core
+gate files import @fusion/core through that closure — excluding a module the gate can reach transitively
+is exactly the failure mode this file's maintenance note warns about.
+*/
+export {
+  PLANNING_EXHAUSTION_ERROR_MARKERS,
+  PLANNING_SPEC_TIMEOUT_ERROR_MARKERS,
+  PLANNING_AUTHORING_EXHAUSTION_ERROR_MARKERS,
+  taskCarriesPlanningExhaustionEvidence,
+  taskCarriesPlanningSpecTimeoutEvidence,
+  classifyPlanningStrandedRetry,
+  buildPlanningStrandedRetryPatch,
+} from "./tasks/planning-stranded-retry.js";
+export type { PlanningStrandedRetryClassification } from "./tasks/planning-stranded-retry.js";
 export {
   EXTERNAL_BLOCK_STATUS,
   EXTERNAL_BLOCK_PAUSE_REASON,

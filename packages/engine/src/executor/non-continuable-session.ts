@@ -119,7 +119,8 @@ export async function handleNonContinuableSessionRetry(
     status: null,
     error: null,
     recoveryRetryCount: null,
-    recoveryDisposition: "escalated-reseed",
+    /* FNXC:ReseedLaneDiscriminator 2026-11-12-14:54 (RUFU-575): execution-lane reseed -> the execution value, so the planning-stranded Retry class cannot read this card as a dead spec run. */
+    recoveryDisposition: "escalated-execution-reseed",
     nextRecoveryAt: null,
     sessionFile: null,
   });

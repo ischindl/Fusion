@@ -3032,7 +3032,7 @@ export default function kbExtension(pi: ExtensionAPI) {
     name: "fn_task_retry",
     label: "fn: Retry Task",
     description:
-      "Retry a failed task — clears the error state. Non-review failures move to todo; in-review execution failures move to todo preserving progress; in-review merge failures stay in-place for auto-merge retry. Also reaches a card stranded by a dead workflow gate (a required Plan/Code Review row that failed with no verdict while the card sits in a pre-execution lane with an approved plan) and discharges that gate in place — no move, no discarded plan.",
+      "Retry a failed task — clears the error state. Non-review failures move to todo; in-review execution failures move to todo preserving progress; in-review merge failures stay in-place for auto-merge retry. Also reaches a card stranded by a dead workflow gate (a required Plan/Code Review row that failed with no verdict while the card sits in a pre-execution lane with an approved plan) and discharges that gate in place — no move, no discarded plan. It further reaches a card whose PLANNING run itself exhausted (a spec timeout parked as `queued` or `needs-replan` in its own planning lane, which no status gate used to accept) and re-arms it to needs-replan in place, leaving the card's lane, specification, steps and worktree untouched.",
     promptSnippet: "Retry a failed Fusion task (clears error, moves to todo or stays in in-review)",
     promptGuidelines: [
       "Use when a task has failed and needs to be retried",
@@ -3149,9 +3149,19 @@ export default function kbExtension(pi: ExtensionAPI) {
       */
       const strandedGateRetry = fusionCore.classifyStrandedGateRetry({ task, ir: retryIr });
       const strandedGateStepIds = strandedGateRetry.kind === "stranded-gate" ? strandedGateRetry.gateStepIds : [];
+      /*
+      FNXC:PlanningStrandedRetry 2026-11-10-15:40 (RUFU-575, extension-tool surface of four):
+      Same core classification, same call as the CLI command, the chat tool, and the board route. This is
+      the ONLY retry an agent can reach, so an un-retryable planning-stranded card was un-retryable by
+      anybody: SANE-282 sat `queued` with `Specification failed after 3 transient errors: Request timed
+      out.` and this gate answered "is not in a retryable state (status: queued)". The parity contract of
+      the stranded-gate note above now extends to this shape - one card, one answer, on all four surfaces.
+      */
+      const planningStrandedRetry = fusionCore.classifyPlanningStrandedRetry({ task, ir: retryIr });
+      const planningStrandedAdmitted = planningStrandedRetry.kind === "planning-stranded";
 
       // Validate task is in a retryable state
-      if (task.status !== 'failed' && task.status !== 'stuck-killed' && !isInReviewRetry && !isMissingWorktreeSessionRetry && strandedGateStepIds.length === 0) {
+      if (task.status !== 'failed' && task.status !== 'stuck-killed' && !isInReviewRetry && !isMissingWorktreeSessionRetry && strandedGateStepIds.length === 0 && !planningStrandedAdmitted) {
         return {
           content: [{ type: "text", text: `Task ${params.id} is not in a retryable state (status: ${task.status || 'none'})` }],
           isError: true,
@@ -3198,6 +3208,32 @@ export default function kbExtension(pi: ExtensionAPI) {
             text: `Retried ${params.id} in ${task.column}: the verdict-less ${strandedGateStepIds.join(", ")} gate row(s) were discharged, so the gate re-runs against the approved plan. The card did not move and its steps, plan and worktree are intact.`,
           }],
           details: { taskId: params.id, column: task.column, strandedGateRetried: true, gateStepIds: strandedGateStepIds },
+        };
+      }
+
+      /*
+      FNXC:PlanningStrandedRetry 2026-11-10-15:40 (RUFU-575, extension-tool surface of four):
+      The non-destructive planning re-arm, byte-for-byte the same decision the CLI command, the chat tool
+      and the board route make: `needs-replan`, stale error and planning recovery bookkeeping cleared, and
+      NOTHING else touched. No `moveTask` (the card already stands in the lane the planner works in) and no
+      write to `PROMPT.md` - a timed-out planning run's normal residue is a missing or seed-only spec, and
+      the next planner pass decides what that file becomes.
+      */
+      if (planningStrandedAdmitted) {
+        await applyRetryReset({
+          ...buildManualRetryResetPatch({ resetMergeRetries: true }),
+          ...fusionCore.buildPlanningStrandedRetryPatch(task),
+        });
+        await store.logEntry(
+          params.id,
+          `Retry requested via Fusion extension (planning run exhausted in ${task.column}; re-armed to needs-replan - the card did not move and its specification, steps, worktree and branch are untouched)`,
+        );
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Retried ${params.id} in ${task.column}: the exhausted planning run was re-armed to needs-replan, so the planner runs the specification again. The card did not move and its specification, steps, worktree and branch are intact.`,
+          }],
+          details: { taskId: params.id, column: task.column, planningStrandedRetried: true },
         };
       }
 

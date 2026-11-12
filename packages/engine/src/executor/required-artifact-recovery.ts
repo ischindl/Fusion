@@ -86,7 +86,8 @@ export async function recoverMissingRequiredArtifacts(
       status: null,
       error: null,
       recoveryRetryCount: null,
-      recoveryDisposition: "escalated-reseed",
+      /* FNXC:ReseedLaneDiscriminator 2026-11-12-14:54 (RUFU-575): execution-lane reseed -> the execution value; this card keeps its graph role, so it is not a stranded planning run. */
+      recoveryDisposition: "escalated-execution-reseed",
       nextRecoveryAt: null,
       graphResumeRetryCount: 0,
     }, context);

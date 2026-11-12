@@ -6,6 +6,7 @@ import {
   // FNXC:TriageStuckKill 2026-11-11-01:35 (RUFU-562): the descriptor key, the park writer, and the Retry allow-list
   // that releases the park all read this one symbol, so the operator notice cannot drift from the remedy.
   STUCK_LOOP_EXHAUSTED_PAUSE_REASON,
+  taskCarriesPlanningSpecTimeoutEvidence,
   type TaskExternalBlockReport,
   type TaskStallReasonCode,
   type TerminalFailureAutoRecoveryDecision,
@@ -152,10 +153,85 @@ Resume paths deliberately retain pause markers for await-input and CLI-approval
 protocols. A stale marker without real pause state, or any actively progressing
 lifecycle state, is not an operator-actionable terminal wedge.
 */
+/*
+FNXC:PlanningStrandedRetry 2026-11-10-23:06 (RUFU-575):
+`queued` was treated as progressing for EVERY card, and that one word silenced this population
+completely: `describeTaskWedge` returns null the moment this predicate says "progressing", so a card
+whose planning run had already died was reported as healthy. SANE-282 sat `queued` carrying
+`Specification failed after 3 transient errors: Request timed out.` - a terminal error from an exhausted
+spec run that no producer writes any more - and no surface ever named it.
+
+The narrowing is deliberately one condition on one status, not a reclassification of `queued`. `queued`
+IS progressing for the cards the scheduler's capacity/overlap stamp and the FN-7926 completed-blocked
+park put it on; it is a dead end only when the row ALSO carries the exhausted run's own evidence, which
+nothing else writes. All four consumers of this predicate agree on the same rows:
+- `describeTaskWedge` (the entry gate): now reaches its planning-exhaustion arm for these rows.
+- `describeTaskWedgeFromStallReason`: unaffected - it bails on any non-empty status first, so the stall
+  ladder cannot double-announce what the new arm describes. Its docstring still says `queued` is
+  "owned by scheduler transients", which stays true for every `queued` row without this evidence.
+- `classifyTerminalFailureAutoRecoveryForTask`: safe, and load-bearing - it returns
+  `not-generic-terminal-failure` BEFORE it ever reads `isProgressing`, which holds only because this
+  population gets its own reason key below. Give these cards the generic `terminal-failed` key and
+  automatic recovery claims a card it cannot advance, which is RUFU-288's withheld-alert defect again.
+- the two `NotificationService` `isTaskProgressing` calls (`suppliedDescriptorIsHeldOrProgressing`, and
+  the same leg in the pending revalidation): those fire only for a `source: "supplied"` descriptor, and
+  this class arms from `task:updated` with `source: "auto"`, so they are not the veto that was dropping
+  the alert. The veto that was is the pending revalidation's own `hasProgressed` - see the note there.
+
+FNXC:ReseedLaneDiscriminator 2026-11-12-15:15 (RUFU-575 code review P0):
+"which nothing else writes" was FALSE as first shipped, and the false clause was the defect. The
+planning lane's `recoveryDisposition: "escalated-reseed"` was shared by the executor's exhausted-retry
+reseeds, which clear `status`, hand the card to its rebound lane (on a trait-declared board that lane is
+often the planning column), and then get the scheduler's `status: "queued"` stamp over the waiting row -
+so a fully-specified card merely waiting for a slot read as an exhausted spec run here and alerted as
+one. The evidence predicate now keys on the lane that authored the diagnostic
+(`escalated-execution-reseed` is the execution lane's own value), so this line is true again for a
+reason the row itself proves rather than an assumption about what its producer paired it with.
+*/
 export function isTaskProgressing(task: Task): boolean {
+  if ((task.status ?? "") === "queued" && taskCarriesPlanningSpecTimeoutEvidence(task)) return false;
   return task.paused !== true
     && task.status !== "paused"
     && ["queued", "planning", "in-progress", "reviewing", "merging", "merging-pr", "merging-fix", "merged", "done"].includes(task.status ?? "");
+}
+
+/*
+FNXC:PlanningStrandedRetry 2026-11-10-23:06 (RUFU-575):
+The row shape this lane describes and the delivery path must revalidate, in ONE predicate shared by
+both. It is deliberately NOT `classifyPlanningStrandedRetry` from core: that classification is the
+RETRY question and takes the workflow IR to prove the lane is a planning lane, while the wedge layer
+has only the row in hand and must not start reading workflow definitions per notification. What keeps
+the two honest is that everything the IR would have proven is already implied here -
+`taskCarriesPlanningSpecTimeoutEvidence` is written only by planning-lane exits (the transient-spec
+exhaustion sentence, and the FN-9512 escalated-reseed dispositions in `triage.ts`/`scheduler.ts`/
+`self-healing.ts`, every one of which nulls `nextRecoveryAt`).
+
+FNXC:ReseedLaneDiscriminator 2026-11-12-15:15 (RUFU-575 code review P0):
+The sentence this note used to carry was "the executor's own escalated-reseed writers all pair it with
+`status: null`, which the status list below refuses", and that is exactly the claim the code review
+falsified: `status: null` is the shape for one instant, until the scheduler stamps the waiting status on
+the rebound row, and the diagnostic outlives the pairing because the executor clears it only when it
+claims the card. A status list therefore cannot refuse an execution reseed, and it was not refusing
+them - a capacity-queued card with an intact spec was alerting here. The discriminator is the VALUE, not
+the status: the execution lane writes `escalated-execution-reseed` and the planning lane keeps
+`escalated-reseed` (see the field note in `types/task/task-core.ts` and the call-site allowlist in
+`packages/engine/src/__tests__/execution-reseed-not-planning-stranded.test.ts`), so no WIP-lane reseed can
+be described as a planning wedge without this layer reading a workflow definition, and no spec body is
+consulted by either side.
+
+The `failed` status is in this list, which is the opposite of the authoring-park lane's rule and both
+choices are deliberate: `PLANNING_FAILED_EXHAUSTED:` rows are generic terminal failures whose automatic
+recovery really runs (two engine tests pin that), while the transient-spec sentence's producer was
+deleted by FN-9512, so a `failed` row still carrying it has no claimant at all and the operator's only
+verb is the same Retry. One reason key across `queued`/`needs-replan`/`failed` is what keeps one episode
+identity as the row drifts between them.
+*/
+/** Whether this row is the planning-exhaustion wedge class: operator Retry is its only remaining path. */
+export function isPlanningStrandedWedgeRow(task: Task): boolean {
+  if (task.paused === true || task.userPaused === true || task.status === "paused") return false;
+  const status = task.status ?? "";
+  if (status !== "queued" && status !== "needs-replan" && status !== "failed" && status !== "stuck-killed") return false;
+  return taskCarriesPlanningSpecTimeoutEvidence(task);
 }
 
 /*
@@ -254,6 +330,51 @@ export function describeTaskWedge(task: Task): TaskWedgeDescriptor | null {
     "in-review-stall-deadlock": { reasonKey: "in-review-stall-deadlock", reason: "Review stalled in a deadlock that needs operator intervention.", action: "Inspect review ownership and retry or reset to todo." },
   };
   if (hasPauseProof && task.pausedReason && pausedDescriptors[task.pausedReason]) return pausedDescriptors[task.pausedReason];
+  /*
+  FNXC:PlanningStrandedRetry 2026-11-10-23:06 (RUFU-575):
+  The planning-exhaustion arm, and its placement ABOVE the `status !== "failed"` bail is the whole
+  reason this card exists. The RUFU-288 fence arm below the bail is the shape this one copies and must
+  not copy exactly: because it sits under the bail it can only ever serve a `failed` row, so the
+  SANE-282 population - `queued` and `needs-replan`, the statuses a stranded planning card is actually
+  left in - could never reach it and produced no descriptor at all. A named arm placed where the
+  incident statuses cannot stand is a dead affordance.
+
+  Why a distinct key rather than `terminal-failed` (the same two costs RUFU-288 and RUFU-485 measured):
+  the operator reading the generic copy is told "inspect the task error" for a condition whose whole
+  remedy is one Retry press; and `classifyTerminalFailureAutoRecoveryForTask` derives
+  `isGenericTerminalFailure` from exactly this reason key, so the generic key would have automatic
+  recovery claim a card it has no planning path for and `shouldWithholdWedgeAlertForAutoRecovery` would
+  mute the alert for a recovery that never arrives.
+
+  The two guards are ownership, not decoration. `fencePark` and the deterministic-spec sentinel are
+  BELOW this arm and own their own populations byte-for-byte today (RUFU-288's fence copy names the
+  unavailable infrastructure; RUFU-485's names the sentence to delete from the spec, and its owner sweep
+  re-admits automatically). An authoring park can ALSO carry the transient sentence inside its
+  `last error:` clause or the FN-9512 disposition, so without these guards this arm would have run first
+  and stolen both live contracts - which the two must-stay-green wedge tests prove would be a regression,
+  not a refactor.
+
+  Why the FN-9512 `escalated-reseed` disposition is alert-worthy even though its producer is healthy:
+  every executor writer pairs it with `status: null` (a card handed back to its graph role, not stranded),
+  so the status list in `isPlanningStrandedWedgeRow` refuses those; the planning-lane writers pair it with
+  `needs-replan` and a nulled `nextRecoveryAt`, which leaves triage's next admission pass as the ONLY
+  claimant. Whether that pass is coming is exactly what the settle window measures: a re-admitted card
+  moves to `planning`, which is progressing again, and the pending episode is cleared before it delivers.
+  A card still in its stranded status after the window has no claimant, and no badge covers it either -
+  `derivePlanningAdmissionStall` returns undefined for any non-empty status.
+
+  The recovery-owner veto is preserved exactly as those arms have it: a card whose scheduled retry still
+  owns the next attempt stays silent, and an exhausted park nulls both counters precisely so this alert
+  CAN fire.
+  */
+  if (!fencePark && !isDeterministicSpecValidationParkError(error) && isPlanningStrandedWedgeRow(task)) {
+    if (describeTaskRecoveryOwner(task)) return null;
+    return {
+      reasonKey: "planning-spec-exhausted",
+      reason: "The planning run exhausted before it wrote a usable specification, and nothing has re-dispatched the planner since.",
+      action: "Retry the card - the Retry button, `fn task retry <ID>`, or the Retry tool - to ask the planner for one more pass. The card keeps its lane, its steps, and any specification it already has.",
+    };
+  }
   if (task.status !== "failed") return null;
   if (error.startsWith("EXECUTION_DISPATCH_LOOP_EXHAUSTED")) {
     return { reasonKey: "execution-dispatch-loop-exhausted", reason: "Execution re-queued without progress until its retry budget was exhausted.", action: "Retry, decompose, or rescope the task." };

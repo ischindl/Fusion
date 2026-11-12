@@ -65,6 +65,8 @@ import {
   buildManualRetryResetPatch,
   buildManualRetryResetPatchIfCurrent,
   buildStrandedGateRetryPatch,
+  buildPlanningStrandedRetryPatch,
+  classifyPlanningStrandedRetry,
   classifyStrandedGateRetry,
   reconcileDeterministicDuplicate,
   extractIntentSignature,
@@ -3988,6 +3990,24 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       */
       const strandedGateRetry = classifyStrandedGateRetry({ task, ir: workflowIr });
       const strandedGateStepIds = strandedGateRetry.kind === "stranded-gate" ? strandedGateRetry.gateStepIds : [];
+      /*
+      FNXC:PlanningStrandedRetry 2026-11-10-23:05 (RUFU-575, board surface of four):
+      THIS route was the worst of the four surfaces for the cards this task was filed from. A card whose
+      planning run exhausted sits in its planning lane, so `retrySpecification` below is TRUE for its
+      `needs-replan` half (SANE-524) and the locked restart planner's answer is DESTRUCTIVE: it stamps
+      `needs-replan`, empties `steps`, and DELETES `.fusion/tasks/<id>/PROMPT.md` - it destroys the
+      specification to arrange a re-plan of a spec that a timed-out provider call, not a bad spec, failed
+      to produce. The `queued` half (SANE-282) never reached that branch and answered 400 instead:
+      "the task is not in a legacy retryable state (current status: queued)".
+
+      Core's single classification answers both here, against the SAME workflow resolution this route
+      already performs, so the board, the CLI, the chat tool and the engine tool cannot disagree about
+      what Retry means for one card. It is consulted HERE, before the stage-restart call below, not only
+      at the retryability gate: skipping a gate while still entering `restartTaskStage` would leave the
+      destructive delete in place and merely rename the refusal that follows it.
+      */
+      const planningStrandedRetry = classifyPlanningStrandedRetry({ task, ir: workflowIr });
+      const planningStrandedAdmitted = planningStrandedRetry.kind === "planning-stranded";
       const retrySpecification = retrySpecificationStatus && workflowPlansInColumn(workflowIr, task.column);
       /*
       Narrowing the DESTRUCTIVE branch must not narrow RETRYABILITY — those were one boolean and are
@@ -4150,7 +4170,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       */
       const preserveWork = (req.body as { preserveWork?: unknown } | undefined)?.preserveWork === true;
       let stageRestartRefusal: Extract<Awaited<ReturnType<typeof restartTaskStage>>, { kind: "refused" }> | undefined;
-      if (!isMissingWorktreeSessionRetry && strandedGateStepIds.length === 0) {
+      if (!isMissingWorktreeSessionRetry && strandedGateStepIds.length === 0 && !planningStrandedAdmitted) {
         // FNXC:TaskRecoveryVocabulary 2026-08-28-01:11: Retry must ask the locked restart
         // planner about every non-missing-worktree shape. Its shape-based refusal, including a
         // v1 no-column-model result, is preserved before legacy recovery gets a chance to handle
@@ -4173,7 +4193,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         stageRestartRefusal = stageResult;
       }
 
-      if (task.status !== "failed" && task.status !== "stuck-killed" && !retrySpecification && !strandedSpecificationRetry && !isInReviewRetry && !isMissingWorktreeSessionRetry && strandedGateStepIds.length === 0) {
+      if (task.status !== "failed" && task.status !== "stuck-killed" && !retrySpecification && !strandedSpecificationRetry && !isInReviewRetry && !isMissingWorktreeSessionRetry && strandedGateStepIds.length === 0 && !planningStrandedAdmitted) {
         const stageReason = stageRestartRefusal?.reason ?? "unavailable";
         throw badRequest(`Retry cannot restart this stage (${stageReason}) and the task is not in a legacy retryable state (current status: ${task.status || "none"})`);
       }
@@ -4216,6 +4236,38 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         await scopedStore.logEntry(
           req.params.id,
           `Retry requested from dashboard (verdict-less ${strandedGateStepIds.join(", ")} gate row(s) discharged in ${task.column}; approved plan, step list and worktree preserved)`,
+        );
+        res.json(await scopedStore.getTask(req.params.id));
+        return;
+      }
+
+      /*
+      FNXC:PlanningStrandedRetry 2026-11-10-23:05 (RUFU-575, board surface of four):
+      The board's non-destructive answer, byte-for-byte the decision the other three verbs make: write
+      `needs-replan` - the re-admission request triage's todo rediscovery and `isTaskAwaitingPlanning`
+      already honour - and clear the stale error plus the planning failure/recovery bookkeeping that
+      would otherwise make the next planner turn skip the card or re-park it.
+
+      Two things this branch deliberately does NOT do, both of which the surrounding handler does for
+      shapes it is entitled to handle:
+      - it never touches `PROMPT.md`, nor any other file. The specification is what the destructive
+        branch trades away and what this retry exists to keep; the next planner pass decides what that
+        file becomes, which is exactly what a `needs-replan` status means to every consumer of it.
+      - it calls no `clearRebuiltSpecWorkflowPins`. Invalidating the planned-step source belongs to the
+        lane that rebuilds the specification - the graph's own plan-replan seam and the planner's spec
+        write - not to a Retry that changes no spec. Clearing instances from a surface that cannot see
+        whether the card ever parsed would be a destructive write this classification does not license.
+      The card also does not move: it already stands in the lane the planner works in, and a `moveTask`
+      here would restamp `columnMovedAt` for a lane change that never happened.
+      */
+      if (planningStrandedAdmitted) {
+        await applyRetryReset({
+          ...buildManualRetryResetPatch({ resetMergeRetries: true }),
+          ...buildPlanningStrandedRetryPatch(task),
+        });
+        await scopedStore.logEntry(
+          req.params.id,
+          `Retry requested from dashboard (planning run exhausted in ${task.column}; re-armed to needs-replan - the card did not move and its specification, steps, worktree and branch are untouched)`,
         );
         res.json(await scopedStore.getTask(req.params.id));
         return;

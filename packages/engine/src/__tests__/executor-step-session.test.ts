@@ -497,7 +497,7 @@ describe("Workflow Steps Execution", () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
-  it("retains an escalated-reseed diagnostic after stale assistant-continuation recovery exhaustion", async () => {
+  it("retains an escalated-execution-reseed diagnostic after stale assistant-continuation recovery exhaustion", async () => {
     const store = createMockStore();
     const task = {
       id: "FN-ASSISTANT-STALE-EXHAUSTED",
@@ -542,13 +542,19 @@ describe("Workflow Steps Execution", () => {
     Graph-owned stale-assistant recovery reaches the existing classifier once reused-worktree
     reconciliation is mocked safe. Assert the absent run context is observably undefined and the
     two-argument store write retains its exact arity, distinguishing it from the graph wrapper path.
+
+    FNXC:ReseedLaneDiscriminator 2026-11-12-15:06 (RUFU-575 code review P0):
+    The retained diagnostic is now the EXECUTION lane's value. This write also moves the card to `todo`
+    (asserted below) — the same lane the planner works in — so a diagnostic naming only "reseed" made an
+    execution-reseeded card indistinguishable from a planning run that gave up. `escalated-reseed` here
+    would re-arm a card whose spec and steps are intact onto a fresh planning pass.
     */
     const exhaustedRecoveryWrite = store.updateTask.mock.calls.find(
       ([id, patch, runContext]) => id === "FN-ASSISTANT-STALE-EXHAUSTED"
         && patch?.status === null
         && patch?.error === null
         && patch?.recoveryRetryCount === null
-        && patch?.recoveryDisposition === "escalated-reseed"
+        && patch?.recoveryDisposition === "escalated-execution-reseed"
         && patch?.nextRecoveryAt === null
         && runContext === undefined,
     );

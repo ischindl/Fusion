@@ -863,6 +863,21 @@ fn task pause FN-001
 fn task unpause FN-001
 ```
 
+`fn task retry` accepts the card in its current lane and never restarts a stage it should not. Besides a
+card-level failure and a stranded required pre-merge gate, it reaches **a planning run that exhausted in
+the card's own planning lane**: a card parked `queued`, `needs-replan`, `failed`, or `stuck-killed` whose
+row carries the spec run's terminal evidence (the `Specification failed after …` incident sentence, a
+legacy `PLANNING_FAILED_EXHAUSTED:` park, or the `escalated-reseed` disposition) re-arms to `needs-replan`
+in place. That disposition names the lane that authored it: the executor's own exhausted-retry reseed writes
+`escalated-execution-reseed` instead, and such a card — even once the scheduler queues it for a slot — is
+refused here, because its implementation already ran and re-planning it would trade finished work. The card keeps its lane, its specification, its steps and its worktree — and it keeps whichever
+of those the timeout actually left behind, so a card whose `PROMPT.md` is still the bootstrap seed, or is
+missing entirely, is retried exactly like one with a full plan: the command never reads the spec to decide,
+and never writes or deletes it. A `queued` card with no such evidence (a capacity or overlap throttle) is
+still refused, naming the real status, and `status: "planning"` is refused because that is the live planner
+claim. The same decision answers the dashboard's **Retry**, the extension's `fn_task_retry`, and the chat
+tool's `fn_task_retry`.
+
 `fn task move` is a transport for a board action, not a separate authority — it calls the same move seam as
 the dashboard. Two consequences are visible from the terminal:
 

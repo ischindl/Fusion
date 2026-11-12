@@ -15,6 +15,9 @@
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { pgDescribe } from "../../../core/src/__test-utils__/pg-test-harness.js";
 import { createPgExtensionHarness } from "./pg-extension-harness.js";
 
@@ -319,5 +322,223 @@ pgTest("runTaskRetry", () => {
     expect(updated.workflowStepResults ?? []).toEqual([]);
     expect(updated.approvedPlanFingerprint).toBe("7a73aaff");
     expect(updated.worktree).toBe("/tmp/fusion-stranded-worktree");
+  });
+
+  /*
+  FNXC:PlanningStrandedRetry 2026-11-10-15:40 (RUFU-575, CLI surface of four):
+  The two cards that motivated this task, seeded as found on the saneca board: SANE-282 sat `queued` in
+  its planning lane and SANE-524 `needs-replan`, both carrying the spec-run terminal error, and both were
+  answered here with "is not in a retryable state (status: ...)". `fn task retry` is the operator's only
+  immediate lever, so an exhausted provider episode ended the card's life. Each case states its own data
+  state, and the two controls below pin that the admission is a class and not a widening - the card this
+  very task logged as capacity-throttled must STILL be refused.
+  */
+  const SPEC_TIMEOUT_ERROR = "Specification failed after 3 transient errors: Request timed out.";
+  const SPEC_BODY = "# Task: Repair the lockfile drift\n\n## Steps\n\n- [ ] Step 0: Preflight\n- [ ] Step 1: Reproduce\n";
+  /*
+  FNXC:PlanningStrandedRetry 2026-11-10-23:58 (RUFU-575):
+  The bootstrap seed body a card holds before any planner ran. It is a fixture, not a predicate: the
+  residue of a provider timeout is legitimately a missing OR a seed-only PROMPT.md, so admission must
+  accept all three states. A gate on seed-ness (`isUnplannedSeedPrompt`) or on the file existing would
+  refuse exactly the reported card while every other test stayed green.
+  */
+  const SEED_ONLY_BODY = "## Original Description\n\nA card whose specification failed with transient provider errors.\n";
+  const promptPathOf = (taskId: string) => join(h.rootDir(), ".fusion", "tasks", taskId, "PROMPT.md");
+
+  async function seedPlanningStrandedCard(
+    store: ReturnType<typeof h.store>,
+    over: { status: "queued" | "needs-replan"; error: string | null; recoveryDisposition?: "escalated-reseed" | "escalated-execution-reseed"; specBody?: string | null },
+  ) {
+    const task = await store.createTask({
+      title: "specification timed out in the planning lane",
+      description: "test",
+      column: "todo",
+    });
+    /*
+    The specification is the FILE, not a row column — the board's destructive branch removes
+    `.fusion/tasks/<id>/PROMPT.md` from disk. So the seed writes a real plan there and the assertion
+    below reads it back: "the Retry preserved the specification" is only evidence where the
+    specification actually lives.
+    */
+    const promptPath = join(h.rootDir(), ".fusion", "tasks", task.id, "PROMPT.md");
+    await mkdir(join(h.rootDir(), ".fusion", "tasks", task.id), { recursive: true });
+    /*
+    FNXC:PlanningStrandedRetry 2026-11-11-23:16 (RUFU-575, Step 5 against a real PostgreSQL):
+    `specBody: null` has to REMOVE the file, not merely skip writing it. `createTask` publishes a
+    bootstrap prompt to `.fusion/tasks/<id>/PROMPT.md` as it creates the row (task-creation.ts's
+    `buildBootstrapPrompt` + `writePromptFileAtomic`), so a seed that only omitted its own write left a
+    seed body on disk and silently turned F4 into F5 - the fixture would have asserted "still absent"
+    against a file its own setup had written. Deleting it models the residue a provider timeout actually
+    leaves and keeps the assertion measuring the retry instead of the seed.
+    */
+    if (over.specBody === null) {
+      await rm(promptPath, { force: true });
+      expect(existsSync(promptPath)).toBe(false);
+    } else {
+      await writeFile(promptPath, over.specBody ?? SPEC_BODY, "utf-8");
+    }
+    await store.updateTask(task.id, {
+      status: over.status,
+      error: over.error,
+      recoveryDisposition: over.recoveryDisposition,
+      steps: [{ name: "Preflight", status: "pending" }],
+      currentStep: 0,
+      /* A real `TaskPlanningFailureState` shape (`lifecycleLockTransport` is one of its named markers),
+         so the fixture states the intent the patch must clear rather than inventing a key. */
+      planningFailure: {
+        lifecycleLockTransport: {
+          message: "Request timed out.",
+          at: new Date(Date.now() - 86_400_000).toISOString(),
+          attempt: 3,
+        },
+      },
+      recoveryRetryCount: 3,
+      nextRecoveryAt: new Date(Date.now() - 86_400_000).toISOString(),
+      mergeRetries: 2,
+      worktree: "/tmp/fusion-rufu-575-worktree",
+      branch: `fusion/${task.id}`,
+      // FNXC:CliTests 2026-08-23-16:14: branch writes need provenance; this fixture simulates an engine-written branch.
+      branchWriteOrigin: "engine" as const,
+      baseBranch: "main",
+      baseCommitSha: "0123456789abcdef0123456789abcdef01234567",
+    });
+    return task;
+  }
+
+  it.each([
+    { label: "SANE-282 (`queued`)", status: "queued" as const, error: SPEC_TIMEOUT_ERROR },
+    { label: "SANE-524 (`needs-replan`)", status: "needs-replan" as const, error: SPEC_TIMEOUT_ERROR },
+    { label: "post-FN-9512 (`queued`, no error, escalated-reseed)", status: "queued" as const, error: null, recoveryDisposition: "escalated-reseed" as const },
+  ])("retries the stranded planning card from $label by re-arming planning in place", async (shape) => {
+    const store = h.store();
+    const task = await seedPlanningStrandedCard(store, shape);
+
+    await runTaskRetry(task.id);
+
+    const updated = await store.getTask(task.id);
+    /* The re-arm: `needs-replan` is the request triage's todo rediscovery already honours, so the planner
+       runs the specification again. The stale error and the planning bookkeeping that would make the
+       next planner turn skip or re-park the card are gone. */
+    expect(updated.status).toBe("needs-replan");
+    expect(updated.error ?? null).toBeNull();
+    expect(updated.planningFailure ?? null).toBeNull();
+    expect(updated.recoveryDisposition ?? null).toBeNull();
+    expect(updated.recoveryRetryCount ?? null).toBeNull();
+    expect(updated.mergeRetries).toBe(0);
+    /* Invariant C, the half this task is about: the card did not move and it kept everything that
+       constitutes its work. Deleting the specification is what the BOARD used to do to this row. */
+    expect(updated.column).toBe("todo");
+    expect(await readFile(promptPathOf(task.id), "utf-8")).toBe(SPEC_BODY);
+    expect(updated.steps?.map((step) => step.status)).toEqual(["pending"]);
+    expect(updated.currentStep).toBe(0);
+    expect(updated.worktree).toBe("/tmp/fusion-rufu-575-worktree");
+    expect(updated.branch).toBe(`fusion/${task.id}`);
+    expect(updated.baseBranch).toBe("main");
+    expect(updated.baseCommitSha).toBe("0123456789abcdef0123456789abcdef01234567");
+    const log = (updated.log ?? []) as Array<{ action?: string }>;
+    expect(log.some((entry) => entry.action?.includes("planning run exhausted in todo"))).toBe(true);
+  });
+
+  /*
+  FNXC:PlanningStrandedRetry 2026-11-10-23:58 (RUFU-575):
+  F4 (no `PROMPT.md` at all) and F5 (seed-only body) of `## Symptom Verification`, on the same row the
+  operator actually had. The whole point of the row-only classification is that these three bodies buy
+  the SAME verdict: a provider timeout usually leaves no usable spec, so a surface that asked the file
+  would answer `is not in a retryable state` to exactly the card this task exists to recover. The CLI
+  never writes or deletes the spec, so the assertion here is that it never starts to: the byte state of
+  the residue is unchanged, absent included.
+  */
+  it.each([
+    { label: "a real plan body (F1-F3's spec state)", specBody: SPEC_BODY as string | null },
+    { label: "no PROMPT.md at all (F4, the normal residue of a spec timeout)", specBody: null as string | null },
+    { label: "only the bootstrap seed body (F5)", specBody: SEED_ONLY_BODY as string | null },
+  ])("re-arms the stranded planning card whose specification state is $label", async ({ specBody }) => {
+    const store = h.store();
+    const task = await seedPlanningStrandedCard(store, { status: "queued", error: SPEC_TIMEOUT_ERROR, specBody });
+
+    await runTaskRetry(task.id);
+
+    const updated = await store.getTask(task.id);
+    expect(updated.status).toBe("needs-replan");
+    expect(updated.error ?? null).toBeNull();
+    expect(updated.column).toBe("todo");
+    if (specBody === null) {
+      // The retry must not invent a specification either: the next planner pass owns that file.
+      expect(existsSync(promptPathOf(task.id))).toBe(false);
+    } else {
+      expect(await readFile(promptPathOf(task.id), "utf-8")).toBe(specBody);
+    }
+  });
+
+  it("still refuses a legitimately throttled queued card, which carries no planning-exhaustion evidence", async () => {
+    const store = h.store();
+    /* This task's own card logged exactly this line while waiting for a WIP slot: `queued` with
+       maxConcurrent 12/12. It is progressing, the scheduler owns it, and admitting it would be the
+       global reclassification of every queued card that this task forbids. */
+    const task = await store.createTask({ title: "waiting for a slot", description: "test", column: "todo" });
+    await store.updateTask(task.id, {
+      status: "queued",
+      error: "maxConcurrent capacity exhausted: used=12/12",
+      steps: [{ name: "Preflight", status: "pending" }],
+    });
+
+    await expect(runTaskRetry(task.id)).rejects.toThrow(/not in a retryable state \(status: queued\)/);
+
+    const updated = await store.getTask(task.id);
+    expect(updated.status).toBe("queued");
+    expect(updated.error).toBe("maxConcurrent capacity exhausted: used=12/12");
+  });
+
+  /*
+  FNXC:ReseedLaneDiscriminator 2026-11-12-15:06 (RUFU-575 code review P0):
+  The row an EXECUTION reseed leaves behind, in the same lane and with the same waiting status as the
+  accepted post-FN-9512 planning row above. Before the lane split these two rows were byte-identical to
+  every field this verb reads, so the verb re-armed a card whose spec, steps and worktree were intact onto
+  a fresh planning pass. The refusal must name the real status, and the row must come back untouched.
+  */
+  it("refuses an execution-reseeded card the scheduler queued, and changes nothing on it", async () => {
+    const store = h.store();
+    const task = await seedPlanningStrandedCard(store, { status: "queued", error: SPEC_TIMEOUT_ERROR });
+    // The executor's exhausted-retry reseed patch, then the scheduler's capacity stamp — the real sequence.
+    await store.updateTask(task.id, {
+      status: null,
+      error: null,
+      recoveryRetryCount: null,
+      nextRecoveryAt: null,
+      recoveryDisposition: "escalated-execution-reseed",
+    });
+    await store.updateTask(task.id, { status: "queued" });
+
+    await expect(runTaskRetry(task.id)).rejects.toThrow(/not in a retryable state \(status: queued\)/);
+
+    const updated = await store.getTask(task.id);
+    expect(updated.status).toBe("queued");
+    expect(updated.recoveryDisposition).toBe("escalated-execution-reseed");
+    expect(updated.steps?.map((step) => step.status)).toEqual(["pending"]);
+    expect(updated.column).toBe("todo");
+    expect(await readFile(promptPathOf(task.id), "utf-8")).toBe(SPEC_BODY);
+  });
+
+  it("leaves a failed card in the review lane on its existing rebound path rather than re-arming planning", async () => {
+    const store = h.store();
+    const task = await store.createTask({ title: "implementation failed", description: "test", column: "todo" });
+    await store.moveTask(task.id, "in-progress");
+    await store.moveTask(task.id, "in-review");
+    await store.updateTask(task.id, {
+      status: "failed",
+      error: "executor exhausted its retries",
+      steps: [{ name: "implemented", status: "done" }, { name: "verify", status: "pending" }],
+    });
+
+    await runTaskRetry(task.id);
+
+    /* Review owns its recovery: the class refuses this card on the COLUMN, so the pre-existing
+       in-review execution-failure path still runs - rebound to the hold lane with a cleared status,
+       NOT stamped `needs-replan`. Sentinelling the value the planning class would have written is the
+       point: if the class ever grew a column-blind leg, this card would be sent back to planning. */
+    const updated = await store.getTask(task.id);
+    expect(updated.column).toBe("todo");
+    expect(updated.status ?? null).toBeNull();
+    expect(updated.steps?.map((step) => step.status)).toEqual(["done", "pending"]);
   });
 });

@@ -17,7 +17,7 @@ import { DEFAULT_NTFY_EVENTS, buildNtfyClickUrl, formatTaskIdentifier } from "..
 import { schedulerLog } from "../logger.js";
 import { NtfyNotificationProvider } from "./ntfy-provider.js";
 import { WebhookNotificationProvider } from "./webhook-provider.js";
-import { classifyTerminalFailureAutoRecoveryForTask, describeTaskRecoveryOwner, describeTaskWedge, describeTaskWedgeWithStall, isTaskProgressing, shouldWithholdWedgeAlertForAutoRecovery, type TaskWedgeDescriptor } from "./task-wedge-notification.js";
+import { classifyTerminalFailureAutoRecoveryForTask, describeTaskRecoveryOwner, describeTaskWedge, describeTaskWedgeWithStall, isPlanningStrandedWedgeRow, isTaskProgressing, shouldWithholdWedgeAlertForAutoRecovery, type TaskWedgeDescriptor } from "./task-wedge-notification.js";
 import { deliverMailboxMessageOnce } from "./mailbox-delivery.js";
 
 type PendingWedgeCompletionOutcome = "delivered" | "suppressed" | "cleared" | "rearmed" | "held" | "absent" | "unreadable";
@@ -1031,8 +1031,27 @@ export class NotificationService {
       const terminalLanes = new Set(await resolveProjectColumnsForRoles(this.store, ["complete"]));
       const progressedLanes = new Set(await resolveProjectColumnsForRoles(this.store, ["hold", "countsTowardWip", "complete"]));
       const activeSelfHealing = task.wedgeNotification?.status === "active" && task.wedgeNotification.reasonKey.startsWith("self-healing-no-action:");
-      const hasProgressed = progressedLanes.has(task.column)
-        || (!activeSelfHealing && typeof task.status === "string" && task.status !== "failed")
+      /*
+      FNXC:PlanningStrandedRetry 2026-11-10-23:15 (RUFU-575):
+      THIS leg, not `isTaskProgressing`, is what actually silenced the alert in production. The settle
+      window defaults to 300000 ms (`wedgeNotificationSettleMs` in the settings schema), so every wedge
+      reaches the operator through this revalidation — while every wedge suite passes `0` and drives the
+      immediate branch instead, which is why the class could be armed and dropped with a green suite.
+      Measured before this narrowing: the pending marker was written with the right reason key and the
+      episode never delivered (`notification-service-planning-stranded-wedge.test.ts`).
+
+      Both of its first two legs fire on a card that has provably gone nowhere: it stands in `todo`, which
+      is a hold-role lane and therefore "visibly resumed", and its status is a non-empty string that is
+      not `failed`. That rule is right everywhere else — a card resting in a hold lane has progressed, and
+      `notification-service-stall-wedge.test.ts > "clears a held stall hold without delivering when the
+      operator resets the card to todo"` is exactly that contract — so the bypass is keyed on the row's
+      own exhaustion evidence and never on the lane or the status word. A `queued` card in `todo` with no
+      exhaustion evidence still clears, and `maybeNotifyTaskWedge`'s episode-resolution `hasProgressed`
+      above stays untouched: it only runs when no descriptor exists, and this class always has one.
+      */
+      const planningStrandedRow = isPlanningStrandedWedgeRow(task);
+      const hasProgressed = (!planningStrandedRow && (progressedLanes.has(task.column)
+        || (!activeSelfHealing && typeof task.status === "string" && task.status !== "failed")))
         || (activeSelfHealing && ["queued", "planning", "in-progress", "merging", "merging-pr", "merged", "done"].includes(task.status ?? ""));
       const suppliedHeldOrProgressing = source === "supplied" && (task.paused === true || task.userPaused === true || task.autoMerge === false || isTaskProgressing(task));
       if (task.deletedAt != null || terminalLanes.has(task.column) || describeTaskRecoveryOwner(task) != null || hasProgressed || suppliedHeldOrProgressing) {

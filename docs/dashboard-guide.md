@@ -187,7 +187,7 @@ When project or workflow policy requires manual plan approval, the task stops af
 
 ## Task Recovery
 
-Every live card, including an intake or planning card, offers **Retry**, **Reset**, and **Delete**. **Retry** stays in the current column: in planning it rebuilds the plan from the original request; during work it asks whether to keep the work already produced; during review it discards review verdicts and reviews the produced work again.
+Every live card, including an intake or planning card, offers **Retry**, **Reset**, and **Delete**. **Retry** stays in the current column: in planning it rebuilds the plan from the original request; during work it asks whether to keep the work already produced; during review it discards review verdicts and reviews the produced work again. One planning case is not a rebuild: when the card's own planning run exhausted (a spec timeout parked as `queued` or `needs-replan` in its planning lane), **Retry** asks the planner for one more pass and leaves the specification, steps, lane and worktree exactly as they are — including the case where the timeout left only a seed prompt or no prompt at all, which is the normal residue and not a reason to refuse the card.
 
 <!--
 FNXC:ColumnRestart 2026-09-17-09:16:

@@ -168,6 +168,13 @@ action, so the six conditions no longer share one line of copy:
 | `duplicate-prompt` | The plan text is only a duplicate redirect | Resolve it against the canonical card, or write this card its own plan |
 | `seed-prompt` | `PROMPT.md` is still the bootstrap stub | Plan the card first |
 
+The `needs-replan` and `seed-prompt` rows describe a card that still needs a plan, not a card that is
+stuck. When the card's own planning run is what died — the row carries the spec run's terminal evidence
+(`Specification failed after …`, a legacy `PLANNING_FAILED_EXHAUSTED:` park, or the post-FN-9512
+`escalated-reseed` disposition) while the card waits in its planning lane — **Retry** is the action that
+moves it: it re-arms the same status for one more planning pass and leaves the specification exactly as the
+timeout left it, seed stub or no stub included. Whether a plan exists never decides that admission.
+
 Two refusals can be discharged by the release itself without waiving anything, and the copy reports
 what actually happened instead of promising it:
 

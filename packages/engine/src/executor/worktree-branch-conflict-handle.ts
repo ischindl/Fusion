@@ -113,7 +113,8 @@ export async function reseedExhaustedBranchConflict(
       status: null,
       error: null,
       recoveryRetryCount: null,
-      recoveryDisposition: "escalated-reseed",
+      /* FNXC:ReseedLaneDiscriminator 2026-11-12-14:54 (RUFU-575): execution-lane reseed -> the execution value; a card waiting in its rebound lane for a scheduler slot must not read as a stranded planning run. */
+      recoveryDisposition: "escalated-execution-reseed",
       nextRecoveryAt: null,
       worktree: null,
       branch: null,

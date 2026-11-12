@@ -1,10 +1,12 @@
 import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Task, TaskStore } from "@fusion/core";
+import type { Task, TaskStore, WorkflowIr } from "@fusion/core";
+import { BUILTIN_CODING_WORKFLOW_IR, classifyPlanningStrandedRetry } from "@fusion/core";
 import "../executor-test-helpers.js";
 import { TaskExecutor } from "../../executor.js";
 import { MAX_POST_DONE_NONCONTINUABLE_WEDGE_RECOVERIES, SelfHealingManager } from "../../self-healing.js";
 import { MAX_RECOVERY_RETRIES } from "../../healing/recovery-policy.js";
+import { describeTaskWedge, isTaskProgressing } from "../../notification/task-wedge-notification.js";
 import { mockExecuteAll, mockedCreateFnAgent, resetExecutorMocks } from "../executor-test-helpers.js";
 
 function makeTask(overrides: Partial<Task> = {}): Task {
@@ -507,10 +509,23 @@ describe("FN-5866 reliability interactions: post-done continuation no wedge", ()
     expect(task.column).toBe("todo");
     expect(task.status).toBeFalsy();
     expect(task.error).toBeFalsy();
-    expect(task.recoveryDisposition).toBe("escalated-reseed");
+    /*
+    FNXC:ReseedLaneDiscriminator 2026-11-12-15:06 (RUFU-575 code review P0):
+    This run leaves behind exactly the row that made the two lanes indistinguishable: the planning lane,
+    no error, no retry cadence, and one word saying "reseeded". The assertion is therefore on the lane
+    VALUE, and the lines below prove the consequence a bare value check could not — once the scheduler
+    stamps its waiting status, the card must keep counting as progressing, must raise no wedge, and must
+    be refused by the planning-stranded Retry lane, because its spec, steps and worktree are all intact.
+    */
+    expect(task.recoveryDisposition).toBe("escalated-execution-reseed");
     expect(task.recoveryRetryCount).toBeFalsy();
     expect(task.nextRecoveryAt).toBeFalsy();
     expect(task.sessionFile).toBeFalsy();
+    await (store as any).updateTask(task.id, { status: "queued" });
+    expect(isTaskProgressing(task)).toBe(true);
+    expect(describeTaskWedge(task)).toBeNull();
+    expect(classifyPlanningStrandedRetry({ task, ir: BUILTIN_CODING_WORKFLOW_IR as unknown as WorkflowIr }))
+      .toEqual({ kind: "not-planning-stranded", reason: "no-planning-exhaustion-evidence" });
     expect(store.moveTask).toHaveBeenCalledWith(task.id, "todo", { preserveResumeState: true });
     expect(store.handoffToReview).not.toHaveBeenCalled();
     expect(onError).not.toHaveBeenCalled();

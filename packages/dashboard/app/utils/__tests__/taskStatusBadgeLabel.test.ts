@@ -54,6 +54,14 @@ describe("getTaskStatusBadgeLabel", () => {
     expect(getTaskStatusBadgeLabel("executing", t, undefined, { recoveryRetryCount: 2 })).toBe("Recovery pending");
     expect(getTaskStatusBadgeLabel("executing", t, undefined, { recoveryDisposition: "verification-pending" })).toBe("Recovery pending");
     expect(getTaskStatusBadgeLabel("needs-replan", t, undefined, { recoveryDisposition: "escalated-reseed" })).toBe("Recovery reseeded");
+    /*
+    FNXC:ReseedLaneDiscriminator 2026-11-12-15:06 (RUFU-575 code review P0):
+    The split lanes share one operator copy. The badge answers "a recovery reseeded this card", which is
+    true for either author; which lane may Retry against it is a predicate question, not a label one. The
+    `queued` row is the shape that matters — an execution-reseeded card waiting for a slot keeps this
+    badge for its whole wait, which is exactly why the value could not stay lane-ambiguous downstream.
+    */
+    expect(getTaskStatusBadgeLabel("queued", t, undefined, { recoveryDisposition: "escalated-execution-reseed" })).toBe("Recovery reseeded");
     expect(getTaskStatusBadgeLabel("needs-replan", t, undefined, { paused: true, recoveryRetryCount: 2 })).toBe("Paused");
     expect(getTaskStatusBadgeLabel("needs-replan", t, undefined, { awaitingApproval: true, recoveryRetryCount: 2 })).toBe("Awaiting Approval");
     expect(getTaskStatusBadgeLabel("needs-replan", t, undefined, { externalBlocked: true, recoveryRetryCount: 2 })).toBe("Blocked");

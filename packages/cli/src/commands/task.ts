@@ -8,7 +8,7 @@ Import union for this line: ours adds `isFollowUpTask`, `resolveWorkflowIrForTas
 but the merged body has no call site, so keeping them would be dead references. Engine side keeps ours
 (`admitTaskToWip`/`isFirstPlanningToWipAdmission`/`planTaskWorktreePath`) and `SelfHealingManager`, which both lines need.
 */
-import { TaskStore, COLUMNS, COLUMN_LABELS, deriveTaskLabelFromDescription, describeTaskTitleRejection, isFollowUpTask, MAX_TASK_MESSAGE_LENGTH, resolveProjectColumnsForRoles, TERMINAL_ROLES, resolveReviewColumns, resolveTaskLifecycleColumns, resolveWorkflowIrForTask, resolvePreMergeGateForTask, resolveWorkflowIrForTaskWithProvenance, workflowHasColumn, columnHasFlag, resolveEffectiveAutoMerge, CentralCore, buildAutoPauseClearPatch, buildManualRetryResetPatch, buildManualRetryResetPatchIfCurrent, buildStrandedGateRetryPatch, classifyStrandedGateRetry, extractIntentSignature, findNearDuplicates, getTaskDuplicateLineage, isValidRepoSlug, isWorkspaceTask, reconcileDeterministicDuplicate, resolveTaskGithubTracking, runDeterministicDuplicateGuard, deliverTaskCommentFromStore, describeTaskCommentDelivery, formatAgentTimestamp, type Settings, type Column, type ColumnId, type StepStatus, type AgentLogType, type AgentLogEntry, type IntentSignature, type NearDuplicateCandidate, type NearDuplicateMatch, type TaskDependencyMutation } from "@fusion/core";
+import { TaskStore, COLUMNS, COLUMN_LABELS, deriveTaskLabelFromDescription, describeTaskTitleRejection, isFollowUpTask, MAX_TASK_MESSAGE_LENGTH, resolveProjectColumnsForRoles, TERMINAL_ROLES, resolveReviewColumns, resolveTaskLifecycleColumns, resolveWorkflowIrForTask, resolvePreMergeGateForTask, resolveWorkflowIrForTaskWithProvenance, workflowHasColumn, columnHasFlag, resolveEffectiveAutoMerge, CentralCore, buildAutoPauseClearPatch, buildManualRetryResetPatch, buildManualRetryResetPatchIfCurrent, buildStrandedGateRetryPatch, classifyStrandedGateRetry, buildPlanningStrandedRetryPatch, classifyPlanningStrandedRetry, extractIntentSignature, findNearDuplicates, getTaskDuplicateLineage, isValidRepoSlug, isWorkspaceTask, reconcileDeterministicDuplicate, resolveTaskGithubTracking, runDeterministicDuplicateGuard, deliverTaskCommentFromStore, describeTaskCommentDelivery, formatAgentTimestamp, type Settings, type Column, type ColumnId, type StepStatus, type AgentLogType, type AgentLogEntry, type IntentSignature, type NearDuplicateCandidate, type NearDuplicateMatch, type TaskDependencyMutation } from "@fusion/core";
 import { isFailedNoVerdictPreMergeReviewResult, admitTaskToWip, isFirstPlanningToWipAdmission, isInReviewMissingWorktreeSessionStartFailure, planTaskWorktreePath, runAiMerge, landWorkspaceTask, withWorkspaceMergeDispatchLease, clearOwnedMergeStamp, reconcileUnownedStaleMergeStamp, SelfHealingManager } from "@fusion/engine";
 import { createInterface } from "node:readline/promises";
 import type { PlanningQuestion, PlanningSummary } from "@fusion/core";
@@ -2046,6 +2046,17 @@ export async function runTaskRetry(id: string, projectName?: string) {
     */
     const strandedGateRetry = classifyStrandedGateRetry({ task, ir: retryIr });
     const strandedGateStepIds = strandedGateRetry.kind === "stranded-gate" ? strandedGateRetry.gateStepIds : [];
+    /*
+    FNXC:PlanningStrandedRetry 2026-11-10-15:40 (RUFU-575, CLI surface of four):
+    The card SANE-282 was: `queued` in its own planning lane carrying
+    `Specification failed after 3 transient errors: Request timed out.`, and THIS line was the answer
+    the operator got - "is not in a retryable state (status: queued)". SANE-524 (`needs-replan`, same
+    lane, same sentence) got the identical refusal. Core answers the shape identically here, on the
+    extension tool, on the chat tool and on the board, so no surface can call the same card
+    un-retryable; the refusal below still names the real status for everything the class refuses.
+    */
+    const planningStrandedRetry = classifyPlanningStrandedRetry({ task, ir: retryIr });
+    const planningStrandedAdmitted = planningStrandedRetry.kind === "planning-stranded";
     const noVerdictGate = !effectiveAutoMergeDisabled && isInReviewStatusNone && retryIr !== undefined
       ? await resolvePreMergeGateForTask(context.store, task.id, task.enabledWorkflowSteps, task).catch(() => undefined)
       : undefined;
@@ -2069,7 +2080,7 @@ export async function runTaskRetry(id: string, projectName?: string) {
     if (noVerdictReviewRetry) {
       throw new Error(`Task ${id} has a failed review with no verdict; retry it through the running dashboard or wait for engine recovery`);
     }
-    if (task.status !== 'failed' && task.status !== 'stuck-killed' && !isInReviewRetry && !isMissingWorktreeSessionRetry && strandedGateStepIds.length === 0) {
+    if (task.status !== 'failed' && task.status !== 'stuck-killed' && !isInReviewRetry && !isMissingWorktreeSessionRetry && strandedGateStepIds.length === 0 && !planningStrandedAdmitted) {
       throw new Error(`Task ${id} is not in a retryable state (status: ${task.status || 'none'})`);
     }
 
@@ -2115,6 +2126,37 @@ export async function runTaskRetry(id: string, projectName?: string) {
 
       console.log();
       console.log(`  ✓ Retried ${id} in ${task.column} (verdict-less ${strandedGateStepIds.join(", ")} gate discharged; approved plan, steps and worktree intact)`);
+      console.log();
+      return;
+    }
+
+    /*
+    FNXC:PlanningStrandedRetry 2026-11-10-15:40 (RUFU-575, CLI surface of four):
+    A planning run that exhausted cannot be retried the way a failed implementation run is. The generic
+    fallthrough at the bottom of this command MOVES the card and clears `worktree`, `branch`, `baseBranch`
+    and `baseCommitSha`; the board's answer for the same row is worse still - it stamps `needs-replan`
+    AND deletes `PROMPT.md`. Neither is what a dead spec run needs: the card is already in the lane the
+    planner works in, and its spec is either already written or was never written, which is the normal
+    residue of a timeout.
+
+    So this branch moves nothing and writes no file. It re-arms `status: "needs-replan"`, which is the
+    re-admission request triage's todo rediscovery and `isTaskAwaitingPlanning` already honour, and clears
+    the stale error plus the planning recovery bookkeeping. Deliberately placed AFTER the stranded-gate
+    branch: a card that both holds an approved plan and carries a spec-exhaustion marker is more precisely
+    recovered by re-running the gate against that plan, and that population is already pinned elsewhere.
+    */
+    if (planningStrandedAdmitted) {
+      await retryBoardCall(context, id, "update task", () => applyRetryReset({
+        ...buildManualRetryResetPatch({ resetMergeRetries: true }),
+        ...buildPlanningStrandedRetryPatch(task),
+      }));
+      await retryBoardCall(context, id, "log entry", () => context.store.logEntry(
+        id,
+        `Retry requested from CLI (planning run exhausted in ${task.column}; re-armed to needs-replan - the card did not move and its specification, steps, worktree and branch are untouched)`,
+      ));
+
+      console.log();
+      console.log(`  ✓ Retried ${id} in ${task.column} (planning re-armed to needs-replan; specification, lane, steps and worktree intact)`);
       console.log();
       return;
     }

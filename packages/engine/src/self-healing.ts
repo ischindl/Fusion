@@ -5909,7 +5909,13 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         paused: false,
         pausedReason: undefined,
         recoveryRetryCount: null,
-        recoveryDisposition: "escalated-reseed",
+        /*
+        FNXC:ReseedLaneDiscriminator 2026-11-12-14:54 (RUFU-575):
+        The execution value, not the planning lane's. This reseed keeps the card in its CURRENT lane, and
+        that lane is drawn from hold/WIP/review candidates — a hold lane that also declares plan nodes is
+        exactly where the shared value made this row readable as a planning run that never wrote a spec.
+        */
+        recoveryDisposition: "escalated-execution-reseed",
         nextRecoveryAt: null,
       };
     });

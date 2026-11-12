@@ -1659,6 +1659,27 @@ export type {
   StrandedGateRetryRefusal,
   StrandedGateRetryTask,
 } from "./tasks/stranded-gate-retry.js";
+/*
+FNXC:PlanningStrandedRetry 2026-11-10 (RUFU-575): the single owner of "is this planning-stranded card
+retryable?" for all four Retry verbs, plus the row-only evidence predicate the wedge layer consumes.
+Mirrors the stranded-gate-retry block above by design — same shape, same reason for existing.
+*/
+export {
+  PLANNING_EXHAUSTION_ERROR_MARKERS,
+  PLANNING_SPEC_TIMEOUT_ERROR_MARKERS,
+  PLANNING_AUTHORING_EXHAUSTION_ERROR_MARKERS,
+  taskCarriesPlanningExhaustionEvidence,
+  taskCarriesPlanningSpecTimeoutEvidence,
+  classifyPlanningStrandedRetry,
+  buildPlanningStrandedRetryPatch,
+} from "./tasks/planning-stranded-retry.js";
+export type {
+  PlanningStrandedRetryClassification,
+  PlanningStrandedRetryPatch,
+  PlanningStrandedRetryRefusal,
+  PlanningStrandedRetryTask,
+  PlanningExhaustionEvidenceTask,
+} from "./tasks/planning-stranded-retry.js";
 export {
   EXTERNAL_BLOCK_STATUS,
   EXTERNAL_BLOCK_PAUSE_REASON,

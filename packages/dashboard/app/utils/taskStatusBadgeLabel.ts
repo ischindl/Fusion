@@ -93,7 +93,13 @@ export interface TaskStatusBadgeContext {
   sessionContentionWaitReason?: string | null;
   /** Persisted shared recovery cadence; present only while an owner has scheduled another pass. */
   recoveryRetryCount?: number | null;
-  recoveryDisposition?: "pending" | "verification-pending" | "escalated-reseed";
+  /*
+  FNXC:ReseedLaneDiscriminator 2026-11-12-14:54 (RUFU-575):
+  The two reseed values name the lane that gave up on its pass (planning vs execution), but the operator
+  copy is one thing for both: an automatic owner re-seeded this card's work. The badge therefore keeps one
+  label across the pair, and the lane distinction stays where it is consumed — the retry/wedge predicates.
+  */
+  recoveryDisposition?: "pending" | "verification-pending" | "escalated-reseed" | "escalated-execution-reseed";
   nextRecoveryAt?: string | null;
   /** Explicit operator control and external holds remain stationary by policy, not stranded. */
   userPaused?: boolean;
@@ -139,7 +145,7 @@ export function getTaskStatusBadgeLabel(
   const canOverrideLifecycleStatus = status !== "done" && status !== "failed";
   if (canOverrideLifecycleStatus && (context?.userPaused || context?.paused)) return t("tasks.statusPaused", "Paused");
   if (canOverrideLifecycleStatus && context?.awaitingApproval) return t("tasks.awaitingApproval", "Awaiting Approval");
-  if (canOverrideLifecycleStatus && context?.recoveryDisposition === "escalated-reseed") {
+  if (canOverrideLifecycleStatus && (context?.recoveryDisposition === "escalated-reseed" || context?.recoveryDisposition === "escalated-execution-reseed")) {
     return t("tasks.statusRecoveryReseed", "Recovery reseeded");
   }
   if (canOverrideLifecycleStatus && (context?.recoveryDisposition === "verification-pending" || (typeof context?.recoveryRetryCount === "number" && context.recoveryRetryCount > 0))) {

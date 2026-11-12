@@ -474,11 +474,18 @@ export async function reseedExhaustedTransientExecution(
       && (live.recoveryRetryCount ?? null) === (task.recoveryRetryCount ?? null);
     if (!sameFailureGeneration || live.userPaused || live.paused || live.status === "blocked") return null;
     reseeded = true;
+    /*
+    FNXC:ReseedLaneDiscriminator 2026-11-12-14:54 (RUFU-575): this reseed is authored by the EXECUTION lane,
+    so it writes the execution value. Sharing the planning lane's `escalated-reseed` made a card that is only
+    waiting for a slot (the scheduler stamps `status: "queued"` over this row in its rebound lane, and the
+    diagnostic survives until the next executor claim) indistinguishable from a planning run that died before
+    writing a spec, which made the planning-stranded Retry class and the wedge alert re-plan healthy work.
+    */
     return {
       status: null,
       error: null,
       recoveryRetryCount: null,
-      recoveryDisposition: "escalated-reseed",
+      recoveryDisposition: "escalated-execution-reseed",
       nextRecoveryAt: null,
       sessionFile: null,
       worktree: null,
@@ -572,8 +579,14 @@ export async function runImplementation(
     FNXC:RecoveryVisibility 2026-10-06-15:51:
     A new executor claim is the persisted reseed handoff boundary. Clear the board diagnostic
     only after live ownership is established, so queued cards retain the route through the reset.
+
+    FNXC:ReseedLaneDiscriminator 2026-11-12-14:54 (RUFU-575):
+    Both reseed values clear here. The execution lane's own value is the one this claim authored, and the
+    planning lane's value clears because a card that reached an executor claim has a spec by definition. The
+    shared pre-split value stays in the condition on purpose: rows written before the value split carry it for
+    either lane, and this claim is the only path that drains them.
     */
-    if (task.recoveryDisposition === "escalated-reseed") {
+    if (task.recoveryDisposition === "escalated-reseed" || task.recoveryDisposition === "escalated-execution-reseed") {
       await deps.store.updateTask(task.id, { recoveryDisposition: null });
     }
 
@@ -3669,7 +3682,8 @@ export async function runImplementation(
             status: null,
             error: null,
             recoveryRetryCount: null,
-            recoveryDisposition: "escalated-reseed",
+            /* FNXC:ReseedLaneDiscriminator 2026-11-12-14:54 (RUFU-575): execution-lane reseed -> execution value; see `reseedExhaustedTransientExecution`. */
+            recoveryDisposition: "escalated-execution-reseed",
             nextRecoveryAt: null,
             sessionFile: null,
           });

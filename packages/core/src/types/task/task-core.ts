@@ -2090,8 +2090,27 @@ export interface Task {
    *  recovery-policy module on each recoverable failure; cleared when work restarts
    *  cleanly, reaches review/Complete, or becomes a deleted/historical sentinel row. */
   recoveryRetryCount?: number;
-  /** Structured, privacy-safe recovery state retained after a bounded owner reseeds work. */
-  recoveryDisposition?: "pending" | "verification-pending" | "escalated-reseed";
+  /**
+   * Structured, privacy-safe recovery state retained after a bounded owner reseeds work.
+   *
+   * FNXC:ReseedLaneDiscriminator 2026-11-12-14:54 (RUFU-575):
+   * The two `escalated-*` values name the LANE that gave up on its pass, and that distinction is load-
+   * bearing, not cosmetic. `escalated-reseed` is authored only by planning-lane exits (triage's spec/
+   * transient/unknown-exhaustion exits and its missing-`PROMPT.md` escalation, the scheduler's filesystem-
+   * validation exhaustion, self-healing's planning-handoff transport loss), each of which also writes a
+   * planning re-admission status and nulls `nextRecoveryAt`. `escalated-execution-reseed` is authored only
+   * by execution-lane exits (the executor's transient/session/branch-conflict/required-artifact reseeds and
+   * self-healing's branch-conflict reclaim reseed), each of which clears `status` and hands the card back
+   * to its graph role. Before RUFU-575 the execution writers shared the planning value, and because that
+   * value survives until the next executor claim while the scheduler stamps `status: "queued"` over the
+   * waiting row, a capacity- or dependency-queued card with an intact spec looked — field for field — like
+   * a planning card stranded by an exhausted spec run. That collision is what made the shared planning-
+   * stranded retry classification (see `tasks/planning-stranded-retry.ts`) and the `planning-spec-exhausted`
+   * wedge arm refuse-and-alert the wrong population, so admission for that class reads the value, never a
+   * spec body. Rows written by pre-RUFU-575 builds carry the shared value for either lane; the executor's
+   * claim-time clear is the cleanup path for them.
+   */
+  recoveryDisposition?: "pending" | "verification-pending" | "escalated-reseed" | "escalated-execution-reseed";
   /** FNXC:WorkspaceContention 2026-08-23-06:40: Durable owner-local retry budget for holdForSessionContention; manual retry, clean completion, and exhausted waits reset it. */
   sessionContentionHoldCount?: number;
   /** Operator-visible bounded reason owned only while holdForSessionContention schedules a retry. */

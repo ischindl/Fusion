@@ -341,3 +341,191 @@ describe("createTaskRetryTool", () => {
     },
   );
 });
+
+/*
+FNXC:PlanningStrandedRetry 2026-11-10-22:55 (RUFU-575, chat-tool surface of four):
+The second half of "an agent-reachable Retry exists" is THIS tool: it is what a running agent calls. Its
+status gate accepted neither of the two cards this task was filed from - SANE-282 (`queued`) and SANE-524
+(`needs-replan`), each parked in its planning lane carrying
+`Specification failed after 3 transient errors: Request timed out.` - so the card had no way back at all
+while the provider episode that killed its spec run was already over.
+
+The classification itself is proven in `planning-stranded-retry.test.ts` (core) and against a real
+PostgreSQL row at the CLI and extension surfaces; what is specific to this surface is WHERE the check
+sits. It is hoisted above the status gate rather than nested in its refusal arm, and the third case below
+is what that placement buys: a legacy `PLANNING_FAILED_EXHAUSTED:` park IS `failed`, so a check inside the
+refusal arm would have let it fall through to the generic path below - which clears the status to `null`
+and MOVES the card - while the CLI re-armed the identical row without moving it.
+*/
+describe("createTaskRetryTool — planning-stranded re-arm", () => {
+  const SPEC_TIMEOUT_ERROR = "Specification failed after 3 transient errors: Request timed out.";
+  const LEGACY_PARK_ERROR = "PLANNING_FAILED_EXHAUSTED: specification failed 3 times - last error: Request timed out.";
+
+  function planningStrandedTask(overrides: Partial<Task> = {}): Task {
+    return task({
+      id: "SANE-282",
+      column: "todo",
+      status: "queued",
+      error: SPEC_TIMEOUT_ERROR,
+      steps: [{ id: "step-1", title: "Preflight", status: "pending" }],
+      currentStep: 0,
+      /* A real `TaskPlanningFailureState` shape (`lifecycleLockTransport` is one of its named markers),
+         so the fixture states the intent the patch must clear rather than inventing a key. */
+      planningFailure: {
+        lifecycleLockTransport: {
+          message: "Request timed out.",
+          at: new Date(Date.now() - 86_400_000).toISOString(),
+          attempt: 3,
+        },
+      },
+      recoveryRetryCount: 3,
+      nextRecoveryAt: new Date(Date.now() - 86_400_000).toISOString(),
+      mergeRetries: 2,
+      worktree: "/tmp/fusion-planning-stranded-worktree",
+      branch: "fusion/SANE-282",
+      baseBranch: "main",
+      ...overrides,
+    } as Partial<Task>) as Task;
+  }
+
+  /** A store that APPLIES the patch, so the assertions below read the resulting row, not a call log. */
+  function applyingStore(seed: Task) {
+    let row = { ...seed };
+    const updateTask = vi.fn(async (_id: string, patch: Record<string, unknown>) => {
+      row = { ...row, ...patch } as Task;
+      return row;
+    });
+    const logEntry = vi.fn().mockResolvedValue(undefined);
+    const moveTask = vi.fn();
+    const store = {
+      getTask: vi.fn(async () => row),
+      getTaskWorkflowSelection: vi.fn().mockReturnValue(undefined),
+      getSettings: vi.fn().mockResolvedValue({ autoMerge: true }),
+      updateTask,
+      updateTaskAtomic: vi.fn(),
+      logEntry,
+      moveTask,
+    } as unknown as TaskStore;
+    return { store, updateTask, logEntry, moveTask, read: () => row };
+  }
+
+  it.each([
+    ["SANE-282, parked `queued` with the incident marker", { status: "queued", error: SPEC_TIMEOUT_ERROR }],
+    ["SANE-524, parked `needs-replan` with the incident marker", { status: "needs-replan", error: SPEC_TIMEOUT_ERROR }],
+    ["the post-FN-9512 shape, `queued` with no error and an escalated-reseed disposition", { status: "queued", error: null, recoveryDisposition: "escalated-reseed" }],
+    ["a legacy `PLANNING_FAILED_EXHAUSTED:` park, which carries a `failed` status", { status: "failed", error: LEGACY_PARK_ERROR }],
+  ])("re-arms planning in place for %s", async (_name, overrides) => {
+    const stranded = planningStrandedTask(overrides as Partial<Task>);
+    const { store, moveTask, logEntry, read } = applyingStore(stranded);
+
+    const result = await createTaskRetryTool(store, {}).execute("run", { id: stranded.id }, undefined as never, undefined as never, undefined as never);
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true);
+    expect((result.content[0] as { text: string }).text).toContain("re-armed to needs-replan");
+
+    const after = read();
+    expect(after.status).toBe("needs-replan");
+    expect(after.error ?? null).toBeNull();
+    expect(after.planningFailure ?? null).toBeNull();
+    expect(after.recoveryDisposition ?? null).toBeNull();
+    expect(after.recoveryRetryCount ?? null).toBeNull();
+    expect(after.mergeRetries).toBe(0);
+    // The card stays put: its planning lane is already the lane the planner works in.
+    expect(after.column).toBe("todo");
+    expect(moveTask).not.toHaveBeenCalled();
+    expect(logEntry).toHaveBeenCalledWith(stranded.id, expect.stringContaining("planning run exhausted in todo"));
+  });
+
+  it("writes none of the fields whose preservation is the point of the class", async () => {
+    /*
+    FNXC:PlanningStrandedRetry 2026-11-10-23:58 (RUFU-575):
+    Why F4 (no `PROMPT.md`) and F5 (seed-only body) are not fixtures on THIS surface while they are on the
+    other three: the chat tool decides from the row and the workflow IR and has no task directory in this
+    seam, so a file-state test here could not fail even if the gate regressed - the classification takes
+    `{task, ir, now?}` (arity-pinned in `planning-stranded-retry.test.ts`), and the assertion below is the
+    matching structural proof that this surface neither reads nor writes the specification. The destructive
+    risk was the board's unlink, and that one is proven on the board surface with real bytes on disk.
+    */
+    const stranded = planningStrandedTask();
+    const { store, updateTask } = applyingStore(stranded);
+
+    await createTaskRetryTool(store, {}).execute("run", { id: stranded.id }, undefined as never, undefined as never, undefined as never);
+
+    const patch = updateTask.mock.calls[0][1] as Record<string, unknown>;
+    expect(patch.status).toBe("needs-replan");
+    /* A spec/lane/worktree key here would make the retry destructive no matter what the surface does.
+       Deleting `PROMPT.md` is what the BOARD used to do to exactly this row. */
+    for (const destructive of ["column", "steps", "currentStep", "promptContent", "worktree", "branch", "baseBranch", "baseCommitSha", "sessionFile", "workflowStepResults", "approvedPlanFingerprint"]) {
+      expect(patch, destructive).not.toHaveProperty(destructive);
+    }
+  });
+
+  it("still refuses a capacity-throttled queued card, which is progressing rather than stranded", async () => {
+    const throttled = planningStrandedTask({ error: "maxConcurrent capacity exhausted: used=12/12" });
+    const { store, updateTask, moveTask } = applyingStore(throttled);
+
+    const result = await createTaskRetryTool(store, {}).execute("run", { id: throttled.id }, undefined as never, undefined as never, undefined as never);
+
+    /* This task's own card logged exactly this line while waiting for a WIP slot. Admitting it would be
+       the global reclassification of every `queued` card that this task forbids. */
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect((result.content[0] as { text: string }).text).toContain("not in a retryable state");
+    expect(updateTask).not.toHaveBeenCalled();
+    expect(moveTask).not.toHaveBeenCalled();
+  });
+
+  /*
+  FNXC:ReseedLaneDiscriminator 2026-11-12-15:06 (RUFU-575 code review P0):
+  The same row, one field apart. An EXECUTION reseed writes the same cleared error and cadence the
+  planning reseed writes, and the scheduler then stamps `queued` on both, so before the lane split this
+  card was indistinguishable from a stranded planning run to every reader of the row. It keeps its
+  finished spec by being refused.
+  */
+  it("refuses an execution-reseeded card the scheduler queued, while the planning reseed row stays admitted", async () => {
+    const executionReseeded = planningStrandedTask({
+      status: "queued",
+      error: null,
+      recoveryRetryCount: null,
+      nextRecoveryAt: null,
+      recoveryDisposition: "escalated-execution-reseed",
+    });
+    const { store, updateTask, moveTask } = applyingStore(executionReseeded);
+
+    const result = await createTaskRetryTool(store, {}).execute("run", { id: executionReseeded.id }, undefined as never, undefined as never, undefined as never);
+
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect((result.content[0] as { text: string }).text).toContain("not in a retryable state (status: queued)");
+    expect(updateTask).not.toHaveBeenCalled();
+    expect(moveTask).not.toHaveBeenCalled();
+
+    // The control: swap only the author of the diagnostic and the same verb re-arms planning.
+    const planningReseeded = planningStrandedTask({
+      status: "queued",
+      error: null,
+      recoveryRetryCount: null,
+      nextRecoveryAt: null,
+      recoveryDisposition: "escalated-reseed",
+    });
+    const planning = applyingStore(planningReseeded);
+    const accepted = await createTaskRetryTool(planning.store, {}).execute("run", { id: planningReseeded.id }, undefined as never, undefined as never, undefined as never);
+    expect((accepted.content[0] as { text: string }).text).toContain("re-armed to needs-replan");
+  });
+
+  it("leaves a failed card in the review lane on its in-review path rather than re-arming planning", async () => {
+    const reviewCard = planningStrandedTask({
+      column: "in-review",
+      status: "failed",
+      error: SPEC_TIMEOUT_ERROR,
+      steps: [{ name: "Implement", status: "done" }, { name: "Verify", status: "pending" }],
+    });
+    const { store, moveTask, read } = applyingStore(reviewCard);
+
+    await createTaskRetryTool(store, {}).execute("run", { id: reviewCard.id }, undefined as never, undefined as never, undefined as never);
+
+    /* The class refuses this card on the COLUMN, so review keeps owning it: the pre-existing path clears
+       the status and re-queues, and never stamps `needs-replan`. Asserting the rejected value is the
+       point - a column-blind leg in the class would send a mid-flight implementation back to planning. */
+    expect(read().status).not.toBe("needs-replan");
+    expect(moveTask).toHaveBeenCalled();
+  });
+});
