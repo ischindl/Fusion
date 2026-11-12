@@ -264,6 +264,25 @@ export default defineConfig({
             re-read every file).
             */
             "src/__tests__/no-legacy-move-targets.test.ts",
+            /*
+            FNXC:EngineTests 2026-11-12-22:07 (RUFU-1003):
+            THE TOMBSTONE RATCHET BELONGS IN THE BLOCKING GATE FOR THE REASON THE TWO ABOVE DO, and this
+            card is the proof it cannot work from outside. `legacy-tombstones.test.ts` has one job: keep
+            deleted cutover machinery deleted. af234684e3 re-added one tombstoned module and widened a
+            second gate's marker family, and every blocking check stayed green while the guard reported
+            2 failed on every run of main for two months — a permanently false invariant is worse than a
+            missing one, because reviewers learn to discount the red and nobody can tell a live violation
+            from a stale guard. Admission is what makes the ratchet fire on the PR that reintroduces the
+            machinery, which is the only moment it is worth anything.
+
+            Admission evidence, on the same terms as its neighbours: no store, no network, no timers, no
+            subprocess at all (one readdir walk plus file reads — cheaper than the census's `ls-files`),
+            and it imports only `vitest` + `node:fs` + `node:path`, so the REDUCED `index.gate.ts`
+            bundle that keeps `reviewer.test.ts` out cannot affect it. Deterministic by construction —
+            same tree, same verdict. Measured ~0.6s of assertions (8 tests), twice under three seconds
+            including Vitest boot.
+            */
+            "src/__tests__/legacy-tombstones.test.ts",
             "src/__tests__/merger-merge-lifecycle.test.ts",
             "src/__tests__/merger-conflict-resolution.test.ts",
             "src/__tests__/merger-diff-scope.test.ts",

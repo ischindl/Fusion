@@ -108,7 +108,6 @@ import {
   admitWorkflowPrincipalBeforeNode,
   type ActiveWorkflowAuthority,
 } from "./workflow-principal-before-node.js";
-import { resolvePendingOverlapWaits } from "../workflows/overlap-plan-revalidation.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mirror TaskExecutor method/map surface
 type AnyFn = (...args: any[]) => any;
@@ -758,19 +757,27 @@ export async function executeWorkflowGraph(
       */
       settings = { ...settings };
       /*
-      FNXC:OverlapWaitSynchronization 2026-09-17-01:00:
-      A blocker landing wakes this task's continuation eligible to run again, but eligibility is
-      not authorization: resolve every pending file-scope wait episode BEFORE any graph node runs
-      so a resumed session either proceeds clean ("resume"), carries a factual delivery briefing
-      ("briefing"), or is held `revalidation-pending` for a targeted repair ("revalidate") — see
-      workflows/overlap-plan-revalidation.ts. Best-effort: a store without the overlap-wait
-      methods (older test doubles) or a transient failure here must not block ordinary graph entry.
+      FNXC:OverlapWaitSynchronization 2026-11-12-22:07 (RUFU-1003):
+      THERE IS NO OVERLAP-WAIT RESOLVER AT GRAPH ENTRY, and there must not be one. FN-375 deleted the
+      pre-node overlap revalidation pass (migration 0078 drained its `revalidation-pending` /
+      `repair-required` episodes and rebuilt the phase CHECK so they cannot return); af234684e3 brought
+      it back here off a pre-FN-375 base, and the tombstone ratchet has been red on main ever since.
+      The resurrection is removed rather than renamed, for three reasons that each stand alone: the
+      `revalidate` arm wrote `phase: "revalidation-pending"`, which the live CHECK constraint rejects,
+      so its only durable effect was a swallowed write; `workflowAdmissionHoldReason` deliberately
+      refuses an `overlap-plan-revalidation-*` marker, so the graph could suspend traversal for a hold
+      the settlement owner would never record; and a second claimant on the same episodes is the shape
+      MergeRebuild0919 already refused once for the heartbeat lane — two owners append the briefing
+      twice.
+
+      The need it claimed to serve is served elsewhere and proved better: overlap-wait episodes are
+      claimed, freshness-proven against real git, refused or completed by
+      `synchronizeOverlapWaitBeforeExecution` (executor/overlap-resume-gate.ts) at worktree acquisition
+      and implementation entry, and the waiter's continuation is woken by the self-healing →
+      `releaseFileScopeWaitingContinuations` bridge in createRuntimeSelfHealingManager. Plan freshness
+      itself is checked statelessly at WIP release (execution/plan-premise-check.ts), which is what the
+      tombstone entry for this file asserts.
       */
-      if (typeof deps.store.listTaskOverlapWaits === "function") {
-        await resolvePendingOverlapWaits({ store: deps.store, task, owner: `graph:${task.id}` }).catch((err) => {
-          executorLog.debug(`[workflow-graph] ${task.id} overlap-wait resolution failed: ${err instanceof Error ? err.message : String(err)}`);
-        });
-      }
       /*
        * FNXC:ExecutorToolFailureRetry 2026-07-16-12:00:
        * Capture a count cursor without reading the task log. Failure handling receives this

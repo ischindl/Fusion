@@ -19,7 +19,15 @@ into `project.task_overlap_waits` in the SAME transaction that would otherwise r
 marker (see observeOverlapWaitTransitionInTransaction, called from audit-ops.ts
 transitionQueuedEpisodeImpl and reset-lifecycle.ts). The executor later claims a pending episode,
 proves delivery freshness, and publishes exactly one of resume/briefing/revalidate before the
-continuation may resume — see packages/engine/src/workflows/overlap-plan-revalidation.ts.
+continuation may resume.
+
+FNXC:OverlapWaitSynchronization 2026-11-12-22:07 (RUFU-1003):
+The claimer is `synchronizeOverlapWaitBeforeExecution`
+(packages/engine/src/executor/overlap-resume-gate.ts), which proves freshness against real git at
+worktree acquisition / implementation entry. This note used to point at a pre-node pass in
+`packages/engine/src/workflows/overlap-plan-revalidation.ts`: FN-375 retired it, af234684e3 resurrected
+it off a stale base, and RUFU-1003 deleted it again — `legacy-tombstones.test.ts` is the line against a
+third copy, so the pointer names the live seam instead of the tombstone.
 */
 
 function mapRow(row: typeof schema.project.taskOverlapWaits.$inferSelect): TaskOverlapWait {
@@ -287,11 +295,16 @@ export async function completeTaskOverlapWaitImpl(
   store: TaskStore,
   /*
   FNXC:MergeRebuild0919 2026-09-19-21:45:
-  The phase union keeps canonical's `revalidation-pending` / `repair-required` values: canonical's
-  `overlap-plan-revalidation.ts` publishes `phase: "revalidation-pending"` for a `revalidate` decision,
-  and `project.task_overlap_waits`' phase CHECK constraint admits both. Everything else in this
-  implementation stays on our line, which supersedes canonical here — see the `durablePlanFingerprint`
-  note below (canonical still compares `sha256(task.prompt)`, a value no task row column can produce).
+  The phase union keeps canonical's `revalidation-pending` / `repair-required` values. Everything else in
+  this implementation stays on our line, which supersedes canonical here — see the
+  `durablePlanFingerprint` note below (canonical still compares `sha256(task.prompt)`, a value no task
+  row column can produce).
+
+  FNXC:OverlapWaitSynchronization 2026-11-12-22:07 (RUFU-1003):
+  Those two values are READ-side only. `mapRow` casts whatever the column holds, so an engine carrying
+  pre-0078 rows still surfaces them; no writer may publish them, because migration 0078 drains those
+  episodes and rebuilds the `task_overlap_waits` phase CHECK without them. The last writer was the
+  pre-node revalidation pass FN-375 deleted and RUFU-1003 re-deleted after af234684e3 resurrected it.
   */
   input: { taskId: string; episodeId: string; expectedRevision: number; owner: string; phase?: "ready" | "delivered" | "freshness-pending" | "revalidation-pending" | "repair-required"; receipt: OverlapWaitReceipt; executionIdentity?: OverlapWaitExecutionIdentity },
 ): Promise<TaskOverlapWait | null> {

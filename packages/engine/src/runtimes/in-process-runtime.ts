@@ -1192,6 +1192,13 @@ call past that tick and breaks the pinned ordering. Keep this dispatcher exactly
 `dispatchPlanningContinuationIfCurrent` / `settlePlanningContinuationDispatch` /
 `releaseFileScopeWaitingContinuations` are exported standalone utilities instead, wired from
 workflows/overlap-plan-revalidation.ts where no such same-tick contract exists.
+
+FNXC:OverlapWaitSynchronization 2026-11-12-22:07 (RUFU-1003):
+The wired-from name above is gone again — RUFU-1003 re-deleted that module, which FN-375 had retired
+and af234684e3 had resurrected off a stale base. The release helper's live caller is the bridge below:
+`createRuntimeSelfHealingManager` feeds every committed `OverlapBlockerRelease` to
+`releaseFileScopeWaitingContinuations`, then kicks the continuation drain. The same-tick constraint on
+this dispatcher is unchanged.
 */
 export function createPlanningContinuationDispatcher(input: {
   store: TaskStore;

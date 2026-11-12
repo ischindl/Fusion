@@ -2559,13 +2559,17 @@ export class WorkflowGraphExecutor {
            * the task or convert an operator-visible hold into graph failure.
            */
           /*
-          FNXC:OverlapWaitSynchronization 2026-09-17-01:08:
-          An `overlap-plan-revalidation-*` preflight refusal is the same shape of benign,
-          already-persisted hold as a principal refusal — a pending overlap-wait episode
-          (see workflows/overlap-plan-revalidation.ts) held the graph continuation rather than
-          failing the task, so treat it identically: suspend traversal, never follow a failure edge.
+          FNXC:OverlapWaitSynchronization 2026-11-12-22:07 (RUFU-1003):
+          The accepted preflight-hold marker family here is `workflow-principal-` ONLY, which is the
+          line FN-375 restored after deleting the overlap revalidation gate. af234684e3 re-widened it
+          to a second family, so a graph run suspended traversal on a marker that
+          `executor/workflow-admission-hold.ts` deliberately refuses to settle — the run stopped while
+          no lease was recorded as held, and `__tests__/workflow-admission-hold.test.ts` already pins
+          that refusal in words naming this ratchet. The marker is dead on both ends: no
+          `beforeNodeExecution` implementation produces it anymore, and the pass that once did is
+          deleted again (see the RUFU-1003 note in executor/execute-workflow-graph.ts).
           */
-          if (preflight.outcome === "failure" && typeof preflight.value === "string" && (preflight.value.startsWith("workflow-principal-") || preflight.value.startsWith("overlap-plan-revalidation-"))) {
+          if (preflight.outcome === "failure" && typeof preflight.value === "string" && preflight.value.startsWith("workflow-principal-")) {
             /*
              * FNXC:WorkflowAgentRouting 2026-08-07-23:05:
              * Carry the refusal REASON out on the shared context. The suspension marker

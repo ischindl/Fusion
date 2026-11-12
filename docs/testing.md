@@ -6,11 +6,13 @@ This guide consolidates the detailed testing guidance moved from `AGENTS.md`.
 
 ## The merge gate
 
-CI blocks PRs on exactly four checks (`.github/workflows/pr-checks.yml`): **Lint, Typecheck, Build, Gate**. The Gate job runs the boot smoke (`scripts/boot-smoke.mjs`: independent CLI `--help` and real `fn init` preflights run concurrently, the latter proving a durable `.fusion/project.json` marker, then a real `fn serve` answers `GET /api/health`, all against one isolated home) and `pnpm test:gate`: 17 static policy validators, 21 curated `engine-core` files, two PostgreSQL canaries, four core unit files, then the CI-shape test.
+CI blocks PRs on exactly four checks (`.github/workflows/pr-checks.yml`): **Lint, Typecheck, Build, Gate**. The Gate job runs the boot smoke (`scripts/boot-smoke.mjs`: independent CLI `--help` and real `fn init` preflights run concurrently, the latter proving a durable `.fusion/project.json` marker, then a real `fn serve` answers `GET /api/health`, all against one isolated home) and `pnpm test:gate`: 23 static policy validators, 24 curated `engine-core` files, two PostgreSQL canaries, four core unit files, then the CI-shape test.
 
 Set `BOOT_SMOKE_TIMINGS=1` when invoking `pnpm smoke:boot` to print per-attempt help, init, health, and SIGTERM phase timings for diagnosis; the flag is off by default so normal gate output stays concise. Everything else — the 4-way shards, the engine slow tier, the dashboard inventory guard — runs NON-BLOCKING in `.github/workflows/full-suite.yml` on push to main.
 
 Gate membership is the explicit allow-list in `packages/engine/vitest.config.ts` (`engine-core` project). Admission requires evidence of value (the test catches real regressions); tests never graduate in by default. A flaky gate test is evicted by deleting its allow-list line — the eviction PR does not need the flaky test to pass. The whole `engine-core` project must stay under ~60s wall-clock.
+
+**A ratchet that must always be true is the strongest case for gate membership, not the weakest.** `src/__tests__/legacy-tombstones.test.ts` was admitted under RUFU-1003 for that reason alone: it had reported 2 failed on every run of main for two months because one PR re-added a tombstoned module, and because nothing blocking consulted it, a correct red was indistinguishable from a stale guard and got discounted. A test whose only job is to refuse the PR that reintroduces deleted machinery is worthless in a lane that runs after the merge. The admission note beside its allow-list line carries the determinism/cost evidence and the `index.gate.ts` barrel reason `reviewer.test.ts` stays out.
 
 ### Shard watchdog and timing-artifact ownership
 

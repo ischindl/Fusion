@@ -32,6 +32,28 @@ const DELETED_FILES = [
   "packages/core/src/workflow-cutover.ts",
   "packages/engine/src/workflow-authoritative-driver.ts",
   "packages/engine/src/workflow-parity-observer.ts",
+  /*
+  FNXC:WorkflowCutover 2026-11-12-22:07 (RUFU-1003 — the one entry this file has ever had to enforce TWICE):
+  `overlap-plan-revalidation.ts` is not U10's entry; FN-375 ("gate plan premises at release") added it on
+  2026-09-13 together with the three `overlap` symbols below, deleting the 297-line module, its test, and
+  its call sites, and shipping migration 0078 to drain its `revalidation-pending` / `repair-required`
+  episodes and rebuild the phase CHECK so they could not return. Four days later af234684e3
+  ("feat(FN-332): reimplement overlap-wait resume gate + file-scope wait wake") re-added the file from a
+  branch that predated that removal, and this guard has reported 2 failed on every run of main since —
+  red, unowned, and outside the engine-core allow-list, which is how a permanently false invariant
+  survives. RUFU-1003 deleted the resurrection rather than renaming it, because the code proved it WAS
+  the retired machine and not a new machine in an old name: its `revalidate` arm wrote
+  `phase: "revalidation-pending"`, which the live CHECK rejects, so its only durable effect was a
+  swallowed write; `workflowAdmissionHoldReason` refuses the marker the resurrected executor arm matched
+  on, so the run suspended with no lease held; and the wake it performed is already owned by
+  `createRuntimeSelfHealingManager` -> `releaseFileScopeWaitingContinuations`. FN-332's need is served by
+  `synchronizeOverlapWaitBeforeExecution` (executor/overlap-resume-gate.ts), which claims the same
+  episodes and proves freshness against real git at acquisition / implementation entry — the seam
+  MergeRebuild0919 chose over this resolver for the heartbeat lane, and RUFU-330 pinned as load-bearing.
+
+  NOTHING was dropped from this list or from DELETED_SYMBOLS to reach green. The file and the marker are
+  gone again; the entries stand, and this run is the reason they exist.
+  */
   "packages/engine/src/workflows/overlap-plan-revalidation.ts",
   /*
   FNXC:WorkflowColumns 2026-07-27-10:25 (U2 / R9 — workflow-owned lifecycle):

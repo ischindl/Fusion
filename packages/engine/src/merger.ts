@@ -9706,8 +9706,9 @@ export async function aiMergeTask(
     Publish this landing as an overlap-wait delivery snapshot for every task currently waiting on
     `taskId` — best-effort and optional-method-gated so a store that predates the overlap-wait
     persistence layer (older test doubles, a store built before this reimplementation) is unaffected.
-    A resuming waiter's overlap-plan-revalidation pass reads this snapshot to decide
-    resume/briefing/revalidate without needing to re-derive it from Git itself.
+    A resuming waiter's overlap synchronization gate (`synchronizeOverlapWaitBeforeExecution`,
+    executor/overlap-resume-gate.ts) reads this snapshot to decide resume/briefing, or to refuse the
+    resume when freshness is unproven, without re-deriving the landing from Git itself.
     */
     if (typeof (store as Partial<TaskStore>).publishTaskOverlapDeliveries === "function") {
       try {

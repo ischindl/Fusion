@@ -3577,10 +3577,17 @@ updates: { title?: string; description?: string; prompt?: string; promptShrinkAu
 
   /*
   FNXC:MergeRebuild0919 2026-09-19-21:45:
-  The phase union carries canonical's `revalidation-pending` / `repair-required` values because
-  `packages/engine/src/workflows/overlap-plan-revalidation.ts` publishes `phase: "revalidation-pending"`
-  for a `revalidate` decision; `completeTaskOverlapWaitImpl` and the `task_overlap_waits` phase CHECK
-  accept the same five values. `reconcileTaskOverlapWaits` below stays — it is this line's own seam.
+  The phase union carries canonical's `revalidation-pending` / `repair-required` values, and
+  `completeTaskOverlapWaitImpl` accepts the same five values. `reconcileTaskOverlapWaits` below stays —
+  it is this line's own seam.
+
+  FNXC:OverlapWaitSynchronization 2026-11-12-22:07 (RUFU-1003):
+  Those two values exist for READING pre-0078 rows only: the `task_overlap_waits` phase CHECK built by
+  migration 0078 omits them, so nothing may persist them. The justification here used to name
+  `packages/engine/src/workflows/overlap-plan-revalidation.ts` as a writer — FN-375 retired that module,
+  af234684e3 resurrected it, and RUFU-1003 deleted it again. Narrowing this parameter to the phases the
+  rebuilt CHECK admits (`ready` / `delivered` / `freshness-pending`) is the honest follow-up; it is
+  deliberately not taken here because it is a core API change with pg-test coverage of its own.
   */
   async completeTaskOverlapWait(input: { taskId: string; episodeId: string; expectedRevision: number; owner: string; phase?: "ready" | "delivered" | "freshness-pending" | "revalidation-pending" | "repair-required"; receipt: OverlapWaitReceipt; executionIdentity?: OverlapWaitExecutionIdentity }) {
     return completeTaskOverlapWaitImpl(this, input);

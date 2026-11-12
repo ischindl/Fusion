@@ -6,8 +6,8 @@ import * as mergerModule from "../merger.js";
 FNXC:OverlapWaitSynchronization 2026-09-18-01:40:
 Reimplemented for FN-332: a successful merge publishes an overlap-wait delivery snapshot for every
 task currently waiting on it (captureSingleCommitLandedPaths + TaskStore.publishTaskOverlapDeliveries),
-so a waiter's overlap-plan-revalidation pass can decide resume/briefing/revalidate without
-re-deriving Git state itself. Gated on the store actually exposing the method, so it is a pure
+so a waiter's overlap synchronization gate can decide resume/briefing without re-deriving Git state
+itself. Gated on the store actually exposing the method, so it is a pure
 addition for stores/tests that predate the overlap-wait persistence layer.
 */
 describe("aiMergeTask overlap-wait delivery publication", () => {
