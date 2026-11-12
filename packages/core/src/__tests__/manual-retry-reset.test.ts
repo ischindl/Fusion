@@ -4,6 +4,7 @@ import {
   BRANCH_CONFLICT_RECOVERY_EXHAUSTED_PAUSE_REASON,
   IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON,
   MANUAL_RETRY_RESET_COUNTER_KEYS,
+  STUCK_LOOP_EXHAUSTED_PAUSE_REASON,
   buildAutoPauseClearPatch,
   buildManualRetryResetPatch,
   buildManualRetryResetPatchIfCurrent,
@@ -93,6 +94,69 @@ describe("buildAutoPauseClearPatch", () => {
       paused: true,
       userPaused: undefined,
       pausedReason: "token_budget_exceeded",
+    })).toEqual({});
+  });
+
+  /*
+  FNXC:TriageStuckKill 2026-11-11-01:35 (RUFU-562):
+  The exact production loss. 21 cards across 5 projects sat in `todo` carrying
+  `STUCK_LOOP_EXHAUSTED: ... 6/6 times without planning completion`, and the message named no remedy because no
+  remedy existed: the park writes `status: "failed"`, so every Retry surface accepted the card and zeroed
+  `stuckKillCount` through `MANUAL_RETRY_RESET_COUNTER_KEYS`, while this function returned `{}` for the reason.
+  The card stayed `paused`, and a paused card is refused outright by triage's `couldBeCandidate` - so the one
+  action the operator could see was a no-op that looked like it had worked. This is the pre-fix behavior these
+  cases would have caught.
+  */
+  it("clears the stuck-loop exhaustion park for a fresh retry", () => {
+    expect(buildAutoPauseClearPatch({
+      paused: true,
+      userPaused: undefined,
+      pausedReason: STUCK_LOOP_EXHAUSTED_PAUSE_REASON,
+    })).toEqual({
+      paused: false,
+      pausedReason: null,
+    });
+  });
+
+  it("still refuses to lift an operator pause that happens to carry the stuck-loop reason", () => {
+    expect(buildAutoPauseClearPatch({
+      paused: true,
+      userPaused: true,
+      pausedReason: STUCK_LOOP_EXHAUSTED_PAUSE_REASON,
+    })).toEqual({});
+  });
+
+  /*
+  FNXC:TriageStuckKill 2026-11-11-01:35 (RUFU-562):
+  One Retry must do BOTH halves, asserted through the real patch every surface spreads. The kill budget and the
+  pause are the two things that make this card inadmissible, and a Retry that cleared only one would leave the
+  card exactly where the operator found it.
+  */
+  it("lifts the stuck-loop park and zeroes its kill count in the same Retry patch", () => {
+    const live = {
+      paused: true,
+      userPaused: undefined,
+      pausedReason: STUCK_LOOP_EXHAUSTED_PAUSE_REASON,
+      status: "failed",
+      error: "STUCK_LOOP_EXHAUSTED: triage stuck detector killed AIWO-150 6/6 times",
+      stuckKillCount: 6,
+    };
+    const patch = buildManualRetryResetPatchIfCurrent(live as never, live as never, buildManualRetryResetPatch());
+    expect(patch).not.toBeNull();
+    expect(patch).toMatchObject({ paused: false, pausedReason: null, stuckKillCount: 0 });
+  });
+
+  /*
+  FNXC:TriageStuckKill 2026-11-11-01:35 (RUFU-562):
+  The allow-list widening stays exactly one reason wide. A near-neighbour from the same family - the incomplete-
+  steps park written by the operator-hold path - must still be refused, or this change would have widened every
+  stuck reason at once.
+  */
+  it("refuses the near-neighbour stuck pause reason the widening did not include", () => {
+    expect(buildAutoPauseClearPatch({
+      paused: true,
+      userPaused: undefined,
+      pausedReason: "stuck-loop-exhausted-incomplete-steps",
     })).toEqual({});
   });
 

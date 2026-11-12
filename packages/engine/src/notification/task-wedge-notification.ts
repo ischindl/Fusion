@@ -3,6 +3,9 @@ import {
   classifyTerminalFailureAutoRecovery,
   isPreMergeStepsNotRunRefusal,
   PRE_MERGE_STEPS_NOT_RUN_BLOCKER,
+  // FNXC:TriageStuckKill 2026-11-11-01:35 (RUFU-562): the descriptor key, the park writer, and the Retry allow-list
+  // that releases the park all read this one symbol, so the operator notice cannot drift from the remedy.
+  STUCK_LOOP_EXHAUSTED_PAUSE_REASON,
   type TaskExternalBlockReport,
   type TaskStallReasonCode,
   type TerminalFailureAutoRecoveryDecision,
@@ -236,7 +239,17 @@ export function describeTaskWedge(task: Task): TaskWedgeDescriptor | null {
     "branch-conflict-tripwire": { reasonKey: "branch-conflict-tripwire", reason: "A repeated branch conflict stopped automatic recovery.", action: "Resolve the branch conflict, then retry or reset to todo." },
     "branch-conflict-recovery-exhausted": { reasonKey: "branch-conflict-recovery-exhausted", reason: "Branch conflict recovery retries were exhausted.", action: "Resolve the conflict, then retry or reset to todo." },
     "branch-conflict-unrecoverable": { reasonKey: "branch-conflict-unrecoverable", reason: "An unrecoverable branch conflict needs operator intervention.", action: "Resolve the conflict or reset the task to todo and retry." },
-    "stuck-loop-exhausted-manual-intervention-required": { reasonKey: "stuck-loop-exhausted", reason: "Self-healing exhausted its stalled-task recovery loop.", action: "Inspect the task state, then retry or reset to todo." },
+    /*
+    FNXC:TriageStuckKill 2026-11-11-01:35 (RUFU-562):
+    The action sentence now names the one door that actually works, and the key is the shared constant rather
+    than a fourth copy of the literal. The old sentence - "Inspect the task state, then retry or reset to todo" -
+    named two actions without saying that the pause reason had no entry in the Retry pause-clear allow-list, so
+    on every surface that consults that guard (CLI retry, pi retry tool, dashboard legacy branch) the Retry
+    zeroed `stuckKillCount` and left the engine pause standing, and a paused card is inadmissible to planning.
+    "Reset to todo" is dropped from the primary clause because Retry is now sufficient on every surface and is
+    what the board button does.
+    */
+    [STUCK_LOOP_EXHAUSTED_PAUSE_REASON]: { reasonKey: "stuck-loop-exhausted", reason: "The planning watchdog exhausted its kill budget without completing a plan.", action: "Retry the task: it clears the stuck-kill budget, lifts this park, and re-seeds planning." },
     "non-retryable-provider-error": { reasonKey: "non-retryable-provider-error", reason: "A non-retryable provider error stopped the task.", action: "Repair provider access or configuration, then retry the task." },
     "in-review-stall-deadlock": { reasonKey: "in-review-stall-deadlock", reason: "Review stalled in a deadlock that needs operator intervention.", action: "Inspect review ownership and retry or reset to todo." },
   };

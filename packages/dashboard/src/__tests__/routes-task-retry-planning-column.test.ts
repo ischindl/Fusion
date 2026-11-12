@@ -416,4 +416,96 @@ describe("POST /api/tasks/:id/retry — specification retry follows the plan nod
     expect(moveOptions?.moveSource).not.toBe("user");
     expect(moveOptions?.parkOnHold).not.toBe(true);
   });
+
+  /*
+  FNXC:TriageStuckKill 2026-11-11-03:05 (RUFU-562):
+  The dashboard half of "Retry releases the exhaustion park", on the shape where the route's OTHER pause
+  authority cannot cover for it. Retry first tries the column's in-place restart, whose publication fence
+  raises `restart-stage-publishing` and then lowers the pause wholesale through `pauseTask(id, false)` — that
+  path releases any park it admits, listed or not. When the restart planner REFUSES (here: a workflow whose
+  plan node sits in `triage` while the card sits in `todo`), the legacy branch runs and `buildAutoPauseClearPatch`
+  is the only thing that can lift the pause. That is where the production loss lived: the park writes
+  `status: "failed"`, so the retryability gate let these cards through and `buildManualRetryResetPatch` already
+  zeroed `stuckKillCount`, yet the reason was not in the allow-list, the card stayed `paused`, and triage's
+  `couldBeCandidate` refuses a paused card outright — a 200 response that changed nothing.
+
+  The assertion is on the WRITTEN PATCH, not the status code, because the response was already 200 while broken.
+  */
+  it("lifts the stuck-loop exhaustion park on the legacy retry branch that already accepted the card", async () => {
+    const task = mkTask({
+      paused: true,
+      pausedReason: "stuck-loop-exhausted-manual-intervention-required",
+      pausedByAgentId: "triage",
+      stuckKillCount: 6,
+      error: "STUCK_LOOP_EXHAUSTED: triage stuck detector killed FN-9001 6/6 times without planning completion",
+    });
+    const { app, updateTask } = buildApp({
+      task,
+      workflowId: "custom:plans-in-triage",
+      definition: { ir: PLANS_IN_TRIAGE },
+    });
+
+    const res = await retry(app);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const written = Object.assign({}, ...updateTask.mock.calls.map((call) => call[1] as object));
+    // Both halves in one Retry: the budget AND the pause are what made the card inadmissible.
+    expect(written).toMatchObject({ paused: false, pausedReason: null, stuckKillCount: 0 });
+    expect(task.paused).toBeFalsy();
+    expect(task.pausedReason).toBeFalsy();
+  });
+
+  /*
+  FNXC:TriageStuckKill 2026-11-11-03:05 (RUFU-562):
+  The other dashboard shape, recorded honestly rather than claimed as a fix: the default workflow plans in
+  `todo`, so a `todo` card takes the in-place restart and its fence owns the pause fields. Retry releases the
+  stuck-loop park there too, and this case pins that it keeps doing so — the restart must end unfenced, or the
+  card trades one park for `restart-stage-publishing`.
+  */
+  it("ends the in-place restart unfenced and with its kill budget cleared", async () => {
+    const task = mkTask({
+      paused: true,
+      pausedReason: "stuck-loop-exhausted-manual-intervention-required",
+      pausedByAgentId: "triage",
+      stuckKillCount: 6,
+      error: "STUCK_LOOP_EXHAUSTED: triage stuck detector killed FN-9001 6/6 times without planning completion",
+    });
+    const { app } = buildApp({ task }); // no selection -> builtin:coding, whose plan nodes are in todo
+
+    const res = await retry(app);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(task.paused).toBeFalsy();
+    expect(task.pausedReason).toBeFalsy();
+    expect(task.stuckKillCount).toBe(0);
+  });
+
+  /*
+  FNXC:TriageStuckKill 2026-11-11-03:05 (RUFU-562):
+  The limit of the widening, on the branch where the guard is the authority: an operator pause stays an
+  operator pause even when it carries the engine's own reason string. (Deliberately the restart-REFUSED shape —
+  the restart fence's `pauseTask(id, false)` clears `userPaused` wholesale, which is pre-existing behaviour this
+  task neither adds nor changes.)
+  */
+  it("leaves an explicit operator pause standing on the same card", async () => {
+    const task = mkTask({
+      paused: true,
+      userPaused: true,
+      pausedReason: "stuck-loop-exhausted-manual-intervention-required",
+      stuckKillCount: 6,
+    });
+    const { app, updateTask } = buildApp({
+      task,
+      workflowId: "custom:plans-in-triage",
+      definition: { ir: PLANS_IN_TRIAGE },
+    });
+
+    const res = await retry(app);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const written = Object.assign({}, ...updateTask.mock.calls.map((call) => call[1] as object));
+    expect(written).not.toHaveProperty("paused", false);
+    expect(task.userPaused).toBe(true);
+    expect(task.paused).toBe(true);
+  });
 });

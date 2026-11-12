@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Agent, TaskStore, Task, TaskDetail, Settings } from "@fusion/core";
-import { applyOriginalDescription, builtinSeamPrompt, buildBootstrapPrompt, computePlanApprovalFingerprint, createCurrentPlanEvidence, deriveFallbackTaskTitle, MAX_TASK_LIST_TEXT_CHARS, renderTriagePolicyPlaceholders, resolveAgentPrompt, UnavailablePlanLockError } from "@fusion/core";
+import { applyOriginalDescription, builtinSeamPrompt, buildBootstrapPrompt, buildRefinementSeedPrompt, computePlanApprovalFingerprint, createCurrentPlanEvidence, deriveFallbackTaskTitle, MAX_TASK_LIST_TEXT_CHARS, renderTriagePolicyPlaceholders, resolveAgentPrompt, UnavailablePlanLockError } from "@fusion/core";
 import {
   TriageProcessor,
   buildSpecificationPrompt,
@@ -23,6 +23,18 @@ import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { planLog } from "../logger.js";
+/*
+FNXC:TriageStuckKill 2026-11-11-02:10 (RUFU-562):
+The cooldown is in-process by design, so the only honest way to drive it end to end is its own clock seam.
+Every case below clears the register, because a leaked cooldown would make a later case fail for a reason no
+reader of this file could see.
+*/
+import {
+  clearAllStuckRequeueCooldownsForTests,
+  getActiveStuckRequeueCooldown,
+  isStuckRequeueCoolingDown,
+  setStuckRequeueClockForTests,
+} from "../util/stuck-requeue-cooldown.js";
 
 const { mockReviewStep, mockCreateFnAgent, mockProbeEnvironmentCapabilities } = vi.hoisted(() => ({
   mockReviewStep: vi.fn(),
@@ -3090,6 +3102,393 @@ describe("requirePlanApproval setting", () => {
       expect(store.moveTask).toHaveBeenCalledWith("FN-APPROVAL", "todo");
       expect(store.updateTask).not.toHaveBeenCalledWith("FN-APPROVAL", expect.objectContaining({ status: "awaiting-approval" }));
     }
+  });
+});
+
+/*
+FNXC:TriageStuckKill 2026-11-11-01:12 (RUFU-562):
+Every shape a planning card's on-disk artifact can present, asserted against the ONE reader that decides
+whether a stuck-killed card has a resumable draft. Data states are enumerated deliberately: the
+classification picks the stuck-kill branch, and a shape that slips past the guard is what parked 21 cards
+`STUCK_LOOP_EXHAUSTED` - recovery refused the seed while the requeue claimed a draft, and neither lane could
+act on the other's precondition.
+*/
+describe("planning draft classification - an unplanned seed is not a resumable draft (RUFU-562)", () => {
+  let rootDir = "";
+  const seedTask = {
+    id: "FN-SEED-1",
+    title: "Trim the sidebar padding",
+    description: "The settings sidebar carries padding the design tokens already express.",
+  };
+  const promptPath = () => join(rootDir, ".fusion", "tasks", seedTask.id, "PROMPT.md");
+
+  beforeEach(async () => {
+    rootDir = await createTriageFixtureRoot("fusion-triage-seedread-");
+    await mkdir(join(rootDir, ".fusion", "tasks", seedTask.id), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await cleanupTriageFixtureRoot(rootDir);
+  });
+
+  async function readDraft(overrides: Partial<TaskStore> = {}): Promise<string | undefined> {
+    const processor = new TriageProcessor(createMockStore(overrides), rootDir);
+    return (processor as any).readNonEmptyPromptDraft(seedTask, "draft classification test");
+  }
+
+  it("reports the create-time bootstrap seed as no resumable draft", async () => {
+    await writeFile(promptPath(), buildBootstrapPrompt(seedTask.id, seedTask.title, seedTask.description));
+
+    expect(await readDraft()).toBeUndefined();
+  });
+
+  it("reports the refinement seed (no task-id heading prefix) as no resumable draft", async () => {
+    await writeFile(promptPath(), buildRefinementSeedPrompt(seedTask.title, seedTask.description));
+
+    expect(await readDraft()).toBeUndefined();
+  });
+
+  /*
+  FNXC:TriageStuckKill 2026-11-11-01:12 (RUFU-562):
+  Seed identity is NORMALIZED, not raw bytes (RUFU-259-era normalization note in core): a CRLF checkout
+  round-trip, a stripped trailing newline, or trailing spaces are all benign and all outside the writer's
+  control. Each must still read as a seed, or the card is misclassified as having a draft again.
+  */
+  it("still reports a seed that drifted through CRLF line endings and trailing whitespace", async () => {
+    const drifted = buildBootstrapPrompt(seedTask.id, seedTask.title, seedTask.description)
+      .replace(/\n/g, "\r\n")
+      .replace(/\n$/, "   \n");
+    await writeFile(promptPath(), drifted);
+
+    expect(await readDraft()).toBeUndefined();
+  });
+
+  it("still reports a seed whose trailing newline was stripped by an editor", async () => {
+    const stripped = buildBootstrapPrompt(seedTask.id, seedTask.title, seedTask.description).replace(/\n+$/, "");
+    await writeFile(promptPath(), stripped);
+
+    expect(await readDraft()).toBeUndefined();
+  });
+
+  it("returns a real specification unchanged - the guard must not eat a genuine draft", async () => {
+    const spec = "# Task: FN-SEED-1\n\n**Size:** M\n\n## Mission\n\nTrim the padding\n";
+    await writeFile(promptPath(), spec);
+
+    expect(await readDraft()).toBe(spec);
+  });
+
+  it("reports a missing PROMPT.md as no draft (ENOENT stays a cold-respec path)", async () => {
+    expect(await readDraft()).toBeUndefined();
+  });
+
+  it("reports a whitespace-only PROMPT.md as no draft", async () => {
+    await writeFile(promptPath(), "   \n\t\n  ");
+
+    expect(await readDraft()).toBeUndefined();
+  });
+
+  /*
+  FNXC:TriageStuckKill 2026-11-11-01:12 (RUFU-562):
+  The guard belongs to the PROMPT.md reader only. `refineTask`/`createTask` write seeds to that file and
+  NEVER to the `plan` task document, so a non-empty plan document is real authored content and must still
+  resume - this is the no-over-reach half of the invariant.
+  */
+  it("still resumes from a non-empty plan task document when PROMPT.md is only the seed", async () => {
+    await writeFile(promptPath(), buildBootstrapPrompt(seedTask.id, seedTask.title, seedTask.description));
+    const planContent = "## Mission\n\nAuthored in the plan document before the kill.\n";
+
+    const processor = new TriageProcessor(
+      createMockStore({ getTaskDocument: vi.fn(async () => ({ content: planContent })) as TaskStore["getTaskDocument"] }),
+      rootDir,
+    );
+    const draft = await (processor as any).readNonEmptyPlanningDraft(seedTask, "draft classification test");
+
+    expect(draft).toEqual({ content: planContent, source: "plan-document" });
+  });
+});
+
+/*
+FNXC:TriageStuckKill 2026-11-11-01:35 (RUFU-562) - SYMPTOM VERIFICATION:
+The reported failure, driven through the stuck-abort requeue with nothing mocked away that the report did not
+mention. Original symptom: cards parked in `todo` carrying `STUCK_LOOP_EXHAUSTED: ... killed <ID> 6/6 times
+without planning completion`, while their project's sibling cards sat unplanned because the doomed card held
+one of the project's two planning slots for every ~10-60 minute inactivity window.
+
+The pre-fix assertion pair (what this harness produced on the pre-fix tree, and why it is the misclassification
+and not a cosmetic wording problem): the engine logged `requeueing to resume existing PROMPT.md draft (5/6)`
+AND wrote the stuck-resume log action carrying the "resume from the existing draft below" revision feedback,
+for a card whose on-disk artifact was still the create-time seed - the same artifact the recovery lane had just
+refused in the same pass with `planning recovery skipped - PROMPT.md is still an unplanned seed`.
+
+Kill-count note (deviation from the spec's wording, deliberate): the spec said "one below the cap", but at
+`maxStuckKills: 6` that makes the next kill the exhaustion park, which cannot emit the resume-draft sentence
+at all. The reported production line was `(5/6)`, which is kill count 4 -> 5, so that is the shape driven here.
+*/
+describe("stuck-kill requeue of a seeded card re-seeds planning instead of resuming (RUFU-562)", () => {
+  let rootDir = "";
+  const seeded = {
+    id: "AIWO-150",
+    title: "Surface the paused-card count on the board header",
+    description: "Operators cannot see how many cards are paused without opening each one.",
+  };
+  const promptPath = () => join(rootDir, ".fusion", "tasks", seeded.id, "PROMPT.md");
+
+  // The reported shape: plan-in-place card, planner killed mid-pass, one kill short of the reported 5/6.
+  const seededRow = (overrides: Partial<Task> = {}): Task => ({
+    ...createTriageTask({
+      id: seeded.id,
+      title: seeded.title,
+      description: seeded.description,
+      column: "todo",
+      status: "planning",
+      stuckKillCount: 4,
+    }),
+    ...overrides,
+  });
+
+  beforeEach(async () => {
+    rootDir = await createTriageFixtureRoot("fusion-triage-stuckseed-");
+    await mkdir(join(rootDir, ".fusion", "tasks", seeded.id), { recursive: true });
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    clearAllStuckRequeueCooldownsForTests();
+    setStuckRequeueClockForTests();
+    await cleanupTriageFixtureRoot(rootDir);
+  });
+
+  async function driveRequeue(row: Task): Promise<{ store: TaskStore; logSpy: ReturnType<typeof vi.spyOn> }> {
+    const store = createMockStore({
+      getSettings: vi.fn().mockResolvedValue({
+        maxConcurrent: 2,
+        maxWorktrees: 4,
+        pollIntervalMs: 10_000,
+        groupOverlappingFiles: false,
+        autoMerge: true,
+        maxStuckKills: 6,
+      } as Settings),
+      getTask: vi.fn().mockResolvedValue(row),
+    });
+    const processor = new TriageProcessor(store, rootDir);
+    const logSpy = vi.spyOn(planLog, "log").mockImplementation(() => {});
+    await (processor as any).handleStuckAbortRequeue(row, "catch");
+    return { store, logSpy };
+  }
+
+  const loggedLines = (logSpy: ReturnType<typeof vi.spyOn>): string[] =>
+    logSpy.mock.calls.map((call) => String(call[0]));
+
+  it("does not claim to resume a draft the card never had - create-time bootstrap seed", async () => {
+    await writeFile(promptPath(), buildBootstrapPrompt(seeded.id, seeded.title, seeded.description));
+
+    const row = seededRow();
+    const { store, logSpy } = await driveRequeue(row);
+
+    // Pre-fix this line existed and contradicted the recovery lane's refusal in the same pass.
+    expect(loggedLines(logSpy).some((line) => line.includes("resume existing"))).toBe(false);
+    expect(store.logEntry).not.toHaveBeenCalledWith(
+      seeded.id,
+      "Triage stuck re-queue will resume existing planning draft",
+      expect.anything(),
+    );
+    // The card keeps its kill budget advance and returns to planning-pending, never `planning`, never paused.
+    expect(store.updateTask).toHaveBeenCalledWith(seeded.id, expect.objectContaining({ stuckKillCount: 5 }));
+    expect(store.updateTask).toHaveBeenCalledWith(seeded.id, expect.objectContaining({ status: null }));
+    expect(store.updateTask).not.toHaveBeenCalledWith(seeded.id, expect.objectContaining({ status: "planning" }));
+    expect(store.updateTask).not.toHaveBeenCalledWith(seeded.id, expect.objectContaining({ status: "needs-replan" }));
+    expect(store.updateTask).not.toHaveBeenCalledWith(seeded.id, expect.objectContaining({ paused: true }));
+    // The log line names the re-seed, so it matches the storage state this branch writes.
+    expect(loggedLines(logSpy).some((line) => line.includes("fresh planning pass"))).toBe(true);
+    expect(loggedLines(logSpy).some((line) => line.includes("unplanned seed"))).toBe(true);
+    /*
+    FNXC:TriageStuckKill 2026-11-11-02:10 (RUFU-562):
+    The throughput half: re-queueing must NOT hand the planning slot straight back to the card it just
+    killed, so the requeue arms the re-admission cooldown with the same post-increment count it persists.
+    */
+    expect(isStuckRequeueCoolingDown(seeded.id)).toBe(true);
+    expect(getActiveStuckRequeueCooldown(seeded.id)?.killCount).toBe(5);
+  });
+
+  it("does not claim to resume a draft the card never had - refinement seed shape", async () => {
+    await writeFile(promptPath(), buildRefinementSeedPrompt(seeded.title, seeded.description));
+
+    const { store, logSpy } = await driveRequeue(seededRow());
+
+    expect(loggedLines(logSpy).some((line) => line.includes("resume existing"))).toBe(false);
+    expect(store.logEntry).not.toHaveBeenCalledWith(
+      seeded.id,
+      "Triage stuck re-queue will resume existing planning draft",
+      expect.anything(),
+    );
+    expect(store.updateTask).toHaveBeenCalledWith(seeded.id, expect.objectContaining({ status: null, stuckKillCount: 5 }));
+  });
+
+  it("preserves the explicit replan status while cold-retrying a seeded card", async () => {
+    await writeFile(promptPath(), buildBootstrapPrompt(seeded.id, seeded.title, seeded.description));
+
+    const { store } = await driveRequeue(seededRow({ status: "needs-replan" }));
+
+    expect(store.updateTask).toHaveBeenCalledWith(seeded.id, expect.objectContaining({ status: "needs-replan", stuckKillCount: 5 }));
+    expect(store.updateTask).not.toHaveBeenCalledWith(seeded.id, expect.objectContaining({ paused: true }));
+  });
+
+  /*
+  FNXC:TriageStuckKill 2026-11-11-01:35 (RUFU-562):
+  The no-regression half: a card that DID write a real spec keeps the revision-mode resume it always had. The
+  guard rejects seeds, not drafts, and this is the case that proves the fix did not lobotomise the requeue.
+  */
+  it("still resumes in revision mode when the killed planner left a real specification", async () => {
+    await writeFile(promptPath(), "# Task: AIWO-150\n\n**Size:** M\n\n## Mission\n\nAdd the paused-card chip.\n");
+
+    const { store, logSpy } = await driveRequeue(seededRow());
+
+    expect(store.logEntry).toHaveBeenCalledWith(
+      seeded.id,
+      "Triage stuck re-queue will resume existing planning draft",
+      expect.stringContaining("Resume from the existing draft"),
+    );
+    expect(store.updateTask).toHaveBeenCalledWith(seeded.id, expect.objectContaining({ status: "needs-replan", stuckKillCount: 5 }));
+    expect(loggedLines(logSpy).some((line) => line.includes("resume existing PROMPT.md draft"))).toBe(true);
+  });
+
+  it("still parks on the sixth kill even when the artifact is only a seed", async () => {
+    await writeFile(promptPath(), buildBootstrapPrompt(seeded.id, seeded.title, seeded.description));
+
+    const { store } = await driveRequeue(seededRow({ stuckKillCount: 5 }));
+
+    expect(store.updateTask).toHaveBeenCalledWith(
+      seeded.id,
+      expect.objectContaining({ stuckKillCount: 6, status: "failed", paused: true }),
+    );
+    /*
+    FNXC:TriageStuckKill 2026-11-11-02:10 (RUFU-562):
+    The terminal park arms no cooldown. A parked card is `paused`, which already counts zero toward the
+    running-agent cap, and arming a timer on a card only an operator can release would hide it behind a
+    window nobody is waiting on.
+    */
+    expect(isStuckRequeueCoolingDown(seeded.id)).toBe(false);
+  });
+
+  /*
+  FNXC:TriageStuckKill 2026-11-11-02:10 (RUFU-562):
+  The exact production loss, asserted at the admission seam: `[plan] Plan throttled by running-agent cap:
+  eligible=1 [AIWO-148], maxConcurrent=2, claimed=2, processing=2 [AIWO-150, AIWO-148]` - the doomed card
+  held a slot while a sibling waited. The killed card must be invisible to discovery for its backoff window
+  and visible again exactly when it lapses, so the slot it just gave up is actually claimable.
+  */
+  it("withholds a killed card from planning discovery until its cooldown lapses", async () => {
+    let fakeNow = Date.now();
+    setStuckRequeueClockForTests(() => fakeNow);
+    await writeFile(promptPath(), buildBootstrapPrompt(seeded.id, seeded.title, seeded.description));
+
+    // The reported shape: the planner was killed mid-pass, so the row is `planning` when the watchdog fires.
+    // A `status: null` row would take the post-handoff "preserving released state" branch instead, which
+    // re-queues nothing and therefore arms nothing - the wrong seam to prove the slot is released.
+    const row = seededRow();
+    const store = createMockStore({
+      getSettings: vi.fn().mockResolvedValue({
+        maxConcurrent: 2,
+        maxWorktrees: 4,
+        pollIntervalMs: 10_000,
+        groupOverlappingFiles: false,
+        autoMerge: true,
+        maxStuckKills: 6,
+      } as Settings),
+      getTask: vi.fn().mockResolvedValue(row),
+    });
+    const processor = new TriageProcessor(store, rootDir);
+
+    await (processor as any).handleStuckAbortRequeue(row, "catch");
+    const cooldown = getActiveStuckRequeueCooldown(seeded.id);
+    expect(cooldown).not.toBeNull();
+
+    // Discovery sees the row as the cold-retry tail left it: planning-pending, kill count advanced.
+    const requeued: Task = { ...row, status: null, stuckKillCount: cooldown!.killCount };
+    const discover = (now: number) =>
+      (processor as any).discoverReadyPlanningTasks([requeued], now) as Promise<Task[]>;
+
+    fakeNow = cooldown!.untilAtMs - 1;
+    expect((await discover(fakeNow)).map((task) => task.id)).not.toContain(seeded.id);
+
+    fakeNow = cooldown!.untilAtMs;
+    expect((await discover(fakeNow)).map((task) => task.id)).toContain(seeded.id);
+  });
+
+  /*
+  FNXC:TriageStuckKill 2026-11-11-02:30 (RUFU-562) - STEP 4, the loop's second half:
+  The stuck-resume log entry survives the requeue, so a later planning pass still finds it as its feedback
+  source. That was the OTHER way the contradiction could bite: `buildSpecificationPrompt` sets
+  `isRevision = Boolean(existingPrompt && hasFeedback)`, so a card carrying the "resume from the existing draft
+  below" instruction while its artifact is only a seed would be told to surgically revise a document that does
+  not exist - the same misclassification one layer down.
+
+  The existing consumer already refuses that (`triage.ts`: stuck-resume action + no draft clears `feedback`), and
+  Step 1 is what makes `existingPrompt` undefined for a seed. So no new guard is warranted here - these two
+  cases pin the invariant so a future reader of either half cannot break the other unnoticed.
+  */
+  async function capturePlanningPrompt(row: Task): Promise<string> {
+    const { promptWithFallback } = await import("../pi.js");
+    const mocked = promptWithFallback as ReturnType<typeof vi.fn>;
+    mocked.mockReset();
+    mocked.mockResolvedValue(undefined);
+    mockCreateFnAgent.mockReset();
+    mockCreateFnAgent.mockResolvedValue({
+      session: {
+        state: {},
+        sessionManager: { getLeafId: vi.fn().mockReturnValue(null) },
+        prompt: vi.fn().mockResolvedValue(undefined),
+        dispose: vi.fn(),
+        navigateTree: vi.fn(),
+      },
+    });
+
+    const detail = { ...mockTaskDetail, id: row.id, description: row.description, attachments: [], comments: [] };
+    const read = vi.fn(async (id: string) => (id === row.id ? detail : null));
+    const store = createMockStore({ getTask: read, getTaskDetail: read } as Partial<TaskStore>);
+    await new TriageProcessor(store, rootDir).specifyTask(row);
+    expect(mocked).toHaveBeenCalled();
+    return String(mocked.mock.calls.at(-1)?.[1] ?? "");
+  }
+
+  // The stuck-resume log entry the requeue leaves behind, in the shape the consumer looks it up by.
+  const stuckResumeLog = () => [
+    {
+      timestamp: "2026-10-05T07:44:00.000Z",
+      action: "Triage stuck re-queue will resume existing planning draft",
+      outcome: "The previous triage session was killed by the stuck-task detector after writing a non-empty planning draft. Resume from the existing draft below.",
+    },
+  ];
+
+  it("does not hand a seeded card the stale 'resume the existing draft' instruction", async () => {
+    await writeFile(promptPath(), buildBootstrapPrompt(seeded.id, seeded.title, seeded.description));
+    const replanned = seededRow({ status: "needs-replan", log: stuckResumeLog() });
+
+    const prompt = await capturePlanningPrompt(replanned);
+
+    // Revision framing is the loop's fuel: it orders surgical edits against a document that is only a seed.
+    expect(prompt).not.toContain("Revise this task");
+    expect(prompt).not.toContain("Resume from the existing draft below");
+    expect(prompt).toContain("Specify this task");
+  });
+
+  /*
+  FNXC:TriageStuckKill 2026-11-11-02:30 (RUFU-562):
+  The still-correct positive case. The clearing rule is "no draft, no revision framing", not "never revise after
+  a kill" - a planner that genuinely left a specification must still be told to revise it, or every killed-but
+  -productive pass would throw away its work and the non-convergence loop that FN-246's seed-the-draft fix
+  removed would come back.
+  */
+  it("still enters revision mode when the killed planner really left a specification", async () => {
+    const realSpec = "# Task: AIWO-150\n\n**Size:** M\n\n## Mission\n\nShow the paused-card count in the header.\n";
+    await writeFile(promptPath(), realSpec);
+    const replanned = seededRow({ status: "needs-replan", log: stuckResumeLog() });
+
+    const prompt = await capturePlanningPrompt(replanned);
+
+    expect(prompt).toContain("Revise this task");
+    expect(prompt).toContain("Resume from the existing draft below");
+    expect(prompt).toContain("Show the paused-card count in the header.");
   });
 });
 
@@ -6268,7 +6667,7 @@ describe("taskCreate tool model inheritance", () => {
   });
 
   describe("assigned-agent triage inheritance", () => {
-    it("injects assigned-agent identity into triage system prompt", async () => {
+    it("injects assigned-agent identity into the triage planning request", async () => {
       const task = createTriageTask({ id: "FN-AGENT-001", assignedAgentId: "agent-007" });
       const store = createMockStore({
         getTask: vi.fn().mockResolvedValue({ ...task, attachments: [] }),
@@ -6307,9 +6706,28 @@ describe("taskCreate tool model inheritance", () => {
 
       await processor.specifyTask(task);
 
-      expect(capturedArgs.systemPrompt).toContain("## Identity");
-      expect(capturedArgs.systemPrompt).toContain("You are Atlas, Senior Planner");
-      expect(capturedArgs.systemPrompt).toContain("agent ID: agent-007");
+      /*
+      FNXC:PromptByteStability 2026-11-06-02:35 (RUFU-562):
+      This case asserted the assigned-agent identity block sat in the serialized `systemPrompt` handed to
+      `createFnAgent`. RUFU-267 moved every per-card block — identity included — out of the prompt head and
+      onto the request tail (`buildRequestVolatileContext` + `appendRequestVolatileContext`) so two
+      consecutive same-role planning requests share a cached prefix, and this assertion was never moved
+      with it, so it failed on `main` with no product defect behind it. Assert the relocated contract: the
+      identity still reaches the planner on the request it is sent, and the byte-stable head must NOT carry
+      it. Both halves are asserted because a future edit that pushed the block back into the head would
+      silently undo RUFU-267's cache while still showing the identity to the model.
+      */
+      const { promptWithFallback } = await import("../pi.js");
+      const sentPrompts = String(
+        (promptWithFallback as ReturnType<typeof vi.fn>)
+          .mock.calls
+          .map((call: unknown[]) => call[1])
+          .join("\n---\n"),
+      );
+      expect(sentPrompts).toContain("## Identity");
+      expect(sentPrompts).toContain("You are Atlas, Senior Planner");
+      expect(sentPrompts).toContain("agent ID: agent-007");
+      expect(capturedArgs.systemPrompt).not.toContain("## Identity");
     });
 
     it("prefers planning settings model ahead of assigned-agent runtime model", async () => {

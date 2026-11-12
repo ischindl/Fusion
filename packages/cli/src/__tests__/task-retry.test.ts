@@ -153,6 +153,87 @@ pgTest("runTaskRetry", () => {
   });
 
   /*
+  FNXC:TriageStuckKill 2026-11-11-02:25 (RUFU-562):
+  The CLI half of "Retry releases the exhaustion park", measured against the real command path and a real
+  PostgreSQL row rather than the patch builder alone. The 21 cards that produced this task sat in the planning
+  lane carrying `STUCK_LOOP_EXHAUSTED: ... 6/6 times without planning completion`, and `fn task retry` was
+  already accepting them: the park sets `status: "failed"`, so it passed the retry gate and `stuckKillCount`
+  went to zero. What survived was `paused: true` with `pausedReason: stuck-loop-exhausted-manual-intervention-required`,
+  and triage's `couldBeCandidate` refuses any paused card — so the command reported success and the card never
+  planned again. That is the pre-fix behavior this case would have caught, and it is why the assertion covers
+  BOTH halves plus the planning-pending status that lets triage pick the card up.
+
+  Deliberately NOT asserted here: `pausedByAgentId`. `buildAutoPauseClearPatch` clears the pause and its reason
+  and leaves the "who paused" attribution to `pauseTask(id, false)`, which this branch never calls — the same
+  shape the three already-listed park reasons have had, so asserting it here would demand more of the shared
+  guard than this change set out to give it.
+  */
+  it("releases the stuck-loop exhaustion park and zeroes its kill budget", async () => {
+    const store = h.store();
+    const task = await store.createTask({
+      title: "planning card killed six times",
+      description: "Build the thing",
+      column: "todo",
+    });
+    await store.updateTask(task.id, {
+      status: "failed",
+      error: "STUCK_LOOP_EXHAUSTED: triage stuck detector killed the task 6/6 times without planning completion",
+      paused: true,
+      pausedReason: "stuck-loop-exhausted-manual-intervention-required",
+      pausedByAgentId: "triage",
+      stuckKillCount: 6,
+    });
+
+    await runTaskRetry(task.id);
+
+    const updated = await store.getTask(task.id);
+    // Still in a planning lane — the retry must not push a never-planned card into execution.
+    expect(["todo", "hold"]).toContain(updated.column);
+    expect(updated.paused).toBeFalsy();
+    expect(updated.pausedReason).toBeFalsy();
+    expect(updated.stuckKillCount).toBe(0);
+    // A null status is planning-pending: the state triage plans from, not a failure it refuses.
+    expect(updated.status).toBeFalsy();
+    expect(updated.error).toBeFalsy();
+  });
+
+  /*
+  FNXC:TriageStuckKill 2026-11-11-03:20 (RUFU-562):
+  The limit of the widening, at the surface an operator actually types into. An operator who paused the card
+  themselves stays authoritative over the engine's automatic park lift.
+
+  Seeded through `pauseTask`, not `updateTask`: the store's field writer cannot write `userPaused` (named in
+  `task-column-restart.ts`), so an `updateTask({ userPaused: true })` seed silently produces a row with no
+  operator hold at all — measured when this case first ran and the guard correctly lifted the pause it was
+  supposed to refuse. `pauseTask` is the seam that owns the flag.
+  */
+  it("does not lift an explicit operator pause while retrying a stuck-loop card", async () => {
+    const store = h.store();
+    const task = await store.createTask({
+      title: "operator-held card",
+      description: "Build the thing",
+      column: "todo",
+    });
+    await store.updateTask(task.id, {
+      status: "failed",
+      error: "STUCK_LOOP_EXHAUSTED: triage stuck detector killed the task 6/6 times",
+      stuckKillCount: 6,
+    });
+    await store.pauseTask(task.id, true, undefined, {
+      userPaused: true,
+      pausedReason: "stuck-loop-exhausted-manual-intervention-required",
+    });
+
+    await runTaskRetry(task.id);
+
+    const updated = await store.getTask(task.id);
+    expect(updated.userPaused).toBe(true);
+    // The kill budget is still zeroed (the operator asked for a retry), but the hold survives it.
+    expect(updated.stuckKillCount).toBe(0);
+    expect(updated.paused).toBeTruthy();
+  });
+
+  /*
   FNXC:StrandedGateRetry 2026-10-13-04:40 (STAS-299 req 4 + Invariant C):
   The STAS-281 card at the CLI. Before this, `fn task retry FN-XXXX` on a card stranded by self-heal's
   FN-8492 orphan flip answered either "not in a retryable state" (the card carries no `failed`

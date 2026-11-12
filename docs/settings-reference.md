@@ -901,7 +901,7 @@ Default notes:
 | `autoUnpauseEnabled` | `boolean` | `true` | Auto-unpause after rate-limit-triggered pauses; manual pauses stay paused until explicitly unpaused by the user. |
 | `autoUnpauseBaseDelayMs` | `number` | `300000` | Base unpause delay in ms (5 min). |
 | `autoUnpauseMaxDelayMs` | `number` | `3600000` | Max auto-unpause delay in ms (1 hour). |
-| `maxStuckKills` | `number` | `6` | Max stuck-task terminations before permanent failure. |
+| `maxStuckKills` | `number` | `6` | Max stuck-task terminations before the card is parked for an operator. Release it with Retry, which clears the park and the kill budget. |
 | `maxBranchConflictRecoveries` | `number` | `5` | Max branch-conflict recovery retries before retry-storm failure handling triggers. |
 | `maxReviewerContextRetries` | `number` | `2` | Max reviewer context-compaction retries (FN-4082) per task. |
 | `maxReviewerFallbackRetries` | `number` | `2` | Max reviewer fallback-model retries (FN-4092) per task. |

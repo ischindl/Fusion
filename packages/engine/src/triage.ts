@@ -33,6 +33,8 @@ import {
   // FNXC:PlannerNoopRelease 2026-11-11-22:54 (RUFU-527): the release door refuses a redirect-only
   // PROMPT.md with the SAME classifier hold-release and the badge use; never re-open-code it here.
   isDuplicateRedirectOnlyPrompt,
+  // FNXC:TriageStuckKill 2026-11-11-01:35 (RUFU-562): one spelling of the park reason, shared with the Retry allow-list that releases it.
+  STUCK_LOOP_EXHAUSTED_PAUSE_REASON,
   // FNXC:TaskFollowUp 2026-09-17-16:10: FN-513's shared sub-type test; never re-derived here.
   isFollowUpTask,
   isTaskAwaitingPlanning,
@@ -101,6 +103,16 @@ type TaskListFormatter = (
   lines: string[],
   opts?: { maxChars?: number; clamp?: TaskListClamp },
 ) => string;
+
+/*
+FNXC:TriageStuckKill 2026-11-11-01:05 (RUFU-562):
+The minimum the draft readers need from a row to answer "is this artifact still an unplanned seed?":
+`isUnplannedSeedPrompt` compares the file against BOTH seed shapes, which are built from the id, the title and
+the description. Threading these three fields through the reader is what keeps the seed question answered by
+ONE predicate — a call site that re-read the row itself would be a second opinion, which is exactly the shape
+that parked 21 cards.
+*/
+type PlanningDraftSubject = Pick<Task, "id" | "description"> & { title?: string };
 
 const TRIAGE_STUCK_RESUME_LOG_ACTION = "Triage stuck re-queue will resume existing planning draft";
 const TRIAGE_STUCK_RESUME_FEEDBACK = "The previous triage session was killed by the stuck-task detector after writing a non-empty planning draft. Resume from the existing draft below: preserve useful structure and decisions, fill gaps, and continue toward review instead of restarting planning from scratch.";
@@ -501,6 +513,24 @@ import {
   getActivePrincipalHoldCooldown,
   recordPrincipalHoldBackoff,
 } from "./executor/execute-workflow-graph.js";
+/*
+FNXC:TriageStuckKill 2026-11-11-02:00 (RUFU-562):
+The killed-card re-admission gate, imported as its own statement from the leaf module that owns it. Deliberately
+NOT folded into the principal-hold import above: `execute-workflow-graph.ts` owns and re-exports the
+principal-hold ladder, but it has never owned the stuck-kill cooldown, and importing these two names from there
+resolves to `undefined` at runtime - `TypeError: isStuckRequeueCoolingDown is not a function` inside
+`couldBeCandidate`, which runs on every triage poll for every board, so a wrong specifier there stops all
+planning admission rather than just this branch. The cooldown lives in `./util/stuck-requeue-cooldown.ts` so
+admission depends on a leaf instead of on the executor graph module.
+
+Both ends are imported by name (no boolean wrapper) so the reader and the writer are each a visible reference -
+the principal-hold ladder's history (a reader moved to a call site where its guard could never be true, leaving
+the map written and never honored) is the cautionary tale for hiding one end behind a wrapper.
+*/
+import {
+  isStuckRequeueCoolingDown,
+  recordStuckRequeueCooldown,
+} from "./util/stuck-requeue-cooldown.js";
 import {
   detectUnrecognizedDependencyEvidence,
   detectWorktreeDependencyPlan,
@@ -2305,12 +2335,35 @@ export class TriageProcessor {
     return report.outcome !== "withheld";
   }
 
-  private async readNonEmptyPromptDraft(taskId: string, context: string): Promise<string | undefined> {
+  /*
+  FNXC:TriageStuckKill 2026-11-11-01:05 (RUFU-562):
+  THE canonical "is there a resumable planning draft?" answer for the whole triage lane. It is the ONE raw
+  PROMPT.md reader, and seed-awareness lives HERE rather than at any call site, because two lanes used to ask
+  two different questions about the same artifact and each one's remedy was the other's precondition:
+  `recoverPlannedTaskFromInterruptedPlanning` refused the card (`planning recovery skipped — PROMPT.md is
+  still an unplanned seed`, which is `isUnplannedSeedPrompt`), while `handleStuckAbortRequeue` asked only
+  "is the file non-empty?", so it logged "requeueing to resume existing PROMPT.md draft" for a card whose
+  artifact was still the create-time bootstrap stub. The card was silently re-admitted with nothing to
+  resume, went idle while holding one of the project's planning slots, and was killed again until the 6/6
+  budget was spent — 21 cards parked `STUCK_LOOP_EXHAUSTED` that way across 5 projects (AIWO-150 was the
+  newest). One predicate, one reader: a seed now reads as `undefined`, so the draft branch is unreachable
+  for a seed and the two verdicts cannot disagree again.
+
+  Call `isUnplannedSeedPrompt` DIRECTLY, never `isTaskAwaitingPlanning`: that helper's FastLane branch returns
+  false for a fast card's bootstrap seed (a fast card never awaits a generated spec), so routing the guard
+  through it would leave this exact bug in place for fast-lane cards while looking like it was fixed.
+
+  `isDuplicateRedirectOnlyPrompt` is deliberately NOT part of this guard. It needs the resolved duplicate
+  marker semantics (and for a title-only redirect, the title) that its owning callers already apply before
+  this reader is consulted, and a duplicate redirect is a terminal finalize decision rather than a draft to
+  resume, so widening the reader here would change finalize behavior this task does not own.
+  */
+  private async readNonEmptyPromptDraft(task: PlanningDraftSubject, context: string): Promise<string | undefined> {
     /*
     FNXC:Triage 2026-06-27-00:00:
     Stuck triage re-queues prefer a non-empty on-disk PROMPT.md draft. Match scheduler filesystem validation and approved recovery semantics (`trim().length > 0`) so empty or whitespace-only drafts cold-start safely instead of seeding a bogus revision.
     */
-    const promptPath = join(this.rootDir, ".fusion", "tasks", taskId, "PROMPT.md");
+    const promptPath = join(this.rootDir, ".fusion", "tasks", task.id, "PROMPT.md");
     const written = await readFile(promptPath, "utf-8").catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
       const code = err && typeof err === "object" && "code" in err ? String((err as { code?: unknown }).code) : undefined;
@@ -2321,15 +2374,32 @@ export class TriageProcessor {
       (FUSION_DEBUG=plan); keep warn for unexpected I/O so real disk failures stay visible.
       */
       if (code === "ENOENT") {
-        planLog.debug(`${taskId}: failed to read PROMPT.md during ${context} (${promptPath}): ${msg}`);
+        planLog.debug(`${task.id}: failed to read PROMPT.md during ${context} (${promptPath}): ${msg}`);
       } else {
-        planLog.warn(`${taskId}: failed to read PROMPT.md during ${context} (${promptPath}): ${msg}`);
+        planLog.warn(`${task.id}: failed to read PROMPT.md during ${context} (${promptPath}): ${msg}`);
       }
       return "";
     });
-    return written.trim().length > 0 ? written : undefined;
+    if (written.trim().length === 0) return undefined;
+    if (isUnplannedSeedPrompt(written, task.id, task.title, task.description)) {
+      /*
+      FNXC:TriageStuckKill 2026-11-11-01:05 (RUFU-562):
+      Debug, not warn: a seed here is the EXPECTED shape of a card whose planner was killed before it wrote
+      anything, and the caller's cold-retry branch is the correct disposition, not a degradation.
+      */
+      planLog.debug(`${task.id}: PROMPT.md during ${context} is still an unplanned seed — no resumable draft`);
+      return undefined;
+    }
+    return written;
   }
 
+  /*
+  FNXC:TriageStuckKill 2026-11-11-01:05 (RUFU-562):
+  Deliberately WITHOUT the seed guard that `readNonEmptyPromptDraft` now applies. A seed is only ever written
+  to PROMPT.md — `createTask`'s bootstrap stub and `refineTask`'s seed both go through that file and neither
+  ever touches the `plan` task document — so any non-empty plan document is content a planner actually
+  authored, and treating it as "no draft" would discard real work on the cold-retry path.
+  */
   private async readNonEmptyPlanDocument(taskId: string, context: string): Promise<string | undefined> {
     /*
     FNXC:Triage 2026-06-27-16:18:
@@ -2348,12 +2418,12 @@ export class TriageProcessor {
     return content.trim().length > 0 ? content : undefined;
   }
 
-  private async readNonEmptyPlanningDraft(taskId: string, context: string): Promise<{ content: string; source: "prompt" | "plan-document" } | undefined> {
-    const promptDraft = await this.readNonEmptyPromptDraft(taskId, context);
+  private async readNonEmptyPlanningDraft(task: PlanningDraftSubject, context: string): Promise<{ content: string; source: "prompt" | "plan-document" } | undefined> {
+    const promptDraft = await this.readNonEmptyPromptDraft(task, context);
     if (promptDraft) {
       return { content: promptDraft, source: "prompt" };
     }
-    const planDocument = await this.readNonEmptyPlanDocument(taskId, context);
+    const planDocument = await this.readNonEmptyPlanDocument(task.id, context);
     return planDocument ? { content: planDocument, source: "plan-document" } : undefined;
   }
 
@@ -2461,10 +2531,18 @@ export class TriageProcessor {
     });
     const maxKills = Math.max(1, maxStuckSettings.maxStuckKills ?? 6);
     const nextStuckKillCount = (freshTask.stuckKillCount ?? task.stuckKillCount ?? 0) + 1;
-    const draft = await this.readNonEmptyPlanningDraft(task.id, `stuck-detector ${context} cleanup`);
+    const draft = await this.readNonEmptyPlanningDraft(freshTask, `stuck-detector ${context} cleanup`);
 
     if (nextStuckKillCount >= maxKills) {
-      const exhaustedError = `STUCK_LOOP_EXHAUSTED: triage stuck detector killed ${task.id} ${nextStuckKillCount}/${maxKills} times without planning completion; task paused for manual intervention.`;
+      /*
+      FNXC:TriageStuckKill 2026-11-11-01:35 (RUFU-562):
+      The sentence names its own remedy. Across 5 projects, 21 cards reached this park and the message told an
+      operator nothing actionable - "paused for manual intervention" while the only action the board offers
+      (Retry) silently failed to release them, because Retry zeroed `stuckKillCount` but the pause reason was
+      not in `buildAutoPauseClearPatch`'s allow-list, and a paused card is inadmissible to planning.
+      Naming Retry here is honest only because that allow-list entry landed in the same change.
+      */
+      const exhaustedError = `STUCK_LOOP_EXHAUSTED: triage stuck detector killed ${task.id} ${nextStuckKillCount}/${maxKills} times without planning completion; the card is parked. Retry it (the board's Retry button, or the CLI "fn task retry ${task.id}") to clear the stuck-kill budget, lift this park, and re-seed planning.`;
       planLog.error(exhaustedError);
       await this.store.logEntry(task.id, exhaustedError).catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
@@ -2475,7 +2553,7 @@ export class TriageProcessor {
         status: "failed",
         error: exhaustedError,
         paused: true,
-        pausedReason: "stuck-loop-exhausted-manual-intervention-required",
+        pausedReason: STUCK_LOOP_EXHAUSTED_PAUSE_REASON,
         pausedByAgentId: "triage",
       }).catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
@@ -2487,6 +2565,14 @@ export class TriageProcessor {
     if (draft) {
       const sourceLabel = draft.source === "prompt" ? "PROMPT.md draft" : "plan task document";
       planLog.log(`${task.id} killed by stuck detector — requeueing to resume existing ${sourceLabel} (${nextStuckKillCount}/${maxKills})`);
+      /*
+      FNXC:TriageStuckKill 2026-11-11-02:00 (RUFU-562):
+      Armed with the POST-increment kill count, before the status write, so the slot is released on the same
+      path that re-queues the card. The exhaustion park below deliberately arms nothing: a parked card is
+      `paused`, which already counts zero toward the running-agent cap, and arming a cooldown on a card only
+      an operator can release would hide it behind a timer nobody is waiting on.
+      */
+      recordStuckRequeueCooldown(task.id, nextStuckKillCount);
       await this.store.logEntry(task.id, TRIAGE_STUCK_RESUME_LOG_ACTION, TRIAGE_STUCK_RESUME_FEEDBACK).catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
         planLog.warn(`${task.id}: failed to log stuck-resume feedback: ${msg}`);
@@ -2501,7 +2587,19 @@ export class TriageProcessor {
       return;
     }
 
-    planLog.log(`${task.id} killed by stuck detector — clearing status for cold retry (${nextStuckKillCount}/${maxKills})`);
+    /*
+    FNXC:TriageStuckKill 2026-11-11-01:30 (RUFU-562):
+    One sentence for every non-resumable artifact shape, and it now states WHICH shapes it covers. The old
+    wording said only "clearing status for cold retry", which was true but incomplete in the way that hid
+    this bug: the shape that arrived here most often - a PROMPT.md still carrying the create-time seed - was
+    indistinguishable in the log from a card whose file had never been written, while the neighbouring draft
+    branch was busy claiming to resume that same seed. The sentence now names the seed explicitly so the log
+    line matches the storage state this branch writes (status back to planning-pending, no pause, kill count
+    advanced) and so a reader of the production log can tell the two shapes apart.
+    */
+    planLog.log(`${task.id} killed by stuck detector — no resumable draft (PROMPT.md missing, empty, or still an unplanned seed); clearing status for a fresh planning pass (${nextStuckKillCount}/${maxKills})`);
+    // FNXC:TriageStuckKill 2026-11-11-02:00 (RUFU-562): same release-the-slot rule as the draft branch above.
+    recordStuckRequeueCooldown(task.id, nextStuckKillCount);
     const restoreStatus = (freshTask.status ?? task.status) === "needs-replan" ? "needs-replan" : null;
     await this.store.updateTask(task.id, {
       status: restoreStatus,
@@ -2609,6 +2707,21 @@ export class TriageProcessor {
       so a hold that only operator action can clear is re-checked at 15s doubling to 5min instead.
       */
       if (getActivePrincipalHoldCooldown(t.id)) return false;
+      /*
+      FNXC:TriageStuckKill 2026-11-11-02:00 (RUFU-562):
+      A card the stuck watchdog just killed may not re-take a planning slot until its backoff lapses. This is
+      the throughput half of the fix: the production measurement was a doomed card holding one of
+      `maxConcurrent=2` slots for its whole ~53-minute kill window while `eligible=1 [AIWO-148]` waited
+      behind it, and a kill that re-admits instantly releases the slot back to the very card it just killed.
+      Consulted HERE, beside the principal-hold probe, so both eligible-column filters below inherit the gate
+      from the single store-free screen - the same precedent one line above.
+
+      FNXC:TriageStuckKill 2026-11-11-02:20 (RUFU-562):
+      The card's own current kill count rides along, so an operator Retry (which zeroes it through the shared
+      retry patch) releases the gate on the very next poll instead of waiting out a window the Retry had just
+      made stale.
+      */
+      if (isStuckRequeueCoolingDown(t.id, t.stuckKillCount)) return false;
       const couldBeIntake = isTaskStillInPlanningStage(t) && !this.advancedRecoveryReservations.has(t.id);
       const couldBeHold = t.status !== "planning";
       return couldBeIntake || couldBeHold;
@@ -4423,7 +4536,7 @@ export class TriageProcessor {
               feedbackLogEntry?.action === TRIAGE_STUCK_RESUME_LOG_ACTION
                 ? "stuck-resume replan seed"
                 : "needs-replan revision seed";
-            const planningDraft = await this.readNonEmptyPlanningDraft(task.id, replanSeedReason);
+            const planningDraft = await this.readNonEmptyPlanningDraft(task, replanSeedReason);
             existingPrompt = planningDraft?.content;
             if (feedbackLogEntry?.action === TRIAGE_STUCK_RESUME_LOG_ACTION && !existingPrompt) {
               feedback = undefined;
@@ -6185,7 +6298,7 @@ export class TriageProcessor {
   private async resolvePlanningRetryHoldStatus(task: Task, knownPromptContent?: string): Promise<Task["status"] | null> {
     const restored = this.restoreStatusAfterInterruptedTriageWork(task);
     if (restored) return restored;
-    const content = knownPromptContent ?? await this.readNonEmptyPromptDraft(task.id, "planning retry hold");
+    const content = knownPromptContent ?? await this.readNonEmptyPromptDraft(task, "planning retry hold");
     return content && !isTaskAwaitingPlanning(task, content) ? "needs-replan" : null;
   }
 

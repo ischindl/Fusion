@@ -11,6 +11,30 @@ literal has exactly one spelling across the two packages). It joins the Retry al
 park's own remedy sentence names Retry as its door — see the note on `buildAutoPauseClearPatch`.
 */
 export const BRANCH_CONFLICT_RECOVERY_EXHAUSTED_PAUSE_REASON = "branch-conflict-recovery-exhausted";
+/*
+FNXC:TriageStuckKill 2026-11-11-01:35 (RUFU-562):
+The pause reason the triage stuck watchdog's TERMINAL park writes after its kill budget is spent
+(`handleStuckAbortRequeue` in `packages/engine/src/triage.ts`, which imports this constant so the literal has
+exactly one spelling across the two packages, and the wedge descriptor in
+`packages/engine/src/notification/task-wedge-notification.ts` keys off the same symbol).
+
+It joins the Retry allow-list below for the same reason `branch-conflict-recovery-exhausted` did, and the
+production measurement behind it is worse: 21 cards across 5 projects sat in `todo` carrying
+`STUCK_LOOP_EXHAUSTED: ... 6/6 times without planning completion`. The park sets `status: "failed"`, so every
+operator Retry surface already accepted the card as retryable and already zeroed `stuckKillCount` via
+`MANUAL_RETRY_RESET_COUNTER_KEYS` - but with no entry here, every surface whose pause lift comes from THIS
+function (the CLI retry, the pi retry tool, and the dashboard route's legacy branch taken when the in-place
+restart planner refuses) left `paused: true` with this reason in place, and `couldBeCandidate` in triage
+refuses a paused card outright: the Retry reset the budget and reported success while the card stayed
+permanently inadmissible. The dashboard's in-place column restart is the one shape that already escaped, because
+its `restart-stage-publishing` publication fence raises the pause and then clears the pause fields wholesale
+through `pauseTask(id, false)`; that fence owns no list, which is precisely why a list-owning guard must not be
+the only door.
+
+Safe by the argument the three existing entries already rest on: this is an engine-authored disposition, not an
+operator hold, so `userPaused === true` is checked FIRST and an explicit operator pause is never lifted here.
+*/
+export const STUCK_LOOP_EXHAUSTED_PAUSE_REASON = "stuck-loop-exhausted-manual-intervention-required";
 
 export const MANUAL_RETRY_RESET_COUNTER_KEYS = [
   "stuckKillCount",
@@ -61,6 +85,13 @@ export function buildAutoPauseClearPatch(
       task.pausedReason === IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON
       || task.pausedReason === BRANCH_CONFLICT_UNRECOVERABLE_PAUSE_REASON
       || task.pausedReason === BRANCH_CONFLICT_RECOVERY_EXHAUSTED_PAUSE_REASON
+      /*
+      FNXC:TriageStuckKill 2026-11-11-01:35 (RUFU-562):
+      The stuck-kill park joins the allow-list so the Retry that already zeroes its kill count also lifts the
+      pause that would otherwise make the card permanently inadmissible. Nothing else in this function changes:
+      an unrelated reason, and any explicit user pause, still returns `{}`.
+      */
+      || task.pausedReason === STUCK_LOOP_EXHAUSTED_PAUSE_REASON
     )
   ) {
     return {
