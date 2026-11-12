@@ -6,6 +6,8 @@ import "../executor-test-helpers.js";
 import { TaskExecutor } from "../../executor.js";
 import { createMockStore, resetExecutorMocks } from "../executor-test-helpers.js";
 import { routeGraphMergeFailureToRetry } from "../../executor/route-graph-merge-failure-to-retry.js";
+import { addActiveWorktree } from "../../executor/active-worktrees.js";
+import { PRE_MERGE_STEPS_NOT_RUN_BLOCKER } from "@fusion/core";
 import type { TaskDetail } from "@fusion/core";
 
 const now = "2026-08-26T00:00:00.000Z";
@@ -1189,6 +1191,238 @@ describe("deferred terminal parking — retryTerminalFailurePersistence outcomes
 
       expect(attempts).toBe(2);
       expect(current).toMatchObject({ status: "failed", error: expect.any(String) });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+/*
+FNXC:WorktreeLiveness 2026-11-12-03:36 (RUFU-609):
+The merge-retry parks are the last non-releasing terminal parks that kept the executor's in-memory
+worktree-ownership entry, so a card parked here went on showing up in `listWorktreeHolders()` while
+nothing ran it — and the FN-6782 leaked-slot reaper never reclaims a review-lane card. These cases pin
+the release rule the router's own return value encodes: release on the COMMITTED park, never on
+`handled`. The distinction is not cosmetic — every declined park still reports handled:true, and the
+registry is keyed by taskId alone, so releasing on a decline would evict the live binding of the
+replacement dispatch an operator requeue had already started in that same checkout. The mid-fence case
+is the trap a flag shared across the backoff attempts would fall into: an attempt whose reducer ran but
+whose write then threw must not leave a commit behind for the next, declining, attempt.
+*/
+describe("routeGraphMergeFailureToRetry — worktree-ownership release", () => {
+  beforeEach(() => {
+    resetExecutorMocks();
+  });
+
+  const mergeFailureResult = {
+    disposition: "failed",
+    outcome: "failure",
+    visitedNodeIds: ["review", "merge"],
+    context: {},
+  } as any;
+
+  function routerDeps(
+    store: any,
+    task: TaskDetail,
+    activeWorktrees: Map<string, Set<string>>,
+    extra: Record<string, unknown> = {},
+  ) {
+    return {
+      store,
+      activeWorktrees,
+      getRunContextFor: () => undefined,
+      mergeRequester: vi.fn(async () => {
+        throw new Error(`Cannot merge ${task.id}: task is marked 'needs-replan'`);
+      }),
+      ensureWorkflowMergeBoundaryTask: vi.fn(async () => ({ task, blocked: undefined })),
+      persistTokenUsage: vi.fn(),
+      ...extra,
+    } as any;
+  }
+
+  it("releases the claim when the rejected-retry park lands its failed write", async () => {
+    const store = createMockStore();
+    const task = makeTask(await mkdtemp(join(tmpdir(), "fusion-rufu609-6c-wt-")));
+    store.getTask.mockResolvedValue(task);
+    store.getSettings.mockResolvedValue({ autoMerge: true });
+    const executor = new TaskExecutor(store, await mkdtemp(join(tmpdir(), "fusion-rufu609-6c-root-")), {});
+    (store as any).updateTaskAtomic = vi.fn(async (_id: string, reducer: (current: TaskDetail) => Partial<TaskDetail> | null, context: unknown) => {
+      const patch = reducer(task);
+      return patch ? store.updateTask(task.id, patch, context) : task;
+    });
+    executor.setMergeRequester(vi.fn(async () => {
+      throw new Error("Cannot merge FN-GDPR53-T: task is marked 'needs-replan'");
+    }) as any);
+    (executor as any).markPausedAborted(task.id, "pause-resume");
+    addActiveWorktree((executor as any).activeWorktrees, task.id, task.worktree!);
+    expect(executor.getActiveWorktreePaths(task.id)).toEqual([task.worktree]);
+
+    await (executor as any).handleGraphFailure(task, mergeFailureResult);
+
+    // End-to-end through the real deps bag: the rejected-retry park committed, so the claim is gone.
+    expect(store.updateTask.mock.calls.some((call: unknown[]) => (call[1] as any)?.status === "failed")).toBe(true);
+    expect(executor.getActiveWorktreePaths(task.id)).toEqual([]);
+    expect(executor.listWorktreeHolders().filter((holder) => holder.taskId === task.id)).toHaveLength(0);
+    // The release is in-memory only; the row keeps naming the checkout a Retry resumes in.
+    const failedPatch = store.updateTask.mock.calls.find((call: unknown[]) => (call[1] as any)?.status === "failed")![1] as Record<string, unknown>;
+    expect("worktree" in failedPatch).toBe(false);
+    expect("branch" in failedPatch).toBe(false);
+  });
+
+  it("keeps the claim while still reporting handled when the fence declines after a mid-fence throw", async () => {
+    vi.useFakeTimers();
+    try {
+      const task = makeTask(await mkdtemp(join(tmpdir(), "fusion-rufu609-decline-wt-")), {
+        columnMovedAt: "2026-09-04T02:43:00.000Z",
+      });
+      // An operator requeued the card while the park was backing off, so the fence's second attempt
+      // reads a shifted columnMovedAt and declines.
+      const requeued = { ...task, columnMovedAt: "2026-09-04T02:44:00.000Z" };
+      let current: TaskDetail = task;
+      const store = createMockStore();
+      let attempts = 0;
+      const activeWorktrees = new Map<string, Set<string>>();
+      addActiveWorktree(activeWorktrees, task.id, task.worktree!);
+      (store as any).updateTaskAtomic = vi.fn(async (_id: string, reducer: (row: TaskDetail) => Partial<TaskDetail> | null) => {
+        attempts += 1;
+        const patch = reducer(current);
+        // The reducer ran and then the write failed — the shape that leaves a hoisted flag lying.
+        if (attempts === 1) throw new Error("store unavailable");
+        if (patch) current = { ...current, ...patch };
+        return current;
+      });
+
+      const outcome = routeGraphMergeFailureToRetry(routerDeps(store, task, activeWorktrees), task, mergeFailureResult, "merge-seam" as any);
+      await vi.advanceTimersByTimeAsync(0);
+      current = requeued;
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(await outcome).toBe(true);
+      expect(attempts).toBe(2);
+      expect(current).toEqual(requeued);
+      expect(activeWorktrees.has(task.id)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the claim while still reporting handled when the fence declines a boundary-preparation park", async () => {
+    // The other half of the handled-vs-committed pair, at the AUTO_MERGE_RETRY_FAILED park: the boundary
+    // preparation throws, the park's reducer declines because the row already carries a terminal decision,
+    // so the route is over (handled) while the write proved nothing (committed false). The card belongs to
+    // the disposition that set that status — often a replacement dispatch re-registered under this same
+    // taskId key — so a delete here would evict a live holder.
+    vi.useFakeTimers();
+    try {
+      const task = makeTask(await mkdtemp(join(tmpdir(), "fusion-rufu609-6b-decline-wt-")), { status: "failed" });
+      const store = createMockStore();
+      (store as any).updateTaskAtomic = vi.fn(async (_id: string, reducer: (current: TaskDetail) => Partial<TaskDetail> | null) => {
+        const patch = reducer(task);
+        return patch ? store.updateTask(task.id, patch, undefined) : task;
+      });
+      const activeWorktrees = new Map<string, Set<string>>();
+      addActiveWorktree(activeWorktrees, task.id, task.worktree!);
+
+      const outcome = routeGraphMergeFailureToRetry(
+        routerDeps(store, task, activeWorktrees, {
+          ensureWorkflowMergeBoundaryTask: vi.fn(async () => {
+            throw new Error("merge runner unavailable");
+          }),
+        }),
+        task,
+        { disposition: "failed", outcome: "failure", visitedNodeIds: ["merge"], context: {} } as any,
+        "merge-seam" as any,
+      );
+      await vi.advanceTimersByTimeAsync(70_000);
+
+      expect(await outcome).toBe(true);
+      // The reducer returned null: the atomic write resolved as a successful no-op and wrote nothing.
+      expect(store.updateTask).not.toHaveBeenCalled();
+      expect(activeWorktrees.has(task.id)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the claim when every park write exhausts the bounded backoff", async () => {
+    vi.useFakeTimers();
+    try {
+      const task = makeTask(await mkdtemp(join(tmpdir(), "fusion-rufu609-exhaust-wt-")));
+      const store = createMockStore();
+      store.updateTask.mockImplementation(async () => { throw new Error("store down"); });
+      (store as any).updateTaskAtomic = vi.fn(async () => { throw new Error("store down"); });
+      const activeWorktrees = new Map<string, Set<string>>();
+      addActiveWorktree(activeWorktrees, task.id, task.worktree!);
+
+      const outcome = routeGraphMergeFailureToRetry(routerDeps(store, task, activeWorktrees), task, mergeFailureResult, "merge-seam" as any);
+      await vi.advanceTimersByTimeAsync(70_000);
+
+      // Not handled → the graph-failure handler's own terminal park takes over. Nothing landed, so the
+      // checkout stays claimed for whichever owner finally settles the row.
+      expect(await outcome).toBe(false);
+      expect(activeWorktrees.has(task.id)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the claim for the RUFU-276 unrun-gate deferral, which parks nothing at all", async () => {
+    // This arm writes no status, no error, and no mergeRetries: the unrun-gate reroute lane owns the
+    // next attempt, so the card stays runnable in this checkout and the claim must stand.
+    const task = makeTask(await mkdtemp(join(tmpdir(), "fusion-rufu609-defer-wt-")));
+    const store = createMockStore();
+    (store as any).updateTaskAtomic = vi.fn(async (_id: string, reducer: (current: TaskDetail) => Partial<TaskDetail> | null) => {
+      const patch = reducer(task);
+      return patch ? store.updateTask(task.id, patch, undefined) : task;
+    });
+    const activeWorktrees = new Map<string, Set<string>>();
+    addActiveWorktree(activeWorktrees, task.id, task.worktree!);
+
+    const outcome = await routeGraphMergeFailureToRetry(
+      routerDeps(store, task, activeWorktrees, {
+        mergeRequester: vi.fn(async () => {
+          throw new Error(`Cannot merge ${task.id}: ${PRE_MERGE_STEPS_NOT_RUN_BLOCKER}`);
+        }),
+      }),
+      task,
+      mergeFailureResult,
+      "merge-seam" as any,
+    );
+
+    expect(outcome).toBe(true);
+    expect(store.updateTask.mock.calls.some((call: unknown[]) => (call[1] as any)?.status === "failed")).toBe(false);
+    expect(store.updateTaskAtomic).not.toHaveBeenCalled();
+    expect(activeWorktrees.has(task.id)).toBe(true);
+  });
+
+  it("releases the claim for the merge-preparation-failure park too", async () => {
+    vi.useFakeTimers();
+    try {
+      const task = makeTask(await mkdtemp(join(tmpdir(), "fusion-rufu609-6b-wt-")));
+      const store = createMockStore();
+      (store as any).updateTaskAtomic = vi.fn(async (_id: string, reducer: (current: TaskDetail) => Partial<TaskDetail> | null, context: unknown) => {
+        const patch = reducer(task);
+        return patch ? store.updateTask(task.id, patch, context) : task;
+      });
+      const activeWorktrees = new Map<string, Set<string>>();
+      addActiveWorktree(activeWorktrees, task.id, task.worktree!);
+
+      const outcome = routeGraphMergeFailureToRetry(
+        routerDeps(store, task, activeWorktrees, {
+          ensureWorkflowMergeBoundaryTask: vi.fn(async () => {
+            throw new Error("merge runner unavailable");
+          }),
+        }),
+        task,
+        { disposition: "failed", outcome: "failure", visitedNodeIds: ["merge"], context: {} } as any,
+        "merge-seam" as any,
+      );
+      await vi.advanceTimersByTimeAsync(70_000);
+
+      expect(await outcome).toBe(true);
+      const failedUpdate = store.updateTask.mock.calls.find((call: unknown[]) => (call[1] as any)?.status === "failed");
+      expect(String((failedUpdate?.[1] as Record<string, unknown>)?.error)).toContain("merge runner unavailable");
+      expect(activeWorktrees.has(task.id)).toBe(false);
     } finally {
       vi.useRealTimers();
     }

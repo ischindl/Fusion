@@ -7,6 +7,7 @@ import {
   TaskExecutor,
 } from "../../executor.js";
 import { SelfHealingManager } from "../../self-healing.js";
+import { addActiveWorktree } from "../../executor/active-worktrees.js";
 import { createMockStore, resetExecutorMocks } from "../executor-test-helpers.js";
 
 const COMPLETED_BLOCKED_PAUSE_REASON = "completed-work-blocked";
@@ -141,6 +142,81 @@ describe("execute requeue loop guard", () => {
     const lastLog = h.store.logEntry.mock.calls.at(-1)?.[1] as string;
     expect(lastLog).toMatch(/^EXECUTION_DISPATCH_LOOP_EXHAUSTED:/);
     expect(lastLog).not.toContain("executor recovery preserved");
+  });
+
+  /*
+  FNXC:WorktreeLiveness 2026-11-12-03:36 (RUFU-609):
+  The cap is this arm's run-ending park — "No further automatic retries will run" — so its committed
+  terminal write releases the executor's worktree-ownership claim, while a below-cap re-queue keeps it:
+  that card is re-queued and its next dispatch resumes in the same checkout. The assertion that matters
+  for the operator symptom is the holder listing, which reported this card as a holder forever before
+  the release, and it is exactly what the FN-6782 leaked-slot reaper could not reclaim from a WIP lane.
+  The durable columns stay untouched either way, so a Retry continues from the recorded worktree.
+  */
+  it("releases the worktree binding at the exhaustion park and keeps it on a below-cap re-queue", async () => {
+    const h = harness(task({
+      id: "RUFU-609-EXHAUST",
+      column: "todo",
+      steps: [
+        { name: "Preflight", status: "done" },
+        { name: "Implement", status: "in-progress" },
+      ],
+      currentStep: 1,
+    }));
+    addActiveWorktree((h.executor as any).activeWorktrees, "RUFU-609-EXHAUST", "/tmp/fusion-fn-7863");
+
+    await failAtExecute(h.executor, h.live);
+
+    // Below the cap the card is re-queued, not terminalized: the claim belongs to its next dispatch.
+    expect(h.executor.getActiveWorktreePaths("RUFU-609-EXHAUST")).toEqual(["/tmp/fusion-fn-7863"]);
+
+    for (let i = 1; i < MAX_EXECUTE_REQUEUE_LOOP_CYCLES; i += 1) {
+      await failAtExecute(h.executor, h.live);
+    }
+
+    expect(h.live.status).toBe("failed");
+    expect(h.executor.getActiveWorktreePaths("RUFU-609-EXHAUST")).toEqual([]);
+    expect(h.executor.listWorktreeHolders().filter((holder) => holder.taskId === "RUFU-609-EXHAUST")).toHaveLength(0);
+    // The release is the in-memory map only — the row still names the checkout a Retry resumes in.
+    expect(h.live.worktree).toBe("/tmp/fusion-fn-7863");
+    expect(h.live.branch).toBe("fusion/fn-7863");
+  });
+
+  /*
+  FNXC:WorktreeLiveness 2026-11-12-03:36 (RUFU-609):
+  The exhaustion release is keyed on the terminal write RESOLVING, so a store that refuses that write
+  must leave the claim standing: nothing landed, the row is not terminal, and the checkout still belongs
+  to whatever finally settles it. Bookkeeping writes still succeed here — only the terminal patch throws —
+  so the arm reaches its write and unwinds past the release line rather than failing earlier.
+  */
+  it("keeps the worktree binding when the exhaustion park's terminal write throws", async () => {
+    const h = harness(task({
+      id: "RUFU-609-EXHAUST-THROW",
+      column: "todo",
+      steps: [
+        { name: "Preflight", status: "done" },
+        { name: "Implement", status: "in-progress" },
+      ],
+      currentStep: 1,
+    }));
+    addActiveWorktree((h.executor as any).activeWorktrees, "RUFU-609-EXHAUST-THROW", "/tmp/fusion-fn-7863");
+
+    for (let i = 0; i < MAX_EXECUTE_REQUEUE_LOOP_CYCLES - 1; i += 1) {
+      await failAtExecute(h.executor, h.live);
+    }
+
+    const bookkeeping = h.store.updateTask.getMockImplementation()!;
+    h.store.updateTask.mockImplementation(async (id: string, updates: Partial<TaskDetail>) => {
+      if (updates.status === "failed") throw new Error("store unavailable");
+      return bookkeeping(id, updates);
+    });
+
+    await failAtExecute(h.executor, h.live);
+
+    // The park never landed, so the ownership claim stays and the card is not terminal on the row.
+    expect(h.live.status).not.toBe("failed");
+    expect(h.executor.getActiveWorktreePaths("RUFU-609-EXHAUST-THROW")).toEqual(["/tmp/fusion-fn-7863"]);
+    expect(h.executor.listWorktreeHolders().filter((holder) => holder.taskId === "RUFU-609-EXHAUST-THROW")).toHaveLength(1);
   });
 
   it("terminalizes the stale in-progress self-requeue marker path", async () => {

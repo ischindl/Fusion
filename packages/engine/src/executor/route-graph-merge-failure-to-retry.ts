@@ -23,6 +23,7 @@ import type { MergeBoundaryRecoveryEvidence, MergeBoundaryUnprovenReasonCode } f
 import { AUTO_MERGE_RETRY_REJECTED_PREFIX } from "../merge/stale-content-park.js";
 import { emitBoundedRunAudit } from "./emit-bounded-run-audit.js";
 import { generateSyntheticRunId } from "../util/run-audit.js";
+import type { ActiveWorktreesMap } from "./worktree-ownership.js";
 
 export type RouteGraphMergeFailureToRetryDeps = {
   store: TaskStore;
@@ -48,6 +49,18 @@ export type RouteGraphMergeFailureToRetryDeps = {
     resumeLanesMemo?: unknown,
     boundaryEvidence?: MergeBoundaryRecoveryEvidence,
   ) => Promise<boolean>;
+  /*
+  FNXC:WorktreeLiveness 2026-11-12-03:36 (RUFU-609):
+  The executor's worktree-OWNERSHIP registry (taskId -> checkout paths). This router terminalizes three
+  parks of its own, and a park that commits ends the run's ownership claim, so it must be able to release
+  the entry exactly as `handle-graph-failure.ts` does — same committed-only rule: release only where the
+  write is PROVEN landed (an in-reducer flag, never the call resolving), because a reducer that returned
+  null wrote nothing and the taskId key may already belong to a replacement dispatch that re-registered
+  through `addActiveWorktree`. Optional and optional-chained so hand-built deps literals (tests, other
+  hosts) keep compiling and simply keep the binding; releasing the in-memory leg never exposes the
+  checkout — the durable leg of `findActiveWorktreeOwner` still resolves the parked card's row.
+  */
+  activeWorktrees?: ActiveWorktreesMap;
 };
 
 const BIT_BACKOFF_MS = [1000, 2000, 4000, 8000, 16000, 32000, 64000];
@@ -58,7 +71,7 @@ async function parkTaskFailed(
   errorMessage: string,
   runContext: EngineRunContext | undefined,
   capturedColumnMovedAt: string | undefined,
-): Promise<boolean> {
+): Promise<{ handled: boolean; committed: boolean }> {
   /*
   FNXC:MergeRetryReliability 2026-08-26-14:00 (Greptile P1): the terminal park must
   survive transient store rejections (field: the GDPR-053 engine API hiccuped
@@ -75,10 +88,25 @@ async function parkTaskFailed(
   stranded-task report. Signal "not handled" (return false) so the graph-failure
   handler's own terminal park ("operator action required", durable when the store
   recovers) takes over and the operator sees the failure.
+
+  FNXC:WorktreeLiveness 2026-11-12-03:36 (RUFU-609): "handled" is NOT "committed", and conflating them
+  leaked a worktree-ownership claim. A resolved call is not a write: core's `updateTaskAtomicImpl` treats
+  a reducer that returned null as a SUCCESSFUL no-op, so every declined park (deleted, already status-bearing,
+  paused, user-paused, or a shifted columnMovedAt after an operator requeue) used to report the same true
+  as a landed park. The return is therefore a two-field verdict: `handled` keeps the exact boolean above so
+  both callers' routes are unchanged, and `committed` is set ONLY by the reducer branch that returns the
+  failed patch. Callers release their ownership binding on `committed`, never on `handled`.
   */
   const backoffMs = BIT_BACKOFF_MS;
   let lastError: unknown;
   for (let attempt = 0; attempt < backoffMs.length; attempt += 1) {
+    /*
+    FNXC:WorktreeLiveness 2026-11-12-03:36 (RUFU-609): the committed flag is PER ATTEMPT, declared inside
+    the loop body. Hoisted above the loop it would be left true by an attempt whose reducer ran but whose
+    write then threw, and the next declined attempt would report a commit that never happened — the exact
+    false-positive this field exists to avoid. The catch below still swallows that attempt and retries.
+    */
+    let committed = false;
     try {
       await store.updateTaskAtomic(taskId, (current) => {
         if (
@@ -91,9 +119,10 @@ async function parkTaskFailed(
             && typeof current.columnMovedAt === "string"
             && current.columnMovedAt !== capturedColumnMovedAt)
         ) return null;
+        committed = true;
         return { status: "failed", error: errorMessage };
       }, runContext);
-      return true;
+      return { handled: true, committed };
     } catch (error) {
       lastError = error;
       if (attempt < backoffMs.length - 1) {
@@ -104,7 +133,7 @@ async function parkTaskFailed(
   executorLog.error(
     `${taskId}: failed to persist failed status after ${backoffMs.length} attempts spanning ~63s: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
   );
-  return false;
+  return { handled: false, committed: false };
 }
 
 
@@ -261,6 +290,16 @@ export async function routeGraphMergeFailureToRetry(
         }, deps.getRunContextFor(live.id));
         const outcome = parked ? "parked" as const : "already-terminal" as const;
         /*
+        FNXC:WorktreeLiveness 2026-11-12-03:36 (RUFU-609): this is the retry-boundary twin of the
+        graph-terminal merge arm — the same task:merge-boundary-unproven-parked audit surface, told apart
+        only by its source enum — so it releases the same way. `parked` is the in-reducer flag set only on
+        the branch that returned the failed patch, i.e. a committed verdict, NOT "the call resolved": a
+        reducer declined by deletedAt / a live status / a pause / autoMerge:false / a shifted
+        columnMovedAt wrote nothing, that row belongs to another disposition (often a replacement dispatch
+        re-registered under this same taskId key), and a stale delete would evict its live binding.
+        */
+        if (parked) deps.activeWorktrees?.delete(live.id);
+        /*
         FNXC:RunAudit 2026-08-20-02:00:
         FN-9168 records exactly one terminal merge-boundary-unproven park here. The boundary
         helper's blocked return is not a park and remains silent; its bounded audit seam contains
@@ -293,15 +332,23 @@ export async function routeGraphMergeFailureToRetry(
       } catch {
         // best-effort telemetry; the durable park below is what matters
       }
-      const parked = await parkTaskFailed(
+      const park = await parkTaskFailed(
         deps.store,
         live.id,
         `AUTO_MERGE_RETRY_FAILED: ${reason}`,
         deps.getRunContextFor(live.id),
         live.columnMovedAt,
       );
+      /*
+      FNXC:WorktreeLiveness 2026-11-12-03:36 (RUFU-609): release on `park.committed`, never on
+      `park.handled` — the local is deliberately NOT named `parked`, which means committed at the CAS
+      above. A boundary-preparation park that was DECLINED (the card was requeued, paused, or already
+      status-bearing) still reports handled, because the run's route is over, but it owns no verdict on
+      the row and must leave the ownership claim to whoever took the card.
+      */
+      if (park.committed) deps.activeWorktrees?.delete(live.id);
       await persistTokenUsageBestEffort(deps.persistTokenUsage, live.id);
-      return parked;
+      return park.handled;
     }
 
     /*
@@ -425,13 +472,20 @@ export async function routeGraphMergeFailureToRetry(
     } catch {
       // best-effort telemetry; the durable park below is what matters
     }
-    const parked = await parkTaskFailed(
+    const park = await parkTaskFailed(
       deps.store,
       live.id,
       `${AUTO_MERGE_RETRY_REJECTED_PREFIX} ${reason}`,
       deps.getRunContextFor(live.id),
       live.columnMovedAt,
     );
+    /*
+    FNXC:WorktreeLiveness 2026-11-12-03:36 (RUFU-609): same handled-vs-committed rule as the
+    AUTO_MERGE_RETRY_FAILED park above: only the reducer branch that wrote the failed patch ends the
+    ownership claim. The RUFU-276 not-run deferral arm upstream of this line writes no status/error at all
+    and therefore releases nothing.
+    */
+    if (park.committed) deps.activeWorktrees?.delete(live.id);
     await persistTokenUsageBestEffort(deps.persistTokenUsage, live.id);
-    return parked;
+    return park.handled;
 }

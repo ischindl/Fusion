@@ -255,3 +255,69 @@ describe("merge-boundary proof routing", () => {
     }
   });
 });
+
+/*
+FNXC:WorktreeLiveness 2026-11-12-03:36 (RUFU-609):
+The retry-boundary park is the twin of the graph-terminal merge arm, so it releases the executor's
+worktree-ownership entry on the same condition: the in-reducer `parked` flag, which is set only on the
+branch that returned the failed patch. The hold that returns true one arm upstream (deletedAt, a live
+pause, autoMerge:false) never reaches either flag and releases nothing, and a reducer declined by an
+already-terminal row means that row belongs to another disposition — often a replacement dispatch
+re-registered under this same taskId key, whose live binding a stale delete would evict.
+*/
+describe("merge-boundary retry park releases the worktree-ownership claim", () => {
+  function boundaryDeps(live: any, activeWorktrees: Map<string, Set<string>>) {
+    const updateTask = vi.fn(async (_id: string, patch: any) => ({ ...live, ...patch }));
+    const updateTaskAtomic = vi.fn(async (id: string, reducer: any, context: unknown) => {
+      const patch = reducer(live);
+      return patch ? updateTask(id, patch, context) : live;
+    });
+    return {
+      deps: {
+        store: { updateTask, updateTaskAtomic, logEntry: vi.fn() } as any,
+        activeWorktrees,
+        getRunContextFor: () => undefined,
+        mergeRequester: vi.fn(),
+        ensureWorkflowMergeBoundaryTask: vi.fn().mockResolvedValue({ task: live, blocked: { reason: "no pre-merge node result recorded", code: "no-node-result", missingInstanceCount: 0, evidence: { code: "no-node-result", missingInstanceIds: [] } } }),
+        persistTokenUsage: vi.fn(),
+      } as any,
+      updateTask,
+    };
+  }
+
+  it("releases the claim once the boundary park's failed write lands", async () => {
+    const live = { ...task, worktree: "/worktree", status: undefined };
+    const activeWorktrees = new Map<string, Set<string>>([[live.id, new Set(["/worktree"])]]);
+    const { deps, updateTask } = boundaryDeps(live, activeWorktrees);
+
+    await expect(routeGraphMergeFailureToRetry(deps, live, graphResult(), undefined)).resolves.toBe(true);
+
+    expect(updateTask).toHaveBeenCalledWith("FN-9157", expect.objectContaining({ status: "failed" }), undefined);
+    expect(activeWorktrees.has(live.id)).toBe(false);
+    // In-memory only: the durable row still names the checkout an operator Retry resumes in.
+    expect(live.worktree).toBe("/worktree");
+  });
+
+  it("keeps the claim when the reducer declines on an already-terminal row", async () => {
+    const live = { ...task, worktree: "/worktree", status: "failed", error: "another disposition owns this row" };
+    const activeWorktrees = new Map<string, Set<string>>([[live.id, new Set(["/worktree"])]]);
+    const { deps, updateTask } = boundaryDeps(live, activeWorktrees);
+
+    await expect(routeGraphMergeFailureToRetry(deps, live, graphResult(), undefined)).resolves.toBe(true);
+
+    // already-terminal: no write, so the claim stays with whichever disposition holds the row now.
+    expect(updateTask).not.toHaveBeenCalled();
+    expect(activeWorktrees.has(live.id)).toBe(true);
+  });
+
+  it("keeps the claim for the human-control hold that never parks at all", async () => {
+    const live = { ...task, worktree: "/worktree", status: undefined, autoMerge: false };
+    const activeWorktrees = new Map<string, Set<string>>([[live.id, new Set(["/worktree"])]]);
+    const { deps } = boundaryDeps(live, activeWorktrees);
+
+    await expect(routeGraphMergeFailureToRetry(deps, live, graphResult(), undefined)).resolves.toBe(true);
+
+    // This arm returns true from the pre-park guard: handled, but nothing was written here.
+    expect(activeWorktrees.has(live.id)).toBe(true);
+  });
+});

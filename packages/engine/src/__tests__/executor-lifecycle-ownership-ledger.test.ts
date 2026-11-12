@@ -294,7 +294,21 @@ describe("U8 execution-lifecycle ownership ledger", () => {
     expect(bodyLineCount(RUN_IMPLEMENTATION, RUN_IMPLEMENTATION_SOURCE)).toBeGreaterThan(2000);
     expect(bodyLineCount(RUN_IMPLEMENTATION, RUN_IMPLEMENTATION_SOURCE)).toBeLessThan(4500);
     expect(bodyLineCount(HANDLE_GRAPH_FAILURE, HANDLE_GRAPH_FAILURE_SOURCE)).toBeGreaterThan(500);
-    expect(bodyLineCount(HANDLE_GRAPH_FAILURE, HANDLE_GRAPH_FAILURE_SOURCE)).toBeLessThan(1600);
+    /*
+    FNXC:WorktreeLiveness 2026-11-12-15:17 (RUFU-609):
+    1600 -> 1800. This bound is the extraction sanity check named above — it asks "did the parser
+    find the junction box, or some small function that happens to share its name?" — so it is a
+    range, not a size ratchet, and a release line added inside the sink legitimately moves it.
+    RUFU-609's six committed-write releases plus their FNXC notes put the body at 1750 lines.
+    Measured, not assumed: main already sat at 1689 lines and therefore already tripped 1600 when
+    this card branched (`git show main:packages/engine/src/executor/handle-graph-failure.ts` read
+    through the same AST), so the bound was stale here BEFORE this change added its 61 lines; the
+    new ceiling covers both. `runImplementation`'s ledger counts drifting on main (RUFU-425 added
+    two `status: "failed"` parks, RUFU-433 removed two `store.moveTask` sites) is deliberately NOT
+    folded into this number — refreshing those constants needs each increment justified in its own
+    PR per the note above the ledger, so it stays owned by the commits that moved them.
+    */
+    expect(bodyLineCount(HANDLE_GRAPH_FAILURE, HANDLE_GRAPH_FAILURE_SOURCE)).toBeLessThan(1800);
   });
 
   it("runImplementation: executor-owned dispositions match the ledger", () => {

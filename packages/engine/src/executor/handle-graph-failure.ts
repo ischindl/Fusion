@@ -425,6 +425,21 @@ export async function handleGraphFailure(
       succeeds because the cleared pin lets the next run re-resolve the CURRENT IR
       and adopt the changed workflow.
       */
+      /*
+      FNXC:WorktreeLiveness 2026-11-12-03:36 (RUFU-609): this drift park deliberately does NOT release
+      `deps.activeWorktrees`, and that is a decision, not an omission. RUFU-323 released the binding at
+      every park whose committed write ENDS the run's ownership claim; two facts put this park outside
+      that class. (1) Its terminal write is guarded by `live.status == null && live.error == null` — a
+      predicate computed from a PRE-READ row, not a landed signal — so it cannot produce the committed
+      verdict the release rule requires without redesigning the arm. (2) The arm performs no requeue and
+      clears the stale IR pin precisely so an ordinary operator Retry resumes the card IN THIS SAME
+      CHECKOUT, so the ownership claim has not ended; releasing would advertise the checkout as free to
+      `listWorktreeHolders()` while the card's own recovery still lives in it. Pinned by
+      `executor-terminal-failure-worktree-release.test.ts` ("keeps the binding for a park that stays
+      recoverable by requeue"). Any future drift release must be PAIRED with the requeue decision that
+      hands the checkout over — that pairing is what the operator's caveat requires and it is separate
+      design work, not a release line added here.
+      */
       if (result.context?.[WORKFLOW_DRIFT_PARK_CONTEXT_KEY] === true) {
         const driftMessage = "Workflow drift park: the workflow definition changed under this run (pinned node/column no longer in the current IR). Stale IR pin cleared — requeue the task to re-resolve the current workflow and continue.";
         executorLog.warn(`${task.id}: ${driftMessage}`);
@@ -455,6 +470,18 @@ export async function handleGraphFailure(
           : "branchWriteOrigin is required when branch is provided";
         await deps.store.logEntry(task.id, diagnostic, undefined, deps.getRunContextFor(task.id));
         await deps.store.updateTask(task.id, { status: "failed", error: diagnostic }, deps.getRunContextFor(task.id));
+        /*
+        FNXC:WorktreeLiveness 2026-11-12-03:36 (RUFU-609): the provenance refusal is a run-ending park —
+        the deterministic mutation input is rejected, no retry classifier reruns it, and the arm returns.
+        The awaited `updateTask` above is its own landed signal (an unconditional write with no fence and
+        no catch: a throw propagates out of this arm and skips the release, leaving the binding to
+        `resumeOrphaned()` / self-healing), so this satisfies RUFU-323's committed-only rule
+        ("Release only where a park is PROVEN landed... never after the call") without a reducer flag.
+        Only the in-memory ownership claim ends here: `task.worktree`/`branch` stay on the row, and the
+        durable leg of `findActiveWorktreeOwner` keeps protecting the checkout until a Retry re-acquires
+        it and re-registers through `addActiveWorktree`.
+        */
+        deps.activeWorktrees.delete(task.id);
         await deps.persistTokenUsage(task.id);
         return;
       }
@@ -478,6 +505,11 @@ export async function handleGraphFailure(
         worktree recovery family so Retry resets only its dedicated counter and the Git cause survives.
         */
         if (await deps.routeUnusableWorktreeGraphFailureToRecovery(task, live, result, resumeLanesMemo)) {
+          /*
+          FNXC:WorktreeLiveness 2026-11-12-03:36 (RUFU-609): the router-true path is a bounded
+          ENVIRONMENT HOLD — the card re-queues into recovery and the same checkout is its next run's
+          resume point, so the ownership claim is NOT over and no release happens here.
+          */
           await deps.persistTokenUsage(task.id);
           return;
         }
@@ -485,6 +517,15 @@ export async function handleGraphFailure(
           status: "failed",
           error: `${diagnostic} — repair/create the repository base ref or configuration, then choose Retry`,
         }, deps.getRunContextFor(task.id));
+        /*
+        FNXC:WorktreeLiveness 2026-11-12-03:36 (RUFU-609): reaching this write means recovery was NOT
+        available, so the workspace-preparation failure is the terminal park: recovery is an operator
+        repairing a base ref or configuration, not an automatic re-run. The awaited unconditional write
+        (no fence, no catch — a throw propagates and skips the release) is its landed signal, so the
+        run's ownership claim ends here exactly like RUFU-323's released parks; `task.worktree` /
+        `task.workspaceWorktrees` keep the row-level claim for the durable ownership leg.
+        */
+        deps.activeWorktrees.delete(task.id);
         await deps.persistTokenUsage(task.id);
         return;
       }
@@ -1267,6 +1308,16 @@ export async function handleGraphFailure(
             executeRequeueLoopSignature: signature,
           }, deps.getRunContextFor(task.id));
           /*
+           * FNXC:WorktreeLiveness 2026-11-12-03:36 (RUFU-609): the dispatch-loop cap is this arm's
+           * run-ending park — "No further automatic retries will run" — so its ownership claim is over
+           * and the binding goes here, immediately after the awaited unconditional terminal write (the
+           * arm's own landed signal: no fence and no catch, so a throw propagates past the release) and
+           * before the FN-9172 telemetry, matching that block's stated ordering reason "updateTask has
+           * already landed". The worktree/branch/step columns stay untouched above: the operator's
+           * Manual Retry resumes from them and re-registers through `addActiveWorktree`.
+           */
+          deps.activeWorktrees.delete(task.id);
+          /*
            * FNXC:RunAudit 2026-08-20-03:02:
            * FN-9172 keeps terminal-park telemetry bounded because updateTask has already landed;
            * an audit failure must not skip persistTokenUsage or this branch's return.
@@ -1319,6 +1370,16 @@ export async function handleGraphFailure(
         const outcome = live.status == null && live.error == null ? "parked" as const : "already-terminal" as const;
         if (outcome === "parked") {
           await deps.store.updateTask(task.id, { error: message, status: "failed" }, deps.getRunContextFor(task.id));
+          /*
+           * FNXC:WorktreeLiveness 2026-11-12-03:36 (RUFU-609): every value this arm terminalizes
+           * (`isTerminalMergeGraphFailureValue`: merge-boundary-unproven plus the conflict / contamination /
+           * foreign-base / retry-exhausted family) is an operator-action park that ends the run, so the
+           * release keys on the branch that PERFORMS the write plus that write resolving — never on
+           * `outcome` alone and never on the failure value. The `already-terminal` branch writes nothing
+           * and keeps the binding: that row belongs to another disposition, often a replacement dispatch
+           * that re-registered under the same taskId key, and a stale delete would evict its holder.
+           */
+          deps.activeWorktrees.delete(task.id);
         }
         if (failureValue === MERGE_BOUNDARY_UNPROVEN_VALUE) {
           /*

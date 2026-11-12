@@ -991,6 +991,8 @@ export function buildRouteGraphMergeFailureToRetryDeps(host: any): any {
   return {
     ...buildStoreRunContextDeps(host),
     mergeRequester: host.mergeRequester,
+    // FNXC:WorktreeLiveness 2026-11-12-03:36 (RUFU-609): the ownership map the router's three terminal parks release on (same passing shape as buildRouteImplementationIncompleteMergeGraphFailureDeps below).
+    activeWorktrees: host.activeWorktrees,
     ...facadeMethods(host, ["ensureWorkflowMergeBoundaryTask", "persistTokenUsage", "routeGraphFailureToExecutionResume"]),
   };
 }

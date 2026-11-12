@@ -8,7 +8,13 @@ import "./executor-test-helpers.js";
 import { createMockStore, resetExecutorMocks } from "./executor-test-helpers.js";
 import { join } from "node:path";
 import type { TaskDetail } from "@fusion/core";
-import { WORKFLOW_DRIFT_PARK_CONTEXT_KEY } from "../workflows/workflow-graph-executor.js";
+import {
+  BRANCH_WRITE_PROVENANCE_FAILURE_VALUE,
+  SESSION_CONTENTION_HOLD_VALUE,
+  WORKSPACE_PREPARATION_FAILURE_HOLD_VALUE,
+  WORKFLOW_DRIFT_PARK_CONTEXT_KEY,
+} from "../workflows/workflow-graph-executor.js";
+import { MERGE_BOUNDARY_UNPROVEN_VALUE } from "../workflows/workflow-merge-nodes.js";
 
 function makeTask(overrides: Partial<TaskDetail> = {}): TaskDetail {
   return {
@@ -319,6 +325,12 @@ describe("terminal graph-failure park releases the worktree binding", () => {
      * continue in. That is the boundary of this task's release rule — releases follow parks that END
      * the run's ownership, not every write of a status. (RUFU-291's cancel exit, which does release,
      * stays pinned end-to-end by `executor-user-cancel-terminal-graph-exit.test.ts`.)
+     *
+     * FNXC:WorktreeLiveness 2026-11-12-03:36 (RUFU-609): this pin is why the drift park was left out of
+     * the follow-up that widened the release to the other non-releasing terminal parks. Its guarded
+     * write is a pre-read of the row, not a landed signal, and its recovery continues in this same
+     * checkout — so it keeps the binding on BOTH branches, the one that writes (asserted here) and the
+     * one that skips the write (asserted in the RUFU-609 block below).
      */
     expect(executor.getActiveWorktreePaths(task.id)).toEqual([worktreePath]);
     expect(store.updateTask.mock.calls.some(([, patch]) => patch.status === "failed")).toBe(true);
@@ -344,6 +356,204 @@ describe("terminal graph-failure park releases the worktree binding", () => {
     expect(executor.getActiveWorktreePaths(sibling.id)).toEqual([join(repoRoot, "wt-b")]);
     expect(executor.getLiveWorktreeHolderCount()).toBe(1);
     expect((executor as any).activeWorktrees.size).toBe(1);
+  });
+});
+
+/*
+FNXC:WorktreeLiveness 2026-11-12-03:36 (RUFU-609):
+The other half of the release class. RUFU-323 released only the parks it enumerated; the parks below
+ended a run's ownership claim just as finally but kept their entry, so `listWorktreeHolders()` went on
+reporting a holder for a card nothing runs, with the FN-6782 leaked-slot reaper — out of candidacy for
+WIP/review-lane cards — as the only reclaim path. Each case drives the REAL `handleGraphFailure` sink to
+one park and reads the ownership registry on both sides of the arm's own decision, because the release
+rule is not "a status was written" but "this park ENDED the run's claim": the workspace arm releases
+only when the environment-hold router declined, and the merge arm only on the branch that actually
+wrote. The keep cases are the safety property, not bookkeeping: the registry is keyed by taskId, so a
+delete by an old run after an operator requeue would evict the replacement dispatch's live binding.
+*/
+describe("RUFU-609: the parks RUFU-323 left behind release on their committed write", () => {
+  beforeEach(() => {
+    resetExecutorMocks();
+  });
+
+  /** A graph run that failed on one named node carrying a recorded node value. */
+  function nodeFailure(nodeId: string, value: string) {
+    return { ...makeGraphFailure(), visitedNodeIds: [nodeId], context: { [`node:${nodeId}:value`]: value } };
+  }
+
+  describe("branch-write provenance refusal", () => {
+    it("releases the claim once the refusal's failed write lands", async () => {
+      const { store, task, executor } = makeHarness();
+      const sibling = makeTask({ id: "RUFU-609-PROV-B" });
+      addActiveWorktree((executor as any).activeWorktrees, sibling.id, join(repoRoot, "wt-sibling"));
+
+      await (executor as any).handleGraphFailure(task, nodeFailure("execute", BRANCH_WRITE_PROVENANCE_FAILURE_VALUE));
+
+      expect(store.updateTask.mock.calls.some(([, patch]) => patch.status === "failed"
+        && String(patch.error).includes("branchWriteOrigin is required when branch is provided"))).toBe(true);
+      expect(executor.getActiveWorktreePaths(task.id)).toEqual([]);
+      expect(executor.listWorktreeHolders().filter((row) => row.taskId === task.id)).toHaveLength(0);
+      // The sibling's claim belongs to another run and survives this park untouched.
+      expect(executor.getActiveWorktreePaths(sibling.id)).toEqual([join(repoRoot, "wt-sibling")]);
+    });
+
+    it("drops every sub-repo holder row of a workspace card in the one park", async () => {
+      const { task, executor } = makeHarness();
+      // A workspace card holds N paths under one key: one ownership claim, N flat-mapped holder rows.
+      addActiveWorktree((executor as any).activeWorktrees, task.id, join(repoRoot, "apps/api"));
+      expect(executor.listWorktreeHolders()).toHaveLength(2);
+
+      await (executor as any).handleGraphFailure(task, nodeFailure("execute", BRANCH_WRITE_PROVENANCE_FAILURE_VALUE));
+
+      expect(executor.getActiveWorktreePaths(task.id)).toEqual([]);
+      expect(executor.listWorktreeHolders()).toHaveLength(0);
+    });
+
+    it("keeps the claim when the refusal's write throws — no landed park, no release", async () => {
+      const { store, task, executor } = makeHarness();
+      store.updateTask.mockImplementation(async () => { throw new Error("store unavailable"); });
+
+      // The arm itself has no catch, so the throw unwinds to the method-level catch and the release line
+      // below the write is never reached: the row stays lane-resident for resumeOrphaned()/self-healing
+      // and the checkout stays claimed.
+      await (executor as any).handleGraphFailure(task, nodeFailure("execute", BRANCH_WRITE_PROVENANCE_FAILURE_VALUE));
+
+      expect(executor.getActiveWorktreePaths(task.id)).toEqual([worktreePath]);
+    });
+  });
+
+  describe("workspace preparation failure", () => {
+    it("releases the claim only when no environment recovery is available", async () => {
+      const { store, task, executor } = makeHarness();
+      vi.spyOn(executor as any, "routeUnusableWorktreeGraphFailureToRecovery").mockResolvedValue(false);
+
+      await (executor as any).handleGraphFailure(task, nodeFailure("execute", WORKSPACE_PREPARATION_FAILURE_HOLD_VALUE));
+
+      expect(store.updateTask.mock.calls.some(([, patch]) => patch.status === "failed"
+        && String(patch.error).includes("then choose Retry"))).toBe(true);
+      expect(executor.getActiveWorktreePaths(task.id)).toEqual([]);
+      expect(executor.listWorktreeHolders()).toHaveLength(0);
+    });
+
+    it("keeps the claim when the terminal fallback write itself throws", async () => {
+      const { store, task, executor } = makeHarness();
+      // Recovery is unavailable, so the arm reaches its terminal write — and that write fails. Nothing
+      // landed, so the release line below it never runs and the checkout stays claimed for the owner
+      // that finally settles the row (self-healing / an operator Retry), exactly as in the provenance arm.
+      vi.spyOn(executor as any, "routeUnusableWorktreeGraphFailureToRecovery").mockResolvedValue(false);
+      store.updateTask.mockImplementation(async () => { throw new Error("store unavailable"); });
+
+      await (executor as any).handleGraphFailure(task, nodeFailure("execute", WORKSPACE_PREPARATION_FAILURE_HOLD_VALUE));
+
+      expect(executor.getActiveWorktreePaths(task.id)).toEqual([worktreePath]);
+    });
+
+    it("keeps the claim when the card re-queues into bounded environment recovery", async () => {
+      const { store, task, executor } = makeHarness();
+      // The recovery router owns this run: it re-queues the card, whose next dispatch resumes in the
+      // SAME checkout, so the ownership claim is not over and must stay registered.
+      vi.spyOn(executor as any, "routeUnusableWorktreeGraphFailureToRecovery").mockResolvedValue(true);
+
+      await (executor as any).handleGraphFailure(task, nodeFailure("execute", WORKSPACE_PREPARATION_FAILURE_HOLD_VALUE));
+
+      expect(store.updateTask.mock.calls.some(([, patch]) => patch.status === "failed")).toBe(false);
+      expect(executor.getActiveWorktreePaths(task.id)).toEqual([worktreePath]);
+    });
+  });
+
+  describe("graph-terminal merge arm", () => {
+    it("releases the claim for a merge failure this arm terminally parks", async () => {
+      const { store, task, executor } = makeHarness();
+
+      await (executor as any).handleGraphFailure(task, nodeFailure("merge", MERGE_BOUNDARY_UNPROVEN_VALUE));
+
+      expect(store.updateTask.mock.calls.some(([, patch]) => patch.status === "failed"
+        && String(patch.error).includes(MERGE_BOUNDARY_UNPROVEN_VALUE))).toBe(true);
+      expect(executor.getActiveWorktreePaths(task.id)).toEqual([]);
+      expect(executor.listWorktreeHolders()).toHaveLength(0);
+    });
+
+    it("keeps the claim when the row was already terminal, because that row has another owner", async () => {
+      const { store, task, executor } = makeHarness({ task: { status: "failed", error: "existing terminal decision" } });
+
+      await (executor as any).handleGraphFailure(task, nodeFailure("merge", MERGE_BOUNDARY_UNPROVEN_VALUE));
+
+      // already-terminal performs no write. The taskId key may already belong to a replacement dispatch
+      // that re-registered through addActiveWorktree, so a delete here would evict a live holder.
+      expect(store.updateTask.mock.calls.some(([, patch]) => patch.status === "failed")).toBe(false);
+      expect(executor.getActiveWorktreePaths(task.id)).toEqual([worktreePath]);
+    });
+  });
+
+  describe("recoverable-in-place holds (no park, nothing to release)", () => {
+    it("keeps the claim on a session-contention hold whose next run resumes in this checkout", async () => {
+      const { store, task, executor } = makeHarness();
+      // FN-179: the run was refused because a sibling session holds the checkout, so the card is parked
+      // on a bounded contention wait whose next dispatch re-enters acquisition on THIS worktree.
+      const hold = vi.spyOn(executor as any, "holdForSessionContention").mockResolvedValue(undefined);
+
+      await (executor as any).handleGraphFailure(task, nodeFailure("execute", SESSION_CONTENTION_HOLD_VALUE));
+
+      expect(hold).toHaveBeenCalledTimes(1);
+      expect(store.updateTask.mock.calls.some(([, patch]) => patch.status === "failed")).toBe(false);
+      expect(executor.getActiveWorktreePaths(task.id)).toEqual([worktreePath]);
+    });
+
+    it("keeps the claim when the base-refresh budget is exhausted and the card remains held", async () => {
+      const { store, task, executor } = makeHarness({ task: { graphResumeRetryCount: 2 } });
+      // The exhausted branch writes no status and no error — "task remains held" — so the card is still
+      // waiting on a clean acquisition in this checkout rather than ending its ownership claim.
+      await (executor as any).handleGraphFailure(task, nodeFailure("code", "dirty-worktree"));
+
+      const heldLog = store.logEntry.mock.calls.map(([, message]) => String(message)).find((message) => message.includes("task remains held"));
+      expect(heldLog).toBeDefined();
+      expect(store.updateTask.mock.calls.some(([, patch]) => patch.status === "failed")).toBe(false);
+      expect(executor.getActiveWorktreePaths(task.id)).toEqual([worktreePath]);
+    });
+  });
+
+  describe("drift park (the keeping boundary, both branches)", () => {
+    it("keeps the claim when its guarded write is skipped because the row already carries a decision", async () => {
+      const { task, executor } = makeHarness({ task: { status: "failed", error: "existing terminal decision" } });
+      const driftFailure = { ...makeGraphFailure(), context: { [WORKFLOW_DRIFT_PARK_CONTEXT_KEY]: true } };
+
+      await (executor as any).handleGraphFailure(task, driftFailure);
+
+      // The sibling of RUFU-323's pinned case above: that one covers the branch that WRITES. This one
+      // covers the skipped-write branch, and both keep — recovery continues in this same checkout.
+      expect(executor.getActiveWorktreePaths(task.id)).toEqual([worktreePath]);
+    });
+  });
+
+  describe("holds and re-queues (no park, nothing to release)", () => {
+    it("keeps the claim when completed work is parked on a live completion blocker", async () => {
+      const { store, task, executor } = makeHarness();
+      // FN-7926: implementation is done but a dependency/blocker holds completion. This diverts before
+      // the dispatch-loop counter and self-healing advances the card when the blocker clears, so the
+      // next dispatch resumes in this checkout — a release here would drop a waiting card's holder row.
+      (executor as any).graphExecuteSelfRequeued.add(task.id);
+      vi.spyOn(executor as any, "getTaskCompletionBlocker").mockResolvedValue({ kind: "unmet-dependency", ids: ["FN-9"] });
+      const parkedBlocked = vi.spyOn(executor as any, "parkCompletedBlockedTask").mockResolvedValue(true);
+
+      await (executor as any).handleGraphFailure(task, makeGraphFailure());
+
+      expect(parkedBlocked).toHaveBeenCalledTimes(1);
+      expect(store.updateTask.mock.calls.some(([, patch]) => patch.status === "failed")).toBe(false);
+      expect(executor.getActiveWorktreePaths(task.id)).toEqual([worktreePath]);
+    });
+
+    it("keeps the claim on a below-cap execute re-queue that writes no terminal status", async () => {
+      const { store, task, executor } = makeHarness();
+      (executor as any).graphExecuteSelfRequeued.add(task.id);
+      vi.spyOn(executor as any, "getTaskCompletionBlocker").mockResolvedValue(null);
+
+      await (executor as any).handleGraphFailure(task, makeGraphFailure());
+
+      // One cycle is far below MAX_EXECUTE_REQUEUE_LOOP_CYCLES: the card is re-queued for another
+      // attempt, so only the loop bookkeeping is written and the claim stays with its next dispatch.
+      expect(store.updateTask.mock.calls.some(([, patch]) => patch.status === "failed")).toBe(false);
+      expect(executor.getActiveWorktreePaths(task.id)).toEqual([worktreePath]);
+    });
   });
 });
 
