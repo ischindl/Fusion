@@ -931,6 +931,90 @@ returns the family a full budget.
 */
 export const BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY = "branchConflictRecoveryEpisode" as const;
 
+/*
+FNXC:PlannerOversight 2026-11-11-11:20 (RUFU-586):
+The planner overseer's anti-spam record for its OWN steering instruction.
+
+The bound that existed before this was a count in a `Map` inside `PlannerRecoveryController`, keyed
+`(taskId, stage)`. Three ordinary production events lower it: an engine restart empties the Map, a healthy
+signal deletes the key (FN-7577 does that on purpose, because the card's overseer badge derives from
+`attemptCount > 0`), and a watched-stage change moves to a new key. So the documented cap of 3 was
+unreachable for a card whose signal oscillates: one card measured 77 byte-identical `[planner-oversight]`
+comments in ~20 h, each one a durable row in `comments` AND `steering_comments` (both arrays and their
+`search_vector` GIN entries are rewritten per append), an intervention-timeline entry and a task-log line - and a stalled
+card alternating `stuck`/`blocked` still writes one comment per problem tick, because the two later guards
+that landed after this was first reported (`PLANNER_OVERSEER_GUIDANCE_DEDUPE_MS`, newest-entry equality in
+`addSteeringCommentImpl`) both key on byte-identical text and neither is a count.
+
+Why a persisted episode rather than pure derivation: a delivery is an EVENT. A task read cannot ask a past
+process whether it posted, and by the time anyone looks the in-memory window is gone (RUFU-547: an
+in-memory set is dead after a restart). Everything stored is a digest, a count, or an ISO instant - the
+instruction's prose stays on the card's comment list, never duplicated into metadata.
+
+The episode holds a budget PER SIGNATURE (the active slot plus an LRU-capped `prior` list), not one budget
+for the card. A single-slot budget is reset by the exact shape this bug takes: `reasonForSignal` renders
+"Signal: `stuck`" and "Signal: `blocked`" for one stall, so a card flapping between them flipped a single
+slot on every tick and every tick looked like a new reason - measured at 24 posts in 24 ticks. Per-signature
+budgets are what make oscillation cost a card its quiet rather than its budget.
+
+This key is a BUDGET, not a diagnostic: unlike `planAdmissionStall`/`wipAdmissionStall`, which are read-only
+by contract, this one is consulted BEFORE the overseer dispatches, and a refusal suppresses the post. That
+is the whole point and it must not be "cleaned up" into a memo. It is written key-level through
+`updateTask`'s `sourceMetadataPatch` so the other provenance keys survive, by exactly one writer
+(`TaskStorePlannerSteeringLedger`), and it deliberately survives `PlannerRecoveryController.clear()` and an
+oversight level of "off" - a card that was escalated does not get a free fresh budget because the poll loop
+moved on.
+
+It is deliberately NOT in `buildManualRetryResetPatch`, unlike the four episodes that builder does clear. Each
+of those four is cleared for one reason: leaving it behind would make the Retry a no-op, because its owner
+re-reads the surviving count and re-authors the same park on the next pass (RUFU-246, RUFU-273, RUFU-395,
+RUFU-485). This episode parks nothing - it withholds one comment and writes no lifecycle field - so an
+operator Retry is fully effective with it still standing, and the re-arm path the operator actually waits for
+is the cooldown, which is one constant in `planner-recovery.ts`. Clearing it on Retry would buy no additional
+recovery and would hand the flood back its old shape one Retry at a time: the same instruction that was
+already delivered three times would get three more deliveries without a single new fact about the card.
+*/
+export const PLANNER_OVERSIGHT_STEERING_METADATA_KEY = "plannerOversightSteering" as const;
+
+/**
+ * One instruction's delivery budget (RUFU-586). Digest, count and ISO instants only - the instruction's
+ * sentence is never copied in here.
+ */
+export interface PlannerSteeringBudgetEntry {
+  /**
+   * `sha256(action|stage|reasonClass)` truncated to 16 hex chars, where the reason class collapses
+   * whitespace and replaces every digit RUN with `N`. Digit-normalised on purpose: several reasons interpolate
+   * elapsed time ("inactive for over 3h", "41m elapsed"), and a signature that churned with the clock would
+   * restart its budget every tick - RUFU-442's "a bound whose key changed each cycle". Changing the reason is
+   * therefore the re-arm path, and the clock is not.
+   */
+  signature: string;
+  /** Deliveries made in THIS budget (1-based). Resets to 1 when the cooldown re-arms it. */
+  deliveredCount: number;
+  /** ISO instant of this budget's first delivery; moves to the re-arm instant, because a re-arm IS a new episode. */
+  firstAt: string;
+  /** ISO instant of the most recent delivery - the base the cooldown is measured from. */
+  lastAt: string;
+  /**
+   * ISO instant of the one-shot "already delivered" intervention-timeline row for this budget. Present means
+   * that instruction has explained itself once; it is stamped only after the row is written, so a restart
+   * cannot announce it twice, and it is dropped when the budget restarts.
+   */
+  noticeRecordedAt?: string;
+}
+
+/**
+ * Durable steering-delivery budgets for one card (RUFU-586). Absent or `null` means "the planner has
+ * delivered nothing recently", which is what a freshly created card returns to (an operator Retry leaves it
+ * alone — see the constant's note above). The
+ * object ITSELF is the budget for the most recently delivered instruction; `prior` carries the other
+ * instructions still inside their window, newest-first and capped at `PLANNER_STEERING_TRACKED_SIGNATURES`.
+ */
+export interface PlannerOversightSteeringEpisode extends PlannerSteeringBudgetEntry {
+  /** Other instructions' budgets, newest-first, LRU-evicted by `lastAt` past the tracked-signature cap. */
+  prior?: PlannerSteeringBudgetEntry[];
+}
+
 /**
  * Durable per-family branch-conflict refusal episode (RUFU-395). Absent or `null` means "this family
  * has refused this card zero times", which is the state a freshly created or Retry-ed card returns to.

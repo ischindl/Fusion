@@ -103,7 +103,31 @@ export interface PlannerRecoveryDecision {
    * for `"none"`.
    */
   proposedAction?: string;
+  /**
+   * FNXC:PlannerOversight 2026-11-11-11:15:
+   * RUFU-586: an admission, not a gate — set by `PlannerRecoveryController` when the durable steering
+   * episode refused to re-post an instruction the agent already holds, so the caller can see "no action was
+   * taken" WITHOUT reading it as "nothing was wrong". `decidePlannerRecovery` never writes this field; only
+   * the dispatch seam does, and no badge, move, or merge derives from it.
+   */
+  steeringDeduped?: true;
 }
+
+/**
+ * FNXC:PlannerOversight 2026-11-11-11:15:
+ * RUFU-586: silence required after an episode has spent its whole delivery budget, before the same
+ * instruction may be delivered again.
+ *
+ * Why a cooldown and not just a cap: the cap answers "how many times may the planner say this thing?", and
+ * without a window a card stuck for a week would re-consume a fresh budget the instant anything reset it -
+ * which is precisely how RUFU-286 reached 77 copies of one sentence. Six hours is the repo's existing
+ * notice-cooldown convention (the wedge renotify and vanished-work buckets), and it is deliberately one
+ * constant: an operator who wants a shorter silence changes this line, not the gate.
+ *
+ * This is the anti-spam bound. It is NOT the human-escalation bound - that stays `PLANNER_RECOVERY_MAX_ATTEMPTS`
+ * over in `derivePlannerOverseerState`, derived from the controller's in-memory badge budget.
+ */
+export const PLANNER_OVERSIGHT_STEERING_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
 /**
  * Maximum bounded recovery attempts per `(taskId, watchedStage)` before

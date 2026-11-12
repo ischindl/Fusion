@@ -101,6 +101,7 @@ import type { ProjectRuntimeConfig, RuntimeStopOptions } from "./project/project
 import { PrMonitor } from "./merge/pr-monitor.js";
 import { PlannerOverseerMonitor, resolveExecutorStuckAfterMs } from "./overseer/planner-overseer.js";
 import { PlannerRecoveryController, type PlannerRecoveryHandlers } from "./overseer/planner-recovery-controller.js";
+import { TaskStorePlannerSteeringLedger } from "./overseer/planner-steering-ledger.js";
 import { evaluateOverseerHumanControl } from "./overseer/overseer-human-control-policy.js";
 import {
   OverseerAdvisorService,
@@ -1669,6 +1670,9 @@ export class ProjectEngine {
     this.plannerRecoveryController = new PlannerRecoveryController({
       snapshotProvider: this.plannerOverseer,
       handlers: this.buildPlannerRecoveryHandlers(store),
+      // RUFU-586: the durable per-reason steering budget. Wired here and nowhere else, so the one dispatcher
+      // that posts instructions is the one that asks permission first.
+      steeringLedger: new TaskStorePlannerSteeringLedger(store),
     });
     // FNXC:PlannerOversight 2026-07-13-23:05: session advisor (transcript review) alongside lifecycle supervisor.
     this.sessionAdvisor = this.buildSessionAdvisorService(store);

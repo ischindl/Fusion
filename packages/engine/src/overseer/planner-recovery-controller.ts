@@ -42,6 +42,7 @@
 
 import type { PlannerConfirmationRequest, PlannerRecoveryDecision, PlannerRecoveryObservation, Settings, Task } from "@fusion/core";
 import { allowsAutoMergeProcessing, decidePlannerRecovery, PLANNER_RECOVERY_MAX_ATTEMPTS } from "@fusion/core";
+import type { PlannerSteeringGate, PlannerSteeringLedger, PlannerSteeringRequest } from "./planner-steering-ledger.js";
 import { createLogger, type Logger } from "../logger.js";
 import type { OverseerStageObservation } from "./planner-overseer.js";
 import {
@@ -154,6 +155,16 @@ export interface PlannerRecoveryControllerOptions {
   snapshotProvider: PlannerRecoverySnapshotProvider | PlannerRecoveryObservationSource;
   handlers?: PlannerRecoveryHandlers;
   logger?: Logger;
+  /**
+   * FNXC:PlannerOversight 2026-11-11-12:40 (RUFU-586):
+   * The durable per-reason steering budget, consulted BEFORE `dispatch()`. Optional by design: absent, the
+   * controller behaves exactly as it did before this existed, which keeps every existing unit test, the
+   * `retry_step` lane, and any caller without a store honest. Production wires the `TaskStore`-backed
+   * ledger; the in-memory `attempts` registry stays the card's BADGE budget and never becomes the anti-spam
+   * authority again, because an engine restart, FN-7577's healthy-signal clear, and a stage change all
+   * lower it.
+   */
+  steeringLedger?: PlannerSteeringLedger;
 }
 
 const controllerLog = createLogger("planner-recovery-controller");
@@ -250,11 +261,14 @@ export class PlannerRecoveryController {
   private readonly guidancePostedAt = new Map<string, number>();
   private guidanceSuppressedCount = 0;
   private guidanceSuppressionLogAt = 0;
+  /** RUFU-586: the durable steering budget; `undefined` means "no durable bound wired". */
+  private readonly steeringLedger?: PlannerSteeringLedger;
 
   constructor(options: PlannerRecoveryControllerOptions) {
     this.snapshotProvider = normalizeProvider(options.snapshotProvider);
     this.handlers = options.handlers ?? {};
     this.logger = options.logger ?? controllerLog;
+    this.steeringLedger = options.steeringLedger;
   }
 
   private attemptKey(taskId: string, stage: string): string {
@@ -384,15 +398,95 @@ export class PlannerRecoveryController {
         return decision;
       }
 
+      // FNXC:PlannerOversight 2026-11-11-12:40 (RUFU-586):
+      // The durable steering gate, BEFORE `dispatch()` and never inside the writer. RUFU-533's lesson is
+      // that a cap enforced inside an atomic write is skipped exactly when that write fails: a writer that
+      // has already been handed the instruction is the last party able to refuse it honestly. Only the two
+      // steering actions pass here - `retry_step` posts no instruction, so it has nothing to bound, and
+      // confirmations dispatched nothing in the first place.
+      //
+      // A refusal returns the decision tagged `steeringDeduped`, and nothing else. It clears no status,
+      // writes no error, and burns no in-memory attempt: refusing to POST is not evidence that the card got
+      // better, and the badge that says "a planner is engaged on this card" must survive its own silence.
+      let steeringRequest: PlannerSteeringRequest | null = null;
+      if (this.steeringLedger && (decision.action === "inject_guidance" || decision.action === "request_targeted_fix")) {
+        steeringRequest = {
+          taskId: task.id,
+          action: decision.action,
+          stage: snapshot.stage,
+          reason: decision.reason,
+          now: ctx.now?.() ?? Date.now(),
+        };
+        // FNXC:PlannerOversight 2026-11-12-15:24 (RUFU-586 review F-3): the gate fails OPEN, and the seam is
+        // this call, not the ledger's internals. A budget that cannot be read must not withhold steering:
+        // withholding on an unreadable card silences a card that may be genuinely stuck, which is the louder
+        // failure than one extra comment. `TaskStorePlannerSteeringLedger.evaluate` already absorbs its own
+        // store faults, so the only thing that reaches this catch is a ledger that throws outright - and the
+        // spec's fail-open ("ledger throws -> tick still returns the decision, with a warn") is only real
+        // when the call is wrapped HERE, because tick's single outer catch turns any escaped throw into a
+        // null return, which reads as "no decision was computed" rather than "the budget was unavailable".
+        const gate = await this.evaluateSteeringGate(steeringRequest);
+        if (gate && !gate.allowed) {
+          await this.bookSteeringSuppression(steeringRequest);
+          return { ...decision, steeringDeduped: true };
+        }
+      }
+
       const dispatched = await this.dispatch(decision, task, ctx);
       if (dispatched) {
         this.attempts.set(key, attemptCount + 1);
         this.lastActions.set(key, { action: decision.action, at: ctx.now?.() ?? Date.now() });
+        if (steeringRequest) await this.bookSteeringDelivery(steeringRequest);
       }
       return decision;
     } catch (err) {
       this.logger.warn(`tick failed for ${task?.id ?? "?"}: ${(err as Error)?.message ?? String(err)}`);
       return null;
+    }
+  }
+
+  /**
+   * Ask the durable steering budget for permission, degrading to "no opinion" (deliver) when the ledger
+   * throws. Returns `null` when no ledger is wired or the ledger failed outright; a real refusal is the
+   * only value that can stop a dispatch. Never throws.
+   *
+   * FNXC:PlannerOversight 2026-11-12-15:24 (RUFU-586 review F-3): one wrap for all three ledger calls, so
+   * "the anti-spam ledger is best-effort" is one fact at one seam rather than a property each call site has
+   * to remember. The warn is the record: a degraded gate has no other trace, because a fail-open delivery
+   * deliberately leaves no row behind.
+   */
+  private async evaluateSteeringGate(request: PlannerSteeringRequest): Promise<PlannerSteeringGate | null> {
+    try {
+      return (await this.steeringLedger?.evaluate(request)) ?? null;
+    } catch (err) {
+      this.logger.warn(
+        `steering budget unavailable for ${request.taskId}, delivering without it: ${(err as Error)?.message ?? String(err)}`,
+      );
+      return null;
+    }
+  }
+
+  /** Book a steering post that really landed. Best-effort: the comment is already durable, so a failed
+   * ledger write costs the NEXT episode its cadence and must never reach the caller. */
+  private async bookSteeringDelivery(request: PlannerSteeringRequest): Promise<void> {
+    try {
+      await this.steeringLedger?.recordDelivery(request);
+    } catch (err) {
+      this.logger.warn(
+        `steering budget delivery bookkeeping failed for ${request.taskId}: ${(err as Error)?.message ?? String(err)}`,
+      );
+    }
+  }
+
+  /** Book a refusal and its one-shot notice. Best-effort for the same reason and in the same direction: a
+   * ledger that cannot record a suppression must not convert a deliberate silence into a tick failure. */
+  private async bookSteeringSuppression(request: PlannerSteeringRequest): Promise<void> {
+    try {
+      await this.steeringLedger?.recordSuppression(request);
+    } catch (err) {
+      this.logger.warn(
+        `steering budget suppression bookkeeping failed for ${request.taskId}: ${(err as Error)?.message ?? String(err)}`,
+      );
     }
   }
 
@@ -644,6 +738,13 @@ export class PlannerRecoveryController {
 
   /** Reset all attempt state and pending confirmations for `taskId` (every watched stage) — call on terminal task transitions. */
   clear(taskId: string): void {
+    // FNXC:PlannerOversight 2026-11-11-12:45 (RUFU-586): deliberately does NOT touch the durable steering
+    // budgets. `clear` drops in-memory bookkeeping a poll loop may legitimately lose; the episode on the card
+    // is the one thing an engine restart, an oversight-level change, or this call must not be able to refill -
+    // RUFU-871 reached the same conclusion about its own window ("clearing these records on a healthy signal
+    // would re-open the exact flood"). An operator Retry does not clear it either: unlike the four episodes
+    // `buildManualRetryResetPatch` lifts, this one parks nothing, so a Retry is fully effective while it
+    // stands and the re-arm path is the cooldown (see the constant's note in `task-core.ts`).
     const prefix = `${taskId}::`;
     for (const key of [...this.attempts.keys()]) {
       if (key.startsWith(prefix)) {
