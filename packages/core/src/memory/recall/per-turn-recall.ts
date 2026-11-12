@@ -2,6 +2,12 @@ import { createHash } from "node:crypto";
 import { MEMORY_PRE_STEERING_MARKER } from "../memory-pre-steering.js";
 import { normalizeRecallContent } from "./recall-dedup.js";
 import { resolveMemoryBackend, type MemorySearchResult } from "../memory-backend.js";
+import { resolveStashMemorySettings } from "../stash-settings.js";
+import {
+  reportStashReadOutcome,
+  stashBaseUrlFromSettings,
+  type StashReadStoreHost,
+} from "../memory-backend-stash.js";
 import { resolveMemorySearchTopic } from "../project-memory.js";
 import type { Settings } from "../../types/settings/settings-scope.js";
 
@@ -282,6 +288,14 @@ export interface PerTurnRecallOptions {
    * today's single-search whole-project behavior.
    */
   focus?: string;
+  /**
+   * RUFU-994: the `TaskStore`-shaped reader behind the ONE Stash key resolver. Absent →
+   * raw settings, which for the operator's real configuration means an empty key and a read
+   * Stash answers 401 for (see the StashReadAuth block in `../project-memory.ts`). Resolved
+   * exactly ONCE here, before lane P, so both lanes and the vector fallback share one
+   * enriched settings object and at most one secret reveal.
+   */
+  secretsReader?: StashReadStoreHost;
 }
 
 /** Dedup key for a hit: identity is (path, lineStart) — two hits on the same lines collide. */
@@ -361,8 +375,16 @@ export async function buildPerTurnMemoryRecallCue(options: PerTurnRecallOptions)
   // guard so a future throwing resolver degrades to a silent skip instead of breaking
   // prompt assembly.
   let backend;
+  let resolvedSettings = settings;
   try {
-    backend = resolveMemoryBackend(settings);
+    // RUFU-994: resolve ONCE here, before either lane runs, so lane P, lane T and the vector
+    // fallback all share one enriched settings object and at most one secret reveal.
+    // `resolveMemoryBackend` stays synchronous and reads `settings.stashApiKey`, which is the empty
+    // schema default until the secret is merged in.
+    resolvedSettings = options.secretsReader
+      ? await resolveStashMemorySettings(options.secretsReader, settings)
+      : settings;
+    backend = resolveMemoryBackend(resolvedSettings);
   } catch {
     return "";
   }
@@ -403,6 +425,7 @@ export async function buildPerTurnMemoryRecallCue(options: PerTurnRecallOptions)
     const results = await backend.search(options.rootDir, { query, limit });
     projectHits = results ?? [];
   } catch {
+    reportStashReadOutcome(options.secretsReader, stashBaseUrlFromSettings(resolvedSettings));
     return "";
   }
   // Client-side score filter (Stash has no server-side score filter).
@@ -419,8 +442,19 @@ export async function buildPerTurnMemoryRecallCue(options: PerTurnRecallOptions)
     }
   }
 
+  /*
+  FNXC:StashReadAuth 2026-11-12-19:41 (RUFU-994):
+  Both lanes have now run, so this is where a refused recall used to become invisible: an empty
+  `## Memory Recall` cue read exactly like a project with nothing stored. The cue contract is
+  unchanged ("" stays ""), but the cause is recorded once per invocation here — after lane T as well
+  as lane P, so a lane-T refusal is still counted when lane P happened to produce a cue.
+  */
+  reportStashReadOutcome(options.secretsReader, stashBaseUrlFromSettings(resolvedSettings));
+
   // Silent skip when neither lane yields a usable hit (matches today's empty contract).
-  if (laneP.length === 0 && laneT.length === 0) return "";
+  if (laneP.length === 0 && laneT.length === 0) {
+    return "";
+  }
 
   // De-dup on (path, lineStart) with lane T winning: a topic hit shadows the same lines in
   // lane P. Lane P keeps its own internal duplicates (RUFU-120 behavior) — only lane-T

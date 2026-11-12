@@ -18,7 +18,7 @@ import { listTraits, isBuiltinWorkflowId, isTaskNotFoundError, renderTaskComment
 import { promoteHeldTask } from "./execution/hold-release.js";
 import { emitBoundedRunAudit } from "./util/emit-bounded-run-audit.js";
 import { STORE_RETRY_GUIDANCE, stepLifecycleNoopResult, storeErrorResult, storeWriteFailure } from "./tool-store-errors.js";
-import { computeCrossParentDiagnosticClaim, computeCrossParentDiagnosticClaimId, computeParentIntentClaimId, DASHBOARD_USER_ID, dailyMemoryPath, ensureOpenClawMemoryFiles, evaluateImplementationTaskBind, extractAgentProvisioningRequest, findSameAgentDuplicates, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, normalizeMessageParticipant, reconcileDeterministicDuplicate, resolveAgentProvisioningPolicy, resolveMemoryBackend, resolveMemorySearchTopic, resolveResearchSettings, resolveTaskGithubTracking, runDeterministicDuplicateGuard, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh, AgentTextCharsetError, assertAgentTextAllowed, isDuplicatedPromptSectionError, isPromptShrinkRejectedError, largestPriorPromptBytes } from "@fusion/core";
+import { computeCrossParentDiagnosticClaim, computeCrossParentDiagnosticClaimId, computeParentIntentClaimId, DASHBOARD_USER_ID, dailyMemoryPath, ensureOpenClawMemoryFiles, evaluateImplementationTaskBind, extractAgentProvisioningRequest, findSameAgentDuplicates, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, normalizeMessageParticipant, reconcileDeterministicDuplicate, resolveAgentProvisioningPolicy, resolveMemoryBackend, resolveMemorySearchTopic, resolveResearchSettings, resolveTaskGithubTracking, runDeterministicDuplicateGuard, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh, type StashSecretsReader, AgentTextCharsetError, assertAgentTextAllowed, isDuplicatedPromptSectionError, isPromptShrinkRejectedError, largestPriorPromptBytes } from "@fusion/core";
 import { formatLongTermMemoryAppendReport, formatMemorySize, measureLongTermMemory, type LongTermMemoryScope } from "./memory/memory-budget.js";
 import { ResearchOrchestrator } from "./research/research-orchestrator.js";
 import { ResearchProviderRegistry } from "./research/provider-registry.js";
@@ -836,6 +836,16 @@ type MemoryToolOptions = {
   isolation is unaffected either way.
   */
   focus?: string;
+  /*
+  FNXC:StashReadAuth 2026-11-12-19:21 (RUFU-994):
+  The `TaskStore`-shaped reader that reaches the ONE Stash key resolver. Without it, fn_memory_search
+  and fn_memory_get resolved the backend from raw settings, so on the operator's real configuration
+  (empty `stashApiKey` setting, key in the global `stash-api-key` secret) both tools queried Stash
+  with no `Authorization` header, took a 401, and reported "NONE" — the tool looked like an empty
+  memory store while capture kept succeeding. Each tool host passes its own store; absent → today's
+  unauthenticated degradation, never a throw.
+  */
+  secretsReader?: StashSecretsReader;
 };
 
 type MemorySearchHit = {
@@ -5313,7 +5323,7 @@ export function createMemorySearchTool(rootDir: string, settings?: MemoryToolSet
         query: params.query,
         limit,
         ...(activeTopic ? { topic: activeTopic } : {}),
-      }, settings);
+      }, settings, undefined, options?.secretsReader);
       const results = [...agentResults, ...projectResults]
         .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
         .slice(0, limit);
@@ -5359,7 +5369,7 @@ export function createMemoryGetTool(rootDir: string, settings?: MemoryToolSettin
         path: params.path,
         startLine: params.startLine,
         lineCount: params.lineCount,
-      }, settings);
+      }, settings, options?.secretsReader);
       return {
         content: [{
           type: "text" as const,

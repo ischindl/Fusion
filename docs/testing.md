@@ -1558,3 +1558,57 @@ When task-branch validation changes, test production acquisition and task creati
 ### Workspace review-to-land regression
 
 Workspace merge regressions must use the production per-repository review capture before landing. Cover a modified scoped repository, a clean acquired peer (`NOT_REVIEWED`), approval-missing, content-changed, and out-of-scope changes; do not manufacture the landing fingerprint as the decisive happy-path oracle.
+
+## Credential assertions need the real transport, not an injected client fake
+
+A request-builder fake cannot prove a credential reached the wire, and a green suite built on one is
+how a read-side auth gap survived 8 320 successful writes. The Stash backend's injectable seam
+(`StashHttpClient`, `packages/core/src/memory/memory-backend-stash.ts`) receives
+`(path, method, payload)` and never sees headers, so `Authorization` is unrepresentable in every
+assertion made through it. RUFU-994 is the measured case: write callers resolved the global
+`stash-api-key` secret and read callers did not, so writes answered `201` and reads answered `401`,
+while every read surface reported "no memories" because the fail-closed contract returns `[]` / `""`.
+
+The convention for any test that asserts *who is authenticating* — not what was requested — is the
+loopback harness in `packages/core/src/memory/__tests__/stash-read-auth-transport.test.ts`: an
+in-process `node:http` server bound to `127.0.0.1:0`, driven through the real
+`stashHttpJsonRequest`, recording `req.headers.authorization` per path so a header-less request is
+observable rather than assumed. Close it in `afterEach`. Port 0 is mandatory (never 4040, which is
+reserved), and no test may reach a real Stash instance or the network.
+
+Two things follow from writing it this way, and both are the point:
+
+- **Model the server's real auth shape.** The harness answers `401` with the same sentence Stash's
+  `get_current_user` raises, and separates "refused an authorized request" from "answered and found
+  nothing", because the pair an operator needs is refusal vs empty, not error vs success.
+- **Assert the header, then assert the outcome code.** The fail-closed return (`[]`, `""`, `false`)
+  must stay unchanged under a refusal, so the test asserts both halves: the credential on the wire and
+  a read-outcome code that is not the one a genuine empty result produces.
+
+Injection stays correct for everything the seam can see — URL shape, query normalization, scoring,
+caching, fail-closed behavior — and `memory-backend-stash.test.ts` remains the right place for that.
+Where a cache window or TTL is under test, prefer the backend's injectable `now` clock over a loopback
+sleep: RUFU-994's one-hour suppression window is pinned that way in case 4b there, while the loopback
+file asserts what only a real socket can (the header itself).
+
+## Credential assertions need the real transport, not an injected client fake
+
+A request-builder fake cannot prove a credential reached the wire, and a suite built on one cannot
+catch a missing `Authorization` header. The Stash backend's test seam (`StashHttpClient`, injected as
+`httpClient` in `packages/core/src/memory/memory-backend-stash.ts`) receives `(path, method, payload)`
+only — headers are not part of its signature. Every pre-RUFU-994 Stash test used that seam, which is
+exactly how read-side auth survived while 8 320 writes returned `201` and 2 334 reads returned `401`:
+the same resolver asymmetry that broke reads was invisible to every assertion the suite could make.
+
+Any test that must prove *what the server actually received* — a header, a credential, a real status
+code, redirect or TLS behavior — therefore stands up an in-process `node:http` server on
+`127.0.0.1:0` (port 0; never 4040, which is reserved) and drives the real transport
+(`stashHttpJsonRequest`) against it, closing the server in `afterEach`.
+`packages/core/src/memory/__tests__/stash-read-auth-transport.test.ts` is the reference shape: record
+`req.headers.authorization` per request path, answer `201`/`401` the way the real server does, and keep
+one mutable flag per failure mode so a case can refuse first and serve later without restarting
+anything — that is what lets a test say "the next turn recovered" literally.
+
+No test reaches the network or a real Stash instance. Keep using the injected-client fake for URL
+shape, payload shape, cache and TTL behavior, where a fast recorder with an injected clock is the right
+tool; use the loopback transport when the claim is about the wire.

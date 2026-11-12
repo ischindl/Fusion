@@ -51,6 +51,9 @@ const files = [
   "../task-store/lifecycle-ops.ts", "../task-store/task-id-integrity.ts", "../task-store/workflow-definitions.ts",
   "../task-store/async/async-phantom-reservations.ts", "../task-store/task-deleted-outbox-consumer.ts",
   "../task-store/task-lifecycle-event-retention.ts", "../memory/recall-capture.ts",
+  // FNXC:StashReadAuth 2026-11-12-20:09 (RUFU-994): the Stash read-refusal row is best-effort
+  // telemetry on a read path, so it belongs in the bounded-seam inventory beside recall-capture.
+  "../memory/memory-backend-stash.ts",
 ];
 
 const sourceRoot = fileURLToPath(new URL("..", import.meta.url));

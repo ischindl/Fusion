@@ -2406,13 +2406,25 @@ export async function runImplementation(
           taskId: task.id,
         }),
         createWebFetchTool(),
-        ...createMemoryTools(deps.rootDir, settings, identityAgent ? {
-          agentMemory: {
-            agentId: identityAgent.id,
-            agentName: identityAgent.name,
-            memory: identityAgent.memory,
-          },
-        } : undefined),
+        ...createMemoryTools(deps.rootDir, settings, {
+          ...(identityAgent
+            ? {
+              agentMemory: {
+                agentId: identityAgent.id,
+                agentName: identityAgent.name,
+                memory: identityAgent.memory,
+              },
+            }
+            : {}),
+          /*
+          FNXC:StashReadAuth 2026-11-12-20:26 (RUFU-994):
+          The store rides the memory options whether or not an agent is assigned: a WRITE needs an
+          assignee, a READ does not, and the credential comes from the same single resolver either way.
+          Omitting it here would put this lane back into the pre-RUFU-994 shape — raw settings, empty
+          stashApiKey, no Authorization header, and a 401 that reads as an empty memory store.
+          */
+          secretsReader: deps.store,
+        }),
         // Conditionally add agent self-reflection when enabled and task has an assigned agent.
         ...reflectionTools,
         // Agent delegation tools — discover and delegate work to other agents.

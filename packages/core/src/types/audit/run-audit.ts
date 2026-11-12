@@ -267,6 +267,31 @@ export type RunAuditMutationType =
   prose and keeps it out of the tables locked to `DELIVERY_PIPELINE_RUN_AUDIT_EVENTS`.
   */
   | "artifact:retracted"
+  /*
+  FNXC:StashReadAuth 2026-11-12-20:09 (RUFU-994):
+  One row per (Stash server, refusal code) per 15-minute window when a Stash memory READ could not be
+  served. The event exists because a refused read was indistinguishable from an empty memory store: on
+  the host that motivated it, reads drew `401 Missing Authorization header` 2 334 times while writes
+  from the same process returned 201, and every read surface — per-turn recall, the proactive cue, the
+  Review Read path — fails closed to `[]` / `""` / `false` by design, so the only surviving signal was
+  a container log the operator had to grep by hand.
+
+  Metadata is the closed set `endpoint` (fixed enum `keyword-search` | `semantic-search` | `read` |
+  `exists`), `code` (fixed enum `key-unresolved` | `refused-auth` | `refused-capability` |
+  `rejected-request` | `unreachable` | `malformed`), `keyResolved` (boolean), and `resultCount`
+  (number). Nothing else: neither the key, nor the Stash URL (its userinfo can carry credentials and
+  the audit store is readable by anything with query access — FN-9059's rule for remote URLs), nor the
+  server's refusal sentence, which is why `target` is the fixed literal `stash-memory`. `no-match` —
+  the honest empty answer — deliberately writes no row, so counts mean "refusals", not traffic.
+
+  Emitted through the FN-9177 bounded core seam, so an absent, throwing, rejecting, or never-settling
+  sink cannot alter, delay, or fail the recall it reports.
+
+  Deliberately OUTSIDE the curated delivery-pipeline catalogue (RUFU-462's, RUFU-279's and RUFU-871's
+  exclusion): a memory read diagnostic is not a delivery-pipeline step, so `docs/run-audit.md`
+  documents it in prose and keeps it out of the tables locked to `DELIVERY_PIPELINE_RUN_AUDIT_EVENTS`.
+  */
+  | "memory:stash-read-refused"
   | (string & {});
 
 /** Input for recording a run-audit event. */

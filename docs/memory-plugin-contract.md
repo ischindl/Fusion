@@ -245,9 +245,14 @@ error/timeout, non-2xx, malformed body, or an empty vector result list —
 (normalized `q`, legacy empty-query URL, limit cap, fail-closed `[]`). A
 per-process negative capability cache (baseUrl-keyed, TTL 1h, test seam
 `__resetVectorCapabilityCacheForTests`) suppresses further vector attempts
-only after *definitive* no-vector responses — 404 (unpatched server), 405,
-501, 503 (embedder unconfigured); 422/500 and network errors are never
-cached, so the vector path retries on the next call.
+only after *definitive* refusals — 404 (unpatched server), 405, 501,
+503 (embedder unconfigured), and since RUFU-994 also 401/403 (a refused or
+absent credential: repeating it each turn produced 2 334 x 401 from one
+process while reading as an empty memory store); 422/500 and network errors
+are never cached, so the vector path retries on the next call. The keyword
+path is never suppressed by this cache, so keyword recall still runs every
+turn and recovers immediately once a key resolves — only the vector attempt
+waits for the window to expire.
 
 **Score-scale caveat (D5).** Vector `score` = response `rank` (cosine
 similarity, 0..1; missing/non-finite → 1.0). The keyword path no longer

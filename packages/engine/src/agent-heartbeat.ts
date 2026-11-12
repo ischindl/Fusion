@@ -4597,6 +4597,13 @@ export class HeartbeatMonitor {
             // whole-project scope. The optional focus seam stays wired so a heartbeat
             // bound to a topic-scoped conversation can scope recall within the project.
             focus: undefined,
+            /*
+            FNXC:StashReadAuth 2026-11-12-20:26 (RUFU-994):
+            Heartbeat recall needs the credential too. This lane already RESOLVED for its write path, so
+            without the reader here it was the split-brain case: capture succeeded with 201 while recall
+            401'd and reported nothing to find.
+            */
+            secretsReader: taskStore,
           }));
         } catch (memorySettingsError) {
           const message = memorySettingsError instanceof Error ? memorySettingsError.message : String(memorySettingsError);

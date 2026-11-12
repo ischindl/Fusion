@@ -2572,6 +2572,10 @@ export {
   DEFAULT_STASH_BULK_MAX_PAGES,
   deleteStashChatSessions,
   bulkDeleteStashChatSessions,
+  // FNXC:StashReadAuth 2026-11-12-19:41 (RUFU-994): the read-outcome reader plus the ONE baseUrl
+  // derivation it is keyed by, so the memory routes can name a refusal without a container log.
+  getStashReadOutcome,
+  stashBaseUrlFromSettings,
 } from "./memory/memory-backend-stash.js";
 export type {
   StashEvent,
@@ -2583,6 +2587,10 @@ export type {
   StashBulkChatSessionDeleteResult,
   StashBulkChatSessionSyncSummary,
   StashBulkDeleteStore,
+  // FNXC:StashReadAuth 2026-11-12-19:41 (RUFU-994): closed read-outcome vocabulary.
+  StashReadOutcome,
+  StashReadOutcomeCode,
+  StashReadEndpoint,
 } from "./memory/memory-backend-stash.js";
 
 // FNXC:RUFU121StashSettingsInCore 2026-08-18-19:53: (RUFU-121) Stash settings/secret

@@ -12,6 +12,7 @@ import {
   type AgentStore,
   type PluginPromptSurface,
   type Settings,
+  type StashSecretsReader,
 } from "@fusion/core";
 import type { PluginRunner } from "../plugins/plugin-runner.js";
 import { buildRequestVolatileContext } from "../execution/prompt-layers.js";
@@ -795,6 +796,14 @@ export async function buildAgentChatPromptParts(options: {
   focus?: string;
   /** Project settings for the recall enable/topK/memoryEnabled gates. */
   settings?: Partial<Settings>;
+  /**
+   * FNXC:StashReadAuth 2026-11-12-20:26 (RUFU-994):
+   * The store behind the ONE Stash key resolver, forwarded to the per-turn recall core.
+   * Chat used to hand this composer raw settings, so chat's recall queried Stash with the empty
+   * schema-default key, took a 401, and produced no cue at all — indistinguishable from a project
+   * with nothing stored. Absent → the same unauthenticated degradation, never a throw.
+   */
+  secretsReader?: StashSecretsReader;
 }): Promise<AgentChatPromptParts> {
   const { agent, rootDir, agentStore, basePrompt, includeProjectMemory = false, inclusionMode = "full" } = options;
 
@@ -892,6 +901,8 @@ export async function buildAgentChatPromptParts(options: {
         // RUFU-172: an already-gated focus biases ranking as lane T; undefined keeps today's
         // single-search whole-project cue byte-for-byte.
         focus: options.focus,
+        // RUFU-994: resolve the Stash credential for this turn's recall (see option above).
+        secretsReader: options.secretsReader,
       });
       if (recallCue) {
         recallSection = `## Memory Recall\n\n${recallCue}`;
@@ -934,6 +945,8 @@ export async function buildAgentChatPrompt(options: {
   sessionId?: string;
   focus?: string;
   settings?: Partial<Settings>;
+  /** RUFU-994: forwarded to {@link buildAgentChatPromptParts} for the per-turn recall credential. */
+  secretsReader?: StashSecretsReader;
 }): Promise<string> {
   const parts = await buildAgentChatPromptParts(options);
   return parts.requestContext

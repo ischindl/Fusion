@@ -105,6 +105,19 @@ describe("fn_memory_search tool topic threading (RUFU-068)", () => {
     healthSpy.mockReset();
   });
 
+  /*
+  FNXC:StashReadAuth 2026-11-12-20:26 (RUFU-994):
+  One place states the seam's full argument shape, because RUFU-994 grew it and a per-test literal
+  argument list is how that change turned into four unrelated-looking failures. The seam is
+  `searchProjectMemory(rootDir, options, settings, topic, secretsReader)`: this host supplies no
+  settings and no store, so the last three slots are `undefined`, and the focus travels INSIDE
+  `options` rather than in the positional topic slot (RUFU-172). A host that DOES hold a store must
+  forward it — that half is the case below, not a relaxation of these.
+  */
+  function expectRecallCalledWith(options: ReturnType<typeof expect.objectContaining>) {
+    expect(searchSpy).toHaveBeenCalledWith(ROOT, options, undefined, undefined, undefined);
+  }
+
   async function runSearch(opts: { params?: Record<string, unknown>; focus?: string }) {
     const tool = createMemorySearchTool(ROOT, undefined, opts.focus ? { focus: opts.focus } : undefined);
     return callTool(tool, "call-1", { query: "durable memory", ...opts.params });
@@ -113,20 +126,12 @@ describe("fn_memory_search tool topic threading (RUFU-068)", () => {
   it("scopes project recall to the active topic via options.focus", async () => {
     await runSearch({ focus: "stash lcm" });
     expect(searchSpy).toHaveBeenCalledTimes(1);
-    expect(searchSpy).toHaveBeenCalledWith(
-      ROOT,
-      expect.objectContaining({ query: "durable memory", limit: 5, topic: "stash lcm" }),
-      undefined,
-    );
+    expectRecallCalledWith(expect.objectContaining({ query: "durable memory", limit: 5, topic: "stash lcm" }));
   });
 
   it("prefers an explicit params.topic over the session focus", async () => {
     await runSearch({ focus: "stash lcm", params: { topic: "explicit topic" } });
-    expect(searchSpy).toHaveBeenCalledWith(
-      ROOT,
-      expect.objectContaining({ query: "durable memory", limit: 5, topic: "explicit topic" }),
-      undefined,
-    );
+    expectRecallCalledWith(expect.objectContaining({ query: "durable memory", limit: 5, topic: "explicit topic" }));
   });
 
   it.each([undefined, "all", "*", "", "   "])(
@@ -143,11 +148,22 @@ describe("fn_memory_search tool topic threading (RUFU-068)", () => {
 
   it("threads an explicitly-set params.topic into backend.search", async () => {
     await runSearch({ params: { topic: "stash lcm" } });
-    expect(searchSpy).toHaveBeenCalledWith(
-      ROOT,
-      expect.objectContaining({ query: "durable memory", limit: 5, topic: "stash lcm" }),
-      undefined,
-    );
+    expectRecallCalledWith(expect.objectContaining({ query: "durable memory", limit: 5, topic: "stash lcm" }));
+  });
+
+  it("forwards the store host so the single Stash key resolver can reach the secret", async () => {
+    /*
+    FNXC:StashReadAuth 2026-11-12-20:26 (RUFU-994):
+    The last slot is the point of this change on the tool side: the store is what lets
+    `resolveStashMemorySettings` reach the global `stash-api-key` secret. A host with no store still
+    degrades fail-closed (asserted above), but a host WITH one must forward it — dropping it is the
+    difference between a tool that recalls and one that answers "NONE" while capture keeps writing.
+    */
+    const secretsReader = { getSecretsStore: async () => null };
+    const tool = createMemorySearchTool(ROOT, undefined, { focus: "stash lcm", secretsReader });
+    await callTool(tool, "call-1", { query: "durable memory" });
+    expect(searchSpy).toHaveBeenCalledTimes(1);
+    expect(searchSpy.mock.calls[0][4]).toBe(secretsReader);
   });
 
   it("is a read-time topic hint, not a result filter: the topic reaches searchProjectMemory options and is never reapplied post-query", async () => {
@@ -171,11 +187,7 @@ describe("fn_memory_search tool topic threading (RUFU-068)", () => {
     const searchTool = tools.find((t) => t.name === "fn_memory_search");
     expect(searchTool).toBeTruthy();
     await callTool(searchTool!, "call-1", { query: "durable memory" });
-    expect(searchSpy).toHaveBeenCalledWith(
-      ROOT,
-      expect.objectContaining({ topic: "stash lcm" }),
-      undefined,
-    );
+    expectRecallCalledWith(expect.objectContaining({ topic: "stash lcm" }));
   });
 });
 

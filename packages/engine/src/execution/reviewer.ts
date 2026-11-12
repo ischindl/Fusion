@@ -478,28 +478,45 @@ export async function reviewStep(
   // A routed reviewer principal owns its memory/runtime identity for this session.
   const memoryTools = options.rootDir && effectiveSettings?.memoryEnabled !== false
     ? [
-        createMemorySearchTool(options.rootDir, effectiveSettings, memoryAgent ? {
-          agentMemory: {
-            agentId: memoryAgent.id,
-            agentName: memoryAgent.name,
-            memory: memoryAgent.memory,
-          },
+        createMemorySearchTool(options.rootDir, effectiveSettings, {
+          ...(memoryAgent
+            ? {
+              agentMemory: {
+                agentId: memoryAgent.id,
+                agentName: memoryAgent.name,
+                memory: memoryAgent.memory,
+              },
+            }
+            : {}),
           // FNXC:MemoryFocusEngine 2026-08-13-16:35 (RUFU-068): review lanes have
           // no per-conversation /focus topic → whole-project scope. The optional
           // focus seam stays wired so a review conversation that later acquires a
           // topic can scope fn_memory_search.
           focus: undefined,
-        } : undefined),
-        createMemoryGetTool(options.rootDir, effectiveSettings, memoryAgent ? {
-          agentMemory: {
-            agentId: memoryAgent.id,
-            agentName: memoryAgent.name,
-            memory: memoryAgent.memory,
-          },
+          /*
+          FNXC:StashReadAuth 2026-11-12-20:26 (RUFU-994):
+          The review lane's recall and search tools carry the store so `resolveStashMemorySettings` can
+          run: review recall previously passed raw settings, so a Stash-backed project reviewed with no
+          recalled memory while capture was writing it successfully.
+          */
+          secretsReader: options.store,
+        }),
+        createMemoryGetTool(options.rootDir, effectiveSettings, {
+          ...(memoryAgent
+            ? {
+              agentMemory: {
+                agentId: memoryAgent.id,
+                agentName: memoryAgent.name,
+                memory: memoryAgent.memory,
+              },
+            }
+            : {}),
           // FNXC:MemoryFocusEngine 2026-08-13-16:35 (RUFU-068): whole-project scope
           // (no /focus topic in review lanes).
           focus: undefined,
-        } : undefined),
+          // RUFU-994: see `createMemorySearchTool` above.
+          secretsReader: options.store,
+        }),
       ]
     : undefined;
   class ReviewerPauseAbortError extends Error {

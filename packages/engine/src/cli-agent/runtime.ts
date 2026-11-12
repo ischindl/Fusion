@@ -26,7 +26,7 @@
 
 import { CliSessionStore } from "@fusion/core";
 import { ChatStore, CHAT_FOCUS_FLAG, isExperimentalFeatureEnabled } from "@fusion/core";
-import type { AsyncDataLayer, Settings } from "@fusion/core";
+import type { AsyncDataLayer, Settings, StashSecretsReader } from "@fusion/core";
 import { CliAdapterRegistry } from "./adapter.js";
 import { BUNDLED_CLI_ADAPTERS } from "./adapters/index.js";
 import { CliSessionManager, type CliSessionManagerOptions } from "./session-manager.js";
@@ -86,6 +86,13 @@ export interface CreateCliAgentRuntimeOptions {
    * `recallEndpointUrl` is set.
    */
   getSettings?: () => Promise<Partial<Settings> | null | undefined>;
+  /**
+   * FNXC:StashReadAuth 2026-11-12-20:26 (RUFU-994):
+   * The project `TaskStore`, forwarded to the per-turn recall service as the reader
+   * behind the ONE Stash key resolver. `getSettings` alone cannot carry the credential — the key
+   * lives in the global secrets store, not in settings — and a header-less recall answers 401.
+   */
+  secretsReader?: StashSecretsReader;
   /**
    * Test override for the chat-recall scratch root (default
    * `<fusionDir>/tmp`). Only consulted when `recallEndpointUrl` is set.
@@ -300,6 +307,8 @@ export async function createCliAgentRuntime(
                 sessionId: input.sessionId,
                 settings: recallSettings,
                 focus: await resolveLinkedChatFocus(input.sessionId, recallSettings),
+                // RUFU-994: resolves the same `stash-api-key` secret the capture path uses.
+                secretsReader: options.secretsReader,
               });
             },
           },

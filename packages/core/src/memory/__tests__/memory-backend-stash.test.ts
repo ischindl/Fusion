@@ -21,6 +21,8 @@ import {
   StashMemoryBackend,
   __resetStashFolderCacheForTests,
   __resetVectorCapabilityCacheForTests,
+  STASH_VECTOR_CAPABILITY_TTL_MS,
+  getStashReadOutcome,
   normalizeStashSearchQuery,
   stashRelevanceScore,
   queryStashEvents,
@@ -515,6 +517,74 @@ describe("StashMemoryBackend vector-first search (RUFU-126 Step 5)", () => {
     await backend.search("/proj/demo", { query: "yet another multi word" });
     expect(semanticCalls()).toHaveLength(2);
     expect(keywordCalls()).toHaveLength(3);
+  });
+
+  /*
+  FNXC:StashReadAuth 2026-11-12-20:09 (RUFU-994 Step 5):
+  The definitive-no-vector set was {404, 405, 501, 503}; 401 and 403 now join it. This is the widened
+  truth, not a weakened assertion: cases 3-5 above still hold unchanged, and case 5's transient list
+  (422/500/network/malformed/empty) still re-attempts on EVERY call. What changes is that a refused
+  credential stops costing one semantic request per recall turn — the operator measured 2 334 x 401
+  from one process, because the fall-through to keyword made the refusal invisible and the next turn
+  asked again. The keyword fallback and the TTL re-probe are asserted in the same case so the
+  suppression cannot silently become permanent.
+  */
+  it.each([[401], [403]])("4b. flag on + multi-word + semantic %i (refused credential) → keyword fallback still runs; semantic suppressed within the TTL window; re-probed after it", async (status) => {
+    const { fake, semanticCalls, keywordCalls } = makeVectorFake(stashStatus(status), () => ({
+      results: [{ id: `kw-${status}`, content: "keyword hit", session_id: "kw-ses" }],
+    }));
+    let nowMs = 1_000;
+    const backend = new StashMemoryBackend({
+      baseUrl: "http://stash-refused.test",
+      apiKey: "resolved-key",
+      now: () => nowMs,
+      httpClient: fake.client,
+      vectorSearch: true,
+    });
+
+    const results = await backend.search("/proj/demo", { query: "multi word query here" });
+    expect(semanticCalls()).toHaveLength(1);
+    // The keyword lane is NOT suppressed by a semantic refusal — that is the fail-closed contract.
+    expect(keywordCalls()).toHaveLength(1);
+    expect(results.map((r) => r.snippet)).toEqual(["keyword hit"]);
+    expect(getStashReadOutcome("http://stash-refused.test", "semantic-search")?.code).toBe("refused-auth");
+
+    // Next turn inside the window: the refused request is not repeated.
+    nowMs += 60_000;
+    await backend.search("/proj/demo", { query: "another multi word query" });
+    expect(semanticCalls()).toHaveLength(1);
+    expect(keywordCalls()).toHaveLength(2);
+
+    // After the window the lane is probed again, which is how a rotated key comes back.
+    nowMs += STASH_VECTOR_CAPABILITY_TTL_MS + 1;
+    await backend.search("/proj/demo", { query: "third multi word query" });
+    expect(semanticCalls()).toHaveLength(2);
+    expect(keywordCalls()).toHaveLength(3);
+  });
+
+  it("4c. flag on + no key at all → records key-unresolved, not refused-auth, and still suppresses", async () => {
+    const { fake, semanticCalls, keywordCalls } = makeVectorFake(stashStatus(401), () => ({ results: [] }));
+    let nowMs = 1_000;
+    const backend = new StashMemoryBackend({
+      baseUrl: "http://stash-nokey.test",
+      now: () => nowMs,
+      httpClient: fake.client,
+      vectorSearch: true,
+    });
+
+    await backend.search("/proj/demo", { query: "multi word query here" });
+    expect(semanticCalls()).toHaveLength(1);
+    expect(keywordCalls()).toHaveLength(1);
+    // Our own missing credential names a different knob than Stash refusing a key it received.
+    expect(getStashReadOutcome("http://stash-nokey.test", "semantic-search")?.code).toBe("key-unresolved");
+    // The fake answers the keyword lane, so the two endpoints carry independent records — a
+    // semantic failure is never attributed to the keyword route (Step 3's per-endpoint rule).
+    expect(getStashReadOutcome("http://stash-nokey.test", "keyword-search")?.code).toBe("no-match");
+
+    nowMs += 60_000;
+    await backend.search("/proj/demo", { query: "another multi word query" });
+    expect(semanticCalls()).toHaveLength(1);
+    expect(keywordCalls()).toHaveLength(2);
   });
 
   it("4. flag on + multi-word + semantic 503 (embedder unconfigured) → keyword fallback; negative cached within TTL", async () => {

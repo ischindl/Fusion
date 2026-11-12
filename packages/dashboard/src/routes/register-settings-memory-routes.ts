@@ -17,6 +17,8 @@ import {
   buildInsightExtractionPrompt,
   exportSettings,
   generateMemoryAudit,
+  getStashReadOutcome,
+  stashBaseUrlFromSettings,
   getMemoryBackendCapabilities,
   importSettings,
   installQmd,
@@ -1333,8 +1335,9 @@ export function registerSettingsMemoryRoutes(ctx: ApiRoutesContext, deps: Settin
       const settings = await scopedStore.getSettings();
       const rootDir = scopedStore.getRootDir();
 
-      // Use backend-aware memory read
-      const result = await readMemory(rootDir, settings);
+      // Use backend-aware memory read. RUFU-994: the scoped store is the reader that resolves
+      // the Stash key — without it a Stash-backed project read 401 and the screen showed "".
+      const result = await readMemory(rootDir, settings, scopedStore);
       res.json({ content: result.content });
     } catch (err: unknown) {
       if (err instanceof ApiError) {
@@ -1375,7 +1378,7 @@ export function registerSettingsMemoryRoutes(ctx: ApiRoutesContext, deps: Settin
       const rootDir = scopedStore.getRootDir();
 
       // Use backend-aware memory write with explicit error mapping
-      await writeMemory(rootDir, content, settings);
+      await writeMemory(rootDir, content, settings, scopedStore);
       res.json({ success: true });
     } catch (err: unknown) {
       if (err instanceof ApiError) {
@@ -1533,6 +1536,15 @@ export function registerSettingsMemoryRoutes(ctx: ApiRoutesContext, deps: Settin
         availableBackends,
         qmdAvailable: await isQmdAvailable(),
         qmdInstallCommand: QMD_INSTALL_COMMAND,
+        /*
+        FNXC:StashReadAuth 2026-11-12-19:41 (RUFU-994):
+        The last Stash read outcome this process recorded for the configured server, or null when
+        nothing has been read from it. This is the operator-visible half of "we were not allowed to
+        look" vs "nothing was stored": before RUFU-994 a `stash` backend here reported healthy
+        capabilities while every recall was 401ing and rendering as an empty memory store. It is a
+        code from a closed set — never a URL, a response body, or error text.
+        */
+        stashReadOutcome: getStashReadOutcome(stashBaseUrlFromSettings(settings))?.code ?? null,
       });
     } catch (err: unknown) {
       if (err instanceof ApiError) {
@@ -1579,6 +1591,8 @@ export function registerSettingsMemoryRoutes(ctx: ApiRoutesContext, deps: Settin
       const results = await searchProjectMemory(
         rootDir,
         { query, limit: 5 },
+        // This route pins the backend to qmd, so it is not a Stash read surface and needs no
+        // secrets reader (RUFU-994 Step 0): the resolve would early-return on backend type.
         { ...settings, memoryBackendType: "qmd" },
       );
 
@@ -1587,6 +1601,10 @@ export function registerSettingsMemoryRoutes(ctx: ApiRoutesContext, deps: Settin
         qmdAvailable,
         usedFallback: !qmdAvailable,
         qmdInstallCommand: QMD_INSTALL_COMMAND,
+        // RUFU-994: this route pins the backend to qmd above, so its own search is not a Stash
+        // read surface; the field reports the last Stash read outcome real recall paths recorded
+        // against the configured server, which is the fact an operator is testing for here.
+        stashReadOutcome: getStashReadOutcome(stashBaseUrlFromSettings(settings))?.code ?? null,
         results,
       });
     } catch (err: unknown) {

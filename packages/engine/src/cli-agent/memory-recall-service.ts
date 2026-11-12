@@ -22,7 +22,7 @@
  */
 
 import { buildPerTurnMemoryRecallCue } from "@fusion/core";
-import type { Settings } from "@fusion/core";
+import type { Settings, StashSecretsReader } from "@fusion/core";
 
 export interface MemoryRecallChatTurnInput {
   /** Project root to resolve the memory backend against. */
@@ -44,6 +44,13 @@ export interface MemoryRecallChatTurnInput {
    * whole-project single-search cue byte-identical.
    */
   focus?: string;
+  /**
+   * FNXC:StashReadAuth 2026-11-12-20:26 (RUFU-994):
+   * The store behind the ONE Stash key resolver. CLI chat turns recalled with raw
+   * settings, i.e. the empty `stashApiKey` schema default, so every Stash recall for a spawned
+   * CLI agent went out unauthenticated and came back as an empty cue.
+   */
+  secretsReader?: StashSecretsReader;
 }
 
 /**
@@ -60,6 +67,8 @@ export async function recallForChatTurn(input: MemoryRecallChatTurnInput): Promi
       settings: input.settings ?? undefined,
       sessionKey: `cli:${input.sessionId}`,
       focus: input.focus,
+      // RUFU-994: the resolved Stash credential, threaded from the runtime that owns the store.
+      secretsReader: input.secretsReader,
     });
   } catch {
     return "";

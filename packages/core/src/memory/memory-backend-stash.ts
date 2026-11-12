@@ -34,6 +34,9 @@ import http from "node:http";
 import https from "node:https";
 import { createHash } from "node:crypto";
 import { basename } from "node:path";
+import { createLogger } from "../process/logger.js";
+import { emitBoundedRunAudit, type RunAuditLogger, type RunAuditSinkHost } from "../run-audit/emit-bounded-run-audit.js";
+import type { RunAuditMutationType } from "../types/audit/run-audit.js";
 import type {
   MemoryBackend,
   MemoryBackendCapabilities,
@@ -197,6 +200,23 @@ export function stashHttpJsonRequest<T>(
 export const DEFAULT_STASH_URL = "http://127.0.0.1:3457";
 
 /*
+FNXC:StashReadAuth 2026-11-12-19:34 (RUFU-994):
+The ONE baseUrl derivation, shared by the backend's own construction and by every reader of
+`getStashReadOutcome`. The read-outcome map is keyed by the baseUrl the backend normalized, so a
+reader that re-derived it a different way (no trim, no trailing-slash strip) would ask about a
+server nobody contacted and report "no outcome" beside a refusal that had just happened. Keep this
+in lock-step with the `StashMemoryBackend` constructor. The parameter is `unknown` on purpose:
+callers hold three different settings shapes (`Settings`, `Partial<Settings>`, and core's
+structurally-indexed `MemorySettings`) and only `stashUrl` is ever read, so a narrower parameter
+type would force a cast at every call site.
+*/
+export function stashBaseUrlFromSettings(settings?: unknown): string {
+  const url = (settings as { stashUrl?: unknown } | undefined)?.stashUrl;
+  const raw = typeof url === "string" && url.trim().length > 0 ? url.trim() : DEFAULT_STASH_URL;
+  return raw.replace(/\/+$/, "");
+}
+
+/*
 FNXC:RUFU122ChunkedUpload 2026-08-19-04:30:
 RUFU-122: Stash's /events/batch endpoint rejects a POST carrying more than 100
 events (verified against the live instance in preflight — the 200 cap from the
@@ -232,13 +252,291 @@ Records ONLY definitive "this server cannot do vector search" responses —
 rejection prefix. 422/500 and network errors are NEVER cached (transient or
 malformed — retry on the next call). TTL 1h, mirroring the session-folder
 cache; __resetVectorCapabilityCacheForTests() clears it for test isolation.
+
+FNXC:StashReadAuth 2026-11-12-20:09 (RUFU-994):
+The definitive set widens to include 401 and 403. The card's operator measured 2 334 semantic-search
+calls and 2 334 x 401 from ONE process: with `stashVectorSearch: true` every recall turn burned the
+semantic request, got refused, fell through to keyword, and burned it again on the next turn. A
+refused credential is as definitive for this window as an absent route — nothing changes until the
+secret or the grant changes. Two halves of the old contract stay exactly as they were: the keyword
+fallback still runs on every call (only the semantic attempt is suppressed), and 422/500/network
+still are never cached. Because the window is the same TTL, a rotated or newly-installed key is
+re-probed when the window expires, not on the next turn — that is the accepted cost, and
+`getStashReadOutcome` keeps reporting the cause while the window stands.
 */
 const STASH_VECTOR_NEGATIVE_CACHE_TTL_MS = 3_600_000;
+/** Statuses that suppress further semantic attempts for one TTL window (RUFU-994: + 401, 403). */
+const STASH_VECTOR_NEGATIVE_STATUSES: ReadonlySet<number> = new Set([401, 403, 404, 405, 501, 503]);
+/** Exported so a test pins the bound rather than the 3_600_000 literal. */
+export const STASH_VECTOR_CAPABILITY_TTL_MS = STASH_VECTOR_NEGATIVE_CACHE_TTL_MS;
 const stashVectorNegativeCache = new Map<string, { expiresAt: number }>();
 
 /** RUFU-126 test seam: clear the per-process negative vector-capability cache. */
 export function __resetVectorCapabilityCacheForTests(): void {
   stashVectorNegativeCache.clear();
+}
+
+/*
+FNXC:StashReadAuth 2026-11-12-19:34 (RUFU-994):
+A refused Stash READ used to be indistinguishable from an empty one. The four read swallow sites
+(`read()`, keyword `search()`, `vectorSearchHits()`, `exists()`) each caught everything and returned
+`[]` / `""` / `false`, which is the correct fail-closed contract but made 2334 x 401 look exactly
+like "this project has no memories" — the defect survived 3 months for that reason alone. The
+operator's requirement: "polozka, kde recall zlyhal pre auth, sa musi lisit od polozky, kde naozaj
+nie je nic najst".
+
+So every read attempt now records ONE outcome per baseUrl in this bounded map, from a closed set of
+deterministic codes. The map is the same shape as `stashFolderCache` / `stashVectorNegativeCache`
+(module-level, per-process, baseUrl-keyed, insert-order eviction) and is pure signal: the return
+values callers see are unchanged, and nothing here may turn a refused read into a throw.
+
+Code meanings — `no-match` and `refused-auth` are the pair the operator asked to separate:
+- `ok`                 the endpoint answered 2xx with at least one result.
+- `no-match`           the endpoint answered 2xx with zero results (or the query normalized to "",
+                       which sends no request at all). Genuinely empty, not a failure.
+- `key-unresolved`     this backend holds no credential, so whatever the server answered, WE sent
+                       nothing. Named ahead of any status so our-side configuration never reads as a
+                       server-side refusal; `keyResolved: false` accompanies it in the audit row.
+- `refused-auth`       401/403 with a credential actually sent — Stash rejected a key it received.
+- `refused-capability` 404/405/501/503 — the route is absent or the feature is unconfigured.
+- `rejected-request`   any other non-2xx (400/422/500/…).
+- `unreachable`        transport-level failure with no status (connection refused, timeout, DNS).
+- `malformed`          2xx whose body could not be parsed as the expected JSON shape.
+
+Nothing here may carry key material, a URL with a query string, a response body, or an exception
+message — the map stores only the fixed code, the fixed endpoint id, a boolean and a count.
+*/
+
+/** Fixed read-endpoint ids. An id names the route; a URL never enters this record. */
+export const STASH_READ_ENDPOINTS = ["keyword-search", "semantic-search", "read", "exists"] as const;
+export type StashReadEndpoint = (typeof STASH_READ_ENDPOINTS)[number];
+
+/** Closed read-outcome vocabulary (see the FNXC block above for each meaning). */
+export const STASH_READ_OUTCOME_CODES = [
+  "ok",
+  "no-match",
+  "key-unresolved",
+  "refused-auth",
+  "refused-capability",
+  "rejected-request",
+  "unreachable",
+  "malformed",
+] as const;
+export type StashReadOutcomeCode = (typeof STASH_READ_OUTCOME_CODES)[number];
+
+/** What one read attempt left behind, readable by the memory routes and by tests. */
+export interface StashReadOutcome {
+  code: StashReadOutcomeCode;
+  endpoint: StashReadEndpoint;
+  /** False when this backend held no credential at the moment of the attempt. */
+  keyResolved: boolean;
+  /** Results the caller received (0 for every refusal and for `no-match`). */
+  resultCount: number;
+  /** Epoch ms of the attempt that produced the record. */
+  at: number;
+}
+
+/** Bound mirrors the other Stash maps: distinct Stash servers per process are a small number. */
+const STASH_READ_DIAGNOSTICS_MAX = 64;
+
+/*
+ * One entry per baseUrl, holding the most recent outcome plus the most recent outcome PER
+ * ENDPOINT. The single "last" record is the operator-facing answer the memory routes surface; the
+ * per-endpoint half exists because the RUFU-126 vector lane falls THROUGH into the keyword route,
+ * so a semantic refusal that arrived first would otherwise be overwritten by the keyword success
+ * that followed it — and semantic-search is precisely the endpoint that measured 2334 refusals.
+ * A `Partial` keyed by the closed endpoint list cannot grow past four keys, so the map stays bounded.
+ */
+const stashReadDiagnostics = new Map<
+  string,
+  { last: StashReadOutcome; endpoints: Partial<Record<StashReadEndpoint, StashReadOutcome>> }
+>();
+
+function recordStashReadOutcome(
+  baseUrl: string,
+  outcome: Omit<StashReadOutcome, "at">,
+  nowMs: number,
+): void {
+  const stamped: StashReadOutcome = { ...outcome, at: nowMs };
+  const entry = stashReadDiagnostics.get(baseUrl);
+  if (entry) {
+    entry.last = stamped;
+    entry.endpoints[outcome.endpoint] = stamped;
+    return;
+  }
+  if (stashReadDiagnostics.size >= STASH_READ_DIAGNOSTICS_MAX) {
+    // Insert-order eviction, mirroring how the folder/vector caches bound themselves.
+    const oldest = stashReadDiagnostics.keys().next();
+    if (!oldest.done) stashReadDiagnostics.delete(oldest.value);
+  }
+  stashReadDiagnostics.set(baseUrl, { last: stamped, endpoints: { [outcome.endpoint]: stamped } });
+}
+
+/**
+ * Last read outcome recorded for a Stash server — or for one named endpoint of it — or null when
+ * this process has read nothing from it. `undefined` baseUrl (no configured server) answers null
+ * rather than guessing a default host.
+ */
+export function getStashReadOutcome(
+  baseUrl?: string,
+  endpoint?: StashReadEndpoint,
+): StashReadOutcome | null {
+  if (!baseUrl) return null;
+  const entry = stashReadDiagnostics.get(baseUrl);
+  if (!entry) return null;
+  return endpoint ? entry.endpoints[endpoint] ?? null : entry.last;
+}
+
+/** Every endpoint record this process holds for one Stash server. */
+function listStashReadOutcomes(baseUrl: string): StashReadOutcome[] {
+  const entry = stashReadDiagnostics.get(baseUrl);
+  if (!entry) return [];
+  const rows: StashReadOutcome[] = [];
+  for (const endpoint of STASH_READ_ENDPOINTS) {
+    const outcome = entry.endpoints[endpoint];
+    if (outcome) rows.push(outcome);
+  }
+  return rows;
+}
+
+/*
+FNXC:StashReadAuth 2026-11-12-19:41 (RUFU-994):
+The diagnostics map answers "what happened last, in this process". The audit row answers the same
+question after a restart, and it is what makes the operator's original measurement reproducible as a
+query instead of a container log: semantic-search refused 2334 times while batch capture returned
+201 a few metres away. One row per (baseUrl, code) per refresh floor, through the FN-9177 bounded
+core seam, so an absent / throwing / rejecting / never-settling sink cannot alter, delay, or fail the
+recall it reports.
+
+What may enter the row: the endpoint id, the closed code, `keyResolved`, and a count. NOT the baseUrl
+— a Stash URL may legitimately carry credentials in its userinfo segment, and the audit store is
+readable by anything with query access (the same rule FN-9059 states for remote URLs) — so the URL
+stays the map's internal dedupe key and the `runId` names the (endpoint, code) pair instead.
+
+Codes that are not refusals (`ok`, `no-match`) write no row: `no-match` is the honest empty answer,
+and auditing it would bury the refusals under the traffic the operator is trying to count.
+*/
+
+/** The run-audit id. Declared in `@fusion/core`'s closed `RunAuditMutationType` union. */
+export const STASH_READ_REFUSAL_MUTATION_TYPE: RunAuditMutationType = "memory:stash-read-refused";
+
+/** Synthetic agent id — a memory read belongs to no lane and no durable agent. */
+const STASH_READ_AUDIT_AGENT_ID = "memory-read";
+
+/**
+ * One refusal per (baseUrl, code) per window. A busy chat lane recalls every turn, and a standing
+ * misconfiguration would otherwise write a row per turn; 15 min matches the RUFU-393 stall-record
+ * floor, so a sustained refusal stays countable without becoming a flood.
+ */
+export const STASH_READ_REFUSAL_AUDIT_REFRESH_FLOOR_MS = 15 * 60_000;
+
+/** Codes worth a row. `ok` and `no-match` are deliberately absent (see the block above). */
+const STASH_READ_REFUSAL_CODES: ReadonlySet<StashReadOutcomeCode> = new Set([
+  "key-unresolved",
+  "refused-auth",
+  "refused-capability",
+  "rejected-request",
+  "unreachable",
+  "malformed",
+]);
+
+const stashReadAuditLog = createLogger("core-memory-stash-read");
+const lastStashReadAuditAt = new Map<string, number>();
+
+/** Test seam: forget the dedupe markers so a suite can observe a fresh emission. */
+export function __resetStashReadAuditDedupeForTests(): void {
+  lastStashReadAuditAt.clear();
+}
+
+/**
+ * The store a memory read entry already holds. One `TaskStore` satisfies both duck types: the
+ * secrets reader the ONE resolver needs and the bounded audit seam's host. No new store is opened
+ * for telemetry, which is why the read paths can emit at all.
+ */
+type RunAuditHostShape = Exclude<RunAuditSinkHost, null | undefined>;
+export type StashReadStoreHost = StashSecretsReader & RunAuditHostShape;
+
+/**
+ * Record the refusals this process saw from one Stash server: at most one audit row and one warn
+ * line per (baseUrl, code) per window. Fire-and-forget by contract — it never awaits the sink, so
+ * it cannot delay a recall, and it swallows its own failure because a diagnostic that can break a
+ * read is worse than no diagnostic.
+ */
+export function reportStashReadOutcome(
+  host: StashReadStoreHost | null | undefined,
+  baseUrl: string | undefined,
+  opts: { nowMs?: number; refreshFloorMs?: number; log?: RunAuditLogger } = {},
+): void {
+  if (!baseUrl) return;
+  const nowMs = opts.nowMs ?? Date.now();
+  const floorMs = opts.refreshFloorMs ?? STASH_READ_REFUSAL_AUDIT_REFRESH_FLOOR_MS;
+  const log: RunAuditLogger = opts.log ?? stashReadAuditLog;
+  try {
+    for (const outcome of listStashReadOutcomes(baseUrl)) {
+      if (outcome.code === "ok" || outcome.code === "no-match") continue;
+      if (!STASH_READ_REFUSAL_CODES.has(outcome.code)) continue;
+      const dedupeKey = `${baseUrl}\u0000${outcome.code}`;
+      const lastAt = lastStashReadAuditAt.get(dedupeKey);
+      if (lastAt !== undefined && lastAt + floorMs > nowMs) continue;
+      // Bounded like the seam's own notice throttle: keys are (server, code), never unbounded.
+      if (lastStashReadAuditAt.size >= 256) lastStashReadAuditAt.clear();
+      lastStashReadAuditAt.set(dedupeKey, nowMs);
+      // Codes are fixed literals and endpoints are fixed ids: no key, URL, body, or error text here.
+      log.warn(
+        `[memory] stash read refused code=${outcome.code} endpoint=${outcome.endpoint} keyResolved=${outcome.keyResolved}`,
+      );
+      void emitBoundedRunAudit(
+        host,
+        {
+          agentId: STASH_READ_AUDIT_AGENT_ID,
+          runId: `${STASH_READ_REFUSAL_MUTATION_TYPE}:${outcome.endpoint}:${outcome.code}`,
+          domain: "database",
+          mutationType: STASH_READ_REFUSAL_MUTATION_TYPE,
+          target: "stash-memory",
+          metadata: {
+            endpoint: outcome.endpoint,
+            code: outcome.code,
+            keyResolved: outcome.keyResolved,
+            resultCount: outcome.resultCount,
+          },
+        },
+        { log },
+      );
+    }
+  } catch {
+    // Swallowed on purpose: the row and the log line are the record, and neither may become
+    // a lifecycle dependency of the read it describes.
+  }
+}
+
+/** RUFU-994 test seam: clear the per-process read-outcome map. */
+export function __resetStashReadDiagnosticsForTests(): void {
+  stashReadDiagnostics.clear();
+}
+
+/**
+ * The transport's rejection message is `Stash returned <status>: <body>` for a non-2xx answer and
+ * `Invalid JSON response (<status>): <body>` for an unparseable 2xx. Both shapes are parsed for the
+ * STATUS DIGIT ONLY — the body segment is never read into a code, a log line, or an audit row.
+ */
+function parseStashTransportStatus(err: unknown): number | null {
+  if (typeof err !== "object" || err === null) return null;
+  const msg = (err as { message?: unknown }).message;
+  if (typeof msg !== "string") return null;
+  const m = /^Stash returned (\d{3}):/.exec(msg);
+  return m ? Number(m[1]) : null;
+}
+
+/** Map a transport rejection onto the closed code set, without retaining any of its text. */
+function classifyStashTransportFailure(err: unknown): StashReadOutcomeCode {
+  const status = parseStashTransportStatus(err);
+  if (status === 401 || status === 403) return "refused-auth";
+  if (status === 404 || status === 405 || status === 501 || status === 503) return "refused-capability";
+  if (status !== null) return "rejected-request";
+  const msg = typeof err === "object" && err !== null ? (err as { message?: unknown }).message : undefined;
+  // A 2xx whose body would not parse is a shape problem, not a connectivity one.
+  if (typeof msg === "string" && msg.startsWith("Invalid JSON response")) return "malformed";
+  return "unreachable";
 }
 
 /**
@@ -483,18 +781,25 @@ export class StashMemoryBackend implements MemoryBackend {
     try {
       const results = await this.search(rootDir, { query: "", limit: 10 });
       if (results.length === 0) {
+        // RUFU-994: `read()` reports its own endpoint so a broad-recall miss is attributed to
+        // `read`, not to whichever keyword URL the search happened to use.
+        this.noteReadOutcome("read", "no-match", 0);
         return { content: "", exists: false, backend: this.type };
       }
+      this.noteReadOutcome("read", "ok", results.length);
       const header = `\`\`\`\n[Stash Memory] ${results.length} memories recalled\n\`\`\`\n\n`;
       const body = results
         .map((r) => `### ${r.path}\n${r.snippet}`)
         .join("\n\n---\n\n");
       return { content: header + body, exists: true, backend: this.type };
-    } catch {
+    } catch (err) {
       // FNXC:StashFailClosed 2026-08-05-16:06:
       // Stash down / auth / parse failure must never throw out of read() — the
       // seam-level getProjectMemory wrapper and buildProactiveMemoryCueBlock
       // depend on empty reads meaning "no memory available", not "backend error".
+      // RUFU-994 keeps that contract and records WHY, so "not allowed to look" and
+      // "nothing stored" stop being the same answer.
+      this.noteReadOutcome("read", this.readFailureCode(err), 0);
       return { content: "", exists: false, backend: this.type };
     }
   }
@@ -627,7 +932,12 @@ export class StashMemoryBackend implements MemoryBackend {
     let q = req;
     if (req.trim().length > 0) {
       const normalized = normalizeStashSearchQuery(req);
-      if (normalized === "") return [];
+      // RUFU-994: this state sends no request at all, so it records `no-match` — the same
+      // "nothing found" answer a 2xx-with-zero-results gives, and never a refusal code.
+      if (normalized === "") {
+        this.noteReadOutcome("keyword-search", "no-match", 0);
+        return [];
+      }
       q = normalized;
     }
     try {
@@ -648,6 +958,9 @@ export class StashMemoryBackend implements MemoryBackend {
         const r = parseUsableNumber(it.rank);
         return r !== null && r > max ? r : max;
       }, 0);
+      // RUFU-994: `no-match` (an answered query with nothing found) is recorded as its own
+      // outcome; the returned array is unchanged.
+      this.noteReadOutcome("keyword-search", filtered.length > 0 ? "ok" : "no-match", filtered.length);
       return filtered.map((it, idx) => ({
         path: it.session_id ? `stash://session/${it.session_id}` : `stash://event/${it.id ?? idx}`,
         lineStart: 1,
@@ -656,16 +969,19 @@ export class StashMemoryBackend implements MemoryBackend {
         score: stashRelevanceScore(it, idx, maxRank),
         backend: this.type,
       }));
-    } catch {
+    } catch (err) {
       // FNXC:StashFailClosed 2026-08-05-16:06:
       // stash down -> [] -> LCM cue "" -> run proceeds. Never throws.
+      // RUFU-994: the swallowed cause is now recorded (see STASH_READ_OUTCOME_CODES).
+      this.noteReadOutcome("keyword-search", this.readFailureCode(err), 0);
       return [];
     }
   }
 
   /**
-   * RUFU-126 (D3): false while a definitive no-vector response (404/405/501/
-   * 503) is cached for this baseUrl and its TTL has not expired.
+   * RUFU-126 (D3): false while a definitive no-vector OR refused-auth response is cached for this
+   * baseUrl and its TTL has not expired. Suppression covers the semantic ATTEMPT only; the keyword
+   * path is never gated here.
    */
   private vectorSearchAvailable(): boolean {
     const entry = stashVectorNegativeCache.get(this.baseUrl);
@@ -677,10 +993,11 @@ export class StashMemoryBackend implements MemoryBackend {
   RUFU-126 (D1): one semantic-search attempt. Returns mapped hits on 2xx with
   a non-empty results array; null on ANY other outcome (network error/timeout,
   non-2xx, malformed body, empty list) so the caller falls through to the
-  keyword path. Definitive no-vector statuses {404, 405, 501, 503} are
-  negatively cached per baseUrl (TTL 1h); 422/500 and network errors are never
-  cached (transient/malformed — retry next call). The raw trimmed query is sent
-  UN-normalized (the embedder tokenizes on its own), capped at 200 chars.
+  keyword path. Definitive no-vector statuses {404, 405, 501, 503} and — since
+  RUFU-994 — auth refusals {401, 403} are negatively cached per baseUrl (TTL 1h);
+  422/500 and network errors are never cached (transient/malformed — retry next
+  call). The raw trimmed query is sent UN-normalized (the embedder tokenizes on its
+  own), capped at 200 chars.
   */
   private async vectorSearchHits(rawQuery: string, limit: number): Promise<MemorySearchResult[] | null> {
     const q = rawQuery.slice(0, 200);
@@ -690,7 +1007,12 @@ export class StashMemoryBackend implements MemoryBackend {
         "GET",
       );
       const items = resp?.results ?? resp?.events;
-      if (!Array.isArray(items) || items.length === 0) return null; // empty list → keyword fallback
+      if (!Array.isArray(items) || items.length === 0) {
+        // Empty list → keyword fallback. RUFU-994: the vector lane records ITS OWN endpoint,
+        // so a semantic-search refusal is never attributed to the keyword route.
+        this.noteReadOutcome("semantic-search", Array.isArray(items) ? "no-match" : "malformed", 0);
+        return null;
+      }
       const hits = items
         .filter((it): it is StashSearchResultItem => Boolean(it) && typeof it === "object")
         .map((it, idx) => {
@@ -714,10 +1036,16 @@ export class StashMemoryBackend implements MemoryBackend {
             backend: this.type,
           } as MemorySearchResult;
         });
+      // RUFU-994: an answered semantic hit records the semantic endpoint as healthy.
+      this.noteReadOutcome("semantic-search", hits.length > 0 ? "ok" : "no-match", hits.length);
       return hits.length > 0 ? hits : null;
     } catch (err) {
+      this.noteReadOutcome("semantic-search", this.readFailureCode(err), 0);
       const status = this.stashErrorStatus(err);
-      if (status !== null && (status === 404 || status === 405 || status === 501 || status === 503)) {
+      // An unresolved key arrives here as the server's 401 too, so this one set covers both halves;
+      // the recorded CODE above stays `key-unresolved`, which is what keeps our own misconfiguration
+      // distinguishable from a refusal of a key Stash actually received (RUFU-994 Step 5).
+      if (status !== null && STASH_VECTOR_NEGATIVE_STATUSES.has(status)) {
         stashVectorNegativeCache.set(this.baseUrl, {
           expiresAt: this.now() + STASH_VECTOR_NEGATIVE_CACHE_TTL_MS,
         });
@@ -731,11 +1059,36 @@ export class StashMemoryBackend implements MemoryBackend {
    * transport seam's rejection message; null for any other error shape.
    */
   private stashErrorStatus(err: unknown): number | null {
-    if (typeof err !== "object" || err === null) return null;
-    const msg = (err as { message?: unknown }).message;
-    if (typeof msg !== "string") return null;
-    const m = /^Stash returned (\d{3}):/.exec(msg);
-    return m ? Number(m[1]) : null;
+    return parseStashTransportStatus(err);
+  }
+
+  /*
+  FNXC:StashReadAuth 2026-11-12-19:34 (RUFU-994):
+  One record per read attempt, written at every site that used to swallow a refusal. The record
+  NEVER changes what the caller receives — `search()` still returns [] and `read()` still returns
+  empty content — it only answers the question those catches made unanswerable: was this empty
+  because nothing is stored, or because the request was refused?
+
+  A backend holding no credential records `key-unresolved` rather than `refused-auth` even though
+  the server's answer is the same 401: the cause is our configuration, not Stash rejecting a key it
+  received, and collapsing the two would send the operator to the wrong knob.
+  */
+  private noteReadOutcome(
+    endpoint: StashReadEndpoint,
+    code: StashReadOutcomeCode,
+    resultCount: number,
+  ): void {
+    recordStashReadOutcome(
+      this.baseUrl,
+      { code, endpoint, keyResolved: this.apiKey !== "", resultCount },
+      this.now(),
+    );
+  }
+
+  /** Classify a read failure, attributing a credential-less attempt to us, not to the server. */
+  private readFailureCode(err: unknown): StashReadOutcomeCode {
+    if (this.apiKey === "") return "key-unresolved";
+    return classifyStashTransportFailure(err);
   }
 
   // ── exists ─────────────────────────────────────────────────────────
@@ -750,8 +1103,13 @@ export class StashMemoryBackend implements MemoryBackend {
         "/api/v1/me/sessions/events/search?q=&limit=1",
         "GET",
       );
-      return resp !== null && resp !== undefined;
-    } catch {
+      const reachable = resp !== null && resp !== undefined;
+      // RUFU-994: the probe answers "could we reach the server at all", which a 401 said no to
+      // for a reason the caller could not see. `no-match` = answered but carried no body.
+      this.noteReadOutcome("exists", reachable ? "ok" : "no-match", reachable ? 1 : 0);
+      return reachable;
+    } catch (err) {
+      this.noteReadOutcome("exists", this.readFailureCode(err), 0);
       return false;
     }
   }

@@ -27,6 +27,7 @@ import type {
   MessageStore,
   Settings,
   TaskStore,
+  StashSecretsReader,
   PermanentAgentGatingContext,
 } from "@fusion/core";
 import { completeColumnsForTask, wipColumnsForTask } from "./task-lifecycle-lanes.js";
@@ -833,16 +834,25 @@ async function resolveChatAgentMemoryContext(
   }
 }
 
-/** Compose createMemoryTools options; empty composition collapses to undefined (pre-existing call shape). */
+/** Compose createMemoryTools options. Carries the Stash key reader, so it is never empty. */
 function buildChatMemoryToolOptions(input: {
   focusEnabled: boolean;
   focus?: string;
   agentMemory?: ChatAgentMemoryContext;
-}): { focus?: string; agentMemory?: ChatAgentMemoryContext } | undefined {
-  const options: { focus?: string; agentMemory?: ChatAgentMemoryContext } = {};
+  /**
+   * FNXC:StashReadAuth 2026-11-12-20:26 (RUFU-994):
+   * The store behind the ONE Stash key resolver. Chat used to hand these tools raw
+   * settings, so on the operator's real configuration (empty `stashApiKey`, key in the global
+   * `stash-api-key` secret) chat's fn_memory_search queried Stash unauthenticated, took a 401,
+   * and answered "NONE" — memory looked empty from inside chat while capture kept succeeding.
+   */
+  secretsReader?: StashSecretsReader;
+}): { focus?: string; agentMemory?: ChatAgentMemoryContext; secretsReader?: StashSecretsReader } {
+  const options: { focus?: string; agentMemory?: ChatAgentMemoryContext; secretsReader?: StashSecretsReader } = {};
   if (input.focusEnabled && input.focus) options.focus = input.focus;
   if (input.agentMemory) options.agentMemory = input.agentMemory;
-  return Object.keys(options).length > 0 ? options : undefined;
+  if (input.secretsReader) options.secretsReader = input.secretsReader;
+  return options;
 }
 
 export async function createChatFusionToolset(options: ChatFusionToolsetOptions): Promise<ChatCustomTool[]> {
@@ -931,6 +941,7 @@ export async function createChatFusionToolset(options: ChatFusionToolsetOptions)
           focusEnabled: Boolean(focus) && isExperimentalFeatureEnabled(settings, CHAT_FOCUS_FLAG),
           focus,
           agentMemory: agentId && agentStore ? await resolveChatAgentMemoryContext(agentStore, agentId) : undefined,
+          secretsReader: taskStore,
         }),
       ).filter((tool) => tool.name !== "fn_memory_append"),
       ...createResearchTools({ store: taskStore, rootDir, getSettings: () => taskStore.getSettings() }),
@@ -2937,6 +2948,8 @@ export class ChatManager {
           // RUFU-172: no focus is passed — a ChatRoom has no persisted memory_focus field
           // (only a ChatSession does), so room responders honestly carry no focus and their
           // recall stays on the whole-project single-search cue. Not an omission.
+          // RUFU-994: the store is what lets that one search carry the resolved Stash key.
+          secretsReader: this.taskStore,
         });
         systemPrompt = responderParts.systemPrompt || CHAT_SYSTEM_PROMPT;
         roomRequestContext = responderParts.requestContext;
@@ -3918,6 +3931,9 @@ export class ChatManager {
             // FNXC:OperatorLanguage 2026-09-16-13:05: direct agent chat honors the operator language setting (PR review).
             settings: await this.getChatModelSettings(),
             focus: chatRecallFocus,
+            // RUFU-994: direct agent chat's per-turn recall must carry the resolved Stash key;
+            // without the store it queried unauthenticated and produced no cue at all.
+            secretsReader: this.taskStore,
           });
           systemPrompt = directParts.systemPrompt || CHAT_SYSTEM_PROMPT;
           chatRequestContext = directParts.requestContext;

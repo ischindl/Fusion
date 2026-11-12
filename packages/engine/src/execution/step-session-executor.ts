@@ -1610,6 +1610,13 @@ export class StepSessionExecutor {
         sessionKey: `task:${taskDetail.id}`,
         // Explicit rather than omitted, so the honest absence above reads as a decision.
         focus: undefined,
+        /*
+        FNXC:StashReadAuth 2026-11-12-20:26 (RUFU-994):
+        This is the executor's per-step recall cue. Without the store it resolved Stash with an empty
+        key, every cue came back "" , and the cause was unrecoverable — which is the exact shape
+        RUFU-994 exists to remove.
+        */
+        secretsReader: this.store,
       });
     } catch (error) {
       // Recall is additive: any failure leaves the step prompt unchanged.
@@ -1700,7 +1707,11 @@ export class StepSessionExecutor {
           // task/session carries one) → whole-project scope today. The optional
           // MemoryToolOptions.focus seam is wired explicitly so a step session bound
           // to a topic-scoped conversation can scope fn_memory_search.
-          const memoryTools = createMemoryTools(this.options.rootDir, settings, { focus: undefined });
+          const memoryTools = createMemoryTools(this.options.rootDir, settings, {
+            focus: undefined,
+            // RUFU-994: step-session memory tools read through the resolved credential.
+            secretsReader: this.store,
+          });
 
           // Task log and create tools — task context for step sessions.
           const taskLogTool = this.options.store

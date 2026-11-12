@@ -33,6 +33,12 @@ import {
   type MemoryGetOptions,
   type MemoryGetResult,
 } from "./memory-backend.js";
+import { resolveStashMemorySettings } from "./stash-settings.js";
+import {
+  reportStashReadOutcome,
+  stashBaseUrlFromSettings,
+  type StashReadStoreHost,
+} from "./memory-backend-stash.js";
 import { appendRecallInstructionSection } from "./recall/recall-instructions.js";
 import type { RecallSearchHit } from "./recall/recall-types.js";
 import { buildMemoryPreSteeringNudge } from "./memory-pre-steering.js";
@@ -229,14 +235,42 @@ export function resolveMemoryInstructionContext(
  * @param settings - Project settings including memoryBackendType.
  * @returns `true` if memory was created/initialized, `false` if it already existed.
  */
+/*
+FNXC:StashReadAuth 2026-11-12-19:21 (RUFU-994):
+Operator decision 2026-11-12: Stash becomes the source of truth for project memory, so READS must
+work — not only the capture writes that already did (measured on production: 8320 x 201 on
+POST /events/batch against 2334 x 401 on GET /events/semantic-search and 176 x 401 on the keyword
+route in 24 h). The asymmetry was never the transport — `stashHttpJsonRequest` sends
+`Authorization: Bearer <apiKey>` identically in both directions and omits the header entirely when
+`apiKey` is "". It was the ARGUMENT: every write caller runs `resolveStashMemorySettings(store,
+settings)` first (which reads the global `stash-api-key` secret), while every read path handed RAW
+settings to the synchronous `resolveMemoryBackend`, whose materialization branch reads
+`settings.stashApiKey` — the schema default empty string, a key no UI field ever writes. So the read
+backend was built with `apiKey: ""` and left the credential off the wire, where Stash's own
+`get_current_user` answers 401 "Missing Authorization header". That 401 was then swallowed into
+"no memories exist", so the defect was undetectable from any Fusion surface.
+
+Contract every read entry below now holds:
+- the ONE resolver is `resolveStashMemorySettings`; a read entry with no reader degrades to raw
+  settings exactly as before (never a second key-reading path, never a throw);
+- resolution happens ONCE per invocation, before the first network call, so multi-lane recall and
+  the vector fallback share one enriched settings object and at most one reveal;
+- `resolveMemoryBackend` stays synchronous — the settings are enriched before it is called;
+- fail-closed is unchanged: a refused read still answers `[]` / `""` / `false`. What is ADDED is the
+  outcome code from `reportStashReadOutcome`, which is how "we were not allowed to look" stopped
+  being indistinguishable from "nothing was stored".
+*/
 export async function ensureMemoryFileWithBackend(
   rootDir: string,
   settings?: MemorySettings,
+  /** RUFU-994: `TaskStore`-shaped reader; absent → raw settings (today's degradation). */
+  secretsReader?: StashReadStoreHost,
 ): Promise<boolean> {
   const backendType =
     (settings?.[MEMORY_BACKEND_SETTINGS_KEYS.MEMORY_BACKEND_TYPE] as string) ||
     DEFAULT_MEMORY_BACKEND;
-  const backend = resolveMemoryBackend(settings);
+  const resolvedSettings = secretsReader ? await resolveStashMemorySettings(secretsReader, settings) : settings;
+  const backend = resolveMemoryBackend(resolvedSettings);
   const refreshQmdIfNeeded = () => {
     if (backend.type === "qmd" || backendType === "qmd") {
       scheduleQmdInstallAndRefresh(rootDir);
@@ -285,8 +319,11 @@ export async function ensureMemoryFileWithBackend(
 export async function readProjectMemoryWithBackend(
   rootDir: string,
   settings?: MemorySettings,
+  /** RUFU-994: resolves the Stash key once, before the broad empty-query recall. */
+  secretsReader?: StashReadStoreHost,
 ): Promise<string> {
-  const backend = resolveMemoryBackend(settings);
+  const resolvedSettings = secretsReader ? await resolveStashMemorySettings(secretsReader, settings) : settings;
+  const backend = resolveMemoryBackend(resolvedSettings);
 
   try {
     const result = await backend.read(rootDir);
@@ -294,6 +331,10 @@ export async function readProjectMemoryWithBackend(
   } catch {
     // Read failures return empty string (graceful degradation)
     return "";
+  } finally {
+    // RUFU-994: this entry holds the store, so it is where the refusal becomes a counted
+    // row + one warn line. Fire-and-forget; the returned content is already decided.
+    reportStashReadOutcome(secretsReader, stashBaseUrlFromSettings(resolvedSettings));
   }
 }
 
@@ -342,8 +383,11 @@ export async function searchProjectMemory(
   options: MemorySearchOptions,
   settings?: MemorySettings,
   topic?: string,
+  /** RUFU-994: resolves the Stash key once for keyword + semantic + fallback in one call. */
+  secretsReader?: StashReadStoreHost,
 ): Promise<MemorySearchResult[]> {
-  const backend = resolveMemoryBackend(settings);
+  const resolvedSettings = secretsReader ? await resolveStashMemorySettings(secretsReader, settings) : settings;
+  const backend = resolveMemoryBackend(resolvedSettings);
   if (!backend.search) {
     return [];
   }
@@ -361,6 +405,11 @@ export async function searchProjectMemory(
     // FNXC:MemoryResilience 2026-08-13-16:35: (RUFU-068) fail closed to empty —
     // never let a Stash/gateway search failure block a task, chat, or test.
     return [];
+  } finally {
+    // RUFU-994: fn_memory_search, POST /api/memory/test and the proactive cue all land here, so
+    // this is the seam that turns a swallowed 401 into a counted row. The returned array is
+    // already decided — reporting cannot change it.
+    reportStashReadOutcome(secretsReader, stashBaseUrlFromSettings(resolvedSettings));
   }
 }
 
@@ -368,8 +417,16 @@ export async function getProjectMemory(
   rootDir: string,
   options: MemoryGetOptions,
   settings?: MemorySettings,
+  /**
+   * RUFU-994: threaded for seam symmetry with the search/read entries. Stash's `get()` is a
+   * pure empty-window stub that performs no HTTP call, so this path cannot refuse on auth
+   * today; the reader is accepted so a future windowed read inherits the credential instead
+   * of rediscovering the defect.
+   */
+  secretsReader?: StashReadStoreHost,
 ): Promise<MemoryGetResult> {
-  const backend = resolveMemoryBackend(settings);
+  const resolvedSettings = secretsReader ? await resolveStashMemorySettings(secretsReader, settings) : settings;
+  const backend = resolveMemoryBackend(resolvedSettings);
   if (!backend.get) {
     throw new Error(`Memory backend '${backend.type}' does not support memory_get`);
   }
@@ -418,13 +475,18 @@ export async function buildProactiveMemoryCueBlock(
   rootDir: string,
   query: string,
   settings?: MemorySettings,
-  opts?: { limit?: number; topic?: string },
+  opts?: { limit?: number; topic?: string; secretsReader?: StashReadStoreHost },
 ): Promise<string> {
   if (!rootDir || !query) return "";
   // FNXC:MemoryResilience 2026-08-13-16:35: (RUFU-068) respect the memory
   // off-switch so proactive recall never activates when memory is disabled.
   if (settings?.memoryEnabled === false) return "";
-  const backend = resolveMemoryBackend(settings);
+  // RUFU-994: resolve before the backend exists — see the StashReadAuth block on
+  // `ensureMemoryFileWithBackend` for why a read that skips this reads as "empty".
+  const resolvedSettings = opts?.secretsReader
+    ? await resolveStashMemorySettings(opts.secretsReader, settings)
+    : settings;
+  const backend = resolveMemoryBackend(resolvedSettings);
   // Only search-capable backends can be proactively recalled; the file/readonly
   // backends have no recall primitive.
   if (!backend.search) return "";
@@ -462,6 +524,10 @@ export async function buildProactiveMemoryCueBlock(
   } catch {
     // Graceful degradation: never let a recall failure block execution.
     return "";
+  } finally {
+    // RUFU-994: same reason as `searchProjectMemory` — the cue builder is the executor's
+    // proactive read seam and holds the store host.
+    reportStashReadOutcome(opts?.secretsReader, stashBaseUrlFromSettings(resolvedSettings));
   }
 }
 

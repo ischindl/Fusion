@@ -1445,3 +1445,64 @@ it is documented in prose and declared in the typed catalogue module only. The p
 verification gate's `verificationFailure.reason: "lane-legs-not-materialized"`, the executor's
 `LANE_LEGS_NOT_MATERIALIZED:` error prefix, and the invariant itself — are in *Architecture → Lane-leg
 measurement invariant*.
+
+### A Stash read that was refused rather than empty (RUFU-994)
+
+`memory:stash-read-refused` records one refusal per (Stash server, code) per 15-minute window, at the
+moment a project-memory read gave up. The event exists because a refused read and an empty memory store
+were the same answer. On the host that motivated it, the Stash container log showed
+`/api/v1/me/sessions/events/semantic-search` answered `401 Unauthorized` 2 334 times and the keyword
+search likewise, while `POST /api/v1/me/sessions/events/batch` from the same process answered `201
+Created` 8 320 times. Fusion reported none of that: every read surface — per-turn recall, the proactive
+cue block, `fn_memory_search`, the Review Read path, `exists()` — fails closed to `[]` / `""` / `false`
+by design, so "we were not allowed to look" was indistinguishable from "this project has stored
+nothing". The operator's own requirement names the pair: *a recall that failed for auth must be
+distinguishable from an entry where there really is nothing to find.*
+
+The cause was an asymmetry in one argument, not in the transport: every write caller runs
+`resolveStashMemorySettings(store, settings)` and so reaches the transport with the resolved global
+`stash-api-key` secret, while every read path passed raw settings, whose `stashApiKey` is the schema
+default empty string. The transport's `if (apiKey)` header rule then sent no `Authorization` header at
+all. The refusal was real, correct on the server's side, and invisible on ours.
+
+Metadata is four keys: `endpoint` (fixed enum `keyword-search` | `semantic-search` | `read` | `exists`),
+`code` (the closed read-outcome vocabulary in
+[`docs/memory-backend-integration.md`](memory-backend-integration.md) § 3 — `key-unresolved`,
+`refused-auth`, `refused-capability`, `rejected-request`, `unreachable`, `malformed`), `keyResolved`
+(boolean), and `resultCount` (number). Nothing else may enter the row. Two codes are absent by
+decision: `ok` writes no row, and neither does `no-match`, because `no-match` is the honest empty answer
+and auditing it would bury the refusals under exactly the traffic the operator is trying to count —
+`memory:stash-read-refused` therefore means "refusals", never "reads". `key-unresolved` is kept distinct
+from `refused-auth` because they name different knobs: the first means Fusion sent no credential
+(configuration), the second means Stash refused one it received (a wrong, revoked, or ungranted key).
+Collapsing them would send the operator to the wrong one.
+
+Neither the Stash URL nor the server's refusal sentence appears anywhere in the row, and `target` is the
+fixed literal `stash-memory`. A Stash URL may legitimately carry credentials in its userinfo segment and
+the audit store is readable by anything with query access to it — the same rule FN-9059 states for remote
+URLs — so the URL stays the diagnostics map's internal dedupe key, and the sentence lives in the log line
+where an operator is already looking. The `runId` names the (endpoint, code) pair instead of a server.
+
+Emission is `reportStashReadOutcome()` in `packages/core/src/memory/memory-backend-stash.ts`, called from
+the four core read entries (`readProjectMemoryWithBackend`, `searchProjectMemory`,
+`buildProactiveMemoryCueBlock`, `buildPerTurnMemoryRecallCue`) — the places that already hold a
+`TaskStore`, which satisfies both the resolver's duck type and the audit sink host, so no second store is
+opened for telemetry. It is fire-and-forget through the FN-9177 bounded core seam: an absent, throwing,
+rejecting, or never-settling sink leaves the recall result, the log line, and the recorded code identical
+(pinned in `packages/core/src/memory/__tests__/stash-read-auth-transport.test.ts`), and the dedupe marker
+advances even when the sink fails, so a broken audit store cannot become a row flood.
+
+The bound is deliberate: a busy chat lane recalls every turn, so an unbounded emit on a standing
+misconfiguration would write one row per turn. Fifteen minutes matches RUFU-393's stall-record floor, which
+keeps a sustained refusal countable at four rows a day per (server, code) instead of one per message. The
+same window carries one `log.warn` naming the code and endpoint class, and `GET /api/memory/backend` plus
+`POST /api/memory/test` return the last outcome code as `stashReadOutcome` so the answer is available in
+the memory settings surface the operator already opens.
+
+Like RUFU-462's `runtime:heap-ceiling`, RUFU-279's `memory:*` trio and RUFU-871's
+`task:unbound-list-read`, this event sits deliberately OUTSIDE the curated delivery-pipeline catalogue that
+`run-audit-catalogue.test.ts` locks table-for-table against the category tables above: whether a memory
+read was refused is not a delivery-pipeline step, and a row there would imply every card is expected to
+pass through it. It is declared in `@fusion/core`'s `RunAuditMutationType` (the placement RUFU-259
+established for core- and dashboard-emitted rows), because its emitter reaches the sink through the core
+seam rather than the engine's `DatabaseMutationType`.

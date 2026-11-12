@@ -56,10 +56,55 @@ Fusion authenticates to the Stash server with an API key resolved in this preced
    `revealSecret`. This is the recommended mechanism; the key lives outside the repo in the
    operator's secret store and is never committed.
 
+**This precedence applies to reads and writes alike** (RUFU-994). `resolveStashMemorySettings` is the
+single resolver and the read paths — keyword search, semantic search, `read()`, the `exists()`
+reachability probe, per-turn recall, and the memory tools — run it before the backend is constructed,
+exactly as capture does. That was not always true: every write resolved the secret while every read
+went straight from raw settings into `resolveMemoryBackend`, so the transport's
+`if (apiKey) headers["Authorization"] = ...` rule sent a credential on `POST /events/batch` and no
+header at all on `GET /events/search`. The result was a server-side asymmetry with no Fusion-side
+symptom — 8 320 writes answered `201` while 2 334 reads answered `401`, and every read surface
+reported "no memories". If reads are refusing on a host where writes succeed, this is the asymmetry
+to re-check first.
+
 The API key is **never hardcoded** in Fusion source. Resolution degrades fail-closed: a
 missing or undecryptable secret resolves to an empty key (an unauthenticated request), so
 capture becomes a no-op rather than an error. Only a Stash backend ever reads secrets — a
 non-Stash or memory-disabled project triggers no secret read at all.
+
+### What a refused read reports
+
+A failed read still degrades to `[]` / `""` / `false` — no memory read path throws at a caller, and
+that contract is unchanged. What changed is that the cause is now recorded, so **"nothing was
+stored" and "we were not allowed to look" are two different answers**. Each read attempt records one
+outcome per endpoint (`keyword-search`, `semantic-search`, `read`, `exists`) from a closed set:
+
+| Code | What it means for an operator |
+| --- | --- |
+| `ok` | The server answered and returned results. |
+| `no-match` | The server answered and found nothing. This is the honest empty case, not a failure. |
+| `key-unresolved` | Fusion sent **no** credential: no `stash-api-key` secret exists and no per-project override is set. Fix the configuration; Stash is refusing nothing it was given. |
+| `refused-auth` | A credential was sent and Stash refused it (`401`/`403`). The key is wrong, revoked, or not granted on the read routers. |
+| `refused-capability` | The route itself refuses (`404`/`405`/`501`/`503`) — an unpatched server or an unconfigured embedder. |
+| `rejected-request` | The request was malformed to the server (`4xx` other than auth). |
+| `unreachable` | No answer at all: connection refused, DNS failure, or timeout. |
+| `malformed` | A 2xx whose body Fusion could not parse. |
+
+Three surfaces carry it, none of which needs the container log:
+
+- `GET /api/memory/backend` and `POST /api/memory/test` return `stashReadOutcome` — the last outcome
+  code recorded for the configured server, or `null` when nothing has been read from it yet.
+- `memory:stash-read-refused` run-audit rows count a standing refusal (see
+  [`docs/run-audit.md`](run-audit.md) → A Stash read that was refused rather than empty).
+- One `log.warn` per (server, code) per 15-minute window names the code and the endpoint class.
+
+No key material, URL, response body, or server error text reaches any of the three.
+
+`stashVectorSearch` (schema-only, no settings row) defaults to **`false`** and stays that way. When it
+is on and the semantic endpoint refuses — for capability reasons or on auth grounds — Fusion suppresses
+further semantic attempts for one cache window instead of burning the request on every turn, while the
+keyword fallback keeps running every turn. A rotated or newly-installed key is therefore re-probed when
+the window expires, not on the next turn; the keyword lane recovers immediately.
 
 ## 4. Per-project isolation
 

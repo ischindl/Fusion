@@ -25,6 +25,7 @@ import { MemoryBackendError } from "./memory-backend-error.js";
 // materialization in resolveMemoryBackend). memory-backend-stash.ts imports ONLY
 // types from this module (erased at build), so there is no ESM circular-init.
 import { StashMemoryBackend, DEFAULT_STASH_URL } from "./memory-backend-stash.js";
+import { resolveStashMemorySettings, type StashSecretsReader } from "./stash-settings.js";
 
 export const MEMORY_WORKSPACE_PATH = ".fusion/memory";
 export const MEMORY_LONG_TERM_FILENAME = "MEMORY.md";
@@ -1593,8 +1594,16 @@ export function getMemoryBackendCapabilities(settings?: MemorySettings): MemoryB
 export async function readMemory(
   rootDir: string,
   settings?: MemorySettings,
+  /**
+   * RUFU-994: the store behind the ONE Stash key resolver (`resolveStashMemorySettings`).
+   * `GET /api/memory` went through here with raw settings, so a Stash-backed project reported
+   * empty memory content on the operator's own memory screen while capture kept succeeding.
+   */
+  secretsReader?: StashSecretsReader,
 ): Promise<MemoryReadResult> {
-  const backend = resolveMemoryBackend(settings);
+  const backend = resolveMemoryBackend(
+    secretsReader ? await resolveStashMemorySettings(secretsReader, settings) : settings,
+  );
   try {
     return await backend.read(rootDir);
   } catch (err) {
@@ -1625,8 +1634,12 @@ export async function writeMemory(
   rootDir: string,
   content: string,
   settings?: MemorySettings,
+  /** RUFU-994: same reader, so the memory screen's save path authenticates like its read path. */
+  secretsReader?: StashSecretsReader,
 ): Promise<MemoryWriteResult> {
-  const backend = resolveMemoryBackend(settings);
+  const backend = resolveMemoryBackend(
+    secretsReader ? await resolveStashMemorySettings(secretsReader, settings) : settings,
+  );
 
   if (!backend.capabilities.writable) {
     throw new MemoryBackendError(
@@ -1649,8 +1662,12 @@ export async function writeMemory(
 export async function memoryExists(
   rootDir: string,
   settings?: MemorySettings,
+  /** RUFU-994: `exists()` is a Stash read (the empty-query search probe) and needs the credential. */
+  secretsReader?: StashSecretsReader,
 ): Promise<boolean> {
-  const backend = resolveMemoryBackend(settings);
+  const backend = resolveMemoryBackend(
+    secretsReader ? await resolveStashMemorySettings(secretsReader, settings) : settings,
+  );
 
   if (backend.exists) {
     return backend.exists(rootDir);

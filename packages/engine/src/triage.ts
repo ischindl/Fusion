@@ -4117,20 +4117,28 @@ export class TriageProcessor {
             },
             taskId: task.id,
           }),
-          ...createMemoryTools(this.rootDir, settings, assignedAgent
-            ? {
-              agentMemory: {
-                agentId: assignedAgent.id,
-                agentName: assignedAgent.name,
-                memory: assignedAgent.memory,
-              },
+          ...createMemoryTools(this.rootDir, settings, {
+            ...(assignedAgent
+              ? {
+                agentMemory: {
+                  agentId: assignedAgent.id,
+                  agentName: assignedAgent.name,
+                  memory: assignedAgent.memory,
+                },
+              }
+              : {}),
               // FNXC:MemoryFocusEngine 2026-08-13-16:35 (RUFU-068): planning/triage
               // sessions carry no per-conversation /focus topic → whole-project scope
               // (project default). The optional focus seam stays wired so a planning
               // conversation that later acquires a topic can scope recall.
               focus: undefined,
-            }
-            : undefined),
+              /*
+              FNXC:StashReadAuth 2026-11-12-20:26 (RUFU-994):
+              The planner's memory tools need the store for the same reason the executor's do: the Stash key
+              lives in the global secrets store and only `resolveStashMemorySettings` can reach it.
+              */
+              secretsReader: this.store,
+            }),
           createWebFetchTool(),
           // Agent delegation tools — discover and delegate work to other agents.
           ...(this.options.agentStore ? [
