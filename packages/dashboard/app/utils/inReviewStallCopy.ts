@@ -42,6 +42,19 @@ const BADGE_LABEL_BY_CODE: Record<InReviewStallCode, string> = {
   ever read on a surface that already opted in — this code is badge-suppressed below — so it exists to keep
   the returned copy shape complete, the same role `held-human-review`'s badge label plays in the resolver.
   */
+  /*
+  FNXC:VerdictlessSkippedGate 2026-11-12-20:15 (RUFU-657):
+  Labels for a gate that refused to report. `rerun-armed` says a re-run is owed, not that one happened;
+  `rerun-exhausted` says the attempts on the row are spent. Neither may read as a completed review or
+  as delivery, which is why neither says "reviewed", "approved" or "merged".
+
+  Both are deliberately absent from `BADGE_SUPPRESSED_CODES` below. The defect these codes exist for was
+  a terminal state with no badge at all (measured: RUFU-343 since 2026-10-10, RUFU-366 since
+  2026-11-08, both in Review with no error, no pause and no notice), so suppressing either would put the
+  silence back.
+  */
+  "rerun-armed": "Review not reported",
+  "rerun-exhausted": "Review owed",
   "awaiting-review-revision": "Review corrections",
 };
 
@@ -90,6 +103,20 @@ const COPY_BY_CODE: Record<InReviewStallCode, Omit<InReviewStallCopy, "badgeLabe
   (findings published in the verdict's `notes`). Naming a step kind the board may not contain is a claim this
   state no longer licenses.
   */
+  "rerun-armed": {
+    headline: "A required review gate refused to report",
+    description:
+      "Code Review ended as `skipped` with no verdict, no honest reason for not running, and no recorded waiver, so the merge stays shut on that gate. Its own attempt history still leaves room for one more run of that gate — this card was NOT reviewed, and nothing here says it was.",
+    suggestedAction:
+      "Open the Review tab and let the gate run again. If it keeps refusing, the card moves to the exhausted state below rather than sitting silent.",
+  },
+  "rerun-exhausted": {
+    headline: "A required review gate refused to report and its re-runs are spent",
+    description:
+      "Code Review ended as `skipped` with no verdict, no honest reason for not running, and no recorded waiver, and the card's own attempt history is used up. The merge stays shut on that gate until someone records a decision: no review verdict exists for this content, and no automatic lane can produce one any more.",
+    suggestedAction:
+      "Record the audited bypass on that gate from the task menu (it names the reason and who decided), or fix whatever stopped the reviewer reporting and re-run the gate. Bypassing is a decision, not an approval.",
+  },
   "awaiting-review-revision": {
     headline: "Applying review corrections",
     description:

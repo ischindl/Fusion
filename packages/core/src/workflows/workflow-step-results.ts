@@ -9,14 +9,42 @@ make the operator remedy ambiguous — the first is fixed by workspace configura
 repository — and a `skipped` row carrying an honest reason is evidence the gate never fabricated, unlike a
 failed review that consumed the one-shot re-run budget.
 */
-export const WORKFLOW_STEP_NOT_RUN_REASONS = ["not-configured", "tooling-unavailable", "execution-mode-skip", "repository-context-unresolved", "ci-repository-unresolved"] as const;
+/*
+FNXC:VerdictlessSkippedGate 2026-11-12-19:38 (RUFU-657):
+`required-gate-refused-owed-verdict` is the sixth value, and it is NOT an honest not-run reason — it
+is the OPPOSITE declaration. The five above say "this gate could not run, here is why", which is why
+`isWorkflowStepNotRun` may let one open a non-content merge gate. The sixth says "this gate owed an
+authored verdict and refused to report one", which must never read as honest.
+
+It lives in the same closed vocabulary rather than in its own type for one reason: `notRunReason` is
+the only discriminator field a `skipped` result carries, and a second field would give the same fact
+two spellings that can disagree. Membership in `WORKFLOW_STEP_NOT_RUN_REASONS` is therefore the
+VALIDATION boundary (a plugin or recorder may only persist a registered value), while honesty is
+decided by the explicit set below. Measured reason the vocabulary needed a refusal value: RUFU-343
+and RUFU-366 both carry `skipped` rows with NO discriminator at all, and "no discriminator" is what
+made every recovery witness answer "not my class".
+*/
+export const WORKFLOW_STEP_NOT_RUN_REASONS = ["not-configured", "tooling-unavailable", "execution-mode-skip", "repository-context-unresolved", "ci-repository-unresolved", "required-gate-refused-owed-verdict"] as const;
 export type WorkflowStepNotRunReason = (typeof WORKFLOW_STEP_NOT_RUN_REASONS)[number];
 
-/** A not-run result is terminal and honest only when its fixed reason accompanies `skipped`. */
+export const REQUIRED_GATE_OWED_VERDICT_NOT_RUN_REASON = "required-gate-refused-owed-verdict" satisfies WorkflowStepNotRunReason;
+
+/** The five reasons that honestly close a gate. The owed-verdict discriminator is excluded by name. */
+const HONEST_NOT_RUN_REASONS: ReadonlySet<string> = new Set<string>(
+  WORKFLOW_STEP_NOT_RUN_REASONS.filter((reason) => reason !== REQUIRED_GATE_OWED_VERDICT_NOT_RUN_REASON),
+);
+
+/** A not-run result is terminal and honest only when an honest fixed reason accompanies `skipped`. */
 export function isWorkflowStepNotRun(result: WorkflowStepResult): boolean {
   return result.status === "skipped"
     && typeof result.notRunReason === "string"
-    && (WORKFLOW_STEP_NOT_RUN_REASONS as readonly string[]).includes(result.notRunReason);
+    && HONEST_NOT_RUN_REASONS.has(result.notRunReason);
+}
+
+/** The declared-refusal discriminator: a `skipped` row that owes an authored verdict. */
+export function isRequiredGateOwedVerdictReason(result: Pick<WorkflowStepResult, "status" | "notRunReason">): boolean {
+  return result.status === "skipped"
+    && result.notRunReason === REQUIRED_GATE_OWED_VERDICT_NOT_RUN_REASON;
 }
 
 /**

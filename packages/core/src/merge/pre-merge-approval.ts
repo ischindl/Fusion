@@ -2,7 +2,7 @@ import type { Task, WorkflowStepResult } from "../types.js";
 import { evaluateZeroCommitEmptyInputContentProof } from "./zero-commit-landing-proof.js";
 import { PLAN_REVIEW_GROUP_ID } from "../workflows/builtin-plan-review-group.js";
 import { FAST_MODE_BYPASS_ACTOR } from "../workflows/workflow-fast-lane.js";
-import { deriveStaleReviewCallbackAttemptId, isWorkflowStepNotRun } from "../workflows/workflow-step-results.js";
+import { deriveStaleReviewCallbackAttemptId, isRequiredGateOwedVerdictReason, isWorkflowStepNotRun } from "../workflows/workflow-step-results.js";
 import type { MergeContentDescriptor } from "./merge-content-descriptor.js";
 
 export type PreMergeApprovalState = "approved" | "missing" | "not-approved" | "stale-content" | "unprovable-content";
@@ -185,7 +185,9 @@ sentence they are repairing still matches the row they are repairing, so a card 
 result row between the sweep read and the repair write is left to its new owner.
 */
 
-/** Required pre-merge gates with no result row at all, in the same latest-row resolution the merge door uses. */
+/**
+ * Required pre-merge gates with no result row at all, in the same latest-row resolution the merge door uses.
+ */
 export function findUnrunRequiredPreMergeStepIds(
   task: Pick<Task, "workflowStepResults" | "repositoryScope">,
   options: { requiredPreMergeStepIds?: ReadonlySet<string> } = {},
@@ -194,6 +196,116 @@ export function findUnrunRequiredPreMergeStepIds(
   return evaluatePreMergeApprovals(task, options)
     .filter((approval) => approval.state === "missing")
     .map((approval) => approval.workflowStepId);
+}
+
+/*
+FNXC:VerdictlessSkippedGate 2026-11-12-19:38 (RUFU-657):
+THE TERMINAL `skipped` REQUIRED-GATE ROW THAT PROVES NOTHING.
+
+Measured on two live cards (RUFU-343 since 2026-10-10, RUFU-366 since 2026-11-08, both read from their
+disk mirrors at 2026-11-12T19:1xZ): a required Code Review burned its attempts without ever authoring
+a verdict, and the row was rewritten to `skipped` with no verdict, no `bypassedBy`, no `notRunReason`
+and no `remediationArchivedAt`. Every witness then refused it, each for its own good reason: the
+RUFU-217 re-run predicate requires `status === "failed"`, the FN-8492 sweep rewrites only `pending`,
+the FN-9243 / RUFU-276 seed lane requires a gate with ZERO rows, FN-295 requires an archive stamp,
+RUFU-391 requires an existing park, and RUFU-375's not-run honour requires an honest reason. The merge
+door still refused (`state: "not-approved"`, verified), so the card was blocked and ownerless at once.
+
+Each exclusion below names the lane that owns the row instead — this predicate is a LAST resort, and
+an exclusion list is the only shape that cannot steal another lane's row:
+- `verdict != null` — an authored non-approval is the remediation lane's veto, and a `skipped` row that
+  carries one keeps it byte-for-byte.
+- `bypassedBy` — any waiver, audited or the fast-mode actor's. FN-7720's waiver is the operator's
+  decision and must never be re-armed or re-waived by an automatic lane; the fast lane is an
+  operator-selected mode whose skips are intentional.
+- `remediationArchivedAt` — shape A, the FN-295 collateral carrier. That stamp is an unconditional merge
+  veto whose remedies are the restore lane and the audited bypass; admitting it here would put a
+  verdict-re-run authority on a row whose authored verdicts survive only in `priorAttempts`.
+- an honest `notRunReason` — RUFU-375's refused-to-run class, which is honest evidence the gate never
+  fabricated. Only ABSENCE of a discriminator, or the declared-refusal discriminator itself, is this class.
+  An UNREGISTERED reason string is deliberately excluded: it is a writer defect, and the skipped-writer
+  inventory ratchet (`verdictless-skipped-writer-inventory.test.ts`) is the lane that owns it.
+- `arbitrationDecision` — the review-convergence ladder adjudicated this row; it owns the aftermath.
+- `requiresAuthoredReviewVerdict` — a script-mode gate that exits on a code never owed a verdict, so it
+  can never owe one again (the same discriminator RUFU-217 uses to keep its own lane from looping).
+
+`automatedStaleCallbackWaiver` is DELIBERATELY not an exclusion. Measured: both exemplars carry that
+carrier, written by `issueStaleReviewCallbackWaiverImpl` when a provably stale review callback is
+waived. It is not an audited operator waiver (`isAuditedOperatorBypass` reads `bypassedBy`, which that
+writer never sets), and the read paths that decide whether the card moves supply no receipt store, so
+the carrier cannot resolve to approval where it matters — it only suppressed the row's own
+verdict-less-ness. A waiver the deciding path cannot validate must not become permanent silence, and
+re-running the gate is the non-laundering resolution: it asks for a real verdict instead of merging
+unreviewed content.
+*/
+export function isVerdictLessSkippedOwedVerdictRow(
+  result: Pick<
+    WorkflowStepResult,
+    | "workflowStepId"
+    | "phase"
+    | "status"
+    | "verdict"
+    | "reviewKind"
+    | "verdictRequired"
+    | "bypassedBy"
+    | "notRunReason"
+    | "remediationArchivedAt"
+    | "arbitrationDecision"
+  >,
+): boolean {
+  if ((result.phase ?? "pre-merge") !== "pre-merge") return false;
+  if (result.status !== "skipped") return false;
+  // `verdict == null` covers the absent field and a stored literal JSON null (RUFU-204's shape).
+  if (result.verdict != null) return false;
+  if (result.bypassedBy !== undefined) return false;
+  if (result.remediationArchivedAt != null) return false;
+  if (result.arbitrationDecision !== undefined) return false;
+  const declaredReason = typeof result.notRunReason === "string" ? result.notRunReason : undefined;
+  if (declaredReason !== undefined && !isRequiredGateOwedVerdictReason(result)) return false;
+  return requiresAuthoredReviewVerdict(result.workflowStepId, result);
+}
+
+/*
+FNXC:VerdictlessSkippedGate 2026-11-12-19:38 (RUFU-657):
+The bound on how many verdict-less attempts one gate may still be given. It is the same number as the
+engine's `MAX_VERDICTLESS_GATE_RERUN_ATTEMPTS` (packages/engine/src/merge/pre-merge-gate-reseed.ts),
+repeated as a literal because `@fusion/core` cannot import `@fusion/engine`; the equality is pinned by
+`verdictless-skipped-required-gate.test.ts` rather than by an import. It is a LIMIT only — the count
+comes from the row's own `priorAttempts` (below), so this class adds no counter to persist, and no
+field to reset, drift, or forget to clear.
+*/
+export const OWED_VERDICT_GATE_RERUN_ATTEMPT_LIMIT = 3;
+
+/** Required pre-merge gates whose latest row is the ownerless terminal `skipped` shape. */
+export function findOwedVerdictRequiredPreMergeGates(
+  task: Pick<Task, "workflowStepResults">,
+  options: { requiredPreMergeStepIds?: ReadonlySet<string> } = {},
+): string[] {
+  const required = options.requiredPreMergeStepIds;
+  if (!required?.size) return [];
+  const results = task.workflowStepResults ?? [];
+  return [...required].filter((workflowStepId) => {
+    const latest = latestResultForStep(results, workflowStepId);
+    return latest !== undefined && isVerdictLessSkippedOwedVerdictRow(latest);
+  });
+}
+
+/**
+ * How many times this gate has already been asked to report: the latest row plus its own verdict-less
+ * `priorAttempts`. The row IS the ledger — a re-run appends another attempt, so the bound tightens
+ * automatically and no separate budget field can survive a reset it should not survive.
+ * Returns 0 for a gate with no row (that gate is the zero-row seed lane's, not this class's).
+ */
+export function countOwedVerdictRequiredGateAttempts(
+  task: Pick<Task, "workflowStepResults">,
+  workflowStepId: string,
+): number {
+  const latest = latestResultForStep(task.workflowStepResults ?? [], workflowStepId);
+  if (!latest) return 0;
+  const verdictlessPriors = (latest.priorAttempts ?? []).filter(
+    (attempt) => attempt.workflowStepId === workflowStepId && isVerdictLessFailedGateRow(attempt),
+  ).length;
+  return 1 + verdictlessPriors;
 }
 
 /*
@@ -341,6 +453,15 @@ export function evaluatePreMergeApprovals(
   return evaluatePreMergeAdmissionDecision(task, options).gates.map(({ selectedResult: _selectedResult, ...gate }) => gate);
 }
 
+/**
+ * The ONE latest-row-per-gate resolution. `evaluateStep`, the admission diagnostic, and the recovery
+ * finders all ask this question; three inline copies of "filter by id, take the last" is how a finder
+ * and the merge door start disagreeing about which row is live.
+ */
+function latestResultForStep(results: readonly WorkflowStepResult[], workflowStepId: string): WorkflowStepResult | undefined {
+  return results.filter((candidate) => candidate.workflowStepId === workflowStepId).at(-1);
+}
+
 export function evaluatePreMergeAdmissionDecision(
   task: Pick<Task, "workflowStepResults" | "repositoryScope"> & Partial<Pick<Task, "id" | "noCommitsExpected">>,
   options: {
@@ -359,7 +480,7 @@ export function evaluatePreMergeAdmissionDecision(
   const results = task.workflowStepResults ?? [];
   const gates = [...required].map((workflowStepId) => {
     const gate = evaluateStep(workflowStepId, results, task, options.mergeContent, options);
-    const result = results.filter((candidate) => candidate.workflowStepId === workflowStepId).at(-1);
+    const result = latestResultForStep(results, workflowStepId);
     return result ? {
       ...gate,
       selectedResult: {
@@ -393,7 +514,7 @@ function evaluateStep(
     };
   },
 ): PreMergeApproval {
-  const result = results.filter((candidate) => candidate.workflowStepId === workflowStepId).at(-1);
+  const result = latestResultForStep(results, workflowStepId);
   // Workspace Code Review persists its positive proof in repositoryScope so it survives
   // the intentional workflow-result remediation wipe; singular tasks have no such carrier.
   if (!result && descriptor?.kind !== "workspace") return { workflowStepId, state: "missing" };

@@ -14344,9 +14344,32 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           || executingTaskLock.has(taskId)
           || this.options.isTaskActive?.(taskId) === true;
       };
-      /* The gate that requested the open remediation keeps its archive: that archive is its own ledger. */
+      /*
+      FNXC:ReviewGateArchiveOwnership 2026-11-12-20:30 (RUFU-657):
+      THE EXCLUSION IS BOUNDED BY THE WAVE, NOT BY ITS OWN EXISTENCE. A gate keeps its archive — that
+      archive is its own remediation ledger — only while the wave that owns it is OPEN: some step carries
+      `remediation.gateStepId === <gate>` at a status that is neither `done` nor `skipped`.
+
+      The set used to be built from every step that merely CARRIED a `gateStepId`. Remediation steps are
+      appended to `task.steps` by `executor/append-review-remediation-steps.ts` and nothing in the shipped
+      lifecycle removes them, so the exclusion never retracted: a gate remediated once stayed invisible to
+      this sweep for the rest of the card's life, and the comment above it named an "open" condition the
+      code never tested. On a card whose gate later refuses to report and gets archived, that is a
+      permanent veto with no automated exit.
+
+      Measured read-only on the production board (2026-11-12): RUFU-351 holds one remediation step and
+      RUFU-455 two, every one of them `gateStepId: "code-review"` at `status: "done"` — excluded today,
+      excluded forever. RUFU-343 and RUFU-366 carry NO remediation steps at all, which is why this
+      exclusion is not their refusal: their Code Review rows have no `remediationArchivedAt` and belong to
+      the owed-verdict class this card classifies, not to FN-295's restore lane.
+
+      The exclusion itself must survive — with an open wave the archive really is that gate's ledger — so
+      this filters on status rather than dropping the clause, and it is one collector serving both call
+      sites (the candidate prefilter and the in-transaction recompute) so the two cannot disagree.
+      */
       const remediationGateIdsFor = (task: Task): ReadonlySet<string> => new Set(
         (task.steps ?? [])
+          .filter((step) => step.status !== "done" && step.status !== "skipped")
           .map((step) => step.remediation?.gateStepId)
           .filter((gateStepId): gateStepId is string => typeof gateStepId === "string" && gateStepId.length > 0),
       );

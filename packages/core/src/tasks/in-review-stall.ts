@@ -1,4 +1,16 @@
 import { getTaskMergeBlocker, isPreMergeStepsNotRunBlocker } from "../merge/task-merge.js";
+/*
+FNXC:VerdictlessSkippedGate 2026-11-12-19:55 (RUFU-657):
+The classifier now needs the owed-verdict gate finder to answer a question it could not ask before:
+"is this card's silence a gate that refused to report?" The import is the core predicate, not a local
+copy, so the classifier and the merge door can never disagree about the row shape (RUFU-217's
+blocker-input parity, applied to a new class).
+*/
+import {
+  countOwedVerdictRequiredGateAttempts,
+  findOwedVerdictRequiredPreMergeGates,
+  OWED_VERDICT_GATE_RERUN_ATTEMPT_LIMIT,
+} from "../merge/pre-merge-approval.js";
 /* FNXC:HumanMergeApproval 2026-09-17-22:32: FN-514's delivery lock is a human WAIT, never a stall. */
 /*
 FNXC:HumanMergeApproval 2026-11-02-10:30 (RUFU-446):
@@ -44,6 +56,29 @@ const LEGACY_REVIEW_LANES: ReadonlySet<string> = new Set(["in-review"]);
  * because in-review tasks are expected to remain on the PR-based manual flow.
  */
 export type InReviewStallCode =
+  /*
+  FNXC:VerdictlessSkippedGate 2026-11-12-19:55 (RUFU-657):
+  A required gate that owes an authored verdict reported `skipped` with no verdict, no honest not-run
+  reason and no audited waiver. The pair exists because SILENCE was the reachable terminal state:
+  measured on RUFU-343 (since 2026-10-10) and RUFU-366 (since 2026-11-08), the merge door refused on
+  the gate-named sentence while every recovery witness refused the row, so no badge, no park, no
+  notice, and no lane ever claimed the card.
+
+  WHAT EACH CODE DOES AND DOES NOT PROVE — read this before adding a consumer:
+  - `rerun-armed`  — the gate's own attempt evidence still leaves room under
+                     `OWED_VERDICT_GATE_RERUN_ATTEMPT_LIMIT`. It says a re-run is OWED; it never says
+                     one was performed. Performing the in-place re-review is the review lane's
+                     authority (RUFU-531 owns the mechanism that lets a woken review run actually
+                     record a verdict), NOT this classifier — there is exactly one seed authority per
+                     gate, and this file is not it.
+  - `rerun-exhausted` — the row's own attempts are spent. The card is now operator-owned, and the
+                     reason sentence names the single remedy (the audited bypass, which
+                     `deriveReviewBypassTarget` now resolves for this shape).
+  Neither code claims a review happened, and neither claims delivery. Both are reportable, so neither
+  is badge-suppressed: the whole defect being removed is an unreported terminal state.
+  */
+  | "rerun-armed"
+  | "rerun-exhausted"
   /*
   FNXC:ReviewRevisionWait 2026-09-29-14:12 (RUFU-280):
   An authored `REVISE` verdict with unfinished named remediation. The signal still fires — a card parked
@@ -480,11 +515,21 @@ export function getInReviewStallReason(
   */
   const operatorWaitIsTheWholeRefusal = isHumanMergeApprovalBlocker(getHumanMergeApprovalBlocker(task));
 
+  /*
+  FNXC:VerdictlessSkippedGate 2026-11-12-19:55 (RUFU-657):
+  Which required gates reported `skipped` while owing an authored verdict. Resolved once here because
+  two consumers need it: the completed-review arm below must not answer first, and the refusal branch
+  must name the gate. With no gate ids resolved (the results-only fallback callers keep) this is the
+  empty set, so every such caller stays byte-identical.
+  */
+  const owedVerdictGates = findOwedVerdictRequiredPreMergeGates(task, { requiredPreMergeStepIds: context.requiredPreMergeStepIds });
+
   const updatedAtMs = Date.parse(task.updatedAt);
   const completedSteps = task.steps.length > 0
     && task.steps.every((step) => step.status === "done" || step.status === "skipped");
   if (
     !operatorWaitIsTheWholeRefusal
+    && owedVerdictGates.length === 0
     && completedSteps
     && task.status == null
     && !task.error
@@ -591,6 +636,37 @@ export function getInReviewStallReason(
       return {
         code: "awaiting-review-revision",
         reason: AWAITING_REVIEW_REVISION_STALL_REASON,
+        observedAt,
+      };
+    }
+
+    /*
+    FNXC:VerdictlessSkippedGate 2026-11-12-19:55 (RUFU-657):
+    THE REFUSAL THAT HAD NO OWNER. A required gate whose latest row is `skipped` with no verdict, no
+    honest not-run reason and no audited waiver produces the gate-named approval refusal above — the
+    door refuses, so the card is genuinely blocked, and the completed-review arm above is a lie about
+    it ("review finished, nothing merged" describes a card whose review never reported).
+
+    ORDER, and why each arm above still outranks this one:
+    - the not-run suppression stays first: with TWO required gates, one never run and one owed, the
+      door names the never-run gate and FN-9243's seed lane owns that crossing. Naming a stall for the
+      owed gate while the real refusal is a scheduled crossing would re-create the false-stall class
+      that suppression was written to stop.
+    - FN-514's human wait outranks it: an operator decision pending is not an engine problem.
+    - an authored `REVISE` outranks it: a review that asked for corrections created work, and the owed
+      row here carries no verdict, so the two cannot describe the same row.
+    Everything below this point (the provider-error arm, the plain `merge-blocker` fallthrough) is what
+    this arm replaces FOR THIS SHAPE ONLY — the fallthrough is why silence looked like a routine
+    merge-blocker that every lane had already decided to ignore.
+    */
+    if (owedVerdictGates.length > 0) {
+      const gateId = owedVerdictGates[0]!;
+      const exhausted = countOwedVerdictRequiredGateAttempts(task, gateId) >= OWED_VERDICT_GATE_RERUN_ATTEMPT_LIMIT;
+      return {
+        code: exhausted ? "rerun-exhausted" : "rerun-armed",
+        reason: exhausted
+          ? `Required pre-merge gate '${gateId}' refused to report a verdict and carries no waiver; its bounded re-run budget is spent — the operator's audited bypass is the remaining remedy`
+          : `Required pre-merge gate '${gateId}' refused to report a verdict and carries no waiver; a bounded re-run of that gate is owed`,
         observedAt,
       };
     }

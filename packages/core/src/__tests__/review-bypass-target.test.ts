@@ -472,6 +472,123 @@ describe("deriveReviewBypassTarget — required post-merge gates", () => {
     expect(target).toBeUndefined();
   });
 
+  /*
+  FNXC:VerdictlessSkippedGate 2026-11-12-20:35 (RUFU-657):
+  The bypass lever for a gate that refused to report. The symptom card proved it from production: on
+  RUFU-343 and RUFU-366 this class was the ONLY exit, and no surface offered it — the store already
+  accepted the row through its residual unapproved class, so an operator could POST the bypass while
+  the menu stayed dark. That is RUFU-179's unreachable-escape-hatch bug from the other side.
+  */
+  it("offers the audited bypass for a required gate whose latest row is skipped with no verdict", () => {
+    const target = deriveReviewBypassTarget(
+      reviewTask({
+        workflowStepResults: [
+          step({ status: "skipped", verdict: undefined, automatedStaleCallbackWaiver: true }),
+        ],
+      }),
+      new Set<string>(["code-review"]),
+      REVIEW,
+    );
+    expect(target).toEqual({
+      kind: "verdictless-skipped",
+      workflowStepId: "code-review",
+      workflowStepName: "Code Review",
+    });
+  });
+
+  it("still offers the bypass when an OLDER row of the same gate carries a verdict", () => {
+    const target = deriveReviewBypassTarget(
+      reviewTask({
+        workflowStepResults: [
+          step({ status: "passed", verdict: "APPROVE" }),
+          step({ status: "skipped", verdict: undefined, automatedStaleCallbackWaiver: true }),
+        ],
+      }),
+      new Set<string>(["code-review"]),
+      REVIEW,
+    );
+    expect(target).toMatchObject({ kind: "verdictless-skipped", workflowStepId: "code-review" });
+  });
+
+  it("offers nothing once the row carries an audited operator waiver", () => {
+    // The row the FN-7720 hatch already recorded. Offering a second waiver would widen the waiver and
+    // erase `bypassedBy`'s provenance, and the merge door already treats the row as approved.
+    const waived = step({
+      status: "skipped",
+      verdict: undefined,
+      automatedStaleCallbackWaiver: true,
+      bypassedBy: "operator-1",
+      bypassedAt: "2026-11-12T00:00:00.000Z",
+      bypassReason: "Reviewer instance was torn down mid-run; verified the change by hand.",
+    });
+    expect(
+      deriveReviewBypassTarget(reviewTask({ workflowStepResults: [waived] }), new Set<string>(["code-review"]), REVIEW),
+    ).toBeUndefined();
+  });
+
+  it("offers nothing when the skip carries an honest not-run reason, or when the gate is not required", () => {
+    const honest = step({
+      status: "skipped",
+      verdict: undefined,
+      automatedStaleCallbackWaiver: true,
+      notRunReason: "required-gate-refused-published-head",
+    });
+    expect(
+      deriveReviewBypassTarget(reviewTask({ workflowStepResults: [honest] }), new Set<string>(["code-review"]), REVIEW),
+    ).toBeUndefined();
+    const notRequired = step({ status: "skipped", verdict: undefined, automatedStaleCallbackWaiver: true });
+    expect(deriveReviewBypassTarget(reviewTask({ workflowStepResults: [notRequired] }), NO_REQUIRED, REVIEW)).toBeUndefined();
+  });
+
+  it("offers nothing for this class on a multi-repo card, because no waiver resolves there", () => {
+    // `auditedOperatorWaiver` in the merge door is false for a workspace descriptor, so a bypass
+    // advertised here could not clear the door it advertises against — the dead affordance RUFU-179
+    // exists to prevent.
+    const target = deriveReviewBypassTarget(
+      reviewTask({
+        workspaceWorktrees: [{ path: "repo-a", branch: "fusion/rufu-657" }],
+        workflowStepResults: [step({ status: "skipped", verdict: undefined, automatedStaleCallbackWaiver: true })],
+      }),
+      new Set<string>(["code-review"]),
+      REVIEW,
+    );
+    expect(target).toBeUndefined();
+  });
+
+  it("still names a failed review row first, and a never-ran gate when no row exists at all", () => {
+    // Ordering for this module: a failed row outranks everything (the reviewer reported a real failure,
+    // the more specific fact), an owed-verdict row outranks the never-ran class for a DIFFERENT gate
+    // (the refusing gate is the decision actually on the table), and a zero-result card still gets its
+    // `absent` target — the class this module exists for.
+    const failedFirst = deriveReviewBypassTarget(
+      reviewTask({
+        workflowStepResults: [
+          step({ workflowStepId: "security-review", workflowStepName: "Security Review", status: "failed" }),
+          step({ workflowStepId: "code-review", workflowStepName: "Code Review", status: "skipped", verdict: undefined, automatedStaleCallbackWaiver: true }),
+        ],
+      }),
+      new Set<string>(["code-review", "security-review"]),
+      REVIEW,
+    );
+    expect(failedFirst).toMatchObject({ kind: "failed", workflowStepId: "security-review" });
+
+    const owedBeatsAbsent = deriveReviewBypassTarget(
+      reviewTask({
+        workflowStepResults: [step({ status: "skipped", verdict: undefined, automatedStaleCallbackWaiver: true })],
+      }),
+      new Set<string>(["plan-review", "code-review"]),
+      REVIEW,
+    );
+    expect(owedBeatsAbsent).toMatchObject({ kind: "verdictless-skipped", workflowStepId: "code-review" });
+
+    const absentStillAnswers = deriveReviewBypassTarget(
+      reviewTask({ workflowStepResults: [] }),
+      new Set<string>(["code-review"]),
+      REVIEW,
+    );
+    expect(absentStillAnswers).toMatchObject({ kind: "absent", workflowStepId: "code-review" });
+  });
+
   it("names builtin:coding's real post-merge gate through the resolver (no invented step id)", () => {
     const ir = BUILTIN_CODING_WORKFLOW_IR as unknown as WorkflowIr;
     const landedCard = {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { WORKFLOW_STEP_NOT_RUN_REASONS as CORE_WORKFLOW_STEP_NOT_RUN_REASONS } from "@fusion/core";
-import type { Task } from "@fusion/core";
+import type { Task, WorkflowStepResult } from "@fusion/core";
 import {
   getRunningOptionalGateBadge,
   getRunningWorkflowStepLabel,
@@ -244,6 +244,51 @@ describe("getUnifiedTaskProgress", () => {
     expect(progress).toMatchObject({ total: 1, completed: 1 });
     expect(progress.items[0]?.status).toBe("not_run");
     expect(WORKFLOW_STEP_NOT_RUN_REASONS).toEqual(CORE_WORKFLOW_STEP_NOT_RUN_REASONS);
+  });
+
+  /*
+  FNXC:VerdictlessSkippedGate 2026-11-12-21:15 (RUFU-657):
+  The sixth registered reason must NOT render as a terminal not-run. `not_run` is painted as
+  •Not executed — <reason>• and is non-blocking by design, which is true for the five honest reasons (the
+  gate was legitimately never told to run) and false for a required gate that ran and refused to report a
+  verdict — the merge door still refuses that card. RUFU-657 registered the value so a recorder can name
+  the refusal, and this pins that registration does not buy the row a clean render state.
+
+  The measured cards (RUFU-343, RUFU-366) carry no discriminator at all, so both the bare row and the
+  discriminated row are pinned: neither may reach `not_run`.
+  */
+  it("keeps an owed-verdict refusal out of the terminal not-run render state", () => {
+    const owedVerdictRow = {
+      workflowStepId: "code-review",
+      workflowStepName: "Code Review",
+      status: "skipped",
+      /* The store-attested carrier the two production rows actually carry; it approves nothing. */
+      automatedStaleCallbackWaiver: {
+        receiptId: "receipt-657",
+        policyVersion: "fn-9429-v1",
+        actor: "system:stale-review-callback-waiver",
+        reason: "proven-stale-code-review-callback",
+        issuedAt: "2026-11-12T00:00:00.000Z",
+        priorStatus: "failed",
+        attemptId: "failed:a:",
+      },
+    } satisfies WorkflowStepResult;
+
+    expect(mapWorkflowStatus(owedVerdictRow)).toBe("skipped");
+    expect(mapWorkflowStatus({ ...owedVerdictRow, notRunReason: "required-gate-refused-owed-verdict" }))
+      .toBe("skipped");
+    /* Contrast: an honest reason on the same `skipped` row still renders the honest not-run state. */
+    expect(mapWorkflowStatus({ ...owedVerdictRow, notRunReason: "ci-repository-unresolved" }))
+      .toBe("not_run");
+
+    /* Registration and honesty are different questions: the value is registered, and still not honest. */
+    expect(WORKFLOW_STEP_NOT_RUN_REASONS).toContain("required-gate-refused-owed-verdict");
+
+    const progress = getUnifiedTaskProgress(makeTask({
+      enabledWorkflowSteps: ["code-review"],
+      workflowStepResults: [{ ...owedVerdictRow, notRunReason: "required-gate-refused-owed-verdict" }],
+    }));
+    expect(progress.items[0]?.status).toBe("skipped");
   });
 
   it("resolves workflow step names from result.workflowStepName without a lookup", () => {

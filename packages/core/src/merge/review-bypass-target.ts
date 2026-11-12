@@ -34,17 +34,31 @@ import type { Task, WorkflowStepResult } from "../types.js";
 import type { WorkflowIr } from "../workflows/workflow-ir-types.js";
 import { declaresAnyLifecycleTrait, resolveReviewColumns } from "../workflows/workflow-lifecycle-traits.js";
 import { getLatestFailedPreMergeReviewStep } from "./task-merge.js";
+/*
+FNXC:VerdictlessSkippedGate 2026-11-12-20:25 (RUFU-657):
+ONE row-shape predicate shared by the merge door, the stall classifier and this capability. The
+invariant of this module is that UI eligibility equals store acceptance, and a second local copy of
+"which `skipped` row owes a verdict" is exactly how the two sides drift apart again.
+*/
+import { isVerdictLessSkippedOwedVerdictRow } from "./pre-merge-approval.js";
 
 /**
- * Which of the two bypassable states a card is in.
+ * Which of the bypassable states a card is in.
  *
  * - `"failed"` — a pre-merge review-lane result came back `failed` (FN-7720's original case,
  *   leading real-world cause: Runfusion/Fusion#1946's `(no feedback captured)` no-verdict dispatch).
  * - `"absent"` — an enabled required pre-merge gate has no result entry at all (FN-158's case, and
  *   the one the UI never covered). Skipping it records a deliberate operator decision, NOT a
  *   review approval, which is why the copy for this kind must not claim a failure or a pass.
+ * - `"verdictless-skipped"` — a required gate's latest row is `skipped` with no verdict, no honest
+ *   not-run reason and no recorded waiver: it refused to report while owing an authored verdict
+ *   (RUFU-657). Measured on RUFU-343 and RUFU-366: this was the ONLY exit and no surface offered it —
+ *   `store.bypassFailedPreMergeReviewStep` already accepted the row through its residual unapproved
+ *   class, so the store could act while the menu stayed dark (RUFU-179's unreachable-escape bug, from
+ *   the other side). Like `absent`, the copy for this kind must claim neither a failure nor a pass:
+ *   the bypass records the operator's decision and never writes a `verdict`.
  */
-export type ReviewBypassTargetKind = "failed" | "absent";
+export type ReviewBypassTargetKind = "failed" | "absent" | "verdictless-skipped";
 
 /** The step a bypass would currently act on, plus the reason class the copy must branch on. */
 export interface ReviewBypassTarget {
@@ -71,7 +85,7 @@ export interface ReviewBypassTarget {
  * reads as "not an operator hold".
  */
 export type ReviewBypassTaskView = Pick<Task, "column" | "paused"> &
-  Partial<Pick<Task, "workflowStepResults" | "userPaused" | "mergeDetails">>;
+  Partial<Pick<Task, "workflowStepResults" | "userPaused" | "mergeDetails" | "workspaceWorktrees">>;
 
 /*
 FNXC:ReviewLaneBypass 2026-09-10-23:19 (RUFU-218):
@@ -211,6 +225,31 @@ export function deriveReviewBypassTarget(
   }
 
   const results = task.workflowStepResults ?? [];
+  /*
+  FNXC:VerdictlessSkippedGate 2026-11-12-20:25 (RUFU-657):
+  Step 3b — a required gate that refused to report is bypassable, and is offered BEFORE the
+  never-ran class: the operator must decide about the specific gate that refused, and a card can hold
+  both shapes at once (one gate owed a verdict, another never dispatched).
+
+  SINGULAR SCOPE ONLY, and that is a refusal rather than an omission. `evaluatePreMergeApprovals`
+  resolves an audited waiver into approval only when the merge-content descriptor is not a workspace
+  (`auditedOperatorWaiver = isAuditedOperatorBypass(result) && descriptor?.kind !== "workspace"`), so on
+  a multi-repo card the bypass this branch would advertise cannot clear the door it advertises against.
+  Offering it there would be the dead affordance RUFU-179 was written to delete, in the direction the
+  operator pays for.
+  */
+  if (task.workspaceWorktrees === undefined) {
+    for (const workflowStepId of requiredStepIds) {
+      const latest = results.filter((result) => result.workflowStepId === workflowStepId).at(-1);
+      if (latest && isVerdictLessSkippedOwedVerdictRow(latest)) {
+        return {
+          kind: "verdictless-skipped",
+          workflowStepId,
+          workflowStepName: latest.workflowStepName || workflowStepId,
+        };
+      }
+    }
+  }
   for (const workflowStepId of requiredStepIds) {
     if (!results.some((result) => result.workflowStepId === workflowStepId)) {
       return { kind: "absent", workflowStepId, workflowStepName: workflowStepId };

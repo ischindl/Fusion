@@ -43,6 +43,25 @@ function approvedCodeReview(overrides: Partial<WorkflowStepResult> = {}): Workfl
   };
 }
 
+/** The same collateral carrier, sitting on the gate that owns the wave (shape A of RUFU-657 / FN-295). */
+function archivedCodeReviewCarrier(): WorkflowStepResult {
+  return archivedPlanReview({ workflowStepId: "code-review", workflowStepName: "Code Review", reviewKind: "code" });
+}
+
+/**
+ * FNXC:ReviewGateArchiveOwnership 2026-11-12-20:45 (RUFU-657): the Code Review remediation wave at a
+ * chosen step status. `pending` / `in-progress` = OPEN, so the owning gate's archive is its own ledger and
+ * FN-295's exclusion must hold; `done` / `skipped` = CLOSED, so the ledger is finished and the gate is
+ * this sweep's to restore.
+ */
+function remediationWave(status: "pending" | "in-progress" | "done" | "skipped", waves = 1) {
+  return Array.from({ length: waves }, (_, index) => ({
+    name: `Fix: reconciliation stalls (wave ${index + 1})`,
+    status,
+    remediation: { wave: index + 1, gate: "Code Review", gateStepId: "code-review", detail: "…" },
+  }));
+}
+
 function task(id: string, overrides: Partial<Task> = {}): Task {
   return {
     id,
@@ -50,8 +69,14 @@ function task(id: string, overrides: Partial<Task> = {}): Task {
     description: "Restore a gate archived by another gate's remediation",
     column: "in-review",
     dependencies: [],
-    /* The open remediation wave belongs to Code Review — Plan Review was collateral. */
-    steps: [{ name: "Fix: reconciliation stalls", status: "done", remediation: { wave: 1, gate: "Code Review", gateStepId: "code-review", detail: "…" } }],
+    /*
+    FNXC:ReviewGateArchiveOwnership 2026-11-12-20:45 (RUFU-657): this fixture's wave is CLOSED
+    (`status: "done"`). Its previous comment claimed "the open remediation wave belongs to Code Review",
+    which the step contradicted — and because the collector used to ignore `step.status`, the contradiction
+    was invisible: a done wave excluded its gate exactly like an open one. Wave status is now stated at the
+    call sites that reason about it (`remediationWave()` below).
+    */
+    steps: remediationWave("done"),
     currentStep: 0,
     log: [],
     status: null,
@@ -134,8 +159,24 @@ describe("reconcileCollateralArchivedReviewGates", () => {
     const row = task("FN-295");
     expect(getTaskMergeBlocker(row, { requiredPreMergeStepIds: required, mergeContent }))
       .toBe("task has enabled pre-merge workflow steps without a current approval (gate 'plan-review')");
-    /* Before: the audited operator bypass has nothing to select — that is the wedge. */
-    expect(getLatestFailedPreMergeReviewStep(row)).toBeUndefined();
+    /*
+    FNXC:ReviewGateArchiveSelection 2026-11-12-20:40 (RUFU-657):
+    BEFORE: the archived carrier is already SELECTABLE, and it was not always.
+
+    This line asserted `toBeUndefined()` - "the audited operator bypass has nothing to select, that is the
+    wedge" - which was FN-295's own premise when it was written. FN-9266 (`restore bypass for archived
+    review failures`, e190adcc02) then gave `getLatestFailedPreMergeReviewStep` a second leg over archived
+    carriers (`isArchivedRemediationCarrier`, `remediationArchivedFromStatus` in failed/advisory_failure, no
+    `bypassedBy`/`supersededAt`), which is exactly the row this fixture builds. The assertion encoded the
+    pre-FN-9266 contract and had been failing at every SHA on this card's base (`7c3faaf7cd`) and head
+    (`da53570e35`) with the sweep's behaviour unchanged.
+
+    Recorded as the new truth rather than deleted, because the rest of the case still describes the wedge:
+    what the sweep repairs is the row's DISPOSITION - a `skipped` merge veto with nothing approvable becomes
+    a `failed` result the gate can re-run - not the selector's reach. The merge-blocker assertion above and
+    the restore assertions below are unchanged.
+    */
+    expect(getLatestFailedPreMergeReviewStep(row)).toMatchObject({ workflowStepId: "plan-review", status: "skipped" });
 
     const { manager, store, auditEvents } = harness([row]);
     await expect(manager.reconcileCollateralArchivedReviewGates()).resolves.toBe(1);
@@ -168,7 +209,13 @@ describe("reconcileCollateralArchivedReviewGates", () => {
   });
 
   it.each([
-    ["the gate that owns the remediation wave", { workflowStepResults: [archivedPlanReview({ workflowStepId: "code-review", workflowStepName: "Code Review", reviewKind: "code" })] }],
+    /*
+    FNXC:ReviewGateArchiveOwnership 2026-11-12-20:45 (RUFU-657): the protection this case pins is real, but
+    only while the wave is OPEN. Under the status-blind collector the default fixture's `done` wave also
+    protected it, so the case never distinguished the two — which is the defect. `restores the gate that
+    owns a CLOSED remediation wave` below covers the other half.
+    */
+    ["the gate that owns an OPEN remediation wave", { steps: remediationWave("pending"), workflowStepResults: [archivedCodeReviewCarrier()] }],
     ["an audited operator waiver", { workflowStepResults: [archivedPlanReview({ bypassedBy: "operator", bypassReason: "known non-blocking" })] }],
     ["a user-paused card", { userPaused: true }],
     ["a workspace card", { workspaceWorktrees: { "repo-a": { worktreePath: "/tmp/repo-a" } } }],
@@ -183,6 +230,53 @@ describe("reconcileCollateralArchivedReviewGates", () => {
     expect(row.workflowStepResults).toEqual(before);
     expect(store.logEntry).not.toHaveBeenCalled();
     expect(auditEvents).toEqual([]);
+  });
+
+  /*
+  FNXC:ReviewGateArchiveOwnership 2026-11-12-20:45 (RUFU-657):
+  (a) THE MEASURED SHAPE. `remediationGateIdsFor` built its set from any step carrying a `gateStepId`, and
+  remediation steps are never removed from `task.steps`, so a gate remediated once was excluded forever —
+  the collector's comment said "open" and the code never tested it. Measured read-only: RUFU-351 carries one
+  `code-review` remediation step at `done` and RUFU-455 carries two, both permanently excluded today. With
+  the wave closed the archive is no longer a live ledger, so the carrier is restorable.
+  */
+  it("restores the gate that owns a CLOSED remediation wave", async () => {
+    const row = task("FN-657-CLOSED-WAVE", {
+      steps: remediationWave("done", 2),
+      workflowStepResults: [archivedCodeReviewCarrier()],
+    });
+    const { manager, auditEvents } = harness([row]);
+
+    await expect(manager.reconcileCollateralArchivedReviewGates()).resolves.toBe(1);
+
+    const restored = row.workflowStepResults?.find((entry) => entry.workflowStepId === "code-review");
+    expect(restored).toMatchObject({ status: "failed" });
+    expect(restored).not.toHaveProperty("remediationArchivedAt");
+    /* Restored to recoverable, never approved: this lane writes no verdict. */
+    expect(restored).not.toHaveProperty("verdict");
+    expect((auditEvents[0] as { metadata: Record<string, unknown> }).metadata).toMatchObject({
+      taskId: row.id, workflowStepId: "code-review", restoredCount: 1,
+    });
+  });
+
+  /*
+  FNXC:ReviewGateArchiveOwnership 2026-11-12-20:45 (RUFU-657):
+  (c) THE PRESERVATION CASE. The collateral shape exactly as it exists today with a genuinely OPEN wave:
+  `plan-review` is restored, the owning `code-review` keeps its archive, current behavior unchanged.
+  */
+  it("restores the collateral gate while an OPEN wave still protects its owner", async () => {
+    const row = task("FN-657-OPEN-WAVE", {
+      steps: remediationWave("in-progress"),
+      workflowStepResults: [archivedPlanReview(), archivedCodeReviewCarrier()],
+    });
+    const { manager } = harness([row]);
+
+    await expect(manager.reconcileCollateralArchivedReviewGates()).resolves.toBe(1);
+
+    expect(row.workflowStepResults?.find((entry) => entry.workflowStepId === "plan-review"))
+      .toMatchObject({ status: "failed" });
+    expect(row.workflowStepResults?.find((entry) => entry.workflowStepId === "code-review"))
+      .toMatchObject({ status: "skipped", remediationArchivedAt: expect.any(String) });
   });
 
   it("never touches a card whose session is live", async () => {

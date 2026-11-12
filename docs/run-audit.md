@@ -966,6 +966,34 @@ RUFU-398 adds three ids/counts/booleans-only keys to the deadlock arm: `priorPar
 
 The keys are observability-only. They do not appear on the observation arm (which writes no row at all) or on `task:in-review-stall-terminal-provider-error`, they change no threshold, no log sentence and no pause payload, and they do not alter whether or when the engine parks. The transient merge-retry counter is deliberately not consulted — it is a second counter with its own reset semantics, and folding it in would be a `mergeRetries`-provenance redesign, not a measurement.
 
+### The gate that refused to report, recorded with no new row (RUFU-657)
+
+**owed-verdict** is this card's name for a required pre-merge gate whose latest workflow-step row is
+`status: "skipped"` with no `verdict`, no honest `notRunReason`, no `bypassedBy` and no
+`remediationArchivedAt`: a run that ended while owing an authored verdict. The registered discriminator for
+it is `required-gate-refused-owed-verdict`, and the one predicate that decides the shape is
+`isVerdictLessSkippedOwedVerdictRow` in `packages/core/src/merge/pre-merge-approval.ts`. The stall codes are
+`rerun-armed` and `rerun-exhausted`. The shape is documented as an invariant in
+[`architecture.md`](architecture.md) — «A required gate that refuses to report is witnessed, bounded, and
+bypassable».
+
+This card adds **no mutation type, no event name, and no metadata key**. The reason is a decision, not an
+oversight: the stall ladder already emits the two rows that could carry this state, and both read `code`
+from the classifier rather than from a per-class emitter. `task:in-review-stall-deadlock-disposed` gains
+`code: "rerun-armed"` or `code: "rerun-exhausted"` exactly where it would previously have recorded the
+undifferentiated «merge-blocker» for the same card, beside the `reason`, `repetitionCount`, `threshold` and
+RUFU-398's episode keys. The observation arm writes no row at all, as it already did, so a card that merely
+waits stays free of rows while its History line and stall chip stay readable. The classifier arm is consent-gated
+by the ladder's existing rule, so a card whose automatic merge processing the operator switched off still
+produces no stall rows of any code.
+
+So the query for «which cards are sitting on a review that never reported?» stays one query and gains a
+filter, not a new family: filter the deadlock arm's `metadata->>'code'` on `rerun-armed` / `rerun-exhausted`. What the row
+cannot answer is deliberately left to the card face and its History line, because the only facts that make
+the class actionable — which gate, how many attempts its own row carries, and that the remaining remedy is
+the operator's audited bypass — live on the workflow-step result the row points at, and copying them into
+audit would be a second copy of a counter that only the reviewer's next verdict can move.
+
 ### Publishing a landing the completion gate would not acknowledge (RUFU-346)
 
 Required post-merge evidence can block completion after the merge is already durable. Before this change the post-merge publish was a step that ran strictly *after* finalization, so every blocked or deferred arm returned or threw before it: the local integration ref had advanced, `origin` was never offered the landing, and the hosted gate that the card is waiting on cannot report against a ref the remote does not have. The wait was self-blocking — the missing evidence could never arrive because the publish that would let it arrive was gated behind the evidence.

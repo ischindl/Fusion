@@ -32,10 +32,33 @@ FNXC:PostMergeCiRepository 2026-10-11-02:35 (RUFU-375):
 reason missing here would render a real not-run gate as a plain `skipped` row — hiding the fact that the post-merge
 Full Suite gate refused because nobody told it which repository runs CI.
 */
-export const WORKFLOW_STEP_NOT_RUN_REASONS = ["not-configured", "tooling-unavailable", "execution-mode-skip", "repository-context-unresolved", "ci-repository-unresolved"] as const;
-const WORKFLOW_STEP_NOT_RUN_REASON_SET: ReadonlySet<string> = new Set(WORKFLOW_STEP_NOT_RUN_REASONS);
+export const WORKFLOW_STEP_NOT_RUN_REASONS = ["not-configured", "tooling-unavailable", "execution-mode-skip", "repository-context-unresolved", "ci-repository-unresolved", "required-gate-refused-owed-verdict"] as const;
 
-export function isWorkflowStepNotRun(result: WorkflowStepResult): boolean {
+/*
+FNXC:VerdictlessSkippedGate 2026-11-12-21:55 (RUFU-657):
+Membership in the tuple above is the VALIDATION boundary (a recorder may persist a registered value);
+honesty is a separate question, and RUFU-657 registers the first value that is registered-but-dishonest.
+`required-gate-refused-owed-verdict` is a required gate that ENDED OWING an authored verdict: the merge
+door still refuses the card, so painting that row as a terminal `not_run` (non-blocking, "Not executed —
+<reason>") would tell the operator the gate was legitimately never run. Measured on RUFU-343 / RUFU-366 the
+row carries no discriminator at all, so the honest set is what this predicate tests, and it excludes the
+owed-verdict value by name. Mirrors `isWorkflowStepNotRun` in `@fusion/core`.
+
+The predicate is a type guard rather than a boolean because the label map in `WorkflowResultsTab.tsx` is
+exhaustive over the honest reasons only: narrowing makes "a reason was registered but has no honest label"
+a compile error at the map, instead of a real gate rendering `undefined`.
+*/
+const REQUIRED_GATE_OWED_VERDICT_NOT_RUN_REASON = "required-gate-refused-owed-verdict" satisfies (typeof WORKFLOW_STEP_NOT_RUN_REASONS)[number];
+const WORKFLOW_STEP_NOT_RUN_REASON_SET: ReadonlySet<string> = new Set(
+  WORKFLOW_STEP_NOT_RUN_REASONS.filter((reason) => reason !== REQUIRED_GATE_OWED_VERDICT_NOT_RUN_REASON),
+);
+
+export function isWorkflowStepNotRun(
+  result: WorkflowStepResult,
+): result is Omit<WorkflowStepResult, "status" | "notRunReason"> & {
+  status: "skipped";
+  notRunReason: Exclude<(typeof WORKFLOW_STEP_NOT_RUN_REASONS)[number], typeof REQUIRED_GATE_OWED_VERDICT_NOT_RUN_REASON>;
+} {
   return result.status === "skipped"
     && typeof result.notRunReason === "string"
     && WORKFLOW_STEP_NOT_RUN_REASON_SET.has(result.notRunReason);
