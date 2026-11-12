@@ -84,7 +84,12 @@ import {
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "@earendil-works/pi-ai";
 import { createHash } from "node:crypto";
-import { createTaskCreateTool, createTaskLogToolWithContext, createTaskLogsReadTool, createTaskDocumentWriteTool, createTaskDocumentReadTool, createTaskReadTools, createArtifactRegisterTool, createArtifactListTool, createArtifactRetractTool, createArtifactViewTool, createListAgentsTool, createDelegateTaskTool, createTaskAssignTool, createGetAgentConfigTool, createUpdateAgentConfigTool, createAgentCreateTool, createAgentDeleteTool, createSendMessageTool, createReadMessagesTool, createAckMessagesTool, createPostRoomMessageTool, createMemoryTools, createGoalRetrievalTools, createMissionTools, createIdeationTools, createReadEvaluationsTool, createUpdateIdentityTool, createReflectOnPerformanceTool, createWebFetchTool, createWorkflowListTool, createWorkflowGetTool, createWorkflowValidateTool, createWorkflowSelectTool, createTaskPromoteTool, createWorkflowCreateTool, createWorkflowUpdateTool, createWorkflowDeleteTool, createWorkflowSettingsTool, createTraitListTool, createAskQuestionTool, createResearchTools, readAgentMemoryWorkspaceLongTerm, taskCreateParams } from "./agent-tools.js";
+import { createTaskCreateTool, createTaskLogToolWithContext, createTaskLogsReadTool, createTaskDocumentWriteTool, createTaskDocumentReadTool, createTaskReadTools, createArtifactRegisterTool, createArtifactListTool, createArtifactRetractTool, createArtifactViewTool, createListAgentsTool, createDelegateTaskTool, createTaskAssignTool, createGetAgentConfigTool, createUpdateAgentConfigTool, createAgentCreateTool, createAgentDeleteTool, createSendMessageTool, createReadMessagesTool, createAckMessagesTool, createPostRoomMessageTool, createMemoryTools, createGoalRetrievalTools, createMissionTools, createIdeationTools, createReadEvaluationsTool, createUpdateIdentityTool, createReflectOnPerformanceTool, createWebFetchTool, createWorkflowListTool, createWorkflowGetTool, createWorkflowValidateTool, createWorkflowSelectTool, createTaskPromoteTool, createRecordReviewVerdictTool, createWorkflowCreateTool, createWorkflowUpdateTool, createWorkflowDeleteTool, createWorkflowSettingsTool, createTraitListTool, createAskQuestionTool, createResearchTools, readAgentMemoryWorkspaceLongTerm, taskCreateParams } from "./agent-tools.js";
+/*
+FNXC:HeartbeatReviewVerdict 2026-11-12-21:10 (RUFU-531): the injection gate is ASKED of the verdict seam, never
+reimplemented here; the seam stays the single place review-lane candidacy is decided.
+*/
+import { heartbeatReviewVerdictGateOpens } from "./review/record-review-verdict.js";
 import { AgentLogger } from "./agents/agent-logger.js";
 import { isTaskPlanningOrExecutionLive } from "./agents/planning-execution-liveness.js";
 /*
@@ -1164,6 +1169,45 @@ export async function heartbeatPlanningLaneAcquisitionSkip(
   /* Deps are all satisfied but the card's own dormant lease is blocking an overlapping peer: the
      overlap blocker id is the skip marker. Unmet deps win the label when both are present. */
   return task.overlapBlockedBy ? [task.overlapBlockedBy] : null;
+}
+
+/**
+ * FNXC:HeartbeatReviewVerdict 2026-11-12-21:10 (RUFU-531):
+ * The wake-side injection of `fn_record_review_verdict`, split out of the wake so the injection rule is a
+ * tested seam rather than eleven hundred lines of `executeHeartbeatRun` with no honest caller-site test.
+ *
+ * Candidacy is ASKED of the verdict seam (`heartbeatReviewVerdictGateOpens`), never answered here, so it
+ * keeps one authority: a workspace card, a missing/superseded `code-review` gate, FN-295's archived
+ * remediation carrier, and a row that already carries `reviewInputFingerprint` all get NO tool. Handing the
+ * agent an affordance that can only answer `no-live-gate` spends a turn on a refusal and invites it to
+ * report a verdict that was never written - the silent-nondelivery class RUFU-531 exists to remove (RUFU-259:
+ * six finished reviews, zero verdict rows, three dispatch attempts parked).
+ *
+ * A task read that fails withholds the tool. That is fail-closed in the only safe direction: the verdict was
+ * not going to be writable either way, and a refusal the agent can read beats a tool over a row nobody can.
+ */
+export async function appendHeartbeatReviewVerdictTool(deps: {
+  tools: ToolDefinition[];
+  taskStore: TaskStore;
+  agentId: string;
+  taskId: string;
+  runContext?: RunMutationContext;
+}): Promise<void> {
+  let live: Awaited<ReturnType<TaskStore["getTask"]>> | null = null;
+  try {
+    live = await deps.taskStore.getTask(deps.taskId);
+  } catch {
+    return;
+  }
+  if (!live || !heartbeatReviewVerdictGateOpens(live)) return;
+  deps.tools.push(
+    createRecordReviewVerdictTool({
+      store: deps.taskStore,
+      agentId: deps.agentId,
+      currentTaskId: deps.taskId,
+      getRunContextFor: () => deps.runContext,
+    }),
+  );
 }
 
 export class HeartbeatMonitor {
@@ -4560,6 +4604,14 @@ export class HeartbeatMonitor {
           // Task-scoped runs: full tool set including fn_task_log and document tools
           // taskId is guaranteed to be defined here because isNoTaskRun = !taskId
           heartbeatTools = this.createHeartbeatTools(agentId, taskStore, taskId!, runContext, audit, this.messageStore);
+          /*
+          FNXC:HeartbeatReviewVerdict 2026-11-12-21:10 (RUFU-531):
+          The reviewer lane's verdict surface, injected ONLY on a wake whose live row can take a verdict.
+          The decision lives in `appendHeartbeatReviewVerdictTool`, which ASKS the seam for candidacy and
+          answers nothing itself. Ownership and tip movement stay enforced inside the seam, so a wake that
+          qualifies structurally can still be refused honestly.
+          */
+          await appendHeartbeatReviewVerdictTool({ tools: heartbeatTools, taskStore, agentId, taskId: taskId!, runContext });
         }
 
         if (!isNoTaskRun && taskId) {
@@ -6622,6 +6674,14 @@ export class HeartbeatMonitor {
     tools.push(...this.createSharedHeartbeatWorkTools(taskStore));
     tools.push(createWorkflowSelectTool(taskStore, taskId));
     tools.push(createTaskPromoteTool(taskStore, taskId));
+    /*
+    FNXC:HeartbeatReviewVerdict 2026-11-12-21:10 (RUFU-531):
+    `fn_record_review_verdict` is deliberately NOT pushed here. It is injected by the wake that assembles
+    this set, and only after the seam's own candidacy decision says this card's live `code-review` row can
+    still take a verdict - see the injection site in `executeHeartbeatRun`. A synchronous builder cannot ask
+    that question, and pushing it unconditionally would advertise a tool that can only answer
+    `no-live-gate` / `already-proven` / `workspace-unsupported` on most wakes.
+    */
 
     return tools;
   }

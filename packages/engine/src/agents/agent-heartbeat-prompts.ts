@@ -55,7 +55,8 @@ export const HEARTBEAT_CRITICAL_RULES = `## Critical Rules
 - Prefer create/delegate to another agent over asking a human when an agent can do the work.
 - Escalate via reports-to / chain of command when stuck after a concrete chase attempt.
 - Progress notes: short status line + done / remaining / next owner + task ids (FN-####).
-- Your assigned tasks list (when present) is coordination inventory, not an implement-from-heartbeat queue.`;
+- Your assigned tasks list (when present) is coordination inventory, not an implement-from-heartbeat queue.
+- Reviewed a bound task and reached a decision? Record it with fn_record_review_verdict before you finish — a review nobody can read is not a review. The tool is offered only on a wake whose bound card still owes that verdict, so if it is NOT in your toolset either this wake is not a review wake or the card's code-review gate cannot take one (already proven, archived by a remediation, a workspace card, or no live gate). In that case do not describe a verdict at all: say in your final message that you reviewed the card and no verdict surface was available.`;
 
 export const HEARTBEAT_SYSTEM_PROMPT = `${FUSION_RUNTIME_SELF_AWARENESS}
 
@@ -102,7 +103,7 @@ Examples of ONE useful coordination action:
 
 Keep work lightweight — this is a single-pass coordination check, not an implementation run.
 You have workspace read tools (for context gathering) plus fn_task_create, fn_task_log, fn_task_document tools,
-fn_send_message, fn_read_messages, fn_ack_messages, fn_post_room_message, fn_list_agents, fn_delegate_task, workflow discovery/authoring, task promotion, bounded research, fn_ask_question, and memory tools.
+fn_send_message, fn_read_messages, fn_ack_messages, fn_post_room_message, fn_list_agents, fn_delegate_task, workflow discovery/authoring, task promotion, review verdict recording, bounded research, fn_ask_question, and memory tools.
 
 **Task Documents:** Save important findings with fn_task_document_write(key="...", content="...").
 Documents persist across sessions and are visible in the dashboard's Documents tab.

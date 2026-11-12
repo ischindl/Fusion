@@ -324,6 +324,16 @@ export function classifyReviewCard(input: {
   (Fusion#1946), and treating it as a verdict would make the sweep blind to exactly the cards it
   exists to rescue.
   */
+  /*
+  FNXC:HeartbeatReviewVerdict 2026-11-12-20:36 (RUFU-531):
+  This line is the contract the new `fn_record_review_verdict` tool is written against, and it is the
+  reason that tool must stay the ONLY heartbeat verdict writer. `hasRecordedCodeReviewVerdict` is the
+  exact predicate the tool re-checks against the LIVE row before it writes, so the sweep cannot skip a
+  card the reviewer failed to record (a refusal leaves the row `pending`, which this predicate excludes
+  on purpose) and cannot dispatch a second reviewer over a verdict the lane did record. The tool also
+  closes this card's live reviewer-run row, which is what releases the `ledger-*` branches below; when it
+  refuses, that row stays live so the next wake re-dispatches instead of parking.
+  */
   if (hasRecordedCodeReviewVerdict(input.task)) return skip("verdict-recorded");
 
   if (live) {
@@ -823,10 +833,16 @@ export class ReviewDispatchSweep {
   }
 
   /**
-   * Verdicts are not captured into the ledger yet, so a session that ends leaves an attempt with
-   * no recorded outcome. Leaving it `running` would claim reviewer work is still happening and
-   * suppress every future dispatch for the card — the stuck state this sweep exists to remove.
-   * Closing it as a failed attempt keeps the attempt attributable AND lets a later tick re-dispatch.
+   * FNXC:HeartbeatReviewVerdict 2026-11-12-20:36 (RUFU-531):
+   * This close is now the NON-DELIVERY fallback, not the only writer. A reviewed wake delivers through
+   * `fn_record_review_verdict`, which settles this same attempt `approve`/`revise` only after its
+   * `code-review` row is durable; this failed-only close remains for the attempts that delivered nothing
+   * (dispatch refused, session died, verdict refused by the candidacy gate). The one-way ledger transition
+   * makes the two mutually exclusive, so a delivered verdict is never rewritten as a failed attempt.
+   *
+   * Leaving a row `running` would claim reviewer work is still happening and suppress every future
+   * dispatch for the card — the stuck state this sweep exists to remove. Closing it as a failed attempt
+   * keeps the attempt attributable AND lets a later tick re-dispatch.
    */
   private async closeUnfinishedRun(taskId: string, runId: string, reviewerAgentId: string, reason: string): Promise<void> {
     const transitioned = await completeReviewerRunForTask(this.options.store, {

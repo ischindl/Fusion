@@ -3638,6 +3638,12 @@ describe("executeHeartbeat", () => {
       fn_artifact_view, bound to the same author id, so an agent that can publish merge-grade evidence can also
       withdraw it. Count rose 71→72; keep exact so new tools fail loudly.
       */
+      /*
+      FNXC:HeartbeatReviewVerdict 2026-11-12-21:10 (RUFU-531): RUFU-531 adds fn_record_review_verdict, but it
+      is NOT part of this fixed set: the wake injects it only when the bound card's live `code-review` row
+      still owes a verdict, and this fixture's card does not, so the count stays 72 here. The positive and
+      negative injection directions live in agent-heartbeat-review-verdict-injection.test.ts.
+      */
       expect(callArgs.customTools).toHaveLength(72);
       expect(callArgs.customTools!.map((tool) => tool.name)).toEqual([
         "fn_task_create",

@@ -16,6 +16,11 @@ import * as fusionCore from "@fusion/core";
 import type { Agent, AgentState, AgentCapability, AgentUpdateInput, AgentLogEntry, Artifact, ArtifactCreateInput, ArtifactWithTask, Task, TaskDocument, TaskDocumentCreateInput, TaskStore, RunMutationContext, MessageStore, Message, SourceType, Settings, ResearchRun, ResearchRunStatus, TaskCreateInput, ReflectionStore, ApprovalRequestStore, ProjectSettings, ChatStore, WorkflowSettingDefinition, GoalStatus, WorkflowIrNode, IdeationCandidate, MissionWithHierarchy, DbTransaction } from "@fusion/core";
 import { listTraits, isBuiltinWorkflowId, isTaskNotFoundError, renderTaskCommentSection, AgentStore, validateColumnAgentBindings, ColumnAgentBindingError, stripApprovalBypassFlags, WorkflowSettingRejectionError, resolveEffectiveSettingsById, resolveWorkflowIrById, findOrphanedSettingValues, BUILTIN_WORKFLOW_SETTINGS, MAX_TASK_LIST_TEXT_CHARS, TASK_BOARD_READ_CAVEAT, formatCurrentTaskLine, normalizeWorkflowIcon, parseWorkflowIr, WorkflowIrError, assertColumnTraitsValid, ColumnTraitValidationError, formatAgentTimestamp } from "@fusion/core";
 import { promoteHeldTask } from "./execution/hold-release.js";
+/*
+FNXC:HeartbeatReviewVerdict 2026-11-12-20:36 (RUFU-531): the heartbeat reviewer lane's verdict seam.
+The tool body below owns schema-shaped refusals only; candidacy, content proof, and persistence live there.
+*/
+import { HEARTBEAT_REVIEW_VERDICTS, recordHeartbeatReviewVerdict, type HeartbeatReviewVerdict } from "./review/record-review-verdict.js";
 import { emitBoundedRunAudit } from "./util/emit-bounded-run-audit.js";
 import { STORE_RETRY_GUIDANCE, stepLifecycleNoopResult, storeErrorResult, storeWriteFailure } from "./tool-store-errors.js";
 import { computeCrossParentDiagnosticClaim, computeCrossParentDiagnosticClaimId, computeParentIntentClaimId, DASHBOARD_USER_ID, dailyMemoryPath, ensureOpenClawMemoryFiles, evaluateImplementationTaskBind, extractAgentProvisioningRequest, findSameAgentDuplicates, getMemoryBackendCapabilities, getProjectMemory, isEphemeralAgent, memoryLongTermPath, normalizeMessageParticipant, reconcileDeterministicDuplicate, resolveAgentProvisioningPolicy, resolveMemoryBackend, resolveMemorySearchTopic, resolveResearchSettings, resolveTaskGithubTracking, runDeterministicDuplicateGuard, scheduleQmdProjectMemoryRefresh, searchProjectMemory, shouldSkipBackgroundQmdRefresh, type StashSecretsReader, AgentTextCharsetError, assertAgentTextAllowed, isDuplicatedPromptSectionError, isPromptShrinkRejectedError, largestPriorPromptBytes } from "@fusion/core";
@@ -8028,6 +8033,182 @@ export function createAckMessagesTool(messageStore: MessageStore, agentId: strin
           failedIds: failed,
         },
       };
+    },
+  };
+}
+
+/*
+FNXC:HeartbeatReviewVerdict 2026-11-12-20:36 (RUFU-531):
+The heartbeat reviewer lane lost its verdict surface when U10/R9 deleted `fn_review_step`, and nothing
+replaced it: a reviewer that finished a real review could only describe it, so the card kept its
+`no recorded code review verdict` merge blocker and the dispatch sweep re-woke the same reviewer until
+the attempt budget parked the card. This is that replacement, and it is deliberately NARROWER than the
+tool it replaces: no rewind, no per-step checkpoints, no review prompt scaffolding (the tombstone guard
+in `__tests__/legacy-tombstones.test.ts` forbids resurrecting any of that), and no board move — it
+records one pre-merge `code-review` row through the fenced step-result writer and closes the reviewer-run
+attempt the dispatch sweep opened. Every candidacy rule, the review-input proof, and the fingerprint
+parity with the merge door live in `./review/record-review-verdict.ts`, not here.
+
+Two surface rules are load-bearing and are enforced in the body, not only in the schema, because a unit
+test can call `execute` directly:
+- NO FINGERPRINT PARAMETER. A reviewer that could state its own review-input digest could approve
+  content the engine never measured. The engine measures it, and a supplied key is refused outright.
+- NO VERDICT DEFAULT. A missing or unknown verdict errors. Defaulting it is exactly how a lane launders
+  "the session ended" into an approval.
+*/
+export const recordReviewVerdictParams = Type.Object({
+  verdict: Type.Union([Type.Literal("APPROVE"), Type.Literal("APPROVE_WITH_NOTES"), Type.Literal("REVISE")], {
+    description:
+      "Your review decision for this card's code-review gate. `APPROVE_WITH_NOTES` still approves and "
+      + "carries advisory notes; `REVISE` requires at least one open finding (or a summary naming a hard "
+      + "blocker) and sends the card back through the ordinary remediation lane. There is no default.",
+  }),
+  summary: Type.String({
+    description:
+      "One-line outcome of the review. Persisted as the gate row's output/notes for the implementer and "
+      + "the operator; never recorded in run-audit.",
+  }),
+  findings: Type.Optional(Type.Array(Type.Object({
+    title: Type.String({ description: "Short finding headline the implementer will read." }),
+    body: Type.String({ description: "What is wrong and what would satisfy the review." }),
+    severity: Type.Optional(Type.Union(
+      [Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("critical")],
+      { description: "Advisory weight. An unresolved finding at or above the gate threshold blocks a REVISE from being downgraded." },
+    )),
+    filePath: Type.Optional(Type.String({ description: "File the finding points at, when it is a file-level objection." })),
+    line: Type.Optional(Type.Number({ description: "Line the finding points at, when known." })),
+  }, { description: "Concrete review objection. Carried verbatim into the remediation lane." }))),
+});
+
+/**
+ * Heartbeat-lane reviewer verdict tool. Registered ONLY on a task-scoped heartbeat wake, so the calling
+ * agent identity and the bound card come from injected lane context, never from tool parameters: the
+ * seam then proves reviewer identity against the reviewer-run ledger and reads candidacy off the live
+ * row. It never moves a card, never touches a reviewer-run row it does not own, and never writes a
+ * board column.
+ */
+export function createRecordReviewVerdictTool(deps: {
+  store: TaskStore;
+  agentId: string;
+  currentTaskId: string;
+  getRunContextFor?: (taskId: string) => RunMutationContext | undefined;
+}): ToolDefinition {
+  const { store, agentId, currentTaskId } = deps;
+  return {
+    name: "fn_record_review_verdict",
+    label: "Record Review Verdict",
+    description:
+      "Record your code-review verdict for THIS card's pre-merge code-review gate, and close the "
+      + "reviewer-run attempt this wake opened. Call it once after you finish reviewing, with the verdict "
+      + "you actually reached. The engine measures the review input itself - there is no fingerprint "
+      + "parameter to fill in. If it refuses, the verdict genuinely cannot be recorded (a verdict or "
+      + "content proof already stands, the content moved under you, or the measurement failed): report the "
+      + "refusal in your final message instead of inventing a verdict to satisfy the tool.",
+    parameters: recordReviewVerdictParams,
+    // The third argument is the wake's own cancellation signal; forwarding it is what makes an aborted
+    // run report `aborted` rather than writing a verdict nobody asked for anymore.
+    execute: async (_id: string, params: Static<typeof recordReviewVerdictParams>, signal?: AbortSignal) => {
+      const body = params as Record<string, unknown>;
+      const refusal = (message: string, code: string) => ({
+        content: [{ type: "text" as const, text: `ERROR: ${message}` }],
+        details: { taskId: currentTaskId, code },
+        isError: true as const,
+      });
+
+      /*
+      A content-proof key is unrepresentable in the declared schema, so reaching this check means a client
+      sent something the schema never offered. Refusing beats ignoring: silently dropping the field would
+      let a caller believe its own digest was used.
+      */
+      const suppliedProofKeys = [
+        "reviewInputFingerprint",
+        "reviewedCommitSha",
+        "fingerprint",
+        "diffFingerprint",
+        "baseCommitSha",
+      ].filter((key) => body[key] !== undefined);
+      if (suppliedProofKeys.length > 0) {
+        return refusal(
+          `Content proof is measured by the engine, never supplied by a reviewer. Remove ${suppliedProofKeys.join(", ")} and call again with just verdict, summary, and findings.`,
+          "caller-supplied-proof",
+        );
+      }
+      const verdict = body.verdict;
+      if (!(HEARTBEAT_REVIEW_VERDICTS as readonly string[]).includes(String(verdict))) {
+        return refusal(
+          `A verdict is required and must be one of ${HEARTBEAT_REVIEW_VERDICTS.join(", ")}; nothing was recorded and no verdict was assumed.`,
+          "verdict-missing",
+        );
+      }
+      const summary = typeof body.summary === "string" ? body.summary.trim() : "";
+      if (!summary) {
+        return refusal("A one-line review summary is required; nothing was recorded.", "summary-missing");
+      }
+
+      const findings: fusionCore.WorkflowReviewFinding[] = Array.isArray(body.findings)
+        ? (body.findings as Array<Record<string, unknown>>).map((finding, index) => ({
+          id: `heartbeat-${index + 1}`,
+          title: typeof finding.title === "string" ? finding.title : `Review finding ${index + 1}`,
+          body: typeof finding.body === "string" ? finding.body : (typeof finding.title === "string" ? finding.title : ""),
+          severity: finding.severity as fusionCore.WorkflowReviewFinding["severity"],
+          ...(typeof finding.filePath === "string" ? { filePath: finding.filePath } : {}),
+          ...(typeof finding.line === "number" ? { line: finding.line } : {}),
+        }))
+        : [];
+
+      try {
+        const result = await recordHeartbeatReviewVerdict(
+          { store, ...(deps.getRunContextFor ? { getRunContextFor: deps.getRunContextFor } : {}) },
+          {
+            // Candidacy is re-read from the LIVE row inside the seam; this carries identity only.
+            task: { id: currentTaskId },
+            callingAgentId: agentId,
+            input: {
+              verdict: verdict as HeartbeatReviewVerdict,
+              summary,
+              ...(findings.length ? { findings } : {}),
+            },
+            ...(signal ? { signal } : {}),
+          },
+        );
+        if (result.outcome === "recorded") {
+          return {
+            content: [{
+              type: "text" as const,
+              text: `Recorded ${result.verdict} on ${currentTaskId}'s code-review gate (${result.fingerprintState} review input)${result.ledgerClosed ? "; the reviewer-run attempt is closed" : ""}.`,
+            }],
+            details: {
+              taskId: currentTaskId,
+              outcome: result.outcome,
+              verdict: result.verdict,
+              fingerprintState: result.fingerprintState,
+              ledgerClosed: result.ledgerClosed,
+              ledgerAlreadySettled: result.ledgerAlreadySettled,
+            },
+          };
+        }
+        if (result.code === "already-proven") {
+          // Idempotent: the verdict already stands. Success-shaped, so a re-wake cannot read it as a failure.
+          return {
+            content: [{ type: "text" as const, text: result.message }],
+            details: {
+              taskId: currentTaskId,
+              outcome: "already-recorded",
+              code: result.code,
+              recordedVerdict: result.recordedVerdict ?? null,
+              ledgerClosed: result.ledgerClosed,
+            },
+          };
+        }
+        return {
+          content: [{ type: "text" as const, text: `ERROR: ${result.message}` }],
+          details: { taskId: currentTaskId, outcome: "refused", code: result.code, ledgerClosed: false },
+          isError: true as const,
+        };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } catch (err: any) {
+        return storeErrorResult("review verdict recording", err);
+      }
     },
   };
 }

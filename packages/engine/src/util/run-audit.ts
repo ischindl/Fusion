@@ -685,6 +685,16 @@ export type DatabaseMutationType =
   | "task:review-verdict-repaired"
   /** FNXC:ReviewEmptyContent 2026-08-28-13:14: Records the ids-only terminal close for a provably empty Code Review input. */
   | "task:review-empty-content-parked"
+  /*
+  FNXC:HeartbeatReviewVerdict 2026-11-12-20:36 (RUFU-531):
+  `task:review-verdict-recorded` is written once per heartbeat-lane verdict that actually persisted a
+  pre-merge `code-review` row. Metadata is `taskId`, `reviewerAgentId`, `verdict`, the fixed
+  `fingerprintState` enum (`fingerprint` / `empty` / `absent-revise`), and `ledgerClosed` - never the
+  fingerprint digest, the summary sentence, findings, or an error string. Declared deliberately OUTSIDE the
+  curated delivery-pipeline catalogue (the same placement as RUFU-279's `memory:*` trio and RUFU-462's
+  `runtime:heap-ceiling`), and documented as prose in `docs/run-audit.md`.
+  */
+  | "task:review-verdict-recorded"
   | "task:review-arbitration"
   | "task:review-convergence-human-escalation"
   /**

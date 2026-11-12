@@ -24,6 +24,15 @@ const SHARED_TASK_AGENT_TOOLS = [
   "fn_workflow_settings",
   "fn_task_promote",
   "fn_task_refine",
+  /*
+  FNXC:HeartbeatReviewVerdict 2026-11-12-20:36 (RUFU-531):
+  `fn_record_review_verdict` writes a task's pre-merge `code-review` step row and settles that card's
+  reviewer-run attempt, so it is a task-scoped mutation on both gate paths. Left unclassified it would fall
+  through the action gate's fallback, and a reviewer lane that silently bypasses operator policy is exactly
+  what the positive-classification rule exists to prevent. It is NOT readonly: the workflow-step read-only
+  allow-list deliberately omits it.
+  */
+  "fn_record_review_verdict",
 ] as const;
 const PROVISIONING_TOOLS = ["fn_agent_create", "fn_agent_delete"] as const;
 /**

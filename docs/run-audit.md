@@ -386,6 +386,45 @@ would turn "stranded" into "attempts exhausted, parked forever". Metadata is ids
 `live-session` / `unparseable-start`), `source`. The registered sweep runs at startup and in maintenance batch 2,
 alongside `reconcile-orphaned-pending-step-results`, whose FN-8492 rules it deliberately mirrors.
 
+### The heartbeat review that had nowhere to publish (RUFU-531)
+
+`task:review-verdict-recorded` is emitted once per heartbeat-lane review verdict that actually persisted a
+pre-merge `code-review` row. The event exists because the lane previously had no verdict surface at all: U10/R9
+deleted `fn_review_step` and nothing replaced it, so a reviewer could finish a real review and publish nothing.
+The card kept its `no recorded code review verdict` merge blocker, the dispatch sweep counted each wake as a
+`stalled-attempt`, and three wakes parked the card - while `agent-log.jsonl` held the completed reviews (RUFU-259:
+six finished reviews, zero verdict rows). The row is what makes that class countable instead of anecdotal: N
+`completed` wakes for a card with zero `task:review-verdict-recorded` rows and a `pending` gate is the signature.
+
+Emission is the FN-9175 bounded seam (`emitBoundedRunAudit`, never `createRunAuditor`), under the reviewer's own
+agent id and the wake's run id, so an absent, throwing, rejecting, or hanging sink cannot change the recorded
+verdict. The row is written only on the `recorded` disposition - a refusal (`archived-carrier`, `content-drift`,
+`already-proven`, `verdict-contradiction`, `fingerprint-unavailable`, `tip-state-unavailable`,
+`workspace-unsupported`, `worktree-missing`, `no-live-gate`, `gate-not-pending`, `revise-without-finding`,
+`task-not-owned`, or a `no-writer` / `fence-refused` / `aborted` / `scope-superseded` / `persist-error` persist
+disposition) records
+nothing here, because those outcomes are already carried on the card's History line and would otherwise double-count
+a review that never delivered. That closed set is declared once, as `ReviewVerdictRefusalCode` in
+`packages/engine/src/review/record-review-verdict.ts`; every guard arm names exactly one of them and none is a
+fall-through.
+
+The same seam also answers the wake-side question, so the refusal classes are visible before an agent spends a turn
+on them: a task-scoped heartbeat wake asks `heartbeatReviewVerdictGateOpens` and injects `fn_record_review_verdict`
+at all only over a live, non-workspace, non-superseded pre-merge `code-review` row that is `pending` or verdict-less
+`failed` and carries neither `reviewInputFingerprint` nor `remediationArchivedAt`. An agent that finishes a review
+and finds no such tool is being told one of those five things about its card - the sentence it must report, rather
+than a verdict it cannot write.
+
+Metadata is ids and fixed enums only: `taskId`, `reviewerAgentId`, `verdict` (`APPROVE` / `APPROVE_WITH_NOTES` /
+`REVISE`), `fingerprintState` (`fingerprint` when the review-input digest bound, `empty` when the branch genuinely
+delivered nothing and the row carries the shared `empty-review-input:v1` sentinel, `absent-revise` when the probe
+could not measure and only a blocking verdict was writable), and `ledgerClosed` (true only when this call settled
+this card's live reviewer-run row). The fingerprint digest itself, the one-line summary, the findings, and any error
+text stay on the durable step row and never enter run-audit - reviewer prose in a store that anything with query
+access can read is exactly the leakage rule this event honors. Like RUFU-279's `memory:*` trio and RUFU-462's
+`runtime:heap-ceiling`, the event is declared in the engine's `DatabaseMutationType` but deliberately outside the
+curated delivery-pipeline catalogue table above, which `run-audit-catalogue.test.ts` locks table-for-table.
+
 ## Suspended-run diagnostics
 
 `task:workflow-run-suspended` is emitted by the executor whenever a graph run ends in the `suspended`
