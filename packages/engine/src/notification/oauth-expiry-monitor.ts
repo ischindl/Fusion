@@ -9,6 +9,15 @@ const DEFAULT_MIN_NOTIFY_INTERVAL_MS = 12 * 60 * 60 * 1000;
 const ANTHROPIC_OAUTH_PROVIDER_ID = "anthropic";
 const ANTHROPIC_SUBSCRIPTION_PROVIDER_ID = "anthropic-subscription";
 
+/*
+FNXC:OAuthAlarmEvidence 2026-11-08-01:02 (RUFU-498):
+Bound on the lane-reference predicate per provider. A slow or hung predicate must not delay
+or suppress the expiry notification it gates — the monitor already waited minutes-to-hours
+for the expiry to matter; five more seconds is where an unreadable lane tier degrades to
+today's always-notify instead of stalling the whole check loop.
+*/
+const REFERENCED_PROBE_TIMEOUT_MS = 5_000;
+
 interface OAuthProviderInfo {
   id: string;
   name: string;
@@ -59,6 +68,16 @@ export interface OAuthExpiryMonitorOptions {
   warnBeforeMs?: number;
   minNotifyIntervalMs?: number;
   alertState?: OAuthAlertStateStore;
+  /**
+   * FNXC:OAuthAlarmEvidence 2026-11-08-01:02 (RUFU-498):
+   * Lane-reference gate: may an expired credential for this provider still hurt work? The
+   * caller resolves it from its readable lane tiers (settings/agents/tasks/workflows).
+   * Absent, rejecting, or slower than REFERENCED_PROBE_TIMEOUT_MS = referenced (fail-open =
+   * the pre-gate always-notify behavior). A `false` answer skips dispatch WITHOUT touching
+   * dedupe or alert-state, so a provider that later becomes referenced is not silenced by a
+   * 12 h slot it never used.
+   */
+  isProviderReferenced?: (providerId: string) => Promise<boolean>;
 }
 
 export class OAuthExpiryMonitor {
@@ -97,6 +116,30 @@ export class OAuthExpiryMonitor {
 
     clearInterval(this.timer);
     this.timer = null;
+  }
+
+  /*
+  FNXC:OAuthAlarmEvidence 2026-11-08-01:02 (RUFU-498):
+  One gate decision with a fail-open ladder: predicate absent, predicate rejection, or
+  predicate slower than the bound all answer "referenced" — the gate may only silence a
+  notification when the caller PROVED the provider unreferenced.
+  */
+  private async isProviderReferenced(providerId: string): Promise<boolean> {
+    const predicate = this.opts.isProviderReferenced;
+    if (!predicate) return true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const probe = predicate(providerId).catch(() => true);
+      const budget = new Promise<true>((resolve) => {
+        timer = setTimeout(() => resolve(true), REFERENCED_PROBE_TIMEOUT_MS);
+        timer.unref?.();
+      });
+      return await Promise.race([probe, budget]);
+    } catch {
+      return true;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   private async check(): Promise<void> {
@@ -157,6 +200,23 @@ export class OAuthExpiryMonitor {
           activeExpiryKeys.add(expiryKey);
           continue;
         }
+      }
+
+      /*
+      FNXC:OAuthAlarmEvidence 2026-11-08-01:02 (RUFU-498):
+      Lane-reference gate, placed after refresh-then-recheck (a credential the refresh
+      revived must never be gated away before its own refresh had its chance) and before the
+      active-set bookkeeping and 12 h notify-interval/dedupe: an expired credential whose
+      provider no resolvable lane resolves through is credential hygiene, not a push-worthy
+      incident (measured: `anthropic-subscription` with zero references across every project,
+      pushing `oauth-token-expired` forever and helping seed a false diagnosis, RUFU-497).
+      The gate is a provider-id-set comparison (the alias closure lives in the predicate's
+      core collector) and leaves ALL cooldown state untouched on `false`: no dispatch, no
+      alert-state write, nothing entering the active/dispatched key sets — re-arming the
+      provider by referencing it later keeps its full notification budget.
+      */
+      if (!(await this.isProviderReferenced(provider.id))) {
+        continue;
       }
 
       activeExpiryKeys.add(expiryKey);

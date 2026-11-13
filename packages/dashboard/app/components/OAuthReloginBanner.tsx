@@ -24,6 +24,20 @@ function getVisibleExpiredOAuthProvidersForGlobalBanner(providers: AuthProvider[
     .filter((provider) => provider.type === "oauth" && provider.expired === true)
     .filter((provider) => {
       /*
+      FNXC:OAuthAlarmEvidence 2026-11-08-00:26 (RUFU-498):
+      An expired credential is only board-wide evidence of work-at-risk when some lane on the
+      host still resolves its provider. A leftover expired credential of a retired provider
+      (measured: `anthropic-subscription` with zero anthropic selections across all projects)
+      is credential hygiene for Settings → Authentication, not an alarm. The check is a
+      provider-id-set comparison computed server-side — no provider names appear in this
+      gate. Strict `=== false` drop: a missing field (older server) or a failed host scan
+      (server fail-open sends true) keeps the banner visible — a broken gate may never
+      suppress a live alarm.
+      */
+      return provider.laneReferenced !== false;
+    })
+    .filter((provider) => {
+      /*
       FNXC:ProviderAuth 2026-07-14-15:46:
       An active Anthropic API key can execute direct `anthropic/*` models, but Claude CLI authentication cannot: the execution surfaces intentionally do not reroute. Therefore only a raw API key may suppress the global subscription-expiry banner; a logged-in CLI must not hide the re-auth action while direct-model tasks fail.
       */

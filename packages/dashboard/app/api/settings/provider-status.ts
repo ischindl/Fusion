@@ -32,6 +32,15 @@ export interface AuthProvider {
   loginInProgress?: boolean;
   /** True when an OAuth credential is stored locally but its expires timestamp is in the past — prompt the user to re-login. */
   expired?: boolean;
+  /*
+  FNXC:OAuthAlarmEvidence 2026-11-08-00:26 (RUFU-498):
+  Whether ANY lane on the host (task/workflow/project/global settings tier, durable-agent
+  runtime model) resolves this provider, computed host-wide server-side. The re-login banner
+  only treats an expired provider as live evidence of work-at-risk when it is referenced;
+  an unreferenced expired leftover is credential hygiene, not a board alarm. Sent only on
+  oauth entries; `undefined` (older server, failed scan) must stay visible — fail-open.
+  */
+  laneReferenced?: boolean;
   /** True when the redirect cannot reach this dashboard host and the user must paste the URL/code back manually. */
   requiresManualCode?: boolean;
   /**

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { useState } from "react";
 import { AuthenticationSection, type AuthenticationSectionData } from "../settings/sections/AuthenticationSection";
-import type { AuthProvider } from "../../api";
+import { removeProviderInstance, type AuthProvider } from "../../api";
 
 vi.mock("../../api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../api")>()),
@@ -89,5 +89,66 @@ describe("AuthenticationSection credential instances", () => {
     expect(within(pending).getByText("Cancel")).toBeInTheDocument();
     fireEvent.click(within(pending).getByText("Login"));
     expect(handlers.handleLogin).toHaveBeenCalledWith("github-copilot", "acct-new", "Personal");
+  });
+
+  /*
+  FNXC:OAuthAlarmEvidence 2026-11-08-01:02 (RUFU-498):
+  With the board banner lane-gated, Settings -> Authentication is where an expired leftover
+  credential (e.g. the measured unreferenced `anthropic-subscription` default instance) is
+  seen at all — so it must be removable exactly there. The expired single default instance
+  gets the same instance row (with Remove) multi-account cards already render; a healthy
+  single instance keeps its chrome-free card (the 2026-08-01 rule stands).
+  */
+  it("renders Remove for an expired single default instance and retires that instance", () => {
+    renderSection([{
+      id: "anthropic-subscription", name: "Anthropic Subscription", authenticated: false, expired: true, type: "oauth", laneReferenced: false,
+      instances: [{ instanceId: "default", authenticated: false, expired: true, isDefault: true, type: "oauth" }],
+    }]);
+    const list = screen.getByTestId("auth-instances-anthropic-subscription");
+    expect(within(list).getByText(/^default/)).toBeInTheDocument();
+    /*
+    FNXC:OAuthAlarmEvidence 2026-11-13-10:22 (RUFU-498 code-review P2):
+    One credential, one set of actions. Rendering the instance rows for this shape used to leave
+    the provider-level Login standing beside the row's own Login — two identical buttons on one
+    card. The card now decides once (`rendersInstanceRows`) whether the rows or the provider
+    header carries credential actions.
+    */
+    expect(screen.getAllByText("Login")).toHaveLength(1);
+    expect(within(list).getByText("Login")).toBeInTheDocument();
+    expect(within(list).getByText("Remove")).toBeInTheDocument();
+    fireEvent.click(within(list).getByText("Remove"));
+    expect(vi.mocked(removeProviderInstance)).toHaveBeenCalledWith("anthropic-subscription", "default");
+  });
+
+  it("keeps the durable login error on an expired single-instance card whose actions live in the row", () => {
+    renderSection([{
+      id: "anthropic-subscription", name: "Anthropic Subscription", authenticated: false, expired: true, type: "oauth", laneReferenced: false,
+      loginError: "This OAuth session expired and could not be refreshed. Re-login to restore model access.",
+      instances: [{ instanceId: "default", authenticated: false, expired: true, isDefault: true, type: "oauth" }],
+    }]);
+    // The rows own the actions; the provider-scoped remediation sentence must survive them.
+    expect(screen.getAllByText("Login")).toHaveLength(1);
+    expect(screen.getByRole("alert")).toHaveTextContent("Re-login to restore model access.");
+  });
+
+  it("keeps one credential action set per account on a multi-instance OAuth card", () => {
+    renderSection([{
+      id: "github-copilot", name: "GitHub", authenticated: false, expired: false, type: "oauth",
+      instances: [
+        { instanceId: "default", authenticated: true, isDefault: true, type: "oauth" },
+        { instanceId: "acct-two", authenticated: false, isDefault: false, type: "oauth" },
+      ],
+    }]);
+    expect(screen.getAllByText("Login")).toHaveLength(1);
+    expect(screen.getAllByText("Logout")).toHaveLength(1);
+  });
+
+  it("keeps a healthy single OAuth instance card free of instance-list chrome", () => {
+    renderSection([{
+      id: "github-copilot", name: "GitHub", authenticated: true, type: "oauth",
+      instances: [{ instanceId: "default", authenticated: true, isDefault: true, type: "oauth" }],
+    }]);
+    expect(screen.queryByTestId("auth-instances-github-copilot")).not.toBeInTheDocument();
+    expect(screen.getByText("Add another account")).toBeInTheDocument();
   });
 });

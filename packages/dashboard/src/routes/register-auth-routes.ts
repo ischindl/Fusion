@@ -1,4 +1,4 @@
-import { createLogger, DEFAULT_PROVIDER_INSTANCE_ID, isValidProviderInstanceId } from "@fusion/core";
+import { createLogger, DEFAULT_PROVIDER_INSTANCE_ID, isValidProviderInstanceId, collectLaneReferencedProviderIds, isProviderLaneReferenced, type TaskStore } from "@fusion/core";
 
 const severityAuditLog = createLogger("dashboard-register-auth-routes");
 import type { Request } from "express";
@@ -16,6 +16,8 @@ import { invalidateAllGlobalSettingsCaches } from "../project-store-resolver.js"
 import { invalidateModelRegistryRefreshCache } from "../model-registry-refresh-cache.js";
 import type { AuthStorageLike } from "../routes.js";
 import type { ApiRouteRegistrar } from "./types.js";
+import { resolveStoreForProjectId } from "./context.js";
+import { withCentralRegistry } from "./task-transfer.js";
 import {
   STATIC_API_KEY_PROVIDER_CATALOG,
   STATIC_OAUTH_PROVIDER_CATALOG,
@@ -33,6 +35,21 @@ export function parseGitHubCopilotDeviceCode(instructions: string): string | und
 }
 
 let loginInitiationTimeoutMs = 30_000;
+
+/*
+FNXC:OAuthAlarmEvidence 2026-11-13-10:22 (RUFU-498 code-review P0):
+One project's whole contribution to the host-wide lane-reference union. `workflowSettingValues`
+is the persisted `Record<workflowId, values>` of the `workflow_settings` table — the
+`selected workflow` tier of model resolution (task → selected workflow → project role →
+global role → Default), which neither `getSettings()` nor `listWorkflowDefinitions()` carries.
+*/
+interface ProjectLaneTier {
+  settings: unknown;
+  tasks: unknown[];
+  agents: unknown[];
+  workflows: unknown[];
+  workflowSettingValues: Record<string, Record<string, unknown>>;
+}
 
 /*
 FNXC:ProviderAuth 2026-09-01-08:00:
@@ -701,6 +718,151 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
     return `${instructions.trim()} ${hint}`;
   }
 
+  /*
+  FNXC:OAuthAlarmEvidence 2026-11-08-00:26 (RUFU-498):
+  Host-wide lane-reference scan behind `laneReferenced` on every OAuth entry of /auth/status.
+  The re-login banner used to alarm from credential-expiry state alone, so an expired leftover
+  credential of a provider no lane resolves through kept a board-wide alarm up forever
+  (measured: `anthropic-subscription` on a 24-project host with zero anthropic selections) and
+  caused a false diagnosis when an agent read it as live board state (RUFU-497). The scan is
+  the union of ALL projects on the host (settings tiers, durable-agent runtime models,
+  non-terminal task lane fields, workflow IR/lane settings) through the one core collector, so
+  a provider referenced by ANY project stays alarming everywhere while one referenced NOWHERE
+  goes quiet. Bounded staleness: one scan per TTL window shared by concurrent polls
+  (single-flight); the scan is batched (never 24-way store fan-out at once) and wall-clock
+  bounded. Fail-open everywhere: absent store, any per-project read error, or budget timeout
+  yields `null`, and the caller maps `null` to laneReferenced=true — a broken scan may only
+  preserve today's always-visible behavior, never suppress a live alarm. A failed scan is
+  cached for the TTL too, so a broken store degrades to constant-visible instead of being
+  re-probed (and re-timing-out) on every 5-minute poll.
+  */
+  const LANE_REFERENCE_SCAN_TTL_MS = 60_000;
+  const LANE_REFERENCE_SCAN_BUDGET_MS = 8_000;
+  const LANE_REFERENCE_PROJECT_BATCH = 4;
+
+  let laneReferenceScan: { atMs: number; referenced: Set<string> | null } | null = null;
+  let laneReferenceInFlight: Promise<Set<string> | null> | null = null;
+
+  /** Project-scoped durable agents (ephemeral session agents excluded). On a store without an
+   *  async agent backend `getIntakeOwnerAgentStore()` throws; that propagates to the scan
+   *  catch, which fails open to visible — the honest direction for an unreadable tier. */
+  async function readProjectAgents(projectStore: TaskStore): Promise<unknown[]> {
+    return await projectStore.getIntakeOwnerAgentStore().listAgents();
+  }
+
+  /**
+   * FNXC:OAuthAlarmEvidence 2026-11-09-13:05 (RUFU-498):
+   * Each tier read is wrapped in an async thunk on purpose. A store (or a partial store
+   * double) that lacks one of these methods throws SYNCHRONOUSLY, and an unwrapped
+   * `Promise.all([a(), b(), c(), d()])` would abandon an already-created rejected promise
+   * whenever a later element throws while building the array — an orphaned rejection that
+   * reaches the process as an unhandled rejection instead of the scan's own fail-open catch.
+   * An async call can only reject, never throw, so `Promise.all` owns every element's
+   * settlement and a broken tier degrades exactly as designed: scan → null → visible.
+   *
+   * FNXC:OAuthAlarmEvidence 2026-11-13-10:22 (RUFU-498 code-review P0):
+   * The `selected workflow` tier of the resolution chain (task → selected workflow → project
+   * role → global role → Default) is made of the PERSISTED per-(workflow, project) lane
+   * VALUES in `workflow_settings`, written by Settings → Workflow model lanes through
+   * `PATCH /workflows/:id/setting-values` → `store.updateWorkflowSettingValues`, and read back
+   * by runtime resolution (`resolveEffectiveSettingsDetailed` merges stored values over
+   * declaration defaults). Neither `getSettings()` nor `listWorkflowDefinitions()` carries
+   * them: `selectedWorkflowModelLanes` is runtime-derived and never persisted
+   * (settings-scope.ts), and built-in workflows are writable here too, so a project whose
+   * Executor lane ALONE named an expired provider computed `laneReferenced: false` and lost
+   * both the banner and the push while every executor task failed on that credential. This
+   * read is what makes that tier visible; built-in declaration defaults are deliberately not
+   * reachable as values, so the read adds no over-inclusion.
+   */
+  async function readProjectLaneTier(projectStore: TaskStore): Promise<ProjectLaneTier> {
+    const [settings, tasks, agents, workflows, workflowSettingValues] = await Promise.all([
+      (async () => projectStore.getSettings())(),
+      // Terminal `done` cards already ran; their lane selections must not keep an
+      // alarm alive forever. Custom workflow lanes are not excluded — over-inclusion
+      // only ever keeps a real alarm visible.
+      (async () => projectStore.listTasks({ slim: true, excludeColumns: ["done"] }))(),
+      readProjectAgents(projectStore),
+      (async () => projectStore.listWorkflowDefinitions())(),
+      (async () => projectStore.listWorkflowSettingValuesForProject())(),
+    ]);
+    return { settings, tasks, agents, workflows, workflowSettingValues };
+  }
+
+  async function runHostLaneReferenceScan(): Promise<Set<string> | null> {
+    if (!store) return null;
+    const scan = (async (): Promise<Set<string>> => {
+      const globalSettings = await store!.getGlobalSettingsStore().getSettings();
+      const projectIds = await withCentralRegistry(options, async (central) => {
+        const projects = await central.listProjects();
+        return projects.map((project) => project.id);
+      });
+      const settingsObjects: unknown[] = [globalSettings];
+      const tasks: unknown[] = [];
+      const agents: unknown[] = [];
+      const workflowDefinitions: unknown[] = [];
+      const appendTier = (tier: ProjectLaneTier) => {
+        settingsObjects.push(tier.settings);
+        tasks.push(...tier.tasks);
+        agents.push(...tier.agents);
+        workflowDefinitions.push(...tier.workflows);
+        // Each stored per-workflow lane-value map is a settings object of the same shape the
+        // `*Provider` suffix sweep already reaches (executionProvider, planningProvider, …).
+        settingsObjects.push(...Object.values(tier.workflowSettingValues ?? {}));
+      };
+      /*
+      The launch store is scanned unconditionally, not only when its project id happens to
+      appear in the central registry: a launch project that is unregistered (or registered
+      under a different id) must not be a coverage hole where its live lane selections go
+      unseen and an expired-but-referenced credential gets wrongly suppressed. A duplicate
+      read of an already-registered project is harmless (reads are idempotent and the store
+      resolver returns the cached store).
+      */
+      const [launchTier, projectTierLists] = await Promise.all([
+        readProjectLaneTier(store!),
+        (async () => {
+          const tiers: ProjectLaneTier[] = [];
+          for (let index = 0; index < projectIds.length; index += LANE_REFERENCE_PROJECT_BATCH) {
+            const batch = projectIds.slice(index, index + LANE_REFERENCE_PROJECT_BATCH);
+            tiers.push(...await Promise.all(batch.map(async (projectId) =>
+              readProjectLaneTier(await resolveStoreForProjectId(projectId, store!, options)),
+            )));
+          }
+          return [tiers];
+        })(),
+      ]);
+      appendTier(launchTier);
+      for (const tierList of projectTierLists) for (const tier of tierList) appendTier(tier);
+      return collectLaneReferencedProviderIds({ settingsObjects, tasks, agents, workflowDefinitions });
+    })().catch(() => null);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const budget = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), LANE_REFERENCE_SCAN_BUDGET_MS);
+      timer.unref?.();
+    });
+    try {
+      return await Promise.race([scan, budget]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /** TTL cache + single-flight around {@link runHostLaneReferenceScan}. */
+  function getHostLaneReferencedProviders(): Promise<Set<string> | null> {
+    const now = Date.now();
+    if (laneReferenceScan && now - laneReferenceScan.atMs < LANE_REFERENCE_SCAN_TTL_MS) {
+      return Promise.resolve(laneReferenceScan.referenced);
+    }
+    if (laneReferenceInFlight) return laneReferenceInFlight;
+    laneReferenceInFlight = (async () => {
+      const referenced = await runHostLaneReferenceScan();
+      laneReferenceScan = { atMs: Date.now(), referenced };
+      return referenced;
+    })().finally(() => {
+      laneReferenceInFlight = null;
+    });
+    return laneReferenceInFlight;
+  }
+
   /**
    * GET /api/auth/status
    * Returns list of all providers with their authentication status and type.
@@ -757,12 +919,29 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
       may vary with runtime/auth state. See auth-provider-catalog.ts.
       */
       const oauthProviders = unionProviderCatalog(STATIC_OAUTH_PROVIDER_CATALOG, storage.getOAuthProviders());
+      /*
+      FNXC:OAuthAlarmEvidence 2026-11-08-00:26 (RUFU-498):
+      One host-wide referenced-id set decides every OAuth entry below; `null` is the fail-open
+      scan-failure signal and maps to visible (true), preserving the pre-gate always-alarm
+      behavior. Only OAuth entries carry the field — api-key and CLI providers never do.
+
+      FNXC:OAuthAlarmEvidence 2026-11-13-10:22 (RUFU-498 code-review P2):
+      The scan runs only when the enumerated list actually reports an expired OAuth credential.
+      It exists for one question — may this alarm be suppressed — and an entry that is not
+      expired can never be suppressed, so a host with zero credentials, or with every credential
+      healthy, previously paid a full store/agent/task/workflow fan-out (bounded at 8 s, and
+      cold enough on first paint to materialize secondary project stores) for an answer nobody
+      asks. Expiry is computed inside the entry build above, so the scan is a POST-pass over the
+      built entries, not a pre-pass; when no entry is expired no scan runs and every entry keeps
+      the same value a failed scan reports (true = visible).
+      */
       const providers: {
         id: string;
         name: string;
         authenticated: boolean;
         type: "oauth" | "api_key" | "cli";
         expired?: boolean;
+        laneReferenced?: boolean;
         keyHint?: string;
         loginInProgress?: boolean;
         requiresManualCode?: boolean;
@@ -820,6 +999,23 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
           loginError: lastLoginError.get(statusProvider.id) ?? scopeLoginError ?? expiryLoginError,
         };
       }));
+
+      /*
+      FNXC:OAuthAlarmEvidence 2026-11-13-10:22 (RUFU-498 code-review P2):
+      `providers` holds ONLY OAuth entries at this point — API-key and CLI entries are appended
+      by the blocks below — so this post-pass decorates exactly the entries the gate is defined
+      for and no non-OAuth entry can ever grow the field. RUFU-498 alarm gate: post-alias-closure
+      membership in the host's lane-referenced provider set; a scan failure (null) or a skipped
+      scan (nothing expired) reports every provider as referenced.
+      */
+      const laneReferencedIds = providers.some((entry) => entry.expired === true)
+        ? await getHostLaneReferencedProviders()
+        : null;
+      for (const entry of providers) {
+        entry.laneReferenced = laneReferencedIds === null
+          ? true
+          : isProviderLaneReferenced(entry.id, laneReferencedIds);
+      }
 
       // Include API-key-backed providers. Presence is the static catalog
       // unioned with anything storage additionally reports (FN-7625) —

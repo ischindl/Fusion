@@ -2598,6 +2598,18 @@ export {
   routeTaskValidatorModel,
 } from "./ai/model-resolution.js";
 export type { ModelThinkingPhase, ResolvedModelSelection, RouterLaneOptions } from "./ai/model-resolution.js";
+/*
+FNXC:OAuthAlarmEvidence 2026-11-08-00:26 (RUFU-498):
+The lane-referenced provider collector is exported for both alarm producers (dashboard
+`/auth/status` route and engine OAuth expiry monitor) so neither can fork its own
+"does any lane use this provider?" answer.
+*/
+export {
+  collectLaneReferencedProviderIds,
+  expandProviderIdAliasClosure,
+  isProviderLaneReferenced,
+} from "./ai/lane-referenced-providers.js";
+export type { LaneReferenceInput } from "./ai/lane-referenced-providers.js";
 export {
   getPrimaryWorkflowRole,
   resolvePermanentAgentEffectiveModel,

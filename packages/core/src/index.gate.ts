@@ -2134,6 +2134,23 @@ export {
   resolvePermanentAgentEffectiveThinkingLevel,
 } from "./ai/agent-effective-model.js";
 export type { PermanentAgentModelLike, PrimaryWorkflowRole } from "./ai/agent-effective-model.js";
+/*
+FNXC:OAuthAlarmEvidence 2026-11-12-22:47 (RUFU-498):
+Mirrored from index.ts on purpose rather than excluded under the "gate never touches it"
+clause: `merge-single-flight-invariant.test.ts` is an engine-core merge-gate file and imports
+`../project-engine.js` directly, and project-engine.ts binds collectLaneReferencedProviderIds /
+isProviderLaneReferenced at module scope for the OAuth expiry monitor's lane gate. An
+unmirrored barrel binds those imports to `undefined` inside engine-core — the exact silent
+failure `gate-barrel-run-audit-parity.test.ts` documents for RUFU-453. Cost is negligible:
+this module's own imports (`./ai/anthropic-models.js`, `../provider-instance.js`) are already
+in the gate barrel's graph.
+*/
+export {
+  collectLaneReferencedProviderIds,
+  expandProviderIdAliasClosure,
+  isProviderLaneReferenced,
+} from "./ai/lane-referenced-providers.js";
+export type { LaneReferenceInput } from "./ai/lane-referenced-providers.js";
 export {
   routeModel,
   routeModelAndEmit,

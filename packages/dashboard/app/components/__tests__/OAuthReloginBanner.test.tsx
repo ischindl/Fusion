@@ -58,7 +58,10 @@ describe("OAuthReloginBanner", () => {
   it("hides expired Anthropic subscription urgency when API key and Claude CLI are authenticated", async () => {
     mockFetchAuthStatus.mockResolvedValueOnce({
       providers: [
-        { id: "anthropic-subscription", name: "Anthropic Subscription", type: "oauth", authenticated: false, expired: true },
+        // `laneReferenced: true` pins the interaction: the api-key fallback suppression is a
+        // SEPARATE authority from the RUFU-498 gate and still wins while the lane gate says
+        // the provider is live, so neither gate may quietly disable the other.
+        { id: "anthropic-subscription", name: "Anthropic Subscription", type: "oauth", authenticated: false, expired: true, laneReferenced: true },
         { id: "anthropic-api-key", name: "Anthropic API Key", type: "api_key", authenticated: true, keyHint: "sk-••••1234" },
         { id: "claude-cli", name: "Anthropic — via Claude CLI", type: "cli", authenticated: true },
       ],
@@ -383,6 +386,78 @@ describe("OAuthReloginBanner", () => {
     firstRender.unmount();
     render(<OAuthReloginBanner onReLogin={vi.fn()} pollIntervalMs={60_000} />);
     await waitFor(() => expect(mockFetchAuthStatus).toHaveBeenCalledTimes(3));
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  /*
+  FNXC:OAuthAlarmEvidence 2026-11-08-00:26 (RUFU-498):
+  The re-login banner is evidence-of-work-at-risk, not a credential ledger: an expired
+  credential whose provider no resolvable lane on the host references is Settings hygiene
+  and must not keep a board-wide alarm up, while the same expired credential referenced by
+  any lane must still alarm, and a status payload without the field (older server, or the
+  server-side scan failing open) must stay visible. Dismissal already persists to
+  localStorage — the remount cases pin that a dismissed banner does NOT return on reload.
+  */
+  it("hides an expired provider that no lane references while showing one that is referenced", async () => {
+    mockFetchAuthStatus.mockResolvedValueOnce({
+      providers: [
+        { id: "anthropic-subscription", name: "Anthropic Subscription", type: "oauth", authenticated: false, expired: true, laneReferenced: false },
+        { id: "openai-codex", name: "OpenAI Codex", type: "oauth", authenticated: false, expired: true, laneReferenced: true },
+      ],
+      ghCli: { available: false, authenticated: false },
+    });
+
+    render(<OAuthReloginBanner onReLogin={vi.fn()} pollIntervalMs={60_000} />);
+
+    expect(await screen.findByRole("status")).toHaveTextContent("OpenAI Codex");
+    expect(screen.getByRole("status")).not.toHaveTextContent("Anthropic Subscription");
+  });
+
+  it("shows nothing when the only expired provider is unreferenced", async () => {
+    mockFetchAuthStatus.mockResolvedValueOnce({
+      providers: [
+        { id: "anthropic-subscription", name: "Anthropic Subscription", type: "oauth", authenticated: false, expired: true, laneReferenced: false },
+      ],
+      ghCli: { available: false, authenticated: false },
+    });
+
+    render(<OAuthReloginBanner onReLogin={vi.fn()} pollIntervalMs={60_000} />);
+
+    await waitFor(() => expect(mockFetchAuthStatus).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("keeps an expired provider visible when the status payload lacks laneReferenced (fail-open)", async () => {
+    mockFetchAuthStatus.mockResolvedValueOnce({
+      providers: [
+        { id: "openai-codex", name: "OpenAI Codex", type: "oauth", authenticated: false, expired: true },
+      ],
+      ghCli: { available: false, authenticated: false },
+    });
+
+    render(<OAuthReloginBanner onReLogin={vi.fn()} pollIntervalMs={60_000} />);
+
+    expect(await screen.findByRole("status")).toHaveTextContent("OpenAI Codex");
+  });
+
+  it("keeps a dismissed referenced provider's banner hidden across reload while it stays expired", async () => {
+    const stillExpired = {
+      providers: [
+        { id: "openai-codex", name: "OpenAI Codex", type: "oauth", authenticated: false, expired: true, laneReferenced: true },
+      ],
+      ghCli: { available: false, authenticated: false },
+    };
+    mockFetchAuthStatus.mockResolvedValue(stillExpired);
+
+    const firstRender = render(<OAuthReloginBanner onReLogin={vi.fn()} pollIntervalMs={60_000} />);
+    expect(await screen.findByRole("status")).toHaveTextContent("OpenAI Codex");
+    fireEvent.click(screen.getByLabelText("Dismiss OAuth re-login banner"));
+    await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+    expect(window.localStorage.getItem("fusion:oauth-relogin-dismissed")).toContain("openai-codex");
+
+    firstRender.unmount();
+    render(<OAuthReloginBanner onReLogin={vi.fn()} pollIntervalMs={60_000} />);
+    await waitFor(() => expect(mockFetchAuthStatus).toHaveBeenCalledTimes(2));
     expect(screen.queryByRole("status")).toBeNull();
   });
 });

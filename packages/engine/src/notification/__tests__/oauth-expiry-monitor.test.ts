@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -618,5 +618,112 @@ describe("OAuthExpiryMonitor", () => {
     await vi.advanceTimersByTimeAsync(500);
 
     expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  /*
+  FNXC:OAuthAlarmEvidence 2026-11-08-01:02 (RUFU-498):
+  The notification producer obeys the same lane-reference invariant as the banner: an expired
+  credential whose provider no resolvable lane references must not push — and skipping must
+  leave every dedupe/cooldown artifact untouched, so referencing the provider again later
+  gets the FULL notification budget, not a slot consumed while it was silent. Absent /
+  rejecting / hung predicates dispatch: a broken gate may only preserve the pre-gate
+  always-notify behavior, never silence a live alarm. The second provider id (`openai-codex`,
+  already this suite's fixture) keeps the invariant provider-agnostic.
+  */
+  describe("lane-reference gate", () => {
+    it("does not dispatch, write alert state, or consume dedupe for an unreferenced provider, and re-arms with full budget", async () => {
+      vi.useFakeTimers();
+      const now = Date.now();
+      const statePath = createStatePath();
+      const authStorage = createAuthStorage({ type: "oauth", expires: now - 1_000 });
+      const dispatch = vi.fn(async () => undefined);
+      let referenced = false;
+      const isProviderReferenced = vi.fn(async () => referenced);
+
+      const monitor = new OAuthExpiryMonitor({
+        authStorage,
+        notificationService: { dispatch } as any,
+        intervalMs: 100,
+        clock: () => now,
+        alertState: new OAuthAlertStateStore({ statePath, clock: () => now }),
+        isProviderReferenced,
+      });
+
+      await monitor.start();
+      monitor.stop();
+
+      expect(isProviderReferenced).toHaveBeenCalledWith("openai-codex");
+      expect(dispatch).not.toHaveBeenCalled();
+      // The alert-state file is only ever written by recordAlert/clear — its absence is the
+      // proof the suppressed pass left cooldown state untouched.
+      expect(existsSync(statePath)).toBe(false);
+
+      // Referencing the provider afterwards must get the full budget: the suppressed pass
+      // consumed no dispatched key and no 12 h slot.
+      referenced = true;
+      await monitor.start();
+      monitor.stop();
+      expect(dispatch).toHaveBeenCalledTimes(1);
+    });
+
+    it("dispatches unchanged when the predicate resolves true", async () => {
+      vi.useFakeTimers();
+      const now = Date.now();
+      const authStorage = createAuthStorage({ type: "oauth", expires: now - 1_000 });
+      const dispatch = vi.fn(async () => undefined);
+      const monitor = new OAuthExpiryMonitor({
+        authStorage,
+        notificationService: { dispatch } as any,
+        intervalMs: 100,
+        clock: () => now,
+        alertState: new OAuthAlertStateStore({ statePath: createStatePath(), clock: () => now }),
+        isProviderReferenced: async () => true,
+      });
+
+      await monitor.start();
+      monitor.stop();
+      expect(dispatch).toHaveBeenCalledTimes(1);
+    });
+
+    it("dispatches when the predicate rejects (fail-open)", async () => {
+      vi.useFakeTimers();
+      const now = Date.now();
+      const authStorage = createAuthStorage({ type: "oauth", expires: now - 1_000 });
+      const dispatch = vi.fn(async () => undefined);
+      const monitor = new OAuthExpiryMonitor({
+        authStorage,
+        notificationService: { dispatch } as any,
+        intervalMs: 100,
+        clock: () => now,
+        alertState: new OAuthAlertStateStore({ statePath: createStatePath(), clock: () => now }),
+        isProviderReferenced: async () => { throw new Error("lane scan exploded"); },
+      });
+
+      await monitor.start();
+      monitor.stop();
+      expect(dispatch).toHaveBeenCalledTimes(1);
+    });
+
+    it("dispatches when the predicate never settles, after the probe bound elapses (fail-open)", async () => {
+      vi.useFakeTimers();
+      const now = Date.now();
+      const authStorage = createAuthStorage({ type: "oauth", expires: now - 1_000 });
+      const dispatch = vi.fn(async () => undefined);
+      const monitor = new OAuthExpiryMonitor({
+        authStorage,
+        notificationService: { dispatch } as any,
+        // Interval beyond the advance window: only start()'s immediate check runs, so the
+        // assertion isolates the probe bound instead of racing interval re-entry.
+        intervalMs: 10_000,
+        clock: () => now,
+        alertState: new OAuthAlertStateStore({ statePath: createStatePath(), clock: () => now }),
+        isProviderReferenced: () => new Promise<boolean>(() => undefined),
+      });
+
+      void monitor.start();
+      await vi.advanceTimersByTimeAsync(6_000);
+      monitor.stop();
+      expect(dispatch).toHaveBeenCalledTimes(1);
+    });
   });
 });

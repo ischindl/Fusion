@@ -75,6 +75,8 @@ import {
   buildManualRetryResetPatch,
   getRequiredPostMergeEvidenceDecision,
   getRequiredPostMergeEvidenceBlocker,
+  collectLaneReferencedProviderIds,
+  isProviderLaneReferenced,
 } from "@fusion/core";
 import { assemblePlannerOverseerRuntimeSnapshot } from "./overseer/planner-overseer-runtime-snapshot.js";
 import { activeSessionRegistry, executingTaskLock } from "./agents/active-session-registry.js";
@@ -1968,6 +1970,21 @@ export class ProjectEngine {
           authStorage: this.authStorage,
           notificationService: this.notificationService,
           alertState: oauthAlertState,
+          /*
+          FNXC:OAuthAlarmEvidence 2026-11-08-01:02 (RUFU-498):
+          The expiry monitor may only notify for a provider some resolvable model lane still
+          uses: an expired leftover credential of a retired provider (measured:
+          `anthropic-subscription` on a 24-project host with zero anthropic selections) fired
+          recurring `oauth-token-expired` pushes forever and helped produce a false diagnosis
+          (RUFU-497). Per-engine gate = global settings UNION this project's tiers (settings,
+          durable agents, non-terminal task lane fields, workflow lane values) through the one
+          core collector. On a multi-project host the union across engines carries the
+          host-wide invariant: the engine of the referencing project still alerts the shared
+          channel, and a provider referenced nowhere silences every engine. Cached at the
+          monitor interval (default 5 min, so at most one scan per tick); any scan error
+          caches null and the predicate answers true (fail-open = today's always-notify).
+          */
+          isProviderReferenced: this.createLaneReferencedPredicate(),
         });
         await this.oauthExpiryMonitor.start();
         if (this.deferredStartupAborted(generation)) return;
@@ -2302,6 +2319,81 @@ export class ProjectEngine {
   /** Get the AgentStore (if initialized). Returns undefined before start(). */
   getAgentStore(): import("@fusion/core").AgentStore | undefined {
     return this.runtime.getAgentStore();
+  }
+
+  /*
+  FNXC:OAuthAlarmEvidence 2026-11-08-01:02 (RUFU-498):
+  Per-engine lane-reference predicate for the OAuth expiry monitor (see the construction site
+  in the deferred-startup block). One TTL-cached scan per monitor tick over the tiers this
+  engine can read without host fan-out: global settings UNION this project's settings,
+  durable agents, non-terminal task lane fields, and workflow lane values. Any read error or
+  missing store yields a cached `null` set, and the predicate answers true — the gate may
+  only silence notification for a provider proven unreferenced, never for one it could not
+  read (fail-open = the pre-gate always-notify behavior).
+
+  FNXC:OAuthAlarmEvidence 2026-11-13-10:22 (RUFU-498 code-review P0):
+  "workflow lane values" are read from the persisted `workflow_settings` rows, not from the
+  workflow IR declarations or the runtime-only `selectedWorkflowModelLanes` overlay key. Model
+  resolution takes the `selected workflow` tier from values saved per (workflow, project) by
+  Settings → Workflow (`PATCH /workflows/:id/setting-values`), and `getSettings()` never
+  contains them — so before this read, a project whose Executor lane ALONE named an expired
+  provider was proven "unreferenced" and its engine stopped pushing `oauth-token-expired`
+  while every executor task failed on that credential. This predicate is the one that decides
+  the push, so the omission silenced the exact alarm the card exists to keep.
+  */
+  createLaneReferencedPredicate(): (providerId: string) => Promise<boolean> {
+    const scanTtlMs = 5 * 60_000;
+    let cache: { atMs: number; referenced: Set<string> | null } | null = null;
+    let inFlight: Promise<Set<string> | null> | null = null;
+    const scanOnce = async (): Promise<Set<string> | null> => {
+      const now = Date.now();
+      if (cache && now - cache.atMs < scanTtlMs) return cache.referenced;
+      if (inFlight) return inFlight;
+      inFlight = (async (): Promise<Set<string> | null> => {
+        let referenced: Set<string> | null = null;
+        try {
+          const store = this.runtime.getTaskStore();
+          const agentStore = this.runtime.getAgentStore();
+          if (!agentStore) throw new Error("agent store unavailable");
+          /*
+          FNXC:OAuthAlarmEvidence 2026-11-09-13:31 (RUFU-498):
+          Same async-thunk rule as the dashboard's `/auth/status` scan: an element that throws
+          SYNCHRONOUSLY while the `Promise.all` array is being built abandons any promise an
+          earlier element already rejected, and that orphan surfaces as an unhandled rejection
+          instead of this scan's own fail-open catch. An async call can only reject, so wrapping
+          every tier read leaves `Promise.all` owning each element's settlement.
+          */
+          const [globalSettings, settings, tasks, workflows, agents, workflowSettingValues] = await Promise.all([
+            (async () => store.getGlobalSettingsStore().getSettings())(),
+            (async () => store.getSettings())(),
+            (async () => store.listTasks({ slim: true, excludeColumns: ["done"] }))(),
+            (async () => store.listWorkflowDefinitions())(),
+            (async () => agentStore.listAgents())(),
+            (async () => store.listWorkflowSettingValuesForProject())(),
+          ]);
+          referenced = collectLaneReferencedProviderIds({
+            // Each per-workflow stored values map is a settings object of the shape the
+            // collector's `*Provider` suffix sweep already reaches (executionProvider, …).
+            settingsObjects: [globalSettings, settings, ...Object.values(workflowSettingValues ?? {})],
+            tasks,
+            agents,
+            workflowDefinitions: workflows,
+          });
+        } catch {
+          referenced = null;
+        }
+        cache = { atMs: Date.now(), referenced };
+        return referenced;
+      })().finally(() => {
+        inFlight = null;
+      });
+      return inFlight;
+    };
+    return async (providerId: string): Promise<boolean> => {
+      const referenced = await scanOnce();
+      if (referenced === null) return true;
+      return isProviderLaneReferenced(providerId, referenced);
+    };
   }
 
   clearTaskPauseAbortState(taskId: string): void {

@@ -232,6 +232,32 @@ export function AuthenticationSection({ auth, form, setForm }: AuthenticationSec
     after a second credential exists; client-generated ids are opaque and labels remain display-only.
     */
     const hasMultipleInstances = (provider: AuthProvider) => (provider.instances?.length ?? 0) > 1;
+    /*
+    FNXC:OAuthAlarmEvidence 2026-11-08-01:02 (RUFU-498):
+    An expired leftover credential is the single-instance case where instance chrome IS the
+    remediation surface. With the board banner now gated on lane references, an
+    expired-but-unreferenced credential is silent on the board and lives only here, so it must
+    be removable where it is seen: render the instance list (with its existing Remove
+    affordance) for an expired single default instance too. The general rule that single and
+    empty cards stay free of instance-list chrome (2026-08-01 note above) otherwise holds; no
+    new styles, classes, or i18n keys — the row markup is the one multi-account cards already
+    use.
+
+    FNXC:OAuthAlarmEvidence 2026-11-13-10:22 (RUFU-498 code-review P2):
+    This decides the card layout, so exactly one predicate may answer it. The card renders
+    credential actions EITHER inside each instance row (the row list owns them, keyed to that
+    instance) OR at provider level (a single/empty card) — never both. Deriving the provider-level
+    blocks from `hasMultipleInstances` alone made the expired single instance a third, mixed case:
+    the card showed the row's Login/Logout/Remove AND the provider-level Login/Logout for the same
+    credential. `rendersInstanceRows` is now consulted by both halves.
+    */
+    const expiredSingleInstance = (provider: AuthProvider) => {
+      const instances = provider.instances ?? [];
+      return instances.length === 1 && (provider.expired === true || instances[0]?.expired === true);
+    };
+    /** True when this card shows per-account rows; the provider-level credential actions and the
+     *  provider-level login error must then stay silent (the rows carry them). */
+    const rendersInstanceRows = (provider: AuthProvider) => hasMultipleInstances(provider) || expiredSingleInstance(provider);
     const instanceProvider = (provider: AuthProvider, instance: ProviderCredentialInstance): AuthProvider => ({
         ...provider,
         authenticated: instance.authenticated,
@@ -263,7 +289,7 @@ export function AuthenticationSection({ auth, form, setForm }: AuthenticationSec
             return next;
         });
         return <div className="auth-instance-controls">
-          {instances.length > 1 && <div className="auth-instance-list" data-testid={`auth-instances-${provider.id}`}>
+          {rendersInstanceRows(provider) && <div className="auth-instance-list" data-testid={`auth-instances-${provider.id}`}>
             {instances.map((item: ProviderCredentialInstance) => {
               const rowProvider = instanceProvider(provider, item);
               return <div className="auth-instance-row" key={item.instanceId}>
@@ -419,9 +445,17 @@ export function AuthenticationSection({ auth, form, setForm }: AuthenticationSec
                         </span>
                       )}
                     </div>
-                    {provider.type !== "api_key" && !hasMultipleInstances(provider) && <div className="auth-provider-actions">{renderAuthenticatedOAuthActions(provider)}</div>}
-                    {providerSupportsApiKey(provider) && !hasMultipleInstances(provider) && renderApiKeySection(provider)}
+                    {provider.type !== "api_key" && !rendersInstanceRows(provider) && <div className="auth-provider-actions">{renderAuthenticatedOAuthActions(provider)}</div>}
+                    {providerSupportsApiKey(provider) && !rendersInstanceRows(provider) && renderApiKeySection(provider)}
                   </div>
+                  {/*
+                  FNXC:ProviderAuth 2026-07-14-15:54 / OAuthAlarmEvidence 2026-11-13-10:22 (RUFU-498 code-review P2):
+                  The durable login error keeps the MULTI-INSTANCE predicate, not `rendersInstanceRows`.
+                  Credential ACTIONS must come from exactly one place (the rows own them once rows render),
+                  but the error sentence is provider-scoped text that targets no instance, and an expired
+                  single-instance card is precisely the card that needs it — hiding it behind the row list
+                  would silently drop the re-login remediation the 2026-07-14 rule exists to keep.
+                  */}
                   {provider.type !== "api_key" && !hasMultipleInstances(provider) && renderProviderAuthError(provider)}
                   {renderInstanceControls(provider)}
                 </div>))}
@@ -442,9 +476,10 @@ export function AuthenticationSection({ auth, form, setForm }: AuthenticationSec
                       </span>
                       {provider.keyHint && (<span className="auth-key-hint">{t("settings.authentication.key", "Key: ")}{provider.keyHint}</span>)}
                     </div>
-                    {provider.type !== "api_key" && !hasMultipleInstances(provider) && <div className="auth-provider-actions">{renderAvailableOAuthActions(provider)}</div>}
-                    {providerSupportsApiKey(provider) && !hasMultipleInstances(provider) && renderApiKeySection(provider)}
+                    {provider.type !== "api_key" && !rendersInstanceRows(provider) && <div className="auth-provider-actions">{renderAvailableOAuthActions(provider)}</div>}
+                    {providerSupportsApiKey(provider) && !rendersInstanceRows(provider) && renderApiKeySection(provider)}
                   </div>
+                  {/* Durable provider-scoped login error keeps the multi-instance predicate — see the note above the authenticated group. */}
                   {provider.type !== "api_key" && !hasMultipleInstances(provider) && renderProviderAuthError(provider)}
                   {renderInstanceControls(provider)}
                 </div>))}
