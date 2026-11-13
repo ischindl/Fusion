@@ -20,8 +20,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { routeGraphFailureToExecutionResume } from "../executor/route-graph-failure-to-execution-resume.js";
 import { resetContainmentRefusalLogForTesting } from "../execution/lifecycle-move.js";
+import { applyTaskPatch } from "./fixtures/task-patch-store.js";
 import {
   EXECUTION_REARM_EXHAUSTED_PREFIX,
+  MAX_EXECUTION_REARM_ATTEMPTS,
   MAX_EXECUTION_REARM_REFUSALS,
   attemptExecutionRearm,
   readExecutionRarmMarker,
@@ -84,14 +86,14 @@ const STEPWISE_IR = {
   edges: [],
 } as any;
 
+
 /**
  * A store faithful to the two API shapes this path actually calls: `updateTaskAtomic` takes a REDUCER
  * (the fenced claim re-validates the live row inside it), and `logEntryOnce` is the durable dedupe —
  * it answers false the second time for the same key, which is what makes "exactly one notice" provable
  * instead of merely asserted.
  */
-function makeStore(task: any) {
-  let current = task;
+function makeStore(task: any) {  let current = task;
   const state = {
     get current() {
       return current;
@@ -121,14 +123,14 @@ function makeStore(task: any) {
     moveTaskIf: vi.fn(async () => ({ moved: false })),
     updateTask: vi.fn(async (_id: string, patch: Record<string, unknown>) => {
       state.patches.push(patch);
-      current = { ...current, ...patch };
+      current = applyTaskPatch(current, patch);
       return current;
     }),
     updateTaskAtomic: vi.fn(async (_id: string, reducer: (value: any) => any) => {
       const patch = reducer(current);
       if (!patch) return null;
       state.patches.push(patch);
-      current = { ...current, ...patch };
+      current = applyTaskPatch(current, patch);
       return current;
     }),
   };
@@ -330,5 +332,63 @@ describe("RUFU-308 symptom: stranded step re-entry (RUFU-291)", () => {
     }));
     expect(store.moveTask).not.toHaveBeenCalled();
     expect(state.current.column).toBe(WIP);
+  });
+});
+
+/*
+FNXC:ExecutionReArmCeiling 2026-11-13-22:17 (RUFU-1027):
+The ceiling existed only on paper. Measured on production RunFusion over 24 h: 327
+`task:execution-rearmed` rows for RUFU-278, EVERY one with `attempt: 1`, and zero
+`task:execution-rearm-exhausted` — the card re-entered the same failing node every ~5 minutes while
+holding a WIP slot, and the second holder of the same latch (RUFU-593) had 17.
+
+Two causes, both measured on the live row, and the task's own spec named only the second one. The
+live marker read `attempt: 1` with `firstAt === at` while its `signature` carried the SAME
+`status:failed`, the SAME error sentence and the SAME step statuses as the pass before it — so the
+counter itself was not surviving to be compared. Cause 1 is storage: the register sits inside
+`mergeDetails`, and `cleanupMergeStateForReverification` writes `mergeDetails: null` on the very path
+this card walks every cycle (`Executor detected stale merge state …` precedes every re-arm in its
+History), so a legitimate merge cleanup erased the counter. Cause 2 is keying: `rearmSignature` keyed
+the episode on the live `status`/`error` columns that the same cleanup and the successful re-arm path
+both clear, so even a surviving marker would compute `unchanged = false`.
+
+Fixing only the key would therefore leave the loop running: a wiped register restarts at 1 no matter
+how the key is computed. This test drives BOTH halves — the cleanup that nulls `mergeDetails` and the
+new failure that re-stamps the badges — because asserting only the keying would pin a fiction.
+
+The assertion the fix must satisfy is the growth, not the count: 1,2,3,4 then ONE exhaustion row and
+ONE park, with the fifth re-arm refused. Asserting only "attempt is 1" is what let the defect ship.
+*/
+describe("RUFU-1027: the declared re-arm ceiling must be reachable", () => {
+  it("counts 1..4 over repeated identical failures, then terminalizes exactly once", async () => {
+    resetContainmentRefusalLogForTesting();
+    const { store, state } = makeStore(strandedTask({ status: "failed", error: STUCK_ERROR }));
+    const deps = makeDeps(store, makeProver("occupied"));
+
+    for (let cycle = 0; cycle <= MAX_EXECUTION_REARM_ATTEMPTS; cycle++) {
+      // The stale-merge-state cleanup this card really hits every cycle: the whole column is nulled,
+      // and the badges go with it (measured: `mergeDetails: null, status: null, error: null`).
+      state.current = { ...state.current, mergeDetails: null, status: null, error: null };
+      // The next dispatch fails again at the SAME node, wearing the SAME error sentence.
+      state.current = { ...state.current, status: "failed", error: STUCK_ERROR };
+      await runFailure(deps, state.current);
+    }
+
+    const rows = auditRows(store);
+    const rearmAttempts = rows
+      .filter((row: any) => row.mutationType === "task:execution-rearmed")
+      .map((row: any) => row.metadata.attempt);
+    expect(rearmAttempts).toEqual([1, 2, 3, 4]);
+
+    const exhausted = rows.filter((row: any) => row.mutationType === "task:execution-rearm-exhausted");
+    expect(exhausted).toHaveLength(1);
+
+    const parks = state.patches.filter((patch: any) =>
+      String(patch.error ?? "").startsWith(EXECUTION_REARM_EXHAUSTED_PREFIX));
+    expect(parks).toHaveLength(1);
+
+    expect(state.current.column).toBe(WIP);
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect(store.moveTaskIf).not.toHaveBeenCalled();
   });
 });

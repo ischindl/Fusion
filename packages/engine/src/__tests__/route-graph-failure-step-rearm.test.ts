@@ -17,6 +17,7 @@ import { describe, expect, it, vi } from "vitest";
 import { routeGraphFailureToExecutionResume } from "../executor/route-graph-failure-to-execution-resume.js";
 /* RUFU-308 Step 3: the containment-refusal dedupe moved next to the refusal line it bounds. */
 import { resetContainmentRefusalLogForTesting } from "../execution/lifecycle-move.js";
+import { applyTaskPatch } from "./fixtures/task-patch-store.js";
 import {
   MAX_EXECUTION_REARM_ATTEMPTS,
   readExecutionRarmMarker,
@@ -99,14 +100,14 @@ function makeStore(task: any) {
     moveTaskIf: vi.fn(async () => ({ moved: false })),
     updateTask: vi.fn(async (_id: string, patch: Record<string, unknown>) => {
       state.patches.push(patch);
-      current = { ...current, ...patch };
+      current = applyTaskPatch(current, patch);
       return current;
     }),
     updateTaskAtomic: vi.fn(async (_id: string, reducer: (value: any) => any) => {
       const patch = reducer(current);
       if (!patch) return null;
       state.patches.push(patch);
-      current = { ...current, ...patch };
+      current = applyTaskPatch(current, patch);
       return current;
     }),
   };

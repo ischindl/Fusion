@@ -17,7 +17,7 @@
  * nothing moves.
  */
 import type { CheckoutEmptinessVerdict, MergeDetails, TaskDetail, TaskStore } from "@fusion/core";
-import { findWorkflowNodeInstance, resolveWorkflowIrForTask } from "@fusion/core";
+import { EXECUTION_REARM_EPISODE_METADATA_KEY, findWorkflowNodeInstance, resolveWorkflowIrForTask } from "@fusion/core";
 import { isDurableBlockedTask } from "../execution-block-classifier.js";
 import { checkoutEmptinessProverFor, checkoutEmptinessEntries, type CheckoutEmptinessProver } from "../worktree/checkout-emptiness.js";
 import { resolveIntegrationBranch } from "../merge/integration-branch.js";
@@ -25,8 +25,13 @@ import { emitBoundedRunAudit } from "../util/emit-bounded-run-audit.js";
 import { generateSyntheticRunId, type EngineRunContext } from "../util/run-audit.js";
 
 /**
- * The persisted ladder, written under `mergeDetails.executionRearm` — declared on core `MergeDetails`
- * (additive JSON-backed field, the same no-migration shape as its `mergeBoundaryRecovery` sibling).
+ * The persisted ladder. It lives under `sourceMetadata[EXECUTION_REARM_EPISODE_METADATA_KEY]`, NOT in
+ * `mergeDetails`: `cleanupMergeStateForReverification` legitimately writes `mergeDetails: null` on the
+ * stale-merge-state path that every re-arming card walks (measured on RUFU-278: `Executor detected
+ * stale merge state …` immediately precedes each of its 327 re-arms in 24 h, every one `attempt: 1`).
+ * A counter that bounds a lifecycle loop cannot live in a column an unrelated cleanup nulls.
+ * The pre-RUFU-1027 `mergeDetails.executionRearm` shape is still READ, so a card that accumulated
+ * attempts before the upgrade is not forgiven its budget; it is never written again.
  */
 export interface ExecutionRarmMarker {
   signature: string;
@@ -37,17 +42,32 @@ export interface ExecutionRarmMarker {
   heldAt: string | null;
 }
 
-/** Reads the persisted ladder from any row that carries `mergeDetails` (a `Task` or a `TaskDetail`). */
-export function readExecutionRarmMarker(task: { mergeDetails?: MergeDetails } | undefined): ExecutionRarmMarker | undefined {
-  const marker = task?.mergeDetails?.executionRearm;
-  return marker && typeof marker.signature === "string" ? marker : undefined;
+/** A row shaped like the ones this ladder is read from (`Task` or `TaskDetail`). */
+type TaskLikeWithRarmEpisode = {
+  mergeDetails?: MergeDetails;
+  sourceMetadata?: Record<string, unknown> | null;
+};
+
+function isExecutionRarmMarker(value: unknown): value is ExecutionRarmMarker {
+  return !!value && typeof value === "object"
+    && typeof (value as ExecutionRarmMarker).signature === "string";
 }
 
-function withExecutionRarmMarker(
-  task: { mergeDetails?: MergeDetails } | undefined,
-  marker: ExecutionRarmMarker,
-): MergeDetails {
-  return { ...(task?.mergeDetails ?? {}), executionRearm: marker };
+/** Reads the ladder: the durable episode key first, the pre-RUFU-1027 `mergeDetails` shape as fallback. */
+export function readExecutionRarmMarker(task: TaskLikeWithRarmEpisode | undefined): ExecutionRarmMarker | undefined {
+  const episode = task?.sourceMetadata?.[EXECUTION_REARM_EPISODE_METADATA_KEY];
+  if (isExecutionRarmMarker(episode)) return episode;
+  const legacy = task?.mergeDetails?.executionRearm;
+  return isExecutionRarmMarker(legacy) ? legacy : undefined;
+}
+
+/**
+ * Key-level `sourceMetadataPatch`: replaces this episode's key only, so unrelated provenance keys
+ * (duplicate-of, handoff-from, the other parks' registers) survive a re-arm untouched — the same
+ * write shape RUFU-246/273/393/395 established, and the same one operator Retry clears.
+ */
+function executionRarmPatch(marker: ExecutionRarmMarker): Record<string, unknown> {
+  return { [EXECUTION_REARM_EPISODE_METADATA_KEY]: marker };
 }
 
 /** Attempts allowed for one unchanged evidence signature before the card is terminalized once. */
@@ -174,12 +194,20 @@ function stepSignature(task: TaskDetail): string {
   return `${rows.join(",")}|${steps.join(",")}`;
 }
 
+/*
+FNXC:ExecutionReArmCeiling 2026-11-13-22:44 (RUFU-1027):
+The episode identity used to include the live `task.status` and `task.error` columns. Both are written
+by the recovery itself (the successful re-arm clears them two statements after the claim) and by the
+stale-merge-state cleanup that runs before it — so every cycle computed a DIFFERENT key, `unchanged`
+resolved false, and the ladder restarted at 1 no matter how many times the same node had already
+failed. A bound whose key is recomputed from fields the bounded loop itself rewrites is not a bound.
+The identity is therefore the durable question being retried: the node, the step ledger's shape, and
+the evidence verdict. Genuine step progress still ends an episode, because it changes the step ledger.
+*/
 function rearmSignature(nodeId: string, task: TaskDetail, evidence: string): string {
   return [
     "rearm",
     nodeId,
-    task.status ?? "null",
-    task.error ?? "null",
     stepSignature(task),
     evidence,
   ].join(":");
@@ -234,7 +262,7 @@ async function claimRearmSlot(
       const refusals = (unchanged ? prior?.refusal ?? 0 : 0) + (kind === "refusal" ? 1 : 0);
       const exhausted = attempts > MAX_EXECUTION_REARM_ATTEMPTS || refusals > MAX_EXECUTION_REARM_REFUSALS;
       return {
-        mergeDetails: withExecutionRarmMarker(current, {
+        sourceMetadataPatch: executionRarmPatch({
           signature,
           attempt: attempts,
           refusal: refusals,
@@ -306,7 +334,7 @@ async function terminalizeRearmBudget(
     {
       status: "failed",
       error: `EXECUTION_REARM_EXHAUSTED: ${detail}`,
-      mergeDetails: withExecutionRarmMarker(current, {
+      sourceMetadataPatch: executionRarmPatch({
         signature: priorMarker?.signature ?? "",
         attempt: priorMarker?.attempt ?? 0,
         refusal: priorMarker?.refusal ?? 0,

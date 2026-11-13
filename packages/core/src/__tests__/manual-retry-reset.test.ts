@@ -268,8 +268,8 @@ describe("buildManualRetryResetPatch", () => {
     the operator just released. The literal stays pinned on purpose — a constant rename that would
     orphan a persisted episode is still caught here rather than in production.
     */
-    expect(buildManualRetryResetPatch().sourceMetadataPatch).toEqual({ planPremiseRejection: null, planAdmissionStall: null, deterministicSpecRejection: null, branchConflictRecoveryEpisode: null, strandedContinuationReclaim: null });
-    expect(buildManualRetryResetPatch({ resetMergeRetries: true }).sourceMetadataPatch).toEqual({ planPremiseRejection: null, planAdmissionStall: null, deterministicSpecRejection: null, branchConflictRecoveryEpisode: null, strandedContinuationReclaim: null });
+    expect(buildManualRetryResetPatch().sourceMetadataPatch).toEqual({ planPremiseRejection: null, planAdmissionStall: null, deterministicSpecRejection: null, branchConflictRecoveryEpisode: null, strandedContinuationReclaim: null, executionRearmEpisode: null });
+    expect(buildManualRetryResetPatch({ resetMergeRetries: true }).sourceMetadataPatch).toEqual({ planPremiseRejection: null, planAdmissionStall: null, deterministicSpecRejection: null, branchConflictRecoveryEpisode: null, strandedContinuationReclaim: null, executionRearmEpisode: null });
     expect(buildManualRetryResetPatch()).not.toHaveProperty("sourceMetadata");
   });
 
@@ -299,6 +299,22 @@ describe("buildManualRetryResetPatch", () => {
     const keys = Object.keys(buildManualRetryResetPatch().sourceMetadataPatch ?? {});
     expect(keys).not.toContain("planningReseedCycles");
     expect(keys).not.toContain("wipAdmissionStall");
+  });
+
+  /*
+  FNXC:ExecutionReArmCeiling 2026-11-13-22:52 (RUFU-1027):
+  The execution re-arm ladder bounds a loop that re-enters the SAME node, so once its identity stopped
+  reading the live `status`/`error` columns, only this clear can restart it. Asserted as behaviour, not
+  as a key in a list: after ONE Retry the full declared budget must be consumable again, because a
+  Retry that resumed at attempt 3 would terminalize two cycles later and the operator would read that
+  as the engine refusing to run the card at all.
+  */
+  it("clears the execution re-arm register so one Retry buys the full ladder again", () => {
+    const patch = buildManualRetryResetPatch();
+    expect(patch.sourceMetadataPatch).toMatchObject({ executionRearmEpisode: null });
+    // The clear is key-level: a Retry must not touch the field wholesale, which still holds because
+    // the builder emits no `sourceMetadata` of its own.
+    expect(patch).not.toHaveProperty("sourceMetadata");
   });
 
   it("lifts the recovery park AND empties its register in one patch, so a Retry is not a no-op", () => {

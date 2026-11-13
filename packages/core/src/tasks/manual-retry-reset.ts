@@ -1,4 +1,4 @@
-import { BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY, DETERMINISTIC_SPEC_REJECTION_METADATA_KEY, PLAN_ADMISSION_STALL_METADATA_KEY, PLAN_PREMISE_REJECTION_METADATA_KEY, STRANDED_CONTINUATION_RECLAIM_METADATA_KEY, type Task } from "../types.js";
+import { BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY, DETERMINISTIC_SPEC_REJECTION_METADATA_KEY, EXECUTION_REARM_EPISODE_METADATA_KEY, PLAN_ADMISSION_STALL_METADATA_KEY, PLAN_PREMISE_REJECTION_METADATA_KEY, STRANDED_CONTINUATION_RECLAIM_METADATA_KEY, type Task } from "../types.js";
 import type { TaskStore } from "../store.js";
 
 export const IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON = "in-review-stall-deadlock";
@@ -195,6 +195,16 @@ export function buildManualRetryResetPatch(options?: { resetMergeRetries?: boole
       [BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY]: null,
       [DETERMINISTIC_SPEC_REJECTION_METADATA_KEY]: null,
       [STRANDED_CONTINUATION_RECLAIM_METADATA_KEY]: null,
+      /*
+      FNXC:ExecutionReArmCeiling 2026-11-13-22:36 (RUFU-1027):
+      And to the execution re-arm ladder. Once the episode key stopped reading the live `status`/
+      `error` columns, an operator Retry could no longer restart the ladder by accident: the same node
+      failing with the same step statuses is the SAME episode, so a Retry that left the register behind
+      would resume at attempt 3 and terminalize two cycles later. That is the RUFU-395 shape exactly - a
+      Retry that does not buy a fresh budget is not an exit. Retry is the only door out of
+      `EXECUTION_REARM_EXHAUSTED:`, so it must reset the number that park reads.
+      */
+      [EXECUTION_REARM_EPISODE_METADATA_KEY]: null,
     },
     nextRecoveryAt: null as unknown as Task["nextRecoveryAt"],
     sessionContentionWaitReason: null as unknown as Task["sessionContentionWaitReason"],

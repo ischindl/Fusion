@@ -816,6 +816,20 @@ actually changes column (the park is column-scoped by construction, so a move ma
 */
 export const WIP_ADMISSION_STALL_METADATA_KEY = "wipAdmissionStall" as const;
 
+/*
+FNXC:ExecutionReArmCeiling 2026-11-13-22:33 (RUFU-1027):
+The execution re-arm ladder moved OUT of `mergeDetails` and into `sourceMetadata`, keyed here.
+`cleanupMergeStateForReverification` legitimately writes `mergeDetails: null` on the path every
+re-arming card walks (measured on RUFU-278: `Executor detected stale merge state …` immediately
+precedes each of its 327 re-arms in 24 h), so a counter stored in that column is erased by an
+unrelated cleanup and the declared ceiling of 4 could never be reached — every audit row read
+`attempt: 1` and no exhaustion row was ever written. An episode register that bounds a lifecycle loop
+must live where the merge bookkeeping it has nothing to do with cannot delete it. Retry clears it
+through the existing `sourceMetadataPatch` seam, which is the pattern RUFU-246/273/393/395 already
+established for every other park this file releases.
+*/
+export const EXECUTION_REARM_EPISODE_METADATA_KEY = "executionRearmEpisode" as const;
+
 /**
  * Which gate refused the crossing. The literals are the vocabulary the hold/release sweep ALREADY
  * computes (`hold-release.ts`'s `trackHeld` reasons) plus the boundary's own RUFU-372 source enum, so
