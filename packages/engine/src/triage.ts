@@ -64,7 +64,10 @@ import {
   resolveProjectColumnsForRoles,
   isWorkflowAgentNodeForRole,
   workflowHasColumn,
-  getStepParser,
+  /* FNXC:PlanArtifactIntegrity 2026-11-13-01:05 (RUFU-693): both step-requirement predicates are
+     consumed from @fusion/core, so triage and the plan-write tool cannot disagree about one plan. */
+  promptDeclaresNoCommitsExpected,
+  promptLacksRequiredImplementationSteps,
   computePlanApprovalFingerprint,
   extractIntentSignature,
   findNearDuplicates,
@@ -2301,8 +2304,7 @@ export class TriageProcessor {
       && requiresPromptImplementationSteps
       && !promptDeclaresNoCommitsExpected(written)
     ) {
-      const parsedSteps = getStepParser("step-headings")?.parse(written).steps ?? [];
-      if (parsedSteps.length === 0) {
+      if (promptLacksRequiredImplementationSteps(written)) {
         const message = "Planning recovery withheld: PROMPT.md has no executable steps and does not declare no commits expected";
         planLog.warn(`${task.id} ${message}`);
         await this.store.logEntry(task.id, message);
@@ -7434,9 +7436,13 @@ function parseFileScopeFromPrompt(text: string): string[] {
   return extractEffectiveWriteScopeFromPrompt(text);
 }
 
-function promptDeclaresNoCommitsExpected(text: string): boolean {
-  return /^\*\*No commits expected:\*\*\s*(true|yes)\b/im.test(text);
-}
+/*
+FNXC:PlanArtifactIntegrity 2026-11-13-01:05 (RUFU-693):
+`promptDeclaresNoCommitsExpected` moved to `@fusion/core` (`tasks/step-parsers.ts`) with byte-identical
+regex, because the plan-write refusal and the `parse-steps` node must answer the no-commits exemption
+with the SAME predicate this file's recovery guard uses. A second local copy is what lets the writer-side
+refusal and the graph-side failure disagree about one plan.
+*/
 
 /*
 FNXC:TriageTitleFallback 2026-09-14-16:20:

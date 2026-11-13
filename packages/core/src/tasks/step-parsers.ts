@@ -749,5 +749,39 @@ export function unregisterStepParser(id: string): boolean {
   return getStepParserRegistry().unregister(id);
 }
 
+/*
+FNXC:PlanArtifactIntegrity 2026-11-13-01:05 (RUFU-693):
+ONE home for "does this plan owe implementation steps". Two consumers answer that question today:
+triage's planning-recovery guard (which withheld a plan that could never execute) and the engine's
+`parse-steps` node (which fails the graph with `missing-implementation-steps`). Triage carried its
+own local copy of the no-commits regex, which is exactly how the two sides drift apart again, so both
+predicates live here beside the parser they consult. Step counting goes through
+`getStepParser("step-headings")`, never the raw `parseStepHeadings` regex, so the parser's heading-frame
+tolerance cannot differ between a writer-side refusal and a graph-side failure.
+*/
+
+/**
+ * True when the plan declares the card produces no commits, which exempts it from the step
+ * requirement (`**No commits expected:** true|yes`). Case-insensitive, multi-line, and identical to
+ * the regex triage used before this moved.
+ */
+export function promptDeclaresNoCommitsExpected(text: string): boolean {
+  return /^\*\*No commits expected:\*\*\s*(true|yes)\b/im.test(text);
+}
+
+/**
+ * True when a plan carries zero executable steps for a workflow that requires them. This is the
+ * writer-side mirror of the parse node's `missing-implementation-steps` failure: same parser, same
+ * tolerance, so a plan that would die at `parse` is refused before it is ever published as approved.
+ * An unresolvable parser counts as LACKING steps, which is what triage's recovery guard already did
+ * (`?.parse(...) ?? []` -> zero steps -> withhold): fail-closed on a plan this layer cannot read. The
+ * deliberate fail-OPEN case is an unreadable workflow IR, decided by the caller, because there the
+ * graph itself remains the safety net.
+ */
+export function promptLacksRequiredImplementationSteps(content: string): boolean {
+  const steps = getStepParser(PROMPT_STEP_PARSER_ID)?.parse(content).steps ?? [];
+  return steps.length === 0;
+}
+
 // Register built-ins into the shared registry on import (idempotent via `has`).
 registerBuiltinStepParsers();

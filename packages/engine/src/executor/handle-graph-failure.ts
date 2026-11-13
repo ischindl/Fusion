@@ -1185,6 +1185,44 @@ export async function handleGraphFailure(
             await deps.persistTokenUsage(live.id);
             return;
           }
+          /*
+          FNXC:PlanArtifactIntegrity 2026-11-13-07:30 (RUFU-693):
+          Second parse sub-case: the plan published, but the artifact yields ZERO executable steps, so the node
+          refused to build a step list (`missing-implementation-steps`). Before this branch the card fell through
+          to generic graph-failure handling and was terminalized `failed` in its implementation lane -- where it
+          held a branch, a worktree and a file-scope lease while the planner overseer re-spent retries on a
+          deterministic answer (measured on RUFU-518: 55 `overseer:intervention` rows in 24h).
+
+          The disposition is IN PLACE, through the same feedback path the sibling `invalid-plan-dependency:` arm
+          above uses, and it deliberately opens no new lifecycle door. The claim that mattered is about STATUS,
+          not placement: `needs-replan` always has a planning claimant while a `failed` card has none
+          (`triage.ts`, "a failed card has no automatic planning claimant"). Moving the card to a planning lane
+          would have required a new sanctioned `wip -> hold` reason and a widened F5 -- a second backward-move
+          authority for a benefit the status already provides -- and graph routing is not supposed to own
+          backward moves at all. A first cut did exactly that and was removed as the larger risk.
+
+          The card keeps its worktree metadata; only the active-worktrees handle is released, as the sibling arm
+          does, and recovery counters are cleared because the next attempt belongs to a different plan.
+          */
+          if (failureValue === "missing-implementation-steps") {
+            await deps.store.updateTask(live.id, {
+              status: "needs-replan",
+              error: null,
+              recoveryRetryCount: null,
+              nextRecoveryAt: null,
+            }, deps.getRunContextFor(live.id));
+            const receivedBytes = Buffer.byteLength(promptContent, "utf8");
+            await deps.store.logEntry(
+              live.id,
+              "AI spec revision requested",
+              `Parse found no executable step (missing-implementation-steps, ${receivedBytes} received bytes). The plan itself needs revision: publish it with a '## Steps' section and at least one '### Step N: <title>' heading.`,
+              deps.getRunContextFor(live.id),
+            );
+            executorLog.warn(`${live.id}: parse found no executable step -- parked in place for planner repair`);
+            deps.activeWorktrees.delete(live.id);
+            await deps.persistTokenUsage(live.id);
+            return;
+          }
         } catch (replanErr) {
           executorLog.warn(
             `${live.id}: failed to rebound non-executable duplicate prompt after parse failure: ${replanErr instanceof Error ? replanErr.message : String(replanErr)}`,

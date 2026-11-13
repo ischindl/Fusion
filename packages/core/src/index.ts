@@ -667,6 +667,11 @@ export {
      keeps lint/typecheck/build green while the gate goes red (the FN-8651 trap). */
   resolveStepHeadingLabelFrame,
   PROMPT_STEP_PARSER_ID,
+  /* FNXC:PlanArtifactIntegrity 2026-11-13-01:05 (RUFU-693): the step-requirement predicates are shared
+     facts between triage, the plan-write tool and the parse node; a missing export here keeps lint and
+     build green while the engine falls back to a local copy (the FN-8651 trap). */
+  promptDeclaresNoCommitsExpected,
+  promptLacksRequiredImplementationSteps,
   __resetStepParserRegistryForTests,
 } from "./tasks/step-parsers.js";
 export type {

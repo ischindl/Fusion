@@ -2831,6 +2831,7 @@ A genuine store failure still takes the unchanged outage path below.
 export type PlanPromptWriteRefusalReason =
   | "planning-reset-fenced"
   | "invalid-step-headings"
+  | "missing-implementation-steps"
   | "duplicated-prompt-section"
   | "prompt-read-back-mismatch"
   | "prompt-shrink-rejected";
@@ -2847,6 +2848,17 @@ const PLAN_PROMPT_WRITE_REFUSAL_GUIDANCE: Record<PlanPromptWriteRefusalReason, s
     "Do not retry: this planning attempt was superseded by a task reset and a newer generation owns the spec.",
   "invalid-step-headings":
     "Nothing was persisted. Fix the plan Markdown so every `### Step N:` heading parses, then submit the complete PROMPT.md again.",
+  /*
+  FNXC:PlanArtifactIntegrity 2026-11-13-02:36 (RUFU-693):
+  A plan whose headings never yield a step publishes as an approved spec and then dies at the graph's
+  `parse` node, terminalizing the card in the execution lane (measured on RUFU-518: 0 `### Step` headings,
+  55 overseer retries in one day, branch + worktree + file-scope lease held the whole time). The guidance
+  must name the shape to add and must NOT point at a generic write tool: the plan is published only
+  through this seam, and a planner sent to `write` leaves the board with a PROMPT.md the graph cannot run.
+  It must also not read as an outage to retry with the same bytes.
+  */
+  "missing-implementation-steps":
+    "Nothing was persisted: the submitted plan produces zero executable steps, so the board would publish it and the graph would immediately fail it at the parse node. Rewrite the COMPLETE plan including `## Steps` with `### Step N: <title>` headings (a heading without a colon and a title is not a step), then call `fn_task_prompt_write` again with the full document. Only if this card genuinely produces no code, declare `**No commits expected:** true` instead. Do not use a generic file-write tool: PROMPT.md is published through this tool only.",
   /*
   FNXC:PromptSpecIntegrity 2026-11-11-07:05 (RUFU-536):
   The store refuses a submission that carries one section twice, and the planner must hear it as a
@@ -2870,16 +2882,116 @@ const PLAN_PROMPT_WRITE_REFUSAL_GUIDANCE: Record<PlanPromptWriteRefusalReason, s
     "Nothing was persisted: the submitted specification is materially smaller than the accepted spec, so the store kept the larger version as the recovery source. Do NOT retry with the shorter text. Re-issue the COMPLETE specification; if the previous body was lost from your context, recover it from the named task document revision.",
 };
 
-function planPromptWriteRefusalResult(taskId: string, reason: PlanPromptWriteRefusalReason, detail: string) {
+function planPromptWriteRefusalResult(
+  taskId: string,
+  reason: PlanPromptWriteRefusalReason,
+  detail: string,
+  /** Classification counts for the operator, never plan text. */
+  extraDetails?: Record<string, unknown>,
+) {
   return {
     content: [{
       type: "text" as const,
       // A refusal names its own reason and never claims the board was unreachable.
       text: `ERROR: PROMPT.md plan write for ${taskId} refused (${reason}): ${detail} ${PLAN_PROMPT_WRITE_REFUSAL_GUIDANCE[reason]}`,
     }],
-    details: { code: "PLAN_PROMPT_WRITE_REFUSED", refusal: reason },
+    details: { code: "PLAN_PROMPT_WRITE_REFUSED", refusal: reason, ...(extraDetails ?? {}) },
     isError: true,
   };
+}
+
+/*
+FNXC:PlanArtifactIntegrity 2026-11-13-02:36 (RUFU-693):
+Whether a submitted plan is REQUIRED to carry executable steps is one question with three askers:
+triage's recovery guard, the graph's `parse-steps` node, and this writer. The predicates themselves live
+in `@fusion/core` (Step 2); what stays here is the card-and-workflow exemption list, because only the
+writer can see the row it is about to publish. Every failure to gather a fact is FAIL-OPEN: an unreadable
+row, an unreadable IR, or an unresolvable workflow must never refuse a plan, because refusing on missing
+evidence would withhold a legitimate spec -- and the graph's own `missing-implementation-steps` disposition
+(Step 4) is the safety net for anything this guard lets through. The deliberate FAIL-CLOSED case is the
+step count itself, which `promptLacksRequiredImplementationSteps` answers.
+*/
+async function submissionRequiresExecutableSteps(
+  store: TaskStore,
+  taskId: string,
+  content: string,
+): Promise<boolean> {
+  let task: Awaited<ReturnType<TaskStore["getTask"]>>;
+  try {
+    task = await store.getTask(taskId);
+  } catch {
+    return false;
+  }
+  if (!task) return false;
+  if (task.noCommitsExpected === true) return false;
+  if (fusionCore.isFastExecutionMode(task)) return false;
+  if (fusionCore.promptDeclaresNoCommitsExpected(content)) return false;
+  // A `DUPLICATE: <id>` redirect owns its own path and carries no steps by design.
+  if (fusionCore.resolveExplicitDuplicateMarker(content, task.title ?? "").marker) return false;
+  if (!fusionCore.promptLacksRequiredImplementationSteps(content)) return false;
+  /*
+  FNXC:PromptWriteIntegrity 2026-11-13-05:10 (RUFU-693):
+  A truncated tool-call argument usually loses its `### Step` headings along with its tail, so refusing on
+  shape ahead of the store's shrink guard would answer RUFU-534's worst case with "add steps" instead of the
+  recovery pointer at the largest durable copy -- advice that invites exactly the retry that loses content.
+  The decision is taken through the SAME policy the store applies (`isMaterialPromptShrink`, not a second
+  copy of the rule): when that policy says the write would be refused as a material shrink, this guard stands
+  down and lets the store's typed refusal be the answer the operator sees.
+  */
+  if (fusionCore.isMaterialPromptShrink(
+    fusionCore.promptByteLength((task as { prompt?: string | null }).prompt ?? ""),
+    Buffer.byteLength(content, "utf8"),
+  )) {
+    return false;
+  }
+  let ir: Awaited<ReturnType<typeof fusionCore.resolveWorkflowIrForTask>> | undefined;
+  try {
+    ir = await fusionCore.resolveWorkflowIrForTask(store, taskId);
+  } catch {
+    return false;
+  }
+  if (!ir) return false;
+  /*
+  FNXC:PlanArtifactIntegrity 2026-11-13-05:10 (RUFU-693):
+  Honest absence (RUFU-372's rule for capacity facts, applied here): a store that cannot be ASKED which
+  workflow the card selected resolves to the built-in default, and that default requires steps -- so a
+  refusal here would be a verdict about a workflow nobody confirmed the card is running. Absence of the
+  reader is therefore not evidence of a step-requiring workflow; it is the absence of a question. Refuse
+  only on evidence actually gathered. This does NOT silence the real lane: `TaskStore` implements the sync
+  reader itself (`packages/core/src/store.ts` `getTaskWorkflowSelection`, with `...Async` beside it), so a
+  production store always answers and only probe-shaped fakes stand down.
+  */
+  if (typeof (store as { getTaskWorkflowSelection?: unknown }).getTaskWorkflowSelection !== "function") {
+    return false;
+  }
+  return ir.nodes.some((node) => (
+    node.kind === "parse-steps"
+    && (node.config?.artifact === undefined || node.config.artifact === "PROMPT.md")
+    && node.config?.parser === "step-headings"
+    && node.config?.requireStepsUnlessNoCommits === true
+  )) === true;
+}
+
+/*
+FNXC:PlanArtifactIntegrity 2026-11-13-02:36 (RUFU-693):
+The card must not learn about a refused plan only from a tool result the planner may never relay, so the
+refusal writes one durable History line -- counts and the reason only, never plan text. Deduped per
+(card, reason, byte count) through `logEntryOnce`; the duck-typed `logEntry` fallback stays on the same
+path because `logEntry` emits `task:updated` unconditionally (RUFU-382), and a store without the once-seam
+must still narrate the refusal rather than lose it.
+*/
+async function recordPlanWriteRefusalNotice(store: TaskStore, taskId: string, receivedBytes: number): Promise<void> {
+  const action = `Plan write refused: no executable steps (receivedBytes=${receivedBytes}, parsedStepCount=0)`;
+  const dedupeKey = `plan-prompt-write-refused:${taskId}:missing-implementation-steps:${receivedBytes}`;
+  try {
+    if (typeof store.logEntryOnce === "function") {
+      await store.logEntryOnce(taskId, { action, dedupeKey, windowMs: 6 * 60 * 60 * 1000 });
+      return;
+    }
+    await store.logEntry(taskId, action);
+  } catch {
+    // The refusal stands on its own; a History write must never become a lifecycle dependency.
+  }
 }
 
 export function createTaskPromptWriteTool(
@@ -2954,6 +3066,34 @@ export function createTaskPromptWriteTool(
             `Planning for ${taskId} was reset before PROMPT.md could be persisted`,
           );
         }
+        /*
+        FNXC:PlanArtifactIntegrity 2026-11-13-02:36 (RUFU-693):
+        Refuse a plan that cannot produce a step BEFORE anything is written. The alternative is a card
+        that looks planned (approved spec, Plan Review passed) and then dies at `parse`, which is the
+        measured RUFU-518 and RUFU-268 failure.
+
+        Ordering is a contract, not a preference, and it ranks by how actionable the answer is:
+        1. the planning-reset fence -- a superseded generation must hear "you were reset" first, because
+           the alternative advice ("add steps") would have it rewrite a spec whose generation no longer
+           exists; the check therefore runs again INSIDE the planning lifecycle lock, beside the fence
+           re-check that already lives there;
+        2. the store's material-shrink guard -- handled by standing this one down (see
+           `submissionRequiresExecutableSteps`), since only the store can measure the durable copy;
+        3. this shape refusal.
+        Declared once and called at both fence points: two copies of the refusal is how the notice and the
+        reason drift apart.
+        */
+        const requireExecutableSteps = async (): Promise<void> => {
+          if (await submissionRequiresExecutableSteps(store, taskId, params.content)) {
+            const receivedBytes = Buffer.byteLength(params.content, "utf8");
+            await recordPlanWriteRefusalNotice(store, taskId, receivedBytes);
+            throw new PlanPromptWriteRefusalError(
+              "missing-implementation-steps",
+              `the submitted plan produced zero executable steps (receivedBytes=${receivedBytes}, parsedStepCount=0)`,
+            );
+          }
+        };
+        await requireExecutableSteps();
         // Workspace membership is derived from workspace.json at task start; PROMPT.md is plan-only.
         const promptUpdate = { prompt: params.content };
         if (canPersist) {
@@ -2971,6 +3111,8 @@ export function createTaskPromptWriteTool(
                 `Planning for ${taskId} was reset before PROMPT.md could be persisted`,
               );
             }
+            // Re-run the shape refusal behind this fence re-check (see the ordering contract above).
+            await requireExecutableSteps();
             const updated = await store.withTaskLock(taskId, () => store.updateTaskUnlocked(taskId, promptUpdate, runContext));
             if (store.isBackendMode()) {
               await store.reconcileSpecDriftWhilePlanningLocked(updated).catch((error: unknown) => {
@@ -3060,7 +3202,19 @@ export function createTaskPromptWriteTool(
       } catch (err: any) {
         if (err instanceof PlanPromptWriteRefusalError) {
           onWriteRefused?.({ reason: err.reason, detail: err.message });
-          return planPromptWriteRefusalResult(taskId, err.reason, err.message);
+          /*
+          FNXC:PlanArtifactIntegrity 2026-11-13-02:36 (RUFU-693): the stepless-plan refusal carries the
+          two counts that make a future instance classifiable without a re-run. Bytes of content the tool
+          actually received, plus the parsed step count; never the plan itself.
+          */
+          return planPromptWriteRefusalResult(
+            taskId,
+            err.reason,
+            err.message,
+            err.reason === "missing-implementation-steps"
+              ? { receivedBytes: Buffer.byteLength(params.content, "utf8"), parsedStepCount: 0 }
+              : undefined,
+          );
         }
         /*
         FNXC:PromptSpecIntegrity 2026-11-11-07:05 (RUFU-536):
