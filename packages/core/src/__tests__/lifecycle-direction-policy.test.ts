@@ -66,6 +66,23 @@ describe("workflow lifecycle direction", () => {
     expect(evaluateForbiddenLifecyclePath("hold", undefined)).toBeNull();
   });
 
+  /*
+  FNXC:PlanArtifactIntegrity 2026-11-13-05:10 (RUFU-693):
+  A plan that published successfully but yields ZERO executable steps is a planning defect whose remedy is a
+  rewritten plan, so its parse reason gets the SAME legal `wip -> hold` door as Plan Review REVISE -- and no
+  other pair. Both halves are asserted together on purpose: F5 refusing a registered reason (or F5 opened
+  while the registry says nothing) is exactly the composite that stranded RUFU-518 in WIP while the overseer
+  re-spent retries, and neither half catches it alone. Unknown reasons and deeper backward routes stay refused.
+  */
+  it("sanctions a zero-step plan back to planning and nothing else", () => {
+    expect(evaluateForbiddenLifecyclePath("wip", "hold", "parse-missing-implementation-steps")).toBeNull();
+    expect(isSanctionedEngineBackwardMove("parse-missing-implementation-steps", "wip", "hold")).toBe(true);
+    expect(isSanctionedEngineBackwardMove("parse-missing-implementation-steps", "review", "wip")).toBe(false);
+    expect(evaluateForbiddenLifecyclePath("wip", "hold", "plan-parsed-empty")?.rule).toBe("F5");
+    // Measured, not assumed: the deny rule that guards a deeper review -> planning jump is F2, not F3.
+    expect(evaluateForbiddenLifecyclePath("review", "hold", "parse-missing-implementation-steps")?.rule).toBe("F2");
+  });
+
   it("requires a known reason whose declared role sets include the actual pair", () => {
     expect(isSanctionedEngineBackwardMove("code-review-revise-remediation", "review", "wip")).toBe(true);
     expect(isSanctionedEngineBackwardMove("merge-boundary-evidence-recovery", "review", "wip")).toBe(true);

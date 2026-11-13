@@ -35,6 +35,12 @@ import { DEPENDENCY_BOOTSTRAP_CONFIGURATION_REQUIRED_VALUE } from "../errors/tra
 import type { WorkflowGraphTaskRunResult } from "../workflows/workflow-graph-task-runner.js";
 import { isRequiredArtifactReadFailedValue } from "../execution/required-workflow-artifacts.js";
 import { getPromptPath } from "../execution/spec-staleness.js";
+/*
+FNXC:PlanArtifactIntegrity 2026-11-13-05:10 (RUFU-693):
+A zero-step plan is re-planned through the SAME primitive Plan Review REVISE uses. Importing it here is
+the point: a second move authority would be the bug this card exists to remove.
+*/
+import { moveTaskToReplanColumn, type ReplanMoveContainedResult } from "../execution/replan-target.js";
 import { resolveWorktreesDir } from "../worktree/worktree-paths.js";
 import { pinnedWorktreePathForTask } from "../worktree/worktree-pinning.js";
 import { executorLog } from "../logger.js";
@@ -1186,42 +1192,83 @@ export async function handleGraphFailure(
             return;
           }
           /*
-          FNXC:PlanArtifactIntegrity 2026-11-13-07:30 (RUFU-693):
+          FNXC:PlanArtifactIntegrity 2026-11-13-09:55 (RUFU-693):
           Second parse sub-case: the plan published, but the artifact yields ZERO executable steps, so the node
           refused to build a step list (`missing-implementation-steps`). Before this branch the card fell through
-          to generic graph-failure handling and was terminalized `failed` in its implementation lane -- where it
+          to generic graph-failure handling and was terminalized `failed` in its implementation lane, where it
           held a branch, a worktree and a file-scope lease while the planner overseer re-spent retries on a
           deterministic answer (measured on RUFU-518: 55 `overseer:intervention` rows in 24h).
 
-          The disposition is IN PLACE, through the same feedback path the sibling `invalid-plan-dependency:` arm
-          above uses, and it deliberately opens no new lifecycle door. The claim that mattered is about STATUS,
-          not placement: `needs-replan` always has a planning claimant while a `failed` card has none
-          (`triage.ts`, "a failed card has no automatic planning claimant"). Moving the card to a planning lane
-          would have required a new sanctioned `wip -> hold` reason and a widened F5 -- a second backward-move
-          authority for a benefit the status already provides -- and graph routing is not supposed to own
-          backward moves at all. A first cut did exactly that and was removed as the larger risk.
-
-          The card keeps its worktree metadata; only the active-worktrees handle is released, as the sibling arm
-          does, and recovery counters are cleared because the next attempt belongs to a different plan.
+          Both halves are required, and the ORDER of the claim is the lesson:
+          - `needs-replan`, not `failed`, because a `failed` card has no automatic planning claimant
+            (`triage.ts`), so the terminal status was what stranded it; and
+          - an actual return to the planning lane, because the planning claimant reads that lane and not the
+            card's status from wherever it happens to sit. Measured after deploying a status-only version of
+            this fix: the card stayed `needs-replan` in `in-progress` for 8+ minutes with no claimant at all,
+            and triage started a planner under a minute after the same row reached its planning lane. Parking
+            in place therefore converts a loud wedge into a quiet one, which is the FN-8923 shape ("invisible
+            to BOTH lanes"), not a fix. The move goes through `moveTaskToReplanColumn` -- the primitive Plan
+            Review REVISE uses -- under the reason registered for exactly this crossing, so no second move
+            authority is created; an earlier draft of this card opened no door at all and was reverted on
+            that measurement.
+          - If the move cannot happen (the workflow declares no planning lane, or the destination refuses at
+            capacity) the card is still held `needs-replan` in place rather than terminalized, because `failed`
+            is never the honest answer to a plan defect. `moveTaskToReplanColumn` answers `undefined` for both
+            causes without distinguishing them, so the History sentence names both as alternatives instead of
+            guessing.
           */
           if (failureValue === "missing-implementation-steps") {
-            await deps.store.updateTask(live.id, {
-              status: "needs-replan",
-              error: null,
-              recoveryRetryCount: null,
-              nextRecoveryAt: null,
-            }, deps.getRunContextFor(live.id));
-            const receivedBytes = Buffer.byteLength(promptContent, "utf8");
-            await deps.store.logEntry(
-              live.id,
-              "AI spec revision requested",
-              `Parse found no executable step (missing-implementation-steps, ${receivedBytes} received bytes). The plan itself needs revision: publish it with a '## Steps' section and at least one '### Step N: <title>' heading.`,
-              deps.getRunContextFor(live.id),
-            );
-            executorLog.warn(`${live.id}: parse found no executable step -- parked in place for planner repair`);
-            deps.activeWorktrees.delete(live.id);
-            await deps.persistTokenUsage(live.id);
-            return;
+            try {
+              const moveOutcome = await moveTaskToReplanColumn(
+                deps.store,
+                { id: live.id, column: live.column },
+                "parse-missing-implementation-steps",
+                undefined,
+                { workflowMoveSource: "workflow-remediation" },
+              );
+              const contained = typeof moveOutcome === "object"
+                && moveOutcome !== null
+                && (moveOutcome as ReplanMoveContainedResult).moved === false;
+              const noPlanningColumn = moveOutcome === undefined;
+              const runContext = deps.getRunContextFor(live.id);
+              if (contained || noPlanningColumn) {
+                await deps.store.updateTask(live.id, {
+                  status: "needs-replan",
+                  error: null,
+                }, runContext);
+                await deps.store.logEntry(
+                  live.id,
+                  "AI spec revision requested",
+                  contained
+                    ? "Parse found no executable step (missing-implementation-steps). This card sits in a review lane, so lifecycle containment kept it there; it is held as needs-replan in place and no step progress was cleared."
+                    : "Parse found no executable step (missing-implementation-steps). The card could not be moved into a planning lane -- this workflow declares none, or the destination was at capacity -- so it is held as needs-replan in place and no step progress was cleared.",
+                  runContext,
+                );
+              } else {
+                await deps.store.updateTask(live.id, {
+                  status: "needs-replan",
+                  error: null,
+                  recoveryRetryCount: null,
+                  nextRecoveryAt: null,
+                  graphResumeRetryCount: 0,
+                }, runContext);
+                const receivedBytes = Buffer.byteLength(promptContent, "utf8");
+                await deps.store.logEntry(
+                  live.id,
+                  "AI spec revision requested",
+                  `Parse found no executable step (missing-implementation-steps, ${receivedBytes} received bytes). The plan itself needs revision, so the card returned to the planning lane for a rewrite that must declare its steps as '### Step N: <title>' headings.`,
+                  runContext,
+                );
+              }
+              executorLog.warn(`${live.id}: parse found no executable step -- rebound to planning as needs-replan`);
+              deps.activeWorktrees.delete(live.id);
+              await deps.persistTokenUsage(live.id);
+              return;
+            } catch (reboundErr) {
+              executorLog.warn(
+                `${live.id}: failed to rebound zero-step plan to planning: ${reboundErr instanceof Error ? reboundErr.message : String(reboundErr)}`,
+              );
+            }
           }
         } catch (replanErr) {
           executorLog.warn(

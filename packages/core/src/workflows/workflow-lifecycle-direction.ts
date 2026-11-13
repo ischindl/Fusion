@@ -57,7 +57,19 @@ export interface ForbiddenLifecyclePath {
   detail: string;
 }
 
-/**
+/*
+FNXC:PlanArtifactIntegrity 2026-11-13-05:10 (RUFU-693):
+ONE list of the reasons that may take a WIP card back to planning, consulted by the F5 deny rule and by
+`ENGINE_BACKWARD_MOVE_REASONS` below. Two separate literals for "who may open this door" is how a
+sanctioned reason ends up registered but still refused by the structural rule -- or the reverse: F5
+widened while the registry says nothing, which hands every caller a backward route it never declared.
+*/
+const WIP_TO_HOLD_AUTHORIZED_REASONS: ReadonlySet<string> = new Set([
+  "plan-review-revise-replan",
+  "parse-missing-implementation-steps",
+]);
+
+ /**
  * The structural lifecycle deny-list. It intentionally runs independently of
  * reason registration: an engine reason may explain a legal step backward but
  * can never authorize a structurally forbidden route.
@@ -75,8 +87,8 @@ export function evaluateForbiddenLifecyclePath(
   if (LIFECYCLE_ROLE_RANK[from] - LIFECYCLE_ROLE_RANK[to] > 1) {
     return { rule: "F2", detail: "Automatic moves may not step backward more than one lifecycle rank" };
   }
-  if (from === "wip" && to === "hold" && reason !== "plan-review-revise-replan") {
-    return { rule: "F5", detail: "A WIP card may return to planning only for Plan Review REVISE" };
+  if (from === "wip" && to === "hold" && !WIP_TO_HOLD_AUTHORIZED_REASONS.has(reason ?? "")) {
+    return { rule: "F5", detail: "A WIP card may return to planning only for an authorized planning-revision reason" };
   }
   /* DELIBERATE-LITERAL: LifecycleRole values are policy roles, not column ids. */
   if (from === "complete" && direction === "backward") {
@@ -116,6 +128,17 @@ export const ENGINE_BACKWARD_MOVE_REASONS: Readonly<Record<string, EngineBackwar
   },
   "plan-review-revise-replan": {
     from: ["wip"], to: ["hold"], summary: "Plan Review REVISE requested a planning revision",
+  },
+  /*
+  FNXC:PlanArtifactIntegrity 2026-11-13-05:10 (RUFU-693):
+  A published plan that yields zero executable steps is a planning defect discovered AFTER admission, and
+  its remedy is a rewritten plan, not an execution retry. Before this reason existed the parse node's
+  `missing-implementation-steps` had no sanctioned way back to planning, so the card was terminalized
+  `failed` in WIP and the overseer re-ran it (measured: 55 interventions in one day on RUFU-518). Same
+  rank, same F5 door as Plan Review REVISE, because it is the same decision witnessed differently.
+  */
+  "parse-missing-implementation-steps": {
+    from: ["wip"], to: ["hold"], summary: "Parse found no step in the published plan, so the plan itself needs revision",
   },
   "merge-failure-rebound": {
     from: ["review"], to: ["review"], summary: "Merge failure bookkeeping remains in review",

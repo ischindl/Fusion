@@ -485,7 +485,14 @@ export type ReplanMoveContainedResult = {
 export async function moveTaskToReplanColumn(
   store: TaskStore,
   task: Pick<Task, "id" | "column">,
-  reason: "plan-review-revise-replan",
+  /*
+  FNXC:PlanArtifactIntegrity 2026-11-13-05:10 (RUFU-693):
+  A literal union, deliberately not `string`: the set of reasons allowed to cross the WIP -> planning
+  door is decided by `ENGINE_BACKWARD_MOVE_REASONS` and F5, and a caller must name one of them. Adding
+  `parse-missing-implementation-steps` here is what lets a zero-step plan reach re-planning through the
+  SAME primitive Plan Review REVISE uses, instead of a second move authority.
+  */
+  reason: "plan-review-revise-replan" | "parse-missing-implementation-steps",
   target?: string,
   options?: { workflowMoveSource?: string },
 ): Promise<string | undefined | ReplanMoveContainedResult> {

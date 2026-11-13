@@ -1052,17 +1052,22 @@ The planner's `fn_install_worktree_dependencies` tool executes its command throu
 
 ### Concurrency, recovery, and resiliency
 - **Lifecycle containment (FN-207):** For explicitly engine- or scheduler-sourced moves, columns are classified from their own effective trait flags using highest-rank-wins precedence. A structural deny-list forbids automatic intake targets, backward jumps over more than one rank, review exits other than to WIP, and backward terminal exits. Every remaining backward move must name `ENGINE_BACKWARD_MOVE_REASONS`; capacity refusal defers in place rather than selecting another column. Optionless and user-sourced moves, plus trait-less legacy shapes, remain fail-open for operator compatibility. Automatic transitions write a `Lifecycle move:` task-log line and activity metadata with direction, source, and reason.
-- **A plan that yields no executable step is parked for repair by status, not by a move (RUFU-693).** When
-  `parse-steps` refuses to build a step list from a published plan (`missing-implementation-steps`), the
-  graph-failure boundary writes `needs-replan` with the error and recovery counters cleared, in the lane the
-  card was dispatched from, through the same feedback path the sibling `invalid-plan-dependency:` arm uses.
-  The invariant is about the status word, not the placement: `needs-replan` always has a planning claimant
-  while a `failed` card has none, so terminalizing one in its implementation lane left it holding a branch, a
-  worktree and a file-scope lease while the overseer re-spent retries on a deterministic answer. No new
-  backward door was opened for this. A first cut registered a `wip -> hold` reason and widened F5 to accept a
-  set of reasons; it was removed because graph routing has no backward lifecycle authority and the status
-  alone already buys the recovery -- the second move authority was the larger risk. F5 therefore still
-  accepts exactly `plan-review-revise-replan`.
+- **A plan that yields no executable step returns to planning by door AND by status (RUFU-693).**
+  `parse-missing-implementation-steps` is a registered `ENGINE_BACKWARD_MOVE_REASONS` entry for `wip -> hold`,
+  the same single-rank door Plan Review REVISE uses, and the graph-failure boundary reaches it through
+  `moveTaskToReplanColumn` rather than a second move authority. F5 and the registry consult ONE
+  authorized-reason set, because a registered reason F5 still refuses (or F5 opened while the registry says
+  nothing) is a composite no single test catches. Both halves are load-bearing, and that was learned by
+  measurement rather than argument: a status-only version (`needs-replan` written where the card stood, no
+  door opened) left the card unclaimed for 8+ minutes with the board silent, and a planner started under a
+  minute after the same row was in its planning lane -- the planning claimant reads that lane, so a status
+  parked in an execution lane is the FN-8923 shape ("invisible to BOTH lanes"), not a recovery. `failed` is
+  still never written: it has no planning claimant at all. When the move cannot happen (no declared planning
+  lane, or the destination refuses at capacity) the card is held `needs-replan` in place, and the History
+  sentence names both causes as alternatives because `moveTaskToReplanColumn` does not distinguish them.
+  A card with `No commits expected: true`, a fast-mode card, or a `DUPLICATE:` redirect is exempt and keeps
+  its own route. Follow-up owed: the sibling `invalid-plan-dependency:` arm parks on status alone and shares
+  the unclaimed shape.
 - **Execution re-arm is not a lifecycle move (RUFU-308):** `attemptExecutionRearm` (`executor/execution-rearm.ts`) re-enters a failed `step-execute` node in place by installing a runnable `kind:"task"` continuation at the same node, so containment is never asked for a move it must refuse. It is evidence-bound (`occupied` checkout proof only), IR-validated, claimed under the per-task advisory lock before the seed, bounded by the persisted `mergeDetails.executionRearm` ladder, and terminalizes once with one operator notice. Containment's deny-list, `ENGINE_BACKWARD_MOVE_REASONS`, and `revisionReasons` are untouched by this path and must stay that way. See [Task Lifecycle](#task-lifecycle) for the full contract.
 - `AgentSemaphore` (`concurrency.ts`) — slot acquisition. Multi-project runtimes share a single manager-owned semaphore for the cross-project `globalMaxConcurrent` cap, while each `InProcessRuntime` wraps that pool in a scoped semaphore that tracks only that project's held slots. Engine stop, `pauseProject`, and `stopAll` abort in-flight agents, wait the configured stop drain window, then return any residual scoped slots to the shared pool without using a blanket `reconcileActiveCount(0)`, so other projects' active slots are preserved and stopped projects do not starve global capacity.
 - `RecoveryPolicy` (`recovery-policy.ts`) — retry/recovery decision policy. It returns a discriminated `retry` or `escalate` disposition, so an exhausted bounded retry cannot be silently mistaken for an ordinary pause. The owning reconciler retains containment and liveness fences; escalation clears stale proof only when its existing role-specific recovery route can reseed the current lifecycle role. Explicit operator controls (project pause, user pause, approval hold, or `autoMerge:false` review) remain holds rather than escalation targets.

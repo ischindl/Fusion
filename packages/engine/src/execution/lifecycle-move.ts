@@ -108,6 +108,9 @@ export async function moveTaskToContainedBackwardTarget(
   const column = live.column;
   const revisionReasons = new Set([
     "plan-review-revise-replan",
+    /* FNXC:PlanArtifactIntegrity 2026-11-13-05:10 (RUFU-693): a zero-step plan is a planning revision, so
+       this seam must accept the reason the registry sanctions or the move is refused here. */
+    "parse-missing-implementation-steps",
     "code-review-revise-remediation",
     "verification-failure-remediation",
     "merge-fix-remediation",
