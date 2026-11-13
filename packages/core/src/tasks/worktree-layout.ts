@@ -132,6 +132,20 @@ export function resolveWorkspaceRepoWorktreePath(taskDir: string, repoRelPath: s
 /**
  * Existing tasks retain their persisted per-repository paths; only a task whose
  * entries all live under its task directory uses the single-root layout.
+ *
+ * FNXC:WorkspaceRootMember 2026-11-13-00:20 (RUFU-561):
+ * An entry that resolves to EXACTLY the task directory is not legacy layout evidence. Two facts
+ * make `rel === ""` legitimate and modern: the workspace root is itself a Git repository, and
+ * `resolveWorkspaceTaskWorktreeDir(root, settings, id)` equals that repository's own singular task
+ * worktree path, which is precisely where RUFU-390 repoints such a member (one branch, one
+ * worktree, so the member reuses the registered worktree holding `fusion/<id>`). Scoring that
+ * entry as legacy flipped the whole task into the pre-group layout: every later member was then
+ * requested from `resolveTaskWorktreePathForBackend(settings, repoDir = <member>)`, i.e.
+ * `<member>/.fusion/worktrees/<task>`, that wrong shape was persisted through
+ * `mergeWorkspaceWorktreeEntry`, the task directory was never created, and the session root became
+ * a member checkout instead of the task directory (measured on the saneca board: 178 member branch
+ * refs carrying no checkout). Entries that resolve OUTSIDE the task directory (`..`, an absolute
+ * escape) remain legacy evidence: a genuinely pre-group task still keeps its positional layout.
  */
 export function isLegacyWorkspaceWorktreeLayout(
   task: { workspaceWorktrees?: Record<string, { worktreePath?: string }> },
@@ -140,6 +154,8 @@ export function isLegacyWorkspaceWorktreeLayout(
   return Object.values(task.workspaceWorktrees ?? {}).some((entry) => {
     if (!entry.worktreePath) return false;
     const rel = relative(resolve(taskDir), resolve(entry.worktreePath));
-    return rel === "" || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+    // `rel === ""` is deliberately absent: equality with the task directory is the root-member
+    // reuse shape, not a pre-group checkout. Only an entry escaping the task directory is legacy.
+    return rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
   });
 }

@@ -107,6 +107,21 @@ describe("workspace worktree layout", () => {
     expect(isLegacyWorkspaceWorktreeLayout({
       workspaceWorktrees: { api: { worktreePath: join(taskDir, "api") } },
     }, taskDir)).toBe(false);
+    /*
+    FNXC:WorkspaceRootMember 2026-11-13-00:20 (RUFU-561):
+    The RUFU-390 root-member reuse shape: a workspace whose root is itself a Git repository has its
+    member entry repointed at the task directory, because that directory IS the root repository's own
+    task worktree and one branch can live in exactly one worktree. Reading that equality as legacy
+    layout is what stranded the saneca cards: the whole task then resolved every later member from a
+    member-local path and returned a member checkout as the session root.
+    */
+    expect(isLegacyWorkspaceWorktreeLayout({
+      workspaceWorktrees: { saneca: { worktreePath: taskDir } },
+    }, taskDir)).toBe(false);
+    // The same directory spelled differently is still the same fact.
+    expect(isLegacyWorkspaceWorktreeLayout({
+      workspaceWorktrees: { saneca: { worktreePath: join(taskDir, ".") } },
+    }, taskDir)).toBe(false);
     expect(isLegacyWorkspaceWorktreeLayout({
       workspaceWorktrees: { api: { worktreePath: join(workspace, "api", ".worktrees", "fn-158") } },
     }, taskDir)).toBe(true);
@@ -116,6 +131,20 @@ describe("workspace worktree layout", () => {
         web: { worktreePath: join(workspace, "web", ".worktrees", "fn-158") },
       },
     }, taskDir)).toBe(true);
+    // A reused root member beside a genuinely legacy entry still reads as legacy layout.
+    expect(isLegacyWorkspaceWorktreeLayout({
+      workspaceWorktrees: {
+        saneca: { worktreePath: taskDir },
+        web: { worktreePath: join(workspace, "web", ".fusion", "worktrees", "fn-158") },
+      },
+    }, taskDir)).toBe(true);
+    // An entry that escapes the task directory upward stays legacy.
+    expect(isLegacyWorkspaceWorktreeLayout({
+      workspaceWorktrees: { api: { worktreePath: join(taskDir, "..", "api") } },
+    }, taskDir)).toBe(true);
+    // Entries with no persisted path are not evidence either way.
+    expect(isLegacyWorkspaceWorktreeLayout({ workspaceWorktrees: { api: {} } }, taskDir)).toBe(false);
+    expect(isLegacyWorkspaceWorktreeLayout({}, taskDir)).toBe(false);
   });
 
   it("sanitizes and rejects escaping paths", () => {
