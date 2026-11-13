@@ -112,7 +112,11 @@ describe("parse-steps node handler (U12, KTD-12)", () => {
   This test used to prove the opposite contract: headings labelled 12 / 99 / 2 were legal display text
   while `(depends: 2)` picked the second parsed step. Under the label coordinate the heading number IS
   the identifier an annotation points at, so a plan has to number its headings as a readable sequence,
-  and the shape that used to resolve now routes `parse-error` instead of writing a wrong edge.
+  and the shape that used to resolve now refuses instead of writing a wrong edge.
+
+  FNXC:StepDependencyDiagnostics 2026-11-12-22:51 (RUFU-501):
+  "refuses" is the whole story it used to tell. The refusal is right; the ROUTE that followed it was not,
+  because the generic value sent a writer's plan defect down the executor-failure ladder.
   */
   it("maps Markdown label dependencies through the production parse node", async () => {
     const { deps, written } = makeDeps({
@@ -123,7 +127,15 @@ describe("parse-steps node handler (U12, KTD-12)", () => {
     expect(written[0][2]).toEqual({ name: "Test", status: "pending", dependsOn: [0, 1] });
   });
 
-  it("routes a plan whose heading numbering an annotation cannot resolve to parse-error", async () => {
+  it("routes a plan whose heading numbering an annotation cannot resolve to planner repair, naming the reason", async () => {
+    /*
+    FNXC:StepDependencyDiagnostics 2026-11-12-22:51 (RUFU-501):
+    Renamed from "...to parse-error". The refusal condition is unchanged (RUFU-545's label coordinate still
+    refuses this plan and still writes nothing); what changed is the ROUTE. Answering the generic
+    `parse-error` value made a plan the writer must rewrite look like a step-reading node that is broken,
+    and the card spent its retry budget and parked failed. The test name keeps the refusal condition in its
+    wording because that is the half an author can act on.
+    */
     const { deps, written, audits } = makeDeps({
       readArtifact: async () => "### Step 12: Preflight\n### Step 99: Implement\n### Step 2 (depends: 2): Test",
     });
@@ -131,8 +143,74 @@ describe("parse-steps node handler (U12, KTD-12)", () => {
       parseIr("step-headings", undefined, [{ from: "parse", to: "end", condition: "outcome:parse-error" }]),
       deps,
     );
-    expect(result.context["node:parse:value"]).toBe("parse-error");
+    expect(result.context["node:parse:value"]).toMatch(/^invalid-plan-dependency:/);
+    // The writer's diagnostic survives onto the routed value, so the card can name what to fix.
+    expect(result.context["node:parse:value"]).toContain("unreadable heading numbering");
     expect(audits.some((a) => a.reason === "parse-error")).toBe(true);
+    expect(written).toHaveLength(0);
+  });
+
+  /*
+  FNXC:StepDependencyDiagnostics 2026-11-12-22:51 (RUFU-501):
+  The routing change moves a plan refusal OFF the author-declared `outcome:parse-error` route and onto the
+  generic `failure` route, because the value stops being the literal `parse-error`. Edge matching is
+  unchanged (`outcome:` wins when it matches, otherwise the generic success/failure edges are considered),
+  so the risk this card introduces is a value that names no outcome edge and therefore strands the walk.
+  These two cases pin the traversal outcome for both halves of that risk: a plan refusal still crosses the
+  generic failure edge, and a genuine artifact-format failure still takes the author's outcome route.
+  */
+  it("crosses the generic failure edge for a plan refusal that names no outcome-tagged edge", async () => {
+    const { deps } = makeDeps({
+      readArtifact: async () => "### Step 0: Preflight\n### Step 1: Implement (depends: 1)",
+    });
+    const result = await runParse(
+      parseIr("step-headings", undefined, [
+        { from: "parse", to: "generic-failure-sink", condition: "failure" },
+        { from: "generic-failure-sink", to: "end", condition: "success" },
+        { from: "parse", to: "outcome-route-decoy", condition: "outcome:parse-error" },
+      ], [
+        { id: "generic-failure-sink", kind: "gate", config: {} },
+        { id: "outcome-route-decoy", kind: "gate", config: {} },
+      ]),
+      deps,
+    );
+    expect(result.context["node:parse:value"]).toMatch(/^invalid-plan-dependency:/);
+    // Not stranded: the generic failure edge carried the run onward...
+    expect(result.visitedNodeIds).toContain("generic-failure-sink");
+    // ...and the refusal no longer impersonates a format failure, so that author route stays unused.
+    expect(result.visitedNodeIds).not.toContain("outcome-route-decoy");
+  });
+
+  it("keeps an unreadable artifact format on the author-declared parse-error route", async () => {
+    // The complement: a non-markdown parser receiving a non-JSON artifact is an INFRASTRUCTURE failure, and
+    // its value must keep matching the author's `outcome:parse-error` edge byte-for-byte.
+    const { deps } = makeDeps({ readArtifact: async () => "not json at all" });
+    const result = await runParse(
+      parseIr("json-steps", undefined, [
+        { from: "parse", to: "generic-failure-sink", condition: "failure" },
+        { from: "generic-failure-sink", to: "end", condition: "success" },
+        { from: "parse", to: "outcome-route-decoy", condition: "outcome:parse-error" },
+      ], [
+        { id: "generic-failure-sink", kind: "gate", config: {} },
+        { id: "outcome-route-decoy", kind: "gate", config: {} },
+      ]),
+      deps,
+    );
+    expect(result.context["node:parse:value"]).toBe("parse-error");
+    expect(result.visitedNodeIds).toContain("outcome-route-decoy");
+    expect(result.visitedNodeIds).not.toContain("generic-failure-sink");
+  });
+
+  it("routes a persisted-index refusal from the same node to the same plan-repair value", async () => {
+    // Second producer, the coordinate the writer never sees: the plan came from a JSON artifact, so the
+    // heading pre-gates never ran, and `depends` is already a 0-based storage index. `depends: [1]` on the
+    // second step names itself, and the structural validator that gates a plugin parser refuses it. Before
+    // the fix this class answered the same generic value as an unreadable artifact.
+    const { deps, written } = makeDeps({
+      readArtifact: async () => JSON.stringify([{ name: "Preflight" }, { name: "Implement", depends: [1] }]),
+    });
+    const result = await runParse(parseIr("json-steps"), deps);
+    expect(result.context["node:parse:value"]).toBe("invalid-plan-dependency:step 2 depends on invalid step 2 (self-or-forward)");
     expect(written).toHaveLength(0);
   });
 

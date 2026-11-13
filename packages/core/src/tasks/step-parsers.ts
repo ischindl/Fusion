@@ -247,6 +247,59 @@ export type StepDependencyCoordinate = "markdown-position" | "storage-index";
 export type StepDependencyValidationReason = "malformed" | "zero" | "negative" | "duplicate" | "out-of-range" | "self-or-forward" | "cycle" | "ambiguous-labels";
 
 /**
+ * Where the refused annotation actually sat in the heading, or why it could not be located.
+ *
+ * FNXC:StepDependencyDiagnostics 2026-11-12-22:51 (RUFU-501):
+ * A Markdown plan accepts two annotation positions — the canonical one before the colon and the legacy
+ * trailing one after it, which additionally requires every heading label to ascend in document order.
+ * A writer that gets a token refused had no way to tell which of the two it had used, and the two behave
+ * differently, so the position is now part of the refusal. Storage-index refusals carry no form at all:
+ * there is no annotation in that coordinate.
+ */
+export type StepDependencyAnnotationForm = "prefix" | "suffix" | "multiple" | "unreadable";
+
+/** The clause naming where the annotation was written, or nothing when the refusal has no annotation. */
+function annotationPositionNote(form: StepDependencyAnnotationForm | undefined): string | undefined {
+  switch (form) {
+    case "prefix": return "The annotation is written before the colon, the canonical position.";
+    case "suffix": return "The annotation is written after the colon, the legacy trailing position, which is read only when every heading label ascends in document order.";
+    case "multiple": return "The heading carries more than one `(depends:)` annotation, and only one is read.";
+    case "unreadable": return "The `(depends:)` annotation on the heading is not a readable list of heading labels.";
+    default: return undefined;
+  }
+}
+
+/**
+ * The clause naming the numbering frame the token was read against.
+ *
+ * FNXC:StepDependencyDiagnostics 2026-11-12-22:51 (RUFU-501):
+ * The frame is what makes a refused token explainable: the same `0` names Preflight in a plan numbered
+ * from 0 and names nothing in a plan numbered from 1. Skipped for the reasons whose sentence already
+ * names the labels (`ambiguous-labels`, `out-of-range`), because repeating a fact reads as a different
+ * fact. RUFU-545 put `frame` and `authoredLabels` on the error object; this renders them.
+ */
+function frameNote(
+  frame: StepHeadingLabelFrame["kind"] | undefined,
+  authoredLabels: readonly number[] | undefined,
+  reason: StepDependencyValidationReason,
+): string | undefined {
+  if (!frame || !authoredLabels || authoredLabels.length === 0) return undefined;
+  if (reason === "ambiguous-labels" || reason === "out-of-range") return undefined;
+  if (frame === "ambiguous") {
+    return `This plan's heading labels ${authoredLabels.join(", ")} are neither contiguous from 0 nor from 1, so no token can be read against them.`;
+  }
+  const from = frame === "zero-based" ? 0 : 1;
+  return `This plan numbers its headings from ${from} (authored labels ${Math.min(...authoredLabels)}-${Math.max(...authoredLabels)}).`;
+}
+
+/** The frame fact that decides the `zero` reason, stated as the rule rather than as a prohibition. */
+function zeroFrameNote(reason: StepDependencyValidationReason): string | undefined {
+  return reason === "zero"
+    ? "A token of 0 names the first heading only in a plan whose headings number from 0."
+    : undefined;
+}
+
+/**
  * A stable, task-visible dependency refusal with the original bad token.
  *
  * FNXC:StepDependencyValidation 2026-11-11-08:26 (RUFU-545):
@@ -263,21 +316,38 @@ export class StepDependencyValidationError extends Error {
   readonly stepCount: number;
   readonly frame?: StepHeadingLabelFrame["kind"];
   readonly authoredLabels?: number[];
+  readonly annotationForm?: StepDependencyAnnotationForm;
 
-  constructor(params: { coordinate: StepDependencyCoordinate; dependentPosition: number; token: string | number; reason: StepDependencyValidationReason; stepCount: number; frame?: StepHeadingLabelFrame["kind"]; authoredLabels?: number[] }) {
-    const { coordinate, dependentPosition, token, reason, stepCount, frame, authoredLabels } = params;
+  constructor(params: { coordinate: StepDependencyCoordinate; dependentPosition: number; token: string | number; reason: StepDependencyValidationReason; stepCount: number; frame?: StepHeadingLabelFrame["kind"]; authoredLabels?: number[]; annotationForm?: StepDependencyAnnotationForm }) {
+    const { coordinate, dependentPosition, token, reason, stepCount, frame, authoredLabels, annotationForm } = params;
     const displayed = coordinate === "markdown-position" ? token : Number(token) + 1;
     const prefix = `step ${dependentPosition} depends on`;
     const labelRange = authoredLabels && authoredLabels.length > 0
       ? `${Math.min(...authoredLabels)}-${Math.max(...authoredLabels)}`
       : undefined;
-    const message = reason === "ambiguous-labels"
+    const sentence = reason === "ambiguous-labels"
       ? `${prefix} unreadable heading numbering: annotated heading ${dependentPosition} carries \`(depends: ${token})\` but the authored step labels ${authoredLabels?.join(", ") ?? "(none)"} are neither contiguous from 0 nor from 1. Renumber contiguously from 0 or from 1, or remove the annotation.`
       : reason === "out-of-range" && labelRange
         ? `${prefix} out-of-range step ${displayed} (authored labels: ${labelRange})`
         : reason === "out-of-range"
           ? `${prefix} out-of-range step ${displayed} (valid positions: 1-${stepCount})`
           : `${prefix} invalid step ${displayed} (${reason})`;
+    /*
+    FNXC:StepDependencyDiagnostics 2026-11-12-22:51 (RUFU-501):
+    The refusal is the only thing a plan writer ever sees of this parser, and the reported failure was
+    that it named the bad token and nothing else: which of the two accepted annotation positions the plan
+    had used, and which numbering frame the token was therefore read against. Both facts were already on
+    the error object; they were rendered for two reasons out of nine. They are APPENDED after the
+    existing `step N depends on invalid step M (reason)` sentence rather than folded into it, because
+    that sentence is the string callers match on — a triage refusal identity, the prompt-write gate, and
+    the byte-equality publication guard all read it.
+    */
+    const writerContext = coordinate === "markdown-position"
+      ? [annotationPositionNote(annotationForm), frameNote(frame, authoredLabels, reason), zeroFrameNote(reason)]
+        .filter((note): note is string => typeof note === "string")
+        .join(" ")
+      : "";
+    const message = writerContext ? `${sentence} ${writerContext}` : sentence;
     super(message);
     this.name = "StepDependencyValidationError";
     this.coordinate = coordinate;
@@ -287,6 +357,7 @@ export class StepDependencyValidationError extends Error {
     this.stepCount = stepCount;
     this.frame = frame;
     this.authoredLabels = authoredLabels;
+    this.annotationForm = annotationForm;
   }
 }
 
@@ -377,7 +448,24 @@ export function parseStepHeadings(content: string): TaskStep[] {
     const annotations = entry.match.split("(depends:").length - 1;
     if (annotations > 1 || (annotations > 0 && !annotated && !suffix)
       || (suffix && !unambiguousLegacyLabels)) {
-      throw new StepDependencyValidationError({ coordinate: "markdown-position", dependentPosition: steps.length + 1, token: entry.match, reason: "malformed", stepCount: matches.length });
+      /*
+      FNXC:StepDependencyDiagnostics 2026-11-12-22:51 (RUFU-501):
+      This was the throw site carrying neither `frame` nor `authoredLabels`, so the one class of refusal a
+      writer hits for putting the annotation in the wrong place was the one class that could not say where
+      the annotation was or what numbering it had been read against. Both are passed now, and the shape of
+      the bad heading is named by `annotationForm`: two annotations, a token list that is not readable, or
+      the legacy trailing position in a document whose labels do not ascend.
+      */
+      throw new StepDependencyValidationError({
+        coordinate: "markdown-position",
+        dependentPosition: steps.length + 1,
+        token: entry.match,
+        reason: "malformed",
+        stepCount: matches.length,
+        frame: frame.kind,
+        authoredLabels,
+        annotationForm: annotations > 1 ? "multiple" : suffix ? "suffix" : "unreadable",
+      });
     }
     const name = annotated?.[2] ?? suffix?.[1] ?? /^###\s+Step\s+\d+[^:]*:\s*(.+)$/m.exec(entry.match)?.[1] ?? "";
     steps.push({ name: name.trim(), status: "pending" });
@@ -398,6 +486,9 @@ export function parseStepHeadings(content: string): TaskStep[] {
         stepCount: steps.length,
         frame: "ambiguous",
         authoredLabels,
+        // Only a prefix annotation can reach here: a trailing annotation in an unreadable document is
+        // refused by the pre-gate above, so this refusal always names the canonical position.
+        annotationForm: "prefix",
       });
     }
     for (const pending of pendingDependencies) {
@@ -408,7 +499,7 @@ export function parseStepHeadings(content: string): TaskStep[] {
       const seen = new Set<number>();
       const dependencies = new Set<number>();
       for (const token of raw.split(",").map((value) => value.trim())) {
-        const base = { coordinate: "markdown-position" as const, dependentPosition: pending.position, token, stepCount: steps.length, frame: frame.kind, authoredLabels };
+        const base = { coordinate: "markdown-position" as const, dependentPosition: pending.position, token, stepCount: steps.length, frame: frame.kind, authoredLabels, annotationForm: pending.form };
         if (!/^-?\d+$/.test(token)) throw new StepDependencyValidationError({ ...base, reason: "malformed" });
         const value = Number(token);
         if (value < 0) throw new StepDependencyValidationError({ ...base, reason: "negative" });

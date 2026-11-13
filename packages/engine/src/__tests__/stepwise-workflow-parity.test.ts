@@ -645,6 +645,56 @@ describe("stepwise workflow parity (U7 / KTD-9)", () => {
     expect(mergeCalls).toBe(0);
   });
 
+  /*
+  FNXC:StepDependencyDiagnostics 2026-11-12-22:51 (RUFU-501):
+  Reproduction, through the real parse node of the shipped coding IR: a plan whose `depends` annotation
+  cannot be resolved is a PLAN refusal, but the node answered it with the generic `parse-error` value, the
+  same value an unreadable artifact format produces. The two failure classes were therefore indistinguishable
+  to the failure handler, which is why the class could arrive at the completion boundary having committed
+  nothing. The value is the after-state this card fixes; the step-write and merge assertions are the ones
+  that were already true and must stay true.
+  */
+  it("RUFU-501 RED: routes a plan-content dependency refusal out of the real parse node as a plan-repair value", async () => {
+    let mergeCalls = 0;
+    let writeCalls = 0;
+    const executor = new WorkflowGraphExecutor({
+      seams: {
+        planning: async () => ({ outcome: "success" }),
+        execute: async () => ({ outcome: "success" }),
+        review: async () => ({ outcome: "success" }),
+        merge: async () => {
+          mergeCalls++;
+          return { outcome: "success" };
+        },
+        schedule: async () => ({ outcome: "success" }),
+        stepExecute: async () => ({ outcome: "success", value: "step-done" }),
+      },
+      getTaskSteps: () => [],
+      parseStepsDeps: {
+        // Trailing annotation naming its own heading label — the shipped mixed form, which resolves
+        // against the label and therefore refuses as `self-or-forward`.
+        readArtifact: async () => "### Step 0: Preflight\n### Step 1: Fence the reclaim write (depends: 1)",
+        writeSteps: async () => { writeCalls++; },
+      },
+      runCustomNode: async () => ({ outcome: "success" }),
+    });
+
+    const result = await executor.run(taskWithSteps(0), settingsOn(), BUILTIN_STEPWISE_CODING_WORKFLOW_IR);
+
+    expect(result.outcome).toBe("failure");
+    // The value names its failure class and carries the writer's diagnostic, so the failure handler can
+    // route it to the plan-repair sink instead of the generic retry ladder.
+    expect(result.context["node:parse:value"]).toMatch(/^invalid-plan-dependency:/);
+    expect(result.context["node:parse:value"]).toContain("(self-or-forward)");
+    // Never wrote a step list, never reached merge.
+    expect(writeCalls).toBe(0);
+    expect(mergeCalls).toBe(0);
+    expect(result.visitedNodeIds).not.toContain("steps");
+    expect(result.visitedNodeIds).not.toContain("merge");
+    // The refusal is still attributed to the parse node, which is what names the recovery owner.
+    expect(result.visitedNodeIds[result.visitedNodeIds.length - 1]).toBe("parse");
+  });
+
   // ── Pre-merge browser-verification optional-group (U6, R-3 run-once) ────────
 
   const BROWSER_VERIFICATION_STEP_VISITED_ID = "browser-verification::browser-verification-step";

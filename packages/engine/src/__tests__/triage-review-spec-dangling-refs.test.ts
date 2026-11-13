@@ -115,13 +115,24 @@ describe("triage deterministic plan validation for dangling references", () => {
       const unreadableNumbering = "step 2 depends on unreadable heading numbering: annotated heading 2 "
         + "carries `(depends: 0)` but the authored step labels 0, 12 are neither contiguous from 0 nor "
         + "from 1. Renumber contiguously from 0 or from 1, or remove the annotation.";
-      await expect((processor as any).validateGeneratedPrompt(
+      /*
+      FNXC:StepDependencyDiagnostics 2026-11-12-23:41 (RUFU-501):
+      This site pinned the refusal with `toBe`, so it was the one census assertion the appended authoring
+      context could break. The intent here is the refusal CLASS and the fact that the card is told about it
+      verbatim, not the exact byte length of the sentence, so the assertion matches the refusal's own
+      sentence as a prefix and substring respectively. The extra context the parser now appends - which
+      annotation positions are read, and that `0`/`1` are the only legal starting labels - is asserted at
+      the parser seam in packages/core/src/__tests__/step-parsers-heading-frame.test.ts.
+      */
+      const refusal = await (processor as any).validateGeneratedPrompt(
         "FN-5112",
         "## Steps\n### Step 12: First\n### Step 0 (depends: 0): Second\n",
-      )).resolves.toBe(unreadableNumbering);
+      );
+      expect(typeof refusal).toBe("string");
+      expect(refusal.startsWith(unreadableNumbering)).toBe(true);
       expect(store.logEntry).toHaveBeenCalledWith(
         "FN-5112",
-        `Generated plan validation failed: ${unreadableNumbering}`,
+        expect.stringContaining(`Generated plan validation failed: ${unreadableNumbering}`),
       );
     } finally {
       await rm(rootDir, { recursive: true, force: true });

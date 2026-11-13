@@ -176,4 +176,44 @@ describe("step parser dependency indexing", () => {
       { name: "Second", dependsOn: [0] },
     ]);
   });
+
+  /*
+  FNXC:StepDependencyDiagnostics 2026-11-12-22:51 (RUFU-501):
+  Explicit anti-regression pins for the three contracts RUFU-501 must leave exactly as they are. They are
+  GREEN before the change and must stay green: this card routes and explains a refusal, it does not widen
+  or narrow what is readable. They are stated here as pins rather than left scattered, because the change
+  touches the same file that decides all three.
+  */
+  it("PIN, unchanged contract: json-steps keeps [0] as the first step and [] as none", () => {
+    expect(parseJsonSteps(JSON.stringify([
+      { name: "Preflight" },
+      { name: "Implement", depends: [0] },
+      { name: "Independent", depends: [] },
+      { name: "Omitted" },
+    ])).steps).toEqual([
+      { name: "Preflight" },
+      { name: "Implement", dependsOn: [0] },
+      { name: "Independent", dependsOn: [] },
+      { name: "Omitted" },
+    ]);
+  });
+
+  it("PIN, unchanged contract: a trailing annotation in a zero-based contiguous plan resolves to a real dependency", () => {
+    // The shipped reading RUFU-545 published: the trailing token names a heading label, and a bare 0 in a
+    // plan numbered from 0 names Preflight, never "no dependency".
+    const steps = parseStepHeadings([
+      "### Step 0: Preflight",
+      "### Step 1: Establish the decision (depends: 0)",
+      "### Step 2: Fan in (depends: 0,1)",
+    ].join("\n"));
+    expect(steps.map((step) => step.dependsOn)).toEqual([undefined, [0], [0, 1]]);
+  });
+
+  it("PIN, unchanged contract: a prefix token naming its own label collapses onto the preceding step and stays an array", () => {
+    // The persisted array matters beyond readability: merge-queue-ops.ts applies its completion guard for a
+    // non-graph writer only when `dependsOn` is an array, so an absent value would delete that guard.
+    const steps = parseStepHeadings("### Step 0: Preflight\n### Step 1: A\n### Step 2 (depends: 2): B");
+    expect(steps[2]?.dependsOn).toEqual([1]);
+    expect(Array.isArray(steps[2]?.dependsOn)).toBe(true);
+  });
 });

@@ -12,7 +12,7 @@ import {
 
 /*
 FNXC:WorkflowLifecycleAutofix 2026-07-12-13:00:
-Two of the five lifecycle warning codes have a deterministic remedy, so the
+Two of the lifecycle warning codes have a deterministic remedy, so the
 editor's warning banner offers one-click fixes for them (all view modes; the
 simplified view is the motivating surface since its users cannot drag nodes
 into place):
@@ -25,6 +25,14 @@ into place):
 The remaining codes (unsafe-terminal-before-merge, optional-group-after-
 execution, review-gate-without-failure-route) are structural judgment calls
 and stay manual.
+
+FNXC:ParseFailureRouting 2026-11-13-00:46 (RUFU-501):
+The set above is a positive allowlist, which is what keeps an unfixable code from becoming a UI defect: the
+banner's Fix button and the Fix-all entry both render only for codes this set contains, so a code that has
+no deterministic remedy renders no empty button, no orphaned click target, and no dangling aria-label in
+either the desktop or the mobile shell. `parse-failure-routes-to-terminal` is deliberately NOT added here -
+choosing which lane deserves a refused plan is the author's judgment, not a node insertion - so it surfaces
+as the code, the node, and the sentence only.
 */
 
 type LayoutNode = FlowNode<WorkflowFlowNodeData>;

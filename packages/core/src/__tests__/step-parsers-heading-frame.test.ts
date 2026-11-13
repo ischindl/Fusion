@@ -8,6 +8,7 @@ import {
   getStepParser,
   resolveAuthoredStepHeadingOffset,
   resolveStepHeadingLabelFrame,
+  validateStepDependencies,
 } from "../tasks/step-parsers.js";
 
 /*
@@ -201,6 +202,80 @@ describe("markdown (depends:) annotation coordinate", () => {
       expect(error).toMatchObject({ reason: "self-or-forward", coordinate: "markdown-position" });
     }
     expect(parseStepHeadings("### Step 0: A\n### Step 1: B (depends: 0)")[1]?.dependsOn).toEqual([0]);
+  });
+
+  /*
+  FNXC:StepDependencyDiagnostics 2026-11-12-22:51 (RUFU-501):
+  RUFU-545 put `frame` and `authoredLabels` on the error object, but the message builder rendered them
+  for only two reasons (`ambiguous-labels`, and `out-of-range` when labels were known), and the error
+  carried no field at all saying which of the two accepted annotation POSITIONS a plan had used. So a
+  writer who put the annotation after the colon, or who wrote `0` in a plan numbered from 1, was told the
+  token was bad and nothing about the coordinate they had actually written in. These cases own the
+  writer-facing sentence; the resolution rules they describe are pinned elsewhere in this file and do not
+  move. RED on the base for two different reasons: the token-level throws already pass `frame` but never
+  render it, and the malformed pre-gate throws with neither `frame` nor `authoredLabels`.
+  */
+  it("RUFU-501 RED: names the prefix position and the resolved frame in the zero refusal of a plan numbered from one", () => {
+    const content = "### Step 1: A\n### Step 2 (depends: 0): B";
+    try {
+      parseStepHeadings(content);
+      expect.unreachable("a 0 token names no heading in the fully-1-based frame");
+    } catch (error) {
+      expect(error).toMatchObject({ reason: "zero", frame: "fully-1-based" });
+      const message = (error as Error).message;
+      // The existing sentence shape survives unchanged; the two facts come after it.
+      expect(message).toContain("step 2 depends on invalid step 0 (zero)");
+      expect(message).toContain("before the colon");
+      expect(message).toContain("numbers its headings from 1");
+      expect(message).toContain("authored labels 1-2");
+      // The remedy is the frame fact itself: a zero names the first heading only where headings start at 0.
+      expect(message).toMatch(/0 names[^.]*only[^.]*from 0/);
+    }
+  });
+
+  it("RUFU-501 RED: names the trailing position and the zero-based frame for the reported reproduction", () => {
+    // The exact plan shape from the 2026-10-02 report: a trailing annotation naming its own heading label.
+    const content = "### Step 0: Preflight\n### Step 1: Fence the reclaim write (depends: 1)";
+    try {
+      parseStepHeadings(content);
+      expect.unreachable("the trailing form still refuses its own label");
+    } catch (error) {
+      expect(error).toMatchObject({ reason: "self-or-forward", frame: "zero-based" });
+      const message = (error as Error).message;
+      expect(message).toContain("step 2 depends on invalid step 1 (self-or-forward)");
+      expect(message).toContain("after the colon");
+      expect(message).toContain("numbers its headings from 0");
+      expect(message).toContain("authored labels 0-1");
+    }
+  });
+
+  it("RUFU-501 RED: names the trailing position in the malformed refusal of a plan whose labels do not ascend", () => {
+    // The pre-gate throw is the site that carried neither frame nor labels: the suffix form asks for an
+    // ascending document, and this plan's labels are 0 then 2.
+    const content = "### Step 0: A\n### Step 2: B (depends: 0)";
+    try {
+      parseStepHeadings(content);
+      expect.unreachable("a trailing annotation in a non-ascending document refuses");
+    } catch (error) {
+      expect(error).toMatchObject({ reason: "malformed", coordinate: "markdown-position" });
+      const message = (error as Error).message;
+      expect(message).toContain("after the colon");
+      expect(message).toContain("0, 2");
+    }
+  });
+
+  it("keeps the storage-index refusal free of Markdown numbering, because it has none", () => {
+    // Pin: the appended position/frame clauses are Markdown-only. A persisted-index refusal must not
+    // start talking about heading labels or annotation positions it never read.
+    try {
+      validateStepDependencies([{ dependsOn: [] }, { dependsOn: [1] }]);
+      expect.unreachable();
+    } catch (error) {
+      const message = (error as Error).message;
+      expect(message).toBe("step 2 depends on invalid step 2 (self-or-forward)");
+      expect(message).not.toContain("colon");
+      expect(message).not.toContain("label");
+    }
   });
 
   it("keeps json-steps dependencies as 0-based document indices", () => {

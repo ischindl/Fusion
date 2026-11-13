@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { TaskDetail } from "@fusion/core";
+import { BUILTIN_STEPWISE_CODING_WORKFLOW_IR } from "@fusion/core";
 import "./executor-test-helpers.js";
 import { TaskExecutor } from "../executor.js";
+import { WorkflowGraphExecutor } from "../workflows/workflow-graph-executor.js";
+import { createNoopLegacySeams } from "../workflows/workflow-node-handlers.js";
 import { createMockStore, resetExecutorMocks } from "./executor-test-helpers.js";
 
 const now = "2026-06-23T00:00:00.000Z";
@@ -114,6 +117,149 @@ describe("executor graph execute self-requeue gate", () => {
       expect.objectContaining({ status: "failed" }),
       expect.anything(),
     );
+  });
+
+  /*
+  FNXC:StepDependencyDiagnostics 2026-11-12-22:51 (RUFU-501):
+  Recovery reproduction across the two production seams, with no hand-written failure value: the run comes
+  from the real parse node of the shipped coding IR and the result goes to the real failure handler. The
+  plan-repair sink was already value-driven, so the only way to show what this card fixes is to let the
+  node author the value — on the base it says `parse-error`, the card takes the generic retry ladder, and
+  the plan-repair branch that would have routed it to the planner is never reached. The paired case below
+  holds the opposite direction: an unreadable artifact is infrastructure and must keep taking the ladder.
+  */
+
+  /** Runs the shipped coding IR through the real parse node and returns the result shape the executor acts on. */
+  async function runRealParseNode(live: TaskDetail, readArtifact: () => Promise<string>) {
+    const graph = new WorkflowGraphExecutor({
+      seams: createNoopLegacySeams(),
+      getTaskSteps: () => [],
+      parseStepsDeps: { readArtifact, writeSteps: async () => {} },
+      runCustomNode: async () => ({ outcome: "success" as const }),
+    });
+    const result = await graph.run(
+      live,
+      { experimentalFeatures: { workflowGraphExecutor: true } } as never,
+      BUILTIN_STEPWISE_CODING_WORKFLOW_IR,
+    );
+    return {
+      disposition: "failed" as const,
+      outcome: result.outcome,
+      visitedNodeIds: result.visitedNodeIds,
+      context: result.context,
+    };
+  }
+
+  it("routes an unresolvable plan dependency from the real parse node to planner repair, not the retry ladder", async () => {
+    resetExecutorMocks();
+    const store = createMockStore();
+    const live = task({
+      id: "FN-PARSE-PLAN-REFUSAL",
+      worktree: "/tmp/fusion-parse-plan-refusal",
+      steps: [{ name: "Preflight", status: "pending" }],
+    });
+    store.getTask.mockResolvedValue(live);
+    const executor = new TaskExecutor(store, "/tmp/test");
+    const activeWorktrees = (executor as any).activeWorktrees as Map<string, Set<string>>;
+    activeWorktrees.set(live.id, new Set([live.worktree!]));
+
+    const result = await runRealParseNode(live, async () => "### Step 0: Preflight\n### Step 1: Fence the reclaim write (depends: 1)");
+    expect(result.context?.["node:parse:value"]).toMatch(/^invalid-plan-dependency:/);
+
+    await (executor as any).handleGraphFailure(live, result);
+
+    const diagnostic = String(result.context?.["node:parse:value"]).slice("invalid-plan-dependency:".length);
+    expect(store.updateTask).toHaveBeenCalledWith(live.id, {
+      status: "needs-replan",
+      error: null,
+      recoveryRetryCount: null,
+      nextRecoveryAt: null,
+    }, undefined);
+    expect(store.logEntry).toHaveBeenCalledWith(
+      live.id,
+      "AI spec revision requested",
+      `Step dependency validation rejected the plan: ${diagnostic}`,
+      undefined,
+    );
+    // Never the generic ladder: no failed park, no recovery-budget burn, no atomic terminal write.
+    expect(store.updateTask).not.toHaveBeenCalledWith(
+      live.id,
+      expect.objectContaining({ status: "failed" }),
+      expect.anything(),
+    );
+    expect(store.updateTaskAtomic).not.toHaveBeenCalled();
+    expect(store.logEntry).not.toHaveBeenCalledWith(
+      live.id,
+      expect.stringContaining("terminated with failure at node 'parse'"),
+      expect.anything(),
+      expect.anything(),
+    );
+    // Lifecycle containment: the plan-repair sink re-seeds planning in place and moves nothing. A card
+    // whose plan cannot be read must never land in a complete-trait column, so the terminal lane is
+    // asserted here as byte-identical placement, not merely as "no handoff to review".
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect(live.column).toBe("in-progress");
+    // The run's checkout is released with the run, exactly as the other committing terminal parks do.
+    expect(activeWorktrees.has(live.id)).toBe(false);
+  });
+
+  it("keeps an unreadable artifact from that same node on the generic ladder, diverted to no planner", async () => {
+    // The A/B half of the routing fix: the two classes share a node and an IR edge, and only the value
+    // separates them. An artifact the parser could not even read is infrastructure — it must keep its
+    // failed park and must never be labelled a plan the planner should rewrite.
+    resetExecutorMocks();
+    const store = createMockStore();
+    const live = task({
+      id: "FN-PARSE-INFRA-FAILURE",
+      worktree: "/tmp/fusion-parse-infra-failure",
+      steps: [{ name: "Preflight", status: "pending" }],
+    });
+    store.getTask.mockResolvedValue(live);
+    const executor = new TaskExecutor(store, "/tmp/test");
+
+    const result = await runRealParseNode(live, async () => {
+      throw new Error("artifact store unreachable");
+    });
+    expect(result.context?.["node:parse:value"]).toBe("parse-error");
+
+    await (executor as any).handleGraphFailure(live, result);
+
+    expect(store.updateTask).not.toHaveBeenCalledWith(
+      live.id,
+      expect.objectContaining({ status: "needs-replan" }),
+      expect.anything(),
+    );
+    expect(store.logEntry).not.toHaveBeenCalledWith(
+      live.id,
+      "AI spec revision requested",
+      expect.any(String),
+      expect.anything(),
+    );
+    const parkedFailed = store.updateTask.mock.calls.some(
+      ([, patch]) => (patch as { status?: string }).status === "failed",
+    );
+    expect(parkedFailed).toBe(false);
+    expect(store.updateTask).not.toHaveBeenCalledWith(
+      live.id,
+      expect.objectContaining({ status: "needs-replan" }),
+      expect.anything(),
+    );
+    expect(store.logEntry).not.toHaveBeenCalledWith(
+      live.id,
+      "AI spec revision requested",
+      expect.any(String),
+      expect.anything(),
+    );
+    // The ladder's own honest terminal: the failed park is a fenced atomic write, and the card's History
+    // names the node and the generic value. This is the pair of log lines the reported cards carried.
+    expect(store.updateTaskAtomic).toHaveBeenCalledTimes(1);
+    expect(store.logEntry).toHaveBeenCalledWith(
+      live.id,
+      expect.stringContaining("terminated with failure at node 'parse' (parse-error)"),
+      undefined,
+      undefined,
+    );
+    expect(store.moveTask).not.toHaveBeenCalled();
   });
 
   it("keeps in-review graph failures in review without a REVISE handoff", async () => {

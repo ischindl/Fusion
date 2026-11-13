@@ -1,4 +1,4 @@
-import { FAST_LANE_STEP_NAME, getStepParser, isFastExecutionMode, isRemediationStep, validateStepDependencies } from "@fusion/core";
+import { FAST_LANE_STEP_NAME, getStepParser, isFastExecutionMode, isRemediationStep, StepDependencyValidationError, validateStepDependencies } from "@fusion/core";
 import type { TaskDetail, TaskStep, WorkflowIrNode } from "@fusion/core";
 
 import type { WorkflowNodeHandler, WorkflowNodeResult } from "../workflows/workflow-graph-executor.js";
@@ -6,6 +6,15 @@ import type { WorkflowNodeRunner, WorkflowNodeRunnerContext } from "../workflows
 
 /** The implicit default step-source artifact when a workflow declares no artifacts. */
 export const PARSE_STEPS_DEFAULT_ARTIFACT = "PROMPT.md";
+
+/*
+FNXC:StepDependencyDiagnostics 2026-11-12-22:51 (RUFU-501):
+The routable value a PLAN refusal carries. The literal is spelled in three places and they must agree:
+this producer, `workflow-graph-foreach.ts` (which has emitted it since the refusal was introduced), and
+the failure handler's `invalid-plan-dependency:` branch that consumes it. Spelling it once here keeps the
+producer honest; the consumer still matches on the literal it has always matched on.
+*/
+export const INVALID_PLAN_DEPENDENCY_VALUE_PREFIX = "invalid-plan-dependency:";
 
 export interface ParseStepsHandlerDeps {
   readArtifact: (task: TaskDetail, key: string) => Promise<string | undefined>;
@@ -116,6 +125,22 @@ export class ParseStepsNodeRunner implements WorkflowNodeRunner {
       parsedSteps = parser.parse(content).steps;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      /*
+      FNXC:StepDependencyDiagnostics 2026-11-12-22:51 (RUFU-501):
+      A `(depends:)` annotation that cannot be resolved is the plan being wrong, not the step-reading node
+      being broken, and the two classes need different recoveries. `StepDependencyValidationError` is the
+      shared validator's typed refusal and is raised ONLY for dependency content — a malformed token, a zero
+      in a plan numbered from one, a self/forward edge, a cycle — while every other throw here (an
+      unreadable JSON document, a plugin parser that threw or timed out, which the plugin adapter re-wraps as
+      `PluginParserError`) is about the artifact or the parser. On the base both classes answered the same
+      generic `parse-error` value, so a plan refusal was routed as an executor failure: it spent the bounded
+      retry ladder and parked `failed`, when the plan-repair sink one branch away in
+      `handle-graph-failure.ts` was built for exactly this card. Plugin parsers cannot leak through this
+      branch as refusals, and their own persisted indices are gated by `validateStepDependencies` below.
+      */
+      if (err instanceof StepDependencyValidationError) {
+        return this.planDependencyRefusal(node, message);
+      }
       this.audit(
         "parse-error",
         `parse-steps node '${node.id}' parser '${parserId}' threw: ${message}`,
@@ -153,6 +178,17 @@ export class ParseStepsNodeRunner implements WorkflowNodeRunner {
       validateStepDependencies(steps);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      /*
+      FNXC:StepDependencyDiagnostics 2026-11-12-22:51 (RUFU-501):
+      The second producer, in the coordinate the writer never sees: the plan arrived with persisted 0-based
+      indices (a JSON artifact or a plugin parser), so no heading annotation was ever read, and the
+      structural validator is what refuses it. It is still the plan that is wrong, so it reaches the same
+      plan-repair sink with the same value — one value, because one sink consumes it and the recovery is
+      identical: rewrite the plan, not the runtime.
+      */
+      if (err instanceof StepDependencyValidationError) {
+        return this.planDependencyRefusal(node, message);
+      }
       this.audit("parse-error", `parse-steps node '${node.id}' rejected invalid dependencies: ${message}`);
       return { outcome: "failure", value: "parse-error" };
     }
@@ -186,6 +222,17 @@ export class ParseStepsNodeRunner implements WorkflowNodeRunner {
     }
 
     return { outcome: "success" };
+  }
+
+  /**
+   * Route a dependency refusal of PLAN CONTENT to the plan-repair boundary in `handle-graph-failure.ts`
+   * instead of the generic executor-failure ladder, carrying the parser's own diagnostic so the writer is
+   * told which step and which token refused. The audit reason stays `parse-error`: it names the node that
+   * failed, and the value is what carries the failure CLASS.
+   */
+  private planDependencyRefusal(node: WorkflowIrNode, diagnostic: string): WorkflowNodeResult {
+    this.audit("parse-error", `parse-steps node '${node.id}' rejected plan dependencies: ${diagnostic}`);
+    return { outcome: "failure", value: `${INVALID_PLAN_DEPENDENCY_VALUE_PREFIX}${diagnostic}` };
   }
 
   private audit(reason: string, detail: string): void {

@@ -1,7 +1,9 @@
 import type { WorkflowDefinitionKind } from "./workflow-definition-types.js";
-import type { WorkflowIr, WorkflowIrEdge, WorkflowIrNode } from "./workflow-ir-types.js";
+import type { WorkflowIr, WorkflowIrColumn, WorkflowIrEdge, WorkflowIrNode } from "./workflow-ir-types.js";
 import { isCompletionSummaryNode } from "./builtin-completion-summary-node.js";
 import { findPostMergeNodesInCompleteColumn } from "./complete-column-post-merge-authoring.js";
+import { resolveColumnFlags } from "./trait-registry.js";
+import { isCompleteColumn } from "./workflow-transition-policy.js";
 
 /**
  * FNXC:WorkflowLifecycle 2026-07-01-00:00:
@@ -30,7 +32,12 @@ export type WorkflowLifecycleWarningCode =
   /** Mirrors the save-time refusal in `complete-column-post-merge-authoring.ts`. Shares that rule's code
    *  string verbatim (`POST_MERGE_COMPLETE_COLUMN_RULE_CODE`) so an editor surface that keys its copy off
    *  the code needs one literal for both the advisory and the refusal. */
-  | "post-merge-node-in-complete-column";
+  | "post-merge-node-in-complete-column"
+  /** A `parse-steps` failure-class edge enters a NON-terminal node in a complete-trait column. Distinct
+   *  from `unsafe-terminal-before-merge` (which scans edges whose target IS the terminal and ignores
+   *  non-success conditions) and from `post-merge-node-in-complete-column` (which scans a node's declared
+   *  post-merge phase, not the edges arriving in it). */
+  | "parse-failure-routes-to-terminal";
 
 export interface WorkflowLifecycleWarning {
   code: WorkflowLifecycleWarningCode;
@@ -57,6 +64,21 @@ function isExecutionNode(node: WorkflowIrNode): boolean {
 function isCodeReviewNode(node: WorkflowIrNode): boolean {
   const name = typeof node.config?.name === "string" ? node.config.name : "";
   return node.id === "code-review" || node.config?.reviewKind === "code" || /code review/i.test(name);
+}
+
+/*
+FNXC:ParseFailureRouting 2026-11-12-23:55 (RUFU-501):
+The two outcomes a `parse-steps` node can fail with are a failure CLASS, not one bucket: `failure` is the
+generic route and `outcome:<reason>` is the route an author gives a named refusal (`outcome:parse-error`,
+`outcome:invalid-plan-dependency`). Success, the no-steps outcome, and an untagged edge are routings and never
+carry a refusal, so the classifier is a closed set of exemptions rather than a list of known failure tags -
+an author's custom `outcome:` tag is a named non-success exit and reads as one.
+*/
+function isFailureClassEdge(edge: WorkflowIrEdge): boolean {
+  const condition = String(edge.condition ?? "");
+  if (condition === "failure") return true;
+  if (!condition.startsWith("outcome:")) return false;
+  return condition !== "outcome:success" && condition !== "outcome:no-steps";
 }
 
 function isWriteCapableNode(node: WorkflowIrNode): boolean {
@@ -100,9 +122,10 @@ function reachableBefore(
 FNXC:WorkflowLifecycleValidation 2026-06-29-11:47:
 Custom workflow authors need lifecycle-specific guidance without turning every
 advanced graph into a hard parse failure. Emit warnings for missing summary,
-missing merge proof regions, unsafe terminal paths, misplaced optional gates, and
-review gates with no failure route; engine/store merge-proof guards remain the
-hard invariant that prevents unsafe done.
+missing merge proof regions, unsafe terminal paths, misplaced optional gates, review
+gates with no failure route, and a `parse-steps` refusal edge routed into a
+complete-trait column; engine/store merge-proof guards remain the hard invariant
+that prevents unsafe done.
 
 FNXC:CompleteLaneBoundary 2026-11-08-15:16 (RUFU-349, Code Review finding P2):
 That closing sentence was no longer the whole truth: a card could stand in `done` over a required
@@ -211,6 +234,41 @@ export function analyzeWorkflowLifecycle(
   the SAME predicate the save-time assertion uses, so an advisory that drifts from the refusal would teach
   authors to distrust both.
   */
+  /*
+  FNXC:ParseFailureRouting 2026-11-12-23:55 (RUFU-501):
+  A plan the step parser refuses is a WRITER failure with a known repair (re-plan), so a graph that routes it
+  into a complete-trait column does two wrong things at once: the card reaches the terminal lane over an
+  unreadable plan, and node entry wrote that column under `bypassGuards: true`, so nothing downstream can
+  retract it - the same irreversibility RUFU-349 refused for post-merge gates, reached here through an edge
+  rather than a `config.phase`. The graph terminal is excluded explicitly: completion legitimately lands
+  there, and KTD-1 makes it inert as a column destination, so a warning that fired on every built-in would
+  train authors to ignore it (measured: every shipped built-in whose parse node has failure edges targets
+  only the terminal). Advisory, per the module rule - a graph drawn this way before the rule must stay
+  loadable so an author can repair it.
+  */
+  const completeColumns = new Set(
+    ((ir as { columns?: WorkflowIrColumn[] }).columns ?? [])
+      .filter((column) => isCompleteColumn(resolveColumnFlags(column)))
+      .map((column) => column.id),
+  );
+  if (completeColumns.size > 0) {
+    const nodesById = new Map(nodes.map((node) => [node.id, node]));
+    for (const source of nodes.filter((node) => node.kind === "parse-steps")) {
+      for (const edge of outgoing.get(source.id) ?? []) {
+        if (!isFailureClassEdge(edge)) continue;
+        const target = nodesById.get(edge.to);
+        // The graph terminal is the designed sink for a parse failure: inert as a column destination (KTD-1).
+        if (!target || target.kind === "end" || target.kind === "start") continue;
+        if (!target.column || !completeColumns.has(target.column)) continue;
+        warnings.push({
+          code: "parse-failure-routes-to-terminal",
+          nodeId: source.id,
+          message: `Parse node '${source.id}' routes its ${String(edge.condition)} refusal into non-terminal node '${target.id}' in complete-trait column '${target.column}'. Entering that node moves the card into the terminal lane over a plan that never parsed, and nothing downstream can retract it. Route the refusal to the lane holding planning or Plan Review so the plan is repaired, or to the graph terminal.`,
+        });
+      }
+    }
+  }
+
   for (const hit of findPostMergeNodesInCompleteColumn(ir)) {
     warnings.push({
       code: "post-merge-node-in-complete-column",

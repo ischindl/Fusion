@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { analyzeWorkflowLifecycle, type WorkflowIr } from "../index.js";
+import { BUILTIN_WORKFLOWS } from "../workflows/builtin-workflows.js";
 
 function baseIr(nodes: WorkflowIr["nodes"], edges: WorkflowIr["edges"]): WorkflowIr {
   return {
@@ -158,5 +159,97 @@ describe("analyzeWorkflowLifecycle: the post-merge-in-complete-column advisory",
   it("stays silent on the shape the rule permits: the same gate drawn into the review column", () => {
     const warnings = analyzeWorkflowLifecycle(irWithPostMergeGateIn("in-review"));
     expect(warnings.map((warning) => warning.code)).not.toContain("post-merge-node-in-complete-column");
+  });
+});
+
+/*
+FNXC:ParseFailureRouting 2026-11-12-23:58 (RUFU-501):
+A refused plan is a writer failure with a known repair, so the edge that carries it decides whether the card
+can still be repaired. Entering a complete-trait column writes that column under `bypassGuards: true`, so a
+card routed there over an unreadable plan is terminal with no retraction path — while the graph terminal is
+inert as a column destination (KTD-1) and is the designed sink for a parse failure. These cases pin both
+halves of that line, plus the catalog check that keeps the advisory from firing on shipped graphs.
+*/
+describe("analyzeWorkflowLifecycle: a parse refusal routed into a complete-trait column", () => {
+  function irWithParseFailureInto(condition: string, targetColumnId: string): WorkflowIr {
+    return {
+      version: "v2",
+      name: "parse-failure-routing-test",
+      columns: [
+        { id: "todo", name: "Todo", traits: [] },
+        { id: "in-progress", name: "In progress", traits: [] },
+        { id: "in-review", name: "In review", traits: [{ trait: "review" }] },
+        { id: "done", name: "Done", traits: [{ trait: "complete" }] },
+      ],
+      nodes: [
+        { id: "start", kind: "start", column: "todo" },
+        { id: "plan", kind: "prompt", column: "todo", config: { seam: "planning" } },
+        { id: "parse", kind: "parse-steps", column: "in-progress", config: { artifact: "plan", parser: "step-headings" } },
+        { id: "landed", kind: "prompt", column: targetColumnId, config: { seam: "execute" } },
+        { id: "end", kind: "end", column: "done" },
+      ],
+      edges: [
+        { from: "start", to: "plan" },
+        { from: "plan", to: "parse", condition: "success" },
+        { from: "parse", to: "landed", condition: condition as WorkflowIr["edges"][number]["condition"] },
+        { from: "landed", to: "end", condition: "success" },
+      ],
+    };
+  }
+
+  it.each(["failure", "outcome:parse-error"])(
+    "names the parse node, the complete column, and the consequence for a %s edge",
+    (condition) => {
+      const advisory = analyzeWorkflowLifecycle(irWithParseFailureInto(condition, "done"))
+        .find((warning) => warning.code === "parse-failure-routes-to-terminal");
+      expect(advisory).toBeDefined();
+      expect(advisory!.nodeId).toBe("parse");
+      expect(advisory!.message).toContain("'done'");
+      expect(advisory!.message).toMatch(/terminal lane/);
+    },
+  );
+
+  it.each(["success", "outcome:no-steps"])(
+    "stays silent on the %s routing, which carries no refusal",
+    (condition) => {
+      const codes = analyzeWorkflowLifecycle(irWithParseFailureInto(condition, "done"))
+        .map((warning) => warning.code);
+      expect(codes).not.toContain("parse-failure-routes-to-terminal");
+    },
+  );
+
+  it("stays silent on the untagged edge, which is the graph's ordinary forward routing", () => {
+    const ir = irWithParseFailureInto("success", "done");
+    ir.edges = ir.edges.map((edge) => (edge.from === "parse" ? { from: edge.from, to: edge.to } : edge));
+    const codes = analyzeWorkflowLifecycle(ir).map((warning) => warning.code);
+    expect(codes).not.toContain("parse-failure-routes-to-terminal");
+  });
+
+  it("treats any other outcome tag as a refusal, because the author named a non-success exit", () => {
+    const codes = analyzeWorkflowLifecycle(irWithParseFailureInto("outcome:invalid-plan-dependency", "done"))
+      .map((warning) => warning.code);
+    expect(codes).toContain("parse-failure-routes-to-terminal");
+  });
+
+  it("stays silent when the refusal targets the graph terminal, which is inert as a destination (KTD-1)", () => {
+    const ir = irWithParseFailureInto("failure", "in-review");
+    ir.edges = ir.edges.filter((edge) => edge.from !== "parse");
+    ir.edges.push({ from: "parse", to: "end", condition: "failure" });
+    const codes = analyzeWorkflowLifecycle(ir).map((warning) => warning.code);
+    expect(codes).not.toContain("parse-failure-routes-to-terminal");
+  });
+
+  it("stays silent when the refusal targets a node in a non-terminal column", () => {
+    const codes = analyzeWorkflowLifecycle(irWithParseFailureInto("failure", "in-review"))
+      .map((warning) => warning.code);
+    expect(codes).not.toContain("parse-failure-routes-to-terminal");
+  });
+
+  it("fires on no shipped built-in graph", () => {
+    for (const definition of BUILTIN_WORKFLOWS) {
+      const codes = analyzeWorkflowLifecycle(definition.ir, { kind: definition.kind })
+        .map((warning) => warning.code);
+      expect(codes, definition.id).not.toContain("parse-failure-routes-to-terminal");
+    }
   });
 });
