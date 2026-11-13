@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluateNoCommitsNoOpFinalize, type NoCommitsNoOpFinalizeEvidence, type TaskStep } from "../index.js";
+import { evaluateNoCommitsNoOpFinalize, type NoCommitsNoOpFinalizeEvidence, type TaskStep, type WorkflowStepResult } from "../index.js";
 
 function steps(statuses: Array<TaskStep["status"]>): TaskStep[] {
   return statuses.map((status, index) => ({ name: `Step ${index}`, status }));
@@ -452,5 +452,237 @@ describe("evaluateNoCommitsNoOpFinalize", () => {
       }),
     );
     expect(result).toMatchObject({ blocked: true, reason: "worktree-content-unproven" });
+  });
+});
+
+/*
+FNXC:NoCommitReviewSignoff 2026-11-13-19:05 (RUFU-649):
+The refusal this suite exists for, measured on RUFU-292:
+
+  skipped verification step(s) with no net branch changes: Destructive reclaim sweeps - make the
+  activation deliberate and tested
+
+The card was delivered (its commit is an ancestor of `main`), both pre-merge gates carried approving rows, and
+its reviewer approved the canonical empty input. The only thing standing between it and `done` was the substring
+"tested" inside an IMPLEMENTATION step's title. Every case below is the same measured row: nine steps, seven
+`done`, steps 3 and 4 `skipped`, step 4 titled with that gate word.
+
+The positive cases prove the card can close. The negative cases are the point of the change: each one removes
+exactly ONE of the two proofs (delivery, reviewer sign-off) or names a class that stays structurally blocking
+(remediation provenance, the FN-6461 tie), and each must still refuse. A passing positive without the negatives
+green would be a widened arm, which is the failure mode FN-8141 was written to stop.
+*/
+describe("RUFU-292 symptom: a landed card refused for the wording of a skipped step's title", () => {
+  /** RUFU-292's real step ledger, read from `.fusion/tasks/RUFU-292/task.json` (7 done, 3 and 4 skipped). */
+  const rufu292Steps = (): TaskStep[] => namedSteps([
+    ["Preflight", "done"],
+    ["Shared attribution helper (`task-id-attribution.ts`)", "done"],
+    ["`branch-conflicts.ts` - consume the helper", "done"],
+    ["`worktree-acquisition.ts`, `workspace-base-branch.ts`, `merger-orphan-rehome.ts`,", "skipped"],
+    ["Destructive reclaim sweeps - make the activation deliberate and tested", "skipped"],
+    ["Real-git symptom test (red-before, green-after)", "done"],
+    ["Stale-behavior sweep, preservation, and must-stay-green regression", "done"],
+    ["Testing & Verification", "done"],
+    ["Documentation, changeset, and follow-ups", "done"],
+  ]);
+
+  /** A durable landing proof, the first of the two possible delivery bases. */
+  const verifyProof = (): NoCommitsNoOpFinalizeEvidence["landingProof"] =>
+    ({ kind: "durable-commit-sha", sha: "f2492f3078901234567890123456789012345678" });
+
+  /** The reviewer sign-off the guard's own refusal text names, the second delivery-adjacent proof. */
+  const emptyInputReview = (overrides: Partial<WorkflowStepResult> = {}): WorkflowStepResult => ({
+    workflowStepId: "code-review",
+    reviewKind: "code",
+    status: "passed",
+    verdict: "APPROVE",
+    reviewInputFingerprint: "empty-review-input:v1",
+    ...overrides,
+  });
+
+  const rufu292Card = (workflowStepResults: WorkflowStepResult[] = [emptyInputReview()]) => ({
+    noCommitsExpected: false,
+    steps: rufu292Steps(),
+    workflowStepResults,
+  });
+
+  it("finalizes a landed card whose only skipped non-remediation steps are flagged by step-name prose", () => {
+    expect(evaluate(rufu292Card(), evidence({ landingProof: verifyProof() })))
+      .toEqual({ blocked: false, doneCount: 7, incompleteCount: 2 });
+  });
+
+  it("finalizes the same card with no durable landing proof (measured live shape)", () => {
+    /*
+    This is the shape the live card actually carried: RUFU-292's `task.json` has no landing-proof key at all,
+    so its delivery arm is authorized by the positive content probe (`nothing-to-deliver`), not by a sha.
+    A relaxation that demanded the durable basis would not have freed the card it was written for.
+    */
+    expect(evaluate(rufu292Card(), evidence()))
+      .toMatchObject({ blocked: false, doneCount: 7, incompleteCount: 2 });
+  });
+
+  it("blocks the name-flagged skip when the reviewer never signed the empty input", () => {
+    // FN-8141 anti-laundering stays closed: no sign-off, no relaxation, the exact old sentence.
+    const result = evaluate(rufu292Card([]));
+    expect(result).toMatchObject({ blocked: true });
+    expect(result.reason).toContain("skipped verification step(s)");
+    expect(result.reason).toContain("deliberate and tested");
+  });
+
+  it("blocks when the code review approved a non-empty input, or approved with notes", () => {
+    const nonEmpty = evaluate(rufu292Card([emptyInputReview({ reviewInputFingerprint: "a1b2c3d4e5f6" })]));
+    expect(nonEmpty).toMatchObject({ blocked: true });
+    expect(nonEmpty.reason).toContain("skipped verification step(s)");
+
+    // APPROVE_WITH_NOTES is a real verdict the reviewer emits; FN-9422's sign-off is the bare APPROVE.
+    const withNotes = evaluate(rufu292Card([emptyInputReview({ verdict: "APPROVE_WITH_NOTES" })]));
+    expect(withNotes).toMatchObject({ blocked: true });
+    expect(withNotes.reason).toContain("skipped verification step(s)");
+  });
+
+  it("blocks a name-flagged skip with commits still ahead", () => {
+    // The delivery authority answers `proven` / `commits-ahead`, so there is no proven legitimate no-op.
+    const result = evaluate(rufu292Card(), evidence({ aheadCommitCount: 1, landingProof: verifyProof() }));
+    expect(result).toMatchObject({ blocked: true });
+    expect(result.reason).toContain("skipped verification step(s)");
+  });
+
+  it("blocks a dirty worktree even with the empty-input sign-off", () => {
+    const result = evaluate(
+      rufu292Card(),
+      evidence({ worktreeContent: DIRTY_TREE, landingProof: verifyProof() }),
+    );
+    expect(result).toMatchObject({ blocked: true });
+    // RUFU-274 Step 11 finding 2: the content risk rides on the refusal even when a step names the reason.
+    expect(result.deliveryUnproven).toMatchObject({
+      contentState: "deliverable",
+      modifiedCount: 1,
+      refusalCode: "uncommitted-work",
+    });
+  });
+
+  it("blocks an unprobed worktree even with the empty-input sign-off", () => {
+    const result = evaluate(
+      rufu292Card(),
+      evidence({ worktreeContent: UNVERIFIABLE_TREE, landingProof: verifyProof() }),
+    );
+    expect(result).toMatchObject({ blocked: true });
+    expect(result.deliveryUnproven).toMatchObject({ contentState: "unverifiable" });
+  });
+
+  it("finalizes the same card when the worktree path is gone — the delivery authority already cleared it", () => {
+    /*
+    Asserted, not guessed: `absent` is in `NOTHING_DELIVERABLE`, so the delivery authority answers
+    `proven-legitimate-noop` and the test above `does not block a commit-expected card whose worktree path is
+    gone` already pins that a gone tree cannot hold this card's files. The relaxation therefore reaches a
+    shape the single delivery authority had ALREADY cleared, which is the whole claim of this change.
+    */
+    expect(evaluate(rufu292Card(), evidence({ worktreeContent: ABSENT_TREE })))
+      .toMatchObject({ blocked: false });
+  });
+
+  it("blocks a skipped remediation step even with both proofs", () => {
+    const result = evaluate({
+      noCommitsExpected: false,
+      steps: [
+        { name: "Implement", status: "done" as const },
+        {
+          name: "Fix: inverted reclaim guard",
+          status: "skipped" as const,
+          remediation: { wave: 1, gate: "Code Review", gateStepId: "code-review", findingId: "F1" },
+        },
+      ],
+      workflowStepResults: [emptyInputReview()],
+    }, evidence({ landingProof: verifyProof() }));
+
+    expect(result).toMatchObject({ blocked: true });
+    expect(result.reason).toContain("skipped verification step(s)");
+    expect(result.reason).toContain("Fix: inverted reclaim guard");
+  });
+
+  it("names the remediation subset when a card carries both blocking classes", () => {
+    /*
+    Documented message change: today this refusal lists BOTH skipped steps. After the split it lists the
+    remediation row only, because that is the row a reviewer can re-issue. Strictly more actionable, and the
+    sentence itself is unchanged.
+    */
+    const result = evaluate({
+      noCommitsExpected: false,
+      steps: [
+        { name: "Implement", status: "done" as const },
+        {
+          name: "Fix: inverted reclaim guard",
+          status: "skipped" as const,
+          remediation: { wave: 1, gate: "Code Review", gateStepId: "code-review", findingId: "F1" },
+        },
+        { name: "Testing & Verification", status: "skipped" as const },
+      ],
+      workflowStepResults: [],
+    }, evidence({ landingProof: verifyProof() }));
+
+    expect(result).toMatchObject({ blocked: true });
+    expect(result.reason).toContain("Fix: inverted reclaim guard");
+    expect(result.reason).not.toContain("Testing & Verification");
+  });
+
+  it("keeps the FN-6461 tie arm un-widened: incomplete work still outweighs the double evidence", () => {
+    /*
+    The arm's own precondition is `noCommitsExpected === true`, so this is the shape where it can actually
+    fire (three skipped, one done). With BOTH proofs present the name arm defers, and this arm is what refuses
+    - which is the boundary this change had to leave byte-identical.
+    */
+    const result = evaluate({
+      noCommitsExpected: true,
+      steps: namedSteps([
+        ["Implement", "done"],
+        ["Testing & Verification", "skipped"],
+        ["Deploy", "skipped"],
+        ["Announce", "skipped"],
+      ]),
+      workflowStepResults: [emptyInputReview()],
+    }, evidence({ landingProof: verifyProof() }));
+
+    expect(result).toMatchObject({ blocked: true });
+    expect(result.reason).toContain("no-commits task skipped/incomplete work outweighs completed work");
+    expect(result.reason).not.toContain("skipped verification step(s)");
+  });
+
+  it("mirrors the FN-8141 reverted shape without a sign-off: still blocked, nothing weakened", () => {
+    // Same ledger as the pre-existing FN-8141 case, minus the reviewer row. The old sentence must survive.
+    const result = evaluate({
+      noCommitsExpected: false,
+      steps: namedSteps([
+        ["Update pi SDK", "done"],
+        ["Wire runtime", "done"],
+        ["Verify Kimi K3", "done"],
+        ["Testing & Verification", "skipped"],
+        ["Documentation & Delivery", "skipped"],
+      ]),
+      workflowStepResults: [],
+    });
+
+    expect(result).toMatchObject({ blocked: true, doneCount: 3, incompleteCount: 2 });
+    expect(result.reason).toContain("skipped verification step(s)");
+    expect(result.reason).toContain("Testing & Verification");
+  });
+
+  it("decides identically for a gate-word title and a plain title — the sign-off is the authority", () => {
+    /*
+    The invariant the change is built on, stated directly: the ONLY difference between these two cards is a
+    word in a title, and both carry the same two proofs. Before the change the first finalized and the second
+    refused, which is what made the guard a lexer instead of a judge.
+    */
+    const withGateWord = rufu292Steps();
+    const withoutGateWord = withGateWord.map((step) =>
+      step.name === "Destructive reclaim sweeps - make the activation deliberate and tested"
+        ? { ...step, name: "Destructive reclaim sweeps - make the activation deliberate" }
+        : step,
+    );
+
+    const gated = evaluate({ noCommitsExpected: false, steps: withGateWord, workflowStepResults: [emptyInputReview()] }, evidence());
+    const plain = evaluate({ noCommitsExpected: false, steps: withoutGateWord, workflowStepResults: [emptyInputReview()] }, evidence());
+
+    expect(gated).toEqual(plain);
+    expect(gated).toMatchObject({ blocked: false });
   });
 });

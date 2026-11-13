@@ -290,6 +290,148 @@ describeIfGit("aiMergeTask finalize no-op unproven reproduction (real git)", () 
     }));
   }, 20_000);
 
+  /*
+  FNXC:ZeroDiffFinalizeProvenance 2026-11-13-19:10 (RUFU-649):
+  RUFU-649 narrows the skipped-step arm so a card carrying both delivery proofs is no longer refused for the
+  WORDING of a skipped step's title. This is the boundary check at the LANE, against a real dirty worktree: the
+  relaxation must not reach the dirty shape. The card below carries everything the narrowed arm requires — an
+  APPROVE recorded over the canonical empty review input, a zero-ahead branch, and a single skipped step that is
+  flagged only because its title says "tested" — and it still does not finalize, because the refusal the lane
+  answers is the CONTENT reason, not the step sentence. The two reasons are asserted apart from each other: a
+  lane that stopped asking about content would report the step wording, which is the RUFU-292 bug.
+  */
+  it("RUFU-649: a double-evidenced card with a dirty worktree is still refused, on the content reason", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "fusion-relax-dirty-"));
+    repos.push(repo);
+    git(repo, "git init -b main");
+    git(repo, 'git config user.email "test@example.com"');
+    git(repo, 'git config user.name "Test User"');
+    git(repo, "git commit --allow-empty -m 'init'");
+    const baseSha = git(repo, "git rev-parse HEAD");
+    git(repo, "git checkout -b fusion/fn-relax");
+    git(repo, "git checkout main");
+    // Real uncommitted deliverable content in the card's own checkout.
+    writeFileSync(join(repo, "undelivered.ts"), "export const work = 1;\n");
+
+    const task = {
+      id: "FN-RELAX",
+      title: "FN-RELAX",
+      description: "FN-RELAX",
+      column: "in-review",
+      branch: "fusion/fn-relax",
+      baseBranch: "main",
+      baseCommitSha: baseSha,
+      worktree: repo,
+      enabledWorkflowSteps: ["code-review"],
+      workflowStepResults: [
+        { workflowStepId: "code-review", reviewKind: "code", status: "passed", verdict: "APPROVE", reviewInputFingerprint: "empty-review-input:v1" },
+      ],
+      dependencies: [],
+      steps: [
+        { name: "Implement the reclaim-sweep gate", status: "done" },
+        { name: "Destructive reclaim sweeps - make the activation deliberate and tested", status: "skipped" },
+      ],
+      currentStep: 0,
+      log: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      prompt: "# FN-RELAX",
+    } as unknown as Task;
+
+    const store = createStore(task, { enabledWorkflowSteps: ["code-review"] });
+    const result = await aiMergeTask(store, repo, "FN-RELAX");
+
+    // Still refused: the content door holds the card, and the worktree is left intact.
+    expect(result.merged).toBe(false);
+    expect(result.noOp).toBe(false);
+    expect(store.moveTaskIf).not.toHaveBeenCalled();
+    // The refusal the lane answers is the CONTENT reason, not the step-name sentence.
+    expect(store.logEntry).toHaveBeenCalledWith(
+      "FN-RELAX",
+      expect.stringContaining("Finalize refused (zero-commit landing proof)"),
+      expect.anything(),
+    );
+    const recorded = (store.logEntry as ReturnType<typeof vi.fn>).mock.calls
+      .map((call) => String(call[1]))
+      .join("\n");
+    /*
+    The falsifiable half: the DURABLE HOLD must still sit on the row. The relaxed step arm is what a future
+    widening would reach for, and the hold is the one artifact only the content refusal writes — a card that
+    finalized, or that was rebound to todo as unfinished work, carries no uncommittedWorkHold and no manual-hold
+    pause. Measured against the pre-RUFU-649 guard this case already refused on the content reason, because the
+    lane asks the content door before it asks the step ledger; it is pinned here so that ordering stops being an
+    assumption and becomes something a change has to break to turn this assertion red.
+    */
+    const persisted = await store.getTask("FN-RELAX");
+    expect(persisted.mergeDetails?.uncommittedWorkHold).toBeTruthy();
+    expect(persisted.paused).toBe(true);
+    expect(persisted.pausedReason).toBe("manual-hold");
+    expect(String(persisted.pausedReasonSource)).toContain("zero-commit-landing-proof");
+    // The card keeps its lane and its pointers: no rebound, no cleanup of a tree that still holds the work.
+    expect(persisted.column).toBe("in-review");
+    expect(persisted.worktree).toBe(repo);
+    expect(persisted.branch).toBe("fusion/fn-relax");
+  }, 20_000);
+
+  /*
+  FNXC:ZeroDiffFinalizeProvenance 2026-11-13-19:10 (RUFU-649):
+  The negative control for the case above: the SAME card with an identical ledger, the same approved empty-review
+  input, and the same "tested" title, and nothing uncommitted in its tree. Everything differing between the two
+  cases is the content on disk, which is what makes the hold assertion in the dirty case load-bearing rather than
+  an artifact of this fixture. This is also RUFU-292's own release path observed through the lane: a landed card
+  whose steps name no unmet gate finalizes instead of being refused for a word in a step title.
+  */
+  it("RUFU-649: the identical card with a clean tree finalizes and writes no hold", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "fusion-relax-clean-"));
+    repos.push(repo);
+    git(repo, "git init -b main");
+    git(repo, 'git config user.email "test@example.com"');
+    git(repo, 'git config user.name "Test User"');
+    git(repo, "git commit --allow-empty -m 'init'");
+    const baseSha = git(repo, "git rev-parse HEAD");
+    git(repo, "git checkout -b fusion/fn-relax-clean");
+    git(repo, "git checkout main");
+
+    const task = {
+      id: "FN-RELAX-CLEAN",
+      title: "FN-RELAX-CLEAN",
+      description: "FN-RELAX-CLEAN",
+      column: "in-review",
+      branch: "fusion/fn-relax-clean",
+      baseBranch: "main",
+      baseCommitSha: baseSha,
+      worktree: repo,
+      enabledWorkflowSteps: ["code-review"],
+      workflowStepResults: [
+        { workflowStepId: "code-review", reviewKind: "code", status: "passed", verdict: "APPROVE", reviewInputFingerprint: "empty-review-input:v1" },
+      ],
+      dependencies: [],
+      steps: [
+        { name: "Implement the reclaim-sweep gate", status: "done" },
+        { name: "Destructive reclaim sweeps - make the activation deliberate and tested", status: "skipped" },
+      ],
+      currentStep: 0,
+      log: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      prompt: "# FN-RELAX-CLEAN",
+    } as unknown as Task;
+
+    const store = createStore(task, { enabledWorkflowSteps: ["code-review"] });
+    const result = await aiMergeTask(store, repo, "FN-RELAX-CLEAN");
+
+    // The only difference is the tree contents, and it decides the outcome.
+    expect(result.noOp).toBe(true);
+    const persisted = await store.getTask("FN-RELAX-CLEAN");
+    expect(persisted.mergeDetails?.uncommittedWorkHold).toBeFalsy();
+    expect(persisted.paused).not.toBe(true);
+    const recorded = (store.logEntry as ReturnType<typeof vi.fn>).mock.calls
+      .map((call) => String(call[1]))
+      .join("\n");
+    expect(recorded).not.toContain("skipped verification step");
+    expect(recorded).not.toContain("Finalize refused (zero-commit landing proof)");
+  }, 20_000);
+
   it("FN-6461: allows all-done no-commits proven no-op tasks to finalize", async () => {
     const repo = mkdtempSync(join(tmpdir(), "fusion-merger-no-commits-done-"));
     repos.push(repo);

@@ -73,6 +73,13 @@ export interface NoCommitsNoOpFinalizeEvaluation {
  * FN-8141 laundered a REVERTED (commit-expected) task to `done`: pi SDK bumps kept breaking verify, the work was reverted 5x, and the agent marked "Testing & Verification" + "Documentation & Delivery" skipped. The branch was empty vs main, so the AI empty-merge lane finalized it as a no-op with `mergeConfirmed:true` and no reviewer ever saw it.
  * The FN-6461 rule missed it twice: it only fired for `noCommitsExpected === true` (FN-8141 was commit-expected), and even then only when incomplete >= done (FN-8141 had 3 done vs 2 skipped).
  * New invariant: a zero-diff/no-op finalize is blocked whenever ANY step is `skipped` (empty diff + skipped step means work was never done or was reverted, so `done` is unsafe). A verification-flavored skipped step (name matching /test|verif|qa|review/i) blocks unconditionally; any other skipped step blocks unless every non-skipped step is `done` AND the task is the legacy `noCommitsExpected` ops shape. This is evaluated only at zero-diff finalize lanes, so the empty-diff condition is supplied by the caller.
+ *
+ * FNXC:NoCommitReviewSignoff 2026-11-13-18:56 (RUFU-649): the clause "a verification-flavored skipped step
+ * (name matching /test|verif|qa|review/i) blocks unconditionally" is SUPERSEDED for a name-only classification
+ * once the card carries both proofs named in the RUFU-649 block below (`proven-legitimate-noop` plus an approved
+ * `empty-review-input:v1` Code Review). It stands unchanged for remediation provenance and for every card that
+ * cannot show its delivery. The clause was the defect RUFU-292 measured: a lexical match on a step TITLE became
+ * a gate verdict, and no amount of reviewer sign-off could answer it.
  */
 const VERIFICATION_STEP_NAME = /test|verif|qa|review/i;
 
@@ -177,6 +184,10 @@ export function evaluateNoCommitsNoOpFinalize(
   disposal. Accept the narrow empty-input approval for non-verification skips; skipped verification
   or remediation work remains unconditionally blocking, and ordinary approvals over non-empty code
   cannot launder reverted implementation work.
+
+  FNXC:NoCommitReviewSignoff 2026-11-13-18:56 (RUFU-649): "skipped verification ... work remains
+  unconditionally blocking" is narrowed by the block below for the NAME-only case, which is exactly what
+  stranded the card that requirement was written for. "or remediation work" is untouched and still absolute.
   */
   const hasApprovedEmptyCodeReview = task.workflowStepResults?.some((result) =>
     result.workflowStepId === "code-review"
@@ -186,15 +197,68 @@ export function evaluateNoCommitsNoOpFinalize(
     && result.reviewInputFingerprint === "empty-review-input:v1",
   ) === true;
 
+  /*
+  FNXC:NoCommitReviewSignoff 2026-11-13-18:56 (RUFU-649):
+  RUFU-292's operator requirement: a card whose work is provably already on the integration branch, whose
+  reviewer approved the canonical empty input, and whose only loose end is an implementation step whose TITLE
+  happens to contain a gate word, must be able to finalize itself. It sat `in-review` + `status=failed` on
+  `skipped verification step(s) with no net branch changes: Destructive reclaim sweeps - make the activation
+  deliberate and tested` and pinned 70 file-scope waiters, because the arm below asked a step's prose whether
+  it was a verification gate and got an answer from the substring "tested".
+
+  "Is this step a declared gate?" is never a question this regex answers. The `unmetGate` arm above already
+  asks the only canonical authority for that (`evaluatePreMergeApprovals`, fed by
+  `evidence.requiredVerificationStepIds`), and review-mandated work is already identified structurally by
+  `isRemediationStep`. Those two arms keep their full force; the regex is demoted to the DEFAULT for a card
+  that cannot produce its own evidence, never the primary key.
+
+  The two proofs required to relax the name-only classification are exactly:
+  1. `verdict.kind === "proven-legitimate-noop"` from `evaluateZeroCommitLandingProof` - the one delivery
+     authority, consumed as a verdict, never re-derived here;
+  2. `hasApprovedEmptyCodeReview` - a `code-review` row `passed` / `APPROVE` over `empty-review-input:v1`.
+  With both, the skip falls through to the existing signature rule below rather than to a new bypass class,
+  so no lane gains a way to finalize that the reviewer did not already sign.
+
+  Supersession made explicit: the FN-9422 block above states "skipped verification or remediation work
+  remains unconditionally blocking". That holds unchanged for REMEDIATION provenance (arm 1 below) and for
+  any card missing either proof; it is superseded only for the name-only classification, because measured
+  against RUFU-292 that sentence refused a card with the reviewer sign-off that same sentence names as the
+  remedy.
+
+  FNXC:NoCommitReviewSignoff 2026-11-13-18:56 (RUFU-649, Note B - measured correction to the operator tick):
+  The relaxation keys on `verdict.kind`, which covers BOTH bases the delivery authority emits: `nothing-to-merge`
+  (a durable landing proof) and `nothing-to-deliver` (a clean/nothing-deliverable tree at
+  `aheadCommitCount === 0`, per RUFU-274 Step 4). Requiring the `nothing-to-merge` basis specifically would
+  demand a durable landing proof the live card does not carry: neither a landing-proof key nor a
+  `noCommitsExpected` key appears anywhere in RUFU-292's `task.json`, so its delivery arm is authorized today
+  by the positive content probe, not by a sha. The unproven, dirty, unverifiable, and commits-ahead shapes
+  stay refused by that same single authority, so this is not a looser door - it is the same door asked once.
+  */
+  const reviewedEmptyNoOp = verdict.kind === "proven-legitimate-noop" && hasApprovedEmptyCodeReview;
+
   // FN-8141: skipped step + empty diff. Applies to ALL tasks regardless of `noCommitsExpected`.
   if (skippedSteps.length > 0) {
-    const verificationSkipped = skippedSteps.filter((step) =>
-      VERIFICATION_STEP_NAME.test(step.name ?? "") || isRemediationStep(step),
-    );
+    /*
+    (1) Structural provenance first and unconditionally: a skipped step carrying `remediation` is named work a
+    reviewer handed back, and skipping it is the FN-8141 laundering shape no amount of delivery evidence cures.
+    When a card carries BOTH a skipped remediation step and a name-flagged skip, the refusal now names the
+    remediation subset instead of the union. That is intentional and strictly more actionable: the remediation
+    row is the one a reviewer can re-issue, and the name-flagged names it drops were either excused by the two
+    proofs above or are about to be reported by the signature rule below.
+    */
+    const remediationSkipped = skippedSteps.filter((step) => isRemediationStep(step));
+    if (remediationSkipped.length > 0) {
+      const names = remediationSkipped.map((step) => step.name).join(", ");
+      return block(`skipped verification step(s) with no net branch changes: ${names}`);
+    }
 
-    // A skipped verification/QA/review step over an empty diff blocks unconditionally:
-    // there is no reviewer or test evidence, so `done` cannot be trusted.
-    if (verificationSkipped.length > 0) {
+    /*
+    (2) A step flagged ONLY by the wording of its title. It keeps blocking whenever either proof is missing -
+    no reviewer sign-off, an unproven or dirty tree, an unreadable ahead-count, or commits still ahead - so the
+    FN-8141 anti-laundering invariant is byte-for-byte intact for every card that cannot show its delivery.
+    */
+    const verificationSkipped = skippedSteps.filter((step) => VERIFICATION_STEP_NAME.test(step.name ?? ""));
+    if (verificationSkipped.length > 0 && !reviewedEmptyNoOp) {
       const names = verificationSkipped.map((step) => step.name).join(", ");
       return block(`skipped verification step(s) with no net branch changes: ${names}`);
     }
