@@ -1,4 +1,5 @@
-import type { Task, TaskStore } from "@fusion/core";
+import { createHash } from "node:crypto";
+import type { RunMutationContext, Task, TaskStore } from "@fusion/core";
 import { isWorkspaceTask } from "@fusion/core";
 import { activeSessionRegistry } from "../agents/active-session-registry.js";
 import { resolveExternalExecutionCheckoutRoute } from "../execution/external-execution-checkout.js";
@@ -148,6 +149,93 @@ export async function recordOverlapAcquisitionPark(input: {
     )).catch(() => undefined);
   }
   return { registrationRelease, announced };
+}
+
+/*
+FNXC:OverlapAcquisitionPark 2026-11-14-11:52 (RUFU-896):
+A refused acquisition is a WAIT, so it must be stored as a wait. The arm that caught this refusal used to
+write `status: "failed"` plus the refusal prose, and that prose is what kept the loop alive: a `failed`
+todo card is re-admitted, re-acquires a worktree, is refused again, and the engine itself logged
+`no retry strike consumed` while using a field shape no counter could bound. RUFU-476 measured 17 of those
+cycles in three hours and rebuilt its worktree after a daemon restart.
+
+So the refusal now writes the same hold shape the executor's dispatch gate already writes
+(`file-scope-lease-dispatch-gate.ts`): `transitionQueuedEpisode` owns `status`, `blockedBy`,
+`overlapBlockedBy` and the queue-log edge, and it has NO `error` field — which is the point. The card stays
+in `todo`, named by its predecessor, and the already-shipped planning-lane acquisition skip
+(`heartbeatPlanningLaneAcquisitionSkip`, RUFU-200) then keeps later heartbeats from touching a checkout at
+all. No new counter is introduced here: bounded waiting is owned by `reconcileTaskOverlapWaits` and
+`reconcileReleasedOverlapWaits`, and RUFU-673 owns attempt budgets — this file deliberately takes neither.
+
+`overlapBlockedBy` stays a SINGLE id because every live value is one; with several predecessors the
+deterministic first (sorted) is used, so one wait cannot oscillate between two names across heartbeats.
+*/
+export type OverlapHoldWrite = "held" | "fallback-terminal";
+
+/** Why this hold exists; kept in the signature so a typed refusal and a composed cap never share an identity. */
+export type OverlapHoldReason = "typed-refusal" | "cap-composed";
+
+/**
+ * Names the predecessors from the episode table, for the arm that carries no typed artifacts.
+ *
+ * FNXC:OverlapAcquisitionPark 2026-11-14-11:52 (RUFU-896):
+ * Without this, the cap-composed hold could only write `overlapBlockedBy: null`, and a hold that names nobody
+ * does not stop the loop: the planning-lane skip decides from that column, so the next heartbeat would acquire
+ * again and rebuild the worktree — the same defect, reached through the other arm. One bounded read on a path
+ * that has already failed is the cheaper answer, and the attribution then comes from the same rows every other
+ * consumer reads. Best-effort by nature: an unreadable episode table leaves the card held but unattributed,
+ * which still beats a prose failure, and `reconcileTaskOverlapWaits` remains the resolver either way.
+ */
+export async function attributeOverlapBlockers(
+  store: Pick<TaskStore, "listTaskOverlapWaits">,
+  taskId: string,
+): Promise<string[]> {
+  const rows = await store.listTaskOverlapWaits(taskId, { pendingOnly: true }).catch(() => []);
+  const blockers = new Set<string>();
+  for (const row of rows ?? []) {
+    const blocker = (row as { blockerTaskId?: string }).blockerTaskId;
+    if (blocker && blocker !== taskId) blockers.add(blocker);
+  }
+  return [...blockers].sort();
+}
+
+/*
+ * Bounded, deterministic episode identity. An unbounded signature would make every heartbeat a NEW wait,
+ * which is exactly how an edge-triggered queue log becomes a flood.
+ */
+function acquisitionSignature(reason: OverlapHoldReason, episodeIds: string[], blockers: string[]): string {
+  const sorted = [...episodeIds].sort().join(",") || [...blockers].sort().join(",") || "unattributed";
+  const short = `overlap-acquisition:${reason}:${sorted}`;
+  if (sorted.length <= 96) return short;
+  return `overlap-acquisition:${reason}:${createHash("sha256").update(sorted).digest("hex").slice(0, 16)}`;
+}
+
+export async function holdRefusedAcquisition(input: {
+  store: TaskStore;
+  task: Task;
+  blockers: string[];
+  episodeIds?: string[];
+  reason: OverlapHoldReason;
+  runContext?: RunMutationContext;
+}): Promise<OverlapHoldWrite> {
+  const { store, task } = input;
+  const blockers = [...input.blockers].filter((id) => typeof id === "string" && id.length > 0).sort();
+  const named = blockers[0] ?? task.overlapBlockedBy ?? null;
+  try {
+    await store.transitionQueuedEpisode(task.id, {
+      signature: acquisitionSignature(input.reason, input.episodeIds ?? [], blockers),
+      blockedBy: task.blockedBy ?? null,
+      overlapBlockedBy: named,
+      action: `queued — waiting on ${named ?? "unknown"} for file-scope delivery (execution withheld, no retry strike consumed)`,
+      outcome: "Acquisition refused by overlap synchronization; the card is held in its queue lane, not failed.",
+      runContext: input.runContext,
+    });
+    return "held";
+  } catch (error) {
+    // A card that cannot be durably held must not look runnable either: the caller keeps the terminal write.
+    executorLog.warn(`${task.id}: overlap hold write refused, falling back to the terminal record: ${error instanceof Error ? error.message : String(error)}`);
+    return "fallback-terminal";
+  }
 }
 
 /** Never let a release failure or a missing pointer turn a refusal into a second failure path. */

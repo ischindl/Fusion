@@ -450,6 +450,16 @@ describe("heartbeat worktree acquisition refused by overlap synchronization", ()
   const CHECKOUT = "task-checkout/fn-1";
 
   /** The card as it reads AFTER acquisition persisted its assignment: a live registration. */
+    /*
+  FNXC:OverlapAcquisitionPark 2026-11-14-11:52 (RUFU-896):
+  One mutable row backs `getTask` for the overlap suite, because the behavior under test IS the row:
+  `heartbeatPlanningLaneAcquisitionSkip` decides from `overlapBlockedBy` on the card, so a fake that forgot
+  the hold could not distinguish "held" from "refused and re-admitted" — the exact difference between one
+  acquisition per wait and RUFU-476's 17 cycles. It sits at describe scope so a test can seed the strike
+  counter the way a real TaskStore persists it without replacing the row and losing the hold.
+  */
+  const heldRow: Record<string, unknown> = {};
+
   function parkedTask(overrides: Record<string, unknown> = {}) {
     return {
       id: "FN-1", title: "t", description: "d", column: "todo", dependencies: [], steps: [], log: [],
@@ -467,6 +477,7 @@ describe("heartbeat worktree acquisition refused by overlap synchronization", ()
   beforeEach(() => {
     vi.restoreAllMocks();
     __resetOverlapAcquisitionParkDedup();
+    for (const key of Object.keys(heldRow)) delete heldRow[key];
     vi.spyOn(piModule, "createFnAgent").mockResolvedValue({ session: { prompt: vi.fn(), dispose: vi.fn() } } as any);
     vi.spyOn(worktreeAcquisition, "acquireTaskWorktree").mockRejectedValue(
       new OverlapResumeSynchronizationError("delivery-unavailable", OVERLAP_DELIVERY_UNAVAILABLE_ERROR, {
@@ -493,9 +504,15 @@ describe("heartbeat worktree acquisition refused by overlap synchronization", ()
     };
     taskStore = {
       getSettings: vi.fn().mockResolvedValue({}),
-      getTask: vi.fn().mockResolvedValue(parkedTask()),
+      getTask: vi.fn(async () => parkedTask(heldRow)),
       moveTask: vi.fn(),
       updateTask: vi.fn(),
+      transitionQueuedEpisode: vi.fn(async (_id: string, transition: Record<string, unknown>) => {
+        heldRow.status = "queued";
+        heldRow.blockedBy = transition.blockedBy ?? null;
+        heldRow.overlapBlockedBy = transition.overlapBlockedBy ?? null;
+        return { appended: true, task: parkedTask(heldRow) };
+      }),
       logEntry: vi.fn(),
       appendAgentLog: vi.fn(),
       listTasks: vi.fn().mockResolvedValue([]),
@@ -522,14 +539,14 @@ describe("heartbeat worktree acquisition refused by overlap synchronization", ()
     // nor through the cap-exhaustion clear.
     expect(taskStore.updateTask).not.toHaveBeenCalledWith("FN-1", expect.objectContaining({ recoveryRetryCount: expect.anything() }));
     expect(onTaskAcquisitionExhausted).not.toHaveBeenCalled();
-    // The bare recoverable sentence is the whole operator-visible reason, so the core matcher and the
-    // released-overlap-waits sweep can both resume this card.
-    expect(taskStore.updateTask).toHaveBeenCalledWith("FN-1", expect.objectContaining({
-      status: "failed",
-      error: OVERLAP_DELIVERY_UNAVAILABLE_ERROR,
+    // RUFU-896: the refusal is a WAIT, so it is stored as one. No `status:"failed"`, no prose in `error`,
+    // and no rebound move — the card never changed lane, it only gained the predecessor's name.
+    expect(taskStore.transitionQueuedEpisode).toHaveBeenCalledWith("FN-1", expect.objectContaining({
+      signature: "overlap-acquisition:typed-refusal:ep-1",
+      overlapBlockedBy: "FN-A",
     }));
-    // The terminal park survives the rebound move (FN-7721 preserveStatus semantics).
-    expect(taskStore.moveTask).toHaveBeenCalledWith("FN-1", "todo", { preserveProgress: true, preserveStatus: true });
+    expect(taskStore.updateTask).not.toHaveBeenCalledWith("FN-1", expect.objectContaining({ status: "failed" }));
+    expect(taskStore.moveTask).not.toHaveBeenCalledWith("FN-1", "todo", expect.objectContaining({ preserveStatus: true }));
     // The registration that used to survive the failure is released through the defensive path and its
     // pointers cleared, so the dormant file-scope lease cannot re-arm (RUFU-200).
     expect(remove).toHaveBeenCalledWith(expect.objectContaining({
@@ -570,7 +587,9 @@ describe("heartbeat worktree acquisition refused by overlap synchronization", ()
     const monitor = new HeartbeatMonitor({ store, taskStore, rootDir: "repo-root" });
 
     for (let cycle = 0; cycle < 3; cycle++) {
-      taskStore.getTask.mockResolvedValue(parkedTask({ recoveryRetryCount }));
+      // Seed the strike counter the way a real TaskStore persists it, WITHOUT replacing the row: the row must
+      // keep carrying the hold, or this loop would prove nothing about re-acquisition.
+      heldRow.recoveryRetryCount = recoveryRetryCount;
       await monitor.executeHeartbeat({ agentId: "a1", source: "on_demand" });
     }
 
@@ -578,9 +597,19 @@ describe("heartbeat worktree acquisition refused by overlap synchronization", ()
     const writtenErrors = taskStore.updateTask.mock.calls
       .map((call: any[]) => (call[1] as Record<string, unknown>)?.error)
       .filter((value: unknown): value is string => typeof value === "string");
-    expect(writtenErrors.length).toBeGreaterThan(0);
-    for (const error of writtenErrors) expect(error).not.toMatch(/heartbeat attempts for branch/);
-    expect(worktreeAcquisition.acquireTaskWorktree).toHaveBeenCalledTimes(3);
+    /*
+    FNXC:OverlapAcquisitionPark 2026-11-14-11:52 (RUFU-896):
+    This was the suite's permanent negative proof against the ROZV-197 loop and it stays one, but its shape
+    changed with the behavior: the hold writes NO error field at all, so the honest assertion is now that no
+    error prose is ever written for this arm — not merely that the composed cap sentence is absent.
+    */
+    expect(writtenErrors).toEqual([]);
+    /*
+    Criterion 4: one acquisition per wait. The hold names the predecessor on the row, the planning-lane skip
+    reads exactly that field, so cycles two and three must not reach acquisition at all. RUFU-476 rebuilt its
+    worktree 17 times in three hours precisely because the terminal write left nothing on the row to skip on.
+    */
+    expect(worktreeAcquisition.acquireTaskWorktree).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the pointer and the checkout when content preservation refuses the release", async () => {
@@ -591,9 +620,8 @@ describe("heartbeat worktree acquisition refused by overlap synchronization", ()
 
     await monitor.executeHeartbeat({ agentId: "a1", source: "on_demand" });
 
-    expect(taskStore.updateTask).toHaveBeenCalledWith("FN-1", expect.objectContaining({
-      status: "failed",
-      error: OVERLAP_DELIVERY_UNAVAILABLE_ERROR,
+    expect(taskStore.transitionQueuedEpisode).toHaveBeenCalledWith("FN-1", expect.objectContaining({
+      overlapBlockedBy: "FN-A",
     }));
     // No pointer clear over a preserved checkout — that is how an orphan is created.
     expect(taskStore.updateTask).not.toHaveBeenCalledWith("FN-1", expect.objectContaining({ worktree: null }));

@@ -261,7 +261,8 @@ heartbeat-model-unavailable parks from assignment/on-demand runs were terminal u
 import { acquireTaskWorktree, acquireWorkspaceTaskWorktrees, WorktreeBaseRefreshError } from "./worktree/worktree-acquisition.js";
 import { isTaskBranchBaseDivergedError } from "./worktree/task-base-resolution.js";
 import { OverlapResumeSynchronizationError } from "./executor/overlap-resume-gate.js";
-import { recordOverlapAcquisitionPark } from "./executor/overlap-acquisition-park.js";
+import { holdRefusedAcquisition, recordOverlapAcquisitionPark, attributeOverlapBlockers, type OverlapHoldWrite } from "./executor/overlap-acquisition-park.js";
+import { isRecoverableOverlapWaitFailure } from "@fusion/core";
 /* RUFU-200: the phantom re-arm guard reuses the scheduler's dependency-satisfaction verdict rather
    than writing a second one — `getUnmetSchedulingDependencies` is the authority the scheduler, the
    dispatch gate, and self-healing all use to answer "is this card still blocked?". */
@@ -5118,16 +5119,37 @@ export class HeartbeatMonitor {
             if (worktreeErr instanceof OverlapResumeSynchronizationError) {
               const liveTask = await taskStore.getTask(taskDetail.id).catch(() => null) ?? taskDetail;
               const park = await recordOverlapAcquisitionPark({ store: taskStore, rootDir, task: liveTask, agentId, error: worktreeErr });
+              /*
+               * FNXC:OverlapAcquisitionPark 2026-11-14-11:52 (RUFU-896):
+               * The refusal is now recorded as a HOLD (`status: "queued"` + `overlapBlockedBy` naming the
+               * predecessor) instead of `status: "failed"` + the refusal sentence. Writing prose into `error`
+               * was the loop's engine: `failed` makes the card re-admissible, the next heartbeat re-acquires a
+               * worktree, the gate refuses again, and nothing bounded the cycle because no counter was involved
+               * (RUFU-476: 17 cycles in 3 h, worktree rebuilt after a daemon restart). The hold also activates
+               * the planning-lane acquisition skip, so later heartbeats never touch a checkout for this card.
+               * The terminal write survives ONLY as the fallback for a store that cannot durably hold the card —
+               * a card we cannot hold must not look runnable either.
+               */
+              let holdWrite: OverlapHoldWrite = "fallback-terminal";
               if (!(await isTaskInTerminalLane(taskStore, taskDetail))) {
-                await taskStore.updateTask(taskDetail.id, {
-                  status: "failed",
-                  error: detail,
+                holdWrite = await holdRefusedAcquisition({
+                  store: taskStore,
+                  task: liveTask,
+                  blockers: worktreeErr.artifacts.blockerTaskIds,
+                  episodeIds: worktreeErr.artifacts.episodeIds,
+                  reason: "typed-refusal",
                 });
-                await taskStore.moveTask(
-                  taskDetail.id,
-                  await resolveHeartbeatReboundColumn(taskStore, taskDetail.id),
-                  { preserveProgress: true, preserveStatus: true },
-                );
+                if (holdWrite === "fallback-terminal") {
+                  await taskStore.updateTask(taskDetail.id, {
+                    status: "failed",
+                    error: detail,
+                  });
+                  await taskStore.moveTask(
+                    taskDetail.id,
+                    await resolveHeartbeatReboundColumn(taskStore, taskDetail.id),
+                    { preserveProgress: true, preserveStatus: true },
+                  );
+                }
               }
               await this.completeRun(agentId, run.id, {
                 status: "completed",
@@ -5138,6 +5160,7 @@ export class HeartbeatMonitor {
                   blockerTaskIds: worktreeErr.artifacts.blockerTaskIds,
                   registrationRelease: park.registrationRelease,
                   strikeBudgetConsumed: 0,
+                  holdWrite,
                 },
                 stderrExcerpt: detail,
                 skipStateTransition: true,
@@ -5157,6 +5180,50 @@ export class HeartbeatMonitor {
             const priorAttempts = taskDetail.recoveryRetryCount ?? 0;
             const attemptsSoFar = priorAttempts + 1;
             const retryCapExhausted = attemptsSoFar >= MAX_HEARTBEAT_WORKTREE_ACQUISITION_RETRIES;
+            /*
+             * FNXC:OverlapAcquisitionPark 2026-11-14-11:52 (RUFU-896):
+             * The cap arm must ask the same question the typed arm asks, BEFORE composing its wrapper. RUFU-342
+             * carried the second shape of this terminalization: a bare Error whose sentence is the overlap wait,
+             * which the cap then wrapped in `Worktree acquisition failed after 3 heartbeat attempts for branch
+             * "…": …`. Once wrapped, `isRecoverableOverlapWaitFailure` can only see it after the fact, so the
+             * card was failed for waiting and no sweep could resume it. Testing the INNER sentence here keeps a
+             * deterministic wait out of the broken-checkout cap entirely: same hold, no strike consumed, and
+             * `onTaskAcquisitionExhausted` stays silent because CentralCore stats must not count a wait as a
+             * broken checkout (the FN-7721 channel is for defects).
+             */
+            const overlapWaitBeforeCap = isRecoverableOverlapWaitFailure(detail);
+            let capHoldWrite: OverlapHoldWrite = "fallback-terminal";
+
+            if (!(await isTaskInTerminalLane(taskStore, taskDetail))) {
+              if (overlapWaitBeforeCap) {
+                // A bare sentence carries no predecessor id, so ask the episode table. Without attribution the
+                // hold would name nobody, the planning-lane skip would not fire, and this arm would keep
+                // re-acquiring — a hold that does not stop the loop is not a hold.
+                const capBlockers = await attributeOverlapBlockers(taskStore, taskDetail.id);
+                capHoldWrite = await holdRefusedAcquisition({
+                  store: taskStore,
+                  task: taskDetail,
+                  blockers: capBlockers,
+                  reason: "cap-composed",
+                });
+                if (capHoldWrite === "held") {
+                  await this.completeRun(agentId, run.id, {
+                    status: "completed",
+                    resultJson: {
+                      reason: "overlap_acquisition_parked",
+                      detail,
+                      holdWrite: capHoldWrite,
+                      holdSource: "cap-composed",
+                      // The wait must not spend the broken-checkout budget it was never charged against.
+                      strikeBudgetConsumed: 0,
+                    },
+                    stderrExcerpt: detail,
+                    skipStateTransition: true,
+                  });
+                  return (await this.store.getRunDetail(agentId, run.id))!;
+                }
+              }
+            }
 
             if (!(await isTaskInTerminalLane(taskStore, taskDetail))) {
               if (retryCapExhausted) {
@@ -5187,7 +5254,7 @@ export class HeartbeatMonitor {
             }
             await this.completeRun(agentId, run.id, {
               status: "completed",
-              resultJson: { reason: "worktree_acquisition_failed", detail, attempt: attemptsSoFar, retryCapExhausted },
+              resultJson: { reason: "worktree_acquisition_failed", detail, attempt: attemptsSoFar, retryCapExhausted, overlapWait: overlapWaitBeforeCap },
               stderrExcerpt: detail,
               skipStateTransition: true,
             });
