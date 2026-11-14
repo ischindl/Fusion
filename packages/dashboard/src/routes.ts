@@ -24,6 +24,10 @@ import {
   readAgentMemoryFile,
   writeAgentMemoryFile,
   resolveWorkflowIrForTask,
+  prefetchWorkflowSelections,
+  prefetchWorkflowIrs,
+  type WorkflowSelection,
+  type WorkflowIr,
   columnsWithFlag,
   resolveEffectiveConcurrency,
   deliverTaskCommentFromStore,
@@ -321,6 +325,7 @@ import {
   reloadExemptTools as engineReloadExemptTools,
   resolveIntegrationBranch,
 } from "@fusion/engine";
+import { getSharedAgentStore } from "./shared-agent-store.js";
 
 // Test-injectable override; defaults to the statically imported engine binding.
 let createFnAgentForRefine: typeof import("@fusion/engine").createFnAgent | undefined = engineCreateFnAgentForRefine;
@@ -328,6 +333,125 @@ let createFnAgentForRefine: typeof import("@fusion/engine").createFnAgent | unde
 /** @internal Inject a mock createFnAgent function for workflow-step refine route tests. */
 export function __setCreateFnAgentForRefine(mock: typeof createFnAgentForRefine): void {
   createFnAgentForRefine = mock;
+}
+
+/**
+ * Terminal task statuses — tasks in these states should not be displayed
+ * as "working on" in agent UI surfaces to avoid stale activity indicators.
+ */
+/*
+FNXC:WorkflowLifecycleColumns 2026-07-31-07:00 (dashboard-server feed):
+DELIBERATE-LITERAL — the fallback for a task whose workflow will not resolve, reviewed
+2026-07-31-07:00. The resolved answer is threaded per task at the call site below.
+
+Census-invisible before this change: a `Set` literal is a definition, not a comparison, so nothing
+in the lifecycle backlog pointed at this file. On a renamed board it matched nothing, so a FINISHED
+card kept its agent's "working on" indicator lit — the agent list showed work that had already
+shipped, which is exactly the stale indicator this sanitizer exists to prevent.
+*/
+/* FNXC:TaskArchiveRemoval 2026-09-04-14:51: Complete is the only live terminal role; the fallback must never classify the historical soft-delete sentinel as a board lane. */
+const TERMINAL_TASK_STATUSES = new Set(["done"]);
+const UNRESOLVED_AGENT_TASK_COLUMN = "unresolved";
+
+/**
+ * Check if a task status is terminal (complete, with Done as the degraded fallback).
+ */
+function isTerminalTaskStatus(status: string | undefined, resolvedTerminal?: ReadonlySet<string>): boolean {
+  if (status === undefined) return false;
+  return (resolvedTerminal ?? TERMINAL_TASK_STATUSES).has(status);
+}
+
+/**
+ * Sanitize agent responses to omit taskId when the linked task is in a terminal state.
+ * This prevents stale "working on" UI indicators for completed tasks.
+ *
+ * FNXC:AgentLinkBatchResolution 2026-11-11-14:25 (RUFU-591):
+ * Hoisted from the createApiRoutes closure to MODULE scope and exported so the
+ * batched-resolution behavior (one selection batch per request, each card judged against its OWN
+ * workflow's Complete lanes, prefetch leg deep-equal to the non-prefetched leg) is testable without
+ * standing up the full express harness. The closure captured no factory state, so hoisting is
+ * behavior-preserving; the route registrars receive this exact function as their dependency.
+ *
+ * @param agents - Array of agents to sanitize
+ * @param scopedStore - Task store for looking up linked task status
+ * @returns Agents with terminal-linked taskId omitted from response
+ */
+export async function sanitizeAgentTaskLinks(
+  agents: Array<import("@fusion/core").Agent>,
+  scopedStore: TaskStore,
+): Promise<Array<import("@fusion/core").Agent>> {
+  // Batch lookup all unique taskIds to avoid per-task detail hydration.
+  const taskIds = [...new Set(agents.map((a) => a.taskId).filter((id): id is string => id !== undefined))];
+
+  let taskStatusMap = new Map<string, string>();
+  try {
+    taskStatusMap = await scopedStore.getTaskColumns(taskIds);
+  } catch {
+    // Lookup failed — treat all linked tasks as non-terminal (preserve taskId)
+    taskStatusMap = new Map<string, string>();
+  }
+
+  /*
+  FNXC:AgentLinkBatchResolution 2026-11-11-14:20 (RUFU-591):
+  One batched selection read per request replaces the per-card `task_workflow_selection` SELECT that
+  made `GET /api/agents` (20 KB) cost seconds behind a board scan. The ORDER below is load-bearing:
+    1. `prefetchWorkflowSelections` is the ONLY prefetch that warms the selection cache; a store with
+       no batched reader leaves the cache untouched and reports `{ batched: 0, singles: N }`.
+    2. `prefetchWorkflowIrs` reads NO selections itself - it maps every selection-cache miss through
+       the default-workflow fallback, so calling it over a cold or partially-warm cache would judge
+       every card against the DEFAULT workflow's lanes: the exact lane substitution this sanitizer
+       exists to prevent. It therefore runs ONLY when (1) reports the batched read (batched === 1 and
+       singles === 0), and is skipped entirely on the single-lookup leg.
+    3. BOTH legs thread both caches into `resolveWorkflowIrForTask`, so each card is judged against
+       its OWN selected workflow's Complete lanes (the resolver coalesces concurrent single reads).
+  Cache lifetime is the request: a plain per-request Map observes a workflow or selection edit on the
+  next request with no wall-clock TTL, which is the invalidation basis the epoch-guarded
+  EpochedWorkflowSelectionCache/EpochedWorkflowIrCache exist to provide for LONG-lived batch caches -
+  this is not one, so no epoch plumbing and no cross-request staleness are needed here.
+  No workflow-id default is spelled in dashboard code: the only source of a task's lanes is the
+  resolver result for that task id, and an unresolvable task stays out of the map and falls back to
+  Done, the pre-existing behaviour.
+  */
+  const terminalSelectionCache: Map<string, WorkflowSelection | undefined> = new Map();
+  const terminalIrCache = new Map<string, WorkflowIr>();
+  const selectionTally = await prefetchWorkflowSelections(scopedStore, taskIds, terminalSelectionCache);
+  if (selectionTally.batched === 1 && selectionTally.singles === 0) {
+    await prefetchWorkflowIrs(scopedStore, taskIds, terminalIrCache, terminalSelectionCache);
+  }
+  const terminalByTaskId = new Map<string, ReadonlySet<string>>();
+  for (const taskId of taskIds) {
+    /*
+    FNXC:WorkflowLifecycleColumns 2026-07-31-09:30 (#2787 review — greptile P1):
+    MEMBERSHIP, not first-per-role — a workflow may declare more than one Complete column, and
+    `resolveLifecycleColumns` returns only the FIRST. A linked task in the second terminal lane
+    kept its `taskId` and the agent stayed displayed as working on finished
+    work, which is the exact symptom this sanitizer exists to remove.
+    */
+    const ir = await resolveWorkflowIrForTask(scopedStore, taskId, terminalIrCache, terminalSelectionCache).catch(() => undefined);
+    if (!ir) continue;
+    const terminal = columnsWithFlag(ir, "complete");
+    if (terminal.length > 0) terminalByTaskId.set(taskId, new Set(terminal));
+  }
+
+  return agents.map((agent) => {
+    if (!agent.taskId) return agent;
+
+    const taskStatus = taskStatusMap.get(agent.taskId);
+    if (isTerminalTaskStatus(taskStatus, terminalByTaskId.get(agent.taskId))) {
+      // Omit taskId for terminal tasks — use spread to create shallow copy without taskId
+      const { taskId: _omitted, taskColumn: _taskColumnOmitted, ...sanitized } = agent;
+      return sanitized as import("@fusion/core").Agent;
+    }
+
+    /*
+     * FNXC:AgentTaskStateDrift 2026-06-27-16:20:
+     * Dashboard agent surfaces show the linked task column so coordinators can tell legitimate triage/queued or active linkage apart from execution drift, matching the FN-7138 text-surface invariant.
+     *
+     * FNXC:AgentTaskStateDrift 2026-06-27-17:08:
+     * Missing/deleted linked tasks and lookup failures must be explicit too; otherwise a stale task link is indistinguishable from an un-enriched dashboard response.
+     */
+    return { ...agent, taskColumn: taskStatus ?? UNRESOLVED_AGENT_TASK_COLUMN };
+  });
 }
 
 function validateOptionalModelField(value: unknown, name: string): string | undefined {
@@ -1198,9 +1322,7 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
       return;
     }
 
-    const { AgentStore } = await import("@fusion/core");
-    const agentStore = new AgentStore({ rootDir: scopedStore.getFusionDir(), asyncLayer: scopedStore.getAsyncLayer() ?? undefined });
-    await agentStore.init();
+    const agentStore = await getSharedAgentStore({ rootDir: scopedStore.getFusionDir(), asyncLayer: scopedStore.getAsyncLayer() ?? undefined });
 
     const recipient = await agentStore.getAgent(recipientAgentId);
     // Skip: agent not found
@@ -1414,98 +1536,6 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
   });
 
   // ── Agent Routes ───────────────────────────────────────────────────────────
-
-  /**
-   * Terminal task statuses — tasks in these states should not be displayed
-   * as "working on" in agent UI surfaces to avoid stale activity indicators.
-   */
-  /*
-  FNXC:WorkflowLifecycleColumns 2026-07-31-07:00 (dashboard-server feed):
-  DELIBERATE-LITERAL — the fallback for a task whose workflow will not resolve, reviewed
-  2026-07-31-07:00. The resolved answer is threaded per task at the call site below.
-
-  Census-invisible before this change: a `Set` literal is a definition, not a comparison, so nothing
-  in the lifecycle backlog pointed at this file. On a renamed board it matched nothing, so a FINISHED
-  card kept its agent's "working on" indicator lit — the agent list showed work that had already
-  shipped, which is exactly the stale indicator this sanitizer exists to prevent.
-  */
-  /* FNXC:TaskArchiveRemoval 2026-09-04-14:51: Complete is the only live terminal role; the fallback must never classify the historical soft-delete sentinel as a board lane. */
-  const TERMINAL_TASK_STATUSES = new Set(["done"]);
-  const UNRESOLVED_AGENT_TASK_COLUMN = "unresolved";
-
-  /**
-   * Check if a task status is terminal (complete, with Done as the degraded fallback).
-   */
-  function isTerminalTaskStatus(status: string | undefined, resolvedTerminal?: ReadonlySet<string>): boolean {
-    if (status === undefined) return false;
-    return (resolvedTerminal ?? TERMINAL_TASK_STATUSES).has(status);
-  }
-
-  /**
-   * Sanitize agent responses to omit taskId when the linked task is in a terminal state.
-   * This prevents stale "working on" UI indicators for completed tasks.
-   *
-   * @param agents - Array of agents to sanitize
-   * @param scopedStore - Task store for looking up linked task status
-   * @returns Agents with terminal-linked taskId omitted from response
-   */
-  async function sanitizeAgentTaskLinks(
-    agents: Array<import("@fusion/core").Agent>,
-    scopedStore: TaskStore,
-  ): Promise<Array<import("@fusion/core").Agent>> {
-    // Batch lookup all unique taskIds to avoid per-task detail hydration.
-    const taskIds = [...new Set(agents.map((a) => a.taskId).filter((id): id is string => id !== undefined))];
-
-    let taskStatusMap = new Map<string, string>();
-    try {
-      taskStatusMap = await scopedStore.getTaskColumns(taskIds);
-    } catch {
-      // Lookup failed — treat all linked tasks as non-terminal (preserve taskId)
-      taskStatusMap = new Map<string, string>();
-    }
-
-    /*
-    FNXC:WorkflowLifecycleColumns 2026-07-31-07:00 (dashboard-server feed):
-    Each linked task's OWN terminal lanes, resolved once per unique id with a shared IR cache. A task
-    whose workflow will not resolve is left out of the map and falls back to Done above,
-    which is the pre-existing behaviour rather than a guess.
-    */
-    const terminalIrCache = new Map<string, never>();
-    const terminalByTaskId = new Map<string, ReadonlySet<string>>();
-    for (const taskId of taskIds) {
-      /*
-      FNXC:WorkflowLifecycleColumns 2026-07-31-09:30 (#2787 review — greptile P1):
-      MEMBERSHIP, not first-per-role — a workflow may declare more than one Complete column, and
-      `resolveLifecycleColumns` returns only the FIRST. A linked task in the second terminal lane
-      kept its `taskId` and the agent stayed displayed as working on finished
-      work, which is the exact symptom this sanitizer exists to remove.
-      */
-      const ir = await resolveWorkflowIrForTask(scopedStore, taskId, terminalIrCache as never).catch(() => undefined);
-      if (!ir) continue;
-      const terminal = columnsWithFlag(ir, "complete");
-      if (terminal.length > 0) terminalByTaskId.set(taskId, new Set(terminal));
-    }
-
-    return agents.map((agent) => {
-      if (!agent.taskId) return agent;
-
-      const taskStatus = taskStatusMap.get(agent.taskId);
-      if (isTerminalTaskStatus(taskStatus, terminalByTaskId.get(agent.taskId))) {
-        // Omit taskId for terminal tasks — use spread to create shallow copy without taskId
-        const { taskId: _omitted, taskColumn: _taskColumnOmitted, ...sanitized } = agent;
-        return sanitized as import("@fusion/core").Agent;
-      }
-
-      /*
-       * FNXC:AgentTaskStateDrift 2026-06-27-16:20:
-       * Dashboard agent surfaces show the linked task column so coordinators can tell legitimate triage/queued or active linkage apart from execution drift, matching the FN-7138 text-surface invariant.
-       *
-       * FNXC:AgentTaskStateDrift 2026-06-27-17:08:
-       * Missing/deleted linked tasks and lookup failures must be explicit too; otherwise a stale task link is indistinguishable from an un-enriched dashboard response.
-       */
-      return { ...agent, taskColumn: taskStatus ?? UNRESOLVED_AGENT_TASK_COLUMN };
-    });
-  }
 
   function validateAgentInstructionsPayload(
     instructionsPath: unknown,

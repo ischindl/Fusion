@@ -2,9 +2,9 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import type { Agent, AgentState, AgentCapability, AgentStats } from "../api";
 import { fetchAgents, fetchAgentStats } from "../api";
 import { isEphemeralAgent } from "@fusion/core";
-import { subscribeSse } from "../sse-bus";
 import { readCache, SWR_CACHE_KEYS, SWR_DEFAULT_MAX_AGE_MS, writeCache } from "../utils/swrCache";
 import { useProjectContextGuard } from "./useProjectContextGuard";
+import { getAgentRosterOwner } from "./agent-roster-owner";
 
 interface UseAgentsOptions {
   filterState?: AgentState | "all";
@@ -27,14 +27,34 @@ interface AgentFilter {
   includeEphemeral?: boolean;
 }
 
-// Debounce window for SSE-triggered refreshes. A burst of agent:updated /
-// agent:stateChanged events during multi-agent activity used to fire one
-// forceFresh fetch per event, defeating the dedupe layer. Coalescing inside
-// this window collapses the burst into one network round trip.
-const SSE_REFRESH_DEBOUNCE_MS = 250;
+/*
+FNXC:AggregateEndpointHydration 2026-11-11-14:45 (RUFU-591):
+The SSE debounce window (250 ms, with the trailing catch-up guarantee) used to live here, per hook
+instance - so N mounted consumers meant N parallel roster refreshes per event burst, each forceFresh
+redirecting (not joining) the dedupe entry its sibling had just started. The debounce, the single
+SSE subscription, and the forceFresh fetch pair now live in ONE shared owner per request variant
+(`agent-roster-owner.ts`); this hook retains the owner and applies its snapshots.
+*/
+
+/*
+FNXC:AggregateEndpointHydration 2026-11-14-12:28 (RUFU-591):
+The roster snapshot slot must be keyed by the same request variant the fetch is keyed by, or the
+shared-cache half of the fix leaks: `AGENTS:<projectId>` carried whichever variant wrote last, so an
+"Show system agents" refresh in the Agents panel left an ephemeral-INCLUSIVE roster in the slot that
+`App.tsx` and every other default-variant mount hydrates from on the next open — a roster whose shape
+is not the one that consumer asked the server for. Keeping the DEFAULT slot byte-identical (no
+suffix) means existing readers, and `clearCache(SWR_CACHE_KEYS.AGENTS)`'s prefix sweep in
+DashboardLoader, behave exactly as before; only the ephemeral-inclusive variant moves to its own
+sub-slot, so neither variant can overwrite the other's snapshot in either direction.
+*/
+export function agentsRosterCacheKey(projectId?: string, includeEphemeral = false): string {
+  const base = projectId ? `${SWR_CACHE_KEYS.AGENTS}:${projectId}` : SWR_CACHE_KEYS.AGENTS;
+  return includeEphemeral ? `${base}:ephemeral` : base;
+}
 
 export function useAgents(projectId?: string, options?: UseAgentsOptions) {
-  const agentsCacheKey = projectId ? `${SWR_CACHE_KEYS.AGENTS}:${projectId}` : SWR_CACHE_KEYS.AGENTS;
+  const includeEphemeral = options?.showSystemAgents ?? false;
+  const agentsCacheKey = agentsRosterCacheKey(projectId, includeEphemeral);
   const statsCacheKey = projectId ? `${SWR_CACHE_KEYS.AGENT_STATS}:${projectId}` : SWR_CACHE_KEYS.AGENT_STATS;
   const [agents, setAgents] = useState<Agent[]>(() => {
     const cached = readCache<Agent[]>(agentsCacheKey, { maxAgeMs: SWR_DEFAULT_MAX_AGE_MS });
@@ -88,6 +108,38 @@ export function useAgents(projectId?: string, options?: UseAgentsOptions) {
     setIsLoading(false);
   }, [agentsCacheKey, statsCacheKey]);
 
+  const applyAgentSnapshot = useCallback((data: Agent[]): Agent[] => {
+    // Defensive dedupe: a race between the initial fetch and an SSE refresh
+    // (or a backend that returned the same agent twice) would otherwise put
+    // duplicate ids into every list rendered from this hook, flooding React
+    // with duplicate-key warnings until the dashboard runs out of heap.
+    const unique = Array.from(new Map(data.map((a) => [a.id, a])).values());
+    setAgents(unique);
+    /*
+    FNXC:AggregateEndpointHydration 2026-11-14-12:47 (RUFU-591):
+    An empty roster never overwrites a populated snapshot in the cache. The shared owner publishes
+    whatever a `forceFresh` pair returns, so one transient empty list read by the server (a store
+    mid-provision, a scoped read that answered empty) would wipe the only snapshot a later mount
+    hydrates from - and while fetches keep answering empty there is no path back to a painted board
+    short of a reload. Keeping the previous snapshot is bounded staleness instead: any successful
+    non-empty write replaces it, and the mounted surface's live state still updates truthfully here,
+    so a genuinely deleted-to-zero roster never keeps lit indicators in the UI. The cache is the
+    hydrate source, never the truth of the moment, which is why the guard sits on the write and not
+    on `setAgents`.
+    */
+    const writesEmpty = unique.length === 0;
+    if (writesEmpty) {
+      const cachedSnapshot = readCache<Agent[]>(agentsCacheKey, { maxAgeMs: SWR_DEFAULT_MAX_AGE_MS });
+      if (Array.isArray(cachedSnapshot) && cachedSnapshot.length > 0) {
+        hasCachedHydrationRef.current = hasCachedHydrationRef.current || unique.length > 0;
+        return unique;
+      }
+    }
+    writeCache(agentsCacheKey, unique, { maxBytes: 500_000 });
+    hasCachedHydrationRef.current = hasCachedHydrationRef.current || unique.length > 0;
+    return unique;
+  }, [agentsCacheKey]);
+
   const loadAgents = useCallback(async (filter?: AgentFilter, opts?: { forceFresh?: boolean }) => {
     const context = capture();
     const gen = ++agentsGenRef.current;
@@ -97,7 +149,6 @@ export function useAgents(projectId?: string, options?: UseAgentsOptions) {
     try {
       const filterState = options?.filterState;
       const baseFilter = filterState && filterState !== "all" ? { state: filterState } : undefined;
-      const includeEphemeral = options?.showSystemAgents ?? false;
       const mergedFilter = {
         ...baseFilter,
         ...filter,
@@ -109,20 +160,13 @@ export function useAgents(projectId?: string, options?: UseAgentsOptions) {
       // A newer call superseded us — drop this response so we don't clobber
       // fresher state with stale data.
       if (gen !== agentsGenRef.current || context.isStale()) return;
-      // Defensive dedupe: a race between the initial fetch and an SSE refresh
-      // (or a backend that returned the same agent twice) would otherwise put
-      // duplicate ids into every list rendered from this hook, flooding React
-      // with duplicate-key warnings until the dashboard runs out of heap.
-      const unique = Array.from(new Map(data.map((a) => [a.id, a])).values());
-      setAgents(unique);
-      writeCache(agentsCacheKey, unique, { maxBytes: 500_000 });
-      hasCachedHydrationRef.current = hasCachedHydrationRef.current || unique.length > 0;
+      applyAgentSnapshot(data);
     } catch (err) {
       console.error("Failed to load agents:", err);
     } finally {
       if (gen === agentsGenRef.current) setIsLoading(false);
     }
-  }, [agentsCacheKey, capture, projectId, options?.filterState, options?.showSystemAgents]);
+  }, [applyAgentSnapshot, capture, projectId, includeEphemeral, options?.filterState]);
 
   const loadStats = useCallback(async (opts?: { forceFresh?: boolean }) => {
     const context = capture();
@@ -151,96 +195,43 @@ export function useAgents(projectId?: string, options?: UseAgentsOptions) {
     void loadStats();
   }, [loadAgents, loadStats, options?.enabled]);
 
-  // SSE subscription for agent events. SSE events fire AFTER the backend
-  // commits the mutation, so we want the post-mutation snapshot. Refresh is
-  // debounced to coalesce bursts (e.g. many agent:updated events during a
-  // batch operation) into a single network round trip.
-  //
-  // Trailing-edge guard: a naive leading-edge debounce degrades to one fetch
-  // per ~250ms when sustained event bursts arrive faster than the fetch
-  // completes — events that land during an in-flight fetch each schedule a
-  // fresh timer. To prevent this storm: while a fetch is in-flight, mark
-  // pendingDuringFetch and skip arming new timers. When the fetch settles,
-  // if any events arrived during it, fire ONE more refresh to capture the
-  // latest state. Net guarantee: per burst of N events arriving within a
-  // fetch+debounce window, we issue at most 2 fetches (the initial debounced
-  // fetch and one trailing catch-up).
+  /*
+  FNXC:AggregateEndpointHydration 2026-11-11-14:45 (RUFU-591):
+  SSE-driven refresh, previously a per-hook subscription + debounce: every mounted consumer ran its
+  own `subscribeSse` and its own 250 ms timer, so one `agent:updated` burst cost one forceFresh
+  roster fetch PER COMPONENT (a second forceFresh arriving while a sibling fetch was in flight
+  REDIRECTS the dedupe entry instead of joining it). The shared owner keeps one subscription, one
+  debounce, and one fetch pair per (projectId, state, includeEphemeral) variant and broadcasts the
+  snapshot; this hook keeps its stale-context guard, its generation discipline (a snapshot outranks
+  any in-flight response, so it bumps the counters and drops those writes), and its cache write.
+  SSE events still fire AFTER the backend commits, so the forceFresh snapshot remains the
+  post-mutation view; missed-event recovery (`onReconnect`) is the owner's as before.
+  */
   useEffect(() => {
     const context = capture();
-    const query = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
-
-    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-    let fetchInProgress = false;
-    let pendingDuringFetch = false;
-    let unmounted = false;
-
-    const fire = async (): Promise<void> => {
-      fetchInProgress = true;
-      pendingDuringFetch = false;
-      try {
-        await Promise.all([
-          loadAgents(undefined, { forceFresh: true }),
-          loadStats({ forceFresh: true }),
-        ]);
-      } finally {
-        fetchInProgress = false;
-        if (!unmounted && pendingDuringFetch) {
-          // Events arrived during the fetch — run one trailing refresh to
-          // capture them. Use a normal debounce so a continued burst still
-          // coalesces.
-          schedule();
-        }
-      }
-    };
-
-    const schedule = (): void => {
-      if (debounceTimer || fetchInProgress) {
-        if (fetchInProgress) pendingDuringFetch = true;
-        return;
-      }
-      debounceTimer = setTimeout(() => {
-        debounceTimer = null;
-        void fire();
-      }, SSE_REFRESH_DEBOUNCE_MS);
-    };
-
-    const refresh = (): void => {
-      if (context.isStale()) return;
-      if (fetchInProgress) {
-        // Mark a trailing refresh; don't schedule a new timer that would race
-        // the in-flight fetch and (via forceFresh) discard its response.
-        pendingDuringFetch = true;
-        return;
-      }
-      schedule();
-    };
-
-    /*
-    FNXC:AgentsView 2026-07-26-15:02:
-    Missed-event recovery. The agent list and stats were refreshed only from live agent/approval
-    events, so state changes during an SSE gap (error reconnect, or the mobile hidden-tab suspend)
-    left the roster showing stale states and pending-approval counts indefinitely. `refresh` is the
-    same debounced authoritative refetch the event handlers use.
-    */
-    const unsubscribe = subscribeSse(`/api/events${query}`, {
-      onReconnect: refresh,
-      events: {
-        "agent:created": refresh,
-        "agent:updated": refresh,
-        "agent:deleted": refresh,
-        "agent:stateChanged": refresh,
-        "approval:requested": refresh,
-        "approval:updated": refresh,
-        "approval:decided": refresh,
-      },
+    const filterState = options?.filterState;
+    const owner = getAgentRosterOwner({
+      projectId,
+      state: filterState && filterState !== "all" ? filterState : undefined,
+      includeEphemeral,
     });
-
+    const release = owner.retain();
+    const unsubscribe = owner.subscribe(({ agents: snapshotAgents, stats: snapshotStats }) => {
+      if (context.isStale()) return;
+      // The snapshot is the freshest view; outrank any in-flight loadAgents/loadStats response.
+      agentsGenRef.current += 1;
+      statsGenRef.current += 1;
+      applyAgentSnapshot(snapshotAgents);
+      setStats(snapshotStats);
+      writeCache(statsCacheKey, snapshotStats, { maxBytes: 500_000 });
+      hasCachedHydrationRef.current = true;
+      setIsLoading(false);
+    });
     return () => {
-      unmounted = true;
-      if (debounceTimer) clearTimeout(debounceTimer);
       unsubscribe();
+      release();
     };
-  }, [capture, projectId, loadAgents, loadStats]);
+  }, [capture, projectId, options?.filterState, includeEphemeral, applyAgentSnapshot, statsCacheKey]);
 
   // refreshAgents is the canonical post-mutation refetch entrypoint. It
   // defaults to forceFresh so consumers don't have to remember — anyone

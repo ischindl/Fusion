@@ -136,8 +136,19 @@ describe("useAgentsMapCache enabled flag", () => {
 
   it("behaves exactly as before when no options are passed", async () => {
     const { result } = renderHook(() => useAgentsMapCache("proj-1"));
-    await waitFor(() => expect(mockFetchAgents).toHaveBeenCalledWith(undefined, "proj-1"));
-    expect(result.current.agentsMap.get("agent-1")?.name).toBe("Alpha");
+    /*
+     * FNXC:TestAssertionOrder 2026-11-14-13:55 (RUFU-591 verification):
+     * Waiting on the CALL alone and then asserting the delivered map is two facts about different
+     * moments: `fetchAgents` being called is true the instant the effect runs, while `agentsMap`
+     * needs the response promise, `writeCache`, and a React render. Under a loaded worker the second
+     * assertion read the map before the response landed ("expected undefined to be 'Alpha'") - a
+     * test-side ordering defect, not a product race, and the file's own "loads on cache miss and
+     * writes through" case already waits for the delivered state instead. One window, both facts.
+     */
+    await waitFor(() => {
+      expect(mockFetchAgents).toHaveBeenCalledWith(undefined, "proj-1");
+      expect(result.current.agentsMap.get("agent-1")?.name).toBe("Alpha");
+    });
   });
 
   it("performs no fetch and exposes no agents when disabled", async () => {

@@ -757,6 +757,16 @@ export const RETENTION_INVENTORY = [
     "expiryEvidence": []
   },
   {
+    "file": "packages/dashboard/src/routes.ts",
+    "name": "TERMINAL_TASK_STATUSES",
+    "kind": "Set",
+    "classification": "fixed-key-set",
+    "sources": [],
+    "ceilingConstant": null,
+    "justification": "literal Set initializer with 1 fixed entries and no mutation site in packages/dashboard/src/routes.ts",
+    "expiryEvidence": []
+  },
+  {
     "file": "packages/dashboard/src/routes/attribute-done-range-files.ts",
     "name": "inFlightAttribution",
     "kind": "Map",
@@ -1085,6 +1095,16 @@ export const RETENTION_INVENTORY = [
     "sources": [],
     "ceilingConstant": null,
     "justification": "keyed by the project's scripts file — one live ScriptStore per configured root",
+    "expiryEvidence": []
+  },
+  {
+    "file": "packages/dashboard/src/shared-agent-store.ts",
+    "name": "sharedEntries",
+    "kind": "Map",
+    "classification": "bounded",
+    "sources": [],
+    "ceilingConstant": "MAX_SHARED_STORES",
+    "justification": "count ceiling `MAX_SHARED_STORES` declared in packages/dashboard/src/shared-agent-store.ts",
     "expiryEvidence": []
   },
   {

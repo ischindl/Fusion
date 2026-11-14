@@ -19,7 +19,7 @@ tags:
 
 # Observed suite-only flakes register
 
-This register has **7 active observation records** (entries 2, 13, 20, 21, 22, 23, and 24), plus the separately maintained active CLI dispatcher timeout below; all are **active first sightings**. Entries 1, 15, and 18 closed after structural fixes with recorded verification, and stay in place below for campaign and first-sighting evidence. Entries 7 and 14 below are closed and retained for cross-reference only. It also has **1 merge-gate eviction record** (entry 6) and **12 archived closed records**. Only the active section drives quarantine and escalation decisions; the other sections preserve historical evidence.
+This register has **7 active observation records** (entries 2, 13, 20, 21, 22, 23, and 24), plus the separately maintained active CLI dispatcher timeout below; all are **active first sightings**. Entries 1, 15, 18, and 25 closed after structural fixes with recorded verification, and stay in place below for campaign and first-sighting evidence. Entries 7 and 14 below are closed and retained for cross-reference only. It also has **1 merge-gate eviction record** (entry 6) and **12 archived closed records**. Only the active section drives quarantine and escalation decisions; the other sections preserve historical evidence.
 
 <!--
 FNXC:TestFlakeRegister 2026-08-19-11:14:
@@ -1057,3 +1057,14 @@ discretion, per the standing rule in AGENTS.md.
 - **Root cause hypothesis (not proven):** a sibling test file leaves a transient fixture under `packages/engine/src` (or under the shared cwd) that the telemetry scanner globs mid-run. Not investigated further: unrelated to any change under test.
 - **Why recorded rather than quarantined:** the file is the FN-8868 pairing inventory itself — quarantining it evicts the whole ratchet over one ordering observation, and the real fix is scoping the scan (skip transient `.tmp-*`/fixture paths or snapshot the file list deterministically). No timeout was widened, no retry added, no assertion relaxed.
 - **What a second sighting should do:** reproduce with `vitest run agent-log-round-trip-fidelity.test.ts agent-usage-telemetry-wiring.test.ts`, identify the artifact visible mid-scan, and fix the scanner's exclusion list — or add the `scripts/lib/test-quarantine.json` entry plus matching vitest-config `exclude` per AGENTS.md.
+
+## Entry: useAgentsMapCache default-options case — closed by a structural fix (2 sightings)
+
+- **File:** `packages/dashboard/app/hooks/__tests__/useAgentsMapCache.test.ts`
+- **Exact test:** `useAgentsMapCache enabled flag > behaves exactly as before when no options are passed`
+- **Observed tree/SHA:** `fusion/rufu-591` at `1a6dd21346` (+ uncommitted RUFU-591 worktree edits to `app/hooks/useAgents.ts`, `app/hooks/agent-roster-owner.ts`, and the roster-refresh test file), observed 2026-11-14 ~13:32 and ~13:51 UTC.
+- **Observed symptom (captured under a loaded worker on the second sighting):** `AssertionError: expected undefined to be 'Alpha'` at the line asserting `result.current.agentsMap.get("agent-1")?.name`, one line after the assertion that passed.
+- **Root cause (proven, not hypothesis):** the case waited on the *call* (`waitFor(() => expect(mockFetchAgents).toHaveBeenCalledWith(undefined, "proj-1"))`, true the instant the effect runs) and then asserted the *delivered* map on the next line. Delivery needs the response promise, `writeCache`, and a React render, so a starved worker reached the second assertion before the response was applied. Nothing in the product is wrong: the file's own `loads on cache miss and writes through` case asserts the delivered state inside its `waitFor` and never failed.
+- **Observed frequency:** 2 failures in ~10 invocations of multi-file `dashboard-app-quality-backfill` batches, zero in isolation; reproduced deterministically by running the same batch while six busy loops held the CPU.
+- **Closure:** both facts now sit in one `waitFor` window, which is what the file's other cases already do. No timeout was widened, no retry added, no assertion relaxed or deleted, and no `.skip` was added - the assertion still requires the same two facts, it just stops claiming the second one at the first one's moment.
+- **Evidence after the fix:** the CPU-pressure reproduction (the shape that produced the captured failure) reran green; `useAgentsMapCache.test.ts` passes alone and in the batch.

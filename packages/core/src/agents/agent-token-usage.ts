@@ -1,8 +1,9 @@
 import { sql } from "drizzle-orm";
 import type { AgentStore } from "./agent-store.js";
 import type { Database } from "../db/db.js";
-import type { DrizzleDb } from "../postgres/data-layer.js";
+import type { AsyncDataLayer } from "../postgres/data-layer.js";
 import { PROJECT_SCHEMA } from "../postgres/schema/_shared.js";
+import { taskListProjectScope } from "../postgres/task-list-read-scope.js";
 import type { TaskStore } from "../store.js";
 import type { AgentRole } from "../types.js";
 
@@ -104,37 +105,100 @@ export function aggregateTaskTokenTotalsByAgentLink(db: Database): Map<string, A
  * FNXC:PostgresCutover 2026-07-04:
  * Async PostgreSQL equivalent of {@link aggregateTaskTokenTotalsByAgentLink}.
  * Reads the same task-link token columns from the schema-qualified
- * project.tasks table (snake_case) and runs them through the shared
- * accumulator so the Agents listing surfaces real task-derived totals in
+ * project.tasks table (snake_case) so the Agents listing surfaces real task-derived totals in
  * backend (PostgreSQL) mode instead of silently degrading to zero. The route
  * dispatches to this when the scoped store carries an AsyncDataLayer.
+ *
+ * FNXC:AggregateEndpointHydration 2026-11-11-15:40 (RUFU-591):
+ * The PostgreSQL leg is now a true SQL aggregate returning ONE ROW PER AGENT instead of materializing
+ * every token-bearing task row and folding it through `accumulateTaskTokenLinkRows` in JS. Two facts
+ * keep the attribution semantics byte-identical to the shared accumulator:
+ *   - The LATERAL VALUES unpivot emits one row per (task, non-null link column); `DISTINCT ON
+ *     (agent_id, task_id)` then collapses an agent linked via several columns of the SAME task into
+ *     one credit — exactly what the accumulator's per-row `Set` of agent ids does, so no double
+ *     counting and `nTasks` stays a distinct-task count.
+ *   - `total_tokens` falls back to input+cached+cacheWrite+output per row (COALESCE), mirroring the
+ *     accumulator's `row.totalTokens ?? sum-of-parts`; every SUM is COALESCEd to 0 so a null column
+ *     contributes zero like `?? 0` does in JS.
+ * Node-postgres returns bigint sums as STRINGS (the drizzle column mode parses only typed selects,
+ * not raw `db.execute`), so every numeric field is coerced with Number() before it enters the Map —
+ * without that the response would carry string token totals and break `inputTokens <= 0` guards
+ * downstream (`withTaskDerivedTokenTotals`).
+ * Project scoping takes the SAME operand `countLiveTasks` uses — `taskListProjectScope(layer, ...)`
+ * — which (a) binds `project_id = $n` as a PARAMETER (never interpolated text) when the layer names
+ * a project, and (b) records the RUFU-871 unbound-shared-layer guard instead of silently reading
+ * across projects. The previous row-shipping query relied on the connection's `fusion.project_id`
+ * session GUC alone; a bypass-mode connection therefore aggregated every project's rows. The SQLite
+ * leg below keeps the shared accumulator unchanged (drizzle-free raw rows are already bounded
+ * per-project there).
  */
 export async function aggregateTaskTokenTotalsByAgentLinkAsync(
-  db: DrizzleDb,
+  layer: AsyncDataLayer,
 ): Promise<Map<string, AgentTaskTokenTotals>> {
-  const rawRows = (await db.execute(
-    sql.raw(`
+  const projectScope = taskListProjectScope(layer, "agent-token-usage:aggregateTaskTokenTotalsByAgentLinkAsync");
+  const rawRows = (await layer.db.execute(
+    sql`
       SELECT
-        id AS "taskId",
-        assigned_agent_id AS "assignedAgentId",
-        source_agent_id AS "sourceAgentId",
-        checked_out_by AS "checkedOutBy",
-        token_usage_input_tokens AS "inputTokens",
-        token_usage_cached_tokens AS "cachedTokens",
-        token_usage_cache_write_tokens AS "cacheWriteTokens",
-        token_usage_output_tokens AS "outputTokens",
-        token_usage_total_tokens AS "totalTokens"
-      FROM ${PROJECT_SCHEMA}.tasks
-      WHERE token_usage_input_tokens IS NOT NULL
-         OR token_usage_cached_tokens IS NOT NULL
-         OR token_usage_cache_write_tokens IS NOT NULL
-         OR token_usage_output_tokens IS NOT NULL
-         OR token_usage_total_tokens IS NOT NULL
-    `),
-  )) as unknown as TaskTokenLinkRow[];
+        agent_id AS "agentId",
+        COALESCE(SUM(input_tokens), 0)::bigint AS "inputTokens",
+        COALESCE(SUM(cached_tokens), 0)::bigint AS "cachedTokens",
+        COALESCE(SUM(cache_write_tokens), 0)::bigint AS "cacheWriteTokens",
+        COALESCE(SUM(output_tokens), 0)::bigint AS "outputTokens",
+        COALESCE(SUM(total_tokens), 0)::bigint AS "totalTokens",
+        COUNT(*)::bigint AS "nTasks"
+      FROM (
+        SELECT DISTINCT ON (link.agent_id, tasks.id)
+          link.agent_id,
+          tasks.token_usage_input_tokens AS input_tokens,
+          tasks.token_usage_cached_tokens AS cached_tokens,
+          tasks.token_usage_cache_write_tokens AS cache_write_tokens,
+          tasks.token_usage_output_tokens AS output_tokens,
+          COALESCE(
+            tasks.token_usage_total_tokens,
+            COALESCE(tasks.token_usage_input_tokens, 0)
+              + COALESCE(tasks.token_usage_cached_tokens, 0)
+              + COALESCE(tasks.token_usage_cache_write_tokens, 0)
+              + COALESCE(tasks.token_usage_output_tokens, 0)
+          ) AS total_tokens
+        FROM ${sql.raw(PROJECT_SCHEMA)}.tasks
+        CROSS JOIN LATERAL (VALUES
+          (tasks.assigned_agent_id),
+          (tasks.source_agent_id),
+          (tasks.checked_out_by)
+        ) AS link(agent_id)
+        WHERE link.agent_id IS NOT NULL
+          AND (
+               tasks.token_usage_input_tokens IS NOT NULL
+            OR tasks.token_usage_cached_tokens IS NOT NULL
+            OR tasks.token_usage_cache_write_tokens IS NOT NULL
+            OR tasks.token_usage_output_tokens IS NOT NULL
+            OR tasks.token_usage_total_tokens IS NOT NULL
+          )
+          ${projectScope ? sql`AND ${projectScope}` : sql``}
+      ) per_agent_task
+      GROUP BY agent_id
+    `,
+  )) as unknown as Array<{
+    agentId: string;
+    inputTokens: number | string;
+    cachedTokens: number | string;
+    cacheWriteTokens: number | string;
+    outputTokens: number | string;
+    totalTokens: number | string;
+    nTasks: number | string;
+  }>;
 
   const totalsByAgentId = new Map<string, AgentTaskTokenTotals>();
-  accumulateTaskTokenLinkRows(rawRows, totalsByAgentId);
+  for (const row of rawRows) {
+    totalsByAgentId.set(row.agentId, {
+      inputTokens: Number(row.inputTokens),
+      cachedTokens: Number(row.cachedTokens),
+      cacheWriteTokens: Number(row.cacheWriteTokens),
+      outputTokens: Number(row.outputTokens),
+      totalTokens: Number(row.totalTokens),
+      nTasks: Number(row.nTasks),
+    });
+  }
   return totalsByAgentId;
 }
 
