@@ -22,6 +22,15 @@ import {
   isReviewColumnRole,
   type ColumnRoleTraitFlags,
 } from "../column-roles.js";
+/*
+FNXC:BoardOrdering 2026-11-13-09:30: RUFU-526 - the attention ladder is imported, never re-derived
+here, so the display comparator, the dashboard, and the store's keyset mirror all read one ladder.
+*/
+import {
+  resolveAttentionTier,
+  type AttentionTask,
+  type ResolveAttentionTierOptions,
+} from "./task-attention.js";
 
 // ── Boost record ────────────────────────────────────────────────────────────
 
@@ -265,9 +274,23 @@ offer (FN-509 deletes that menu; there is no configurable display order any more
 
   - Manual intake (Ideas): newest first — an idea list reads top-down as "what did I just think of".
   - Complete (Done): most recent ARRIVAL first, unchanged, so Done does not become creation-ordered.
-  - Everything else: genuinely ACTIVE cards first, then the whole waiting queue in Boost/FIFO order.
-    Active cards are ordered among themselves by arrival and never by boost — a boost must not let a
-    waiting card appear to jump ahead of work already in flight.
+  - Everything else: genuinely ACTIVE cards first, then the whole waiting queue in Boost/attention
+    /FIFO order. Active cards are ordered among themselves by arrival and never by boost — a boost
+    must not let a waiting card appear to jump ahead of work already in flight.
+
+FNXC:BoardOrdering 2026-11-13-09:30:
+RUFU-526 puts cards that need the operator above idle ones inside that waiting queue, because the
+operator's requirement is that "idle/backlog cards must never bury actionable items" — measured as
+one failed card among 200+ idle `todo` cards rendering ~201st, below every fold. The new term goes
+INSIDE the existing Boost bucket and never ahead of it: a deliberate Boost still holds the head it
+holds today, and only then does "needs attention" outrank "idle". In-flight cards are unaffected -
+they are already partitioned above the whole waiting queue, so attention cannot jump the queue ahead
+of work in progress.
+
+The two lane-role branches above are deliberately untouched: manual intake is newest-first by design
+and Complete ranks by ARRIVAL, so neither has a waiting queue to rank. `priority` is not an input and
+never comes back (FN-509 deleted it), and nothing here changes a card's column, status or pause state
+- this function returns a permutation of the SAME rows, which is what makes lane counts identical.
 */
 export function sortTasksForDisplayColumn<T extends TaskQueueSortable>(
   tasks: readonly T[],
@@ -291,13 +314,66 @@ export function sortTasksForDisplayColumn<T extends TaskQueueSortable>(
     return isReviewColumnRole(columnFlags, column) && isActiveMergeStatus(task.status);
   };
 
+  /*
+  The review-scope gate for the attention ladder, resolved by the SAME authority the server uses.
+  It is already computed for the activity partition, so gating costs nothing and cannot disagree with
+  the partition: a lane that has no review column has no required pre-merge gate to be stuck on and no
+  merge/stall blocker to surface, so tiers 1 and 3 are dropped and the 200-idle-card `todo` lane walks
+  zero step arrays per comparison.
+  */
+  const attentionOptions: ResolveAttentionTierOptions = { reviewScope: isReviewColumnRole(columnFlags, column) };
+
   return [...tasks].sort((a, b) => {
     const aActive = activeOf(a);
     const bActive = activeOf(b);
     if (aActive !== bActive) return aActive ? -1 : 1;
     if (aActive && bActive) return compareTasksByAgeAndId(a, b);
-    return compareTasksByQueueOrder(a, b);
+    return compareWaitingQueueOrder(a, b, attentionOptions);
   });
+}
+
+/*
+FNXC:BoardOrdering 2026-11-13-09:30:
+One lane's waiting queue: the whole Boost bucket, then the attention tier, then the arrival and id
+terms byte-for-byte. Three properties decide the shape.
+
+WHY THE BOOST BUCKET STAYS FIRST AND WHOLE. Its authority is `resolveEffectiveQueueBoost`, which
+validates the boost against the card's CURRENT workflow - a check the SQL mirror
+`sqlEffectiveBoostSequence` deliberately omits because SQL cannot see the workflow identity
+(`task-queue-order-ops.ts`). Deriving the display bucket from the mirror would have changed existing
+boosted-card semantics for a boost stamped in another workflow. Presence and boost recency are
+therefore resolved here exactly as before, so a deliberate Boost keeps the head it holds today and
+the ONLY new edge is which arrival a stuck card outranks.
+
+WHY THE TIER SITS AFTER THE BOOST SEQUENCE RATHER THAN BETWEEN PRESENCE AND RECENCY. Term order is
+the one thing the SQL `ORDER BY` and this comparator may not disagree about, because SQL's order
+selects WHICH rows a truncated page carries while this one arranges them. `QUEUE_BOOST_SEQUENCE DESC`
+already orders the whole bucket - every effective sequence is above `0`, so the SQL term is exactly
+(presence, then recency) - and mirroring that split here keeps the two halves identical rather than
+merely similar. Putting the tier between presence and recency would have made an all-boosted group
+rank by tier here and by recency in SQL.
+
+ARRIVAL AND ID COME FROM `compareTasksByAgeAndId` UNCHANGED, which is what "byte-for-byte" means
+operally: inside a tier the lane still reads oldest-first with the numeric-id tiebreak, so a no-change
+poll cannot reshuffle it.
+*/
+function compareWaitingQueueOrder<T extends TaskQueueSortable>(
+  a: T,
+  b: T,
+  attentionOptions: ResolveAttentionTierOptions,
+): number {
+  const aBoost = resolveEffectiveQueueBoost(a);
+  const bBoost = resolveEffectiveQueueBoost(b);
+  if (!!aBoost !== !!bBoost) return aBoost ? -1 : 1;
+  if (aBoost && bBoost) {
+    const sequenceCmp = compareQueueBoostSequence(bBoost.sequence, aBoost.sequence);
+    if (sequenceCmp !== 0) return sequenceCmp;
+  }
+  // Ascending: the ladder's contract is "lowest matching tier ranks highest".
+  const tierCmp =
+    resolveAttentionTier(a as AttentionTask, attentionOptions) - resolveAttentionTier(b as AttentionTask, attentionOptions);
+  if (tierCmp !== 0) return tierCmp;
+  return compareTasksByAgeAndId(a, b);
 }
 
 // ── Queue presence / Boost availability ─────────────────────────────────────

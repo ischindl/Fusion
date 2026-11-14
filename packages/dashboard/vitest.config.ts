@@ -450,6 +450,15 @@ const browserTouchTests = [
   CSS file as text. Collected once in this lane, self-gating on the presence of a local Chromium.
   */
   "src/__tests__/external-block-card-geometry-browser.test.ts",
+  /*
+  FNXC:BoardOrdering 2026-11-13-15:25 (RUFU-526):
+  The headline acceptance — one failed card among 201 renders inside the first viewport at 1440x900 AND on
+  a 390x844 phone reached by a real touch pan — is RENDERED geometry: it depends on the truncated lane read
+  carrying the card, `Column`'s virtualisation window, spacer heights and the phone scroll-snap layout.
+  jsdom computes none of it (every rect it returns is zero), so the claim is unmeasurable there. Collected
+  once in this lane, self-gating on the presence of a local Chromium.
+  */
+  "src/__tests__/board-attention-viewport-browser.test.ts",
 ];
 
 const qualityApiTests = [

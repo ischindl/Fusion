@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { globSync, readFileSync } from "node:fs";
+import { existsSync, globSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -294,5 +294,38 @@ describe("dashboard test config guard", () => {
     const geometrySpecSource = readFileSync(join(dashboardRoot, geometrySpec), "utf8");
     expect(geometrySpecSource).toContain("port: 0");
     expect(geometrySpecSource).not.toContain("4040");
+  });
+
+  /*
+  FNXC:BoardOrdering 2026-11-13-13:37 (RUFU-526):
+  The first-screen viewport proof joins the same browser lane. It is the only surface that can settle the
+  headline claim ("one failed card among 200+ idle cards renders inside the first viewport, desktop and
+  phone"), because jsdom returns zero for every rect — so a lane that silently stopped collecting it would
+  turn the task's acceptance into an unmeasured claim. Same three contracts as the two specs above, plus
+  the fixture it mounts: the spec proves nothing without the 200-card board it drives, so both files are
+  required to exist and the spec must keep driving them through a real browser rather than a mock.
+  */
+  it("collects the board attention first-screen browser proof exactly once in the touch lane", () => {
+    const attentionSpec = "src/__tests__/board-attention-viewport-browser.test.ts";
+    const touchProject = dashboardQualityProjectGlobs["dashboard-browser-touch"];
+
+    expect(expandDashboardGlobs(touchProject.include)).toContain(attentionSpec);
+
+    const collectingProjects = Object.entries(dashboardQualityProjectGlobs)
+      .filter(([projectName]) => projectName !== "dashboard-api-quality-backfill")
+      .filter(([, project]) => expandDashboardGlobs(project.include).has(attentionSpec))
+      .filter(([, project]) => !expandDashboardGlobs(project.exclude).has(attentionSpec))
+      .map(([projectName]) => projectName);
+    expect(collectingProjects).toEqual(["dashboard-browser-touch"]);
+    expect(expandProjectFiles("dashboard-api-quality-backfill")).not.toContain(attentionSpec);
+
+    const attentionSpecSource = readFileSync(join(dashboardRoot, attentionSpec), "utf8");
+    expect(attentionSpecSource).toContain("port: 0");
+    expect(attentionSpecSource).not.toContain("4040");
+    // The fixture is the 200-card board; a spec that stopped mounting it would prove nothing.
+    expect(attentionSpecSource).toContain("board-attention-e2e-fixture.html");
+    expect(existsSync(join(dashboardRoot, "app/board-attention-e2e-fixture.tsx"))).toBe(true);
+    // The pan must stay a real gesture: assigning scrollLeft would prove only assignability.
+    expect(attentionSpecSource).toContain("Input.dispatchTouchEvent");
   });
 });

@@ -19,7 +19,7 @@ import { WorkflowSwitcher } from "./WorkflowSwitcher";
 import { computeWorkflowStatusCounts } from "./workflowStatusCounts";
 import { writeBoardWorkflowsCache } from "../utils/boardWorkflowsCache";
 import { useBoardWorkflows } from "../hooks/useBoardWorkflows";
-import { useTaskQueuePages, type TaskQueueScope } from "../hooks/useTaskQueuePages";
+import { useTaskQueuePages, laneQueueScopeForColumn, type TaskQueueScope } from "../hooks/useTaskQueuePages";
 import { useHeaderWorkflowSlot } from "../hooks/useHeaderWorkflowSlot";
 import { useUnmappedWorkflowRefetch } from "../hooks/useUnmappedWorkflowRefetch";
 import { ALL_WORKFLOWS_BOARD_VIEW_ID } from "../utils/boardWorkflowSelection";
@@ -440,9 +440,11 @@ function BoardContent({ tasks: providedTasks, projectId, maxConcurrent, maxWorkt
   FN-509 : la page générique du board sélectionne le travail vivant par création croissante AVANT sa
   limite. Une carte boostée — ou une idée récente — située au-delà de cette limite est donc absente
   de la réponse, et aucun tri client ne peut la ramener en tête après un rechargement. On demande
-  donc au serveur la tête de CHAQUE colonne visible dans l'ordre propre de cette colonne
-  (`queue` = Boost puis arrivée, `intake` = plus récent d'abord) et on fusionne ces lignes par id.
-  L'instantané du board reste l'autorité pour un id qu'il détient déjà, donc SSE, mutations vivantes
+  donc au serveur la tête de CHAQUE colonne visible dans l'ordre propre de cette colonne et on fusionne
+  ces lignes par id. Depuis RUFU-526 la mapping vit dans `laneQueueScopeForColumn` : `attention` pour les
+  colonnes de travail (`queue` reste l'ordre de dispatch du moteur et n'est plus demandé ici), `intake`
+  pour la capture manuelle, plus la revendication `reviewScope` pour les lanes que les traits appellent
+  review. L'instantané du board reste l'autorité pour un id qu'il détient déjà, donc SSE, mutations vivantes
   et accumulateur Done ne changent pas de propriétaire ; une lane indisponible dégrade simplement
   vers la page générique.
   */
@@ -453,11 +455,16 @@ function BoardContent({ tasks: providedTasks, projectId, maxConcurrent, maxWorkt
     for (const column of source) {
       if (column.flags?.hiddenFromBoard === true) continue;
       if (column.flags?.complete === true) continue;
-      scopes.push({
-        key: column.id,
-        columns: [column.id],
-        order: column.flags?.manualIntake === true ? "intake" : "queue",
-      });
+      /*
+      FNXC:BoardOrdering 2026-11-13-10:37 (RUFU-526):
+      The lane head now arrives ranked by attention, which is the half that makes the first screen mean
+      something: this board page and the lane head are both TRUNCATED reads, so a card sitting past the
+      limit is not in the payload and no client-side sort can promote it. Asking for `attention` is what
+      puts the one failed card among two hundred idle ones INTO the payload. The mapping itself - which
+      lane asks for which order, and which lanes claim the required-gate tier - is `laneQueueScopeForColumn`,
+      named so that the rule has one answer and a test that does not have to render this component.
+      */
+      scopes.push(laneQueueScopeForColumn(column.id, column.flags));
     }
     return scopes;
   }, [selectedWorkflow, workflowMode]);

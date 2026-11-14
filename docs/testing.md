@@ -1532,6 +1532,18 @@ The shared task-modal/FloatingWindow lane in `packages/dashboard/src/__tests__/t
 
 This repository has no Playwright test runner: Vitest runs `playwright-core` as the Chromium CDP driver. Do not use `--project chromium` or `browserName` guidance from FN-8605/FN-8607. The lane finds an already-installed browser via `FUSION_BROWSER_SMOKE_BROWSER`, `CHROME_BIN`, or platform candidates, and skips with an explicit reason when none is available; it never downloads a browser. `FUSION_DASHBOARD_DEEP=1` does not collect this spec a second time — the dedicated project remains its only collection lane.
 
+<!-- FNXC:BoardOrdering 2026-11-13-14:05 (RUFU-526): any claim about what fits on the operator's first screen belongs in this lane, never in jsdom. -->
+
+### First-screen and geometry claims
+
+A test that asserts what an operator sees **on the first screen** — inside the viewport, without scrolling — cannot be written in jsdom: jsdom runs no layout engine, so every `getBoundingClientRect()` and `offsetHeight` it returns is zero, and an assertion written there passes on a page that renders the card below every fold. Those claims belong in the `dashboard-browser-touch` lane, which drives a real layout. The specs that carry them:
+
+- `src/__tests__/board-scroll-browser.test.ts` — the board's horizontal scroll and lane snap (FN-500).
+- `src/__tests__/external-block-card-geometry-browser.test.ts` — an external-block notice contained inside its own card (RUFU-492).
+- `src/__tests__/board-attention-viewport-browser.test.ts` — one failing card among 200+ idle `todo` cards rendering inside the first viewport at 1440x900 and on a 390x844 phone, reached by a real `Input.dispatchTouchEvent` pan (RUFU-526). Its fixture (`app/board-attention-e2e-fixture.tsx`) mounts the real `Board` behind a `window.fetch` stub that honours the `order` parameter the way the server does, so the assertion is falsifiable in both directions: a lane read that stopped asking for `attention` renders no card at all, and a client that stopped ranking it renders that card ~201st — which virtualisation then never mounts.
+
+The RUFU-526 spec is the reason the split matters: it failed on its first real run with the lane's own scroll container at `scrollTop` 320 and the failing card at top `-218`, because the lane-head row arrival is a **prepend** to the virtualiser and its anchor compensation had added its 320px row estimate to the scroll position. The card the ranking had just promoted to rank zero was pushed above the fold — the exact symptom the ordering change exists to remove, invisible to every zero-rect environment. See `packages/dashboard/app/components/Column.tsx` (`followStartOnPrepend`) and `app/components/__tests__/Column.scroll-geometry.test.tsx`.
+
 ### PostgreSQL DDL admission bound
 
 FN-9136 evaluated and rejected per-fork `TRUNCATE` database reuse: its two-sided golden-template gate passed the cluster smoke, but the required seven-pair 12-worker campaign left dead-fork pooled databases because the experiment lacked an awaited fork-exit flush and degraded to a shared local identity. The experimental wiring was removed rather than weaken isolation; see `docs/solutions/test-failures/postgres-ddl-admission-bound.md`.

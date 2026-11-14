@@ -2714,6 +2714,19 @@ export type {
   QueueUnavailableReason,
 } from "./tasks/task-queue-order.js";
 /*
+FNXC:BoardOrdering 2026-11-13-09:30:
+RUFU-526's attention ladder is ONE classifier shared by the display comparator, the SQL tier
+expression's TypeScript mirror, and the dashboard, so a second ranking definition cannot exist. The
+module is pure over the loaded row - no store, no engine import, no mutation - so it is browser-safe
+and belongs in every barrel that already carries the queue order it ranks inside.
+*/
+export {
+  ATTENTION_TIER_IDLE,
+  resolveAttentionTier,
+  sqlAttentionTier,
+} from "./tasks/task-attention.js";
+export type { AttentionTier, AttentionTask, ResolveAttentionTierOptions } from "./tasks/task-attention.js";
+/*
 FNXC:TaskFollowUp 2026-09-17-15:55:
 FN-513's follow-up sub-type test and eligibility rule are ONE definition shared by the context menu,
 the store mode, the HTTP route, and the planner, so no surface can fork the rule.

@@ -1714,9 +1714,22 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       const columnsParam = typeof req.query.columns === "string" ? req.query.columns : undefined;
       const columns = columnsParam?.split(",").map((value) => value.trim()).filter(Boolean) ?? [];
       const orderParam = typeof req.query.order === "string" ? req.query.order : undefined;
-      if (orderParam !== undefined && orderParam !== "queue" && orderParam !== "intake") {
-        throw badRequest("order must be 'queue' or 'intake'");
+      if (orderParam !== undefined && orderParam !== "queue" && orderParam !== "intake" && orderParam !== "attention") {
+        throw badRequest("order must be 'queue', 'intake' or 'attention'");
       }
+      /*
+      FNXC:BoardOrdering 2026-11-13-10:37 (RUFU-526):
+      `reviewScope=1` is a CLAIM about the requested lanes, not a decision. The operator's board asks for
+      it on the lanes its own column flags call review-owned, because only there does a required pre-merge
+      gate that failed, is pending, or never ran mean the card cannot move. This route does not grade that
+      claim - `listTaskQueuePage` re-derives the lane vocabulary from the store and confirms or refuses it,
+      all-or-nothing over the requested columns - for the same reason the route never trusts a client's
+      `columns` to define a lane: a measured live board has 519 backlog cards matching the never-ran-gate
+      shape, so a claim that was merely believed would rank a whole `todo` column by gates it has not
+      reached. Only the ORDER changes; membership and totals come from the same predicate as before, so
+      accepting a fourth order mode cannot move a card between columns.
+      */
+      const reviewScopeClaim = req.query.reviewScope === "1";
       if (columns.length > 0 && query) throw badRequest("columns cannot be combined with q");
       try {
         if (columns.length > 0) {
@@ -1725,6 +1738,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
             limit,
             ...(cursor ? { cursor } : {}),
             ...(orderParam ? { order: orderParam } : {}),
+            ...(reviewScopeClaim ? { reviewScope: true } : {}),
           }));
           return;
         }

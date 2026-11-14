@@ -41,10 +41,13 @@ import { taskProjectScope } from "../../postgres/data-layer.js";
 import { noteTaskListProjectScope, taskListProjectScope } from "../../postgres/task-list-read-scope.js";
 import { resolveBoardFeedProjection } from "../../postgres/board-feed.js";
 import {
+  taskAttentionOrderCursorPredicate,
+  taskAttentionOrderBy,
   taskIntakeDisplayCursorPredicate,
   taskIntakeDisplayOrderBy,
   taskQueueOrderBy,
   taskQueueOrderCursorPredicate,
+  type TaskAttentionPageKey,
   type TaskQueuePageKey,
 } from "../task-queue-order-ops.js";
 import {
@@ -997,7 +1000,7 @@ export interface ReadLiveTaskRowsOptions {
   offset?: number;
   afterCreatedAt?: string;
   afterId?: string;
-  sort?: "created-asc" | "completion-desc" | "completion-date-desc" | "queue-order" | "intake-desc";
+  sort?: "created-asc" | "completion-desc" | "completion-date-desc" | "queue-order" | "intake-desc" | "attention-order";
   /*
   FNXC:TaskQueueOrder 2026-09-17-13:51:
   The board's per-lane pages continue with the SAME total order they were selected by, so the
@@ -1008,6 +1011,18 @@ export interface ReadLiveTaskRowsOptions {
   */
   afterQueueKey?: TaskQueuePageKey;
   afterIntakeKey?: Pick<TaskQueuePageKey, "createdAt" | "id">;
+  /** Exclusive attention keyset: the queue key plus the tier the SQL expression assigned. */
+  afterAttentionKey?: TaskAttentionPageKey;
+  /*
+  FNXC:BoardOrdering 2026-11-13-09:30:
+  Whether the attention ladder may consult its required-pre-merge-gate arm. Default FALSE, and this
+  layer deliberately does NOT resolve it itself: the same rule `isReviewColumnRole` applies client-side
+  is resolved by the caller that named the lanes, so no read reaches a `workflow_step_results` array it
+  did not ask for. The gate is also what bounds the cost: a plain lane reads six scalar columns per row
+  and never walks a jsonb array, which is what keeps the 200-idle-card lane this card exists for inside
+  its cost bound.
+  */
+  attentionReviewScope?: boolean;
 }
 
 export async function readLiveTaskRows(
@@ -1076,9 +1091,22 @@ export async function readLiveTaskRows(
     : options?.sort === "intake-desc" && options.afterIntakeKey
       ? taskIntakeDisplayCursorPredicate(options.afterIntakeKey)
       : undefined;
+  /*
+  FNXC:BoardOrdering 2026-11-13-09:30:
+  A third continuation, keyed on `sort` exactly as the other two are, so at most one of the three is
+  ever non-undefined and both can sit in the same `and(...)` without changing what a `queue-order` or
+  `intake-desc` page means. Folding it into the ternary above would have made one `sort` value decide
+  two orders.
+  */
+  const attentionCursorScope = options?.sort === "attention-order" && options.afterAttentionKey
+    ? taskAttentionOrderCursorPredicate(
+        options.afterAttentionKey,
+        { reviewScope: options.attentionReviewScope === true },
+      )
+    : undefined;
   const liveFilter = options?.includeDeleted
-    ? and(projectScope, columnScope, cursorScope, queueCursorScope)
-    : and(ACTIVE_TASK_FILTER, projectScope, columnScope, cursorScope, queueCursorScope);
+    ? and(projectScope, columnScope, cursorScope, queueCursorScope, attentionCursorScope)
+    : and(ACTIVE_TASK_FILTER, projectScope, columnScope, cursorScope, queueCursorScope, attentionCursorScope);
   const paginate = options?.limit !== undefined || (options?.offset ?? 0) > 0;
   /*
   FNXC:DonePagination 2026-09-04-10:36:
@@ -1095,7 +1123,18 @@ export async function readLiveTaskRows(
     ? taskQueueOrderBy()
     : options?.sort === "intake-desc"
       ? taskIntakeDisplayOrderBy()
-      : options?.sort === "completion-desc" || options?.sort === "completion-date-desc"
+      /*
+      FNXC:BoardOrdering 2026-11-13-09:30:
+      The board lane's attention order: the Boost bucket, then the tier, then arrival. The mode has to be
+      registered HERE as well as in the union above: the union is a type, this is the dispatch, and a mode
+      that falls through to the created-ascending branch below ships rows its caller believes it asked
+      for attention — the server half silently disagreeing with the client comparator. `queue-order`
+      itself is untouched, because engine dispatch paths consume that mode and their head-row contract
+      must not move.
+      */
+      : options?.sort === "attention-order"
+        ? taskAttentionOrderBy({ reviewScope: options.attentionReviewScope === true })
+        : options?.sort === "completion-desc" || options?.sort === "completion-date-desc"
         ? [
             desc(sql`COALESCE(${schema.project.tasks.columnMovedAt}, ${schema.project.tasks.updatedAt}, ${schema.project.tasks.createdAt})`),
             desc(numericTaskSuffix),

@@ -17,6 +17,7 @@ commits to a winner.
 */
 
 import { and, eq, sql, type SQL } from "drizzle-orm";
+import type { PgColumn } from "drizzle-orm/pg-core";
 import * as schema from "../postgres/schema/index.js";
 import { taskProjectScope, type DbTransaction } from "../postgres/data-layer.js";
 import { acquireTaskAdvisoryXactLock } from "./task-advisory-lock.js";
@@ -26,6 +27,11 @@ import {
   resolveTaskColumnEntryAt,
   type TaskQueueBoost,
 } from "../tasks/task-queue-order.js";
+/*
+FNXC:BoardOrdering 2026-11-13-09:30: RUFU-526 - the SQL tier expression below is written against the
+same ladder the TypeScript mirror returns, imported rather than re-stated so the two cannot drift.
+*/
+import { sqlAttentionTier, ATTENTION_TIER_IDLE, type AttentionTier, type ResolveAttentionTierOptions } from "../tasks/task-attention.js";
 import type { Task } from "../types.js";
 import type { TaskStore } from "../store.js";
 
@@ -88,6 +94,118 @@ export function taskIntakeDisplayOrderBy(): SQL[] {
   ];
 }
 
+// ── Attention order (RUFU-526) ─────────────────────────────────────────────
+
+/*
+A value counts as a signal only when it holds something beyond whitespace. PostgreSQL's `\S` is the
+class the SQL half uses, and the TypeScript half (`isFilledText` in `tasks/task-attention.ts`) treats
+only the six ASCII whitespace characters as blank - a subset of what `\S` rejects, in every locale
+PostgreSQL builds against. That ordering is what keeps the ladder directional: a row SQL considers to
+carry a signal is one the client also considers to carry one, never the reverse. (Spelled `\\S` because
+a JavaScript template would otherwise eat the backslash.)
+*/
+function attentionTextSignal(column: SQL | PgColumn): SQL {
+  return sql`COALESCE(${column}, '') ~ '\\S'`;
+}
+
+/*
+FNXC:BoardOrdering 2026-11-13-09:30:
+The PostgreSQL half of the attention ladder. ONE exported fragment, read verbatim by the `ORDER BY`
+below and by the keyset continuation predicate - the same rule `ID_NUMERIC_SUFFIX` records above: an
+ORDER BY term and its cursor predicate must be written from one expression, or a page walk repeats or
+drops rows around the term.
+
+THE SAME SEVEN TIERS, MINUS THE ONE SQL CANNOT SEE. Tiers 0, 1, 2, 4, 5 and the idle floor are built
+from durable `project.tasks` columns only. Tier 3 is DELIBERATELY ABSENT: `stallReason` and
+`inReviewStall` are hydrated derivations (the Census in `tasks/task-attention.ts` records them as
+never-persisted), so a card the client ranks 3 because of a merge/stall blocker is ranked by its
+durable arms here - `paused_reason` carries `in-review-stall-deadlock` and lands it at 4. That is the
+ONE declared divergence and it runs in the only allowed direction: SQL may rank a row CALMER than the
+client, never more urgent, because `taskAttentionPageKey` writes the stored tier from
+`sqlAttentionTier` and a key that ranked higher than the database's own would make the exclusive
+continuation skip every row between the two.
+
+THE ARM THAT IS NOT CHEAP, AND WHY IT IS BEHIND A GATE. Tiers 0, 2, 4 and 5 are scalar column reads.
+Tier 1 correlates `enabled_workflow_steps` against `workflow_step_results` - the row's OWN step id
+list, not `resolveRequiredPreMergeStepIds`, which resolves the workflow IR per row and so cannot be
+one SQL predicate. It is emitted only when the caller resolved a review-scope lane, which is both the
+correctness rule (a `todo` card has not reached its gates, so "no result row" is normal there and must
+not float the whole backlog) and the cost bound: the 200-idle-card lane this card exists for pays zero
+jsonb work per row.
+
+THE STEP-STATUS VOCABULARY IS CLOSED. Only `failed`, `pending` and the absence of a latest row fire
+the arm; `passed`, `advisory_failure` (non-blocking by contract) and `skipped` (often an audited
+operator waiver) do not. The COALESCE to `''` is what spells "zero result rows", so the missing-row
+shape and the two attention statuses are one test rather than two that can drift apart.
+*/
+export function attentionTierSql(options: ResolveAttentionTierOptions = {}): SQL {
+  const durableSteps = sql`CASE WHEN jsonb_typeof(${tasks.enabledWorkflowSteps}) = 'array'
+    THEN ${tasks.enabledWorkflowSteps} ELSE '[]'::jsonb END`;
+  const durableResults = sql`CASE WHEN jsonb_typeof(${tasks.workflowStepResults}) = 'array'
+    THEN ${tasks.workflowStepResults} ELSE '[]'::jsonb END`;
+  /*
+  The latest row for a step id is the LAST match in array order, mirroring `latestResultForStep` via
+  `WITH ORDINALITY`. `jsonb` preserves array element order (it sorts object keys, never arrays), so
+  ordinality is arrival order. The `jsonb_typeof = 'string'` filter mirrors the ladder skipping a
+  non-string step id, and the `->>` match skips a row whose own id is absent or non-string.
+  */
+  const requiredGateStuck = sql`EXISTS (
+    SELECT 1 FROM jsonb_array_elements(${durableSteps}) AS gate(el)
+    WHERE jsonb_typeof(gate.el) = 'string'
+      AND COALESCE((
+        SELECT row ->> 'status'
+        FROM jsonb_array_elements(${durableResults}) WITH ORDINALITY AS result(row, ord)
+        WHERE result.row ->> 'workflowStepId' = gate.el #>> '{}'
+        ORDER BY result.ord DESC
+        LIMIT 1
+      ), '') IN ('failed', 'pending', '')
+  )`;
+
+  return sql`(CASE
+    WHEN ${attentionTextSignal(tasks.error)} OR ${tasks.status} IN ('failed', 'blocked') THEN 0
+    ${options.reviewScope === true ? sql`WHEN ${requiredGateStuck} THEN 1` : sql``}
+    WHEN ${attentionTextSignal(tasks.awaitingApprovalReason)}
+      OR (jsonb_typeof(${tasks.humanPlanApproval}) = 'object'
+          AND ${tasks.humanPlanApproval} ->> 'enabled' = 'true'
+          AND jsonb_exists(${tasks.humanPlanApproval}, 'decision') = false)
+      OR (jsonb_typeof(${tasks.humanMergeApproval}) = 'object'
+          AND ${tasks.humanMergeApproval} ->> 'enabled' = 'true'
+          AND jsonb_exists(${tasks.humanMergeApproval}, 'decision') = false)
+      THEN 2
+    WHEN ${attentionTextSignal(tasks.pausedReason)} THEN 4
+    WHEN ${attentionTextSignal(tasks.blockedBy)}
+      OR ${attentionTextSignal(tasks.overlapBlockedBy)}
+      OR (jsonb_typeof(${tasks.dependencies}) = 'array' AND jsonb_array_length(${tasks.dependencies}) > 0)
+      THEN 5
+    ELSE ${ATTENTION_TIER_IDLE}
+  END)`;
+}
+
+/**
+ * The board lane ORDER BY that surfaces attention: the Boost bucket, the attention tier, then the
+ * existing queue terms byte-for-byte.
+ *
+ * The tier sits INSIDE the bucket, never ahead of it, for the reason the module header gives: an
+ * ordered scan may admit extra candidates, never hide a head row. Leading with the tier would drop an
+ * operator-boosted idle card that today leads on `QUEUE_BOOST_SEQUENCE DESC` off a truncated page,
+ * and would float the oldest low-tier row above a newest failure. `taskQueueOrderBy()` - the order
+ * every engine dispatch path consumes - is untouched.
+ *
+ * `reviewScope` must come from `isReviewColumnRole` over the columns actually being read; a request
+ * naming mixed columns gates OFF rather than letting one review column switch the step scan on for a
+ * plain `todo` column, which would OVER-rank that column's backlog.
+ */
+export function taskAttentionOrderBy(options: ResolveAttentionTierOptions = {}): SQL[] {
+  return [
+    sql`${QUEUE_BOOST_SEQUENCE} DESC`,
+    sql`${attentionTierSql(options)} ASC`,
+    sql`(CASE WHEN ${tasks.createdAt} IS NULL THEN 1 ELSE 0 END) ASC`,
+    sql`${tasks.createdAt} ASC NULLS LAST`,
+    sql`${ID_NUMERIC_SUFFIX} ASC`,
+    sql`${tasks.id} ASC`,
+  ];
+}
+
 // ── Keyset continuation ─────────────────────────────────────────────────────
 
 /** The exact sort key of one row under `taskQueueOrderBy()` / `taskIntakeDisplayOrderBy()`. */
@@ -141,6 +259,99 @@ export function taskQueueOrderCursorPredicate(cursor: TaskQueuePageKey): SQL {
     OR (${QUEUE_BOOST_SEQUENCE} = ${seq} AND ${tasks.createdAt} > ${cursor.createdAt})
     OR (${QUEUE_BOOST_SEQUENCE} = ${seq} AND ${tasks.createdAt} = ${cursor.createdAt} AND ${ID_NUMERIC_SUFFIX} > ${suffix})
     OR (${QUEUE_BOOST_SEQUENCE} = ${seq} AND ${tasks.createdAt} = ${cursor.createdAt} AND ${ID_NUMERIC_SUFFIX} = ${suffix} AND ${tasks.id} > ${cursor.id})
+  )`;
+}
+
+/**
+ * The exact sort key of one row under `taskAttentionOrderBy()`: the queue key plus the tier.
+ *
+ * `tier` is additive on purpose - `TaskQueuePageKey` stays the shape `queue-order` and `intake-desc`
+ * cursors carry, so an existing page walk cannot receive a key whose tier it never sorted by.
+ */
+export interface TaskAttentionPageKey extends TaskQueuePageKey {
+  /** The value the SQL tier EXPRESSION assigned, i.e. `sqlAttentionTier`, never the client ladder. */
+  tier: AttentionTier;
+}
+
+/** The hydrated fields the attention key needs: the queue key's, plus the ladder's durable inputs. */
+export type TaskAttentionKeyTask = Pick<
+  Task,
+  | "id"
+  | "column"
+  | "columnMovedAt"
+  | "createdAt"
+  | "queueBoost"
+  | "error"
+  | "status"
+  | "awaitingApprovalReason"
+  | "humanPlanApproval"
+  | "humanMergeApproval"
+  | "pausedReason"
+  | "blockedBy"
+  | "overlapBlockedBy"
+  | "dependencies"
+  | "enabledWorkflowSteps"
+  | "workflowStepResults"
+>;
+
+/*
+FNXC:BoardOrdering 2026-11-13-09:30:
+Read the attention page key of a hydrated row.
+
+The `tier` comes from `sqlAttentionTier`, the DURABLE-ONLY mirror, and never from the
+`resolveAttentionTier` the comparator uses - this is the seam `sqlEffectiveBoostSequence` above exists
+to illustrate. A card whose hydrated `stallReason` ranks it 3 client-side is ranked 4 by the SQL
+expression through `paused_reason`; minting 3 here would make the exclusive predicate below ask for
+rows strictly after tier 3 in an ordering that never contained one, silently skipping every tier-4 row
+between them. Same bug shape, same fix: mirror what the database could see.
+
+`reviewScope` MUST be the value the read passed to `taskAttentionOrderBy()`. A key minted with the gate
+on for a lane sorted with it off stores tier 1 for a row SQL ranked 6, which skips rows; the reverse
+under-ranks and repeats them.
+*/
+export function taskAttentionPageKey(task: TaskAttentionKeyTask, options: ResolveAttentionTierOptions = {}): TaskAttentionPageKey {
+  return {
+    sequence: sqlEffectiveBoostSequence(task),
+    tier: sqlAttentionTier(task, options),
+    createdAt: task.createdAt,
+    id: task.id,
+  };
+}
+
+/**
+ * Exclusive keyset predicate for `taskAttentionOrderBy()`.
+ *
+ * ORDER AND CONTINUATION ARE ONE INVARIANT (the rule `ID_NUMERIC_SUFFIX` states): every ORDER BY term
+ * appears here in the same direction, and the tier term is the SAME exported `attentionTierSql`
+ * fragment rather than a second spelling of the ladder. The tier clause sits between the boost
+ * sequence and the arrival terms because that is where the ORDER BY puts it; moving it here without
+ * moving it there would make a page walk drop rows inside a boost-sequence group.
+ */
+export function taskAttentionOrderCursorPredicate(cursor: TaskAttentionPageKey, options: ResolveAttentionTierOptions = {}): SQL {
+  const seq = sql`${cursor.sequence}::numeric`;
+  const tier = sql`${attentionTierSql(options)}`;
+  const suffix = sql`COALESCE(NULLIF(regexp_replace(${cursor.id}, '^.*-', ''), '')::numeric, 0)`;
+  const sameSeq = sql`${QUEUE_BOOST_SEQUENCE} = ${seq}`;
+  const sameTier = sql`${tier} = ${cursor.tier}`;
+  /*
+  FNXC:BoardOrdering 2026-11-13-09:30 (RUFU-526):
+  The tier clause below is GREATER-THAN, and it is the one term that is not a copy of the queue predicate
+  above. The boost bucket is DESCENDING, so "after the cursor" there reads `<`; the attention tier is
+  ASCENDING - 0 is the card that must be seen first - so "after the cursor" here has to mean a LARGER tier.
+  Writing `<` compiles, runs, and returns a page holding only the rest of the cursor row's own tier: a walk
+  of a six-card lane came back with one row on page two and never reached the three calmer cards behind it.
+  That is the row-loss direction a keyset cursor fails in, and it is what the page-walk case in the
+  attention pg suite now pins. Note also that the clause must stay a SQL fragment rather than a constant
+  from the cursor: the predicate and the ORDER BY share the ONE `attentionTierSql` builder, and a second
+  spelling of the ladder is where a page walk starts disagreeing with the read that minted its cursor.
+  */
+  return sql`(
+    ${QUEUE_BOOST_SEQUENCE} < ${seq}
+    OR (${sameSeq} AND ${tier} > ${cursor.tier})
+    OR (${sameSeq} AND ${sameTier} AND ${tasks.createdAt} IS NULL)
+    OR (${sameSeq} AND ${sameTier} AND ${tasks.createdAt} > ${cursor.createdAt})
+    OR (${sameSeq} AND ${sameTier} AND ${tasks.createdAt} = ${cursor.createdAt} AND ${ID_NUMERIC_SUFFIX} > ${suffix})
+    OR (${sameSeq} AND ${sameTier} AND ${tasks.createdAt} = ${cursor.createdAt} AND ${ID_NUMERIC_SUFFIX} = ${suffix} AND ${tasks.id} > ${cursor.id})
   )`;
 }
 

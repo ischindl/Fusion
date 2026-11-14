@@ -1846,6 +1846,18 @@ export type {
   QueuePresenceVerdict,
   QueueUnavailableReason,
 } from "./tasks/task-queue-order.js";
+/*
+FNXC:BoardOrdering 2026-11-13-09:30:
+RUFU-526's attention ladder ranks a lane's waiting queue by "needs attention" inside the display
+order. It is re-exported in this browser leaf beside the sorter it feeds so a dashboard surface
+cannot fork a second ladder; the classifier reads the already-loaded row and mutates nothing.
+*/
+export {
+  ATTENTION_TIER_IDLE,
+  resolveAttentionTier,
+  sqlAttentionTier,
+} from "./tasks/task-attention.js";
+export type { AttentionTier, AttentionTask, ResolveAttentionTierOptions } from "./tasks/task-attention.js";
 
 /*
 FNXC:TaskFollowUp 2026-09-17-15:55:

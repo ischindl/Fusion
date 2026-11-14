@@ -544,6 +544,30 @@ function ColumnComponent({ column, tasks, projectId, maxWorktrees, showWorktreeG
   FNXC:BoardNavigation 2026-09-09-22:29:
   Board lanes always initialize their virtual window at the first task. Board's arrival boundary may also reset an already-mounted lane and dispatch scroll; keep this local alignment at start, while ordinary task refreshes remain free to preserve the user's later position.
   */
+  /*
+  FNXC:BoardOrdering 2026-11-13-13:30:
+  RUFU-526 measured this in a real Chromium phone lane (`board-attention-viewport-browser.test.ts`):
+  the lane-head read delivers the attention-ranked head, so the card that must be met first ARRIVES AT
+  THE HEAD of a lane the operator is already looking at — which is a PREPEND to the virtualiser's key
+  list. With `followStartOnPrepend` off, the hook's prepend compensation adds that unmeasured row's
+  320 px estimate to `scrollTop`, so the card the ladder just promoted to rank zero is pushed above the
+  fold (measured: lane body `scrollTop` 320, card top -218, i.e. exactly the "buried by 200 idle cards"
+  symptom this card exists to remove, re-created by the client's own scroll bookkeeping).
+
+  The hook already owns the correct rule and needs no change: "within one CSS pixel of the start stays
+  at zero so the new row appears immediately; a user-owned position below that threshold keeps the
+  existing height compensation and visible anchor". Only the OPT-IN was too narrow — it was written for
+  the Complete lane, the one lane whose head was previously the only place rows arrived. Now every lane
+  whose order runs the attention ladder has a head that arrives, so the opt-in follows the ladder's own
+  lane roles: the same `manualIntake` flag `sortTasksForDisplayColumn` excludes by (newest-first by
+  design, no waiting queue to rank) and the Complete branch it already covers.
+
+  Surface check: this is Column-only on purpose. The List's phone branch (`.list-cards`) mounts no
+  virtualiser scroll container at all — `listScrollRef` is attached only to `.list-table-container` — so
+  the hook has no scroller to compensate there and the cards surface cannot exhibit the write. The table
+  branch keeps its own user-chosen sort semantics, which the ladder does not own.
+  */
+  const attentionRankedColumn = columnFlags?.manualIntake !== true && !isCompleteColumn;
   const virtualList = useVirtualizedList({
     collectionKey: stableCollectionKey,
     keys: showWorktreeGroups ? [] : tasks.map((task) => task.id),
@@ -551,7 +575,7 @@ function ColumnComponent({ column, tasks, projectId, maxWorktrees, showWorktreeG
     estimateHeight: 320,
     maxRenderedRows: 40,
     initialAlign: "start",
-    followStartOnPrepend: isCompleteColumn,
+    followStartOnPrepend: isCompleteColumn || attentionRankedColumn,
   });
   const visibleTasks = showWorktreeGroups
     ? tasks

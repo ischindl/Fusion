@@ -76,31 +76,37 @@ describe("Column scroll geometry", () => {
     expect(document.querySelector("[data-virtual-task-row='FN-0']")).not.toBeNull();
   });
 
-  it("enables top following by the complete trait rather than the column id", async () => {
+  /*
+  FNXC:BoardOrdering 2026-11-13-15:55 (RUFU-526):
+  Which lanes follow the start on a prepend is now decided by the ORDER the lane runs, not by which lane
+  is `complete`. The first version of this test pinned the rule to the complete trait, because Done was
+  the only lane whose head rows arrived at. RUFU-526 made the lane head an arriving position everywhere
+  the attention ladder runs, and a prepend into a lane the operator is reading from the top used to be
+  compensated by `estimateHeight` (320px here), which pushed the freshly-promoted attention head ABOVE
+  the fold — measured in a real Chromium phone lane as `scrollTop` 320 / card top -218, the same "buried
+  by idle cards" symptom the card exists to remove. So the expectation is now a function of the flags:
+  a lane the ladder ranks keeps the head visible; manual intake, whose newest-first order has no waiting
+  queue to rank, keeps the historical anchor compensation; the column id still decides nothing.
+  */
+  it.each([
+    { name: "complete", column: "finished", columnFlags: { complete: true }, expectedScrollTop: 0 },
+    { name: "attention-ranked review", column: "reviewed", columnFlags: { mergeBlocker: true }, expectedScrollTop: 0 },
+    { name: "attention-ranked hold", column: "waiting", columnFlags: { hold: true }, expectedScrollTop: 0 },
+    { name: "manual intake", column: "ideas", columnFlags: { intake: true, manualIntake: true }, expectedScrollTop: 320 },
+  ])("follows the start on a lane-head prepend for the $name lane, by trait not id", async ({ column, columnFlags, expectedScrollTop }) => {
     vi.stubGlobal("ResizeObserver", undefined);
     const tasks = Array.from({ length: 100 }, (_, index) => task(index));
-    const completeView = render(<Column {...props} column={"finished" as ColumnType} columnFlags={{ complete: true }} tasks={tasks} />);
-    const completeBody = document.querySelector<HTMLElement>(".column-body")!;
-    Object.defineProperties(completeBody, {
+    const view = render(<Column {...props} column={column as ColumnType} columnFlags={columnFlags} tasks={tasks} />);
+    const body = document.querySelector<HTMLElement>(".column-body")!;
+    Object.defineProperties(body, {
       clientHeight: { configurable: true, value: 640 },
       scrollHeight: { configurable: true, value: 32_000 },
       scrollTop: { configurable: true, writable: true, value: 0 },
     });
-    fireEvent.scroll(completeBody);
-    completeView.rerender(<Column {...props} column={"finished" as ColumnType} columnFlags={{ complete: true }} tasks={[task(-1), ...tasks]} />);
-    expect(completeBody.scrollTop).toBe(0);
-    completeView.unmount();
-
-    const ordinaryView = render(<Column {...props} column={"reviewed" as ColumnType} columnFlags={{ mergeBlocker: true }} tasks={tasks} />);
-    const ordinaryBody = document.querySelector<HTMLElement>(".column-body")!;
-    Object.defineProperties(ordinaryBody, {
-      clientHeight: { configurable: true, value: 640 },
-      scrollHeight: { configurable: true, value: 32_000 },
-      scrollTop: { configurable: true, writable: true, value: 0 },
-    });
-    fireEvent.scroll(ordinaryBody);
-    ordinaryView.rerender(<Column {...props} column={"reviewed" as ColumnType} columnFlags={{ mergeBlocker: true }} tasks={[task(-1), ...tasks]} />);
-    expect(ordinaryBody.scrollTop).toBe(320);
+    fireEvent.scroll(body);
+    view.rerender(<Column {...props} column={column as ColumnType} columnFlags={columnFlags} tasks={[task(-1), ...tasks]} />);
+    expect(body.scrollTop).toBe(expectedScrollTop);
+    view.unmount();
   });
 
   it("preserves user scroll across an ordinary task refresh", async () => {

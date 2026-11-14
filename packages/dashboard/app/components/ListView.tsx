@@ -1117,6 +1117,20 @@ export function ListView({
     keys: virtualTaskKeys,
     scrollRef: listScrollRef,
     initialAlign: "start",
+    /*
+    FNXC:BoardOrdering 2026-11-13-15:40 (RUFU-526):
+    Same rule `Column` ships, for the same reason. This list's default order is the attention ladder (the
+    `if (!sortField)` arm of the grouping memo), so its head row is by definition the card that needs the
+    operator, and the lane feed merges pages into it - which is a PREPEND whenever a head row arrives. The
+    virtualiser's prepend compensation exists to keep a READER's anchor when rows appear above, but at
+    `scrollTop: 0` there is no reader anchor to preserve: there it added the 320 px row estimate to this
+    container's own `scrollTop` and pushed the card that had just been ranked first above the viewport -
+    the burying this ordering exists to remove. The flag only acts while the viewport is at the start, so a
+    scrolled reader keeps anchor preservation unchanged. `Column`'s version of this was measured in
+    `board-attention-viewport-browser.test.ts`; this container is `.list-table-container`, which wraps the
+    phone cards branch too, so the list is not a theoretical surface.
+    */
+    followStartOnPrepend: true,
     maxRenderedRows: LIST_MAX_RENDERED_TASKS,
   });
   const visibleVirtualTaskIds = useMemo(() => new Set(virtualList.visibleKeys), [virtualList.visibleKeys]);

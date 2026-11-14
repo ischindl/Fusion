@@ -64,7 +64,8 @@ import {deriveTaskStallReason, type TaskStallReason, type TaskStallReasonContext
 import {TaskNotFoundError} from "../task-store/errors.js";
 import { ARCHIVED_SENTINEL_LANES, resolveProjectColumnsForRoles } from "../project-lane-vocabulary.js";
 import { taskProjectScope } from "../postgres/data-layer.js";
-import { taskQueuePageKey, type TaskQueuePageKey } from "./task-queue-order-ops.js";
+import { taskAttentionPageKey, taskQueuePageKey, type TaskAttentionPageKey, type TaskQueuePageKey } from "./task-queue-order-ops.js";
+import { ATTENTION_TIER_IDLE, type AttentionTier } from "../tasks/task-attention.js";
 
 /** Merge storage tiers while preserving primary-source authority and order. */
 function mergePrimaryById<T extends { id: string }>(primary: T[], secondary: T[]): T[] {
@@ -682,6 +683,10 @@ export interface ListTasksOptions {
   /** Exclusive keyset for the shared queue orders (see `task-queue-order-ops.ts`). */
   afterQueueKey?: TaskQueuePageKey;
   afterIntakeKey?: Pick<TaskQueuePageKey, "createdAt" | "id">;
+  /** Exclusive keyset for the board lane's attention order (see `task-queue-order-ops.ts`). */
+  afterAttentionKey?: TaskAttentionPageKey;
+  /** Gate the attention ladder's required-pre-merge-gate arm; see `ReadLiveTaskRowsOptions`. */
+  attentionReviewScope?: boolean;
   /** Historical compatibility snapshots participate only when explicitly requested. */
   includeArchived?: boolean;
   /** Omit heavy detail fields for board-style consumers. */
@@ -714,7 +719,7 @@ export interface ListTasksOptions {
   /** Exclude one or several custom-capable column ids. */
   excludeColumns?: readonly ColumnId[];
   /** Select the SQL page by creation or latest completion-lane entry. */
-  sort?: "created-asc" | "completion-desc" | "completion-date-desc" | "queue-order" | "intake-desc";
+  sort?: "created-asc" | "completion-desc" | "completion-date-desc" | "queue-order" | "intake-desc" | "attention-order";
   startupMemo?: boolean;
   /*
   FNXC:ListReadInFlightCoalescing 2026-10-23-21:24 (RUFU-627):
@@ -1028,7 +1033,8 @@ function isCoalescableListRead(options?: ListTasksOptions): boolean {
     && options?.afterCreatedAt === undefined
     && options?.afterId === undefined
     && options?.afterQueueKey === undefined
-    && options?.afterIntakeKey === undefined;
+    && options?.afterIntakeKey === undefined
+    && options?.afterAttentionKey === undefined;
 }
 
 export async function listTasksImpl(store: TaskStore, options?: ListTasksOptions): Promise<Task[]> {
@@ -1247,6 +1253,8 @@ export async function listTasksImpl(store: TaskStore, options?: ListTasksOptions
       afterId: options?.afterId,
       afterQueueKey: options?.afterQueueKey,
       afterIntakeKey: options?.afterIntakeKey,
+      afterAttentionKey: options?.afterAttentionKey,
+      attentionReviewScope: options?.attentionReviewScope,
       ...(boundedMergedPrefix !== undefined
         ? { limit: boundedMergedPrefix, offset: 0 }
         : sqlPaginated
@@ -1490,12 +1498,17 @@ export async function listTasksImpl(store: TaskStore, options?: ListTasksOptions
     A global page ending at K can only contain rows from each source's first K entries. Bound both SQL reads to K, then apply live-ID authority and the exact shared comparator before slicing. Unbounded callers retain the complete-result contract.
     */
     /* FNXC:TaskQueueOrder 2026-09-17-12:07: every SQL-ordered mode is already final; only the
-       default created-ascending merge below needs the cold-storage composition pass. */
+       default created-ascending merge below needs the cold-storage composition pass.
+       FNXC:BoardOrdering 2026-11-13-09:30: `attention-order` joins that list because it is one of the
+       SQL-final orders. Omitting it here would not merely skip the cold-storage pass — the read would
+       fall into the merge-and-resort branch below, whose comparator re-sorts the page by creation and
+       would quietly undo the attention ranking the database just applied. */
     if (!includeColdStorage && (
       options?.sort === "completion-desc"
       || options?.sort === "completion-date-desc"
       || options?.sort === "queue-order"
       || options?.sort === "intake-desc"
+      || options?.sort === "attention-order"
     )) return tasks;
     const archiveEntries = includeColdStorage
       ? boundedMergedPrefix !== undefined
@@ -1848,7 +1861,15 @@ The continuation is the server's own opaque keyset, bound to project, order and 
 cursor minted for another lane or another order would interleave two total orders and silently skip
 or repeat rows, so it is rejected rather than replayed.
 */
-export type TaskQueuePageOrder = "queue" | "intake";
+export type TaskQueuePageOrder = "queue" | "intake" | "attention";
+
+/*
+The two traits `isReviewColumnRole` reads, and deliberately NOT `REVIEW_ROLES`, which also carries
+`mergeOrchestration`. The client comparator gates its gate arm on exactly this predicate, so admitting
+a third trait here would let SQL rank a lane's cards by their gate state while the comparator left them
+idle: two halves of one ladder disagreeing, in the one direction that is forbidden.
+*/
+const ATTENTION_REVIEW_ROLES = ["mergeBlocker", "humanReview"] as const;
 
 /*
 Re-exported so `store.ts` can type `getTaskPresence`'s public return without importing the persistence
@@ -1862,6 +1883,19 @@ export interface TaskQueuePageOptions {
   order?: TaskQueuePageOrder;
   limit?: number;
   cursor?: string;
+  /*
+  FNXC:BoardOrdering 2026-11-13-09:30:
+  Whether the attention ladder may rank by a required pre-merge gate. Requesting it is a CLAIM, not an
+  instruction: the server confirms it against its own lane vocabulary and refuses the arm for a lane it
+  does not agree is a review lane. Refusing is the safe direction — the cards keep tier 6 instead of
+  every backlog card with an empty step-result array floating to the top of a plain lane — so a wrong
+  claim costs that lane its attention ranking and nothing else.
+
+  The confirmation is also skipped when the claim is absent, which is the cost bound: the lane this card
+  exists for (`todo`, 200+ idle cards) asks for attention with the claim off and pays no vocabulary read
+  and no jsonb scan, while the one or two review lanes that can show a failed gate pay one.
+  */
+  reviewScope?: boolean;
 }
 
 type TaskQueueCursorPayload = {
@@ -1870,12 +1904,14 @@ type TaskQueueCursorPayload = {
   order: TaskQueuePageOrder;
   scope: string;
   sequence: string;
+  /** Present only for the attention order, which sorts by it and must resume on it. */
+  tier?: number;
   createdAt: string;
   id: string;
 };
 
-function taskQueueScopeSignature(columns: readonly string[]): string {
-  return [...new Set(columns)].sort().join("\u0000");
+function taskQueueScopeSignature(columns: readonly string[], reviewScope: boolean): string {
+  return [...new Set(columns)].sort().join("\u0000") + (reviewScope ? "\u0001review" : "");
 }
 
 function decodeTaskQueueCursor(cursor: string, projectId: string, order: TaskQueuePageOrder, scope: string): TaskQueueCursorPayload {
@@ -1884,7 +1920,17 @@ function decodeTaskQueueCursor(cursor: string, projectId: string, order: TaskQue
     if (parsed.v !== 1 || parsed.projectId !== projectId || parsed.order !== order || parsed.scope !== scope
       || typeof parsed.id !== "string" || !parsed.id
       || typeof parsed.sequence !== "string" || !/^\d{1,32}$/.test(parsed.sequence)
-      || typeof parsed.createdAt !== "string" || Number.isNaN(Date.parse(parsed.createdAt))) {
+      || typeof parsed.createdAt !== "string" || Number.isNaN(Date.parse(parsed.createdAt))
+      /*
+      FNXC:BoardOrdering 2026-11-13-09:30:
+      The attention order's continuation needs the tier as well as the queue key: resuming a page that
+      sorted by tier without naming which tier it stopped at would re-read or skip every row of that
+      tier. A v1 cursor minted for `queue`/`intake` carries no tier and must keep working, so the field
+      is required only for the order that reads it — and a cross-order replay was already rejected by the
+      `order` check above, so a queue cursor can never be replayed as an attention one.
+      */
+      || (order === "attention" && (typeof parsed.tier !== "number" || !Number.isInteger(parsed.tier)
+        || parsed.tier < 0 || parsed.tier > ATTENTION_TIER_IDLE))) {
       throw new Error("mismatch");
     }
     return parsed as TaskQueueCursorPayload;
@@ -1896,12 +1942,29 @@ function decodeTaskQueueCursor(cursor: string, projectId: string, order: TaskQue
 /** Return one keyset page of a single board lane scope, ordered in SQL before the limit. */
 export async function listTaskQueuePageImpl(store: TaskStore, options: TaskQueuePageOptions): Promise<TaskListPage> {
   const limit = Math.min(200, Math.max(1, Math.trunc(options.limit ?? 50) || 50));
-  const order: TaskQueuePageOrder = options.order === "intake" ? "intake" : "queue";
+  const order: TaskQueuePageOrder = options.order === "intake" || options.order === "attention" ? options.order : "queue";
   const columns = [...new Set(options.columns.filter((column) => typeof column === "string" && column.length > 0))];
   const layer = store.asyncLayer;
   if (!layer) throw new Error("Task pagination requires the async task backend");
   if (columns.length === 0) return { tasks: [], total: 0, hasMore: false, nextCursor: null };
-  const scope = taskQueueScopeSignature(columns);
+  /*
+  ALL-OR-NOTHING OVER THE LANE'S COLUMNS. A scope naming one review column and one plain column gets
+  the gate OFF for both, because the ORDER BY is one expression for the whole page: switching it on for
+  the review column would read the step arrays of the plain column's rows too, and rank them by a gate
+  their own lane has not reached. The board's own fan-out names one column per request, so a mixed scope
+  only arrives from a caller that chose it.
+  */
+  const gateClaimed = order === "attention" && options.reviewScope === true;
+  /*
+  Resolved at most once per page, and only for a lane that CLAIMED the gate: the vocabulary walk reads
+  every workflow definition in the project, so asking for it on the 200-card `todo` lane — which can
+  never be granted the gate — would add a per-request read to the lane that must stay cheapest.
+  */
+  const reviewColumns = gateClaimed
+    ? await resolveProjectColumnsForRoles(store, ATTENTION_REVIEW_ROLES)
+    : null;
+  const reviewScope = reviewColumns !== null && columns.every((column) => reviewColumns.has(column));
+  const scope = taskQueueScopeSignature(columns, reviewScope);
   const cursor = options.cursor ? decodeTaskQueueCursor(options.cursor, layer.projectId ?? "", order, scope) : undefined;
 
   const [total, rows] = await Promise.all([
@@ -1914,12 +1977,21 @@ export async function listTaskQueuePageImpl(store: TaskStore, options: TaskQueue
       // a lane-scoped feed reads badges from the write-time projections, not from the log column.
       excludeLog: true,
       limit: limit + 1,
-      sort: order === "intake" ? "intake-desc" : "queue-order",
+      sort: order === "intake" ? "intake-desc" : order === "attention" ? "attention-order" : "queue-order",
       startupMemo: false,
+      /*
+      FNXC:BoardOrdering 2026-11-13-09:30:
+      The gate is part of the ORDER, not only of the cursor, so it is passed for a head page too — a
+      first page sorted with the arm on and a continuation computed with it off would resume on a tier
+      the first page never contained. `taskAttentionPageKey` below receives the same resolved value.
+      */
+      ...(order === "attention" ? { attentionReviewScope: reviewScope } : {}),
       ...(cursor
         ? order === "intake"
           ? { afterIntakeKey: { createdAt: cursor.createdAt, id: cursor.id } }
-          : { afterQueueKey: { sequence: cursor.sequence, createdAt: cursor.createdAt, id: cursor.id } }
+          : order === "attention"
+            ? { afterAttentionKey: { sequence: cursor.sequence, tier: cursor.tier as AttentionTier, createdAt: cursor.createdAt, id: cursor.id } }
+            : { afterQueueKey: { sequence: cursor.sequence, createdAt: cursor.createdAt, id: cursor.id } }
         : {}),
     }),
   ]);
@@ -1932,7 +2004,7 @@ export async function listTaskQueuePageImpl(store: TaskStore, options: TaskQueue
         projectId: layer.projectId ?? "",
         order,
         scope,
-        ...taskQueuePageKey(last),
+        ...(order === "attention" ? taskAttentionPageKey(last, { reviewScope }) : taskQueuePageKey(last)),
       } satisfies TaskQueueCursorPayload), "utf8").toString("base64url")
     : null;
   return { tasks, total, hasMore, nextCursor };

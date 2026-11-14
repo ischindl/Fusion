@@ -2239,6 +2239,21 @@ export type {
   QueueUnavailableReason,
 } from "./tasks/task-queue-order.js";
 /*
+FNXC:BoardOrdering 2026-11-13-09:30:
+RUFU-526's attention ladder is ONE classifier shared by the display comparator and the SQL tier
+mirror. MIRRORED here because `tasks/task-queue-order.ts` above imports it directly: the gate's
+`task-queue-acceptance.test.ts` reaches it transitively through that production module, and the
+FN-7667 note at the top of this file warns that narrowing the barrel under a transitive consumer is
+how 141/335 gate tests once failed. The module is pure over the loaded row, so it costs the gate
+nothing.
+*/
+export {
+  ATTENTION_TIER_IDLE,
+  resolveAttentionTier,
+  sqlAttentionTier,
+} from "./tasks/task-attention.js";
+export type { AttentionTier, AttentionTask, ResolveAttentionTierOptions } from "./tasks/task-attention.js";
+/*
 FNXC:TaskFollowUp 2026-09-17-15:55:
 FN-513's follow-up sub-type test and eligibility rule are ONE definition shared by the context menu,
 the store mode, the HTTP route, and the planner, so no surface can fork the rule.

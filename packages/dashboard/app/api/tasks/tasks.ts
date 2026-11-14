@@ -93,7 +93,15 @@ export function fetchTaskQueuePage(
   projectId?: string,
   options?: {
     columns: readonly string[];
-    order?: "queue" | "intake";
+    order?: "queue" | "intake" | "attention";
+    /*
+    FNXC:BoardOrdering 2026-11-13-10:37 (RUFU-526):
+    `reviewScope` rides as a claim, exactly like the caller's `columns`: the server re-derives the lane
+    vocabulary and confirms or refuses it. Sending it is what lets a review lane rank on its required
+    pre-merge gate at all; omitting it is the safe default, because a lane read without the claim simply
+    never sees that tier rather than seeing it wrongly.
+    */
+    reviewScope?: boolean;
     limit?: number;
     cursor?: string;
     signal?: AbortSignal;
@@ -102,6 +110,7 @@ export function fetchTaskQueuePage(
   const search = new URLSearchParams();
   search.set("columns", (options?.columns ?? []).join(","));
   if (options?.order) search.set("order", options.order);
+  if (options?.reviewScope) search.set("reviewScope", "1");
   if (options?.limit !== undefined) search.set("limit", String(options.limit));
   if (options?.cursor) search.set("cursor", options.cursor);
   return api<TaskListPageResponse>(withProjectId(`/tasks/page?${search.toString()}`, projectId), { signal: options?.signal });
