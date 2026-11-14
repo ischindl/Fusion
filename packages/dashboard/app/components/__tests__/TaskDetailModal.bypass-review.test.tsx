@@ -37,6 +37,20 @@ const unrunTarget: ReviewBypassTarget = {
   workflowStepName: "plan-review",
 };
 
+/*
+FNXC:PostMergeGateOperatorWaiver 2026-11-14-02:10 (RUFU-599 Step 7, reproductions 1 and 2 / RUFU-474):
+The carrier the reported cards actually had: a REQUIRED POST-MERGE gate whose row ended `skipped` owing a verdict.
+Steps 2-3 made the server offer a waiver for it, and the surfaces still spelled their copy from `kind === "absent"`,
+so the only escape hatch on such a card was reached by a menu row and an audit prompt that both described a failed
+PRE-merge step. This fixture is what the offer looks like on the wire.
+*/
+const postMergeCarrierTarget = {
+  kind: "verdictless-skipped",
+  workflowStepId: "post-merge-verification",
+  workflowStepName: "Post-merge Verification",
+  phase: "post-merge",
+} as ReviewBypassTarget;
+
 function stubPrompt(value: string | null): void {
   vi.spyOn(window, "prompt").mockReturnValue(value);
 }
@@ -106,9 +120,48 @@ describe("TaskDetailModal review-lane bypass affordance", () => {
     expect(addToast).toHaveBeenCalledWith("Bypassed failed review lane for FN-179", "success");
   });
 
+  /*
+  FNXC:PostMergeGateOperatorWaiver 2026-11-14-02:10 (RUFU-599 Step 7, reproductions 1 and 2 / RUFU-474):
+  The operator path this card exists for: the only remaining action on a card blocked by a required post-merge
+  gate that never reported is this waiver, and it has to be activatable with words that match the row. Pinned as
+  the real three-step interaction (menu item -> audit prompt -> trimmed reason to the store route) plus a toast that
+  never claims a pre-merge step, because the toast is what the operator reads after clicking and the audit reason
+  is what the card's history quotes afterwards.
+  */
+  it("activates the post-merge carrier waiver with copy that never claims a failed pre-merge step", async () => {
+    const onBypassReview = vi.fn().mockResolvedValue(makeTask({ id: "FN-474" }) as Task);
+    const addToast = vi.fn();
+    stubPrompt("  delivery proven by recorded workspace evidence  ");
+
+    render(
+      <TaskDetailModal
+        task={makeTask({ id: "FN-474", column: "in-review", reviewBypass: postMergeCarrierTarget })}
+        initialTab="definition"
+        onClose={noop}
+        onDeleteTask={noopDelete}
+        onMergeTask={noopMerge}
+        onOpenDetail={noopOpenDetail}
+        onBypassReview={onBypassReview}
+        addToast={addToast}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Waive post-merge gate that never reported" }));
+
+    const promptMessage = (window.prompt as unknown as { mock: { calls: string[][] } }).mock.calls[0][0];
+    expect(promptMessage).toContain("post-merge");
+    expect(promptMessage).toContain("without a verdict");
+    expect(promptMessage).not.toContain("pre-merge");
+
+    await waitFor(() => expect(onBypassReview).toHaveBeenCalledWith("FN-474", "delivery proven by recorded workspace evidence"));
+    const toast = addToast.mock.calls.find((call) => call[1] === "success");
+    expect(toast?.[0]).toContain("post-merge");
+    expect(toast?.[0]).not.toMatch(/pre-merge|failed/);
+  });
+
   it("sends nothing when the operator cancels the reason prompt", async () => {
-    const onBypassReview = vi.fn();
-    stubPrompt(null);
+    const onBypassReview = vi.fn();    stubPrompt(null);
 
     render(
       <TaskDetailModal

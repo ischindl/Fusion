@@ -878,6 +878,18 @@ still refused, naming the real status, and `status: "planning"` is refused becau
 claim. The same decision answers the dashboard's **Retry**, the extension's `fn_task_retry`, and the chat
 tool's `fn_task_retry`.
 
+**Retry can also refuse, and that refusal names the waiver instead of itself.** When a card's remaining
+blocker is a gate no reporter can ever answer — a required gate whose carrier is `skipped` with no verdict, or
+a required post-merge gate that never ran, on a card whose work is already approved (and, for the post-merge
+shape, already landed) — replaying it would discard the approving review row while leaving the same blocker
+standing. `fn task retry` then exits non-zero with a sentence naming the gate and saying the remedy is the
+operator waiver, and it writes nothing: no column move, no status clear, no loss of the worktree or branch a
+later waiver merges from. The dashboard's **Retry**, the extension's `fn_task_retry` and the chat tool's
+`fn_task_retry` refuse identically because all four ask one classifier, and the refusal appears as exactly one
+History line on the card (`Retry refused (<surface>): …`), deduplicated per card and gate. Retry stays Retry
+where a replay is the real remedy: a plain failed card, a merge-active card, a card whose gate has since
+reported an approval, or an engine park whose own remedy sentence names Retry.
+
 `fn task move` is a transport for a board action, not a separate authority — it calls the same move seam as
 the dashboard. Two consequences are visible from the terminal:
 
@@ -891,6 +903,22 @@ the dashboard. Two consequences are visible from the terminal:
 - **The CLI names who is moving.** A shell carrying Pi session markers is attributed `agent-cli` and the
   refusal audit records its session id; a plain terminal is `operator-cli`. Attribution never turns a refusal
   on or off — it only makes a human-attributed move distinguishable from an agent-driven one after the fact.
+
+#### Waiving a gate that never reported
+
+The waiver is operator-only, takes a mandatory reason, and is reached from the card itself: the **Review**
+menu / overflow action on the card (which posts `POST /api/tasks/<id>/bypass-review`) or the privileged
+`fn_task_bypass_review` tool. There is no `fn task` subcommand for it, and none is wanted - the waiver is the
+one escape hatch that is deliberately not on the shell surface an agent can reach.
+
+It discharges one gate, chosen by the card's own state, across four shapes: a failed pre-merge gate, a
+required pre-merge gate with no result at all, a required post-merge gate that never ran, and a post-merge
+gate whose carrier is `skipped` without a verdict. The action names which gate it is about to waive; the
+accepted write rewrites that gate's single current row (`skipped` plus the operator actor, timestamp and
+reason, and what it replaced) and never appends a second row, so a gate cannot accumulate waiver-shaped
+approvals. Like every other audited waiver it records no reviewer verdict, and it stays visible afterwards as
+the **Waived by <actor>** row on the card's Workflow Results tab. See
+[Workflow Steps](./workflow-steps.md) — *A waiver is offered for exactly the gates it can discharge*.
 
 ### Node routing controls
 

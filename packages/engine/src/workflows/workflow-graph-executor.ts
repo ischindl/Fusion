@@ -12,7 +12,7 @@ import type {
   WorkflowStepNotRunReason,
   PostMergeEvidenceKind,
 } from "@fusion/core";
-import { BUILTIN_CODING_WORKFLOW_IR, FAST_LANE_SKIP_VALUE, FAST_MODE_BYPASS_ACTOR, GRAPH_NATIVE_POST_MERGE_FLAG, PLAN_REVIEW_GROUP_ID, WORKFLOW_STEP_NOT_RUN_REASONS, WorkflowIrError, authoredPostMergeEvidenceKindOf, classifyReviewLease, computeWorkflowIrPin, getWorkflowExtensionRegistry, instanceNodeId, isCompletionSummaryNode, isExperimentalFeatureEnabled, isPlanReviewSatisfied, isWorkflowOptionalGroupEnabled, parseNoOpCompletionMarker, requiresContentReviewProof, resolveFastLaneRoute, resolveMaxReworkCycles, resolveRequiredPreMergeStepIds } from "@fusion/core";
+import { BUILTIN_CODING_WORKFLOW_IR, FAST_LANE_SKIP_VALUE, FAST_MODE_BYPASS_ACTOR, GRAPH_NATIVE_POST_MERGE_FLAG, PLAN_REVIEW_GROUP_ID, WORKFLOW_STEP_NOT_RUN_REASONS, WorkflowIrError, acceptedTerminalPlanReviewClose, authoredPostMergeEvidenceKindOf, classifyReviewLease, computeWorkflowIrPin, getWorkflowExtensionRegistry, instanceNodeId, isCompletionSummaryNode, isExperimentalFeatureEnabled, isPlanReviewSatisfied, isWorkflowOptionalGroupEnabled, parseNoOpCompletionMarker, requiresContentReviewProof, resolveFastLaneRoute, resolveMaxReworkCycles, resolveRequiredPreMergeStepIds } from "@fusion/core";
 import {
   DEPENDENCY_BOOTSTRAP_CONFIGURATION_REQUIRED_VALUE,
   isDependencyBootstrapConfigurationBlock,
@@ -1307,9 +1307,18 @@ export class WorkflowGraphExecutor {
           /*
           FNXC:PlanReview 2026-08-04-06:35:
           Triage runs Plan Review before releasing a task to execution so the task stays in the triage column during review. When the execution graph later reaches the same optional group, only an unsuperseded projection may satisfy, repair, or hold the gate; old-episode evidence must never suppress the current reviewer session.
+
+          FNXC:TerminalPlanReviewClose 2026-11-14-04:40 (RUFU-599 reproduction 3, SANE-532):
+          "Already satisfied" must not mean "already approved". An accepted CLOSE_NO_OP row satisfies
+          `isPlanReviewSatisfied` for the plain `passed`, and this branch then took the SUCCESS edge — straight
+          into `execute` — which is how a card recorded as closed at Plan Review ran its whole step list and
+          completed as ordinary work. A close is excluded here so control reaches the close branch below, which
+          re-derives the marker from the durable row and takes the terminal route; an approval still short-circuits
+          exactly as before.
           */
           if (
             node.id === PLAN_REVIEW_GROUP_ID
+            && !acceptedTerminalPlanReviewClose(task.workflowStepResults)
             && task.workflowStepResults?.some(isPlanReviewSatisfied)
           ) {
             context[`node:${node.id}:outcome`] = "success";
@@ -1384,6 +1393,61 @@ export class WorkflowGraphExecutor {
               context[`node:${node.id}:outcome`] = "failure";
               context[`node:${node.id}:value`] = PLAN_REVIEW_LEASE_HELD_VALUE;
               return { outcome: "failure", value: PLAN_REVIEW_LEASE_HELD_VALUE };
+            }
+
+            /*
+            FNXC:TerminalPlanReviewClose 2026-11-14-03:00 (RUFU-599 reproduction 3, SANE-532):
+            A close that was already ACCEPTED is terminal AT THIS GATE: a re-entry neither asks a reviewer again
+            nor falls through to execution. SANE-532 measured the leak — Plan Review carried a `passed`
+            CLOSE_NO_OP row with a valid sentinel, `isPlanReviewSatisfied` answers true for the plain `passed`,
+            and the resume placed the run on the node AFTER Plan Review, so the card executed its step list and
+            completed as ordinary work.
+
+            Two halves close it: `resolveResumePlacement` no longer reads an accepted close as "gate released"
+            (it pins Plan Review instead), and this branch is what makes arriving there cheap — the marker is
+            re-derived from the durable row's own notes with the same parse that legalised the close, and the
+            existing `outcome:close-no-op` route is traversed so the close terminalises. An IR without that
+            route deliberately falls through to the ordinary path below, where the fresh close verdict meets
+            RUFU-452's `terminal-route-unavailable` hold: inventing a destination the card's own IR never
+            declared is the worse failure, and a re-review is what that shape already does today.
+            */
+            const acceptedClose = acceptedTerminalPlanReviewClose(task.workflowStepResults);
+            const acceptedCloseMarker = acceptedClose ? parseNoOpCompletionMarker(acceptedClose.notes) : null;
+            if (acceptedClose && acceptedCloseMarker) {
+              const closeRouteAvailable = ir.edges.some((edge) =>
+                edge.from === node.id
+                && edge.condition === "outcome:close-no-op"
+                && ir.nodes.find((entry) => entry.id === edge.to)?.config?.workflowAction === "plan-review-no-op",
+              );
+              if (closeRouteAvailable) {
+                context.noOpMarker = acceptedCloseMarker;
+                context.noOpCloseNotes = acceptedClose.notes;
+                context[`node:${node.id}:outcome`] = "success";
+                this.deps.logTaskEntry?.(
+                  "[pre-merge] Plan Review close already accepted — re-traversing the terminal route instead of dispatching a reviewer",
+                );
+                return await traverseChildren(node, { outcome: "success", value: "close-no-op" });
+              }
+              /*
+              FNXC:TerminalPlanReviewClose 2026-11-14-04:05 (RUFU-599 reproduction 3):
+              No close route in this card's IR is the same defect the fresh verdict already reports, and it gets
+              the same disposition — hold, do not execute. What it must NOT get is the ordinary path, which would
+              buy a reviewer session on every resume, and it must not rewrite the accepted row: the failed-evidence
+              rewrite below belongs to a close that has never been accepted. So the durable close stays exactly as
+              it is and the run suspends with the established reason.
+              */
+              const column = this.deps.columnBoundary?.currentColumn() ?? task.column;
+              const suspension = {
+                reason: "hold" as const,
+                nodeId: node.id,
+                fromColumn: column,
+                toColumn: column,
+                irHash: computeWorkflowIrPin(ir, node.id).irHash,
+              };
+              context[`node:${node.id}:outcome`] = "failure";
+              context[`node:${node.id}:value`] = "plan-review-close-route-unavailable";
+              await this.deps.holdPlanReviewNoOp?.(task, { ...suspension, reason: "terminal-route-unavailable" });
+              throw new WorkflowGraphSuspended(suspension);
             }
           }
           /*

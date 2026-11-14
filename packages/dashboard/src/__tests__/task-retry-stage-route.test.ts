@@ -984,3 +984,92 @@ describe("POST /tasks/:id/retry", () => {
     expect(row.recoveryRetryCount).toBe(0);
   });
 });
+
+/*
+FNXC:ApprovalDestroyingRetry 2026-11-14-02:10 (RUFU-599 Step 7, reproduction 4 / RUFU-474):
+A refused Retry has to leave a trace on the CARD, not only in the HTTP response. Before this the operator's
+click produced a 409 in the browser while the card's History still showed only the reviewer's stale `REVISE`
+line, so the next reader pressed the same button. The dashboard restart is the destructive surface here (it
+discards this column's gate rows), so this pins the three halves of the honest answer together: the request is
+refused as a CONFLICT naming the waiver, NOTHING destructive is written, and the card carries one History line
+stating the refusal and the decision that actually clears the card.
+*/
+const WAIVER_ONLY_IR = {
+  version: "v2",
+  name: "waiver-only-retry",
+  columns: [
+    { id: "planning", name: "Planning", traits: [{ trait: "intake" }, { trait: "hold" }] },
+    { id: "building", name: "Building", traits: [{ trait: "wip" }] },
+    { id: "signoff", name: "Signoff", traits: [{ trait: "human-review" }, { trait: "merge-blocker" }] },
+    { id: "done", name: "Done", traits: [{ trait: "complete" }] },
+  ],
+  nodes: [
+    { id: "start", kind: "start" },
+    { id: "plan", kind: "prompt", column: "planning" },
+    { id: "implement", kind: "execute", column: "building" },
+    { id: "code-review", kind: "optional-group", column: "signoff", config: { phase: "pre-merge", defaultOn: true, template: { nodes: [{ id: "code-review-step", kind: "prompt", config: { gateMode: "gate", prompt: "review" } }], edges: [] } } },
+    { id: "ci-report", kind: "optional-group", column: "signoff", config: { phase: "post-merge", defaultOn: true, template: { nodes: [{ id: "ci-report-step", kind: "script", config: { gateMode: "gate" } }], edges: [] } } },
+  ],
+  edges: [
+    { from: "start", to: "plan" },
+    { from: "plan", to: "implement" },
+    { from: "implement", to: "code-review" },
+    { from: "code-review", to: "ci-report" },
+  ],
+} as never;
+
+describe("retry route refuses an approval-destroying restart and narrates it on the card", () => {
+  function landedCard(): Task {
+    return taskFixture({
+      column: "signoff",
+      mergeDetails: { mergeConfirmed: true },
+      enabledWorkflowSteps: ["code-review", "ci-report"],
+      workflowStepResults: [
+        { workflowStepId: "code-review", workflowStepName: "Code Review", status: "passed", verdict: "APPROVE", phase: "pre-merge" },
+        { workflowStepId: "ci-report", workflowStepName: "CI Report", status: "skipped", phase: "post-merge", notRunReason: "ci-repository-unresolved" },
+      ] as Task["workflowStepResults"],
+    });
+  }
+
+  it("answers 409 naming the waiver, writes nothing destructive, and logs the refusal once", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fusion-retry-approval-destroying-"));
+    const { store, calls } = createRestartStore(root, landedCard(), { ir: WAIVER_ONLY_IR });
+    const disposer = vi.fn();
+    const unregister = registerTaskResetDisposer(store, disposer);
+    try {
+      const response = await postRetry(createApp(store), "FN-204", { confirm: true });
+
+      expect(response.status, JSON.stringify(response.body)).toBe(409);
+      const body = JSON.stringify(response.body);
+      expect(body).toContain("already approved this work");
+      expect(body).toContain("operator waiver");
+      expect(body).toContain("ci-report");
+
+      expect(calls).toEqual([]);
+      expect(disposer).not.toHaveBeenCalled();
+      expect(store.updateTask).not.toHaveBeenCalled();
+      expect(store.replaceActiveTaskWorkflowContinuation).not.toHaveBeenCalled();
+      expect(store.pauseTask).not.toHaveBeenCalled();
+
+      const lines = vi.mocked(store.logEntry).mock.calls.map((call) => String(call[1]));
+      expect(lines.filter((line) => line.startsWith("Retry refused (dashboard-restart):"))).toHaveLength(1);
+      expect(lines.find((line) => line.startsWith("Retry refused"))).toContain("Code Review");
+    } finally {
+      unregister();
+    }
+  });
+
+  it("narrates nothing on a restart the planner accepts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fusion-retry-approval-destroying-quiet-"));
+    const { store } = createRestartStore(root, taskFixture({ column: "building" }));
+    const unregister = registerTaskResetDisposer(store, vi.fn());
+    try {
+      const response = await postRetry(createApp(store), "FN-204", { confirm: true });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      const lines = vi.mocked(store.logEntry).mock.calls.map((call) => String(call[1]));
+      expect(lines.some((line) => line.startsWith("Retry refused"))).toBe(false);
+    } finally {
+      unregister();
+    }
+  });
+});

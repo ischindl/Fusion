@@ -64,6 +64,22 @@ export function isWorkflowStepNotRun(
     && WORKFLOW_STEP_NOT_RUN_REASON_SET.has(result.notRunReason);
 }
 
+/*
+FNXC:PostMergeGateOperatorWaiver 2026-11-14-02:10 (RUFU-599 Step 7, reproduction 2 / RUFU-474):
+A GATE AN OPERATOR WAIVED IS NOT A GATE THAT DID NOT RUN. `TaskStore.bypassFailedPreMergeReviewStep` records an
+audited waiver by rewriting the gate's row to `status: "skipped"` plus `bypassedBy` / `bypassedAt` /
+`bypassReason`, and a post-merge carrier can carry a `notRunReason` on top of that. Rendered by shape alone the
+row reads as a plain "Skipped", so on cards whose entire open question was "who decided this, and under what
+authority?", the panel answered with the same word a legitimately-unrun gate wears. The row-shape question is the
+one core's `isAuditedOperatorBypass` asks at the door; this mirrors it locally because `@fusion/core` resolves to
+a TYPE-ONLY browser build for app components - the same reason `WORKFLOW_STEP_NOT_RUN_REASONS` is mirrored above.
+*/
+export function isOperatorWaivedWorkflowStep(result: WorkflowStepResult): boolean {
+  return result.status === "skipped"
+    && typeof result.bypassedBy === "string" && result.bypassedBy.trim().length > 0
+    && typeof result.bypassReason === "string" && result.bypassReason.trim().length > 0;
+}
+
 export type UnifiedTaskProgressStatus = StepStatus | "failed" | "advisory_failure" | "running" | "not_run";
 
 export interface UnifiedTaskProgressItem {

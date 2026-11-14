@@ -89,6 +89,10 @@ export function worktreeContentCounts(
  * - `verified-no-op` — the shipped `noOpVerifiedShortCircuit` flag: rebase-strategy capture proved
  *   every commit on the branch was ALREADY on main, from the merge that recorded it.
  * - `workspace-landed-at` — a workspace land recorded a per-repository `landedSha`.
+ * - `workspace-commit-free` — a workspace land recorded, per repository, that this card's branch tip was
+ *   already an ancestor of that repository's own integration branch. RUFU-599 added this kind; see
+ *   `classifyCommitFreeWorkspaceDelivery` for why a per-repository git observation is proof while the
+ *   finalizing lane's own emptiness claim is not.
  * - `landed-files` — the land recorded the file set it delivered (`landedFiles` / `filesChanged`).
  * - `caller-asserted` — proof a lane verified outside the row (an owned-commit/absent-branch
  *   reconciliation, `classifyOwnedLandedEvidenceForSelfHealing`); not derivable from `mergeDetails`.
@@ -97,8 +101,27 @@ export type LandingProofKind =
   | "durable-commit-sha"
   | "verified-no-op"
   | "workspace-landed-at"
+  | "workspace-commit-free"
   | "landed-files"
   | "caller-asserted";
+
+/*
+FNXC:ZeroCommitLandingProof 2026-11-14-02:05 (RUFU-599):
+The opening text of the sentence the workspace land lane records in `mergeDetails.noOpReason` when it
+finalizes a card that authored zero commits because every repository had already integrated the work.
+The literal MIRRORS `COMMIT_FREE_DELIVERY_REASON` in
+`packages/engine/src/merge/workspace-commit-free-delivery.ts` — `@fusion/core` cannot import
+`@fusion/engine`, so the string is declared on both sides exactly as `workspaceCommitFreeBasis`'s union
+already is, and `workspace-commit-free-delivery.test.ts` pins the two together so a reworded sentence
+cannot silently stop matching the guard that reads it.
+
+Matching the recorded delivery KIND (not `mergeConfirmed`, not `noOpMerge`) is what lets the delivery
+guard, the no-commits finalize guard and the reconcile lane reach ONE verdict about a card the merger
+already called delivered. Before this, the delivery lane wrote a sentence plus a per-repository basis
+that nothing downstream read, so the guard asked for a sha or a file set, found neither, and said
+"undelivered" about a card git says every repository already contains.
+*/
+export const COMMIT_FREE_DELIVERY_REASON_PREFIX = "commit-free delivery:";
 
 export interface LandingProof {
   kind: LandingProofKind;
@@ -127,7 +150,7 @@ flag set by the finalizing lane still proves nothing.
 */
 export function hasDurableLandingProof(
   mergeDetails:
-    | Pick<MergeDetails, "commitSha" | "landedBranchTipSha" | "landedFiles" | "filesChanged" | "noOpVerifiedShortCircuit" | "workspaceLandedFiles">
+    | Pick<MergeDetails, "commitSha" | "landedBranchTipSha" | "landedFiles" | "filesChanged" | "noOpVerifiedShortCircuit" | "workspaceLandedFiles" | "noOpReason" | "workspaceCommitFreeBasis" | "workspaceCommitFreeBranchTipShas">
     | undefined,
 ): DurableLandingProofVerdict {
   if (!mergeDetails) return { proven: false, kind: null, proof: null };
@@ -144,12 +167,92 @@ export function hasDurableLandingProof(
     const proof: LandingProof = { kind: "workspace-landed-at" };
     return { proven: true, kind: proof.kind, proof };
   }
+  if (classifyCommitFreeWorkspaceDelivery(mergeDetails)) {
+    const proof: LandingProof = { kind: "workspace-commit-free" };
+    return { proven: true, kind: proof.kind, proof };
+  }
   const landedFileCount = mergeDetails.landedFiles?.length ?? 0;
   if (landedFileCount > 0 || (typeof mergeDetails.filesChanged === "number" && mergeDetails.filesChanged > 0)) {
     const proof: LandingProof = { kind: "landed-files" };
     return { proven: true, kind: proof.kind, proof };
   }
   return { proven: false, kind: null, proof: null };
+}
+
+/*
+FNXC:ZeroCommitWorkspaceDelivery 2026-11-14-02:05 (RUFU-599):
+ONE verdict for a workspace card the merge lane recorded as delivered without authoring a commit.
+
+The shape (SANE-482 / saneca production board): every declared repository was already integrated, so the
+workspace land wrote `mergeConfirmed: true`, `noOpMerge: true`, a `commit-free delivery:` sentence in
+`noOpReason`, and the per-repository `workspaceCommitFreeBasis` — with NO `commitSha` and NO
+`workspaceLandedFiles`. Every downstream reader asks for a sha or a file set, finds neither, and reports
+the card as undelivered, while the reconcile lane answered the bare word `workspace`. Three lanes, three
+facts, one stuck card.
+
+What counts as proof here, and what does not:
+- The `basis` map is a POSITIVE git observation made by the land lane's ancestry probe (`zero-ahead` =
+  this card's branch tip is an ancestor of that repository's own integration branch). It is therefore the
+  same class of evidence as `noOpVerifiedShortCircuit`, which this module has always accepted, and NOT
+  the finalizing lane's claim of emptiness (`mergeConfirmed` / `noOpMerge`), which it has always rejected
+  and still rejects — this predicate never reads either field.
+- At least one repository must read `zero-ahead`: a basis that is entirely `absent` proves that nothing
+  could be measured, which is the obligation-free zero-commit door's question, not a delivery. Content
+  that reached integration is what this proof kind asserts.
+- Any `unproven` entry refuses the whole verdict. The land lane's own vocabulary already says an
+  `unproven` repository is NEVER a delivery; a guard that averaged over it would launder the one shape
+  the writer refuses to certify.
+- The recorded delivery KIND must be present. A basis with no sentence means only half the pair was
+  written, and a half-written delivery record is not evidence.
+
+Where the one reading is consumed, so the triangle cannot re-open:
+- `hasDurableLandingProof` below, which is the proof reader behind the engine's `confirmRecordedLandingProof`
+  (`packages/engine/src/merge/zero-commit-finalization-guard.ts`) and therefore behind every finalize lane's
+  delivery evidence — a recorded delivery proves itself without a containment probe because it names no sha.
+- `reconcileLandedReviewTask`'s recorded-delivery closeout (`packages/engine/src/self-healing.ts`), which
+  refuses the same card the `workspace` word it always got.
+- Deliberately NOT the zero-commit CONTENT door (`evaluateNoCommitsNoOpFinalize`): that guard refuses a tree
+  it reads as holding uncommitted work, and refuses an unreadable tree, with or without any landing proof
+  (RUFU-274), so handing it this fact would change no verdict and would only make a content waiver look
+  available where the content door has none. Pinned by the "a recorded delivery is not a content waiver"
+  cases in `packages/core/src/__tests__/commit-free-workspace-delivery.test.ts`.
+*/
+export interface CommitFreeWorkspaceDeliveryRecord {
+  /** Repositories the record certifies as already-integrated (`zero-ahead`). */
+  zeroAheadRepos: string[];
+  /** Repositories certified absent (branch gone) — carried for the refusal sentence, never proof. */
+  absentRepos: string[];
+}
+
+export function classifyCommitFreeWorkspaceDelivery(
+  mergeDetails:
+    | Pick<MergeDetails, "noOpReason" | "workspaceCommitFreeBasis" | "workspaceCommitFreeBranchTipShas">
+    | undefined,
+): CommitFreeWorkspaceDeliveryRecord | undefined {
+  if (!mergeDetails) return undefined;
+  const reason = mergeDetails.noOpReason?.trim();
+  if (!reason || !reason.startsWith(COMMIT_FREE_DELIVERY_REASON_PREFIX)) return undefined;
+  const basis = mergeDetails.workspaceCommitFreeBasis;
+  const entries = Object.entries(basis ?? {});
+  if (entries.length === 0) return undefined;
+  const tips = mergeDetails.workspaceCommitFreeBranchTipShas ?? {};
+  const zeroAheadRepos: string[] = [];
+  const absentRepos: string[] = [];
+  for (const [repo, value] of entries) {
+    // The writer's closed vocabulary; an unknown value is not a delivery this guard will guess about.
+    if (value === "zero-ahead") {
+      // A `zero-ahead` verdict IS "the tip resolves and is an ancestor", so a basis entry with no
+      // recorded tip is a half-written record: the ancestry claim it states was never observed.
+      if (!tips[repo]?.trim()) return undefined;
+      zeroAheadRepos.push(repo);
+    } else if (value === "absent") {
+      absentRepos.push(repo);
+    } else {
+      return undefined;
+    }
+  }
+  if (zeroAheadRepos.length === 0) return undefined;
+  return { zeroAheadRepos, absentRepos };
 }
 
 export interface ZeroCommitLandingProofInput {

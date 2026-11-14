@@ -316,6 +316,8 @@ describe("reconcileLandedReviewTask workspace discharge (RUFU-357)", () => {
       dischargedCount: 3,
       outcome: "discharged",
       repoBasis: { saneca: "zero-ahead", "lager-manager": "zero-ahead", "lager-2026": "landed" },
+      // This pass measured every basis itself; RUFU-599's closeout says "recorded" instead.
+      basisSource: "probed",
     });
     // The RUFU-390 identity is reported as the root repository, never as a separate member.
     const logged = (store.logEntry as ReturnType<typeof vi.fn>).mock.calls.map((call) => String(call[1]));

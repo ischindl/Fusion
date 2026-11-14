@@ -187,4 +187,44 @@ describe("useTasks reviewBypass affordance survives the stall anti-flicker clear
 
     expect(result.current.tasks[0]?.reviewBypass).toMatchObject({ kind: "absent", workflowStepId: "code-review" });
   });
+
+  /*
+  FNXC:ApprovalDestroyingRetry 2026-11-14-01:35 (RUFU-599 reproduction 4):
+  THE SAME RULE, POINTED THE OTHER WAY. For the waiver, a flicker-clear would hide the operator's only escape.
+  For the refusal, a flicker-clear would RESTORE a destructive affordance: the Retry item would reappear on a
+  card whose approval the Retry erases, for the length of a reviewer's agent-log activity, and the click that
+  follows is the reproduction this field exists to stop. So `retryRefusal` joins `reviewBypass` as a capability
+  the anti-flicker clear may never touch — the flicker window belongs to the diagnostics, not to the doors.
+  */
+  it("keeps the Retry refusal hidden while a fresh agent-log activity blanks the diagnostics", async () => {
+    const refusal = {
+      destroyedApproval: { workflowStepId: "code-review", workflowStepName: "Code Review" },
+      waiver: unrunTarget,
+      sentence: "Retry is refused here: `Code Review` already approved this work.",
+    };
+    const initialTask = createMockTask({
+      reviewBypass: unrunTarget,
+      retryRefusal: refusal as never,
+      stallReason: gatePendingStall as never,
+    });
+    mockFetchBoard.mockResolvedValueOnce(page([initialTask]));
+
+    const { result } = renderHook(() => useTasks());
+    await waitFor(() => expect(result.current.tasks).toHaveLength(1));
+
+    act(() => {
+      MockEventSource.instances[0]._emit("agent:log", {
+        taskId: "FN-179",
+        timestamp: "2026-09-01T00:00:03.000Z", // > updatedAt → the clear runs
+        type: "text",
+        agent: "reviewer",
+      });
+    });
+
+    expect(result.current.tasks[0]?.stallReason).toBeUndefined();
+    expect(result.current.tasks[0]?.retryRefusal).toMatchObject({
+      destroyedApproval: { workflowStepId: "code-review" },
+    });
+    expect(result.current.tasks[0]?.reviewBypass).toMatchObject({ kind: "absent" });
+  });
 });

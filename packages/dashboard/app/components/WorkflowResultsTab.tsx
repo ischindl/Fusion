@@ -27,7 +27,7 @@ import type { Components } from "react-markdown";
 import { linkifyFilePaths, linkifyReactChildren } from "../utils/filePathLinkify";
 import { workflowResultTextsAreEquivalent } from "../utils/workflowResultText";
 import { resolveEffectiveExecutor, resolveEffectivePlanning, resolveEffectiveValidator } from "./effective-model-resolution";
-import { isWorkflowStepNotRun } from "../utils/taskProgress";
+import { isOperatorWaivedWorkflowStep, isWorkflowStepNotRun } from "../utils/taskProgress";
 import { useStickyBottomFollow } from "../hooks/useStickyBottomFollow";
 
 // Markdown rendering components for workflow output
@@ -124,6 +124,16 @@ const NOT_RUN_REASON_LABELS = {
 } as const;
 
 function getStatusLabel(result: WorkflowStepResult, t: ReturnType<typeof useTranslation>["t"]): string {
+  /*
+  FNXC:PostMergeGateOperatorWaiver 2026-11-14-02:10 (RUFU-599 Step 7, reproduction 2 / RUFU-474):
+  Asked BEFORE the not-run branch on purpose. A waived post-merge carrier can carry a `notRunReason` as well as the
+  actor/reason an audited waiver writes, and once an operator has discharged the gate, the operative fact on the
+  row is WHO decided, not why the gate never reported. Both words were true of the same reported card and only one
+  of them is the reason the card is no longer blocked.
+  */
+  if (isOperatorWaivedWorkflowStep(result)) {
+    return t("app:workflow.statusWaived", "Waived by {{by}}", { by: result.bypassedBy!.trim() });
+  }
   if (isWorkflowStepNotRun(result)) {
     const [reasonKey, reasonFallback] = NOT_RUN_REASON_LABELS[result.notRunReason!];
     return t("app:workflow.statusNotRunWithReason", "Not executed — {{reason}}", {

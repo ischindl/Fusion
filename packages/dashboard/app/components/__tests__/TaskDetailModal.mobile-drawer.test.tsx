@@ -23,6 +23,53 @@ describe("TaskDetailModal Alpha mobile drawer", () => {
     });
   });
 
+  /*
+  FNXC:ApprovalDestroyingRetry 2026-11-14-02:10 (RUFU-599 Step 7, reproduction 4 / RUFU-472 / RUFU-474):
+  Le refus est serveur, mais l'opérateur le voit ici. Sur mobile only le tiroir est la seule surface du card, donc
+  l'échappatoire refusée doit disparaître ICI aussi : le bouton Retry retiré (et non grisé), sans coquille vide ni
+  aria-label pendant, et la phrase du serveur affichée à la place. `onRetryTask` est passé exprès : sans le refus,
+  ce même fixture rendrait les deux boutons, ce qui prouve que c'est le champ qui les retire et non l'absence d'un
+  handler. Le bandeau d'échec ne se rend que sous l'onglet definition, d'où `initialTab`.
+  */
+  it("affiche le refus du Retry serveur et aucune commande Retry dans le tiroir mobile", () => {
+    const refusal = {
+      destroyedApproval: { workflowStepId: "code-review", workflowStepName: "Code Review" },
+      waiver: {
+        kind: "verdictless-skipped",
+        workflowStepId: "post-merge-verification",
+        workflowStepName: "Post-merge Verification",
+        phase: "post-merge",
+      },
+      sentence: "Retry is refused here: `Code Review` already approved this work; the remaining blocker waits on an operator waiver on `post-merge-verification`.",
+    };
+
+    render(
+      <TaskDetailModal
+        task={makeTask({
+          id: "FN-474",
+          column: "in-review",
+          status: "failed",
+          error: "required post-merge gate has not reported",
+          retryRefusal: refusal,
+        })}
+        mobileDrawer
+        initialTab="definition"
+        onClose={noop}
+        onOpenDetail={noopOpenDetail}
+        onDeleteTask={noopDelete}
+        onMergeTask={noopMerge}
+        onRetryTask={vi.fn()}
+        addToast={noop}
+      />,
+    );
+
+    const alert = document.querySelector(".detail-error-alert");
+    expect(alert).not.toBeNull();
+    expect(alert!.textContent).toContain("operator waiver on `post-merge-verification`");
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.queryByText(/Retry with a different model/)).toBeNull();
+  });
+
   it("réutilise le contenu Task Detail dans le shell partagé sans FloatingWindow", () => {
     const close = vi.fn();
     render(

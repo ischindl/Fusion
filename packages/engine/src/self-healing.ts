@@ -72,6 +72,7 @@ import { PRE_MERGE_STEPS_NOT_RUN_BLOCKER, loadWorkspaceConfig, type TaskMoveLane
   resolveWorktreePathReservationDirectory,
   resolveLegacyWorktreesDirLayout,
   getMergeConfirmedFinalizationBlocker,
+  classifyCommitFreeWorkspaceDelivery,
   isPlanningLifecycleSessionLive,
   PLANNING_LIFECYCLE_RELEASE_AGE_FLOOR_MS,
   type PlanningLifecycleHolder,
@@ -1492,6 +1493,16 @@ export type LandedReviewReconcileResult =
   invented; that is the whole content of this arm.
   */
   | { outcome: "zero-commit-discharged"; baseBranch: string; basis: "empty-input-approval" }
+  /*
+  FNXC:ZeroCommitWorkspaceDelivery 2026-11-14-02:05 (RUFU-599):
+  The closeout arm for a workspace card whose commit-free delivery the LAND lane already recorded. It is
+  deliberately a different arm from `workspace-discharged`: that one reports repositories THIS pass probed
+  (and so names each repository's base branch and any proved landing sha), while this arm's evidence is the
+  row's own recorded `workspaceCommitFreeBasis`. Reporting a `baseBranch` here would claim a base resolution
+  and an ancestry read this pass never performed — the same lie RUFU-504's no-sha rule exists to prevent —
+  so the arm carries only the repository keys and the two basis words the record itself states.
+  */
+  | { outcome: "workspace-delivery-closed"; repoCount: number; dischargedCount: number; repos: Array<{ repo: string; basis: "zero-ahead" | "absent" }> }
   | { outcome: "not-landed"; baseBranch: string }
   | { outcome: "raced"; reason: string }
   /*
@@ -21185,6 +21196,153 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
     return { outcome: "ineligible", reason };
   }
 
+  /*
+  FNXC:ZeroCommitWorkspaceDelivery 2026-11-14-02:05 (RUFU-599) — the recorded-delivery closeout:
+  What a workspace card whose delivery the land lane already recorded commit-free still needs, and the
+  ONE verdict it gets here.
+
+  The measured shape (SANE-482, saneca board): the workspace land probed every declared repository, found
+  this card's branch tip already an ancestor of each repository's own integration branch, and wrote the
+  whole claim on the row — `mergeConfirmed`, the `commit-free delivery:` kind in `noOpReason`, and the
+  per-repository `workspaceCommitFreeBasis` with the tips it read. No commit was authored because none was
+  owed. What the card then met was three lanes reading three different facts: the merge door asked for
+  evidence the gate had never reported, the unproven-approval repair answers nothing for a workspace card
+  by design (`resolveUnprovenReviewApproval` — a workspace approval binds `repositoryScope` evidence, not
+  a singular fingerprint), and `reconcileLandedReviewTask` answered the bare word `workspace`. One card,
+  three refusals, no door.
+
+  The verdict chosen here is FINALISE ON THE RECORDED DELIVERY, not repair-the-approval, and the reason is
+  that the repair has nothing to repair: the ancestry basis is a positive git observation that there is no
+  unlanded content left for a reviewer to bind. Re-reviewing it would ask a reviewer to approve content
+  that every repository already contains, and would still leave the card with no lane that could close it.
+
+  The fence it runs, in order — every one of them is a fence this method does NOT own and had to inherit:
+  1. Reached only from `reconcileLandedReviewTask`, AFTER the review-lane check, the required pre-merge
+     approval check, the pause / user-pause / live-session / executing / lease guards, and the auto-merge
+     hold. Nothing here re-implements those; the method is private and has one caller.
+  2. The remaining obligation is asked ONCE, through the shared post-merge seam (`contract` + producer
+     surface + `getRequiredPostMergeEvidenceDecision`) that the singular landed arm and the finalizer use.
+     Any answer but `finalizable` keeps the card exactly where it stands and names the gate — this arm
+     never waives a required gate, and never re-seeds one (the re-seed seam refuses workspace cards by
+     construction, RUFU-429, so pretending otherwise would be a false success).
+  3. The close itself is a compare-and-set over every field this decision read, and inside the commit it
+     re-asks `getTaskHardMergeBlocker`: a required pre-merge gate that a concurrent writer left unapproved
+     fails the write. FN-180 / FN-9234 are untouched — an unwaived content-review approval bound to
+     unreadable or stale content still refuses.
+  4. The write authores NOTHING: no `mergeDetails` rewrite (the delivery record already stands), no commit
+     sha, no branch deletion, no worktree removal. Branch pointers are cleared exactly as RUFU-357's
+     workspace discharge clears them; per-repository worktrees stay owned by the FN-9056 sweep.
+  5. The move is the shared complete-lane `moveTask` (a forward move of a durably landed card with nothing
+     owed — the same move the auto-merge finalizer performs), never a backward move, and it is followed by
+     exactly one bounded `task:reconcile-workspace-landed-review` audit row through the FN-9175 seam, AFTER
+     the durable close, with ids/counts/fixed-outcomes metadata only.
+  */
+  private async closeCommitFreeWorkspaceDelivery(
+    task: Task,
+    options: { source: "self-healing" | "manual" },
+    context: {
+      reviewColumns: ReadonlySet<string>;
+      requiredPreMergeStepIds: ReadonlySet<string>;
+      record: NonNullable<ReturnType<typeof classifyCommitFreeWorkspaceDelivery>>;
+    },
+  ): Promise<LandedReviewReconcileResult> {
+    const { record } = context;
+    const contract = await resolvePostMergeEvidenceContract(this.store, { auditHost: this.store });
+    const producerSurface = await resolvePostMergeProducerSurface(this.store, task);
+    const decision = await getRequiredPostMergeEvidenceDecision(this.store, task, contract, producerSurface);
+    if (decision.outcome !== "finalizable") {
+      const refusal: LandedReviewReconcileResult = {
+        outcome: "ineligible",
+        reason: "post-merge-evidence-pending",
+      };
+      await this.logMergeConfirmedReconcileRefusal(task, options.source, refusal.reason, decision.gateId);
+      return refusal;
+    }
+    const fingerprintOf = (current: Task) => JSON.stringify({
+      column: current.column,
+      status: current.status ?? null,
+      paused: !!current.paused,
+      userPaused: !!current.userPaused,
+      branch: current.branch ?? null,
+      checkoutRunId: current.checkoutRunId ?? null,
+      checkoutLeaseRenewedAt: current.checkoutLeaseRenewedAt ?? null,
+      enabledWorkflowSteps: current.enabledWorkflowSteps ?? [],
+      workflowStepResults: current.workflowStepResults ?? [],
+      workspaceWorktrees: current.workspaceWorktrees ?? null,
+      repositoryScope: current.repositoryScope ?? null,
+      pausedReason: current.pausedReason ?? null,
+      mergeDetails: current.mergeDetails ?? null,
+    });
+    const fingerprint = fingerprintOf(task);
+    let committed = false;
+    const commitIfCurrent = (current: Task) => {
+      if (fingerprintOf(current) !== fingerprint) return null;
+      // Re-ask the merge door at commit time: a gate that stopped being approved mid-pass refuses the close.
+      if (getTaskHardMergeBlocker(current, { reviewColumns: context.reviewColumns, requiredPreMergeStepIds: context.requiredPreMergeStepIds })) return null;
+      committed = true;
+      return {
+        branch: null,
+        branchWriteOrigin: "engine" as const,
+        status: null,
+        error: null,
+        paused: false as const,
+        pausedReason: null,
+        ...computePauseAccountingPatch(current, false, new Date().toISOString(), false),
+      };
+    };
+    if (typeof this.store.updateTaskAtomic === "function") {
+      await this.store.updateTaskAtomic(task.id, commitIfCurrent);
+    } else {
+      const current = await this.store.getTask(task.id);
+      const patch = current && commitIfCurrent(current);
+      if (patch) await this.store.updateTask(task.id, patch);
+    }
+    if (!committed) return { outcome: "raced", reason: "task-state-changed" };
+    const completeLane = (await resolveTaskLifecycleColumns(this.store, task.id))?.complete ?? "done";
+    const movedTask = await this.store.moveTask(task.id, completeLane);
+    this.emitTaskMerged(movedTask, { mergeConfirmed: true });
+    await this.store.logEntry(
+      task.id,
+      `Auto-reconciled (workspace, recorded commit-free delivery): the land lane's recorded per-repository proof (${record.zeroAheadRepos.length} repositor${record.zeroAheadRepos.length === 1 ? "y" : "ies"} proven zero commits ahead of their own integration branch${record.absentRepos.length > 0 ? `; ${record.absentRepos.length} declared repositor${record.absentRepos.length === 1 ? "y" : "ies"} hold no artifact of this card` : ""}) plus an empty required-post-merge-evidence question closed the card. No commit was authored, no gate was waived, and branches and worktrees were left untouched.`,
+    ).catch(() => undefined);
+    await emitBoundedRunAudit(this.store, {
+      taskId: task.id,
+      agentId: "self-healing",
+      runId: generateSyntheticRunId("reconcile-workspace-landed-review", task.id),
+      domain: "database",
+      mutationType: "task:reconcile-workspace-landed-review",
+      target: task.id,
+      metadata: {
+        taskId: task.id,
+        source: options.source,
+        repoCount: record.zeroAheadRepos.length + record.absentRepos.length,
+        dischargedCount: record.zeroAheadRepos.length,
+        repoBasis: Object.fromEntries([
+          ...record.zeroAheadRepos.map((repo) => [repo, "zero-ahead"] as const),
+          ...record.absentRepos.map((repo) => [repo, "absent"] as const),
+        ]),
+        /*
+        Honest provenance for the basis words, in the same spirit as RUFU-372's "an absent count means no
+        pool was asked": this row's `zero-ahead` / `absent` entries are the land lane's recorded ancestry
+        observations, NOT a probe this pass ran. Without the key, a reader counting rows cannot tell a
+        measured discharge from a closeout on recorded evidence — the two answers a reviewer or an operator
+        will ask apart.
+        */
+        basisSource: "recorded" as const,
+        outcome: "discharged",
+      },
+    }, { log });
+    return {
+      outcome: "workspace-delivery-closed",
+      repoCount: record.zeroAheadRepos.length + record.absentRepos.length,
+      dischargedCount: record.zeroAheadRepos.length,
+      repos: [
+        ...record.zeroAheadRepos.map((repo) => ({ repo, basis: "zero-ahead" as const })),
+        ...record.absentRepos.map((repo) => ({ repo, basis: "absent" as const })),
+      ],
+    };
+  }
+
   /**
    * Reconciles an absent post-merge branch only after ownership proof and liveness fences agree.
    *
@@ -21270,8 +21428,40 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
     flows into the post-merge-evidence arm below. Placed after the review-lane and approval checks as
     the spec requires; the discharge arm is inserted BEFORE the merge-confirmed arm too, so the two
     guards cannot disagree even if one is later widened.
+
+    FNXC:ZeroCommitWorkspaceDelivery 2026-11-14-02:05 (RUFU-599):
+    The blanket refusal is narrowed by exactly one shape: a workspace card the workspace land lane
+    recorded as a COMMIT-FREE delivery (`classifyCommitFreeWorkspaceDelivery` — the recorded
+    `commit-free delivery:` kind plus a per-repository basis with at least one `zero-ahead` and no
+    `unproven`). For that card the bare word `workspace` was the third corner of a triangle with no
+    door: the merge door refused its unreported post-merge gate, the unproven-approval sweep skips every
+    workspace card by design, and this fence refused to look at it at all, so SANE-482 sat in review
+    with an operator asking three different surfaces for one answer. It now gets the SAME answer a
+    singular landed card gets from the shared post-merge arm below — resume the unreported gate, or name
+    the gate that is not approved — because the delivery question is already settled by recorded git
+    proof, not by this lane's opinion. Every other merge-confirmed workspace card (a real landed sha,
+    an `unproven` repository, no recorded delivery kind) keeps the `workspace` refusal byte-identical.
+
+    FNXC:ZeroCommitWorkspaceDelivery 2026-11-14-02:05 (RUFU-599) — the same card, engine-parked: RUFU-357's
+    pause admission is widened to this shape too, because the population SANE-482 belongs to IS parked by
+    the engine's own stall disposition, and admitting the park without a door would only rename the refusal
+    from `workspace` to `paused`. The classifier is reused whole (it rejects `userPaused` and a park whose
+    error a later failure overwrote), and the close below is still gated on the shared post-merge question
+    plus a compare-and-set, so the admission grants re-entry to the decision, never a discharge.
     */
-    if (isWorkspaceTask(task) && task.mergeDetails?.mergeConfirmed) return { outcome: "ineligible", reason: "workspace" };
+    if (isWorkspaceTask(task) && task.mergeDetails?.mergeConfirmed
+      && !classifyCommitFreeWorkspaceDelivery(task.mergeDetails)) {
+      return { outcome: "ineligible", reason: "workspace" };
+    }
+    /*
+    FNXC:ZeroCommitWorkspaceDelivery 2026-11-14-02:05 (RUFU-599):
+    Resolved ONCE and consumed by both the pause-admission widening below and the closeout arm, so the
+    two can never disagree about whether this card carries a recorded commit-free delivery — the same
+    single-read rule the refusal gate above follows.
+    */
+    const recordedCommitFreeDelivery = isWorkspaceTask(task) && task.mergeDetails?.mergeConfirmed
+      ? classifyCommitFreeWorkspaceDelivery(task.mergeDetails)
+      : undefined;
     /*
     FNXC:ZeroCommitWorkspaceDelivery 2026-11-02-19:20 (RUFU-451) — a workspace card is not only its worktrees:
     `isWorkspaceTask` reads `workspaceWorktrees`, so a card in a workspace project that never ACQUIRED a member
@@ -21303,7 +21493,8 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
     method may write anything, and the discharge itself is only granted when EVERY obligation
     repository proves out — admitting the pause never skips a probe.
     */
-    const workspaceStallParkAdmission = unconfirmedWorkspaceCard && isEngineAuthoredInReviewStallPark(task);
+    const workspaceStallParkAdmission = (unconfirmedWorkspaceCard || recordedCommitFreeDelivery !== undefined)
+      && isEngineAuthoredInReviewStallPark(task);
     if (task.paused && !workspaceStallParkAdmission) return await this.refuseMergeConfirmedHold(task, options.source, "paused");
     if (task.userPaused) return await this.refuseMergeConfirmedHold(task, options.source, "user-paused");
     const livePaths = activeSessionRegistry.pathsForTask(task.id).filter((path) => activeSessionRegistry.isPathActive(path));
@@ -21340,6 +21531,25 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
     */
     if (unconfirmedWorkspaceCard) {
       return await this.reconcileWorkspaceLandedReview(task, options, { settings, reviewColumns, requiredPreMergeStepIds });
+    }
+    /*
+    FNXC:ZeroCommitWorkspaceDelivery 2026-11-14-02:05 (RUFU-599):
+    The recorded-delivery closeout. A workspace card the land lane finalized COMMIT-FREE already carries
+    its whole delivery claim (`mergeConfirmed`, the `commit-free delivery:` kind, and a per-repository
+    `zero-ahead` basis with the tips that were read), so unlike `reconcileWorkspaceLandedReview` above
+    there is nothing left to probe: what this card was missing was a lane willing to say so. It reached
+    here only after every shared fence (review lane, pause/hold, liveness, lease, auto-merge) and after
+    the `workspace` refusal above, which now spares exactly this shape. The verdict is ONE question — is
+    any required post-merge evidence still owed? — asked through the same shared seam the singular
+    landed arm asks, and the answer decides: nothing owed closes the card through the shared complete
+    lane, anything owed keeps the card in review naming that gate.
+    */
+    if (task.mergeDetails?.mergeConfirmed && isWorkspaceTask(task) && recordedCommitFreeDelivery) {
+      return await this.closeCommitFreeWorkspaceDelivery(task, options, {
+        reviewColumns,
+        requiredPreMergeStepIds,
+        record: recordedCommitFreeDelivery,
+      });
     }
     if (task.mergeDetails?.mergeConfirmed) {
       /*
@@ -22120,6 +22330,8 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
         repoCount: obligationRepos.length,
         dischargedCount: discharged.length,
         repoBasis: Object.fromEntries(discharged.map((verdict) => [verdict.repo, verdict.basis])),
+        // Names where the bases came from: this pass measured them (RUFU-599's closeout says "recorded").
+        basisSource: "probed" as const,
         outcome: "discharged",
       },
     }, { log });
@@ -22228,7 +22440,7 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
             it is failing on cards it actually repaired. Upstream FN-9442 counts that same action in the
             sweep's recovered tally, so the tally and the audit exclusion travel together.
             */
-            if (result.outcome === "reconciled" || result.outcome === "resumed" || result.outcome === "workspace-discharged" || result.outcome === "zero-commit-discharged") recovered++;
+            if (result.outcome === "reconciled" || result.outcome === "resumed" || result.outcome === "workspace-discharged" || result.outcome === "zero-commit-discharged" || result.outcome === "workspace-delivery-closed") recovered++;
             /*
             FNXC:WorkspaceLandedReconcile 2026-11-01-08:27 (RUFU-357):
             The tally learns the new success arm so a future automatic admission can never under-count a

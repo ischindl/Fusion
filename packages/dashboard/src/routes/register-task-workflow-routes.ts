@@ -190,7 +190,7 @@ import {
   withCentralRegistry,
   type TaskTransferDisposition,
 } from "./task-transfer.js";
-import { restartTaskStage } from "./task-restart-stage.js";
+import { restartStageRefusalError, restartTaskStage } from "./task-restart-stage.js";
 import { resumeExternallyBlockedTask } from "./task-external-block-resume.js";
 import type { ApiRoutesContext } from "./types.js";
 import { deriveAutoTaskBranch, derivePerTaskBranch, getBranchSelectionMode, resolveBranchSelection } from "./branch-selection.js";
@@ -4191,6 +4191,25 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
           return;
         }
         stageRestartRefusal = stageResult;
+        /*
+        FNXC:ApprovalDestroyingRetry 2026-11-14-01:35 (RUFU-599 reproduction 4, RUFU-472 and RUFU-284 and RUFU-304):
+        This refusal may not fall through. The legacy lanes below still write (merge-retry counters, pause
+        provenance) and answer 200, so an operator who pressed Retry on a card whose only remedy is a waiver
+        would see a successful Retry, a preserved approval, and the same blocker standing. A card whose status
+        is `failed` reaches those lanes even though the planner said no. The destructive write is refused in the
+        planner; this is the half that stops the surface from reporting a false success instead of the remedy.
+        */
+        if (stageResult.reason === "approval-destroying-retry") {
+          /*
+          FNXC:ApprovalDestroyingRetry 2026-11-14-02:10 (RUFU-599 Step 7):
+          The card's History line for this refusal is written by `restartTaskStage` itself, the one function that
+          owns the destructive write - it narrates both refusal modes (thrown and signalled), so a second call
+          here would make one operator click two candidate authors for the same line. What stays at the surface
+          is the HTTP contract: a conflict naming the waiver, never a fall-through to the legacy lanes below
+          that would answer 200 with the blocker still standing.
+          */
+          throw restartStageRefusalError(stageResult);
+        }
       }
 
       if (task.status !== "failed" && task.status !== "stuck-killed" && !retrySpecification && !strandedSpecificationRetry && !isInReviewRetry && !isMissingWorktreeSessionRetry && strandedGateStepIds.length === 0 && !planningStrandedAdmitted) {
@@ -6011,7 +6030,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       the route answered 409 `{outcome:"not-landed"}` for a card that could never land, which is the same
       permanent-refusal read the CLI printed. Still no decision logic here: the body is the fence's own result.
       */
-      if (result.outcome === "reconciled" || result.outcome === "resumed" || result.outcome === "already-complete" || result.outcome === "workspace-discharged" || result.outcome === "zero-commit-discharged") {
+      if (result.outcome === "reconciled" || result.outcome === "resumed" || result.outcome === "already-complete" || result.outcome === "workspace-discharged" || result.outcome === "zero-commit-discharged" || result.outcome === "workspace-delivery-closed") {
         return res.json(result);
       }
       return res.status(409).json(result);

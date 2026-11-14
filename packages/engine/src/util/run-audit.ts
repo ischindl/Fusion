@@ -845,9 +845,17 @@ export type DatabaseMutationType =
   FNXC:WorkspaceLandedReconcile 2026-11-01-08:27 (RUFU-357):
   One row per workspace commit-free discharge from the landed-review reconcile fence.
   Metadata: { taskId, source, repoCount, dischargedCount, repoBasis (repo → "zero-ahead"|"landed"),
-  outcome: "discharged" } — ids/counts/fixed outcomes only; refusal writes no row. Deliberately
+  basisSource, outcome: "discharged" } — ids/counts/fixed outcomes only; refusal writes no row. Deliberately
   outside the curated delivery-pipeline tables of docs/run-audit.md (RUFU-390/RUFU-346/RUFU-768
   precedent), documented there as prose.
+
+  FNXC:ZeroCommitWorkspaceDelivery 2026-11-14-02:10 (RUFU-599):
+  The same row now has a second writer — the recorded-delivery closeout for a workspace card the land lane
+  already finalized commit-free — so the basis vocabulary widens to `zero-ahead`|`absent`|`landed` and every
+  writer states `basisSource` explicitly: `"probed"` when this pass measured the repositories itself, `"recorded"`
+  when the basis words are the land lane's recorded ancestry observations. The distinction is the row's only
+  honest answer to "was this delivery measured now or read off the row", and a reader must never infer it
+  from which basis words appear or from a key being absent.
   */
   | "task:reconcile-workspace-landed-review"
   | "task:auto-recover-misrouted-foreign-commit"

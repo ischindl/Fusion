@@ -35,10 +35,13 @@ The rules encoded here:
     node entry, before the KTD-2 refusal), so it reports `pin-at-release-seam`, not incoherence.
 */
 import {
+  PLAN_REVIEW_GROUP_ID,
+  acceptedTerminalPlanReviewClose,
   findWorkflowColumn,
   isHoldToWipBoundary,
   isPlanReviewSatisfied,
   isReviewGateNode,
+  isTerminalPlanReviewCloseRow,
   resolveColumnFlags,
   type Task,
   type WorkflowIr,
@@ -129,10 +132,18 @@ function latestRowFor(results: WorkflowStepResult[] | undefined, stepId: string)
  * Is this gate released? Three shapes only: the one Plan Review satisfaction predicate, a plain
  * `passed` row, or an audited operator waiver. A collateral archive (`remediationArchivedAt` with no
  * `bypassedBy`) is an archive, not a waiver, and releases nothing.
+ *
+ * FNXC:TerminalPlanReviewClose 2026-11-14-03:10 (RUFU-599 reproduction 3, SANE-532):
+ * An ACCEPTED Plan Review close (`passed` + `CLOSE_NO_OP` + a leading sentinel) is the fourth exception and
+ * it releases NOTHING. It was the leak: `isPlanReviewSatisfied` returns true for any `passed` row, so the
+ * resume treated the card's END as a gate it had passed on the way forward, placed the run on the node after
+ * Plan Review, and the card executed its steps and completed as ordinary work. A close authorises closing,
+ * never executing.
  */
 export function isGateReleased(row: WorkflowStepResult | undefined): boolean {
   if (!row) return false;
   if (row.supersededAt != null) return false;
+  if (isTerminalPlanReviewCloseRow(row)) return false;
   if (isPlanReviewSatisfied(row)) return true;
   if (row.status === "passed") return true;
   return row.status === "skipped" && typeof row.bypassedBy === "string" && row.bypassedBy.trim().length > 0;
@@ -244,6 +255,27 @@ export function resolveResumePlacement(input: ResumePlacementInput): ResumePlace
   }
   const released = new Set(releasedNodeIds);
   const mismatch = classifyMismatch(task, ir);
+
+  /*
+  FNXC:TerminalPlanReviewClose 2026-11-14-03:10 (RUFU-599 reproduction 3, SANE-532):
+  A card whose latest Plan Review evidence is an accepted close is placed BACK on Plan Review, whatever lane
+  it stands in. Dropping the row from the released set above is necessary but not sufficient: with no released
+  gate to stand behind, the remaining candidates are the column entry and the continuation, and for a card
+  parked in the execution lane both sit AHEAD of Plan Review — which is precisely how SANE-532 resumed.
+  Re-entering the gate is cheap by construction (`workflow-graph-executor.ts` re-derives the marker from the
+  durable row and traverses the existing `outcome:close-no-op` route without dispatching a reviewer), and it
+  is the only placement that can terminalise. A workflow whose IR declares no Plan Review node on its main
+  path keeps its ordinary placement — nothing may be pinned to a node this card never had.
+  */
+  const acceptedCloseNodeId = ir.nodes.find((node) => node.id === PLAN_REVIEW_GROUP_ID && order.index.has(node.id))?.id;
+  if (acceptedCloseNodeId && acceptedTerminalPlanReviewClose(task.workflowStepResults)) {
+    return {
+      nodeId: acceptedCloseNodeId,
+      source: "after-released-gate",
+      releasedNodeIds,
+      ...(mismatch ? { mismatch } : {}),
+    };
+  }
 
   // The furthest released gate along the main path is the one the run must land behind.
   let furthest: string | undefined;

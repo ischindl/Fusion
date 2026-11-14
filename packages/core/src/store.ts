@@ -3263,6 +3263,26 @@ updates: { title?: string; description?: string; prompt?: string; promptShrinkAu
         requiredPostMergeForBypass,
       );
       const absentStepId = bypassTarget && bypassTarget.kind === "absent" ? bypassTarget.workflowStepId : undefined;
+      /*
+      FNXC:PostMergeGateWaiver 2026-11-14-01:45 (RUFU-599 reproduction 1, RUFU-474):
+      A post-merge target that names an EXISTING row is a row target. Before RUFU-599 the only row targets
+      this method could resolve were `failedTarget` and `unapprovedTarget`, and both are pre-merge-only
+      (`evaluatePreMergeApprovals` filters `phase !== "post-merge"`), so even once
+      `deriveReviewBypassTarget` named the gate, an offer for a landed card's `skipped` post-merge carrier
+      would still have died here on `no failed pre-merge review step found` — the two sides of the
+      offer == accept invariant disagreeing by one clause instead of by whole classes. A `pending` row is
+      excluded exactly as the unapproved class excludes it: a gate in flight is not a gate to overwrite.
+      */
+      const postMergeWaiverTarget = bypassTarget?.phase === "post-merge" && bypassTarget.kind !== "absent"
+        ? bypassTarget
+        : undefined;
+      const postMergeRowTarget = postMergeWaiverTarget
+        ? results.find((result) => result.workflowStepId === postMergeWaiverTarget.workflowStepId && result.status !== "pending")
+        : undefined;
+      if (postMergeWaiverTarget && !postMergeRowTarget) {
+        // Fail closed rather than append a second row for a gate the decision refuses as `duplicate`.
+        throw new Error(`Cannot bypass review lane for ${id}: post-merge gate result not found`);
+      }
       // FNXC:PostMergeGateOperatorWaiver 2026-09-29-15:49 (RUFU-408): the waiver row belongs to the gate's own phase.
       const absentPhase: "pre-merge" | "post-merge" = bypassTarget?.phase === "post-merge" ? "post-merge" : "pre-merge";
       const unapprovedTarget = !failedTarget && !absentStepId && requiredForBypass.length > 0
@@ -3295,13 +3315,13 @@ updates: { title?: string; description?: string; prompt?: string; promptShrinkAu
         throw new Error(`Cannot bypass review lane for ${id}: failed review has open findings`);
       }
 
-      const target = failedTarget ?? unapprovedTarget ?? {
+      const target = failedTarget ?? unapprovedTarget ?? postMergeRowTarget ?? {
         workflowStepId: bypassTarget!.workflowStepId,
         workflowStepName: bypassTarget!.workflowStepName,
         phase: absentPhase,
         status: "absent" as const,
       };
-      const rowTarget = failedTarget ?? unapprovedTarget;
+      const rowTarget = failedTarget ?? unapprovedTarget ?? postMergeRowTarget;
       const targetIndex = rowTarget ? results.indexOf(rowTarget) : -1;
       if (rowTarget && targetIndex === -1) {
         throw new Error(`Cannot bypass review lane for ${id}: failed step result not found`);

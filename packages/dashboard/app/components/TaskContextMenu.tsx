@@ -7,6 +7,12 @@ import type { ColumnId, Task, TaskDetail } from "@fusion/core";
 /* FNXC:TaskFollowUp 2026-09-17-18:10: FN-513's eligibility rule is a PURE core helper reachable through the barrel. */
 import { isFollowUpEligible } from "@fusion/core";
 /*
+FNXC:PostMergeGateOperatorWaiver 2026-11-14-02:10 (RUFU-599 Step 7):
+The waiver label is resolved by the helper `TaskDetailModal` also uses for its audit-reason prompt. The import
+is one-directional at runtime - `taskRetryCopy` reaches back here for a TYPE only - so this adds no module cycle.
+*/
+import { resolveBypassReviewCopy } from "../utils/taskRetryCopy";
+/*
 FNXC:LifecycleColumnCensus 2026-11-06-14:05 (RUFU-546):
 The terminal-lane question below is answered through the board's resolved `complete` trait, so this
 file imports the ONE canonical role helper instead of spelling `=== "done"` a fourth time. Same
@@ -449,7 +455,17 @@ export function buildTaskActionMenuModel(options: BuildTaskActionMenuModelOption
   always repeat its current stage. Terminal columns remain immutable through the shared trait/id
   predicate, including first paint before workflow metadata is available.
   */
-  if (hasRetryHandler && isMutableLiveColumn(task.column, currentColumnFlags)) {
+  /*
+  FNXC:ApprovalDestroyingRetry 2026-11-14-01:35 (RUFU-599 reproduction 4, RUFU-472 / RUFU-474):
+  The item is DROPPED, not greyed out, and that is the whole shape of the fix. The server already refuses this
+  Retry on every surface (planner, CLI, extension tool, chat tool) and answers with the waiver sentence, so a
+  disabled row would be an empty shell that tells the operator nothing, and a note-toned row is the
+  non-interactive dead text RUFU-179 measured as the operator-visible failure. The waiver item the same payload
+  offers (`task.reviewBypass`, computed by the same derivation as this refusal) is the actionable one, so the
+  menu keeps exactly one answer: the door that works is open, the door that destroys is absent. Same descriptor
+  list feeds the desktop context menu and the mobile drawer, so both breakpoints change together.
+  */
+  if (hasRetryHandler && isMutableLiveColumn(task.column, currentColumnFlags) && !task.retryRefusal) {
     actions.push({ id: "retry", label: t("taskDetail.retry.btn", "Retry"), onSelect: options.onRetry });
   }
 
@@ -503,12 +519,17 @@ export function buildTaskActionMenuModel(options: BuildTaskActionMenuModelOption
   */
   const bypassTarget = task.reviewBypass;
   if (hasBypassReviewHandler && isReviewBypassLaneColumn(currentColumnFlags, task.column) && bypassTarget) {
+    /*
+    FNXC:PostMergeGateOperatorWaiver 2026-11-14-02:10 (RUFU-599 Step 7, reproduction 1 / RUFU-474):
+    The label comes from the same resolver `TaskDetailModal` uses for its audit-reason prompt, so one operator
+    action cannot carry two vocabularies across the two surfaces that offer it. The two-way `kind === "absent"`
+    test this replaced labelled a `verdictless-skipped` post-merge carrier "Bypass failed review" - a failed
+    PRE-merge row that does not exist on the card - while the merge door's own remedy sentence named that same
+    post-merge gate.
+    */
     actions.push({
       id: "bypass-review",
-      label:
-        bypassTarget.kind === "absent"
-          ? t("taskDetail.bypassReview.btnUnrun", "Bypass unrun review gate")
-          : t("taskDetail.bypassReview.btn", "Bypass failed review"),
+      label: resolveBypassReviewCopy(t, bypassTarget).label,
       tone: "default",
       // FNXC:TaskDetailAlpha 2026-09-11-04:19: Bypass is an audited operator action, not explanatory note copy; keep it keyboard- and pointer-selectable in both menu implementations.
       onSelect: options.onBypassReview,

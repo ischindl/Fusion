@@ -5,6 +5,7 @@ import {
   isVerdictLessFailedGateRow,
   OPERATOR_PLANNING_LIFECYCLE_LOCK_TIMEOUT_MS,
   planTaskColumnRestart,
+  recordApprovalDestroyingRetryRefusal,
   RESTART_STAGE_FENCE_REASON,
   resolveTaskSymbolsForTask,
   resolveWorkflowIrForTask,
@@ -44,12 +45,23 @@ export interface RestartTaskStageDeps {
 
 export type RestartTaskStageResult = Task | Extract<ReturnType<typeof planTaskColumnRestart>, { kind: "refused" }>;
 
-function refusalError(plan: Extract<ReturnType<typeof planTaskColumnRestart>, { kind: "refused" }>) {
+export function restartStageRefusalError(plan: Extract<ReturnType<typeof planTaskColumnRestart>, { kind: "refused" }>) {
   if (plan.reason === "no-entry-node-in-column") {
     const later = plan.detail?.resolvedEntryNodeColumn;
     return badRequest(later
       ? `The ${later} workflow node is later than the task's ${plan.detail?.resolvedEntryNodeColumn === later ? "current" : ""} column; this stage cannot be retried in place`
       : "This column has no workflow entry node and cannot be retried in place");
+  }
+  /*
+  FNXC:ApprovalDestroyingRetry 2026-11-14-01:35 (RUFU-599 reproduction 4):
+  A refusal whose remedy is a different action is a conflict, not a malformed request: the operator's click was
+  well-formed, the card's evidence is what makes it destructive. The sentence names the waiver because a Retry
+  that would erase an approval while leaving the blocker standing is exactly the loop RUFU-284 / RUFU-304
+  measured as hours of re-burned review cycles.
+  */
+  if (plan.reason === "approval-destroying-retry") {
+    return conflict(plan.detail?.retryRefusal?.sentence
+      ?? "Retry is refused: this restart would discard approving gate evidence while a blocker it cannot re-run survives");
   }
   return badRequest(`Retry is unavailable: ${plan.reason}`);
 }
@@ -140,8 +152,17 @@ export async function restartTaskStage(deps: RestartTaskStageDeps): Promise<Rest
       const entryNode = resolveColumnResumeNode(ir, task.column);
       const plan = planTaskColumnRestart({ task, ir, entryNode, preserveWork: deps.preserveWork === true });
       if (plan.kind === "refused") {
+        /*
+        FNXC:ApprovalDestroyingRetry 2026-11-14-02:10 (RUFU-599 Step 7):
+        Narrate the refusal on the card in BOTH refusal modes — thrown or signalled — because either way the
+        operator's click produced no durable trace and the card still read as untouched. One shared core seam,
+        deduped per gate pair inside a refresh window, so a caller that also narrates cannot double the line.
+        */
+        if (plan.detail?.retryRefusal) {
+          await recordApprovalDestroyingRetryRefusal(store, taskId, plan.detail.retryRefusal, "dashboard-restart");
+        }
         if (deps.onRefusal === "signal") return plan;
-        throw refusalError(plan);
+        throw restartStageRefusalError(plan);
       }
       if (deps.preserveWork === true && !plan.preservedWork) {
         throw badRequest("Retry can only preserve in-flight work while the card is being worked on");

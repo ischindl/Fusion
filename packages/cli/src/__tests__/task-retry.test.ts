@@ -519,6 +519,124 @@ pgTest("runTaskRetry", () => {
     expect(await readFile(promptPathOf(task.id), "utf-8")).toBe(SPEC_BODY);
   });
 
+  /*
+  FNXC:ApprovalDestroyingRetry 2026-11-14-01:35 (RUFU-599 reproduction 4, RUFU-472 / RUFU-474):
+  The reported card, driven through the real command path against a real PostgreSQL row. Its work had landed,
+  `code-review` still stood APPROVE, and the only blocker left was a post-merge gate that refused to report
+  (`ci-repository-unresolved`) — a gate this Retry cannot re-run. The operator's remedy was an audited waiver;
+  the command they reached for instead moved the card to the hold lane, whose reopen hook wipes
+  `workflowStepResults` whole, so the APPROVE died with it and the blocker stayed. The refusal has to arrive
+  BEFORE the move and say who can clear the card, and the worktree/branch metadata must survive being refused.
+
+  The paired case below is what keeps this narrow: the same card whose post-merge gate DID report an approval
+  offers no waiver, so Retry remains the legitimate remedy and the wipe it performs is the one the replay
+  re-earns. Asserting only the refusal would let an over-broad classifier ship as green.
+  */
+  it("refuses a Retry that would erase the approval a waiver-only blocker still needs", async () => {
+    const store = h.store();
+    const heldWorktree = ["/tmp", "fusion-refused-retry-worktree"].join("/");
+    const task = await store.createTask({
+      title: "landed but held by a never-reporting post-merge gate",
+      description: "test",
+      column: "todo",
+    });
+    await store.moveTask(task.id, "in-progress");
+    await store.moveTask(task.id, "in-review");
+    await store.updateTask(task.id, {
+      status: "failed",
+      error: "Required post-merge gate did not run: post-merge-verification",
+      mergeDetails: { mergeConfirmed: true, commitSha: "0123456789abcdef" },
+      enabledWorkflowSteps: ["code-review", "post-merge-verification"],
+      workflowStepResults: [
+        {
+          workflowStepId: "code-review",
+          workflowStepName: "Code Review",
+          status: "passed",
+          verdict: "APPROVE",
+          phase: "pre-merge",
+          completedAt: "2026-11-14T10:00:00.000Z",
+        },
+        {
+          workflowStepId: "post-merge-verification",
+          workflowStepName: "Post-merge Verification",
+          status: "skipped",
+          phase: "post-merge",
+          notRunReason: "ci-repository-unresolved",
+          completedAt: "2026-11-14T10:05:00.000Z",
+        },
+      ],
+      steps: [{ name: "implemented", status: "done" }],
+      worktree: heldWorktree,
+      branch: `fusion/${task.id}`,
+      // FNXC:CliTests 2026-08-23-16:14: FN-107 branch-write provenance, as every engine-simulated seed here carries it.
+      branchWriteOrigin: "engine" as const,
+    });
+
+    await expect(runTaskRetry(task.id)).rejects.toThrow(/Retry is refused here/);
+
+    const after = await store.getTask(task.id);
+    expect(after.column).toBe("in-review");
+    expect(after.status).toBe("failed");
+    const approval = (after.workflowStepResults ?? []).find((row) => row.workflowStepId === "code-review");
+    expect(approval?.status).toBe("passed");
+    expect(approval?.verdict).toBe("APPROVE");
+    /* A refusal must cost the card nothing: the worktree and branch are what a later waiver merges from. */
+    expect(after.worktree).toBe(heldWorktree);
+    expect(after.branch).toBe(`fusion/${task.id}`);
+  });
+
+  it("still retries the same card once its post-merge gate has actually reported an approval", async () => {
+    const store = h.store();
+    const task = await store.createTask({
+      title: "landed, every gate reported",
+      description: "test",
+      column: "todo",
+    });
+    await store.moveTask(task.id, "in-progress");
+    await store.moveTask(task.id, "in-review");
+    await store.updateTask(task.id, {
+      status: "failed",
+      error: "merge finalization failed",
+      mergeDetails: { mergeConfirmed: true, commitSha: "0123456789abcdef" },
+      enabledWorkflowSteps: ["code-review", "post-merge-verification"],
+      workflowStepResults: [
+        {
+          workflowStepId: "code-review",
+          workflowStepName: "Code Review",
+          status: "passed",
+          verdict: "APPROVE",
+          phase: "pre-merge",
+          completedAt: "2026-11-14T10:00:00.000Z",
+        },
+        {
+          workflowStepId: "post-merge-verification",
+          workflowStepName: "Post-merge Verification",
+          status: "passed",
+          verdict: "APPROVE",
+          phase: "post-merge",
+          completedAt: "2026-11-14T10:05:00.000Z",
+        },
+      ],
+      steps: [{ name: "implemented", status: "done" }],
+    });
+
+    await runTaskRetry(task.id);
+
+    const after = await store.getTask(task.id);
+    expect(after.status ?? null).toBeNull();
+    expect(after.error ?? null).toBeNull();
+    /*
+    FNXC:ApprovalDestroyingRetry 2026-11-14-04:45 (RUFU-599 Step 8):
+    What this case owns is the DECISION, not the aftermath shape. A carrier that genuinely reported an
+    approval owes no waiver, so the door must open — the refusal is for the shape where the approval is the
+    only thing standing between the card and its deliverable. The cleared status/error is the observable
+    grant; where the card then RESTS and whether the reported rows survive the bounce are the store's
+    reopen policy by role (a landed review-lane card keeps its lane and its evidence, and this whole file
+    runs against a real PostgreSQL store), which `reopen-semantics-by-role.test.ts` owns. Asserting either
+    here pinned one store's shape onto a decision test.
+    */
+  });
+
   it("leaves a failed card in the review lane on its existing rebound path rather than re-arming planning", async () => {
     const store = h.store();
     const task = await store.createTask({ title: "implementation failed", description: "test", column: "todo" });

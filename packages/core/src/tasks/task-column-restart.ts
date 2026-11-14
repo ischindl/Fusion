@@ -2,6 +2,7 @@ import type { Task } from "../types.js";
 import type { WorkflowIr, WorkflowIrV2 } from "../workflows/workflow-ir-types.js";
 import { resolveColumnFlags } from "../workflows/trait-registry.js";
 import { resolveRequiredPreMergeStepIds } from "../merge/required-pre-merge-steps.js";
+import { findApprovalDestroyingRetry, type ApprovalDestroyingRetry } from "./approval-destroying-retry.js";
 import { workflowDeclaresColumnModel } from "../workflows/workflow-transitions.js";
 import { buildManualRetryResetPatch, type ManualRetryResetPatch } from "./manual-retry-reset.js";
 
@@ -29,8 +30,13 @@ export interface TaskColumnRestartPlan {
 
 export interface TaskColumnRestartRefusal {
   kind: "refused";
-  reason: "terminal-column" | "column-not-in-workflow" | "no-column-model" | "no-entry-node-in-column";
-  detail?: { resolvedEntryNodeId?: string; resolvedEntryNodeColumn?: string };
+  reason: "terminal-column" | "column-not-in-workflow" | "no-column-model" | "no-entry-node-in-column" | "approval-destroying-retry";
+  detail?: {
+    resolvedEntryNodeId?: string;
+    resolvedEntryNodeColumn?: string;
+    /** Present with `reason: "approval-destroying-retry"`: the destroyed approval and the blocker that survives it. */
+    retryRefusal?: ApprovalDestroyingRetry;
+  };
 }
 
 /*
@@ -132,6 +138,18 @@ export function planTaskColumnRestart(input: {
   const workflowStepResults = (task.workflowStepResults ?? []).filter((result) => !shouldDiscard(result));
   // Keep the discard predicate separate so duplicate workflow-step attempts stay observable.
   const discarded = (task.workflowStepResults ?? []).filter(shouldDiscard);
+  /*
+  FNXC:ApprovalDestroyingRetry 2026-11-14-01:35 (RUFU-599 reproduction 4, RUFU-472 / RUFU-284 / RUFU-304):
+  This route is the ONE destructive write a review-lane Retry performs in place, so the shared classifier is
+  consulted against the rows this plan is about to discard — the refusal can never disagree with the write it
+  refuses. The same classifier answers for `fn task retry`, the `fn_task_retry` extension tool and the chat
+  Retry, whose destructive write is the reopen move that wipes `workflowStepResults` at the move seam; all
+  four surfaces therefore give one card one answer.
+  */
+  const retryRefusal: ApprovalDestroyingRetry | undefined = findApprovalDestroyingRetry({ task, ir });
+  if (retryRefusal) {
+    return { kind: "refused", reason: "approval-destroying-retry", detail: { retryRefusal } };
+  }
   const now = input.now ?? new Date().toISOString();
   const patch: ManualRetryResetPatch = {
     ...buildManualRetryResetPatch({ resetMergeRetries: true }),

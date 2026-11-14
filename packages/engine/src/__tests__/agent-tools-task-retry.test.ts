@@ -528,4 +528,96 @@ describe("createTaskRetryTool — planning-stranded re-arm", () => {
     expect(read().status).not.toBe("needs-replan");
     expect(moveTask).toHaveBeenCalled();
   });
+
+  /*
+  FNXC:ApprovalDestroyingRetry 2026-11-14-01:35 (RUFU-599 reproduction 4, RUFU-472 / RUFU-474):
+  THE CHAT SURFACE IS THE MOST DESTRUCTIVE OF THE FOUR, so it is pinned here rather than only in the core
+  table: this path clears the status AND moves the card, and the move's reopen hook wipes `workflowStepResults`
+  whole. The reported card had a landed delivery, a standing `code-review` APPROVE, and a post-merge gate that
+  refused to report — the waiver was its only remaining remedy, and every surface the operator could reach took
+  the approval away instead. The pair below is the whole claim: refused while a waiver is the only door, and
+  NOT refused once the post-merge gate has actually approved, because then the replay re-runs the gate the
+  wipe costs. The core classifier is what decides both; this suite proves the chat tool asks it.
+  */
+  function waiverOnlyCard(overrides: Partial<Task> = {}): Task {
+    return task({
+      status: "failed",
+      error: "Required post-merge gate did not run: post-merge-verification",
+      mergeDetails: { mergeConfirmed: true, commitSha: "0123456789abcdef" },
+      enabledWorkflowSteps: ["code-review", "post-merge-verification"],
+      workflowStepResults: [
+        {
+          workflowStepId: "code-review",
+          workflowStepName: "Code Review",
+          status: "passed",
+          verdict: "APPROVE",
+          phase: "pre-merge",
+          completedAt: "2026-11-14T10:00:00.000Z",
+        },
+        {
+          workflowStepId: "post-merge-verification",
+          workflowStepName: "Post-merge Verification",
+          status: "skipped",
+          phase: "post-merge",
+          notRunReason: "ci-repository-unresolved",
+          completedAt: "2026-11-14T10:05:00.000Z",
+        },
+      ],
+      ...overrides,
+    } as Task);
+  }
+
+  it("refuses a review-lane retry whose only remaining remedy is an operator waiver", async () => {
+    const card = waiverOnlyCard();
+    const { store, updateTask, moveTask, read } = applyingStore(card);
+
+    const result = await createTaskRetryTool(store, {}).execute("run", { id: card.id }, undefined as never, undefined as never, undefined as never);
+
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("Retry is refused here");
+    /* The sentence must name the remedy, not the failure: an operator who reads only this line has to know
+       which action clears the card. */
+    expect(text).toMatch(/waiver/i);
+    expect(result.details).toMatchObject({
+      retryRefusal: "approval-destroying",
+      waiverStepId: "post-merge-verification",
+      destroyedApprovalStepId: "code-review",
+    });
+    /* A refusal that still wrote would still have destroyed the approval. */
+    expect(updateTask).not.toHaveBeenCalled();
+    expect(moveTask).not.toHaveBeenCalled();
+    const approval = (read().workflowStepResults ?? []).find((row) => row.workflowStepId === "code-review");
+    expect(approval?.verdict).toBe("APPROVE");
+  });
+
+  it("still retries the same card once every gate has reported, because the replay re-earns the approval", async () => {
+    const card = waiverOnlyCard({
+      error: "merge finalization failed",
+      workflowStepResults: [
+        {
+          workflowStepId: "code-review",
+          workflowStepName: "Code Review",
+          status: "passed",
+          verdict: "APPROVE",
+          phase: "pre-merge",
+          completedAt: "2026-11-14T10:00:00.000Z",
+        },
+        {
+          workflowStepId: "post-merge-verification",
+          workflowStepName: "Post-merge Verification",
+          status: "passed",
+          verdict: "APPROVE",
+          phase: "post-merge",
+          completedAt: "2026-11-14T10:05:00.000Z",
+        },
+      ],
+    });
+    const { store, moveTask } = applyingStore(card);
+
+    const result = await createTaskRetryTool(store, {}).execute("run", { id: card.id }, undefined as never, undefined as never, undefined as never);
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true);
+    expect(moveTask).toHaveBeenCalled();
+  });
 });

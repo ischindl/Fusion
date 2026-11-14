@@ -1312,6 +1312,9 @@ export {
 } from "./duplicates/explicit-duplicate-marker.js";
 export {
   parseNoOpCompletionMarker,
+  acceptedTerminalPlanReviewClose,
+  isTerminalPlanReviewCloseRow,
+  latestPlanReviewRow,
   type NoOpCompletionMarker,
   type NoOpCompletionMarkerKind,
 } from "./merge/no-op-completion-marker.js";
@@ -1340,8 +1343,8 @@ export type { ReviewRevisionWaitSubject, ReviewRevisionWaitOptions } from "./tas
 export type { AppendRemediationStepsOptions, AppendRemediationStepsResult } from "./task-store/remediation-step-ops.js";
 export { evaluateNoCommitsNoOpFinalize, WORKTREE_CONTENT_UNPROVEN_REASON } from "./merge/no-commits-finalize-guard.js";
 /* FNXC:ZeroCommitLandingProof 2026-09-25-11:17 (RUFU-274): the shared durable landing-proof predicate every finalization lane must consult before reporting a zero-commit card done. */
-export { evaluateZeroCommitLandingProof, hasDurableLandingProof, worktreeContentCounts, CLEAN_WORKTREE_CONTENT, describeUncommittedWorkRefusal, isUncommittedWorkHold, getUncommittedWorkHoldBlocker, CONTENT_UNVERIFIABLE_REFUSAL, isZeroCommitWorkspaceLandPark, isWorkspacePartialLandParkError, hasZeroCommitDeliveryAuthorization, /* FNXC:ZeroCommitEmptyInputContentProof 2026-11-03-19:15 (RUFU-384): the core-side mirror of the engine's empty-review-input marker is exported so the equality can be pinned from a package that sees both; `@fusion/core` cannot import `@fusion/engine`, so the mirror itself is unavoidable. */ CORE_EMPTY_REVIEW_INPUT_FINGERPRINT, /* FNXC:ZeroCommitEmptyInputContentProof 2026-11-03-18:50 (RUFU-384, code-review P0): the second core-side mirror of this change — the ONE `unavailable` diff reason the zero-commit waiver may read. Exported for the same reason as the marker above: the engine produces it inline in `probeReviewDiffFingerprint`, so the spelling can only be pinned from a package that sees both. */ CORE_MISSING_CHECKOUT_DIFF_REASON, WORKSPACE_PARTIAL_LAND_UNRECOVERABLE_PREFIX, WORKSPACE_PARTIAL_LAND_EVIDENCE_UNAVAILABLE_PREFIX } from "./merge/zero-commit-landing-proof.js";
-export type { WorktreeContentState, WorktreeContentClassification, LandingProof, LandingProofKind, DurableLandingProofVerdict, ZeroCommitLandingProofInput, ZeroCommitLandingProofVerdict, LegitimateNoOpBasis, UncommittedWorkRefusalCode } from "./merge/zero-commit-landing-proof.js";
+export { evaluateZeroCommitLandingProof, hasDurableLandingProof, classifyCommitFreeWorkspaceDelivery, /* FNXC:ZeroCommitWorkspaceDelivery 2026-11-14-02:05 (RUFU-599): exported so the engine land lane's sentence and the core guard's match are pinned from one test; core cannot import engine, so the prefix is a declared twin, not a second implementation. */ COMMIT_FREE_DELIVERY_REASON_PREFIX, worktreeContentCounts, CLEAN_WORKTREE_CONTENT, describeUncommittedWorkRefusal, isUncommittedWorkHold, getUncommittedWorkHoldBlocker, CONTENT_UNVERIFIABLE_REFUSAL, isZeroCommitWorkspaceLandPark, isWorkspacePartialLandParkError, hasZeroCommitDeliveryAuthorization, /* FNXC:ZeroCommitEmptyInputContentProof 2026-11-03-19:15 (RUFU-384): the core-side mirror of the engine's empty-review-input marker is exported so the equality can be pinned from a package that sees both; `@fusion/core` cannot import `@fusion/engine`, so the mirror itself is unavoidable. */ CORE_EMPTY_REVIEW_INPUT_FINGERPRINT, /* FNXC:ZeroCommitEmptyInputContentProof 2026-11-03-18:50 (RUFU-384, code-review P0): the second core-side mirror of this change — the ONE `unavailable` diff reason the zero-commit waiver may read. Exported for the same reason as the marker above: the engine produces it inline in `probeReviewDiffFingerprint`, so the spelling can only be pinned from a package that sees both. */ CORE_MISSING_CHECKOUT_DIFF_REASON, WORKSPACE_PARTIAL_LAND_UNRECOVERABLE_PREFIX, WORKSPACE_PARTIAL_LAND_EVIDENCE_UNAVAILABLE_PREFIX } from "./merge/zero-commit-landing-proof.js";
+export type { WorktreeContentState, WorktreeContentClassification, LandingProof, LandingProofKind, DurableLandingProofVerdict, CommitFreeWorkspaceDeliveryRecord, ZeroCommitLandingProofInput, ZeroCommitLandingProofVerdict, LegitimateNoOpBasis, UncommittedWorkRefusalCode } from "./merge/zero-commit-landing-proof.js";
 export type { NoCommitsNoOpFinalizeEvaluation, NoCommitsNoOpFinalizeEvidence, NoCommitsDeliveryUnproven } from "./merge/no-commits-finalize-guard.js";
 export { evaluateCompletedPromotionFailureProvenance, CLEAN_COMPLETION_MARKERS, MAX_LOG_SCAN } from "./merge/completed-promotion-failure-provenance.js";
 export type { CompletedPromotionFailureProvenanceEvaluation } from "./merge/completed-promotion-failure-provenance.js";
@@ -1391,6 +1394,16 @@ export {
   type DeterministicGuardOutcome,
 } from "./duplicates/duplicate-guard.js";
 export type { TaskDependencyMutation } from "./store.js";
+/*
+FNXC:OperatorWaiverSurface 2026-11-14-04:25 (RUFU-599 code-review sweep of the typecheck gate):
+The waiver TARGET is a server verdict, not a client guess, and the surfaces that render it — the card's
+Bypass/Waive affordance and the Retry refusal copy — have to name the same three kinds the store resolves,
+or the board tells a friendlier story than the API does. `types.ts` already re-exported both names and
+`Task["reviewBypass"]` has named the interface since RUFU-179, but the package entry listed neither, so a
+dashboard source file that imported the kind union failed `tsc` while a test file in the same directory
+silently did not. Exporting them here makes the rendered vocabulary and the deciding rules one surface.
+*/
+export type { ReviewBypassTarget, ReviewBypassTargetKind } from "./types.js";
 // FNXC:VanishedTaskDetection 2026-09-23-21:28: presence shape (live / tombstone / archive).
 export type { TaskIdPresence } from "./task-store/task-id-integrity.js";
 /*
@@ -1655,6 +1668,29 @@ export {
   RESTART_STAGE_FENCE_REASON,
   planTaskColumnRestart,
 } from "./tasks/task-column-restart.js";
+/*
+FNXC:ApprovalDestroyingRetry 2026-11-14-01:35 (RUFU-599 reproduction 4):
+Exported from both barrels: the gate lane builds `@fusion/core` from `index.gate.ts`, and an export that only
+exists in the main barrel resolves to `undefined` there (the U3 `classifyReviewLease` shape). The refusal is
+reachable from any lane that restarts a stage, so it must resolve in both.
+*/
+export {
+  classifyApprovalDestroyingRetry,
+  findApprovalDestroyingRetry,
+  type ApprovalDestroyingRetry,
+  type ApprovalDestroyingRetryClassification,
+} from "./tasks/approval-destroying-retry.js";
+/*
+FNXC:ApprovalDestroyingRetry 2026-11-14-02:10 (RUFU-599 Step 7):
+The narration half of a refused Retry, exported beside the classifier that decides it, so every surface that
+refuses can also record in the card's own History what it refused and from where it was asked.
+*/
+export {
+  recordApprovalDestroyingRetryRefusal,
+  formatApprovalDestroyingRetryRefusalLine,
+  type ApprovalDestroyingRetryRefusalSource,
+  type RetryRefusalLogStore,
+} from "./tasks/retry-refusal-log.js";
 export {
   classifyStrandedGateRetry,
   buildStrandedGateRetryPatch,
@@ -1927,8 +1963,8 @@ export {
   resolveUnprovenReviewApproval,
   COLLATERAL_ARCHIVED_REVIEW_GATE_DIAGNOSTIC,
 } from "./merge/pre-merge-approval.js";
-export { getPostMergeFinalizeBlocker, getRequiredPostMergeEvidenceBlocker, getRequiredPostMergeEvidenceDecision, getPostMergeEvidenceGateStatuses, isNotRunPostMergeEvidence, resolveRequiredPostMergeGateIds, planConfirmedMergeChecklistReconciliation } from "./merge/confirmed-merge-reconciliation.js";
-export type { ConfirmedMergeChecklistReconciliation, PostMergeEvidenceGateState, PostMergeEvidenceGateStatus, PostMergeEvidenceNotApplicableReason } from "./merge/confirmed-merge-reconciliation.js";
+export { getPostMergeFinalizeBlocker, getRequiredPostMergeEvidenceBlocker, getRequiredPostMergeEvidenceDecision, getPostMergeEvidenceGateStatuses, isNotRunPostMergeEvidence, postMergeGateWaiverReason, resolveRequiredPostMergeGateIds, planConfirmedMergeChecklistReconciliation } from "./merge/confirmed-merge-reconciliation.js";
+export type { ConfirmedMergeChecklistReconciliation, PostMergeEvidenceGateState, PostMergeEvidenceGateStatus, PostMergeEvidenceNotApplicableReason, PostMergeGateWaiverReason } from "./merge/confirmed-merge-reconciliation.js";
 /*
 FNXC:PostMergeProducerSurface 2026-11-02-18:16 (RUFU-450):
 The observation the engine reports about a landed card's delivery surface, the pure rule over it, and the

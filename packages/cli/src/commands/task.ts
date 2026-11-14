@@ -8,7 +8,7 @@ Import union for this line: ours adds `isFollowUpTask`, `resolveWorkflowIrForTas
 but the merged body has no call site, so keeping them would be dead references. Engine side keeps ours
 (`admitTaskToWip`/`isFirstPlanningToWipAdmission`/`planTaskWorktreePath`) and `SelfHealingManager`, which both lines need.
 */
-import { TaskStore, COLUMNS, COLUMN_LABELS, deriveTaskLabelFromDescription, describeTaskTitleRejection, isFollowUpTask, MAX_TASK_MESSAGE_LENGTH, resolveProjectColumnsForRoles, TERMINAL_ROLES, resolveReviewColumns, resolveTaskLifecycleColumns, resolveWorkflowIrForTask, resolvePreMergeGateForTask, resolveWorkflowIrForTaskWithProvenance, workflowHasColumn, columnHasFlag, resolveEffectiveAutoMerge, CentralCore, buildAutoPauseClearPatch, buildManualRetryResetPatch, buildManualRetryResetPatchIfCurrent, buildStrandedGateRetryPatch, classifyStrandedGateRetry, buildPlanningStrandedRetryPatch, classifyPlanningStrandedRetry, extractIntentSignature, findNearDuplicates, getTaskDuplicateLineage, isValidRepoSlug, isWorkspaceTask, reconcileDeterministicDuplicate, resolveTaskGithubTracking, runDeterministicDuplicateGuard, deliverTaskCommentFromStore, describeTaskCommentDelivery, formatAgentTimestamp, type Settings, type Column, type ColumnId, type StepStatus, type AgentLogType, type AgentLogEntry, type IntentSignature, type NearDuplicateCandidate, type NearDuplicateMatch, type TaskDependencyMutation } from "@fusion/core";
+import { TaskStore, COLUMNS, COLUMN_LABELS, deriveTaskLabelFromDescription, describeTaskTitleRejection, isFollowUpTask, MAX_TASK_MESSAGE_LENGTH, resolveProjectColumnsForRoles, TERMINAL_ROLES, resolveReviewColumns, resolveTaskLifecycleColumns, resolveWorkflowIrForTask, resolvePreMergeGateForTask, resolveWorkflowIrForTaskWithProvenance, workflowHasColumn, columnHasFlag, resolveEffectiveAutoMerge, CentralCore, buildAutoPauseClearPatch, buildManualRetryResetPatch, buildManualRetryResetPatchIfCurrent, buildStrandedGateRetryPatch, classifyStrandedGateRetry, findApprovalDestroyingRetry, recordApprovalDestroyingRetryRefusal, buildPlanningStrandedRetryPatch, classifyPlanningStrandedRetry, extractIntentSignature, findNearDuplicates, getTaskDuplicateLineage, isValidRepoSlug, isWorkspaceTask, reconcileDeterministicDuplicate, resolveTaskGithubTracking, runDeterministicDuplicateGuard, deliverTaskCommentFromStore, describeTaskCommentDelivery, formatAgentTimestamp, type Settings, type Column, type ColumnId, type StepStatus, type AgentLogType, type AgentLogEntry, type IntentSignature, type NearDuplicateCandidate, type NearDuplicateMatch, type TaskDependencyMutation } from "@fusion/core";
 import { isFailedNoVerdictPreMergeReviewResult, admitTaskToWip, isFirstPlanningToWipAdmission, isInReviewMissingWorktreeSessionStartFailure, planTaskWorktreePath, runAiMerge, landWorkspaceTask, withWorkspaceMergeDispatchLease, clearOwnedMergeStamp, reconcileUnownedStaleMergeStamp, SelfHealingManager } from "@fusion/engine";
 import { createInterface } from "node:readline/promises";
 import type { PlanningQuestion, PlanningSummary } from "@fusion/core";
@@ -1484,6 +1484,19 @@ export async function runTaskReconcile(id: string, projectName?: string) {
     "Discharged" now matches the workspace lane's vocabulary, and "no commit authored" keeps the claim honest.
     The basis names the proof rather than a sha, because the basis IS the proof.
     */
+    /*
+    FNXC:ZeroCommitWorkspaceDelivery 2026-11-14-02:05 (RUFU-599):
+    The recorded-delivery closeout has its own sentence for RUFU-357's reason plus one of its own: the two
+    arms above name what THIS run measured, and this arm reports what the land lane recorded — so there is
+    no base branch to print (none was resolved here) and the honest clause is the recorded basis plus the
+    empty post-merge-evidence question. "no gate waived" is load-bearing: the close is a delivery verdict,
+    not an approval, and an operator reading it must not conclude a reviewer was skipped.
+    */
+    if (result.outcome === "workspace-delivery-closed") {
+      const repoClause = result.repos.map((repo) => `${repo.repo} ${repo.basis}`).join("; ");
+      console.log(`Closed ${id}: recorded commit-free workspace delivery (${result.dischargedCount}/${result.repoCount} repositories proven zero-ahead: ${repoClause}) with no required post-merge evidence outstanding; card moved to complete, no commit authored, no gate waived.`);
+      return;
+    }
     if (result.outcome === "zero-commit-discharged") {
       console.log(`Discharged ${id}: zero-commit delivery authorized and Code Review approved over the canonical empty review input on ${result.baseBranch} (basis: ${result.basis}); card moved to complete, no commit authored.`);
       return;
@@ -2082,6 +2095,30 @@ export async function runTaskRetry(id: string, projectName?: string) {
     }
     if (task.status !== 'failed' && task.status !== 'stuck-killed' && !isInReviewRetry && !isMissingWorktreeSessionRetry && strandedGateStepIds.length === 0 && !planningStrandedAdmitted) {
       throw new Error(`Task ${id} is not in a retryable state (status: ${task.status || 'none'})`);
+    }
+
+    /*
+    FNXC:ApprovalDestroyingRetry 2026-11-14-01:35 (RUFU-599 reproduction 4, RUFU-472 / RUFU-284 / RUFU-304):
+    Asked here, at the last point before this command writes anything, so every branch below is covered by one
+    call rather than one branch. The classifier is the same one the board route's restart planner asks; on this
+    surface the destructive write is not the in-place restart but the move back to the hold lane, whose reopen
+    hook (`applyReopenFieldClears`) wipes `workflowStepResults` whole — so an approved gate's APPROVE row dies
+    with it, and RUFU-284 / RUFU-304 measured the resulting re-burned review cycles in hours. The refusal
+    stays narrow enough to leave every legitimate CLI path standing: a merge-active recovery has no
+    `mergeConfirmed` and therefore no waiver offered, a verdict-less failed gate row answers a `failed` waiver
+    the replay does re-run, and a card outside a review lane is never classified.
+    */
+    const approvalDestroyingRetry = findApprovalDestroyingRetry({ task, ir: retryIr });
+    if (approvalDestroyingRetry) {
+      /*
+      FNXC:ApprovalDestroyingRetry 2026-11-14-02:10 (RUFU-599 Step 7):
+      Narrate the refusal on the card before throwing it. The command's rejection reaches only the terminal that
+      typed it; the card kept showing the reviewer's stale `REVISE` line as if nobody had tried anything, so the
+      next operator pressed Retry again. One bounded, swallow-everything History write through the shared core
+      seam — the sentence is the classifier's own, so the card and the terminal cannot tell two stories.
+      */
+      await recordApprovalDestroyingRetryRefusal(context.store, id, approvalDestroyingRetry, "cli");
+      throw new Error(`Task ${id}: ${approvalDestroyingRetry.sentence}`);
     }
 
     /*

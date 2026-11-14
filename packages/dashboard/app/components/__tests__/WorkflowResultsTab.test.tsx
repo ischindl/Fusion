@@ -1021,6 +1021,52 @@ describe("WorkflowResultsTab", () => {
     expect(screen.getByTestId("workflow-model-setting-thinking")).toHaveTextContent("Default");
   });
 
+  /*
+  FNXC:PostMergeGateOperatorWaiver 2026-11-14-02:10 (RUFU-599 Step 7, reproduction 2 / RUFU-474):
+  The row an operator's waiver resolved has to READ as resolved-by-decision. `bypassFailedPreMergeReviewStep`
+  rewrites the waived row to `skipped` plus actor/reason, and the panel rendered it as a plain "Skipped" - the same
+  word a legitimately-unrun gate and a verdict-less carrier both wear. On the reported cards the whole question was
+  "who decided this, and under what authority?", so the badge names the actor.
+  */
+  it("labels an operator-waived gate as waived and names the actor", () => {
+    render(
+      <WorkflowResultsTab
+        taskId="FN-001"
+        results={[{
+          workflowStepId: "WS-009",
+          workflowStepName: "Post-merge Verification",
+          phase: "post-merge",
+          status: "skipped",
+          notRunReason: "ci-repository-unresolved",
+          bypassedBy: "operator",
+          bypassedAt: "2026-11-14T02:00:00Z",
+          bypassReason: "delivery proven by recorded workspace evidence",
+        } as WorkflowStepResult]}
+      />,
+    );
+
+    const badge = screen.getByTestId("workflow-result-badge-WS-009");
+    expect(badge).toHaveTextContent("Waived by operator");
+    expect(badge).not.toHaveTextContent("Skipped");
+  });
+
+  it("does not read a verdict-less carrier as waived when nobody recorded a decision", () => {
+    render(
+      <WorkflowResultsTab
+        taskId="FN-001"
+        results={[{
+          workflowStepId: "WS-010",
+          workflowStepName: "Post-merge Verification",
+          phase: "post-merge",
+          status: "skipped",
+          notRunReason: "required-gate-refused-owed-verdict",
+        } as WorkflowStepResult]}
+      />,
+    );
+
+    expect(screen.getByTestId("workflow-result-badge-WS-010")).not.toHaveTextContent("Waived");
+  });
+
   it("renders correct status badges for each result", () => {
     render(<WorkflowResultsTab taskId="FN-001" results={mockResults} />);
 

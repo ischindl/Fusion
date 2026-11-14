@@ -4593,6 +4593,32 @@ export function createTaskRetryTool(store: TaskStore, options: TaskRetryToolOpti
         if (task.status !== "failed" && task.status !== "stuck-killed") {
           return { content: [{ type: "text" as const, text: `Task ${params.id} is not in a retryable state (status: ${task.status || "none"})` }], details: { taskId: params.id, currentStatus: task.status }, isError: true };
         }
+        /*
+        FNXC:ApprovalDestroyingRetry 2026-11-14-01:35 (RUFU-599 reproduction 4, RUFU-472 / RUFU-284 / RUFU-304):
+        Placed after the two non-destructive hatches and immediately before this tool's own destructive write -
+        which is the worst of the four Retry surfaces for this class, because the generic path clears the status
+        AND moves the card, so the reopen hook at the move seam wipes `workflowStepResults` whole and the
+        approved gate's APPROVE row goes with it. The same core classifier answers here, on the CLI, in the
+        extension tool and on the board, so one card gets one answer; the refusal names the operator waiver,
+        the only action this card can still take.
+        */
+        const approvalDestroyingRetry = fusionCore.findApprovalDestroyingRetry({ task, ir: retryIr });
+        if (approvalDestroyingRetry) {
+          // FNXC:ApprovalDestroyingRetry 2026-11-14-02:10 (RUFU-599 Step 7): one durable History line per refused
+          // Retry, written through the shared core seam. Without it the card reports no trace of an attempt an
+          // agent just made, and the next reader - operator or agent - presses the same destructive button.
+          await fusionCore.recordApprovalDestroyingRetryRefusal(store, params.id, approvalDestroyingRetry, "chat-tool");
+          return {
+            content: [{ type: "text" as const, text: `Task ${params.id}: ${approvalDestroyingRetry.sentence}` }],
+            details: {
+              taskId: params.id,
+              retryRefusal: "approval-destroying",
+              waiverStepId: approvalDestroyingRetry.waiver.workflowStepId,
+              destroyedApprovalStepId: approvalDestroyingRetry.destroyedApproval.workflowStepId,
+            },
+            isError: true,
+          };
+        }
         await store.updateTask(params.id, { status: null, error: null });
         /*
         FNXC:TaskRetry 2026-07-31-23:59 (review finding on #3152 — the move resolved, the REPORT did not):

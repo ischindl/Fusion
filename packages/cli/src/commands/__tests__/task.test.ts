@@ -3718,6 +3718,14 @@ describe("runTaskRetry", () => {
       Fourth key-level clear: the deterministic-spec refusal episode counts the identical verdicts that
       author the park, so a Retry that left the count standing would re-park on the next refusal.
       */
+      /*
+      FNXC:ManualRetryEpisodeClears 2026-11-14-03:25 (RUFU-599 Step 8):
+      Two more key-level clears the literal had not caught up with, both landed by other cards and neither
+      invented here: the stranded-continuation reclaim episode (RUFU-547) and the execution re-arm episode
+      (RUFU-1027), whose ceiling is only reachable if the episode survives, so Retry must delete both keys.
+      This literal is a full-shape assertion, so every episode the shared builder nulls has to appear in it -
+      a missing key here does not weaken the builder, it just makes the CLI's own contract red.
+      */
       sourceMetadataPatch: { planPremiseRejection: null, planAdmissionStall: null, branchConflictRecoveryEpisode: null, deterministicSpecRejection: null, strandedContinuationReclaim: null, executionRearmEpisode: null },  // FNXC:TestBehaviourOwnership 2026-11-14-01:32 (RUFU-1027 / RUFU-547): this asserts the EXACT manual-retry reset patch, so every key `buildManualRetryResetPatch` nulls must be listed here. `strandedContinuationReclaim` arrived with d956ffca31 (RUFU-547) and `executionRearmEpisode` with 0c911adda3 (RUFU-1027); neither lane updated this CLI assertion, because the writer lives in @fusion/core and this file lives in @runfusion/fusion, so changed-file-scoped verification could not see it. Listing a key is not a weakening: dropping one would still fail.
     });
     // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): the CLI retry re-queue must state release intent — without parkOnHold:false the rebound parks the card it was asked to run.

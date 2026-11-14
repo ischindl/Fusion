@@ -139,6 +139,52 @@ export function isNotRunPostMergeEvidence(result: WorkflowStepResult): boolean {
   return isWorkflowStepNotRun(result) && !result.verdict && !result.bypassedBy && !result.remediationArchivedAt;
 }
 
+/*
+FNXC:GateApprovalVocabulary 2026-11-14-01:35 (RUFU-599 reproduction 4):
+The approving verdicts of a content gate, named once. `status: "passed"` alone is not approval — an accepted
+Plan Review close passes with `CLOSE_NO_OP`, and RUFU-539's whole premise is that the merge door admits only
+positive approval evidence (FN-180). Every lane that asks "did this gate approve?" must answer from this
+predicate, or the two answers drift and one lane launders what the other refuses.
+*/
+export function isGateApprovalVerdict(verdict: WorkflowStepResult["verdict"]): boolean {
+  return verdict === "APPROVE" || verdict === "APPROVE_WITH_NOTES";
+}
+
+/*
+FNXC:PostMergeGateWaiver 2026-11-14-01:20 (RUFU-599 reproduction 1, RUFU-474):
+Name WHY a required post-merge gate's latest row is waiting on an operator waiver, or `undefined` when it
+is not. The row-shape exclusions are RUFU-657's list, kept in the same order and reached through the
+already-exported not-run classifier rather than restated as a new shape test: an authored verdict is a human
+decision (`skipped` + `verdict: "REVISE"` keeps its veto), an audited waiver is already the terminal state,
+a collateral archive (`remediationArchivedAt` with no `bypassedBy`) belongs to
+`reconcile-collateral-archived-review-gate`, and an arbitration decision belongs to the convergence ladder.
+
+This is deliberately NOT `isVerdictLessSkippedOwedVerdictRow` with a widened phase: that predicate's last
+clause asks `requiresAuthoredReviewVerdict`, which the builtin `post-merge-verification` node answers NO to
+because it asks for landed EVIDENCE, not a review verdict — yet the post-merge requirement ladder
+(`requiresPostMergeApproval`) treats that same gate as owed an approval and refuses the door on a `skipped`
+row. Asking the review-verdict question there is how a gate that blocks the merge grows no affordance.
+
+Presence is load-bearing. The `not-applicable` exemption states (RUFU-429's workspace delivery shape,
+RUFU-430's reporter-less board) attach only to an ABSENT row, so a gate holding a present, blocking,
+verdict-less row is never inapplicable and can never grow the dead affordance RUFU-572 had to delete.
+Absence stays the engine's bounded re-seed, never an operator waiver.
+*/
+export type PostMergeGateWaiverReason = "not-run" | "verdictless-skipped";
+
+export function postMergeGateWaiverReason(
+  row: WorkflowStepResult | undefined,
+): PostMergeGateWaiverReason | undefined {
+  if (!row) return undefined;
+  if (row.status !== "skipped") return undefined;
+  if (isAuditedOperatorBypass(row)) return undefined;
+  if (row.remediationArchivedAt != null) return undefined;
+  if (row.arbitrationDecision !== undefined) return undefined;
+  // `verdict == null` covers the absent field and a stored literal JSON null (RUFU-204's shape).
+  if (row.verdict != null) return undefined;
+  return isNotRunPostMergeEvidence(row) ? "not-run" : "verdictless-skipped";
+}
+
 export interface PostMergeEvidenceGateStatus {
   gateId: string;
   state: PostMergeEvidenceGateState;
@@ -245,7 +291,7 @@ export function getPostMergeEvidenceGateStatuses(
     automated actor, so only a named human waiver clears the gate.
     */
     if (isAuditedOperatorBypass(result)) return [];
-    if (result.status !== "passed" || (result.verdict !== "APPROVE" && result.verdict !== "APPROVE_WITH_NOTES")) {
+    if (result.status !== "passed" || !isGateApprovalVerdict(result.verdict)) {
       /*
       FNXC:PostMergeEvidenceContract 2026-09-30-22:29 (RUFU-430):
       A durable negative verdict is a real gate decision and is never laundered — that is RUFU-429's own
@@ -319,7 +365,7 @@ export async function getRequiredPostMergeEvidenceDecision(
     if (result.status === "pending") return { outcome: "blocked", gateId, reason: "pending" };
     if (result.status === "failed") return { outcome: "blocked", gateId, reason: "failed" };
     if (result.status === "skipped") return { outcome: "blocked", gateId, reason: "skipped" };
-    if (result.status !== "passed" || (result.verdict !== "APPROVE" && result.verdict !== "APPROVE_WITH_NOTES")) {
+    if (result.status !== "passed" || !isGateApprovalVerdict(result.verdict)) {
       return { outcome: "blocked", gateId, reason: "not-approved" };
     }
   }

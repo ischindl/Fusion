@@ -30,6 +30,9 @@ import type { InReviewStallSignal } from "../../tasks/in-review-stall.js";
 import type { InReviewStalledSignal } from "../../tasks/in-review-stalled.js";
 import type { TaskStallReason } from "../../tasks/task-stall-reason.js";
 import type { ReviewBypassTarget } from "../../merge/review-bypass-target.js";
+// FNXC:ApprovalDestroyingRetry 2026-11-14-01:35 (RUFU-599): type-only, so the erased import keeps the
+// types <- tasks dependency graph one-directional at runtime.
+import type { ApprovalDestroyingRetry } from "../../tasks/approval-destroying-retry.js";
 import type { WorktreeContentState } from "../merge/worktree-content.js";
 import type { StalePausedReviewSignal } from "../../tasks/stale-paused-review.js";
 import type { StalePausedTodoSignal } from "../../tasks/stale-paused-todo.js";
@@ -1939,6 +1942,20 @@ export interface Task {
    * is NOT operator-held and keeps the capability: the park freezes automation, not the operator.
    */
   reviewBypass?: ReviewBypassTarget;
+  /*
+   * FNXC:ApprovalDestroyingRetry 2026-11-14-01:35 (RUFU-599 reproduction 4, RUFU-472 / RUFU-474):
+   * Server-derived REFUSAL CAPABILITY, the mirror image of `reviewBypass` one door to the left: the
+   * destructive Retry this card must NOT be offered, with the sentence naming the waiver that is its
+   * remaining remedy. Hydrated on the same four read paths, by the same classifier the dashboard restart
+   * planner, `fn task retry`, the `fn_task_retry` extension tool and the chat Retry each consult before
+   * they write — so "the menu offers Retry" and "every Retry surface performs the destructive wipe" are
+   * one fact computed once. Rendered as the derived fact, never re-derived client-side (RUFU-179's rule).
+   *
+   * Present only where the waiver is offered: no waiver offered means Retry remains a legitimate remedy,
+   * so this field is undefined for an ordinary re-review card. Undefined therefore means "Retry allowed",
+   * not "Retry unconfirmed".
+   */
+  retryRefusal?: ApprovalDestroyingRetry;
   /** Server-computed task age staleness signal. Undefined when no staleness rule matches.
    *  Diagnostic-only: must not be used as an auto-completion signal. */
   ageStaleness?: TaskAgeStalenessSignal;

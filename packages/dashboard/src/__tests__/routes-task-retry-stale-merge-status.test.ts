@@ -284,6 +284,32 @@ describe("POST /api/tasks/:id/reconcile-landed-review", () => {
     expect(res.body).toEqual(discharge);
   });
 
+  /*
+  FNXC:ZeroCommitWorkspaceDelivery 2026-11-14-02:10 (RUFU-599):
+  The recorded-delivery closeout is a SECOND success arm of the same fence, and the route must not collapse
+  it into the probe-verified discharge or into a refusal: SANE-482's card is closed on the delivery the land
+  lane recorded, and the dashboard that offered the action has to report the verdict the fence actually gave.
+  */
+  it("returns 200 for the recorded commit-free workspace closeout", async () => {
+    const closeout = {
+      outcome: "workspace-delivery-closed",
+      repoCount: 3,
+      dischargedCount: 2,
+      repos: [
+        { repo: "saneca", basis: "zero-ahead" },
+        { repo: "lager-manager", basis: "zero-ahead" },
+        { repo: "lager-2026", basis: "absent" },
+      ],
+    };
+    const reconcileLandedReviewTask = vi.fn().mockResolvedValue(closeout);
+    const { app } = buildApp({ task: mkMergeTask({ id: "SANE-482", status: null }), reconcileLandedReviewTask });
+
+    const res = await performRequest(app, "POST", "/api/tasks/SANE-482/reconcile-landed-review", "{}", { "content-type": "application/json" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(closeout);
+  });
+
   it("relays the per-repository workspace refusal detail as a 409", async () => {
     const refusal = {
       outcome: "ineligible",

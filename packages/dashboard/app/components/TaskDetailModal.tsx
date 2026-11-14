@@ -115,7 +115,7 @@ import { resolveStallReason, stallReasonVisibleOnFace } from "../utils/stallReas
 import { toStallAgent } from "../utils/stallAgent";
 import { decideTaskPromptRefresh } from "../utils/taskPromptRefresh";
 import { hasPendingAutomaticRecovery } from "../utils/taskRecovery";
-import { resolveRetryStageCopy } from "../utils/taskRetryCopy";
+import { resolveBypassReviewCopy, resolveRetryRefusalHint, resolveRetryStageCopy } from "../utils/taskRetryCopy";
 import { findInReviewStallLogEntry, IN_REVIEW_STALL_LOG_REGEX } from "../utils/findInReviewStallLogEntry";
 import { getTaskLogEntryAction, getTaskLogEntryOutcome } from "../utils/taskLogEntryDisplay";
 import { copyTextToClipboard } from "../utils/copyToClipboard";
@@ -3579,33 +3579,30 @@ export function TaskDetailContent({
   const handleBypassReview = useCallback(() => {
     if (!onBypassReview) return;
     /*
-    FNXC:ReviewLaneBypass 2026-09-03-13:15 (RUFU-179):
-    The prompt and toast name the target the server actually offered: kind "failed" rewrites a
-    failed gate's verdict, kind "absent" records an audited-operator approval for a required gate
-    that never ran. These are different operator decisions, so the audit-reason prompt says which
-    one is being made rather than always claiming a "failed" bypass.
+    FNXC:PostMergeGateOperatorWaiver 2026-11-14-02:10 (RUFU-599 Step 7, reproductions 1 and 2 / RUFU-474):
+    The prompt and toast name the target the server actually OFFERED (`ReviewBypassTarget`, hydrated on every read
+    path next to the Retry refusal). That shape widened in Steps 2-3 with a `phase` axis and a third `kind`, so the
+    two-way `kind === "absent"` test here would have labelled a `verdictless-skipped` post-merge carrier "Bypass
+    failed review" - a failed PRE-merge row that does not exist on the card - in the exact place the operator types
+    the audit reason. The copy is one resolver over `{ phase, kind }` shared with the context-menu row that performs
+    the same action, so one operator decision cannot carry two vocabularies across the two surfaces that offer it.
+    The two classes that already had words keep them byte-for-byte: an audit prompt is read back later by whoever
+    reviews the card, and the card's own history would otherwise quote wording no surface uses any more.
     */
-    const unrunGate = task.reviewBypass?.kind === "absent";
-    const reason = window.prompt(
-      unrunGate
-        ? t("taskDetail.bypassReview.promptMessageUnrun", "Reason for bypassing the review gate that never ran (required, audit-logged):")
-        : t("taskDetail.bypassReview.promptMessage", "Reason for bypassing the failed pre-merge review step (required, audit-logged):"),
-    );
+    const bypassTarget = task.reviewBypass;
+    if (!bypassTarget) return;
+    const copy = resolveBypassReviewCopy(t, bypassTarget);
+    const reason = window.prompt(copy.promptMessage);
     if (!reason || !reason.trim()) return;
     onBypassReview(task.id, reason.trim())
       .then((updated) => {
         onTaskUpdated?.(updated);
-        addToast(
-          unrunGate
-            ? t("taskDetail.bypassReview.successUnrun", "Bypassed unrun review gate for {{id}}", { id: task.id })
-            : t("taskDetail.bypassReview.success", "Bypassed failed review lane for {{id}}", { id: task.id }),
-          "success",
-        );
+        addToast(copy.success(task.id), "success");
       })
       .catch((err) => {
         addToast(getErrorMessage(err), "error");
       });
-  }, [task.id, task.reviewBypass?.kind, onBypassReview, onTaskUpdated, addToast, t]);
+  }, [task.id, task.reviewBypass, onBypassReview, onTaskUpdated, addToast, t]);
 
   /*
   FNXC:AIMergeReviewReconciliation 2026-08-20-22:14:
@@ -5967,7 +5964,19 @@ export function TaskDetailContent({
                 ) : null}
                 {taskFailureHint ? <div className="detail-error-hint">{taskFailureHint}</div> : null}
                 {hasPendingRecovery ? <div className="detail-error-hint">{t("taskDetail.retry.pendingAutomaticRecovery", "Automatic recovery is pending. You can Retry now to restart this stage.")}</div> : null}
-                {onRetryTask && isMutableLiveColumn ? (
+                {task.retryRefusal ? (
+                  /*
+                  FNXC:ApprovalDestroyingRetry 2026-11-14-01:35 (RUFU-599 reproduction 4, RUFU-472 / RUFU-474):
+                  The refusal the server already enforces on every Retry surface, named where the operator was
+                  about to click. The sentence is the server's own (`task.retryRefusal.sentence`), never re-derived
+                  here — the same rule that made `task.reviewBypass` a shipped capability instead of a client
+                  predicate. The Retry buttons below are gated on this field's absence, so no empty button shell
+                  or dangling aria-label is left behind at either breakpoint; the drawer and the desktop sheet
+                  render this one block.
+                  */
+                  <div className="detail-error-hint">{resolveRetryRefusalHint(t, task.retryRefusal)}</div>
+                ) : null}
+                {onRetryTask && isMutableLiveColumn && !task.retryRefusal ? (
                   <div className="detail-error-actions">
                     <UiButton type="button" className="btn btn-sm" onClick={handleRetry}>
                       {t("taskDetail.error.retry", "Retry")}
@@ -5977,7 +5986,7 @@ export function TaskDetailContent({
                     </UiButton>
                   </div>
                 ) : null}
-                {showFailureRetryPicker && onRetryTask && isMutableLiveColumn ? (
+                {showFailureRetryPicker && onRetryTask && isMutableLiveColumn && !task.retryRefusal ? (
                   <div className="detail-error-retry-picker">
                     <label htmlFor={`failure-retry-model-${task.id}`}>
                       {t("taskDetail.error.retryModelLabel", "Executor model")}

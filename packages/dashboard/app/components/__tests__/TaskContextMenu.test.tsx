@@ -205,6 +205,48 @@ describe("TaskContextMenu shared task action model", () => {
   });
 
   /*
+  FNXC:ApprovalDestroyingRetry 2026-11-14-01:35 (RUFU-599 reproduction 4, RUFU-472 / RUFU-474):
+  The server already refuses this Retry on every surface; the menu has to stop offering it. DROPPED rather than
+  disabled — a greyed row is the empty shell an operator has to click to learn anything, and a `tone: "note"`
+  row is the dead text RUFU-179 measured as the operator-visible failure. The waiver item stays, because the
+  same payload that carries the refusal carries the offer (`task.reviewBypass`), so the menu keeps exactly one
+  actionable answer. Both the desktop context menu and the mobile drawer render this one model, which is why
+  asserting the model is asserting both breakpoints.
+  */
+  it("drops Retry but keeps the waiver on a card whose blocker only an operator waiver can clear", () => {
+    const reviewFlags = { humanReview: true, mergeBlocker: true } as never;
+    const handlers = { onRetry: vi.fn(), onBypassReview: vi.fn(), onTogglePause: vi.fn(), onReset: vi.fn() };
+    const waiver = {
+      kind: "verdictless-skipped",
+      workflowStepId: "post-merge-verification",
+      workflowStepName: "Post-merge Verification",
+      phase: "post-merge",
+    } as never;
+    const refusal = {
+      destroyedApproval: { workflowStepId: "code-review", workflowStepName: "Code Review" },
+      waiver,
+      sentence: "Retry is refused here: `Code Review` already approved this work.",
+    } as never;
+
+    const refused = actionIds(
+      makeTask({ column: "in-review", reviewBypass: waiver, retryRefusal: refusal }),
+      { ...handlers, currentColumnFlags: reviewFlags },
+    );
+    expect(refused).not.toContain("retry");
+    expect(refused).toContain("bypass-review");
+    /* The rest of the menu is untouched — the card is live, not dead, so pause stays available. */
+    expect(refused).toContain("pause");
+
+    /* Positive control: without the refusal the same card keeps BOTH, so the gate is the field and not the lane. */
+    const retryable = actionIds(
+      makeTask({ column: "in-review", reviewBypass: waiver }),
+      { ...handlers, currentColumnFlags: reviewFlags },
+    );
+    expect(retryable).toContain("retry");
+    expect(retryable).toContain("bypass-review");
+  });
+
+  /*
   FNXC:TaskContextMenu 2026-09-15-10:40:
   FN-417: the engine plans automatically, so NO column shape produces a `plan` descriptor any more.
   Replaces "exposes Plan only for pre-execution hold columns with a host callback", whose subject
@@ -594,6 +636,38 @@ describe("bypass-review renders from the server capability, not a local predicat
       label: "Bypass unrun review gate",
       tone: "default",
     });
+  });
+
+  /*
+  FNXC:PostMergeGateOperatorWaiver 2026-11-14-02:10 (RUFU-599 Step 7, reproductions 1 and 2 / RUFU-474):
+  The waiver offer widened in Steps 2-3 with a `phase` axis and the `verdictless-skipped` kind, and the menu's own
+  two-way `kind === "absent"` test would have labelled BOTH new classes "Bypass failed review" - a failed PRE-merge
+  row that does not exist on the card - while the merge door's remedy sentence named a post-merge gate. The label
+  is now the shared resolver's, so the class is pinned per axis: the phase decides the sentence, and the kind only
+  decides whether the gate never ran or ran without reporting.
+  */
+  it("labels a post-merge verdict-less carrier as a waiver, never as a failed pre-merge bypass", () => {
+    const postMergeCarrier = {
+      kind: "verdictless-skipped",
+      workflowStepId: "post-merge-verification",
+      workflowStepName: "Post-merge Verification",
+      phase: "post-merge",
+    };
+    const item = bypassItem(makeTask({ column: "in-review", reviewBypass: postMergeCarrier }));
+    expect(item).toMatchObject({ label: "Waive post-merge gate that never reported", tone: "default" });
+    expect(item!.label).not.toMatch(/failed|pre-merge/);
+  });
+
+  it("labels a pre-merge verdict-less carrier as a waiver that names the missing verdict", () => {
+    const preMergeCarrier = {
+      kind: "verdictless-skipped",
+      workflowStepId: "code-review",
+      workflowStepName: "Code Review",
+      phase: "pre-merge",
+    };
+    const item = bypassItem(makeTask({ column: "in-review", reviewBypass: preMergeCarrier }));
+    expect(item!.label).toContain("without a verdict");
+    expect(item!.label).not.toContain("failed");
   });
 
   /*

@@ -569,6 +569,33 @@ describe("resolveStallReason — non-pause codes reach the translator", () => {
     expect(call("stall.failed.badgeLabel")).toMatchObject({ fallback: "Failed" });
   });
 
+  /*
+  FNXC:ApprovalDestroyingRetry 2026-11-14-02:10 (RUFU-599 Step 7, reproduction 4 / RUFU-474):
+  The chip is the sentence an operator reads first, and the generic failed copy told them to do the one thing the
+  server refuses on these cards. Asserted as an ABSENT translator call rather than a rendered string: what must not
+  happen is the Retry-naming copy being requested at all, so a card whose refusal is present never hears "Retry the
+  card" from one surface while another names the waiver. The second case is the negative half: a failure nothing
+  refuses keeps its old remedy.
+  */
+  it("failed prints the server's retry refusal instead of asking for the retry-the-card copy", () => {
+    const { t, call } = makeT();
+    const sentence = "Retry is refused here: `Code Review` already approved this work.";
+    const result = resolveStallReason(
+      subject({ status: "failed", error: "required post-merge gate has not reported", retryRefusal: { sentence } }),
+      { t },
+    );
+    expect(result?.code).toBe("failed");
+    expect(result?.suggestedAction).toBe(sentence);
+    expect(call("stall.failed.suggestedAction")).toBeUndefined();
+  });
+
+  it("a failed card nothing refuses still names Retry as its remedy", () => {
+    const { t, call } = makeT();
+    const result = resolveStallReason(subject({ status: "failed", error: "tool timeout" }), { t });
+    expect(result?.suggestedAction).toBe("Retry the card, or open the detail to read the failure.");
+    expect(call("stall.failed.suggestedAction")).toMatchObject({ key: "stall.failed.suggestedAction" });
+  });
+
   it("queued only fires on an asserted queuedReason and reuses tasks.queued", () => {
     const { t, call } = makeT();
     const result = resolveStallReason(subject({ queuedReason: "waiting for an execution slot" }), { t });

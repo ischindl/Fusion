@@ -106,6 +106,32 @@ describe("runTaskReconcile", () => {
   now names every repository with its basis and — where git counted them — its unique commits, while
   the mergeConfirmed class keeps the bare sentence byte-identically.
   */
+  /*
+  FNXC:ZeroCommitWorkspaceDelivery 2026-11-14-02:10 (RUFU-599):
+  The closeout on a RECORDED delivery must read differently from the discharge this run measured: no base
+  branch was resolved here, the basis words are the land lane's, and the sentence has to say out loud that
+  no gate was waived — the operator's one cue that this is a delivery verdict, not an approval.
+  */
+  it("renders the recorded-delivery closeout without inventing a base branch or a waiver", async () => {
+    reconcile.mockResolvedValue({
+      outcome: "workspace-delivery-closed",
+      repoCount: 3,
+      dischargedCount: 2,
+      repos: [
+        { repo: "saneca", basis: "zero-ahead" },
+        { repo: "lager-manager", basis: "zero-ahead" },
+        { repo: "lager-2026", basis: "absent" },
+      ],
+    });
+    await expect(runTaskReconcile("SANE-482", "project")).resolves.toBeUndefined();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("recorded commit-free workspace delivery"));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("2/3 repositories proven zero-ahead"));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("lager-2026 absent"));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("no gate waived"));
+    expect(log).not.toHaveBeenCalledWith(expect.stringContaining("on main"));
+    expect(exit).not.toHaveBeenCalled();
+  });
+
   it("names every repository in the widened workspace refusal", async () => {
     reconcile.mockResolvedValue({
       outcome: "ineligible",

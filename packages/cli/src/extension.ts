@@ -3168,7 +3168,33 @@ export default function kbExtension(pi: ExtensionAPI) {
           details: { taskId: params.id, currentStatus: task.status },
         };
       }
-      
+
+      /*
+      FNXC:ApprovalDestroyingRetry 2026-11-14-01:35 (RUFU-599 reproduction 4, RUFU-472 / RUFU-284 / RUFU-304):
+      The same core classifier the board route's restart planner, the CLI command and the chat tool ask, called
+      before this tool writes anything. This is the surface an agent reaches, and an agent pressing Retry on a
+      card whose only remaining remedy is an operator waiver does the worst available thing: the reopen move
+      wipes `workflowStepResults`, so the approved gate's APPROVE row dies while the blocker survives. The
+      answer names the waiver, because the waiver — not Retry — is the action this card can still take.
+      */
+      const approvalDestroyingRetry = fusionCore.findApprovalDestroyingRetry({ task, ir: retryIr });
+      if (approvalDestroyingRetry) {
+        // FNXC:ApprovalDestroyingRetry 2026-11-14-02:10 (RUFU-599 Step 7): narrate the refusal on the card, not
+        // only in this tool's return value - the agent that pressed Retry sees a sentence, the operator reading
+        // the card would otherwise still see only the reviewer's stale line.
+        await fusionCore.recordApprovalDestroyingRetryRefusal(store, params.id, approvalDestroyingRetry, "extension-tool");
+        return {
+          content: [{ type: "text", text: `Task ${params.id}: ${approvalDestroyingRetry.sentence}` }],
+          isError: true,
+          details: {
+            taskId: params.id,
+            retryRefusal: "approval-destroying",
+            waiverStepId: approvalDestroyingRetry.waiver.workflowStepId,
+            destroyedApprovalStepId: approvalDestroyingRetry.destroyedApproval.workflowStepId,
+          },
+        };
+      }
+
       const autoPauseClearPatch = buildAutoPauseClearPatch(task);
       const clearedDeadlockAutoPause = Object.keys(autoPauseClearPatch).length > 0;
       const retryLogSuffix = clearedDeadlockAutoPause ? ", cleared deadlock auto-pause" : "";

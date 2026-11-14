@@ -1000,6 +1000,9 @@ export {
 } from "./duplicates/explicit-duplicate-marker.js";
 export {
   parseNoOpCompletionMarker,
+  acceptedTerminalPlanReviewClose,
+  isTerminalPlanReviewCloseRow,
+  latestPlanReviewRow,
   type NoOpCompletionMarker,
   type NoOpCompletionMarkerKind,
 } from "./merge/no-op-completion-marker.js";
@@ -1050,8 +1053,8 @@ which call these emitters — so excluding it here reproduces the FN-7668 failur
 the `engine-core` fork resolved `hasDurableLandingProof` to `undefined` and failed the zero-commit finalize
 lane with a TypeError instead of a verdict.
 */
-export { evaluateZeroCommitLandingProof, hasDurableLandingProof, worktreeContentCounts, CLEAN_WORKTREE_CONTENT, describeUncommittedWorkRefusal, isUncommittedWorkHold, getUncommittedWorkHoldBlocker, CONTENT_UNVERIFIABLE_REFUSAL } from "./merge/zero-commit-landing-proof.js";
-export type { WorktreeContentState, WorktreeContentClassification, LandingProof, LandingProofKind, DurableLandingProofVerdict, ZeroCommitLandingProofInput, ZeroCommitLandingProofVerdict, LegitimateNoOpBasis, UncommittedWorkRefusalCode } from "./merge/zero-commit-landing-proof.js";
+export { evaluateZeroCommitLandingProof, hasDurableLandingProof, classifyCommitFreeWorkspaceDelivery, COMMIT_FREE_DELIVERY_REASON_PREFIX, worktreeContentCounts, CLEAN_WORKTREE_CONTENT, describeUncommittedWorkRefusal, isUncommittedWorkHold, getUncommittedWorkHoldBlocker, CONTENT_UNVERIFIABLE_REFUSAL } from "./merge/zero-commit-landing-proof.js";
+export type { WorktreeContentState, WorktreeContentClassification, LandingProof, LandingProofKind, DurableLandingProofVerdict, CommitFreeWorkspaceDeliveryRecord, ZeroCommitLandingProofInput, ZeroCommitLandingProofVerdict, LegitimateNoOpBasis, UncommittedWorkRefusalCode } from "./merge/zero-commit-landing-proof.js";
 export {
   __getDeterministicGuardMutexSize,
   deterministicGuardLocks,
@@ -1288,6 +1291,29 @@ export {
   RESTART_STAGE_FENCE_REASON,
   planTaskColumnRestart,
 } from "./tasks/task-column-restart.js";
+/*
+FNXC:ApprovalDestroyingRetry 2026-11-14-01:35 (RUFU-599 reproduction 4):
+Mirrored from the main barrel on purpose: the gate lane builds `@fusion/core` from `index.gate.ts`, so an
+export that exists only in the main barrel resolves to `undefined` there (the U3 `classifyReviewLease`
+shape that broke every defaultOn Plan Review run under engine-core).
+*/
+export {
+  classifyApprovalDestroyingRetry,
+  findApprovalDestroyingRetry,
+  type ApprovalDestroyingRetry,
+  type ApprovalDestroyingRetryClassification,
+} from "./tasks/approval-destroying-retry.js";
+/*
+FNXC:ApprovalDestroyingRetry 2026-11-14-02:10 (RUFU-599 Step 7):
+The narration half of a refused Retry, exported beside the classifier that decides it, so every surface that
+refuses can also record in the card's own History what it refused and from where it was asked.
+*/
+export {
+  recordApprovalDestroyingRetryRefusal,
+  formatApprovalDestroyingRetryRefusalLine,
+  type ApprovalDestroyingRetryRefusalSource,
+  type RetryRefusalLogStore,
+} from "./tasks/retry-refusal-log.js";
 export {
   classifyStrandedGateRetry,
   buildStrandedGateRetryPatch,

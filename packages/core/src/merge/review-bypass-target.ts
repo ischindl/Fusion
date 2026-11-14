@@ -41,6 +41,7 @@ invariant of this module is that UI eligibility equals store acceptance, and a s
 "which `skipped` row owes a verdict" is exactly how the two sides drift apart again.
 */
 import { isVerdictLessSkippedOwedVerdictRow } from "./pre-merge-approval.js";
+import { postMergeGateWaiverReason } from "./confirmed-merge-reconciliation.js";
 
 /**
  * Which of the bypassable states a card is in.
@@ -257,8 +258,36 @@ export function deriveReviewBypassTarget(
   }
   for (const workflowStepId of requiredPostMergeStepIds) {
     if (task.mergeDetails?.mergeConfirmed !== true) return undefined;
-    if (!results.some((result) => result.workflowStepId === workflowStepId)) {
+    const latestPostMerge = results.filter((result) => result.workflowStepId === workflowStepId);
+    if (latestPostMerge.length === 0) {
       return { kind: "absent", workflowStepId, workflowStepName: workflowStepId, phase: "post-merge" };
+    }
+    /*
+    FNXC:PostMergeGateWaiver 2026-11-14-01:35 (RUFU-599 reproduction 1, RUFU-474):
+    Step 5 widened from "no row at all" to "the row the door's own remedy sentence names a waiver for".
+    RUFU-408 admitted only the `absent` class, on the reasoning that "a post-merge row that EXISTS and was
+    not approved carries a real reviewer verdict". That premise fails on the shape RUFU-474 measured: the
+    row existed, carried NO verdict (an honest `ci-repository-unresolved` not-run carrier, or any plain
+    `skipped`), and `getRequiredPostMergeEvidenceBlocker` still refused the door on it while its remedy text
+    told the operator to "bypass with an audited reason from the dashboard". The affordance derivation never
+    offered it, `bypassFailedPreMergeReviewStep` accepted writes for that gate anyway, and the card had no
+    surface to make the decision the sentence asked for — 2 days 18 h in `in-review`.
+
+    Exactly one row is required, and that is `getRequiredPostMergeEvidenceDecision`'s own rule: two rows for
+    one gate refuses `duplicate` BEFORE the requirement is consulted, and the store's rewrite targets the
+    first matching row, so waiving a duplicate keeps the duplicate. Offering the waiver there would be the
+    dead affordance RUFU-179 deletes; a duplicated post-merge report is a broken workflow definition, not a
+    human decision. Only a `skipped` carrier is offered: a `failed` or `pending` post-merge row belongs to
+    the engine's bounded re-seed (RUFU-375) and to the reviewer in flight, not to an operator overwrite.
+    */
+    if (latestPostMerge.length === 1 && postMergeGateWaiverReason(latestPostMerge[0]) !== undefined) {
+      const [row] = latestPostMerge;
+      return {
+        kind: "verdictless-skipped",
+        workflowStepId,
+        workflowStepName: row.workflowStepName || workflowStepId,
+        phase: "post-merge",
+      };
     }
   }
   return undefined;

@@ -2,6 +2,13 @@ import type { TFunction } from "i18next";
 import type { Task, TaskExternalBlock, TaskStallReason } from "@fusion/core";
 import { formatTaskExternalBlockReason, formatWipAdmissionStallWait, isTaskExternallyBlocked, readWipAdmissionStallEpisode } from "@fusion/core";
 import { elapsedSinceMs } from "./dataFreshness";
+/*
+FNXC:ApprovalDestroyingRetry 2026-11-14-02:10 (RUFU-599 Step 7):
+The refusal sentence is authored once (server) and phrased once (this resolver), so the stall chip, the failure
+panel and the tool refusal cannot tell three versions of one decision. `taskRetryCopy` reaches back into
+`TaskContextMenu` for a TYPE only, which is erased at build time, so this edge adds no runtime cycle.
+*/
+import { resolveRetryRefusalHint } from "./taskRetryCopy";
 import { getInReviewStallCopy } from "./inReviewStallCopy";
 import { getStalePausedReviewCopy } from "./stalePausedReviewCopy";
 
@@ -168,6 +175,8 @@ export interface StallSubject
     | "stalledReview"
     | "updatedAt"
     | "error"
+    // FNXC:ApprovalDestroyingRetry 2026-11-14-02:10 (RUFU-599 Step 7): the server's own refusal, hydrated on every read next to `reviewBypass`, so the remedy printed here cannot name an action the server will refuse.
+    | "retryRefusal"
   > {
   /** Caller-supplied queue reason; the `queued` code fires only when a caller asserts one, so a
    *  plain flowing/queued card never produces a stall by default. */
@@ -839,7 +848,18 @@ function failedReason(subject: StallSubject, context: StallContext): StallReason
     badgeLabel: t("stall.failed.badgeLabel", "Failed"),
     headline: t("stall.failed.headline", "This card failed"),
     description: detail ?? t("stall.failed.description", "The last run ended in a failure without a captured error message."),
-    suggestedAction: t("stall.failed.suggestedAction", "Retry the card, or open the detail to read the failure."),
+    /*
+    FNXC:ApprovalDestroyingRetry 2026-11-14-02:10 (RUFU-599 Step 7, reproduction 4 / RUFU-474):
+    THE CHIP'S REMEDY HAS TO AGREE WITH THE DOOR THAT ENFORCES IT. Every reported card was `failed` in its review
+    lane, so this generic copy was the sentence the operator actually read - "Retry the card" - while the Retry door,
+    the menu row, and the failure panel all refused that exact action because the card's remaining remedy is an
+    audited waiver on a gate Retry cannot re-run. Two surfaces naming two remedies for one card is the drift this
+    card removes, so the refusal's own server-authored sentence is printed here instead. The card never re-derives
+    the rule; it renders `task.retryRefusal`, the same field the detail view reads.
+    */
+    suggestedAction: subject.retryRefusal
+      ? resolveRetryRefusalHint(t, subject.retryRefusal)
+      : t("stall.failed.suggestedAction", "Retry the card, or open the detail to read the failure."),
   };
 }
 

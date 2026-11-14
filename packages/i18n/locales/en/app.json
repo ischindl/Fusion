@@ -1728,6 +1728,7 @@
     "summaryAdvisory_other": "{{count}} advisory",
     "stepProgressValue": "{{completed}} of {{total}} steps completed",
     "statusSkipped": "Skipped",
+    "statusWaived": "Waived by {{by}}",
     "summaryRunning_other": "{{count}} running",
     "steps": "Workflow Steps",
     "executionPreMerge": "Pre-merge steps running",
@@ -5880,6 +5881,7 @@
       "btn": "Retry",
       "genericSuccess": "This stage will restart in its current column.",
       "reviewSuccess": "Review will run again in this column.",
+      "refusalFallback": "Retry is refused here: this card already has an approving gate and the blocker that remains is waiting on an operator waiver, which Retry would not clear.",
       "reviewConfirmMessage": "Discard the review verdicts and review the produced work again. This card stays in its current column.",
       "preserveWorkDescription": "Keep the worktree, branch, and finished steps, and replay only the step that was running.",
       "implementationPreservedSuccess": "The current step will run again and the work already produced is kept.",
@@ -5916,7 +5918,16 @@
       "btn": "Bypass failed review",
       "btnUnrun": "Bypass unrun review gate",
       "success": "Bypassed failed review lane for {{id}}",
-      "promptMessageUnrun": "Reason for bypassing the review gate that never ran (required, audit-logged):"
+      "promptMessageUnrun": "Reason for bypassing the review gate that never ran (required, audit-logged):",
+      "btnVerdictless": "Waive review gate that ended without a verdict",
+      "promptMessageVerdictless": "Reason for waiving the review gate that ended without a verdict (required, audit-logged):",
+      "successVerdictless": "Waived review gate for {{id}}",
+      "btnPostMergeUnrun": "Waive post-merge gate that never ran",
+      "promptMessagePostMergeUnrun": "Reason for waiving the post-merge gate that never ran (required, audit-logged):",
+      "successPostMergeUnrun": "Waived post-merge gate for {{id}}",
+      "btnPostMergeVerdictless": "Waive post-merge gate that never reported",
+      "promptMessagePostMergeVerdictless": "Reason for waiving the post-merge gate that ended without a verdict (required, audit-logged):",
+      "successPostMergeVerdictless": "Waived post-merge gate for {{id}}"
     },
     "details": {
       "collapseRouting": "Collapse routing details",

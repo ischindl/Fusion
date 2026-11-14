@@ -610,3 +610,163 @@ describe("deriveReviewBypassTarget — required post-merge gates", () => {
       .toMatchObject({ kind: "absent", workflowStepId: "post-merge-verification", phase: "post-merge" });
   });
 });
+
+/*
+FNXC:PostMergeGateWaiver 2026-11-14-02:05 (RUFU-599 reproduction 1, RUFU-474):
+The merge door's own remedy text for a landed card reads "…or bypass with an audited reason from the
+dashboard", and RUFU-408 admitted only a post-merge gate with NO row. RUFU-474's card had one: both pre-merge
+gates APPROVE, and the post-merge verification gate a verdict-less skipped carrier naming
+ci-repository-unresolved. The door refused, the notice named a lever, and no surface offered it - 2 days
+18 h in in-review. These cases pin that the offer now covers the row the sentence describes, and stays shut
+on every shape the sentence does NOT describe (an authored verdict, an already-recorded waiver, a duplicate
+report, an unlanded card).
+*/
+describe("deriveReviewBypassTarget - post-merge gate holding a verdict-less carrier row", () => {
+  const POST_MERGE = new Set<string>(["post-merge-verification"]);
+  const LANDED = { mergeDetails: { commitSha: "0123456789abcdef0123456789abcdef01234567", mergeConfirmed: true } } as never;
+  const APPROVED_PRE_MERGE = {
+    workflowStepId: "code-review",
+    workflowStepName: "Code Review",
+    phase: "pre-merge",
+    status: "passed",
+    verdict: "APPROVE",
+    completedAt: "2026-11-11T00:00:00.000Z",
+  } as never;
+
+  function postRow(overrides: Partial<WorkflowStepResult> = {}): WorkflowStepResult {
+    return {
+      workflowStepId: "post-merge-verification",
+      workflowStepName: "Post-merge verification",
+      phase: "post-merge",
+      status: "skipped",
+      completedAt: "2026-11-11T00:00:00.000Z",
+      ...overrides,
+    } as WorkflowStepResult;
+  }
+
+  it("offers the gate whose only row is an honest not-run carrier (the measured RUFU-474 shape)", () => {
+    const target = deriveReviewBypassTarget(
+      reviewTask({
+        workflowStepResults: [APPROVED_PRE_MERGE, postRow({ notRunReason: "ci-repository-unresolved", output: "post-merge verification refused: ci-repository-unresolved" })],
+        ...LANDED,
+      }),
+      NO_REQUIRED,
+      REVIEW,
+      POST_MERGE,
+    );
+    expect(target).toEqual({
+      kind: "verdictless-skipped",
+      workflowStepId: "post-merge-verification",
+      workflowStepName: "Post-merge verification",
+      phase: "post-merge",
+    });
+  });
+
+  it("offers the gate for a plain verdict-less skipped row too (no notRunReason required)", () => {
+    const target = deriveReviewBypassTarget(
+      reviewTask({ workflowStepResults: [APPROVED_PRE_MERGE, postRow()], ...LANDED }),
+      NO_REQUIRED,
+      REVIEW,
+      POST_MERGE,
+    );
+    expect(target).toMatchObject({ kind: "verdictless-skipped", workflowStepId: "post-merge-verification", phase: "post-merge" });
+  });
+
+  it("offers nothing once the row carries the audited waiver - a waiver is this gate's terminal state", () => {
+    const target = deriveReviewBypassTarget(
+      reviewTask({
+        workflowStepResults: [
+          APPROVED_PRE_MERGE,
+          postRow({ status: "skipped", bypassedBy: "operator", bypassedAt: "2026-11-12T00:00:00.000Z", bypassReason: "no CI on this board", bypassedFromStatus: "skipped" }),
+        ],
+        ...LANDED,
+      }),
+      NO_REQUIRED,
+      REVIEW,
+      POST_MERGE,
+    );
+    expect(target).toBeUndefined();
+  });
+
+  it("offers nothing for a skipped row that AUTHORED a verdict - a REVISE keeps its veto", () => {
+    const target = deriveReviewBypassTarget(
+      reviewTask({ workflowStepResults: [APPROVED_PRE_MERGE, postRow({ verdict: "REVISE" })], ...LANDED }),
+      NO_REQUIRED,
+      REVIEW,
+      POST_MERGE,
+    );
+    expect(target).toBeUndefined();
+  });
+
+  it("offers nothing for a collateral archive whose owned remedy is the restore sweep, not a waiver", () => {
+    const target = deriveReviewBypassTarget(
+      reviewTask({
+        workflowStepResults: [APPROVED_PRE_MERGE, postRow({ remediationArchivedAt: "2026-11-12T00:00:00.000Z", remediationArchivedFromStatus: "failed" })],
+        ...LANDED,
+      }),
+      NO_REQUIRED,
+      REVIEW,
+      POST_MERGE,
+    );
+    expect(target).toBeUndefined();
+  });
+
+  it("offers nothing while the card is unlanded - durable merge proof stays the prerequisite", () => {
+    const target = deriveReviewBypassTarget(
+      reviewTask({ workflowStepResults: [APPROVED_PRE_MERGE, postRow()] }),
+      NO_REQUIRED,
+      REVIEW,
+      POST_MERGE,
+    );
+    expect(target).toBeUndefined();
+  });
+
+  it("offers nothing when the gate reported TWICE - the decision refuses duplicate before any waiver", () => {
+    const target = deriveReviewBypassTarget(
+      reviewTask({
+        workflowStepResults: [
+          APPROVED_PRE_MERGE,
+          postRow({ completedAt: "2026-11-10T00:00:00.000Z" }),
+          postRow({ completedAt: "2026-11-11T00:00:00.000Z" }),
+        ],
+        ...LANDED,
+      }),
+      NO_REQUIRED,
+      REVIEW,
+      POST_MERGE,
+    );
+    expect(target).toBeUndefined();
+  });
+
+  it("keeps an outstanding pre-merge gate in front of a waivable post-merge carrier", () => {
+    const target = deriveReviewBypassTarget(
+      reviewTask({ workflowStepResults: [postRow()], enabledWorkflowSteps: ["plan-review"], ...LANDED }),
+      new Set<string>(["plan-review"]),
+      REVIEW,
+      POST_MERGE,
+    );
+    expect(target).toEqual({ kind: "absent", workflowStepId: "plan-review", workflowStepName: "plan-review" });
+    expect(target?.phase).toBeUndefined();
+  });
+
+  it("reaches the offer through the builtin coding workflow's own resolver on the reported card", () => {
+    const ir = BUILTIN_CODING_WORKFLOW_IR as unknown as WorkflowIr;
+    const card = {
+      column: "in-review",
+      paused: false,
+      mergeDetails: { commitSha: "0123456789abcdef0123456789abcdef01234567", mergeConfirmed: true },
+      enabledWorkflowSteps: ["plan-review", "code-review", "post-merge-verification"],
+      workflowStepResults: [
+        { workflowStepId: "plan-review", phase: "pre-merge", status: "passed", verdict: "APPROVE" },
+        { workflowStepId: "code-review", phase: "pre-merge", status: "passed", verdict: "APPROVE" },
+        { workflowStepId: "post-merge-verification", phase: "post-merge", status: "skipped", notRunReason: "ci-repository-unresolved" },
+      ],
+    } as unknown as ReviewBypassTaskView;
+    const requiredPost = new Set(resolveRequiredPostMergeGateIds(
+      { enabledWorkflowSteps: card.enabledWorkflowSteps } as Task,
+      ir,
+    ));
+    expect(deriveReviewBypassTarget(card, new Set<string>(), REVIEW, requiredPost))
+      .toMatchObject({ kind: "verdictless-skipped", workflowStepId: "post-merge-verification", phase: "post-merge" });
+  });
+});
