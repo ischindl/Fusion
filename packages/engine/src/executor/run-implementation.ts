@@ -229,7 +229,8 @@ import { emitBoundedRunAudit } from "./emit-bounded-run-audit.js";
 import { acquireTaskWorktree, acquireWorkspaceTaskWorktrees, WorktreeBaseRefreshError } from "../worktree/worktree-acquisition.js";
 import { isTaskBranchBaseDivergedError } from "../worktree/task-base-resolution.js";
 import { acknowledgeOverlapResumeContext, readOverlapResumeContextDelivery, type OverlapResumeContextDelivery } from "../execution/overlap-resume-context.js";
-import { synchronizeOverlapWaitBeforeExecution } from "./overlap-resume-gate.js";
+import { synchronizeOverlapWaitBeforeExecution, OverlapResumeSynchronizationError } from "./overlap-resume-gate.js";
+import { holdRefusedAcquisition, recordOverlapAcquisitionPark } from "./overlap-acquisition-park.js";
 
 import { resolveWorktreesDir } from "../worktree/worktree-paths.js";
 import {
@@ -3611,6 +3612,48 @@ export async function runImplementation(
         // Dependency added mid-execution — discard worktree and move to triage
         deps.depAborted.delete(task.id);
         await deps.handleDepAbortCleanup(task.id, worktreePath);
+      } else if (err instanceof OverlapResumeSynchronizationError) {
+        /*
+        FNXC:OverlapAcquisitionPark 2026-11-14-15:50 (RUFU-1040):
+        A file-scope overlap refusal is a WAIT, not a defect, and this is the second caller of that gate.
+        RUFU-896 gave the heartbeat lane a hold; the executor lane had none, so the refusal fell into the
+        generic sink below and wrote `status:"failed"` plus the sentence. That write is what kept the loop
+        alive: the card read as finished, was re-admitted, and paid `worktree:create` + a base rebase + a
+        failed step + one `executionRearmEpisode` unit + an overseer retry per cycle. Measured on RUFU-593:
+        5 re-arm units in 4 m 10 s (13:02:34 → 13:06:44) before the ceiling parked it at 14:51.
+
+        The disposition is the `WorktreeBaseRefreshError` lane, deliberately ordered before it: the row is
+        left clean, the typed error is re-thrown so the step adapter and the interpreter can route it to the
+        bounded delayed resume, and NOTHING here writes `status`, `error`, or a strike.
+        `releaseRegistration: false` because a WIP lease classifies `active` unconditionally — releasing it
+        would only convert the next attempt into a fresh `worktree:create`, which is the churn itself.
+
+        `fallback-terminal` keeps today's terminal write on purpose: a card whose hold cannot be persisted
+        must not look runnable, and the last resort is an honest `failed` rather than silence.
+        */
+        executorLog.warn(`${task.id}: file-scope overlap wait refused execution (${err.reason}) — holding, no re-arm unit spent`);
+        const holdWrite = await holdRefusedAcquisition({
+          store: deps.store,
+          task,
+          blockers: err.artifacts.blockerTaskIds,
+          episodeIds: err.artifacts.episodeIds,
+          reason: "typed-refusal",
+        });
+        await recordOverlapAcquisitionPark({
+          store: deps.store,
+          rootDir: deps.rootDir,
+          task,
+          agentId: task.assignedAgentId ?? "executor",
+          error: err,
+          releaseRegistration: false,
+        }).catch(() => undefined);
+        if (holdWrite === "held") {
+          await deps.persistTokenUsage(task.id);
+          throw err;
+        }
+        await deps.store.logEntry(task.id, `Execution failed: ${err.message}`, undefined, deps.getRunContextFor(task.id)).catch(() => undefined);
+        await deps.store.updateTask(task.id, { status: "failed", error: err.message }).catch(() => undefined);
+        await deps.persistTokenUsage(task.id);
       } else if (err instanceof WorktreeBaseRefreshError) {
         /*
         FNXC:WorktreeBaseRefresh 2026-08-10-01:15:

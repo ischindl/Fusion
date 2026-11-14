@@ -22,6 +22,7 @@
 import type { Task, TaskStore, ThinkingLevel } from "@fusion/core";
 import { executorLog } from "../logger.js";
 import { WorktreeBaseRefreshError } from "../worktree/worktree-acquisition.js";
+import { OverlapResumeSynchronizationError } from "./overlap-resume-gate.js";
 import type { ImplementationExit } from "./implementation-exit.js";
 
 export type ImplementationPhaseResult = {
@@ -127,6 +128,14 @@ export async function runGraphTaskStep(
     The interpreter owns its delayed retry; this adapter must not flatten it into step-failed.
     */
     if (err instanceof WorktreeBaseRefreshError) throw err;
+    /*
+    FNXC:OverlapAcquisitionPark 2026-11-14-15:50 (RUFU-1040):
+    Same contract as the line above, for the other pre-session refusal this seam can raise: a file-scope
+    overlap wait. Flattening it here would hand the interpreter a `step-failed`, which is the exact route
+    that spends an `executionRearmEpisode` unit and reaches the terminal sink. The interpreter owns the
+    bounded delayed resume, so the typed error must survive this adapter unchanged.
+    */
+    if (err instanceof OverlapResumeSynchronizationError) throw err;
     /*
     FNXC:WorkflowExecution 2026-06-29-09:01:
     Stepwise graph execution is projection-driven: a shared implementation pass can complete every task step and pass deterministic verification without using the legacy monolithic `task_done` sentinel. If the target step is already terminal in Task.steps[], the workflow node succeeds and the graph continues to its review/merge nodes instead of converting stale legacy completion failure into `steps#N:step-execute`.

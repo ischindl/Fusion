@@ -32,6 +32,16 @@ export type OverlapRegistrationRelease =
   | "refused-external-checkout"
   | "refused-workspace-task"
   | "no-registration"
+  /*
+  FNXC:OverlapAcquisitionPark 2026-11-14-15:50 (RUFU-1040):
+  The executor's implementation-entry refusal keeps its checkout on purpose. `classifyFileScopeLease`
+  (scheduler.ts) returns `kind: "active"` for a WIP column unconditionally — its own note records that
+  "WIP skips the checkout question entirely by design" — so releasing there buys no wedge relief and only
+  converts the next attempt from a checkout reuse into a fresh `worktree:create`. That is the churn this card
+  exists to remove, so the lane reports `retained-wip-lease` rather than laundering the decision as
+  `no-registration`, which would claim there was nothing to retain.
+  */
+  | "retained-wip-lease"
   | "failed";
 
 /** Deduped per (task, reason, episode set) so a repeated wait is countable, not a per-heartbeat flood. */
@@ -100,8 +110,13 @@ export async function releaseRefusedAcquisitionRegistration(input: {
 }
 
 /**
- * Records one bounded withheld-work episode and releases the leaked registration.
- * Returns the fixed outcomes so the caller's heartbeat run result carries them too.
+ * Records one bounded withheld-work episode and, unless the caller says otherwise, releases the leaked
+ * registration. Returns the fixed outcomes so the caller's run result carries them too.
+ *
+ * `releaseRegistration` defaults to true so the heartbeat lane stays byte-identical: a planning-lane peer's
+ * retained checkout is a DORMANT lease that can block its own predecessor (RUFU-373 defect 3), which is why
+ * that lane releases. The executor's WIP lane passes false for the opposite reason — see
+ * `retained-wip-lease` above. One helper, one parameter, no second copy of the release ladder.
  */
 export async function recordOverlapAcquisitionPark(input: {
   store: TaskStore;
@@ -110,10 +125,13 @@ export async function recordOverlapAcquisitionPark(input: {
   agentId: string;
   error: OverlapResumeSynchronizationError;
   nodeId?: string;
+  releaseRegistration?: boolean;
 }): Promise<{ registrationRelease: OverlapRegistrationRelease; announced: boolean }> {
   const { store, task, agentId, error } = input;
   const artifacts = error.artifacts;
-  const registrationRelease = await releaseRegistrationGuarded(input);
+  const registrationRelease = input.releaseRegistration === false
+    ? "retained-wip-lease"
+    : await releaseRegistrationGuarded(input);
   const key = episodeKey(task.id, error.reason, artifacts);
   const announced = !announcedEpisodes.has(key);
   if (announced) {

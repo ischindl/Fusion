@@ -63,6 +63,7 @@ import {
   latestFailedPreMergeWorkflowStep,
   isSessionContentionGraphFailure,
   isWorkspacePreparationGraphFailure,
+  isOverlapWaitGraphFailure,
   isWorktreeBaseRefreshGraphFailure,
 } from "./graph-failure-pure.js";
 import {
@@ -574,6 +575,63 @@ export async function handleGraphFailure(
           await deps.store.logEntry(
             task.id,
             `Worktree base refresh remains blocked (${refreshKind}) — retry budget exhausted; task remains held`,
+            undefined,
+            deps.getRunContextFor(task.id),
+          );
+        }
+        await deps.persistTokenUsage(task.id);
+        return;
+      }
+      if (isOverlapWaitGraphFailure(result)) {
+        /*
+        FNXC:OverlapAcquisitionPark 2026-11-14-15:50 (RUFU-1040):
+        A file-scope overlap wait that reached the graph as a typed hold. This arm exists to keep the refusal
+        away from the two sinks below it: the terminal park (which writes `status:"failed"` plus the sentence,
+        and that write is what made a waiting card read as finished and re-admitted it) and
+        `routeGraphFailureToExecutionResume`, the ONLY router that spends an `executionRearmEpisode` unit.
+        Measured cost of not having it: RUFU-593 burned 5 re-arm units in 4 m 10 s (13:02:34 → 13:06:44) and
+        was parked by the ceiling at 14:51, rebuilding its worktree every cycle while its predecessor gained
+        nothing.
+
+        `graphResumeRetryCount` is reused, not a new counter: base-refresh and the bootstrap arms already
+        share it and it is cleared on clean completion. Exhaustion deliberately writes NOTHING — the wake path
+        is event-driven (`releaseFileScopeWaitingContinuations` on the holder's committed release, plus
+        `reconcileReleasedOverlapWaits`), and this timer is a backstop. A waiting card ends this pass exactly
+        as it started: held, honest, and charged nothing.
+        */
+        const current = await deps.store.getTask(task.id);
+        if (!current || deps.hasLiveTaskSessionSurface(task.id) || deps.executing.has(task.id)) {
+          await deps.persistTokenUsage(task.id);
+          return;
+        }
+        const overlapRetries = current.graphResumeRetryCount ?? 0;
+        if (overlapRetries < MAX_TRANSIENT_GRAPH_RESUME_RETRIES) {
+          const nextRetries = overlapRetries + 1;
+          await deps.store.logEntry(
+            task.id,
+            `Waiting on a file-scope predecessor — retrying in place (${nextRetries} of ${MAX_TRANSIENT_GRAPH_RESUME_RETRIES}), no execution re-arm unit spent`,
+            undefined,
+            deps.getRunContextFor(task.id),
+          );
+          await deps.store.updateTask(task.id, { graphResumeRetryCount: nextRetries }, deps.getRunContextFor(task.id));
+          const handle = setTimeout(() => {
+            void (async () => {
+              /* Same re-read rule as the base-refresh arm: a pause, deletion, replacement session or a
+                 column change during the backoff must not be resumed over. */
+              const resume = await deps.store.getTask(task.id);
+              if (!resume || resume.deletedAt || resume.paused || resume.userPaused
+                || resume.status === "failed" || resume.column !== live.column
+                || deps.hasLiveTaskSessionSurface(task.id)
+                || deps.executing.has(task.id) || deps.resumingUnpaused.has(task.id)
+                || deps.processWideGraphRouting.has(task.id)) return;
+              await deps.execute(resume);
+            })().catch((err: unknown) => executorLog.error(`Failed overlap-wait graph resume for ${task.id}:`, err));
+          }, TRANSIENT_GRAPH_RESUME_RETRY_BACKOFF_MS);
+          handle.unref?.();
+        } else {
+          await deps.store.logEntry(
+            task.id,
+            "File-scope overlap wait is still unsatisfied — in-place retry budget exhausted; the card stays held until its predecessor releases",
             undefined,
             deps.getRunContextFor(task.id),
           );

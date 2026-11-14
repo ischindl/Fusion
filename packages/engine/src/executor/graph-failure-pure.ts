@@ -8,9 +8,11 @@ import type { Task, TaskDetail, WorkflowIrNodeKind, WorkflowStepResult as CoreWo
 import type { WorkflowGraphTaskRunResult } from "../workflows/workflow-graph-task-runner.js";
 import {
   MERGE_REGION_KINDS,
+  OVERLAP_WAIT_HOLD_VALUE,
   SESSION_CONTENTION_HOLD_VALUE,
   WORKSPACE_PREPARATION_FAILURE_HOLD_VALUE,
 } from "../workflows/workflow-graph-executor.js";
+import { OVERLAP_DELIVERY_UNAVAILABLE_ERROR } from "@fusion/core";
 import { isMissingWorktreeSessionStartFailure } from "../healing/restart-recovery-coordinator.js";
 import { isSessionContentionError } from "../errors/transient-error-detector.js";
 import { PAUSE_ABORT_PARK_ERROR_MARKER } from "../self-healing.js";
@@ -227,6 +229,26 @@ export function isWorktreeBaseRefreshGraphFailure(result: WorkflowGraphTaskRunRe
     "base-persistence-failed-compensated",
     "base-reconciliation-required",
   ]).has(graphFailureValue(result) ?? "");
+}
+
+/*
+FNXC:OverlapAcquisitionPark 2026-11-14-15:50 (RUFU-1040):
+A file-scope overlap refusal that reached the graph as a typed node value. Two ways in, like the other hold
+classifiers, because both occur in production: `graphFailureValue` already resolves the foreach container and
+`::group::template` fallbacks (the default coding workflow IS a foreach, and a failed template records under
+the container key), while the message shape covers a refusal arriving from a path not yet taught the typed
+value.
+
+The message-shape arm reads ONLY the failing node's own error text, not every `:error` in the context.
+`graphFailureErrorTexts` returns every node's error string, so a stale error left by an earlier node in the
+same run would otherwise drag a genuine failure into the hold arm and hide it — a classifier that swallows
+real failures is worse than one that misses a rare shape.
+*/
+export function isOverlapWaitGraphFailure(result: WorkflowGraphTaskRunResult): boolean {
+  if (graphFailureValue(result) === OVERLAP_WAIT_HOLD_VALUE) return true;
+  const failingNodeText = graphFailureNodeErrorText(result);
+  return typeof failingNodeText === "string"
+    && failingNodeText.includes(OVERLAP_DELIVERY_UNAVAILABLE_ERROR);
 }
 
 /*

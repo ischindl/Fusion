@@ -22,6 +22,7 @@ import { isSessionContentionError } from "../errors/transient-error-patterns.js"
 import { errorTextWithThrowSite } from "./error-throw-site.js";
 import { isRequiredArtifactReadFailedValue, parseRequiredArtifactMissingValue } from "../execution/required-workflow-artifacts.js";
 import { workflowStepMissingVerdictNotice } from "../executor/workflow-step-verdict.js";
+import { OverlapResumeSynchronizationError } from "../executor/overlap-resume-gate.js";
 
 import {
   createDefaultNodeHandlers,
@@ -181,6 +182,16 @@ it as a PROVIDER failure, retried twice with no delay, and parked the task once 
 (the reported FN-1398/FN-1403 collision). Applies to EVERY node, not just Plan Review.
 */
 export const SESSION_CONTENTION_HOLD_VALUE = "session-contention-hold";
+
+/*
+FNXC:OverlapAcquisitionPark 2026-11-14-15:50 (RUFU-1040):
+A file-scope overlap refusal at the executor's implementation entry needs its own failure value for the same
+reason session contention does: without one it lands in the generic `exception` bucket, where the terminal
+sink parks the card `failed` and `routeGraphFailureToExecutionResume` spends an `executionRearmEpisode` unit
+on a card that is only waiting for a peer's delivery. One vocabulary, one place, beside the other holds —
+no new lifecycle field, no new reason enum, no graph suspension semantics.
+*/
+export const OVERLAP_WAIT_HOLD_VALUE = "overlap-wait-hold";
 
 export type WorkflowNodeAbortKind = "engine-pause";
 
@@ -2766,6 +2777,30 @@ export class WorkflowGraphExecutor {
               },
             },
           };
+          if (recordProgress && this.shouldRecordNodeProgress(node)) {
+            await this.recordNodeProgressFinish(task.id, node, null, failureResult, task.workflowStepResults);
+          }
+          return failureResult;
+        }
+        if (error instanceof OverlapResumeSynchronizationError) {
+          /*
+          FNXC:OverlapAcquisitionPark 2026-11-14-15:50 (RUFU-1040):
+          Mirrors the two typed arms above it exactly, because their shape is the contract: publish a typed
+          node value, retain the patch across a foreach container (`Object.assign` — foreach does not merge a
+          failed template's patch), record node progress the same way base-refresh does, and return so the
+          attempt loop does not spend another retry on a wait git state alone can clear.
+          */
+          const failureResult: WorkflowNodeResult = {
+            outcome: "failure",
+            value: OVERLAP_WAIT_HOLD_VALUE,
+            contextPatch: {
+              [`node:${node.id}:error`]: error.artifacts.blockerTaskIds.length
+                ? `${error.message}: waiting on ${error.artifacts.blockerTaskIds.join(", ")}`
+                : error.message,
+              [`node:${node.id}:overlapWait`]: error.reason,
+            },
+          };
+          Object.assign(context, failureResult.contextPatch);
           if (recordProgress && this.shouldRecordNodeProgress(node)) {
             await this.recordNodeProgressFinish(task.id, node, null, failureResult, task.workflowStepResults);
           }
