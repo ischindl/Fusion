@@ -17,7 +17,7 @@
  * nothing moves.
  */
 import type { CheckoutEmptinessVerdict, MergeDetails, TaskDetail, TaskStore } from "@fusion/core";
-import { EXECUTION_REARM_EPISODE_METADATA_KEY, findWorkflowNodeInstance, resolveWorkflowIrForTask } from "@fusion/core";
+import { EXECUTION_REARM_EPISODE_METADATA_KEY, findWorkflowNodeInstance, isPlanReviewSatisfied, resolveWorkflowIrForTask } from "@fusion/core";
 import { isDurableBlockedTask } from "../execution-block-classifier.js";
 import { checkoutEmptinessProverFor, checkoutEmptinessEntries, type CheckoutEmptinessProver } from "../worktree/checkout-emptiness.js";
 import { resolveIntegrationBranch } from "../merge/integration-branch.js";
@@ -40,6 +40,14 @@ export interface ExecutionRarmMarker {
   firstAt: string;
   at: string;
   heldAt: string | null;
+  /**
+   * FNXC:ExecutionReArmCeiling 2026-11-14-16:20 (RUFU-1028):
+   * The durable question this park answered: the step-execute node plus the step ledger, carrying NO live
+   * evidence token and no `status`/`error`. `signature` cannot serve this purpose because it embeds the
+   * `occupied`/`unproven` evidence verdict, and that token flips while the same question is still
+   * unanswered — a park keyed on it would release itself whenever a worktree probe disagreed with itself.
+   */
+  questionStamp?: string | null;
 }
 
 /** A row shaped like the ones this ladder is read from (`Task` or `TaskDetail`). */
@@ -195,6 +203,41 @@ function stepSignature(task: TaskDetail): string {
 }
 
 /*
+FNXC:ExecutionReArmCeiling 2026-11-14-16:20 (RUFU-1028):
+The question a park answers, minus everything a transient can move. `rearmSignature` is the identity of an
+EPISODE and deliberately carries the evidence verdict; a PARK must not be keyed on it, or a card whose worktree
+probe flips its verdict between two polls earns a fresh ladder for the identical question. A genuine forward
+move in the step ledger (a gate that passed, a step that completed) IS a different question and must release
+the park.
+
+The stamp is deliberately NARROWER than `stepSignature`, and the reason is measured rather than stylistic:
+`cleanupMergeStateForReverification` keeps only the pre-execution Plan Review row and DROPS every other
+workflow-step row (`preservePreExecutionWorkflowStepResults`). A stamp reading all step rows therefore moved
+every time that cleanup ran, which is precisely the writer this park must survive; the first version of this
+stamp did exactly that, and the merge-reset test caught it. So it reads the two halves that cleanup cannot
+touch, using the SAME authority the board already agrees on: `isPlanReviewSatisfied` is the pre-execution gate
+the cleanup preserves and reconstructs, and the completed-step count is the ledger's own forward progress. A
+plan review passing or a step completing is a new question; a wiped badge, a verdict flip, or a cleared
+post-execution row is not.
+*/
+function durableQuestionStamp(nodeId: string, task: TaskDetail): string {
+  const planReviewSatisfied = (task.workflowStepResults ?? []).some((result) => isPlanReviewSatisfied(result));
+  const completedSteps = (task.steps ?? []).filter((step) => step.status === "done").length;
+  return `${nodeId}|${planReviewSatisfied ? "plan-review-satisfied" : "plan-review-none"}|${completedSteps}`;
+}
+
+/**
+ * Does the standing park still answer the question being asked? A marker written before RUFU-1028 carries
+ * no stamp at all: the park HOLDS, because a false hold costs an operator one press of Retry while a false
+ * release costs the board an unbounded loop — the asymmetry that made a sticky guard necessary.
+ */
+function parkHoldsForQuestion(prior: ExecutionRarmMarker, questionStamp: string): boolean {
+  if (prior.heldAt == null) return false;
+  if (typeof prior.questionStamp !== "string" || prior.questionStamp === "") return true;
+  return prior.questionStamp === questionStamp;
+}
+
+/*
 FNXC:ExecutionReArmCeiling 2026-11-13-22:44 (RUFU-1027):
 The episode identity used to include the live `task.status` and `task.error` columns. Both are written
 by the recovery itself (the successful re-arm clears them two statements after the claim) and by the
@@ -228,6 +271,7 @@ async function claimRearmSlot(
   deps: ExecutionRarmDeps,
   input: ExecutionRarmInput,
   signature: string,
+  questionStamp: string,
   kind: "attempt" | "refusal",
 ): Promise<{ allowed: boolean; attempts: number; refusals: number; held: boolean; parked: boolean; liveChanged: boolean }> {
   const now = deps.now?.() ?? Date.now();
@@ -246,15 +290,38 @@ async function claimRearmSlot(
   own ladder.
   */
   let alreadyParked = false;
+  /*
+  FNXC:ExecutionReArmCeiling 2026-11-14-16:20 (RUFU-1028):
+  RUFU-1027 made the ceiling REACHABLE; this makes it HOLD. The RUFU-308 guard above proved "a park stands"
+  from the two row columns the park used to announce itself in, and the line below it made `heldAt != null`
+  force `unchanged` false — so any writer that cleared or replaced those columns turned the terminal park
+  into a fresh four-attempt ladder with a new `firstAt` and `heldAt: null`. Measured live on the shipped
+  ceiling (RUFU-583, 2026-11-14): `attempt 4/4` at 15:49:50, `5/4 EXHAUSTED` at 15:52:54, `attempt 1/4` again
+  at 15:55:57 — 44 re-arm grants between 14:10 and 16:04, with the card's own episode row showing `firstAt`
+  moving forward twice. The re-dispatch that followed that park was an `overseer:intervention action:"retry"`
+  at 15:53:25, and no audit row exists for the statement that cleared the columns, which is exactly why a
+  guard may not rest on them. The park's proof is now the durable episode and nothing else, because
+  `status`/`error` belong to every writer on the board.
+
+  The episode is released only by its owners: operator/agent Retry (which nulls the episode key in
+  `buildManualRetryResetPatch`), a card leaving the WIP lane, a pause, or genuine durable step-ledger progress
+  past the stamp taken at park time.
+  */
+  let parkAnnouncementLost = false;
+  let parkMarker: ExecutionRarmMarker | null = null;
   try {
     const updated = await deps.store.updateTaskAtomic(input.taskId, (current) => {
       if (!current || current.deletedAt) return null;
       if (current.paused === true || current.userPaused === true) return null;
       if (current.column !== input.wipColumn) return null;
       const prior = readExecutionRarmMarker(current);
-      if (prior?.heldAt != null && current.status === "failed"
-        && (current.error ?? "").startsWith(EXECUTION_REARM_EXHAUSTED_PREFIX)) {
+      if (prior && parkHoldsForQuestion(prior, questionStamp)) {
         alreadyParked = true;
+        parkMarker = prior;
+        // Disturbance detection, not a decision: the park holds either way, and this only records that the
+        // row-level announcement an earlier build depended on has been cleared by someone else.
+        parkAnnouncementLost = !(current.status === "failed"
+          && (current.error ?? "").startsWith(EXECUTION_REARM_EXHAUSTED_PREFIX));
         return null;
       }
       const unchanged = prior?.signature === signature && prior.heldAt == null;
@@ -269,11 +336,24 @@ async function claimRearmSlot(
           firstAt: unchanged ? prior?.firstAt ?? at : at,
           at,
           heldAt: exhausted ? at : null,
+          questionStamp,
         }),
       };
     }, deps.getRunContextFor?.(input.taskId));
     if (alreadyParked) {
       // No write, no notice: the existing park is the answer.
+      if (parkAnnouncementLost && parkMarker) {
+        const runContext = deps.getRunContextFor?.(input.taskId);
+        await announceExecutionRearmParkDisturbed({
+          store: deps.store,
+          taskId: input.taskId,
+          agentId: runContext?.agentId ?? "executor",
+          runId: runContext?.runId,
+          marker: parkMarker,
+          observedFrom: "rearm-claim",
+          resetSource: "unknown",
+        });
+      }
       return { allowed: false, attempts: 0, refusals: 0, held: true, parked: true, liveChanged: false };
     }
     const marker = readExecutionRarmMarker(updated);
@@ -317,6 +397,90 @@ function emitExecutionRearmAudit(
   });
 }
 
+/**
+ * A standing terminal park whose row-level announcement was cleared by someone else is a disturbance, and a
+ * disturbance that records nothing is how RUFU-583 looped 44 times unseen. ONE audit row and ONE History
+ * line per episode window, never one per poll: the bounded `logEntryOnce` write is the dedupe authority and
+ * the audit row follows only when that write was appended, so a sustained disturbance stays countable at
+ * four records an hour per card instead of one per dispatch.
+ *
+ * The park is NEVER released here — this records the wipe and does not decide from it. Metadata stays
+ * ids/counts/fixed enums: no signature, no error sentence, no path.
+ */
+/*
+FNXC:ExecutionReArmCeiling 2026-11-14-16:20 (RUFU-1028):
+How long the park-disturbance announcement is allowed to take before the writer stops waiting for it. Not a
+retry budget and not the park's own bound — it is the wall-clock ceiling on one best-effort History write, so
+that a stuck log sink costs a missing notice instead of a stuck card.
+*/
+const PARK_ANNOUNCEMENT_BOUND_MS = 2_000;
+
+export async function announceExecutionRearmParkDisturbed(input: {
+  store: TaskStore;
+  taskId: string;
+  agentId?: string;
+  runId?: string;
+  marker: ExecutionRarmMarker;
+  observedFrom: "rearm-claim" | "merge-reset";
+  resetSource: "execute-preflight" | "lane-return" | "unknown";
+}): Promise<void> {
+  const { store, taskId, marker } = input;
+    const dedupeKey = `execution-rearm-park-marker-cleared:${taskId}`;
+    // The History line is the bound itself: a repeat inside its window answers false, which is what stops a
+    // reset that runs on every dispatch from announcing on every dispatch (RUFU-442). The key carries no
+    // growing counter, because a key that changes each cycle is not a bound at all.
+    //
+    // FNXC:ExecutionReArmCeiling 2026-11-14-16:20 (RUFU-1028): the write is bounded by ITS OWN wall clock, and
+    // the reason is measured: awaiting it unbounded let a never-settling log sink hang the stale-merge cleanup
+    // that observed the disturbance — a test caught the reset never returning at all. Telemetry that can stop
+    // the writer it describes is the exact defect this card removes, so a sink that will not answer simply
+    // means "not announced".
+    let appended = false;
+    if (typeof store.logEntryOnce === "function") {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const attempt = store
+          .logEntryOnce(taskId, {
+            action:
+              "Execution re-arm park still stands on this card, but the row-level notice an earlier pass " +
+              "wrote was cleared by another writer. The card stays held; operator Retry resumes the step.",
+            outcome: "execution-rearm-park-marker-cleared",
+            dedupeKey,
+            windowMs: 6 * 60 * 60 * 1000,
+          })
+          .then((written: unknown) => Boolean(written))
+          .catch(() => false);
+        const bound = new Promise<false>((resolve) => {
+          timer = setTimeout(() => resolve(false), PARK_ANNOUNCEMENT_BOUND_MS);
+          timer.unref?.();
+        });
+        appended = await Promise.race([attempt, bound]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+  if (!appended) return;
+  await emitBoundedRunAudit(store, {
+    taskId,
+    agentId: input.agentId ?? "executor",
+    runId: input.runId ?? generateSyntheticRunId("execution-rearm", taskId),
+    domain: "database",
+    mutationType: "task:execution-rearm-park-marker-cleared",
+    target: taskId,
+    metadata: {
+      taskId,
+      outcome: "marker-cleared",
+      observedFrom: input.observedFrom,
+      resetSource: input.resetSource,
+      attempt: marker.attempt,
+      refusal: marker.refusal,
+      attemptLimit: MAX_EXECUTION_REARM_ATTEMPTS,
+      refusalLimit: MAX_EXECUTION_REARM_REFUSALS,
+      parkHeld: marker.heldAt != null,
+    },
+  });
+}
+
 /** One durable, operator-visible park: the card stops looping and says why, exactly once. */
 async function terminalizeRearmBudget(
   deps: ExecutionRarmDeps,
@@ -341,6 +505,9 @@ async function terminalizeRearmBudget(
         firstAt: priorMarker?.firstAt ?? new Date().toISOString(),
         at: new Date().toISOString(),
         heldAt: new Date().toISOString(),
+        // Stamped from the question that EXHAUSTED the budget, so a later pass asking the same question is
+        // refused while a card that genuinely moved forward is not.
+        questionStamp: nodeId ? durableQuestionStamp(nodeId, task) : priorMarker?.questionStamp ?? null,
       }),
     },
     deps.getRunContextFor?.(input.taskId),
@@ -394,7 +561,9 @@ export async function attemptExecutionRearm(
 
   const evidence = await hasStepWorkEvidence(deps, task);
   const signature = rearmSignature(nodeId, task, evidence.hasEvidence ? "occupied" : "unproven");
-  const claim = await claimRearmSlot(deps, input, signature, evidence.hasEvidence ? "attempt" : "refusal");
+  const claim = await claimRearmSlot(
+    deps, input, signature, durableQuestionStamp(nodeId, task), evidence.hasEvidence ? "attempt" : "refusal",
+  );
   if (!claim.allowed) {
     if (claim.liveChanged) return { outcome: "not-eligible", detail: "the card changed under recovery" };
     if (claim.parked) {

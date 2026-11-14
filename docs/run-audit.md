@@ -842,6 +842,23 @@ RUFU-343 corrects `parkShape` to the closed set `retry-rejected`, `raw-blocker`,
 
 `task:execution-rearm-exhausted` records the one terminal park that ends a bounded re-arm episode: the card is left in its current lane with `EXECUTION_REARM_EXHAUSTED:` and one operator notice. It records only `taskId`, `nodeId` (`"unknown"` when the graph recorded none), fixed `reason` (`no-progress` when re-arms produced no step progress, `no-evidence` when recovery passes kept finding no worktree evidence to preserve), `attempt`, `refusal`, `attemptLimit`, `refusalLimit`, `column` (the lane the card stays in), and fixed `outcome: "exhausted"`. The park is sticky, so a card that keeps being polled after exhaustion writes no further row and no further notice; the notice dedupe is `logEntryOnce`, not an in-process set. Exhaustion detail sentences, error text, and worktree paths are excluded. It is intentionally outside the curated delivery-pipeline event catalogue.
 
+`task:execution-rearm-park-marker-cleared` records a DISTURBANCE, not a lifecycle decision (RUFU-1028): a writer
+that does not own the park cleared the badge the park is announced with, while the episode that binds the card
+stayed in place. The measurement that motivated it: an exhausted card parked at 15:36:29 with its History line
+appended, a generic unclassified-failure retry ran at 15:53:25, the execute-preflight stale-merge cleanup nulled
+`status` and `error`, and the next pass restarted the identical question at attempt 1 — 44
+`task:execution-rearmed` rows in 109 minutes, ceiling exhaustions at 15:36 and 15:52, and a third unbounded
+stretch after 16:04. Neither `cleanupMergeStateForReverification` nor the review-scoped `task-column-restart`
+was designed to stop at that boundary and neither ever did; what was missing is that a single pass is invisible
+while the reset is self-cancelling, so this row names the observation and nothing else. Metadata is
+ids/counts/fixed enums only — `taskId`, `outcome` (`marker-cleared`), `observedFrom` (`rearm-claim` /
+`merge-reset`), `resetSource` (`execute-preflight` / `lane-return` / `unknown`), `attempt`, `refusal`,
+`attemptLimit`, `refusalLimit`, `parkHeld` — with no error sentence, no reset message, no path, and no step-
+ledger text. The announcement is bounded by the task-History write it accompanies, so a reset that runs on every
+dispatch cannot announce on every dispatch; the audit row appears only when that append was accepted, which is
+the `logEntryOnce` window and nothing else. Telemetry never releases the park: the row records a question an
+earlier pass asked and no later pass answered, which is what a disturbance is.
+
 ### Assignee transfer teardown and heartbeat wake dedup
 
 `task:assignee-transfer-abort` records one bounded row per ownership-transfer teardown decision (RUFU-260). It fires whenever a card with a previous owner is re-assigned or un-assigned, so the row documents what the engine did about the previous owner's live execution session rather than merely that ownership moved. The row targets the task id and sets `agentId` to the **previous** owner with a synthetic run id, so operator support can answer "why did this agent's session die mid-card?" by querying either the card or the agent. Metadata is IDs and fixed outcomes only: `outcome` (the fixed enum `aborted` — the previous owner had a live surface and it was torn down with `abortSource = abort-in-flight:assignee-transfer`; `column-binding-deferred` — the live session is staffed by a column-agent principal equal to the previous owner, so the column binding governs and the existing watcher keeps the session; `no-live-surface` — the card had no in-flight session or child process to dispose), `previousOwnerId`, `newOwnerId` (`null` for an un-assignment), and `reviewLaneSessionPreserved` — true only when the card sat in a review lane and a live prompt-lane (workflow-step) session was deliberately left running instead of aborted, because an assignee change must not destroy the review gate's own session (an interrupted review emits no verdict and wedges that required pre-merge gate for operator bypass). A deferred or no-live-surface teardown records the same row: it is a completed outcome, not a failure. Assignee display names, task titles, prompts, session or worktree content, worktree paths, and error prose are never recorded; the greppable abort reason lives in the abort provenance, not in metadata. The write uses the FN-9175 bounded best-effort seam, so an absent, throwing, or hanging audit sink can never delay or fail the teardown nor hold the per-task disposal barrier that the new owner's heartbeat wake awaits. It is intentionally outside the curated delivery-pipeline event catalogue.

@@ -4076,6 +4076,19 @@ export type { TaskLifecycleEventInput, TaskEnteredReviewLifecyclePayload } from 
 export { OVERLAP_DELIVERY_UNAVAILABLE_ERROR, isRecoverableOverlapWaitFailure } from "./tasks/overlap-wait-release.js";
 
 /*
+FNXC:ExecutionReArmCeiling 2026-11-14-16:20 (RUFU-1028):
+`mergeDetails` truthiness is not "a merge happened". Exported because four engine consumers (execute
+preflight, the merge-bearing-lane return, and the two completed-work fast paths) must agree on one
+classification rather than each re-deriving it.
+*/
+export {
+  MERGE_DETAIL_EVIDENCE_KEYS,
+  MERGE_DETAIL_RECOVERY_BOOKKEEPING_KEYS,
+  classifyMergeDetailKey,
+  mergeDetailsCarriesMergeEvidence,
+} from "./tasks/merge-details-evidence.js";
+
+/*
 FNXC:EventDrivenDispatch 2026-09-18-00:40:
 FN-519 — PostgreSQL LISTEN/NOTIFY transport for the advisory dispatch wake. Exported so the engine
 runtime can own the listening session's lifecycle (and its disposal) without importing a deep path.

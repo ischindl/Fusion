@@ -12,14 +12,15 @@
  * `resolveWorkflowIrForTask` degrades to the BUILT-IN IR rather than throwing.
  */
 import type { Task, TaskStore } from "@fusion/core";
-import { columnsWithFlag, resolveStepReopenPolicy, resolveWorkflowIrForTask } from "@fusion/core";
+import { columnsWithFlag, mergeDetailsCarriesMergeEvidence, resolveStepReopenPolicy, resolveWorkflowIrForTask } from "@fusion/core";
+import type { MergeResetSource } from "./cleanup-merge-state.js";
 
 export type ResetMergeStateDeps = {
   store: TaskStore;
   cleanupMergeStateForReverification: (
     task: Task,
     logMessage: string,
-    options?: { preserveVerificationFailureCount?: boolean; stepReopenPolicy?: "reopen-trailing" | "none" },
+    options?: { preserveVerificationFailureCount?: boolean; stepReopenPolicy?: "reopen-trailing" | "none"; resetSource?: MergeResetSource },
   ) => Promise<Task>;
 };
 
@@ -41,7 +42,14 @@ export async function resetMergeStateIfNeeded(
     return task;
   }
 
-  const hasMergeEvidence = Boolean(task.mergeDetails)
+  /*
+  FNXC:ExecutionReArmCeiling 2026-11-14-16:20 (RUFU-1028):
+  `Boolean(task.mergeDetails)` is not "a merge was recorded": the column also carries recovery bookkeeping.
+  A card that never merged was bounced through the merge-state cleanup anyway, and that cleanup clears
+  `status`/`error` — the row-level announcement a bounded re-arm park depends on. Merge evidence is now the
+  named predicate over the closed key classification, so a bounce happens for merge reasons or not at all.
+  */
+  const hasMergeEvidence = mergeDetailsCarriesMergeEvidence(task.mergeDetails)
     || (task.mergeRetries ?? 0) > 0
     || (task.verificationFailureCount ?? 0) > 0
     || task.status === "merging"
@@ -62,6 +70,7 @@ export async function resetMergeStateIfNeeded(
       // the canonical signal once a bounce has started.
       preserveVerificationFailureCount: (task.verificationFailureCount ?? 0) > 0,
       stepReopenPolicy: resolveStepReopenPolicy(ir),
+      resetSource: "lane-return",
     },
   );
 }

@@ -48,6 +48,7 @@ import type {
 } from "@fusion/core";
 import {
   ApprovalRequestStore,
+  mergeDetailsCarriesMergeEvidence,
   deriveTaskLabelFromDescription,
   buildTaskExternalBlockPatch,
   buildTaskExternalBlockReport,
@@ -781,13 +782,24 @@ export async function runImplementation(
       }
     }
 
-    if (task.column === preflightWipLane && task.mergeDetails) {
+    /*
+    FNXC:ExecutionReArmCeiling 2026-11-14-16:20 (RUFU-1028):
+    This arm used to fire on `task.mergeDetails` TRUTHINESS, and `MergeDetails` also carries recovery
+    bookkeeping (`pushRecovery`, `mergeBoundaryRecovery`, the pre-RUFU-1027 `executionRearm` ladder). So a
+    card that had never merged anything was declared to be in a stale merge state, and the cleanup it called
+    writes `status: null, error: null` — which cleared the only row-level announcement the bounded re-arm park
+    had and let the ladder restart at `attempt 1/4`. Measured: RUFU-278 walked this line 320 times in 18 h
+    44 m and RUFU-583 burned 44 re-arm grants in under two hours. Merge evidence is now a named predicate
+    over the closed key classification; recovery bookkeeping alone never triggers this reset, and the reason
+    a reset ran is recorded so a wipe is attributable.
+    */
+    if (task.column === preflightWipLane && mergeDetailsCarriesMergeEvidence(task.mergeDetails)) {
       executorLog.warn(`${task.id}: stale mergeDetails found while executing in-progress task — resetting merge state before continuing`);
       const ir = await resolveWorkflowIrForTask(deps.store, task.id).catch(() => undefined);
       task = await deps.cleanupMergeStateForReverification(
         task,
         "Executor detected stale merge state while task was in-progress — reset verification steps and merge metadata before resuming",
-        { stepReopenPolicy: resolveStepReopenPolicy(ir) },
+        { stepReopenPolicy: resolveStepReopenPolicy(ir), resetSource: "execute-preflight" },
       );
     }
 

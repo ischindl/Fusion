@@ -198,7 +198,7 @@ import { upsertWorkflowWorkItemImpl, replaceActiveTaskWorkflowContinuationImpl, 
 import { getSettingsImpl, getSettingsFastImpl, getSettingsByScopeImpl, getSettingsByScopeFastImpl, resolveTaskIdMintingImpl } from "./task-store/settings-ops-2.js";
 import { runPluginColumnTransitionHooksImpl, checkAndRecordUnplannedExecutionBlockImpl, logEntryImpl, logEntryOnceImpl, transitionQueuedEpisodeImpl, type QueuedEpisodeTransition } from "./task-store/audit-ops.js";
 import { reconcileTaskOverlapWaitsImpl, type OverlapWaitReconciliationOptions } from "./task-store/overlap-wait-reconciliation.js";
-import { claimTaskOverlapWaitImpl, completeTaskOverlapWaitImpl, listTaskOverlapWaitsImpl, publishTaskOverlapDeliveriesImpl } from "./task-store/overlap-wait-ops.js";
+import { claimTaskOverlapWaitImpl, completeTaskOverlapWaitImpl, listPendingOverlapWaitTaskIdsImpl, listTaskOverlapWaitsImpl, publishTaskOverlapDeliveriesImpl } from "./task-store/overlap-wait-ops.js";
 import type { OverlapWaitClaim, OverlapWaitDeliverySnapshot, OverlapWaitExecutionIdentity, OverlapWaitReceipt } from "./types/task/task-overlap-wait.js";
 import { clearWorkflowRunBranchesImpl, projectMergeRequestToWorkflowWorkItemImpl, createCompletionHandoffWorkflowWorkImpl } from "./task-store/workflow-workitems-ops.js";
 import { flushAgentLogBufferImpl, appendAgentLogBatchImpl } from "./task-store/agent-logs.js";
@@ -3581,6 +3581,15 @@ updates: { title?: string; description?: string; prompt?: string; promptShrinkAu
 
   async listTaskOverlapWaits(taskId: string, options: { pendingOnly?: boolean } = {}) {
     return listTaskOverlapWaitsImpl(this, taskId, options);
+  }
+
+  /**
+   * FNXC:ExecutionReArmCeiling 2026-11-14-16:20 (RUFU-1028):
+   * Board-wide pending-episode read for the overlap recovery sweep. See `listPendingOverlapWaitTaskIdsImpl`
+   * for why the episode row is the only surviving trace of a warm-worktree reuse refusal.
+   */
+  async listPendingOverlapWaitTaskIds(): Promise<string[]> {
+    return listPendingOverlapWaitTaskIdsImpl(this);
   }
 
   async reconcileTaskOverlapWaits(taskId: string, options?: OverlapWaitReconciliationOptions) {

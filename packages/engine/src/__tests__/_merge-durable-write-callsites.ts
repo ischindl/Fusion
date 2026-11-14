@@ -115,6 +115,12 @@ const STORE_METHOD_CLASSIFICATION: Record<string, Omit<SurfaceClassification, "m
   claimTaskOverlapWait: { kind: "writer", reason: "claims and fences durable overlap-wait episode ownership" },
   completeTaskOverlapWait: { kind: "writer", reason: "persists a fenced overlap-wait receipt and completion phase" },
   listTaskOverlapWaits: { kind: "non-writer", reason: "reads durable overlap-wait episodes without mutation" },
+  /*
+  FNXC:ExecutionReArmCeiling 2026-11-14-16:20 (RUFU-1028):
+  The board-wide pending-episode read the overlap recovery sweep needs. Projected `task_id`s from a SELECT
+  DISTINCT, no row touched, so it is a reader beside its per-task sibling rather than a writer.
+  */
+  listPendingOverlapWaitTaskIds: { kind: "non-writer", reason: "reads pending overlap-wait episode owners board-wide without mutation" },
   mutateScript: { kind: "writer", reason: "persists script-catalog mutations with settings-version attribution" },
   publishTaskOverlapDeliveries: { kind: "writer", reason: "persists delivery snapshots on open overlap-wait episodes" },
   claimTaskVerificationRequest: { kind: "writer", reason: "persists or mutates TaskStore state" },

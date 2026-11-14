@@ -1,3 +1,4 @@
+import { mergeDetailsCarriesMergeEvidence, pickMergeDetailRecoveryOnlyKeys } from "./merge-details-evidence.js";
 import type { Task } from "../types.js";
 import type { WorkflowIr, WorkflowIrV2 } from "../workflows/workflow-ir-types.js";
 import { resolveColumnFlags } from "../workflows/trait-registry.js";
@@ -208,10 +209,32 @@ export function planTaskColumnRestart(input: {
       scopeAutoWiden: [],
     });
   } else if (scope === "review") {
+    /*
+    FNXC:ExecutionReArmCeiling 2026-11-14-16:20 (RUFU-1028):
+    The second writer of this exact shape, found by the census rather than by the reported repro - which is the
+    difference between fixing RUFU-583 once and fixing it four times (FN-5787/5789/5803). A review-scoped
+    restart clears merge evidence on purpose; it never had a reason to delete the re-arm ladder's host. A card
+    whose `mergeDetails` holds ONLY recovery bookkeeping has not landed anything, so the wipe targets the
+    delivery evidence and keeps the recovery keys. When the row does carry merge evidence, the wholesale null
+    stays exactly as RUFU-469 requires it.
+    */
+    const carriesMergeEvidence = mergeDetailsCarriesMergeEvidence(task.mergeDetails);
+    /*
+    FNXC:ExecutionReArmCeiling 2026-11-14-16:20 (RUFU-1028):
+    An EMPTY OBJECT IS NOT NOTHING. `mergeDetails: null` is what every consumer today reads as "this card has
+    no merge state"; `{}` is truthy, so writing it for a card that never had the field would invent merge state
+    out of a cleanup. The recovery keys are kept only when one is actually present, and the null stays for a
+    row that genuinely holds nothing — including a row whose only content was placeholder values.
+    */
+    const recoveryOnly = pickMergeDetailRecoveryOnlyKeys(task.mergeDetails);
+    const recoveryOnlyKeys = Object.keys(recoveryOnly).length > 0;
     Object.assign(patch, {
       review: null as unknown as Task["review"],
       reviewState: null as unknown as Task["reviewState"],
-      mergeDetails: null as unknown as Task["mergeDetails"],
+      // Null when the card really merged something; recovery keys only when it never did.
+      mergeDetails: (!carriesMergeEvidence && recoveryOnlyKeys
+        ? recoveryOnly
+        : null) as unknown as Task["mergeDetails"],
       aiMergeReviewReconciliation: null as unknown as Task["aiMergeReviewReconciliation"],
       awaitingApprovalReason: null as unknown as Task["awaitingApprovalReason"],
     });

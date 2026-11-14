@@ -52,6 +52,53 @@ function plan(
   });
 }
 
+/*
+FNXC:ExecutionReArmCeiling 2026-11-14-16:20 (RUFU-1028):
+The review-scoped restart is the SECOND writer of the same wholesale `mergeDetails: null`, found by the census
+rather than by the reported repro — which is the difference between fixing RUFU-583 once and four times
+(FN-5787/5789/5803). RUFU-583 sat in review when this restart nulled the row out from under its re-arm ladder.
+The distinction is narrow and both halves must hold: merge evidence still goes entirely (RUFU-469's stale-
+generation guarantee), a recovery-only row keeps its host, and a row with nothing at all stays NULL rather than
+becoming a truthy empty object.
+*/
+describe("review-scoped restart keeps recovery bookkeeping and drops delivery evidence", () => {
+  const episode = {
+    signature: "rearm:steps#1:step-execute:x:occupied",
+    attempt: 5,
+    refusal: 0,
+    firstAt: "2026-11-14T15:38:41.000Z",
+    at: "2026-11-14T15:52:54.000Z",
+    heldAt: "2026-11-14T15:52:54.000Z",
+    questionStamp: "steps#1:step-execute|plan-review-none|1",
+  };
+
+  it("keeps the re-arm episode when the row carried no delivery evidence", () => {
+    const planned = plan({
+      column: "review",
+      mergeDetails: { executionRearm: episode as never } as never,
+    } as Partial<Task>);
+    expect(planned.patch.mergeDetails).toEqual({ executionRearm: episode });
+  });
+
+  it("still nulls the row wholesale when the card actually merged something", () => {
+    const planned = plan({
+      column: "review",
+      mergeDetails: { executionRearm: episode as never, commitSha: "abc123" } as never,
+    } as Partial<Task>);
+    // RUFU-469: a later run must never observe a previous generation's landing. The ladder is safe because it
+    // now lives in `sourceMetadata`, not because this writer was made gentle about merge data.
+    expect(planned.patch.mergeDetails).toBeNull();
+  });
+
+  it("writes null, not an empty object, for a card that never had merge state", () => {
+    const planned = plan({ column: "review" } as Partial<Task>);
+    expect(planned.patch.mergeDetails).toBeNull();
+    // The empty object would be a lie with consequences: `{}` is truthy for every `if (task.mergeDetails)`
+    // reader in the codebase, so a cleanup would have invented merge state on a card that never merged.
+    expect(planned.patch.mergeDetails).not.toEqual({});
+  });
+});
+
 const workspaceStates = {
   one: {
     api: {

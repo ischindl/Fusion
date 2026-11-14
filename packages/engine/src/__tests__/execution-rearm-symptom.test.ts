@@ -18,6 +18,8 @@
  * cleared with no continuation is still RUFU-291.
  */
 import { describe, expect, it, vi } from "vitest";
+import { buildManualRetryResetPatch } from "@fusion/core";
+import { cleanupMergeStateForReverification } from "../executor/cleanup-merge-state.js";
 import { routeGraphFailureToExecutionResume } from "../executor/route-graph-failure-to-execution-resume.js";
 import { resetContainmentRefusalLogForTesting } from "../execution/lifecycle-move.js";
 import { applyTaskPatch } from "./fixtures/task-patch-store.js";
@@ -390,5 +392,232 @@ describe("RUFU-1027: the declared re-arm ceiling must be reachable", () => {
     expect(state.current.column).toBe(WIP);
     expect(store.moveTask).not.toHaveBeenCalled();
     expect(store.moveTaskIf).not.toHaveBeenCalled();
+  });
+});
+
+
+/*
+FNXC:ExecutionReArmCeiling 2026-11-14-16:20 (RUFU-1028):
+RUFU-1027 made the ceiling reachable; these pin that it HOLDS. The shipped RUFU-1027 test above re-wears the
+same error sentence on every cycle, which is exactly the assumption the old guard rested on — and production
+does not honour it. Measured on RUFU-583 (2026-11-14): `attempt 4/4` at 15:49:50, `5/4 EXHAUSTED` at 15:52:54,
+`attempt 1/4` again at 15:55:57, 44 grants by 16:04, with the card's own episode row showing `firstAt` moving
+forward twice. The re-dispatch that followed the park was an `overseer:intervention action:"retry"`.
+
+Each test below takes the park's announcement away the way a real writer does, then asks the same question
+again, and asserts the answer is still "exhausted" with the episode untouched.
+*/
+describe("RUFU-1028: the terminal park must survive writers that do not own it", () => {
+  function rearmDeps(store: any, verdict = "occupied") {
+    return { store, emptinessProver: makeProver(verdict) as any, getRunContextFor: () => undefined } as any;
+  }
+
+  function rearm(deps: any, state: any) {
+    return attemptExecutionRearm(deps, {
+      taskId: state.current.id, failedNode: OWNER_NODE, wipColumn: WIP, reason: "step-failed",
+    });
+  }
+
+  function rearmRows(store: any) {
+    return auditRows(store).filter((row: any) => row.mutationType === "task:execution-rearmed");
+  }
+
+  function exhaustedRows(store: any) {
+    return auditRows(store).filter((row: any) => row.mutationType === "task:execution-rearm-exhausted");
+  }
+
+  function disturbedRows(store: any) {
+    return auditRows(store).filter((row: any) => row.mutationType === "task:execution-rearm-park-marker-cleared");
+  }
+
+  /** Drive to exhaustion without re-wearing the exhausted sentence, which is what production does. */
+  async function driveToPark(deps: any, state: any) {
+    for (let cycle = 0; cycle <= MAX_EXECUTION_REARM_ATTEMPTS; cycle++) {
+      state.current = { ...state.current, status: "failed", error: STUCK_ERROR };
+      await rearm(deps, state);
+    }
+  }
+
+  it("holds the park across three real merge resets that remove its row-level announcement", async () => {
+    resetContainmentRefusalLogForTesting();
+    const { store, state } = makeStore(strandedTask({ status: "failed", error: STUCK_ERROR }));
+    const deps = rearmDeps(store);
+    await driveToPark(deps, state);
+
+    const parked = readExecutionRarmMarker(state.current)!;
+    expect(parked.heldAt).not.toBeNull();
+    const grantsBefore = rearmRows(store).length;
+    expect(grantsBefore).toBe(MAX_EXECUTION_REARM_ATTEMPTS);
+    expect(exhaustedRows(store)).toHaveLength(1);
+
+    const cleanupDeps = { store, getRunContextFor: () => undefined } as any;
+    for (let pass = 0; pass < 3; pass++) {
+      // The real cleanup, not a hand-written patch: it nulls `mergeDetails` and both badges in one statement.
+      state.current = await cleanupMergeStateForReverification(
+        cleanupDeps, state.current,
+        "Executor detected stale merge state while task was in-progress — reset verification steps and merge metadata before resuming",
+        { resetSource: "execute-preflight" },
+      );
+      expect(state.current.status).toBeNull();
+      expect(state.current.error).toBeNull();
+
+      const again = await rearm(deps, state);
+      expect(again.outcome).toBe("budget-exhausted");
+    }
+
+    // No further grants, no second park, and the episode is byte-identical — the RUFU-583 restart is gone.
+    expect(rearmRows(store)).toHaveLength(grantsBefore);
+    expect(exhaustedRows(store)).toHaveLength(1);
+    const after = readExecutionRarmMarker(state.current)!;
+    expect(after.firstAt).toBe(parked.firstAt);
+    expect(after.heldAt).toBe(parked.heldAt);
+    expect(after.attempt).toBe(parked.attempt);
+    expect(after.questionStamp).toBe(parked.questionStamp);
+    expect(store.moveTask).not.toHaveBeenCalled();
+
+    // Step 3: three resets, ONE announcement. `logEntryOnce` is the dedupe authority, and the audit row
+    // follows only when that write was appended.
+    expect(disturbedRows(store)).toHaveLength(1);
+    expect(disturbedRows(store)[0].metadata).toMatchObject({
+      outcome: "marker-cleared",
+      observedFrom: "merge-reset",
+      resetSource: "execute-preflight",
+      parkHeld: true,
+      attemptLimit: MAX_EXECUTION_REARM_ATTEMPTS,
+      refusalLimit: MAX_EXECUTION_REARM_REFUSALS,
+    });
+    // Six observations (three resets + three claims) and ONE audit row, which is the pair that proves the
+    // bound: the append is what the row follows. The dedupe key must carry no growing counter, or every pass
+    // would be a fresh "first" announcement (RUFU-442).
+    const disturbanceKeys = store.logEntryOnce.mock.calls
+      .filter((call: any[]) => call[1]?.outcome === "execution-rearm-park-marker-cleared")
+      .map((call: any[]) => `${call[0]}|${call[1].dedupeKey}|${call[1].windowMs}`);
+    expect(disturbanceKeys).toHaveLength(6);
+    expect(new Set(disturbanceKeys)).toEqual(
+      new Set([`${state.current.id}|execution-rearm-park-marker-cleared:${state.current.id}|${6 * 60 * 60 * 1000}`]),
+    );
+  });
+
+  it("holds the park when another failure sentence replaces the exhausted one (graph-failure shape)", async () => {
+    resetContainmentRefusalLogForTesting();
+    const { store, state } = makeStore(strandedTask({ status: "failed", error: STUCK_ERROR }));
+    const deps = rearmDeps(store);
+    await driveToPark(deps, state);
+    const parked = readExecutionRarmMarker(state.current)!;
+    const grantsBefore = rearmRows(store).length;
+
+    for (let pass = 0; pass < 3; pass++) {
+      state.current = { ...state.current, status: "failed", error: "TypeError: boom raised by an unrelated node" };
+      const again = await rearm(deps, state);
+      expect(again.outcome).toBe("budget-exhausted");
+    }
+
+    expect(rearmRows(store)).toHaveLength(grantsBefore);
+    expect(exhaustedRows(store)).toHaveLength(1);
+    const after = readExecutionRarmMarker(state.current)!;
+    expect(after.firstAt).toBe(parked.firstAt);
+    expect(after.heldAt).toBe(parked.heldAt);
+    // Replacing the exhausted sentence DOES remove the park's row-level announcement, so the disturbance is
+    // real and must be recorded — once, from the claim seam, with no reset to blame.
+    const disturbed = disturbedRows(store);
+    expect(disturbed).toHaveLength(1);
+    expect(disturbed[0].metadata).toMatchObject({ observedFrom: "rearm-claim", resetSource: "unknown", parkHeld: true });
+  });
+
+  it("releases for genuine step-ledger progress but NOT for an evidence-token flip", async () => {
+    resetContainmentRefusalLogForTesting();
+    const { store, state } = makeStore(strandedTask({ status: "failed", error: STUCK_ERROR }));
+    await driveToPark(rearmDeps(store), state);
+    const parked = readExecutionRarmMarker(state.current)!;
+
+    // The worktree probe changing its mind is a transient, not a new question. `signature` carries the
+    // verdict, so a guard keyed on the signature alone would hand this card a fresh four-attempt ladder.
+    const flipped = await attemptExecutionRearm(rearmDeps(store, "unproven"), {
+      taskId: state.current.id, failedNode: OWNER_NODE, wipColumn: WIP, reason: "step-failed",
+    });
+    expect(flipped.outcome).toBe("budget-exhausted");
+    expect(readExecutionRarmMarker(state.current)!.heldAt).toBe(parked.heldAt);
+
+    // Real forward movement in the durable ledger IS a different question, and the park answers the old one.
+    state.current = {
+      ...state.current,
+      status: null,
+      error: null,
+      steps: state.current.steps.map((step: any, index: number) =>
+        index === 1 ? { ...step, status: "done" } : index === 2 ? { ...step, status: "in-progress" } : step),
+    };
+    const fresh = await rearm(rearmDeps(store), state);
+    expect(fresh.outcome).toBe("rearmed");
+    const next = readExecutionRarmMarker(state.current)!;
+    expect(next.attempt).toBe(1);
+    expect(next.heldAt).toBeNull();
+    // `firstAt` is deliberately not asserted: the fake clock has no seam, and comparing two `new Date()`
+    // reads inside one event loop turn is a flake waiting to happen. The episode identity is the assertion.
+    expect(next.questionStamp).not.toBe(parked.questionStamp);
+  });
+
+  it("restarts the ladder only through the real operator Retry patch", async () => {
+    resetContainmentRefusalLogForTesting();
+    const { store, state } = makeStore(strandedTask({ status: "failed", error: STUCK_ERROR }));
+    const deps = rearmDeps(store);
+    await driveToPark(deps, state);
+    expect(readExecutionRarmMarker(state.current)!.heldAt).not.toBeNull();
+
+    // The park's release authority: `buildManualRetryResetPatch` nulls the episode key at KEY level.
+    state.current = applyTaskPatch(state.current, buildManualRetryResetPatch() as any);
+    expect(readExecutionRarmMarker(state.current)).toBeUndefined();
+
+    const restarted = await rearm(deps, state);
+    expect(restarted.outcome).toBe("rearmed");
+    expect(readExecutionRarmMarker(state.current)!.attempt).toBe(1);
+  });
+
+  it("keeps today's non-rearm answers for a pause and a lane exit", async () => {
+    resetContainmentRefusalLogForTesting();
+    const { store, state } = makeStore(strandedTask({ status: "failed", error: STUCK_ERROR }));
+    const deps = rearmDeps(store);
+    await driveToPark(deps, state);
+
+    state.current = { ...state.current, paused: true };
+    expect((await rearm(deps, state)).outcome).toBe("not-eligible");
+
+    state.current = { ...state.current, paused: false, column: REVIEW };
+    expect((await rearm(deps, state)).outcome).toBe("not-eligible");
+    expect(store.updateTask).not.toHaveBeenCalledWith(
+      state.current.id, expect.objectContaining({ status: "failed", error: expect.stringContaining("another") }));
+  });
+
+  /*
+   * THE AMNESIA PATH IS GONE, BY CONSTRUCTION. The old code did not need a new failure to restart a spent
+   * ladder: it only needed `heldAt != null` to make `unchanged` false, which rewrote `attempt` to 1, `firstAt`
+   * to now, and `heldAt` to null. Every badge shape below is a row a production writer can leave behind — the
+   * merge reset nulls both, a fresh graph run wears its own sentence, and containment re-labels the card. None
+   * of them may buy a fresh attempt now.
+   */
+  it("cannot be talked back to attempt 1 by any badge shape", async () => {
+    const badgeShapes: Array<{ label: string; row: (t: any) => any }> = [
+      { label: "both badges cleared by the merge reset", row: (t) => ({ ...t, status: null, error: null }) },
+      { label: "a different failure sentence", row: (t) => ({ ...t, status: "failed", error: "Execution failed: something else entirely" }) },
+      { label: "no status, exhausted sentence kept", row: (t) => ({ ...t, status: null }) },
+      { label: "failed with no sentence at all", row: (t) => ({ ...t, status: "failed", error: null }) },
+    ];
+
+    for (const shape of badgeShapes) {
+      resetContainmentRefusalLogForTesting();
+      const { store, state } = makeStore(strandedTask({ status: "failed", error: STUCK_ERROR }));
+      const deps = rearmDeps(store);
+      await driveToPark(deps, state);
+      const grantsBefore = rearmRows(store).length;
+      const parked = readExecutionRarmMarker(state.current)!;
+
+      state.current = shape.row(state.current);
+      const pass = await rearm(deps, state);
+      expect(pass.outcome, shape.label).toBe("budget-exhausted");
+      expect(rearmRows(store), shape.label).toHaveLength(grantsBefore);
+      const after = readExecutionRarmMarker(state.current)!;
+      expect(after.attempt, shape.label).toBe(parked.attempt);
+      expect(after.firstAt, shape.label).toBe(parked.firstAt);
+      expect(after.heldAt, shape.label).toBe(parked.heldAt);
+    }
   });
 });

@@ -9,7 +9,7 @@
  * finds orphans and the filter drops every one — recovery silently does nothing after restart.
  */
 import type { Task, TaskStore } from "@fusion/core";
-import { deriveTaskLabelFromDescription, resolveProjectColumnsForRoles } from "@fusion/core";
+import { deriveTaskLabelFromDescription, mergeDetailsCarriesMergeEvidence, resolveProjectColumnsForRoles } from "@fusion/core";
 import { setImmediate as setImmediateCb } from "node:timers";
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -185,7 +185,13 @@ export async function resumeOrphaned(deps: ResumeOrphanedDeps): Promise<void> {
     }
     // Fast-path: if the task already completed its work (all steps done),
     // move it directly to in-review instead of re-executing from scratch.
-    if (isTaskWorkComplete(task) && !task.mergeDetails) {
+    /*
+    FNXC:ExecutionReArmCeiling 2026-11-14-16:20 (RUFU-1028):
+    Same rule as the unpause path: "no merge was recorded" is a question about merge EVIDENCE, not about
+    whether the `mergeDetails` column happens to be non-null. Recovery bookkeeping there used to deny a
+    finished card its hand-off to review and send it through a full re-execution.
+    */
+    if (isTaskWorkComplete(task) && !mergeDetailsCarriesMergeEvidence(task.mergeDetails)) {
       if (deps.recoveringCompleted.has(task.id)) {
         executorLog.debug(`${task.id} completed-task recovery already running - skipping duplicate startup recovery`);
         continue;

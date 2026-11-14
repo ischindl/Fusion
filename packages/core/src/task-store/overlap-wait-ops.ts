@@ -196,6 +196,30 @@ export async function listTaskOverlapWaitsImpl(store: TaskStore, taskId: string,
   return rows.map(mapRow);
 }
 
+/*
+FNXC:ExecutionReArmCeiling 2026-11-14-16:20 (RUFU-1028):
+Board-wide read of which cards hold an UNRESOLVED overlap-wait episode, for the recovery sweep's candidate
+set. A warm-worktree reuse refusal writes no `overlapBlockedBy` and its `error` sentence is cleared by the
+re-arm and by the merge reset, so the episode row in `project.taskOverlapWaits` is the only surviving trace
+that the card is waiting — and before this read, the sweep never considered such a card at all.
+
+One query per sweep pass, projected ids only. The phase predicate is the SAME closed pair used by every other
+pending read here (`delivered`, `cancelled`), so this cannot drift into calling a resolved wait pending.
+*/
+export async function listPendingOverlapWaitTaskIdsImpl(store: TaskStore): Promise<string[]> {
+  const layer = store.asyncLayer;
+  if (!layer) throw new Error("Overlap wait reads require a PostgreSQL store");
+  const projectId = layer.projectId?.trim() || "__legacy_unscoped__";
+  const rows = await layer.db
+    .selectDistinct({ taskId: schema.project.taskOverlapWaits.taskId })
+    .from(schema.project.taskOverlapWaits)
+    .where(and(
+      eq(schema.project.taskOverlapWaits.projectId, projectId),
+      sql`${schema.project.taskOverlapWaits.phase} NOT IN ('delivered', 'cancelled')`,
+    ));
+  return rows.map((row: { taskId: string }) => row.taskId);
+}
+
 const EXECUTION_IDENTITY_KEYS = [
   "taskLineageId", "planFingerprint", "checkoutEpoch", "worktree", "branch", "headSha",
   "repository", "target", "nodeId", "nodeInstanceId",

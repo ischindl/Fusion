@@ -53,6 +53,14 @@ Run on startup and maintenance, including failed WIP whose visible blocker was a
 Only idle missing-delivery or superseded-owner failures resume; completed steps and the current lane remain intact.
 Repairing an indicator is metadata cleanup, not authorization to resume a paused or human-owned card.
 */
+/*
+FNXC:OverlapWaitSynchronization 2026-11-14-16:20 (RUFU-1028):
+How long the release sweep will wait for the episode table before continuing without it. Deliberately small,
+for an asymmetric reason: missing this source costs one candidate until the next pass, while waiting on it
+costs every release in the current pass.
+*/
+const PENDING_EPISODE_READ_BOUND_MS = 2_000;
+
 export async function reconcileReleasedOverlapWaits(
   store: TaskStore,
   isTaskLive: (task: Task) => boolean,
@@ -69,9 +77,42 @@ export async function reconcileReleasedOverlapWaits(
    */
   const irCache = new Map<string, WorkflowIr>();
   const selectionCache: WorkflowSelectionCache = new Map();
+  /*
+  FNXC:ExecutionReArmCeiling 2026-11-14-16:20 (RUFU-1028):
+  A fourth candidate shape, read from the episode table rather than from the row. A warm-worktree reuse refusal
+  writes no `overlapBlockedBy`, and its `error` sentence is wiped by the merge reset and by the re-arm's own
+  post-seed update — so a card waiting purely on another card's delivered files matched none of the three
+  existing disjuncts and no sweep ever looked at it. RUFU-896's hold is inert against that shape until this
+  arm exists, which is why the candidate test grows rather than the prose predicate widening.
+
+  One query per pass, and feature-detected: a store without the read (a fake, or a non-pg layer whose reader
+  throws) keeps today's three disjuncts instead of losing the whole sweep.
+  */
+  let pendingEpisodeTaskIds = new Set<string>();
+  if (typeof store.listPendingOverlapWaitTaskIds === "function") {
+    // ITS OWN WALL CLOCK, not the sweep's. Awaiting this read unbounded let one hanging registry wedge every
+    // overlap release in the pass — including the three sources that never asked the registry anything (a test
+    // caught the sweep never returning). The source is additive, so giving up costs one candidate next pass;
+    // waiting forever costs the whole sweep.
+    let readTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const attempt = Promise.resolve(store.listPendingOverlapWaitTaskIds()).then((ids) =>
+        Array.isArray(ids) ? ids : ([] as string[]),
+      );
+      const bound = new Promise<string[]>((resolve) => {
+        readTimer = setTimeout(() => resolve([]), PENDING_EPISODE_READ_BOUND_MS);
+        readTimer.unref?.();
+      });
+      pendingEpisodeTaskIds = new Set(await Promise.race([attempt.catch(() => [] as string[]), bound]));
+    } finally {
+      if (readTimer) clearTimeout(readTimer);
+    }
+  }
   // FNXC:ListTasksExcludeLog 2026-10-12-16:20 (RUFU-615 tranche 4): this scan never reads task log or markers (no non-logger `.log` token in the file), so `slim` must not pay for hydrating the whole board's log. See list-tasks-slim-excludes-log.test.ts.
   for (const task of await store.listTasks({ includeArchived: false, slim: true, excludeLog: true })) {
-    if (task.deletedAt || (!task.overlapBlockedBy && !task.blockedBy && !isRecoverableOverlapWaitFailure(task.error))) continue;
+    if (task.deletedAt
+      || (!task.overlapBlockedBy && !task.blockedBy && !isRecoverableOverlapWaitFailure(task.error)
+        && !pendingEpisodeTaskIds.has(task.id))) continue;
     try {
       const lanes = await resolveTaskLifecycleColumns(store, task.id, irCache);
       const ir = await resolveWorkflowIrForTask(store, task.id, irCache, selectionCache).catch(() => undefined);

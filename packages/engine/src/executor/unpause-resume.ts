@@ -12,6 +12,7 @@
  * recoverCompletedTask refuses when resumingUnpaused still holds the id; transfer ownership before recovery.
  */
 import type { Task, TaskStore } from "@fusion/core";
+import { mergeDetailsCarriesMergeEvidence } from "@fusion/core";
 import { executorLog } from "../logger.js";
 import { getUnmetSchedulingDependencies, resolveDependencySatisfactionColumns } from "../scheduler.js";
 import type { EngineRunContext } from "../util/run-audit.js";
@@ -100,7 +101,13 @@ export async function dispatchUnpauseResume(
     }
 
     deps.approvalSuspended.delete(task.id);
-    if (isTaskWorkComplete(task) && !task.mergeDetails) {
+    /*
+    FNXC:ExecutionReArmCeiling 2026-11-14-16:20 (RUFU-1028):
+    This fast path reads "no merge was recorded". Under `!task.mergeDetails` truthiness, a card whose row
+    carried only recovery bookkeeping was denied its hand-off to review and re-executed from scratch. The same
+    misread fired the execute-preflight merge reset, so both halves of the ambiguity move to one predicate.
+    */
+    if (isTaskWorkComplete(task) && !mergeDetailsCarriesMergeEvidence(task.mergeDetails)) {
       deps.resumingUnpaused.delete(task.id);
       deps.recoveringCompleted.add(task.id);
       handoffOwnsClaim = true; // prevent finally from double-deleting a already-cleared claim

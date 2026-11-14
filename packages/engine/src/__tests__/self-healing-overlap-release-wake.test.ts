@@ -373,6 +373,86 @@ describe("released-overlap-waits resume gate", () => {
     expect(resumeIfSeen).toHaveLength(1);
   });
 
+  /*
+  FNXC:OverlapWaitSynchronization 2026-11-14-16:20 (RUFU-1028):
+  THE EPISODE TABLE IS A CANDIDATE SOURCE IN ITS OWN RIGHT.
+
+  RUFU-583 proves why the three row-level traces are not enough. Its card's `overlapBlockedBy` was cleared, its
+  dependency edge moved on, and its error text was replaced by the NEXT failure the card met —
+  `EXECUTION_REARM_EXHAUSTED:` — while a `pending` row still sat in the registry naming it. The sweep that
+  exists to wake such a card never read that table, so the wake owner was never scheduled: five cards held on
+  an already-released wait and the release sweep reported nothing.
+
+  These cases pin the fourth disjunct and, just as importantly, its two failure modes: a registry that names
+  nobody must not invent candidates, and a build whose store has no registry at all must keep working exactly as
+  before (feature detection, not a hard dependency, because the engine is loaded against stores that predate it).
+  */
+  it("considers a card whose only surviving trace is a pending episode row", async () => {
+    const { store, resumeIfSeen } = sweepStore(
+      makeTask("SANE-436", {
+        column: "building",
+        // Every row-level trace is gone: no blocker field, no dependency edge, and a DIFFERENT failure text
+        // than the overlap sentence the sweep used to require.
+        status: "failed",
+        error: "EXECUTION_REARM_EXHAUSTED: 4 re-arms produced no step progress",
+        branch: "fusion/sane-436",
+        worktree: null,
+        checkedOutBy: null,
+        paused: false,
+        userPaused: false,
+        autoMerge: true,
+      }),
+    );
+    (store as any).listPendingOverlapWaitTaskIds = vi.fn(async () => ["SANE-436"]);
+
+    expect(await reconcileReleasedOverlapWaits(store, () => false)).toBe(1);
+    expect(resumeIfSeen).toHaveLength(1);
+  });
+
+  it("does not invent candidates that the episode table does not name", async () => {
+    const { store, resumeIfSeen } = sweepStore(parkedTask("building"));
+    // `parkedTask` carries the recoverable sentence, so it is a candidate anyway; the registry naming nobody
+    // must change nothing about that, and a card the registry does not name must not gain a second wake.
+    (store as any).listPendingOverlapWaitTaskIds = vi.fn(async () => []);
+
+    expect(await reconcileReleasedOverlapWaits(store, () => false)).toBe(1);
+    expect(resumeIfSeen).toHaveLength(1);
+  });
+
+  it("keeps working against a store with no overlap-wait registry at all", async () => {
+    const { store, resumeIfSeen } = sweepStore(parkedTask("building"));
+    delete (store as any).listPendingOverlapWaitTaskIds;
+
+    await expect(reconcileReleasedOverlapWaits(store, () => false)).resolves.toBe(1);
+    expect(resumeIfSeen).toHaveLength(1);
+
+    // And the new source is genuinely additive: with the sentence gone AND no registry, nothing is claimed.
+    const { store: bare, resumeIfSeen: bareSeen } = sweepStore(
+      makeTask("SANE-436", {
+        column: "building",
+        status: "failed",
+        error: "some unrelated failure",
+        paused: false,
+        userPaused: false,
+      }),
+    );
+    delete (bare as any).listPendingOverlapWaitTaskIds;
+    expect(await reconcileReleasedOverlapWaits(bare, () => false)).toBe(0);
+    expect(bareSeen).toHaveLength(0);
+  });
+
+  it("never lets a hostile registry decide the sweep", async () => {
+    for (const hostile of [
+      vi.fn(async () => { throw new Error("registry down"); }),
+      vi.fn(() => new Promise<string[]>(() => {})),
+    ]) {
+      const { store, resumeIfSeen } = sweepStore(parkedTask("building"));
+      (store as any).listPendingOverlapWaitTaskIds = hostile;
+      await expect(reconcileReleasedOverlapWaits(store, () => false)).resolves.toBe(1);
+      expect(resumeIfSeen).toHaveLength(1);
+    }
+  });
+
   it("still resumes the WIP lane it always covered", async () => {
     const { store } = sweepStore(parkedTask("building"));
     expect(await reconcileReleasedOverlapWaits(store, () => false)).toBe(1);

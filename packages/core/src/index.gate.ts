@@ -3320,3 +3320,17 @@ export type {
   HostRetentionSourceDescriptor,
   HostRetentionSourceKind,
 } from "./retention-host-sources.js";
+
+/*
+FNXC:ExecutionReArmCeiling 2026-11-14-16:20 (RUFU-1028):
+Gate-barrel mirror of the `index.ts` export above. The `engine-core` gate project aliases `@fusion/core` to
+this file, and the engine modules that now read the predicate (`reset-merge-state`, `run-implementation`,
+`unpause-resume`, `resume-orphaned`) are reachable from gate tests — a symbol missing here is invisible to
+typecheck and to scoped tests while the gate goes red.
+*/
+export {
+  MERGE_DETAIL_EVIDENCE_KEYS,
+  MERGE_DETAIL_RECOVERY_BOOKKEEPING_KEYS,
+  classifyMergeDetailKey,
+  mergeDetailsCarriesMergeEvidence,
+} from "./tasks/merge-details-evidence.js";
