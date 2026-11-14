@@ -129,7 +129,16 @@ const quarantinedCliTests: string[] = [
   Keep the 14-day deletion ratchet and direct-file diagnostic bypass; do not appease this with timeout,
   retry, or assertion changes. This is not an engine-core merge-gate eviction.
   */
-  "src/commands/__tests__/skills-get.test.ts",
+  /*
+  FNXC:TestQuarantineRatchet 2026-11-14-00:42 (RUFU-956):
+  skills-get.test.ts is RESCUED, not deleted, and its exclusion is removed in the same commit as its
+  ledger row. The quarantine's subject still exists (the built CLI's global-flag precedence over a
+  guide request is shipped behaviour), so deletion would have removed live coverage rather than dead
+  bookkeeping. The load mechanism was one case performing three sequential bundle boots against the
+  default 5 s budget; it is now one boot per case, with every matcher unchanged. Keeping this list
+  comment-only is load-bearing: lockstep-cli-quarantine.test.ts parses this declaration with a regex
+  that needs the opening bracket and the closing `];` on their own lines.
+  */
 ];
 
 /*

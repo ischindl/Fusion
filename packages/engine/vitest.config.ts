@@ -466,8 +466,17 @@ export default defineConfig({
             inMemoryDb. These tests exercise the SQLite Database class being deleted in this feature.
             Quarantined on sight per AGENTS.md; mirrored in scripts/lib/test-quarantine.json.
             */
-            // SQLite-path gate test evicted + quarantined (see engine-core comment + ledger).
-            "src/__tests__/agent-activity-writers.test.ts",
+            /*
+            FNXC:TestQuarantineRatchet 2026-11-14-01:21 (RUFU-956):
+            agent-activity-writers.test.ts is RESCUED and its exclusion is removed in the same commit as its ledger row.
+            Its quarantine could not be evidenced at HEAD: the flake lives in the file's pgDescribe block, and that block
+            cannot execute here because PG test provisioning is refused (`pnpm pg:test:status` -> status "admin-ddl-denied"),
+            so pgDescribe skips all 5 of its cases. A skipped block is not a passing one and is certainly not a fixed one,
+            so this commit claims only what was measured: the 6 mocked-lane cases pass under load, and the PG-backed half
+            is unobservable until provisioning exists. Its `*.test.ts` name on a PostgreSQL block is RUFU-869's lane-placement
+            subject; renaming it here would change no engine lane and would drift register record 17 off its documented case.
+            docs/solutions/test-failures/suite-only-flakes-observed-register.md.
+            */
             /*
             FNXC:ExecutorPauseResumeQuarantine 2026-10-05-17:10:
             FN-9510's second full-suite sighting again observed zero agent creations only under

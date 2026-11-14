@@ -60,16 +60,17 @@ describe("CLI quarantine ledger lockstep", () => {
     }
   });
 
-  it("retains the FN-9425 skills-get quarantine exactly once", () => {
-    const quarantinedFile = "src/commands/__tests__/skills-get.test.ts";
+  /*
+  FNXC:TestQuarantineRatchet 2026-11-14-00:42 (RUFU-956):
+  The case this replaces asserted the FN-9425 skills-get row and exclusion must EXIST. RUFU-956 rescued that suite, so the old assertion encoded a removed state - and per AGENTS.md "A Behavior Change Owns Every Test That Asserts The Old Behavior" it moves in the same commit as the row it described. The subject is inverted rather than dropped: an empty pair for a rescued file is the new invariant, and it fails loudly if either half is re-added on its own.
+  */
+  it("keeps the rescued FN-9425 skills-get suite out of both quarantine halves", () => {
+    const rescuedFile = "src/commands/__tests__/skills-get.test.ts";
     const configPaths = parseQuarantinedCliTests(readFileSync(configPath, "utf8"));
     const ledger = JSON.parse(readFileSync(ledgerPath, "utf8")) as { entries: QuarantineEntry[] };
-    const entries = ledger.entries.filter((entry) => entry.file === `${cliPathPrefix}${quarantinedFile}`);
+    const entries = ledger.entries.filter((entry) => entry.file === `${cliPathPrefix}${rescuedFile}`);
 
-    expect(configPaths.filter((path) => path === quarantinedFile)).toHaveLength(1);
-    expect(entries).toHaveLength(1);
-    expect(entries[0]).toMatchObject({
-      quarantinedAt: "2026-09-29",
-    });
+    expect(configPaths.filter((path) => path === rescuedFile)).toEqual([]);
+    expect(entries).toEqual([]);
   });
 });

@@ -88,15 +88,31 @@ describe("fn skills get", () => {
     expect(missing).toMatchObject({ code: 1, signal: null, stderr: expect.stringContaining("computer-use") });
   });
 
+  /*
+  FNXC:TestQuarantineRatchet 2026-11-14-00:42 (RUFU-956):
+  This case carried THREE sequential built-CLI boots, so its wall-clock cost was three bundle boots
+  against the default 5 s budget - measured 5228 ms and 5915 ms at register record 19, and reproduced
+  again at HEAD under the loaded `src/commands/__tests__` lane (5000 ms timeout plus the setup file's
+  "left running at end of test" subprocess guard, which is a consequence of the abort, not a second
+  defect). The defect was the granularity, not the assertions: each boot asserts an independent
+  contract, so one test's budget was being spent on three of them. Splitting puts one boot per test
+  and changes no matcher, no timeout, and no expectation. Every assertion below is verbatim from the
+  original body; the historical case title is retained on the first one because the closed register
+  record pins that exact title and this file still exists.
+  */
   it("preserves global flag precedence and validation for built guide requests", async () => {
     const version = await runBuiltCli(["skills", "get", "computer-use", "--version"]);
     expect(version).toMatchObject({ code: 0, signal: null });
     expect(version.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
+  });
 
+  it("lets the built global --help win over a built guide request", async () => {
     const help = await runBuiltCli(["skills", "get", "computer-use", "--help"]);
     expect(help).toMatchObject({ code: 0, signal: null });
     expect(help.stdout).toContain("fn — AI-orchestrated task board");
+  });
 
+  it("refuses a built guide request that repeats the --project flag", async () => {
     const duplicateProject = await runBuiltCli([
       "skills", "get", "computer-use", "--project", "one", "-P", "two",
     ]);
