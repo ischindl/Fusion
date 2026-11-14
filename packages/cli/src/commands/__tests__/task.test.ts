@@ -3718,7 +3718,7 @@ describe("runTaskRetry", () => {
       Fourth key-level clear: the deterministic-spec refusal episode counts the identical verdicts that
       author the park, so a Retry that left the count standing would re-park on the next refusal.
       */
-      sourceMetadataPatch: { planPremiseRejection: null, planAdmissionStall: null, branchConflictRecoveryEpisode: null, deterministicSpecRejection: null },
+      sourceMetadataPatch: { planPremiseRejection: null, planAdmissionStall: null, branchConflictRecoveryEpisode: null, deterministicSpecRejection: null, strandedContinuationReclaim: null, executionRearmEpisode: null },  // FNXC:TestBehaviourOwnership 2026-11-14-01:32 (RUFU-1027 / RUFU-547): this asserts the EXACT manual-retry reset patch, so every key `buildManualRetryResetPatch` nulls must be listed here. `strandedContinuationReclaim` arrived with d956ffca31 (RUFU-547) and `executionRearmEpisode` with 0c911adda3 (RUFU-1027); neither lane updated this CLI assertion, because the writer lives in @fusion/core and this file lives in @runfusion/fusion, so changed-file-scoped verification could not see it. Listing a key is not a weakening: dropping one would still fail.
     });
     // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): the CLI retry re-queue must state release intent — without parkOnHold:false the rebound parks the card it was asked to run.
     expect(mockMoveTask).toHaveBeenCalledWith("FN-001", "todo", { parkOnHold: false });
@@ -3831,7 +3831,7 @@ describe("runTaskRetry", () => {
       And the fourth, on this path for the same reason: the whole-patch assertion tracks the builder,
       so the deterministic-spec episode key has to appear here too.
       */
-      sourceMetadataPatch: { planPremiseRejection: null, planAdmissionStall: null, branchConflictRecoveryEpisode: null, deterministicSpecRejection: null },
+      sourceMetadataPatch: { planPremiseRejection: null, planAdmissionStall: null, branchConflictRecoveryEpisode: null, deterministicSpecRejection: null, strandedContinuationReclaim: null, executionRearmEpisode: null },  // FNXC:TestBehaviourOwnership 2026-11-14-01:32 (RUFU-1027 / RUFU-547): this asserts the EXACT manual-retry reset patch, so every key `buildManualRetryResetPatch` nulls must be listed here. `strandedContinuationReclaim` arrived with d956ffca31 (RUFU-547) and `executionRearmEpisode` with 0c911adda3 (RUFU-1027); neither lane updated this CLI assertion, because the writer lives in @fusion/core and this file lives in @runfusion/fusion, so changed-file-scoped verification could not see it. Listing a key is not a weakening: dropping one would still fail.
     });
     // FNXC:TaskRetryReleaseIntent 2026-09-22-07:39 (RUFU-261): release intent pinned on the retry move args.
     expect(mockMoveTask).toHaveBeenCalledWith("FN-001", "todo", { parkOnHold: false });
