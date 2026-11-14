@@ -4396,7 +4396,23 @@ export function createTaskDeleteTool(store: TaskStore): ToolDefinition {
         const task = await store.deleteTask(params.id, {
           allowResurrection: params.allowResurrection === true,
           removeLineageReferences: params.removeLineageReferences === true,
-          auditContext: { agentId: "chat", runId: `chat-delete-${params.id}-${Date.now()}`, taskId: params.id },
+          /*
+          FNXC:TaskDeleteAttribution 2026-11-14-01:42 (RUFU-236):
+          `TaskDeleteAuditContext.taskId` is the CALLER's task, never the target, and it doubles as the
+          self-delete guard input (`auditContext.taskId === id` throws TaskSelfDeleteError in both
+          `deleteTaskImpl` and its PostgreSQL mirror). This lane used to stamp `params.id` — the target —
+          into it, so the guard matched on every call and no chat agent could delete ANY task (observed
+          live twice while closing duplicate card RUFU-235). A chat session carries no ambient task, so the
+          key is omitted entirely: `taskId: undefined` would satisfy the guard yet keep an own key, and the
+          attribution contract is "absent caller is recorded as absent" (`callerTaskId: null`).
+          `callerKind: "agent-tool"` is required rather than inferable: an absent kind persists as
+          `api-unattributed`, which tells the operator "nothing claimed responsibility" instead of the true
+          `agent-tool` sentence in `task-delete-notice.ts`. This mirrors the pi-extension agent-tool lane in
+          `packages/cli/src/extension.ts`, which forwards a caller task id only when its context really has one.
+          The guard itself is correct and untouched — pinned by
+          `packages/core/src/__tests__/postgres/store-self-delete-guard.pg.test.ts`.
+          */
+          auditContext: { agentId: "chat", runId: `chat-delete-${params.id}-${Date.now()}`, callerKind: "agent-tool" },
         });
         return { content: [{ type: "text" as const, text: `Deleted ${task.id}` }], details: { taskId: task.id } };
       } catch (err: unknown) {
