@@ -235,36 +235,90 @@ codebase owns the bug:
 | `POST /api/v1/me/sessions/events/batch` payload, `/sessions/<id>` GUI rows, HTTP `422` on a missing `event_type` | Fusion → Stash (this document) |
 | a `memctx_save` call, an `Updated existing note: <rel>` response, `## Update (…)` blocks inside a `.md` note | the pi memory plugin, not Fusion and not Stash |
 
-### The note-size ceiling is the store's, not a policy knob
+<!-- FNXC:MemoryBackendIntegration 2026-11-15-12:30:
+RUFU-461's code review (finding F1) measured that this subsection had substituted the project notes store's cap for
+the memory budget that card was about and had generalized that cap to every memory integration no matter which store
+it wrote through. Two ceilings must stay named distinctly here. NOTE_CONTENT_MAX_LENGTH (1 MiB = 1,048,576 bytes) is a hard
+refusal on writes to the notes table; RUFU-279's MEMORY_LONG_TERM_BYTE_BUDGET (32 KiB = 32,768 bytes) is measured
+per long-term MEMORY.md and only reports and schedules consolidation, never refuses. They differ by a factor of 32
+and in semantics, so no sentence may collapse them into one ceiling on "memory storage": RUFU-461's sibling pack
+notes at 1,505,099 / 1,504,574 / 1,501,742 bytes each exceed 1,048,576 and none was ever refused, because a pack
+file is not a notes-table row. A report of the shape "a memory save grew one file forever" is checked against the
+32 KiB budget first -- RUFU-461's reported file at 444,550 bytes is 13.6x over that budget while sitting under the
+notes cap, so the notes cap could not have flagged it. Worked examples cite measured bytes from the card's own
+evidence, never a rounded figure with no source. -->
 
-Fusion caps a stored note body at **1 MiB**: `NOTE_CONTENT_MAX_LENGTH` in
-`packages/core/src/notes/note-types.ts`, enforced in PostgreSQL by the CHECK constraint
-`notes_content_length <= 1048576`. Any memory integration that stores a *note-shaped* body faces the same
-boundary, whichever store it writes through.
+### Two size ceilings, in two stores, with opposite semantics
 
-That ceiling is why a memory plugin must be note-granular rather than append-oriented. A save path that
-rewrites an existing note on every similar save grows one file without bound; the file eventually crosses
-the cap of whatever holds it, and the memory system then fails **on the memory it is supposed to protect** —
-a repeatedly-saved topic becomes the one thing that can no longer be saved, and truncating the oversized
-body in response destroys the history it is storing. The contract that keeps a pack healthy:
+Fusion holds **two** size bounds, and they differ by a factor of 32 and in what happens when content
+crosses them. Which one applies is decided by **which store the content is written through**, never by the
+shape of the text being stored — one note-shaped body does not inherit the other store's limit.
+
+**The project notes table refuses at 1 MiB.** `NOTE_CONTENT_MAX_LENGTH = 1024 * 1024` in
+`packages/core/src/notes/note-types.ts` is enforced along the whole write path: the store raises
+`RangeError("Note content is too large")` (`packages/core/src/async-stores/async-note-store.ts`), the HTTP
+API answers `400` with `content must be a string up to 1 MiB`
+(`packages/dashboard/src/notes-routes.ts`), and PostgreSQL holds the `CHECK` constraint
+`notes_content_length` as `octet_length(content) <= 1048576`. The semantics are a hard refusal — the write
+fails and nothing partial lands. This bound belongs to the **notes table**, so an integration meets it only
+for content it actually writes through that store or its API.
+
+**Fusion's own long-term memory is measured at 32 KiB and is never refused.**
+`MEMORY_LONG_TERM_BYTE_BUDGET = 32 * 1024` in `packages/engine/src/memory/memory-budget.ts` is RUFU-279's
+bound: UTF-8 bytes counted **per long-term memory file** — `.fusion/memory/MEMORY.md` (project scope) and
+`.fusion/agent-memory/<agentId>/MEMORY.md` (one per durable agent), exactly the files
+`discoverLongTermMemoryTargets` enumerates. It is measured in two places: the `fn_memory_append` write path
+and the `reconcile-long-term-memory-budget` maintenance sweep. Crossing it produces **honest reporting plus
+scheduled maintenance, never a refusal** — a memory tool that declined to record a lesson because its file
+was large would lose the lesson permanently, while the crowding the budget guards against is only expensive.
+The breach surfaces as `memory:long-term-over-budget`, `memory:long-term-consolidated`, and
+`memory:long-term-consolidation-failed`, documented in
+[Long-term memory budget maintenance](./run-audit.md#long-term-memory-budget-maintenance-rufu-279). The
+budget is a code constant, not a settings knob, and a file above `MEMORY_LONG_TERM_MAINTENANCE_MAX_BYTES`
+(8 MiB) is still reported but deliberately left unwritten, so one pathological file cannot make every
+maintenance pass re-parse megabytes.
+
+**Check the 32 KiB budget first for a growth report.** A report of the shape "a memory save grew one file
+forever" is a growth question, and growth is what the memory budget measures; the 1 MiB cap guards a
+different store and is relevant only when the content goes through the notes table. The arithmetic is the
+proof: the file RUFU-461 reported, 444,550 bytes, is roughly 13.6× over the 32,768-byte budget while
+remaining **under** the 1,048,576-byte notes cap — so the notes cap could not have flagged that file and
+never did.
+
+Both bounds share one consequence when a save path ignores them. A save path that rewrites an existing note
+on every similar save grows one file without bound, and the memory system then fails **on the memory it is
+supposed to protect** — a repeatedly-saved topic becomes the one thing that can no longer be saved, and
+truncating the oversized body in response destroys the history it is storing. That is why a memory plugin
+must be note-granular rather than append-oriented. The contract that keeps a pack healthy is enforced by the
+**plugin's own save path**, not by either Fusion bound:
 
 - **one memory is one new note** — a colliding filename gets a `-2`/`-3` name, never a merge;
 - **similarity is reported, not merged** — the response names the closest existing note so linking stays
   deliberate;
-- **an oversized new note is refused**, with its byte size, and nothing partial is written;
-- **an oversized note already on disk is an operator repair** — a plugin reports it and leaves the file
+- **an oversized new note is refused by the plugin**, with its byte size, and nothing partial is written —
+  this is `memctx_save` declining its own write, not Fusion's notes store refusing;
+- **an oversized note already on disk is an operator repair** — the plugin reports it and leaves the file
   byte-identical rather than hand-splitting, trimming, or growing it.
 
 ### RUFU-461 (worked example)
 
-The reported symptom — `memctx_save` responding `Updated existing note` and rewriting a 1.3 MB blob — was
-traced to `weauratech/pi-memctx@main`, where save-target selection was a fuzzy term-overlap match
-(`findSimilarNote`) whose result was appended to under `## Update (<timestamp>)`, and where every turn with
-several saves appended a further `## Related learned memories` section to each note. Two unbounded writers,
-one file, one refusal.
+The reported symptom — `memctx_save` responding `Updated existing note:
+60-observations/operator-waiver-validity-rules.md` while rewriting that one file, measured on 2026-10-01 at
+**444,550 bytes over 5,486 lines** with 755 `## ` headings — was traced to `weauratech/pi-memctx@main`,
+where save-target selection was a fuzzy term-overlap match (`findSimilarNote`) whose result was appended to
+under `## Update (<timestamp>)`, and where every turn with several saves appended a further `## Related
+learned memories` section to each note. Two unbounded writers, one file, one refusal.
 
 Nothing on the Fusion or Stash side needed changing: the fix belongs to the upstream plugin, and it shipped
 as a `git format-patch` artifact on card RUFU-461 (`git am` applies it; no push, fork, or PR was performed
 from a Fusion task session). Fusion's own note store keeps its 1 MiB cap and its refusal semantics
-unchanged. If an integration needs to *split* content, splitting stays a deliberate, human-visible act on
-the pack — not something the save path does silently to make a write fit.
+unchanged, and they reach notes-table rows only. **Neither Fusion size bound governs the pack files on
+disk**, and that card's own evidence proves it: the sibling notes in the same directory measured 1,505,099 /
+1,504,574 / 1,501,742 bytes — each above the 1,048,576-byte notes cap, and none of them was ever refused,
+because a pack file is not a notes-table row. The 32 KiB budget does not measure them either, since it is
+defined per `.fusion/memory/MEMORY.md` and per `.fusion/agent-memory/<agentId>/MEMORY.md`. The budget is
+still the bound that describes this failure *shape* — one memory file grown without bound by repeated saves
+— so it is the first thing to check whenever the file in question is Fusion's own long-term memory, which is
+where the same shape arrives as `memory:long-term-over-budget` instead of a silent success message. If an
+integration needs to *split* content, splitting stays a deliberate, human-visible act on the pack — not
+something the save path does silently to make a write fit.
