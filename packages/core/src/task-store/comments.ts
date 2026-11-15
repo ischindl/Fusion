@@ -10,6 +10,13 @@
 import type { TaskLogEntry } from "../types.js";
 import { buildBootstrapPrompt } from "../mesh/mesh-task-replication.js";
 
+/*
+FNXC:TaskActivityLogRetention 2026-11-15-03:54:
+The governing policy for this constant is decided in docs/solutions/performance/task-activity-log-retention-policy.md (RUFU-633). Read it before changing the number: the entry cap is retained only as a BACKSTOP, and the operative bound decided there is a per-card byte ceiling enforced in the retention step of `appendTaskLogEntries`, not here. Measured reference-board distribution behind the 1 000 value: p50 = 97 entries, p90 = 737, max = 1 005, with 239 cards already at or above the cap — the cap is live, not headroom.
+
+FNXC:TaskActivityLogRetention 2026-11-15-03:54:
+`compactTaskActivityLog` below has no production caller; the live trim is the `seq`-ordered DELETE in `appendTaskLogEntries` (task-log-entries.ts). Do not attach new retention behavior to this function — it would look owned while changing nothing. Only `outcome` is truncated here; `action` is the unbounded field and carries the corpus's largest entries (27 KB measured), which is why the ADR decides a bound for it.
+*/
 const DEFAULT_TASK_ACTIVITY_LOG_ENTRY_LIMIT = 1_000;
 const DEFAULT_TASK_ACTIVITY_LOG_OUTCOME_LIMIT = 4_000;
 

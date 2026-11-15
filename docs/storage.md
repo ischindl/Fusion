@@ -668,6 +668,12 @@ whole-row `UPDATE`: measured on the operator's live board, 25 MB of 55 MB live `
 `tasks.log`, and every History line rewrote that row, bumped its `updated_at`, and invalidated whatever had
 reasoned from it. RUFU-312 moves the History itself out of the row.
 
+<!-- FNXC:TaskActivityLogRetention 2026-11-15-03:54: RUFU-633 — one-line pointer only; retention policy is decided elsewhere so this section keeps owning shape, backfill, benchmark and maintenance. -->
+
+How many History entries a card keeps, and in which currency, is a separate decision: see
+[Task activity-log retention policy](solutions/performance/task-activity-log-retention-policy.md) (RUFU-633). This section owns the storage shape, the backfill and catch-up, the read-shape
+benchmark, and the operator-decided maintenance list; that record owns the bound.
+
 ### The three tables (migration `0093_rufu_312_task_log_entries.sql`)
 
 | Table | Shape | Answers |
