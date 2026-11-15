@@ -35,6 +35,35 @@ export { RemovalReason } from "./worktree-backend.js";
 // surface for classification + prune in the acquisition tests.
 export { pruneWorktreeAdminEntries };
 
+/*
+FNXC:WorktreePreservation 2026-11-08-04:25 (RUFU-278):
+The refusal classifier and its settlement helper ride the pool barrel so every removal lane imports ONE classifier for
+both the removal decision and the preservation decision, the same reason RUFU-298 put the prune seam here. Lanes still
+import the predicate from `worktree-preservation.js` directly where their tests double the whole pool barrel — a
+classifier bound across a mocked barrel silently vanishes and the lane reverts to treating a protection as a failure.
+
+FNXC:WorktreePreservation 2026-11-15-22:43 (RUFU-278):
+This list publishes exactly what the leaf exports, and nothing more. A named re-export of a symbol the module does not
+export is not a harmless dead line: `tsc` fails it with TS2305, and because the engine is ESM built by plain `tsc`, the
+emitted barrel throws at link time for EVERY module that imports it (`self-healing.ts`, `executor/worktree-remove-own.ts`,
+`merge/post-landing-worktree-cleanup.ts`), so the engine cannot boot at all. Vitest cannot catch it — it transpiles
+without typechecking and its SSR transform does not validate re-export names — so the barrel is kept in lockstep with
+`worktree-preservation.ts`'s `export` lines by hand and `pnpm --filter @fusion/engine typecheck` is the only automated
+probe. `worktreeCheckoutIsReleased` stays OFF the barrel on purpose: every pointer-clear site imports it from the leaf
+for the mock-boundary reason above, so a barrel entry would advertise a caller nobody has.
+*/
+export {
+  isWorktreePreservationRefusal,
+  worktreePreservationRefusal,
+  settlePreservedWorktreeRemoval,
+} from "./worktree-preservation.js";
+export type {
+  PreservedWorktreeRemovalLane,
+  PreservedWorktreeRemovalOutcome,
+  PreservedWorktreeSettlementStore,
+  SettledPreservedWorktreeRemoval,
+} from "./worktree-preservation.js";
+
 // Re-export worktrunk installer types for convenience.
 export {
   resolveWorktrunkBinary as resolveWorktrunkBinaryOriginal,

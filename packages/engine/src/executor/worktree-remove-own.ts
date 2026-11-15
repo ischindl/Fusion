@@ -12,6 +12,9 @@ import {
   RemovalReason,
   removeWorktree,
 } from "../worktree/worktree-pool.js";
+// FNXC:WorktreePreservation 2026-11-08-05:40 (RUFU-278): the preservation leaf, so this helper's callers all get the
+// same classifier regardless of which worktree module boundary their tests double.
+import { settlePreservedWorktreeRemoval } from "../worktree/worktree-preservation.js";
 import { ActiveSessionWorktreeRemovalError } from "../worktree/worktree-backend.js";
 import { executorLog } from "../logger.js";
 
@@ -83,6 +86,22 @@ export async function removeOwnWorktreeWithReconcile(
         // Refused — surface the original error so the caller can decide.
       }
     }
+    /*
+    FNXC:WorktreePreservation 2026-11-08-05:40 (RUFU-278):
+    This was the residual `.throws` surface on the executor's removal path: a content-preservation refusal left here
+    reached callers as an undifferentiated failure, and a caller that logged-and-continued had nothing to tell the
+    operator except `Failed to ...`. The record is written at this single choke point so every caller gets it without
+    each one re-implementing the classification, and the throw is preserved untouched: the caller still owns the
+    disposition, and a caller that clears pointers only on a completed removal keeps doing that.
+    */
+    await settlePreservedWorktreeRemoval({
+      store: deps.store,
+      taskId: input.taskId,
+      worktreePath: input.worktreePath,
+      reason: input.reason,
+      lane: "executor-teardown",
+      error,
+    });
     throw error;
   }
 }

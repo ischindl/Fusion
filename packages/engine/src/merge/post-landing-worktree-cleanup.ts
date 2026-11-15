@@ -15,6 +15,9 @@ import {
   RemovalReason,
   removeWorktree,
 } from "../worktree/worktree-backend.js";
+// FNXC:WorktreePreservation 2026-11-08-04:45 (RUFU-278): imported from the preservation leaf rather than the pool
+// barrel so a lane whose tests double the whole barrel still reaches the real classifier.
+import { worktreePreservationRefusal } from "../worktree/worktree-preservation.js";
 import type { MergeWriteFence } from "./merge-write-fence.js";
 import { activeSessionRegistry } from "../agents/active-session-registry.js";
 import { canonicalizePath } from "../worktree/worktree-pool.js";
@@ -132,12 +135,19 @@ function combineNestedRegistrations(passes: readonly LandedNestedRegistrations[]
   );
 }
 
+/**
+ * FNXC:WorktreePreservation 2026-11-08-04:45 (RUFU-278):
+ * This lane is the board's reference fail-soft model: a refusal is an outcome on the result, never a thrown failure.
+ * What changes here is HOW the class is read — the shared classifier instead of a private `message.includes(": status
+ * probe failed (")` test, which was a second opinion on the same policy and would drift the moment a refusal was
+ * re-wrapped. The emitted outcomes are deliberately unchanged: `ignored-only` keeps reporting as `deliverable` at
+ * this layer because the merge gate's contract is "the work was preserved", not which proof was missing.
+ */
 function preservedOutcomeFor(error: unknown): Pick<CleanupLandedTaskWorktreeResult, "outcome" | "preservedReason"> {
   if (error instanceof ActiveSessionWorktreeRemovalError) {
     return { outcome: "preserved-active-session", preservedReason: "active-session" };
   }
-  const message = error instanceof Error ? error.message : String(error);
-  if (message.includes(": status probe failed (")) {
+  if (worktreePreservationRefusal(error)?.classification === "unverifiable") {
     return { outcome: "preserved-unverifiable", preservedReason: "unverifiable" };
   }
   return { outcome: "preserved-deliverable", preservedReason: "deliverable" };

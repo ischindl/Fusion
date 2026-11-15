@@ -1244,9 +1244,33 @@ condition as a no-op (`FNXC:WorktreeCleanup 2026-09-08-06:13`), so the policy wa
 type distinction was wrong. Callers that own a safe preserve path must discriminate by type: matching the
 message would stop working the moment the wording changes, so the message text is preserved verbatim.
 */
+/*
+FNXC:WorktreePreservation 2026-11-08-03:45 (RUFU-278):
+The status-probe refusal was the third content-preservation decision still typed as a bare `Error`, and it is the
+one RUFU-260 actually died on: its two retained directories were never proven to be anything, because the tree read
+itself failed. A lane could discriminate `deliverable` from `ignored-only` by type but had to re-parse the message
+for `unverifiable`, so the shared classifier was the only place that could be honest about all three. The class now
+names its own classification and reproduces BOTH refusal sentences byte-for-byte, so every existing message matcher
+(`worktree-backend.test.ts`, the real-git preservation suite, the self-healing cap lane) keeps matching unchanged.
+`unverifiable` is a preservation refusal rather than a removal failure for the same reason as the other two: an
+unreadable tree is not proof of an empty tree, and `probeWorktreeRemovalContent` deliberately reports its own
+failure instead of guessing (see `worktree-removal-content-probe.test.ts`).
+*/
+/** Which preservation decision a refusal carries. `unverifiable` means the tree could not be read at all. */
+export type WorktreePreservedRefusalClassification = "deliverable" | "ignored-only" | "unverifiable";
+
 export class WorktreeContentPreservationError extends Error {
-  constructor(public readonly worktreePath: string) {
-    super(`preserving ${worktreePath}: uncommitted or ignored content present`);
+  constructor(
+    public readonly worktreePath: string,
+    public readonly classification: WorktreePreservedRefusalClassification = "deliverable",
+    /** Only set for `unverifiable`; interpolated verbatim into the historical sentence. */
+    probeError?: string,
+  ) {
+    super(
+      classification === "unverifiable"
+        ? `preserving ${worktreePath}: status probe failed (${probeError ?? "unknown"})`
+        : `preserving ${worktreePath}: uncommitted or ignored content present`,
+    );
     this.name = "WorktreeContentPreservationError";
   }
 }
@@ -1652,7 +1676,8 @@ async function assertCleanForDefensiveRemoval(rootDir: string, worktreePath: str
   }
   const probe = await probeWorktreeRemovalContent(worktreePath);
   if (probe.status === "probe-failed") {
-    throw new Error(`preserving ${worktreePath}: status probe failed (${probe.probeError})`);
+    // RUFU-278: typed now that every lane discriminates by the shared predicate; the sentence is byte-identical.
+    throw new WorktreeContentPreservationError(worktreePath, "unverifiable", probe.probeError);
   }
   if (probe.classification === "deliverable") {
     /*
@@ -1724,8 +1749,10 @@ export async function removeWorktree(input: {
       contentClassification = contentProbe.classification;
       contentEntryCount = contentProbe.entryCount;
     } catch (error) {
-      const classification = error instanceof Error && error.message.includes(": status probe failed (")
-        ? "unverifiable"
+      // RUFU-278: the status-probe refusal carries its own classification now, so the refusal-to-audit read-back
+      // never re-parses a message. A non-typed throw (the project-root guard) keeps its historical attribution.
+      const classification: WorktreePreservedRefusalClassification = error instanceof WorktreeContentPreservationError
+        ? error.classification
         : "deliverable";
       await input.audit?.git({
         type: "worktree:removal-preserved",
@@ -1752,7 +1779,7 @@ export async function removeWorktree(input: {
           hasPostLandingProof: false,
         },
       }).catch(() => undefined);
-      throw new WorktreeContentPreservationError(input.worktreePath);
+      throw new WorktreeContentPreservationError(input.worktreePath, "ignored-only");
     }
   }
 

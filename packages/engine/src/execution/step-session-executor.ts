@@ -81,6 +81,9 @@ import {
   createTaskLogsReadTool,
 } from "../agent-tools.js";
 import { RemovalReason, removeWorktree } from "../worktree/worktree-backend.js";
+// FNXC:WorktreePreservation 2026-11-08-05:35 (RUFU-278): one classifier for the whole removal surface, reached from
+// the preservation leaf so a test doubling either worktree module boundary still sees the same predicate.
+import { settlePreservedWorktreeRemoval } from "../worktree/worktree-preservation.js";
 import { resolveWorkflowStepRunAgentId } from "./resolve-activity-run-agent-id.js";
 import { acknowledgeOverlapResumeContext, readOverlapResumeContextDelivery } from "./overlap-resume-context.js";
 import { pruneWorktreeAdminEntries } from "../worktree/worktree-prune.js";
@@ -1296,7 +1299,21 @@ export class StepSessionExecutor {
           stepExecLog.warn(`Parallel worktree for step ${stepIdx} already removed: ${worktreePath}`);
         }
       } catch (err) {
-        stepExecLog.warn(`Failed to remove worktree for step ${stepIdx}: ${err}`);
+        // FNXC:WorktreePreservation 2026-11-08-05:35 (RUFU-278): `StepSessionCleanup` is a defensive reason, so a
+        // parallel step worktree can be refused on content. Recording the classification replaces the bare "Failed to
+        // remove" claim, which told the operator something had broken when a policy had declined to delete the step's
+        // checkout. Either way this lane keeps its fail-soft disposition: a step worktree has no card pointer to retain.
+        const settled = await settlePreservedWorktreeRemoval({
+          store: this.store,
+          taskId: this.options.taskDetail.id,
+          worktreePath,
+          reason: RemovalReason.StepSessionCleanup,
+          lane: "step-session-cleanup",
+          error: err,
+        });
+        if (!settled) {
+          stepExecLog.warn(`Failed to remove worktree for step ${stepIdx}: ${err}`);
+        }
       }
     }
 
@@ -2181,7 +2198,20 @@ export class StepSessionExecutor {
             });
           }
         } catch (err) {
-          stepExecLog.warn(`Failed to clean up worktree for step ${stepIdx}: ${err}`);
+          // FNXC:WorktreePreservation 2026-11-08-05:35 (RUFU-278): see the wave-teardown site above — a content
+          // refusal is recorded as a preservation, and the branch deletion below stays skipped because the throw
+          // short-circuits it: work that could not be deleted must not have its branch dropped underneath it.
+          const settled = await settlePreservedWorktreeRemoval({
+            store: this.store,
+            taskId: this.options.taskDetail.id,
+            worktreePath,
+            reason: RemovalReason.StepSessionCleanup,
+            lane: "step-session-cleanup",
+            error: err,
+          });
+          if (!settled) {
+            stepExecLog.warn(`Failed to clean up worktree for step ${stepIdx}: ${err}`);
+          }
         } finally {
           this.unregisterParallelWorktree(stepIdx);
           this.parallelBranches.delete(stepIdx);

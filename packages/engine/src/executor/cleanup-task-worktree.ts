@@ -8,6 +8,9 @@
 import type { TaskStore, WorkspaceConfig } from "@fusion/core";
 import { findWorktreeUser } from "../merger.js";
 import { RemovalReason } from "../worktree/worktree-pool.js";
+// FNXC:WorktreePreservation 2026-11-08-05:30 (RUFU-278): the preservation leaf rather than the pool barrel, so a test
+// doubling the barrel cannot erase the protection/failure distinction here.
+import { settlePreservedWorktreeRemoval } from "../worktree/worktree-preservation.js";
 import { executorLog } from "../logger.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mirror TaskExecutor method surface
@@ -65,6 +68,24 @@ export async function cleanupTaskWorktree(
     executorLog.log(`Cleaned up worktree for ${taskId}`);
   } catch (err: unknown) {
     const errorMessage = err instanceof Error ? err.message : String(err);
-    executorLog.error(`Failed to clean up worktree for ${taskId}:`, errorMessage);
+    /*
+    FNXC:WorktreePreservation 2026-11-08-05:30 (RUFU-278):
+    This lane passes `ExecutorDispose`, a non-defensive reason that cannot refuse on content today, so the settle call
+    is normally a no-op and the existing error log stands. It is here because `reason` arrives from the caller: the
+    moment any caller routes a defensive reason through this teardown, a content refusal must be recorded as the
+    protection it is instead of surfacing as `Failed to clean up worktree` — which is how RUFU-260's episode first
+    reached an operator. No pointer is cleared on this path either way.
+    */
+    const settled = await settlePreservedWorktreeRemoval({
+      store: deps.store,
+      taskId,
+      worktreePath,
+      reason: RemovalReason.ExecutorDispose,
+      lane: "executor-teardown",
+      error: err,
+    });
+    if (!settled) {
+      executorLog.error(`Failed to clean up worktree for ${taskId}:`, errorMessage);
+    }
   }
 }

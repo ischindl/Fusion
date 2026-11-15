@@ -198,6 +198,10 @@ import {
 } from "./duplicate-marker-clear.js";
 import { mergeEffectiveSettings } from "./project/effective-settings.js";
 import { RemovalReason, canonicalizePath, classifyTaskWorktree, describeRegisteredWorktrees, getRegisteredWorktreeBranchMap, getRegisteredWorktreePaths, isUsableTaskWorktree, relocateReclaimableWorktreeIntoRoot, removeWorktree, resolveWorktreeBackend, scanIdleWorktrees, scanOrphanedBranches } from "./worktree/worktree-pool.js";
+// FNXC:WorktreePreservation 2026-11-08-15:15 (RUFU-278): the classifier comes from the preservation leaf, not the
+// pool barrel this file already imports removeWorktree from, so a test doubling the barrel cannot erase the
+// distinction between a protection and a failure here.
+import { isWorktreePreservationRefusal } from "./worktree/worktree-preservation.js";
 import { pruneWorktreeAdminEntries } from "./worktree/worktree-prune.js";
 /*
 FNXC:TempWorktreeSweep 2026-10-02-16:05 (RUFU-290):
@@ -26240,8 +26244,14 @@ const reroute = await rerouteUnrunPreMergeGateToReview(this.store, task, {
           FNXC:WorktreeCleanup 2026-09-08-06:13:
           A preservation refusal is a deliberate policy outcome, not a removal failure. Logging it at
           WARN on every maintenance tick turned permanently protected worktrees into a repeating bug.
+
+          FNXC:WorktreePreservation 2026-11-08-15:15 (RUFU-278):
+          The decision is now read from the shared classifier instead of a `preserving ${worktreePath}:` prefix test.
+          That prefix is shared by three refusal sentences, so it previously swallowed the project-root refusal — a
+          sweep being asked to delete the primary checkout, which IS a bug — into this quiet debug record. A content
+          refusal keeps its non-alarming disposition; anything else that shares the prefix now reaches the WARN below.
           */
-          if (errorMessage.startsWith(`preserving ${worktreePath}:`)) {
+          if (isWorktreePreservationRefusal(err)) {
             log.debug(`[self-healing] cap-enforcement preserved ${worktreePath}: ${errorMessage}`);
           } else {
             log.warn(`Failed to remove idle worktree ${worktreePath} during cap enforcement: ${errorMessage} — non-fatal`);

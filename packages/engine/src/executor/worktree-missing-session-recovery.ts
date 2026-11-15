@@ -20,6 +20,9 @@ import {
   removeWorktree,
   RemovalReason,
 } from "../worktree/worktree-pool.js";
+// FNXC:WorktreePreservation 2026-11-08-05:25 (RUFU-278): the preservation leaf, not the pool barrel, so doubling the
+// barrel in a test cannot make a protection read as a failure on this path.
+import { settlePreservedWorktreeRemoval } from "../worktree/worktree-preservation.js";
 import {
   autoRecoverWorktreeSessionStartFailure,
   MAX_WORKTREE_SESSION_RETRIES,
@@ -100,7 +103,25 @@ export async function recoverMissingWorktreeSessionStartFailure(
         liveOwnerProbe: (path, ownerTaskId) => deps.hasActiveWorktreeBinding(ownerTaskId, path),
       });
     } catch (removeErr) {
-      executorLog.warn(`${task.id}: failed to remove unusable session-start worktree ${staleWorktreePath}: ${formatError(removeErr)}`);
+      /*
+      FNXC:WorktreePreservation 2026-11-08-05:25 (RUFU-278):
+      The old line called this worktree "unusable" and said removal had failed. When the removal refused on content the
+      sentence was doubly wrong: the checkout is usable (it holds the card's work) and nothing failed — a policy
+      declined to delete it. A refusal now records the protection on the card; every other removal error keeps the
+      existing warn and the unchanged recovery cadence below.
+      */
+      const settled = await settlePreservedWorktreeRemoval({
+        store: deps.store,
+        taskId: task.id,
+        worktreePath: staleWorktreePath,
+        reason: RemovalReason.PoolPrune,
+        lane: "session-start-recovery",
+        error: removeErr,
+        runId: deps.getRunContextFor(task.id)?.runId,
+      });
+      if (!settled) {
+        executorLog.warn(`${task.id}: failed to remove unusable session-start worktree ${staleWorktreePath}: ${formatError(removeErr)}`);
+      }
     }
   }
 

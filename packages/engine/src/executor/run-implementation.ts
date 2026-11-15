@@ -242,6 +242,18 @@ import {
   isInsideWorktreesDir,
   removeWorktree,
 } from "../worktree/worktree-pool.js";
+/*
+FNXC:WorktreePreservation 2026-11-08-05:10 (RUFU-278):
+The executor's teardown is where RUFU-260 lost both its deliverable's location and its reason. These two seams are
+imported from the preservation leaf rather than the pool barrel above, because an executor test doubles the whole
+`worktree-pool.js` module: a classifier bound across that boundary silently reads as absent and the lane reverts to
+rendering a protection as a failure.
+*/
+import {
+  settlePreservedWorktreeRemoval,
+  worktreeCheckoutIsReleased,
+  worktreePreservationRefusal,
+} from "../worktree/worktree-preservation.js";
 
 export async function finalizeImplementationTransportWithOverlapAck(input: {
   session: AgentSession;
@@ -417,6 +429,89 @@ export async function parkExternalSessionObstacle(
     undefined,
     deps.getRunContextFor(taskId),
   );
+  await emitBoundedRunAudit(deps.store, {
+    taskId,
+    agentId: "executor",
+    runId: generateSyntheticRunId("external-block", taskId),
+    domain: "database",
+    mutationType: "task:external-block-parked",
+    target: taskId,
+    metadata: {
+      taskId,
+      origin: externalBlock.origin,
+      code: externalBlock.code,
+      source: externalBlock.source,
+      column: live.column,
+      resumeNodeId: externalBlock.resume.nodeId,
+    },
+  });
+  return true;
+}
+
+/*
+FNXC:WorktreePreservation 2026-11-08-06:50 (RUFU-278):
+The other half of RUFU-260. `parkExternalSessionObstacle` above can only freeze an obstacle
+`classifyExternalObstacle` recognises, and that classifier is deliberately message-conservative — a worktree
+preservation refusal is not a host, provider, credential, or network fault, so it returned null and the caller fell
+through to `updateTask({ status: "failed", error: <the refusal sentence> })`. That is the whole defect in one line: a
+policy that PROTECTED the deliverable wrote the card's death sentence into `error`, and the sentence read like an
+implementation bug, so Retry was the only remedy and it re-produced the same refusal.
+
+This helper is the lane-local typed catch: it asks the shared classifier, and only the classifier, and freezes through
+the same sanctioned `buildTaskExternalBlockPatch` primitive — which retains `column`, workflow progress, `worktree`,
+and `branch`, and is operator-clearable by design. `origin` is `project-configuration` because the blocking fact is the
+state of the project's own checkout, and the two `code` values are a fixed vocabulary so an operator's search and a
+dashboard label never depend on prose. Teaching `classifyExternalObstacle` instead was rejected on purpose: it is
+shared by every lane's freeze decision, and a wide change there has a blast radius this card does not own.
+*/
+export async function parkPreservedWorktreeObstacle(
+  deps: Pick<RunImplementationDeps, "store" | "getRunContextFor">,
+  taskId: string,
+  error: unknown,
+): Promise<boolean> {
+  const refusal = worktreePreservationRefusal(error);
+  if (!refusal) return false;
+  const live = await deps.store.getTask(taskId);
+  if (!live) return false;
+
+  const code = refusal.classification === "unverifiable"
+    ? "WORKTREE_STATE_UNVERIFIABLE"
+    : "WORKTREE_CONTENT_PRESERVED";
+  const preservedPath = live.worktree ?? "";
+  const externalBlock = {
+    origin: "project-configuration" as const,
+    code,
+    message: error instanceof Error ? error.message : String(error),
+    source: "session-failure" as const,
+    blockedAt: new Date().toISOString(),
+    resume: {
+      column: live.column,
+      nodeId: live.effectiveNodeId,
+      currentStep: live.currentStep,
+      worktree: live.worktree,
+      branch: live.branch,
+    },
+    report: buildTaskExternalBlockReport({ origin: "project-configuration", code }, {
+      verifiedCondition: `Automatic worktree cleanup refused to delete ${preservedPath || "the task worktree"} because it holds content that cannot be proven disposable (${refusal.classification}).`,
+      stopReason: "The task's committed deliverable and its uncommitted files are intact in that checkout; nothing was deleted.",
+      unimplementedWork: "The remaining step work was not started; the branch and worktree links are retained.",
+      unblockCondition: `Commit, move, or remove the files under ${preservedPath || "the task worktree"}, then Retry this task.`,
+    }),
+  };
+
+  await deps.store.updateTask(taskId, buildTaskExternalBlockPatch(externalBlock));
+  // The settled decision is recorded as a preservation with the `parked` outcome, so the refusal and the freeze are
+  // two queryable facts about one episode instead of one row that has to carry both meanings.
+  await settlePreservedWorktreeRemoval({
+    store: deps.store,
+    taskId,
+    worktreePath: preservedPath || "unknown",
+    reason: "unknown",
+    lane: "execution-terminal-sink",
+    outcome: "parked",
+    error,
+    runId: deps.getRunContextFor(taskId)?.runId,
+  });
   await emitBoundedRunAudit(deps.store, {
     taskId,
     agentId: "executor",
@@ -2039,10 +2134,13 @@ export async function runImplementation(
                 executorLog.warn(`⚡ ${task.id} transient error — retry ${attempt}/${MAX_RECOVERY_RETRIES} in ${delay}: ${errorMessage}`);
                 await deps.store.logEntry(task.id, `Transient error (retry ${attempt}/${MAX_RECOVERY_RETRIES} in ${delay}): ${errorMessage}`, undefined, deps.getRunContextFor(task.id));
               }
+              // FNXC:WorktreePreservation 2026-11-08-05:10 (RUFU-278): set only by a removal attempt that did not
+              // release the checkout; gates the pointer null below.
+              let retainedWorktree = false;
               if (!externalExecutionRoute.configured && worktreePath && existsSync(worktreePath)) {
                 try {
                   const settings = await deps.store.getSettings();
-                  await removeWorktree({
+                  const removal = await removeWorktree({
                     worktreePath,
                     rootDir: deps.rootDir,
                     settings,
@@ -2052,16 +2150,34 @@ export async function runImplementation(
                     expectedOwnerTaskId: task.id,
                     liveOwnerProbe: (path, ownerTaskId) => deps.hasActiveWorktreeBinding(ownerTaskId, path),
                   });
+                  retainedWorktree = !worktreeCheckoutIsReleased(removal);
                 } catch (wtErr: unknown) {
                   const msg = wtErr instanceof Error ? wtErr.message : String(wtErr);
-                  executorLog.warn(`${task.id}: worktree removal failed during transient-error retry cleanup (${worktreePath}): ${msg}`);
+                  // FNXC:WorktreePreservation 2026-11-08-05:10 (RUFU-278): this is RUFU-260's exact site. The catch
+                  // used to log one WARN line and then null `worktree`/`branch` regardless, so a refusal that had just
+                  // protected the deliverable orphaned the checkout holding it. Any throw retains the pointers: the
+                  // next dispatch rebinds to the same checkout through the proven-rebind path instead of losing it.
+                  const settled = await settlePreservedWorktreeRemoval({
+                    store: deps.store,
+                    taskId: task.id,
+                    worktreePath,
+                    reason: RemovalReason.ExecutorTransientRetry,
+                    lane: "executor-transient-retry",
+                    error: wtErr,
+                    runId: deps.getRunContextFor(task.id)?.runId,
+                  });
+                  retainedWorktree = true;
+                  if (!settled) {
+                    executorLog.warn(`${task.id}: worktree removal failed during transient-error retry cleanup (${worktreePath}): ${msg}`);
+                  }
                 }
               }
               await deps.store.updateTask(task.id, {
                 recoveryRetryCount: decision.nextState.recoveryRetryCount,
                 nextRecoveryAt: decision.nextState.nextRecoveryAt,
-                worktree: null,
-                branch: null, branchWriteOrigin: "engine" as const,
+                // FNXC:WorktreePreservation 2026-11-08-05:10 (RUFU-278): a pointer null is a claim that the checkout is
+                // gone, so it is written only when something released it.
+                ...(retainedWorktree ? {} : { worktree: null, branch: null, branchWriteOrigin: "engine" as const }),
               });
               deps.markGraphExecuteSelfRequeued(task.id);
               await deps.store.moveTask(task.id, await resolveReboundColumnFor(deps.store, task.id), { preserveProgress: true });
@@ -4383,11 +4499,14 @@ export async function runImplementation(
               executorLog.warn(`⚡ ${task.id} transient error — retry ${attempt}/${MAX_RECOVERY_RETRIES} in ${delay}: ${errorMessage}`);
               await deps.store.logEntry(task.id, `Transient error (retry ${attempt}/${MAX_RECOVERY_RETRIES} in ${delay}): ${errorMessage}`, undefined, deps.getRunContextFor(task.id));
             }
+            // FNXC:WorktreePreservation 2026-11-08-05:10 (RUFU-278): set only by a removal attempt that did not
+            // release the checkout; gates the pointer null below.
+            let retainedWorktree = false;
             // Clean up the old worktree so the retry gets a fresh one
             if (!externalExecutionRoute.configured && worktreePath && existsSync(worktreePath)) {
               try {
                 const settings = await deps.store.getSettings();
-                await removeWorktree({
+                const removal = await removeWorktree({
                   worktreePath,
                   rootDir: deps.rootDir,
                   settings,
@@ -4397,17 +4516,33 @@ export async function runImplementation(
                   expectedOwnerTaskId: task.id,
                   liveOwnerProbe: (path, ownerTaskId) => deps.hasActiveWorktreeBinding(ownerTaskId, path),
                 });
+                retainedWorktree = !worktreeCheckoutIsReleased(removal);
                 executorLog.log(`Removed old worktree for transient retry: ${worktreePath}`);
               } catch (cleanupErr: unknown) {
                 const cleanupErrMessage = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
-                executorLog.warn(`Failed to remove old worktree ${worktreePath}: ${cleanupErrMessage}`);
+                // FNXC:WorktreePreservation 2026-11-08-05:10 (RUFU-278): see the step-session site above — a refused
+                // removal keeps its pointers so the retry rebinds to the protected checkout instead of orphaning it.
+                const settled = await settlePreservedWorktreeRemoval({
+                  store: deps.store,
+                  taskId: task.id,
+                  worktreePath,
+                  reason: RemovalReason.ExecutorTransientRetry,
+                  lane: "executor-transient-retry",
+                  error: cleanupErr,
+                  runId: deps.getRunContextFor(task.id)?.runId,
+                });
+                retainedWorktree = true;
+                if (!settled) {
+                  executorLog.warn(`Failed to remove old worktree ${worktreePath}: ${cleanupErrMessage}`);
+                }
               }
             }
             await deps.store.updateTask(task.id, {
               recoveryRetryCount: decision.nextState.recoveryRetryCount,
               nextRecoveryAt: decision.nextState.nextRecoveryAt,
-              worktree: null,
-              branch: null, branchWriteOrigin: "engine" as const,
+              // FNXC:WorktreePreservation 2026-11-08-05:10 (RUFU-278): nulling these two fields is the orphaning half
+              // of RUFU-260; it now requires a removal that actually released the checkout.
+              ...(retainedWorktree ? {} : { worktree: null, branch: null, branchWriteOrigin: "engine" as const }),
             });
             deps.markGraphExecuteSelfRequeued(task.id);
             await deps.store.moveTask(task.id, await resolveReboundColumnFor(deps.store, task.id), { preserveProgress: true });
@@ -4430,7 +4565,17 @@ export async function runImplementation(
           : errorMessage;
         executorLog.error(`✗ ${task.id} execution failed:`, errorDetail);
         await deps.store.logEntry(task.id, `Execution failed: ${terminalError}`, errorStack ?? errorDetail, deps.getRunContextFor(task.id));
-        if (!(await parkExternalSessionObstacle(deps, task.id, terminalError))) {
+        /*
+        FNXC:WorktreePreservation 2026-11-08-06:50 (RUFU-278):
+        RUFU-260 arrived here. Its session error was a re-wrapped worktree preservation refusal, so
+        `parkExternalSessionObstacle` saw nothing it recognised and this line wrote the refusal sentence as the card's
+        terminal `error`. The preservation freeze is now tried before the terminal write, so the only way this sink can
+        still fire is a genuine failure — an ordinary removal error, a lock, or anything the classifier declines.
+        */
+        if (
+          !(await parkExternalSessionObstacle(deps, task.id, terminalError))
+          && !(await parkPreservedWorktreeObstacle(deps, task.id, err))
+        ) {
           await deps.store.updateTask(task.id, { status: "failed", error: terminalError });
         }
         await deps.persistTokenUsage(task.id);
