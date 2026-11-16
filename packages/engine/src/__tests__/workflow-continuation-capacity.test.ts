@@ -105,7 +105,7 @@ describe("workflow continuation active-slot admission", () => {
       dispatch,
     });
 
-    expect(admitted).toBe(true);
+    expect(admitted).toBe("dispatched");
     expect(dispatch).toHaveBeenCalledOnce();
     expect(taskStore.logEntry).not.toHaveBeenCalledWith(
       CONTINUATION_ID,
@@ -127,7 +127,7 @@ describe("workflow continuation active-slot admission", () => {
       dispatch,
     });
 
-    expect(admitted).toBe(true);
+    expect(admitted).toBe("dispatched");
     expect(dispatch).toHaveBeenCalledOnce();
   });
 
@@ -182,7 +182,7 @@ describe("workflow continuation active-slot admission", () => {
     const admitted = await admission;
 
     expect(taskStore.listTasks).toHaveBeenCalledOnce();
-    expect(admitted).toBe(false);
+    expect(admitted).toBe("deferred-capacity");
     expect(dispatch).not.toHaveBeenCalled();
   });
 
@@ -205,7 +205,7 @@ describe("workflow continuation active-slot admission", () => {
       dispatch,
     });
 
-    expect(admitted).toBe(true);
+    expect(admitted).toBe("dispatched");
     expect(dispatch).toHaveBeenCalledOnce();
   });
 
@@ -224,7 +224,7 @@ describe("workflow continuation active-slot admission", () => {
       dispatch,
     });
 
-    expect(admitted).toBe(true);
+    expect(admitted).toBe("dispatched");
     expect(dispatch).toHaveBeenCalledOnce();
   });
 
@@ -291,12 +291,12 @@ describe("workflow continuation active-slot admission", () => {
       dispatch(continuation, item),
       dispatch(continuation, { ...item, id: "continuation-duplicate" }),
     ]);
-    expect(admissions).toEqual([true, true]);
+    expect(admissions).toEqual(["dispatched", "deferred-in-flight-leak"]);
     await Promise.resolve();
     expect(execute).toHaveBeenCalledOnce();
-    expect(await dispatch(other, { ...item, id: "continuation-other", taskId: other.id })).toBe(true);
+    expect(await dispatch(other, { ...item, id: "continuation-other", taskId: other.id })).toBe("dispatched");
     expect(execute).toHaveBeenCalledTimes(2);
-    expect(await dispatch(fourth, { ...item, id: "continuation-fourth", taskId: fourth.id })).toBe(false);
+    expect(await dispatch(fourth, { ...item, id: "continuation-fourth", taskId: fourth.id })).toBe("deferred-capacity");
     expect(execute).toHaveBeenCalledTimes(2);
 
     settles.forEach((settle) => settle());

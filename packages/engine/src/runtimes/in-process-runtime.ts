@@ -95,7 +95,7 @@ import {
   isTaskPlanningOrExecutionLive,
   planningContinuationDispatchLeaseOwner,
 } from "../agents/planning-execution-liveness.js";
-import { generateSyntheticRunId } from "../util/run-audit.js";
+import { generateSyntheticRunId, type DatabaseMutationType } from "../util/run-audit.js";
 import { emitBoundedRunAudit } from "../util/emit-bounded-run-audit.js";
 import { setImmediate as setImmediateCb } from "node:timers";
 import { seedPreReleasePlanReviewContinuation, type PlanReviewSeedBailReason } from "../plan-review-continuation.js";
@@ -106,6 +106,15 @@ import {
   type CapacityEmptinessProof,
 } from "../concurrency/concurrency.js";
 import { openCapacityAdmissionPass } from "../concurrency/capacity-admission-snapshot.js";
+import {
+  CLAIM_REFUSAL_DEFER_MS,
+  PLANNING_CONTINUATION_ADMISSIONS,
+  createPlanningContinuationAccounting,
+  planningAdmissionDeferralMs,
+  planningAdmissionLatchesWindow,
+  type PlanningContinuationAccounting,
+  type PlanningContinuationAdmission,
+} from "./planning-continuation-accounting.js";
 
 /*
 FNXC:WorkflowResolvedColumns 2026-07-31-14:40 (fleet — long-tail fallback arms):
@@ -656,13 +665,55 @@ export interface DuePlanningContinuationDrainDeps {
   ) => Promise<void>;
   /** `item` is passed only so the caller's failure log can keep naming the work
    *  item verbatim; the extraction is otherwise a byte-for-byte body move. */
-  /** Return false when shared capacity rejected this item; later FIFO items
-   *  cannot fit either, so the bounded pass stops without repeating snapshots. The
-   *  pass still stamps the refused row through `defer` before stopping, otherwise
-   *  the stop starves every later item (RUFU-812). */
-  dispatch: (task: Task, item: WorkflowWorkItem) => boolean | void | Promise<boolean | void>;
+  /** Return the arm that decided this row's fate. `false` is accepted for backward
+   *  compatibility and means `deferred-capacity`; `true` means `dispatched`.
+   *
+   * FNXC:PlanningContinuationDispatch 2026-11-16-16:05 (RUFU-1069):
+   * A capacity refusal latches the pass: every later row in this window is refused by the SAME cap,
+   * so the pass stamps them all without re-snapshotting. Every OTHER non-dispatch arm belongs to one
+   * row only, so it stamps that row and keeps going — latching on a per-row reason would delay a
+   * whole window over one card's lost CAS. */
+  dispatch: (
+    task: Task,
+    item: WorkflowWorkItem,
+  ) => PlanningContinuationAdmission | boolean | void | Promise<PlanningContinuationAdmission | boolean | void>;
   nowMs: () => number;
   warn: (message: string) => void;
+  /** Per-pass outcome counters and the stalled-window record. Optional so a hand-built
+   *  drain stays exercisable; omitted means the pass still bounds rows but records nothing. */
+  accounting?: PlanningContinuationAccounting;
+  /** The `limit` the due read used, so the account can state whether the window was truncated. */
+  windowLimit?: number;
+}
+
+/** Map the drain's own skip classification onto the shared outcome vocabulary. */
+function planningSkipOutcome(
+  reason: "paused" | "awaiting-approval" | "planner-live",
+): PlanningContinuationAdmission {
+  if (reason === "paused") return "skipped-paused";
+  if (reason === "awaiting-approval") return "skipped-approval-required";
+  return "deferred-planner-live";
+}
+
+/**
+ * Read a dispatcher's answer as the shared vocabulary.
+ *
+ * FNXC:PlanningContinuationDispatch 2026-11-16-16:05 (RUFU-1069):
+ * `boolean` and `undefined` are accepted so a hand-built drain (every existing test fake) keeps
+ * working without reinterpretation: `false` was always the capacity arm, and `true`/omitted always
+ * meant "handled, nothing to stamp", which is what `dispatched` means here. An unrecognisable answer
+ * becomes `errored` rather than `dispatched` on purpose - defaulting an unknown arm to "dispatched"
+ * is exactly the lie this card removes, and `errored` is bounded, so a mis-wired fake cannot spin.
+ */
+function normalisePlanningDispatchOutcome(
+  answer: PlanningContinuationAdmission | boolean | void | null | undefined,
+): PlanningContinuationAdmission {
+  if (answer === false) return "deferred-capacity";
+  if (answer === true || answer === undefined || answer === null) return "dispatched";
+  if (typeof answer === "string" && (PLANNING_CONTINUATION_ADMISSIONS as readonly string[]).includes(answer)) {
+    return answer as PlanningContinuationAdmission;
+  }
+  return "errored";
 }
 
 /**
@@ -673,73 +724,122 @@ export interface DuePlanningContinuationDrainDeps {
  * FNXC:WorkflowScheduling 2026-07-21-22:31:
  * Per-item task loads must not abort the pass. getTask throws for soft-deleted
  * rows without an archive snapshot; one orphan earlier in created_at FIFO used
- * to prevent every later planning continuation from dispatching (FN-8470 → FN-8471).
+ * to prevent every later planning continuation from dispatching (FN-8470 -> FN-8471).
  * Cancel orphaned work items so they leave the due set and free the batch window.
  *
- * FNXC:PlanApprovalHold 2026-07-27-22:10 (U7, PR #2491 review — CodeRabbit):
+ * FNXC:PlanApprovalHold 2026-07-27-22:10 (U7, PR #2491 review - CodeRabbit):
  * EXTRACTED verbatim from `InProcessRuntime.drainWorkflowContinuations` with no
  * behavior change, because the deferral wiring was unprovable where it lived: the
  * method is private on a class whose construction attaches to the real project
  * registry, so no test could tell "the drain applies the deferral" from "the drain
  * ignores it". The re-entry guard and `status === "active"` check stay with the
- * caller — those are runtime lifecycle, not pass logic.
+ * caller - those are runtime lifecycle, not pass logic.
+ *
+ * FNXC:PlanningContinuationDispatch 2026-11-16-16:05 (RUFU-1069):
+ * The pass is now honest about every due row it examines, which changed it in two structural ways:
+ *
+ * 1. EVERY non-dispatch arm of `dispatch` bounds its own row, not only the capacity arm. Four arms
+ *    previously answered "handled" while writing nothing, so a boosted card at rank 1 of the window
+ *    could be examined every pass forever: measured on the live board, five operator-boosted cards
+ *    sat `state=runnable, retryAfter=NULL, lease_owner=NULL` for six minutes while eight unboosted
+ *    cards behind them were claimed. `planningAdmissionDeferralMs` is the single rule table, so an
+ *    arm cannot exist without a bound.
+ * 2. The whole item body sits inside a per-item guard. `deps.dispatch` was awaited with no catch and
+ *    `ProjectAdmissionCoordinator.admitNext` RETHROWS a `start()` rejection, so one throwing row
+ *    (the planning-lifecycle advisory-lock grant timeout is the known candidate, RUFU-708/RUFU-550)
+ *    aborted the pass and rows 2..N were never examined at all. A throw now bounds that one row as
+ *    `errored` and the loop continues.
+ *
+ * Only a capacity refusal latches the pass. A per-row refusal must not, or one card's lost CAS would
+ * delay every other card in the window by a full rotation horizon.
  */
 export async function drainDuePlanningContinuations(
   deps: DuePlanningContinuationDrainDeps,
 ): Promise<void> {
   const items = await deps.listDue();
+  const windowLimit = deps.windowLimit ?? items.length;
+  const horizons = {
+    capacityMs: CAPACITY_REFUSAL_DEFER_MS,
+    plannerLiveMs: PLANNER_LIVE_CONTINUATION_DEFER_MS,
+    parkedMs: PARKED_CONTINUATION_DEFER_MS,
+  };
+  const observe = async (item: WorkflowWorkItem, outcome: PlanningContinuationAdmission): Promise<void> => {
+    // Accounting sits beside a lifecycle pass: a refused record is a lost record and must never cost
+    // a dispatch. The sink-internal bounds do the real work; this is the outer net.
+    await deps.accounting?.observe(item.id, item.taskId, outcome).catch(() => undefined);
+  };
+  /** Arm one row's next chance. `expectedState` is the state the row had when it was listed, so a
+   *  row another lane already moved is left alone rather than re-stamped. */
+  const armRow = async (item: WorkflowWorkItem, horizonMs: number): Promise<void> => {
+    await deps.defer({
+      itemId: item.id,
+      expectedState: item.state,
+      retryAfter: new Date(deps.nowMs() + horizonMs).toISOString(),
+    });
+  };
   /*
   FNXC:ContinuationDrainFairness 2026-11-02-19:57 (RUFU-862):
   After one global-capacity refusal, every later row in this window is refused by the SAME cap, so
   `break` wrote a stamp for exactly one row and left the other W-1 examined rows due with a NULL
   `retryAfter`. The rotation math in `CAPACITY_REFUSAL_DEFER_MS` assumes a pass vacates the whole
   window; this makes that true. No dispatch happens after a refusal, so the stop's original guarantee
-  — a genuine global refusal stays true for every later FIFO item in the pass — is unchanged; only the
+  - a genuine global refusal stays true for every later FIFO item in the pass - is unchanged; only the
   bookkeeping for those later items is added. Accepted cost: a refusal that was NOT global stamps rows
   it should not have, delaying them by one horizon; the reservation-release wake covers that case.
+
+  FNXC:PlanningContinuationDispatch 2026-11-16-16:05 (RUFU-1069):
+  The latch is now scoped to the one outcome that earns it. RUFU-862's accepted cost ("a refusal that
+  was NOT global stamps rows it should not have") was paid for a case that is tellable apart once the
+  answer is discriminated, so a non-capacity refusal no longer latches the window at all.
   */
   let capacityRefusedInPass = false;
   for (const item of items) {
-    let task: Task | undefined;
-    let taskLookupFailed = false;
     try {
-      task = await deps.getTask(item.taskId);
-    } catch (error) {
-      taskLookupFailed = true;
-      deps.warn(
-        `Workflow continuation ${item.id}: getTask(${item.taskId}) failed — treating as orphan: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
-    const terminalColumns = taskLookupFailed
-      ? undefined
-      : await deps.resolveTerminalColumns?.(item.taskId).catch(() => undefined);
-    const resolved = resolvePlanningContinuationCandidate(item, task, {
-      taskLookupFailed,
-      terminalColumns,
-      plannerLive: deps.isPlannerLive?.(item.taskId) === true,
-    });
-    if (resolved.kind === "orphan") {
-      await deps.cancelOrphan(resolved.item, resolved.reason);
-      continue;
-    }
-    // FNXC:PlanApprovalHold 2026-07-27-21:30 (U7, PR #2491 review — greptile P1):
-    // push an operator-parked item out of the FIFO due window so it cannot starve
-    // newer actionable continuations while a human decides.
-    const deferral = resolveParkedContinuationDeferral(resolved, deps.nowMs());
-    if (deferral) await deps.defer(deferral);
-    if (resolved.kind !== "actionable") continue;
-    if (capacityRefusedInPass) {
-      // Refused by the cap this pass already proved full: stamp it, never dispatch it.
-      await deps.defer({
-        itemId: resolved.item.id,
-        expectedState: resolved.item.state,
-        retryAfter: new Date(deps.nowMs() + CAPACITY_REFUSAL_DEFER_MS).toISOString(),
+      let task: Task | undefined;
+      let taskLookupFailed = false;
+      try {
+        task = await deps.getTask(item.taskId);
+      } catch (error) {
+        taskLookupFailed = true;
+        deps.warn(
+          `Workflow continuation ${item.id}: getTask(${item.taskId}) failed - treating as orphan: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+      const terminalColumns = taskLookupFailed
+        ? undefined
+        : await deps.resolveTerminalColumns?.(item.taskId).catch(() => undefined);
+      const resolved = resolvePlanningContinuationCandidate(item, task, {
+        taskLookupFailed,
+        terminalColumns,
+        plannerLive: deps.isPlannerLive?.(item.taskId) === true,
       });
-      continue;
-    }
-    if (await deps.dispatch(resolved.task, resolved.item) === false) {
+      if (resolved.kind === "orphan") {
+        await deps.cancelOrphan(resolved.item, resolved.reason);
+        await observe(resolved.item, "skipped-orphan");
+        continue;
+      }
+      // FNXC:PlanApprovalHold 2026-07-27-21:30 (U7, PR #2491 review - greptile P1):
+      // push an operator-parked item out of the FIFO due window so it cannot starve
+      // newer actionable continuations while a human decides.
+      const deferral = resolveParkedContinuationDeferral(resolved, deps.nowMs());
+      if (deferral) await deps.defer(deferral);
+      if (resolved.kind !== "actionable") {
+        // The deferral above already armed this row; counting it must not also stamp it, which is why
+        // the rule table answers `null` for the skip arms.
+        await observe(resolved.item, planningSkipOutcome(resolved.reason));
+        continue;
+      }
+      if (capacityRefusedInPass) {
+        // Refused by the cap this pass already proved full: stamp it, never dispatch it.
+        await armRow(resolved.item, CAPACITY_REFUSAL_DEFER_MS);
+        await observe(resolved.item, "deferred-capacity");
+        continue;
+      }
+      const answer = normalisePlanningDispatchOutcome(await deps.dispatch(resolved.task, resolved.item));
+      await observe(resolved.item, answer);
+      if (answer === "dispatched") continue;
       /*
       FNXC:ContinuationDrainFairness 2026-10-29-10:55 (RUFU-812):
       A capacity refusal used to stop the pass and write nothing, so the refused row stayed
@@ -747,29 +847,59 @@ export async function drainDuePlanningContinuations(
       measured on the live board: 156 due continuations, 0 with a `retryAfter`, 95 of them
       `plan-review`, oldest 81 days. The due poll reads `limit 20` ordered by task queue rank, so
       the refused head was re-listed and re-refused on every pass forever and rows 21..156 were
-      never read at all — no card could reach Plan Review, which is how a card with a valid
+      never read at all - no card could reach Plan Review, which is how a card with a valid
       `approved_plan_fingerprint` ends up with zero `workflow_step_results` rows.
       Stamping the refused row is the same FIFO protection the operator-parked deferral above
       already uses; the batch-limit comment says the starvation is a property of the bound, and a
       refusal was the one examined-but-not-moved case that never got the stamp.
-      The stop itself is kept: a genuine global-capacity refusal stays true for every later FIFO
-      item within the same pass. The CAS `expectedState` means a row another lane already moved is
-      left alone, and the accepted cost is that a slot freed microseconds later is picked up on the
-      next pass, not this one.
 
       FNXC:ContinuationDrainFairness 2026-11-02-19:57 (RUFU-862):
       "The stop itself is kept" was correct about DISPATCHING and wrong about STAMPING: stopping
       outright also stopped the stamp for the remaining W-1 rows the same cap had just refused, which
       is why the live board still showed 256 of 274 due rows with a NULL `retryAfter` four days after
       this shipped. The refusal now latches the pass instead of ending it.
+
+      FNXC:PlanningContinuationDispatch 2026-11-16-16:05 (RUFU-1069):
+      Generalised from the capacity arm to every non-dispatch arm, which is what makes the operator's
+      observation impossible: an examined row cannot leave a pass both due and silent.
       */
-      capacityRefusedInPass = true;
-      await deps.defer({
-        itemId: resolved.item.id,
-        expectedState: resolved.item.state,
-        retryAfter: new Date(deps.nowMs() + CAPACITY_REFUSAL_DEFER_MS).toISOString(),
-      });
+      const horizonMs = planningAdmissionDeferralMs(answer, horizons) ?? CLAIM_REFUSAL_DEFER_MS;
+      await armRow(resolved.item, horizonMs);
+      if (planningAdmissionLatchesWindow(answer)) capacityRefusedInPass = true;
+    } catch (error) {
+      /*
+      FNXC:PlanningContinuationDispatch 2026-11-16-16:05 (RUFU-1069):
+      The per-item guard. A throw here is the same class of transient condition as a refused claim -
+      the measured candidate is the planning-lifecycle advisory-lock grant timeout - so it gets the
+      same short bound and the loop keeps its remaining rows. Bounded rather than skipped outright:
+      an unbounded row re-enters the 20-wide window every `WORKFLOW_CONTINUATION_POLL_MS` and
+      re-starves the tail, which is the RUFU-812 mechanism. If arming itself fails there is nothing
+      left to do but say so; the row stays due and the next pass re-examines it.
+      */
+      deps.warn(
+        `Workflow continuation ${item.id}: planning admission raised - bounding this row and continuing: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      try {
+        await armRow(item, CLAIM_REFUSAL_DEFER_MS);
+      } catch (armError) {
+        deps.warn(
+          `Workflow continuation ${item.id}: could not arm a deferral after a failed admission: ${
+            armError instanceof Error ? armError.message : String(armError)
+          }`,
+        );
+      }
+      await observe(item, "errored");
     }
+  }
+  if (deps.accounting) {
+    await deps.accounting.finish({
+      limit: windowLimit,
+      dueSetTruncated: items.length >= windowLimit,
+      windowHeadTaskId: items[0]?.taskId ?? null,
+      windowHeadItemId: items[0]?.id ?? null,
+    }).catch(() => undefined);
   }
 }
 
@@ -924,9 +1054,18 @@ export async function dispatchPlanningContinuationIfCurrent(input: {
   item: WorkflowWorkItem;
   isPlannerLive?: (taskId: string) => boolean;
   dispatch: () => void;
-}): Promise<boolean> {
-  const validateAndDispatch = async (): Promise<boolean> => {
-    if (input.isPlannerLive?.(input.task.id) === true) return false;
+}): Promise<PlanningContinuationAdmission> {
+  /*
+  FNXC:PlanningContinuationDispatch 2026-11-16-16:20 (RUFU-1069):
+  This seam used to answer a bare `boolean`, and its `false` covered five genuinely different facts -
+  a planner is live, the card is not planable, the card waits on a human, the row moved underneath,
+  the running claim went to someone else. Callers could only log one sentence about all five, and
+  `admitPlanningContinuation`'s already-active branch DISCARDED the value entirely, so a refused
+  hand-off was reported to the drain as "handled". Each arm now names itself, which is what lets the
+  drain arm the right horizon and the window account count the right reason.
+  */
+  const validateAndDispatch = async (): Promise<PlanningContinuationAdmission> => {
+    if (input.isPlannerLive?.(input.task.id) === true) return "deferred-planner-live";
     const currentTask = typeof input.store.getTask === "function"
       ? await input.store.getTask(input.task.id).catch(() => undefined)
       : input.task;
@@ -941,8 +1080,8 @@ export async function dispatchPlanningContinuationIfCurrent(input: {
     */
     const terminalLifecycle = await resolveTaskLifecycleColumns(input.store, input.task.id);
     const terminalColumns = new Set([terminalLifecycle?.complete ?? "done", "done"]);
-    if (!isPlanningContinuationTaskDispatchable(currentTask, terminalColumns)) return false;
-    if (isTaskBlockedOnApproval(currentTask)) return false;
+    if (!isPlanningContinuationTaskDispatchable(currentTask, terminalColumns)) return "refused-not-planable";
+    if (isTaskBlockedOnApproval(currentTask)) return "skipped-approval-required";
     const currentItem = typeof input.store.getWorkflowWorkItem === "function"
       ? await input.store.getWorkflowWorkItem(input.item.id).catch(() => null)
       : input.item;
@@ -957,7 +1096,7 @@ export async function dispatchPlanningContinuationIfCurrent(input: {
       || currentItem.attempt !== input.item.attempt
       || currentItem.retryAfter !== input.item.retryAfter
       || currentItem.leaseOwner !== input.item.leaseOwner
-      || currentItem.leaseExpiresAt !== input.item.leaseExpiresAt) return false;
+      || currentItem.leaseExpiresAt !== input.item.leaseExpiresAt) return "refused-superseded";
     /*
     FNXC:PlanningContinuationDispatch 2026-09-06-01:58:
     Validation under the planning lock is insufficient by itself: a planner that was awaiting setup
@@ -976,12 +1115,20 @@ export async function dispatchPlanningContinuationIfCurrent(input: {
         lastError: null,
         blockedReason: null,
       });
-      if (!isPlanningContinuationDispatchClaim(claimed) || claimed.leaseOwner !== leaseOwner) {
-        return false;
+      /*
+      FNXC:PlanningContinuationDispatch 2026-11-16-16:20 (RUFU-1069):
+      `transitionWorkflowWorkItem` is typed non-null but is reached through a duck-typed partial
+      store, so a nullish answer was a live shape: it threw a TypeError out of `isPlanningContinuation
+      DispatchClaim`, which - because `admitNext` rethrows a `start()` rejection - aborted the entire
+      drain pass and left every row behind this one unexamined. A store that answers nothing is now
+      an ordinary lost claim: bounded, counted, and the pass keeps going.
+      */
+      if (!claimed || !isPlanningContinuationDispatchClaim(claimed) || claimed.leaseOwner !== leaseOwner) {
+        return "refused-claim";
       }
     }
     input.dispatch();
-    return true;
+    return "dispatched";
   };
   const lifecycleLock = (input.store as Partial<TaskStore>).withPlanningLifecycleLock;
   return typeof lifecycleLock === "function"
@@ -997,12 +1144,20 @@ export async function admitPlanningContinuation(input: {
   isPlannerLive?: (taskId: string) => boolean;
   dispatch: () => Promise<void>;
   onDispatchSettled?: () => void;
-}): Promise<boolean> {
+}): Promise<PlanningContinuationAdmission> {
   const runKey = `${input.projectId}:${input.task.id}`;
-  // A task owns one top-level slot regardless of how many durable continuation
-  // rows point at it. Treat a duplicate due row as already handled; admitting it
-  // would attach two releasers to one task-keyed coordinator reservation.
-  if (planningContinuationRuns.has(runKey)) return true;
+  /*
+  FNXC:PlanningContinuationDispatch 2026-11-16-16:20 (RUFU-1069):
+  A task owns one top-level slot regardless of how many durable continuation rows point at it, so a
+  duplicate due row must not attach a second releaser to one task-keyed reservation. But "already
+  handled" was a lie that cost the operator their board: a row in the DUE set is by definition
+  unleased, so a run key held against a due row means `planningContinuationRuns` kept an entry after
+  its run ended. Returning `true` there wrote nothing, so the row was re-listed and re-declined every
+  `WORKFLOW_CONTINUATION_POLL_MS` with no durable trace. It is now its own named outcome with its own
+  bound, which doubles as the diagnostic: this arm firing on a DUE row is proof of a bookkeeping leak,
+  and no wait for capacity explains it.
+  */
+  if (planningContinuationRuns.has(runKey)) return "deferred-in-flight-leak";
   const settings = await input.store.getSettings();
   /*
   FNXC:ExternalBlock 2026-10-19-20:28 (RUFU-374):
@@ -1050,7 +1205,14 @@ export async function admitPlanningContinuation(input: {
     .agentTaskIds
     .includes(input.task.id);
   if (taskAlreadyActive) {
-    await dispatchPlanningContinuationIfCurrent({
+    /*
+    FNXC:PlanningContinuationDispatch 2026-11-16-16:20 (RUFU-1069):
+    The discarded-result bug. This branch called the same-slot hand-off, threw its answer away, and
+    returned "handled" unconditionally - so a hand-off that was refused (a planner armed itself a
+    moment ago, the card is not planable, the claim went elsewhere) reached the drain looking exactly
+    like a hand-off that ran. The answer is now the return value.
+    */
+    const handoff = await dispatchPlanningContinuationIfCurrent({
       store: input.store,
       task: input.task,
       item: input.item,
@@ -1061,13 +1223,20 @@ export async function admitPlanningContinuation(input: {
           .catch(() => {});
       },
     });
-    return true;
+    if (handoff === "dispatched") planningContinuationCapacityReasons.delete(runKey);
+    return handoff;
   }
   // This snapshot is intentionally created lazily inside the coordinator drain.
   // A prior lane may have been finishing its own handoff before this task's
   // turn; a pre-drain project snapshot can admit into its newly occupied slot.
   let admissionSnapshot: Promise<{ count: number; ids: string[] }> | undefined;
-  let plannerOrContinuationSuperseded = false;
+  /*
+  FNXC:PlanningContinuationDispatch 2026-11-16-16:20 (RUFU-1069):
+  `plannerOrContinuationSuperseded` collapsed every decline into one flag that the caller could only
+  read as "handled". `lastAdmission` keeps the reason for THIS row, so the flag is gone rather than
+  kept beside a truer value.
+  */
+  let lastAdmission: PlanningContinuationAdmission | undefined;
   const getAdmissionSnapshot = () => admissionSnapshot ??= loadClaimSnapshot();
   await projectAdmissionCoordinator.admitNext({
     projectId: input.projectId,
@@ -1104,7 +1273,7 @@ export async function admitPlanningContinuation(input: {
         Triage installs its running continuation under the same lock; whichever owner arrives first
         is visible to the other, and a superseded candidate declines without consuming capacity.
         */
-        const dispatched = await dispatchPlanningContinuationIfCurrent({
+        const admission = await dispatchPlanningContinuationIfCurrent({
           store: input.store,
           task: input.task,
           item: input.item,
@@ -1135,14 +1304,33 @@ export async function admitPlanningContinuation(input: {
             ).catch(() => {});
           },
         });
-        if (!dispatched) plannerOrContinuationSuperseded = true;
+        lastAdmission = admission;
+        const dispatched = admission === "dispatched";
         return dispatched;
       },
     }],
   });
-  if (selected || duplicateHandled || plannerOrContinuationSuperseded) {
+  /*
+  FNXC:PlanningContinuationDispatch 2026-11-16-16:20 (RUFU-1069):
+  The three declining outcomes used to share one `return true`, which is the sentence this card exists
+  to delete. Each now answers as itself, and the drain turns each into a bound on this row. The
+  capacity fallthrough below is unchanged: `start()` is reached only when the coordinator had a slot to
+  give, so arriving here with no attempt recorded really does mean "the board is full".
+  */
+  if (selected) {
     planningContinuationCapacityReasons.delete(runKey);
-    return true;
+    return "dispatched";
+  }
+  if (duplicateHandled) {
+    // A run for this task appeared between the preflight and the serialized ownership check, so this
+    // row is due while the task slot is held. Same named outcome as the preflight arm: from here the
+    // two are the same fact, and both are proof the row cannot be dispatched this pass.
+    planningContinuationCapacityReasons.delete(runKey);
+    return "deferred-in-flight-leak";
+  }
+  if (lastAdmission && lastAdmission !== "dispatched") {
+    planningContinuationCapacityReasons.delete(runKey);
+    return lastAdmission;
   }
   const snapshot = await getAdmissionSnapshot();
   const limit = resolveAgentCapacityLimit({
@@ -1166,7 +1354,7 @@ export async function admitPlanningContinuation(input: {
       await input.store.logEntry(input.task.id, reason);
     }
   }
-  return false;
+  return "deferred-capacity";
 }
 
 /*
@@ -1207,7 +1395,13 @@ export function createPlanningContinuationDispatcher(input: {
   isPlannerLive?: (taskId: string) => boolean;
   kick?: () => void;
   onError?: (task: Task, item: WorkflowWorkItem, error: unknown) => void;
-}): (task: Task, item: WorkflowWorkItem) => Promise<boolean> {
+  /*
+  FNXC:PlanningContinuationDispatch 2026-11-16-16:30 (RUFU-1069):
+  The return type widened from `boolean` to the shared admission vocabulary. The same-tick contract
+  above is untouched: the arm is decided by `admitPlanningContinuation`, which already resolved
+  without awaiting the inner run, so naming the outcome adds no await before `execute()`.
+  */
+}): (task: Task, item: WorkflowWorkItem) => Promise<PlanningContinuationAdmission> {
   return (task, item) => {
     let kickAfterOwnershipRelease = false;
     return admitPlanningContinuation({
@@ -1489,6 +1683,29 @@ export class InProcessRuntime
   /** FNXC:EventDrivenDispatch 2026-09-18-00:40: FN-519 bounded "why did this card wait?" recorder. */
   private dispatchLatency?: import("../util/dispatch-latency.js").DispatchLatencyRecorder;
   private workflowContinuationDrainActive = false;
+  /*
+  FNXC:PlanningContinuationDispatch 2026-11-16-16:30 (RUFU-1069):
+  One accounting instance per runtime, not per pass: its dedupe memory is the emission floor for a
+  stalled window, and a fresh object each pass would forget it and re-emit every 2 s. Built lazily
+  because the sinks read `this.taskStore`, which a field initializer would capture before the
+  constructor assigns it.
+  */
+  private planningAccounting?: PlanningContinuationAccounting;
+  private get planningContinuationAccounting(): PlanningContinuationAccounting {
+    this.planningAccounting ??= createPlanningContinuationAccounting({
+      nowMs: () => Date.now(),
+      logEntryOnce: (taskId, input) => this.taskStore.logEntryOnce?.(taskId, input),
+      emitAudit: (event) => {
+        emitBoundedRunAudit(this.taskStore, {
+          ...event,
+          mutationType: event.mutationType as DatabaseMutationType,
+          domain: "database",
+        });
+        return Promise.resolve();
+      },
+    });
+    return this.planningAccounting;
+  }
   private workflowContinuationDrainSince = 0;
   private workflowContinuationDrainProgressAt = 0;
   private workflowContinuationDrainPhase = "idle";
@@ -4071,6 +4288,8 @@ export class InProcessRuntime
         },
         nowMs: () => Date.now(),
         warn: (message) => runtimeLog.warn(message),
+        accounting: this.planningContinuationAccounting,
+        windowLimit: DUE_PLANNING_CONTINUATION_BATCH_LIMIT,
       });
     } finally {
       if (this.workflowContinuationDrainGeneration === drainGeneration) {

@@ -670,3 +670,71 @@ retry. The remedy is a re-send of the complete specification or a restore from t
 performs that restore automatically - recovery stays an operator or planner decision. An authorized
 replacement (an operator prompt edit through the task-update route, a merge-boundary correction, the duplicate
 marker body) is the one case that shrinks without a marker, because it states its intent explicitly.
+
+## A card at rank 1 of the planning window is not dispatched (RUFU-1069)
+
+A boosted or otherwise urgent card that sits at the top of the planning queue, keeps its intake lane, and
+records nothing at all is the shape this recipe is for. "No evidence" is itself the signal: the planning
+drain reads a bounded window of due continuations ordered by the owning task's queue rank every two
+seconds, so a row at rank 1 is re-read on essentially every pass. If nothing moves it, either something
+outside the engine owns the wait, or the pass examined it and answered itself that it had handled it.
+
+**One query answers which card is at the head and whether the window is bounded.**
+
+`retry_after` and `timestamp` are ISO-8601 TEXT columns, not `timestamptz`, so the clock comparison below
+is written against a formatted literal - the same shape the store's own due predicate uses.
+
+```sql
+select w.id, w.task_id, w.state, w.retry_after, w.lease_owner, t.column, t.queue_boost
+  from workflow_work_items w
+  join tasks t on t.id = w.task_id and t.project_id = w.project_id
+  where w.kind = 'task' and w.state = 'runnable'
+    and (w.retry_after is null
+         or w.retry_after <= to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+  order by (case when t.queue_boost is not null
+                 then (t.queue_boost ->> 'sequence')::numeric else 0 end) desc,
+           t.created_at asc
+  limit 20;
+```
+
+- `retry_after` set on the head → the window is bounded and this is a *wait*, with a duration. Read the
+  card's History line naming which admission refused it and how long it is deferred.
+- `retry_after` NULL and `lease_owner` NULL on a head that has been there for minutes → the RUFU-812 /
+  RUFU-862 / RUFU-1069 starvation signature. That combination is what this card made impossible for a
+  *refusal*; if it reappears, a new admission arm was added without a deferral rule.
+- The window is full of rows with `retry_after IS NULL` while a card at rank 1 is unclaimed → look at the
+  cap and the horizons, not at the card.
+
+**Then ask whether the pass is examining work and moving none of it.**
+
+```sql
+select timestamp, metadata
+  from run_audit_events
+  where mutation_type = 'task:planning-window-outcome'
+  order by timestamp desc
+  limit 20;
+```
+
+(The canonical queue-rank expression is `taskQueueOrderBy()` in
+`packages/core/src/task-store/task-queue-order-ops.ts`; the `ORDER BY` above mirrors its leading term so
+the read shows what the drain sees, and `run_audit_events` keys its clock on `timestamp`, not
+`created_at`.)
+
+One record per stalled drain pass, re-emitted at most once per fifteen minutes for the whole stalled
+class (one record per runtime, not per card): the pass arms every row it examined, so the card at the
+head of the window is usually a different one on the next pass, and `windowHeadTaskId` names the pass
+that was recorded rather than the only card that is waiting. Read your own card's Activity/History line
+for the per-card answer - it carries the same reason and the retry horizon.
+The per-bucket counts say which admission refused: `claimRefusedCount` is a lost compare-and-set,
+`capacityDeferredCount` is the shared per-agent slot pool, `inFlightLeakCount` is in-process run
+bookkeeping that survived the run it belongs to, `throwCount` is a dispatch that raised (the usual
+candidate is the planning-lifecycle advisory-lock grant timeout), and `approvalSkipCount` /
+`pausedSkipCount` mean a human owns the wait. `dueSetTruncated` true means the window was cut off at the
+batch limit, so the rows that never reached admission are not counted anywhere.
+
+**What is deliberately not here.** This event is never emitted for a lane that is merely idle, and the
+counts are per pass, not per episode — the row set answers "how often did planning admission examine work
+and move none of it?", nothing else. A card's own `stallReason` chip and its `task:planning-admission-stalled`
+row remain the surfaces for "which gate is holding this card"; the difference is that the planning-
+continuation lane previously had no analogue at all, which is how a boosted card could be examined every
+two seconds while unboosted cards behind it were claimed, invisibly.

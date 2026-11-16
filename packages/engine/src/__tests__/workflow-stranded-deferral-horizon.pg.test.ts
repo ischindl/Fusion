@@ -31,7 +31,7 @@ Throwaway per-file database; never port 4040; no temp-root walk.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import "@fusion/core";
 import type { TaskStore, WorkflowWorkItem } from "@fusion/core";
-import { ACTIVE_WORKFLOW_WORK_ITEM_STATES } from "@fusion/core";
+import { ACTIVE_WORKFLOW_WORK_ITEM_STATES, resolveEffectiveQueueBoost } from "@fusion/core";
 
 import {
   pgDescribe,
@@ -447,6 +447,218 @@ pgDescribe("RUFU-299 stranded-deferral horizon against a live store", () => {
       */
       expect(dueIds(await store.listDueWorkflowWorkItems({ kinds: ["task"], states: ["runnable", "retrying"] })))
         .not.toContain(itemId);
+    });
+  });
+
+  describe("queue rank (an operator Boost orders the planning window ahead of a real backlog)", () => {
+    /*
+    FNXC:PlanningContinuationDispatch 2026-11-16-20:20 (RUFU-1069):
+    Acceptance criterion 2(i): the boost-first claim of the planning lane proven against the REAL due
+    predicate, at both window widths the engine uses (`DUE_PLANNING_CONTINUATION_BATCH_LIMIT = 20` for the
+    planning drain, `limit: 25` for `claimDueWorkflowWorkItem`). The operator measured 219 due rows and
+    estimated ~11 days of window rotation; what a store test can actually prove is the property that
+    makes that estimate wrong for a boosted card, namely that `taskQueueOrderBy()` is applied BEFORE the
+    `LIMIT`, so a boosted card cannot be truncated out of the window by its age. `taskQueueOrderBy()`
+    already did this on HEAD, so every case here is a KEEP-THIS-TRUE ratchet, not a red baseline —
+    the red shape RUFU-1069 removed is the examined-and-unwritten row, asserted at the engine seam in
+    `planning-continuation-admission-honesty.test.ts`.
+
+    WHY THE SPEC'S OWN WORDS ARE TRANSLATED HERE. The card asked for "an expired boost window" and "a
+    boost with no `approvedAt`". `TaskQueueBoost` has neither field — it carries `sequence`, `workflowId`,
+    `column`, `columnEntryAt`, `requestId` and no expiry, so inventing them would assert a schema that
+    does not exist. The two REAL invalidation predicates are pinned instead: a stay that has ended (a
+    column move through `moveTask`, which is what actually retires a boost) and a record that fails
+    structural validation (a non-decimal `sequence`, and a record missing a required field). The last
+    case also pins the ONE declared SQL/TypeScript divergence — the superset rule in
+    `task-queue-order-ops.ts` — so a future author cannot "fix" it silently.
+
+    ARRANGEMENT ORDER IS THE TRAP. A boost's scope marker is `COALESCE(column_moved_at, created_at)`, so
+    aging a row AFTER boosting silently invalidates the boost and every case below would measure an
+    inert rank while looking green. `seedQueuedCard` therefore arrives the arrival first and
+    `boostCard` re-reads the row before it clicks.
+    */
+    const DAY_R = 24 * 3_600_000;
+    const BOOST_WORKFLOW = "builtin:coding";
+
+    /** The planning drain's own filter shape, read off `drainWorkflowContinuations`. */
+    const planningWindow = (limit: number) =>
+      h.store().listDueWorkflowWorkItems({ limit, kinds: ["task"], states: ["runnable", "retrying"] });
+
+    /** One due `plan-review` continuation whose arrival is arranged `ageMs` in the past. */
+    async function seedQueuedCard(ageMs: number): Promise<{ taskId: string; itemId: string }> {
+      const store = h.store();
+      const task = await h.createTestTask();
+      const item = await store.upsertWorkflowWorkItem({
+        runId: `run-${task.id}`,
+        taskId: task.id,
+        nodeId: "plan-review",
+        kind: "task",
+        state: "runnable",
+        retryAfter: null,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+      });
+      await h.adminSql()`UPDATE project.tasks SET created_at = ${ago(ageMs)} WHERE id = ${task.id}`;
+      return { taskId: task.id, itemId: item.id };
+    }
+
+    /** The backlog: `count` unboosted due rows, oldest first, each a minute apart in arrival. */
+    async function seedBacklog(count: number, oldestAgeMs: number): Promise<Array<{ taskId: string; itemId: string }>> {
+      const cards: Array<{ taskId: string; itemId: string }> = [];
+      for (let i = 0; i < count; i += 1) cards.push(await seedQueuedCard(oldestAgeMs + i * 60_000));
+      return cards;
+    }
+
+    /** The real Boost writer, with the preconditions the dashboard route sends. */
+    async function boostCard(taskId: string, requestId = `boost-${taskId}`): Promise<string> {
+      const store = h.store();
+      /*
+      The preconditions are read from the ROW, not from a hydrated task object. `boostTask` refuses with
+      `scope-changed` when `expectedColumnEntryAt` disagrees with `COALESCE(column_moved_at, created_at)`,
+      and every case here ages its row through raw SQL after the row was created - a hydrated read that
+      answered from a cache would therefore hand the writer the pre-aging marker and the seed would
+      refuse. Reading the same expression the writer revalidates is the only ordering-proof arrangement.
+      */
+      const [row] = await h.adminSql<{ col: string; entry_at: string }[]>`
+        SELECT "column" AS col, COALESCE(column_moved_at, created_at) AS entry_at
+          FROM project.tasks
+         WHERE id = ${taskId}
+      `;
+      if (!row) throw new Error(`seed row ${taskId} vanished`);
+      const outcome = await store.boostTask(taskId, {
+        requestId,
+        workflowId: BOOST_WORKFLOW,
+        expectedColumn: row.col,
+        expectedColumnEntryAt: row.entry_at,
+      });
+      if (!outcome.ok) throw new Error(`seed boost refused: ${outcome.reason}`);
+      return outcome.boost.sequence;
+    }
+
+    it("holds the boosted card at rank 1 of a 20-row window that its own age would truncate out", async () => {
+      const store = h.store();
+      // 21 unboosted rows ALL older than the boosted card: ordering after truncation would answer
+      // with the 20 oldest rows and never see the head row at all.
+      const backlog = await seedBacklog(21, 30 * DAY_R);
+      const boosted = await seedQueuedCard(60_000);
+      await boostCard(boosted.taskId);
+
+      const window = await planningWindow(20);
+      expect(window, "the window is truncated, so this is a real LIMIT, not a full scan")
+        .toHaveLength(20);
+      expect(dueIds(window)[0], "the boost must be the leading term BEFORE the LIMIT").toBe(boosted.itemId);
+      expect(dueIds(window).indexOf(boosted.itemId), "and it must not merely be present somewhere").toBe(0);
+      expect(dueIds(window)[1], "then the backlog keeps its arrival order").toBe(backlog[0]!.itemId);
+      expect(dueIds(window).includes(backlog[20]!.itemId), "the 21st backlog row is the truncation loss")
+        .toBe(false);
+
+      // The rank is the durable record, not an in-memory guess: the row the window returned is the
+      // same row the boost writer stamped.
+      const reread = await store.getTask(boosted.taskId);
+      expect(resolveEffectiveQueueBoost(reread, { workflowId: BOOST_WORKFLOW })).not.toBeNull();
+    });
+
+    it("ranks two boosts newest-click-first and both ahead of the backlog, at the scheduler's 25-row width", async () => {
+      const backlog = await seedBacklog(21, 30 * DAY_R);
+      // The operator clicks twice over minutes: the older card first, the newer card second. The
+      // LATER sequence owns the head, which is how a second click reclaims the head from a first.
+      const firstClick = backlog[3]!;
+      const secondClick = backlog[7]!;
+      const seq1 = await boostCard(firstClick.taskId, "req-1");
+      const seq2 = await boostCard(secondClick.taskId, "req-2");
+      expect(Number(seq2), "the server sequence, not a client clock, ordered the clicks")
+        .toBeGreaterThan(Number(seq1));
+
+      const window = await planningWindow(25);
+      expect(dueIds(window).slice(0, 2)).toEqual([secondClick.itemId, firstClick.itemId]);
+      expect(dueIds(window)[2], "the unboosted backlog resumes after the whole boost bucket")
+        .toBe(backlog[0]!.itemId);
+    });
+
+    it("breaks a duplicated boost sequence on arrival, not on the id shape", async () => {
+      // Two cards sharing one rank is reachable (a migrated or restored record, a replayed writer),
+      // and the fall-through must be the SAME arrival term the rest of the queue uses.
+      const backlog = await seedBacklog(3, 30 * DAY_R);
+      const older = backlog[1]!;
+      const newer = backlog[2]!;
+      const olderSeq = await boostCard(older.taskId, "req-older");
+      await boostCard(newer.taskId, "req-newer");
+      await h.adminSql()`
+        UPDATE project.tasks
+           SET queue_boost = jsonb_set(queue_boost, '{sequence}', to_jsonb(${olderSeq}::text))
+         WHERE id = ${newer.taskId}
+      `;
+
+      const window = await planningWindow(25);
+      expect(dueIds(window).slice(0, 2), "equal ranks fall to created_at ASC, so the older card leads")
+        .toEqual([older.itemId, newer.itemId]);
+    });
+
+    it("returns a boost whose stay has ended to arrival order, in SQL and in TypeScript alike", async () => {
+      /*
+      This is the real shape of the spec's "expired boost window": a boost is scoped to one STAY in one
+      COLUMN, and the only production event that ends a stay is a column move. Proven through the real
+      writer rather than by hand-editing the marker, because the invalidation is exactly the property
+      that a hand-written fixture could accidentally assert.
+      */
+      const store = h.store();
+      await seedBacklog(21, 30 * DAY_R);
+      const card = await seedQueuedCard(60_000);
+      await boostCard(card.taskId);
+      expect(dueIds(await planningWindow(20))[0], "the boost owns the head while the stay lasts")
+        .toBe(card.itemId);
+
+      await store.moveTask(card.taskId, "in-progress", { moveSource: "user" });
+
+      const reread = await store.getTask(card.taskId);
+      expect(resolveEffectiveQueueBoost(reread, { workflowId: BOOST_WORKFLOW }),
+        "the TypeScript authority retires the rank once the card leaves the stay").toBeNull();
+      expect(dueIds(await planningWindow(20)), "the SQL mirror retires it too, so the window forgets it")
+        .not.toContain(card.itemId);
+    });
+
+    it("treats a boost that fails structural validation as no boost at all", async () => {
+      const store = h.store();
+      await seedBacklog(21, 30 * DAY_R);
+      const card = await seedQueuedCard(60_000);
+      await boostCard(card.taskId);
+
+      // A `sequence` the decimal contract rejects degrades to rank 0 in BOTH halves: the SQL term is
+      // regex-gated and `isTaskQueueBoost` refuses the record, so a corrupt value can only ever lose
+      // precedence, never manufacture it.
+      await h.adminSql()`
+        UPDATE project.tasks
+           SET queue_boost = jsonb_set(queue_boost, '{sequence}', to_jsonb('12x'::text))
+         WHERE id = ${card.taskId}
+      `;
+      expect(resolveEffectiveQueueBoost(await store.getTask(card.taskId), { workflowId: BOOST_WORKFLOW }))
+        .toBeNull();
+      expect(dueIds(await planningWindow(20)), "a malformed rank never holds the head")
+        .not.toContain(card.itemId);
+    });
+
+    it("keeps the declared SQL superset honest: an incomplete record ranks in SQL and is inert in TypeScript", async () => {
+      /*
+      The ONE divergence `task-queue-order-ops.ts` documents in its header, pinned as behaviour rather
+      than as prose. `QUEUE_BOOST_EFFECTIVE` can only see `column`, `columnEntryAt` and the `sequence`
+      regex, so a record missing `requestId` — which `isTaskQueueBoost` rejects outright — still ranks
+      above 0 in an ordered scan. That is deliberate: a superset may admit an EXTRA candidate into the
+      scan and never hide a head row, and every admission path re-reads the canonical rank before
+      committing to a winner. This test exists so nobody "fixes" the mismatch by making SQL stricter,
+      which would change the meaning of a boost for the ordering authority, or by assuming the window
+      listing has already filtered to TypeScript-effective boosts — it has not.
+      */
+      const store = h.store();
+      await seedBacklog(21, 30 * DAY_R);
+      const card = await seedQueuedCard(60_000);
+      await boostCard(card.taskId);
+      await h.adminSql()`UPDATE project.tasks SET queue_boost = queue_boost - 'requestId' WHERE id = ${card.taskId}`;
+
+      expect(resolveEffectiveQueueBoost(await store.getTask(card.taskId), { workflowId: BOOST_WORKFLOW }),
+        "the canonical rank says there is no boost").toBeNull();
+      expect(dueIds(await planningWindow(20))[0],
+        "the ordered scan still lists it first, which is why consumers re-resolve the rank")
+        .toBe(card.itemId);
     });
   });
 });

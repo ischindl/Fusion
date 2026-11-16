@@ -376,7 +376,7 @@ describe("triage planning continuation lease", () => {
       isPlannerLive: () => false,
     });
 
-    await expect(dispatch(h.current, runnable)).resolves.toBe(true);
+    await expect(dispatch(h.current, runnable)).resolves.toBe("dispatched");
     expect(execute).toHaveBeenCalledOnce();
     expect(h.workItem && isPlanningContinuationDispatchClaim(h.workItem)).toBe(true);
     expect(h.transitions).toHaveBeenCalledWith(runnable.id, "running", expect.objectContaining({
@@ -415,7 +415,7 @@ describe("triage planning continuation lease", () => {
       kick,
     });
 
-    await expect(dispatch(h.current, runnable)).resolves.toBe(true);
+    await expect(dispatch(h.current, runnable)).resolves.toBe("dispatched");
     await vi.waitFor(() => expect(h.workItem).toMatchObject({
       state: "held",
       leaseOwner: null,
@@ -453,7 +453,7 @@ describe("triage planning continuation lease", () => {
       kick,
     });
 
-    await expect(dispatch(h.current, runnable)).resolves.toBe(true);
+    await expect(dispatch(h.current, runnable)).resolves.toBe("dispatched");
     await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(2));
     expect(kick).toHaveBeenCalledOnce();
     expect(h.workItem).toMatchObject({ state: "succeeded", leaseOwner: null });
@@ -505,7 +505,7 @@ describe("triage planning continuation lease", () => {
       isPlannerLive: () => false,
     });
 
-    await expect(dispatch(h.current, runnable)).resolves.toBe(true);
+    await expect(dispatch(h.current, runnable)).resolves.toBe("dispatched");
     h.replaceWorkItem({ ...h.workItem!, state: "running", leaseOwner: "planning-continuation-dispatch:successor:1" });
     Object.assign(h.current, { status: "queued", overlapBlockedBy: "FN-HOLDER" });
     finish();
@@ -530,7 +530,7 @@ describe("triage planning continuation lease", () => {
       isPlannerLive: () => false,
     });
 
-    await expect(dispatch(h.current, runnable)).resolves.toBe(true);
+    await expect(dispatch(h.current, runnable)).resolves.toBe("dispatched");
     const dispatchClaim = { ...h.workItem! };
     const transitionCountAfterDispatch = h.transitions.mock.calls.length;
     h.listWorkflowWorkItemsForTask.mockRejectedValueOnce(new Error("dispatch claim read unavailable"));

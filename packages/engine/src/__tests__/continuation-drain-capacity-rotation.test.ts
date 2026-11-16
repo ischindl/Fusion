@@ -128,6 +128,20 @@ describe("a capacity-refused continuation cannot starve the rest of the due wind
     predicate therefore tested a state the runtime cannot produce, and it pinned one-stamp-per-pass -
     the exact behaviour that starves the queue: rotating a 20-wide window by one row per 2 s poll
     needs 269 passes, while the stamp expired after 5 s.
+
+    FNXC:PlanningContinuationDispatch 2026-11-16-20:05 (RUFU-1069):
+    The sentence "`admitPlanningContinuation` has a single `return false`" is RETIRED, and the shape
+    this case pins is NOT. The boolean contract is gone: the function now answers the
+    `PlanningContinuationAdmission` union, and `false` survives only as a fake-side shorthand that the
+    drain normalises to `deferred-capacity` (`normalisePlanningDispatchOutcome`). What still makes a
+    per-card fake refusal unreachable-in-production here is the latch rule, not the arm count:
+    `planningAdmissionLatchesWindow` is true for `deferred-capacity` ALONE, because a shared cap is a
+    property of the window. The per-row arms (`refused-claim`, `errored`, `deferred-in-flight-leak`,
+    ...) ARE reachable per card now and are covered in
+    `planning-continuation-admission-honesty.test.ts` and
+    `planning-dispatch-queue-order-ratchet.test.ts`, where they bound one row and leave the rest of the
+    window dispatched. Asserting the whole-window stamp against one of those arms would pin the exact
+    over-latching RUFU-1069 forbids.
     */
     const firstPass = await runDrain(store, async () => false);
     expect(firstPass).toEqual([]);

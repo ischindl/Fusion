@@ -87,7 +87,7 @@ describe("planning-continuation admission resolves terminal columns from the tas
       dispatch,
     });
 
-    expect(dispatched).toBe(false);
+    expect(dispatched).toBe("refused-not-planable");
     expect(dispatch).not.toHaveBeenCalled();
   });
 
@@ -103,7 +103,7 @@ describe("planning-continuation admission resolves terminal columns from the tas
       dispatch,
     });
 
-    expect(dispatched).toBe(true);
+    expect(dispatched).toBe("dispatched");
     expect(dispatch).toHaveBeenCalledOnce();
   });
 });

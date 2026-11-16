@@ -751,6 +751,29 @@ export type DatabaseMutationType =
   */
   | "task:reconcile-deterministic-spec-rejection-parks"
   | "task:reconcile-deterministic-spec-rejection-parks-no-action"
+  /*
+  FNXC:PlanningContinuationDispatch 2026-11-16-16:35 (RUFU-1069):
+  One planning-continuation dispatch pass examined due rows and dispatched none of them. Before this
+  event existed that state was unanswerable without SQL: the operator boosted five cards, waited six
+  minutes, watched eight unboosted cards get claimed, and the board carried no record that the five
+  had been looked at at all, because four arms of `admitPlanningContinuation` answered "handled" while
+  writing nothing. Deliberately OUTSIDE the curated delivery-pipeline catalogue, the same precedent as
+  `task:planning-admission-stalled`, so `docs/run-audit.md` documents it in prose and
+  `run-audit-catalogue.test.ts` stays locked table-for-table.
+  Metadata is the closed counters object of `PlanningWindowOutcome`: `{ limit, examinedCount,
+  dispatchedCount, capacityDeferredCount, plannerLiveDeferredCount, claimRefusedCount,
+  supersededCount, inFlightLeakCount, pausedSkipCount, approvalSkipCount, orphanCount, throwCount,
+  windowHeadTaskId, windowHeadItemId, dueSetTruncated, examinedTaskIds }`. It is emitted only when
+  `examinedCount > 0 && dispatchedCount === 0`, at most once per `WINDOW_OUTCOME_REFRESH_FLOOR_MS` per
+  accounting instance (one per runtime/project) — the bound is on the stalled CLASS and never on the
+  window head, which the pass itself rotates by arming every row it examined (RUFU-442: a bound whose
+  key changes each cycle is not a bound). The head ids are metadata describing the recorded pass; the
+  row carries the head card as its `taskId` so retention, which deletes run-audit rows through
+  `task_id`, can collect it (RUFU-344's taskless-row trap). Per-card legibility is the separate History
+  line, written for every examined card and reason. No error text, no branch names, no paths, no task
+  titles.
+  */
+  | "task:planning-window-outcome"
   | "agent:auto-recover-error-state"
   | "agent:reset-error-state-on-startup"
   | "agent:error-retry-exhausted"

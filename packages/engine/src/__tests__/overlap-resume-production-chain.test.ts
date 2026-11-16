@@ -265,7 +265,7 @@ describe("overlap resume production chain", () => {
 
     if (order === "delivery-first") h.blockSettlement();
     const initialDispatch = dispatch(blocked, h.item);
-    if (order === "settlement-first") expect(await initialDispatch).toBe(true);
+    if (order === "settlement-first") expect(await initialDispatch).toBe("dispatched");
     await vi.waitFor(() => {
       if (dispatchError) throw dispatchError;
       expect(h.store.transitionQueuedEpisode).toHaveBeenCalledWith("FN-B", expect.objectContaining({ overlapBlockedBy: "FN-A" }));
@@ -332,7 +332,7 @@ describe("overlap resume production chain", () => {
     const manager = createRuntimeSelfHealingManager(h.store, { requestImmediateSchedule: vi.fn() } as any, { rootDir: repo.root }, { kick });
     manager.start();
 
-    expect(await dispatch(blocked, h.item)).toBe(true);
+    expect(await dispatch(blocked, h.item)).toBe("dispatched");
     await vi.waitFor(() => expect(h.item.state).toBe("held"));
     await h.store.transitionQueuedEpisode("FN-B", { overlapBlockedBy: "FN-C" });
     expect(h.blocked.overlapBlockedBy).toBe("FN-C");
@@ -371,7 +371,7 @@ describe("overlap resume production chain", () => {
     const manager = createRuntimeSelfHealingManager(h.store, { requestImmediateSchedule: vi.fn() } as any, { rootDir: repo.root }, { kick });
     manager.start();
 
-    expect(await dispatch(blocked, h.item)).toBe(true);
+    expect(await dispatch(blocked, h.item)).toBe("dispatched");
     await vi.waitFor(() => expect(h.item.state).toBe("held"));
     await finalizeHolder(h.store, repo, holder);
     await vi.waitFor(() => expect(h.blocked.blockedBy).toBe("FN-D"));

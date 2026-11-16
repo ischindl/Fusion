@@ -238,7 +238,7 @@ describe("workflow continuation file-scope completion wake", () => {
     const manager = createRuntimeSelfHealingManager(h.store, scheduler, { rootDir: "/repo" }, { kick });
     manager.start();
 
-    await expect(dispatch(h.blocked, h.item)).resolves.toBe(true);
+    await expect(dispatch(h.blocked, h.item)).resolves.toBe("dispatched");
     await vi.waitFor(() => expect(h.item).toMatchObject({
       state: "held",
       leaseOwner: null,
