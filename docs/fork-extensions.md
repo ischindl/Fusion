@@ -1,14 +1,32 @@
 # Fork extensions — what this build adds, and how we keep contributing upstream
 
 This repository is a private build of [Runfusion/Fusion](https://github.com/Runfusion/Fusion) that
-carries a large private base (~780 commits) on top of upstream. That base is **not** a fork of the
-product's direction: almost all of it is lifecycle depth (self-healing, merge correctness, review
-convergence) plus a set of capabilities upstream deliberately does not ship.
+carries a large private base (1221 commits, measured 2026-11-16) on top of upstream. That base is
+**not** a fork of the product's direction: almost all of it is lifecycle depth (self-healing, merge
+correctness, review convergence) plus a set of capabilities upstream deliberately does not ship.
 
 This file is the single place that records **which capabilities are ours**, with evidence, and
 **how we keep shipping pull requests upstream** while carrying that base. Both halves exist because
 the two failure modes are separate: drifting so far that we can no longer contribute, and silently
 re-adding something upstream already excluded.
+
+### The geometry, as measured
+
+| Fact | Value |
+| --- | --- |
+| Our `main` | `076757c72e` |
+| `origin/main` (upstream tip) | `eb7eef49d5`, dated 2026-10-26 |
+| `merge-base origin/main main` | `eb7eef49d5` — upstream's own tip |
+| Commits we carry on top | **1221** |
+| Commits upstream has that we lack | **0** |
+
+The fourth and fifth rows are the whole point of recording this: the merge-base *is* upstream's tip,
+so the divergence is **one-directional**. We are not missing an upstream fix, and "rebase onto
+upstream" would not be a sync — it would be a rewrite of the private base (see *The contribution
+line*). It also means an upstream commit we want is not behind a merge; it is behind nothing.
+
+Upstream's tip is 20 days stale relative to this document. That is a choice, not drift: we consume
+upstream by cherry-picking into `pr/*` branches, not by pulling.
 
 ---
 
@@ -37,12 +55,12 @@ counts non-test files containing the anchor identifier.
 | Capability | Anchor | This build | `origin/main` | Schema slot |
 | --- | --- | --- | --- | --- |
 | Human plan-approval gate | `humanPlanApproval` | 32 files | **0** | `0080` |
-| Human merge-approval gate | `humanMergeApproval` | 34 files | **0** | `0083` |
+| Human merge-approval gate | `humanMergeApproval` | 28 files | **0** | `0083` |
 | Project notes | `AsyncNoteStore` | 4 files | **0** | `0074` |
 | Whiteboards | `AsyncWhiteboardStore` | 4 files | **0** | `0076` |
-| Per-turn memory recall | `perTurnRecall` | 11 files | **0** | — |
-| Operator language directive | `operatorLanguage` | 19 files | **0** | — |
-| Review-lane entry ledger + dispatch sweep | `ReviewDispatchSweep` | 2 files | **0** | `0088` |
+| Per-turn memory recall | `perTurnRecall` | 4 files | **0** | — |
+| Operator language directive | `operatorLanguage` | 14 files | **0** | — |
+| Review-lane entry ledger + dispatch sweep | `ReviewDispatchSweep` | 4 files | **0** | `0091` |
 | Verification resource envelope | `applyVerificationResourceBound` | 3 files | **0** | — |
 | Chat liveness reconciliation | `classifyChatInFlightLiveness` | 6 files | **0** | — |
 | Workflow identity + project model lanes | schema slot only, no symbol claimed | — | — | `0079` |
@@ -57,11 +75,56 @@ behaviour; this file records only who owns the capability.
 Recorded so nobody re-claims them during a merge review. Each of these looks fork-unique by path
 and is not — upstream has the same concept, so a "our fork adds X" claim would be false:
 
-- **Knowledge graph** — `KnowledgeGraph` appears in 51 upstream files vs 55 here. Shared.
-- **Long-term memory** — `longTermMemory` present upstream. Shared.
-- **Overlap waits / file-scope coordination** — `overlapWait` present upstream (28 files). Shared.
+Counts below use the same method as the table (non-test `.ts`/`.tsx` files carrying the anchor
+identifier), so the two halves of this file are comparable.
+
+- **Knowledge graph** — `KnowledgeGraph`: 29 files here, 23 upstream. Shared.
+- **Long-term memory** — `longTermMemory`: 3 files here, 1 upstream. Present upstream; shared.
 - **Migration `0089`** (`fn_9429_stale_review_callback_waiver_receipts`) is upstream's `0086`
   re-issued under our numbering during a merge, not an addition of ours.
+
+### Claim corrected 2026-11-16: overlap waits are no longer shared
+
+This list previously said *"Overlap waits / file-scope coordination — `overlapWait` present upstream
+(28 files). Shared."* **That is false as of the current `origin/main`.** `git grep -l overlapWait
+origin/main -- '*.ts' '*.tsx'` returns exactly one file, `packages/core/src/postgres/schema-applier.ts`
+— upstream retains the **schema** and has no implementation, while this build carries 4 non-test
+implementation files. The old number was true when it was written and was never re-measured; a claim
+about another repository rots silently, because nothing in CI fetches that repository.
+
+Overlap waits are therefore **not** in the unclaimed list and must not be cited as "upstream already
+has it" in a merge review. They are not promoted into the table above either: promotion requires a
+named anchor file plus a matching `CLAIMED_CAPABILITIES` entry in
+`packages/engine/src/__tests__/fork-extensions-doc.test.ts`, and the honest anchor here is still
+being chosen — the machinery spans the core store, the dispatch gate, and the release path. What
+this correction does change is the upstreaming decision: this is the largest piece of lifecycle
+depth we carry that upstream has *declared interest in by reserving its schema slots* and does not
+have, which makes it the strongest candidate to ship as a `pr/*` branch.
+
+## Re-measuring (run this before editing any number above)
+
+Every count in this file is a `git grep` against a ref, and every one of them is wrong the moment
+upstream moves or this build grows. Reproduce rather than trust:
+
+```bash
+git fetch origin main
+git merge-base --is-ancestor origin/main main && echo "strictly ahead (no upstream commits missing)"
+git rev-list --count $(git merge-base origin/main main)..main   # commits we carry
+
+hits() { git grep -l "$1" "$2" -- '*.ts' '*.tsx' 2>/dev/null \
+          | grep -viE 'test|spec|__tests__' | wc -l; }
+for a in humanPlanApproval humanMergeApproval AsyncNoteStore AsyncWhiteboardStore \
+         perTurnRecall operatorLanguage ReviewDispatchSweep \
+         applyVerificationResourceBound classifyChatInFlightLiveness; do
+  printf '%-32s here %3s upstream %3s\n' "$a" "$(hits $a main)" "$(hits $a origin/main)"
+done
+```
+
+The `origin/main` column is the one that goes stale without any test noticing — see the overlap-wait
+correction above. The upstream column going to zero is not automatically a win: check *which* file
+survives before concluding upstream dropped a feature. A single surviving `schema-applier.ts` hit
+means upstream kept the tables and dropped the code, which is a different claim than either "shared"
+or "absent".
 
 ## Keeping this file current
 
@@ -87,7 +150,7 @@ excluded feature is absent, or re-adding a feature upstream moved to `deprecated
 
 ## The contribution line
 
-Carrying ~780 private commits does **not** block upstream PRs, because upstream PRs are not cut from
+Carrying 1221 private commits does **not** block upstream PRs, because upstream PRs are not cut from
 our `main`. Every open PR here is a small cross-repo branch from `ischindl/Fusion` whose base is a
 recent `origin/main` commit and whose commit count is 1–8. Verified: no `pr/*` branch has our `main`
 as an ancestor.
@@ -95,7 +158,7 @@ as an ancestor.
 Rules that keep this true:
 
 1. **Cut `pr/*` branches from `origin/main`, then cherry-pick the shippable commits.** Never from our
-   `main` — that would put ~780 commits in the PR diff.
+   `main` — that would put 1221 commits in the PR diff.
 2. **Never rebase our `main` onto `origin/main`.** That is a different operation from rule 1 and it
    destroys the private base. Rebasing a *small* `pr/*` branch onto current `origin/main` is normal,
    safe, and the fix for a stale `CONFLICTING` PR.
