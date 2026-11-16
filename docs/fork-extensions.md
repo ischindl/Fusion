@@ -1,7 +1,8 @@
 # Fork extensions — what this build adds, and how we keep contributing upstream
 
 This repository is a private build of [Runfusion/Fusion](https://github.com/Runfusion/Fusion) that
-carries a large private base (1221 commits, measured 2026-11-16) on top of upstream. That base is
+carries a large private base (1222 commits as of 2026-11-16, including this document's own commit)
+on top of upstream. That base is
 **not** a fork of the product's direction: almost all of it is lifecycle depth (self-healing, merge
 correctness, review convergence) plus a set of capabilities upstream deliberately does not ship.
 
@@ -17,7 +18,8 @@ re-adding something upstream already excluded.
 | Our `main` | `076757c72e` |
 | `origin/main` (upstream tip) | `eb7eef49d5`, dated 2026-10-26 |
 | `merge-base origin/main main` | `eb7eef49d5` — upstream's own tip |
-| Commits we carry on top | **1221** |
+| Commits we carry on top | **1222** |
+| Distinct task ids in those commits | **717** (across 8 projects) |
 | Commits upstream has that we lack | **0** |
 
 The fourth and fifth rows are the whole point of recording this: the merge-base *is* upstream's tip,
@@ -70,7 +72,95 @@ merge decisions; here each one is an operator boundary with its own audit event,
 bypass path. `docs/settings-reference.md` and `docs/workflow-steps.md` describe the runtime
 behaviour; this file records only who owns the capability.
 
-### Deliberately *not* claimed
+## What the base actually consists of
+
+The capability table below is a *claim list* — one row per product-level feature we assert is ours.
+It is not an inventory, and 1222 commits are not visible in ten rows. This section is the inventory,
+so that "what do we have that upstream doesn't" is answerable without reading git log.
+
+Measured 2026-11-16 over `merge-base origin/main main..main`. Two honesty limits on the numbers: a
+**file-touch** counts a file every time any commit modifies it, so it weights churn rather than
+feature size; and the thematic buckets match on commit *subject* keywords, so a commit that touches
+three areas is counted in all three. Use them to see where the mass is, not to measure features.
+
+### Where the work landed
+
+| Area | File touches | What it says |
+| --- | --- | --- |
+| `packages/dashboard` | 5564 | The largest single mass. Operator surfaces: board, task detail, modals, terminals. |
+| `packages/engine` | 2876 | The lifecycle depth: lanes, scheduler, executor, merger, self-healing sweeps. |
+| `packages/core` | 2183 | Domain model, store, migrations, the invariants the engine reads. |
+| `docs` | 990 | Includes `docs/solutions/` — see depth below. |
+| `packages/i18n` | 970 | Translation churn on an existing upstream package, **not** a fork capability. |
+| `.changeset` | 824 | Release-note discipline, one file per shipped change. |
+| `plugins` | 381 | Plugin surfaces on an existing upstream tree. |
+| `packages/cli` | 312 | `fn` CLI and the pi extension. |
+| `scripts` | 137 | The structural gates this repo enforces (non-Latin scan, comment-assertion scan, prompt byte-stability). |
+
+`packages/i18n`, `plugins`, and `packages/cli` all exist upstream too (50 vs 48, 976 vs 959, 334 vs
+311 tracked files). Their churn here is ours, the *package* is not — do not cite them as fork
+capabilities.
+
+### What the commits are about
+
+Overlapping buckets, by commit subject:
+
+| Theme | Commits |
+| --- | --- |
+| merge / squash / push correctness | 190 |
+| review / verdict / gate | 149 |
+| dashboard & UI | 138 |
+| chat & sessions | 119 |
+| test quarantine, flakes, gate admission | 132 |
+| worktree & branch lifecycle | 78 |
+| workflow graph / nodes / continuations | 74 |
+| durable agents & heartbeats | 66 |
+| memory / recall / stash | 34 |
+| overlap waits & file-scope coordination | 26 |
+| run-audit telemetry | 17 |
+| schema & migrations | 11 |
+| self-healing sweeps | 9 |
+
+Read the last two rows against the first five, not by size. `self-heal` at 9 is a floor, not a
+ceiling: self-healing sweeps are *named* in 9 subjects but the sweeps themselves are mostly authored
+under merge, review, and worktree subjects — the sweep count understates that subsystem by design.
+
+### Schema we carry that upstream does not
+
+The sharpest evidence of divergence, because a migration file either exists here or it does not:
+**19 migration files present here and absent upstream** (98 here vs 81 upstream, plus a `meta/`
+directory counted in neither).
+
+| Slots | Owned by |
+| --- | --- |
+| `0074`, `0076` | project notes, whiteboards (upstream moved these to `deprecated_excluded_features`) |
+| `0075`, `0077`, `0078`, `0090` | the overlap-wait / file-scope machinery, incl. owner-FK repair |
+| `0079` | workflow identity + project model lanes |
+| `0080`, `0083` | human plan-approval and human merge-approval gates |
+| `0081`, `0082` | task pause accounting, task queue order (`queueBoost`) |
+| `0091` | review-lane entry ledger |
+| `0092`, `0093`, `0094` | task-log entries and projections, search-vector scope |
+| `0095` | `workflow_work_items.deferred_since` |
+| `0096` | global task-id claim |
+| `0097` | artifact retraction |
+| `local_repair_mixed_0065` | a one-off repair, not a feature — do not cite it as one |
+
+Four of those 19 slots are the overlap-wait machinery. That is the same machinery upstream reserved
+schema for and never built (see the correction below), and it is why a fork merge involving
+`task_overlap_waits` needs review rather than auto-resolution.
+
+### Depth, which no capability row shows
+
+| | This build | `origin/main` |
+| --- | --- | --- |
+| test files | 4688 | 3693 |
+| `docs/solutions/` documents | 196 | 134 |
+
+~995 more test files and 62 more written solutions than upstream, over the same tree. This is the
+part of the base that is invisible in a feature diff and is the main reason the base cannot be
+re-derived by re-implementing the rows in the table above.
+
+## Deliberately *not* claimed
 
 Recorded so nobody re-claims them during a merge review. Each of these looks fork-unique by path
 and is not — upstream has the same concept, so a "our fork adds X" claim would be false:
@@ -150,7 +240,7 @@ excluded feature is absent, or re-adding a feature upstream moved to `deprecated
 
 ## The contribution line
 
-Carrying 1221 private commits does **not** block upstream PRs, because upstream PRs are not cut from
+Carrying 1222 private commits does **not** block upstream PRs, because upstream PRs are not cut from
 our `main`. Every open PR here is a small cross-repo branch from `ischindl/Fusion` whose base is a
 recent `origin/main` commit and whose commit count is 1–8. Verified: no `pr/*` branch has our `main`
 as an ancestor.
@@ -158,7 +248,7 @@ as an ancestor.
 Rules that keep this true:
 
 1. **Cut `pr/*` branches from `origin/main`, then cherry-pick the shippable commits.** Never from our
-   `main` — that would put 1221 commits in the PR diff.
+   `main` — that would put 1222 commits in the PR diff.
 2. **Never rebase our `main` onto `origin/main`.** That is a different operation from rule 1 and it
    destroys the private base. Rebasing a *small* `pr/*` branch onto current `origin/main` is normal,
    safe, and the fix for a stale `CONFLICTING` PR.
