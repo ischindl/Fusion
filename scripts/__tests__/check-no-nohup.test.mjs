@@ -43,3 +43,18 @@ test("scanTrackedFiles rethrows tracked-file read failures other than ENOENT", (
     (error) => error === denied,
   );
 });
+
+/*
+FNXC:StaticMergeGate 2026-11-17-20:31 (RUFU-714):
+This guard scans tracked text under the package and script roots, comments included, so an explanatory
+mention that omitted the allowlist marker turned the whole static gate red for every card on the board.
+The five cases above prove the scanner still finds real matches, but none of them reads the repository,
+so nothing in the suite could report such a regression before CI did. This case calls the production tree
+scan with no arguments, so it performs the real tracked-file listing and the real reads, and fails with
+the guard's own message naming the offending path and line. The shape is copied from the
+prompt-volatility suite's equivalent case rather than invented.
+*/
+test("the delivered tree passes the guard", () => {
+  const violations = scanTrackedFiles();
+  assert.deepEqual(violations.map((v) => `${v.filePath}:${v.lineNumber}`), [], formatFailureMessage(violations));
+});
