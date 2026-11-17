@@ -18,7 +18,9 @@
  * - ±10% jitter to avoid thundering-herd effects.
  * - Recovery metadata (`recoveryRetryCount`, `nextRecoveryAt`) is persisted on the task
  *   so retries survive engine restarts.
- * - Exhausted retry budgets escalate to a real failure (task marked failed or error set).
+ * - An exhausted budget produces an explicit escalation (`disposition: "escalate"`, `exhausted: true`)
+ *   and clears `recoveryRetryCount`/`nextRecoveryAt`. This policy never terminalizes the task itself;
+ *   the owning recovery lane decides the landing (see `FNXC:RecoveryOwnership` below).
  *
  * **Not retried via this policy:**
  * - FNXC:ProviderRateLimitIsolation 2026-07-21-18:00: usage-limit errors
@@ -29,9 +31,32 @@
  * - Merge-conflict retries (handled by `mergeRetries` separately)
  */
 
+/*
+FNXC:RecoveryOwnership 2026-11-15-03:14:
+RUFU-624 retired the last two written encodings of the pre-FN-9512 rule that an exhausted
+retry budget terminalized the card ("escalate to a real failure (task marked failed or error
+set)", wording introduced by cb57093d03). Two facts a future reader must not re-drift:
+(1) Budget exhaustion ESCALATES. `computeRecoveryDecision` answers `disposition: "escalate"`
+with `exhausted: true` and clears both recovery fields so the card is not left indistinguishable,
+and the OWNER chooses the landing: `escalatePlanningReseed` in `triage.ts` hands a planning card
+back to the replan owner with `recoveryDisposition: "escalated-reseed"` (9e086e8e02), while
+`reseedExhaustedBranchConflict` owns the branch/worktree landing. The discriminating `exhausted`
+field exists precisely so a caller cannot collapse that hand-off into a no-op pause.
+(2) `pause` stays correct for its OWN reasons only: `mode: "off"` and destructive ambiguity, both
+decided by `AutoRecoveryDispatcher.classify` BEFORE it consults this budget. Do not widen them.
+Drift history: Full Suite shard 2/4 was red on run 38050589218 because two engine tests still
+asserted the retired `pause` for an exhausted budget; FN-9533 (5ba1ee45a0) landed the assertion
+repair and RUFU-527 (001cc3ab93) moved the planning-transport fixture onto the throw path.
+Disposition record: docs/solutions/test-failures/rufu-624-full-suite-shard-2-disposition.md.
+*/
+
 // ── Constants ────────────────────────────────────────────────────────
 
-/** Maximum number of recovery retry attempts before escalating to failure. */
+/**
+ * Default per-owner budget of recovery retry attempts. Exhausting it yields an explicit
+ * escalation that the owning lane turns into a hand-off, never a terminal failure here.
+ * Owners may pass a smaller `maxRetries` through {@link RecoveryPolicyOptions}.
+ */
 export const MAX_RECOVERY_RETRIES = 3;
 
 /** Base delay in milliseconds for the first retry (60 seconds). */
