@@ -18,7 +18,7 @@ symptoms:
   - "`capacity-exhausted` refusal on a `todo -> in-progress` move while `runningAgentCount` reports 0 live agents"
   - "every ready card in the planning lane held with `heldReason: \"downstream-full\"`"
   - "the workflow switcher shows the WIP lane at its limit while nothing is executing"
-root_cause: "the in-transaction column WIP counter counted every row in the lane, including dead `status:\"failed\"` parks, while the engine sweep's own mirror and the agent-capacity predicate excluded them"
+root_cause: "the in-transaction column WIP counters AND the engine sweep's own mirror each counted every non-deleted row in the lane, so dead `status:\"failed\"` parks occupied slots; only the agent-capacity predicate `isRunningAgentTask` excluded them, per FN-8704, which is why `runningAgentCount` read 0 live agents while every column counter reported the lane full"
 resolution_type: bugfix
 ---
 
@@ -31,24 +31,34 @@ hundreds of times — a graph suspend with `waitReason: "capacity"`.
 
 ## Mechanism
 
-Three surfaces count "how full is this lane", and they did not agree:
+Three surfaces count "how full is this lane". Pre-fix, two of them agreed with each other and the third dissented — and the dissenter was the only one that was right:
 
 | Surface | Failed park (`status:"failed"`) |
 | --- | --- |
 | `countActiveInCapacitySlotSync` / `...Async` (in-transaction, authoritative — every move, drag, promote, release) | **counted** |
-| `countCapacitySlot` in the hold/release sweep (documented as mirroring the in-txn count) | excluded |
+| `countCapacitySlot` in the hold/release sweep (documented as mirroring the in-txn count — and it did) | **counted** |
 | `isRunningAgentTask` (agent `maxConcurrent` / `maxWorktrees`) | excluded since FN-8704 |
 
 A dead card whose step died parks with `status:"failed"`. It holds no session, no agent slot and no
 worktree slot, but it *stays in its lane on purpose* — FN-8704 deliberately keeps failed WIP rows
-rendered so an operator can retry or re-home them. The column counter never got that amendment, so
-debris occupied real slots.
+rendered so an operator can retry or re-home them. None of the three column counters had that
+amendment, so debris occupied real slots.
 
-At a WIP limit of 3, three dead cards therefore made the lane permanently full: the move was refused
-inside the transaction, the graph suspended at the column boundary, the sweep — reading through its own
-excluding mirror — saw free capacity and held the ready cards `downstream-full` instead, and the same
-cycle repeated on every poll. Measured on project `saneca`: 294 capacity suspensions in ~30 minutes,
-`runningAgentCount` 0 and `planningCount` 0, zero board-wide moves.
+At a WIP limit of 3, three dead cards therefore made the lane permanently full: `store.moveTask`
+arbitration refused the crossing `capacity-exhausted` inside the transaction, the graph suspended it at
+the column boundary with `waitReason: "capacity"`, and the hold/release sweep — counting through the
+*same* gap in its own `countCapacitySlot` — refused to release ready cards into it and held them
+`downstream-full`. Both refusals therefore had one cause, the shared counting gap: the mirror agreed
+with the store, and both disagreed with FN-8704's ruling. The agent-capacity predicate was
+the only truthful surface during the freeze: `isRunningAgentTask` excluded the parks, so
+`runningAgentCount` correctly read 0 live agents while every column counter insisted the lane was at its
+limit. The same cycle repeated on every poll. Measured on project `saneca`: 294 capacity suspensions in
+~30 minutes, `runningAgentCount` 0 and `planningCount` 0, zero board-wide moves.
+
+A consistency rule for anyone re-reading this table: `downstream-full` is the sweep's objection to a
+lane it counts as **full**, so it cannot originate from a mirror that saw free capacity. A narrative
+that pairs "the sweep saw free capacity" with cards held `downstream-full` is self-contradictory, and it
+is the reverse of what happened here.
 
 ## Fix
 
