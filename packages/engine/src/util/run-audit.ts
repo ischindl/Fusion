@@ -1031,6 +1031,33 @@ export type DatabaseMutationType =
   */
   | "task:reconcile-terminal-branch-conflict-park"
   /*
+  FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050):
+  `reconcileUnclaimedGraphWork` owns the card whose graph row is claimable in principle and claimed by no
+  one in fact. The row records WHICH shape was found and WHICH authority took the hand-off, because the
+  defect this sweep closes is precisely a state that every existing surface could describe and none could
+  act on. Metadata is ids/counts/fixed enums only (`taskId`, `column`, `code`, `action`, `itemId`,
+  `nodeSeam`, `owner`, `outcome`, `redriveCount`); the release sentence, the row's error text, and any
+  reviewer prose never enter run-audit. Deliberately outside the curated delivery-pipeline catalogue and
+  documented as prose in `docs/run-audit.md`, which `run-audit-catalogue.test.ts` locks table-for-table.
+  */
+  | "task:reconcile-unclaimed-graph-work"
+  /*
+  FNXC:UnclaimedGraphWork 2026-11-17-02:47 (RUFU-1050 code-review remediation, P1-2):
+  The withheld half of the pair above. `task:reconcile-unclaimed-graph-work` is written only for a verdict
+  the pass was allowed to ACT on, so the cards this sweep exists to explain — the 136 that every authority
+  refuses — produced NO row at all: the pass had a `withheld` tally in a return value both registrations
+  discarded, and the next frozen board was diagnosed by hand-written SQL. This row is that missing half:
+  one record per (card, withheld code) per 6 h re-announcement window, bounded by the card's own durable
+  episode rather than by process memory, so a restart mid-stall neither loses the bound nor re-announces
+  the board. Healthy work emits nothing (`not-aged`, `live-session`, `not-planning-lane`, `operator-held`,
+  `auto-merge-off` are excluded by the shared predicate), because naming healthy work is the RUFU-273/372
+  mistake. Metadata is the same closed set as the acted row plus the two wait measurements (`taskId`,
+  `column`, `code`, `action` fixed to `none`, `itemId`, `nodeSeam`, `owner`, `outcome` fixed to `withheld`,
+  `stalenessMs`, `retryAfterMs`, `redriveCount`); no row prose, no error text, no reviewer text. Deliberately
+  outside the curated delivery-pipeline catalogue and documented as prose in `docs/run-audit.md`.
+  */
+  | "task:reconcile-unclaimed-graph-work-no-action"
+  /*
   FNXC:PlanningFenceRecovery 2026-10-02-02:27 (RUFU-288):
   `reconcile-planning-fence-park` owns the planning-lane card that the durable principal fence refused
   into a terminal park. The mutation row fires once per automatic re-queue (the card goes

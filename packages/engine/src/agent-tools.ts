@@ -4580,7 +4580,7 @@ export function createTaskRetryTool(store: TaskStore, options: TaskRetryToolOpti
           });
           await store.logEntry(
             params.id,
-            `Retry requested via chat tool (planning run exhausted in ${task.column}; re-armed to needs-replan - the card did not move and its specification, steps, worktree and branch are untouched)`,
+            `Retry requested via chat tool (${fusionCore.describePlanningStrandedRetryAdmission(planningStrandedRetry.via, task.column)}; re-armed to needs-replan - the card did not move and its specification, steps, worktree and branch are untouched)`,
           );
           return {
             content: [{

@@ -105,7 +105,22 @@ async function specSeed(taskId: string, body: string | null = SPEC_BODY): Promis
 }
 
 function buildApp(input: { task: Task; rootDir: string }) {
-  const updateTask = vi.fn(async (_taskId: string, patch: Partial<Task>) => Object.assign(input.task, patch));
+  // Mirrors the real store's key-level `sourceMetadataPatch` contract (RUFU-246): a null value deletes that
+  // one key and the rest of the JSONB carrier survives. A fake that ignored the patch would make every
+  // "the register was cleared" assertion below measure the mock's shape instead of the route's write.
+  const updateTask = vi.fn(async (_taskId: string, patch: Partial<Task> & { sourceMetadataPatch?: Record<string, unknown> | null }) => {
+    const { sourceMetadataPatch, ...rest } = patch as Record<string, unknown> & { sourceMetadataPatch?: Record<string, unknown> | null };
+    Object.assign(input.task, rest);
+    if (sourceMetadataPatch) {
+      const carrier = { ...((input.task.sourceMetadata as Record<string, unknown> | undefined) ?? {}) };
+      for (const [key, value] of Object.entries(sourceMetadataPatch)) {
+        if (value === null) delete carrier[key];
+        else carrier[key] = value;
+      }
+      input.task.sourceMetadata = carrier as Task["sourceMetadata"];
+    }
+    return input.task;
+  });
   const moveTask = vi.fn(async () => input.task);
   const store = {
     getTask: async () => input.task,
@@ -337,5 +352,63 @@ describe("POST /api/tasks/:id/retry — a planning run that exhausted re-arms wi
 
     expect(res.status).toBe(200);
     expect(existsSync(promptPath)).toBe(false);
+  });
+});
+
+/*
+FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050) — the board surface of the unclaimed shape.
+
+RUFU-1050's cards are a third row this route had no honest answer for: planning lane, `status: null`, the
+graph continuation (not the planning run) the thing that stopped moving. Before the classifier grew its
+episode leg, this row reached the retryability gate, failed the legacy status test, and — because
+`retrySpecification` is computed from STATUS, which is null here — never entered the destructive branch, so
+the operator got a 400 while the same press on a sibling row re-planned it. One card, four surfaces, four
+meanings for the same button.
+
+The file assertion carries the weight again, for the reason this file already states: the only difference
+between "re-armed" and "destroyed" on this route is which branch you land in, and only the filesystem
+records which one ran.
+*/
+describe("POST /api/tasks/:id/retry — a card whose graph work nobody will take re-arms without losing its spec (RUFU-1050)", () => {
+  const EPISODE = {
+    code: "due-unclaimed",
+    firstAt: "2026-11-17T01:05:00.000Z",
+    signature: "unclaimed-graph-work|due-unclaimed|WI-1|runnable|plan-review",
+    redriveCount: 3,
+  };
+
+  it("re-arms the status-null unclaimed card and leaves PROMPT.md on disk", async () => {
+    const task = mkTask({ status: null, error: null, sourceMetadata: { unclaimedGraphWork: EPISODE } });
+    const promptPath = await specSeed(task.id);
+    const { app, updateTask, moveTask } = buildApp({ task, rootDir: rootDir! });
+
+    const res = await retry(app);
+
+    expect(res.status).toBe(200);
+    expect(statusPatchOf(updateTask)).toBe("needs-replan");
+    expect(task.status).toBe("needs-replan");
+    // A re-arm moves nothing: the card already stands in the lane the planner works in.
+    expect(moveTask).not.toHaveBeenCalled();
+    // The register the owning pass bounds itself by must go, or the Retry is not an exit (RUFU-395).
+    // Key-level clear: the key is GONE (store semantics), while unrelated provenance keys survive.
+    expect(task.sourceMetadata).not.toHaveProperty("unclaimedGraphWork");
+    expect(existsSync(promptPath)).toBe(true);
+  });
+
+  it("refuses the same row when nobody measured it — a healthy status-null card is not this class", async () => {
+    /*
+    The control, and the case that keeps the whole admission honest: without the episode the row is what
+    every freshly-triaged card looks like, and pressing Retry on one must not quietly re-plan the board.
+    It takes the pre-existing 400 rather than a destructive restart, which is the refusal RUFU-1050 started
+    from — accepted as correct here precisely because the unmeasured row really is somebody else's.
+    */
+    const task = mkTask({ status: null, error: null });
+    const promptPath = await specSeed(task.id);
+    const { app } = buildApp({ task, rootDir: rootDir! });
+
+    const res = await retry(app);
+
+    expect(res.status).toBe(400);
+    expect(existsSync(promptPath)).toBe(true);
   });
 });

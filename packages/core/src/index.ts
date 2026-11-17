@@ -48,7 +48,7 @@ export type {
   MissionLineageApprovalResult,
   MissionLineageSnapshot,
 } from "./tasks/symbol-lock-lineage-approval.js";
-export { AGENT_VALID_TRANSITIONS, DUPLICATE_OF_METADATA_KEY, HANDOFF_FROM_METADATA_KEY, PLAN_PREMISE_REJECTION_METADATA_KEY, PLAN_ADMISSION_STALL_METADATA_KEY, DETERMINISTIC_SPEC_REJECTION_METADATA_KEY, WIP_ADMISSION_STALL_METADATA_KEY, BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY, STRANDED_CONTINUATION_RECLAIM_METADATA_KEY, PLANNER_OVERSIGHT_STEERING_METADATA_KEY, TRANSFERRED_TO_METADATA_KEY, EXECUTION_REARM_EPISODE_METADATA_KEY, REPORT_ATTACHMENT_SOURCE, assertNotWorkspaceTaskMerge, isWorkspaceTask, WorkspaceTaskMergeError, PLANNER_AGENT_ROLE} from "./types.js";
+export { AGENT_VALID_TRANSITIONS, DUPLICATE_OF_METADATA_KEY, HANDOFF_FROM_METADATA_KEY, PLAN_PREMISE_REJECTION_METADATA_KEY, PLAN_ADMISSION_STALL_METADATA_KEY, DETERMINISTIC_SPEC_REJECTION_METADATA_KEY, WIP_ADMISSION_STALL_METADATA_KEY, BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY, STRANDED_CONTINUATION_RECLAIM_METADATA_KEY, PLANNER_OVERSIGHT_STEERING_METADATA_KEY, TRANSFERRED_TO_METADATA_KEY, EXECUTION_REARM_EPISODE_METADATA_KEY, UNCLAIMED_GRAPH_WORK_EPISODE_METADATA_KEY, REPORT_ATTACHMENT_SOURCE, assertNotWorkspaceTaskMerge, isWorkspaceTask, WorkspaceTaskMergeError, PLANNER_AGENT_ROLE} from "./types.js";
 export { WEDGE_RENOTIFY_COOLDOWN_MS, normalizeAgentRoles, MAX_TASK_MESSAGE_LENGTH } from "./types.js";
 export { MAX_TASK_STEP_REPORTS, MAX_TASK_STEP_REPORT_SUMMARY_CHARS, appendTaskStepReport } from "./workflows/task-step-reports.js";
 export {
@@ -1713,12 +1713,14 @@ export {
   taskCarriesPlanningSpecTimeoutEvidence,
   classifyPlanningStrandedRetry,
   buildPlanningStrandedRetryPatch,
+  describePlanningStrandedRetryAdmission,
 } from "./tasks/planning-stranded-retry.js";
 export type {
   PlanningStrandedRetryClassification,
   PlanningStrandedRetryPatch,
   PlanningStrandedRetryRefusal,
   PlanningStrandedRetryTask,
+  PlanningStrandedRetryAdmission,
   PlanningExhaustionEvidenceTask,
 } from "./tasks/planning-stranded-retry.js";
 export {

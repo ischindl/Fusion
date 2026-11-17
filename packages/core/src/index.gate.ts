@@ -1333,8 +1333,9 @@ export {
   taskCarriesPlanningSpecTimeoutEvidence,
   classifyPlanningStrandedRetry,
   buildPlanningStrandedRetryPatch,
+  describePlanningStrandedRetryAdmission,
 } from "./tasks/planning-stranded-retry.js";
-export type { PlanningStrandedRetryClassification } from "./tasks/planning-stranded-retry.js";
+export type { PlanningStrandedRetryClassification, PlanningStrandedRetryAdmission } from "./tasks/planning-stranded-retry.js";
 export {
   EXTERNAL_BLOCK_STATUS,
   EXTERNAL_BLOCK_PAUSE_REASON,

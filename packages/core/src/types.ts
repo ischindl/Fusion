@@ -628,6 +628,7 @@ import {
   BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY,
   STRANDED_CONTINUATION_RECLAIM_METADATA_KEY,
   EXECUTION_REARM_EPISODE_METADATA_KEY,
+  UNCLAIMED_GRAPH_WORK_EPISODE_METADATA_KEY,
   PLANNER_OVERSIGHT_STEERING_METADATA_KEY,
   WEDGE_RENOTIFY_COOLDOWN_MS,
 } from "./types/task/task-core.js";
@@ -646,6 +647,7 @@ export {
   BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY,
   STRANDED_CONTINUATION_RECLAIM_METADATA_KEY,
   EXECUTION_REARM_EPISODE_METADATA_KEY,
+  UNCLAIMED_GRAPH_WORK_EPISODE_METADATA_KEY,
   PLANNER_OVERSIGHT_STEERING_METADATA_KEY,
   WEDGE_RENOTIFY_COOLDOWN_MS,
 };
@@ -655,6 +657,7 @@ export type { TaskDeterministicSpecRejectionEpisode } from "./types/task/task-co
 export type { TaskWipAdmissionStallCode, TaskWipAdmissionStallEpisode } from "./types/task/task-core.js";
 export type { TaskBranchConflictRecoveryEpisode } from "./types/task/task-core.js";
 export type { StrandedContinuationReclaimEpisode, StrandedContinuationReclaimAnnouncement } from "./types/task/task-core.js";
+export type { TaskUnclaimedGraphWorkEpisode } from "./types/task/task-core.js";
 export type { PlannerOversightSteeringEpisode, PlannerSteeringBudgetEntry } from "./types/task/task-core.js";
 
 import type {

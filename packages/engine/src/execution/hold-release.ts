@@ -81,6 +81,15 @@ import { emitBoundedRunAudit } from "../util/emit-bounded-run-audit.js";
 import { getPromptPath } from "./spec-staleness.js";
 import { isTaskPlanningOrExecutionLive } from "../agents/planning-execution-liveness.js";
 import { evaluateStrandedHoldContinuation, seedPreReleasePlanReviewContinuation, type PlanReviewSeedBailReason } from "../plan-review-continuation.js";
+/*
+FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050):
+The release seam consumes an already-made decision; it never re-derives one. `classifyUnclaimedWorkForTask`
+gathers the facts (lane roles from the card's own IR, the drain's own due page, the pump's progress mark)
+and `unclaimedWorkMeansStarved` is the one predicate that says "no consumer will take this row".
+*/
+import { classifyUnclaimedWorkForTask } from "../workflows/unclaimed-graph-work-for-task.js";
+import { unclaimedWorkMeansStarved, type UnclaimedGraphWorkDecision, type UnclaimedGraphWorkOwner } from "../workflows/unclaimed-graph-work.js";
+import { DUE_PLANNING_CONTINUATION_BATCH_LIMIT } from "../workflows/continuation-drain-constants.js";
 import { checkPlanPremises, type PlanPremiseCheckResult } from "./plan-premise-check.js";
 /*
 FNXC:WipAdmissionPark 2026-11-02-07:10 (RUFU-393):
@@ -597,7 +606,60 @@ type PlanReviewArming =
   | { kind: "unavailable" }
   | { kind: "automatic" };
 
-function planReviewArmingSuffix(arming: PlanReviewArming): string {
+/*
+FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050):
+What the release seam says when an armed planning wait exists but NO consumer will take it. Before this,
+`bailed: "active-continuation"` answered every such card with "Plan Review is already queued for this
+card and will run", and `readyAtCapacityBoundary` — the one gate that would have had to notice — reads
+`waitReason === "capacity"`, so a `waitReason: "planning"` row never reaches it.
+
+The sentences below are ONE table keyed by the decision code, because the seam's own module claim is that
+this file is the only place admission wording lives: naming both the cause and the next actor here is
+what keeps the board move route, promote, the CLI and `fn_task_promote` from each inventing their own
+story about a card that will not move.
+
+"The card stays put" is asserted, not promised: this seam releases nothing, arms nothing, and moves
+nothing. It only stops describing a dead row as a queued run.
+*/
+const UNCLAIMED_PLANNING_WAIT_DETAIL: Partial<Record<UnclaimedGraphWorkDecision["code"], string>> = {
+  "due-unclaimed": "the row is due and inside the drain's window, but the continuation drain has not consumed it",
+  "deferred-repeating": "the row's retry deferral has been re-stamped past every horizon the drain publishes, so it never re-enters the due window",
+  "lease-held": "the row carries a work-item lease that has outlasted the row's own last write",
+  "behind-drain-window": `the due poll reads a FIFO of ${DUE_PLANNING_CONTINUATION_BATCH_LIMIT} rows ordered by queue rank and this row ranks past that window`,
+  "terminal-node-orphan": "the card's only work item is terminalized at attempt 0, a state no dispatcher can ever read",
+  "terminal-recorded": "the card's only work item is terminalized and a durable failure record already names it",
+};
+
+/** Who acts next, in operator words. Keyed by the decision's owner token so the two cannot drift. */
+const UNCLAIMED_NEXT_ACTOR_LABEL: Record<UnclaimedGraphWorkOwner, string> = {
+  "drain-window": "the continuation drain's fairness rotation",
+  "planning-continuation-drain": "the planning continuation drain",
+  "hold-release-sweep": "the hold/release sweep",
+  "stranded-continuation-reclaim": "stranded-continuation reclaim",
+  "wake-seams": "the wake that lifts the wait",
+  "lease-holder": "the node holding the work-item lease",
+  "execution-rearm": "the execution re-arm authority",
+  "triage": "the planner, reached through a replan admission",
+  "operator": "an operator",
+  "live-session": "the session already running this card",
+  "workflow-ir": "the workflow definition, which must name its planning and work-in-progress lanes",
+  "this-pass": "the unclaimed-graph-work reconciliation pass",
+};
+
+/**
+ * The honest admission suffix for a starved wait, or `null` to keep the existing wording. `null` is the
+ * common case: a row the drain demonstrably consumed moments ago IS a queued run, and that sentence
+ * survives byte-for-byte because it is still true.
+ */
+export function unclaimedPlanningWaitDetail(decision: UnclaimedGraphWorkDecision | undefined): string | null {
+  if (!decision || !unclaimedWorkMeansStarved(decision)) return null;
+  const cause = UNCLAIMED_PLANNING_WAIT_DETAIL[decision.code]
+    ?? `the planning continuation is unclaimed (${decision.code})`;
+  return ` Plan Review is already queued for this card, but nothing will dispatch it: ${cause}. The card stays put, and the next actor is ${UNCLAIMED_NEXT_ACTOR_LABEL[decision.owner] ?? decision.owner}.`;
+}
+
+function planReviewArmingSuffix(arming: PlanReviewArming, unclaimed?: UnclaimedGraphWorkDecision | null): string {
+  const honest = unclaimedPlanningWaitDetail(unclaimed ?? undefined);
   switch (arming.kind) {
     case "armed":
       return " Plan Review is now queued for this card and will run; the card releases itself once it reports a passing verdict.";
@@ -608,7 +670,12 @@ function planReviewArmingSuffix(arming: PlanReviewArming): string {
     case "bailed":
       switch (arming.bail) {
         case "active-continuation":
-          return " Plan Review is already queued for this card and will run; the card releases itself once it reports a passing verdict.";
+          /*
+          FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050):
+          The one arm that names a specific armed row, so it is the one arm that can promise a run that
+          will never happen. When the decision says no consumer will take that row, say so instead.
+          */
+          return honest ?? " Plan Review is already queued for this card and will run; the card releases itself once it reports a passing verdict.";
         case "plan-review-passed":
           return " A passing Plan Review has just been recorded — move the card again and it will be admitted.";
         case "awaiting-approval":
@@ -674,7 +741,30 @@ async function dischargeUnplannedAdmission(
     const arming: PlanReviewArming = options.explicit
       ? await armPreReleasePlanReview(store, task, ir)
       : { kind: "automatic" };
-    return { continueRelease: false, detail: `${base}${planReviewArmingSuffix(arming)}` };
+    /*
+    FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050):
+    Only the arm that claims a queued run may be corrected, and only when the facts can be read. The
+    background sweep's `automatic` arm states the order plan -> Plan Review -> execution without naming a
+    row, so it stays untouched and the sweep path performs no new read. `pass` memoizes the work-item and
+    prompt reads, so an explicit release re-uses what the gate above already fetched rather than re-reading.
+    */
+    let unclaimed: UnclaimedGraphWorkDecision | null = null;
+    if (arming.kind === "bailed" && arming.bail === "active-continuation") {
+      try {
+        const items = await listWorkItemsObs(options.pass, store, task.id);
+        const prompt = await readPromptObs(options.pass, store, task.id);
+        unclaimed = await classifyUnclaimedWorkForTask(store, task, ir, {
+          items: items ?? [],
+          hasDurableSpec: typeof prompt === "string" && prompt.trim().length > 0,
+          liveness: isTaskPlanningOrExecutionLive(task.id, { isTaskActive: deps.isTaskActive }) ? "live" : "idle",
+        });
+      } catch {
+        // An unreadable card keeps the historical wording. Refusing to answer is not the same as
+        // inventing a worse answer, and this seam's whole failure mode was over-promising.
+        unclaimed = null;
+      }
+    }
+    return { continueRelease: false, detail: `${base}${planReviewArmingSuffix(arming, unclaimed)}` };
   }
   if (reason === "planning-status") {
     const staleClaim = await clearStalePlanningClaimIfSoleBlocker(store, deps, task, ir, options.pass);

@@ -33,6 +33,12 @@ import {
 } from "@fusion/core";
 /* FNXC:HumanMergeApproval 2026-09-17-22:32: FN-514 classifies the parked marker family it owns. */
 import { isHumanMergeAdmissionHold } from "../executor/workflow-admission-hold.js";
+/*
+FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050):
+The pump publishes its own progress mark so a release surface below the scheduler can say truthfully
+whether a row it left armed will actually be dispatched. See `workflows/continuation-drain-progress.ts`.
+*/
+import { notePlanningContinuationDrainProgress } from "../workflows/continuation-drain-progress.js";
 import { Scheduler } from "../scheduler.js";
 import { isProjectRuntimeEnabled, RuntimeLaneGate } from "../runtime-lane-gate.js";
 import { registerDefaultAgentPluginRunner, unregisterDefaultAgentPluginRunner } from "../pi.js";
@@ -482,44 +488,24 @@ export async function wakePlannerLiveDeferredContinuations(deps: {
   return released;
 }
 
-/** The FIFO due-poll batch size. Named because the starvation the deferral above
- *  prevents is a property of this bound, so the two belong in one place. */
-export const DUE_PLANNING_CONTINUATION_BATCH_LIMIT = 20;
 /*
-FNXC:ContinuationDrainFairness 2026-10-29-10:55 (RUFU-812):
-How long a capacity-refused continuation leaves the due window before it may be tried again.
-The batch limit above is deliberately small and the due poll is ordered by task queue rank, so the
-only thing that makes the window advance is a refused row leaving the due set. Without a stamp the
-refused head is re-listed and re-refused every pass and rows beyond the limit are never read.
-
-FNXC:ContinuationDrainFairness 2026-11-02-19:57 (RUFU-862):
-The original 5 s horizon was sized against a wrong rotation model. It cost "ceil(156 / 20) = 8 passes"
-of ONE STAMP PER PASS, because the refusal path stamped a single row and stopped; a pass can only
-stamp the whole window once the stop becomes a stamp-only continuation (see
-`drainDuePlanningContinuations`). With one stamp per pass the window advances one row per poll, so a
-full rotation costs `N` polls, not `ceil(N / W)`.
-
-The horizon must outlast one window rotation or the head re-enters before the tail is ever read. One
-rotation of a W-wide window at the 2 s continuation poll costs at least W × 2 s = 40 s, so the floor
-is 45 s. Measured on the live board the same day: 274 due `kind: "task"` continuations, 256 of them
-with a NULL `retryAfter` (never deferred), only ONE row carrying a future one, and RUFU-627 ranked
-101st behind a window of 20 — four times outside reach, with `capacity_refused=0` and free executor
-capacity. A refused head that stays out for 45 s moves 20 rows per pass instead of one.
-
-The cost is bounded by the wake, not the timer: `dispatch-wakes.ts` treats reservation release as a
-wake signal ("returning the last shared slot is the exact moment ANOTHER card becomes runnable"), so
-a freed slot re-consults a stamped row immediately. The 2 s interval is a backstop for a lost NOTIFY
-(EventDrivenDispatch FN-519), which is why a longer horizon does not become added latency.
+FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050):
+The three drain-sizing constants moved to `workflows/continuation-drain-constants.ts` with their
+fairness rationale, and are re-exported here so every existing importer of this module is unchanged.
+They moved because `execution/hold-release.ts` must answer truthfully about the FIFO window and cannot
+import this file (this file imports the scheduler, which imports hold-release — the import would be a
+cycle). Values, names, and relative sizing are untouched.
 */
-export const CAPACITY_REFUSAL_DEFER_MS = 45_000;
-/*
-FNXC:ContinuationDrainFairness 2026-11-02-20:12 (RUFU-862):
-The continuation due poll's own period, named because the horizon above is only correct RELATIVE to
-it. Until now it was an inline literal 2 300 lines from the constant that has to outlast it, so the
-relationship could not be asserted by anything: a poll that slowed, or a due set that grew, silently
-defeated the fairness stamp while every test stayed green.
-*/
-export const WORKFLOW_CONTINUATION_POLL_MS = 2_000;
+export {
+  DUE_PLANNING_CONTINUATION_BATCH_LIMIT,
+  CAPACITY_REFUSAL_DEFER_MS,
+  WORKFLOW_CONTINUATION_POLL_MS,
+} from "../workflows/continuation-drain-constants.js";
+import {
+  DUE_PLANNING_CONTINUATION_BATCH_LIMIT,
+  CAPACITY_REFUSAL_DEFER_MS,
+  WORKFLOW_CONTINUATION_POLL_MS,
+} from "../workflows/continuation-drain-constants.js";
 /** A drain is only force-opened after this long without an owning-pass progress mark. */
 export const CONTINUATION_DRAIN_STALL_MS = 300_000;
 
@@ -1595,6 +1581,18 @@ export function createRuntimeSelfHealingManager(
     ...options,
     onOverlapBlockersReleased: async (releases) => {
       await releaseFileScopeWaitingContinuations(store, releases);
+      continuations?.kick();
+      scheduler.requestImmediateSchedule();
+    },
+    /*
+    FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050):
+    The redrive kick bridge. Clearing a row's `retryAfter` makes it CLAIMABLE; the drain still only wakes
+    on its own poll unless something rings it, so without this line the sweep's own repair sits idle for a
+    full interval and the card is no better off when the pass finishes than when it started. Reuses the SAME
+    `continuations` handle the overlap-release path already owns — a second, parallel wake channel is how a
+    board ends up with two authorities disagreeing about when the drain runs.
+    */
+    onUnclaimedGraphWorkRedrive: () => {
       continuations?.kick();
       scheduler.requestImmediateSchedule();
     },
@@ -2779,6 +2777,14 @@ export class InProcessRuntime
         for live sessions and the FN-6756 fix would evaporate without a test failing.
         */
         hasLiveSessionSurface: (taskId: string) => this.executor?.hasLiveSessionSurface(taskId) ?? false,
+        /*
+        FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050):
+        The executor's own liveness answer, wired to the SAME probe `attemptExecutionRearm`'s two existing
+        callers use. An unwired option here reads as "nothing is live" and would let the pass re-enter a
+        step that a running session is already executing — the FN-6756 lesson one seam over: a `?.()` probe
+        that production never wires fails silently, so it is wired at the same place its sibling is.
+        */
+        hasLiveExecutionSurface: (taskId: string) => this.executor?.hasLiveSessionSurface(taskId) ?? false,
         listWorktreeHolders: () => this.executor?.listWorktreeHolders() ?? [],
         // FNXC:PlanningEvacuation 2026-07-25-23:00: the executor owns the release safety conditions.
         releasePreExecutionWorktree: (taskId, reason) =>
@@ -4175,6 +4181,14 @@ export class InProcessRuntime
     if (this.workflowContinuationDrainGeneration !== generation) return;
     this.workflowContinuationDrainProgressAt = Date.now();
     this.workflowContinuationDrainPhase = phase;
+    /*
+    FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050):
+    The same measurement, published to the one reader that cannot reach this private field. A release
+    surface refusing a card has to say whether the row it left armed will actually run, and that is
+    true exactly when this pump is running — so the pump reports into
+    `workflows/continuation-drain-progress.ts` rather than the seam guessing.
+    */
+    notePlanningContinuationDrainProgress(this.workflowContinuationDrainProgressAt);
   }
 
   private async drainWorkflowContinuations(): Promise<void> {

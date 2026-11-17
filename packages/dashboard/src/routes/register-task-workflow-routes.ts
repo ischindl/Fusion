@@ -66,6 +66,7 @@ import {
   buildManualRetryResetPatchIfCurrent,
   buildStrandedGateRetryPatch,
   buildPlanningStrandedRetryPatch,
+  describePlanningStrandedRetryAdmission,
   classifyPlanningStrandedRetry,
   classifyStrandedGateRetry,
   reconcileDeterministicDuplicate,
@@ -4300,7 +4301,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         });
         await scopedStore.logEntry(
           req.params.id,
-          `Retry requested from dashboard (planning run exhausted in ${task.column}; re-armed to needs-replan - the card did not move and its specification, steps, worktree and branch are untouched)`,
+          `Retry requested from dashboard (${describePlanningStrandedRetryAdmission(planningStrandedRetry.via, task.column)}; re-armed to needs-replan - the card did not move and its specification, steps, worktree and branch are untouched)`,
         );
         res.json(await scopedStore.getTask(req.params.id));
         return;

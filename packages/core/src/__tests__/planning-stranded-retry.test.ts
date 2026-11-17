@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { UNCLAIMED_GRAPH_WORK_EPISODE_METADATA_KEY } from "../types.js";
+import { buildManualRetryResetPatch } from "../tasks/manual-retry-reset.js";
 import type { Task } from "../types.js";
 import type { WorkflowIr, WorkflowIrV2 } from "../workflows/workflow-ir-types.js";
 import { BUILTIN_CODING_WORKFLOW_IR } from "../workflows/builtin-coding-workflow-ir.js";
@@ -8,6 +10,7 @@ import {
   PLANNING_SPEC_TIMEOUT_ERROR_MARKERS,
   buildPlanningStrandedRetryPatch,
   classifyPlanningStrandedRetry,
+  describePlanningStrandedRetryAdmission,
   taskCarriesPlanningExhaustionEvidence,
   taskCarriesPlanningSpecTimeoutEvidence,
 } from "../tasks/planning-stranded-retry.js";
@@ -173,7 +176,7 @@ describe("classifyPlanningStrandedRetry", () => {
       { label: "queued + escalated-reseed (post-FN-9512)", task: strandedTask({ error: null, recoveryDisposition: "escalated-reseed" }) },
     ];
     for (const shape of shapes) {
-      expect(classify(shape.task), shape.label).toEqual({ kind: "planning-stranded" });
+      expect(classify(shape.task), shape.label).toEqual({ kind: "planning-stranded", via: "planning-exhaustion-evidence" });
     }
   });
 
@@ -194,13 +197,13 @@ describe("classifyPlanningStrandedRetry", () => {
         return JSON.stringify(classify(strandedTask(row)));
       });
       expect(new Set(verdicts).size, `${fixture.name} (${fixture.specState}) must be spec-state-blind`).toBe(1);
-      expect(JSON.parse(verdicts[0])).toEqual({ kind: "planning-stranded" });
+      expect(JSON.parse(verdicts[0])).toEqual({ kind: "planning-stranded", via: "planning-exhaustion-evidence" });
     }
   });
 
   it("accepts the legacy PLANNING_FAILED_EXHAUSTED park, whose rows still exist on real boards", () => {
-    expect(classify(strandedTask({ status: "failed", error: LEGACY_PARK_ERROR }))).toEqual({ kind: "planning-stranded" });
-    expect(classify(strandedTask({ status: "stuck-killed", error: LEGACY_PARK_ERROR }))).toEqual({ kind: "planning-stranded" });
+    expect(classify(strandedTask({ status: "failed", error: LEGACY_PARK_ERROR }))).toEqual({ kind: "planning-stranded", via: "planning-exhaustion-evidence" });
+    expect(classify(strandedTask({ status: "stuck-killed", error: LEGACY_PARK_ERROR }))).toEqual({ kind: "planning-stranded", via: "planning-exhaustion-evidence" });
   });
 
   it("resolves the planning lane by trait role and graph placement, not by the literal `todo`", () => {
@@ -214,7 +217,7 @@ describe("classifyPlanningStrandedRetry", () => {
       ),
     } as unknown as typeof BUILTIN_CODING_WORKFLOW_IR;
 
-    expect(classify(strandedTask({ column: "queue" }), renamed as unknown as WorkflowIr)).toEqual({ kind: "planning-stranded" });
+    expect(classify(strandedTask({ column: "queue" }), renamed as unknown as WorkflowIr)).toEqual({ kind: "planning-stranded", via: "planning-exhaustion-evidence" });
   });
 
   // ── One test per refusal leg, each with a fixture that breaks if the leg is removed ──
@@ -238,7 +241,7 @@ describe("classifyPlanningStrandedRetry", () => {
       .toEqual({ kind: "not-planning-stranded", reason: "no-planning-exhaustion-evidence" });
     // F3 - the same row authored by the PLANNING lane - must stay admitted or the fix is a regression.
     expect(classify(strandedTask({ error: null, recoveryDisposition: "escalated-reseed" })))
-      .toEqual({ kind: "planning-stranded" });
+      .toEqual({ kind: "planning-stranded", via: "planning-exhaustion-evidence" });
   });
 
   it("never treats `planning` as stranded — that is the live planner claim", () => {
@@ -281,7 +284,7 @@ describe("classifyPlanningStrandedRetry", () => {
       .toEqual({ kind: "not-planning-stranded", reason: "recovery-scheduled" });
     /* A PAST window is not an owner — refusing on it is how a card strands again after the timer fired. */
     expect(classify(strandedTask({}, { nextRecoveryAt: "2026-11-09T23:50:00.000Z" } as Partial<Task>), CODING_IR, now))
-      .toEqual({ kind: "planning-stranded" });
+      .toEqual({ kind: "planning-stranded", via: "planning-exhaustion-evidence" });
   });
 
   it("refuses an IR that cannot answer the placement question (`no-column-model`)", () => {
@@ -331,5 +334,102 @@ describe("buildPlanningStrandedRetryPatch", () => {
     /* `needs-replan` is in AWAITING_PLANNING_STATUSES and is what triage's todo rediscovery consumes; a
        null status names no owner and is how the card became a dead end in the first place. */
     expect(buildPlanningStrandedRetryPatch({ column: "todo", status: "queued" }).status).toBe("needs-replan");
+  });
+});
+
+/*
+FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050):
+The 136 cards this task was filed from are a DIFFERENT row from every fixture above: `status: null` in the
+planning lane, with the graph continuation — not the planning run — the thing that stopped moving. Before
+this leg all four surfaces refused them with `status-owned-by-another-lane`, so `fn task retry` answered
+"is not in a retryable state (status: none)" while the board's answer for the same card was a
+spec-destroying restart.
+
+The weight of these cases sits on the REFUSALS. `status: null` in a planning lane is what a perfectly
+healthy newly-triaged card looks like, so an admission leg that read the STATUS would hand every healthy
+card on the board to a re-plan. The episode the owning pass writes is the only thing separating the two.
+*/
+describe("classifyPlanningStrandedRetry — the unclaimed-graph-work admission (RUFU-1050)", () => {
+  const EPISODE = {
+    code: "due-unclaimed",
+    firstAt: "2026-11-17T01:05:00.000Z",
+    signature: "unclaimed-graph-work|due-unclaimed|WI-1|runnable|plan-review",
+    redriveCount: 3,
+  };
+
+  function unclaimedTask(overrides: Partial<Task> = {}): Task {
+    return {
+      id: "RUFU-1050",
+      column: "todo",
+      status: null,
+      error: null,
+      steps: [],
+      ...overrides,
+    } as unknown as Task;
+  }
+
+  const withEpisode = (episode: unknown) => ({ sourceMetadata: { unclaimedGraphWork: episode } });
+
+  it("admits a status-null planning-lane card the owning pass measured as unclaimed, and names that evidence", () => {
+    // `via` is what lets a surface narrate the truth: these cards' planning run COMPLETED, so a History line
+    // saying "planning run exhausted" would record a failure that never happened.
+    expect(classify(unclaimedTask(withEpisode(EPISODE) as Partial<Task>)))
+      .toEqual({ kind: "planning-stranded", via: "unclaimed-graph-work-episode" });
+  });
+
+  it("names exhaustion evidence for the RUFU-575 shapes, so the two admissions never share a sentence", () => {
+    expect(classify(strandedTask())).toEqual({ kind: "planning-stranded", via: "planning-exhaustion-evidence" });
+    expect(describePlanningStrandedRetryAdmission("unclaimed-graph-work-episode", "todo"))
+      .toBe("graph work waiting on planning in todo was claimed by no consumer");
+    expect(describePlanningStrandedRetryAdmission("planning-exhaustion-evidence", "todo"))
+      .toBe("planning run exhausted in todo");
+  });
+
+  it("refuses a status-null card with NO episode — a healthy waiting card is not this class", () => {
+    // The case that protects the board: without it, `fn task retry` re-plans every fresh card.
+    expect(classify(unclaimedTask())).toEqual({
+      kind: "not-planning-stranded",
+      reason: "status-owned-by-another-lane",
+    });
+  });
+
+  it("refuses an episode-shaped marker that names no code", () => {
+    // A register without its closed-set code is not a measurement, so it is not evidence either.
+    for (const value of [{}, null, "", 3, { firstAt: "2026-11-17T01:05:00.000Z" }]) {
+      expect(classify(unclaimedTask(withEpisode(value) as Partial<Task>)), `junk ${JSON.stringify(value)}`).toEqual({
+        kind: "not-planning-stranded",
+        reason: "status-owned-by-another-lane",
+      });
+    }
+  });
+
+  it("still refuses the unclaimed shape when an operator holds it or a retry is already scheduled", () => {
+    // The new leg joins the class; it does not outrank the legs that protect a human decision or a queued run.
+    expect(classify(unclaimedTask({ ...withEpisode(EPISODE), userPaused: true } as Partial<Task> as Task)))
+      .toEqual({ kind: "not-planning-stranded", reason: "operator-held" });
+    expect(classify(unclaimedTask({
+      ...withEpisode(EPISODE),
+      nextRecoveryAt: new Date(Date.now() + 600_000).toISOString(),
+    } as Partial<Task> as Task))).toEqual({ kind: "not-planning-stranded", reason: "recovery-scheduled" });
+  });
+
+  it("refuses the unclaimed shape outside a planning lane, whatever the episode claims", () => {
+    // Lane placement is checked before the episode is consulted; a WIP or review card owns its own recovery.
+    for (const column of ["in-progress", "in-review", "done"]) {
+      expect(classify(unclaimedTask({ ...withEpisode(EPISODE), column } as Partial<Task> as Task)), column).toEqual({
+        kind: "not-planning-stranded",
+        reason: "not-planning-column",
+      });
+    }
+  });
+
+  it("re-arms it with the same non-destructive patch, and Retry clears the register the pass bounds itself by", () => {
+    /* One classification, one patch: the four surfaces must not fork behaviour by sub-shape. The episode
+       clear lives in the shared manual-retry patch every surface already spreads — a Retry that left the
+       register behind would be refused again by the pass that keeps measuring the row (RUFU-395). */
+    expect(buildPlanningStrandedRetryPatch({ column: "todo", status: null }).status).toBe("needs-replan");
+    const reset = buildManualRetryResetPatch() as { sourceMetadataPatch?: Record<string, unknown> | null };
+    expect(Object.keys(reset.sourceMetadataPatch ?? {})).toContain(UNCLAIMED_GRAPH_WORK_EPISODE_METADATA_KEY);
+    expect(reset.sourceMetadataPatch?.[UNCLAIMED_GRAPH_WORK_EPISODE_METADATA_KEY]).toBeNull();
   });
 });

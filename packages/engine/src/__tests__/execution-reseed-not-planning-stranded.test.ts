@@ -200,7 +200,7 @@ describe("an execution-lane reseed is not planning-stranded, even after the sche
     expect(isTaskProgressing(planningAuthored)).toBe(false);
     expect(describeTaskWedge(planningAuthored)?.reasonKey).toBe("planning-spec-exhausted");
     expect(classifyPlanningStrandedRetry({ task: planningAuthored, ir: IR }))
-      .toEqual({ kind: "planning-stranded" });
+      .toEqual({ kind: "planning-stranded", via: "planning-exhaustion-evidence" });
 
     // And the incident sentence itself is unambiguous evidence on either predicate. A card whose scheduled
     // retry still owns it stays silent (the recovery-owner veto), so this row has its cadence cleared too.

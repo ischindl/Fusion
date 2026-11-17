@@ -1,4 +1,5 @@
 import type { Task } from "../types.js";
+import { UNCLAIMED_GRAPH_WORK_EPISODE_METADATA_KEY } from "../types/task/task-core.js";
 import type { WorkflowIr, WorkflowIrV2 } from "../workflows/workflow-ir-types.js";
 import { resolveColumnFlags } from "../workflows/trait-registry.js";
 import { workflowDeclaresColumnModel, workflowPlansInColumn } from "../workflows/workflow-transitions.js";
@@ -177,8 +178,21 @@ function includesMarker(error: unknown, marker: string): boolean {
 }
 
 export type PlanningStrandedRetryClassification =
-  | { kind: "planning-stranded" }
+  /**
+   * `via` names the EVIDENCE that admitted the card, so every surface can narrate what actually happened
+   * from one source instead of each asserting "the planning run exhausted" — a sentence RUFU-1050's cards
+   * make false, since their planning run finished and it was the graph row that stopped being taken. It is
+   * descriptive only: no branch may key behaviour off it, and one classification still produces one patch.
+   */
+  | { kind: "planning-stranded"; via: PlanningStrandedRetryAdmission }
   | { kind: "not-planning-stranded"; reason: PlanningStrandedRetryRefusal };
+
+/** Which of the two evidence families admitted the card. Closed, and never a status guess. */
+export type PlanningStrandedRetryAdmission =
+  /** The planning run's own exhaustion marker or escalated-reseed disposition (RUFU-575's shape). */
+  | "planning-exhaustion-evidence"
+  /** The owning pass measured this card's graph row as unclaimed (RUFU-1050's shape). */
+  | "unclaimed-graph-work-episode";
 
 /**
  * Why a card is NOT this retry class, so a retry surface can answer "why not" and keep naming the real
@@ -219,7 +233,30 @@ export type PlanningStrandedRetryTask = Pick<Task,
   | "recoveryDisposition"
   | "paused"
   | "userPaused"
-  | "nextRecoveryAt">;
+  | "nextRecoveryAt"
+  // Read ONLY for the RUFU-1050 unclaimed-episode leg below; nothing here inspects a spec body.
+  | "sourceMetadata">;
+
+/*
+FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050):
+A card whose graph continuation waits on planning while its `status` is NULL is the SAME operator problem
+as an exhausted planning run — the card sits in its planning lane and nothing will move it — but it is the
+same problem with the OPPOSITE-looking row: `status: null` is what a HEALTHY waiting card looks like, so an
+admission leg written as `status == null && planning lane` would let `fn task retry` re-plan every healthy
+newly-triaged card on the board. The episode the owning pass writes is therefore load-bearing: it is the
+measurement, not a guess. A card nobody measured keeps its existing refusal.
+
+Why the episode is trustworthy here: its only author is `reconcile-unclaimed-graph-work`, whose own ladder
+refuses anything a live session, a lease holder, a human hold, an unaged row, or the FIFO window owns. The
+Retry then does two things at once: it re-arms `needs-replan` (this module's existing patch) and it clears
+the episode (through the shared `buildManualRetryResetPatch`), so the pass gets a fresh budget to prove the
+row unhealthy again — RUFU-395's rule that a Retry which leaves the register behind is not an exit.
+*/
+function taskCarriesUnclaimedPlanningWait(task: Pick<Task, "sourceMetadata">): boolean {
+  const metadata = task.sourceMetadata as Record<string, unknown> | null | undefined;
+  const episode = metadata?.[UNCLAIMED_GRAPH_WORK_EPISODE_METADATA_KEY] as { code?: unknown } | undefined;
+  return typeof episode?.code === "string" && episode.code.length > 0;
+}
 
 /**
  * Whether this card is stranded in its own planning lane by an exhausted planning run.
@@ -239,7 +276,14 @@ export type PlanningStrandedRetryTask = Pick<Task,
  *   attempt, and the wedge layer must stay silent for the same reason.
  * - `no-planning-exhaustion-evidence` — the leg that keeps a healthy capacity- or overlap-throttled
  *   `queued` card (the shape this task's own card logged as `queued - maxConcurrent capacity exhausted`)
- *   out of the class.
+ *   out of the class. An unclaimed-graph-work episode written by the owning pass satisfies this leg the
+ *   same way an exhaustion marker does: it is measured row evidence, not a status guess (RUFU-1050).
+ *
+ * ADMISSION ALSO ACCEPTS THE UNCLAIMED SHAPE (RUFU-1050): a card in its planning lane whose `status` is
+ * NULL, refused here by the status leg for fifteen years of healthy waiting, is admitted once the owning
+ * pass has MEASURED its continuation as unclaimed. The episode — not the NULL status — is the evidence, so
+ * an unmeasured healthy card is refused byte-for-byte as before, and all four surfaces still answer from
+ * this one function rather than re-deriving retryability from private status unions.
  */
 export function classifyPlanningStrandedRetry(input: {
   task: PlanningStrandedRetryTask;
@@ -261,14 +305,42 @@ export function classifyPlanningStrandedRetry(input: {
     return { kind: "not-planning-stranded", reason: "not-planning-column" };
   }
 
-  if (!statusIsStrandedPlanningStatus(task.status)) return { kind: "not-planning-stranded", reason: "status-owned-by-another-lane" };
+  if (!statusIsStrandedPlanningStatus(task.status) && !taskCarriesUnclaimedPlanningWait(task)) {
+    return { kind: "not-planning-stranded", reason: "status-owned-by-another-lane" };
+  }
   if (task.userPaused === true || task.paused === true) return { kind: "not-planning-stranded", reason: "operator-held" };
   const now = input.now ?? Date.now();
   const nextRecoveryAt = Date.parse(task.nextRecoveryAt ?? "");
   if (Number.isFinite(nextRecoveryAt) && nextRecoveryAt > now) return { kind: "not-planning-stranded", reason: "recovery-scheduled" };
-  if (!taskCarriesPlanningExhaustionEvidence(task)) return { kind: "not-planning-stranded", reason: "no-planning-exhaustion-evidence" };
+  // The episode IS the exhaustion evidence for the unclaimed shape, so it satisfies the evidence leg rather
+  // than being refused by it; a card with neither is refused exactly as before.
+  if (!taskCarriesPlanningExhaustionEvidence(task) && !taskCarriesUnclaimedPlanningWait(task)) {
+    return { kind: "not-planning-stranded", reason: "no-planning-exhaustion-evidence" };
+  }
 
-  return { kind: "planning-stranded" };
+  return {
+    kind: "planning-stranded",
+    via: taskCarriesPlanningExhaustionEvidence(task) ? "planning-exhaustion-evidence" : "unclaimed-graph-work-episode",
+  };
+}
+
+/**
+ * The clause each surface puts in its own History line, derived from the evidence that admitted the card.
+ *
+ * FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050): four surfaces each carried their own copy of
+ * "planning run exhausted in <column>", which RUFU-1050's cards make FALSE — their planning run completed,
+ * and it was the graph row that no consumer would take. A card whose History claims a failure that did not
+ * happen is the defect class this module exists to close, so the sentence is generated here and every
+ * surface keeps only its own transport prefix ("from CLI", "via chat tool"). One classification, one
+ * patch, one narration.
+ */
+export function describePlanningStrandedRetryAdmission(
+  admission: PlanningStrandedRetryAdmission,
+  column: string,
+): string {
+  return admission === "unclaimed-graph-work-episode"
+    ? `graph work waiting on planning in ${column} was claimed by no consumer`
+    : `planning run exhausted in ${column}`;
 }
 
 /** The re-arm patch — exactly these keys, and nothing else. */

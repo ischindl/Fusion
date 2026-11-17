@@ -1583,3 +1583,112 @@ read was refused is not a delivery-pipeline step, and a row there would imply ev
 pass through it. It is declared in `@fusion/core`'s `RunAuditMutationType` (the placement RUFU-259
 established for core- and dashboard-emitted rows), because its emitter reaches the sink through the core
 seam rather than the engine's `DatabaseMutationType`.
+
+### The graph row no consumer would take (RUFU-1050)
+
+`task:reconcile-unclaimed-graph-work` records one repair performed by the owning pass
+`reconcile-unclaimed-graph-work` (registered in startup recovery and maintenance batch 1) over a workflow
+continuation that every existing consumer had already declined.
+
+The population was measured at 136 todo cards on one board. A card in that shape holds a live planning item
+— `state: "runnable"`, `waitReason: "planning"` — while its `task.status` is NULL. Three owners each
+declined it for a reason that is individually correct and collectively a hole: the hold/release sweep
+releases a planning wait only when `status` carries a value that is not `"planning"`, so a NULL status
+fails its status test; the continuation drain reads only the FIFO due page, and a row deferred off that
+page is invisible to it; the stranded-reclaim sweep reads only `retryAfter`, which a planning wait does not
+set. Nothing dispatched it, and the release surface's sentence for it read "…and will run", so the card
+promised a run that no code path existed to deliver.
+
+The pass is a hand-off pass, not a second admission lane, and the row is what proves the difference. Its
+three verbs are the authorities that already own each repair: a cleared deferral/lease through the CAS
+`transitionWorkflowWorkItem` followed by a kick of the existing continuation handle; an execution re-arm
+delegated whole to `attemptExecutionRearm` with the honest `self-healing-stranded-recovery` reason; and a
+`needs-replan` write under the planning lifecycle lock, which is triage's own re-admission request. It
+never moves a column, never seeds a continuation, and withholds absolutely whenever the FIFO page cannot be
+read at all — a pass that cannot tell "queued behind 20 rows" from "never going to be taken" has no
+business clearing a queue.
+
+Metadata is ids, two fixed enums, and one counter: `taskId`, `column`, `code` (the decision from the closed
+seam vocabulary), `action` (`redrive` / `rearm` / `replan` / `name-terminal`), `itemId`, `nodeSeam`,
+`owner`, `outcome`, and `redriveCount`. Decision prose, prompt text, spec bodies, worktree paths, and error
+text never enter the row.
+
+`outcome` is the delegated authority's answer, written AFTER the hand-off rather than before it, and it is one
+of four values: `repaired` (the authority took the hand-off and reported success), `announced`
+(`name-terminal`, which reports a verdict and changes nothing by design), `already-owned` (a legitimate
+refusal — another claimant holds the row), and `authority-refused` (the hand-off did not land). The first cut
+wrote `repaired` eagerly for every action, so a card whose re-arm the execution authority refused carried a
+durable row claiming a repair that had not happened, and `name-terminal` — which repairs nothing by
+definition — claimed one too. A record that over-claims is worse than no record: it is durable evidence
+pointing at a repair nobody can find. The refusal token the authority returned (`no-work-evidence`,
+`not-eligible`, `cas-lost`, …) goes on the card's History line, never in the row.
+
+### The withheld half of that row (RUFU-1050 code review)
+
+`task:reconcile-unclaimed-graph-work-no-action` records one verdict the same pass examined and refused to act
+on. The name was already used in the code's own comments, which is exactly the problem: the idiom in this
+repository is that a refusal gets a paired `-no-action` event (RUFU-273's `task:planning-admission-stalled`,
+RUFU-288's fence park, RUFU-356's acquisition conflict), and this class documented the idiom while emitting
+only the acted half. The measured board produced what the review found: a query for the fleet of unclaimed
+cards returned zero rows, and the pass's own result tally was dropped by both registrations
+(`reconcileUnclaimedGraphWork().then(() => undefined)`), so "nothing happened" and "nothing was claimable"
+were the same silent thing and got diagnosed with hand-written SQL.
+
+The pair restores the two facts a refusal has to carry: what was refused, and who owns the card instead. Its
+event name is deliberately absent from the curated delivery-pipeline catalogue, exactly like its acted half,
+and is documented here as prose so `run-audit-catalogue.test.ts` stays in lock-step.
+
+Metadata is the acted row's closed set plus two durations — `taskId`, `column`, `code`, `action` (always
+`none`), `itemId`, `nodeSeam`, `owner`, `outcome` (always `withheld`), `stalenessMs`, `retryAfterMs`,
+`redriveCount` — and again no prose.
+
+Three bounds keep a recorded refusal from becoming the row flood it was designed to avoid:
+
+- **Healthy work emits nothing at all.** `not-aged`, `not-planning-lane`, `live-session`, `operator-held`, and
+  `auto-merge-off` are counted in the pass result and write no row, no History line, and no episode. RUFU-273
+  and RUFU-372 each measured what happens when a sweep announces healthy cards or a card a human is
+  deliberately holding: the store fills with cards that are fine and the stall stops being findable.
+- **The bound is the card's own episode, not process memory.** `lastAction` and `lastReportedAt` ride the
+  `unclaimedGraphWork` episode the pass already owns, so a sustained stall re-announces at most once per the
+  six-hour floor *across restarts*. RUFU-318's bound was a process-local key, which limits a sustained stall
+  to one row per boot rather than one per window — on a board that crash-loops, that is a flood with a
+  healthy-looking cadence. An episode with no `lastReportedAt` (written before this pair of keys existed)
+  counts as never announced, so an upgraded board reports the stalls it already has instead of inheriting
+  silence.
+- **The key never grows.** The repeat identity is `(code, action)` — never a counter or a measurement —
+  because RUFU-442 measured what a bound keyed on a changing field does: every poll becomes a first
+  occurrence. A code or action change always re-announces, since `due-unclaimed` and `terminal-node-orphan`
+  are different questions about the same card.
+
+The same bound gates `action: "name-terminal"`, the one acted verb that writes no repair and is therefore
+pure announcement: without it, a card whose remedy is a human produces one row per pass forever. The repair
+verbs (`redrive`, `rearm`, `replan`) are never gated there — each is bounded by the authority it hands off
+to.
+
+A pass that examined anything also logs its totals (`examined / redriven / rearmed / replanned / named /
+withheld`), at `warn` when it acted and `debug` otherwise; zero-candidate passes stay silent. The level split
+follows the diagnostics rule for this subsystem, and the vocabulary is `log/debug/warn/error` — this logger
+has no `info`, and calling the missing method threw inside the pass's own `try/catch`, which is how a
+totals line turned into a swallowed warning on every pass until the falsification run caught it.
+
+The card's own History line is written through `logEntryOnce` (falling back to `logEntry` on a store
+without it) under `[unclaimed-graph-work]`, deduped per (card, code, action) on a six-hour floor, so the
+operator reading the card sees the same measurement the row carries. Its episode carrier is
+`sourceMetadata.unclaimedGraphWork`, written KEY-level, whose `signature` is stamped by the decision seam
+itself and never rebuilt by a reader: the redrive budget compares against that exact string, and RUFU-1027's
+bound-that-was-not-a-bound came from exactly two writers spelling one key differently.
+
+Two consumers depend on this event's shape staying boring. The operator's Retry clears the episode through
+core's shared `buildManualRetryResetPatch` — the key is declared in core's `task-core` for that reason and
+that reason only, since core cannot import the engine — and `classifyPlanningStrandedRetry` reads the same
+episode as the *evidence* that admits the card to a non-destructive re-arm on all four surfaces. A register
+the Retry cannot clear would make the pass refuse a card the operator had just released, and a classifier
+that admitted on `status === null` instead would re-plan every healthy newly-triaged card on the board.
+
+This event sits deliberately OUTSIDE the curated delivery-pipeline catalogue that
+`run-audit-catalogue.test.ts` locks table-for-table against the category tables above: a repair pass over a
+row nobody claimed is not a step every card is expected to pass through, and a catalogue row would imply
+one. It is declared in the engine's `DatabaseMutationType` because its emitter reaches the sink through the
+engine's `emitBoundedRunAudit` seam, and — like every row in this file — it cannot alter, delay, or fail
+the repair it reports: an absent, throwing, rejecting, or hanging sink leaves the transition, the re-arm,
+and the History line identical.

@@ -1,5 +1,29 @@
 import { resumeMissingPostMergeGate } from "./merge/post-merge-gate-reseed.js";
 import { EpochedWorkflowIrCache, EpochedWorkflowSelectionCache, STRANDED_CONTINUATION_RECLAIM_METADATA_KEY } from "@fusion/core";
+import type { CheckoutEmptinessProver } from "./worktree/checkout-emptiness.js";
+import type { WorkflowWorkItem } from "@fusion/core";
+/*
+FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050):
+The three leaves this pass consumes. The decision lives in a pure seam so the release sentence and this
+repair cannot hold two opinions about what an unclaimed row means; the reader exists so neither surface
+re-derives lane roles, the FIFO page, or drain freshness by hand.
+*/
+import {
+  UNCLAIMED_GRAPH_WORK_EPISODE_METADATA_KEY,
+  UNCLAIMED_GRAPH_WORK_HISTORY_WINDOW_MS,
+  unclaimedGraphWorkTerminalRecordExists,
+  unclaimedGraphWorkWithholdingIsReportable,
+  type UnclaimedGraphWorkAction,
+  type UnclaimedGraphWorkDecision,
+  type UnclaimedGraphWorkEpisode,
+} from "./workflows/unclaimed-graph-work.js";
+import {
+  classifyUnclaimedWorkForTask,
+  readEpisode,
+  resolveUnclaimedWorkLanes,
+} from "./workflows/unclaimed-graph-work-for-task.js";
+import { DUE_PLANNING_CONTINUATION_BATCH_LIMIT } from "./workflows/continuation-drain-constants.js";
+import { attemptExecutionRearm, resolveStrandedStepExecuteNode } from "./executor/execution-rearm.js";
 /**
  * SelfHealingManager — enables unattended multi-day/week operation by
  * providing automatic recovery from common failure modes.
@@ -679,6 +703,107 @@ import {
 const log = createLogger("self-healing");
 
 /*
+FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050):
+One pass's tally, reported to the maintenance log. `examined` counts cards that carried one of the two
+shapes, `withheld` counts the verdicts this pass was not permitted to act on, and the four repair counters
+name which authority actually took the hand-off — a repair an authority refused is NOT counted as one.
+*/
+export interface UnclaimedGraphWorkOutcome {
+  examined: number;
+  redriven: number;
+  rearmed: number;
+  replanned: number;
+  named: number;
+  withheld: number;
+}
+
+/*
+FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050):
+The card-History sentence for a repair. It deliberately does NOT promise a run: the sentence that made this
+task necessary was "Plan Review is already queued for this card and will run", and the fix is not to say it
+more quietly but to name who acts next and what this pass actually did. `firstAt` is carried because a
+repeat sighting must read as a repeat, not as fresh news.
+*/
+const UNCLAIMED_GRAPH_WORK_HISTORY_DETAIL: Record<UnclaimedGraphWorkAction, (owner: string, redriveCount: number) => string> = {
+  redrive: (owner, count) => `Self-healing cleared a stale deferral/lease on this card's own planning row so the drain can claim it (redrive #${count}); next actor: ${owner}.`,
+  rearm: (owner) => `Self-healing handed this card's terminal step row to ${owner}, the only authority that may re-enter step execution; it proves worktree evidence and spends a bounded budget to do so.`,
+  replan: (owner) => `Self-healing signalled this card for replanning (status needs-replan); the plan is ${owner}'s to make, this pass only cleared the dead row that was blocking it.`,
+  "name-terminal": (owner) => `Self-healing found a terminal graph row with no re-entry owner and NO runnable repair: the card stays put and waits for ${owner}. Nothing will dispatch it automatically.`,
+  none: (owner) => `Self-healing examined this card's graph row and withheld the repair; it belongs to ${owner}.`,
+};
+
+function unclaimedGraphWorkHistorySentence(
+  decision: UnclaimedGraphWorkDecision,
+  episode: UnclaimedGraphWorkEpisode,
+): string {
+  const owner = UNCLAIMED_GRAPH_WORK_OWNER_LABEL[decision.owner] ?? decision.owner;
+  const body = UNCLAIMED_GRAPH_WORK_HISTORY_DETAIL[decision.action](owner, episode.redriveCount);
+  return `${body} Shape: ${decision.code} (first seen ${episode.firstAt}).`;
+}
+
+/**
+ * FNXC:UnclaimedGraphWork 2026-11-17-03:30 (RUFU-1050 code-review remediation, P1-2 honesty follow-up):
+ * What the delegated authority actually answered, as the closed `outcome` enum of
+ * `task:reconcile-unclaimed-graph-work`. `repaired` means the authority took the hand-off and reported
+ * success - it is not this pass's intent, and a row that says it without the authority's agreement is the
+ * defect this enum removes. `announced` is `name-terminal`, which reports a verdict and changes nothing, and
+ * `already-owned` is a legitimate refusal (another claimant holds the row) rather than a finding.
+ */
+type UnclaimedGraphWorkVerdict = "repaired" | "announced" | "already-owned" | "authority-refused";
+
+/** The delegation's answer: the outcome bucket it filled, the durable verdict, and the authority's own token. */
+type UnclaimedGraphWorkDelegation = {
+  bucket: keyof UnclaimedGraphWorkOutcome | null;
+  verdict: UnclaimedGraphWorkVerdict;
+  /** The delegated authority's own verdict token - card History only, never the audit row. */
+  authorityVerdict?: string;
+};
+
+/** Operator-facing next-actor labels. A token like `execution-rearm` is not something to read on a card. */
+const UNCLAIMED_GRAPH_WORK_OWNER_LABEL: Record<string, string> = {
+  "this-pass": "this sweep (a re-probe follows)",
+  "drain-window": "the continuation drain's FIFO window",
+  "planning-continuation-drain": "the planning continuation drain",
+  "hold-release-sweep": "the hold/release sweep",
+  "stranded-continuation-reclaim": "the stranded-continuation reclaim sweep",
+  "wake-seams": "a graph wake seam",
+  "lease-holder": "the agent holding the lease",
+  "execution-rearm": "the execution re-arm authority",
+  triage: "triage",
+  operator: "an operator",
+  "live-session": "the session already working this card",
+  "workflow-ir": "the workflow definition",
+};
+
+/** Key-level `sourceMetadataPatch` for this episode alone — the RUFU-246/273/393/395 write shape. */
+function unclaimedGraphWorkEpisodePatch(episode: UnclaimedGraphWorkEpisode): Record<string, unknown> {
+  return { sourceMetadataPatch: { [UNCLAIMED_GRAPH_WORK_EPISODE_METADATA_KEY]: episode } };
+}
+
+/*
+FNXC:UnclaimedGraphWork 2026-11-17-02:47 (RUFU-1050 code-review remediation, P1-2):
+Whether this verdict has already been announced inside the re-announcement window, read from the card's
+OWN episode. Three properties the bound must have, each of which an in-process Set fails:
+- it survives a restart (RUFU-318's process-local key bounds a sustained stall to one row per BOOT, not
+  one per window, and a board that crash-loops therefore floods the store);
+- its key does not grow (RUFU-442's bound-keyed-on-a-changing-field defect), so the identity is
+  `(code, action)` and never a count or a measurement;
+- a code or action change always re-announces, because `due-unclaimed` and `terminal-node-orphan` are
+  different questions about the same card and collapsing them would hide the second one.
+A missing `lastReportedAt` (an episode written before this pair of keys existed) is treated as never
+announced, so an upgraded board reports its existing stalls once instead of inheriting silence.
+*/
+function unclaimedGraphWorkAnnouncementIsRepeat(
+  prior: UnclaimedGraphWorkEpisode | null,
+  decision: { code: UnclaimedGraphWorkEpisode["code"]; action: UnclaimedGraphWorkAction },
+  now: number,
+): boolean {
+  if (!prior || prior.code !== decision.code || prior.lastAction !== decision.action) return false;
+  const reportedAt = typeof prior.lastReportedAt === "string" ? Date.parse(prior.lastReportedAt) : Number.NaN;
+  return Number.isFinite(reportedAt) && now - reportedAt < UNCLAIMED_GRAPH_WORK_HISTORY_WINDOW_MS;
+}
+
+/*
 DELIBERATE-LITERAL — the no-metadata fallback for dependency satisfaction, mirroring
 `isLegacyDependencySatisfied` in scheduler.ts (reviewed there 2026-07-30-20:40).
 
@@ -847,6 +972,24 @@ export interface SelfHealingOptions {
   clearPhantomExecutorBinding's refusal, exposed rather than re-derived.
   */
   hasLiveSessionSurface?: (taskId: string) => boolean;
+  /**
+   * FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050):
+   * The executor's own liveness answer, handed to `attemptExecutionRearm` under the SAME predicate its two
+   * existing callers use. A re-arm that re-enters a step while a session is still running that step does
+   * not recover the card, it duplicates it, so the refusal is load-bearing and must be the real executor
+   * probe rather than a looser read this pass invents.
+   */
+  hasLiveExecutionSurface?: (taskId: string) => boolean;
+  /**
+   * FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050):
+   * The drain kick bridge. A redrive clears a row's `retryAfter` and `leaseExpiresAt`, which makes the row
+   * CLAIMABLE but not claimed: without a kick the next drain pass is still one poll away, so the repair's
+   * own effect sits idle for the whole interval. Absent (CLI one-shot, tests) the pass degrades to the
+   * existing poll cadence instead of failing.
+   */
+  onUnclaimedGraphWorkRedrive?: () => void;
+  /** Injectable checkout-emptiness prover, forwarded to `attemptExecutionRearm` so evidence stays testable. */
+  checkoutEmptinessProver?: CheckoutEmptinessProver;
   /*
   FNXC:PlanningEvacuation 2026-07-25-23:00:
   Releases a task's PRE-EXECUTION worktree (acquired at planning time) when the card is parked
@@ -2884,6 +3027,16 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       */
       { name: "reconcile-terminal-branch-conflict-parks", fn: () => this.reconcileTerminalBranchConflictParks().then(() => undefined) },
       /*
+      FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050):
+      BOOT OWNER FOR ROWS NO CONSUMER WILL TAKE. The startup twin matters here more than for most sweeps:
+      an unclaimed planning row changes NOTHING on its card, so a board restarted a hundred times still has
+      the same 136 cards resting `runnable` with `status` NULL, and every restart is the moment a fresh
+      drain could have taken them if anything had cleared their deferrals. No ordering dependency on the
+      sweeps around it — it reads work items, the IR's lane vocabulary, and liveness, and it never moves a
+      column, so it cannot interleave with a move.
+      */
+      { name: "reconcile-unclaimed-graph-work", fn: () => this.reconcileUnclaimedGraphWork().then(() => undefined) },
+      /*
       FNXC:CompleteLaneBoundary 2026-11-08-13:36 (RUFU-349):
       REPORT-ONLY enumeration of cards already miscompleted into a complete-trait column without approving
       gate evidence. Registered beside the terminal-lane sweep above because that one is the only other
@@ -4287,6 +4440,16 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           shape only; no ordering dependency inside this batch.
           */
           { name: "reconcile-terminal-branch-conflict-parks", fn: () => this.reconcileTerminalBranchConflictParks() },
+          /*
+          FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050):
+          Steady-state twin of the startup registration. A row can become unclaimed entirely between
+          restarts — a deferral stamped at its maximum horizon, or a lease whose holder died with its own
+          expiry still in the future — and the boot pass alone would leave those cards sitting until the
+          next deploy. This is the only pass that repairs such a row, and it repairs it by handing off: the
+          CAS clears a deferral nobody holds, `attemptExecutionRearm` still owns every re-entry into step
+          execution, and `needs-replan` remains the graph's signal for triage to consume.
+          */
+          { name: "reconcile-unclaimed-graph-work", fn: () => this.reconcileUnclaimedGraphWork().then(() => undefined) },
           /*
           FNXC:CompleteLaneBoundary 2026-11-08-13:36 (RUFU-349):
           Steady-state twin of the startup registration. A card can be miscompleted entirely between
@@ -11960,6 +12123,507 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     } catch (error) {
       log.warn(`reconcileStrandedHoldContinuations failed: ${error instanceof Error ? error.message : String(error)}`);
       return 0;
+    }
+  }
+
+  /**
+   * FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050):
+   * THE OWNING PASS FOR A PLANNING WAIT NO CONSUMER WILL TAKE.
+   *
+   * The measurement this pass exists for: 136 cards resting in `todo` whose planning continuation is
+   * `runnable`, `waitReason: "planning"`, and whose `status` is NULL. The hold/release sweep releases a
+   * card whose status is `needs-replan` and refuses this one on the status alone; the drain only takes a
+   * row whose card has a releasable boundary. Nothing else looks at the row at all. So it sits `runnable`
+   * forever, the release seam keeps announcing that the plan review "will run", and the card is neither
+   * waiting nor progressing — it is unclaimed.
+   *
+   * WHY THIS IS A NEW PASS AND NOT A WIDENING OF `readyAtCapacityBoundary`. That gate asks whether a card
+   * is ready at the CAPACITY boundary and answers from a `waitReason === "capacity"` row. Teaching it to
+   * also read `waitReason === "planning"` would let a capacity gate move cards across the hold→WIP seam on
+   * the strength of a row the capacity pool never consulted. The release seam therefore keeps its answer
+   * and gets only HONESTER WORDS for it (see `dischargeUnplannedAdmission`); the repair lives here, where
+   * a pass may act without becoming an admission authority.
+   *
+   * WHY EVERY REPAIR IS A HAND-OFF TO AN EXISTING AUTHORITY.
+   * - `attemptExecutionRearm` proves worktree emptiness before re-entering a step and burns a bounded
+   *   per-signature ladder. Re-implementing the seed here would let a card re-enter step execution with no
+   *   evidence and no budget — the shape RUFU-308 was written to refuse.
+   * - The graph's replan seam owns `needs-replan`, and triage is the only planner that consumes it. Writing
+   *   that status is a SIGNAL, not a plan, and stays guarded by the liveness predicate so a planning run in
+   *   flight is never signalled out from under itself.
+   * - The drain owns the FIFO due page. A row ranked past the window is QUEUED, not starved, so this pass
+   *   withholds on `behind-drain-window`: clearing `retryAfter` on a row the drain has not reached would
+   *   let it skip the queue it is legitimately standing in.
+   * The one work-item write this pass makes directly is the compare-and-set that clears a deferral or a
+   * lease nobody is holding — the same seam `reconcileStrandedWorkflowContinuations` uses, where
+   * `expectedState` makes losing the race the ordinary outcome rather than a corrupted claim.
+   *
+   * WHY THE EPISODE IS WRITTEN BEFORE THE ACTION IS REPORTED. A pass that classifies a candidate and writes
+   * nothing is indistinguishable from a pass that never ran, which is how 136 cards survived every previous
+   * sweep unnoticed. Every non-withheld verdict therefore leaves three records: the durable episode key (so
+   * a second pass can tell a repeat from a first sighting), one audit row, and one card-History line that
+   * names the next actor instead of promising a run.
+   */
+  async reconcileUnclaimedGraphWork(): Promise<UnclaimedGraphWorkOutcome> {
+    const outcome: UnclaimedGraphWorkOutcome = { examined: 0, redriven: 0, rearmed: 0, replanned: 0, named: 0, withheld: 0 };
+    try {
+      const settings = await this.store.getSettings();
+      if (settings.globalPause === true || settings.enginePaused === true) return outcome;
+      const now = Date.now();
+      const irCache = new Map<string, WorkflowIr>();
+      const selectionCache: WorkflowSelectionCache = new Map();
+      /*
+      The FIFO due page is a BOARD-WIDE fact, not a per-card one: the drain takes the first
+      `DUE_PLANNING_CONTINUATION_BATCH_LIMIT` due rows ordered by sequence. Reading it once per pass and
+      handing membership down is what keeps a 500-card page from costing 500 page reads.
+      */
+      let dueIds: Set<string> | null = null;
+      if (typeof this.store.listDueWorkflowWorkItems === "function") {
+        try {
+          const due = await this.store.listDueWorkflowWorkItems({
+            kinds: ["task"], states: ["runnable", "retrying"],
+            limit: DUE_PLANNING_CONTINUATION_BATCH_LIMIT, now: new Date(now).toISOString(),
+          });
+          dueIds = new Set(due.map((item) => item.id));
+        } catch {
+          dueIds = null;
+        }
+      }
+      const live = (taskId: string): boolean => isTaskPlanningOrExecutionLive(taskId, {
+        isTaskActive: this.options.isTaskActive,
+        getPlanningTaskIds: this.options.getPlanningTaskIds,
+      }) || this.options.hasLiveSessionSurface?.(taskId) === true
+        || this.options.hasLiveExecutionSurface?.(taskId) === true;
+      let offset = 0;
+      for (;;) {
+        const tasks = await this.store.listTasks({ slim: false, includeArchived: false, includeDeleted: false, limit: 500, offset, excludeLog: true });
+        await prefetchWorkflowSelections(this.store, tasks.map((entry) => entry.id), selectionCache);
+        for (const snapshot of tasks) {
+          try {
+            const task = await this.store.getTask(snapshot.id);
+            if (!task || task.deletedAt) continue;
+            const ir = await resolveWorkflowIrForTask(this.store, task.id, irCache, selectionCache);
+            if (!("columns" in ir)) continue;
+            const lanes = resolveUnclaimedWorkLanes(ir);
+            if (!lanes.lanesReadable || !(lanes.planningColumns.has(task.column) || lanes.wipColumns.has(task.column))) continue;
+            const items = await this.store.listWorkflowWorkItemsForTask(task.id);
+            /*
+            The cheap pre-filter that keeps this pass affordable: both shapes are two field reads over rows
+            the pass already holds, and the classification, terminal-record read, episode write and audit
+            rows only ever run for a card that actually carries one.
+            */
+            const carriesPlanningWait = items.some((item) =>
+              (item.state === "runnable" || item.state === "retrying") && item.waitReason === "planning");
+            const carriesTerminalOrphan = items.some((item) =>
+              (item.state === "failed" || item.state === "cancelled") && (item.attempt ?? 0) === 0 && !item.waitReason);
+            if (!carriesPlanningWait && !carriesTerminalOrphan) continue;
+            outcome.examined += 1;
+            /*
+            An unreadable due page and a card waiting on that page: the pass cannot tell "queued behind 20
+            rows" from "never going to be taken", and the difference decides whether a repair is a service
+            or a queue-jump. Withheld, counted, and logged — not resolved by a guess.
+            */
+            if (dueIds === null && carriesPlanningWait) {
+              outcome.withheld += 1;
+              log.warn(`reconcileUnclaimedGraphWork: withheld for ${task.id} — the FIFO due page is unreadable, so reachability cannot be answered`);
+              continue;
+            }
+            /*
+            A durable specification is read only for a card that already carries one of the two shapes, so
+            the file touch is bounded by the candidate count, not the board. The seam routes a terminal
+            orphan to a REPLAN only when a spec exists to replan from, and answering that wrongly would
+            strand a card with nothing to plan.
+            */
+            let hasDurableSpec = false;
+            try {
+              hasDurableSpec = (await readFile(getPromptPath(this.store.getTasksDir(), task.id), "utf8")).trim().length > 0;
+            } catch {
+              hasDurableSpec = false;
+            }
+            const decision = await classifyUnclaimedWorkForTask(this.store, task, ir, {
+              now,
+              items,
+              hasDurableSpec,
+              liveness: live(task.id) ? "live" : "idle",
+              /*
+              FNXC:UnclaimedGraphWork 2026-11-17-02:47 (RUFU-1050 code-review remediation, P1-1):
+              Read the durable terminal record, do not proxy it. The previous answer was `task.error` being
+              non-empty, and that proxy fails in BOTH directions, which is what makes it worse than useless
+              here: (1) it credits a record that speaks about a DIFFERENT failure — a card carrying an old
+              `MERGE_CONFLICT:` or a `PLANNING_FENCE_UNAVAILABLE:` sentence from a lane that never looked at
+              this row was read as "somebody already announced this dead row", so the pass withheld on
+              `terminal-recorded` forever; (2) it says nothing about the measured shape at all, because
+              RUFU-1044 and RUFU-243 both sat with an EMPTY `task.error` and no terminal audit row — the
+              silence is the finding, and a proxy over the same field cannot detect it. So the answer now
+              comes from the card's own audit tail ({@link unclaimedGraphWorkTerminalRecordExists}), read only
+              for a candidate that already carries a terminal row (the pre-filter above), and an unreadable
+              tail answers `false` — the finding side, never the health side, because every action the pass
+              then takes is re-checked by its own authority.
+              */
+              terminalRecordExists: carriesTerminalOrphan
+                ? await unclaimedGraphWorkTerminalRecordExists(this.store, task.id)
+                : false,
+              skipDueWindowProbe: !carriesPlanningWait || dueIds === null,              reachedByDueWindow: dueIds === null ? undefined : items.some((item) => dueIds!.has(item.id)),
+            });
+            /*
+            FNXC:UnclaimedGraphWork 2026-11-17-02:47 (RUFU-1050 code-review remediation, P1-2):
+            `action: "none"` is the withhold, and it is now a RECORDED withhold. Counting it in a return value
+            that both registrations throw away (`.then(() => undefined)`) is how 136 cards sat for a month
+            with nothing on them and nothing in the audit store: the pass had a total and no persistence, and
+            the next frozen board was diagnosed by hand-written SQL. Every withheld verdict that is not
+            healthy work (see `unclaimedGraphWorkWithholdingIsReportable`) leaves the paired
+            `task:reconcile-unclaimed-graph-work-no-action` row, bounded per (card, code) by the durable
+            episode rather than by process memory, so a restart does not turn a sustained stall into a flood.
+            */
+            if (decision.action === "none") {
+              outcome.withheld += 1;
+              await this.recordUnclaimedGraphWorkWithholding(task, decision, now);
+              continue;
+            }
+            const acted = await this.actOnUnclaimedGraphWork(task, decision, { items, now });
+            if (acted) outcome[acted] += 1;
+          } catch (error) {
+            log.warn(`reconcileUnclaimedGraphWork: failed for ${snapshot.id}: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+        if (tasks.length < 500) break;
+        offset += tasks.length;
+      }
+      /*
+      FNXC:UnclaimedGraphWork 2026-11-17-02:47 (RUFU-1050 code-review remediation, P1-2):
+      The per-pass totals, persisted to the engine log instead of discarded. The pass returns a tally and
+      both registrations dropped it (`.then(() => undefined)`), so "the sweep ran and found 136 cards" was a
+      fact that existed for the duration of one function call. Level split follows the diagnostics rule for
+      this subsystem (recoveries are warn, steady-state chatter is debug), and zero-candidate passes stay
+      silent. NOTE the level vocabulary: this logger has `log/debug/warn/error` and NO `info` — calling a
+      missing method here threw inside the sweep's own try/catch and turned every pass into a swallowed
+      warning, which is why the falsification run of this change is what caught it.
+      */
+      const acted = outcome.redriven + outcome.rearmed + outcome.replanned + outcome.named;
+      if (outcome.examined > 0) {
+        const tally = `reconcileUnclaimedGraphWork: examined ${outcome.examined} — redriven ${outcome.redriven}, rearmed ${outcome.rearmed}, replanned ${outcome.replanned}, named ${outcome.named}, withheld ${outcome.withheld}`;
+        if (acted > 0) log.warn(tally);
+        else log.debug(tally);
+      }
+      return outcome;
+    } catch (error) {
+      log.warn(`reconcileUnclaimedGraphWork failed: ${error instanceof Error ? error.message : String(error)}`);
+      return outcome;
+    }
+  }
+
+  /**
+   * FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050):
+   * One verdict's worth of repair, always delivered through the authority the decision named. Returns the
+   * outcome bucket it filled, or null when the authority refused (which is recorded as withheld, never as
+   * a repair).
+   */
+  private async actOnUnclaimedGraphWork(
+    task: Task,
+    decision: UnclaimedGraphWorkDecision,
+    context: { items: WorkflowWorkItem[]; now: number },
+  ): Promise<keyof UnclaimedGraphWorkOutcome | null> {
+    const { now, items } = context;
+    const action = decision.action;
+    const prior = readEpisode(task);
+    /*
+    FNXC:UnclaimedGraphWork 2026-11-17-02:47 (RUFU-1050 code-review remediation, P1-2):
+    `name-terminal` is the one ACTION that reports nothing but a verdict — it writes no repair — so without a
+    bound it is one audit row and one candidate tally PER PASS FOREVER for a card whose remedy is a human.
+    Withheld verdicts get the same bound (see `recordUnclaimedGraphWorkWithholding`). The key is the episode
+    the pass already owns, so the bound survives a restart, and a CODE or ACTION change always re-announces:
+    a card that moves from `due-unclaimed` to `terminal-node-orphan` is answering a different question.
+    Repairs (`redrive`, `rearm`, `replan`) are never gated here — each is bounded by its own authority.
+    */
+    if (action === "name-terminal" && unclaimedGraphWorkAnnouncementIsRepeat(prior, decision, now)) return "withheld";
+    const episode: UnclaimedGraphWorkEpisode = {
+      code: decision.code,
+      // A code change restarts the clock (it is a different question); a same-code repeat keeps its origin,
+      // so `firstAt` stays the age of the WAIT rather than the age of the latest pass that noticed it.
+      firstAt: prior && prior.code === decision.code ? prior.firstAt : new Date(now).toISOString(),
+      // The seam stamps its own identity on every verdict. Persisting THAT string, rather than rebuilding
+      // one from whatever fields the pass happens to hold, is what makes the redrive budget actually bind.
+      signature: decision.signature,
+      redriveCount: (prior?.redriveCount ?? 0) + (action === "redrive" ? 1 : 0),
+      lastAction: action,
+      lastReportedAt: new Date(now).toISOString(),
+    };
+    if (!await this.recordUnclaimedGraphWorkEpisode(task, episode)) return null;
+    /*
+    FNXC:UnclaimedGraphWork 2026-11-17-03:30 (RUFU-1050 code-review remediation, P1-2 honesty follow-up):
+    The record is written OVER THE ANSWER, not over the intent. The first cut emitted `outcome: "repaired"`
+    eagerly for every action, so a card whose re-arm the execution authority refused (`no-work-evidence` - the
+    measured RUFU-243 shape) carried a durable row claiming a repair that never happened, and
+    `action: "name-terminal"`, which repairs nothing by definition, claimed one too. That is worse than the
+    missing record this pair fixes: it is durable evidence pointing at a repair nobody can find. The episode
+    still writes FIRST, because it is the budget and repetition carrier and must stand even with a dead sink.
+    */
+    const delegation = await this.delegateUnclaimedGraphWorkRepair(task, decision, { items, now });
+    await this.auditUnclaimedGraphWork(task, decision, episode, delegation);
+    return delegation.bucket;
+  }
+
+  /**
+   * FNXC:UnclaimedGraphWork 2026-11-17-03:30 (RUFU-1050 code-review remediation, P1-2 honesty follow-up):
+   * The delegation half of one verdict, split out so the record can state what the authority ANSWERED rather
+   * than what this pass intended. Every refusal path names which kind of refusal it was, because "the
+   * authority refused" and "somebody else already owns this row" are different facts for a reader and only
+   * the first is a finding. `authorityVerdict` is the delegated authority's own token and reaches the card
+   * History line only - the audit row takes ids and fixed enums, never prose.
+   */
+  private async delegateUnclaimedGraphWorkRepair(
+    task: Task,
+    decision: UnclaimedGraphWorkDecision,
+    context: { items: WorkflowWorkItem[]; now: number },
+  ): Promise<UnclaimedGraphWorkDelegation> {
+    const { items } = context;
+    const action = decision.action;
+
+    if (action === "redrive" && decision.itemId) {
+      const item = items.find((entry) => entry.id === decision.itemId);
+      if (!item || typeof this.store.transitionWorkflowWorkItem !== "function") {
+        return { bucket: null, verdict: "authority-refused", authorityVerdict: "transition-seam-missing" };
+      }
+      try {
+        const settled = await this.store.transitionWorkflowWorkItem(item.id, item.state, {
+          expectedState: item.state,
+          retryAfter: null,
+          leaseExpiresAt: null,
+        });
+        // A CAS no-op returns the newer row untouched; following a state we did not claim is not a repair.
+        if (settled.state !== item.state) return { bucket: null, verdict: "already-owned", authorityVerdict: "cas-lost" };
+        // The row is now claimable; without a kick the next drain pass is still one poll away.
+        try {
+          this.options.onUnclaimedGraphWorkRedrive?.();
+        } catch {
+          /* A missing wake bridge degrades to the existing poll cadence, never to a lost repair. */
+        }
+        return { bucket: "redriven", verdict: "repaired" };
+      } catch (error) {
+        log.warn(`reconcileUnclaimedGraphWork: redrive CAS refused for ${task.id}: ${error instanceof Error ? error.message : String(error)}`);
+        return { bucket: null, verdict: "authority-refused", authorityVerdict: "cas-threw" };
+      }
+    }
+
+    if (action === "rearm" && decision.itemId) {
+      /*
+      FNXC:UnclaimedGraphWork 2026-11-17-02:47 (RUFU-1050 code-review remediation, P0):
+      The re-arm installs a NODE, and only the continuation row carries its identity — but WHICH identity is
+      load-bearing. A foreach card's row carries `nodeId: "steps"` (the CONTAINER) and
+      `nodeInstanceId: "steps#1:step-execute"` (the instantiated template step), and `resolveStepExecuteOwner`
+      (`executor/execution-rearm.ts:142`) accepts a node only when `kind === "prompt"` AND
+      `config.seam === "step-execute"`. The container is `kind: "foreach"`, so handing the bare `nodeId` made
+      the one self-clearing exit for the measured RUFU-1044 card answer `not-eligible` on every pass — the row
+      stays dead and the card keeps resting unowned. This is the identity half of the defect
+      `attemptExecutionRearm`'s own comment records for RUFU-1044 ("its caller passed the FOREACH CONTAINER
+      id"): the classifier decided `nodeSeam` from `nodeInstanceId ?? nodeId`, so the re-arm must be handed
+      that same identity, never the bare id, and never `nodeSeam` (a seam token is not a node).
+      */
+      const row = items.find((entry) => entry.id === decision.itemId);
+      const failedNode = row?.nodeInstanceId
+        || row?.nodeId
+        || await resolveStrandedStepExecuteNode(this.store, task).catch(() => null);
+      if (!failedNode) {
+        log.warn(`reconcileUnclaimedGraphWork: re-arm for ${task.id} names no step-execute node (row ${decision.itemId} carries neither nodeInstanceId nor nodeId, and the step ledger names no pending step) - no re-entry attempted`);
+        return { bucket: null, verdict: "authority-refused", authorityVerdict: "node-unresolvable" };
+      }
+      const rearm = await attemptExecutionRearm(
+        {
+          store: this.store,
+          hasLiveExecutionSurface: (taskId) => this.options.hasLiveExecutionSurface?.(taskId) === true
+            || this.options.hasLiveSessionSurface?.(taskId) === true,
+          ...(this.options.checkoutEmptinessProver ? { emptinessProver: this.options.checkoutEmptinessProver } : {}),
+        },
+        {
+          taskId: task.id,
+          failedNode,
+          wipColumn: task.column,
+          reason: "self-healing-stranded-recovery",
+        },
+      ).catch(() => null);
+      if (rearm?.outcome === "rearmed") return { bucket: "rearmed", verdict: "repaired" };
+      if (rearm?.outcome === "already-owned") return { bucket: "withheld", verdict: "already-owned", authorityVerdict: "already-owned" };
+      log.warn(`reconcileUnclaimedGraphWork: re-arm for ${task.id} @ ${failedNode} answered ${rearm?.outcome ?? "attempt-failed"} — ${rearm?.detail ?? "re-arm attempt threw"}`);
+      // The refusal is the durable answer, not a silent null: this is the sentence an operator reads when the
+      // card stays in WIP, and the token is the authority's own verdict (`no-work-evidence`, `not-eligible`,
+      // `budget-exhausted`, `live-session`), never a paraphrase of it.
+      return {
+        bucket: null,
+        verdict: "authority-refused",
+        authorityVerdict: rearm?.outcome ?? "attempt-failed",
+      };
+    }
+
+    if (action === "replan") {
+      const writeReplanSignal = async (): Promise<boolean> => {
+        const fresh = await this.store.getTask(task.id);
+        if (!fresh || fresh.deletedAt) return false;
+        if (isTaskPlanningOrExecutionLive(fresh.id, {
+          isTaskActive: this.options.isTaskActive,
+          getPlanningTaskIds: this.options.getPlanningTaskIds,
+        })) return false;
+        await this.store.updateTaskAtomic(fresh.id, (live) => (live.status === "needs-replan" ? null : { status: "needs-replan" as const }));
+        return true;
+      };
+      const lifecycleLock = (this.store as Partial<TaskStore>).withPlanningLifecycleLock;
+      const signalled = lifecycleLock
+        ? await lifecycleLock.call(this.store, task.id, writeReplanSignal, { holderLabel: "sweep" })
+        : await writeReplanSignal();
+      return signalled
+        ? { bucket: "replanned", verdict: "repaired" }
+        : { bucket: null, verdict: "authority-refused", authorityVerdict: "replan-not-signalled" };
+    }
+
+    if (action === "name-terminal") return { bucket: "named", verdict: "announced" };
+    return { bucket: null, verdict: "authority-refused", authorityVerdict: "no-delegation-path" };
+  }
+
+  /**
+   * FNXC:UnclaimedGraphWork 2026-11-17-02:47 (RUFU-1050 code-review remediation, P1-2):
+   * The withheld half of the record pair. A withheld verdict repairs nothing, so its record is the ONLY
+   * evidence the card was ever examined — and until now it was a number in a return value that both call
+   * sites discarded, which is why a 136-card stall produced zero queryable facts about the 136 cards.
+   *
+   * THREE rules this method exists to keep:
+   * 1. Healthy work says nothing. `not-aged`, `live-session`, `operator-held` and `auto-merge-off` are
+   *    excluded by the classifier's own predicate (RUFU-273/RUFU-372's "naming healthy work" mistake), so a
+   *    busy board does not fill its audit store with cards that are merely in handoff or merely paused.
+   * 2. The bound is DURABLE, not process memory. The dedupe key is the episode this pass already owns
+   *    (`code` + `lastAction` + `lastReportedAt`) over the existing 6 h re-announcement floor, so a restart
+   *    mid-stall neither loses the bound (an in-process Set's failure) nor re-announces the whole board.
+   * 3. The episode is written BEFORE the record is emitted. An episode write that was refused means no
+   *    durable key stands, so emitting would start a per-pass flood — the record waits for the next pass.
+   */
+  private async recordUnclaimedGraphWorkWithholding(
+    task: Task,
+    decision: UnclaimedGraphWorkDecision,
+    now: number,
+  ): Promise<void> {
+    if (!unclaimedGraphWorkWithholdingIsReportable(decision.code)) return;
+    const prior = readEpisode(task);
+    if (unclaimedGraphWorkAnnouncementIsRepeat(prior, decision, now)) return;
+    const episode: UnclaimedGraphWorkEpisode = {
+      code: decision.code,
+      firstAt: prior && prior.code === decision.code ? prior.firstAt : new Date(now).toISOString(),
+      signature: decision.signature,
+      redriveCount: prior?.redriveCount ?? 0,
+      lastAction: "none",
+      lastReportedAt: new Date(now).toISOString(),
+    };
+    if (!await this.recordUnclaimedGraphWorkEpisode(task, episode)) return;
+    await emitBoundedRunAudit(this.store, {
+      taskId: task.id,
+      agentId: "self-healing",
+      runId: generateSyntheticRunId("reconcile-unclaimed-graph-work-no-action", task.id),
+      domain: "database",
+      mutationType: "task:reconcile-unclaimed-graph-work-no-action",
+      target: task.id,
+      metadata: {
+        taskId: task.id,
+        column: task.column,
+        code: decision.code,
+        action: "none",
+        itemId: decision.itemId ?? null,
+        nodeSeam: decision.nodeSeam ?? null,
+        owner: decision.owner,
+        outcome: "withheld",
+        stalenessMs: decision.stalenessMs,
+        retryAfterMs: decision.retryAfterMs,
+        redriveCount: episode.redriveCount,
+      },
+    }).catch(() => undefined);
+    await this.writeUnclaimedGraphWorkHistory(task, decision, episode);
+  }
+
+  /**
+   * FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050):
+   * Key-level episode write, written BEFORE any repair is attempted so a pass that classifies a card and
+   * then has its authority refuse still leaves evidence that the card was seen. Everything rides
+   * `sourceMetadataPatch`: a whole-field write would orphan `duplicateOf`, `handoffFrom`, and the sibling
+   * planning/WIP-admission episodes on the same row, which is the collateral RUFU-377 deleted a field over.
+   */
+  private async recordUnclaimedGraphWorkEpisode(
+    task: Task,
+    episode: UnclaimedGraphWorkEpisode,
+  ): Promise<boolean> {
+    try {
+      await this.store.updateTaskAtomic(task.id, () => unclaimedGraphWorkEpisodePatch(episode));
+      return true;
+    } catch (error) {
+      log.warn(`reconcileUnclaimedGraphWork: episode write refused for ${task.id}: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }
+  }
+
+  /**
+   * FNXC:UnclaimedGraphWork 2026-11-17-03:30 (RUFU-1050 code-review remediation, P1-2 honesty follow-up):
+   * One audit row plus one card-History line PER VERDICT THAT WAS ACTED ON, written after the delegated
+   * authority answered and carrying its verdict. Before this the row claimed `outcome: "repaired"` for every
+   * action unconditionally - including the two actions that repair nothing by construction (`name-terminal`)
+   * and the refusals (`no-work-evidence`), so the durable record asserted work the card never received and
+   * the operator's only explanation of a card still sitting in WIP was an engine-log line.
+   *
+   * The History line is the half an operator actually reads: it names the next actor rather than promising a
+   * run (the sentence-level defect this task exists to close) and, on a refusal, names the authority's own
+   * verdict token. Both halves ride the FN-9175 bounded seam, so an absent or hostile sink cannot turn a
+   * repair into a failure.
+   */
+  private async auditUnclaimedGraphWork(
+    task: Task,
+    decision: UnclaimedGraphWorkDecision,
+    episode: UnclaimedGraphWorkEpisode,
+    delegation: UnclaimedGraphWorkDelegation,
+  ): Promise<void> {
+    await emitBoundedRunAudit(this.store, {
+      taskId: task.id,
+      agentId: "self-healing",
+      runId: generateSyntheticRunId("reconcile-unclaimed-graph-work", task.id),
+      domain: "database",
+      mutationType: "task:reconcile-unclaimed-graph-work",
+      target: task.id,
+      metadata: {
+        taskId: task.id,
+        column: task.column,
+        code: decision.code,
+        action: decision.action,
+        itemId: decision.itemId ?? null,
+        nodeSeam: decision.nodeSeam ?? null,
+        owner: decision.owner,
+        outcome: delegation.verdict,
+        redriveCount: episode.redriveCount,
+      },
+    }).catch(() => undefined);
+    const refusal = delegation.verdict === "authority-refused" || delegation.verdict === "already-owned"
+      ? ` The hand-off did not land: ${delegation.authorityVerdict ?? delegation.verdict}.`
+      : "";
+    await this.writeUnclaimedGraphWorkHistory(task, decision, episode, refusal);
+  }
+
+  /**
+   * FNXC:UnclaimedGraphWork 2026-11-17-03:30 (RUFU-1050 code-review remediation, P1-2):
+   * The card-History write, shared by the acted and withheld halves so the two can never drift in shape:
+   * one `[unclaimed-graph-work]` line per (card, code, action) inside the re-announcement floor, through the
+   * `logEntryOnce` once-seam, falling back to `logEntry` plus a bounded process-local key on a store without
+   * it (RUFU-318/RUFU-371's shape). Run-audit has no board surface, so a refusal recorded only there is
+   * invisible to the person who has to act on it.
+   */
+  private async writeUnclaimedGraphWorkHistory(
+    task: Task,
+    decision: UnclaimedGraphWorkDecision,
+    episode: UnclaimedGraphWorkEpisode,
+    suffix = "",
+  ): Promise<void> {
+    const marker = `[unclaimed-graph-work] ${unclaimedGraphWorkHistorySentence(decision, episode)}${suffix}`;
+    const logKey = `unclaimed-graph-work:${task.id}:${decision.code}:${decision.action}`;
+    if (typeof this.store.logEntryOnce === "function") {
+      await this.store.logEntryOnce(task.id, {
+        action: marker,
+        outcome: decision.code,
+        dedupeKey: logKey,
+        windowMs: UNCLAIMED_GRAPH_WORK_HISTORY_WINDOW_MS,
+      }).catch(() => undefined);
+    } else {
+      await this.store.logEntry(task.id, marker).catch(() => undefined);
     }
   }
 

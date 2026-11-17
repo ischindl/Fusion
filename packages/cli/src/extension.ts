@@ -3252,7 +3252,7 @@ export default function kbExtension(pi: ExtensionAPI) {
         });
         await store.logEntry(
           params.id,
-          `Retry requested via Fusion extension (planning run exhausted in ${task.column}; re-armed to needs-replan - the card did not move and its specification, steps, worktree and branch are untouched)`,
+          `Retry requested via Fusion extension (${fusionCore.describePlanningStrandedRetryAdmission(planningStrandedRetry.via, task.column)}; re-armed to needs-replan - the card did not move and its specification, steps, worktree and branch are untouched)`,
         );
         return {
           content: [{

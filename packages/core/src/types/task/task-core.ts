@@ -833,6 +833,40 @@ established for every other park this file releases.
 */
 export const EXECUTION_REARM_EPISODE_METADATA_KEY = "executionRearmEpisode" as const;
 
+/*
+FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050):
+The episode register for a graph row no consumer will take. A planning-lane card whose continuation is
+`runnable` with `waitReason: "planning"` and whose `status` is NULL was released by nothing and refused by
+everything: the hold/release sweep releases a planning wait only on `status !== "planning"` (a NULL status
+fails its status test), the drain reads only the FIFO due page, and the stranded-reclaim sweep reads only
+`retryAfter`. Measured 136 cards in that shape on one board. The register is where the owning pass records
+what it measured and how many times it has already handed the row off, so the bound survives a restart.
+
+It lives in core, beside every other episode key this file owns, for one specific reason: the operator's
+Retry must be able to clear it. `buildManualRetryResetPatch` is shared by all four retry surfaces, and core
+cannot import the engine, so a key declared engine-side is a key the shared reset cannot name — which is
+how a Retry would stop being an exit (the RUFU-395 / RUFU-1027 shape). The engine imports THIS constant.
+*/
+export const UNCLAIMED_GRAPH_WORK_EPISODE_METADATA_KEY = "unclaimedGraphWork" as const;
+
+/**
+ * One measured episode of unclaimed graph work (RUFU-1050). Diagnostic plus bound; it gates nothing.
+ *
+ * `signature` is written by the decision seam itself, never rebuilt by a reader: the redrive budget is
+ * compared against this exact string, and RUFU-1027's defect was a bound whose key two writers spelled
+ * differently.
+ */
+export interface TaskUnclaimedGraphWorkEpisode {
+  /** The closed decision code the pass last read. A code change restarts `firstAt` and the budget. */
+  code: string;
+  /** ISO instant of the first pass that named THIS code for this card — the age of the wait, not of the last observation. */
+  firstAt: string;
+  /** The deciding seam's own identity string. */
+  signature: string;
+  /** Hand-offs this pass has already performed for this signature. Bounded by `UNCLAIMED_GRAPH_WORK_MAX_REDRIVES`. */
+  redriveCount?: number;
+}
+
 /**
  * Which gate refused the crossing. The literals are the vocabulary the hold/release sweep ALREADY
  * computes (`hold-release.ts`'s `trackHeld` reasons) plus the boundary's own RUFU-372 source enum, so

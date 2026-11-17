@@ -436,6 +436,43 @@ describe("createTaskRetryTool — planning-stranded re-arm", () => {
     expect(logEntry).toHaveBeenCalledWith(stranded.id, expect.stringContaining("planning run exhausted in todo"));
   });
 
+  /*
+  FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050):
+  The fourth surface, and the sentence is the point. RUFU-1050's cards reach this same admitted branch on
+  the strength of the owning pass's episode, and their planning run COMPLETED — a History line reading
+  "planning run exhausted" would record a failure that never happened, which is precisely the kind of
+  card-lying this retry family was refactored to stop. The narration comes from the classification's own
+  `via`, so no surface can restate the wrong cause while still applying the right patch.
+  */
+  it("re-arms an unclaimed status-null card and narrates what actually stranded it", async () => {
+    const stranded = planningStrandedTask({
+      status: null,
+      error: null,
+      sourceMetadata: {
+        unclaimedGraphWork: {
+          code: "due-unclaimed",
+          firstAt: "2026-11-17T01:05:00.000Z",
+          signature: "unclaimed-graph-work|due-unclaimed|WI-1|runnable|plan-review",
+          redriveCount: 3,
+        },
+      },
+    });
+    const { store, moveTask, logEntry, read } = applyingStore(stranded);
+
+    const result = await createTaskRetryTool(store, {}).execute("run", { id: stranded.id }, undefined as never, undefined as never, undefined as never);
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true);
+    const after = read();
+    expect(after.status).toBe("needs-replan");
+    expect(after.column).toBe("todo");
+    expect(moveTask).not.toHaveBeenCalled();
+    expect(logEntry).toHaveBeenCalledWith(
+      stranded.id,
+      expect.stringContaining("graph work waiting on planning in todo was claimed by no consumer"),
+    );
+    expect(logEntry.mock.calls[0][1]).not.toContain("planning run exhausted");
+  });
+
   it("writes none of the fields whose preservation is the point of the class", async () => {
     /*
     FNXC:PlanningStrandedRetry 2026-11-10-23:58 (RUFU-575):

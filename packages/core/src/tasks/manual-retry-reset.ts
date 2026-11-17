@@ -1,4 +1,4 @@
-import { BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY, DETERMINISTIC_SPEC_REJECTION_METADATA_KEY, EXECUTION_REARM_EPISODE_METADATA_KEY, PLAN_ADMISSION_STALL_METADATA_KEY, PLAN_PREMISE_REJECTION_METADATA_KEY, STRANDED_CONTINUATION_RECLAIM_METADATA_KEY, type Task } from "../types.js";
+import { BRANCH_CONFLICT_RECOVERY_EPISODE_METADATA_KEY, DETERMINISTIC_SPEC_REJECTION_METADATA_KEY, EXECUTION_REARM_EPISODE_METADATA_KEY, PLAN_ADMISSION_STALL_METADATA_KEY, PLAN_PREMISE_REJECTION_METADATA_KEY, STRANDED_CONTINUATION_RECLAIM_METADATA_KEY, UNCLAIMED_GRAPH_WORK_EPISODE_METADATA_KEY, type Task } from "../types.js";
 import type { TaskStore } from "../store.js";
 
 export const IN_REVIEW_STALL_DEADLOCK_PAUSE_REASON = "in-review-stall-deadlock";
@@ -205,6 +205,16 @@ export function buildManualRetryResetPatch(options?: { resetMergeRetries?: boole
       `EXECUTION_REARM_EXHAUSTED:`, so it must reset the number that park reads.
       */
       [EXECUTION_REARM_EPISODE_METADATA_KEY]: null,
+      /*
+      FNXC:UnclaimedGraphWork 2026-11-17-01:05 (RUFU-1050):
+      And to the unclaimed-graph-work register, the seventh key in this one statement. RUFU-1050's owning
+      pass bounds itself at three hand-offs per decision signature and holds that line for as long as the
+      SAME signature stands, so a Retry that left the register behind would clear the card's own state and
+      still be refused by the pass that keeps measuring it — the pass would report "budget spent, waiting on
+      the operator" while the operator had just pressed the button it was pointed at. Fourth instance of the
+      RUFU-395 rule: if a park reads a number, Retry must reset that number or the park has no door.
+      */
+      [UNCLAIMED_GRAPH_WORK_EPISODE_METADATA_KEY]: null,
     },
     nextRecoveryAt: null as unknown as Task["nextRecoveryAt"],
     sessionContentionWaitReason: null as unknown as Task["sessionContentionWaitReason"],
